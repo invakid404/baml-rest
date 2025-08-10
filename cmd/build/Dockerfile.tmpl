@@ -15,8 +15,20 @@ RUN npx @boundaryml/baml@{{ .bamlVersion }} generate
 
 FROM golang:latest
 
+RUN go install golang.org/x/tools/cmd/goimports@latest
+
 WORKDIR /build
 COPY baml_rest baml_rest
 
 WORKDIR /build/baml_rest
+
 COPY --from=client /baml/baml_rest_generated/baml_client baml_client
+RUN go run cmd/introspect/main.go
+
+RUN gofmt -w . && goimports -w .
+
+RUN go get github.com/boundaryml/baml@{{ .bamlVersion }}
+RUN go mod tidy
+
+RUN go build -o baml-rest cmd/serve/main.go
+RUN ./baml-rest
