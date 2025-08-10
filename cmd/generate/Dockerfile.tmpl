@@ -1,7 +1,22 @@
-FROM node:22
+FROM node:22-alpine AS client
+
+RUN apk add --no-cache gettext bash
 
 WORKDIR /baml
-COPY baml_src baml_src
-RUN npx @boundaryml/baml generate
 
+COPY baml_src baml_src
+
+COPY clients.baml.template clients.baml.template
+ENV OUTPUT_DIR="../baml_rest_generated"
+ENV BAML_VERSION="{{ .bamlVersion }}"
+RUN cat clients.baml.template | envsubst | tee baml_src/baml_rest_client.baml
+
+RUN npx @boundaryml/baml@{{ .bamlVersion }} generate
+
+FROM golang:latest
+
+WORKDIR /build
 COPY baml_rest baml_rest
+
+WORKDIR /build/baml_rest
+COPY --from=client /baml/baml_rest_generated/baml_client baml_client

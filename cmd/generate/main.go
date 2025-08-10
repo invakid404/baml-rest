@@ -25,6 +25,9 @@ import (
 //go:embed Dockerfile.tmpl
 var dockerfileTemplateInput string
 
+//go:embed clients.baml.template
+var clientsBamlTemplate []byte
+
 func copyDirToTar(path string, target *tar.Writer, mapper copyFSToTarMapper) error {
 	return copyFSToTar(os.DirFS(path), target, mapper)
 }
@@ -127,8 +130,11 @@ var rootCmd = &cobra.Command{
 		dockerfileTemplate := template.Must(template.New("dockerfile").Parse(dockerfileTemplateInput))
 		var dockerfileOut bytes.Buffer
 
-		templateArgs := map[string]string{}
-		if err = dockerfileTemplate.Execute(&dockerfileOut, templateArgs); err != nil {
+		dockerfileTemplateArgs := map[string]string{
+			// TODO: unhardcode
+			"bamlVersion": "0.204.0",
+		}
+		if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 			return fmt.Errorf("failed to render Dockerfile template: %w", err)
 		}
 		dockerfile := dockerfileOut.Bytes()
@@ -144,6 +150,19 @@ var rootCmd = &cobra.Command{
 
 		if _, err := tarWriter.Write(dockerfile); err != nil {
 			return fmt.Errorf("failed to write Dockerfile to build context: %w", err)
+		}
+
+		clientsBamlTemplateHeader := tar.Header{
+			Name: "clients.baml.template",
+			Mode: 0644,
+			Size: int64(len(clientsBamlTemplate)),
+		}
+		if err := tarWriter.WriteHeader(&clientsBamlTemplateHeader); err != nil {
+			return fmt.Errorf("failed to write clients.baml template header to build context: %w", err)
+		}
+
+		if _, err := tarWriter.Write(clientsBamlTemplate); err != nil {
+			return fmt.Errorf("failed to write clients.baml template to build context: %w", err)
 		}
 
 		err = copyFSToTar(baml_rest.Source, tarWriter, func(filePath string, dirEntry fs.DirEntry, _ fs.FileInfo) *string {
