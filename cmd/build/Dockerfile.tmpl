@@ -13,7 +13,7 @@ RUN cat clients.baml.template | envsubst | tee baml_src/baml_rest_client.baml
 
 RUN npx @boundaryml/baml@{{ .bamlVersion }} generate
 
-FROM golang:latest
+FROM golang AS build
 
 RUN go install golang.org/x/tools/cmd/goimports@latest
 
@@ -30,5 +30,21 @@ RUN gofmt -w . && goimports -w .
 RUN go get github.com/boundaryml/baml@{{ .bamlVersion }}
 RUN go mod tidy
 
+ENV BAML_CACHE_DIR=/baml-cache
+
 RUN go build -o baml-rest cmd/serve/main.go
 RUN ./baml-rest
+
+FROM debian:latest
+
+RUN apt-get update && \
+    apt-get install -y ca-certificates tzdata bash && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /
+COPY --from=build /build/baml_rest/baml-rest /baml-rest
+COPY --from=build /baml-cache /baml-cache
+
+ENV BAML_CACHE_DIR=/baml-cache
+
+ENTRYPOINT ["/baml-rest"]
