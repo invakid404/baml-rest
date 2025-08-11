@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -57,12 +58,58 @@ func main() {
 	packageName := streamFile.Name.Name
 	packageBaseName := packageName[strings.LastIndex(packageName, "/")+1:]
 
-	introspectedTemplate := template.Must(template.New("introspected.go").Parse(introspectedTemplateInput))
+	var streamFunctions []map[string]any
+
+	for _, decl := range streamFile.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+
+		receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+
+		receiverIdentifier, ok := receiver.X.(*ast.Ident)
+		if !ok {
+			continue
+		}
+
+		if receiverIdentifier.Name != "stream" {
+			continue
+		}
+
+		output := make(map[string]any)
+		output["name"] = funcDecl.Name.Name
+
+		var args []string
+		for _, param := range funcDecl.Type.Params.List {
+			args = append(args, param.Names[0].Name)
+		}
+		// Remove context and variadic args
+		output["args"] = args[1 : len(args)-1]
+
+		streamFunctions = append(streamFunctions, output)
+	}
+
+	funcMap := template.FuncMap{
+		"quoteAndJoin": func(input []string) string {
+			quoted := make([]string, len(input))
+			for i, s := range input {
+				quoted[i] = strconv.Quote(s)
+			}
+			return strings.Join(quoted, ",")
+		},
+	}
+
+	introspectedTemplate := template.Must(template.New("introspected.go").Funcs(funcMap).Parse(introspectedTemplateInput))
 	var introspectedTemplateOut bytes.Buffer
 
 	introspectedTemplateArgs := map[string]any{
 		"streamPackageName": packageBaseName,
 		"streamPackagePath": fmt.Sprintf("github.com/invakid404/baml-rest/%s", packageName),
+		"streamMethods":     streamFunctions,
 	}
 	if err := introspectedTemplate.Execute(&introspectedTemplateOut, introspectedTemplateArgs); err != nil {
 		panic(err)

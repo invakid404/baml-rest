@@ -3,3 +3,9 @@ package baml_rest
 import "{{ .streamPackagePath }}"
 
 var Stream = {{ .streamPackageName }}.Stream
+
+var StreamMethods = map[string][]string{
+{{ range .streamMethods }}
+  {{ .name | printf "%q" }}: []string{ {{ quoteAndJoin .args }} },
+{{ end }}
+}
