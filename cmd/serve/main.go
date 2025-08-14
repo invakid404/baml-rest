@@ -110,6 +110,8 @@ func main() {
 		}),
 	)
 
+	paths := openapi3.NewPaths()
+
 	streamReflect := reflect.ValueOf(baml_rest.Stream)
 	for methodIdx := 0; methodIdx < streamReflect.NumMethod(); methodIdx++ {
 		methodType := streamReflect.Type().Method(methodIdx)
@@ -170,6 +172,30 @@ func main() {
 
 		resultSchemaName := fmt.Sprintf("%sResult", methodType.Name)
 		schemas[resultSchemaName] = resultTypeSchema.Value.Properties["x"]
+
+		responses := openapi3.NewResponses()
+		responses.Set("200", &openapi3.ResponseRef{
+			Ref: fmt.Sprintf("#/components/schemas/%s", resultSchemaName),
+		})
+
+		path := fmt.Sprintf("/call/%s", methodType.Name)
+		paths.Set(path, &openapi3.PathItem{
+			Post: &openapi3.Operation{
+				OperationID: methodType.Name,
+				RequestBody: &openapi3.RequestBodyRef{
+					Value: &openapi3.RequestBody{
+						Content: map[string]*openapi3.MediaType{
+							"application/json": {
+								Schema: &openapi3.SchemaRef{
+									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
+								},
+							},
+						},
+					},
+				},
+				Responses: responses,
+			},
+		})
 	}
 
 	finalSchema := openapi3.T{
@@ -181,6 +207,7 @@ func main() {
 		Components: &openapi3.Components{
 			Schemas: schemas,
 		},
+		Paths: paths,
 	}
 
 	data, _ := json.MarshalIndent(finalSchema, "", "  ")
