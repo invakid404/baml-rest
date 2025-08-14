@@ -33,7 +33,7 @@ RUN go mod tidy
 ENV BAML_CACHE_DIR=/baml-cache
 
 RUN go build -o baml-rest cmd/serve/main.go
-RUN ./baml-rest
+RUN ./baml-rest --dry-run
 
 FROM debian:latest
 
@@ -46,5 +46,6 @@ COPY --from=build /build/baml_rest/baml-rest /baml-rest
 COPY --from=build /baml-cache /baml-cache
 
 ENV BAML_CACHE_DIR=/baml-cache
+ENV BAML_LOG=off
 
 ENTRYPOINT ["/baml-rest"]

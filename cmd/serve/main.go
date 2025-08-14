@@ -1,17 +1,22 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3gen"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/render"
 	"github.com/invakid404/baml-rest"
+	"github.com/spf13/cobra"
 	"github.com/stoewer/go-strcase"
+	"log"
+	"net/http"
 	"reflect"
 	"strings"
 )
 
-func main() {
+func generateOpenAPISchema() *openapi3.T {
 	schemas := make(openapi3.Schemas)
 
 	var generator *openapi3gen.Generator
@@ -210,6 +215,52 @@ func main() {
 		Paths: paths,
 	}
 
-	data, _ := json.MarshalIndent(finalSchema, "", "  ")
-	fmt.Println(string(data))
+	return &finalSchema
+}
+
+var dryRun bool
+
+var rootCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Start the BAML REST API server",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		schema := generateOpenAPISchema()
+
+		if dryRun {
+			// Just generate and print the schema, then exit
+			schemaJSON, err := schema.MarshalJSON()
+			if err != nil {
+				return fmt.Errorf("failed to marshal schema: %w", err)
+			}
+			fmt.Println(string(schemaJSON))
+			return nil
+		}
+
+		// Create Chi router
+		r := chi.NewRouter()
+
+		// Add middleware
+		r.Use(middleware.Logger)
+		r.Use(middleware.Recoverer)
+
+		// Add /openapi.json endpoint
+		r.Get("/openapi.json", func(w http.ResponseWriter, r *http.Request) {
+			render.JSON(w, r, schema)
+		})
+
+		// Start server
+		log.Println("Starting server on :8080...")
+		log.Println("OpenAPI schema available at http://localhost:8080/openapi.json")
+		return http.ListenAndServe(":8080", r)
+	},
+}
+
+func init() {
+	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Generate OpenAPI schema and exit without starting the server")
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
+		log.Fatalln(err)
+	}
 }
