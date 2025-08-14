@@ -10,6 +10,7 @@ import (
 	"github.com/invakid404/baml-rest"
 	"github.com/spf13/cobra"
 	"github.com/stoewer/go-strcase"
+	"gopkg.in/yaml.v3"
 	"log"
 	"net/http"
 	"reflect"
@@ -218,7 +219,7 @@ func generateOpenAPISchema() *openapi3.T {
 	return &finalSchema
 }
 
-var dryRun bool
+var dryRunFormat string
 
 var rootCmd = &cobra.Command{
 	Use:   "serve",
@@ -226,13 +227,24 @@ var rootCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		schema := generateOpenAPISchema()
 
-		if dryRun {
+		if dryRunFormat != "" {
 			// Just generate and print the schema, then exit
-			schemaJSON, err := schema.MarshalJSON()
-			if err != nil {
-				return fmt.Errorf("failed to marshal schema: %w", err)
+			switch dryRunFormat {
+			case "json":
+				schemaJSON, err := schema.MarshalJSON()
+				if err != nil {
+					return fmt.Errorf("failed to marshal schema to JSON: %w", err)
+				}
+				fmt.Println(string(schemaJSON))
+			case "yaml":
+				yamlData, err := yaml.Marshal(schema)
+				if err != nil {
+					return fmt.Errorf("failed to marshal schema to YAML: %w", err)
+				}
+				fmt.Print(string(yamlData))
+			default:
+				return fmt.Errorf("unsupported format: %s (supported: json, yaml)", dryRunFormat)
 			}
-			fmt.Println(string(schemaJSON))
 			return nil
 		}
 
@@ -248,15 +260,29 @@ var rootCmd = &cobra.Command{
 			render.JSON(w, r, schema)
 		})
 
+		// Add /openapi.yaml endpoint
+		r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/yaml")
+			yamlData, err := yaml.Marshal(schema)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write(yamlData)
+		})
+
 		// Start server
 		log.Println("Starting server on :8080...")
-		log.Println("OpenAPI schema available at http://localhost:8080/openapi.json")
+		log.Println("OpenAPI schema available at:")
+		log.Println("  JSON: http://localhost:8080/openapi.json")
+		log.Println("  YAML: http://localhost:8080/openapi.yaml")
 		return http.ListenAndServe(":8080", r)
 	},
 }
 
 func init() {
-	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Generate OpenAPI schema and exit without starting the server")
+	rootCmd.Flags().StringVar(&dryRunFormat, "dry-run", "", "Generate OpenAPI schema and exit without starting the server (format: json, yaml; defaults to json)")
+	rootCmd.Flags().Lookup("dry-run").NoOptDefVal = "json"
 }
 
 func main() {
