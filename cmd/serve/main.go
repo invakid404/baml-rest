@@ -141,15 +141,48 @@ func main() {
 		inputStruct := reflect.StructOf(structFields)
 		inputStructInstance := reflect.New(inputStruct)
 
-		schema, err := generator.NewSchemaRefForValue(inputStructInstance.Interface(), schemas)
+		inputSchema, err := generator.NewSchemaRefForValue(inputStructInstance.Interface(), schemas)
 		if err != nil {
 			panic(err)
 		}
 
-		schemaName := fmt.Sprintf("%sInput", methodType.Name)
-		schemas[schemaName] = schema
+		inputSchemaName := fmt.Sprintf("%sInput", methodType.Name)
+		schemas[inputSchemaName] = inputSchema
+
+		streamResultType := methodType.Type.Out(0).Elem()
+		streamResultTypeInstance := reflect.New(streamResultType)
+
+		finalType := streamResultTypeInstance.MethodByName("Final").Type().Out(0).Elem()
+
+		resultTypeStruct := reflect.StructOf([]reflect.StructField{
+			{
+				Name: "X",
+				Type: finalType,
+				Tag:  reflect.StructTag(fmt.Sprintf(`json:"x"`)),
+			},
+		})
+
+		resultTypeStructInstance := reflect.New(resultTypeStruct)
+		resultTypeSchema, err := generator.NewSchemaRefForValue(resultTypeStructInstance.Interface(), schemas)
+		if err != nil {
+			panic(err)
+		}
+
+		resultSchemaName := fmt.Sprintf("%sResult", methodType.Name)
+		schemas[resultSchemaName] = resultTypeSchema.Value.Properties["x"]
 	}
 
-	data, _ := json.MarshalIndent(schemas, "", "  ")
+	finalSchema := openapi3.T{
+		OpenAPI: "3.0.0",
+		Info: &openapi3.Info{
+			Title:   "baml-rest",
+			Version: "1.0.0",
+		},
+		Components: &openapi3.Components{
+			Schemas: schemas,
+		},
+	}
+
+	data, _ := json.MarshalIndent(finalSchema, "", "  ")
 	fmt.Println(string(data))
 }
