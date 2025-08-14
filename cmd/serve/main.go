@@ -180,8 +180,18 @@ func generateOpenAPISchema() *openapi3.T {
 		schemas[resultSchemaName] = resultTypeSchema.Value.Properties["x"]
 
 		responses := openapi3.NewResponses()
+		description := fmt.Sprintf("Successful response for %s", methodType.Name)
 		responses.Set("200", &openapi3.ResponseRef{
-			Ref: fmt.Sprintf("#/components/schemas/%s", resultSchemaName),
+			Value: &openapi3.Response{
+				Description: &description,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Ref: fmt.Sprintf("#/components/schemas/%s", resultSchemaName),
+						},
+					},
+				},
+			},
 		})
 
 		path := fmt.Sprintf("/call/%s", methodType.Name)
