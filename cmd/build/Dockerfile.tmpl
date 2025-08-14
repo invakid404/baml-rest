@@ -13,7 +13,7 @@ RUN cat clients.baml.template | envsubst | tee baml_src/baml_rest_client.baml
 
 RUN npx @boundaryml/baml@{{ .bamlVersion }} generate
 
-FROM golang AS build
+FROM golang:latest AS build
 
 RUN go install golang.org/x/tools/cmd/goimports@latest
 

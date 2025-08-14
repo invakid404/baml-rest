@@ -6,9 +6,13 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"github.com/invakid404/baml-rest"
+	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/moby/api/types/build"
+	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/registry"
 	"html/template"
 	"io"
 	"io/fs"
@@ -139,6 +143,15 @@ var rootCmd = &cobra.Command{
 		}
 		dockerfile := dockerfileOut.Bytes()
 
+		images, err := extractFromImages(&dockerfileOut)
+		if err != nil {
+			return fmt.Errorf("failed to extract images from Dockerfile: %w", err)
+		}
+
+		if err = pullImagesIfNeeded(dockerClient, images); err != nil {
+			return fmt.Errorf("failed to pull images: %w", err)
+		}
+
 		dockerfileHeader := tar.Header{
 			Name: "Dockerfile",
 			Mode: 0644,
@@ -195,6 +208,10 @@ var rootCmd = &cobra.Command{
 			Dockerfile: "Dockerfile",
 			Tags:       []string{"testis:latest"},
 			Remove:     true,
+			Version:    build.BuilderBuildKit,
+			AuthConfigs: map[string]registry.AuthConfig{
+				"docker.io": {},
+			},
 		})
 		if err != nil {
 			return fmt.Errorf("failed to build image: %w", err)
@@ -223,4 +240,162 @@ func main() {
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatalln(err)
 	}
+}
+
+func extractFromImages(dockerfileContent io.Reader) ([]string, error) {
+	result, err := parser.Parse(dockerfileContent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Dockerfile: %w", err)
+	}
+
+	var images []string
+
+	for _, child := range result.AST.Children {
+		if strings.ToUpper(child.Value) == "FROM" {
+			if child.Next != nil {
+				image := extractImageFromNode(child.Next)
+				if image != "" && !isStageReference(image) {
+					images = append(images, normalizeImageName(image))
+				}
+			}
+		}
+	}
+
+	return images, nil
+}
+
+func extractImageFromNode(node *parser.Node) string {
+	var parts []string
+
+	for n := node; n != nil; n = n.Next {
+		if strings.ToUpper(n.Value) == "AS" {
+			break
+		}
+		parts = append(parts, n.Value)
+	}
+
+	return strings.Join(parts, "")
+}
+
+func normalizeImageName(image string) string {
+	// Handle scratch image (special case)
+	if image == "scratch" {
+		return image
+	}
+
+	// Add default tag if missing
+	if !strings.Contains(image, ":") {
+		image = image + ":latest"
+	}
+
+	// Add docker.io registry if no registry specified
+	if !strings.Contains(strings.Split(image, "/")[0], ".") &&
+		!strings.Contains(strings.Split(image, "/")[0], ":") &&
+		!strings.HasPrefix(image, "localhost/") {
+
+		// Check if it's an official image (no namespace)
+		parts := strings.Split(image, "/")
+		if len(parts) == 1 {
+			image = "docker.io/library/" + image
+		} else if len(parts) == 2 {
+			image = "docker.io/" + image
+		}
+	}
+
+	return image
+}
+
+func isStageReference(image string) bool {
+	if image == "scratch" {
+		return false
+	}
+
+	hasColon := strings.Contains(image, ":")
+	hasSlash := strings.Contains(image, "/")
+
+	return !hasColon && !hasSlash
+}
+
+func pullImagesIfNeeded(cli *client.Client, images []string) error {
+	ctx := context.Background()
+
+	for _, img := range images {
+		// Skip scratch image
+		if img == "scratch" {
+			fmt.Printf("Skipping special image: %s\n", img)
+			continue
+		}
+
+		// Check if image exists locally
+		exists, err := imageExists(ctx, cli, img)
+		if err != nil {
+			return fmt.Errorf("failed to check image %s: %w", img, err)
+		}
+
+		if exists {
+			fmt.Printf("Image already exists: %s\n", img)
+		} else {
+			fmt.Printf("Pulling image: %s\n", img)
+			err = pullImage(ctx, cli, img)
+			if err != nil {
+				return fmt.Errorf("failed to pull image %s: %w", img, err)
+			}
+			fmt.Printf("Successfully pulled: %s\n", img)
+		}
+	}
+
+	return nil
+}
+
+func imageExists(ctx context.Context, cli *client.Client, imageName string) (bool, error) {
+	images, err := cli.ImageList(ctx, image.ListOptions{})
+	if err != nil {
+		return false, err
+	}
+
+	for _, img := range images {
+		for _, tag := range img.RepoTags {
+			if tag == imageName ||
+				strings.TrimPrefix(tag, "docker.io/") == strings.TrimPrefix(imageName, "docker.io/") ||
+				"docker.io/library/"+tag == imageName {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+func pullImage(ctx context.Context, cli *client.Client, imageName string) error {
+	// Pull the image
+	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
+	if err != nil {
+		return err
+	}
+	defer func(reader io.ReadCloser) {
+		_ = reader.Close()
+	}(reader)
+
+	// Process the output to show progress
+	decoder := json.NewDecoder(reader)
+	for {
+		var message map[string]interface{}
+		if err := decoder.Decode(&message); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		// Print progress messages
+		if status, ok := message["status"].(string); ok {
+			if progress, ok := message["progress"].(string); ok {
+				fmt.Printf("  %s %s\n", status, progress)
+			} else {
+				fmt.Printf("  %s\n", status)
+			}
+		}
+	}
+
+	return nil
 }
