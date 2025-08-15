@@ -176,9 +176,6 @@ func generateOpenAPISchema() *openapi3.T {
 			panic(err)
 		}
 
-		resultSchemaName := fmt.Sprintf("%sResult", methodType.Name)
-		schemas[resultSchemaName] = resultTypeSchema.Value.Properties["x"]
-
 		responses := openapi3.NewResponses()
 		description := fmt.Sprintf("Successful response for %s", methodType.Name)
 		responses.Set("200", &openapi3.ResponseRef{
@@ -186,9 +183,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &description,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: &openapi3.SchemaRef{
-							Ref: fmt.Sprintf("#/components/schemas/%s", resultSchemaName),
-						},
+						Schema: resultTypeSchema.Value.Properties["x"],
 					},
 				},
 			},
