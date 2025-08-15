@@ -105,6 +105,37 @@ func generateOpenAPISchema() *openapi3.T {
 					return err
 				}
 			} else {
+				// Handle required vs optional fields based on pointer types
+				if t.Kind() == reflect.Struct {
+					var requiredFields []string
+					for i := 0; i < t.NumField(); i++ {
+						field := t.Field(i)
+						// Skip unexported fields
+						if !field.IsExported() {
+							continue
+						}
+						
+						// Get the JSON tag name, default to field name if no tag
+						jsonTag := field.Tag.Get("json")
+						fieldName := field.Name
+						if jsonTag != "" && jsonTag != "-" {
+							// Handle "name,omitempty" format
+							if parts := strings.Split(jsonTag, ","); len(parts) > 0 && parts[0] != "" {
+								fieldName = parts[0]
+							}
+						}
+						
+						// If field is not a pointer, it's required
+						if field.Type.Kind() != reflect.Ptr {
+							requiredFields = append(requiredFields, fieldName)
+						}
+					}
+					
+					if len(requiredFields) > 0 {
+						schema.Required = requiredFields
+					}
+				}
+				
 				return nil
 			}
 
