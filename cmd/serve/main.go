@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"net/http"
+	"reflect"
+	"strings"
+
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3gen"
 	"github.com/go-chi/chi/v5"
@@ -11,13 +17,20 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stoewer/go-strcase"
 	"gopkg.in/yaml.v3"
-	"log"
-	"net/http"
-	"reflect"
-	"strings"
 )
 
-func generateOpenAPISchema() *openapi3.T {
+type generateSchemaResult struct {
+	Prompts []*collectedPrompt
+	Schema  *openapi3.T
+}
+
+type collectedPrompt struct {
+	Name     string
+	Input    reflect.Type
+	CallFunc func(context.Context, interface{}) (*reflect.Value, error)
+}
+
+func generateOpenAPISchema() (result generateSchemaResult) {
 	schemas := make(openapi3.Schemas)
 
 	var generator *openapi3gen.Generator
@@ -114,7 +127,7 @@ func generateOpenAPISchema() *openapi3.T {
 						if !field.IsExported() {
 							continue
 						}
-						
+
 						// Get the JSON tag name, default to field name if no tag
 						jsonTag := field.Tag.Get("json")
 						fieldName := field.Name
@@ -124,18 +137,18 @@ func generateOpenAPISchema() *openapi3.T {
 								fieldName = parts[0]
 							}
 						}
-						
+
 						// If field is not a pointer, it's required
 						if field.Type.Kind() != reflect.Ptr {
 							requiredFields = append(requiredFields, fieldName)
 						}
 					}
-					
+
 					if len(requiredFields) > 0 {
 						schema.Required = requiredFields
 					}
 				}
-				
+
 				return nil
 			}
 
@@ -238,6 +251,48 @@ func generateOpenAPISchema() *openapi3.T {
 				Responses: responses,
 			},
 		})
+
+		// Create a callable function that extracts struct fields and calls the BAML method
+		callFunc := func(ctx context.Context, input interface{}) (*reflect.Value, error) {
+			inputValue := reflect.ValueOf(input)
+			if inputValue.Kind() == reflect.Ptr {
+				inputValue = inputValue.Elem()
+			}
+
+			// Get the BAML method
+			streamValue := reflect.ValueOf(baml_rest.Stream)
+			method := streamValue.MethodByName(methodType.Name)
+			if !method.IsValid() {
+				return nil, fmt.Errorf("method %s not found", methodType.Name)
+			}
+
+			// Prepare arguments: context + individual field values + variadic args
+			methodArgs := []reflect.Value{reflect.ValueOf(ctx)}
+
+			// Extract struct fields in the correct order based on args
+			for _, argName := range args {
+				fieldName := strcase.UpperCamelCase(argName)
+				fieldValue := inputValue.FieldByName(fieldName)
+				if !fieldValue.IsValid() {
+					return nil, fmt.Errorf("field %s not found in input struct", fieldName)
+				}
+				methodArgs = append(methodArgs, fieldValue)
+			}
+
+			// Call the method
+			results := method.Call(methodArgs)
+			if len(results) < 1 {
+				return nil, fmt.Errorf("method returned no results")
+			}
+
+			return &results[0], nil
+		}
+
+		result.Prompts = append(result.Prompts, &collectedPrompt{
+			Name:     methodType.Name,
+			Input:    inputStruct,
+			CallFunc: callFunc,
+		})
 	}
 
 	finalSchema := openapi3.T{
@@ -252,7 +307,9 @@ func generateOpenAPISchema() *openapi3.T {
 		Paths: paths,
 	}
 
-	return &finalSchema
+	result.Schema = &finalSchema
+
+	return
 }
 
 var dryRunFormat string
@@ -261,7 +318,8 @@ var rootCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		schema := generateOpenAPISchema()
+		schemaResult := generateOpenAPISchema()
+		schema := schemaResult.Schema
 
 		if dryRunFormat != "" {
 			// Just generate and print the schema, then exit
@@ -306,6 +364,51 @@ var rootCmd = &cobra.Command{
 			}
 			_, _ = w.Write(yamlData)
 		})
+
+		for _, prompt := range schemaResult.Prompts {
+			log.Println("Registering prompt:", prompt.Name)
+
+			// Capture the prompt for the closure
+			capturedPrompt := prompt
+			r.Post(fmt.Sprintf("/call/%s", prompt.Name), func(w http.ResponseWriter, r *http.Request) {
+				input := reflect.New(capturedPrompt.Input).Interface()
+				if err := render.DecodeJSON(r.Body, input); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+
+				// Call the prompt using the attached CallFunc
+				ctx := context.Background()
+				result, err := capturedPrompt.CallFunc(ctx, input)
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", capturedPrompt.Name, err), http.StatusInternalServerError)
+					return
+				}
+
+				for {
+					result, ok := result.Recv()
+					if !ok {
+						break
+					}
+
+					// Create a new pointer of type *T
+					ptrValue := reflect.New(result.Type())
+
+					// Set the value that ptrValue points to as v
+					ptrValue.Elem().Set(result)
+
+					if result.FieldByName("IsFinal").Bool() {
+						final, ok := ptrValue.Type().MethodByName("Final")
+						if !ok {
+							http.Error(w, fmt.Sprintf("Method Final not found on type %s", result.Type().Name()), http.StatusInternalServerError)
+						}
+
+						render.JSON(w, r, final.Func.Call([]reflect.Value{ptrValue})[0].Interface())
+						return
+					}
+				}
+			})
+		}
 
 		// Start server
 		log.Println("Starting server on :8080...")
