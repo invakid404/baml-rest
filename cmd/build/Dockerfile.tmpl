@@ -23,17 +23,17 @@ COPY baml_rest baml_rest
 WORKDIR /build/baml_rest
 
 COPY --from=client /baml/baml_rest_generated/baml_client baml_client
-RUN go run cmd/introspect/main.go
-
-RUN gofmt -w . && goimports -w .
 
 RUN go get github.com/boundaryml/baml@{{ .bamlVersion }}
 RUN go mod tidy
 
+RUN go run cmd/introspect/main.go
+RUN gofmt -w . && goimports -w .
+
 ENV BAML_CACHE_DIR=/baml-cache
+RUN go run cmd/generate/main.go
 
 RUN go build -o baml-rest cmd/serve/main.go
-RUN ./baml-rest --dry-run
 
 FROM debian:latest
 

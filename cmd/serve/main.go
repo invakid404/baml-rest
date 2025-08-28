@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -12,25 +13,16 @@ import (
 	"github.com/getkin/kin-openapi/openapi3gen"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/httplog/v3"
 	"github.com/go-chi/render"
 	"github.com/invakid404/baml-rest"
+	"github.com/invakid404/baml-rest/baml"
+
 	"github.com/spf13/cobra"
-	"github.com/stoewer/go-strcase"
 	"gopkg.in/yaml.v3"
 )
 
-type generateSchemaResult struct {
-	Prompts []*collectedPrompt
-	Schema  *openapi3.T
-}
-
-type collectedPrompt struct {
-	Name     string
-	Input    reflect.Type
-	CallFunc func(context.Context, interface{}) (*reflect.Value, error)
-}
-
-func generateOpenAPISchema() (result generateSchemaResult) {
+func generateOpenAPISchema() *openapi3.T {
 	schemas := make(openapi3.Schemas)
 
 	var generator *openapi3gen.Generator
@@ -162,49 +154,19 @@ func generateOpenAPISchema() (result generateSchemaResult) {
 
 	paths := openapi3.NewPaths()
 
-	streamReflect := reflect.ValueOf(baml_rest.Stream)
-	for methodIdx := 0; methodIdx < streamReflect.NumMethod(); methodIdx++ {
-		methodType := streamReflect.Type().Method(methodIdx)
-
-		firstParam := methodType.Type.In(1)
-		if firstParam.String() != "context.Context" {
-			continue
-		}
-
-		args, ok := baml_rest.StreamMethods[methodType.Name]
-		if !ok {
-			continue
-		}
-
-		var structFields []reflect.StructField
-
-		for paramIdx := 2; paramIdx < methodType.Type.NumIn()-1; paramIdx++ {
-			paramName := args[paramIdx-2]
-			paramType := methodType.Type.In(paramIdx)
-
-			structField := reflect.StructField{
-				Name: strcase.UpperCamelCase(paramName),
-				Type: paramType,
-				Tag:  reflect.StructTag(fmt.Sprintf(`json:%q`, paramName)),
-			}
-			structFields = append(structFields, structField)
-		}
-
-		inputStruct := reflect.StructOf(structFields)
-		inputStructInstance := reflect.New(inputStruct)
+	for methodName, method := range baml_rest.Methods {
+		inputStruct := method.MakeInput()
+		inputStructInstance := reflect.ValueOf(inputStruct)
 
 		inputSchema, err := generator.NewSchemaRefForValue(inputStructInstance.Interface(), schemas)
 		if err != nil {
 			panic(err)
 		}
 
-		inputSchemaName := fmt.Sprintf("%sInput", methodType.Name)
+		inputSchemaName := inputStructInstance.Elem().Type().Name()
 		schemas[inputSchemaName] = inputSchema
 
-		streamResultType := methodType.Type.Out(0).Elem()
-		streamResultTypeInstance := reflect.New(streamResultType)
-
-		finalType := streamResultTypeInstance.MethodByName("Final").Type().Out(0).Elem()
+		finalType := reflect.ValueOf(method.MakeOutput()).Elem().Type()
 
 		resultTypeStruct := reflect.StructOf([]reflect.StructField{
 			{
@@ -221,7 +183,7 @@ func generateOpenAPISchema() (result generateSchemaResult) {
 		}
 
 		responses := openapi3.NewResponses()
-		description := fmt.Sprintf("Successful response for %s", methodType.Name)
+		description := fmt.Sprintf("Successful response for %s", methodName)
 		responses.Set("200", &openapi3.ResponseRef{
 			Value: &openapi3.Response{
 				Description: &description,
@@ -233,10 +195,10 @@ func generateOpenAPISchema() (result generateSchemaResult) {
 			},
 		})
 
-		path := fmt.Sprintf("/call/%s", methodType.Name)
+		path := fmt.Sprintf("/call/%s", methodName)
 		paths.Set(path, &openapi3.PathItem{
 			Post: &openapi3.Operation{
-				OperationID: methodType.Name,
+				OperationID: methodName,
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
 						Content: map[string]*openapi3.MediaType{
@@ -251,51 +213,9 @@ func generateOpenAPISchema() (result generateSchemaResult) {
 				Responses: responses,
 			},
 		})
-
-		// Create a callable function that extracts struct fields and calls the BAML method
-		callFunc := func(ctx context.Context, input interface{}) (*reflect.Value, error) {
-			inputValue := reflect.ValueOf(input)
-			if inputValue.Kind() == reflect.Ptr {
-				inputValue = inputValue.Elem()
-			}
-
-			// Get the BAML method
-			streamValue := reflect.ValueOf(baml_rest.Stream)
-			method := streamValue.MethodByName(methodType.Name)
-			if !method.IsValid() {
-				return nil, fmt.Errorf("method %s not found", methodType.Name)
-			}
-
-			// Prepare arguments: context + individual field values + variadic args
-			methodArgs := []reflect.Value{reflect.ValueOf(ctx)}
-
-			// Extract struct fields in the correct order based on args
-			for _, argName := range args {
-				fieldName := strcase.UpperCamelCase(argName)
-				fieldValue := inputValue.FieldByName(fieldName)
-				if !fieldValue.IsValid() {
-					return nil, fmt.Errorf("field %s not found in input struct", fieldName)
-				}
-				methodArgs = append(methodArgs, fieldValue)
-			}
-
-			// Call the method
-			results := method.Call(methodArgs)
-			if len(results) < 1 {
-				return nil, fmt.Errorf("method returned no results")
-			}
-
-			return &results[0], nil
-		}
-
-		result.Prompts = append(result.Prompts, &collectedPrompt{
-			Name:     methodType.Name,
-			Input:    inputStruct,
-			CallFunc: callFunc,
-		})
 	}
 
-	finalSchema := openapi3.T{
+	return &openapi3.T{
 		OpenAPI: "3.0.0",
 		Info: &openapi3.Info{
 			Title:   "baml-rest",
@@ -306,47 +226,23 @@ func generateOpenAPISchema() (result generateSchemaResult) {
 		},
 		Paths: paths,
 	}
-
-	result.Schema = &finalSchema
-
-	return
 }
-
-var dryRunFormat string
 
 var rootCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		schemaResult := generateOpenAPISchema()
-		schema := schemaResult.Schema
-
-		if dryRunFormat != "" {
-			// Just generate and print the schema, then exit
-			switch dryRunFormat {
-			case "json":
-				schemaJSON, err := schema.MarshalJSON()
-				if err != nil {
-					return fmt.Errorf("failed to marshal schema to JSON: %w", err)
-				}
-				fmt.Println(string(schemaJSON))
-			case "yaml":
-				yamlData, err := yaml.Marshal(schema)
-				if err != nil {
-					return fmt.Errorf("failed to marshal schema to YAML: %w", err)
-				}
-				fmt.Print(string(yamlData))
-			default:
-				return fmt.Errorf("unsupported format: %s (supported: json, yaml)", dryRunFormat)
-			}
-			return nil
-		}
+		schema := generateOpenAPISchema()
 
 		// Create Chi router
 		r := chi.NewRouter()
 
 		// Add middleware
-		r.Use(middleware.Logger)
+		logger := slog.Default()
+		r.Use(httplog.RequestLogger(logger, &httplog.Options{
+			Level:         slog.LevelInfo,
+			RecoverPanics: true,
+		}))
 		r.Use(middleware.Recoverer)
 
 		// Add /openapi.json endpoint
@@ -365,45 +261,36 @@ var rootCmd = &cobra.Command{
 			_, _ = w.Write(yamlData)
 		})
 
-		for _, prompt := range schemaResult.Prompts {
-			log.Println("Registering prompt:", prompt.Name)
+		for methodName, method := range baml_rest.Methods {
+			logger.Info("Registering prompt: " + methodName)
 
-			// Capture the prompt for the closure
-			capturedPrompt := prompt
-			r.Post(fmt.Sprintf("/call/%s", prompt.Name), func(w http.ResponseWriter, r *http.Request) {
-				input := reflect.New(capturedPrompt.Input).Interface()
+			r.Post(fmt.Sprintf("/call/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
+				input := method.MakeInput()
 				if err := render.DecodeJSON(r.Body, input); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
 
-				// Call the prompt using the attached CallFunc
-				ctx := context.Background()
-				result, err := capturedPrompt.CallFunc(ctx, input)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				result, err := method.Impl(ctx, input)
 				if err != nil {
-					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", capturedPrompt.Name, err), http.StatusInternalServerError)
+					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 					return
 				}
 
-				for {
-					result, ok := result.Recv()
-					if !ok {
-						break
+				for result := range result {
+					kind := result.Kind()
+					if kind == baml.StreamResultKindError {
+						_ = httplog.SetError(r.Context(), result.Error())
+						w.WriteHeader(http.StatusInternalServerError)
+
+						return
 					}
 
-					// Create a new pointer of type *T
-					ptrValue := reflect.New(result.Type())
-
-					// Set the value that ptrValue points to as v
-					ptrValue.Elem().Set(result)
-
-					if result.FieldByName("IsFinal").Bool() {
-						final, ok := ptrValue.Type().MethodByName("Final")
-						if !ok {
-							http.Error(w, fmt.Sprintf("Method Final not found on type %s", result.Type().Name()), http.StatusInternalServerError)
-						}
-
-						render.JSON(w, r, final.Func.Call([]reflect.Value{ptrValue})[0].Interface())
+					if kind == baml.StreamResultKindFinal {
+						render.JSON(w, r, result.Final())
 						return
 					}
 				}
@@ -411,17 +298,12 @@ var rootCmd = &cobra.Command{
 		}
 
 		// Start server
-		log.Println("Starting server on :8080...")
-		log.Println("OpenAPI schema available at:")
-		log.Println("  JSON: http://localhost:8080/openapi.json")
-		log.Println("  YAML: http://localhost:8080/openapi.yaml")
+		logger.Info("Starting server on :8080...")
+		logger.Info("OpenAPI schema available at:")
+		logger.Info("  JSON: http://localhost:8080/openapi.json")
+		logger.Info("  YAML: http://localhost:8080/openapi.yaml")
 		return http.ListenAndServe(":8080", r)
 	},
-}
-
-func init() {
-	rootCmd.Flags().StringVar(&dryRunFormat, "dry-run", "", "Generate OpenAPI schema and exit without starting the server (format: json, yaml; defaults to json)")
-	rootCmd.Flags().Lookup("dry-run").NoOptDefVal = "json"
 }
 
 func main() {
