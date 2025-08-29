@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/dave/jennifer/jen"
 	"github.com/invakid404/baml-rest"
@@ -229,7 +231,7 @@ func parseReflectType(targetStatement *jen.Statement, typ reflect.Type) parsedRe
 	typeName := typ.Name()
 
 	genericsStartIdx := strings.Index(typeName, "[")
-	genericsEndIdx := strings.Index(typeName, "]")
+	genericsEndIdx := strings.LastIndex(typeName, "]")
 
 	var genericsTypes []jen.Code
 	if genericsStartIdx != -1 && genericsEndIdx != -1 {
@@ -239,20 +241,35 @@ func parseReflectType(targetStatement *jen.Statement, typ reflect.Type) parsedRe
 		genericsEntries := strings.Split(genericsStr, ",")
 
 		for _, entry := range genericsEntries {
+			operator := ""
 			pkgName := ""
 			ident := entry
 
 			lastDot := strings.LastIndex(entry, ".")
+
 			if lastDot != -1 {
 				pkgName = entry[:lastDot]
 				ident = entry[lastDot+1:]
 			}
 
-			if pkgName == "" {
-				genericsTypes = append(genericsTypes, jen.Id(ident))
-			} else {
-				genericsTypes = append(genericsTypes, jen.Qual(pkgName, ident))
+			firstChar := strings.IndexFunc(pkgName, unicode.IsLetter)
+			if firstChar > 0 {
+				operator = pkgName[:firstChar]
+				pkgName = pkgName[firstChar:]
 			}
+
+			var current *jen.Statement
+			if pkgName == "" {
+				current = jen.Id(ident)
+			} else {
+				current = jen.Qual(pkgName, ident)
+			}
+
+			if operator != "" {
+				current = jen.Op(operator).Add(current)
+			}
+
+			genericsTypes = append(genericsTypes, current)
 		}
 	}
 
