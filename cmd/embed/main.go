@@ -101,8 +101,12 @@ func main() {
 				}
 
 				return &ImportEntry{
-					Module:       strconv.Quote(parsedModule.Module.Mod.Path),
-					PkgName:      filepath.Base(parsedModule.Module.Mod.Path),
+					Module: strconv.Quote(parsedModule.Module.Mod.Path),
+					PkgName: strings.ReplaceAll(
+						filepath.Base(parsedModule.Module.Mod.Path),
+						".",
+						"_",
+					),
 					RelativePath: strconv.Quote(relativePath),
 				}, nil
 			}()
@@ -116,7 +120,7 @@ func main() {
 
 		embedTemplate := template.Must(template.New("embed.go").Parse(embedTemplateInput))
 		input := map[string]any{
-			"Package": strcase.SnakeCase(filepath.Base(root)),
+			"Package": strings.ReplaceAll(strcase.SnakeCase(filepath.Base(root)), ".", "_"),
 			"Dirs":    strings.Join(dirs, " "),
 			"Imports": imports,
 		}

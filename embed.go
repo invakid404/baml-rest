@@ -5,6 +5,7 @@ import (
     "fmt"
     "path/filepath"
     "github.com/invakid404/baml-rest/adapters/common"
+    "github.com/invakid404/baml-rest/adapters/v0.204.0"
     "github.com/invakid404/baml-rest/bamlutils"
     "github.com/invakid404/baml-rest/introspected"
 )
@@ -18,6 +19,10 @@ func init() {
     Sources["."] = source
     for key, value := range common.Sources {
         path := filepath.Clean(fmt.Sprintf("./%s/%s", "adapters/common", key))
+        Sources[path] = value
+    }
+    for key, value := range v0_204_0.Sources {
+        path := filepath.Clean(fmt.Sprintf("./%s/%s", "adapters/v0.204.0", key))
         Sources[path] = value
     }
     for key, value := range bamlutils.Sources {

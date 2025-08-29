@@ -1,10 +1,10 @@
-package common
+package v0_204_0
 
 import (
     "embed"
 )
 
-//go:embed embed.go go.mod go.sum helpers.go
+//go:embed cmd embed.go go.mod go.sum
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)

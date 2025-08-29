@@ -36,7 +36,7 @@ RUN go run cmd/introspect/main.go
 RUN gofmt -w . && goimports -w .
 
 ENV BAML_CACHE_DIR=/baml-cache
-RUN go run cmd/generate/main.go
+RUN go run adapters/v0.204.0/cmd/main.go
 
 RUN go build -o baml-rest cmd/serve/main.go
 
