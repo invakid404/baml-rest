@@ -50,10 +50,10 @@ func main() {
 			paramName := args[paramIdx-2]
 			paramType := methodType.Type.In(paramIdx)
 
-			parsedType := parseReflectType(jen.Id(strcase.UpperCamelCase(paramName)), paramType)
+			parsedType := jen.Id(strcase.UpperCamelCase(paramName)).Add(parseReflectType(paramType).statement)
 
 			structFields = append(structFields,
-				parsedType.statement.
+				parsedType.
 					Tag(map[string]string{
 						"json": paramName,
 					}))
@@ -69,8 +69,10 @@ func main() {
 
 		outputInnerFieldName := "Value"
 
-		parsedStreamResultType := parseReflectType(jen.Id(outputInnerFieldName), streamResultType)
-		out.Type().Id(outputStructName).Struct(parsedStreamResultType.statement)
+		parsedStreamResultType := parseReflectType(streamResultType)
+		out.Type().Id(outputStructName).Struct(
+			jen.Id(outputInnerFieldName).Add(parsedStreamResultType.statement),
+		)
 
 		finalResultType := parsedStreamResultType.generics[1]
 
@@ -226,7 +228,20 @@ type parsedReflectType struct {
 	generics  []jen.Code
 }
 
-func parseReflectType(targetStatement *jen.Statement, typ reflect.Type) parsedReflectType {
+func parseReflectType(typ reflect.Type) parsedReflectType {
+	var ops []string
+	for {
+		if typ.Kind() == reflect.Ptr {
+			typ = typ.Elem()
+			ops = append(ops, "*")
+		} else if typ.Kind() == reflect.Slice {
+			typ = typ.Elem()
+			ops = append(ops, "[]")
+		} else {
+			break
+		}
+	}
+
 	pkgPath := typ.PkgPath()
 	typeName := typ.Name()
 
@@ -275,9 +290,13 @@ func parseReflectType(targetStatement *jen.Statement, typ reflect.Type) parsedRe
 
 	var statement *jen.Statement
 	if pkgPath == "" {
-		statement = targetStatement.Id(typeName)
+		statement = jen.Id(typeName)
 	} else {
-		statement = targetStatement.Qual(pkgPath, typeName)
+		statement = jen.Qual(pkgPath, typeName)
+	}
+
+	for _, op := range slices.Backward(ops) {
+		statement = jen.Op(op).Add(statement)
 	}
 
 	return parsedReflectType{
