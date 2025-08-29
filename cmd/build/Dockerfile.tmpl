@@ -26,6 +26,8 @@ COPY baml_rest baml_rest
 WORKDIR /build/baml_rest
 
 COPY --from=client /baml/baml_rest_generated/baml_client baml_client
+RUN cd baml_client && go mod init github.com/invakid404/baml-rest/baml_client
+RUN go work use ./baml_client
 
 RUN go get github.com/boundaryml/baml@{{ .bamlVersion }}
 RUN go work sync

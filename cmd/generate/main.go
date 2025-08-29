@@ -8,13 +8,9 @@ import (
 	"unicode"
 
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest"
+	"github.com/invakid404/baml-rest/adapters/common"
+	"github.com/invakid404/baml-rest/introspected"
 	"github.com/stoewer/go-strcase"
-)
-
-var (
-	rootPkg       = "github.com/invakid404/baml-rest"
-	interfacesPkg = fmt.Sprintf("%s/bamlutils", rootPkg)
 )
 
 type methodOut struct {
@@ -24,9 +20,9 @@ type methodOut struct {
 }
 
 func main() {
-	out := jen.NewFilePathName(rootPkg, "baml_rest")
+	out := common.MakeFile()
 
-	streamReflect := reflect.ValueOf(baml_rest.Stream)
+	streamReflect := reflect.ValueOf(introspected.Stream)
 	var methods []methodOut
 
 	for methodIdx := 0; methodIdx < streamReflect.NumMethod(); methodIdx++ {
@@ -38,7 +34,7 @@ func main() {
 			continue
 		}
 
-		args, ok := baml_rest.StreamMethods[methodType.Name]
+		args, ok := introspected.StreamMethods[methodType.Name]
 		if !ok {
 			continue
 		}
@@ -85,13 +81,13 @@ func main() {
 		out.Func().
 			Params(selfParam.Clone()).
 			Id("Kind").Params().
-			Qual(interfacesPkg, "StreamResultKind").
+			Qual(common.InterfacesPkg, "StreamResultKind").
 			Block(
 				jen.If(selfValueName.Clone().Dot("IsError")).
-					Block(jen.Return(jen.Qual(interfacesPkg, "StreamResultKindError"))),
+					Block(jen.Return(jen.Qual(common.InterfacesPkg, "StreamResultKindError"))),
 				jen.If(selfValueName.Clone().Dot("IsFinal")).
-					Block(jen.Return(jen.Qual(interfacesPkg, "StreamResultKindFinal"))),
-				jen.Return(jen.Qual(interfacesPkg, "StreamResultKindStream")),
+					Block(jen.Return(jen.Qual(common.InterfacesPkg, "StreamResultKindFinal"))),
+				jen.Return(jen.Qual(common.InterfacesPkg, "StreamResultKindStream")),
 			)
 
 		out.Func().
@@ -134,7 +130,7 @@ func main() {
 			jen.Id("input").Op(":=").Id("rawInput").Assert(jen.Op("*").Id(inputStructName)),
 
 			jen.List(jen.Id("result"), jen.Id("err")).Op(":=").
-				Qual(rootPkg, "Stream").Dot(methodName).Call(callParams...),
+				Qual(common.IntrospectedPkg, "Stream").Dot(methodName).Call(callParams...),
 
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
@@ -142,7 +138,7 @@ func main() {
 		)
 
 		// Initialize the channel
-		streamResultInterface := jen.Qual(interfacesPkg, "StreamResult")
+		streamResultInterface := jen.Qual(common.InterfacesPkg, "StreamResult")
 
 		methodBody = append(methodBody,
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone())),
@@ -197,7 +193,7 @@ func main() {
 	}
 
 	// Generate the map of methods
-	streamingFunctionInterface := jen.Qual(interfacesPkg, "StreamingMethod")
+	streamingFunctionInterface := jen.Qual(common.InterfacesPkg, "StreamingMethod")
 
 	mapElements := make(jen.Dict)
 	for _, method := range methods {
@@ -218,7 +214,7 @@ func main() {
 		Map(jen.String()).Add(streamingFunctionInterface).
 		Values(mapElements)
 
-	if err := out.Save("adapter.go"); err != nil {
+	if err := common.Commit(out); err != nil {
 		panic(err)
 	}
 }

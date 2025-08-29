@@ -4,18 +4,28 @@ import (
     "embed"
     "fmt"
     "path/filepath"
+    "github.com/invakid404/baml-rest/adapters/common"
     "github.com/invakid404/baml-rest/bamlutils"
+    "github.com/invakid404/baml-rest/introspected"
 )
 
-//go:embed adapter.go cmd embed.go go.mod go.sum go.work go.work.sum introspected.go
+//go:embed adapter.go adapters cmd embed.go go.mod go.sum go.work go.work.sum
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)
 
 func init() {
     Sources["."] = source
+    for key, value := range common.Sources {
+        path := filepath.Clean(fmt.Sprintf("./%s/%s", "adapters/common", key))
+        Sources[path] = value
+    }
     for key, value := range bamlutils.Sources {
         path := filepath.Clean(fmt.Sprintf("./%s/%s", "bamlutils", key))
+        Sources[path] = value
+    }
+    for key, value := range introspected.Sources {
+        path := filepath.Clean(fmt.Sprintf("./%s/%s", "introspected", key))
         Sources[path] = value
     }
 }

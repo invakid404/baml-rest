@@ -115,7 +115,7 @@ func main() {
 		panic(err)
 	}
 
-	if err := os.WriteFile("introspected.go", introspectedTemplateOut.Bytes(), 0644); err != nil {
+	if err := os.WriteFile("introspected/introspected.go", introspectedTemplateOut.Bytes(), 0644); err != nil {
 		panic(err)
 	}
 }

@@ -1,4 +1,4 @@
-package baml_rest
+package introspected
 
 // NOTE: this file will be overwritten during build
 
