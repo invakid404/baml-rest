@@ -137,7 +137,7 @@ var rootCmd = &cobra.Command{
 
 		dockerfileTemplateArgs := map[string]string{
 			// TODO: unhardcode
-			"bamlVersion": "0.204.0",
+			"bamlVersion": "0.206.1",
 		}
 		if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 			return fmt.Errorf("failed to render Dockerfile template: %w", err)
