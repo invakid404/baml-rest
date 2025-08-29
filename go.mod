@@ -5,6 +5,7 @@ go 1.24.2
 toolchain go1.24.5
 
 require (
+	github.com/alecthomas/participle/v2 v2.1.4
 	github.com/dave/jennifer v1.7.1
 	github.com/getkin/kin-openapi v0.131.0
 	github.com/go-chi/chi/v5 v5.2.2
