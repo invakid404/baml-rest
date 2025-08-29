@@ -14,13 +14,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	bamlrest "github.com/invakid404/baml-rest"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/registry"
+	"golang.org/x/mod/semver"
 
 	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
@@ -83,6 +86,10 @@ func copyFSToTar(dir fs.FS, target *tar.Writer, mapper copyFSToTarMapper) error 
 
 type copyFSToTarMapper func(path string, dirEntry fs.DirEntry, fileInfo fs.FileInfo) *string
 
+const (
+	adapterPrefix = "adapters/v"
+)
+
 var rootCmd = &cobra.Command{
 	Use:   "baml-rest [directory]",
 	Short: "Build a REST API server for your BAML project",
@@ -116,6 +123,57 @@ var rootCmd = &cobra.Command{
 
 		fmt.Printf("Found baml_src folder in %s\n", targetDir)
 
+		var availableAdapterVersions []string
+		for key := range bamlrest.Sources {
+			if !strings.HasPrefix(key, adapterPrefix) {
+				continue
+			}
+
+			availableAdapterVersions = append(
+				availableAdapterVersions,
+				"v"+strings.TrimPrefix(key, adapterPrefix),
+			)
+		}
+
+		semver.Sort(availableAdapterVersions)
+
+		detectedVersions, err := bamlutils.ParseVersions(os.DirFS(bamlSrcPath))
+		if err != nil {
+			return fmt.Errorf("failed to parse versions: %w", err)
+		}
+
+		if len(detectedVersions) == 0 {
+			return fmt.Errorf("no BAML generators found in %q, cannot infer version", bamlSrcPath)
+		}
+
+		if len(detectedVersions) > 1 {
+			return fmt.Errorf(
+				"detected multiple BAML versions in %q: %v, cannot infer which one to use",
+				bamlSrcPath, detectedVersions,
+			)
+		}
+
+		detectedVersion := detectedVersions[0]
+		detectedVersionForComparison := "v" + detectedVersion
+
+		adapterVersionToUse := ""
+
+		for _, version := range slices.Backward(availableAdapterVersions) {
+			if semver.Compare(detectedVersionForComparison, version) >= 0 {
+				adapterVersionToUse = version
+				break
+			}
+		}
+
+		if adapterVersionToUse == "" {
+			return fmt.Errorf(
+				"BAML version %q is unsupported, the minimum supported version is %q",
+				detectedVersion, availableAdapterVersions[0],
+			)
+		}
+
+		fmt.Println("Adapter version to use:", adapterVersionToUse)
+
 		fmt.Println("Making docker client...")
 		dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
@@ -135,8 +193,8 @@ var rootCmd = &cobra.Command{
 		var dockerfileOut bytes.Buffer
 
 		dockerfileTemplateArgs := map[string]string{
-			// TODO: unhardcode
-			"bamlVersion": "0.206.1",
+			"bamlVersion":    detectedVersion,
+			"adapterVersion": adapterVersionToUse,
 		}
 		if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 			return fmt.Errorf("failed to render Dockerfile template: %w", err)
