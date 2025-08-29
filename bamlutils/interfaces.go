@@ -1,4 +1,4 @@
-package baml
+package bamlutils
 
 import "context"
 

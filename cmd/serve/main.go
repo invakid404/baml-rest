@@ -16,7 +16,7 @@ import (
 	"github.com/go-chi/httplog/v3"
 	"github.com/go-chi/render"
 	"github.com/invakid404/baml-rest"
-	"github.com/invakid404/baml-rest/baml"
+	"github.com/invakid404/baml-rest/bamlutils"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -282,14 +282,14 @@ var rootCmd = &cobra.Command{
 
 				for result := range result {
 					kind := result.Kind()
-					if kind == baml.StreamResultKindError {
+					if kind == bamlutils.StreamResultKindError {
 						_ = httplog.SetError(r.Context(), result.Error())
 						w.WriteHeader(http.StatusInternalServerError)
 
 						return
 					}
 
-					if kind == baml.StreamResultKindFinal {
+					if kind == bamlutils.StreamResultKindFinal {
 						render.JSON(w, r, result.Final())
 						return
 					}

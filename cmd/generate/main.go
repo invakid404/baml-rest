@@ -14,7 +14,7 @@ import (
 
 var (
 	rootPkg       = "github.com/invakid404/baml-rest"
-	interfacesPkg = fmt.Sprintf("%s/baml", rootPkg)
+	interfacesPkg = fmt.Sprintf("%s/bamlutils", rootPkg)
 )
 
 type methodOut struct {

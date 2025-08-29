@@ -1,4 +1,4 @@
-package baml
+package bamlutils
 
 import (
 	"io/fs"
@@ -17,16 +17,18 @@ var configLexer = lexer.MustSimple([]lexer.SimpleRule{
 	{"Ident", `[a-zA-Z_][a-zA-Z0-9_/-]*`},
 	{"LBrace", `\{`},
 	{"RBrace", `\}`},
+	{"LAngle", `<`},
+	{"RAngle", `>`},
 	{"Other", `.`},
 })
 
 type Config struct {
-	Entries []*Entry `@@*`
+	Items []Item `@@*`
 }
 
-type Entry struct {
-	Generator *Generator `@@ |`
-	Junk      string     `@(Keyword | Ident | String | LBrace | RBrace | Other)+`
+type Item struct {
+	Generator *Generator `@@`
+	Other     *Other     `| @@`
 }
 
 type Generator struct {
@@ -40,8 +42,11 @@ type Field struct {
 	Value string `( @String | @Ident )`
 }
 
-// Function to parse a file and extract versions.
-func extractVersions(filePath string, file fs.File) ([]string, error) {
+type Other struct {
+	Token string `@( Ident | String | LBrace | RBrace | LAngle | RAngle | Other )`
+}
+
+func ExtractVersions(filePath string, file fs.File) ([]string, error) {
 	// Build the parser.
 	parser, err := participle.Build[Config](
 		participle.Lexer(configLexer),
@@ -60,9 +65,10 @@ func extractVersions(filePath string, file fs.File) ([]string, error) {
 
 	// Collect versions from all generators.
 	var versions []string
-	for _, part := range config.Entries {
-		if part.Generator != nil {
-			for _, field := range part.Generator.Fields {
+	for _, item := range config.Items {
+		if item.Generator != nil {
+			generator := item.Generator
+			for _, field := range generator.Fields {
 				if strings.EqualFold(field.Key, "version") {
 					value := strings.Trim(field.Value, `"`)
 					versions = append(versions, value)
@@ -91,7 +97,8 @@ func ParseVersions(target fs.FS) (versions []string, err error) {
 			_ = file.Close()
 		}(file)
 
-		currentVersions, err := extractVersions(path, file)
+		currentVersions, err := ExtractVersions(path, file)
+
 		if err != nil {
 			return err
 		}

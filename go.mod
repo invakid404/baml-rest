@@ -5,7 +5,6 @@ go 1.24.2
 toolchain go1.24.5
 
 require (
-	github.com/alecthomas/participle/v2 v2.1.4
 	github.com/dave/jennifer v1.7.1
 	github.com/getkin/kin-openapi v0.131.0
 	github.com/go-chi/chi/v5 v5.2.2
@@ -16,6 +15,7 @@ require (
 	github.com/moby/moby/client v0.1.0-alpha.0
 	github.com/spf13/cobra v1.9.1
 	github.com/stoewer/go-strcase v1.3.1
+	golang.org/x/mod v0.27.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

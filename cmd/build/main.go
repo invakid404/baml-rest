@@ -13,11 +13,10 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
-	"github.com/invakid404/baml-rest"
+	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/image"
@@ -179,12 +178,11 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("failed to write clients.baml template to build context: %w", err)
 		}
 
-		err = copyFSToTar(baml_rest.Source, tarWriter, func(filePath string, dirEntry fs.DirEntry, _ fs.FileInfo) *string {
-			result := path.Join("baml_rest", filePath)
-			return &result
-		})
-		if err != nil {
-			return fmt.Errorf("failed to copy source code to build context: %w", err)
+		for path, source := range baml_rest.Sources {
+			err = copyFSToTar(source, tarWriter, func(filePath string, dirEntry fs.DirEntry, _ fs.FileInfo) *string {
+				result := filepath.Join("baml_rest", path, filePath)
+				return &result
+			})
 		}
 
 		err = copyDirToTar(bamlSrcPath, tarWriter, func(path string, _ fs.DirEntry, fileInfo fs.FileInfo) *string {
