@@ -129,6 +129,8 @@ func main() {
 			callParams = append(callParams, jen.Id("input").Dot(argName))
 		}
 
+		callParams = append(callParams, jen.Id("makeOptionsFromAdapter").Call(jen.Id("adapter")).Op("..."))
+
 		// Call the streaming method and propagate errors
 		methodBody = append(methodBody,
 			jen.Id("input").Op(":=").Id("rawInput").Assert(jen.Op("*").Id(inputStructName)),
@@ -229,6 +231,22 @@ func main() {
 						jen.Id("Context"): jen.Id("ctx"),
 					}),
 			),
+		)
+
+	// Generate `makeOptionsFromAdapter`
+	out.Func().Id("makeOptionsFromAdapter").
+		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
+		Call(
+			jen.Id("result").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+		).
+		Block(
+			jen.Id("adapter").Op(":=").Id("adapterIn").Assert(jen.Op("*").Qual(selfPkg, "BamlAdapter")),
+			jen.If(jen.Id("adapter").Dot("ClientRegistry").Op("!=").Nil()).Block(
+				jen.Id("result").Op("=").Append(jen.Id("result"),
+					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
+						Call(jen.Id("adapter").Dot("ClientRegistry"))),
+			),
+			jen.Return(),
 		)
 
 	if err := common.Commit(out); err != nil {

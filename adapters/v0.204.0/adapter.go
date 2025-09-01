@@ -9,18 +9,18 @@ import (
 
 type BamlAdapter struct {
 	context.Context
-	clientRegistry *baml.ClientRegistry
+	ClientRegistry *baml.ClientRegistry
 }
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) {
-	b.clientRegistry = baml.NewClientRegistry()
+	b.ClientRegistry = baml.NewClientRegistry()
 
 	for _, client := range clientRegistry.Clients {
-		b.clientRegistry.AddLlmClient(client.Name, client.Provider, client.Options)
+		b.ClientRegistry.AddLlmClient(client.Name, client.Provider, client.Options)
 	}
 
 	if clientRegistry.Primary != nil {
-		b.clientRegistry.SetPrimaryClient(*clientRegistry.Primary)
+		b.ClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
 	}
 }
 

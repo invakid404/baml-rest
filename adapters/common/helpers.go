@@ -8,8 +8,9 @@ const (
 	RootPkg     = "github.com/invakid404/baml-rest"
 	RootPkgName = "baml_rest"
 
-	IntrospectedPkg = RootPkg + "/introspected"
-	InterfacesPkg   = RootPkg + "/bamlutils"
+	IntrospectedPkg    = RootPkg + "/introspected"
+	InterfacesPkg      = RootPkg + "/bamlutils"
+	GeneratedClientPkg = RootPkg + "/baml_client"
 
 	OutputPath = "adapter.go"
 )
