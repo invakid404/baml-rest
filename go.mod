@@ -5,11 +5,11 @@ go 1.24.2
 toolchain go1.24.5
 
 require (
-	github.com/dave/jennifer v1.7.1
 	github.com/getkin/kin-openapi v0.131.0
 	github.com/go-chi/chi/v5 v5.2.2
 	github.com/go-chi/httplog/v3 v3.2.2
 	github.com/go-chi/render v1.0.3
+	github.com/goccy/go-json v0.10.5
 	github.com/moby/buildkit v0.23.2
 	github.com/moby/moby/api v1.52.0-alpha.1
 	github.com/moby/moby/client v0.1.0-alpha.0
