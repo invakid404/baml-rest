@@ -1,6 +1,8 @@
 package bamlutils
 
-import "context"
+import (
+	"context"
+)
 
 type StreamResult interface {
 	Kind() StreamResultKind
@@ -17,10 +19,27 @@ const (
 	StreamResultKindError
 )
 
-type StreamingPrompt func(ctx context.Context, input any) (<-chan StreamResult, error)
+type StreamingPrompt func(adapter Adapter, input any) (<-chan StreamResult, error)
 
 type StreamingMethod struct {
 	MakeInput  func() any
 	MakeOutput func() any
 	Impl       StreamingPrompt
+}
+
+type ClientRegistry struct {
+	Primary *string           `json:"primary"`
+	Clients []*ClientProperty `json:"clients"`
+}
+
+type ClientProperty struct {
+	Name        string         `json:"name"`
+	Provider    string         `json:"provider"`
+	RetryPolicy *string        `json:"retry_policy"`
+	Options     map[string]any `json:"options,omitempty"`
+}
+
+type Adapter interface {
+	context.Context
+	SetClientRegistry(clientRegistry *ClientRegistry)
 }

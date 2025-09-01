@@ -19,6 +19,10 @@ type methodOut struct {
 	outputStructQual jen.Code
 }
 
+const (
+	selfPkg = "github.com/invakid404/baml-rest/adapters/v0.204.0"
+)
+
 func main() {
 	out := common.MakeFile()
 
@@ -118,7 +122,7 @@ func main() {
 		var methodBody []jen.Code
 
 		var callParams []jen.Code
-		callParams = append(callParams, jen.Id("ctx"))
+		callParams = append(callParams, jen.Id("adapter"))
 
 		for _, arg := range args {
 			argName := strcase.UpperCamelCase(arg)
@@ -160,7 +164,7 @@ func main() {
 										jen.Id("Value"): jen.Id("entry"),
 									}),
 								),
-							jen.Case(jen.Op("<-").Id("ctx").Dot("Done").Call()).
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).
 								Block(jen.Return()),
 						),
 					),
@@ -175,7 +179,7 @@ func main() {
 		out.Func().
 			Id(methodName).
 			Params(
-				jen.Id("ctx").Qual("context", "Context"),
+				jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
 				jen.Id("rawInput").Any(),
 			).
 			Call(
@@ -213,6 +217,19 @@ func main() {
 	out.Var().Id("Methods").Op("=").
 		Map(jen.String()).Add(streamingFunctionInterface).
 		Values(mapElements)
+
+	// Generate `MakeAdapter`
+	out.Func().Id("MakeAdapter").
+		Params(jen.Id("ctx").Qual("context", "Context")).
+		Qual(common.InterfacesPkg, "Adapter").
+		Block(
+			jen.Return(
+				jen.Op("&").Qual(selfPkg, "BamlAdapter").
+					Values(jen.Dict{
+						jen.Id("Context"): jen.Id("ctx"),
+					}),
+			),
+		)
 
 	if err := common.Commit(out); err != nil {
 		panic(err)

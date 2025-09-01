@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -265,8 +267,19 @@ var rootCmd = &cobra.Command{
 			logger.Info("Registering prompt: " + methodName)
 
 			r.Post(fmt.Sprintf("/call/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
+				rawInput, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+
+				var options BamlOptions
+				if err := json.Unmarshal(rawInput, &options); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+				}
+
 				input := method.MakeInput()
-				if err := render.DecodeJSON(r.Body, input); err != nil {
+				if err := json.Unmarshal(rawInput, input); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
@@ -274,7 +287,13 @@ var rootCmd = &cobra.Command{
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
-				result, err := method.Impl(ctx, input)
+				adapter := baml_rest.MakeAdapter(ctx)
+				if options.Options != nil && options.Options.ClientRegistry != nil {
+					adapter.SetClientRegistry(options.Options.ClientRegistry)
+				}
+
+				result, err := method.Impl(adapter, input)
+
 				if err != nil {
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 					return
@@ -310,4 +329,10 @@ func main() {
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatalln(err)
 	}
+}
+
+type BamlOptions struct {
+	Options *struct {
+		ClientRegistry *bamlutils.ClientRegistry `json:"client_registry"`
+	} `json:"__baml_options__,omitempty"`
 }
