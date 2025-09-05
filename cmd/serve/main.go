@@ -10,16 +10,17 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/goccy/go-json"
-
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3gen"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httplog/v3"
 	"github.com/go-chi/render"
+	"github.com/goccy/go-json"
+	"github.com/google/uuid"
 	"github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/tmaxmax/go-sse"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -241,6 +242,10 @@ func generateOpenAPISchema() *openapi3.T {
 	}
 }
 
+type sseContextKey string
+
+const sseContextKeyTopic = sseContextKey("topic")
+
 var rootCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
@@ -249,6 +254,24 @@ var rootCmd = &cobra.Command{
 
 		// Create Chi router
 		r := chi.NewRouter()
+
+		// Pre-allocate SSE event kinds
+		sseErrorKind, err := sse.NewType("error")
+		if err != nil {
+			panic(err)
+		}
+
+		// Create SSE server
+		s := &sse.Server{
+			OnSession: func(_ http.ResponseWriter, req *http.Request) (topics []string, permitted bool) {
+				topic, ok := req.Context().Value(sseContextKeyTopic).(string)
+				if !ok {
+					return nil, false
+				}
+
+				return []string{topic}, true
+			},
+		}
 
 		// Add middleware
 		logger := slog.Default()
@@ -278,19 +301,8 @@ var rootCmd = &cobra.Command{
 			logger.Info("Registering prompt: " + methodName)
 
 			r.Post(fmt.Sprintf("/call/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
-				rawInput, err := io.ReadAll(r.Body)
+				input, err := readBody(r, method.MakeInput)
 				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-
-				var options BamlOptionsInput
-				if err := json.Unmarshal(rawInput, &options); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-				}
-
-				input := method.MakeInput()
-				if err := json.Unmarshal(rawInput, input); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
@@ -299,11 +311,9 @@ var rootCmd = &cobra.Command{
 				defer cancel()
 
 				adapter := baml_rest.MakeAdapter(ctx)
-				if options.Options != nil && options.Options.ClientRegistry != nil {
-					adapter.SetClientRegistry(options.Options.ClientRegistry)
-				}
+				input.options.Apply(adapter)
 
-				result, err := method.Impl(adapter, input)
+				result, err := method.Impl(adapter, input.input)
 
 				if err != nil {
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
@@ -325,6 +335,77 @@ var rootCmd = &cobra.Command{
 					}
 				}
 			})
+
+			r.Post(fmt.Sprintf("/stream/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
+				topicUUID, err := uuid.NewRandom()
+				if err != nil {
+					_ = httplog.SetError(r.Context(), err)
+					w.WriteHeader(http.StatusInternalServerError)
+
+					return
+				}
+
+				topic := fmt.Sprintf("stream/%s/%s", methodName, topicUUID.String())
+
+				ctx, cancel := context.WithCancel(
+					context.WithValue(r.Context(), sseContextKeyTopic, topic),
+				)
+				defer cancel()
+
+				r = r.WithContext(ctx)
+
+				input, err := readBody(r, method.MakeInput)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+
+					return
+				}
+
+				adapter := baml_rest.MakeAdapter(ctx)
+				input.options.Apply(adapter)
+
+				result, err := method.Impl(adapter, input.input)
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
+
+					return
+				}
+
+				go s.ServeHTTP(w, r)
+
+				for result := range result {
+					message := &sse.Message{}
+
+					var value any
+					var err error
+
+					switch result.Kind() {
+					case bamlutils.StreamResultKindError:
+						err = result.Error()
+					case bamlutils.StreamResultKindStream:
+						value = result.Stream()
+					case bamlutils.StreamResultKindFinal:
+						value = result.Final()
+					}
+
+					var data []byte
+					if value != nil {
+						data, err = json.Marshal(value)
+					}
+
+					if err != nil {
+						message.Type = sseErrorKind
+						message.AppendData(err.Error())
+					} else {
+						message.AppendData(string(data))
+					}
+
+					err = s.Publish(message, topic)
+					if err != nil {
+						break
+					}
+				}
+			})
 		}
 
 		// Start server
@@ -342,8 +423,41 @@ func main() {
 	}
 }
 
+type readBodyResult struct {
+	input   any
+	options *BamlOptionsInput
+}
+
+func readBody(r *http.Request, makeInput func() any) (*readBodyResult, error) {
+	rawInput, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read request body: %w", err)
+	}
+
+	var options BamlOptionsInput
+	if err := json.Unmarshal(rawInput, &options); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal baml options: %w", err)
+	}
+
+	input := makeInput()
+	if err := json.Unmarshal(rawInput, input); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
+	}
+
+	return &readBodyResult{
+		input:   input,
+		options: &options,
+	}, nil
+}
+
 type BamlOptionsInput struct {
 	Options *BamlOptions `json:"__baml_options__,omitempty"`
+}
+
+func (i *BamlOptionsInput) Apply(adapter bamlutils.Adapter) {
+	if i.Options != nil && i.Options.ClientRegistry != nil {
+		adapter.SetClientRegistry(i.Options.ClientRegistry)
+	}
 }
 
 type BamlOptions struct {
