@@ -157,6 +157,13 @@ func generateOpenAPISchema() *openapi3.T {
 
 	paths := openapi3.NewPaths()
 
+	bamlOptionsSchemaName := "BamlOptions"
+	bamlOptionsSchema, err := generator.NewSchemaRefForValue(BamlOptions{}, schemas)
+	if err != nil {
+		panic(err)
+	}
+	schemas[bamlOptionsSchemaName] = bamlOptionsSchema
+
 	for methodName, method := range baml_rest.Methods {
 		inputStruct := method.MakeInput()
 		inputStructInstance := reflect.ValueOf(inputStruct)
@@ -164,6 +171,9 @@ func generateOpenAPISchema() *openapi3.T {
 		inputSchema, err := generator.NewSchemaRefForValue(inputStructInstance.Interface(), schemas)
 		if err != nil {
 			panic(err)
+		}
+		inputSchema.Value.Properties["__baml_options__"] = &openapi3.SchemaRef{
+			Ref: fmt.Sprintf("#/components/schemas/%s", bamlOptionsSchemaName),
 		}
 
 		inputSchemaName := inputStructInstance.Elem().Type().Name()
@@ -274,7 +284,7 @@ var rootCmd = &cobra.Command{
 					return
 				}
 
-				var options BamlOptions
+				var options BamlOptionsInput
 				if err := json.Unmarshal(rawInput, &options); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 				}
@@ -332,8 +342,10 @@ func main() {
 	}
 }
 
+type BamlOptionsInput struct {
+	Options *BamlOptions `json:"__baml_options__,omitempty"`
+}
+
 type BamlOptions struct {
-	Options *struct {
-		ClientRegistry *bamlutils.ClientRegistry `json:"client_registry"`
-	} `json:"__baml_options__,omitempty"`
+	ClientRegistry *bamlutils.ClientRegistry `json:"client_registry"`
 }
