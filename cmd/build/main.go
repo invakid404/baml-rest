@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
-	"encoding/json"
+	"encoding/base64"
 	"fmt"
 	"html/template"
 	"io"
@@ -16,6 +16,15 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/containerd/containerd/v2/pkg/protobuf/proto"
+	"github.com/docker/buildx/util/progress"
+	"github.com/goccy/go-json"
+	controlapi "github.com/moby/buildkit/api/services/control"
+	buildkitclient "github.com/moby/buildkit/client"
+	"github.com/moby/buildkit/util/progress/progressui"
+	"github.com/opencontainers/go-digest"
 
 	bamlrest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -274,16 +283,44 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("failed to build image: %w", err)
 		}
 
-		defer func(Body io.ReadCloser) {
-			_ = Body.Close()
+		defer func(body io.ReadCloser) {
+			_ = body.Close()
 		}(response.Body)
 
 		// Use a scanner to read the response stream line by line
 		scanner := bufio.NewScanner(response.Body)
 
+		progressWriter, err := progress.NewPrinter(context.TODO(), os.Stdout, progressui.AutoMode)
+		if err != nil {
+			return fmt.Errorf("failed to create progress writer: %w", err)
+		}
+
 		for scanner.Scan() {
 			line := scanner.Text()
-			fmt.Println(line)
+
+			var message dockerBuildMessage
+			if err = json.Unmarshal([]byte(line), &message); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "failed to parse build output: %v\n", err)
+				continue
+			}
+
+			if message.ID == "moby.buildkit.trace" {
+				aux, err := base64.StdEncoding.DecodeString(message.Aux.(string))
+				if err != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "failed to decode aux output: %v\n", err)
+					continue
+				}
+
+				var statusResponse controlapi.StatusResponse
+				if err = proto.Unmarshal(aux, &statusResponse); err != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "failed to parse aux output: %v\n", err)
+					continue
+				}
+
+				solveStatus := mapStatusResponseToSolveStatus(&statusResponse)
+
+				progressWriter.Write(&solveStatus)
+			}
 		}
 		if err := scanner.Err(); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "reading build output failed: %v\n", err)
@@ -291,6 +328,11 @@ var rootCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+type dockerBuildMessage struct {
+	ID  string `json:"id,omitempty"`
+	Aux any    `json:"aux,omitempty"`
 }
 
 func main() {
@@ -455,4 +497,136 @@ func pullImage(ctx context.Context, cli *client.Client, imageName string) error 
 	}
 
 	return nil
+}
+
+// mapStatusResponseToSolveStatus converts a controlapi.StatusResponse to buildkitclient.SolveStatus
+// This avoids the protobuf JSON serialization issue where int64 fields get serialized as strings
+func mapStatusResponseToSolveStatus(statusResponse *controlapi.StatusResponse) buildkitclient.SolveStatus {
+	if statusResponse == nil {
+		return buildkitclient.SolveStatus{}
+	}
+
+	// Preallocate slices with necessary capacity
+	vertexes := make([]*buildkitclient.Vertex, 0, len(statusResponse.GetVertexes()))
+	statuses := make([]*buildkitclient.VertexStatus, 0, len(statusResponse.GetStatuses()))
+	logs := make([]*buildkitclient.VertexLog, 0, len(statusResponse.GetLogs()))
+	warnings := make([]*buildkitclient.VertexWarning, 0, len(statusResponse.GetWarnings()))
+
+	// Map vertexes
+	for _, v := range statusResponse.GetVertexes() {
+		if v == nil {
+			continue
+		}
+
+		vertex := &buildkitclient.Vertex{
+			Digest:        digest.Digest(v.GetDigest()),
+			Name:          v.GetName(),
+			Cached:        v.GetCached(),
+			Error:         v.GetError(),
+			ProgressGroup: v.GetProgressGroup(),
+		}
+
+		// Convert inputs slice
+		if inputs := v.GetInputs(); len(inputs) > 0 {
+			vertex.Inputs = make([]digest.Digest, 0, len(inputs))
+			for _, input := range inputs {
+				vertex.Inputs = append(vertex.Inputs, digest.Digest(input))
+			}
+		}
+
+		// Convert timestamps
+		if started := v.GetStarted(); started != nil {
+			t := time.Unix(started.GetSeconds(), int64(started.GetNanos())).UTC()
+			vertex.Started = &t
+		}
+		if completed := v.GetCompleted(); completed != nil {
+			t := time.Unix(completed.GetSeconds(), int64(completed.GetNanos())).UTC()
+			vertex.Completed = &t
+		}
+
+		vertexes = append(vertexes, vertex)
+	}
+
+	// Map statuses
+	for _, s := range statusResponse.GetStatuses() {
+		if s == nil {
+			continue
+		}
+
+		status := &buildkitclient.VertexStatus{
+			ID:      s.GetID(),
+			Vertex:  digest.Digest(s.GetVertex()),
+			Name:    s.GetName(),
+			Total:   s.GetTotal(),
+			Current: s.GetCurrent(),
+		}
+
+		// Convert timestamps
+		if timestamp := s.GetTimestamp(); timestamp != nil {
+			status.Timestamp = time.Unix(timestamp.GetSeconds(), int64(timestamp.GetNanos())).UTC()
+		}
+		if started := s.GetStarted(); started != nil {
+			t := time.Unix(started.GetSeconds(), int64(started.GetNanos())).UTC()
+			status.Started = &t
+		}
+		if completed := s.GetCompleted(); completed != nil {
+			t := time.Unix(completed.GetSeconds(), int64(completed.GetNanos())).UTC()
+			status.Completed = &t
+		}
+
+		statuses = append(statuses, status)
+	}
+
+	// Map logs
+	for _, l := range statusResponse.GetLogs() {
+		if l == nil {
+			continue
+		}
+
+		log := &buildkitclient.VertexLog{
+			Vertex: digest.Digest(l.GetVertex()),
+			Stream: int(l.GetStream()),
+			Data:   l.GetMsg(),
+		}
+
+		// Convert timestamp
+		if timestamp := l.GetTimestamp(); timestamp != nil {
+			log.Timestamp = time.Unix(timestamp.GetSeconds(), int64(timestamp.GetNanos())).UTC()
+		}
+
+		logs = append(logs, log)
+	}
+
+	// Map warnings
+	for _, w := range statusResponse.GetWarnings() {
+		if w == nil {
+			continue
+		}
+
+		warning := &buildkitclient.VertexWarning{
+			Vertex:     digest.Digest(w.GetVertex()),
+			Level:      int(w.GetLevel()),
+			Short:      w.GetShort(),
+			URL:        w.GetUrl(),
+			SourceInfo: w.GetInfo(),
+			Range:      w.GetRanges(),
+		}
+
+		// Convert detail slice
+		if detail := w.GetDetail(); len(detail) > 0 {
+			warning.Detail = make([][]byte, 0, len(detail))
+			for _, d := range detail {
+				warning.Detail = append(warning.Detail, d)
+			}
+		}
+
+		warnings = append(warnings, warning)
+	}
+
+	return buildkitclient.SolveStatus{
+		Vertexes: vertexes,
+		Statuses: statuses,
+		Logs:     logs,
+		Warnings: warnings,
+	}
 }
