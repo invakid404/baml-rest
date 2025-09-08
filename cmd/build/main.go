@@ -6,6 +6,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 //go:embed Dockerfile.tmpl
@@ -98,11 +100,42 @@ const (
 	adapterPrefix = "adapters/v"
 )
 
+var (
+	targetImage string
+)
+
+func init() {
+	viper.SetConfigName("baml-rest")
+	viper.SetConfigType("toml")
+	viper.AddConfigPath(".")
+	viper.SetEnvPrefix("BAML_REST")
+
+	replacer := strings.NewReplacer("-", "_", ".", "_")
+	viper.SetEnvKeyReplacer(replacer)
+	viper.AutomaticEnv()
+
+	if err := viper.ReadInConfig(); err != nil {
+		var configFileNotFoundError viper.ConfigFileNotFoundError
+		if !errors.As(err, &configFileNotFoundError) {
+			// Config file was found but another error was produced
+			log.Printf("Error reading config file: %v", err)
+		}
+	}
+
+	rootCmd.Flags().StringVarP(&targetImage, "target-image", "t", "", "Target image name and tag for the built Docker image (required)")
+	_ = rootCmd.MarkFlagRequired("target-image")
+
+	_ = viper.BindPFlag("target-image", rootCmd.Flags().Lookup("target-image"))
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "baml-rest [directory]",
 	Short: "Build a REST API server for your BAML project",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Update targetImage from Viper to get the final value considering config file, env vars, and CLI flags
+		targetImage = viper.GetString("target-image")
+
 		targetDir := args[0]
 
 		info, err := os.Stat(targetDir)
@@ -271,7 +304,7 @@ var rootCmd = &cobra.Command{
 		fmt.Println("Building image")
 		response, err := dockerClient.ImageBuild(context.TODO(), &buf, build.ImageBuildOptions{
 			Dockerfile: "Dockerfile",
-			Tags:       []string{"testis:latest"},
+			Tags:       []string{targetImage},
 			Remove:     true,
 			Version:    build.BuilderBuildKit,
 			AuthConfigs: map[string]registry.AuthConfig{
