@@ -20,7 +20,8 @@ type methodOut struct {
 }
 
 const (
-	selfPkg = "github.com/invakid404/baml-rest/adapters/v0.204.0"
+	selfPkg        = "github.com/invakid404/baml-rest/adapters/v0.204.0"
+	selfAdapterPkg = selfPkg + "/adapter"
 )
 
 func main() {
@@ -226,7 +227,7 @@ func main() {
 		Qual(common.InterfacesPkg, "Adapter").
 		Block(
 			jen.Return(
-				jen.Op("&").Qual(selfPkg, "BamlAdapter").
+				jen.Op("&").Qual(selfAdapterPkg, "BamlAdapter").
 					Values(jen.Dict{
 						jen.Id("Context"): jen.Id("ctx"),
 					}),
@@ -240,7 +241,7 @@ func main() {
 			jen.Id("result").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
 		).
 		Block(
-			jen.Id("adapter").Op(":=").Id("adapterIn").Assert(jen.Op("*").Qual(selfPkg, "BamlAdapter")),
+			jen.Id("adapter").Op(":=").Id("adapterIn").Assert(jen.Op("*").Qual(selfAdapterPkg, "BamlAdapter")),
 			jen.If(jen.Id("adapter").Dot("ClientRegistry").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),
 					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
