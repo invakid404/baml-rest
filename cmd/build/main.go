@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"context"
 	_ "embed"
@@ -287,19 +286,17 @@ var rootCmd = &cobra.Command{
 			_ = body.Close()
 		}(response.Body)
 
-		// Use a scanner to read the response stream line by line
-		scanner := bufio.NewScanner(response.Body)
+		// Use a JSON decoder to read the response stream
+		decoder := json.NewDecoder(response.Body)
 
 		progressWriter, err := progress.NewPrinter(context.TODO(), os.Stdout, progressui.AutoMode)
 		if err != nil {
 			return fmt.Errorf("failed to create progress writer: %w", err)
 		}
 
-		for scanner.Scan() {
-			line := scanner.Text()
-
+		for decoder.More() {
 			var message dockerBuildMessage
-			if err = json.Unmarshal([]byte(line), &message); err != nil {
+			if err := decoder.Decode(&message); err != nil {
 				_, _ = fmt.Fprintf(os.Stderr, "failed to parse build output: %v\n", err)
 				continue
 			}
@@ -321,9 +318,6 @@ var rootCmd = &cobra.Command{
 
 				progressWriter.Write(&solveStatus)
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "reading build output failed: %v\n", err)
 		}
 
 		return nil
