@@ -101,6 +101,7 @@ func generateOpenAPISchema() *openapi3.T {
 	}
 
 	generator = openapi3gen.NewGenerator(
+		openapi3gen.UseAllExportedFields(),
 		openapi3gen.CreateComponentSchemas(openapi3gen.ExportComponentSchemasOptions{
 			ExportComponentSchemas: true,
 		}),
