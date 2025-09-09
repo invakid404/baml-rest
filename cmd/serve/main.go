@@ -311,7 +311,9 @@ var rootCmd = &cobra.Command{
 				defer cancel()
 
 				adapter := baml_rest.MakeAdapter(ctx)
-				input.options.Apply(adapter)
+				if err := input.options.Apply(adapter); err != nil {
+					http.Error(w, fmt.Sprintf("Error applying __baml_options__: %v", err), http.StatusBadRequest)
+				}
 
 				result, err := method.Impl(adapter, input.input)
 
@@ -362,7 +364,9 @@ var rootCmd = &cobra.Command{
 				}
 
 				adapter := baml_rest.MakeAdapter(ctx)
-				input.options.Apply(adapter)
+				if err := input.options.Apply(adapter); err != nil {
+					http.Error(w, fmt.Sprintf("Error applying __baml_options__: %v", err), http.StatusBadRequest)
+				}
 
 				result, err := method.Impl(adapter, input.input)
 				if err != nil {
@@ -454,12 +458,27 @@ type BamlOptionsInput struct {
 	Options *BamlOptions `json:"__baml_options__,omitempty"`
 }
 
-func (i *BamlOptionsInput) Apply(adapter bamlutils.Adapter) {
-	if i.Options != nil && i.Options.ClientRegistry != nil {
-		adapter.SetClientRegistry(i.Options.ClientRegistry)
+func (i *BamlOptionsInput) Apply(adapter bamlutils.Adapter) error {
+	if i.Options == nil {
+		return nil
 	}
+
+	if i.Options.ClientRegistry != nil {
+		if err := adapter.SetClientRegistry(i.Options.ClientRegistry); err != nil {
+			return fmt.Errorf("failed to set client registry: %w", err)
+		}
+	}
+
+	if i.Options.TypeBuilder != nil {
+		if err := adapter.SetTypeBuilder(i.Options.TypeBuilder); err != nil {
+			return fmt.Errorf("failed to set type builder: %w", err)
+		}
+	}
+
+	return nil
 }
 
 type BamlOptions struct {
 	ClientRegistry *bamlutils.ClientRegistry `json:"client_registry"`
+	TypeBuilder    *bamlutils.TypeBuilder    `json:"type_builder"`
 }

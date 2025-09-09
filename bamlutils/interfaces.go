@@ -39,7 +39,16 @@ type ClientProperty struct {
 	Options     map[string]any `json:"options,omitempty"`
 }
 
+type TypeBuilder struct {
+	BamlSnippets []string `json:"baml_snippets,omitempty"`
+}
+
+func (b *TypeBuilder) Add(input string) {
+	b.BamlSnippets = append(b.BamlSnippets, input)
+}
+
 type Adapter interface {
 	context.Context
-	SetClientRegistry(clientRegistry *ClientRegistry)
+	SetClientRegistry(clientRegistry *ClientRegistry) error
+	SetTypeBuilder(typeBuilder *TypeBuilder) error
 }

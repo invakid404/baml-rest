@@ -95,12 +95,36 @@ func main() {
 				jen.Return(jen.Qual(common.InterfacesPkg, "StreamResultKindStream")),
 			)
 
+		isDynamic := hasDynamicProperties(streamResultType)
+
+		makeValueGetter := func(method string) []jen.Code {
+			if !isDynamic {
+				return []jen.Code{jen.Return(selfValueName.Clone().Dot(method).Call())}
+			}
+
+			return []jen.Code{
+				jen.Id("result").Op(":=").Add(selfValueName.Clone().Dot(method).Call()),
+				jen.If(jen.Id("result").Dot("DynamicProperties").Op("!=").Nil()).Block(
+					jen.For(jen.List(jen.Id("key"), jen.Id("value")).Op(":=").Range().Id("result").Dot("DynamicProperties")).
+						Block(
+							jen.If(
+								jen.List(jen.Id("reflectValue"), jen.Id("ok")).Op(":=").Id("value").Assert(jen.Qual("reflect", "Value")),
+								jen.Id("ok"),
+							).Block(
+								jen.Id("result").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Id("reflectValue").Dot("Interface").Call(),
+							),
+						),
+				),
+				jen.Return(jen.Id("result")),
+			}
+		}
+
 		out.Func().
 			Params(selfParam.Clone()).
 			Id("Stream").Params().
 			Any().
 			Block(
-				jen.Return(selfValueName.Clone().Dot("Stream").Call()),
+				makeValueGetter("Stream")...,
 			)
 
 		out.Func().
@@ -108,7 +132,7 @@ func main() {
 			Id("Final").Params().
 			Any().
 			Block(
-				jen.Return(selfValueName.Clone().Dot("Final").Call()),
+				makeValueGetter("Final")...,
 			)
 
 		out.Func().
@@ -230,6 +254,14 @@ func main() {
 				jen.Op("&").Qual(selfAdapterPkg, "BamlAdapter").
 					Values(jen.Dict{
 						jen.Id("Context"): jen.Id("ctx"),
+						jen.Id("TypeBuilderFactory"): jen.Func().Params().
+							Call(
+								jen.Qual(selfAdapterPkg, "BamlTypeBuilder"),
+								jen.Error(),
+							).
+							Block(
+								jen.Return(jen.Qual(common.GeneratedClientPkg, "NewTypeBuilder").Call()),
+							),
 					}),
 			),
 		)
@@ -247,6 +279,10 @@ func main() {
 					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
 						Call(jen.Id("adapter").Dot("ClientRegistry"))),
 			),
+			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
+				jen.Id("result").Op("=").Append(jen.Id("result"),
+					jen.Qual(common.GeneratedClientPkg, "WithTypeBuilder").
+						Call(jen.Id("adapter").Dot("TypeBuilder").Assert(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"))))),
 			jen.Return(),
 		)
 
@@ -335,4 +371,32 @@ func parseReflectType(typ reflect.Type) parsedReflectType {
 		statement.Types(genericsTypes...),
 		genericsTypes,
 	}
+}
+
+func hasDynamicProperties(typ reflect.Type) bool {
+	for typ.Kind() != reflect.Ptr {
+		typ = reflect.PointerTo(typ)
+	}
+
+	finalMethod, hasFinalMethod := typ.MethodByName("Final")
+	if !hasFinalMethod {
+		return false
+	}
+
+	finalMethodType := finalMethod.Type
+	if finalMethodType.NumOut() != 1 {
+		return false
+	}
+
+	returnType := finalMethodType.Out(0).Elem()
+	if returnType.Kind() == reflect.Ptr {
+		returnType = returnType.Elem()
+	}
+
+	if returnType.Kind() != reflect.Struct {
+		return false
+	}
+
+	_, hasDynamicFields := returnType.FieldByName("DynamicProperties")
+	return hasDynamicFields
 }
