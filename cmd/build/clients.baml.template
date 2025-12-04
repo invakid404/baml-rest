@@ -1,6 +1,0 @@
-generator baml_rest_target {
-  output_type "go"
-  output_dir "${OUTPUT_DIR}"
-  version "${BAML_VERSION}"
-  client_package_name "github.com/invakid404/baml-rest"
-}

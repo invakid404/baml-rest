@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,16 +41,63 @@ import (
 )
 
 //go:embed Dockerfile.tmpl
-var dockerfileTemplateInput string
+var dockerfileDockerTemplateInput string
 
-//go:embed clients.baml.template
-var clientsBamlTemplate []byte
+//go:embed build.sh
+var buildScript string
 
-func copyDirToTar(path string, target *tar.Writer, mapper copyFSToTarMapper) error {
-	return copyFSToTar(os.DirFS(path), target, mapper)
+type fileWriter interface {
+	WriteFile(name string, data io.Reader, size int64, mode int64) error
 }
 
-func copyFSToTar(dir fs.FS, target *tar.Writer, mapper copyFSToTarMapper) error {
+type tarWriter struct {
+	tw *tar.Writer
+}
+
+func (t *tarWriter) WriteFile(name string, data io.Reader, size int64, mode int64) error {
+	header := tar.Header{
+		Name: name,
+		Mode: mode,
+		Size: size,
+	}
+	if err := t.tw.WriteHeader(&header); err != nil {
+		return fmt.Errorf("failed to write file header for %s: %w", name, err)
+	}
+	if _, err := io.Copy(t.tw, data); err != nil {
+		return fmt.Errorf("failed to copy %s: %w", name, err)
+	}
+	return nil
+}
+
+type diskWriter struct {
+	baseDir string
+}
+
+func (d *diskWriter) WriteFile(name string, data io.Reader, size int64, mode int64) error {
+	targetPath := filepath.Join(d.baseDir, name)
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory for %s: %w", targetPath, err)
+	}
+
+	outFile, err := os.Create(targetPath)
+	if err != nil {
+		return fmt.Errorf("failed to create %s: %w", targetPath, err)
+	}
+	defer func(outFile *os.File) {
+		_ = outFile.Close()
+	}(outFile)
+
+	if _, err = io.Copy(outFile, data); err != nil {
+		return fmt.Errorf("failed to copy %s: %w", targetPath, err)
+	}
+
+	return nil
+}
+
+type copyFSMapper func(path string, dirEntry fs.DirEntry, fileInfo fs.FileInfo) *string
+
+func copyFS(dir fs.FS, writer fileWriter, mapper copyFSMapper) error {
 	return fs.WalkDir(dir, ".", func(path string, dirEntry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -69,15 +117,6 @@ func copyFSToTar(dir fs.FS, target *tar.Writer, mapper copyFSToTarMapper) error 
 			return nil
 		}
 
-		fileHeader := tar.Header{
-			Name: *name,
-			Mode: 0644,
-			Size: fileInfo.Size(),
-		}
-		if err := target.WriteHeader(&fileHeader); err != nil {
-			return fmt.Errorf("failed to write file header for %s: %w", *name, err)
-		}
-
 		file, err := dir.Open(path)
 		if err != nil {
 			return fmt.Errorf("failed to open %s: %w", path, err)
@@ -86,26 +125,42 @@ func copyFSToTar(dir fs.FS, target *tar.Writer, mapper copyFSToTarMapper) error 
 			_ = file.Close()
 		}(file)
 
-		if _, err = io.Copy(target, file); err != nil {
-			return fmt.Errorf("failed to copy %s: %w", *name, err)
-		}
-
-		return nil
+		return writer.WriteFile(*name, file, fileInfo.Size(), int64(fileInfo.Mode()))
 	})
 }
 
-type copyFSToTarMapper func(path string, dirEntry fs.DirEntry, fileInfo fs.FileInfo) *string
+func copyDirToTar(path string, target *tar.Writer, mapper copyFSMapper) error {
+	return copyFS(os.DirFS(path), &tarWriter{tw: target}, mapper)
+}
+
+func copyFSToTar(dir fs.FS, target *tar.Writer, mapper copyFSMapper) error {
+	return copyFS(dir, &tarWriter{tw: target}, mapper)
+}
+
+func copyDirToDisk(path string, targetDir string, mapper copyFSMapper) error {
+	return copyFS(os.DirFS(path), &diskWriter{baseDir: targetDir}, mapper)
+}
+
+func copyFSToDisk(dir fs.FS, targetDir string, mapper copyFSMapper) error {
+	return copyFS(dir, &diskWriter{baseDir: targetDir}, mapper)
+}
 
 const (
 	adapterPrefix = "adapters/v"
+	bamlRestDir   = "baml_rest"
+	bamlSrcDir    = "baml_src"
+	bamlFileExt   = ".baml"
+	bamlRestName  = "baml-rest"
 )
 
 var (
 	targetImage string
+	buildMode   string
+	outputPath  string
 )
 
 func init() {
-	viper.SetConfigName("baml-rest")
+	viper.SetConfigName(bamlRestName)
 	viper.SetConfigType("toml")
 	viper.AddConfigPath(".")
 	viper.SetEnvPrefix("BAML_REST")
@@ -122,10 +177,13 @@ func init() {
 		}
 	}
 
-	rootCmd.Flags().StringVarP(&targetImage, "target-image", "t", "", "Target image name and tag for the built Docker image (required)")
-	_ = rootCmd.MarkFlagRequired("target-image")
+	rootCmd.Flags().StringVarP(&buildMode, "mode", "m", "docker", "Build mode: 'docker' (container build) or 'native' (direct execution)")
+	rootCmd.Flags().StringVarP(&targetImage, "target-image", "t", "", "Target image name and tag for the built Docker image (required for docker mode)")
+	rootCmd.Flags().StringVarP(&outputPath, "output", "o", "", "Output path for the binary (native mode only, defaults to ./baml-rest)")
 
+	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
 	_ = viper.BindPFlag("target-image", rootCmd.Flags().Lookup("target-image"))
+	_ = viper.BindPFlag("output", rootCmd.Flags().Lookup("output"))
 }
 
 var rootCmd = &cobra.Command{
@@ -133,11 +191,29 @@ var rootCmd = &cobra.Command{
 	Short: "Build a REST API server for your BAML project",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Update targetImage from Viper to get the final value considering config file, env vars, and CLI flags
+		// Get configuration from Viper
+		buildMode = viper.GetString("mode")
 		targetImage = viper.GetString("target-image")
+		outputPath = viper.GetString("output")
+
+		// Validate mode
+		if buildMode != "docker" && buildMode != "native" {
+			return fmt.Errorf("invalid mode %q, must be 'docker' or 'native'", buildMode)
+		}
+
+		// Validate required flags based on mode
+		if buildMode == "docker" && targetImage == "" {
+			return fmt.Errorf("--target-image is required for docker mode")
+		}
+
+		// Set default output path for native mode
+		if buildMode == "native" && outputPath == "" {
+			outputPath = "./baml-rest"
+		}
 
 		targetDir := args[0]
 
+		// Common setup: validate directory structure
 		info, err := os.Stat(targetDir)
 		if err != nil {
 			return fmt.Errorf("failed to access directory %s: %w", targetDir, err)
@@ -147,7 +223,7 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("%s is not a directory", targetDir)
 		}
 
-		bamlSrcPath := filepath.Join(targetDir, "baml_src")
+		bamlSrcPath := filepath.Join(targetDir, bamlSrcDir)
 		bamlSrcInfo, err := os.Stat(bamlSrcPath)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -164,6 +240,7 @@ var rootCmd = &cobra.Command{
 
 		fmt.Printf("Found baml_src folder in %s\n", targetDir)
 
+		// Common setup: detect BAML and adapter versions
 		var availableAdapterVersions []string
 		for key := range bamlrest.Sources {
 			if !strings.HasPrefix(key, adapterPrefix) {
@@ -213,148 +290,270 @@ var rootCmd = &cobra.Command{
 			)
 		}
 
-		fmt.Println("Adapter version to use:", adapterVersionToUse)
+		fmt.Printf("BAML version: %s\n", detectedVersion)
+		fmt.Printf("Adapter version: %s\n", adapterVersionToUse)
+		fmt.Printf("Build mode: %s\n", buildMode)
 
-		fmt.Println("Making docker client...")
-		dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-		if err != nil {
-			return fmt.Errorf("failed to connect to docker daemon: %w", err)
+		// Dispatch to appropriate build function
+		if buildMode == "docker" {
+			return buildDocker(targetDir, bamlSrcPath, detectedVersion, adapterVersionToUse)
+		} else {
+			return buildNative(targetDir, bamlSrcPath, detectedVersion, adapterVersionToUse)
 		}
+	},
+}
 
-		dockerVersion, err := dockerClient.ServerVersion(context.TODO())
-		if err != nil {
-			return fmt.Errorf("failed to get docker version: %w", err)
-		}
-		fmt.Printf("Connected to docker daemon version %s\n", dockerVersion.Version)
+func buildDocker(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) error {
+	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
-		var buf bytes.Buffer
-		tarWriter := tar.NewWriter(&buf)
+	fmt.Printf("Making docker client...\n")
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("failed to connect to docker daemon: %w", err)
+	}
 
-		dockerfileTemplate := template.Must(template.New("dockerfile").Parse(dockerfileTemplateInput))
-		var dockerfileOut bytes.Buffer
+	dockerVersion, err := dockerClient.ServerVersion(context.TODO())
+	if err != nil {
+		return fmt.Errorf("failed to get docker version: %w", err)
+	}
+	fmt.Printf("Connected to docker daemon version %s\n", dockerVersion.Version)
 
-		dockerfileTemplateArgs := map[string]string{
-			"bamlVersion":    detectedVersion,
-			"adapterVersion": adapterVersionToUse,
-		}
-		if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
-			return fmt.Errorf("failed to render Dockerfile template: %w", err)
-		}
-		dockerfile := dockerfileOut.Bytes()
+	var buf bytes.Buffer
+	tarWriter := tar.NewWriter(&buf)
 
-		images, err := extractFromImages(&dockerfileOut)
-		if err != nil {
-			return fmt.Errorf("failed to extract images from Dockerfile: %w", err)
-		}
+	// Use the new Docker template with build.sh
+	dockerfileTemplate := template.Must(template.New("dockerfile").Parse(dockerfileDockerTemplateInput))
+	var dockerfileOut bytes.Buffer
 
-		if err = pullImagesIfNeeded(dockerClient, images); err != nil {
-			return fmt.Errorf("failed to pull images: %w", err)
-		}
+	dockerfileTemplateArgs := map[string]string{
+		"bamlVersion":    bamlVersion,
+		"adapterVersion": adapterVersion,
+	}
+	if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
+		return fmt.Errorf("failed to render Dockerfile template: %w", err)
+	}
+	dockerfile := dockerfileOut.Bytes()
 
-		dockerfileHeader := tar.Header{
-			Name: "Dockerfile",
-			Mode: 0644,
-			Size: int64(len(dockerfile)),
-		}
-		if err := tarWriter.WriteHeader(&dockerfileHeader); err != nil {
-			return fmt.Errorf("failed to write Dockerfile header to build context: %w", err)
-		}
+	images, err := extractFromImages(&dockerfileOut)
+	if err != nil {
+		return fmt.Errorf("failed to extract images from Dockerfile: %w", err)
+	}
 
-		if _, err := tarWriter.Write(dockerfile); err != nil {
-			return fmt.Errorf("failed to write Dockerfile to build context: %w", err)
-		}
+	if err = pullImagesIfNeeded(dockerClient, images); err != nil {
+		return fmt.Errorf("failed to pull images: %w", err)
+	}
 
-		clientsBamlTemplateHeader := tar.Header{
-			Name: "clients.baml.template",
-			Mode: 0644,
-			Size: int64(len(clientsBamlTemplate)),
-		}
-		if err := tarWriter.WriteHeader(&clientsBamlTemplateHeader); err != nil {
-			return fmt.Errorf("failed to write clients.baml template header to build context: %w", err)
-		}
+	dockerfileHeader := tar.Header{
+		Name: "Dockerfile",
+		Mode: 0644,
+		Size: int64(len(dockerfile)),
+	}
+	if err := tarWriter.WriteHeader(&dockerfileHeader); err != nil {
+		return fmt.Errorf("failed to write Dockerfile header to build context: %w", err)
+	}
 
-		if _, err := tarWriter.Write(clientsBamlTemplate); err != nil {
-			return fmt.Errorf("failed to write clients.baml template to build context: %w", err)
-		}
+	if _, err := tarWriter.Write(dockerfile); err != nil {
+		return fmt.Errorf("failed to write Dockerfile to build context: %w", err)
+	}
 
-		for path, source := range bamlrest.Sources {
-			err = copyFSToTar(source, tarWriter, func(filePath string, dirEntry fs.DirEntry, _ fs.FileInfo) *string {
-				result := filepath.Join("baml_rest", path, filePath)
-				return &result
-			})
-		}
+	buildScriptHeader := tar.Header{
+		Name: "build.sh",
+		Mode: 0755,
+		Size: int64(len(buildScript)),
+	}
+	if err := tarWriter.WriteHeader(&buildScriptHeader); err != nil {
+		return fmt.Errorf("failed to write build.sh header to build context: %w", err)
+	}
 
-		err = copyDirToTar(bamlSrcPath, tarWriter, func(path string, _ fs.DirEntry, fileInfo fs.FileInfo) *string {
-			baseName := fileInfo.Name()
-			if !strings.HasSuffix(baseName, ".baml") {
-				return nil
-			}
+	if _, err := tarWriter.Write([]byte(buildScript)); err != nil {
+		return fmt.Errorf("failed to write build.sh to build context: %w", err)
+	}
 
-			result := fmt.Sprintf("baml_src/%s", path)
+	for path, source := range bamlrest.Sources {
+		err = copyFSToTar(source, tarWriter, func(filePath string, dirEntry fs.DirEntry, _ fs.FileInfo) *string {
+			result := filepath.Join(bamlRestDir, path, filePath)
 			return &result
 		})
 		if err != nil {
-			return fmt.Errorf("failed to copy target directory to build context: %w", err)
+			return fmt.Errorf("failed to copy baml_rest sources: %w", err)
+		}
+	}
+
+	err = copyDirToTar(bamlSrcPath, tarWriter, func(path string, _ fs.DirEntry, fileInfo fs.FileInfo) *string {
+		baseName := fileInfo.Name()
+		if !strings.HasSuffix(baseName, bamlFileExt) {
+			return nil
 		}
 
-		if err := tarWriter.Close(); err != nil {
-			return fmt.Errorf("failed to close build context writer: %w", err)
+		result := fmt.Sprintf("baml_src/%s", path)
+		return &result
+	})
+	if err != nil {
+		return fmt.Errorf("failed to copy target directory to build context: %w", err)
+	}
+
+	if err := tarWriter.Close(); err != nil {
+		return fmt.Errorf("failed to close build context writer: %w", err)
+	}
+
+	fmt.Printf("Building image...\n")
+	response, err := dockerClient.ImageBuild(context.TODO(), &buf, build.ImageBuildOptions{
+		Dockerfile: "Dockerfile",
+		Tags:       []string{targetImage},
+		Remove:     true,
+		Version:    build.BuilderBuildKit,
+		AuthConfigs: map[string]registry.AuthConfig{
+			"docker.io": {},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to build image: %w", err)
+	}
+
+	defer func(body io.ReadCloser) {
+		_ = body.Close()
+	}(response.Body)
+
+	decoder := json.NewDecoder(response.Body)
+
+	progressWriter, err := progress.NewPrinter(context.TODO(), os.Stdout, progressui.AutoMode)
+	if err != nil {
+		return fmt.Errorf("failed to create progress writer: %w", err)
+	}
+
+	for decoder.More() {
+		var message dockerBuildMessage
+		if err := decoder.Decode(&message); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "failed to parse build output: %v\n", err)
+			continue
 		}
 
-		fmt.Println("Building image")
-		response, err := dockerClient.ImageBuild(context.TODO(), &buf, build.ImageBuildOptions{
-			Dockerfile: "Dockerfile",
-			Tags:       []string{targetImage},
-			Remove:     true,
-			Version:    build.BuilderBuildKit,
-			AuthConfigs: map[string]registry.AuthConfig{
-				"docker.io": {},
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("failed to build image: %w", err)
-		}
-
-		defer func(body io.ReadCloser) {
-			_ = body.Close()
-		}(response.Body)
-
-		// Use a JSON decoder to read the response stream
-		decoder := json.NewDecoder(response.Body)
-
-		progressWriter, err := progress.NewPrinter(context.TODO(), os.Stdout, progressui.AutoMode)
-		if err != nil {
-			return fmt.Errorf("failed to create progress writer: %w", err)
-		}
-
-		for decoder.More() {
-			var message dockerBuildMessage
-			if err := decoder.Decode(&message); err != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "failed to parse build output: %v\n", err)
+		if message.ID == "moby.buildkit.trace" {
+			aux, err := base64.StdEncoding.DecodeString(message.Aux.(string))
+			if err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "failed to decode aux output: %v\n", err)
 				continue
 			}
 
-			if message.ID == "moby.buildkit.trace" {
-				aux, err := base64.StdEncoding.DecodeString(message.Aux.(string))
-				if err != nil {
-					_, _ = fmt.Fprintf(os.Stderr, "failed to decode aux output: %v\n", err)
-					continue
-				}
-
-				var statusResponse controlapi.StatusResponse
-				if err = proto.Unmarshal(aux, &statusResponse); err != nil {
-					_, _ = fmt.Fprintf(os.Stderr, "failed to parse aux output: %v\n", err)
-					continue
-				}
-
-				solveStatus := mapStatusResponseToSolveStatus(&statusResponse)
-
-				progressWriter.Write(&solveStatus)
+			var statusResponse controlapi.StatusResponse
+			if err = proto.Unmarshal(aux, &statusResponse); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "failed to parse aux output: %v\n", err)
+				continue
 			}
-		}
 
-		return nil
-	},
+			solveStatus := mapStatusResponseToSolveStatus(&statusResponse)
+
+			progressWriter.Write(&solveStatus)
+		}
+	}
+
+	fmt.Printf("\n✓ Docker build completed successfully!\n")
+	fmt.Printf("Image: %s\n", targetImage)
+
+	return nil
+}
+
+func buildNative(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) error {
+	fmt.Printf("\n=== Native Build Mode ===\n\n")
+
+	// Check prerequisites
+	requiredCommands := []string{"node", "npx", "go", "gawk"}
+	for _, cmd := range requiredCommands {
+		if _, err := exec.LookPath(cmd); err != nil {
+			return fmt.Errorf("required command %q not found in PATH. Please install it before using native mode", cmd)
+		}
+	}
+
+	fmt.Printf("✓ All required tools are available\n")
+
+	// Set up cache directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get user home directory: %w", err)
+	}
+
+	cacheDir := filepath.Join(homeDir, ".cache", bamlRestName)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	fmt.Printf("Cache directory: %s\n", cacheDir)
+
+	// Create temporary build context directory
+	tmpDir, err := os.MkdirTemp("", "baml-rest-build-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Write build.sh to temporary location
+	buildScriptPath := filepath.Join(tmpDir, "build.sh")
+	if err := os.WriteFile(buildScriptPath, []byte(buildScript), 0755); err != nil {
+		return fmt.Errorf("failed to write build.sh: %w", err)
+	}
+
+	// Create build context directory structure
+	buildContextDir := filepath.Join(tmpDir, "context")
+	if err := os.MkdirAll(buildContextDir, 0755); err != nil {
+		return fmt.Errorf("failed to create build context directory: %w", err)
+	}
+
+	// Write baml_rest sources to build context
+	fmt.Printf("Writing baml_rest sources to build context...\n")
+	for path, source := range bamlrest.Sources {
+		if err := copyFSToDisk(source, buildContextDir, func(filePath string, _ fs.DirEntry, _ fs.FileInfo) *string {
+			result := filepath.Join(bamlRestDir, path, filePath)
+			return &result
+		}); err != nil {
+			return fmt.Errorf("failed to copy baml_rest sources: %w", err)
+		}
+	}
+
+	// Copy user's baml_src to build context
+	fmt.Printf("Copying baml_src to build context...\n")
+	if err := copyDirToDisk(bamlSrcPath, buildContextDir, func(path string, _ fs.DirEntry, fileInfo fs.FileInfo) *string {
+		baseName := fileInfo.Name()
+		if !strings.HasSuffix(baseName, bamlFileExt) {
+			return nil
+		}
+		result := filepath.Join(bamlSrcDir, path)
+		return &result
+	}); err != nil {
+		return fmt.Errorf("failed to copy baml_src to build context: %w", err)
+	}
+
+	// Convert output path to absolute path to avoid ambiguity
+	absOutputPath, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path for output: %w", err)
+	}
+
+	// Prepare environment variables
+	env := os.Environ()
+	env = append(env,
+		fmt.Sprintf("BAML_VERSION=%s", bamlVersion),
+		fmt.Sprintf("ADAPTER_VERSION=%s", adapterVersion),
+		fmt.Sprintf("USER_CONTEXT_PATH=%s", buildContextDir),
+		fmt.Sprintf("OUTPUT_PATH=%s", absOutputPath),
+		fmt.Sprintf("CACHE_DIR=%s", cacheDir),
+	)
+
+	// Execute build.sh
+	fmt.Printf("\nExecuting build script...\n\n")
+
+	cmd := exec.Command("/bin/bash", buildScriptPath)
+	cmd.Env = env
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build script failed: %w", err)
+	}
+
+	fmt.Printf("\n✓ Native build completed successfully!\n")
+	fmt.Printf("Binary: %s\n", outputPath)
+
+	return nil
 }
 
 type dockerBuildMessage struct {

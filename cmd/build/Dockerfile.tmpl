@@ -1,56 +1,69 @@
-FROM node:22-alpine AS client
+# Builder stage: Node.js + Go combined environment
+FROM node:22-bookworm AS builder
 
-RUN apk add --no-cache gettext bash gawk
+# Install Go (multi-architecture support)
+ARG TARGETARCH
+RUN apt-get update && \
+    apt-get install -y wget git ca-certificates && \
+    wget -q https://go.dev/dl/go1.23.4.linux-${TARGETARCH}.tar.gz && \
+    tar -C /usr/local -xzf go1.23.4.linux-${TARGETARCH}.tar.gz && \
+    rm go1.23.4.linux-${TARGETARCH}.tar.gz && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-WORKDIR /baml
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH="/go"
+ENV PATH="${GOPATH}/bin:${PATH}"
 
-COPY baml_src baml_src
+# Install required tools
+RUN apt-get update && \
+    apt-get install -y gettext bash gawk && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-COPY baml_rest/cmd/build/remove_unneeded_blocks.sh remove_unneeded_blocks.sh
-RUN bash ./remove_unneeded_blocks.sh
-
-COPY clients.baml.template clients.baml.template
-ENV OUTPUT_DIR="../baml_rest_generated"
-ENV BAML_VERSION="{{ .bamlVersion }}"
-RUN cat clients.baml.template | envsubst | tee baml_src/baml_rest_client.baml
-
-RUN npx @boundaryml/baml@{{ .bamlVersion }} generate
-
-FROM golang:latest AS build
-
+# Install goimports
 RUN go install golang.org/x/tools/cmd/goimports@latest
 
-WORKDIR /build
-COPY baml_rest baml_rest
+# Set up working directories
+WORKDIR /workspace
 
-WORKDIR /build/baml_rest
+# Copy build script
+COPY build.sh /workspace/build.sh
+RUN chmod +x /workspace/build.sh
 
-COPY --from=client /baml/baml_rest_generated/baml_client baml_client
-RUN cd baml_client && go mod init github.com/invakid404/baml-rest/baml_client
-RUN go work use ./baml_client
+# Copy user's baml_src
+COPY baml_src /workspace/baml_src
 
-RUN go get github.com/boundaryml/baml@{{ .bamlVersion }}
-RUN go work sync
+# Copy baml_rest sources
+COPY baml_rest /workspace/baml_rest
 
-RUN go run cmd/introspect/main.go
-RUN gofmt -w . && goimports -w .
+# Set build environment variables
+ENV BAML_VERSION="{{ .bamlVersion }}"
+ENV ADAPTER_VERSION="{{ .adapterVersion }}"
+ENV USER_CONTEXT_PATH="/workspace"
+ENV OUTPUT_PATH="/output/baml-rest"
+ENV BAML_CACHE_DIR="/baml-cache-build"
 
-ENV BAML_CACHE_DIR=/baml-cache
-RUN go run adapters/{{ .adapterVersion }}/cmd/main.go
+# Run build with unified cache mount (npm, go only - BAML cache is separate)
+RUN --mount=type=cache,target=/cache \
+    /workspace/build.sh
 
-RUN go build -o baml-rest cmd/serve/main.go
-
-FROM debian:latest
+# Final stage: Minimal Debian image
+FROM debian:bookworm-slim
 
 RUN apt-get update && \
     apt-get install -y ca-certificates tzdata bash && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /
-COPY --from=build /build/baml_rest/baml-rest /baml-rest
-COPY --from=build /baml-cache /baml-cache
 
-ENV BAML_CACHE_DIR=/baml-cache
+# Copy binary from builder
+COPY --from=builder /output/baml-rest /baml-rest
+
+# Copy BAML cache from builder
+COPY --from=builder /baml-cache-build /baml-cache
+
 ENV BAML_LOG=off
+ENV BAML_CACHE_DIR=/baml-cache
 
 ENTRYPOINT ["/baml-rest"]

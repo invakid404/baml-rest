@@ -1,7 +1,7 @@
 package common
 
 import (
-    "embed"
+	"embed"
 )
 
 //go:embed embed.go go.mod go.sum helpers.go
@@ -10,5 +10,5 @@ var source embed.FS
 var Sources = make(map[string]embed.FS)
 
 func init() {
-    Sources["."] = source
+	Sources["."] = source
 }

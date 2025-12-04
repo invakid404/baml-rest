@@ -1,14 +1,14 @@
 package {{ .Package }}
 
 import (
-    "embed"
-    {{- if gt (len .Imports) 0 }}
-    "fmt"
-    "path/filepath"
-    {{- end }}
-    {{- range .Imports }}
-    {{ .Module }}
-    {{- end }}
+	"embed"
+	{{- if gt (len .Imports) 0 }}
+	"fmt"
+	"path/filepath"
+	{{- end }}
+	{{- range .Imports }}
+	{{ .Module }}
+	{{- end }}
 )
 
 //go:embed {{ .Dirs }}
@@ -17,13 +17,13 @@ var source embed.FS
 var Sources = make(map[string]embed.FS)
 
 func init() {
-    Sources["."] = source
+	Sources["."] = source
 {{- if gt (len .Imports) 0 }}
-    {{- range .Imports }}
-    for key, value := range {{ .PkgName }}.Sources {
-        path := filepath.Clean(fmt.Sprintf("./%s/%s", {{ .RelativePath }}, key))
-        Sources[path] = value
-    }
-    {{- end }}
+	{{- range .Imports }}
+	for key, value := range {{ .PkgName }}.Sources {
+		path := filepath.Clean(fmt.Sprintf("./%s/%s", {{ .RelativePath }}, key))
+		Sources[path] = value
+	}
+	{{- end }}
 {{- end }}
 }
