@@ -157,6 +157,7 @@ var (
 	targetImage string
 	buildMode   string
 	outputPath  string
+	bamlVersion string
 )
 
 func init() {
@@ -180,10 +181,12 @@ func init() {
 	rootCmd.Flags().StringVarP(&buildMode, "mode", "m", "docker", "Build mode: 'docker' (container build) or 'native' (direct execution)")
 	rootCmd.Flags().StringVarP(&targetImage, "target-image", "t", "", "Target image name and tag for the built Docker image (required for docker mode)")
 	rootCmd.Flags().StringVarP(&outputPath, "output", "o", "", "Output path for the binary (native mode only, defaults to ./baml-rest)")
+	rootCmd.Flags().StringVarP(&bamlVersion, "baml-version", "b", "", "Specific BAML version to use (bypasses automatic version detection)")
 
 	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
 	_ = viper.BindPFlag("target-image", rootCmd.Flags().Lookup("target-image"))
 	_ = viper.BindPFlag("output", rootCmd.Flags().Lookup("output"))
+	_ = viper.BindPFlag("baml-version", rootCmd.Flags().Lookup("baml-version"))
 }
 
 var rootCmd = &cobra.Command{
@@ -195,6 +198,7 @@ var rootCmd = &cobra.Command{
 		buildMode = viper.GetString("mode")
 		targetImage = viper.GetString("target-image")
 		outputPath = viper.GetString("output")
+		bamlVersion = viper.GetString("baml-version")
 
 		// Validate mode
 		if buildMode != "docker" && buildMode != "native" {
@@ -255,24 +259,35 @@ var rootCmd = &cobra.Command{
 
 		semver.Sort(availableAdapterVersions)
 
-		detectedVersions, err := bamlutils.ParseVersions(os.DirFS(bamlSrcPath))
-		if err != nil {
-			return fmt.Errorf("failed to parse versions: %w", err)
-		}
+		var detectedVersion string
+		var detectedVersionForComparison string
 
-		if len(detectedVersions) == 0 {
-			return fmt.Errorf("no BAML generators found in %q, cannot infer version", bamlSrcPath)
-		}
+		if bamlVersion != "" {
+			// Use the manually specified BAML version
+			detectedVersion = bamlVersion
+			detectedVersionForComparison = "v" + detectedVersion
+			fmt.Printf("Using manually specified BAML version: %s\n", detectedVersion)
+		} else {
+			// Auto-detect BAML version
+			detectedVersions, err := bamlutils.ParseVersions(os.DirFS(bamlSrcPath))
+			if err != nil {
+				return fmt.Errorf("failed to parse versions: %w", err)
+			}
 
-		if len(detectedVersions) > 1 {
-			return fmt.Errorf(
-				"detected multiple BAML versions in %q: %v, cannot infer which one to use",
-				bamlSrcPath, detectedVersions,
-			)
-		}
+			if len(detectedVersions) == 0 {
+				return fmt.Errorf("no BAML generators found in %q, cannot infer version", bamlSrcPath)
+			}
 
-		detectedVersion := detectedVersions[0]
-		detectedVersionForComparison := "v" + detectedVersion
+			if len(detectedVersions) > 1 {
+				return fmt.Errorf(
+					"detected multiple BAML versions in %q: %v, cannot infer which one to use",
+					bamlSrcPath, detectedVersions,
+				)
+			}
+
+			detectedVersion = detectedVersions[0]
+			detectedVersionForComparison = "v" + detectedVersion
+		}
 
 		adapterVersionToUse := ""
 
