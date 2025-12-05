@@ -21,7 +21,7 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	b.ClientRegistry = baml.NewClientRegistry()
 
 	for _, client := range clientRegistry.Clients {
-		b.ClientRegistry.AddLlmClient(client.Name, client.Provider, client.Options)
+		b.ClientRegistry.AddLlmClient(client.Name, client.Provider, WrapMapValues(client.Options))
 	}
 
 	if clientRegistry.Primary != nil {
