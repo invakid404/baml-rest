@@ -247,6 +247,8 @@ type sseContextKey string
 
 const sseContextKeyTopic = sseContextKey("topic")
 
+var port int
+
 var rootCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
@@ -414,12 +416,16 @@ var rootCmd = &cobra.Command{
 		}
 
 		// Start server
-		logger.Info("Starting server on :8080...")
+		logger.Info(fmt.Sprintf("Starting server on :%d...", port))
 		logger.Info("OpenAPI schema available at:")
-		logger.Info("  JSON: http://localhost:8080/openapi.json")
-		logger.Info("  YAML: http://localhost:8080/openapi.yaml")
-		return http.ListenAndServe(":8080", r)
+		logger.Info(fmt.Sprintf("  JSON: http://localhost:%d/openapi.json", port))
+		logger.Info(fmt.Sprintf("  YAML: http://localhost:%d/openapi.yaml", port))
+		return http.ListenAndServe(fmt.Sprintf(":%d", port), r)
 	},
+}
+
+func init() {
+	rootCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
 }
 
 func main() {
