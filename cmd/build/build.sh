@@ -191,7 +191,7 @@ goimports -w .
 
 # Run adapter
 echo "Running adapter (${ADAPTER_VERSION})..."
-go run adapters/${ADAPTER_VERSION}/cmd/main.go
+go run ${ADAPTER_VERSION}/cmd/main.go
 
 # Build final binary
 echo "Building final binary..."

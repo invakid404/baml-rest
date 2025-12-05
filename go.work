@@ -2,8 +2,8 @@ go 1.24.5
 
 use (
 	.
+	./adapters/adapter_v0_204_0
 	./adapters/common
-	./adapters/v0.204.0
 	./bamlutils
 	./introspected
 )

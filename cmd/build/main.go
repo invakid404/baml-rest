@@ -31,7 +31,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/moby/api/types/build"
-	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/registry"
 	"golang.org/x/mod/semver"
 
@@ -146,7 +145,7 @@ func copyFSToDisk(dir fs.FS, targetDir string, mapper copyFSMapper) error {
 }
 
 const (
-	adapterPrefix = "adapters/v"
+	adapterPrefix = "adapters/adapter_v"
 	bamlRestDir   = "baml_rest"
 	bamlSrcDir    = "baml_src"
 	bamlFileExt   = ".baml"
@@ -246,15 +245,19 @@ var rootCmd = &cobra.Command{
 
 		// Common setup: detect BAML and adapter versions
 		var availableAdapterVersions []string
+		adapterVersionToPath := make(map[string]string)
+
 		for key := range bamlrest.Sources {
 			if !strings.HasPrefix(key, adapterPrefix) {
 				continue
 			}
 
+			version := "v" + strings.ReplaceAll(strings.TrimPrefix(key, adapterPrefix), "_", ".")
 			availableAdapterVersions = append(
 				availableAdapterVersions,
-				"v"+strings.TrimPrefix(key, adapterPrefix),
+				version,
 			)
+			adapterVersionToPath[version] = key
 		}
 
 		semver.Sort(availableAdapterVersions)
@@ -311,9 +314,9 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(targetDir, bamlSrcPath, detectedVersion, adapterVersionToUse)
+			return buildDocker(targetDir, bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse])
 		} else {
-			return buildNative(targetDir, bamlSrcPath, detectedVersion, adapterVersionToUse)
+			return buildNative(targetDir, bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse])
 		}
 	},
 }
@@ -327,7 +330,7 @@ func buildDocker(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) err
 		return fmt.Errorf("failed to connect to docker daemon: %w", err)
 	}
 
-	dockerVersion, err := dockerClient.ServerVersion(context.TODO())
+	dockerVersion, err := dockerClient.ServerVersion(context.TODO(), client.ServerVersionOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get docker version: %w", err)
 	}
@@ -412,7 +415,7 @@ func buildDocker(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) err
 	}
 
 	fmt.Printf("Building image...\n")
-	response, err := dockerClient.ImageBuild(context.TODO(), &buf, build.ImageBuildOptions{
+	response, err := dockerClient.ImageBuild(context.TODO(), &buf, client.ImageBuildOptions{
 		Dockerfile: "Dockerfile",
 		Tags:       []string{targetImage},
 		Remove:     true,
@@ -688,12 +691,12 @@ func pullImagesIfNeeded(cli *client.Client, images []string) error {
 }
 
 func imageExists(ctx context.Context, cli *client.Client, imageName string) (bool, error) {
-	images, err := cli.ImageList(ctx, image.ListOptions{})
+	images, err := cli.ImageList(ctx, client.ImageListOptions{})
 	if err != nil {
 		return false, err
 	}
 
-	for _, img := range images {
+	for _, img := range images.Items {
 		for _, tag := range img.RepoTags {
 			if tag == imageName ||
 				strings.TrimPrefix(tag, "docker.io/") == strings.TrimPrefix(imageName, "docker.io/") ||
@@ -708,7 +711,7 @@ func imageExists(ctx context.Context, cli *client.Client, imageName string) (boo
 
 func pullImage(ctx context.Context, cli *client.Client, imageName string) error {
 	// Pull the image
-	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
+	reader, err := cli.ImagePull(ctx, imageName, client.ImagePullOptions{})
 	if err != nil {
 		return err
 	}

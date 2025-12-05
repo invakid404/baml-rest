@@ -1,4 +1,4 @@
-package v0_204_0
+package adapter_v0_204_0
 
 import (
 	"embed"

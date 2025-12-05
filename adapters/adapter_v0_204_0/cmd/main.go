@@ -20,7 +20,7 @@ type methodOut struct {
 }
 
 const (
-	selfPkg        = "github.com/invakid404/baml-rest/adapters/v0.204.0"
+	selfPkg        = "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0"
 	selfAdapterPkg = selfPkg + "/adapter"
 )
 
