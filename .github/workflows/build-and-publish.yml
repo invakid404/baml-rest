@@ -6,6 +6,10 @@ on:
   release:
     types: [published]
 
+concurrency:
+  group: build-and-publish
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write
