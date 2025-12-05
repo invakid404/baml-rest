@@ -278,9 +278,25 @@ var rootCmd = &cobra.Command{
 
 		// Add middleware
 		logger := slog.Default()
+		r.Use(middleware.RequestID)
+		// Custom middleware to set request ID as response header
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if reqID := middleware.GetReqID(r.Context()); reqID != "" {
+					w.Header().Set("X-Request-Id", reqID)
+				}
+				next.ServeHTTP(w, r)
+			})
+		})
 		r.Use(httplog.RequestLogger(logger, &httplog.Options{
 			Level:         slog.LevelInfo,
 			RecoverPanics: true,
+			LogExtraAttrs: func(req *http.Request, reqBody string, respStatus int) []slog.Attr {
+				if reqID := middleware.GetReqID(req.Context()); reqID != "" {
+					return []slog.Attr{slog.String("request_id", reqID)}
+				}
+				return nil
+			},
 		}))
 		r.Use(middleware.Recoverer)
 
