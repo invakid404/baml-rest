@@ -7,8 +7,12 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
 	"reflect"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3gen"
@@ -431,12 +435,48 @@ var rootCmd = &cobra.Command{
 			})
 		}
 
-		// Start server
-		logger.Info(fmt.Sprintf("Starting server on :%d...", port))
-		logger.Info("OpenAPI schema available at:")
-		logger.Info(fmt.Sprintf("  JSON: http://localhost:%d/openapi.json", port))
-		logger.Info(fmt.Sprintf("  YAML: http://localhost:%d/openapi.yaml", port))
-		return http.ListenAndServe(fmt.Sprintf(":%d", port), r)
+		// Create HTTP server
+		srv := &http.Server{
+			Addr:    fmt.Sprintf(":%d", port),
+			Handler: r,
+		}
+
+		// Start server in a goroutine
+		serverErr := make(chan error, 1)
+		go func() {
+			logger.Info(fmt.Sprintf("Starting server on :%d...", port))
+			logger.Info("OpenAPI schema available at:")
+			logger.Info(fmt.Sprintf("  JSON: http://localhost:%d/openapi.json", port))
+			logger.Info(fmt.Sprintf("  YAML: http://localhost:%d/openapi.yaml", port))
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				serverErr <- err
+			}
+		}()
+
+		// Set up signal handling for graceful shutdown
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+		// Wait for interrupt signal or server error
+		select {
+		case err := <-serverErr:
+			return fmt.Errorf("server error: %w", err)
+		case sig := <-sigChan:
+			logger.Info(fmt.Sprintf("Received signal: %v. Initiating graceful shutdown...", sig))
+
+			// Create shutdown context with timeout
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer shutdownCancel()
+
+			// Shutdown server - this will wait for active connections to finish
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				logger.Error(fmt.Sprintf("Error during server shutdown: %v", err))
+				return fmt.Errorf("shutdown error: %w", err)
+			}
+
+			logger.Info("Server gracefully stopped")
+			return nil
+		}
 	},
 }
 
