@@ -84,6 +84,62 @@ jobs:
         run: |
           go build -o ${{ matrix.output }} ./cmd/build/main.go
 
+      - name: Sign Binary
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_IDENTITY: ${{ secrets.MACOS_IDENTITY }}
+        run: |
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          
+          # Decode certificate and import to keychain
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import certificate.p12 -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          
+          # Add keychain to search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed s/\"//g)
+          
+          # Sign the binary
+          /usr/bin/codesign --force --sign "$MACOS_IDENTITY" --options runtime --timestamp ${{ matrix.output }}
+          
+          # Verify signature
+          /usr/bin/codesign --verify --verbose ${{ matrix.output }}
+          
+          # Clean up
+          security delete-keychain "$KEYCHAIN_PATH"
+          rm certificate.p12
+
+      - name: Notarize Binary
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Create a zip file (required for notarization)
+          ditto -c -k --keepParent ${{ matrix.output }} ${{ matrix.output }}.zip
+          
+          # Submit for notarization
+          xcrun notarytool submit ${{ matrix.output }}.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          
+          # Staple the notarization ticket to the binary
+          xcrun stapler staple ${{ matrix.output }}
+          
+          # Verify
+          xcrun stapler validate ${{ matrix.output }}
+
+      - name: Clean up zip
+        run: rm ${{ matrix.output }}.zip
+
       - name: Upload Binary as Release Asset
         uses: actions/upload-release-asset@v1
         env:
