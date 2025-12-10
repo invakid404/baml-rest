@@ -72,7 +72,7 @@ type diskWriter struct {
 	baseDir string
 }
 
-func (d *diskWriter) WriteFile(name string, data io.Reader, size int64, mode int64) error {
+func (d *diskWriter) WriteFile(name string, data io.Reader, _ int64, _ int64) error {
 	targetPath := filepath.Join(d.baseDir, name)
 
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
@@ -314,18 +314,18 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(targetDir, bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse])
+			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse])
 		} else {
-			return buildNative(targetDir, bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse])
+			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse])
 		}
 	},
 }
 
-func buildDocker(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	fmt.Printf("Making docker client...\n")
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
 		return fmt.Errorf("failed to connect to docker daemon: %w", err)
 	}
@@ -439,11 +439,24 @@ func buildDocker(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) err
 		return fmt.Errorf("failed to create progress writer: %w", err)
 	}
 
+	// Track build errors and failed vertices
+	var buildErrors []string
+	var failedVertices []string
+	vertexLogs := make(map[string][]string) // Map vertex digest to its logs
+
 	for decoder.More() {
 		var message dockerBuildMessage
 		if err := decoder.Decode(&message); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "failed to parse build output: %v\n", err)
 			continue
+		}
+
+		// Check for standard Docker error messages
+		if message.Error != "" {
+			buildErrors = append(buildErrors, message.Error)
+		}
+		if message.ErrorDetail.Message != "" {
+			buildErrors = append(buildErrors, message.ErrorDetail.Message)
 		}
 
 		if message.ID == "moby.buildkit.trace" {
@@ -459,10 +472,66 @@ func buildDocker(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) err
 				continue
 			}
 
+			// Check for vertex errors
+			for _, v := range statusResponse.GetVertexes() {
+				if v != nil && v.GetError() != "" {
+					vertexName := v.GetName()
+					vertexError := v.GetError()
+					if vertexName != "" {
+						failedVertices = append(failedVertices, vertexName)
+						buildErrors = append(buildErrors, fmt.Sprintf("%s: %s", vertexName, vertexError))
+					} else {
+						buildErrors = append(buildErrors, vertexError)
+					}
+				}
+			}
+
+			// Capture logs for each vertex
+			for _, l := range statusResponse.GetLogs() {
+				if l != nil {
+					vertexDigest := l.GetVertex()
+					logData := string(l.GetMsg())
+					vertexLogs[vertexDigest] = append(vertexLogs[vertexDigest], logData)
+				}
+			}
+
 			solveStatus := mapStatusResponseToSolveStatus(&statusResponse)
 
 			progressWriter.Write(&solveStatus)
 		}
+	}
+
+	// If there were any errors, report them
+	if len(buildErrors) > 0 {
+		fmt.Printf("\n✗ Docker build failed!\n\n")
+
+		// Print failed vertices and their logs
+		if len(failedVertices) > 0 {
+			fmt.Printf("Failed steps:\n")
+			for _, vertexName := range failedVertices {
+				fmt.Printf("  - %s\n", vertexName)
+			}
+			fmt.Printf("\n")
+		}
+
+		// Print errors
+		fmt.Printf("Errors:\n")
+		for _, buildError := range buildErrors {
+			fmt.Printf("  %s\n", buildError)
+		}
+		fmt.Printf("\n")
+
+		// Print relevant logs if available
+		if len(vertexLogs) > 0 {
+			fmt.Printf("Build output:\n")
+			for _, logs := range vertexLogs {
+				for _, logEntry := range logs {
+					fmt.Printf("%s", logEntry)
+				}
+			}
+		}
+
+		return errors.New("docker build failed")
 	}
 
 	fmt.Printf("\n✓ Docker build completed successfully!\n")
@@ -471,7 +540,7 @@ func buildDocker(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) err
 	return nil
 }
 
-func buildNative(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) error {
+func buildNative(bamlSrcPath, bamlVersion, adapterVersion string) error {
 	fmt.Printf("\n=== Native Build Mode ===\n\n")
 
 	// Check prerequisites
@@ -502,7 +571,9 @@ func buildNative(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) err
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tmpDir)
 
 	// Write build.sh to temporary location
 	buildScriptPath := filepath.Join(tmpDir, "build.sh")
@@ -575,8 +646,13 @@ func buildNative(targetDir, bamlSrcPath, bamlVersion, adapterVersion string) err
 }
 
 type dockerBuildMessage struct {
-	ID  string `json:"id,omitempty"`
-	Aux any    `json:"aux,omitempty"`
+	ID          string `json:"id,omitempty"`
+	Aux         any    `json:"aux,omitempty"`
+	Error       string `json:"error,omitempty"`
+	ErrorDetail struct {
+		Message string `json:"message,omitempty"`
+	} `json:"errorDetail,omitempty"`
+	Stream string `json:"stream,omitempty"`
 }
 
 func main() {
@@ -732,8 +808,8 @@ func pullImage(ctx context.Context, cli *client.Client, imageName string) error 
 
 		// Print progress messages
 		if status, ok := message["status"].(string); ok {
-			if progress, ok := message["progress"].(string); ok {
-				fmt.Printf("  %s %s\n", status, progress)
+			if progressMessage, ok := message["progress"].(string); ok {
+				fmt.Printf("  %s %s\n", status, progressMessage)
 			} else {
 				fmt.Printf("  %s\n", status)
 			}
@@ -827,7 +903,7 @@ func mapStatusResponseToSolveStatus(statusResponse *controlapi.StatusResponse) b
 			continue
 		}
 
-		log := &buildkitclient.VertexLog{
+		vertexLog := &buildkitclient.VertexLog{
 			Vertex: digest.Digest(l.GetVertex()),
 			Stream: int(l.GetStream()),
 			Data:   l.GetMsg(),
@@ -835,10 +911,10 @@ func mapStatusResponseToSolveStatus(statusResponse *controlapi.StatusResponse) b
 
 		// Convert timestamp
 		if timestamp := l.GetTimestamp(); timestamp != nil {
-			log.Timestamp = time.Unix(timestamp.GetSeconds(), int64(timestamp.GetNanos())).UTC()
+			vertexLog.Timestamp = time.Unix(timestamp.GetSeconds(), int64(timestamp.GetNanos())).UTC()
 		}
 
-		logs = append(logs, log)
+		logs = append(logs, vertexLog)
 	}
 
 	// Map warnings
