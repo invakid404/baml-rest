@@ -130,12 +130,6 @@ jobs:
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
-          
-          # Staple the notarization ticket to the binary
-          xcrun stapler staple ${{ matrix.output }}
-          
-          # Verify
-          xcrun stapler validate ${{ matrix.output }}
 
       - name: Clean up zip
         run: rm ${{ matrix.output }}.zip
