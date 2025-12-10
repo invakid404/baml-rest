@@ -4,7 +4,7 @@ import (
 	"embed"
 )
 
-//go:embed adapter cmd embed.go go.mod go.sum
+//go:embed adapter cmd embed.go go.mod go.sum utils
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)
