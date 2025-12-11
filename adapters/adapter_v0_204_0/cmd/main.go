@@ -157,10 +157,15 @@ func main() {
 
 		callParams = append(callParams, jen.Id("makeOptionsFromAdapter").Call(jen.Id("adapter")).Op("..."))
 
+		// Only define `input` if the prompt has arguments
+		if len(args) > 0 {
+			methodBody = append(methodBody,
+				jen.Id("input").Op(":=").Id("rawInput").Assert(jen.Op("*").Id(inputStructName)),
+			)
+		}
+
 		// Call the streaming method and propagate errors
 		methodBody = append(methodBody,
-			jen.Id("input").Op(":=").Id("rawInput").Assert(jen.Op("*").Id(inputStructName)),
-
 			jen.List(jen.Id("result"), jen.Id("err")).Op(":=").
 				Qual(common.IntrospectedPkg, "Stream").Dot(methodName).Call(callParams...),
 
