@@ -321,7 +321,7 @@ func Generate(selfPkg string) {
 						jen.Id("Context"): jen.Id("ctx"),
 						jen.Id("TypeBuilderFactory"): jen.Func().Params().
 							Call(
-								jen.Qual(selfAdapterPkg, "BamlTypeBuilder"),
+								jen.Qual(common.InterfacesPkg, "BamlTypeBuilder"),
 								jen.Error(),
 							).
 							Block(

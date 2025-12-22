@@ -47,6 +47,10 @@ func (b *TypeBuilder) Add(input string) {
 	b.BamlSnippets = append(b.BamlSnippets, input)
 }
 
+type BamlTypeBuilder interface {
+	AddBaml(string) error
+}
+
 type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error

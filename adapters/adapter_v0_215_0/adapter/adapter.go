@@ -11,10 +11,10 @@ import (
 type BamlAdapter struct {
 	context.Context
 
-	TypeBuilderFactory func() (BamlTypeBuilder, error)
+	TypeBuilderFactory func() (bamlutils.BamlTypeBuilder, error)
 
 	ClientRegistry *baml.ClientRegistry
-	TypeBuilder    BamlTypeBuilder
+	TypeBuilder    bamlutils.BamlTypeBuilder
 }
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
@@ -52,7 +52,3 @@ func (b *BamlAdapter) SetTypeBuilder(typeBuilder *bamlutils.TypeBuilder) error {
 }
 
 var _ bamlutils.Adapter = (*BamlAdapter)(nil)
-
-type BamlTypeBuilder interface {
-	AddBaml(string) error
-}
