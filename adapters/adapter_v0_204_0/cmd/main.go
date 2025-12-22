@@ -224,27 +224,29 @@ func main() {
 		)
 
 		methodBody = append(methodBody,
-			jen.Go().Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
-				// Error handler function
-				jen.Func().Params(jen.Id("err").Error()).Block(
-					jen.Select().Block(
-						jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("err"))).Block(),
-						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
-					),
-				),
-				// Goroutine function
-				jen.Func().Params().Error().Block(
-					jen.Defer().Close(jen.Id("out")),
-					jen.For().Block(
+			jen.Go().Func().Params().Block(
+				jen.Defer().Close(jen.Id("out")),
+				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
+					// Error handler function
+					jen.Func().Params(jen.Id("err").Error()).Block(
 						jen.Select().Block(
-							jen.Case(jen.List(jen.Id("entry"), jen.Id("ok")).Op(":=").Op("<-").Id("result")).
-								Block(resultCaseBlock...),
-							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).
-								Block(jen.Return(jen.Nil())),
+							jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("err"))).Block(),
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+						),
+					),
+					// Goroutine function
+					jen.Func().Params().Error().Block(
+						jen.For().Block(
+							jen.Select().Block(
+								jen.Case(jen.List(jen.Id("entry"), jen.Id("ok")).Op(":=").Op("<-").Id("result")).
+									Block(resultCaseBlock...),
+								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).
+									Block(jen.Return(jen.Nil())),
+							),
 						),
 					),
 				),
-			),
+			).Call(),
 		)
 
 		// Return the channel
