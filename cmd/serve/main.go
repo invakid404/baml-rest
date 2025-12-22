@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"github.com/go-chi/render"
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
+	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/tmaxmax/go-sse"
@@ -287,6 +289,12 @@ var rootCmd = &cobra.Command{
 
 		// Add middleware
 		logger := slog.Default()
+
+		// Set global panic recovery handler to use structured logging
+		recovery.ErrorHandler = func(err error) {
+			logger.Error("Unhandled panic recovered", "error", err)
+		}
+
 		r.Use(middleware.RequestID)
 		// Custom middleware to set request ID as response header
 		r.Use(func(next http.Handler) http.Handler {
@@ -403,7 +411,10 @@ var rootCmd = &cobra.Command{
 					return
 				}
 
-				go s.ServeHTTP(w, r)
+				go recovery.Go(func() error {
+					s.ServeHTTP(w, r)
+					return nil
+				})
 
 				for result := range result {
 					message := &sse.Message{}
@@ -448,15 +459,18 @@ var rootCmd = &cobra.Command{
 
 		// Start server in a goroutine
 		serverErr := make(chan error, 1)
-		go func() {
+		go recovery.GoHandler(func(err error) {
+			serverErr <- err
+		}, func() error {
 			logger.Info(fmt.Sprintf("Starting server on :%d...", port))
 			logger.Info("OpenAPI schema available at:")
 			logger.Info(fmt.Sprintf("  JSON: http://localhost:%d/openapi.json", port))
 			logger.Info(fmt.Sprintf("  YAML: http://localhost:%d/openapi.yaml", port))
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				serverErr <- err
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return err
 			}
-		}()
+			return nil
+		})
 
 		// Set up signal handling for graceful shutdown
 		sigChan := make(chan os.Signal, 1)

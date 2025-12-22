@@ -144,6 +144,21 @@ func main() {
 				jen.Return(selfValueName.Clone().Dot("Error")),
 			)
 
+		// Generate error constructor function
+		errorConstructorName := strcase.LowerCamelCase(fmt.Sprintf("new%sError", outputStructName))
+		out.Func().
+			Id(errorConstructorName).
+			Params(jen.Id("err").Error()).
+			Op("*").Id(outputStructName).
+			Block(
+				jen.Return(jen.Op("&").Id(outputStructName).Values(jen.Dict{
+					jen.Id(outputInnerFieldName): parsedStreamResultType.statement.Clone().Values(jen.Dict{
+						jen.Id("IsError"): jen.Lit(true),
+						jen.Id("Error"):   jen.Id("err"),
+					}),
+				})),
+			)
+
 		// Generate the method
 		var methodBody []jen.Code
 
@@ -164,10 +179,19 @@ func main() {
 			)
 		}
 
-		// Call the streaming method and propagate errors
+		// Call the streaming method with panic recovery using go-recovery
 		methodBody = append(methodBody,
 			jen.List(jen.Id("result"), jen.Id("err")).Op(":=").
-				Qual(common.IntrospectedPkg, "Stream").Dot(methodName).Call(callParams...),
+				Qual("github.com/gregwebs/go-recovery", "Call1").Call(
+				jen.Func().Params().Params(
+					jen.Op("<-").Chan().Add(parsedStreamResultType.statement.Clone()),
+					jen.Error(),
+				).Block(
+					jen.Return(
+						jen.Qual(common.IntrospectedPkg, "Stream").Dot(methodName).Call(callParams...),
+					),
+				),
+			),
 
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
@@ -182,26 +206,45 @@ func main() {
 		)
 
 		// Translate the stream into the channel
+		// Build the case block for receiving from result channel
+		var resultCaseBlock []jen.Code
+		resultCaseBlock = append(resultCaseBlock,
+			jen.If(jen.Op("!").Id("ok")).Block(
+				jen.Return(jen.Nil()),
+			),
+			// Send with context check
+			jen.Select().Block(
+				jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
+					jen.Id("Value"): jen.Id("entry"),
+				})).Block(),
+				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+					jen.Return(jen.Nil()),
+				),
+			),
+		)
+
 		methodBody = append(methodBody,
-			jen.Go().Func().Params().
-				Block(
+			jen.Go().Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
+				// Error handler function
+				jen.Func().Params(jen.Id("err").Error()).Block(
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("err"))).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+					),
+				),
+				// Goroutine function
+				jen.Func().Params().Error().Block(
 					jen.Defer().Close(jen.Id("out")),
 					jen.For().Block(
 						jen.Select().Block(
 							jen.Case(jen.List(jen.Id("entry"), jen.Id("ok")).Op(":=").Op("<-").Id("result")).
-								Block(
-									jen.If(jen.Op("!").Id("ok")).Block(
-										jen.Return(),
-									),
-									jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
-										jen.Id("Value"): jen.Id("entry"),
-									}),
-								),
+								Block(resultCaseBlock...),
 							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).
-								Block(jen.Return()),
+								Block(jen.Return(jen.Nil())),
 						),
 					),
-				).Call(),
+				),
+			),
 		)
 
 		// Return the channel
