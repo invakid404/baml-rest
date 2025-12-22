@@ -8,11 +8,11 @@ set -euo pipefail
 # - BAML_VERSION: Version of BAML to use (e.g., "0.204.0")
 # - ADAPTER_VERSION: Adapter version to use (e.g., "v0.204.0")
 # - USER_CONTEXT_PATH: Path to the user's context directory containing baml_src
-# 
+#
 # Optional environment variables:
 # - OUTPUT_PATH: Where to place the final binary (default: /output/baml-rest)
 # - CACHE_DIR: Root cache directory (default: /cache)
-# - BAML_CACHE_DIR: BAML cache directory (default: ${CACHE_DIR}/baml)
+# - BAML_CACHE_DIR: Final BAML cache directory (default: /baml-cache)
 
 # Validate required environment variables
 if [ -z "${BAML_VERSION:-}" ]; then
@@ -33,13 +33,20 @@ fi
 # Set defaults for optional variables
 OUTPUT_PATH="${OUTPUT_PATH:-/output/baml-rest}"
 CACHE_DIR="${CACHE_DIR:-/cache}"
-BAML_CACHE_DIR="${BAML_CACHE_DIR:-${CACHE_DIR}/baml}"
+BAML_CACHE_DIR="${BAML_CACHE_DIR:-/baml-cache}"
+
+# Save the final BAML cache destination
+BAML_CACHE_FINAL="${BAML_CACHE_DIR}"
+
+# Use a version-specific location in the cache mount for BAML downloads during build
+# This ensures the shared library is cached across builds and avoids version conflicts
+BAML_CACHE_BUILD="${CACHE_DIR}/baml-shared-lib/${BAML_VERSION}"
 
 # Configure unified caching
 export NPM_CONFIG_CACHE="${CACHE_DIR}/npm"
 export GOMODCACHE="${CACHE_DIR}/go/mod"
 export GOCACHE="${CACHE_DIR}/go/build"
-export BAML_CACHE_DIR
+export BAML_CACHE_DIR="${BAML_CACHE_BUILD}"
 
 # Create cache directories if they don't exist
 mkdir -p "${NPM_CONFIG_CACHE}"
@@ -55,6 +62,8 @@ echo "Adapter Version: ${ADAPTER_VERSION}"
 echo "User Context: ${USER_CONTEXT_PATH}"
 echo "Output Path: ${OUTPUT_PATH}"
 echo "Cache Directory: ${CACHE_DIR}"
+echo "BAML Cache (build): ${BAML_CACHE_BUILD}"
+echo "BAML Cache (final): ${BAML_CACHE_FINAL}"
 echo "============================================"
 
 # Create working directory structure
@@ -232,6 +241,17 @@ if [ "${KEEP_SOURCE:-false}" = "true" ]; then
     fi
 fi
 
+# Copy BAML cache from build location to final destination
+echo ""
+echo "Copying BAML cache from build location to final destination..."
+mkdir -p "${BAML_CACHE_FINAL}"
+if [ -d "${BAML_CACHE_BUILD}" ]; then
+    cp -r "${BAML_CACHE_BUILD}/." "${BAML_CACHE_FINAL}/" || echo "WARNING: Failed to copy BAML cache to final destination"
+    echo "BAML cache copied to: ${BAML_CACHE_FINAL}"
+else
+    echo "WARNING: BAML cache build directory does not exist: ${BAML_CACHE_BUILD}"
+fi
+
 echo ""
 echo "============================================"
 echo "Build completed successfully!"
@@ -239,4 +259,5 @@ echo "Binary location: ${OUTPUT_PATH}"
 if [ "${KEEP_SOURCE:-false}" = "true" ]; then
     echo "Generated source: ${KEEP_SOURCE_DIR}"
 fi
+echo "BAML cache location: ${BAML_CACHE_FINAL}"
 echo "============================================"

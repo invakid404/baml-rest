@@ -48,7 +48,9 @@ ENV KEEP_SOURCE="true"
 ENV KEEP_SOURCE_DIR="{{ .keepSource }}"
 {{- end }}
 
-# Run build with unified cache mount (npm, go only - BAML cache is separate)
+# Run build with unified cache mount
+# build.sh will temporarily override BAML_CACHE_DIR to use a version-specific location in the cache mount,
+# then copy the cached shared library to BAML_CACHE_DIR at the end
 RUN --mount=type=cache,target=/cache \
     /workspace/build.sh
 
