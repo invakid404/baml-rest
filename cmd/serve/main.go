@@ -178,6 +178,11 @@ func generateOpenAPISchema() *openapi3.T {
 		if err != nil {
 			panic(err)
 		}
+
+		if inputSchema.Value.Properties == nil {
+			inputSchema.Value.Properties = make(openapi3.Schemas)
+		}
+
 		inputSchema.Value.Properties["__baml_options__"] = &openapi3.SchemaRef{
 			Ref: fmt.Sprintf("#/components/schemas/%s", bamlOptionsSchemaName),
 		}
