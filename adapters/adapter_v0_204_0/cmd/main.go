@@ -170,12 +170,27 @@ func main() {
 			callParams = append(callParams, jen.Id("input").Dot(argName))
 		}
 
-		callParams = append(callParams, jen.Id("makeOptionsFromAdapter").Call(jen.Id("adapter")).Op("..."))
+		callParams = append(callParams, jen.Id("options").Op("..."))
+
+		// Get options from adapter
+		methodBody = append(methodBody,
+			jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id("makeOptionsFromAdapter").Call(jen.Id("adapter")),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Id("err")),
+			),
+		)
 
 		// Only define `input` if the prompt has arguments
 		if len(args) > 0 {
 			methodBody = append(methodBody,
-				jen.Id("input").Op(":=").Id("rawInput").Assert(jen.Op("*").Id(inputStructName)),
+				jen.List(jen.Id("input"), jen.Id("ok")).Op(":=").Id("rawInput").Assert(jen.Op("*").Id(inputStructName)),
+				jen.If(jen.Op("!").Id("ok")).Block(
+					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
+						jen.Lit("invalid input type: expected *%s, got %T"),
+						jen.Lit(inputStructName),
+						jen.Id("rawInput"),
+					)),
+				),
 			)
 		}
 
@@ -320,21 +335,37 @@ func main() {
 	// Generate `makeOptionsFromAdapter`
 	out.Func().Id("makeOptionsFromAdapter").
 		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
-		Call(
-			jen.Id("result").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+		Params(
+			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Error(),
 		).
 		Block(
-			jen.Id("adapter").Op(":=").Id("adapterIn").Assert(jen.Op("*").Qual(selfAdapterPkg, "BamlAdapter")),
+			jen.List(jen.Id("adapter"), jen.Id("ok")).Op(":=").Id("adapterIn").Assert(jen.Op("*").Qual(selfAdapterPkg, "BamlAdapter")),
+			jen.If(jen.Op("!").Id("ok")).Block(
+				jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
+					jen.Lit("invalid adapter type: expected *BamlAdapter, got %T"),
+					jen.Id("adapterIn"),
+				)),
+			),
+			jen.Var().Id("result").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
 			jen.If(jen.Id("adapter").Dot("ClientRegistry").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),
 					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
 						Call(jen.Id("adapter").Dot("ClientRegistry"))),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
+				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("adapter").Dot("TypeBuilder").Assert(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder")),
+				jen.If(jen.Op("!").Id("ok")).Block(
+					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
+						jen.Lit("invalid TypeBuilder type: expected *TypeBuilder, got %T"),
+						jen.Id("adapter").Dot("TypeBuilder"),
+					)),
+				),
 				jen.Id("result").Op("=").Append(jen.Id("result"),
 					jen.Qual(common.GeneratedClientPkg, "WithTypeBuilder").
-						Call(jen.Id("adapter").Dot("TypeBuilder").Assert(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"))))),
-			jen.Return(),
+						Call(jen.Id("typeBuilder"))),
+			),
+			jen.Return(jen.Id("result"), jen.Nil()),
 		)
 
 	if err := common.Commit(out); err != nil {
