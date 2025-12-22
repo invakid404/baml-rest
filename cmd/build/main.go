@@ -157,6 +157,7 @@ var (
 	buildMode   string
 	outputPath  string
 	bamlVersion string
+	keepSource  string
 )
 
 func init() {
@@ -181,11 +182,14 @@ func init() {
 	rootCmd.Flags().StringVarP(&targetImage, "target-image", "t", "", "Target image name and tag for the built Docker image (required for docker mode)")
 	rootCmd.Flags().StringVarP(&outputPath, "output", "o", "", "Output path for the binary (native mode only, defaults to ./baml-rest)")
 	rootCmd.Flags().StringVarP(&bamlVersion, "baml-version", "b", "", "Specific BAML version to use (bypasses automatic version detection)")
+	rootCmd.Flags().StringVarP(&keepSource, "keep-source", "k", "", "Keep generated source files at specified path (default: /baml-rest-generated-src). Use --keep-source or --keep-source=<path>")
+	rootCmd.Flags().Lookup("keep-source").NoOptDefVal = "/baml-rest-generated-src"
 
 	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
 	_ = viper.BindPFlag("target-image", rootCmd.Flags().Lookup("target-image"))
 	_ = viper.BindPFlag("output", rootCmd.Flags().Lookup("output"))
 	_ = viper.BindPFlag("baml-version", rootCmd.Flags().Lookup("baml-version"))
+	_ = viper.BindPFlag("keep-source", rootCmd.Flags().Lookup("keep-source"))
 }
 
 var rootCmd = &cobra.Command{
@@ -198,6 +202,7 @@ var rootCmd = &cobra.Command{
 		targetImage = viper.GetString("target-image")
 		outputPath = viper.GetString("output")
 		bamlVersion = viper.GetString("baml-version")
+		keepSource = viper.GetString("keep-source")
 
 		// Validate mode
 		if buildMode != "docker" && buildMode != "native" {
@@ -314,14 +319,14 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse])
+			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource)
 		} else {
-			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse])
+			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	fmt.Printf("Making docker client...\n")
@@ -343,9 +348,10 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string) error {
 	dockerfileTemplate := template.Must(template.New("dockerfile").Parse(dockerfileDockerTemplateInput))
 	var dockerfileOut bytes.Buffer
 
-	dockerfileTemplateArgs := map[string]string{
+	dockerfileTemplateArgs := map[string]interface{}{
 		"bamlVersion":    bamlVersion,
 		"adapterVersion": adapterVersion,
+		"keepSource":     keepSource,
 	}
 	if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 		return fmt.Errorf("failed to render Dockerfile template: %w", err)
@@ -540,7 +546,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string) error {
 	return nil
 }
 
-func buildNative(bamlSrcPath, bamlVersion, adapterVersion string) error {
+func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string) error {
 	fmt.Printf("\n=== Native Build Mode ===\n\n")
 
 	// Check prerequisites
@@ -626,6 +632,9 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string) error {
 		fmt.Sprintf("OUTPUT_PATH=%s", absOutputPath),
 		fmt.Sprintf("CACHE_DIR=%s", cacheDir),
 	)
+	if keepSource != "" {
+		env = append(env, "KEEP_SOURCE=true", fmt.Sprintf("KEEP_SOURCE_DIR=%s", keepSource))
+	}
 
 	// Execute build.sh
 	fmt.Printf("\nExecuting build script...\n\n")

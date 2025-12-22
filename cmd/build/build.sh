@@ -59,7 +59,9 @@ echo "============================================"
 
 # Create working directory structure
 WORK_DIR="$(mktemp -d)"
-trap "rm -rf ${WORK_DIR}" EXIT
+if [ "${KEEP_SOURCE:-false}" != "true" ]; then
+    trap "rm -rf ${WORK_DIR}" EXIT
+fi
 
 BAML_WORK="${WORK_DIR}/baml"
 BUILD_WORK="${WORK_DIR}/build"
@@ -204,8 +206,37 @@ mkdir -p "${OUTPUT_DIR}"
 echo "Copying binary to ${OUTPUT_PATH}..."
 cp baml-rest "${OUTPUT_PATH}"
 
+# Handle source preservation if KEEP_SOURCE is enabled
+if [ "${KEEP_SOURCE:-false}" = "true" ]; then
+    echo ""
+    echo "KEEP_SOURCE enabled - preserving generated source files..."
+
+    KEEP_SOURCE_DIR="${KEEP_SOURCE_DIR:-/baml-rest-generated-src}"
+
+    # Attempt to create the directory and all parent directories
+    if mkdir -p "${KEEP_SOURCE_DIR}" 2>/dev/null && [ -d "${KEEP_SOURCE_DIR}" ] && [ -w "${KEEP_SOURCE_DIR}" ]; then
+        # Successfully created/verified directory with write permissions
+        echo "Copying generated source to ${KEEP_SOURCE_DIR}..."
+        if cp -r . "${KEEP_SOURCE_DIR}/" 2>/dev/null; then
+            echo "Generated source files saved to ${KEEP_SOURCE_DIR}"
+        else
+            echo "WARNING: Failed to copy source files to ${KEEP_SOURCE_DIR}"
+            echo "Generated source files preserved at: ${BUILD_WORK}/baml_rest"
+            KEEP_SOURCE_DIR="${BUILD_WORK}/baml_rest"
+        fi
+    else
+        # Cannot create directory or insufficient permissions - fall back to temp directory
+        echo "Cannot write to ${KEEP_SOURCE_DIR} (permissions or invalid path)"
+        echo "Generated source files preserved at: ${BUILD_WORK}/baml_rest"
+        KEEP_SOURCE_DIR="${BUILD_WORK}/baml_rest"
+    fi
+fi
+
 echo ""
 echo "============================================"
 echo "Build completed successfully!"
 echo "Binary location: ${OUTPUT_PATH}"
+if [ "${KEEP_SOURCE:-false}" = "true" ]; then
+    echo "Generated source: ${KEEP_SOURCE_DIR}"
+fi
 echo "============================================"

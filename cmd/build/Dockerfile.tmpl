@@ -43,6 +43,10 @@ ENV ADAPTER_VERSION="{{ .adapterVersion }}"
 ENV USER_CONTEXT_PATH="/workspace"
 ENV OUTPUT_PATH="/output/baml-rest"
 ENV BAML_CACHE_DIR="/baml-cache-build"
+{{- if .keepSource }}
+ENV KEEP_SOURCE="true"
+ENV KEEP_SOURCE_DIR="{{ .keepSource }}"
+{{- end }}
 
 # Run build with unified cache mount (npm, go only - BAML cache is separate)
 RUN --mount=type=cache,target=/cache \
@@ -62,6 +66,11 @@ COPY --from=builder /output/baml-rest /baml-rest
 
 # Copy BAML cache from builder
 COPY --from=builder /baml-cache-build /baml-cache
+
+{{- if .keepSource }}
+# Copy generated source files from builder for inspection (keep-source flag enabled)
+COPY --from=builder {{ .keepSource }} {{ .keepSource }}
+{{- end }}
 
 ENV BAML_LOG=off
 ENV BAML_CACHE_DIR=/baml-cache
