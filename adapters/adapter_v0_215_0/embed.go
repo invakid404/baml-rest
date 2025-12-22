@@ -1,10 +1,10 @@
-package common
+package adapter_v0_215_0
 
 import (
 	"embed"
 )
 
-//go:embed codegen embed.go go.mod go.sum helpers.go
+//go:embed adapter cmd embed.go go.mod go.sum utils
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)

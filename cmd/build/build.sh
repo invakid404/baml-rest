@@ -144,7 +144,7 @@ cat clients.baml.template | envsubst | tee baml_src/baml_rest_client.baml
 
 # Generate BAML client
 echo "Running BAML client generation (npx @boundaryml/baml@${BAML_VERSION} generate)..."
-npx @boundaryml/baml@${BAML_VERSION} generate
+npx "@boundaryml/baml@${BAML_VERSION}" generate
 
 echo ""
 echo "=== Stage 2: Go Build ==="
@@ -175,21 +175,168 @@ cp -r "${BAML_WORK}/baml_rest_generated/baml_client" ./baml_client
 
 # Initialize Go module for generated client
 echo "Initializing Go module for BAML client..."
-cd baml_client
+pushd baml_client
 go mod init github.com/invakid404/baml-rest/baml_client
-cd ..
+popd
 
 # Add generated client to Go workspace
 echo "Adding BAML client to Go workspace..."
 go work use ./baml_client
 
+# Clean up unused adapters to avoid version conflicts
+echo ""
+echo "=== Cleaning up unused adapters ==="
+SELECTED_ADAPTER=$(basename "${ADAPTER_VERSION}")
+echo "Selected adapter: ${SELECTED_ADAPTER}"
+
+# Delete all adapter_v* directories except the selected one
+echo "Removing unused adapter directories from adapters/..."
+for adapter_dir in adapters/adapter_v*/; do
+    if [ -d "${adapter_dir}" ]; then
+        adapter_name=$(basename "${adapter_dir}")
+        if [ "${adapter_name}" != "${SELECTED_ADAPTER}" ]; then
+            echo "  Deleting ${adapter_dir}..."
+            rm -rf "${adapter_dir}"
+        else
+            echo "  Keeping ${adapter_dir}"
+        fi
+    fi
+done
+
+# Remove replace statements from go.mod for deleted adapters
+echo "Cleaning up go.mod replace statements..."
+tmp_file=$(mktemp)
+in_replace_block=0
+
+while IFS= read -r line; do
+    # Detect start of replace block
+    if [[ "$line" =~ ^replace[[:space:]]*\( ]]; then
+        in_replace_block=1
+        echo "$line" >> "$tmp_file"
+    # Detect end of replace block
+    elif [[ "$in_replace_block" -eq 1 ]] && [[ "$line" =~ ^\) ]]; then
+        in_replace_block=0
+        echo "$line" >> "$tmp_file"
+    # If we're in the replace block
+    elif [[ "$in_replace_block" -eq 1 ]]; then
+        # Check if this line references an adapter_v* directory
+        if [[ "$line" =~ adapters/adapter_v[0-9_]+ ]]; then
+            # Extract the adapter name from the line
+            adapter_in_line=$(echo "$line" | grep -oE 'adapter_v[0-9_]+' | head -1)
+            # Only keep the line if it matches the selected adapter
+            if [ "${adapter_in_line}" == "${SELECTED_ADAPTER}" ]; then
+                echo "$line" >> "$tmp_file"
+            else
+                echo "  Removing replace for: ${adapter_in_line}"
+            fi
+        else
+            # Not an adapter line, keep it (common, bamlutils, introspected, etc.)
+            echo "$line" >> "$tmp_file"
+        fi
+    else
+        # Not in replace block, keep the line
+        echo "$line" >> "$tmp_file"
+    fi
+done < go.mod
+
+mv "$tmp_file" go.mod
+
+# Remove require statements from go.mod for deleted adapters
+echo "Cleaning up go.mod require statements..."
+tmp_file=$(mktemp)
+in_require_block=0
+
+while IFS= read -r line; do
+    # Detect start of require block
+    if [[ "$line" =~ ^require[[:space:]]*\( ]]; then
+        in_require_block=1
+        echo "$line" >> "$tmp_file"
+    # Detect end of require block
+    elif [[ "$in_require_block" -eq 1 ]] && [[ "$line" =~ ^\) ]]; then
+        in_require_block=0
+        echo "$line" >> "$tmp_file"
+    # If we're in the require block
+    elif [[ "$in_require_block" -eq 1 ]]; then
+        # Check if this line references an adapter_v* module
+        if [[ "$line" =~ github\.com/invakid404/baml-rest/adapters/adapter_v[0-9_]+ ]]; then
+            # Extract the adapter name from the line
+            adapter_in_line=$(echo "$line" | grep -oE 'adapter_v[0-9_]+' | head -1)
+            # Only keep the line if it matches the selected adapter
+            if [ "${adapter_in_line}" == "${SELECTED_ADAPTER}" ]; then
+                echo "$line" >> "$tmp_file"
+            else
+                echo "  Removing require for: ${adapter_in_line}"
+            fi
+        else
+            # Not an adapter_v* line, keep it (common, bamlutils, introspected, other deps, etc.)
+            echo "$line" >> "$tmp_file"
+        fi
+    else
+        # Not in require block, keep the line
+        echo "$line" >> "$tmp_file"
+    fi
+done < go.mod
+
+mv "$tmp_file" go.mod
+
+# Remove use statements from go.work for deleted adapters
+echo "Cleaning up go.work use statements..."
+tmp_file=$(mktemp)
+in_use_block=0
+
+while IFS= read -r line; do
+    # Detect start of use block
+    if [[ "$line" =~ ^use[[:space:]]*\( ]]; then
+        in_use_block=1
+        echo "$line" >> "$tmp_file"
+    # Detect end of use block
+    elif [[ "$in_use_block" -eq 1 ]] && [[ "$line" =~ ^\) ]]; then
+        in_use_block=0
+        echo "$line" >> "$tmp_file"
+    # If we're in the use block
+    elif [[ "$in_use_block" -eq 1 ]]; then
+        # Check if this line references an adapter_v* directory
+        if [[ "$line" =~ adapters/adapter_v[0-9_]+ ]]; then
+            # Extract the adapter name from the line
+            adapter_in_line=$(echo "$line" | grep -oE 'adapter_v[0-9_]+' | head -1)
+            # Only keep the line if it matches the selected adapter
+            if [ "${adapter_in_line}" == "${SELECTED_ADAPTER}" ]; then
+                echo "$line" >> "$tmp_file"
+            else
+                echo "  Removing use for: ${adapter_in_line}"
+            fi
+        else
+            # Not an adapter line, keep it (., common, bamlutils, introspected, etc.)
+            echo "$line" >> "$tmp_file"
+        fi
+    else
+        # Not in use block, keep the line
+        echo "$line" >> "$tmp_file"
+    fi
+done < go.work
+
+mv "$tmp_file" go.work
+
+# Regenerate embed.go to reflect the deleted adapters
+echo "Regenerating embed.go..."
+go run cmd/embed/main.go
+
+echo "Adapter cleanup complete!"
+echo ""
+
 # Get BAML dependency
 echo "Getting BAML Go dependency (github.com/boundaryml/baml@${BAML_VERSION})..."
-go get github.com/boundaryml/baml@${BAML_VERSION}
+go get "github.com/boundaryml/baml@${BAML_VERSION}"
 
 # Sync Go workspace
 echo "Syncing Go workspace..."
 go work sync
+
+# Ensure baml_client uses the correct BAML version
+pushd baml_client
+echo "Setting BAML version in baml_client to ${BAML_VERSION}..."
+go get "github.com/boundaryml/baml@${BAML_VERSION}"
+popd
 
 # Run introspection
 echo "Running introspection..."
@@ -202,8 +349,7 @@ goimports -w .
 
 # Run adapter
 echo "Running adapter (${ADAPTER_VERSION})..."
-go run ${ADAPTER_VERSION}/cmd/main.go
-
+go run "${ADAPTER_VERSION}/cmd/main.go"
 # Build final binary
 echo "Building final binary..."
 go build -o baml-rest cmd/serve/main.go

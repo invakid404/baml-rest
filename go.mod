@@ -13,6 +13,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gregwebs/go-recovery v0.4.1
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/common v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000
@@ -119,6 +120,7 @@ exclude google.golang.org/genproto v0.0.0-20230223222841-637eb2293923
 
 replace (
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 => ./adapters/adapter_v0_204_0
+	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 => ./adapters/adapter_v0_215_0
 	github.com/invakid404/baml-rest/adapters/common => ./adapters/common
 	github.com/invakid404/baml-rest/bamlutils => ./bamlutils
 	github.com/invakid404/baml-rest/introspected => ./introspected

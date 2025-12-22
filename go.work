@@ -3,6 +3,7 @@ go 1.24.5
 use (
 	.
 	./adapters/adapter_v0_204_0
+	./adapters/adapter_v0_215_0
 	./adapters/common
 	./bamlutils
 	./introspected
