@@ -9,6 +9,8 @@ type StreamResult interface {
 	Stream() any
 	Final() any
 	Error() error
+	// Raw returns the raw LLM response text at this streaming point
+	Raw() string
 }
 
 type StreamResultKind int
