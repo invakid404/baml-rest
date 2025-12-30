@@ -210,6 +210,7 @@ func generateOpenAPISchema() *openapi3.T {
 			panic(err)
 		}
 
+		// Response for /call endpoint
 		responses := openapi3.NewResponses()
 		description := fmt.Sprintf("Successful response for %s", methodName)
 		responses.Set("200", &openapi3.ResponseRef{
@@ -239,6 +240,53 @@ func generateOpenAPISchema() *openapi3.T {
 					},
 				},
 				Responses: responses,
+			},
+		})
+
+		// Response for /call-with-raw endpoint
+		rawResponsesDescription := fmt.Sprintf("Successful response for %s with raw LLM output", methodName)
+		rawResponses := openapi3.NewResponses()
+		rawResponses.Set("200", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &rawResponsesDescription,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type: &openapi3.Types{openapi3.TypeObject},
+								Properties: openapi3.Schemas{
+									"data": resultTypeSchema.Value.Properties["x"],
+									"raw": &openapi3.SchemaRef{
+										Value: &openapi3.Schema{
+											Type:        &openapi3.Types{openapi3.TypeString},
+											Description: "Raw LLM response text",
+										},
+									},
+								},
+								Required: []string{"data", "raw"},
+							},
+						},
+					},
+				},
+			},
+		})
+
+		rawPath := fmt.Sprintf("/call-with-raw/%s", methodName)
+		paths.Set(rawPath, &openapi3.PathItem{
+			Post: &openapi3.Operation{
+				OperationID: fmt.Sprintf("%sWithRaw", methodName),
+				RequestBody: &openapi3.RequestBodyRef{
+					Value: &openapi3.RequestBody{
+						Content: map[string]*openapi3.MediaType{
+							"application/json": {
+								Schema: &openapi3.SchemaRef{
+									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
+								},
+							},
+						},
+					},
+				},
+				Responses: rawResponses,
 			},
 		})
 	}
@@ -356,32 +404,37 @@ var rootCmd = &cobra.Command{
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
-				adapter := baml_rest.MakeAdapter(ctx)
-				if err := input.options.Apply(adapter); err != nil {
-					http.Error(w, fmt.Sprintf("Error applying __baml_options__: %v", err), http.StatusBadRequest)
-				}
-
-				result, err := method.Impl(adapter, input.input)
-
-				if err != nil {
-					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
+				result := executeCall(ctx, method, input.input, input.options)
+				if result.err != nil {
+					_ = httplog.SetError(r.Context(), result.err)
+					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, result.err), http.StatusInternalServerError)
 					return
 				}
 
-				for result := range result {
-					kind := result.Kind()
-					if kind == bamlutils.StreamResultKindError {
-						_ = httplog.SetError(r.Context(), result.Error())
-						w.WriteHeader(http.StatusInternalServerError)
+				render.JSON(w, r, result.data)
+			})
 
-						return
-					}
-
-					if kind == bamlutils.StreamResultKindFinal {
-						render.JSON(w, r, result.Final())
-						return
-					}
+			r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
+				input, err := readBody(r, method.MakeInput)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
 				}
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				result := executeCall(ctx, method, input.input, input.options)
+				if result.err != nil {
+					_ = httplog.SetError(r.Context(), result.err)
+					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, result.err), http.StatusInternalServerError)
+					return
+				}
+
+				render.JSON(w, r, CallWithRawResponse{
+					Data: result.data,
+					Raw:  result.raw,
+				})
 			})
 
 			r.Post(fmt.Sprintf("/stream/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
@@ -584,4 +637,51 @@ func (i *BamlOptionsInput) Apply(adapter bamlutils.Adapter) error {
 type BamlOptions struct {
 	ClientRegistry *bamlutils.ClientRegistry `json:"client_registry"`
 	TypeBuilder    *bamlutils.TypeBuilder    `json:"type_builder"`
+}
+
+// callResult holds the result of executing a BAML method
+type callResult struct {
+	data any
+	raw  string
+	err  error
+}
+
+// CallWithRawResponse is the response format for the /call-with-raw endpoint
+type CallWithRawResponse struct {
+	Data any    `json:"data"`
+	Raw  string `json:"raw"`
+}
+
+// executeCall runs a BAML method and returns both the final result and raw LLM output
+func executeCall(
+	ctx context.Context,
+	method bamlutils.StreamingMethod,
+	input any,
+	options *BamlOptionsInput,
+) *callResult {
+	adapter := baml_rest.MakeAdapter(ctx)
+	if err := options.Apply(adapter); err != nil {
+		return &callResult{err: fmt.Errorf("error applying __baml_options__: %w", err)}
+	}
+
+	resultChan, err := method.Impl(adapter, input)
+	if err != nil {
+		return &callResult{err: fmt.Errorf("error calling method: %w", err)}
+	}
+
+	for result := range resultChan {
+		kind := result.Kind()
+		if kind == bamlutils.StreamResultKindError {
+			return &callResult{err: result.Error()}
+		}
+
+		if kind == bamlutils.StreamResultKindFinal {
+			return &callResult{
+				data: result.Final(),
+				raw:  result.Raw(),
+			}
+		}
+	}
+
+	return &callResult{err: fmt.Errorf("no final result received")}
 }
