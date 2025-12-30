@@ -25,3 +25,6 @@ var ParseStream = &struct{}{}
 
 // ParseStreamMethods is a set of method names available on ParseStream
 var ParseStreamMethods = map[string]struct{}{}
+
+// ParseStreamFuncs maps ParseStream method names to their function values (for reflection)
+var ParseStreamFuncs = map[string]any{}

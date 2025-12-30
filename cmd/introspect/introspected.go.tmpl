@@ -43,3 +43,10 @@ var ParseStreamMethods = map[string]struct{}{
   {{ . | printf "%q" }}: {},
 {{ end }}
 }
+
+// ParseStreamFuncs maps ParseStream method names to their function values (for reflection)
+var ParseStreamFuncs = map[string]any{
+{{ range .parseStreamMethods }}
+  {{ . | printf "%q" }}: {{ $.streamPackageName }}.ParseStream.{{ . }},
+{{ end }}
+}
