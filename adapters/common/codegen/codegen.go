@@ -498,8 +498,10 @@ func Generate(selfPkg string) {
 					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
 						jen.Func().Params().Error().Block(
 							// Call ParseStream outside of OnTick callback context (avoids deadlock)
+							// Pass adapter as context (hack adds ctx param to ParseStream methods)
 							jen.List(jen.Id("parsed"), jen.Id("parseErr")).Op(":=").
 								Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
+									jen.Id("adapter"),
 									jen.Id("raw"),
 									jen.Id("options").Op("..."),
 								),

@@ -338,6 +338,10 @@ echo "Setting BAML version in baml_client to ${BAML_VERSION}..."
 go get "github.com/boundaryml/baml@${BAML_VERSION}"
 popd
 
+# Run hacks to patch generated BAML client
+echo "Running hacks..."
+go run cmd/hacks/main.go --baml-client-dir ./baml_client --baml-version "${BAML_VERSION}"
+
 # Run introspection
 echo "Running introspection..."
 go run cmd/introspect/main.go
