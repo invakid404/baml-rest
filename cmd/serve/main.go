@@ -8,9 +8,11 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -264,6 +266,14 @@ var rootCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		startGoroutineMonitor(10 * time.Second)
+
+		// pprof server for debugging goroutine leaks
+		go func() {
+			log.Println("pprof available at http://localhost:6060/debug/pprof/")
+			log.Println(http.ListenAndServe(":6060", nil))
+		}()
+
 		schema := generateOpenAPISchema()
 
 		// Create Chi router
@@ -501,6 +511,17 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
+}
+
+func startGoroutineMonitor(interval time.Duration) {
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+
+		for range t.C {
+			log.Printf("goroutines=%d", runtime.NumGoroutine())
+		}
+	}()
 }
 
 func main() {
