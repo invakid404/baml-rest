@@ -46,6 +46,7 @@ require (
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
+	github.com/enriquebris/goconcurrentqueue v0.7.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -123,5 +124,6 @@ replace (
 	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 => ./adapters/adapter_v0_215_0
 	github.com/invakid404/baml-rest/adapters/common => ./adapters/common
 	github.com/invakid404/baml-rest/bamlutils => ./bamlutils
+	github.com/invakid404/baml-rest/bamlutils/sse => ./bamlutils/sse
 	github.com/invakid404/baml-rest/introspected => ./introspected
 )
