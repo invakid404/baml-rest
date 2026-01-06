@@ -77,4 +77,4 @@ COPY --from=builder {{ .keepSource }} {{ .keepSource }}
 ENV BAML_LOG=off
 ENV BAML_CACHE_DIR=/baml-cache
 
-ENTRYPOINT ["/baml-rest"]
+ENTRYPOINT ["/baml-rest", "serve"]

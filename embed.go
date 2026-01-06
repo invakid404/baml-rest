@@ -9,6 +9,8 @@ import (
 	"github.com/invakid404/baml-rest/adapters/common"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/introspected"
+	"github.com/invakid404/baml-rest/pool"
+	"github.com/invakid404/baml-rest/workerplugin"
 )
 
 //go:embed Dockerfile.builder README.md adapter.go adapters cmd embed.go go.mod go.sum go.work go.work.sum
@@ -36,6 +38,14 @@ func init() {
 	}
 	for key, value := range introspected.Sources {
 		path := filepath.Clean(fmt.Sprintf("./%s/%s", "introspected", key))
+		Sources[path] = value
+	}
+	for key, value := range pool.Sources {
+		path := filepath.Clean(fmt.Sprintf("./%s/%s", "pool", key))
+		Sources[path] = value
+	}
+	for key, value := range workerplugin.Sources {
+		path := filepath.Clean(fmt.Sprintf("./%s/%s", "workerplugin", key))
 		Sources[path] = value
 	}
 }

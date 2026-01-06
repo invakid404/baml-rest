@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package workerplugin;
+
+option go_package = "github.com/invakid404/baml-rest/workerplugin";
+
+// Request to call a BAML method
+message CallRequest {
+  string method_name = 1;
+  bytes input_json = 2;        // JSON-encoded input struct
+  bytes options_json = 3;      // JSON-encoded BamlOptions (client_registry, type_builder)
+}
+
+// Response for unary call (non-streaming)
+message CallResponse {
+  bytes data_json = 1;         // JSON-encoded result
+  string raw = 2;              // Raw LLM response text
+  string error = 3;            // Error message if failed
+}
+
+// Streaming result
+message StreamResult {
+  enum Kind {
+    STREAM = 0;
+    FINAL = 1;
+    ERROR = 2;
+  }
+  Kind kind = 1;
+  bytes data_json = 2;         // JSON-encoded stream/final data
+  string raw = 3;              // Raw LLM response text (populated on FINAL)
+  string error = 4;            // Error message (populated on ERROR)
+}
+
+// Health check
+message Empty {}
+
+message HealthResponse {
+  bool healthy = 1;
+}
+
+// Worker service
+service Worker {
+  // Unary call - waits for final result
+  rpc Call(CallRequest) returns (CallResponse);
+
+  // Streaming call - returns stream of results
+  rpc CallStream(CallRequest) returns (stream StreamResult);
+
+  // Health check
+  rpc Health(Empty) returns (HealthResponse);
+}

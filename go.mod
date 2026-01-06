@@ -5,6 +5,7 @@ go 1.24.5
 require (
 	github.com/containerd/containerd/v2 v2.2.1-0.20251115011841-efd86f2b0bc2
 	github.com/docker/buildx v0.30.1
+	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/go-chi/httplog/v3 v3.3.0
@@ -12,11 +13,14 @@ require (
 	github.com/goccy/go-json v0.10.5
 	github.com/google/uuid v1.6.0
 	github.com/gregwebs/go-recovery v0.4.1
+	github.com/hashicorp/go-plugin v1.6.3
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/common v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/workerplugin v0.0.0-00010101000000-000000000000
 	github.com/moby/buildkit v0.26.2
 	github.com/moby/moby/api v1.52.0
 	github.com/moby/moby/client v0.2.1
@@ -46,7 +50,7 @@ require (
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/enriquebris/goconcurrentqueue v0.7.0 // indirect
+	github.com/fatih/color v1.18.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -61,11 +65,15 @@ require (
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/gregwebs/stackfmt v0.1.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.2 // indirect
+	github.com/hashicorp/go-hclog v0.14.1 // indirect
+	github.com/hashicorp/yamux v0.1.1 // indirect
 	github.com/in-toto/in-toto-golang v0.9.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/locker v1.0.1 // indirect
@@ -75,6 +83,7 @@ require (
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037 // indirect
 	github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90 // indirect
+	github.com/oklog/run v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
@@ -126,4 +135,6 @@ replace (
 	github.com/invakid404/baml-rest/bamlutils => ./bamlutils
 	github.com/invakid404/baml-rest/bamlutils/sse => ./bamlutils/sse
 	github.com/invakid404/baml-rest/introspected => ./introspected
+	github.com/invakid404/baml-rest/pool => ./pool
+	github.com/invakid404/baml-rest/workerplugin => ./workerplugin
 )

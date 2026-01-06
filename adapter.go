@@ -3,6 +3,8 @@ package baml_rest
 import (
 	"context"
 
+	_ "github.com/enriquebris/goconcurrentqueue"
+
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
