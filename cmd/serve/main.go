@@ -24,8 +24,11 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/gregwebs/go-recovery"
-	"github.com/invakid404/baml-rest"
+	goplugin "github.com/hashicorp/go-plugin"
+	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/pool"
+	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/tmaxmax/go-sse"
 
 	"github.com/spf13/cobra"
@@ -306,13 +309,33 @@ type sseContextKey string
 
 const sseContextKeyTopic = sseContextKey("topic")
 
-var port int
+var (
+	port     int
+	poolSize int
+)
 
 var rootCmd = &cobra.Command{
+	Use:   "baml-rest",
+	Short: "BAML REST API server",
+}
+
+var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		schema := generateOpenAPISchema()
+
+		// Initialize worker pool - spawns self with "worker" subcommand
+		poolConfig := pool.DefaultConfig()
+		poolConfig.PoolSize = poolSize
+		poolConfig.Logger = slog.Default()
+
+		workerPool, err := pool.New(poolConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create worker pool: %w", err)
+		}
+
+		slog.Info("Worker pool initialized", "size", poolSize)
 
 		// Create Chi router
 		r := chi.NewRouter()
@@ -381,49 +404,60 @@ var rootCmd = &cobra.Command{
 			_, _ = w.Write(yamlData)
 		})
 
-		for methodName, method := range baml_rest.Methods {
+		for methodName := range baml_rest.Methods {
+			methodName := methodName // capture for closure
+
 			logger.Info("Registering prompt: " + methodName)
 
 			r.Post(fmt.Sprintf("/call/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
-				input, err := readBody(r, method.MakeInput)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
-				result := executeCall(ctx, method, input.input, input.options)
-				if result.err != nil {
-					_ = httplog.SetError(r.Context(), result.err)
-					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, result.err), http.StatusInternalServerError)
+				rawBody, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 					return
 				}
 
-				render.JSON(w, r, result.data)
+				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody)
+				if err != nil {
+					_ = httplog.SetError(r.Context(), err)
+					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(result.Data)
 			})
 
 			r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
-				input, err := readBody(r, method.MakeInput)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 
-				result := executeCall(ctx, method, input.input, input.options)
-				if result.err != nil {
-					_ = httplog.SetError(r.Context(), result.err)
-					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, result.err), http.StatusInternalServerError)
+				rawBody, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+					return
+				}
+
+				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody)
+				if err != nil {
+					_ = httplog.SetError(r.Context(), err)
+					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
+					return
+				}
+
+				// Unmarshal data and create response with raw
+				var data any
+				if err := json.Unmarshal(result.Data, &data); err != nil {
+					_ = httplog.SetError(r.Context(), err)
+					http.Error(w, fmt.Sprintf("Error unmarshaling result: %v", err), http.StatusInternalServerError)
 					return
 				}
 
 				render.JSON(w, r, CallWithRawResponse{
-					Data: result.data,
-					Raw:  result.raw,
+					Data: data,
+					Raw:  result.Raw,
 				})
 			})
 
@@ -432,7 +466,6 @@ var rootCmd = &cobra.Command{
 				if err != nil {
 					_ = httplog.SetError(r.Context(), err)
 					w.WriteHeader(http.StatusInternalServerError)
-
 					return
 				}
 
@@ -445,22 +478,15 @@ var rootCmd = &cobra.Command{
 
 				r = r.WithContext(ctx)
 
-				input, err := readBody(r, method.MakeInput)
+				rawBody, err := io.ReadAll(r.Body)
 				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-
+					http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 					return
 				}
 
-				adapter := baml_rest.MakeAdapter(ctx)
-				if err := input.options.Apply(adapter); err != nil {
-					http.Error(w, fmt.Sprintf("Error applying __baml_options__: %v", err), http.StatusBadRequest)
-				}
-
-				result, err := method.Impl(adapter, input.input)
+				results, err := workerPool.CallStream(ctx, methodName, rawBody, rawBody)
 				if err != nil {
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
-
 					return
 				}
 
@@ -469,35 +495,20 @@ var rootCmd = &cobra.Command{
 					return nil
 				})
 
-				for result := range result {
+				for result := range results {
 					message := &sse.Message{}
 
-					var value any
-					var err error
-
-					switch result.Kind() {
-					case bamlutils.StreamResultKindError:
-						err = result.Error()
-					case bamlutils.StreamResultKindStream:
-						value = result.Stream()
-					case bamlutils.StreamResultKindFinal:
-						value = result.Final()
-					}
-
-					var data []byte
-					if value != nil {
-						data, err = json.Marshal(value)
-					}
-
-					if err != nil {
+					switch result.Kind {
+					case workerplugin.StreamResultKindError:
 						message.Type = sseErrorKind
-						message.AppendData(err.Error())
-					} else {
-						message.AppendData(string(data))
+						if result.Error != nil {
+							message.AppendData(result.Error.Error())
+						}
+					case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
+						message.AppendData(string(result.Data))
 					}
 
-					err = s.Publish(message, topic)
-					if err != nil {
+					if err := s.Publish(message, topic); err != nil {
 						break
 					}
 				}
@@ -532,6 +543,7 @@ var rootCmd = &cobra.Command{
 		// Wait for interrupt signal or server error
 		select {
 		case err := <-serverErr:
+			_ = workerPool.Close()
 			return fmt.Errorf("server error: %w", err)
 		case sig := <-sigChan:
 			logger.Info(fmt.Sprintf("Received signal: %v. Initiating graceful shutdown...", sig))
@@ -540,10 +552,20 @@ var rootCmd = &cobra.Command{
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer shutdownCancel()
 
-			// Shutdown server - this will wait for active connections to finish
+			// Shutdown HTTP server - this will wait for active connections to finish
+			// Active connections are waiting on worker responses, so workers must stay alive
 			if err := srv.Shutdown(shutdownCtx); err != nil {
-				logger.Error(fmt.Sprintf("Error during server shutdown: %v", err))
+				logger.Error(fmt.Sprintf("Error during HTTP server shutdown: %v", err))
+				_ = workerPool.Close()
 				return fmt.Errorf("shutdown error: %w", err)
+			}
+
+			logger.Info("HTTP server stopped, shutting down worker pool...")
+
+			// Gracefully shutdown worker pool - waits for any remaining in-flight requests
+			if err := workerPool.Shutdown(shutdownCtx); err != nil {
+				logger.Error(fmt.Sprintf("Error during worker pool shutdown: %v", err))
+				return fmt.Errorf("worker pool shutdown error: %w", err)
 			}
 
 			logger.Info("Server gracefully stopped")
@@ -552,8 +574,21 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+var workerCmd = &cobra.Command{
+	Use:    "worker",
+	Short:  "Run as a worker process (internal use)",
+	Hidden: true,
+	Run: func(cmd *cobra.Command, args []string) {
+		runWorker()
+	},
+}
+
 func init() {
-	rootCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
+	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
+	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
+
+	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(workerCmd)
 }
 
 func main() {
@@ -562,50 +597,51 @@ func main() {
 	}
 }
 
-type readBodyResult struct {
-	input   any
-	options *BamlOptionsInput
+// CallWithRawResponse is the response format for the /call-with-raw endpoint
+type CallWithRawResponse struct {
+	Data any    `json:"data"`
+	Raw  string `json:"raw"`
 }
 
-func readBody(r *http.Request, makeInput func() any) (*readBodyResult, error) {
-	rawInput, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read request body: %w", err)
-	}
-
-	var options BamlOptionsInput
-	if err := json.Unmarshal(rawInput, &options); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal baml options: %w", err)
-	}
-
-	input := makeInput()
-	if err := json.Unmarshal(rawInput, input); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
-	}
-
-	return &readBodyResult{
-		input:   input,
-		options: &options,
-	}, nil
+// BamlOptions is used for OpenAPI schema generation of the __baml_options__ field
+type BamlOptions struct {
+	ClientRegistry *bamlutils.ClientRegistry `json:"client_registry"`
+	TypeBuilder    *bamlutils.TypeBuilder    `json:"type_builder"`
 }
 
-type BamlOptionsInput struct {
+// Worker mode implementation
+
+func runWorker() {
+	goplugin.Serve(&goplugin.ServeConfig{
+		HandshakeConfig: workerplugin.Handshake,
+		Plugins: map[string]goplugin.Plugin{
+			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{}},
+		},
+		GRPCServer: goplugin.DefaultGRPCServer,
+	})
+}
+
+// workerImpl implements the workerplugin.Worker interface
+type workerImpl struct{}
+
+// workerBamlOptions mirrors the options structure for worker parsing
+type workerBamlOptions struct {
 	Options *BamlOptions `json:"__baml_options__,omitempty"`
 }
 
-func (i *BamlOptionsInput) Apply(adapter bamlutils.Adapter) error {
-	if i.Options == nil {
+func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
+	if o.Options == nil {
 		return nil
 	}
 
-	if i.Options.ClientRegistry != nil {
-		if err := adapter.SetClientRegistry(i.Options.ClientRegistry); err != nil {
+	if o.Options.ClientRegistry != nil {
+		if err := adapter.SetClientRegistry(o.Options.ClientRegistry); err != nil {
 			return fmt.Errorf("failed to set client registry: %w", err)
 		}
 	}
 
-	if i.Options.TypeBuilder != nil {
-		if err := adapter.SetTypeBuilder(i.Options.TypeBuilder); err != nil {
+	if o.Options.TypeBuilder != nil {
+		if err := adapter.SetTypeBuilder(o.Options.TypeBuilder); err != nil {
 			return fmt.Errorf("failed to set type builder: %w", err)
 		}
 	}
@@ -613,54 +649,146 @@ func (i *BamlOptionsInput) Apply(adapter bamlutils.Adapter) error {
 	return nil
 }
 
-type BamlOptions struct {
-	ClientRegistry *bamlutils.ClientRegistry `json:"client_registry"`
-	TypeBuilder    *bamlutils.TypeBuilder    `json:"type_builder"`
-}
-
-// callResult holds the result of executing a BAML method
-type callResult struct {
-	data any
-	raw  string
-	err  error
-}
-
-// CallWithRawResponse is the response format for the /call-with-raw endpoint
-type CallWithRawResponse struct {
-	Data any    `json:"data"`
-	Raw  string `json:"raw"`
-}
-
-// executeCall runs a BAML method and returns both the final result and raw LLM output
-func executeCall(
-	ctx context.Context,
-	method bamlutils.StreamingMethod,
-	input any,
-	options *BamlOptionsInput,
-) *callResult {
-	adapter := baml_rest.MakeAdapter(ctx)
-	if err := options.Apply(adapter); err != nil {
-		return &callResult{err: fmt.Errorf("error applying __baml_options__: %w", err)}
+func (w *workerImpl) Call(ctx context.Context, methodName string, inputJSON, optionsJSON []byte) (*workerplugin.CallResult, error) {
+	method, ok := baml_rest.Methods[methodName]
+	if !ok {
+		return nil, fmt.Errorf("method %q not found", methodName)
 	}
 
+	// Parse input
+	input := method.MakeInput()
+	if err := json.Unmarshal(inputJSON, input); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
+	}
+
+	// Parse options
+	var options workerBamlOptions
+	if len(optionsJSON) > 0 {
+		if err := json.Unmarshal(optionsJSON, &options); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal options: %w", err)
+		}
+	}
+
+	// Create adapter and apply options
+	adapter := baml_rest.MakeAdapter(ctx)
+	if err := options.apply(adapter); err != nil {
+		return nil, fmt.Errorf("failed to apply options: %w", err)
+	}
+
+	// Execute the method
 	resultChan, err := method.Impl(adapter, input)
 	if err != nil {
-		return &callResult{err: fmt.Errorf("error calling method: %w", err)}
+		return nil, fmt.Errorf("failed to call method: %w", err)
 	}
 
+	// Wait for final result
 	for result := range resultChan {
 		kind := result.Kind()
 		if kind == bamlutils.StreamResultKindError {
-			return &callResult{err: result.Error()}
+			return nil, result.Error()
 		}
 
 		if kind == bamlutils.StreamResultKindFinal {
-			return &callResult{
-				data: result.Final(),
-				raw:  result.Raw(),
+			data, err := json.Marshal(result.Final())
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal result: %w", err)
 			}
+			return &workerplugin.CallResult{
+				Data: data,
+				Raw:  result.Raw(),
+			}, nil
 		}
 	}
 
-	return &callResult{err: fmt.Errorf("no final result received")}
+	return nil, fmt.Errorf("no final result received")
+}
+
+func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSON, optionsJSON []byte) (<-chan *workerplugin.StreamResult, error) {
+	method, ok := baml_rest.Methods[methodName]
+	if !ok {
+		return nil, fmt.Errorf("method %q not found", methodName)
+	}
+
+	// Parse input
+	input := method.MakeInput()
+	if err := json.Unmarshal(inputJSON, input); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
+	}
+
+	// Parse options
+	var options workerBamlOptions
+	if len(optionsJSON) > 0 {
+		if err := json.Unmarshal(optionsJSON, &options); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal options: %w", err)
+		}
+	}
+
+	// Create adapter and apply options
+	adapter := baml_rest.MakeAdapter(ctx)
+	if err := options.apply(adapter); err != nil {
+		return nil, fmt.Errorf("failed to apply options: %w", err)
+	}
+
+	// Execute the method
+	resultChan, err := method.Impl(adapter, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call method: %w", err)
+	}
+
+	// Convert to plugin stream results
+	out := make(chan *workerplugin.StreamResult)
+	go func() {
+		defer close(out)
+		for result := range resultChan {
+			var pluginResult *workerplugin.StreamResult
+
+			switch result.Kind() {
+			case bamlutils.StreamResultKindError:
+				pluginResult = &workerplugin.StreamResult{
+					Kind:  workerplugin.StreamResultKindError,
+					Error: result.Error(),
+				}
+			case bamlutils.StreamResultKindStream:
+				data, err := json.Marshal(result.Stream())
+				if err != nil {
+					pluginResult = &workerplugin.StreamResult{
+						Kind:  workerplugin.StreamResultKindError,
+						Error: fmt.Errorf("failed to marshal stream result: %w", err),
+					}
+				} else {
+					pluginResult = &workerplugin.StreamResult{
+						Kind: workerplugin.StreamResultKindStream,
+						Data: data,
+						Raw:  result.Raw(),
+					}
+				}
+			case bamlutils.StreamResultKindFinal:
+				data, err := json.Marshal(result.Final())
+				if err != nil {
+					pluginResult = &workerplugin.StreamResult{
+						Kind:  workerplugin.StreamResultKindError,
+						Error: fmt.Errorf("failed to marshal final result: %w", err),
+					}
+				} else {
+					pluginResult = &workerplugin.StreamResult{
+						Kind: workerplugin.StreamResultKindFinal,
+						Data: data,
+						Raw:  result.Raw(),
+					}
+				}
+			}
+
+			select {
+			case out <- pluginResult:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return out, nil
+}
+
+func (w *workerImpl) Health(ctx context.Context) (bool, error) {
+	return true, nil
 }
