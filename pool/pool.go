@@ -116,14 +116,21 @@ func New(config *Config) (*Pool, error) {
 
 func (p *Pool) startWorker(id int) (*workerHandle, error) {
 	// Spawn self with "worker" subcommand
+	cmd := exec.Command(p.execPath, "worker")
+
+	// If BAML logging is enabled (not "off"), configure LSP mode so logs go through
+	// go-plugin's hclog instead of stdout (which would corrupt the gRPC protocol)
+	if bamlLog := os.Getenv("BAML_LOG"); bamlLog != "" && bamlLog != "off" {
+		cmd.Env = append(os.Environ(), "BAML_LOG_LSP=true", "BAML_INTERNAL_LOG=info")
+	}
+
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: workerplugin.Handshake,
 		Plugins:         workerplugin.PluginMap,
-		Cmd:             exec.Command(p.execPath, "worker"),
+		Cmd:             cmd,
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
 		},
-		Logger: nil, // Use go-plugin's default hclog
 	})
 
 	rpcClient, err := client.Client()
