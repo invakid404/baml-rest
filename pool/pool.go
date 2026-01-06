@@ -222,7 +222,11 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 	handle.healthy = false
 	handle.mu.Unlock()
 
-	// Cancel all in-flight requests - they will retry
+	// Kill the process immediately - don't wait for graceful shutdown
+	// This is critical for truly hung workers that won't respond to context cancellation
+	handle.client.Kill()
+
+	// Cancel all in-flight requests - they will retry on other workers
 	handle.inFlightMu.Lock()
 	for _, req := range handle.inFlightReq {
 		if req.cancel != nil {
@@ -231,7 +235,7 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 	}
 	handle.inFlightMu.Unlock()
 
-	// Restart the worker
+	// Start a new worker to replace the killed one
 	go p.restartWorker(handle.id)
 }
 
