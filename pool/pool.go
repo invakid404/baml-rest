@@ -23,6 +23,8 @@ type Config struct {
 	MaxRetries int
 	// HealthCheckInterval is how often to check worker health
 	HealthCheckInterval time.Duration
+	// FirstByteTimeout is how long to wait for first response before considering worker hung
+	FirstByteTimeout time.Duration
 	// Logger for pool operations
 	Logger *slog.Logger
 }
@@ -33,30 +35,41 @@ func DefaultConfig() *Config {
 		PoolSize:            4,
 		MaxRetries:          2,
 		HealthCheckInterval: 10 * time.Second,
+		FirstByteTimeout:    30 * time.Second,
 	}
+}
+
+// inFlightRequest tracks an active request on a worker
+type inFlightRequest struct {
+	id           uint64
+	startedAt    time.Time
+	gotFirstByte atomic.Bool
+	cancel       context.CancelFunc
 }
 
 // Pool manages a pool of worker processes
 type Pool struct {
-	config   *Config
-	execPath string // path to current executable
-	workers  []*workerHandle
-	mu       sync.RWMutex
-	next     atomic.Uint64
-	closed   atomic.Bool
-	draining atomic.Bool
-	wg       sync.WaitGroup
-	done     chan struct{}
+	config    *Config
+	execPath  string // path to current executable
+	workers   []*workerHandle
+	mu        sync.RWMutex
+	next      atomic.Uint64
+	requestID atomic.Uint64
+	closed    atomic.Bool
+	draining  atomic.Bool
+	wg        sync.WaitGroup
+	done      chan struct{}
 }
 
 type workerHandle struct {
-	id       int
-	client   *plugin.Client
-	worker   workerplugin.Worker
-	mu       sync.Mutex
-	healthy  bool
-	lastUsed time.Time
-	inFlight atomic.Int64
+	id          int
+	client      *plugin.Client
+	worker      workerplugin.Worker
+	mu          sync.Mutex
+	healthy     bool
+	lastUsed    time.Time
+	inFlightMu  sync.RWMutex
+	inFlightReq map[uint64]*inFlightRequest
 }
 
 // New creates a new worker pool
@@ -134,31 +147,92 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 	p.config.Logger.Info("Started worker", "id", id)
 
 	return &workerHandle{
-		id:       id,
-		client:   client,
-		worker:   worker,
-		healthy:  true,
-		lastUsed: time.Now(),
+		id:          id,
+		client:      client,
+		worker:      worker,
+		healthy:     true,
+		lastUsed:    time.Now(),
+		inFlightReq: make(map[uint64]*inFlightRequest),
 	}, nil
 }
 
 func (p *Pool) healthChecker() {
 	defer p.wg.Done()
 
-	ticker := time.NewTicker(p.config.HealthCheckInterval)
-	defer ticker.Stop()
+	healthTicker := time.NewTicker(p.config.HealthCheckInterval)
+	defer healthTicker.Stop()
+
+	// Check for hung requests more frequently
+	hungTicker := time.NewTicker(time.Second)
+	defer hungTicker.Stop()
 
 	for {
 		select {
 		case <-p.done:
 			return
-		case <-ticker.C:
+		case <-hungTicker.C:
+			if p.closed.Load() {
+				return
+			}
+			p.checkHungRequests()
+		case <-healthTicker.C:
 			if p.closed.Load() {
 				return
 			}
 			p.checkHealth()
 		}
 	}
+}
+
+// checkHungRequests looks for requests waiting too long for first byte
+func (p *Pool) checkHungRequests() {
+	p.mu.RLock()
+	workers := p.workers
+	p.mu.RUnlock()
+
+	now := time.Now()
+	for _, handle := range workers {
+		if handle == nil {
+			continue
+		}
+
+		handle.inFlightMu.RLock()
+		var hungRequest *inFlightRequest
+		for _, req := range handle.inFlightReq {
+			if !req.gotFirstByte.Load() && now.Sub(req.startedAt) > p.config.FirstByteTimeout {
+				hungRequest = req
+				break
+			}
+		}
+		handle.inFlightMu.RUnlock()
+
+		if hungRequest != nil {
+			p.config.Logger.Warn("Worker appears hung, killing",
+				"worker", handle.id,
+				"request_id", hungRequest.id,
+				"waited", now.Sub(hungRequest.startedAt))
+			p.killWorkerAndRetry(handle)
+		}
+	}
+}
+
+// killWorkerAndRetry kills a worker and cancels all its in-flight requests
+func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
+	handle.mu.Lock()
+	handle.healthy = false
+	handle.mu.Unlock()
+
+	// Cancel all in-flight requests - they will retry
+	handle.inFlightMu.Lock()
+	for _, req := range handle.inFlightReq {
+		if req.cancel != nil {
+			req.cancel()
+		}
+	}
+	handle.inFlightMu.Unlock()
+
+	// Restart the worker
+	go p.restartWorker(handle.id)
 }
 
 func (p *Pool) checkHealth() {
@@ -248,28 +322,53 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON, optionsJS
 			return nil, err
 		}
 
-		// Track in-flight request
-		handle.inFlight.Add(1)
-		defer handle.inFlight.Add(-1)
+		// Create cancellable context for this attempt
+		attemptCtx, cancel := context.WithCancel(ctx)
+
+		// Register in-flight request
+		reqID := p.requestID.Add(1)
+		req := &inFlightRequest{
+			id:        reqID,
+			startedAt: time.Now(),
+			cancel:    cancel,
+		}
+
+		handle.inFlightMu.Lock()
+		handle.inFlightReq[reqID] = req
+		handle.inFlightMu.Unlock()
 
 		handle.mu.Lock()
 		handle.lastUsed = time.Now()
 		handle.mu.Unlock()
 
-		result, err := handle.worker.Call(ctx, methodName, inputJSON, optionsJSON)
+		result, err := handle.worker.Call(attemptCtx, methodName, inputJSON, optionsJSON)
+
+		// Unregister request
+		handle.inFlightMu.Lock()
+		delete(handle.inFlightReq, reqID)
+		handle.inFlightMu.Unlock()
+		cancel()
+
 		if err == nil {
 			return result, nil
 		}
 
 		lastErr = err
-		p.config.Logger.Warn("Worker call failed", "worker", handle.id, "attempt", attempt+1, "error", err)
 
-		// Check if context is cancelled
+		// Check if the parent context is cancelled (user cancelled)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 
-		// Mark worker as unhealthy and restart
+		// If attempt context was cancelled but parent wasn't, worker was killed - retry
+		if attemptCtx.Err() != nil {
+			p.config.Logger.Info("Retrying after worker kill", "worker", handle.id, "attempt", attempt+1)
+			continue
+		}
+
+		// Regular error - mark worker unhealthy and retry
+		p.config.Logger.Warn("Worker call failed", "worker", handle.id, "attempt", attempt+1, "error", err)
+
 		handle.mu.Lock()
 		handle.healthy = false
 		handle.mu.Unlock()
@@ -282,43 +381,90 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON, optionsJS
 
 // CallStream executes a BAML method and streams results
 func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON, optionsJSON []byte) (<-chan *workerplugin.StreamResult, error) {
-	handle, err := p.getWorker()
-	if err != nil {
-		return nil, err
-	}
+	var lastErr error
 
-	// Track in-flight request
-	handle.inFlight.Add(1)
+	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
+		handle, err := p.getWorker()
+		if err != nil {
+			return nil, err
+		}
 
-	handle.mu.Lock()
-	handle.lastUsed = time.Now()
-	handle.mu.Unlock()
+		// Create cancellable context for this attempt
+		attemptCtx, cancel := context.WithCancel(ctx)
 
-	results, err := handle.worker.CallStream(ctx, methodName, inputJSON, optionsJSON)
-	if err != nil {
-		handle.inFlight.Add(-1)
+		// Register in-flight request
+		reqID := p.requestID.Add(1)
+		req := &inFlightRequest{
+			id:        reqID,
+			startedAt: time.Now(),
+			cancel:    cancel,
+		}
 
-		// Mark worker as unhealthy
+		handle.inFlightMu.Lock()
+		handle.inFlightReq[reqID] = req
+		handle.inFlightMu.Unlock()
+
 		handle.mu.Lock()
-		handle.healthy = false
+		handle.lastUsed = time.Now()
 		handle.mu.Unlock()
 
-		go p.restartWorker(handle.id)
-		return nil, err
+		results, err := handle.worker.CallStream(attemptCtx, methodName, inputJSON, optionsJSON)
+		if err != nil {
+			// Unregister request
+			handle.inFlightMu.Lock()
+			delete(handle.inFlightReq, reqID)
+			handle.inFlightMu.Unlock()
+			cancel()
+
+			lastErr = err
+
+			// Check if the parent context is cancelled (user cancelled)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+
+			// If attempt context was cancelled but parent wasn't, worker was killed - retry
+			if attemptCtx.Err() != nil {
+				p.config.Logger.Info("Retrying stream after worker kill", "worker", handle.id, "attempt", attempt+1)
+				continue
+			}
+
+			// Regular error - mark worker unhealthy and retry
+			p.config.Logger.Warn("Worker stream call failed", "worker", handle.id, "attempt", attempt+1, "error", err)
+
+			handle.mu.Lock()
+			handle.healthy = false
+			handle.mu.Unlock()
+
+			go p.restartWorker(handle.id)
+			continue
+		}
+
+		// Got a results channel - wrap it to track first byte and cleanup
+		wrappedResults := make(chan *workerplugin.StreamResult)
+		go func() {
+			defer close(wrappedResults)
+			defer func() {
+				handle.inFlightMu.Lock()
+				delete(handle.inFlightReq, reqID)
+				handle.inFlightMu.Unlock()
+				cancel()
+			}()
+
+			firstByte := false
+			for result := range results {
+				if !firstByte {
+					firstByte = true
+					req.gotFirstByte.Store(true)
+				}
+				wrappedResults <- result
+			}
+		}()
+
+		return wrappedResults, nil
 	}
 
-	// Wrap the results channel to decrement inFlight when done
-	wrappedResults := make(chan *workerplugin.StreamResult)
-	go func() {
-		defer close(wrappedResults)
-		defer handle.inFlight.Add(-1)
-
-		for result := range results {
-			wrappedResults <- result
-		}
-	}()
-
-	return wrappedResults, nil
+	return nil, fmt.Errorf("all stream retries failed: %w", lastErr)
 }
 
 // totalInFlight returns the total number of in-flight requests across all workers
@@ -329,7 +475,9 @@ func (p *Pool) totalInFlight() int64 {
 	var total int64
 	for _, handle := range p.workers {
 		if handle != nil {
-			total += handle.inFlight.Load()
+			handle.inFlightMu.RLock()
+			total += int64(len(handle.inFlightReq))
+			handle.inFlightMu.RUnlock()
 		}
 	}
 	return total
@@ -409,7 +557,9 @@ func (p *Pool) Stats() Stats {
 			if handle.healthy {
 				stats.HealthyWorkers++
 			}
-			stats.InFlight += handle.inFlight.Load()
+			handle.inFlightMu.RLock()
+			stats.InFlight += int64(len(handle.inFlightReq))
+			handle.inFlightMu.RUnlock()
 		}
 	}
 
