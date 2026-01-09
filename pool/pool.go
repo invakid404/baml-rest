@@ -35,7 +35,7 @@ func DefaultConfig() *Config {
 		PoolSize:            4,
 		MaxRetries:          2,
 		HealthCheckInterval: 10 * time.Second,
-		FirstByteTimeout:    30 * time.Second,
+		FirstByteTimeout:    120 * time.Second,
 	}
 }
 

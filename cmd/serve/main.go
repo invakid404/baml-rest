@@ -310,8 +310,9 @@ type sseContextKey string
 const sseContextKeyTopic = sseContextKey("topic")
 
 var (
-	port     int
-	poolSize int
+	port             int
+	poolSize         int
+	firstByteTimeout time.Duration
 )
 
 var rootCmd = &cobra.Command{
@@ -328,6 +329,7 @@ var serveCmd = &cobra.Command{
 		// Initialize worker pool - spawns self with "worker" subcommand
 		poolConfig := pool.DefaultConfig()
 		poolConfig.PoolSize = poolSize
+		poolConfig.FirstByteTimeout = firstByteTimeout
 		poolConfig.Logger = slog.Default()
 
 		workerPool, err := pool.New(poolConfig)
@@ -586,6 +588,7 @@ var workerCmd = &cobra.Command{
 func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
+	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
 
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(workerCmd)
