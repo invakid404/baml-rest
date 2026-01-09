@@ -248,26 +248,18 @@ func Generate(selfPkg string) {
 			)
 		}
 
-		// Initialize queue, context, WaitGroup, and mutex for async partial processing
+		// Initialize state for streaming
 		streamResultInterface := jen.Qual(common.InterfacesPkg, "StreamResult")
 
 		methodBody = append(methodBody,
 			// Output channel for results
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
-			// Unbounded queue for passing raw text from OnTick to partials goroutine (never drops)
-			jen.Id("rawQueue").Op(":=").Qual(common.GoConcurrentQueuePkg, "NewFIFO").Call(),
-			// Context to signal partials goroutine to stop
-			// NOT derived from adapter - we only cancel after ticksDone to ensure no late enqueues
-			jen.List(jen.Id("queueCtx"), jen.Id("queueCancel")).Op(":=").Qual("context", "WithCancel").Call(jen.Qual("context", "Background").Call()),
 
-			// Two-phase shutdown state
-			jen.Var().Id("stopping").Qual("sync/atomic", "Bool"),   // shutdown requested
-			jen.Var().Id("inTick").Qual("sync/atomic", "Int64"),    // number of onTick currently executing
-			jen.Var().Id("pending").Qual("sync/atomic", "Int64"),   // number of queued items not yet completed
-			jen.Id("ticksDone").Op(":=").Make(jen.Chan().Struct()),  // closed when stopping && inTick==0
-			jen.Id("allDone").Op(":=").Make(jen.Chan().Struct()),    // closed when stopping && pending==0
+			// Shutdown state
+			jen.Var().Id("stopping").Qual("sync/atomic", "Bool"),  // shutdown requested
+			jen.Var().Id("inTick").Qual("sync/atomic", "Int64"),   // number of onTick currently executing
+			jen.Id("ticksDone").Op(":=").Make(jen.Chan().Struct()), // closed when stopping && inTick==0
 			jen.Var().Id("ticksOnce").Qual("sync", "Once"),
-			jen.Var().Id("allOnce").Qual("sync", "Once"),
 			jen.Var().Id("shutdownOnce").Qual("sync", "Once"),
 
 			// Fatal error storage
@@ -278,174 +270,210 @@ func Generate(selfPkg string) {
 			jen.Var().Id("lastRawResponse").String(),
 			jen.Var().Id("mu").Qual("sync", "Mutex"),
 
-			// Two-phase shutdown function - guarded by shutdownOnce
+			// Tick counter for logging
+			jen.Var().Id("tickCount").Qual("sync/atomic", "Int64"),
+
+			// Shutdown function - waits for all in-flight ticks to complete
 			jen.Id("doShutdown").Op(":=").Func().Params().Block(
-				// Phase 1: Stop accepting new ticks
+				jen.Qual("log", "Println").Call(jen.Lit("[SHUTDOWN] doShutdown called")),
 				jen.Id("stopping").Dot("Store").Call(jen.True()),
 				jen.If(jen.Id("inTick").Dot("Load").Call().Op("==").Lit(0)).Block(
+					jen.Qual("log", "Println").Call(jen.Lit("[SHUTDOWN] No ticks in flight, closing ticksDone immediately")),
 					jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(
 						jen.Close(jen.Id("ticksDone")),
 					)),
 				).Else().Block(
+					jen.Qual("log", "Printf").Call(jen.Lit("[SHUTDOWN] Waiting for %d in-flight ticks to complete..."), jen.Id("inTick").Dot("Load").Call()),
 					jen.Op("<-").Id("ticksDone"),
-				),
-
-				// Phase 2: Cancel queue and wait for pending items
-				jen.Id("queueCancel").Call(),
-				jen.If(jen.Id("pending").Dot("Load").Call().Op("==").Lit(0)).Block(
-					jen.Id("allOnce").Dot("Do").Call(jen.Func().Params().Block(
-						jen.Close(jen.Id("allDone")),
-					)),
-				).Else().Block(
-					jen.Op("<-").Id("allDone"),
+					jen.Qual("log", "Println").Call(jen.Lit("[SHUTDOWN] All ticks completed")),
 				),
 			),
 
 			// Error handler for goroutine panics - records error and initiates shutdown
-			// Triggers full teardown asynchronously so errors abort promptly even if stream hangs
 			jen.Id("errHandler").Op(":=").Func().Params(jen.Id("err").Error()).Block(
+				jen.Qual("log", "Printf").Call(jen.Lit("[ERROR] errHandler called with: %v"), jen.Id("err")),
 				jen.Id("fatalMu").Dot("Lock").Call(),
 				jen.If(jen.Id("fatalErr").Op("==").Nil()).Block(
 					jen.Id("fatalErr").Op("=").Id("err"),
 				),
 				jen.Id("fatalMu").Dot("Unlock").Call(),
 
-				// Initiate shutdown and kick off full teardown asynchronously
+				// Initiate shutdown
 				jen.If(jen.Id("stopping").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+					jen.Qual("log", "Println").Call(jen.Lit("[ERROR] Initiating shutdown due to error")),
 					jen.If(jen.Id("inTick").Dot("Load").Call().Op("==").Lit(0)).Block(
 						jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(
 							jen.Close(jen.Id("ticksDone")),
 						)),
 					),
-					// Trigger full shutdown asynchronously (non-blocking)
 					jen.Go().Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
 				),
 			),
 		)
 
 		// Watcher goroutine: trigger shutdown when adapter (HTTP request) is cancelled
-		// This ensures prompt cleanup on client disconnect while respecting shutdown ordering
 		methodBody = append(methodBody,
+			jen.Qual("log", "Println").Call(jen.Lit("[INIT] Starting request processing")),
 			jen.Go().Func().Params().Block(
 				jen.Op("<-").Id("adapter").Dot("Done").Call(),
+				jen.Qual("log", "Println").Call(jen.Lit("[WATCHER] Adapter context cancelled, triggering shutdown")),
 				jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
 			).Call(),
 		)
 
-		// Build the onTick callback - extracts raw text and enqueues for async processing
-		// IMPORTANT: OnTick is called synchronously by BAML, so we must return ASAP
+		// Build the onTick callback - extracts raw text and calls ParseStream directly
 		// Uses panic recovery and inTick barrier for safe shutdown
 		onTickBody := []jen.Code{
-			// Wrap in gorecovery.Call for panic safety - call errHandler if panic occurs
+			// Wrap in gorecovery.Call for panic safety
 			jen.If(
 				jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
 					jen.Func().Params().Error().Block(
-					// CRITICAL: increment inTick FIRST, before any checks
-					// This prevents the race where shutdown sees inTick==0 while we're between
-					// checking stopping and incrementing inTick
-					jen.Id("inTick").Dot("Add").Call(jen.Lit(1)),
-					// Defer exit: decrement counter and close ticksDone if we're the last and stopping
-					jen.Defer().Func().Params().Block(
-						jen.If(
-							jen.Id("inTick").Dot("Add").Call(jen.Lit(-1)).Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call(),
-						).Block(
-							jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(
-								jen.Close(jen.Id("ticksDone")),
-							)),
-						),
-					).Call(),
+						// CRITICAL: increment inTick FIRST, before any checks
+						jen.Id("currentTick").Op(":=").Id("tickCount").Dot("Add").Call(jen.Lit(1)),
+						jen.Id("inTick").Dot("Add").Call(jen.Lit(1)),
+						jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] onTick started, reason=%v, inTick=%d"), jen.Id("currentTick"), jen.Id("reason"), jen.Id("inTick").Dot("Load").Call()),
 
-					// Now check if we should bail out (after inTick is incremented)
-					jen.If(jen.Id("stopping").Dot("Load").Call()).Block(
-						jen.Return(jen.Nil()),
-					),
-					jen.Select().Block(
-						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						// Defer exit: decrement counter and close ticksDone if we're the last and stopping
+						jen.Defer().Func().Params().Block(
+							jen.Id("remaining").Op(":=").Id("inTick").Dot("Add").Call(jen.Lit(-1)),
+							jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] onTick finished, remaining inTick=%d, stopping=%v"), jen.Id("currentTick"), jen.Id("remaining"), jen.Id("stopping").Dot("Load").Call()),
+							jen.If(
+								jen.Id("remaining").Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call(),
+							).Block(
+								jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Last tick completed during shutdown, closing ticksDone"), jen.Id("currentTick")),
+								jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(
+									jen.Close(jen.Id("ticksDone")),
+								)),
+							),
+						).Call(),
+
+						// Check if we should bail out
+						jen.If(jen.Id("stopping").Dot("Load").Call()).Block(
+							jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Bailing out - shutdown in progress"), jen.Id("currentTick")),
 							jen.Return(jen.Nil()),
 						),
-						jen.Default().Block(),
-					),
-
-					// Build StreamingData from FunctionLog
-					jen.Id("calls").Op(",").Id("callsErr").Op(":=").Id("funcLog").Dot("Calls").Call(),
-					jen.If(jen.Id("callsErr").Op("!=").Nil()).Block(
-						jen.Return(jen.Nil()),
-					),
-
-					// Build StreamingData struct
-					jen.Id("streamingData").Op(":=").Op("&").Qual(common.SSEPkg, "StreamingData").Values(),
-					jen.For(jen.List(jen.Id("_"), jen.Id("call")).Op(":=").Range().Id("calls")).Block(
-						// Type-assert to LLMStreamCall (extends LLMCall with SSEChunks)
-						jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("call").Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
-						jen.If(jen.Op("!").Id("ok")).Block(
-							jen.Continue(),
+						jen.Select().Block(
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+								jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Bailing out - adapter cancelled"), jen.Id("currentTick")),
+								jen.Return(jen.Nil()),
+							),
+							jen.Default().Block(),
 						),
-						jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
-						jen.If(jen.Id("provErr").Op("!=").Nil()).Block(
-							jen.Continue(),
-						),
-						jen.Id("chunks").Op(",").Id("chunksErr").Op(":=").Id("streamCall").Dot("SSEChunks").Call(),
-						jen.If(jen.Id("chunksErr").Op("!=").Nil()).Block(
-							jen.Continue(),
-						),
-						// Convert chunks to SSEChunk interface slice
-						jen.Id("sseChunks").Op(":=").Make(jen.Index().Qual(common.SSEPkg, "SSEChunk"), jen.Len(jen.Id("chunks"))),
-						jen.For(jen.List(jen.Id("i"), jen.Id("chunk")).Op(":=").Range().Id("chunks")).Block(
-							jen.Id("sseChunks").Index(jen.Id("i")).Op("=").Id("chunk"),
-						),
-						jen.Id("streamingData").Dot("Calls").Op("=").Append(
-							jen.Id("streamingData").Dot("Calls"),
-							jen.Qual(common.SSEPkg, "StreamingCall").Values(jen.Dict{
-								jen.Id("Provider"): jen.Id("provider"),
-								jen.Id("Chunks"):   jen.Id("sseChunks"),
-							}),
-						),
-					),
 
-					// Get raw LLM response by extracting SSE deltas
-					jen.List(jen.Id("raw"), jen.Id("rawErr")).Op(":=").Qual(common.SSEPkg, "GetCurrentContent").Call(jen.Id("streamingData")),
-					jen.If(jen.Id("rawErr").Op("!=").Nil()).Block(
-						jen.Return(jen.Nil()),
-					),
-
-					// Skip if no content yet
-					jen.If(jen.Id("raw").Op("==").Lit("")).Block(
-						jen.Return(jen.Nil()),
-					),
-
-					// Update lastRawResponse for final capture
-					jen.Id("mu").Dot("Lock").Call(),
-					jen.Id("lastRawResponse").Op("=").Id("raw"),
-					jen.Id("mu").Dot("Unlock").Call(),
-
-					// Final check before enqueue: if adapter cancelled, don't enqueue
-					// (second line of defense against enqueue after parser exit)
-					jen.Select().Block(
-						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						// Build StreamingData from FunctionLog
+						jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Extracting calls from funcLog..."), jen.Id("currentTick")),
+						jen.Id("calls").Op(",").Id("callsErr").Op(":=").Id("funcLog").Dot("Calls").Call(),
+						jen.If(jen.Id("callsErr").Op("!=").Nil()).Block(
+							jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Error getting calls: %v"), jen.Id("currentTick"), jen.Id("callsErr")),
 							jen.Return(jen.Nil()),
 						),
-						jen.Default().Block(),
-					),
+						jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Got %d calls"), jen.Id("currentTick"), jen.Len(jen.Id("calls"))),
 
-					// Reserve pending slot, then enqueue
-					// If enqueue fails (shouldn't happen with FIFO), rollback pending
-					jen.Id("pending").Dot("Add").Call(jen.Lit(1)),
-					jen.If(jen.Id("err").Op(":=").Id("rawQueue").Dot("Enqueue").Call(jen.Id("raw")), jen.Id("err").Op("!=").Nil()).Block(
-						// Rollback and check if we need to close allDone
-						jen.If(
-							jen.Id("pending").Dot("Add").Call(jen.Lit(-1)).Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call(),
-						).Block(
-							jen.Id("allOnce").Dot("Do").Call(jen.Func().Params().Block(
-								jen.Close(jen.Id("allDone")),
-							)),
+						// Build StreamingData struct
+						jen.Id("streamingData").Op(":=").Op("&").Qual(common.SSEPkg, "StreamingData").Values(),
+						jen.For(jen.List(jen.Id("_"), jen.Id("call")).Op(":=").Range().Id("calls")).Block(
+							jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("call").Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
+							jen.If(jen.Op("!").Id("ok")).Block(
+								jen.Continue(),
+							),
+							jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
+							jen.If(jen.Id("provErr").Op("!=").Nil()).Block(
+								jen.Continue(),
+							),
+							jen.Id("chunks").Op(",").Id("chunksErr").Op(":=").Id("streamCall").Dot("SSEChunks").Call(),
+							jen.If(jen.Id("chunksErr").Op("!=").Nil()).Block(
+								jen.Continue(),
+							),
+							jen.Id("sseChunks").Op(":=").Make(jen.Index().Qual(common.SSEPkg, "SSEChunk"), jen.Len(jen.Id("chunks"))),
+							jen.For(jen.List(jen.Id("i"), jen.Id("chunk")).Op(":=").Range().Id("chunks")).Block(
+								jen.Id("sseChunks").Index(jen.Id("i")).Op("=").Id("chunk"),
+							),
+							jen.Id("streamingData").Dot("Calls").Op("=").Append(
+								jen.Id("streamingData").Dot("Calls"),
+								jen.Qual(common.SSEPkg, "StreamingCall").Values(jen.Dict{
+									jen.Id("Provider"): jen.Id("provider"),
+									jen.Id("Chunks"):   jen.Id("sseChunks"),
+								}),
+							),
 						),
-					),
 
-					jen.Return(jen.Nil()),
+						// Get raw LLM response by extracting SSE deltas
+						jen.List(jen.Id("raw"), jen.Id("rawErr")).Op(":=").Qual(common.SSEPkg, "GetCurrentContent").Call(jen.Id("streamingData")),
+						jen.If(jen.Id("rawErr").Op("!=").Nil()).Block(
+							jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Error getting content: %v"), jen.Id("currentTick"), jen.Id("rawErr")),
+							jen.Return(jen.Nil()),
+						),
+
+						// Skip if no content yet
+						jen.If(jen.Id("raw").Op("==").Lit("")).Block(
+							jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] No content yet, skipping"), jen.Id("currentTick")),
+							jen.Return(jen.Nil()),
+						),
+
+						jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Got raw content (%d bytes): %.100s..."), jen.Id("currentTick"), jen.Len(jen.Id("raw")), jen.Id("raw")),
+
+						// Update lastRawResponse for final capture
+						jen.Id("mu").Dot("Lock").Call(),
+						jen.Id("lastRawResponse").Op("=").Id("raw"),
+						jen.Id("mu").Dot("Unlock").Call(),
+
+						// Check again before parsing
+						jen.Select().Block(
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+								jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Adapter cancelled before parse"), jen.Id("currentTick")),
+								jen.Return(jen.Nil()),
+							),
+							jen.Default().Block(),
+						),
+
+						// Call ParseStream directly
+						jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Calling ParseStream..."), jen.Id("currentTick")),
+						jen.List(jen.Id("parsed"), jen.Id("parseErr")).Op(":=").
+							Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
+								jen.Id("adapter"),
+								jen.Id("raw"),
+								jen.Id("options").Op("..."),
+							),
+
+						jen.If(jen.Id("parseErr").Op("!=").Nil()).Block(
+							jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] ParseStream error: %v"), jen.Id("currentTick"), jen.Id("parseErr")),
+							jen.Return(jen.Nil()),
+						),
+
+						jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] ParseStream succeeded, sending to output..."), jen.Id("currentTick")),
+
+						// Pre-check: if adapter is cancelled, don't attempt send
+						jen.Select().Block(
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+								jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Adapter cancelled before send"), jen.Id("currentTick")),
+								jen.Return(jen.Nil()),
+							),
+							jen.Default().Block(),
+						),
+
+						// Take address of parsed result for consistency
+						jen.Id("parsedPtr").Op(":=").Op("&").Id("parsed"),
+
+						// Best-effort send (non-blocking)
+						jen.Select().Block(
+							jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
+								jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindStream"),
+								jen.Id("raw"):    jen.Id("raw"),
+								jen.Id("parsed"): jen.Id("parsedPtr"),
+							})).Block(
+								jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Sent partial to output channel"), jen.Id("currentTick")),
+							),
+							jen.Default().Block(
+								jen.Qual("log", "Printf").Call(jen.Lit("[TICK #%d] Output channel full, dropping partial"), jen.Id("currentTick")),
+							),
+						),
+
+						jen.Return(jen.Nil()),
+					),
 				),
-			),
 				jen.Id("err").Op("!=").Nil(),
 			).Block(
+				jen.Qual("log", "Printf").Call(jen.Lit("[TICK] Panic recovered: %v"), jen.Id("err")),
 				jen.Id("errHandler").Call(jen.Id("err")),
 			),
 
@@ -462,7 +490,6 @@ func Generate(selfPkg string) {
 		}
 
 		// Add all options: prepend WithOnTick to the options slice
-		// This generates: append([]CallOptionFunc{WithOnTick(onTick)}, options...)...
 		streamCallParams = append(streamCallParams,
 			jen.Append(
 				jen.Index().Qual(common.GeneratedClientPkg, "CallOptionFunc").Values(
@@ -472,142 +499,17 @@ func Generate(selfPkg string) {
 			).Op("..."),
 		)
 
-		// Helper to decrement pending and maybe close allDone
-		decrementPending := []jen.Code{
-			jen.If(
-				jen.Id("pending").Dot("Add").Call(jen.Lit(-1)).Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call(),
-			).Block(
-				jen.Id("allOnce").Dot("Do").Call(jen.Func().Params().Block(
-					jen.Close(jen.Id("allDone")),
-				)),
-			),
-		}
-
-		// Build the partials processing goroutine body - reads from queue, calls ParseStream, emits partials
-		// Each item is processed in a separate function call so defers run per-item
-		// Per-item panics are caught and reported but don't exit the loop
-		// The entire loop iteration is wrapped in gorecovery.Call to catch panics from queue operations
-		partialsGoroutineBody := []jen.Code{
-			// Define process function - handles one queue item with defer and panic recovery
-			jen.Id("process").Op(":=").Func().Params(jen.Id("raw").String()).Block(
-				// Defer pending decrement - runs when THIS function returns (per-item)
-				jen.Defer().Func().Params().Block(decrementPending...).Call(),
-
-				// Wrap parse+send in gorecovery.Call - if panic, call errHandler but DON'T exit
-				jen.If(
-					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
-						jen.Func().Params().Error().Block(
-							// Call ParseStream outside of OnTick callback context (avoids deadlock)
-							// Pass adapter as context (hack adds ctx param to ParseStream methods)
-							jen.List(jen.Id("parsed"), jen.Id("parseErr")).Op(":=").
-								Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
-									jen.Id("adapter"),
-									jen.Id("raw"),
-									jen.Id("options").Op("..."),
-								),
-							jen.If(jen.Id("parseErr").Op("==").Nil()).Block(
-								// Pre-check: if adapter is cancelled, don't attempt send
-								// (avoids race where select randomly picks out <- after close)
-								jen.Select().Block(
-									jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-										jen.Return(jen.Nil()),
-									),
-									jen.Default().Block(),
-								),
-
-								// ParseStream returns a concrete type - always take address for consistency
-								jen.Id("parsedPtr").Op(":=").Op("&").Id("parsed"),
-
-								// Best-effort send (non-blocking)
-								jen.Select().Block(
-									jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
-										jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindStream"),
-										jen.Id("raw"):    jen.Id("raw"),
-										jen.Id("parsed"): jen.Id("parsedPtr"),
-									})).Block(),
-									jen.Default().Block(),
-								),
-							),
-							jen.Return(jen.Nil()),
-						),
-					),
-					jen.Id("err").Op("!=").Nil(),
-				).Block(
-					// Record fatal error but DON'T return - let defer run and continue loop
-					jen.Id("errHandler").Call(jen.Id("err")),
-				),
-			),
-
-			// Drain helper - processes remaining queue items, checking for adapter cancellation
-			jen.Id("drain").Op(":=").Func().Params().Block(
-				jen.For().Block(
-					// Check if adapter is cancelled - if so, just decrement pending without processing
-					jen.Select().Block(
-						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-							// Request cancelled - decrement all remaining pending items and exit
-							jen.For().Block(
-								jen.List(jen.Id("_"), jen.Id("drainErr")).Op(":=").Id("rawQueue").Dot("Dequeue").Call(),
-								jen.If(jen.Id("drainErr").Op("!=").Nil()).Block(
-									jen.Return(), // Queue empty
-								),
-								jen.Block(decrementPending...),
-							),
-						),
-						jen.Default().Block(),
-					),
-
-					jen.List(jen.Id("remaining"), jen.Id("drainErr")).Op(":=").Id("rawQueue").Dot("Dequeue").Call(),
-					jen.If(jen.Id("drainErr").Op("!=").Nil()).Block(
-						jen.Return(), // Queue empty
-					),
-					jen.List(jen.Id("raw"), jen.Id("ok")).Op(":=").Id("remaining").Assert(jen.String()),
-					jen.If(jen.Op("!").Id("ok")).Block(
-						jen.Block(decrementPending...),
-						jen.Continue(),
-					),
-					jen.Id("process").Call(jen.Id("raw")),
-				),
-			),
-
-			// Main loop: wait for items from queue until context is cancelled
-			// Entire loop iteration wrapped in gorecovery.Call1 to catch panics from queue operations
-			jen.For().Block(
-				jen.List(jen.Id("shouldExit"), jen.Id("err")).Op(":=").Qual("github.com/gregwebs/go-recovery", "Call1").Types(jen.Bool()).Call(
-					jen.Func().Params().Params(jen.Bool(), jen.Error()).Block(
-						jen.List(jen.Id("item"), jen.Id("err")).Op(":=").Id("rawQueue").Dot("DequeueOrWaitForNextElementContext").Call(jen.Id("queueCtx")),
-						jen.If(jen.Id("err").Op("!=").Nil()).Block(
-							// Context cancelled - drain remaining items and exit
-							jen.Id("drain").Call(),
-							jen.Return(jen.True(), jen.Nil()),
-						),
-						jen.List(jen.Id("raw"), jen.Id("ok")).Op(":=").Id("item").Assert(jen.String()),
-						jen.If(jen.Op("!").Id("ok")).Block(
-							jen.Block(decrementPending...),
-							jen.Return(jen.False(), jen.Nil()), // Continue loop
-						),
-						jen.Id("process").Call(jen.Id("raw")),
-						jen.Return(jen.False(), jen.Nil()),
-					),
-				),
-				jen.If(jen.Id("err").Op("!=").Nil()).Block(
-					jen.Id("errHandler").Call(jen.Id("err")),
-					jen.Continue(), // Keep looping after panic
-				),
-				jen.If(jen.Id("shouldExit")).Block(
-					jen.Return(jen.Nil()),
-				),
-			),
-			jen.Return(jen.Nil()),
-		}
-
-		// Build the stream drain goroutine - drains stream channel, waits for partials via two-phase shutdown, emits final/error
+		// Build the stream goroutine - calls Stream, drains it, waits for ticks, emits final
 		streamDrainBody := []jen.Code{
+			jen.Qual("log", "Println").Call(jen.Lit("[STREAM] Starting Stream call...")),
+
 			// Call the Stream method with WithOnTick
 			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
 				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(streamCallParams...),
 
 			// If initial stream creation failed, shutdown and emit error
 			jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
+				jen.Qual("log", "Printf").Call(jen.Lit("[STREAM] Stream creation failed: %v"), jen.Id("streamErr")),
 				jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
 				jen.Select().Block(
 					jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("streamErr"))).Block(),
@@ -616,28 +518,40 @@ func Generate(selfPkg string) {
 				jen.Return(jen.Nil()),
 			),
 
-			// Drain the stream channel - ignore partials (we get ours from ParseStream)
+			jen.Qual("log", "Println").Call(jen.Lit("[STREAM] Stream created successfully, draining...")),
+
+			// Drain the stream channel - ignore partials (we get ours from onTick)
 			jen.Var().Id("result").Any(),
 			jen.Var().Id("streamErr2").Error(),
+			jen.Id("streamCount").Op(":=").Lit(0),
 			jen.For(jen.Id("streamVal").Op(":=").Range().Id("stream")).Block(
+				jen.Id("streamCount").Op("++"),
 				jen.If(jen.Id("streamVal").Dot("IsError")).Block(
+					jen.Qual("log", "Printf").Call(jen.Lit("[STREAM] Got error at item #%d: %v"), jen.Id("streamCount"), jen.Id("streamVal").Dot("Error")),
 					jen.Id("streamErr2").Op("=").Id("streamVal").Dot("Error"),
 					jen.Continue(),
 				),
 				jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
+					jen.Qual("log", "Printf").Call(jen.Lit("[STREAM] Got final result at item #%d"), jen.Id("streamCount")),
 					jen.Id("result").Op("=").Id("streamVal").Dot("Final").Call(),
+				).Else().Block(
+					jen.Qual("log", "Printf").Call(jen.Lit("[STREAM] Got partial at item #%d (ignoring, we use onTick)"), jen.Id("streamCount")),
 				),
-				// Ignore non-final partials - our partials come from the ParseStream goroutine
 			),
 
-			// Perform two-phase shutdown - waits for all ticks and pending items
-			jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
+			jen.Qual("log", "Printf").Call(jen.Lit("[STREAM] Stream drained, received %d items total"), jen.Id("streamCount")),
 
-			// Check if there was a fatal error from one of the goroutines
+			// Perform shutdown - waits for all in-flight ticks
+			jen.Qual("log", "Println").Call(jen.Lit("[STREAM] Initiating shutdown...")),
+			jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
+			jen.Qual("log", "Println").Call(jen.Lit("[STREAM] Shutdown complete")),
+
+			// Check if there was a fatal error
 			jen.Id("fatalMu").Dot("Lock").Call(),
 			jen.Id("fatalErrCopy").Op(":=").Id("fatalErr"),
 			jen.Id("fatalMu").Dot("Unlock").Call(),
 			jen.If(jen.Id("fatalErrCopy").Op("!=").Nil()).Block(
+				jen.Qual("log", "Printf").Call(jen.Lit("[STREAM] Fatal error detected: %v"), jen.Id("fatalErrCopy")),
 				jen.Select().Block(
 					jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("fatalErrCopy"))).Block(),
 					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
@@ -645,8 +559,9 @@ func Generate(selfPkg string) {
 				jen.Return(jen.Nil()),
 			),
 
-			// Now emit final/error (after all partials have been sent)
+			// Emit stream error if any
 			jen.If(jen.Id("streamErr2").Op("!=").Nil()).Block(
+				jen.Qual("log", "Printf").Call(jen.Lit("[STREAM] Emitting stream error: %v"), jen.Id("streamErr2")),
 				jen.Select().Block(
 					jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("streamErr2"))).Block(),
 					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
@@ -658,11 +573,11 @@ func Generate(selfPkg string) {
 			jen.Id("mu").Dot("Lock").Call(),
 			jen.Id("finalRaw").Op(":=").Id("lastRawResponse"),
 			jen.Id("mu").Dot("Unlock").Call(),
+			jen.Qual("log", "Printf").Call(jen.Lit("[STREAM] Final raw response: %d bytes"), jen.Len(jen.Id("finalRaw"))),
 
-			// Send final result - handle both pointer and value types from streamVal.Final()
+			// Send final result
 			jen.Var().Id("finalParsed").Any(),
 			jen.If(jen.Id("result").Op("!=").Nil()).Block(
-				// First try pointer type (BAML often returns pointers from Final())
 				jen.If(
 					jen.List(jen.Id("ptr"), jen.Id("ok")).Op(":=").Id("result").Assert(finalTypePtr.Clone()),
 					jen.Id("ok"),
@@ -677,13 +592,19 @@ func Generate(selfPkg string) {
 					jen.Id("finalParsed").Op("=").Id("result"),
 				),
 			),
+
+			jen.Qual("log", "Println").Call(jen.Lit("[STREAM] Sending final result to output channel")),
 			jen.Select().Block(
 				jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
 					jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindFinal"),
 					jen.Id("raw"):    jen.Id("finalRaw"),
 					jen.Id("parsed"): jen.Id("finalParsed"),
-				})).Block(),
-				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+				})).Block(
+					jen.Qual("log", "Println").Call(jen.Lit("[STREAM] Final result sent successfully")),
+				),
+				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+					jen.Qual("log", "Println").Call(jen.Lit("[STREAM] Adapter cancelled before final send")),
+				),
 			),
 
 			jen.Return(jen.Nil()),
@@ -698,34 +619,22 @@ func Generate(selfPkg string) {
 			).Qual(BamlPkg, "FunctionSignal").Block(onTickBody...),
 		)
 
-		// Start the partials processing goroutine wrapped in GoHandler for panic safety
+		// Start the stream goroutine (drains stream, waits for ticks, emits final)
 		methodBody = append(methodBody,
 			jen.Go().Func().Params().Block(
+				jen.Defer().Func().Params().Block(
+					jen.Qual("log", "Println").Call(jen.Lit("[GOROUTINE] Closing output channel")),
+					jen.Close(jen.Id("out")),
+				).Call(),
 				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
-					jen.Id("errHandler"),
-					jen.Func().Params().Error().Block(partialsGoroutineBody...),
-				),
-			).Call(),
-		)
-
-		// Shutdown call for error handler - uses shutdownOnce to ensure only one shutdown runs
-		doShutdownCode := []jen.Code{
-			jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
-		}
-
-		// Start the stream drain goroutine (drains stream, cancels queue context, waits for partials, emits final)
-		methodBody = append(methodBody,
-			jen.Go().Func().Params().Block(
-				jen.Defer().Close(jen.Id("out")),
-				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
-					// Error handler function - performs full shutdown then emits error
+					// Error handler function - performs shutdown then emits error
 					jen.Func().Params(jen.Id("err").Error()).Block(
-						append(doShutdownCode,
-							jen.Select().Block(
-								jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("err"))).Block(),
-								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
-							),
-						)...,
+						jen.Qual("log", "Printf").Call(jen.Lit("[GOROUTINE] Panic in stream goroutine: %v"), jen.Id("err")),
+						jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
+						jen.Select().Block(
+							jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("err"))).Block(),
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+						),
 					),
 					// Main goroutine function
 					jen.Func().Params().Error().Block(streamDrainBody...),

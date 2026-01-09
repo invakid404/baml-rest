@@ -158,6 +158,7 @@ var (
 	outputPath  string
 	bamlVersion string
 	keepSource  string
+	prebuiltLib string
 )
 
 func init() {
@@ -184,12 +185,14 @@ func init() {
 	rootCmd.Flags().StringVarP(&bamlVersion, "baml-version", "b", "", "Specific BAML version to use (bypasses automatic version detection)")
 	rootCmd.Flags().StringVarP(&keepSource, "keep-source", "k", "", "Keep generated source files at specified path (default: /baml-rest-generated-src). Use --keep-source or --keep-source=<path>")
 	rootCmd.Flags().Lookup("keep-source").NoOptDefVal = "/baml-rest-generated-src"
+	rootCmd.Flags().StringVarP(&prebuiltLib, "prebuilt-lib", "p", "", "Path to prebuilt BAML shared library (docker mode only, for debugging)")
 
 	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
 	_ = viper.BindPFlag("target-image", rootCmd.Flags().Lookup("target-image"))
 	_ = viper.BindPFlag("output", rootCmd.Flags().Lookup("output"))
 	_ = viper.BindPFlag("baml-version", rootCmd.Flags().Lookup("baml-version"))
 	_ = viper.BindPFlag("keep-source", rootCmd.Flags().Lookup("keep-source"))
+	_ = viper.BindPFlag("prebuilt-lib", rootCmd.Flags().Lookup("prebuilt-lib"))
 }
 
 var rootCmd = &cobra.Command{
@@ -203,6 +206,7 @@ var rootCmd = &cobra.Command{
 		outputPath = viper.GetString("output")
 		bamlVersion = viper.GetString("baml-version")
 		keepSource = viper.GetString("keep-source")
+		prebuiltLib = viper.GetString("prebuilt-lib")
 
 		// Validate mode
 		if buildMode != "docker" && buildMode != "native" {
@@ -319,14 +323,14 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, prebuiltLib)
 		} else {
 			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, prebuiltLib string) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	fmt.Printf("Making docker client...\n")
@@ -352,6 +356,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		"bamlVersion":    bamlVersion,
 		"adapterVersion": adapterVersion,
 		"keepSource":     keepSource,
+		"prebuiltLib":    prebuiltLib != "",
 	}
 	if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 		return fmt.Errorf("failed to render Dockerfile template: %w", err)
@@ -414,6 +419,35 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	})
 	if err != nil {
 		return fmt.Errorf("failed to copy target directory to build context: %w", err)
+	}
+
+	// Copy prebuilt library if specified (for debugging)
+	if prebuiltLib != "" {
+		fmt.Printf("Adding prebuilt library: %s\n", prebuiltLib)
+		libFile, err := os.Open(prebuiltLib)
+		if err != nil {
+			return fmt.Errorf("failed to open prebuilt library %s: %w", prebuiltLib, err)
+		}
+		defer libFile.Close()
+
+		libInfo, err := libFile.Stat()
+		if err != nil {
+			return fmt.Errorf("failed to stat prebuilt library: %w", err)
+		}
+
+		// Hardcoded name for aarch64 debugging
+		const prebuiltLibName = "prebuilt_lib/libbaml_cffi-aarch64-unknown-linux-gnu.so"
+		libHeader := tar.Header{
+			Name: prebuiltLibName,
+			Mode: 0755,
+			Size: libInfo.Size(),
+		}
+		if err := tarWriter.WriteHeader(&libHeader); err != nil {
+			return fmt.Errorf("failed to write prebuilt library header: %w", err)
+		}
+		if _, err := io.Copy(tarWriter, libFile); err != nil {
+			return fmt.Errorf("failed to write prebuilt library to build context: %w", err)
+		}
 	}
 
 	if err := tarWriter.Close(); err != nil {
