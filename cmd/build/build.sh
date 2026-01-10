@@ -354,9 +354,21 @@ goimports -w .
 # Run adapter
 echo "Running adapter (${ADAPTER_VERSION})..."
 go run "${ADAPTER_VERSION}/cmd/main.go"
-# Build final binary
+
+# Build worker binary first (this imports baml and loads the shared library)
+echo "Building worker binary..."
+go build -o cmd/serve/worker cmd/worker/main.go
+
+# Generate OpenAPI schema (this also imports baml)
+echo "Generating OpenAPI schema..."
+go run cmd/schema/main.go cmd/serve/openapi.json
+
+# Build final binary (embeds worker and schema, doesn't import baml directly)
 echo "Building final binary..."
 go build -o baml-rest cmd/serve/main.go
+
+# Clean up intermediate files from cmd/serve (they're embedded now)
+rm -f cmd/serve/worker cmd/serve/openapi.json
 
 # Create output directory and copy binary
 OUTPUT_DIR="$(dirname "${OUTPUT_PATH}")"

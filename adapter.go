@@ -15,3 +15,7 @@ var Methods = map[string]bamlutils.StreamingMethod{}
 func MakeAdapter(context.Context) bamlutils.Adapter {
 	return (bamlutils.Adapter)(nil)
 }
+
+func InitBamlRuntime() {
+	// Stub - overwritten during build
+}

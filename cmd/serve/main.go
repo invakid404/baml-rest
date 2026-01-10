@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -10,13 +13,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"reflect"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/getkin/kin-openapi/openapi3gen"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httplog/v3"
@@ -24,8 +26,6 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/gregwebs/go-recovery"
-	goplugin "github.com/hashicorp/go-plugin"
-	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -35,275 +35,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func generateOpenAPISchema() *openapi3.T {
-	schemas := make(openapi3.Schemas)
+//go:embed worker
+var workerBinary []byte
 
-	var generator *openapi3gen.Generator
-
-	isUnion := func(t reflect.Type) bool {
-		return strings.HasPrefix(t.Name(), "Union")
-	}
-
-	handleUnion := func(name string, t reflect.Type, tag reflect.StructTag, schema *openapi3.Schema) error {
-		for idx := 0; idx < t.NumField(); idx++ {
-			field := t.Field(idx)
-			if field.Type.Kind() != reflect.Ptr {
-				continue
-			}
-
-			fakeStruct := reflect.StructOf([]reflect.StructField{
-				{
-					Name: "X",
-					Type: field.Type.Elem(),
-					Tag:  reflect.StructTag(fmt.Sprintf(`json:"x"`)),
-				},
-			})
-
-			fieldInstance := reflect.New(fakeStruct)
-			fieldSchema, err := generator.NewSchemaRefForValue(fieldInstance.Interface(), schemas)
-			if err != nil {
-				return fmt.Errorf("failed to generate schema for field %q in type %q: %w", field.Name, t.Name(), err)
-			}
-
-			schema.OneOf = append(schema.OneOf, fieldSchema.Value.Properties["x"])
-		}
-
-		return nil
-	}
-
-	isEnum := func(t reflect.Type) bool {
-		if t.Kind() != reflect.String || t.Name() == "string" {
-			return false
-		}
-
-		_, ok := t.MethodByName("Values")
-
-		return ok
-	}
-
-	handleEnum := func(name string, t reflect.Type, tag reflect.StructTag, schema *openapi3.Schema) error {
-		valuesMethod, ok := t.MethodByName("Values")
-		if !ok {
-			panic("enum type must have a Values method")
-		}
-
-		enumInstance := reflect.New(t).Elem()
-
-		values := valuesMethod.Func.Call([]reflect.Value{enumInstance})[0]
-		if values.Kind() != reflect.Slice {
-			return fmt.Errorf("values method must return a slice")
-		}
-
-		length := values.Len()
-		result := make([]any, length)
-		for i := 0; i < length; i++ {
-			result[i] = values.Index(i).String()
-		}
-
-		var schemaType openapi3.Types
-		schemaType = append(schemaType, openapi3.TypeString)
-		schema.Type = &schemaType
-
-		schema.Enum = result
-
-		return nil
-	}
-
-	generator = openapi3gen.NewGenerator(
-		openapi3gen.UseAllExportedFields(),
-		openapi3gen.CreateComponentSchemas(openapi3gen.ExportComponentSchemasOptions{
-			ExportComponentSchemas: true,
-		}),
-		openapi3gen.SchemaCustomizer(func(name string, t reflect.Type, tag reflect.StructTag, schema *openapi3.Schema) error {
-			if isUnion(t) {
-				if err := handleUnion(name, t, tag, schema); err != nil {
-					return err
-				}
-			} else if isEnum(t) {
-				if err := handleEnum(name, t, tag, schema); err != nil {
-					return err
-				}
-			} else {
-				// Handle required vs optional fields based on pointer types
-				if t.Kind() == reflect.Struct {
-					var requiredFields []string
-					for i := 0; i < t.NumField(); i++ {
-						field := t.Field(i)
-						// Skip unexported fields
-						if !field.IsExported() {
-							continue
-						}
-
-						// Get the JSON tag name, default to field name if no tag
-						jsonTag := field.Tag.Get("json")
-						fieldName := field.Name
-						if jsonTag != "" && jsonTag != "-" {
-							// Handle "name,omitempty" format
-							if parts := strings.Split(jsonTag, ","); len(parts) > 0 && parts[0] != "" {
-								fieldName = parts[0]
-							}
-						}
-
-						// If field is not a pointer, it's required
-						if field.Type.Kind() != reflect.Ptr {
-							requiredFields = append(requiredFields, fieldName)
-						}
-					}
-
-					if len(requiredFields) > 0 {
-						schema.Required = requiredFields
-					}
-				}
-
-				return nil
-			}
-
-			schemas[t.Name()] = &openapi3.SchemaRef{
-				Value: schema,
-			}
-
-			return nil
-		}),
-	)
-
-	paths := openapi3.NewPaths()
-
-	bamlOptionsSchemaName := "BamlOptions"
-	bamlOptionsSchema, err := generator.NewSchemaRefForValue(BamlOptions{}, schemas)
-	if err != nil {
-		panic(err)
-	}
-	schemas[bamlOptionsSchemaName] = bamlOptionsSchema
-
-	for methodName, method := range baml_rest.Methods {
-		inputStruct := method.MakeInput()
-		inputStructInstance := reflect.ValueOf(inputStruct)
-
-		inputSchema, err := generator.NewSchemaRefForValue(inputStructInstance.Interface(), schemas)
-		if err != nil {
-			panic(err)
-		}
-
-		if inputSchema.Value.Properties == nil {
-			inputSchema.Value.Properties = make(openapi3.Schemas)
-		}
-
-		inputSchema.Value.Properties["__baml_options__"] = &openapi3.SchemaRef{
-			Ref: fmt.Sprintf("#/components/schemas/%s", bamlOptionsSchemaName),
-		}
-
-		inputSchemaName := inputStructInstance.Elem().Type().Name()
-		schemas[inputSchemaName] = inputSchema
-
-		finalType := reflect.ValueOf(method.MakeOutput()).Elem().Type()
-
-		resultTypeStruct := reflect.StructOf([]reflect.StructField{
-			{
-				Name: "X",
-				Type: finalType,
-				Tag:  reflect.StructTag(fmt.Sprintf(`json:"x"`)),
-			},
-		})
-
-		resultTypeStructInstance := reflect.New(resultTypeStruct)
-		resultTypeSchema, err := generator.NewSchemaRefForValue(resultTypeStructInstance.Interface(), schemas)
-		if err != nil {
-			panic(err)
-		}
-
-		// Response for /call endpoint
-		responses := openapi3.NewResponses()
-		description := fmt.Sprintf("Successful response for %s", methodName)
-		responses.Set("200", &openapi3.ResponseRef{
-			Value: &openapi3.Response{
-				Description: &description,
-				Content: openapi3.Content{
-					"application/json": &openapi3.MediaType{
-						Schema: resultTypeSchema.Value.Properties["x"],
-					},
-				},
-			},
-		})
-
-		path := fmt.Sprintf("/call/%s", methodName)
-		paths.Set(path, &openapi3.PathItem{
-			Post: &openapi3.Operation{
-				OperationID: methodName,
-				RequestBody: &openapi3.RequestBodyRef{
-					Value: &openapi3.RequestBody{
-						Content: map[string]*openapi3.MediaType{
-							"application/json": {
-								Schema: &openapi3.SchemaRef{
-									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
-								},
-							},
-						},
-					},
-				},
-				Responses: responses,
-			},
-		})
-
-		// Response for /call-with-raw endpoint
-		rawResponsesDescription := fmt.Sprintf("Successful response for %s with raw LLM output", methodName)
-		rawResponses := openapi3.NewResponses()
-		rawResponses.Set("200", &openapi3.ResponseRef{
-			Value: &openapi3.Response{
-				Description: &rawResponsesDescription,
-				Content: openapi3.Content{
-					"application/json": &openapi3.MediaType{
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{
-								Type: &openapi3.Types{openapi3.TypeObject},
-								Properties: openapi3.Schemas{
-									"data": resultTypeSchema.Value.Properties["x"],
-									"raw": &openapi3.SchemaRef{
-										Value: &openapi3.Schema{
-											Type:        &openapi3.Types{openapi3.TypeString},
-											Description: "Raw LLM response text",
-										},
-									},
-								},
-								Required: []string{"data", "raw"},
-							},
-						},
-					},
-				},
-			},
-		})
-
-		rawPath := fmt.Sprintf("/call-with-raw/%s", methodName)
-		paths.Set(rawPath, &openapi3.PathItem{
-			Post: &openapi3.Operation{
-				OperationID: fmt.Sprintf("%sWithRaw", methodName),
-				RequestBody: &openapi3.RequestBodyRef{
-					Value: &openapi3.RequestBody{
-						Content: map[string]*openapi3.MediaType{
-							"application/json": {
-								Schema: &openapi3.SchemaRef{
-									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
-								},
-							},
-						},
-					},
-				},
-				Responses: rawResponses,
-			},
-		})
-	}
-
-	return &openapi3.T{
-		OpenAPI: "3.0.0",
-		Info: &openapi3.Info{
-			Title:   "baml-rest",
-			Version: "1.0.0",
-		},
-		Components: &openapi3.Components{
-			Schemas: schemas,
-		},
-		Paths: paths,
-	}
-}
+//go:embed openapi.json
+var openapiJSON []byte
 
 type sseContextKey string
 
@@ -320,17 +56,90 @@ var rootCmd = &cobra.Command{
 	Short: "BAML REST API server",
 }
 
+// extractWorker extracts the embedded worker binary to a cache location
+// Returns the path to the extracted binary
+func extractWorker() (string, error) {
+	// Use a hash-based filename to detect changes
+	hash := sha256.Sum256(workerBinary)
+	hashStr := hex.EncodeToString(hash[:8]) // First 8 bytes is enough
+
+	// Use system cache directory
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		// Fallback to temp directory
+		cacheDir = os.TempDir()
+	}
+	cacheDir = filepath.Join(cacheDir, "baml-rest")
+
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	workerFilename := fmt.Sprintf("worker-%s", hashStr)
+	workerPath := filepath.Join(cacheDir, workerFilename)
+
+	// Check if worker already exists with correct hash
+	if _, err := os.Stat(workerPath); err == nil {
+		return workerPath, nil
+	}
+
+	// Extract worker binary
+	if err := os.WriteFile(workerPath, workerBinary, 0755); err != nil {
+		return "", fmt.Errorf("failed to write worker binary: %w", err)
+	}
+
+	// Clean up old worker versions
+	entries, err := os.ReadDir(cacheDir)
+	if err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.HasPrefix(name, "worker-") && name != workerFilename {
+				oldPath := filepath.Join(cacheDir, name)
+				if err := os.Remove(oldPath); err != nil {
+					slog.Debug("Failed to remove old worker binary", "path", oldPath, "error", err)
+				} else {
+					slog.Debug("Removed old worker binary", "path", oldPath)
+				}
+			}
+		}
+	}
+
+	return workerPath, nil
+}
+
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		schema := generateOpenAPISchema()
+		// Load OpenAPI schema from embedded JSON
+		var schema openapi3.T
+		if err := json.Unmarshal(openapiJSON, &schema); err != nil {
+			return fmt.Errorf("failed to parse embedded OpenAPI schema: %w", err)
+		}
 
-		// Initialize worker pool - spawns self with "worker" subcommand
+		// Extract method names from schema paths
+		const callPrefix = "/call/"
+		methodNames := make([]string, 0)
+		for path := range schema.Paths.Map() {
+			// Extract method name from /call/{methodName}
+			if methodName := strings.TrimPrefix(path, callPrefix); methodName != path {
+				methodNames = append(methodNames, methodName)
+			}
+		}
+
+		// Extract worker binary
+		workerPath, err := extractWorker()
+		if err != nil {
+			return fmt.Errorf("failed to extract worker binary: %w", err)
+		}
+		slog.Info("Worker binary extracted", "path", workerPath)
+
+		// Initialize worker pool with external worker binary
 		poolConfig := pool.DefaultConfig()
 		poolConfig.PoolSize = poolSize
 		poolConfig.FirstByteTimeout = firstByteTimeout
 		poolConfig.Logger = slog.Default()
+		poolConfig.WorkerPath = workerPath
 
 		workerPool, err := pool.New(poolConfig)
 		if err != nil {
@@ -392,13 +201,13 @@ var serveCmd = &cobra.Command{
 
 		// Add /openapi.json endpoint
 		r.Get("/openapi.json", func(w http.ResponseWriter, r *http.Request) {
-			render.JSON(w, r, schema)
+			render.JSON(w, r, &schema)
 		})
 
 		// Add /openapi.yaml endpoint
 		r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/yaml")
-			yamlData, err := yaml.Marshal(schema)
+			yamlData, err := yaml.Marshal(&schema)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -406,7 +215,7 @@ var serveCmd = &cobra.Command{
 			_, _ = w.Write(yamlData)
 		})
 
-		for methodName := range baml_rest.Methods {
+		for _, methodName := range methodNames {
 			methodName := methodName // capture for closure
 
 			logger.Info("Registering prompt: " + methodName)
@@ -576,22 +385,12 @@ var serveCmd = &cobra.Command{
 	},
 }
 
-var workerCmd = &cobra.Command{
-	Use:    "worker",
-	Short:  "Run as a worker process (internal use)",
-	Hidden: true,
-	Run: func(cmd *cobra.Command, args []string) {
-		runWorker()
-	},
-}
-
 func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
 
 	rootCmd.AddCommand(serveCmd)
-	rootCmd.AddCommand(workerCmd)
 }
 
 func main() {
@@ -604,194 +403,4 @@ func main() {
 type CallWithRawResponse struct {
 	Data any    `json:"data"`
 	Raw  string `json:"raw"`
-}
-
-// BamlOptions is used for OpenAPI schema generation of the __baml_options__ field
-type BamlOptions struct {
-	ClientRegistry *bamlutils.ClientRegistry `json:"client_registry"`
-	TypeBuilder    *bamlutils.TypeBuilder    `json:"type_builder"`
-}
-
-// Worker mode implementation
-
-func runWorker() {
-	goplugin.Serve(&goplugin.ServeConfig{
-		HandshakeConfig: workerplugin.Handshake,
-		Plugins: map[string]goplugin.Plugin{
-			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{}},
-		},
-		GRPCServer: goplugin.DefaultGRPCServer,
-	})
-}
-
-// workerImpl implements the workerplugin.Worker interface
-type workerImpl struct{}
-
-// workerBamlOptions mirrors the options structure for worker parsing
-type workerBamlOptions struct {
-	Options *BamlOptions `json:"__baml_options__,omitempty"`
-}
-
-func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
-	if o.Options == nil {
-		return nil
-	}
-
-	if o.Options.ClientRegistry != nil {
-		if err := adapter.SetClientRegistry(o.Options.ClientRegistry); err != nil {
-			return fmt.Errorf("failed to set client registry: %w", err)
-		}
-	}
-
-	if o.Options.TypeBuilder != nil {
-		if err := adapter.SetTypeBuilder(o.Options.TypeBuilder); err != nil {
-			return fmt.Errorf("failed to set type builder: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func (w *workerImpl) Call(ctx context.Context, methodName string, inputJSON, optionsJSON []byte) (*workerplugin.CallResult, error) {
-	method, ok := baml_rest.Methods[methodName]
-	if !ok {
-		return nil, fmt.Errorf("method %q not found", methodName)
-	}
-
-	// Parse input
-	input := method.MakeInput()
-	if err := json.Unmarshal(inputJSON, input); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
-	}
-
-	// Parse options
-	var options workerBamlOptions
-	if len(optionsJSON) > 0 {
-		if err := json.Unmarshal(optionsJSON, &options); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal options: %w", err)
-		}
-	}
-
-	// Create adapter and apply options
-	adapter := baml_rest.MakeAdapter(ctx)
-	if err := options.apply(adapter); err != nil {
-		return nil, fmt.Errorf("failed to apply options: %w", err)
-	}
-
-	// Execute the method
-	resultChan, err := method.Impl(adapter, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call method: %w", err)
-	}
-
-	// Wait for final result
-	for result := range resultChan {
-		kind := result.Kind()
-		if kind == bamlutils.StreamResultKindError {
-			return nil, result.Error()
-		}
-
-		if kind == bamlutils.StreamResultKindFinal {
-			data, err := json.Marshal(result.Final())
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal result: %w", err)
-			}
-			return &workerplugin.CallResult{
-				Data: data,
-				Raw:  result.Raw(),
-			}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no final result received")
-}
-
-func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSON, optionsJSON []byte) (<-chan *workerplugin.StreamResult, error) {
-	method, ok := baml_rest.Methods[methodName]
-	if !ok {
-		return nil, fmt.Errorf("method %q not found", methodName)
-	}
-
-	// Parse input
-	input := method.MakeInput()
-	if err := json.Unmarshal(inputJSON, input); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
-	}
-
-	// Parse options
-	var options workerBamlOptions
-	if len(optionsJSON) > 0 {
-		if err := json.Unmarshal(optionsJSON, &options); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal options: %w", err)
-		}
-	}
-
-	// Create adapter and apply options
-	adapter := baml_rest.MakeAdapter(ctx)
-	if err := options.apply(adapter); err != nil {
-		return nil, fmt.Errorf("failed to apply options: %w", err)
-	}
-
-	// Execute the method
-	resultChan, err := method.Impl(adapter, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call method: %w", err)
-	}
-
-	// Convert to plugin stream results
-	out := make(chan *workerplugin.StreamResult)
-	go func() {
-		defer close(out)
-		for result := range resultChan {
-			var pluginResult *workerplugin.StreamResult
-
-			switch result.Kind() {
-			case bamlutils.StreamResultKindError:
-				pluginResult = &workerplugin.StreamResult{
-					Kind:  workerplugin.StreamResultKindError,
-					Error: result.Error(),
-				}
-			case bamlutils.StreamResultKindStream:
-				data, err := json.Marshal(result.Stream())
-				if err != nil {
-					pluginResult = &workerplugin.StreamResult{
-						Kind:  workerplugin.StreamResultKindError,
-						Error: fmt.Errorf("failed to marshal stream result: %w", err),
-					}
-				} else {
-					pluginResult = &workerplugin.StreamResult{
-						Kind: workerplugin.StreamResultKindStream,
-						Data: data,
-						Raw:  result.Raw(),
-					}
-				}
-			case bamlutils.StreamResultKindFinal:
-				data, err := json.Marshal(result.Final())
-				if err != nil {
-					pluginResult = &workerplugin.StreamResult{
-						Kind:  workerplugin.StreamResultKindError,
-						Error: fmt.Errorf("failed to marshal final result: %w", err),
-					}
-				} else {
-					pluginResult = &workerplugin.StreamResult{
-						Kind: workerplugin.StreamResultKindFinal,
-						Data: data,
-						Raw:  result.Raw(),
-					}
-				}
-			}
-
-			select {
-			case out <- pluginResult:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return out, nil
-}
-
-func (w *workerImpl) Health(ctx context.Context) (bool, error) {
-	return true, nil
 }
