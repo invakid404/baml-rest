@@ -223,37 +223,174 @@ func Generate(selfPkg string) {
 				})),
 			)
 
-		// Generate the method implementation using sync + onTick + ParseStream
-		var methodBody []jen.Code
-
-		// Get options from adapter
-		methodBody = append(methodBody,
-			jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id("makeOptionsFromAdapter").Call(jen.Id("adapter")),
-			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				jen.Return(jen.Nil(), jen.Id("err")),
-			),
-		)
-
-		// Only define `input` if the prompt has arguments
-		if len(args) > 0 {
-			methodBody = append(methodBody,
-				jen.List(jen.Id("input"), jen.Id("ok")).Op(":=").Id("rawInput").Assert(jen.Op("*").Id(inputStructName)),
-				jen.If(jen.Op("!").Id("ok")).Block(
-					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
-						jen.Lit("invalid input type: expected *%s, got %T"),
-						jen.Lit(inputStructName),
-						jen.Id("rawInput"),
-					)),
-				),
-			)
-		}
-
-		// Initialize queue, context, WaitGroup, and mutex for async partial processing
 		streamResultInterface := jen.Qual(common.InterfacesPkg, "StreamResult")
 
-		methodBody = append(methodBody,
-			// Output channel for results
-			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
+		// Helper: common preamble for both implementations
+		// Inner methods return only error, so early returns just return the error
+		makePreamble := func() []jen.Code {
+			preamble := []jen.Code{
+				jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id("makeOptionsFromAdapter").Call(jen.Id("adapter")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Id("err")),
+				),
+			}
+			if len(args) > 0 {
+				preamble = append(preamble,
+					jen.List(jen.Id("input"), jen.Id("ok")).Op(":=").Id("rawInput").Assert(jen.Op("*").Id(inputStructName)),
+					jen.If(jen.Op("!").Id("ok")).Block(
+						jen.Return(jen.Qual("fmt", "Errorf").Call(
+							jen.Lit("invalid input type: expected *%s, got %T"),
+							jen.Lit(inputStructName),
+							jen.Id("rawInput"),
+						)),
+					),
+				)
+			}
+			return preamble
+		}
+
+		// Build call parameters for Stream method
+		var streamCallParams []jen.Code
+		streamCallParams = append(streamCallParams, jen.Id("adapter")) // context
+		for _, arg := range args {
+			argName := strcase.UpperCamelCase(arg)
+			streamCallParams = append(streamCallParams, jen.Id("input").Dot(argName))
+		}
+		streamCallParams = append(streamCallParams,
+			jen.Append(
+				jen.Index().Qual(common.GeneratedClientPkg, "CallOptionFunc").Values(
+					jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
+				),
+				jen.Id("options").Op("..."),
+			).Op("..."),
+		)
+
+		// ====== SIMPLIFIED IMPLEMENTATION: methodName_noRaw ======
+		// This path uses BAML's native streaming without raw collection overhead.
+		// Partials come directly from BAML's stream, no OnTick/SSE parsing needed.
+		noRawMethodName := strcase.LowerCamelCase(methodName + "_noRaw")
+
+		// Build call parameters for Stream method WITHOUT OnTick
+		var streamCallParamsNoOnTick []jen.Code
+		streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, jen.Id("adapter")) // context
+		for _, arg := range args {
+			argName := strcase.UpperCamelCase(arg)
+			streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, jen.Id("input").Dot(argName))
+		}
+		streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, jen.Id("options").Op("..."))
+
+		// noRaw goroutine body - wrapped in gorecovery.GoHandler for panic resilience
+		noRawGoroutineBody := []jen.Code{
+			// Call Stream WITHOUT OnTick - use BAML's native streaming
+			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
+				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(streamCallParamsNoOnTick...),
+
+			// If stream creation failed, emit error
+			jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
+				jen.Select().Block(
+					jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("streamErr"))).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+				),
+				jen.Return(jen.Nil()),
+			),
+
+			// Process BAML's stream - forward partials and final
+			jen.For(jen.Id("streamVal").Op(":=").Range().Id("stream")).Block(
+				// Check context cancellation at start of each iteration
+				jen.Select().Block(
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Return(jen.Nil()),
+					),
+					jen.Default().Block(),
+				),
+
+				// Handle errors
+				jen.If(jen.Id("streamVal").Dot("IsError")).Block(
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("streamVal").Dot("Error"))).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.Return(jen.Nil()),
+						),
+					),
+					jen.Continue(),
+				),
+
+				// Handle final result
+				// Final() returns *TFinal - already a pointer, use directly
+				jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
+							jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindFinal"),
+							jen.Id("parsed"): jen.Id("streamVal").Dot("Final").Call(),
+						})).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.Return(jen.Nil()),
+						),
+					),
+					jen.Continue(),
+				),
+
+				// Handle partial - forward BAML's native partial via Stream()
+				// Stream() returns *TStream - already a pointer, use directly
+				jen.If(jen.Id("partial").Op(":=").Id("streamVal").Dot("Stream").Call(), jen.Id("partial").Op("!=").Nil()).Block(
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
+							jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindStream"),
+							jen.Id("parsed"): jen.Id("partial"),
+						})).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.Return(jen.Nil()),
+						),
+						jen.Default().Block(), // Non-blocking send for partials
+					),
+				),
+			),
+
+			jen.Return(jen.Nil()),
+		}
+
+		noRawBody := makePreamble()
+		noRawBody = append(noRawBody,
+			// Stream goroutine - uses BAML's native streaming, forwards partials directly
+			// Wrapped in gorecovery.GoHandler for panic resilience
+			jen.Go().Func().Params().Block(
+				jen.Defer().Close(jen.Id("out")),
+				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
+					// Error handler - emit panic as error to output channel
+					jen.Func().Params(jen.Id("err").Error()).Block(
+						jen.Select().Block(
+							jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("err"))).Block(),
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+						),
+					),
+					// Main goroutine function
+					jen.Func().Params().Error().Block(noRawGoroutineBody...),
+				),
+			).Call(),
+
+			jen.Return(jen.Nil()),
+		)
+
+		// Generate the noRaw implementation function
+		// Accepts output channel from caller, returns only error
+		out.Func().
+			Id(noRawMethodName).
+			Params(
+				jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+				jen.Id("rawInput").Any(),
+				jen.Id("out").Chan().Add(streamResultInterface.Clone()),
+			).
+			Error().
+			Block(noRawBody...)
+
+		// ====== FULL IMPLEMENTATION: methodName_full ======
+		// This path uses the ParseStream goroutine for partial results
+		fullMethodName := strcase.LowerCamelCase(methodName + "_full")
+
+		var fullBody []jen.Code
+		fullBody = append(fullBody, makePreamble()...)
+
+		fullBody = append(fullBody,
 			// Unbounded queue for passing raw text from OnTick to partials goroutine (never drops)
 			jen.Id("rawQueue").Op(":=").Qual(common.GoConcurrentQueuePkg, "NewFIFO").Call(),
 			// Context to signal partials goroutine to stop
@@ -325,7 +462,7 @@ func Generate(selfPkg string) {
 
 		// Watcher goroutine: trigger shutdown when adapter (HTTP request) is cancelled
 		// This ensures prompt cleanup on client disconnect while respecting shutdown ordering
-		methodBody = append(methodBody,
+		fullBody = append(fullBody,
 			jen.Go().Func().Params().Block(
 				jen.Op("<-").Id("adapter").Dot("Done").Call(),
 				jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
@@ -451,26 +588,6 @@ func Generate(selfPkg string) {
 
 			jen.Return(jen.Nil()),
 		}
-
-		// Build the call parameters for the Stream method
-		var streamCallParams []jen.Code
-		streamCallParams = append(streamCallParams, jen.Id("adapter")) // context
-
-		for _, arg := range args {
-			argName := strcase.UpperCamelCase(arg)
-			streamCallParams = append(streamCallParams, jen.Id("input").Dot(argName))
-		}
-
-		// Add all options: prepend WithOnTick to the options slice
-		// This generates: append([]CallOptionFunc{WithOnTick(onTick)}, options...)...
-		streamCallParams = append(streamCallParams,
-			jen.Append(
-				jen.Index().Qual(common.GeneratedClientPkg, "CallOptionFunc").Values(
-					jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
-				),
-				jen.Id("options").Op("..."),
-			).Op("..."),
-		)
 
 		// Helper to decrement pending and maybe close allDone
 		decrementPending := []jen.Code{
@@ -690,7 +807,7 @@ func Generate(selfPkg string) {
 		}
 
 		// Define the onTick callback variable
-		methodBody = append(methodBody,
+		fullBody = append(fullBody,
 			jen.Id("onTick").Op(":=").Func().Params(
 				jen.Id("ctx").Qual("context", "Context"),
 				jen.Id("reason").Qual(BamlPkg, "TickReason"),
@@ -699,7 +816,7 @@ func Generate(selfPkg string) {
 		)
 
 		// Start the partials processing goroutine wrapped in GoHandler for panic safety
-		methodBody = append(methodBody,
+		fullBody = append(fullBody,
 			jen.Go().Func().Params().Block(
 				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 					jen.Id("errHandler"),
@@ -714,7 +831,7 @@ func Generate(selfPkg string) {
 		}
 
 		// Start the stream drain goroutine (drains stream, cancels queue context, waits for partials, emits final)
-		methodBody = append(methodBody,
+		fullBody = append(fullBody,
 			jen.Go().Func().Params().Block(
 				jen.Defer().Close(jen.Id("out")),
 				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
@@ -734,9 +851,37 @@ func Generate(selfPkg string) {
 		)
 
 		// Return the channel
-		methodBody = append(methodBody,
-			jen.Return(jen.Id("out"), jen.Nil()),
+		fullBody = append(fullBody,
+			jen.Return(jen.Nil()),
 		)
+
+		// Generate the full implementation function
+		// Accepts output channel from caller, returns only error
+		out.Func().
+			Id(fullMethodName).
+			Params(
+				jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+				jen.Id("rawInput").Any(),
+				jen.Id("out").Chan().Add(streamResultInterface.Clone()),
+			).
+			Error().
+			Block(fullBody...)
+
+		// Generate the public router function that dispatches based on RawCollectionEnabled()
+		// Creates the output channel and passes it to the inner implementation
+		routerBody := []jen.Code{
+			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
+			jen.Var().Id("err").Error(),
+			jen.If(jen.Id("adapter").Dot("RawCollectionEnabled").Call()).Block(
+				jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out")),
+			).Else().Block(
+				jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out")),
+			),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Id("err")),
+			),
+			jen.Return(jen.Id("out"), jen.Nil()),
+		}
 
 		out.Func().
 			Id(methodName).
@@ -749,7 +894,7 @@ func Generate(selfPkg string) {
 					jen.Op("<-").Chan().Add(streamResultInterface.Clone()),
 					jen.Error(),
 				)).
-			Block(methodBody...)
+			Block(routerBody...)
 
 		methods = append(methods, methodOut{
 			name:             methodName,

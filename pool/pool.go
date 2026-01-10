@@ -320,7 +320,7 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 }
 
 // Call executes a BAML method and returns the final result
-func (p *Pool) Call(ctx context.Context, methodName string, inputJSON, optionsJSON []byte) (*workerplugin.CallResult, error) {
+func (p *Pool) Call(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (*workerplugin.CallResult, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
@@ -348,7 +348,7 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON, optionsJS
 		handle.lastUsed = time.Now()
 		handle.mu.Unlock()
 
-		result, err := handle.worker.Call(attemptCtx, methodName, inputJSON, optionsJSON)
+		result, err := handle.worker.Call(attemptCtx, methodName, inputJSON, optionsJSON, enableRawCollection)
 
 		// Unregister request
 		handle.inFlightMu.Lock()
@@ -387,7 +387,7 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON, optionsJS
 }
 
 // CallStream executes a BAML method and streams results
-func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON, optionsJSON []byte) (<-chan *workerplugin.StreamResult, error) {
+func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (<-chan *workerplugin.StreamResult, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
@@ -415,7 +415,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON, opt
 		handle.lastUsed = time.Now()
 		handle.mu.Unlock()
 
-		results, err := handle.worker.CallStream(attemptCtx, methodName, inputJSON, optionsJSON)
+		results, err := handle.worker.CallStream(attemptCtx, methodName, inputJSON, optionsJSON, enableRawCollection)
 		if err != nil {
 			// Unregister request
 			handle.inFlightMu.Lock()

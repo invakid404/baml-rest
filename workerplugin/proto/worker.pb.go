@@ -72,12 +72,13 @@ func (StreamResult_Kind) EnumDescriptor() ([]byte, []int) {
 
 // Request to call a BAML method
 type CallRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MethodName    string                 `protobuf:"bytes,1,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
-	InputJson     []byte                 `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`       // JSON-encoded input struct
-	OptionsJson   []byte                 `protobuf:"bytes,3,opt,name=options_json,json=optionsJson,proto3" json:"options_json,omitempty"` // JSON-encoded BamlOptions (client_registry, type_builder)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	MethodName          string                 `protobuf:"bytes,1,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
+	InputJson           []byte                 `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`                                  // JSON-encoded input struct
+	OptionsJson         []byte                 `protobuf:"bytes,3,opt,name=options_json,json=optionsJson,proto3" json:"options_json,omitempty"`                            // JSON-encoded BamlOptions (client_registry, type_builder)
+	EnableRawCollection bool                   `protobuf:"varint,4,opt,name=enable_raw_collection,json=enableRawCollection,proto3" json:"enable_raw_collection,omitempty"` // When true, capture raw LLM response via OnTick/SSE parsing
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *CallRequest) Reset() {
@@ -129,6 +130,13 @@ func (x *CallRequest) GetOptionsJson() []byte {
 		return x.OptionsJson
 	}
 	return nil
+}
+
+func (x *CallRequest) GetEnableRawCollection() bool {
+	if x != nil {
+		return x.EnableRawCollection
+	}
+	return false
 }
 
 // Response for unary call (non-streaming)
@@ -346,13 +354,14 @@ var File_workerplugin_proto_worker_proto protoreflect.FileDescriptor
 
 const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x1fworkerplugin/proto/worker.proto\x12\fworkerplugin\"p\n" +
+	"\x1fworkerplugin/proto/worker.proto\x12\fworkerplugin\"\xa4\x01\n" +
 	"\vCallRequest\x12\x1f\n" +
 	"\vmethod_name\x18\x01 \x01(\tR\n" +
 	"methodName\x12\x1d\n" +
 	"\n" +
 	"input_json\x18\x02 \x01(\fR\tinputJson\x12!\n" +
-	"\foptions_json\x18\x03 \x01(\fR\voptionsJson\"S\n" +
+	"\foptions_json\x18\x03 \x01(\fR\voptionsJson\x122\n" +
+	"\x15enable_raw_collection\x18\x04 \x01(\bR\x13enableRawCollection\"S\n" +
 	"\fCallResponse\x12\x1b\n" +
 	"\tdata_json\x18\x01 \x01(\fR\bdataJson\x12\x10\n" +
 	"\x03raw\x18\x02 \x01(\tR\x03raw\x12\x14\n" +
