@@ -27,6 +27,8 @@ type Config struct {
 	FirstByteTimeout time.Duration
 	// Logger for pool operations
 	Logger *slog.Logger
+	// WorkerPath is the path to the worker binary (required)
+	WorkerPath string
 }
 
 // DefaultConfig returns a default configuration
@@ -50,7 +52,6 @@ type inFlightRequest struct {
 // Pool manages a pool of worker processes
 type Pool struct {
 	config    *Config
-	execPath  string // path to current executable
 	workers   []*workerHandle
 	mu        sync.RWMutex
 	next      atomic.Uint64
@@ -74,6 +75,9 @@ type workerHandle struct {
 
 // New creates a new worker pool
 func New(config *Config) (*Pool, error) {
+	if config.WorkerPath == "" {
+		return nil, fmt.Errorf("WorkerPath is required")
+	}
 	if config.PoolSize <= 0 {
 		config.PoolSize = 4
 	}
@@ -81,17 +85,10 @@ func New(config *Config) (*Pool, error) {
 		config.Logger = slog.Default()
 	}
 
-	// Get the path to the current executable
-	execPath, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get executable path: %w", err)
-	}
-
 	p := &Pool{
-		config:   config,
-		execPath: execPath,
-		workers:  make([]*workerHandle, config.PoolSize),
-		done:     make(chan struct{}),
+		config:  config,
+		workers: make([]*workerHandle, config.PoolSize),
+		done:    make(chan struct{}),
 	}
 
 	// Start workers
@@ -115,8 +112,7 @@ func New(config *Config) (*Pool, error) {
 }
 
 func (p *Pool) startWorker(id int) (*workerHandle, error) {
-	// Spawn self with "worker" subcommand
-	cmd := exec.Command(p.execPath, "worker")
+	cmd := exec.Command(p.config.WorkerPath)
 
 	// If BAML logging is enabled (not "off"), configure LSP mode so logs go through
 	// go-plugin's hclog instead of stdout (which would corrupt the gRPC protocol)

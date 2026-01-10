@@ -837,6 +837,13 @@ func Generate(selfPkg string) {
 			jen.Return(jen.Id("result"), jen.Nil()),
 		)
 
+	// Generate `InitBamlRuntime` - wrapper for baml_client.InitRuntime()
+	out.Func().Id("InitBamlRuntime").
+		Params().
+		Block(
+			jen.Qual(common.GeneratedClientPkg, "InitRuntime").Call(),
+		)
+
 	if err := common.Commit(out); err != nil {
 		panic(err)
 	}

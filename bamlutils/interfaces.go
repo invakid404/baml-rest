@@ -58,3 +58,9 @@ type Adapter interface {
 	SetClientRegistry(clientRegistry *ClientRegistry) error
 	SetTypeBuilder(typeBuilder *TypeBuilder) error
 }
+
+// BamlOptions contains optional configuration for BAML method calls
+type BamlOptions struct {
+	ClientRegistry *ClientRegistry `json:"client_registry"`
+	TypeBuilder    *TypeBuilder    `json:"type_builder"`
+}
