@@ -220,7 +220,7 @@ var serveCmd = &cobra.Command{
 			logger.Info("Registering prompt: " + methodName)
 
 			r.Post(fmt.Sprintf("/call/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancel := context.WithCancel(r.Context())
 				defer cancel()
 
 				rawBody, err := io.ReadAll(r.Body)
@@ -241,7 +241,7 @@ var serveCmd = &cobra.Command{
 			})
 
 			r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancel := context.WithCancel(r.Context())
 				defer cancel()
 
 				rawBody, err := io.ReadAll(r.Body)
