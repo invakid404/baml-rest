@@ -26,7 +26,6 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/gregwebs/go-recovery"
-	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/tmaxmax/go-sse"
@@ -230,7 +229,7 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody)
+				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody, false)
 				if err != nil {
 					_ = httplog.SetError(r.Context(), err)
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
@@ -251,7 +250,7 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody)
+				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody, true)
 				if err != nil {
 					_ = httplog.SetError(r.Context(), err)
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
@@ -295,7 +294,7 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				results, err := workerPool.CallStream(ctx, methodName, rawBody, rawBody)
+				results, err := workerPool.CallStream(ctx, methodName, rawBody, rawBody, false)
 				if err != nil {
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 					return

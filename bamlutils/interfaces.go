@@ -57,6 +57,12 @@ type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
 	SetTypeBuilder(typeBuilder *TypeBuilder) error
+	// SetRawCollection enables or disables raw LLM response collection.
+	// When true, the OnTick callback captures raw SSE data for the Raw() method.
+	// When false, just uses BAML's native streaming without raw collection overhead.
+	SetRawCollection(enabled bool)
+	// RawCollectionEnabled returns whether raw LLM response collection is enabled.
+	RawCollectionEnabled() bool
 }
 
 // BamlOptions contains optional configuration for BAML method calls
