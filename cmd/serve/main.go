@@ -225,50 +225,38 @@ var serveCmd = &cobra.Command{
 
 			logger.Info().Str("prompt", methodName).Msg("Registering prompt")
 
-			r.Post(fmt.Sprintf("/call/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
-				ctx, cancel := context.WithCancel(r.Context())
-				defer cancel()
+			makeCallHandler := func(enableRawCollection bool) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					ctx, cancel := context.WithCancel(r.Context())
+					defer cancel()
 
-				rawBody, err := io.ReadAll(r.Body)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
-					return
+					rawBody, err := io.ReadAll(r.Body)
+					if err != nil {
+						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						return
+					}
+
+					result, err := workerPool.Call(ctx, methodName, rawBody, enableRawCollection)
+					if err != nil {
+						httplogger.SetError(r.Context(), err)
+						http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
+						return
+					}
+
+					w.Header().Set("Content-Type", "application/json")
+					if enableRawCollection {
+						render.JSON(w, r, CallWithRawResponse{
+							Data: result.Data,
+							Raw:  result.Raw,
+						})
+					} else {
+						_, _ = w.Write(result.Data)
+					}
 				}
+			}
 
-				result, err := workerPool.Call(ctx, methodName, rawBody, false)
-				if err != nil {
-					httplogger.SetError(r.Context(), err)
-					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
-					return
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write(result.Data)
-			})
-
-			r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
-				ctx, cancel := context.WithCancel(r.Context())
-				defer cancel()
-
-				rawBody, err := io.ReadAll(r.Body)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
-					return
-				}
-
-				result, err := workerPool.Call(ctx, methodName, rawBody, true)
-				if err != nil {
-					httplogger.SetError(r.Context(), err)
-					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
-					return
-				}
-
-				// Use json.RawMessage to embed pre-serialized data without re-parsing
-				render.JSON(w, r, CallWithRawResponse{
-					Data: result.Data,
-					Raw:  result.Raw,
-				})
-			})
+			r.Post(fmt.Sprintf("/call/%s", methodName), makeCallHandler(false))
+			r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(true))
 
 			makeStreamHandler := func(pathPrefix string, enableRawCollection bool) http.HandlerFunc {
 				return func(w http.ResponseWriter, r *http.Request) {
