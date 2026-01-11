@@ -499,6 +499,11 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					req.gotFirstByte.Store(true)
 				}
 
+				// Filter out heartbeat - it's only for first-byte tracking, not for consumers
+				if result.Kind == workerplugin.StreamResultKindHeartbeat {
+					continue
+				}
+
 				select {
 				case wrappedResults <- result:
 				case <-ctx.Done():

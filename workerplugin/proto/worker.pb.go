@@ -24,9 +24,10 @@ const (
 type StreamResult_Kind int32
 
 const (
-	StreamResult_STREAM StreamResult_Kind = 0
-	StreamResult_FINAL  StreamResult_Kind = 1
-	StreamResult_ERROR  StreamResult_Kind = 2
+	StreamResult_STREAM    StreamResult_Kind = 0
+	StreamResult_FINAL     StreamResult_Kind = 1
+	StreamResult_ERROR     StreamResult_Kind = 2
+	StreamResult_HEARTBEAT StreamResult_Kind = 3 // Signals first byte received from LLM (filtered at pool level)
 )
 
 // Enum value maps for StreamResult_Kind.
@@ -35,11 +36,13 @@ var (
 		0: "STREAM",
 		1: "FINAL",
 		2: "ERROR",
+		3: "HEARTBEAT",
 	}
 	StreamResult_Kind_value = map[string]int32{
-		"STREAM": 0,
-		"FINAL":  1,
-		"ERROR":  2,
+		"STREAM":    0,
+		"FINAL":     1,
+		"ERROR":     2,
+		"HEARTBEAT": 3,
 	}
 )
 
@@ -291,17 +294,18 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"methodName\x12\x1d\n" +
 	"\n" +
 	"input_json\x18\x02 \x01(\fR\tinputJson\x122\n" +
-	"\x15enable_raw_collection\x18\x03 \x01(\bR\x13enableRawCollection\"\xb2\x01\n" +
+	"\x15enable_raw_collection\x18\x03 \x01(\bR\x13enableRawCollection\"\xc1\x01\n" +
 	"\fStreamResult\x123\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1f.workerplugin.StreamResult.KindR\x04kind\x12\x1b\n" +
 	"\tdata_json\x18\x02 \x01(\fR\bdataJson\x12\x10\n" +
 	"\x03raw\x18\x03 \x01(\tR\x03raw\x12\x14\n" +
-	"\x05error\x18\x04 \x01(\tR\x05error\"(\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\"7\n" +
 	"\x04Kind\x12\n" +
 	"\n" +
 	"\x06STREAM\x10\x00\x12\t\n" +
 	"\x05FINAL\x10\x01\x12\t\n" +
-	"\x05ERROR\x10\x02\"\a\n" +
+	"\x05ERROR\x10\x02\x12\r\n" +
+	"\tHEARTBEAT\x10\x03\"\a\n" +
 	"\x05Empty\"*\n" +
 	"\x0eHealthResponse\x12\x18\n" +
 	"\ahealthy\x18\x01 \x01(\bR\ahealthy2\x8c\x01\n" +

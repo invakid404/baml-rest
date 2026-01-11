@@ -124,6 +124,10 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 						Raw:  result.Raw(),
 					}
 				}
+			case bamlutils.StreamResultKindHeartbeat:
+				pluginResult = &workerplugin.StreamResult{
+					Kind: workerplugin.StreamResultKindHeartbeat,
+				}
 			}
 
 			select {

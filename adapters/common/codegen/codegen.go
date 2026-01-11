@@ -270,18 +270,26 @@ func Generate(selfPkg string) {
 		// Partials come directly from BAML's stream, no OnTick/SSE parsing needed.
 		noRawMethodName := strcase.LowerCamelCase(methodName + "_noRaw")
 
-		// Build call parameters for Stream method WITHOUT OnTick
+		// Build call parameters for Stream method WITH OnTick for heartbeat tracking
+		// The OnTick callback is lightweight - it only sends a heartbeat on first invocation
 		var streamCallParamsNoOnTick []jen.Code
 		streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, jen.Id("adapter")) // context
 		for _, arg := range args {
 			argName := strcase.UpperCamelCase(arg)
 			streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, jen.Id("input").Dot(argName))
 		}
-		streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, jen.Id("options").Op("..."))
+		streamCallParamsNoOnTick = append(streamCallParamsNoOnTick,
+			jen.Append(
+				jen.Index().Qual(common.GeneratedClientPkg, "CallOptionFunc").Values(
+					jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
+				),
+				jen.Id("options").Op("..."),
+			).Op("..."),
+		)
 
 		// noRaw goroutine body - wrapped in gorecovery.GoHandler for panic resilience
 		noRawGoroutineBody := []jen.Code{
-			// Call Stream WITHOUT OnTick - use BAML's native streaming
+			// Call Stream WITH OnTick for heartbeat tracking, but still use native streaming for data
 			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
 				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(streamCallParamsNoOnTick...),
 
@@ -350,6 +358,42 @@ func Generate(selfPkg string) {
 		}
 
 		noRawBody := makePreamble()
+
+		// Add heartbeat tracking state - sends a single heartbeat when first data is received
+		noRawBody = append(noRawBody,
+			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
+		)
+
+		// Define lightweight onTick callback that only sends heartbeat on first invocation
+		// Unlike the _full implementation, this doesn't process FunctionLog - it just signals "data received"
+		noRawOnTickBody := []jen.Code{
+			jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+				// Check adapter.Done() first to avoid race with channel close on cancellation
+				jen.Select().Block(
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Return(jen.Nil()),
+					),
+					jen.Default().Block(),
+				),
+				// Send heartbeat - non-blocking to avoid blocking BAML
+				jen.Select().Block(
+					jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
+						jen.Id("kind"): jen.Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
+					})).Block(),
+					jen.Default().Block(),
+				),
+			),
+			jen.Return(jen.Nil()),
+		}
+
+		noRawBody = append(noRawBody,
+			jen.Id("onTick").Op(":=").Func().Params(
+				jen.Id("_").Qual("context", "Context"),
+				jen.Id("_").Qual(BamlPkg, "TickReason"),
+				jen.Id("_").Qual(BamlPkg, "FunctionLog"),
+			).Qual(BamlPkg, "FunctionSignal").Block(noRawOnTickBody...),
+		)
+
 		noRawBody = append(noRawBody,
 			// Stream goroutine - uses BAML's native streaming, forwards partials directly
 			// Wrapped in gorecovery.GoHandler for panic resilience
