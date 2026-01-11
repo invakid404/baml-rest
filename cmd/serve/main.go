@@ -26,6 +26,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/gregwebs/go-recovery"
+	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/tmaxmax/go-sse"
@@ -308,7 +309,10 @@ var serveCmd = &cobra.Command{
 							message.AppendData(result.Error.Error())
 						}
 					case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
-						message.AppendData(string(result.Data))
+						// SAFETY: result.Data is owned by this goroutine, used only for this
+						// AppendData call, and never modified afterward. The string is consumed
+						// immediately by the SSE library.
+						message.AppendData(unsafeutil.BytesToString(result.Data))
 					}
 
 					if err := s.Publish(message, topic); err != nil {
