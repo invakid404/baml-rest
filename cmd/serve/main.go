@@ -23,6 +23,10 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/internal/httplogger"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -203,6 +207,19 @@ var serveCmd = &cobra.Command{
 			RecoverPanics: true,
 		}))
 		r.Use(middleware.Recoverer)
+
+		// Set up Prometheus metrics with prefix
+		metricsReg := prometheus.NewRegistry()
+		metricsReg.MustRegister(
+			collectors.NewGoCollector(),
+			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		)
+
+		// Add /metrics endpoint for Prometheus scraping
+		r.Handle("/metrics", promhttp.HandlerFor(
+			prefixGatherer{prefix: "bamlrest_", gatherer: metricsReg},
+			promhttp.HandlerOpts{},
+		))
 
 		// Add /openapi.json endpoint
 		r.Get("/openapi.json", func(w http.ResponseWriter, r *http.Request) {
@@ -443,4 +460,22 @@ func main() {
 type CallWithRawResponse struct {
 	Data json.RawMessage `json:"data"`
 	Raw  string          `json:"raw"`
+}
+
+// prefixGatherer wraps a prometheus.Gatherer and adds a prefix to all metric names
+type prefixGatherer struct {
+	prefix   string
+	gatherer prometheus.Gatherer
+}
+
+func (p prefixGatherer) Gather() ([]*dto.MetricFamily, error) {
+	mfs, err := p.gatherer.Gather()
+	if err != nil {
+		return nil, err
+	}
+	for _, mf := range mfs {
+		name := p.prefix + mf.GetName()
+		mf.Name = &name
+	}
+	return mfs, nil
 }
