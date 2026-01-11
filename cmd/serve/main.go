@@ -257,16 +257,9 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				// Unmarshal data and create response with raw
-				var data any
-				if err := json.Unmarshal(result.Data, &data); err != nil {
-					_ = httplog.SetError(r.Context(), err)
-					http.Error(w, fmt.Sprintf("Error unmarshaling result: %v", err), http.StatusInternalServerError)
-					return
-				}
-
+				// Use json.RawMessage to embed pre-serialized data without re-parsing
 				render.JSON(w, r, CallWithRawResponse{
-					Data: data,
+					Data: result.Data,
 					Raw:  result.Raw,
 				})
 			})
@@ -400,6 +393,6 @@ func main() {
 
 // CallWithRawResponse is the response format for the /call-with-raw endpoint
 type CallWithRawResponse struct {
-	Data any    `json:"data"`
-	Raw  string `json:"raw"`
+	Data json.RawMessage `json:"data"`
+	Raw  string          `json:"raw"`
 }
