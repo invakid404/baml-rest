@@ -158,6 +158,7 @@ var (
 	outputPath  string
 	bamlVersion string
 	keepSource  string
+	prettyLogs  bool
 )
 
 func init() {
@@ -174,6 +175,7 @@ func init() {
 		var configFileNotFoundError viper.ConfigFileNotFoundError
 		if !errors.As(err, &configFileNotFoundError) {
 			// Config file was found but another error was produced
+			// Note: prettyLogs flag not yet parsed at init time, use JSON format
 			logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
 			logger.Warn().Err(err).Msg("Error reading config file")
 		}
@@ -185,6 +187,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&bamlVersion, "baml-version", "b", "", "Specific BAML version to use (bypasses automatic version detection)")
 	rootCmd.Flags().StringVarP(&keepSource, "keep-source", "k", "", "Keep generated source files at specified path (default: /baml-rest-generated-src). Use --keep-source or --keep-source=<path>")
 	rootCmd.Flags().Lookup("keep-source").NoOptDefVal = "/baml-rest-generated-src"
+	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 
 	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
 	_ = viper.BindPFlag("target-image", rootCmd.Flags().Lookup("target-image"))
@@ -667,7 +670,11 @@ type dockerBuildMessage struct {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
+		var output io.Writer = os.Stderr
+		if prettyLogs {
+			output = zerolog.ConsoleWriter{Out: os.Stderr}
+		}
+		logger := zerolog.New(output).With().Timestamp().Logger()
 		logger.Fatal().Err(err).Msg("Command failed")
 	}
 }

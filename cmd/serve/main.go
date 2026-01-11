@@ -48,6 +48,7 @@ var (
 	port             int
 	poolSize         int
 	firstByteTimeout time.Duration
+	prettyLogs       bool
 )
 
 var rootCmd = &cobra.Command{
@@ -111,7 +112,11 @@ var serveCmd = &cobra.Command{
 	Short: "Start the BAML REST API server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Initialize zerolog logger
-		logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+		var output io.Writer = os.Stdout
+		if prettyLogs {
+			output = zerolog.ConsoleWriter{Out: os.Stdout}
+		}
+		logger := zerolog.New(output).With().Timestamp().Logger()
 
 		// Load OpenAPI schema from embedded JSON
 		var schema openapi3.T
@@ -140,7 +145,8 @@ var serveCmd = &cobra.Command{
 		poolConfig := pool.DefaultConfig()
 		poolConfig.PoolSize = poolSize
 		poolConfig.FirstByteTimeout = firstByteTimeout
-		poolConfig.Logger = logger
+		poolConfig.LogOutput = os.Stdout
+		poolConfig.PrettyLogs = prettyLogs
 		poolConfig.WorkerPath = workerPath
 
 		workerPool, err := pool.New(poolConfig)
@@ -376,6 +382,7 @@ func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
+	serveCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 
 	rootCmd.AddCommand(serveCmd)
 }
