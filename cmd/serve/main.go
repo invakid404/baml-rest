@@ -263,61 +263,80 @@ var serveCmd = &cobra.Command{
 				})
 			})
 
-			r.Post(fmt.Sprintf("/stream/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
-				topicUUID, err := uuid.NewRandom()
-				if err != nil {
-					httplogger.SetError(r.Context(), err)
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
+			makeStreamHandler := func(pathPrefix string, enableRawCollection bool) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					topicUUID, err := uuid.NewRandom()
+					if err != nil {
+						httplogger.SetError(r.Context(), err)
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
 
-				topic := fmt.Sprintf("stream/%s/%s", methodName, topicUUID.String())
+					topic := fmt.Sprintf("%s/%s/%s", pathPrefix, methodName, topicUUID.String())
 
-				ctx, cancel := context.WithCancel(
-					context.WithValue(r.Context(), sseContextKeyTopic, topic),
-				)
-				defer cancel()
+					ctx, cancel := context.WithCancel(
+						context.WithValue(r.Context(), sseContextKeyTopic, topic),
+					)
+					defer cancel()
 
-				r = r.WithContext(ctx)
+					r = r.WithContext(ctx)
 
-				rawBody, err := io.ReadAll(r.Body)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
-					return
-				}
+					rawBody, err := io.ReadAll(r.Body)
+					if err != nil {
+						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						return
+					}
 
-				results, err := workerPool.CallStream(ctx, methodName, rawBody, false)
-				if err != nil {
-					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
-					return
-				}
+					results, err := workerPool.CallStream(ctx, methodName, rawBody, enableRawCollection)
+					if err != nil {
+						http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
+						return
+					}
 
-				go recovery.Go(func() error {
-					s.ServeHTTP(w, r)
-					return nil
-				})
+					go recovery.Go(func() error {
+						s.ServeHTTP(w, r)
+						return nil
+					})
 
-				for result := range results {
-					message := &sse.Message{}
+					for result := range results {
+						message := &sse.Message{}
 
-					switch result.Kind {
-					case workerplugin.StreamResultKindError:
-						message.Type = sseErrorKind
-						if result.Error != nil {
-							message.AppendData(result.Error.Error())
+						switch result.Kind {
+						case workerplugin.StreamResultKindError:
+							message.Type = sseErrorKind
+							if result.Error != nil {
+								message.AppendData(result.Error.Error())
+							}
+						case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
+							data := result.Data
+							if enableRawCollection {
+								var err error
+								data, err = json.Marshal(CallWithRawResponse{
+									Data: result.Data,
+									Raw:  result.Raw,
+								})
+								if err != nil {
+									message.Type = sseErrorKind
+									message.AppendData(fmt.Sprintf("Failed to marshal response: %v", err))
+									_ = s.Publish(message, topic)
+									continue
+								}
+							}
+							// SAFETY: data is owned by this goroutine, used only for this
+							// AppendData call, and never modified afterward. The string is consumed
+							// immediately by the SSE library.
+							message.AppendData(unsafeutil.BytesToString(data))
 						}
-					case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
-						// SAFETY: result.Data is owned by this goroutine, used only for this
-						// AppendData call, and never modified afterward. The string is consumed
-						// immediately by the SSE library.
-						message.AppendData(unsafeutil.BytesToString(result.Data))
-					}
 
-					if err := s.Publish(message, topic); err != nil {
-						break
+						if err := s.Publish(message, topic); err != nil {
+							break
+						}
 					}
 				}
-			})
+			}
+
+			r.Post(fmt.Sprintf("/stream/%s", methodName), makeStreamHandler("stream", false))
+			r.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), makeStreamHandler("stream-with-raw", true))
 		}
 
 		// Create HTTP server
