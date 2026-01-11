@@ -9,23 +9,35 @@ import (
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/workerplugin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"google.golang.org/protobuf/proto"
 )
 
 func main() {
 	// Initialize BAML runtime - this loads the shared library
 	baml_rest.InitBamlRuntime()
 
+	// Set up Prometheus metrics registry for this worker
+	metricsReg := prometheus.NewRegistry()
+	metricsReg.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+
 	goplugin.Serve(&goplugin.ServeConfig{
 		HandshakeConfig: workerplugin.Handshake,
 		Plugins: map[string]goplugin.Plugin{
-			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{}},
+			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg}},
 		},
 		GRPCServer: goplugin.DefaultGRPCServer,
 	})
 }
 
 // workerImpl implements the workerplugin.Worker interface
-type workerImpl struct{}
+type workerImpl struct {
+	metricsReg *prometheus.Registry
+}
 
 // workerBamlOptions wraps the options for JSON parsing
 type workerBamlOptions struct {
@@ -136,4 +148,21 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 
 func (w *workerImpl) Health(ctx context.Context) (bool, error) {
 	return true, nil
+}
+
+func (w *workerImpl) GetMetrics(ctx context.Context) ([][]byte, error) {
+	mfs, err := w.metricsReg.Gather()
+	if err != nil {
+		return nil, fmt.Errorf("failed to gather metrics: %w", err)
+	}
+
+	result := make([][]byte, 0, len(mfs))
+	for _, mf := range mfs {
+		data, err := proto.Marshal(mf)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal metric family %s: %w", mf.GetName(), err)
+		}
+		result = append(result, data)
+	}
+	return result, nil
 }

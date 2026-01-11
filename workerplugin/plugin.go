@@ -77,6 +77,10 @@ type Worker interface {
 
 	// Health checks if the worker is healthy
 	Health(ctx context.Context) (bool, error)
+
+	// GetMetrics returns Prometheus metrics from the worker process.
+	// Returns serialized prometheus MetricFamily protos.
+	GetMetrics(ctx context.Context) ([][]byte, error)
 }
 
 // WorkerPlugin is the implementation of plugin.GRPCPlugin

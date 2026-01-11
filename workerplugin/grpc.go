@@ -46,6 +46,14 @@ func (s *GRPCServer) Health(ctx context.Context, req *pb.Empty) (*pb.HealthRespo
 	return &pb.HealthResponse{Healthy: healthy}, nil
 }
 
+func (s *GRPCServer) GetMetrics(ctx context.Context, req *pb.Empty) (*pb.MetricsResponse, error) {
+	metricFamilies, err := s.Impl.GetMetrics(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.MetricsResponse{MetricFamilies: metricFamilies}, nil
+}
+
 // GRPCClient is the gRPC client that connects to the plugin
 type GRPCClient struct {
 	client pb.WorkerClient
@@ -98,4 +106,12 @@ func (c *GRPCClient) Health(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return resp.Healthy, nil
+}
+
+func (c *GRPCClient) GetMetrics(ctx context.Context) ([][]byte, error) {
+	resp, err := c.client.GetMetrics(ctx, &pb.Empty{})
+	if err != nil {
+		return nil, err
+	}
+	return resp.MetricFamilies, nil
 }
