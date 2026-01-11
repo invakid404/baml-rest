@@ -440,7 +440,21 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					firstByte = true
 					req.gotFirstByte.Store(true)
 				}
-				wrappedResults <- result
+
+				select {
+				case wrappedResults <- result:
+				case <-ctx.Done():
+					// Consumer cancelled, drain remaining results to unblock gRPC goroutine
+					go func() { for range results {} }()
+					return
+				}
+
+				// FINAL and ERROR are terminal - drain any remaining results
+				// This prevents blocking if the gRPC stream sends more after terminal
+				if result.Kind == workerplugin.StreamResultKindFinal || result.Kind == workerplugin.StreamResultKindError {
+					go func() { for range results {} }()
+					return
+				}
 			}
 		}()
 
