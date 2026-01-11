@@ -52,6 +52,40 @@ type inFlightRequest struct {
 	cancel       context.CancelFunc
 }
 
+// inFlightRequestPool reduces allocations for request tracking
+var inFlightRequestPool = sync.Pool{
+	New: func() any {
+		return &inFlightRequest{}
+	},
+}
+
+// trackRequest registers an in-flight request and returns the request and a cleanup function.
+// The cleanup function unregisters the request, cancels the context, and returns the request to the pool.
+func (p *Pool) trackRequest(handle *workerHandle, cancel context.CancelFunc) (*inFlightRequest, func()) {
+	reqID := p.requestID.Add(1)
+
+	req := inFlightRequestPool.Get().(*inFlightRequest)
+	req.id = reqID
+	req.startedAt = time.Now()
+	req.gotFirstByte.Store(false)
+	req.cancel = cancel
+
+	handle.inFlightMu.Lock()
+	handle.inFlightReq[reqID] = req
+	handle.inFlightMu.Unlock()
+
+	cleanup := func() {
+		handle.inFlightMu.Lock()
+		delete(handle.inFlightReq, reqID)
+		handle.inFlightMu.Unlock()
+		cancel()
+		req.cancel = nil
+		inFlightRequestPool.Put(req)
+	}
+
+	return req, cleanup
+}
+
 // Pool manages a pool of worker processes
 type Pool struct {
 	config    *Config
@@ -325,7 +359,7 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 }
 
 // Call executes a BAML method and returns the final result
-func (p *Pool) Call(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (*workerplugin.CallResult, error) {
+func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (*workerplugin.CallResult, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
@@ -336,30 +370,14 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON, optionsJS
 
 		// Create cancellable context for this attempt
 		attemptCtx, cancel := context.WithCancel(ctx)
-
-		// Register in-flight request
-		reqID := p.requestID.Add(1)
-		req := &inFlightRequest{
-			id:        reqID,
-			startedAt: time.Now(),
-			cancel:    cancel,
-		}
-
-		handle.inFlightMu.Lock()
-		handle.inFlightReq[reqID] = req
-		handle.inFlightMu.Unlock()
+		_, cleanup := p.trackRequest(handle, cancel)
 
 		handle.mu.Lock()
 		handle.lastUsed = time.Now()
 		handle.mu.Unlock()
 
-		result, err := handle.worker.Call(attemptCtx, methodName, inputJSON, optionsJSON, enableRawCollection)
-
-		// Unregister request
-		handle.inFlightMu.Lock()
-		delete(handle.inFlightReq, reqID)
-		handle.inFlightMu.Unlock()
-		cancel()
+		result, err := handle.worker.Call(attemptCtx, methodName, inputJSON, enableRawCollection)
+		cleanup()
 
 		if err == nil {
 			return result, nil
@@ -392,7 +410,7 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON, optionsJS
 }
 
 // CallStream executes a BAML method and streams results
-func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (<-chan *workerplugin.StreamResult, error) {
+func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *workerplugin.StreamResult, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
@@ -403,31 +421,15 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON, opt
 
 		// Create cancellable context for this attempt
 		attemptCtx, cancel := context.WithCancel(ctx)
-
-		// Register in-flight request
-		reqID := p.requestID.Add(1)
-		req := &inFlightRequest{
-			id:        reqID,
-			startedAt: time.Now(),
-			cancel:    cancel,
-		}
-
-		handle.inFlightMu.Lock()
-		handle.inFlightReq[reqID] = req
-		handle.inFlightMu.Unlock()
+		req, cleanup := p.trackRequest(handle, cancel)
 
 		handle.mu.Lock()
 		handle.lastUsed = time.Now()
 		handle.mu.Unlock()
 
-		results, err := handle.worker.CallStream(attemptCtx, methodName, inputJSON, optionsJSON, enableRawCollection)
+		results, err := handle.worker.CallStream(attemptCtx, methodName, inputJSON, enableRawCollection)
 		if err != nil {
-			// Unregister request
-			handle.inFlightMu.Lock()
-			delete(handle.inFlightReq, reqID)
-			handle.inFlightMu.Unlock()
-			cancel()
-
+			cleanup()
 			lastErr = err
 
 			// Check if the parent context is cancelled (user cancelled)
@@ -456,12 +458,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON, opt
 		wrappedResults := make(chan *workerplugin.StreamResult)
 		go func() {
 			defer close(wrappedResults)
-			defer func() {
-				handle.inFlightMu.Lock()
-				delete(handle.inFlightReq, reqID)
-				handle.inFlightMu.Unlock()
-				cancel()
-			}()
+			defer cleanup()
 
 			firstByte := false
 			for result := range results {

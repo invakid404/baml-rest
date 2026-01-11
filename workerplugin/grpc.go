@@ -14,7 +14,7 @@ type GRPCServer struct {
 }
 
 func (s *GRPCServer) Call(ctx context.Context, req *pb.CallRequest) (*pb.CallResponse, error) {
-	result, err := s.Impl.Call(ctx, req.MethodName, req.InputJson, req.OptionsJson, req.EnableRawCollection)
+	result, err := s.Impl.Call(ctx, req.MethodName, req.InputJson, req.EnableRawCollection)
 	if err != nil {
 		return &pb.CallResponse{Error: err.Error()}, nil
 	}
@@ -25,7 +25,7 @@ func (s *GRPCServer) Call(ctx context.Context, req *pb.CallRequest) (*pb.CallRes
 }
 
 func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStreamServer) error {
-	results, err := s.Impl.CallStream(stream.Context(), req.MethodName, req.InputJson, req.OptionsJson, req.EnableRawCollection)
+	results, err := s.Impl.CallStream(stream.Context(), req.MethodName, req.InputJson, req.EnableRawCollection)
 	if err != nil {
 		return err
 	}
@@ -59,11 +59,10 @@ type GRPCClient struct {
 	client pb.WorkerClient
 }
 
-func (c *GRPCClient) Call(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (*CallResult, error) {
+func (c *GRPCClient) Call(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (*CallResult, error) {
 	resp, err := c.client.Call(ctx, &pb.CallRequest{
 		MethodName:          methodName,
 		InputJson:           inputJSON,
-		OptionsJson:         optionsJSON,
 		EnableRawCollection: enableRawCollection,
 	})
 	if err != nil {
@@ -78,11 +77,10 @@ func (c *GRPCClient) Call(ctx context.Context, methodName string, inputJSON, opt
 	}, nil
 }
 
-func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (<-chan *StreamResult, error) {
+func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *StreamResult, error) {
 	stream, err := c.client.CallStream(ctx, &pb.CallRequest{
 		MethodName:          methodName,
 		InputJson:           inputJSON,
-		OptionsJson:         optionsJSON,
 		EnableRawCollection: enableRawCollection,
 	})
 	if err != nil {

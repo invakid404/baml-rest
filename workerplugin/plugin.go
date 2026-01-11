@@ -46,10 +46,10 @@ const (
 // Worker is the interface that the plugin implements.
 type Worker interface {
 	// Call executes a BAML method and returns the final result
-	Call(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (*CallResult, error)
+	Call(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (*CallResult, error)
 
 	// CallStream executes a BAML method and streams results
-	CallStream(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (<-chan *StreamResult, error)
+	CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *StreamResult, error)
 
 	// Health checks if the worker is healthy
 	Health(ctx context.Context) (bool, error)

@@ -26,6 +26,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/gregwebs/go-recovery"
+	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/tmaxmax/go-sse"
@@ -229,7 +230,7 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody, false)
+				result, err := workerPool.Call(ctx, methodName, rawBody, false)
 				if err != nil {
 					_ = httplog.SetError(r.Context(), err)
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
@@ -250,23 +251,16 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody, true)
+				result, err := workerPool.Call(ctx, methodName, rawBody, true)
 				if err != nil {
 					_ = httplog.SetError(r.Context(), err)
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 					return
 				}
 
-				// Unmarshal data and create response with raw
-				var data any
-				if err := json.Unmarshal(result.Data, &data); err != nil {
-					_ = httplog.SetError(r.Context(), err)
-					http.Error(w, fmt.Sprintf("Error unmarshaling result: %v", err), http.StatusInternalServerError)
-					return
-				}
-
+				// Use json.RawMessage to embed pre-serialized data without re-parsing
 				render.JSON(w, r, CallWithRawResponse{
-					Data: data,
+					Data: result.Data,
 					Raw:  result.Raw,
 				})
 			})
@@ -294,7 +288,7 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				results, err := workerPool.CallStream(ctx, methodName, rawBody, rawBody, false)
+				results, err := workerPool.CallStream(ctx, methodName, rawBody, false)
 				if err != nil {
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 					return
@@ -315,7 +309,10 @@ var serveCmd = &cobra.Command{
 							message.AppendData(result.Error.Error())
 						}
 					case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
-						message.AppendData(string(result.Data))
+						// SAFETY: result.Data is owned by this goroutine, used only for this
+						// AppendData call, and never modified afterward. The string is consumed
+						// immediately by the SSE library.
+						message.AppendData(unsafeutil.BytesToString(result.Data))
 					}
 
 					if err := s.Publish(message, topic); err != nil {
@@ -400,6 +397,6 @@ func main() {
 
 // CallWithRawResponse is the response format for the /call-with-raw endpoint
 type CallWithRawResponse struct {
-	Data any    `json:"data"`
-	Raw  string `json:"raw"`
+	Data json.RawMessage `json:"data"`
+	Raw  string          `json:"raw"`
 }
