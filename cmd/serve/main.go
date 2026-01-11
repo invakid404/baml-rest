@@ -272,7 +272,7 @@ var serveCmd = &cobra.Command{
 
 			makeStreamHandler := func(pathPrefix string, enableRawCollection bool) http.HandlerFunc {
 				return func(w http.ResponseWriter, r *http.Request) {
-					topic := fmt.Sprintf("%s/%s/%s", pathPrefix, methodName, middleware.GetReqID(r.Context()))
+					topic := fmt.Sprintf("%s/%s/%p", pathPrefix, methodName, r)
 					ready := make(chan struct{})
 
 					ctx, cancel := context.WithCancel(
