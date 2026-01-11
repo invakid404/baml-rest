@@ -646,8 +646,14 @@ func Generate(selfPkg string) {
 								jen.Return(jen.Nil()),
 							),
 
-							// Update lastRawResponse for final capture
+							// Update lastRawResponse for final capture, skip if no change (avoid duplicate SSE messages)
+							// Calculate delta (only new content) before updating lastRawResponse
 							jen.Id("mu").Dot("Lock").Call(),
+							jen.If(jen.Id("raw").Op("==").Id("lastRawResponse")).Block(
+								jen.Id("mu").Dot("Unlock").Call(),
+								jen.Return(jen.Nil()),
+							),
+							jen.Id("rawDelta").Op(":=").Id("raw").Index(jen.Len(jen.Id("lastRawResponse")).Op(":")),
 							jen.Id("lastRawResponse").Op("=").Id("raw"),
 							jen.Id("mu").Dot("Unlock").Call(),
 
@@ -672,11 +678,11 @@ func Generate(selfPkg string) {
 								// ParseStream returns a concrete type - always take address for consistency
 								jen.Id("parsedPtr").Op(":=").Op("&").Id("parsed"),
 
-								// Best-effort send (non-blocking)
+								// Best-effort send (non-blocking) - send only delta to save bandwidth
 								jen.Select().Block(
 									jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
 										jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindStream"),
-										jen.Id("raw"):    jen.Id("raw"),
+										jen.Id("raw"):    jen.Id("rawDelta"),
 										jen.Id("parsed"): jen.Id("parsedPtr"),
 									})).Block(),
 									jen.Default().Block(),

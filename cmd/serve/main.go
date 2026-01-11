@@ -304,6 +304,9 @@ var serveCmd = &cobra.Command{
 						return
 					}
 
+					// Accumulate raw deltas for SSE output (internal gRPC sends deltas to save bandwidth)
+					var accumulatedRaw strings.Builder
+
 					for result := range results {
 						message := &sse.Message{}
 
@@ -316,10 +319,17 @@ var serveCmd = &cobra.Command{
 						case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
 							data := result.Data
 							if enableRawCollection {
+								// Stream messages contain deltas, Final contains full raw
+								rawForOutput := result.Raw
+								if result.Kind == workerplugin.StreamResultKindStream {
+									// Accumulate delta into full raw response for SSE output
+									accumulatedRaw.WriteString(result.Raw)
+									rawForOutput = accumulatedRaw.String()
+								}
 								var err error
 								data, err = json.Marshal(CallWithRawResponse{
 									Data: result.Data,
-									Raw:  result.Raw,
+									Raw:  rawForOutput,
 								})
 								if err != nil {
 									message.Type = sseErrorKind
