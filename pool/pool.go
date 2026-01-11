@@ -358,55 +358,29 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 	return nil, fmt.Errorf("no healthy workers available")
 }
 
-// Call executes a BAML method and returns the final result
+// Call executes a BAML method and returns the final result.
+// Internally uses CallStream to benefit from hung detection on first partial result.
 func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (*workerplugin.CallResult, error) {
-	var lastErr error
-
-	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
-		handle, err := p.getWorker()
-		if err != nil {
-			return nil, err
-		}
-
-		// Create cancellable context for this attempt
-		attemptCtx, cancel := context.WithCancel(ctx)
-		_, cleanup := p.trackRequest(handle, cancel)
-
-		handle.mu.Lock()
-		handle.lastUsed = time.Now()
-		handle.mu.Unlock()
-
-		result, err := handle.worker.Call(attemptCtx, methodName, inputJSON, enableRawCollection)
-		cleanup()
-
-		if err == nil {
-			return result, nil
-		}
-
-		lastErr = err
-
-		// Check if the parent context is cancelled (user cancelled)
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		// If attempt context was cancelled but parent wasn't, worker was killed - retry
-		if attemptCtx.Err() != nil {
-			p.config.Logger.Info("Retrying after worker kill", "worker", handle.id, "attempt", attempt+1)
-			continue
-		}
-
-		// Regular error - mark worker unhealthy and retry
-		p.config.Logger.Warn("Worker call failed", "worker", handle.id, "attempt", attempt+1, "error", err)
-
-		handle.mu.Lock()
-		handle.healthy = false
-		handle.mu.Unlock()
-
-		go p.restartWorker(handle.id)
+	results, err := p.CallStream(ctx, methodName, inputJSON, enableRawCollection)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("all retries failed: %w", lastErr)
+	// Consume stream waiting for final result
+	for result := range results {
+		switch result.Kind {
+		case workerplugin.StreamResultKindError:
+			return nil, result.Error
+		case workerplugin.StreamResultKindFinal:
+			return &workerplugin.CallResult{
+				Data: result.Data,
+				Raw:  result.Raw,
+			}, nil
+		}
+		// StreamResultKindStream - continue waiting for final
+	}
+
+	return nil, fmt.Errorf("no final result received")
 }
 
 // CallStream executes a BAML method and streams results
@@ -466,7 +440,21 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					firstByte = true
 					req.gotFirstByte.Store(true)
 				}
-				wrappedResults <- result
+
+				select {
+				case wrappedResults <- result:
+				case <-ctx.Done():
+					// Consumer cancelled, drain remaining results to unblock gRPC goroutine
+					go func() { for range results {} }()
+					return
+				}
+
+				// FINAL and ERROR are terminal - drain any remaining results
+				// This prevents blocking if the gRPC stream sends more after terminal
+				if result.Kind == workerplugin.StreamResultKindFinal || result.Kind == workerplugin.StreamResultKindError {
+					go func() { for range results {} }()
+					return
+				}
 			}
 		}()
 

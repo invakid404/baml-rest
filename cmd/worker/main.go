@@ -52,59 +52,6 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
 	return nil
 }
 
-func (w *workerImpl) Call(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (*workerplugin.CallResult, error) {
-	method, ok := baml_rest.Methods[methodName]
-	if !ok {
-		return nil, fmt.Errorf("method %q not found", methodName)
-	}
-
-	// Parse input (unknown fields like __baml_options__ are ignored)
-	input := method.MakeInput()
-	if err := json.Unmarshal(inputJSON, input); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
-	}
-
-	// Parse options from the same input (only extracts __baml_options__ field)
-	var options workerBamlOptions
-	if err := json.Unmarshal(inputJSON, &options); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal options: %w", err)
-	}
-
-	// Create adapter and apply options
-	adapter := baml_rest.MakeAdapter(ctx)
-	adapter.SetRawCollection(enableRawCollection)
-	if err := options.apply(adapter); err != nil {
-		return nil, fmt.Errorf("failed to apply options: %w", err)
-	}
-
-	// Execute the method
-	resultChan, err := method.Impl(adapter, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call method: %w", err)
-	}
-
-	// Wait for final result
-	for result := range resultChan {
-		kind := result.Kind()
-		if kind == bamlutils.StreamResultKindError {
-			return nil, result.Error()
-		}
-
-		if kind == bamlutils.StreamResultKindFinal {
-			data, err := json.Marshal(result.Final())
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal result: %w", err)
-			}
-			return &workerplugin.CallResult{
-				Data: data,
-				Raw:  result.Raw(),
-			}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no final result received")
-}
-
 func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *workerplugin.StreamResult, error) {
 	method, ok := baml_rest.Methods[methodName]
 	if !ok {

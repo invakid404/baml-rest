@@ -67,7 +67,7 @@ func (x StreamResult_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use StreamResult_Kind.Descriptor instead.
 func (StreamResult_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{2, 0}
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{1, 0}
 }
 
 // Request to call a BAML method
@@ -131,67 +131,6 @@ func (x *CallRequest) GetEnableRawCollection() bool {
 	return false
 }
 
-// Response for unary call (non-streaming)
-type CallResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DataJson      []byte                 `protobuf:"bytes,1,opt,name=data_json,json=dataJson,proto3" json:"data_json,omitempty"` // JSON-encoded result
-	Raw           string                 `protobuf:"bytes,2,opt,name=raw,proto3" json:"raw,omitempty"`                           // Raw LLM response text
-	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`                       // Error message if failed
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CallResponse) Reset() {
-	*x = CallResponse{}
-	mi := &file_workerplugin_proto_worker_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CallResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CallResponse) ProtoMessage() {}
-
-func (x *CallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_workerplugin_proto_worker_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CallResponse.ProtoReflect.Descriptor instead.
-func (*CallResponse) Descriptor() ([]byte, []int) {
-	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *CallResponse) GetDataJson() []byte {
-	if x != nil {
-		return x.DataJson
-	}
-	return nil
-}
-
-func (x *CallResponse) GetRaw() string {
-	if x != nil {
-		return x.Raw
-	}
-	return ""
-}
-
-func (x *CallResponse) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
 // Streaming result
 type StreamResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -205,7 +144,7 @@ type StreamResult struct {
 
 func (x *StreamResult) Reset() {
 	*x = StreamResult{}
-	mi := &file_workerplugin_proto_worker_proto_msgTypes[2]
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -217,7 +156,7 @@ func (x *StreamResult) String() string {
 func (*StreamResult) ProtoMessage() {}
 
 func (x *StreamResult) ProtoReflect() protoreflect.Message {
-	mi := &file_workerplugin_proto_worker_proto_msgTypes[2]
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -230,7 +169,7 @@ func (x *StreamResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamResult.ProtoReflect.Descriptor instead.
 func (*StreamResult) Descriptor() ([]byte, []int) {
-	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{2}
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *StreamResult) GetKind() StreamResult_Kind {
@@ -270,7 +209,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_workerplugin_proto_worker_proto_msgTypes[3]
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -282,7 +221,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_workerplugin_proto_worker_proto_msgTypes[3]
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -295,7 +234,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{3}
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{2}
 }
 
 type HealthResponse struct {
@@ -307,7 +246,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_workerplugin_proto_worker_proto_msgTypes[4]
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -319,7 +258,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_workerplugin_proto_worker_proto_msgTypes[4]
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -332,7 +271,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{4}
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *HealthResponse) GetHealthy() bool {
@@ -352,11 +291,7 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"methodName\x12\x1d\n" +
 	"\n" +
 	"input_json\x18\x02 \x01(\fR\tinputJson\x122\n" +
-	"\x15enable_raw_collection\x18\x03 \x01(\bR\x13enableRawCollection\"S\n" +
-	"\fCallResponse\x12\x1b\n" +
-	"\tdata_json\x18\x01 \x01(\fR\bdataJson\x12\x10\n" +
-	"\x03raw\x18\x02 \x01(\tR\x03raw\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\xb2\x01\n" +
+	"\x15enable_raw_collection\x18\x03 \x01(\bR\x13enableRawCollection\"\xb2\x01\n" +
 	"\fStreamResult\x123\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1f.workerplugin.StreamResult.KindR\x04kind\x12\x1b\n" +
 	"\tdata_json\x18\x02 \x01(\fR\bdataJson\x12\x10\n" +
@@ -369,9 +304,8 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\x05ERROR\x10\x02\"\a\n" +
 	"\x05Empty\"*\n" +
 	"\x0eHealthResponse\x12\x18\n" +
-	"\ahealthy\x18\x01 \x01(\bR\ahealthy2\xcb\x01\n" +
-	"\x06Worker\x12=\n" +
-	"\x04Call\x12\x19.workerplugin.CallRequest\x1a\x1a.workerplugin.CallResponse\x12E\n" +
+	"\ahealthy\x18\x01 \x01(\bR\ahealthy2\x8c\x01\n" +
+	"\x06Worker\x12E\n" +
 	"\n" +
 	"CallStream\x12\x19.workerplugin.CallRequest\x1a\x1a.workerplugin.StreamResult0\x01\x12;\n" +
 	"\x06Health\x12\x13.workerplugin.Empty\x1a\x1c.workerplugin.HealthResponseB.Z,github.com/invakid404/baml-rest/workerpluginb\x06proto3"
@@ -389,25 +323,22 @@ func file_workerplugin_proto_worker_proto_rawDescGZIP() []byte {
 }
 
 var file_workerplugin_proto_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_workerplugin_proto_worker_proto_goTypes = []any{
 	(StreamResult_Kind)(0), // 0: workerplugin.StreamResult.Kind
 	(*CallRequest)(nil),    // 1: workerplugin.CallRequest
-	(*CallResponse)(nil),   // 2: workerplugin.CallResponse
-	(*StreamResult)(nil),   // 3: workerplugin.StreamResult
-	(*Empty)(nil),          // 4: workerplugin.Empty
-	(*HealthResponse)(nil), // 5: workerplugin.HealthResponse
+	(*StreamResult)(nil),   // 2: workerplugin.StreamResult
+	(*Empty)(nil),          // 3: workerplugin.Empty
+	(*HealthResponse)(nil), // 4: workerplugin.HealthResponse
 }
 var file_workerplugin_proto_worker_proto_depIdxs = []int32{
 	0, // 0: workerplugin.StreamResult.kind:type_name -> workerplugin.StreamResult.Kind
-	1, // 1: workerplugin.Worker.Call:input_type -> workerplugin.CallRequest
-	1, // 2: workerplugin.Worker.CallStream:input_type -> workerplugin.CallRequest
-	4, // 3: workerplugin.Worker.Health:input_type -> workerplugin.Empty
-	2, // 4: workerplugin.Worker.Call:output_type -> workerplugin.CallResponse
-	3, // 5: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
-	5, // 6: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
-	4, // [4:7] is the sub-list for method output_type
-	1, // [1:4] is the sub-list for method input_type
+	1, // 1: workerplugin.Worker.CallStream:input_type -> workerplugin.CallRequest
+	3, // 2: workerplugin.Worker.Health:input_type -> workerplugin.Empty
+	2, // 3: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
+	4, // 4: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
+	3, // [3:5] is the sub-list for method output_type
+	1, // [1:3] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
 	1, // [1:1] is the sub-list for extension extendee
 	0, // [0:1] is the sub-list for field type_name
@@ -424,7 +355,7 @@ func file_workerplugin_proto_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workerplugin_proto_worker_proto_rawDesc), len(file_workerplugin_proto_worker_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

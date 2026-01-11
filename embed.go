@@ -3,7 +3,6 @@ package baml_rest
 import (
 	"embed"
 	"fmt"
-	"path/filepath"
 	"github.com/invakid404/baml-rest/adapters/adapter_v0_204_0"
 	"github.com/invakid404/baml-rest/adapters/adapter_v0_215_0"
 	"github.com/invakid404/baml-rest/adapters/common"
@@ -11,6 +10,7 @@ import (
 	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
+	"path/filepath"
 )
 
 //go:embed Dockerfile.builder README.md adapter.go adapters cmd embed.go go.mod go.sum go.work go.work.sum internal
