@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	_ "embed"
 	"io"
@@ -19,6 +20,7 @@ import (
 var embedTemplateInput string
 
 const outputName = "embed.go"
+const ignoreFileName = ".embedignore"
 
 type ImportEntry struct {
 	Module       string
@@ -57,12 +59,18 @@ func main() {
 			panic(err)
 		}
 
+		ignoreSet := loadIgnoreList(root)
+
 		var dirs []string
 		var imports []*ImportEntry
 
 		for _, entry := range entries {
 			name := entry.Name()
 			if name[0] == '.' {
+				continue
+			}
+
+			if _, ignored := ignoreSet[name]; ignored {
 				continue
 			}
 
@@ -154,4 +162,25 @@ func buildPathTree(paths []string) map[string][]string {
 	}
 
 	return tree
+}
+
+func loadIgnoreList(root string) map[string]struct{} {
+	ignoreSet := make(map[string]struct{})
+
+	file, err := os.Open(filepath.Join(root, ignoreFileName))
+	if err != nil {
+		return ignoreSet
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		ignoreSet[line] = struct{}{}
+	}
+
+	return ignoreSet
 }
