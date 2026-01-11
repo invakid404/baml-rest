@@ -21,7 +21,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/render"
 	"github.com/goccy/go-json"
-	"github.com/google/uuid"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/internal/httplogger"
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
@@ -273,14 +272,7 @@ var serveCmd = &cobra.Command{
 
 			makeStreamHandler := func(pathPrefix string, enableRawCollection bool) http.HandlerFunc {
 				return func(w http.ResponseWriter, r *http.Request) {
-					topicUUID, err := uuid.NewRandom()
-					if err != nil {
-						httplogger.SetError(r.Context(), err)
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-
-					topic := fmt.Sprintf("%s/%s/%s", pathPrefix, methodName, topicUUID.String())
+					topic := fmt.Sprintf("%s/%s/%s", pathPrefix, methodName, middleware.GetReqID(r.Context()))
 					ready := make(chan struct{})
 
 					ctx, cancel := context.WithCancel(
