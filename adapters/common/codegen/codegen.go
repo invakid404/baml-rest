@@ -368,6 +368,13 @@ func Generate(selfPkg string) {
 		// Unlike the _full implementation, this doesn't process FunctionLog - it just signals "data received"
 		noRawOnTickBody := []jen.Code{
 			jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+				// Check adapter.Done() first to avoid race with channel close on cancellation
+				jen.Select().Block(
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Return(jen.Nil()),
+					),
+					jen.Default().Block(),
+				),
 				// Send heartbeat - non-blocking to avoid blocking BAML
 				jen.Select().Block(
 					jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
