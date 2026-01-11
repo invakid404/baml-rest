@@ -8,7 +8,6 @@ require (
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/go-chi/chi/v5 v5.2.3
-	github.com/go-chi/httplog/v3 v3.3.0
 	github.com/go-chi/render v1.0.3
 	github.com/goccy/go-json v0.10.5
 	github.com/google/uuid v1.6.0
@@ -25,6 +24,7 @@ require (
 	github.com/moby/moby/api v1.52.0
 	github.com/moby/moby/client v0.2.1
 	github.com/opencontainers/go-digest v1.0.0
+	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stoewer/go-strcase v1.3.1

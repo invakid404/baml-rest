@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,14 +19,15 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/httplog/v3"
 	"github.com/go-chi/render"
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
 	"github.com/gregwebs/go-recovery"
+	"github.com/invakid404/baml-rest/internal/httplogger"
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
+	"github.com/rs/zerolog"
 	"github.com/tmaxmax/go-sse"
 
 	"github.com/spf13/cobra"
@@ -58,7 +57,7 @@ var rootCmd = &cobra.Command{
 
 // extractWorker extracts the embedded worker binary to a cache location
 // Returns the path to the extracted binary
-func extractWorker() (string, error) {
+func extractWorker(logger zerolog.Logger) (string, error) {
 	// Use a hash-based filename to detect changes
 	hash := sha256.Sum256(workerBinary)
 	hashStr := hex.EncodeToString(hash[:8]) // First 8 bytes is enough
@@ -96,9 +95,9 @@ func extractWorker() (string, error) {
 			if strings.HasPrefix(name, "worker-") && name != workerFilename {
 				oldPath := filepath.Join(cacheDir, name)
 				if err := os.Remove(oldPath); err != nil {
-					slog.Debug("Failed to remove old worker binary", "path", oldPath, "error", err)
+					logger.Debug().Str("path", oldPath).Err(err).Msg("Failed to remove old worker binary")
 				} else {
-					slog.Debug("Removed old worker binary", "path", oldPath)
+					logger.Debug().Str("path", oldPath).Msg("Removed old worker binary")
 				}
 			}
 		}
@@ -111,6 +110,9 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Initialize zerolog logger
+		logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+
 		// Load OpenAPI schema from embedded JSON
 		var schema openapi3.T
 		if err := json.Unmarshal(openapiJSON, &schema); err != nil {
@@ -128,17 +130,17 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Extract worker binary
-		workerPath, err := extractWorker()
+		workerPath, err := extractWorker(logger)
 		if err != nil {
 			return fmt.Errorf("failed to extract worker binary: %w", err)
 		}
-		slog.Info("Worker binary extracted", "path", workerPath)
+		logger.Info().Str("path", workerPath).Msg("Worker binary extracted")
 
 		// Initialize worker pool with external worker binary
 		poolConfig := pool.DefaultConfig()
 		poolConfig.PoolSize = poolSize
 		poolConfig.FirstByteTimeout = firstByteTimeout
-		poolConfig.Logger = slog.Default()
+		poolConfig.Logger = logger
 		poolConfig.WorkerPath = workerPath
 
 		workerPool, err := pool.New(poolConfig)
@@ -146,7 +148,7 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("failed to create worker pool: %w", err)
 		}
 
-		slog.Info("Worker pool initialized", "size", poolSize)
+		logger.Info().Int("size", poolSize).Msg("Worker pool initialized")
 
 		// Create Chi router
 		r := chi.NewRouter()
@@ -169,12 +171,9 @@ var serveCmd = &cobra.Command{
 			},
 		}
 
-		// Add middleware
-		logger := slog.Default()
-
 		// Set global panic recovery handler to use structured logging
 		recovery.ErrorHandler = func(err error) {
-			logger.Error("Unhandled panic recovered", "error", err)
+			logger.Error().Err(err).Msg("Unhandled panic recovered")
 		}
 
 		r.Use(middleware.RequestID)
@@ -187,15 +186,8 @@ var serveCmd = &cobra.Command{
 				next.ServeHTTP(w, r)
 			})
 		})
-		r.Use(httplog.RequestLogger(logger, &httplog.Options{
-			Level:         slog.LevelInfo,
+		r.Use(httplogger.RequestLogger(logger, &httplogger.Options{
 			RecoverPanics: true,
-			LogExtraAttrs: func(req *http.Request, reqBody string, respStatus int) []slog.Attr {
-				if reqID := middleware.GetReqID(req.Context()); reqID != "" {
-					return []slog.Attr{slog.String("request_id", reqID)}
-				}
-				return nil
-			},
 		}))
 		r.Use(middleware.Recoverer)
 
@@ -218,7 +210,7 @@ var serveCmd = &cobra.Command{
 		for _, methodName := range methodNames {
 			methodName := methodName // capture for closure
 
-			logger.Info("Registering prompt: " + methodName)
+			logger.Info().Str("prompt", methodName).Msg("Registering prompt")
 
 			r.Post(fmt.Sprintf("/call/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
 				ctx, cancel := context.WithCancel(r.Context())
@@ -232,7 +224,7 @@ var serveCmd = &cobra.Command{
 
 				result, err := workerPool.Call(ctx, methodName, rawBody, false)
 				if err != nil {
-					_ = httplog.SetError(r.Context(), err)
+					httplogger.SetError(r.Context(), err)
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 					return
 				}
@@ -253,7 +245,7 @@ var serveCmd = &cobra.Command{
 
 				result, err := workerPool.Call(ctx, methodName, rawBody, true)
 				if err != nil {
-					_ = httplog.SetError(r.Context(), err)
+					httplogger.SetError(r.Context(), err)
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 					return
 				}
@@ -268,7 +260,7 @@ var serveCmd = &cobra.Command{
 			r.Post(fmt.Sprintf("/stream/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
 				topicUUID, err := uuid.NewRandom()
 				if err != nil {
-					_ = httplog.SetError(r.Context(), err)
+					httplogger.SetError(r.Context(), err)
 					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
@@ -333,10 +325,9 @@ var serveCmd = &cobra.Command{
 		go recovery.GoHandler(func(err error) {
 			serverErr <- err
 		}, func() error {
-			logger.Info(fmt.Sprintf("Starting server on :%d...", port))
-			logger.Info("OpenAPI schema available at:")
-			logger.Info(fmt.Sprintf("  JSON: http://localhost:%d/openapi.json", port))
-			logger.Info(fmt.Sprintf("  YAML: http://localhost:%d/openapi.yaml", port))
+			logger.Info().Int("port", port).Msg("Starting server")
+			logger.Info().Msgf("OpenAPI JSON: http://localhost:%d/openapi.json", port)
+			logger.Info().Msgf("OpenAPI YAML: http://localhost:%d/openapi.yaml", port)
 			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				return err
 			}
@@ -353,7 +344,7 @@ var serveCmd = &cobra.Command{
 			_ = workerPool.Close()
 			return fmt.Errorf("server error: %w", err)
 		case sig := <-sigChan:
-			logger.Info(fmt.Sprintf("Received signal: %v. Initiating graceful shutdown...", sig))
+			logger.Info().Str("signal", sig.String()).Msg("Received signal, initiating graceful shutdown")
 
 			// Create shutdown context with timeout
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -362,20 +353,20 @@ var serveCmd = &cobra.Command{
 			// Shutdown HTTP server - this will wait for active connections to finish
 			// Active connections are waiting on worker responses, so workers must stay alive
 			if err := srv.Shutdown(shutdownCtx); err != nil {
-				logger.Error(fmt.Sprintf("Error during HTTP server shutdown: %v", err))
+				logger.Error().Err(err).Msg("Error during HTTP server shutdown")
 				_ = workerPool.Close()
 				return fmt.Errorf("shutdown error: %w", err)
 			}
 
-			logger.Info("HTTP server stopped, shutting down worker pool...")
+			logger.Info().Msg("HTTP server stopped, shutting down worker pool")
 
 			// Gracefully shutdown worker pool - waits for any remaining in-flight requests
 			if err := workerPool.Shutdown(shutdownCtx); err != nil {
-				logger.Error(fmt.Sprintf("Error during worker pool shutdown: %v", err))
+				logger.Error().Err(err).Msg("Error during worker pool shutdown")
 				return fmt.Errorf("worker pool shutdown error: %w", err)
 			}
 
-			logger.Info("Server gracefully stopped")
+			logger.Info().Msg("Server gracefully stopped")
 			return nil
 		}
 	},
@@ -391,7 +382,8 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatalln(err)
+		logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
+		logger.Fatal().Err(err).Msg("Command failed")
 	}
 }
 

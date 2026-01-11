@@ -3,7 +3,6 @@ package pool
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-plugin"
+	"github.com/rs/zerolog"
 
 	"github.com/invakid404/baml-rest/workerplugin"
 )
@@ -29,7 +29,7 @@ type Config struct {
 	// FirstByteTimeout is how long to wait for first response before considering worker hung
 	FirstByteTimeout time.Duration
 	// Logger for pool operations
-	Logger *slog.Logger
+	Logger zerolog.Logger
 	// WorkerPath is the path to the worker binary (required)
 	WorkerPath string
 }
@@ -101,6 +101,7 @@ type Pool struct {
 
 type workerHandle struct {
 	id          int
+	logger      zerolog.Logger // pre-bound with worker id
 	client      *plugin.Client
 	worker      workerplugin.Worker
 	mu          sync.Mutex
@@ -117,9 +118,6 @@ func New(config *Config) (*Pool, error) {
 	}
 	if config.PoolSize <= 0 {
 		config.PoolSize = 4
-	}
-	if config.Logger == nil {
-		config.Logger = slog.Default()
 	}
 
 	p := &Pool{
@@ -159,6 +157,9 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		cmd.Env = append(cmd.Env, "BAML_LOG_LSP=true", "BAML_INTERNAL_LOG=info")
 	}
 
+	// Create a zerolog-backed hclog for plugin communication
+	pluginLogger := newHclogZerolog(p.config.Logger.With().Int("worker", id).Logger())
+
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: workerplugin.Handshake,
 		Plugins:         workerplugin.PluginMap,
@@ -166,6 +167,7 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
 		},
+		Logger: pluginLogger,
 	})
 
 	rpcClient, err := client.Client()
@@ -186,10 +188,12 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		return nil, fmt.Errorf("unexpected plugin type: %T", raw)
 	}
 
-	p.config.Logger.Info("Started worker", "id", id)
+	workerLogger := p.config.Logger.With().Int("worker", id).Logger()
+	workerLogger.Info().Msg("Started worker")
 
 	return &workerHandle{
 		id:          id,
+		logger:      workerLogger,
 		client:      client,
 		worker:      worker,
 		healthy:     true,
@@ -249,10 +253,10 @@ func (p *Pool) checkHungRequests() {
 		handle.inFlightMu.RUnlock()
 
 		if hungRequest != nil {
-			p.config.Logger.Warn("Worker appears hung, killing",
-				"worker", handle.id,
-				"request_id", hungRequest.id,
-				"waited", now.Sub(hungRequest.startedAt))
+			handle.logger.Warn().
+				Uint64("request_id", hungRequest.id).
+				Dur("waited", now.Sub(hungRequest.startedAt)).
+				Msg("Worker appears hung, killing")
 			p.killWorkerAndRetry(handle)
 		}
 	}
@@ -298,7 +302,7 @@ func (p *Pool) checkHealth() {
 
 		if err != nil || !healthy {
 			handle.healthy = false
-			p.config.Logger.Warn("Worker unhealthy, restarting", "id", handle.id, "error", err)
+			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 			handle.mu.Unlock()
 
 			// Restart worker
@@ -325,7 +329,7 @@ func (p *Pool) restartWorker(id int) {
 
 	newHandle, err := p.startWorker(id)
 	if err != nil {
-		p.config.Logger.Error("Failed to restart worker", "id", id, "error", err)
+		p.config.Logger.Error().Int("worker", id).Err(err).Msg("Failed to restart worker")
 		return
 	}
 
@@ -413,12 +417,12 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 
 			// If attempt context was cancelled but parent wasn't, worker was killed - retry
 			if attemptCtx.Err() != nil {
-				p.config.Logger.Info("Retrying stream after worker kill", "worker", handle.id, "attempt", attempt+1)
+				handle.logger.Info().Int("attempt", attempt+1).Msg("Retrying stream after worker kill")
 				continue
 			}
 
 			// Regular error - mark worker unhealthy and retry
-			p.config.Logger.Warn("Worker stream call failed", "worker", handle.id, "attempt", attempt+1, "error", err)
+			handle.logger.Warn().Int("attempt", attempt+1).Err(err).Msg("Worker stream call failed")
 
 			handle.mu.Lock()
 			handle.healthy = false
@@ -484,7 +488,7 @@ func (p *Pool) totalInFlight() int64 {
 func (p *Pool) Shutdown(ctx context.Context) error {
 	// Start draining - reject new requests
 	p.draining.Store(true)
-	p.config.Logger.Info("Pool draining, waiting for in-flight requests to complete")
+	p.config.Logger.Info().Msg("Pool draining, waiting for in-flight requests to complete")
 
 	// Wait for in-flight requests to complete
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -493,16 +497,16 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	for {
 		inFlight := p.totalInFlight()
 		if inFlight == 0 {
-			p.config.Logger.Info("All in-flight requests completed")
+			p.config.Logger.Info().Msg("All in-flight requests completed")
 			break
 		}
 
 		select {
 		case <-ctx.Done():
-			p.config.Logger.Warn("Shutdown timeout, killing workers with in-flight requests", "in_flight", inFlight)
+			p.config.Logger.Warn().Int64("in_flight", inFlight).Msg("Shutdown timeout, killing workers with in-flight requests")
 			return p.Close()
 		case <-ticker.C:
-			p.config.Logger.Info("Waiting for in-flight requests", "count", inFlight)
+			p.config.Logger.Info().Int64("count", inFlight).Msg("Waiting for in-flight requests")
 		}
 	}
 
@@ -530,7 +534,7 @@ func (p *Pool) Close() error {
 	}
 
 	p.wg.Wait()
-	p.config.Logger.Info("Worker pool closed")
+	p.config.Logger.Info().Msg("Worker pool closed")
 	return nil
 }
 

@@ -11,7 +11,6 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +34,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/moby/moby/client"
+	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -174,7 +174,8 @@ func init() {
 		var configFileNotFoundError viper.ConfigFileNotFoundError
 		if !errors.As(err, &configFileNotFoundError) {
 			// Config file was found but another error was produced
-			log.Printf("Error reading config file: %v", err)
+			logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
+			logger.Warn().Err(err).Msg("Error reading config file")
 		}
 	}
 
@@ -666,7 +667,8 @@ type dockerBuildMessage struct {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatalln(err)
+		logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
+		logger.Fatal().Err(err).Msg("Command failed")
 	}
 }
 
