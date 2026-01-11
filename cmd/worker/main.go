@@ -88,51 +88,44 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 	go func() {
 		defer close(out)
 		for result := range resultChan {
-			var pluginResult *workerplugin.StreamResult
+			pluginResult := workerplugin.GetStreamResult()
 
 			switch result.Kind() {
 			case bamlutils.StreamResultKindError:
-				pluginResult = &workerplugin.StreamResult{
-					Kind:  workerplugin.StreamResultKindError,
-					Error: result.Error(),
-				}
+				pluginResult.Kind = workerplugin.StreamResultKindError
+				pluginResult.Error = result.Error()
 			case bamlutils.StreamResultKindStream:
 				data, err := json.Marshal(result.Stream())
 				if err != nil {
-					pluginResult = &workerplugin.StreamResult{
-						Kind:  workerplugin.StreamResultKindError,
-						Error: fmt.Errorf("failed to marshal stream result: %w", err),
-					}
+					pluginResult.Kind = workerplugin.StreamResultKindError
+					pluginResult.Error = fmt.Errorf("failed to marshal stream result: %w", err)
 				} else {
-					pluginResult = &workerplugin.StreamResult{
-						Kind: workerplugin.StreamResultKindStream,
-						Data: data,
-						Raw:  result.Raw(),
-					}
+					pluginResult.Kind = workerplugin.StreamResultKindStream
+					pluginResult.Data = data
+					pluginResult.Raw = result.Raw()
 				}
 			case bamlutils.StreamResultKindFinal:
 				data, err := json.Marshal(result.Final())
 				if err != nil {
-					pluginResult = &workerplugin.StreamResult{
-						Kind:  workerplugin.StreamResultKindError,
-						Error: fmt.Errorf("failed to marshal final result: %w", err),
-					}
+					pluginResult.Kind = workerplugin.StreamResultKindError
+					pluginResult.Error = fmt.Errorf("failed to marshal final result: %w", err)
 				} else {
-					pluginResult = &workerplugin.StreamResult{
-						Kind: workerplugin.StreamResultKindFinal,
-						Data: data,
-						Raw:  result.Raw(),
-					}
+					pluginResult.Kind = workerplugin.StreamResultKindFinal
+					pluginResult.Data = data
+					pluginResult.Raw = result.Raw()
 				}
 			case bamlutils.StreamResultKindHeartbeat:
-				pluginResult = &workerplugin.StreamResult{
-					Kind: workerplugin.StreamResultKindHeartbeat,
-				}
+				pluginResult.Kind = workerplugin.StreamResultKindHeartbeat
 			}
+
+			// Release the adapter's output struct back to its pool
+			result.Release()
 
 			select {
 			case out <- pluginResult:
 			case <-ctx.Done():
+				// Release the plugin result we couldn't send
+				workerplugin.ReleaseStreamResult(pluginResult)
 				return
 			}
 		}

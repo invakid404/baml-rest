@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -92,18 +93,16 @@ type inFlightRequest struct {
 }
 
 // inFlightRequestPool reduces allocations for request tracking
-var inFlightRequestPool = sync.Pool{
-	New: func() any {
-		return &inFlightRequest{}
-	},
-}
+var inFlightRequestPool = bamlutils.NewPool(func() *inFlightRequest {
+	return &inFlightRequest{}
+})
 
 // trackRequest registers an in-flight request and returns the request and a cleanup function.
 // The cleanup function unregisters the request, cancels the context, and returns the request to the pool.
 func (p *Pool) trackRequest(handle *workerHandle, cancel context.CancelFunc) (*inFlightRequest, func()) {
 	reqID := p.requestID.Add(1)
 
-	req := inFlightRequestPool.Get().(*inFlightRequest)
+	req := inFlightRequestPool.Get()
 	req.id = reqID
 	req.startedAt = time.Now()
 	req.gotFirstByte.Store(false)
@@ -118,7 +117,7 @@ func (p *Pool) trackRequest(handle *workerHandle, cancel context.CancelFunc) (*i
 		delete(handle.inFlightReq, reqID)
 		handle.inFlightMu.Unlock()
 		cancel()
-		req.cancel = nil
+		*req = inFlightRequest{}
 		inFlightRequestPool.Put(req)
 	}
 
@@ -428,14 +427,19 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, en
 	for result := range results {
 		switch result.Kind {
 		case workerplugin.StreamResultKindError:
-			return nil, result.Error
+			err := result.Error
+			workerplugin.ReleaseStreamResult(result)
+			return nil, err
 		case workerplugin.StreamResultKindFinal:
-			return &workerplugin.CallResult{
+			callResult := &workerplugin.CallResult{
 				Data: result.Data,
 				Raw:  result.Raw,
-			}, nil
+			}
+			workerplugin.ReleaseStreamResult(result)
+			return callResult, nil
 		}
 		// StreamResultKindStream - continue waiting for final
+		workerplugin.ReleaseStreamResult(result)
 	}
 
 	return nil, fmt.Errorf("no final result received")
@@ -501,6 +505,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 
 				// Filter out heartbeat - it's only for first-byte tracking, not for consumers
 				if result.Kind == workerplugin.StreamResultKindHeartbeat {
+					workerplugin.ReleaseStreamResult(result)
 					continue
 				}
 
@@ -508,14 +513,24 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				case wrappedResults <- result:
 				case <-ctx.Done():
 					// Consumer cancelled, drain remaining results to unblock gRPC goroutine
-					go func() { for range results {} }()
+					// Release the current result that wasn't sent
+					workerplugin.ReleaseStreamResult(result)
+					go func() {
+						for r := range results {
+							workerplugin.ReleaseStreamResult(r)
+						}
+					}()
 					return
 				}
 
 				// FINAL and ERROR are terminal - drain any remaining results
 				// This prevents blocking if the gRPC stream sends more after terminal
 				if result.Kind == workerplugin.StreamResultKindFinal || result.Kind == workerplugin.StreamResultKindError {
-					go func() { for range results {} }()
+					go func() {
+						for r := range results {
+							workerplugin.ReleaseStreamResult(r)
+						}
+					}()
 					return
 				}
 			}
