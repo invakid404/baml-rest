@@ -335,6 +335,7 @@ var serveCmd = &cobra.Command{
 									message.Type = sseErrorKind
 									message.AppendData(fmt.Sprintf("Failed to marshal response: %v", err))
 									_ = s.Publish(message, topic)
+									workerplugin.ReleaseStreamResult(result)
 									continue
 								}
 							}
@@ -344,7 +345,12 @@ var serveCmd = &cobra.Command{
 							message.AppendData(unsafeutil.BytesToString(data))
 						}
 
+						workerplugin.ReleaseStreamResult(result)
 						if err := s.Publish(message, topic); err != nil {
+							// Drain and release remaining results to avoid leaking pooled structs
+							for remaining := range results {
+								workerplugin.ReleaseStreamResult(remaining)
+							}
 							break
 						}
 					}

@@ -29,8 +29,11 @@ func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStream
 			pbResult.Error = result.Error.Error()
 		}
 		if err := stream.Send(pbResult); err != nil {
+			ReleaseStreamResult(result)
 			return err
 		}
+		// Release the StreamResult back to pool after Send completes
+		ReleaseStreamResult(result)
 	}
 	return nil
 }
@@ -68,18 +71,17 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 				if err.Error() == "EOF" {
 					return
 				}
-				results <- &StreamResult{
-					Kind:  StreamResultKindError,
-					Error: err,
-				}
+				errResult := GetStreamResult()
+				errResult.Kind = StreamResultKindError
+				errResult.Error = err
+				results <- errResult
 				return
 			}
 
-			result := &StreamResult{
-				Kind: StreamResultKind(resp.Kind),
-				Data: resp.DataJson,
-				Raw:  resp.Raw,
-			}
+			result := GetStreamResult()
+			result.Kind = StreamResultKind(resp.Kind)
+			result.Data = resp.DataJson
+			result.Raw = resp.Raw
 			if resp.Error != "" {
 				result.Error = fmt.Errorf("%s", resp.Error)
 			}

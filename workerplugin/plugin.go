@@ -4,10 +4,34 @@ import (
 	"context"
 
 	"github.com/hashicorp/go-plugin"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"google.golang.org/grpc"
 
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 )
+
+// streamResultPool is a pool of StreamResult structs to reduce allocations.
+var streamResultPool = bamlutils.NewPool(func() *StreamResult {
+	return &StreamResult{}
+})
+
+// GetStreamResult retrieves a StreamResult from the pool.
+// The struct is already zeroed by ReleaseStreamResult before being returned to pool.
+func GetStreamResult() *StreamResult {
+	return streamResultPool.Get()
+}
+
+// ReleaseStreamResult returns a StreamResult to the pool for reuse.
+// After calling this, the StreamResult should not be accessed.
+func ReleaseStreamResult(r *StreamResult) {
+	if r == nil {
+		return
+	}
+	// Reset entire struct before returning to pool to avoid memory retention
+	// and ensure future-proofing if fields are added
+	*r = StreamResult{}
+	streamResultPool.Put(r)
+}
 
 // Handshake is used to verify the plugin is the expected plugin.
 var Handshake = plugin.HandshakeConfig{

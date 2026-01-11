@@ -210,6 +210,38 @@ func Generate(selfPkg string) {
 				jen.Return(selfName.Clone().Dot("raw")),
 			)
 
+		// Generate pool for output struct reuse
+		poolVarName := strcase.LowerCamelCase(fmt.Sprintf("%sPool", outputStructName))
+		out.Var().Id(poolVarName).Op("=").Qual(common.InterfacesPkg, "NewPool").Call(
+			jen.Func().Params().Op("*").Id(outputStructName).Block(
+				jen.Return(jen.Op("&").Id(outputStructName).Values()),
+			),
+		)
+
+		// Release() method - returns struct to pool
+		// Uses struct reset (*v = T{}) instead of field-by-field for future-proofing
+		out.Func().
+			Params(selfParam.Clone()).
+			Id("Release").Params().
+			Block(
+				jen.If(selfName.Clone().Op("==").Nil()).Block(
+					jen.Return(),
+				),
+				// Reset entire struct before returning to pool
+				jen.Op("*").Add(selfName.Clone()).Op("=").Id(outputStructName).Values(),
+				jen.Id(poolVarName).Dot("Put").Call(selfName.Clone()),
+			)
+
+		// Generate getter function for output struct
+		getterFuncName := strcase.LowerCamelCase(fmt.Sprintf("get%s", outputStructName))
+		out.Func().
+			Id(getterFuncName).
+			Params().
+			Op("*").Id(outputStructName).
+			Block(
+				jen.Return(jen.Id(poolVarName).Dot("Get").Call()),
+			)
+
 		// Generate error constructor function
 		errorConstructorName := strcase.LowerCamelCase(fmt.Sprintf("new%sError", outputStructName))
 		out.Func().
@@ -217,10 +249,10 @@ func Generate(selfPkg string) {
 			Params(jen.Id("err").Error()).
 			Op("*").Id(outputStructName).
 			Block(
-				jen.Return(jen.Op("&").Id(outputStructName).Values(jen.Dict{
-					jen.Id("kind"): jen.Qual(common.InterfacesPkg, "StreamResultKindError"),
-					jen.Id("err"):  jen.Id("err"),
-				})),
+				jen.Id("r").Op(":=").Id(getterFuncName).Call(),
+				jen.Id("r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindError"),
+				jen.Id("r").Dot("err").Op("=").Id("err"),
+				jen.Return(jen.Id("r")),
 			)
 
 		streamResultInterface := jen.Qual(common.InterfacesPkg, "StreamResult")
@@ -295,9 +327,12 @@ func Generate(selfPkg string) {
 
 			// If stream creation failed, emit error
 			jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
+				jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("streamErr")),
 				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("streamErr"))).Block(),
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+					jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Id("__errR").Dot("Release").Call(),
+					),
 				),
 				jen.Return(jen.Nil()),
 			),
@@ -314,9 +349,11 @@ func Generate(selfPkg string) {
 
 				// Handle errors
 				jen.If(jen.Id("streamVal").Dot("IsError")).Block(
+					jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("streamVal").Dot("Error")),
 					jen.Select().Block(
-						jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("streamVal").Dot("Error"))).Block(),
+						jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
 						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.Id("__errR").Dot("Release").Call(),
 							jen.Return(jen.Nil()),
 						),
 					),
@@ -326,12 +363,13 @@ func Generate(selfPkg string) {
 				// Handle final result
 				// Final() returns *TFinal - already a pointer, use directly
 				jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
+					jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+					jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindFinal"),
+					jen.Id("__r").Dot("parsed").Op("=").Id("streamVal").Dot("Final").Call(),
 					jen.Select().Block(
-						jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
-							jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindFinal"),
-							jen.Id("parsed"): jen.Id("streamVal").Dot("Final").Call(),
-						})).Block(),
+						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.Id("__r").Dot("Release").Call(),
 							jen.Return(jen.Nil()),
 						),
 					),
@@ -341,15 +379,18 @@ func Generate(selfPkg string) {
 				// Handle partial - forward BAML's native partial via Stream()
 				// Stream() returns *TStream - already a pointer, use directly
 				jen.If(jen.Id("partial").Op(":=").Id("streamVal").Dot("Stream").Call(), jen.Id("partial").Op("!=").Nil()).Block(
+					jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+					jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+					jen.Id("__r").Dot("parsed").Op("=").Id("partial"),
 					jen.Select().Block(
-						jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
-							jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindStream"),
-							jen.Id("parsed"): jen.Id("partial"),
-						})).Block(),
+						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.Id("__r").Dot("Release").Call(),
 							jen.Return(jen.Nil()),
 						),
-						jen.Default().Block(), // Non-blocking send for partials
+						jen.Default().Block(
+							jen.Id("__r").Dot("Release").Call(),
+						), // Non-blocking send for partials - release if not sent
 					),
 				),
 			),
@@ -376,11 +417,13 @@ func Generate(selfPkg string) {
 					jen.Default().Block(),
 				),
 				// Send heartbeat - non-blocking to avoid blocking BAML
+				jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+				jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
 				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
-						jen.Id("kind"): jen.Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
-					})).Block(),
-					jen.Default().Block(),
+					jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+					jen.Default().Block(
+						jen.Id("__r").Dot("Release").Call(),
+					),
 				),
 			),
 			jen.Return(jen.Nil()),
@@ -402,9 +445,12 @@ func Generate(selfPkg string) {
 				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 					// Error handler - emit panic as error to output channel
 					jen.Func().Params(jen.Id("err").Error()).Block(
+						jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("err")),
 						jen.Select().Block(
-							jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("err"))).Block(),
-							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+							jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+								jen.Id("__errR").Dot("Release").Call(),
+							),
 						),
 					),
 					// Main goroutine function
@@ -679,13 +725,15 @@ func Generate(selfPkg string) {
 								jen.Id("parsedPtr").Op(":=").Op("&").Id("parsed"),
 
 								// Best-effort send (non-blocking) - send only delta to save bandwidth
+								jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+								jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+								jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
+								jen.Id("__r").Dot("parsed").Op("=").Id("parsedPtr"),
 								jen.Select().Block(
-									jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
-										jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindStream"),
-										jen.Id("raw"):    jen.Id("rawDelta"),
-										jen.Id("parsed"): jen.Id("parsedPtr"),
-									})).Block(),
-									jen.Default().Block(),
+									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+									jen.Default().Block(
+										jen.Id("__r").Dot("Release").Call(),
+									),
 								),
 							),
 							jen.Return(jen.Nil()),
@@ -769,9 +817,12 @@ func Generate(selfPkg string) {
 			// If initial stream creation failed, shutdown and emit error
 			jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
 				jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
+				jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("streamErr")),
 				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("streamErr"))).Block(),
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+					jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Id("__errR").Dot("Release").Call(),
+					),
 				),
 				jen.Return(jen.Nil()),
 			),
@@ -798,18 +849,24 @@ func Generate(selfPkg string) {
 			jen.Id("fatalErrCopy").Op(":=").Id("fatalErr"),
 			jen.Id("fatalMu").Dot("Unlock").Call(),
 			jen.If(jen.Id("fatalErrCopy").Op("!=").Nil()).Block(
+				jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("fatalErrCopy")),
 				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("fatalErrCopy"))).Block(),
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+					jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Id("__errR").Dot("Release").Call(),
+					),
 				),
 				jen.Return(jen.Nil()),
 			),
 
 			// Now emit final/error (after all partials have been sent)
 			jen.If(jen.Id("streamErr2").Op("!=").Nil()).Block(
+				jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("streamErr2")),
 				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("streamErr2"))).Block(),
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+					jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Id("__errR").Dot("Release").Call(),
+					),
 				),
 				jen.Return(jen.Nil()),
 			),
@@ -837,13 +894,15 @@ func Generate(selfPkg string) {
 					jen.Id("finalParsed").Op("=").Id("result"),
 				),
 			),
+			jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+			jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindFinal"),
+			jen.Id("__r").Dot("raw").Op("=").Id("finalRaw"),
+			jen.Id("__r").Dot("parsed").Op("=").Id("finalParsed"),
 			jen.Select().Block(
-				jen.Case(jen.Id("out").Op("<-").Op("&").Id(outputStructName).Values(jen.Dict{
-					jen.Id("kind"):   jen.Qual(common.InterfacesPkg, "StreamResultKindFinal"),
-					jen.Id("raw"):    jen.Id("finalRaw"),
-					jen.Id("parsed"): jen.Id("finalParsed"),
-				})).Block(),
-				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+				jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+					jen.Id("__r").Dot("Release").Call(),
+				),
 			),
 
 			jen.Return(jen.Nil()),
@@ -881,9 +940,12 @@ func Generate(selfPkg string) {
 					// Error handler function - performs full shutdown then emits error
 					jen.Func().Params(jen.Id("err").Error()).Block(
 						append(doShutdownCode,
+							jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("err")),
 							jen.Select().Block(
-								jen.Case(jen.Id("out").Op("<-").Id(errorConstructorName).Call(jen.Id("err"))).Block(),
-								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(),
+								jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+									jen.Id("__errR").Dot("Release").Call(),
+								),
 							),
 						)...,
 					),

@@ -4,6 +4,7 @@ go 1.24.5
 
 require (
 	github.com/hashicorp/go-plugin v1.6.3
+	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/workerplugin v0.0.0-00010101000000-000000000000
 	github.com/rs/zerolog v1.34.0
 )
@@ -25,4 +26,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/invakid404/baml-rest/workerplugin => ../workerplugin
+replace (
+	github.com/invakid404/baml-rest/bamlutils => ../bamlutils
+	github.com/invakid404/baml-rest/workerplugin => ../workerplugin
+)

@@ -11,6 +11,9 @@ type StreamResult interface {
 	Error() error
 	// Raw returns the raw LLM response text at this streaming point
 	Raw() string
+	// Release returns the StreamResult to a pool for reuse.
+	// After calling Release, the StreamResult should not be accessed.
+	Release()
 }
 
 type StreamResultKind int
