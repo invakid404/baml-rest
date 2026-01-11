@@ -646,8 +646,12 @@ func Generate(selfPkg string) {
 								jen.Return(jen.Nil()),
 							),
 
-							// Update lastRawResponse for final capture
+							// Update lastRawResponse for final capture, skip if no change (avoid duplicate SSE messages)
 							jen.Id("mu").Dot("Lock").Call(),
+							jen.If(jen.Id("raw").Op("==").Id("lastRawResponse")).Block(
+								jen.Id("mu").Dot("Unlock").Call(),
+								jen.Return(jen.Nil()),
+							),
 							jen.Id("lastRawResponse").Op("=").Id("raw"),
 							jen.Id("mu").Dot("Unlock").Call(),
 
