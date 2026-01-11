@@ -287,12 +287,14 @@ var serveCmd = &cobra.Command{
 
 					rawBody, err := io.ReadAll(r.Body)
 					if err != nil {
+						httplogger.SetError(r.Context(), err)
 						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 						return
 					}
 
 					results, err := workerPool.CallStream(ctx, methodName, rawBody, enableRawCollection)
 					if err != nil {
+						httplogger.SetError(r.Context(), err)
 						http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 						return
 					}
