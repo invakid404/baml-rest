@@ -42,7 +42,10 @@ var openapiJSON []byte
 
 type sseContextKey string
 
-const sseContextKeyTopic = sseContextKey("topic")
+const (
+	sseContextKeyTopic = sseContextKey("topic")
+	sseContextKeyReady = sseContextKey("ready")
+)
 
 var (
 	port             int
@@ -173,6 +176,11 @@ var serveCmd = &cobra.Command{
 					return nil, false
 				}
 
+				// Signal that SSE connection is ready for publishing
+				if ready, ok := req.Context().Value(sseContextKeyReady).(chan struct{}); ok {
+					close(ready)
+				}
+
 				return []string{topic}, true
 			},
 		}
@@ -273,9 +281,13 @@ var serveCmd = &cobra.Command{
 					}
 
 					topic := fmt.Sprintf("%s/%s/%s", pathPrefix, methodName, topicUUID.String())
+					ready := make(chan struct{})
 
 					ctx, cancel := context.WithCancel(
-						context.WithValue(r.Context(), sseContextKeyTopic, topic),
+						context.WithValue(
+							context.WithValue(r.Context(), sseContextKeyTopic, topic),
+							sseContextKeyReady, ready,
+						),
 					)
 					defer cancel()
 
@@ -293,10 +305,22 @@ var serveCmd = &cobra.Command{
 						return
 					}
 
+					sseDone := make(chan struct{})
 					go recovery.Go(func() error {
+						defer close(sseDone)
 						s.ServeHTTP(w, r)
 						return nil
 					})
+
+					// Wait for SSE connection to be established before publishing
+					select {
+					case <-ready:
+						// SSE is ready, proceed
+					case <-ctx.Done():
+						// Context cancelled (client disconnected)
+						<-sseDone
+						return
+					}
 
 					for result := range results {
 						message := &sse.Message{}
@@ -332,6 +356,10 @@ var serveCmd = &cobra.Command{
 							break
 						}
 					}
+
+					// Cancel context to signal SSE server to stop, then wait for it
+					cancel()
+					<-sseDone
 				}
 			}
 
