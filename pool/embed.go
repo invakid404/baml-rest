@@ -4,7 +4,7 @@ import (
 	"embed"
 )
 
-//go:embed embed.go go.mod pool.go
+//go:embed embed.go go.mod go.sum hclogzerolog.go pool.go
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)

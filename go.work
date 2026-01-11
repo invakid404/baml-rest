@@ -7,4 +7,6 @@ use (
 	./adapters/common
 	./bamlutils
 	./introspected
+	./pool
+	./workerplugin
 )

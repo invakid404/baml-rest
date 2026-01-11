@@ -3,20 +3,57 @@ package pool
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/go-plugin"
+	"github.com/rs/zerolog"
 
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
 var tokioWorkerThreads = fmt.Sprintf("TOKIO_WORKER_THREADS=%d", runtime.NumCPU()*2)
+
+// priorityFields are fields to show before the message in pretty mode
+var priorityFields = [...]string{"worker", "hclog_name"}
+
+// formatPrepareWithPriorityFields moves priority fields before the message
+func formatPrepareWithPriorityFields(m map[string]interface{}) error {
+	// Fast path: check if any priority fields exist
+	var count int
+	for i := range priorityFields {
+		if _, ok := m[priorityFields[i]]; ok {
+			count++
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+
+	msg, _ := m[zerolog.MessageFieldName].(string)
+
+	var b strings.Builder
+	b.Grow(count*20 + len(msg))
+
+	for i := range priorityFields {
+		if v, ok := m[priorityFields[i]]; ok {
+			b.WriteString(priorityFields[i])
+			b.WriteByte('=')
+			fmt.Fprint(&b, v)
+			b.WriteByte(' ')
+			delete(m, priorityFields[i])
+		}
+	}
+	b.WriteString(msg)
+	m[zerolog.MessageFieldName] = b.String()
+	return nil
+}
 
 // Config holds the configuration for the worker pool
 type Config struct {
@@ -28,8 +65,10 @@ type Config struct {
 	HealthCheckInterval time.Duration
 	// FirstByteTimeout is how long to wait for first response before considering worker hung
 	FirstByteTimeout time.Duration
-	// Logger for pool operations
-	Logger *slog.Logger
+	// LogOutput is the output writer for logs (defaults to os.Stdout)
+	LogOutput io.Writer
+	// PrettyLogs enables human-readable console logging
+	PrettyLogs bool
 	// WorkerPath is the path to the worker binary (required)
 	WorkerPath string
 }
@@ -89,6 +128,7 @@ func (p *Pool) trackRequest(handle *workerHandle, cancel context.CancelFunc) (*i
 // Pool manages a pool of worker processes
 type Pool struct {
 	config    *Config
+	logger    zerolog.Logger
 	workers   []*workerHandle
 	mu        sync.RWMutex
 	next      atomic.Uint64
@@ -101,6 +141,7 @@ type Pool struct {
 
 type workerHandle struct {
 	id          int
+	logger      zerolog.Logger // pre-bound with worker id
 	client      *plugin.Client
 	worker      workerplugin.Worker
 	mu          sync.Mutex
@@ -118,12 +159,23 @@ func New(config *Config) (*Pool, error) {
 	if config.PoolSize <= 0 {
 		config.PoolSize = 4
 	}
-	if config.Logger == nil {
-		config.Logger = slog.Default()
+	if config.LogOutput == nil {
+		config.LogOutput = os.Stdout
 	}
+
+	// Create logger with appropriate output format
+	var output io.Writer = config.LogOutput
+	if config.PrettyLogs {
+		output = zerolog.ConsoleWriter{
+			Out: config.LogOutput,
+			FormatPrepare: formatPrepareWithPriorityFields,
+		}
+	}
+	logger := zerolog.New(output).With().Timestamp().Logger()
 
 	p := &Pool{
 		config:  config,
+		logger:  logger,
 		workers: make([]*workerHandle, config.PoolSize),
 		done:    make(chan struct{}),
 	}
@@ -159,6 +211,9 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		cmd.Env = append(cmd.Env, "BAML_LOG_LSP=true", "BAML_INTERNAL_LOG=info")
 	}
 
+	// Create a zerolog-backed hclog for plugin communication
+	pluginLogger := newHclogZerolog(p.logger.With().Int("worker", id).Logger())
+
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: workerplugin.Handshake,
 		Plugins:         workerplugin.PluginMap,
@@ -166,6 +221,7 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
 		},
+		Logger: pluginLogger,
 	})
 
 	rpcClient, err := client.Client()
@@ -186,10 +242,12 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		return nil, fmt.Errorf("unexpected plugin type: %T", raw)
 	}
 
-	p.config.Logger.Info("Started worker", "id", id)
+	workerLogger := p.logger.With().Int("worker", id).Logger()
+	workerLogger.Info().Msg("Started worker")
 
 	return &workerHandle{
 		id:          id,
+		logger:      workerLogger,
 		client:      client,
 		worker:      worker,
 		healthy:     true,
@@ -249,10 +307,10 @@ func (p *Pool) checkHungRequests() {
 		handle.inFlightMu.RUnlock()
 
 		if hungRequest != nil {
-			p.config.Logger.Warn("Worker appears hung, killing",
-				"worker", handle.id,
-				"request_id", hungRequest.id,
-				"waited", now.Sub(hungRequest.startedAt))
+			handle.logger.Warn().
+				Uint64("request_id", hungRequest.id).
+				Dur("waited", now.Sub(hungRequest.startedAt)).
+				Msg("Worker appears hung, killing")
 			p.killWorkerAndRetry(handle)
 		}
 	}
@@ -298,7 +356,7 @@ func (p *Pool) checkHealth() {
 
 		if err != nil || !healthy {
 			handle.healthy = false
-			p.config.Logger.Warn("Worker unhealthy, restarting", "id", handle.id, "error", err)
+			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 			handle.mu.Unlock()
 
 			// Restart worker
@@ -325,7 +383,7 @@ func (p *Pool) restartWorker(id int) {
 
 	newHandle, err := p.startWorker(id)
 	if err != nil {
-		p.config.Logger.Error("Failed to restart worker", "id", id, "error", err)
+		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to restart worker")
 		return
 	}
 
@@ -413,12 +471,12 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 
 			// If attempt context was cancelled but parent wasn't, worker was killed - retry
 			if attemptCtx.Err() != nil {
-				p.config.Logger.Info("Retrying stream after worker kill", "worker", handle.id, "attempt", attempt+1)
+				handle.logger.Info().Int("attempt", attempt+1).Msg("Retrying stream after worker kill")
 				continue
 			}
 
 			// Regular error - mark worker unhealthy and retry
-			p.config.Logger.Warn("Worker stream call failed", "worker", handle.id, "attempt", attempt+1, "error", err)
+			handle.logger.Warn().Int("attempt", attempt+1).Err(err).Msg("Worker stream call failed")
 
 			handle.mu.Lock()
 			handle.healthy = false
@@ -484,7 +542,7 @@ func (p *Pool) totalInFlight() int64 {
 func (p *Pool) Shutdown(ctx context.Context) error {
 	// Start draining - reject new requests
 	p.draining.Store(true)
-	p.config.Logger.Info("Pool draining, waiting for in-flight requests to complete")
+	p.logger.Info().Msg("Pool draining, waiting for in-flight requests to complete")
 
 	// Wait for in-flight requests to complete
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -493,16 +551,16 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	for {
 		inFlight := p.totalInFlight()
 		if inFlight == 0 {
-			p.config.Logger.Info("All in-flight requests completed")
+			p.logger.Info().Msg("All in-flight requests completed")
 			break
 		}
 
 		select {
 		case <-ctx.Done():
-			p.config.Logger.Warn("Shutdown timeout, killing workers with in-flight requests", "in_flight", inFlight)
+			p.logger.Warn().Int64("in_flight", inFlight).Msg("Shutdown timeout, killing workers with in-flight requests")
 			return p.Close()
 		case <-ticker.C:
-			p.config.Logger.Info("Waiting for in-flight requests", "count", inFlight)
+			p.logger.Info().Int64("count", inFlight).Msg("Waiting for in-flight requests")
 		}
 	}
 
@@ -530,7 +588,7 @@ func (p *Pool) Close() error {
 	}
 
 	p.wg.Wait()
-	p.config.Logger.Info("Worker pool closed")
+	p.logger.Info().Msg("Worker pool closed")
 	return nil
 }
 
