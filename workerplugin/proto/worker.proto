@@ -32,6 +32,13 @@ message HealthResponse {
   bool healthy = 1;
 }
 
+// Metrics response - contains serialized Prometheus metrics
+message MetricsResponse {
+  // Serialized prometheus MetricFamily protos
+  // Use prometheus client_model to deserialize
+  repeated bytes metric_families = 1;
+}
+
 // Worker service
 service Worker {
   // Streaming call - returns stream of results
@@ -40,4 +47,7 @@ service Worker {
 
   // Health check
   rpc Health(Empty) returns (HealthResponse);
+
+  // Get Prometheus metrics from worker process
+  rpc GetMetrics(Empty) returns (MetricsResponse);
 }

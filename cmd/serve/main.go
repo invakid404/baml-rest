@@ -23,15 +23,16 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/internal/httplogger"
+	"github.com/invakid404/baml-rest/internal/unsafeutil"
+	"github.com/invakid404/baml-rest/pool"
+	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/invakid404/baml-rest/internal/unsafeutil"
-	"github.com/invakid404/baml-rest/pool"
-	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/rs/zerolog"
 	"github.com/tmaxmax/go-sse"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -209,15 +210,22 @@ var serveCmd = &cobra.Command{
 		r.Use(middleware.Recoverer)
 
 		// Set up Prometheus metrics with prefix
-		metricsReg := prometheus.NewRegistry()
-		metricsReg.MustRegister(
+		mainMetricsReg := prometheus.NewRegistry()
+		mainMetricsReg.MustRegister(
 			collectors.NewGoCollector(),
 			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		)
 
+		// Create combined gatherer that includes main process and worker metrics
+		combinedGatherer := &combinedMetricsGatherer{
+			prefix:       "bamlrest_",
+			mainGatherer: mainMetricsReg,
+			pool:         workerPool,
+		}
+
 		// Add /metrics endpoint for Prometheus scraping
 		r.Handle("/metrics", promhttp.HandlerFor(
-			prefixGatherer{prefix: "bamlrest_", gatherer: metricsReg},
+			combinedGatherer,
 			promhttp.HandlerOpts{},
 		))
 
@@ -462,20 +470,72 @@ type CallWithRawResponse struct {
 	Raw  string          `json:"raw"`
 }
 
-// prefixGatherer wraps a prometheus.Gatherer and adds a prefix to all metric names
-type prefixGatherer struct {
-	prefix   string
-	gatherer prometheus.Gatherer
+// combinedMetricsGatherer gathers metrics from the main process and all workers
+type combinedMetricsGatherer struct {
+	prefix       string
+	mainGatherer prometheus.Gatherer
+	pool         *pool.Pool
 }
 
-func (p prefixGatherer) Gather() ([]*dto.MetricFamily, error) {
-	mfs, err := p.gatherer.Gather()
+func (g *combinedMetricsGatherer) Gather() ([]*dto.MetricFamily, error) {
+	// Gather main process metrics
+	mainMfs, err := g.mainGatherer.Gather()
 	if err != nil {
 		return nil, err
 	}
-	for _, mf := range mfs {
-		name := p.prefix + mf.GetName()
+
+	// Add prefix to main process metrics and mark with process="main"
+	mainLabel := "main"
+	processLabelName := "process"
+	for _, mf := range mainMfs {
+		name := g.prefix + mf.GetName()
 		mf.Name = &name
+		// Add process="main" label to each metric
+		for _, m := range mf.Metric {
+			m.Label = append(m.Label, &dto.LabelPair{
+				Name:  &processLabelName,
+				Value: &mainLabel,
+			})
+		}
 	}
-	return mfs, nil
+
+	// Gather worker metrics
+	workerMetrics := g.pool.GatherWorkerMetrics(context.Background())
+
+	// Deserialize and merge worker metrics
+	for _, wm := range workerMetrics {
+		workerLabel := fmt.Sprintf("worker_%d", wm.WorkerID)
+
+		for _, mfBytes := range wm.MetricFamilies {
+			var mf dto.MetricFamily
+			if err := proto.Unmarshal(mfBytes, &mf); err != nil {
+				continue // Skip malformed metrics
+			}
+
+			// Add prefix and process label
+			name := g.prefix + mf.GetName()
+			mf.Name = &name
+			for _, m := range mf.Metric {
+				m.Label = append(m.Label, &dto.LabelPair{
+					Name:  &processLabelName,
+					Value: &workerLabel,
+				})
+			}
+
+			// Merge into main metrics (find existing or append)
+			merged := false
+			for _, existingMf := range mainMfs {
+				if existingMf.GetName() == mf.GetName() {
+					existingMf.Metric = append(existingMf.Metric, mf.Metric...)
+					merged = true
+					break
+				}
+			}
+			if !merged {
+				mainMfs = append(mainMfs, &mf)
+			}
+		}
+	}
+
+	return mainMfs, nil
 }

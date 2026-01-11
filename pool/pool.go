@@ -640,3 +640,41 @@ func (p *Pool) Stats() Stats {
 
 	return stats
 }
+
+// WorkerMetrics holds metrics from a single worker
+type WorkerMetrics struct {
+	WorkerID      int
+	MetricFamilies [][]byte
+}
+
+// GatherWorkerMetrics collects Prometheus metrics from all healthy workers.
+// Returns a slice of worker metrics, one per worker.
+func (p *Pool) GatherWorkerMetrics(ctx context.Context) []WorkerMetrics {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var results []WorkerMetrics
+
+	for _, handle := range p.workers {
+		if handle == nil || !handle.healthy {
+			continue
+		}
+
+		// Use a short timeout for metrics collection
+		metricsCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		metricFamilies, err := handle.worker.GetMetrics(metricsCtx)
+		cancel()
+
+		if err != nil {
+			p.logger.Warn().Int("worker", handle.id).Err(err).Msg("Failed to collect metrics from worker")
+			continue
+		}
+
+		results = append(results, WorkerMetrics{
+			WorkerID:      handle.id,
+			MetricFamilies: metricFamilies,
+		})
+	}
+
+	return results
+}
