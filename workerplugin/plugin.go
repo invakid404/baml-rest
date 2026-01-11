@@ -41,6 +41,7 @@ const (
 	StreamResultKindStream StreamResultKind = iota
 	StreamResultKindFinal
 	StreamResultKindError
+	StreamResultKindHeartbeat
 )
 
 // Worker is the interface that the plugin implements.

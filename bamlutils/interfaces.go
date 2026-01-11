@@ -19,6 +19,7 @@ const (
 	StreamResultKindStream StreamResultKind = iota
 	StreamResultKindFinal
 	StreamResultKindError
+	StreamResultKindHeartbeat
 )
 
 type StreamingPrompt func(adapter Adapter, input any) (<-chan StreamResult, error)

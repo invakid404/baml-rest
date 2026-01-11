@@ -17,6 +17,7 @@ message StreamResult {
     STREAM = 0;
     FINAL = 1;
     ERROR = 2;
+    HEARTBEAT = 3;  // Signals first byte received from LLM (filtered at pool level)
   }
   Kind kind = 1;
   bytes data_json = 2;         // JSON-encoded stream/final data
