@@ -229,7 +229,7 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody, false)
+				result, err := workerPool.Call(ctx, methodName, rawBody, false)
 				if err != nil {
 					_ = httplog.SetError(r.Context(), err)
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
@@ -250,7 +250,7 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				result, err := workerPool.Call(ctx, methodName, rawBody, rawBody, true)
+				result, err := workerPool.Call(ctx, methodName, rawBody, true)
 				if err != nil {
 					_ = httplog.SetError(r.Context(), err)
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
@@ -294,7 +294,7 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
-				results, err := workerPool.CallStream(ctx, methodName, rawBody, rawBody, false)
+				results, err := workerPool.CallStream(ctx, methodName, rawBody, false)
 				if err != nil {
 					http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 					return

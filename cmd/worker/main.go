@@ -52,24 +52,22 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
 	return nil
 }
 
-func (w *workerImpl) Call(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (*workerplugin.CallResult, error) {
+func (w *workerImpl) Call(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (*workerplugin.CallResult, error) {
 	method, ok := baml_rest.Methods[methodName]
 	if !ok {
 		return nil, fmt.Errorf("method %q not found", methodName)
 	}
 
-	// Parse input
+	// Parse input (unknown fields like __baml_options__ are ignored)
 	input := method.MakeInput()
 	if err := json.Unmarshal(inputJSON, input); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
 	}
 
-	// Parse options
+	// Parse options from the same input (only extracts __baml_options__ field)
 	var options workerBamlOptions
-	if len(optionsJSON) > 0 {
-		if err := json.Unmarshal(optionsJSON, &options); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal options: %w", err)
-		}
+	if err := json.Unmarshal(inputJSON, &options); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal options: %w", err)
 	}
 
 	// Create adapter and apply options
@@ -107,24 +105,22 @@ func (w *workerImpl) Call(ctx context.Context, methodName string, inputJSON, opt
 	return nil, fmt.Errorf("no final result received")
 }
 
-func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSON, optionsJSON []byte, enableRawCollection bool) (<-chan *workerplugin.StreamResult, error) {
+func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *workerplugin.StreamResult, error) {
 	method, ok := baml_rest.Methods[methodName]
 	if !ok {
 		return nil, fmt.Errorf("method %q not found", methodName)
 	}
 
-	// Parse input
+	// Parse input (unknown fields like __baml_options__ are ignored)
 	input := method.MakeInput()
 	if err := json.Unmarshal(inputJSON, input); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
 	}
 
-	// Parse options
+	// Parse options from the same input (only extracts __baml_options__ field)
 	var options workerBamlOptions
-	if len(optionsJSON) > 0 {
-		if err := json.Unmarshal(optionsJSON, &options); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal options: %w", err)
-		}
+	if err := json.Unmarshal(inputJSON, &options); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal options: %w", err)
 	}
 
 	// Create adapter and apply options
