@@ -1,11 +1,17 @@
 package utils
 
 import (
+	"reflect"
+
 	"github.com/boundaryml/baml/engine/language_client_go/baml_go/serde"
 )
 
 func UnwrapDynamicValue(value any) any {
 	if value == nil {
+		return nil
+	}
+
+	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Ptr && rv.IsNil() {
 		return nil
 	}
 
