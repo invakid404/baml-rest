@@ -2,13 +2,13 @@ package {{ .Package }}
 
 import (
 	"embed"
-	{{- if gt (len .Imports) 0 }}
+{{- if gt (len .Imports) 0 }}
 	"fmt"
 	"path/filepath"
-	{{- end }}
-	{{- range .Imports }}
-	{{ .Module }}
-	{{- end }}
+{{ range .Imports }}
+	{{ .Module -}}
+{{ end }}
+{{- end }}
 )
 
 //go:embed {{ .Dirs }}
