@@ -194,19 +194,6 @@ var serveCmd = &cobra.Command{
 			logger.Error().Err(err).Msg("Unhandled panic recovered")
 		}
 
-		r.Use(middleware.RequestID)
-		// Custom middleware to set request ID as response header
-		r.Use(func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if reqID := middleware.GetReqID(r.Context()); reqID != "" {
-					w.Header().Set("X-Request-Id", reqID)
-				}
-				next.ServeHTTP(w, r)
-			})
-		})
-		r.Use(httplogger.RequestLogger(logger, &httplogger.Options{
-			RecoverPanics: true,
-		}))
 		r.Use(middleware.Recoverer)
 
 		// Set up Prometheus metrics with prefix
@@ -223,172 +210,189 @@ var serveCmd = &cobra.Command{
 			pool:         workerPool,
 		}
 
-		// Add /metrics endpoint for Prometheus scraping
+		// Add /metrics endpoint for Prometheus scraping (no HTTP logging to reduce noise)
 		r.Handle("/metrics", promhttp.HandlerFor(
 			combinedGatherer,
 			promhttp.HandlerOpts{},
 		))
 
-		// Add /openapi.json endpoint
-		r.Get("/openapi.json", func(w http.ResponseWriter, r *http.Request) {
-			render.JSON(w, r, &schema)
-		})
-
-		// Add /openapi.yaml endpoint
-		r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/yaml")
-			yamlData, err := yaml.Marshal(&schema)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			_, _ = w.Write(yamlData)
-		})
-
-		for _, methodName := range methodNames {
-			methodName := methodName // capture for closure
-
-			logger.Info().Str("prompt", methodName).Msg("Registering prompt")
-
-			makeCallHandler := func(enableRawCollection bool) http.HandlerFunc {
-				return func(w http.ResponseWriter, r *http.Request) {
-					ctx, cancel := context.WithCancel(r.Context())
-					defer cancel()
-
-					rawBody, err := io.ReadAll(r.Body)
-					if err != nil {
-						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
-						return
+		// Routes with HTTP request logging
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.RequestID)
+			r.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if reqID := middleware.GetReqID(r.Context()); reqID != "" {
+						w.Header().Set("X-Request-Id", reqID)
 					}
+					next.ServeHTTP(w, r)
+				})
+			})
 
-					result, err := workerPool.Call(ctx, methodName, rawBody, enableRawCollection)
-					if err != nil {
-						httplogger.SetError(r.Context(), err)
-						http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
-						return
+			r.Use(httplogger.RequestLogger(logger, &httplogger.Options{
+				RecoverPanics: true,
+			}))
+
+			// Add /openapi.json endpoint
+			r.Get("/openapi.json", func(w http.ResponseWriter, r *http.Request) {
+				render.JSON(w, r, &schema)
+			})
+
+			// Add /openapi.yaml endpoint
+			r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/yaml")
+				yamlData, err := yaml.Marshal(&schema)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				_, _ = w.Write(yamlData)
+			})
+
+			for _, methodName := range methodNames {
+				methodName := methodName // capture for closure
+
+				logger.Info().Str("prompt", methodName).Msg("Registering prompt")
+
+				makeCallHandler := func(enableRawCollection bool) http.HandlerFunc {
+					return func(w http.ResponseWriter, r *http.Request) {
+						ctx, cancel := context.WithCancel(r.Context())
+						defer cancel()
+
+						rawBody, err := io.ReadAll(r.Body)
+						if err != nil {
+							http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+							return
+						}
+
+						result, err := workerPool.Call(ctx, methodName, rawBody, enableRawCollection)
+						if err != nil {
+							httplogger.SetError(r.Context(), err)
+							http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
+							return
+						}
+
+						w.Header().Set("Content-Type", "application/json")
+						if enableRawCollection {
+							render.JSON(w, r, CallWithRawResponse{
+								Data: result.Data,
+								Raw:  result.Raw,
+							})
+						} else {
+							_, _ = w.Write(result.Data)
+						}
 					}
+				}
 
-					w.Header().Set("Content-Type", "application/json")
-					if enableRawCollection {
-						render.JSON(w, r, CallWithRawResponse{
-							Data: result.Data,
-							Raw:  result.Raw,
+				r.Post(fmt.Sprintf("/call/%s", methodName), makeCallHandler(false))
+				r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(true))
+
+				makeStreamHandler := func(pathPrefix string, enableRawCollection bool) http.HandlerFunc {
+					return func(w http.ResponseWriter, r *http.Request) {
+						topic := fmt.Sprintf("%s/%s/%p", pathPrefix, methodName, r)
+						ready := make(chan struct{})
+
+						ctx, cancel := context.WithCancel(
+							context.WithValue(
+								context.WithValue(r.Context(), sseContextKeyTopic, topic),
+								sseContextKeyReady, ready,
+							),
+						)
+						defer cancel()
+
+						r = r.WithContext(ctx)
+
+						rawBody, err := io.ReadAll(r.Body)
+						if err != nil {
+							httplogger.SetError(r.Context(), err)
+							http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+							return
+						}
+
+						results, err := workerPool.CallStream(ctx, methodName, rawBody, enableRawCollection)
+						if err != nil {
+							httplogger.SetError(r.Context(), err)
+							http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
+							return
+						}
+
+						sseDone := make(chan struct{})
+						go recovery.Go(func() error {
+							defer close(sseDone)
+							s.ServeHTTP(w, r)
+							return nil
 						})
-					} else {
-						_, _ = w.Write(result.Data)
-					}
-				}
-			}
 
-			r.Post(fmt.Sprintf("/call/%s", methodName), makeCallHandler(false))
-			r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(true))
+						// Wait for SSE connection to be established before publishing
+						select {
+						case <-ready:
+							// SSE is ready, proceed
+						case <-ctx.Done():
+							// Context cancelled (client disconnected)
+							<-sseDone
+							return
+						}
 
-			makeStreamHandler := func(pathPrefix string, enableRawCollection bool) http.HandlerFunc {
-				return func(w http.ResponseWriter, r *http.Request) {
-					topic := fmt.Sprintf("%s/%s/%p", pathPrefix, methodName, r)
-					ready := make(chan struct{})
+						// Accumulate raw deltas for SSE output (internal gRPC sends deltas to save bandwidth)
+						var accumulatedRaw strings.Builder
 
-					ctx, cancel := context.WithCancel(
-						context.WithValue(
-							context.WithValue(r.Context(), sseContextKeyTopic, topic),
-							sseContextKeyReady, ready,
-						),
-					)
-					defer cancel()
+						for result := range results {
+							message := &sse.Message{}
 
-					r = r.WithContext(ctx)
+							switch result.Kind {
+							case workerplugin.StreamResultKindError:
+								message.Type = sseErrorKind
+								if result.Error != nil {
+									message.AppendData(result.Error.Error())
+								}
+							case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
+								data := result.Data
+								if enableRawCollection {
+									// Stream messages contain deltas, Final contains full raw
+									rawForOutput := result.Raw
+									if result.Kind == workerplugin.StreamResultKindStream {
+										// Accumulate delta into full raw response for SSE output
+										accumulatedRaw.WriteString(result.Raw)
+										rawForOutput = accumulatedRaw.String()
+									}
+									var err error
+									data, err = json.Marshal(CallWithRawResponse{
+										Data: result.Data,
+										Raw:  rawForOutput,
+									})
+									if err != nil {
+										message.Type = sseErrorKind
+										message.AppendData(fmt.Sprintf("Failed to marshal response: %v", err))
+										_ = s.Publish(message, topic)
+										workerplugin.ReleaseStreamResult(result)
+										continue
+									}
+								}
+								// SAFETY: data is owned by this goroutine, used only for this
+								// AppendData call, and never modified afterward. The string is consumed
+								// immediately by the SSE library.
+								message.AppendData(unsafeutil.BytesToString(data))
+							}
 
-					rawBody, err := io.ReadAll(r.Body)
-					if err != nil {
-						httplogger.SetError(r.Context(), err)
-						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
-						return
-					}
+							workerplugin.ReleaseStreamResult(result)
+							if err := s.Publish(message, topic); err != nil {
+								// Drain and release remaining results to avoid leaking pooled structs
+								for remaining := range results {
+									workerplugin.ReleaseStreamResult(remaining)
+								}
+								break
+							}
+						}
 
-					results, err := workerPool.CallStream(ctx, methodName, rawBody, enableRawCollection)
-					if err != nil {
-						httplogger.SetError(r.Context(), err)
-						http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
-						return
-					}
-
-					sseDone := make(chan struct{})
-					go recovery.Go(func() error {
-						defer close(sseDone)
-						s.ServeHTTP(w, r)
-						return nil
-					})
-
-					// Wait for SSE connection to be established before publishing
-					select {
-					case <-ready:
-						// SSE is ready, proceed
-					case <-ctx.Done():
-						// Context cancelled (client disconnected)
+						// Cancel context to signal SSE server to stop, then wait for it
+						cancel()
 						<-sseDone
-						return
 					}
-
-					// Accumulate raw deltas for SSE output (internal gRPC sends deltas to save bandwidth)
-					var accumulatedRaw strings.Builder
-
-					for result := range results {
-						message := &sse.Message{}
-
-						switch result.Kind {
-						case workerplugin.StreamResultKindError:
-							message.Type = sseErrorKind
-							if result.Error != nil {
-								message.AppendData(result.Error.Error())
-							}
-						case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
-							data := result.Data
-							if enableRawCollection {
-								// Stream messages contain deltas, Final contains full raw
-								rawForOutput := result.Raw
-								if result.Kind == workerplugin.StreamResultKindStream {
-									// Accumulate delta into full raw response for SSE output
-									accumulatedRaw.WriteString(result.Raw)
-									rawForOutput = accumulatedRaw.String()
-								}
-								var err error
-								data, err = json.Marshal(CallWithRawResponse{
-									Data: result.Data,
-									Raw:  rawForOutput,
-								})
-								if err != nil {
-									message.Type = sseErrorKind
-									message.AppendData(fmt.Sprintf("Failed to marshal response: %v", err))
-									_ = s.Publish(message, topic)
-									workerplugin.ReleaseStreamResult(result)
-									continue
-								}
-							}
-							// SAFETY: data is owned by this goroutine, used only for this
-							// AppendData call, and never modified afterward. The string is consumed
-							// immediately by the SSE library.
-							message.AppendData(unsafeutil.BytesToString(data))
-						}
-
-						workerplugin.ReleaseStreamResult(result)
-						if err := s.Publish(message, topic); err != nil {
-							// Drain and release remaining results to avoid leaking pooled structs
-							for remaining := range results {
-								workerplugin.ReleaseStreamResult(remaining)
-							}
-							break
-						}
-					}
-
-					// Cancel context to signal SSE server to stop, then wait for it
-					cancel()
-					<-sseDone
 				}
-			}
 
-			r.Post(fmt.Sprintf("/stream/%s", methodName), makeStreamHandler("stream", false))
-			r.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), makeStreamHandler("stream-with-raw", true))
-		}
+				r.Post(fmt.Sprintf("/stream/%s", methodName), makeStreamHandler("stream", false))
+				r.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), makeStreamHandler("stream-with-raw", true))
+			}
+		})
 
 		// Create HTTP server
 		srv := &http.Server{
