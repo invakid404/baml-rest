@@ -19,7 +19,6 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Worker_Call_FullMethodName       = "/workerplugin.Worker/Call"
 	Worker_CallStream_FullMethodName = "/workerplugin.Worker/CallStream"
 	Worker_Health_FullMethodName     = "/workerplugin.Worker/Health"
 )
@@ -30,9 +29,8 @@ const (
 //
 // Worker service
 type WorkerClient interface {
-	// Unary call - waits for final result
-	Call(ctx context.Context, in *CallRequest, opts ...grpc.CallOption) (*CallResponse, error)
 	// Streaming call - returns stream of results
+	// Used for both streaming and non-streaming calls
 	CallStream(ctx context.Context, in *CallRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamResult], error)
 	// Health check
 	Health(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*HealthResponse, error)
@@ -44,16 +42,6 @@ type workerClient struct {
 
 func NewWorkerClient(cc grpc.ClientConnInterface) WorkerClient {
 	return &workerClient{cc}
-}
-
-func (c *workerClient) Call(ctx context.Context, in *CallRequest, opts ...grpc.CallOption) (*CallResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CallResponse)
-	err := c.cc.Invoke(ctx, Worker_Call_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *workerClient) CallStream(ctx context.Context, in *CallRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamResult], error) {
@@ -91,9 +79,8 @@ func (c *workerClient) Health(ctx context.Context, in *Empty, opts ...grpc.CallO
 //
 // Worker service
 type WorkerServer interface {
-	// Unary call - waits for final result
-	Call(context.Context, *CallRequest) (*CallResponse, error)
 	// Streaming call - returns stream of results
+	// Used for both streaming and non-streaming calls
 	CallStream(*CallRequest, grpc.ServerStreamingServer[StreamResult]) error
 	// Health check
 	Health(context.Context, *Empty) (*HealthResponse, error)
@@ -107,9 +94,6 @@ type WorkerServer interface {
 // pointer dereference when methods are called.
 type UnimplementedWorkerServer struct{}
 
-func (UnimplementedWorkerServer) Call(context.Context, *CallRequest) (*CallResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Call not implemented")
-}
 func (UnimplementedWorkerServer) CallStream(*CallRequest, grpc.ServerStreamingServer[StreamResult]) error {
 	return status.Error(codes.Unimplemented, "method CallStream not implemented")
 }
@@ -135,24 +119,6 @@ func RegisterWorkerServer(s grpc.ServiceRegistrar, srv WorkerServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&Worker_ServiceDesc, srv)
-}
-
-func _Worker_Call_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CallRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(WorkerServer).Call(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Worker_Call_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(WorkerServer).Call(ctx, req.(*CallRequest))
-	}
-	return interceptor(ctx, in, info, handler)
 }
 
 func _Worker_CallStream_Handler(srv interface{}, stream grpc.ServerStream) error {
@@ -191,10 +157,6 @@ var Worker_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "workerplugin.Worker",
 	HandlerType: (*WorkerServer)(nil),
 	Methods: []grpc.MethodDesc{
-		{
-			MethodName: "Call",
-			Handler:    _Worker_Call_Handler,
-		},
 		{
 			MethodName: "Health",
 			Handler:    _Worker_Health_Handler,

@@ -11,13 +11,6 @@ message CallRequest {
   bool enable_raw_collection = 3;  // When true, capture raw LLM response via OnTick/SSE parsing
 }
 
-// Response for unary call (non-streaming)
-message CallResponse {
-  bytes data_json = 1;         // JSON-encoded result
-  string raw = 2;              // Raw LLM response text
-  string error = 3;            // Error message if failed
-}
-
 // Streaming result
 message StreamResult {
   enum Kind {
@@ -40,10 +33,8 @@ message HealthResponse {
 
 // Worker service
 service Worker {
-  // Unary call - waits for final result
-  rpc Call(CallRequest) returns (CallResponse);
-
   // Streaming call - returns stream of results
+  // Used for both streaming and non-streaming calls
   rpc CallStream(CallRequest) returns (stream StreamResult);
 
   // Health check
