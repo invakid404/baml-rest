@@ -23,6 +23,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/internal/httplogger"
+	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -56,6 +57,7 @@ var (
 	poolSize         int
 	firstByteTimeout time.Duration
 	prettyLogs       bool
+	memLimit         int64
 )
 
 var rootCmd = &cobra.Command{
@@ -125,6 +127,28 @@ var serveCmd = &cobra.Command{
 		}
 		logger := zerolog.New(output).With().Timestamp().Logger()
 
+		// Configure memory limits
+		totalMem := memLimit
+		if totalMem == 0 {
+			totalMem = memlimit.DetectAvailable()
+		}
+
+		var workerMemLimit int64
+		if totalMem > 0 {
+			serverMem, workerMem := memlimit.CalculateLimits(totalMem, poolSize)
+			workerMemLimit = workerMem
+
+			memlimit.SetGOMEMLIMIT(serverMem)
+			logger.Info().
+				Str("total", memlimit.FormatBytes(totalMem)).
+				Str("server", memlimit.FormatBytes(serverMem)).
+				Str("per_worker", memlimit.FormatBytes(workerMem)).
+				Int("workers", poolSize).
+				Msg("Memory limits configured")
+		} else {
+			logger.Warn().Msg("Could not detect memory limit, GOMEMLIMIT not set")
+		}
+
 		// Load OpenAPI schema from embedded JSON
 		var schema openapi3.T
 		if err := json.Unmarshal(openapiJSON, &schema); err != nil {
@@ -155,6 +179,7 @@ var serveCmd = &cobra.Command{
 		poolConfig.LogOutput = os.Stdout
 		poolConfig.PrettyLogs = prettyLogs
 		poolConfig.WorkerPath = workerPath
+		poolConfig.WorkerMemLimit = workerMemLimit
 
 		workerPool, err := pool.New(poolConfig)
 		if err != nil {
@@ -457,6 +482,7 @@ func init() {
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
 	serveCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
+	serveCmd.Flags().Int64Var(&memLimit, "mem-limit", 0, "Total memory limit in bytes (0 = auto-detect from cgroups/system)")
 
 	rootCmd.AddCommand(serveCmd)
 }
