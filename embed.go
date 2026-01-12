@@ -14,7 +14,7 @@ import (
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
-//go:embed Dockerfile.builder README.md adapter.go adapters cmd embed.go go.mod go.sum go.work go.work.sum internal
+//go:embed adapter.go adapters cmd embed.go go.mod go.sum go.work go.work.sum internal
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)
