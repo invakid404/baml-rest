@@ -1,2 +1,5 @@
+README.md
+Dockerfile.builder
+
 # Monitoring/observability config (not needed at runtime)
 monitoring

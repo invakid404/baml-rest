@@ -72,6 +72,8 @@ type Config struct {
 	PrettyLogs bool
 	// WorkerPath is the path to the worker binary (required)
 	WorkerPath string
+	// WorkerMemLimit is the GOMEMLIMIT for each worker process (0 = no limit)
+	WorkerMemLimit int64
 }
 
 // DefaultConfig returns a default configuration
@@ -203,6 +205,11 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 	cmd := exec.Command(p.config.WorkerPath)
 
 	cmd.Env = append(os.Environ(), tokioWorkerThreads)
+
+	// Set GOMEMLIMIT for worker if configured
+	if p.config.WorkerMemLimit > 0 {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("GOMEMLIMIT=%d", p.config.WorkerMemLimit))
+	}
 
 	// If BAML logging is enabled (not "off"), configure LSP mode so logs go through
 	// go-plugin's hclog instead of stdout (which would corrupt the gRPC protocol)
