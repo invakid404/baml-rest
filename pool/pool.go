@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-chi/metrics"
 	"github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
 
@@ -20,6 +21,23 @@ import (
 )
 
 var tokioWorkerThreads = fmt.Sprintf("TOKIO_WORKER_THREADS=%d", runtime.NumCPU()*2)
+
+// WorkerRestartReason represents why a worker was restarted
+type WorkerRestartReason string
+
+const (
+	RestartReasonHung      WorkerRestartReason = "hung"
+	RestartReasonUnhealthy WorkerRestartReason = "unhealthy"
+)
+
+type workerRestartLabels struct {
+	Reason WorkerRestartReason `label:"reason"`
+}
+
+var workerRestarts = metrics.CounterWith[workerRestartLabels](
+	"bamlrest_worker_restarts_total",
+	"Total number of worker restarts",
+)
 
 // priorityFields are fields to show before the message in pretty mode
 var priorityFields = [...]string{"worker", "hclog_name"}
@@ -181,6 +199,10 @@ func New(config *Config) (*Pool, error) {
 		done:    make(chan struct{}),
 	}
 
+	// Initialize worker restart counter labels
+	workerRestarts.Add(0, workerRestartLabels{Reason: RestartReasonHung})
+	workerRestarts.Add(0, workerRestartLabels{Reason: RestartReasonUnhealthy})
+
 	// Start workers
 	for i := 0; i < config.PoolSize; i++ {
 		handle, err := p.startWorker(i)
@@ -317,6 +339,7 @@ func (p *Pool) checkHungRequests() {
 				Uint64("request_id", hungRequest.id).
 				Dur("waited", now.Sub(hungRequest.startedAt)).
 				Msg("Worker appears hung, killing")
+			workerRestarts.Inc(workerRestartLabels{Reason: RestartReasonHung})
 			p.killWorkerAndRetry(handle)
 		}
 	}
@@ -365,7 +388,7 @@ func (p *Pool) checkHealth() {
 			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 			handle.mu.Unlock()
 
-			// Restart worker
+			workerRestarts.Inc(workerRestartLabels{Reason: RestartReasonUnhealthy})
 			p.restartWorker(handle.id)
 		} else {
 			handle.healthy = true

@@ -19,6 +19,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/metrics"
 	"github.com/go-chi/render"
 	"github.com/goccy/go-json"
 	"github.com/gregwebs/go-recovery"
@@ -28,7 +29,6 @@ import (
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog"
@@ -221,17 +221,10 @@ var serveCmd = &cobra.Command{
 
 		r.Use(middleware.Recoverer)
 
-		// Set up Prometheus metrics with prefix
-		mainMetricsReg := prometheus.NewRegistry()
-		mainMetricsReg.MustRegister(
-			collectors.NewGoCollector(),
-			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		)
-
 		// Create combined gatherer that includes main process and worker metrics
 		combinedGatherer := &combinedMetricsGatherer{
 			prefix:       "bamlrest_",
-			mainGatherer: mainMetricsReg,
+			mainGatherer: prometheus.DefaultGatherer,
 			pool:         workerPool,
 		}
 
@@ -241,8 +234,9 @@ var serveCmd = &cobra.Command{
 			promhttp.HandlerOpts{},
 		))
 
-		// Routes with HTTP request logging
+		// Routes with HTTP request logging and metrics
 		r.Group(func(r chi.Router) {
+			r.Use(metrics.Collector(metrics.CollectorOpts{}))
 			r.Use(middleware.RequestID)
 			r.Use(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
