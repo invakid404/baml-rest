@@ -19,12 +19,14 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/v2/pkg/protobuf/proto"
+	"github.com/containerd/platforms"
 	"github.com/docker/buildx/util/progress"
 	"github.com/goccy/go-json"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	buildkitclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/util/progress/progressui"
 	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	bamlrest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -158,6 +160,7 @@ var (
 	outputPath  string
 	bamlVersion string
 	keepSource  string
+	platform    string
 	prettyLogs  bool
 )
 
@@ -187,6 +190,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&bamlVersion, "baml-version", "b", "", "Specific BAML version to use (bypasses automatic version detection)")
 	rootCmd.Flags().StringVarP(&keepSource, "keep-source", "k", "", "Keep generated source files at specified path (default: /baml-rest-generated-src). Use --keep-source or --keep-source=<path>")
 	rootCmd.Flags().Lookup("keep-source").NoOptDefVal = "/baml-rest-generated-src"
+	rootCmd.Flags().StringVarP(&platform, "platform", "p", "", "Target platform for Docker build (e.g., linux/amd64, linux/arm64)")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 
 	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
@@ -194,6 +198,7 @@ func init() {
 	_ = viper.BindPFlag("output", rootCmd.Flags().Lookup("output"))
 	_ = viper.BindPFlag("baml-version", rootCmd.Flags().Lookup("baml-version"))
 	_ = viper.BindPFlag("keep-source", rootCmd.Flags().Lookup("keep-source"))
+	_ = viper.BindPFlag("platform", rootCmd.Flags().Lookup("platform"))
 }
 
 var rootCmd = &cobra.Command{
@@ -207,6 +212,7 @@ var rootCmd = &cobra.Command{
 		outputPath = viper.GetString("output")
 		bamlVersion = viper.GetString("baml-version")
 		keepSource = viper.GetString("keep-source")
+		platform = viper.GetString("platform")
 
 		// Validate mode
 		if buildMode != "docker" && buildMode != "native" {
@@ -323,15 +329,25 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, platform)
 		} else {
 			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform string) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
+
+	var parsedPlatform *ocispec.Platform
+	if platform != "" {
+		fmt.Printf("Target platform: %s\n", platform)
+		p, err := platforms.Parse(platform)
+		if err != nil {
+			return fmt.Errorf("failed to parse platform %q: %w", platform, err)
+		}
+		parsedPlatform = &p
+	}
 
 	fmt.Printf("Making docker client...\n")
 	dockerClient, err := client.New(client.FromEnv)
@@ -367,7 +383,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		return fmt.Errorf("failed to extract images from Dockerfile: %w", err)
 	}
 
-	if err = pullImagesIfNeeded(dockerClient, images); err != nil {
+	if err = pullImagesIfNeeded(dockerClient, images, parsedPlatform); err != nil {
 		return fmt.Errorf("failed to pull images: %w", err)
 	}
 
@@ -425,7 +441,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	}
 
 	fmt.Printf("Building image...\n")
-	response, err := dockerClient.ImageBuild(context.TODO(), &buf, client.ImageBuildOptions{
+	buildOptions := client.ImageBuildOptions{
 		Dockerfile: "Dockerfile",
 		Tags:       []string{targetImage},
 		Remove:     true,
@@ -433,7 +449,11 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		AuthConfigs: map[string]registry.AuthConfig{
 			"docker.io": {},
 		},
-	})
+	}
+	if parsedPlatform != nil {
+		buildOptions.Platforms = []ocispec.Platform{*parsedPlatform}
+	}
+	response, err := dockerClient.ImageBuild(context.TODO(), &buf, buildOptions)
 	if err != nil {
 		return fmt.Errorf("failed to build image: %w", err)
 	}
@@ -753,7 +773,7 @@ func isStageReference(image string) bool {
 	return !hasColon && !hasSlash
 }
 
-func pullImagesIfNeeded(cli *client.Client, images []string) error {
+func pullImagesIfNeeded(cli *client.Client, images []string, platform *ocispec.Platform) error {
 	ctx := context.Background()
 
 	for _, img := range images {
@@ -763,22 +783,26 @@ func pullImagesIfNeeded(cli *client.Client, images []string) error {
 			continue
 		}
 
-		// Check if image exists locally
-		exists, err := imageExists(ctx, cli, img)
-		if err != nil {
-			return fmt.Errorf("failed to check image %s: %w", img, err)
+		// Check if image exists locally (skip check if platform is specified,
+		// as we need to ensure we have the correct platform variant)
+		if platform == nil {
+			exists, err := imageExists(ctx, cli, img)
+			if err != nil {
+				return fmt.Errorf("failed to check image %s: %w", img, err)
+			}
+
+			if exists {
+				fmt.Printf("Image already exists: %s\n", img)
+				continue
+			}
 		}
 
-		if exists {
-			fmt.Printf("Image already exists: %s\n", img)
-		} else {
-			fmt.Printf("Pulling image: %s\n", img)
-			err = pullImage(ctx, cli, img)
-			if err != nil {
-				return fmt.Errorf("failed to pull image %s: %w", img, err)
-			}
-			fmt.Printf("Successfully pulled: %s\n", img)
+		fmt.Printf("Pulling image: %s\n", img)
+		err := pullImage(ctx, cli, img, platform)
+		if err != nil {
+			return fmt.Errorf("failed to pull image %s: %w", img, err)
 		}
+		fmt.Printf("Successfully pulled: %s\n", img)
 	}
 
 	return nil
@@ -803,9 +827,13 @@ func imageExists(ctx context.Context, cli *client.Client, imageName string) (boo
 	return false, nil
 }
 
-func pullImage(ctx context.Context, cli *client.Client, imageName string) error {
+func pullImage(ctx context.Context, cli *client.Client, imageName string, platform *ocispec.Platform) error {
 	// Pull the image
-	reader, err := cli.ImagePull(ctx, imageName, client.ImagePullOptions{})
+	pullOptions := client.ImagePullOptions{}
+	if platform != nil {
+		pullOptions.Platforms = []ocispec.Platform{*platform}
+	}
+	reader, err := cli.ImagePull(ctx, imageName, pullOptions)
 	if err != nil {
 		return err
 	}
