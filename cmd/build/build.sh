@@ -38,12 +38,21 @@ BAML_CACHE_DIR="${BAML_CACHE_DIR:-/baml-cache}"
 # Save the final BAML cache destination
 BAML_CACHE_FINAL="${BAML_CACHE_DIR}"
 
-# Use a version-specific location in the cache mount for BAML downloads during build
-# This ensures the shared library is cached across builds and avoids version conflicts
-BAML_CACHE_BUILD="${CACHE_DIR}/baml-shared-lib/${BAML_VERSION}"
+# Get target architecture for platform-specific caching
+# TARGETARCH is set by Docker during multi-arch builds (e.g., amd64, arm64)
+TARGETARCH="${TARGETARCH:-$(uname -m)}"
+# Normalize architecture names
+case "${TARGETARCH}" in
+    x86_64) TARGETARCH="amd64" ;;
+    aarch64) TARGETARCH="arm64" ;;
+esac
 
-# Configure unified caching
-export NPM_CONFIG_CACHE="${CACHE_DIR}/npm"
+# Use a version and architecture-specific location in the cache mount for BAML downloads during build
+# This ensures the shared library is cached across builds and avoids version/architecture conflicts
+BAML_CACHE_BUILD="${CACHE_DIR}/baml-shared-lib/${BAML_VERSION}/${TARGETARCH}"
+
+# Configure unified caching (npm cache is architecture-specific due to native bindings)
+export NPM_CONFIG_CACHE="${CACHE_DIR}/npm/${TARGETARCH}"
 export GOMODCACHE="${CACHE_DIR}/go/mod"
 export GOCACHE="${CACHE_DIR}/go/build"
 export BAML_CACHE_DIR="${BAML_CACHE_BUILD}"
@@ -57,11 +66,13 @@ mkdir -p "${BAML_CACHE_DIR}"
 echo "============================================"
 echo "BAML REST API Build Script"
 echo "============================================"
+echo "Target Architecture: ${TARGETARCH}"
 echo "BAML Version: ${BAML_VERSION}"
 echo "Adapter Version: ${ADAPTER_VERSION}"
 echo "User Context: ${USER_CONTEXT_PATH}"
 echo "Output Path: ${OUTPUT_PATH}"
 echo "Cache Directory: ${CACHE_DIR}"
+echo "NPM Cache: ${NPM_CONFIG_CACHE}"
 echo "BAML Cache (build): ${BAML_CACHE_BUILD}"
 echo "BAML Cache (final): ${BAML_CACHE_FINAL}"
 echo "============================================"
