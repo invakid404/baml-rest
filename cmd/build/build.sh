@@ -63,6 +63,32 @@ mkdir -p "${GOMODCACHE}"
 mkdir -p "${GOCACHE}"
 mkdir -p "${BAML_CACHE_DIR}"
 
+# Handle custom BAML lib if provided
+CUSTOM_BAML_LIB_PATH="${USER_CONTEXT_PATH}/custom_baml_lib.so"
+if [ -f "${CUSTOM_BAML_LIB_PATH}" ]; then
+    echo ""
+    echo "=== Custom BAML Library Detected ==="
+
+    # Determine the correct filename based on architecture
+    case "${TARGETARCH}" in
+        amd64)
+            BAML_LIB_FILENAME="libbaml_cffi-x86_64-unknown-linux-gnu.so"
+            ;;
+        arm64)
+            BAML_LIB_FILENAME="libbaml_cffi-aarch64-unknown-linux-gnu.so"
+            ;;
+        *)
+            echo "ERROR: Custom BAML lib not supported for architecture: ${TARGETARCH}"
+            exit 1
+            ;;
+    esac
+
+    echo "Installing custom BAML lib as: ${BAML_LIB_FILENAME}"
+    cp "${CUSTOM_BAML_LIB_PATH}" "${BAML_CACHE_DIR}/${BAML_LIB_FILENAME}"
+    echo "Custom BAML lib installed to: ${BAML_CACHE_DIR}/${BAML_LIB_FILENAME}"
+    echo ""
+fi
+
 echo "============================================"
 echo "BAML REST API Build Script"
 echo "============================================"
@@ -75,6 +101,9 @@ echo "Cache Directory: ${CACHE_DIR}"
 echo "NPM Cache: ${NPM_CONFIG_CACHE}"
 echo "BAML Cache (build): ${BAML_CACHE_BUILD}"
 echo "BAML Cache (final): ${BAML_CACHE_FINAL}"
+if [ -n "${BAML_LIB_FILENAME:-}" ]; then
+    echo "Custom BAML Lib: ${BAML_LIB_FILENAME}"
+fi
 echo "============================================"
 
 # Create working directory structure
