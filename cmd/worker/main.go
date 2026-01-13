@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/goccy/go-json"
 	goplugin "github.com/hashicorp/go-plugin"
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -17,6 +20,23 @@ import (
 func main() {
 	// Initialize BAML runtime - this loads the shared library
 	baml_rest.InitBamlRuntime()
+
+	// Start RSS monitor to trigger GC when native memory pressure is high.
+	// BAML's native (Rust) memory isn't visible to Go's GC, so we monitor RSS
+	// and force GC to run finalizers that clean up native resources.
+	//
+	// Note: We discard the stop function because workers run until the parent
+	// go-plugin process terminates them. There's no graceful shutdown path.
+	if memLimitStr := os.Getenv("GOMEMLIMIT"); memLimitStr != "" {
+		if memLimit, err := memlimit.ParseBytes(memLimitStr); err == nil && memLimit > 0 {
+			// Trigger GC when RSS exceeds 80% of memory limit
+			threshold := memLimit * 8 / 10
+			_ = memlimit.StartRSSMonitor(memlimit.RSSMonitorConfig{
+				Threshold: threshold,
+				Interval:  5 * time.Second,
+			})
+		}
+	}
 
 	// Set up Prometheus metrics registry for this worker
 	metricsReg := prometheus.NewRegistry()

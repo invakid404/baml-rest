@@ -43,8 +43,6 @@ func (b *BamlAdapter) SetTypeBuilder(typeBuilder *bamlutils.TypeBuilder) error {
 		return fmt.Errorf("failed to create type builder: %w", err)
 	}
 
-	fmt.Printf("Got type builder: %T %+v", tb, tb)
-
 	for idx, input := range typeBuilder.BamlSnippets {
 		if err := tb.AddBaml(input); err != nil {
 			return fmt.Errorf("failed to add input at index %d: %w", idx, err)
