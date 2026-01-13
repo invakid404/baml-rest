@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -21,6 +22,14 @@ func main() {
 	// Initialize BAML runtime - this loads the shared library
 	baml_rest.InitBamlRuntime()
 
+	// Create hclog logger for go-plugin communication.
+	// Logs are routed back to the main process via go-plugin's protocol.
+	logger := hclog.New(&hclog.LoggerOptions{
+		Level:      hclog.Debug,
+		Output:     os.Stderr,
+		JSONFormat: true,
+	})
+
 	// Start RSS monitor to trigger GC when native memory pressure is high.
 	// BAML's native (Rust) memory isn't visible to Go's GC, so we monitor RSS
 	// and force GC to run finalizers that clean up native resources.
@@ -34,6 +43,14 @@ func main() {
 			_ = memlimit.StartRSSMonitor(memlimit.RSSMonitorConfig{
 				Threshold: threshold,
 				Interval:  5 * time.Second,
+				OnGC: func(rssBefore, rssAfter int64, result memlimit.GCResult) {
+					logger.Debug("RSS-triggered GC completed",
+						"rss_before", memlimit.FormatBytes(rssBefore),
+						"rss_after", memlimit.FormatBytes(rssAfter),
+						"threshold", memlimit.FormatBytes(threshold),
+						"result", result.String(),
+					)
+				},
 			})
 		}
 	}
@@ -51,6 +68,7 @@ func main() {
 			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg}},
 		},
 		GRPCServer: goplugin.DefaultGRPCServer,
+		Logger:     logger,
 	})
 }
 
