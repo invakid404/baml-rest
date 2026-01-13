@@ -35,7 +35,7 @@ type workerRestartLabels struct {
 }
 
 var workerRestarts = metrics.CounterWith[workerRestartLabels](
-	"bamlrest_worker_restarts_total",
+	"worker_restarts_total",
 	"Total number of worker restarts",
 )
 
