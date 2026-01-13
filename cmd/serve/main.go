@@ -139,6 +139,24 @@ var serveCmd = &cobra.Command{
 			workerMemLimit = workerMem
 
 			memlimit.SetGOMEMLIMIT(serverMem)
+
+			// Start RSS monitor to trigger GC when native memory pressure is high.
+			// Returns a stop function that's called during shutdown.
+			rssThreshold := serverMem * 8 / 10
+			stopRSSMonitor := memlimit.StartRSSMonitor(memlimit.RSSMonitorConfig{
+				Threshold: rssThreshold,
+				Interval:  5 * time.Second,
+				OnGC: func(rssBefore, rssAfter int64, result memlimit.GCResult) {
+					logger.Debug().
+						Str("rss_before", memlimit.FormatBytes(rssBefore)).
+						Str("rss_after", memlimit.FormatBytes(rssAfter)).
+						Str("threshold", memlimit.FormatBytes(rssThreshold)).
+						Str("result", result.String()).
+						Msg("RSS-triggered GC completed")
+				},
+			})
+			defer stopRSSMonitor()
+
 			logger.Info().
 				Str("total", memlimit.FormatBytes(totalMem)).
 				Str("server", memlimit.FormatBytes(serverMem)).
