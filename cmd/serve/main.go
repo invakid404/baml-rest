@@ -252,6 +252,9 @@ var serveCmd = &cobra.Command{
 			promhttp.HandlerOpts{},
 		))
 
+		// Register debug endpoints (no-op unless built with -tags=debug)
+		registerDebugEndpoints(r, logger, workerPool)
+
 		// Routes with HTTP request logging and metrics
 		r.Group(func(r chi.Router) {
 			r.Use(metrics.Collector(metrics.CollectorOpts{}))

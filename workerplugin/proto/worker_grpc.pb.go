@@ -22,6 +22,7 @@ const (
 	Worker_CallStream_FullMethodName = "/workerplugin.Worker/CallStream"
 	Worker_Health_FullMethodName     = "/workerplugin.Worker/Health"
 	Worker_GetMetrics_FullMethodName = "/workerplugin.Worker/GetMetrics"
+	Worker_TriggerGC_FullMethodName  = "/workerplugin.Worker/TriggerGC"
 )
 
 // WorkerClient is the client API for Worker service.
@@ -37,6 +38,8 @@ type WorkerClient interface {
 	Health(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*HealthResponse, error)
 	// Get Prometheus metrics from worker process
 	GetMetrics(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*MetricsResponse, error)
+	// Trigger garbage collection and release memory to OS
+	TriggerGC(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*GCResponse, error)
 }
 
 type workerClient struct {
@@ -86,6 +89,16 @@ func (c *workerClient) GetMetrics(ctx context.Context, in *Empty, opts ...grpc.C
 	return out, nil
 }
 
+func (c *workerClient) TriggerGC(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*GCResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GCResponse)
+	err := c.cc.Invoke(ctx, Worker_TriggerGC_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorkerServer is the server API for Worker service.
 // All implementations must embed UnimplementedWorkerServer
 // for forward compatibility.
@@ -99,6 +112,8 @@ type WorkerServer interface {
 	Health(context.Context, *Empty) (*HealthResponse, error)
 	// Get Prometheus metrics from worker process
 	GetMetrics(context.Context, *Empty) (*MetricsResponse, error)
+	// Trigger garbage collection and release memory to OS
+	TriggerGC(context.Context, *Empty) (*GCResponse, error)
 	mustEmbedUnimplementedWorkerServer()
 }
 
@@ -117,6 +132,9 @@ func (UnimplementedWorkerServer) Health(context.Context, *Empty) (*HealthRespons
 }
 func (UnimplementedWorkerServer) GetMetrics(context.Context, *Empty) (*MetricsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMetrics not implemented")
+}
+func (UnimplementedWorkerServer) TriggerGC(context.Context, *Empty) (*GCResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TriggerGC not implemented")
 }
 func (UnimplementedWorkerServer) mustEmbedUnimplementedWorkerServer() {}
 func (UnimplementedWorkerServer) testEmbeddedByValue()                {}
@@ -186,6 +204,24 @@ func _Worker_GetMetrics_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Worker_TriggerGC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServer).TriggerGC(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Worker_TriggerGC_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServer).TriggerGC(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Worker_ServiceDesc is the grpc.ServiceDesc for Worker service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -200,6 +236,10 @@ var Worker_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetMetrics",
 			Handler:    _Worker_GetMetrics_Handler,
+		},
+		{
+			MethodName: "TriggerGC",
+			Handler:    _Worker_TriggerGC_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

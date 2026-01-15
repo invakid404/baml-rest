@@ -39,6 +39,13 @@ message MetricsResponse {
   repeated bytes metric_families = 1;
 }
 
+// GC response - contains memory stats before/after GC
+message GCResponse {
+  uint64 heap_alloc_before = 1;
+  uint64 heap_alloc_after = 2;
+  uint64 heap_released = 3;
+}
+
 // Worker service
 service Worker {
   // Streaming call - returns stream of results
@@ -50,4 +57,7 @@ service Worker {
 
   // Get Prometheus metrics from worker process
   rpc GetMetrics(Empty) returns (MetricsResponse);
+
+  // Trigger garbage collection and release memory to OS
+  rpc TriggerGC(Empty) returns (GCResponse);
 }

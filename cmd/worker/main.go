@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -203,4 +205,26 @@ func (w *workerImpl) GetMetrics(ctx context.Context) ([][]byte, error) {
 		result = append(result, data)
 	}
 	return result, nil
+}
+
+func (w *workerImpl) TriggerGC(ctx context.Context) (*workerplugin.GCResult, error) {
+	// Capture memory stats before GC
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+
+	// Force garbage collection
+	runtime.GC()
+
+	// Aggressively release memory to OS
+	debug.FreeOSMemory()
+
+	// Capture memory stats after GC
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
+
+	return &workerplugin.GCResult{
+		HeapAllocBefore: memBefore.HeapAlloc,
+		HeapAllocAfter:  memAfter.HeapAlloc,
+		HeapReleased:    memAfter.HeapReleased - memBefore.HeapReleased,
+	}, nil
 }

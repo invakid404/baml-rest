@@ -54,6 +54,18 @@ func (s *GRPCServer) GetMetrics(ctx context.Context, req *pb.Empty) (*pb.Metrics
 	return &pb.MetricsResponse{MetricFamilies: metricFamilies}, nil
 }
 
+func (s *GRPCServer) TriggerGC(ctx context.Context, req *pb.Empty) (*pb.GCResponse, error) {
+	result, err := s.Impl.TriggerGC(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.GCResponse{
+		HeapAllocBefore: result.HeapAllocBefore,
+		HeapAllocAfter:  result.HeapAllocAfter,
+		HeapReleased:    result.HeapReleased,
+	}, nil
+}
+
 // GRPCClient is the gRPC client that connects to the plugin
 type GRPCClient struct {
 	client pb.WorkerClient
@@ -114,4 +126,16 @@ func (c *GRPCClient) GetMetrics(ctx context.Context) ([][]byte, error) {
 		return nil, err
 	}
 	return resp.MetricFamilies, nil
+}
+
+func (c *GRPCClient) TriggerGC(ctx context.Context) (*GCResult, error) {
+	resp, err := c.client.TriggerGC(ctx, &pb.Empty{})
+	if err != nil {
+		return nil, err
+	}
+	return &GCResult{
+		HeapAllocBefore: resp.HeapAllocBefore,
+		HeapAllocAfter:  resp.HeapAllocAfter,
+		HeapReleased:    resp.HeapReleased,
+	}, nil
 }
