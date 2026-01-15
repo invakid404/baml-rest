@@ -40,6 +40,9 @@ COPY baml_rest /workspace/baml_rest
 # Copy custom BAML lib if provided (wildcard allows this to be optional)
 COPY custom_baml_lib.so* /workspace/
 
+# Copy custom BAML Go lib directory (always exists, may be empty)
+COPY custom_baml_go_lib /workspace/custom_baml_go_lib
+
 # Set build environment variables
 ENV BAML_VERSION="{{ .bamlVersion }}"
 ENV ADAPTER_VERSION="{{ .adapterVersion }}"

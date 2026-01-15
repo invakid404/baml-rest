@@ -89,6 +89,16 @@ if [ -f "${CUSTOM_BAML_LIB_PATH}" ]; then
     echo ""
 fi
 
+# Handle custom BAML Go library if provided (check for .provided marker)
+CUSTOM_BAML_GO_LIB_PATH="${USER_CONTEXT_PATH}/custom_baml_go_lib"
+if [ -f "${CUSTOM_BAML_GO_LIB_PATH}/.provided" ]; then
+    echo ""
+    echo "=== Custom BAML Go Library Detected ==="
+    echo "Path: ${CUSTOM_BAML_GO_LIB_PATH}"
+    export CUSTOM_BAML_GO_LIB="${CUSTOM_BAML_GO_LIB_PATH}"
+    echo ""
+fi
+
 echo "============================================"
 echo "BAML REST API Build Script"
 echo "============================================"
@@ -103,6 +113,9 @@ echo "BAML Cache (build): ${BAML_CACHE_BUILD}"
 echo "BAML Cache (final): ${BAML_CACHE_FINAL}"
 if [ -n "${BAML_LIB_FILENAME:-}" ]; then
     echo "Custom BAML Lib: ${BAML_LIB_FILENAME}"
+fi
+if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
+    echo "Custom BAML Go Lib: ${CUSTOM_BAML_GO_LIB}"
 fi
 if [ "${DEBUG_BUILD:-false}" = "true" ]; then
     echo "Debug Build: enabled"
@@ -380,6 +393,13 @@ go get "github.com/boundaryml/baml@${BAML_VERSION}"
 # Sync Go workspace
 echo "Syncing Go workspace..."
 go work sync
+
+# Add replace directive to go.work for custom BAML Go library if provided
+# Note: replace directives in go.mod are ignored in workspace mode, so we must use go.work
+if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
+    echo "Adding replace directive for custom BAML Go library to go.work..."
+    go work edit -replace "github.com/boundaryml/baml=${CUSTOM_BAML_GO_LIB}"
+fi
 
 # Ensure baml_client uses the correct BAML version
 pushd baml_client
