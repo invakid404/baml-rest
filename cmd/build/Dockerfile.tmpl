@@ -50,6 +50,9 @@ ENV BAML_CACHE_DIR="/baml-cache-build"
 ENV KEEP_SOURCE="true"
 ENV KEEP_SOURCE_DIR="{{ .keepSource }}"
 {{- end }}
+{{- if .debugBuild }}
+ENV DEBUG_BUILD="true"
+{{- end }}
 
 # Run build with unified cache mount
 # build.sh will temporarily override BAML_CACHE_DIR to use a version-specific location in the cache mount,

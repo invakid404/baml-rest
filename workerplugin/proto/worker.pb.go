@@ -331,6 +331,67 @@ func (x *MetricsResponse) GetMetricFamilies() [][]byte {
 	return nil
 }
 
+// GC response - contains memory stats before/after GC
+type GCResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	HeapAllocBefore uint64                 `protobuf:"varint,1,opt,name=heap_alloc_before,json=heapAllocBefore,proto3" json:"heap_alloc_before,omitempty"`
+	HeapAllocAfter  uint64                 `protobuf:"varint,2,opt,name=heap_alloc_after,json=heapAllocAfter,proto3" json:"heap_alloc_after,omitempty"`
+	HeapReleased    uint64                 `protobuf:"varint,3,opt,name=heap_released,json=heapReleased,proto3" json:"heap_released,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *GCResponse) Reset() {
+	*x = GCResponse{}
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GCResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GCResponse) ProtoMessage() {}
+
+func (x *GCResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GCResponse.ProtoReflect.Descriptor instead.
+func (*GCResponse) Descriptor() ([]byte, []int) {
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GCResponse) GetHeapAllocBefore() uint64 {
+	if x != nil {
+		return x.HeapAllocBefore
+	}
+	return 0
+}
+
+func (x *GCResponse) GetHeapAllocAfter() uint64 {
+	if x != nil {
+		return x.HeapAllocAfter
+	}
+	return 0
+}
+
+func (x *GCResponse) GetHeapReleased() uint64 {
+	if x != nil {
+		return x.HeapReleased
+	}
+	return 0
+}
+
 var File_workerplugin_proto_worker_proto protoreflect.FileDescriptor
 
 const file_workerplugin_proto_worker_proto_rawDesc = "" +
@@ -357,13 +418,19 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\x0eHealthResponse\x12\x18\n" +
 	"\ahealthy\x18\x01 \x01(\bR\ahealthy\":\n" +
 	"\x0fMetricsResponse\x12'\n" +
-	"\x0fmetric_families\x18\x01 \x03(\fR\x0emetricFamilies2\xce\x01\n" +
+	"\x0fmetric_families\x18\x01 \x03(\fR\x0emetricFamilies\"\x87\x01\n" +
+	"\n" +
+	"GCResponse\x12*\n" +
+	"\x11heap_alloc_before\x18\x01 \x01(\x04R\x0fheapAllocBefore\x12(\n" +
+	"\x10heap_alloc_after\x18\x02 \x01(\x04R\x0eheapAllocAfter\x12#\n" +
+	"\rheap_released\x18\x03 \x01(\x04R\fheapReleased2\x8a\x02\n" +
 	"\x06Worker\x12E\n" +
 	"\n" +
 	"CallStream\x12\x19.workerplugin.CallRequest\x1a\x1a.workerplugin.StreamResult0\x01\x12;\n" +
 	"\x06Health\x12\x13.workerplugin.Empty\x1a\x1c.workerplugin.HealthResponse\x12@\n" +
 	"\n" +
-	"GetMetrics\x12\x13.workerplugin.Empty\x1a\x1d.workerplugin.MetricsResponseB.Z,github.com/invakid404/baml-rest/workerpluginb\x06proto3"
+	"GetMetrics\x12\x13.workerplugin.Empty\x1a\x1d.workerplugin.MetricsResponse\x12:\n" +
+	"\tTriggerGC\x12\x13.workerplugin.Empty\x1a\x18.workerplugin.GCResponseB.Z,github.com/invakid404/baml-rest/workerpluginb\x06proto3"
 
 var (
 	file_workerplugin_proto_worker_proto_rawDescOnce sync.Once
@@ -378,7 +445,7 @@ func file_workerplugin_proto_worker_proto_rawDescGZIP() []byte {
 }
 
 var file_workerplugin_proto_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_workerplugin_proto_worker_proto_goTypes = []any{
 	(StreamResult_Kind)(0),  // 0: workerplugin.StreamResult.Kind
 	(*CallRequest)(nil),     // 1: workerplugin.CallRequest
@@ -386,17 +453,20 @@ var file_workerplugin_proto_worker_proto_goTypes = []any{
 	(*Empty)(nil),           // 3: workerplugin.Empty
 	(*HealthResponse)(nil),  // 4: workerplugin.HealthResponse
 	(*MetricsResponse)(nil), // 5: workerplugin.MetricsResponse
+	(*GCResponse)(nil),      // 6: workerplugin.GCResponse
 }
 var file_workerplugin_proto_worker_proto_depIdxs = []int32{
 	0, // 0: workerplugin.StreamResult.kind:type_name -> workerplugin.StreamResult.Kind
 	1, // 1: workerplugin.Worker.CallStream:input_type -> workerplugin.CallRequest
 	3, // 2: workerplugin.Worker.Health:input_type -> workerplugin.Empty
 	3, // 3: workerplugin.Worker.GetMetrics:input_type -> workerplugin.Empty
-	2, // 4: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
-	4, // 5: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
-	5, // 6: workerplugin.Worker.GetMetrics:output_type -> workerplugin.MetricsResponse
-	4, // [4:7] is the sub-list for method output_type
-	1, // [1:4] is the sub-list for method input_type
+	3, // 4: workerplugin.Worker.TriggerGC:input_type -> workerplugin.Empty
+	2, // 5: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
+	4, // 6: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
+	5, // 7: workerplugin.Worker.GetMetrics:output_type -> workerplugin.MetricsResponse
+	6, // 8: workerplugin.Worker.TriggerGC:output_type -> workerplugin.GCResponse
+	5, // [5:9] is the sub-list for method output_type
+	1, // [1:5] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
 	1, // [1:1] is the sub-list for extension extendee
 	0, // [0:1] is the sub-list for field type_name
@@ -413,7 +483,7 @@ func file_workerplugin_proto_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workerplugin_proto_worker_proto_rawDesc), len(file_workerplugin_proto_worker_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

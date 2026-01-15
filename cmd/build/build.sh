@@ -104,7 +104,16 @@ echo "BAML Cache (final): ${BAML_CACHE_FINAL}"
 if [ -n "${BAML_LIB_FILENAME:-}" ]; then
     echo "Custom BAML Lib: ${BAML_LIB_FILENAME}"
 fi
+if [ "${DEBUG_BUILD:-false}" = "true" ]; then
+    echo "Debug Build: enabled"
+fi
 echo "============================================"
+
+# Set up Go build tags
+GO_BUILD_TAGS=""
+if [ "${DEBUG_BUILD:-false}" = "true" ]; then
+    GO_BUILD_TAGS="-tags=debug"
+fi
 
 # Create working directory structure
 WORK_DIR="$(mktemp -d)"
@@ -404,8 +413,8 @@ echo "Generating OpenAPI schema..."
 go run cmd/schema/main.go cmd/serve/openapi.json
 
 # Build final binary (embeds worker and schema, doesn't import baml directly)
-echo "Building final binary..."
-go build -o baml-rest cmd/serve/main.go
+echo "Building final binary${GO_BUILD_TAGS:+ with tags: ${GO_BUILD_TAGS#-tags=}}..."
+go build ${GO_BUILD_TAGS} -o baml-rest ./cmd/serve/
 
 # Clean up intermediate files from cmd/serve (they're embedded now)
 rm -f cmd/serve/worker cmd/serve/openapi.json

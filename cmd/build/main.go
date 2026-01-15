@@ -163,6 +163,7 @@ var (
 	keepSource    string
 	platform      string
 	customBamlLib string
+	debugBuild    bool
 	prettyLogs    bool
 )
 
@@ -194,6 +195,7 @@ func init() {
 	rootCmd.Flags().Lookup("keep-source").NoOptDefVal = "/baml-rest-generated-src"
 	rootCmd.Flags().StringVarP(&platform, "platform", "p", "", "Target platform for Docker build (e.g., linux/amd64, linux/arm64)")
 	rootCmd.Flags().StringVar(&customBamlLib, "custom-baml-lib", "", "Path to custom BAML FFI library (Docker mode only, requires --platform linux/amd64 or linux/arm64)")
+	rootCmd.Flags().BoolVar(&debugBuild, "debug", false, "Enable debug endpoints in the built binary (/_debug/gc)")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 
 	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
@@ -203,6 +205,7 @@ func init() {
 	_ = viper.BindPFlag("keep-source", rootCmd.Flags().Lookup("keep-source"))
 	_ = viper.BindPFlag("platform", rootCmd.Flags().Lookup("platform"))
 	_ = viper.BindPFlag("custom-baml-lib", rootCmd.Flags().Lookup("custom-baml-lib"))
+	_ = viper.BindPFlag("debug", rootCmd.Flags().Lookup("debug"))
 }
 
 var rootCmd = &cobra.Command{
@@ -218,6 +221,7 @@ var rootCmd = &cobra.Command{
 		keepSource = viper.GetString("keep-source")
 		platform = viper.GetString("platform")
 		customBamlLib = viper.GetString("custom-baml-lib")
+		debugBuild = viper.GetBool("debug")
 
 		// Validate mode
 		if buildMode != "docker" && buildMode != "native" {
@@ -385,14 +389,14 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, parsedPlatform, customBamlLib)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, parsedPlatform, customBamlLib, debugBuild)
 		} else {
-			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource)
+			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, debugBuild)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, debugBuild bool) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	if platform != nil {
@@ -422,6 +426,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		"bamlVersion":    bamlVersion,
 		"adapterVersion": adapterVersion,
 		"keepSource":     keepSource,
+		"debugBuild":     debugBuild,
 	}
 	if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 		return fmt.Errorf("failed to render Dockerfile template: %w", err)
@@ -649,7 +654,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	return nil
 }
 
-func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string) error {
+func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, debugBuild bool) error {
 	fmt.Printf("\n=== Native Build Mode ===\n\n")
 
 	// Check prerequisites
@@ -737,6 +742,9 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	)
 	if keepSource != "" {
 		env = append(env, "KEEP_SOURCE=true", fmt.Sprintf("KEEP_SOURCE_DIR=%s", keepSource))
+	}
+	if debugBuild {
+		env = append(env, "DEBUG_BUILD=true")
 	}
 
 	// Execute build.sh
