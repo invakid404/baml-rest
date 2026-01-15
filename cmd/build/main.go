@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"debug/elf"
 	_ "embed"
 	"encoding/base64"
 	"errors"
@@ -155,13 +156,14 @@ const (
 )
 
 var (
-	targetImage string
-	buildMode   string
-	outputPath  string
-	bamlVersion string
-	keepSource  string
-	platform    string
-	prettyLogs  bool
+	targetImage   string
+	buildMode     string
+	outputPath    string
+	bamlVersion   string
+	keepSource    string
+	platform      string
+	customBamlLib string
+	prettyLogs    bool
 )
 
 func init() {
@@ -191,6 +193,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&keepSource, "keep-source", "k", "", "Keep generated source files at specified path (default: /baml-rest-generated-src). Use --keep-source or --keep-source=<path>")
 	rootCmd.Flags().Lookup("keep-source").NoOptDefVal = "/baml-rest-generated-src"
 	rootCmd.Flags().StringVarP(&platform, "platform", "p", "", "Target platform for Docker build (e.g., linux/amd64, linux/arm64)")
+	rootCmd.Flags().StringVar(&customBamlLib, "custom-baml-lib", "", "Path to custom BAML FFI library (Docker mode only, requires --platform linux/amd64 or linux/arm64)")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 
 	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
@@ -199,6 +202,7 @@ func init() {
 	_ = viper.BindPFlag("baml-version", rootCmd.Flags().Lookup("baml-version"))
 	_ = viper.BindPFlag("keep-source", rootCmd.Flags().Lookup("keep-source"))
 	_ = viper.BindPFlag("platform", rootCmd.Flags().Lookup("platform"))
+	_ = viper.BindPFlag("custom-baml-lib", rootCmd.Flags().Lookup("custom-baml-lib"))
 }
 
 var rootCmd = &cobra.Command{
@@ -213,6 +217,7 @@ var rootCmd = &cobra.Command{
 		bamlVersion = viper.GetString("baml-version")
 		keepSource = viper.GetString("keep-source")
 		platform = viper.GetString("platform")
+		customBamlLib = viper.GetString("custom-baml-lib")
 
 		// Validate mode
 		if buildMode != "docker" && buildMode != "native" {
@@ -227,6 +232,57 @@ var rootCmd = &cobra.Command{
 		// Set default output path for native mode
 		if buildMode == "native" && outputPath == "" {
 			outputPath = "./baml-rest"
+		}
+
+		// Parse platform flag into ocispec.Platform if provided
+		var parsedPlatform *ocispec.Platform
+		if platform != "" {
+			p, err := platforms.Parse(platform)
+			if err != nil {
+				return fmt.Errorf("failed to parse platform %q: %w", platform, err)
+			}
+			parsedPlatform = &p
+		}
+
+		// Validate custom BAML lib flag
+		if customBamlLib != "" {
+			if buildMode != "docker" {
+				return fmt.Errorf("--custom-baml-lib is only supported in docker mode")
+			}
+
+			// If platform not specified, detect from Docker daemon
+			if parsedPlatform == nil {
+				detectedPlatform, err := detectDockerPlatform()
+				if err != nil {
+					return fmt.Errorf("--custom-baml-lib requires --platform to be specified (failed to auto-detect: %v)", err)
+				}
+				parsedPlatform = detectedPlatform
+				fmt.Printf("Auto-detected platform from Docker: %s/%s\n", parsedPlatform.OS, parsedPlatform.Architecture)
+			}
+
+			// Validate platform is supported for custom lib
+			if parsedPlatform.OS != "linux" || (parsedPlatform.Architecture != "amd64" && parsedPlatform.Architecture != "arm64") {
+				return fmt.Errorf("--custom-baml-lib only supports linux/amd64 and linux/arm64 platforms, got %s/%s", parsedPlatform.OS, parsedPlatform.Architecture)
+			}
+
+			// Check that the file exists and is readable
+			info, err := os.Stat(customBamlLib)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("custom BAML lib not found: %s", customBamlLib)
+				}
+				return fmt.Errorf("failed to access custom BAML lib: %w", err)
+			}
+			if info.IsDir() {
+				return fmt.Errorf("custom BAML lib path is a directory, expected a file: %s", customBamlLib)
+			}
+			if !strings.HasSuffix(customBamlLib, ".so") {
+				fmt.Printf("Warning: custom BAML lib does not have .so extension: %s\n", customBamlLib)
+			}
+			// Validate ELF architecture matches target platform
+			if err := validateELFArchitecture(customBamlLib, parsedPlatform); err != nil {
+				return fmt.Errorf("custom BAML lib validation failed: %w", err)
+			}
 		}
 
 		targetDir := args[0]
@@ -329,24 +385,18 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, platform)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, parsedPlatform, customBamlLib)
 		} else {
 			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform string) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
-	var parsedPlatform *ocispec.Platform
-	if platform != "" {
-		fmt.Printf("Target platform: %s\n", platform)
-		p, err := platforms.Parse(platform)
-		if err != nil {
-			return fmt.Errorf("failed to parse platform %q: %w", platform, err)
-		}
-		parsedPlatform = &p
+	if platform != nil {
+		fmt.Printf("Target platform: %s/%s\n", platform.OS, platform.Architecture)
 	}
 
 	fmt.Printf("Making docker client...\n")
@@ -383,7 +433,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		return fmt.Errorf("failed to extract images from Dockerfile: %w", err)
 	}
 
-	if err = pullImagesIfNeeded(dockerClient, images, parsedPlatform); err != nil {
+	if err = pullImagesIfNeeded(dockerClient, images, platform); err != nil {
 		return fmt.Errorf("failed to pull images: %w", err)
 	}
 
@@ -436,6 +486,35 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		return fmt.Errorf("failed to copy target directory to build context: %w", err)
 	}
 
+	// Add custom BAML lib to build context if provided
+	if customBamlLib != "" {
+		customLibFile, err := os.Open(customBamlLib)
+		if err != nil {
+			return fmt.Errorf("failed to open custom BAML lib: %w", err)
+		}
+		customLibInfo, err := customLibFile.Stat()
+		if err != nil {
+			_ = customLibFile.Close()
+			return fmt.Errorf("failed to stat custom BAML lib: %w", err)
+		}
+
+		customLibHeader := tar.Header{
+			Name: "custom_baml_lib.so",
+			Mode: 0644,
+			Size: customLibInfo.Size(),
+		}
+		if err := tarWriter.WriteHeader(&customLibHeader); err != nil {
+			_ = customLibFile.Close()
+			return fmt.Errorf("failed to write custom BAML lib header: %w", err)
+		}
+		if _, err := io.Copy(tarWriter, customLibFile); err != nil {
+			_ = customLibFile.Close()
+			return fmt.Errorf("failed to write custom BAML lib to build context: %w", err)
+		}
+		_ = customLibFile.Close()
+		fmt.Printf("Added custom BAML lib to build context\n")
+	}
+
 	if err := tarWriter.Close(); err != nil {
 		return fmt.Errorf("failed to close build context writer: %w", err)
 	}
@@ -450,8 +529,8 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 			"docker.io": {},
 		},
 	}
-	if parsedPlatform != nil {
-		buildOptions.Platforms = []ocispec.Platform{*parsedPlatform}
+	if platform != nil {
+		buildOptions.Platforms = []ocispec.Platform{*platform}
 	}
 	response, err := dockerClient.ImageBuild(context.TODO(), &buf, buildOptions)
 	if err != nil {
@@ -697,6 +776,67 @@ func main() {
 		logger := zerolog.New(output).With().Timestamp().Logger()
 		logger.Fatal().Err(err).Msg("Command failed")
 	}
+}
+
+// detectDockerPlatform queries the Docker daemon to determine the default platform
+func detectDockerPlatform() (*ocispec.Platform, error) {
+	dockerClient, err := client.New(client.FromEnv)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Docker daemon: %w", err)
+	}
+	defer func(dockerClient *client.Client) {
+		_ = dockerClient.Close()
+	}(dockerClient)
+
+	info, err := dockerClient.Info(context.Background(), client.InfoOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Docker info: %w", err)
+	}
+
+	// Normalize architecture to GOARCH format
+	arch := info.Info.Architecture
+	switch arch {
+	case "x86_64":
+		arch = "amd64"
+	case "aarch64":
+		arch = "arm64"
+	}
+
+	return &ocispec.Platform{OS: info.Info.OSType, Architecture: arch}, nil
+}
+
+// validateELFArchitecture checks if the given file is an ELF binary for the expected platform
+func validateELFArchitecture(filePath string, platform *ocispec.Platform) error {
+	elfFile, err := elf.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open as ELF: %w", err)
+	}
+	defer func(elfFile *elf.File) {
+		_ = elfFile.Close()
+	}(elfFile)
+
+	// Check for 64-bit ELF
+	if elfFile.Class != elf.ELFCLASS64 {
+		return fmt.Errorf("file is not a 64-bit ELF binary")
+	}
+
+	// Map platform architecture to expected machine type
+	var expectedMachine elf.Machine
+	switch platform.Architecture {
+	case "amd64":
+		expectedMachine = elf.EM_X86_64
+	case "arm64":
+		expectedMachine = elf.EM_AARCH64
+	default:
+		return fmt.Errorf("unsupported architecture: %s", platform.Architecture)
+	}
+
+	if elfFile.Machine != expectedMachine {
+		return fmt.Errorf("architecture mismatch: expected %s, but file is %s", platform.Architecture, elfFile.Machine)
+	}
+
+	fmt.Printf("✓ Custom BAML lib architecture validated: %s\n", platform.Architecture)
+	return nil
 }
 
 func extractFromImages(dockerfileContent io.Reader) ([]string, error) {
