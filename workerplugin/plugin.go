@@ -51,12 +51,41 @@ type CallResult struct {
 	Raw  string // Raw LLM response
 }
 
+// ErrorWithStack wraps an error with an optional stacktrace.
+// Used to propagate stacktraces from worker panics through the pool to the server.
+type ErrorWithStack struct {
+	Err        error
+	Stacktrace string
+}
+
+func (e *ErrorWithStack) Error() string {
+	return e.Err.Error()
+}
+
+func (e *ErrorWithStack) Unwrap() error {
+	return e.Err
+}
+
+// GetStacktrace returns the stacktrace, or empty string if none.
+func (e *ErrorWithStack) GetStacktrace() string {
+	return e.Stacktrace
+}
+
+// NewErrorWithStack creates an error that carries a stacktrace.
+func NewErrorWithStack(err error, stacktrace string) error {
+	if stacktrace == "" {
+		return err
+	}
+	return &ErrorWithStack{Err: err, Stacktrace: stacktrace}
+}
+
 // StreamResult represents a streaming result from a BAML method
 type StreamResult struct {
-	Kind  StreamResultKind
-	Data  []byte // JSON-encoded data
-	Raw   string // Raw LLM response (populated on Final)
-	Error error  // Error (populated on Error kind)
+	Kind       StreamResultKind
+	Data       []byte // JSON-encoded data
+	Raw        string // Raw LLM response (populated on Final)
+	Error      error  // Error (populated on Error kind)
+	Stacktrace string // Stacktrace (populated on Error kind, when available)
 }
 
 type StreamResultKind int

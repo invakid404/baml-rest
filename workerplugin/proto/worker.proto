@@ -23,6 +23,7 @@ message StreamResult {
   bytes data_json = 2;         // JSON-encoded stream/final data
   string raw = 3;              // Raw LLM response text (populated on FINAL)
   string error = 4;            // Error message (populated on ERROR)
+  string stacktrace = 5;       // Stacktrace (populated on ERROR, when available)
 }
 
 // Health check

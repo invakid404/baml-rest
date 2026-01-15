@@ -156,11 +156,24 @@ func LogEntry(ctx context.Context) *zerolog.Logger {
 	return nil
 }
 
-// SetError logs an error on the request-scoped logger
+// stacktraceGetter is implemented by errors that carry a stacktrace
+type stacktraceGetter interface {
+	GetStacktrace() string
+}
+
+// SetError logs an error on the request-scoped logger.
+// If the error implements stacktraceGetter, the stacktrace is also logged.
 func SetError(ctx context.Context, err error) {
 	if logger := LogEntry(ctx); logger != nil {
 		logger.UpdateContext(func(c zerolog.Context) zerolog.Context {
-			return c.Err(err)
+			c = c.Err(err)
+			// Check if error carries a stacktrace (e.g., from worker panics)
+			if stErr, ok := err.(stacktraceGetter); ok {
+				if st := stErr.GetStacktrace(); st != "" {
+					c = c.Str("stack", st)
+				}
+			}
+			return c
 		})
 	}
 }
