@@ -27,6 +27,10 @@ func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStream
 		}
 		if result.Error != nil {
 			pbResult.Error = result.Error.Error()
+			// Extract stacktrace using %+v formatting (works with go-recovery and pkg/errors style errors)
+			if fullErr := fmt.Sprintf("%+v", result.Error); fullErr != pbResult.Error {
+				pbResult.Stacktrace = fullErr
+			}
 		}
 		if err := stream.Send(pbResult); err != nil {
 			ReleaseStreamResult(result)
@@ -104,6 +108,7 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 			result.Raw = resp.Raw
 			if resp.Error != "" {
 				result.Error = fmt.Errorf("%s", resp.Error)
+				result.Stacktrace = resp.Stacktrace
 			}
 			results <- result
 		}

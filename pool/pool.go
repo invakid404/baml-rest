@@ -457,7 +457,7 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, en
 	for result := range results {
 		switch result.Kind {
 		case workerplugin.StreamResultKindError:
-			err := result.Error
+			err := workerplugin.NewErrorWithStack(result.Error, result.Stacktrace)
 			workerplugin.ReleaseStreamResult(result)
 			return nil, err
 		case workerplugin.StreamResultKindFinal:

@@ -383,6 +383,8 @@ var serveCmd = &cobra.Command{
 								message.Type = sseErrorKind
 								if result.Error != nil {
 									message.AppendData(result.Error.Error())
+									// Log error with stacktrace if available
+									httplogger.SetError(r.Context(), workerplugin.NewErrorWithStack(result.Error, result.Stacktrace))
 								}
 							case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
 								data := result.Data
