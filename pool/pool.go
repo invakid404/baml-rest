@@ -701,9 +701,56 @@ func (p *Pool) GatherWorkerMetrics(ctx context.Context) []WorkerMetrics {
 		}
 
 		results = append(results, WorkerMetrics{
-			WorkerID:      handle.id,
+			WorkerID:       handle.id,
 			MetricFamilies: metricFamilies,
 		})
+	}
+
+	return results
+}
+
+// WorkerGCResult contains GC results for a single worker
+type WorkerGCResult struct {
+	WorkerID        int
+	HeapAllocBefore uint64
+	HeapAllocAfter  uint64
+	HeapReleased    uint64
+	Error           error
+}
+
+// TriggerAllWorkersGC triggers garbage collection on all healthy workers.
+// Returns results for each worker.
+func (p *Pool) TriggerAllWorkersGC(ctx context.Context) []WorkerGCResult {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var results []WorkerGCResult
+
+	for _, handle := range p.workers {
+		if handle == nil || !handle.healthy {
+			continue
+		}
+
+		// Use a short timeout for GC
+		gcCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		gcResult, err := handle.worker.TriggerGC(gcCtx)
+		cancel()
+
+		result := WorkerGCResult{
+			WorkerID: handle.id,
+			Error:    err,
+		}
+		if gcResult != nil {
+			result.HeapAllocBefore = gcResult.HeapAllocBefore
+			result.HeapAllocAfter = gcResult.HeapAllocAfter
+			result.HeapReleased = gcResult.HeapReleased
+		}
+
+		if err != nil {
+			p.logger.Warn().Int("worker", handle.id).Err(err).Msg("Failed to trigger GC on worker")
+		}
+
+		results = append(results, result)
 	}
 
 	return results

@@ -68,6 +68,13 @@ const (
 	StreamResultKindHeartbeat
 )
 
+// GCResult contains memory stats from a GC operation
+type GCResult struct {
+	HeapAllocBefore uint64
+	HeapAllocAfter  uint64
+	HeapReleased    uint64
+}
+
 // Worker is the interface that the plugin implements.
 type Worker interface {
 	// CallStream executes a BAML method and streams results.
@@ -81,6 +88,9 @@ type Worker interface {
 	// GetMetrics returns Prometheus metrics from the worker process.
 	// Returns serialized prometheus MetricFamily protos.
 	GetMetrics(ctx context.Context) ([][]byte, error)
+
+	// TriggerGC forces garbage collection and releases memory to OS
+	TriggerGC(ctx context.Context) (*GCResult, error)
 }
 
 // WorkerPlugin is the implementation of plugin.GRPCPlugin
