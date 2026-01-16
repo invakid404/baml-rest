@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -156,15 +157,16 @@ const (
 )
 
 var (
-	targetImage   string
-	buildMode     string
-	outputPath    string
-	bamlVersion   string
-	keepSource    string
-	platform      string
-	customBamlLib string
-	debugBuild    bool
-	prettyLogs    bool
+	targetImage     string
+	buildMode       string
+	outputPath      string
+	bamlVersion     string
+	keepSource      string
+	platform        string
+	customBamlLib   string
+	customBamlGoLib string
+	debugBuild      bool
+	prettyLogs      bool
 )
 
 func init() {
@@ -194,7 +196,8 @@ func init() {
 	rootCmd.Flags().StringVarP(&keepSource, "keep-source", "k", "", "Keep generated source files at specified path (default: /baml-rest-generated-src). Use --keep-source or --keep-source=<path>")
 	rootCmd.Flags().Lookup("keep-source").NoOptDefVal = "/baml-rest-generated-src"
 	rootCmd.Flags().StringVarP(&platform, "platform", "p", "", "Target platform for Docker build (e.g., linux/amd64, linux/arm64)")
-	rootCmd.Flags().StringVar(&customBamlLib, "custom-baml-lib", "", "Path to custom BAML FFI library (Docker mode only, requires --platform linux/amd64 or linux/arm64)")
+	rootCmd.Flags().StringVar(&customBamlLib, "custom-baml-lib", "", "Path to custom BAML FFI library (.so file for linux/amd64 or linux/arm64)")
+	rootCmd.Flags().StringVar(&customBamlGoLib, "custom-baml-go-lib", "", "Path to custom BAML Go library folder (replaces github.com/boundaryml/baml)")
 	rootCmd.Flags().BoolVar(&debugBuild, "debug", false, "Enable debug endpoints in the built binary (/_debug/gc)")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 
@@ -205,6 +208,7 @@ func init() {
 	_ = viper.BindPFlag("keep-source", rootCmd.Flags().Lookup("keep-source"))
 	_ = viper.BindPFlag("platform", rootCmd.Flags().Lookup("platform"))
 	_ = viper.BindPFlag("custom-baml-lib", rootCmd.Flags().Lookup("custom-baml-lib"))
+	_ = viper.BindPFlag("custom-baml-go-lib", rootCmd.Flags().Lookup("custom-baml-go-lib"))
 	_ = viper.BindPFlag("debug", rootCmd.Flags().Lookup("debug"))
 }
 
@@ -221,6 +225,7 @@ var rootCmd = &cobra.Command{
 		keepSource = viper.GetString("keep-source")
 		platform = viper.GetString("platform")
 		customBamlLib = viper.GetString("custom-baml-lib")
+		customBamlGoLib = viper.GetString("custom-baml-go-lib")
 		debugBuild = viper.GetBool("debug")
 
 		// Validate mode
@@ -250,23 +255,28 @@ var rootCmd = &cobra.Command{
 
 		// Validate custom BAML lib flag
 		if customBamlLib != "" {
-			if buildMode != "docker" {
-				return fmt.Errorf("--custom-baml-lib is only supported in docker mode")
-			}
-
-			// If platform not specified, detect from Docker daemon
-			if parsedPlatform == nil {
-				detectedPlatform, err := detectDockerPlatform()
-				if err != nil {
-					return fmt.Errorf("--custom-baml-lib requires --platform to be specified (failed to auto-detect: %v)", err)
+			// Determine target platform for validation
+			var targetPlatform *ocispec.Platform
+			if buildMode == "docker" {
+				// For Docker mode, use specified platform or detect from Docker daemon
+				if parsedPlatform == nil {
+					detectedPlatform, err := detectDockerPlatform()
+					if err != nil {
+						return fmt.Errorf("--custom-baml-lib requires --platform to be specified (failed to auto-detect: %v)", err)
+					}
+					parsedPlatform = detectedPlatform
+					fmt.Printf("Auto-detected platform from Docker: %s/%s\n", parsedPlatform.OS, parsedPlatform.Architecture)
 				}
-				parsedPlatform = detectedPlatform
-				fmt.Printf("Auto-detected platform from Docker: %s/%s\n", parsedPlatform.OS, parsedPlatform.Architecture)
+				targetPlatform = parsedPlatform
+			} else {
+				// For native mode, use the local system's platform
+				targetPlatform = detectLocalPlatform()
+				fmt.Printf("Using local platform: %s/%s\n", targetPlatform.OS, targetPlatform.Architecture)
 			}
 
 			// Validate platform is supported for custom lib
-			if parsedPlatform.OS != "linux" || (parsedPlatform.Architecture != "amd64" && parsedPlatform.Architecture != "arm64") {
-				return fmt.Errorf("--custom-baml-lib only supports linux/amd64 and linux/arm64 platforms, got %s/%s", parsedPlatform.OS, parsedPlatform.Architecture)
+			if targetPlatform.OS != "linux" || (targetPlatform.Architecture != "amd64" && targetPlatform.Architecture != "arm64") {
+				return fmt.Errorf("--custom-baml-lib only supports linux/amd64 and linux/arm64 platforms, got %s/%s", targetPlatform.OS, targetPlatform.Architecture)
 			}
 
 			// Check that the file exists and is readable
@@ -284,8 +294,36 @@ var rootCmd = &cobra.Command{
 				fmt.Printf("Warning: custom BAML lib does not have .so extension: %s\n", customBamlLib)
 			}
 			// Validate ELF architecture matches target platform
-			if err := validateELFArchitecture(customBamlLib, parsedPlatform); err != nil {
+			if err := validateELFArchitecture(customBamlLib, targetPlatform); err != nil {
 				return fmt.Errorf("custom BAML lib validation failed: %w", err)
+			}
+		}
+
+		// Validate custom BAML Go lib flag
+		if customBamlGoLib != "" {
+			info, err := os.Stat(customBamlGoLib)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("custom BAML Go library path does not exist: %s", customBamlGoLib)
+				}
+				return fmt.Errorf("failed to access custom BAML Go library: %w", err)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("custom BAML Go library path must be a directory: %s", customBamlGoLib)
+			}
+			// Check for go.mod to confirm it's a Go module
+			goModPath := filepath.Join(customBamlGoLib, "go.mod")
+			if _, err := os.Stat(goModPath); err != nil {
+				return fmt.Errorf("custom BAML Go library must contain a go.mod file: %s", customBamlGoLib)
+			}
+			// Validate go.mod module path matches expected BAML module
+			if err := validateGoModModule(goModPath, "github.com/boundaryml/baml"); err != nil {
+				return fmt.Errorf("custom BAML Go library validation failed: %w", err)
+			}
+			// Convert to absolute path for consistent handling
+			customBamlGoLib, err = filepath.Abs(customBamlGoLib)
+			if err != nil {
+				return fmt.Errorf("failed to get absolute path for custom BAML Go library: %w", err)
 			}
 		}
 
@@ -389,14 +427,14 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, parsedPlatform, customBamlLib, debugBuild)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild)
 		} else {
-			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, debugBuild)
+			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, customBamlLib, customBamlGoLib, debugBuild)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, debugBuild bool) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	if platform != nil {
@@ -518,6 +556,43 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		}
 		_ = customLibFile.Close()
 		fmt.Printf("Added custom BAML lib to build context\n")
+	}
+
+	// Add custom BAML Go lib directory to build context (always create, may be empty)
+	// Docker COPY requires the source to exist, so we always create the directory
+	if customBamlGoLib != "" {
+		// Custom lib provided - copy all files and add a .provided marker
+		err := copyDirToTar(customBamlGoLib, tarWriter, func(path string, dirEntry fs.DirEntry, _ fs.FileInfo) *string {
+			// Skip symlinks and non-regular files to avoid tar issues
+			if !dirEntry.Type().IsRegular() {
+				return nil
+			}
+			result := filepath.Join("custom_baml_go_lib", path)
+			return &result
+		})
+		if err != nil {
+			return fmt.Errorf("failed to copy custom BAML Go library to build context: %w", err)
+		}
+		// Add marker file to indicate custom lib was provided
+		markerHeader := tar.Header{
+			Name: "custom_baml_go_lib/.provided",
+			Mode: 0644,
+			Size: 0,
+		}
+		if err := tarWriter.WriteHeader(&markerHeader); err != nil {
+			return fmt.Errorf("failed to write custom BAML Go lib marker: %w", err)
+		}
+		fmt.Printf("Added custom BAML Go library to build context\n")
+	} else {
+		// No custom lib - create empty directory with placeholder so COPY doesn't fail
+		placeholderHeader := tar.Header{
+			Name: "custom_baml_go_lib/.placeholder",
+			Mode: 0644,
+			Size: 0,
+		}
+		if err := tarWriter.WriteHeader(&placeholderHeader); err != nil {
+			return fmt.Errorf("failed to write custom BAML Go lib placeholder: %w", err)
+		}
 	}
 
 	if err := tarWriter.Close(); err != nil {
@@ -654,7 +729,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	return nil
 }
 
-func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, debugBuild bool) error {
+func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool) error {
 	fmt.Printf("\n=== Native Build Mode ===\n\n")
 
 	// Check prerequisites
@@ -723,6 +798,48 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		return &result
 	}); err != nil {
 		return fmt.Errorf("failed to copy baml_src to build context: %w", err)
+	}
+
+	// Copy custom BAML Go library to build context if provided
+	if customBamlGoLib != "" {
+		fmt.Printf("Copying custom BAML Go library to build context...\n")
+		if err := copyDirToDisk(customBamlGoLib, buildContextDir, func(path string, dirEntry fs.DirEntry, _ fs.FileInfo) *string {
+			// Skip symlinks and non-regular files
+			if !dirEntry.Type().IsRegular() {
+				return nil
+			}
+			result := filepath.Join("custom_baml_go_lib", path)
+			return &result
+		}); err != nil {
+			return fmt.Errorf("failed to copy custom BAML Go library: %w", err)
+		}
+		// Create .provided marker file so build.sh knows custom lib was provided
+		markerPath := filepath.Join(buildContextDir, "custom_baml_go_lib", ".provided")
+		if err := os.WriteFile(markerPath, []byte{}, 0644); err != nil {
+			return fmt.Errorf("failed to create custom BAML Go library marker: %w", err)
+		}
+	}
+
+	// Copy custom BAML FFI library to build context if provided
+	if customBamlLib != "" {
+		fmt.Printf("Copying custom BAML FFI library to build context...\n")
+		srcFile, err := os.Open(customBamlLib)
+		if err != nil {
+			return fmt.Errorf("failed to open custom BAML lib: %w", err)
+		}
+		defer srcFile.Close()
+
+		dstPath := filepath.Join(buildContextDir, "custom_baml_lib.so")
+		dstFile, err := os.Create(dstPath)
+		if err != nil {
+			return fmt.Errorf("failed to create custom BAML lib in build context: %w", err)
+		}
+		defer dstFile.Close()
+
+		if _, err := io.Copy(dstFile, srcFile); err != nil {
+			return fmt.Errorf("failed to copy custom BAML lib: %w", err)
+		}
+		fmt.Printf("Added custom BAML FFI library to build context\n")
 	}
 
 	// Convert output path to absolute path to avoid ambiguity
@@ -813,6 +930,11 @@ func detectDockerPlatform() (*ocispec.Platform, error) {
 	return &ocispec.Platform{OS: info.Info.OSType, Architecture: arch}, nil
 }
 
+// detectLocalPlatform returns the current system's OS and architecture
+func detectLocalPlatform() *ocispec.Platform {
+	return &ocispec.Platform{OS: runtime.GOOS, Architecture: runtime.GOARCH}
+}
+
 // validateELFArchitecture checks if the given file is an ELF binary for the expected platform
 func validateELFArchitecture(filePath string, platform *ocispec.Platform) error {
 	elfFile, err := elf.Open(filePath)
@@ -845,6 +967,29 @@ func validateELFArchitecture(filePath string, platform *ocispec.Platform) error 
 
 	fmt.Printf("✓ Custom BAML lib architecture validated: %s\n", platform.Architecture)
 	return nil
+}
+
+// validateGoModModule checks that the go.mod file declares the expected module path
+func validateGoModModule(goModPath, expectedModule string) error {
+	content, err := os.ReadFile(goModPath)
+	if err != nil {
+		return fmt.Errorf("failed to read go.mod: %w", err)
+	}
+
+	// Parse the module line - format: "module <path>"
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "module ") {
+			modulePath := strings.TrimSpace(strings.TrimPrefix(line, "module"))
+			if modulePath != expectedModule {
+				return fmt.Errorf("go.mod declares module %q, expected %q", modulePath, expectedModule)
+			}
+			fmt.Printf("✓ Custom BAML Go library module validated: %s\n", modulePath)
+			return nil
+		}
+	}
+	return fmt.Errorf("go.mod does not contain a module declaration")
 }
 
 func extractFromImages(dockerfileContent io.Reader) ([]string, error) {
