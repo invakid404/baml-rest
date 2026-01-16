@@ -1,52 +1,12 @@
 package sse
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
-
-// OpenAI Chat Completions SSE format
-type openAIChatChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content string `json:"content"`
-		} `json:"delta"`
-	} `json:"choices"`
-}
-
-// OpenAI Responses API SSE format
-type openAIResponsesChunk struct {
-	Type  string `json:"type"`
-	Delta string `json:"delta"`
-}
-
-// Anthropic SSE format
-type anthropicChunk struct {
-	Type  string `json:"type"`
-	Delta struct {
-		Type     string `json:"type"`
-		Text     string `json:"text"`
-		Thinking string `json:"thinking"`
-	} `json:"delta"`
-}
-
-// Google AI SSE format
-type googleChunk struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
-}
-
-// AWS Bedrock SSE format (debug string wrapped in JSON)
-type bedrockChunk struct {
-	Debug string `json:"debug"`
-}
 
 // SSEChunk represents a single SSE chunk that can provide text or JSON
 type SSEChunk interface {
@@ -84,7 +44,6 @@ func GetCurrentContent(data *StreamingData) (string, error) {
 
 // ExtractDeltaContent extracts the text delta from an SSE chunk based on provider
 func ExtractDeltaContent(provider string, chunk SSEChunk) (string, error) {
-	// Get raw text and parse ourselves for reliability
 	rawText, err := chunk.Text()
 	if err != nil {
 		return "", fmt.Errorf("failed to get chunk text: %w", err)
@@ -92,61 +51,40 @@ func ExtractDeltaContent(provider string, chunk SSEChunk) (string, error) {
 
 	switch provider {
 	// OpenAI-compatible providers (Chat Completions API format)
+	// Path: choices[0].delta.content
 	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter":
-		var c openAIChatChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		if len(c.Choices) > 0 {
-			return c.Choices[0].Delta.Content, nil
-		}
-		return "", nil
+		return gjson.Get(rawText, "choices.0.delta.content").String(), nil
 
 	// OpenAI Responses API (different format)
+	// Path: delta (when type == "response.output_text.delta")
 	case "openai-responses":
-		var c openAIResponsesChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		if c.Type == "response.output_text.delta" {
-			return c.Delta, nil
+		if gjson.Get(rawText, "type").String() == "response.output_text.delta" {
+			return gjson.Get(rawText, "delta").String(), nil
 		}
 		return "", nil
 
 	// Anthropic
+	// Path: delta.text or delta.thinking (when type == "content_block_delta")
 	case "anthropic":
-		var c anthropicChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		if c.Type == "content_block_delta" {
-			switch c.Delta.Type {
+		if gjson.Get(rawText, "type").String() == "content_block_delta" {
+			switch gjson.Get(rawText, "delta.type").String() {
 			case "text_delta":
-				return c.Delta.Text, nil
+				return gjson.Get(rawText, "delta.text").String(), nil
 			case "thinking_delta":
-				return c.Delta.Thinking, nil
+				return gjson.Get(rawText, "delta.thinking").String(), nil
 			}
 		}
 		return "", nil
 
 	// Google (both use same format)
+	// Path: candidates[0].content.parts[0].text
 	case "google-ai", "vertex-ai":
-		var c googleChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		if len(c.Candidates) > 0 && len(c.Candidates[0].Content.Parts) > 0 {
-			return c.Candidates[0].Content.Parts[0].Text, nil
-		}
-		return "", nil
+		return gjson.Get(rawText, "candidates.0.content.parts.0.text").String(), nil
 
 	// AWS Bedrock (Debug string format)
+	// Path: debug (then parsed via regex)
 	case "aws-bedrock":
-		var c bedrockChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		return extractBedrockFromDebug(c.Debug)
+		return extractBedrockFromDebug(gjson.Get(rawText, "debug").String())
 
 	default:
 		return "", fmt.Errorf("unsupported provider: %s", provider)
