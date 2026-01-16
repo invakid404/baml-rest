@@ -102,6 +102,7 @@ func Generate(selfPkg string) {
 			jen.Id("raw").String(),
 			jen.Id("parsed").Any(),
 			jen.Id("err").Error(),
+			jen.Id("reset").Bool(), // true when client should discard accumulated state (retry occurred)
 		)
 
 		// Implement `StreamResult` interface for the output struct
@@ -208,6 +209,15 @@ func Generate(selfPkg string) {
 			String().
 			Block(
 				jen.Return(selfName.Clone().Dot("raw")),
+			)
+
+		// Reset() method - returns true if client should discard accumulated state
+		out.Func().
+			Params(selfParam.Clone()).
+			Id("Reset").Params().
+			Bool().
+			Block(
+				jen.Return(selfName.Clone().Dot("reset")),
 			)
 
 		// Generate pool for output struct reuse
@@ -501,9 +511,9 @@ func Generate(selfPkg string) {
 			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
 			jen.Var().Id("fatalErr").Error(),
 
-			// Mutex and lastRawResponse for final raw capture
-			jen.Var().Id("lastRawResponse").String(),
-			jen.Var().Id("mu").Qual("sync", "Mutex"),
+			// Incremental extractor for SSE chunks (tracks cursor to avoid re-parsing)
+			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
+			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
 
 			// Two-phase shutdown function - guarded by shutdownOnce
 			jen.Id("doShutdown").Op(":=").Func().Params().Block(
@@ -646,62 +656,78 @@ func Generate(selfPkg string) {
 					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
 						jen.Func().Params().Error().Block(
 							// Extract data from FunctionLog (moved from OnTick for async processing)
+							// Only fetch data for the LAST call - earlier calls are failed retries
 							jen.Id("calls").Op(",").Id("callsErr").Op(":=").Id("funcLog").Dot("Calls").Call(),
 							jen.If(jen.Id("callsErr").Op("!=").Nil()).Block(
 								jen.Return(jen.Nil()),
 							),
-
-							// Build StreamingData struct
-							jen.Id("streamingData").Op(":=").Op("&").Qual(common.SSEPkg, "StreamingData").Values(),
-							jen.For(jen.List(jen.Id("_"), jen.Id("call")).Op(":=").Range().Id("calls")).Block(
-								// Type-assert to LLMStreamCall (extends LLMCall with SSEChunks)
-								jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("call").Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
-								jen.If(jen.Op("!").Id("ok")).Block(
-									jen.Continue(),
-								),
-								jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
-								jen.If(jen.Id("provErr").Op("!=").Nil()).Block(
-									jen.Continue(),
-								),
-								jen.Id("chunks").Op(",").Id("chunksErr").Op(":=").Id("streamCall").Dot("SSEChunks").Call(),
-								jen.If(jen.Id("chunksErr").Op("!=").Nil()).Block(
-									jen.Continue(),
-								),
-								// Convert chunks to SSEChunk interface slice
-								jen.Id("sseChunks").Op(":=").Make(jen.Index().Qual(common.SSEPkg, "SSEChunk"), jen.Len(jen.Id("chunks"))),
-								jen.For(jen.List(jen.Id("i"), jen.Id("chunk")).Op(":=").Range().Id("chunks")).Block(
-									jen.Id("sseChunks").Index(jen.Id("i")).Op("=").Id("chunk"),
-								),
-								jen.Id("streamingData").Dot("Calls").Op("=").Append(
-									jen.Id("streamingData").Dot("Calls"),
-									jen.Qual(common.SSEPkg, "StreamingCall").Values(jen.Dict{
-										jen.Id("Provider"): jen.Id("provider"),
-										jen.Id("Chunks"):   jen.Id("sseChunks"),
-									}),
-								),
-							),
-
-							// Get raw LLM response by extracting SSE deltas
-							jen.List(jen.Id("raw"), jen.Id("rawErr")).Op(":=").Qual(common.SSEPkg, "GetCurrentContent").Call(jen.Id("streamingData")),
-							jen.If(jen.Id("rawErr").Op("!=").Nil()).Block(
+							jen.Id("callCount").Op(":=").Len(jen.Id("calls")),
+							jen.If(jen.Id("callCount").Op("==").Lit(0)).Block(
 								jen.Return(jen.Nil()),
 							),
 
-							// Skip if no content yet
-							jen.If(jen.Id("raw").Op("==").Lit("")).Block(
+							// Get only the last call (current attempt) - avoid FFI calls for failed retries
+							jen.Id("lastCall").Op(":=").Id("calls").Index(jen.Id("callCount").Op("-").Lit(1)),
+							jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("lastCall").Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
+							jen.If(jen.Op("!").Id("ok")).Block(
+								jen.Return(jen.Nil()),
+							),
+							jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
+							jen.If(jen.Id("provErr").Op("!=").Nil()).Block(
+								jen.Return(jen.Nil()),
+							),
+							jen.Id("chunks").Op(",").Id("chunksErr").Op(":=").Id("streamCall").Dot("SSEChunks").Call(),
+							jen.If(jen.Id("chunksErr").Op("!=").Nil()).Block(
 								jen.Return(jen.Nil()),
 							),
 
-							// Update lastRawResponse for final capture, skip if no change (avoid duplicate SSE messages)
-							// Calculate delta (only new content) before updating lastRawResponse
-							jen.Id("mu").Dot("Lock").Call(),
-							jen.If(jen.Id("raw").Op("==").Id("lastRawResponse")).Block(
-								jen.Id("mu").Dot("Unlock").Call(),
+							// Convert chunks to SSEChunk interface slice
+							jen.Id("sseChunks").Op(":=").Make(jen.Index().Qual(common.SSEPkg, "SSEChunk"), jen.Len(jen.Id("chunks"))),
+							jen.For(jen.List(jen.Id("i"), jen.Id("chunk")).Op(":=").Range().Id("chunks")).Block(
+								jen.Id("sseChunks").Index(jen.Id("i")).Op("=").Id("chunk"),
+							),
+
+							// Extract new content incrementally (only processes new chunks)
+							jen.Id("extractorMu").Dot("Lock").Call(),
+							jen.Id("extractResult").Op(":=").Id("extractor").Dot("Extract").Call(
+								jen.Id("callCount"),
+								jen.Id("provider"),
+								jen.Id("sseChunks"),
+							),
+							jen.Id("extractorMu").Dot("Unlock").Call(),
+
+							// Skip if no new content AND no reset signal
+							// (must emit reset even with empty delta so client discards stale state)
+							jen.If(jen.Id("extractResult").Dot("Delta").Op("==").Lit("").Op("&&").Op("!").Id("extractResult").Dot("Reset")).Block(
 								jen.Return(jen.Nil()),
 							),
-							jen.Id("rawDelta").Op(":=").Id("raw").Index(jen.Len(jen.Id("lastRawResponse")).Op(":")),
-							jen.Id("lastRawResponse").Op("=").Id("raw"),
-							jen.Id("mu").Dot("Unlock").Call(),
+
+							jen.Id("raw").Op(":=").Id("extractResult").Dot("Full"),
+							jen.Id("rawDelta").Op(":=").Id("extractResult").Dot("Delta"),
+
+							// Short-circuit: if rawDelta is empty, we only need to propagate reset signal
+							// (no new content to parse, skip ParseStream overhead)
+							jen.If(jen.Id("rawDelta").Op("==").Lit("")).Block(
+								// Pre-check adapter cancellation
+								jen.Select().Block(
+									jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+										jen.Return(jen.Nil()),
+									),
+									jen.Default().Block(),
+								),
+								// Emit reset-only result (no parsed content)
+								jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+								jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+								jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
+								jen.Id("__r").Dot("reset").Op("=").Id("extractResult").Dot("Reset"),
+								jen.Select().Block(
+									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+									jen.Default().Block(
+										jen.Id("__r").Dot("Release").Call(),
+									),
+								),
+								jen.Return(jen.Nil()),
+							),
 
 							// Call ParseStream outside of OnTick callback context (avoids deadlock)
 							// Pass adapter as context (hack adds ctx param to ParseStream methods)
@@ -729,6 +755,7 @@ func Generate(selfPkg string) {
 								jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
 								jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
 								jen.Id("__r").Dot("parsed").Op("=").Id("parsedPtr"),
+								jen.Id("__r").Dot("reset").Op("=").Id("extractResult").Dot("Reset"),
 								jen.Select().Block(
 									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 									jen.Default().Block(
@@ -871,10 +898,10 @@ func Generate(selfPkg string) {
 				jen.Return(jen.Nil()),
 			),
 
-			// Get the final raw response
-			jen.Id("mu").Dot("Lock").Call(),
-			jen.Id("finalRaw").Op(":=").Id("lastRawResponse"),
-			jen.Id("mu").Dot("Unlock").Call(),
+			// Get the final raw response from extractor
+			jen.Id("extractorMu").Dot("Lock").Call(),
+			jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
+			jen.Id("extractorMu").Dot("Unlock").Call(),
 
 			// Send final result - handle both pointer and value types from streamVal.Final()
 			jen.Var().Id("finalParsed").Any(),

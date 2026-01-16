@@ -26,16 +26,21 @@ type StreamingData struct {
 }
 
 // GetCurrentContent returns the accumulated content so far from streaming
-// by extracting deltas from all SSE chunks
+// by extracting deltas from SSE chunks of the last call only.
+// Earlier calls are ignored since they represent failed retry attempts.
 func GetCurrentContent(data *StreamingData) (string, error) {
-	var sb strings.Builder
+	if len(data.Calls) == 0 {
+		return "", nil
+	}
 
-	for _, call := range data.Calls {
-		for _, chunk := range call.Chunks {
-			delta, err := ExtractDeltaContent(call.Provider, chunk)
-			if err == nil && delta != "" {
-				sb.WriteString(delta)
-			}
+	// Only use the last call - earlier calls are failed retries
+	call := data.Calls[len(data.Calls)-1]
+
+	var sb strings.Builder
+	for _, chunk := range call.Chunks {
+		delta, err := ExtractDeltaContent(call.Provider, chunk)
+		if err == nil && delta != "" {
+			sb.WriteString(delta)
 		}
 	}
 
@@ -111,4 +116,105 @@ func extractBedrockFromDebug(debugStr string) (string, error) {
 	text = strings.ReplaceAll(text, `\\`, `\`)
 
 	return text, nil
+}
+
+// IncrementalExtractor extracts SSE content incrementally, tracking which chunks
+// have already been processed to avoid re-parsing on each tick.
+type IncrementalExtractor struct {
+	// callCount tracks the number of calls seen (to detect retries)
+	callCount int
+	// cursor tracks chunks processed in the current (last) call
+	cursor int
+	// accumulated content from processed chunks
+	accumulated strings.Builder
+}
+
+// NewIncrementalExtractor creates a new incremental extractor.
+func NewIncrementalExtractor() *IncrementalExtractor {
+	return &IncrementalExtractor{}
+}
+
+// ExtractResult contains the result of an incremental extraction.
+type ExtractResult struct {
+	// Delta is the new content extracted from this tick (empty if no new content)
+	Delta string
+	// Full is the complete accumulated content
+	Full string
+	// Reset is true if the client should discard accumulated state (retry occurred).
+	// This is NOT set on first extraction - only when a retry causes a rebuild.
+	Reset bool
+}
+
+// Extract processes new SSE chunks incrementally, returning only the delta.
+// Parameters:
+//   - callCount: total number of calls in the FunctionLog (used to detect retries)
+//   - provider: the LLM provider for the current (last) call
+//   - chunks: SSE chunks from the current (last) call only
+//
+// A full rebuild occurs if:
+//   - First extraction (initial state)
+//   - Call count changed (retry added a new call)
+//   - Chunk count decreased (shouldn't happen normally)
+func (e *IncrementalExtractor) Extract(callCount int, provider string, chunks []SSEChunk) ExtractResult {
+	if callCount == 0 {
+		return ExtractResult{}
+	}
+
+	// Determine rebuild reasons
+	isFirstExtraction := e.callCount == 0
+	isRetry := !isFirstExtraction && callCount != e.callCount
+	chunksDecreased := !isFirstExtraction && len(chunks) < e.cursor
+
+	needsRebuild := isFirstExtraction || isRetry || chunksDecreased
+
+	if needsRebuild {
+		// Full rebuild: reset state and process all chunks from last call
+		e.callCount = callCount
+		e.cursor = 0
+		e.accumulated.Reset()
+
+		for _, chunk := range chunks {
+			delta, err := ExtractDeltaContent(provider, chunk)
+			if err == nil && delta != "" {
+				e.accumulated.WriteString(delta)
+			}
+		}
+		e.cursor = len(chunks)
+
+		return ExtractResult{
+			Delta: e.accumulated.String(),
+			Full:  e.accumulated.String(),
+			// Signal reset when retry occurred or chunks decreased (client state is invalid)
+			Reset: isRetry || chunksDecreased,
+		}
+	}
+
+	// Incremental: only process new chunks
+	var deltaBuf strings.Builder
+	for i := e.cursor; i < len(chunks); i++ {
+		delta, err := ExtractDeltaContent(provider, chunks[i])
+		if err == nil && delta != "" {
+			deltaBuf.WriteString(delta)
+			e.accumulated.WriteString(delta)
+		}
+	}
+	e.cursor = len(chunks)
+
+	return ExtractResult{
+		Delta: deltaBuf.String(),
+		Full:  e.accumulated.String(),
+		Reset: false,
+	}
+}
+
+// Clear resets the extractor state.
+func (e *IncrementalExtractor) Clear() {
+	e.callCount = 0
+	e.cursor = 0
+	e.accumulated.Reset()
+}
+
+// Full returns the complete accumulated content without processing new data.
+func (e *IncrementalExtractor) Full() string {
+	return e.accumulated.String()
 }

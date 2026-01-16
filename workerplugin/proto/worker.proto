@@ -24,6 +24,7 @@ message StreamResult {
   string raw = 3;              // Raw LLM response text (populated on FINAL)
   string error = 4;            // Error message (populated on ERROR)
   string stacktrace = 5;       // Stacktrace (populated on ERROR, when available)
+  bool reset = 6;              // When true, client should discard accumulated state (retry occurred)
 }
 
 // Health check
