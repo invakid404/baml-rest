@@ -86,6 +86,7 @@ type StreamResult struct {
 	Raw        string // Raw LLM response (populated on Final)
 	Error      error  // Error (populated on Error kind)
 	Stacktrace string // Stacktrace (populated on Error kind, when available)
+	Reset      bool   // When true, client should discard accumulated state (retry occurred)
 }
 
 type StreamResultKind int

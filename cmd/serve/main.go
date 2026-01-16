@@ -214,6 +214,10 @@ var serveCmd = &cobra.Command{
 		if err != nil {
 			panic(err)
 		}
+		sseResetKind, err := sse.NewType("reset")
+		if err != nil {
+			panic(err)
+		}
 
 		// Create SSE server
 		s := &sse.Server{
@@ -387,6 +391,20 @@ var serveCmd = &cobra.Command{
 									httplogger.SetError(r.Context(), workerplugin.NewErrorWithStack(result.Error, result.Stacktrace))
 								}
 							case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
+								// Handle reset signal (retry occurred) - send reset event and clear accumulated state
+								if result.Reset {
+									accumulatedRaw.Reset()
+									resetMessage := &sse.Message{Type: sseResetKind}
+									resetMessage.AppendData("{}")
+									if err := s.Publish(resetMessage, topic); err != nil {
+										workerplugin.ReleaseStreamResult(result)
+										for remaining := range results {
+											workerplugin.ReleaseStreamResult(remaining)
+										}
+										break
+									}
+								}
+
 								data := result.Data
 								if enableRawCollection {
 									// Stream messages contain deltas, Final contains full raw

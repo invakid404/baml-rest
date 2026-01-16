@@ -11,6 +11,8 @@ type StreamResult interface {
 	Error() error
 	// Raw returns the raw LLM response text at this streaming point
 	Raw() string
+	// Reset returns true if the client should discard accumulated state (retry occurred)
+	Reset() bool
 	// Release returns the StreamResult to a pool for reuse.
 	// After calling Release, the StreamResult should not be accessed.
 	Release()

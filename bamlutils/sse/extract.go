@@ -1,52 +1,12 @@
 package sse
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
-
-// OpenAI Chat Completions SSE format
-type openAIChatChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content string `json:"content"`
-		} `json:"delta"`
-	} `json:"choices"`
-}
-
-// OpenAI Responses API SSE format
-type openAIResponsesChunk struct {
-	Type  string `json:"type"`
-	Delta string `json:"delta"`
-}
-
-// Anthropic SSE format
-type anthropicChunk struct {
-	Type  string `json:"type"`
-	Delta struct {
-		Type     string `json:"type"`
-		Text     string `json:"text"`
-		Thinking string `json:"thinking"`
-	} `json:"delta"`
-}
-
-// Google AI SSE format
-type googleChunk struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
-}
-
-// AWS Bedrock SSE format (debug string wrapped in JSON)
-type bedrockChunk struct {
-	Debug string `json:"debug"`
-}
 
 // SSEChunk represents a single SSE chunk that can provide text or JSON
 type SSEChunk interface {
@@ -66,16 +26,21 @@ type StreamingData struct {
 }
 
 // GetCurrentContent returns the accumulated content so far from streaming
-// by extracting deltas from all SSE chunks
+// by extracting deltas from SSE chunks of the last call only.
+// Earlier calls are ignored since they represent failed retry attempts.
 func GetCurrentContent(data *StreamingData) (string, error) {
-	var sb strings.Builder
+	if len(data.Calls) == 0 {
+		return "", nil
+	}
 
-	for _, call := range data.Calls {
-		for _, chunk := range call.Chunks {
-			delta, err := ExtractDeltaContent(call.Provider, chunk)
-			if err == nil && delta != "" {
-				sb.WriteString(delta)
-			}
+	// Only use the last call - earlier calls are failed retries
+	call := data.Calls[len(data.Calls)-1]
+
+	var sb strings.Builder
+	for _, chunk := range call.Chunks {
+		delta, err := ExtractDeltaContent(call.Provider, chunk)
+		if err == nil && delta != "" {
+			sb.WriteString(delta)
 		}
 	}
 
@@ -84,7 +49,6 @@ func GetCurrentContent(data *StreamingData) (string, error) {
 
 // ExtractDeltaContent extracts the text delta from an SSE chunk based on provider
 func ExtractDeltaContent(provider string, chunk SSEChunk) (string, error) {
-	// Get raw text and parse ourselves for reliability
 	rawText, err := chunk.Text()
 	if err != nil {
 		return "", fmt.Errorf("failed to get chunk text: %w", err)
@@ -92,61 +56,40 @@ func ExtractDeltaContent(provider string, chunk SSEChunk) (string, error) {
 
 	switch provider {
 	// OpenAI-compatible providers (Chat Completions API format)
+	// Path: choices[0].delta.content
 	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter":
-		var c openAIChatChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		if len(c.Choices) > 0 {
-			return c.Choices[0].Delta.Content, nil
-		}
-		return "", nil
+		return gjson.Get(rawText, "choices.0.delta.content").String(), nil
 
 	// OpenAI Responses API (different format)
+	// Path: delta (when type == "response.output_text.delta")
 	case "openai-responses":
-		var c openAIResponsesChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		if c.Type == "response.output_text.delta" {
-			return c.Delta, nil
+		if gjson.Get(rawText, "type").String() == "response.output_text.delta" {
+			return gjson.Get(rawText, "delta").String(), nil
 		}
 		return "", nil
 
 	// Anthropic
+	// Path: delta.text or delta.thinking (when type == "content_block_delta")
 	case "anthropic":
-		var c anthropicChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		if c.Type == "content_block_delta" {
-			switch c.Delta.Type {
+		if gjson.Get(rawText, "type").String() == "content_block_delta" {
+			switch gjson.Get(rawText, "delta.type").String() {
 			case "text_delta":
-				return c.Delta.Text, nil
+				return gjson.Get(rawText, "delta.text").String(), nil
 			case "thinking_delta":
-				return c.Delta.Thinking, nil
+				return gjson.Get(rawText, "delta.thinking").String(), nil
 			}
 		}
 		return "", nil
 
 	// Google (both use same format)
+	// Path: candidates[0].content.parts[0].text
 	case "google-ai", "vertex-ai":
-		var c googleChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		if len(c.Candidates) > 0 && len(c.Candidates[0].Content.Parts) > 0 {
-			return c.Candidates[0].Content.Parts[0].Text, nil
-		}
-		return "", nil
+		return gjson.Get(rawText, "candidates.0.content.parts.0.text").String(), nil
 
 	// AWS Bedrock (Debug string format)
+	// Path: debug (then parsed via regex)
 	case "aws-bedrock":
-		var c bedrockChunk
-		if err := json.Unmarshal([]byte(rawText), &c); err != nil {
-			return "", nil
-		}
-		return extractBedrockFromDebug(c.Debug)
+		return extractBedrockFromDebug(gjson.Get(rawText, "debug").String())
 
 	default:
 		return "", fmt.Errorf("unsupported provider: %s", provider)
@@ -173,4 +116,105 @@ func extractBedrockFromDebug(debugStr string) (string, error) {
 	text = strings.ReplaceAll(text, `\\`, `\`)
 
 	return text, nil
+}
+
+// IncrementalExtractor extracts SSE content incrementally, tracking which chunks
+// have already been processed to avoid re-parsing on each tick.
+type IncrementalExtractor struct {
+	// callCount tracks the number of calls seen (to detect retries)
+	callCount int
+	// cursor tracks chunks processed in the current (last) call
+	cursor int
+	// accumulated content from processed chunks
+	accumulated strings.Builder
+}
+
+// NewIncrementalExtractor creates a new incremental extractor.
+func NewIncrementalExtractor() *IncrementalExtractor {
+	return &IncrementalExtractor{}
+}
+
+// ExtractResult contains the result of an incremental extraction.
+type ExtractResult struct {
+	// Delta is the new content extracted from this tick (empty if no new content)
+	Delta string
+	// Full is the complete accumulated content
+	Full string
+	// Reset is true if the client should discard accumulated state (retry occurred).
+	// This is NOT set on first extraction - only when a retry causes a rebuild.
+	Reset bool
+}
+
+// Extract processes new SSE chunks incrementally, returning only the delta.
+// Parameters:
+//   - callCount: total number of calls in the FunctionLog (used to detect retries)
+//   - provider: the LLM provider for the current (last) call
+//   - chunks: SSE chunks from the current (last) call only
+//
+// A full rebuild occurs if:
+//   - First extraction (initial state)
+//   - Call count changed (retry added a new call)
+//   - Chunk count decreased (shouldn't happen normally)
+func (e *IncrementalExtractor) Extract(callCount int, provider string, chunks []SSEChunk) ExtractResult {
+	if callCount == 0 {
+		return ExtractResult{}
+	}
+
+	// Determine rebuild reasons
+	isFirstExtraction := e.callCount == 0
+	isRetry := !isFirstExtraction && callCount != e.callCount
+	chunksDecreased := !isFirstExtraction && len(chunks) < e.cursor
+
+	needsRebuild := isFirstExtraction || isRetry || chunksDecreased
+
+	if needsRebuild {
+		// Full rebuild: reset state and process all chunks from last call
+		e.callCount = callCount
+		e.cursor = 0
+		e.accumulated.Reset()
+
+		for _, chunk := range chunks {
+			delta, err := ExtractDeltaContent(provider, chunk)
+			if err == nil && delta != "" {
+				e.accumulated.WriteString(delta)
+			}
+		}
+		e.cursor = len(chunks)
+
+		return ExtractResult{
+			Delta: e.accumulated.String(),
+			Full:  e.accumulated.String(),
+			// Signal reset when retry occurred or chunks decreased (client state is invalid)
+			Reset: isRetry || chunksDecreased,
+		}
+	}
+
+	// Incremental: only process new chunks
+	var deltaBuf strings.Builder
+	for i := e.cursor; i < len(chunks); i++ {
+		delta, err := ExtractDeltaContent(provider, chunks[i])
+		if err == nil && delta != "" {
+			deltaBuf.WriteString(delta)
+			e.accumulated.WriteString(delta)
+		}
+	}
+	e.cursor = len(chunks)
+
+	return ExtractResult{
+		Delta: deltaBuf.String(),
+		Full:  e.accumulated.String(),
+		Reset: false,
+	}
+}
+
+// Clear resets the extractor state.
+func (e *IncrementalExtractor) Clear() {
+	e.callCount = 0
+	e.cursor = 0
+	e.accumulated.Reset()
+}
+
+// Full returns the complete accumulated content without processing new data.
+func (e *IncrementalExtractor) Full() string {
+	return e.accumulated.String()
 }
