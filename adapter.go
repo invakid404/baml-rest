@@ -12,6 +12,8 @@ import (
 
 var Methods = map[string]bamlutils.StreamingMethod{}
 
+var ParseMethods = map[string]bamlutils.ParseMethod{}
+
 func MakeAdapter(context.Context) bamlutils.Adapter {
 	return (bamlutils.Adapter)(nil)
 }

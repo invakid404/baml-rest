@@ -71,6 +71,14 @@ func (s *GRPCServer) TriggerGC(ctx context.Context, req *pb.Empty) (*pb.GCRespon
 	}, nil
 }
 
+func (s *GRPCServer) Parse(ctx context.Context, req *pb.ParseRequest) (*pb.ParseResponse, error) {
+	result, err := s.Impl.Parse(ctx, req.MethodName, req.InputJson)
+	if err != nil {
+		return &pb.ParseResponse{Error: err.Error()}, nil
+	}
+	return &pb.ParseResponse{DataJson: result.Data}, nil
+}
+
 // GRPCClient is the gRPC client that connects to the plugin
 type GRPCClient struct {
 	client pb.WorkerClient
@@ -145,4 +153,18 @@ func (c *GRPCClient) TriggerGC(ctx context.Context) (*GCResult, error) {
 		HeapAllocAfter:  resp.HeapAllocAfter,
 		HeapReleased:    resp.HeapReleased,
 	}, nil
+}
+
+func (c *GRPCClient) Parse(ctx context.Context, methodName string, inputJSON []byte) (*ParseResult, error) {
+	resp, err := c.client.Parse(ctx, &pb.ParseRequest{
+		MethodName: methodName,
+		InputJson:  inputJSON,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, fmt.Errorf("%s", resp.Error)
+	}
+	return &ParseResult{Data: resp.DataJson}, nil
 }

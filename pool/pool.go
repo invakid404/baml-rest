@@ -445,6 +445,20 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 	return nil, fmt.Errorf("no healthy workers available")
 }
 
+// Parse parses raw LLM output using a BAML method's schema.
+func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
+	handle, err := p.getWorker()
+	if err != nil {
+		return nil, err
+	}
+
+	handle.mu.Lock()
+	handle.lastUsed = time.Now()
+	handle.mu.Unlock()
+
+	return handle.worker.Parse(ctx, methodName, inputJSON)
+}
+
 // Call executes a BAML method and returns the final result.
 // Internally uses CallStream to benefit from hung detection on first partial result.
 func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (*workerplugin.CallResult, error) {

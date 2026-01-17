@@ -228,3 +228,49 @@ func (w *workerImpl) TriggerGC(ctx context.Context) (*workerplugin.GCResult, err
 		HeapReleased:    memAfter.HeapReleased - memBefore.HeapReleased,
 	}, nil
 }
+
+// workerParseInput wraps the input for parse requests
+type workerParseInput struct {
+	Raw     string                    `json:"raw"`
+	Options *bamlutils.BamlOptions    `json:"__baml_options__,omitempty"`
+}
+
+func (w *workerImpl) Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
+	method, ok := baml_rest.ParseMethods[methodName]
+	if !ok {
+		return nil, fmt.Errorf("parse method %q not found", methodName)
+	}
+
+	// Parse input
+	var input workerParseInput
+	if err := json.Unmarshal(inputJSON, &input); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
+	}
+
+	if input.Raw == "" {
+		return nil, fmt.Errorf("missing required field 'raw'")
+	}
+
+	// Create adapter and apply options
+	adapter := baml_rest.MakeAdapter(ctx)
+	if input.Options != nil {
+		opts := workerBamlOptions{Options: input.Options}
+		if err := opts.apply(adapter); err != nil {
+			return nil, fmt.Errorf("failed to apply options: %w", err)
+		}
+	}
+
+	// Call the parse method
+	result, err := method.Impl(adapter, input.Raw)
+	if err != nil {
+		return nil, err
+	}
+
+	// Marshal the result to JSON
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal parse result: %w", err)
+	}
+
+	return &workerplugin.ParseResult{Data: data}, nil
+}

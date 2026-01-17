@@ -48,6 +48,18 @@ message GCResponse {
   uint64 heap_released = 3;
 }
 
+// Request to parse raw LLM output
+message ParseRequest {
+  string method_name = 1;
+  bytes input_json = 2;        // JSON-encoded input (contains "raw" and optional "__baml_options__")
+}
+
+// Parse response
+message ParseResponse {
+  bytes data_json = 1;         // JSON-encoded parsed result
+  string error = 2;            // Error message (if parsing failed)
+}
+
 // Worker service
 service Worker {
   // Streaming call - returns stream of results
@@ -62,4 +74,7 @@ service Worker {
 
   // Trigger garbage collection and release memory to OS
   rpc TriggerGC(Empty) returns (GCResponse);
+
+  // Parse raw LLM output into structured data
+  rpc Parse(ParseRequest) returns (ParseResponse);
 }
