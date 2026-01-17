@@ -705,9 +705,9 @@ func Generate(selfPkg string) {
 							jen.Id("raw").Op(":=").Id("extractResult").Dot("Full"),
 							jen.Id("rawDelta").Op(":=").Id("extractResult").Dot("Delta"),
 
-							// Short-circuit: if rawDelta is empty, we only need to propagate reset signal
-							// (no new content to parse, skip ParseStream overhead)
-							jen.If(jen.Id("rawDelta").Op("==").Lit("")).Block(
+							// Short-circuit: if rawDelta is empty or raw is empty, skip ParseStream
+							// (no new content to parse, or nothing accumulated yet)
+							jen.If(jen.Id("rawDelta").Op("==").Lit("").Op("||").Id("raw").Op("==").Lit("")).Block(
 								// Pre-check adapter cancellation
 								jen.Select().Block(
 									jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
