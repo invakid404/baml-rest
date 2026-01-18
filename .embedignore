@@ -3,3 +3,6 @@ Dockerfile.builder
 
 # Monitoring/observability config (not needed at runtime)
 monitoring
+
+# Integration tests
+integration
