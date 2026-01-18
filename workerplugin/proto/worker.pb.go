@@ -466,6 +466,7 @@ type ParseResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	DataJson      []byte                 `protobuf:"bytes,1,opt,name=data_json,json=dataJson,proto3" json:"data_json,omitempty"` // JSON-encoded parsed result
 	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`                       // Error message (if parsing failed)
+	Stacktrace    string                 `protobuf:"bytes,3,opt,name=stacktrace,proto3" json:"stacktrace,omitempty"`             // Stacktrace (if parsing failed, when available)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -514,6 +515,13 @@ func (x *ParseResponse) GetError() string {
 	return ""
 }
 
+func (x *ParseResponse) GetStacktrace() string {
+	if x != nil {
+		return x.Stacktrace
+	}
+	return ""
+}
+
 var File_workerplugin_proto_worker_proto protoreflect.FileDescriptor
 
 const file_workerplugin_proto_worker_proto_rawDesc = "" +
@@ -554,10 +562,13 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\vmethod_name\x18\x01 \x01(\tR\n" +
 	"methodName\x12\x1d\n" +
 	"\n" +
-	"input_json\x18\x02 \x01(\fR\tinputJson\"B\n" +
+	"input_json\x18\x02 \x01(\fR\tinputJson\"b\n" +
 	"\rParseResponse\x12\x1b\n" +
 	"\tdata_json\x18\x01 \x01(\fR\bdataJson\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error2\xcc\x02\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\x12\x1e\n" +
+	"\n" +
+	"stacktrace\x18\x03 \x01(\tR\n" +
+	"stacktrace2\xcc\x02\n" +
 	"\x06Worker\x12E\n" +
 	"\n" +
 	"CallStream\x12\x19.workerplugin.CallRequest\x1a\x1a.workerplugin.StreamResult0\x01\x12;\n" +

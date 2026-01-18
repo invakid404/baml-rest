@@ -58,6 +58,7 @@ message ParseRequest {
 message ParseResponse {
   bytes data_json = 1;         // JSON-encoded parsed result
   string error = 2;            // Error message (if parsing failed)
+  string stacktrace = 3;       // Stacktrace (if parsing failed, when available)
 }
 
 // Worker service

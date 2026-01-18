@@ -74,7 +74,12 @@ func (s *GRPCServer) TriggerGC(ctx context.Context, req *pb.Empty) (*pb.GCRespon
 func (s *GRPCServer) Parse(ctx context.Context, req *pb.ParseRequest) (*pb.ParseResponse, error) {
 	result, err := s.Impl.Parse(ctx, req.MethodName, req.InputJson)
 	if err != nil {
-		return &pb.ParseResponse{Error: err.Error()}, nil
+		resp := &pb.ParseResponse{Error: err.Error()}
+		// Extract stacktrace using %+v formatting (works with go-recovery and pkg/errors style errors)
+		if fullErr := fmt.Sprintf("%+v", err); fullErr != resp.Error {
+			resp.Stacktrace = fullErr
+		}
+		return resp, nil
 	}
 	return &pb.ParseResponse{DataJson: result.Data}, nil
 }
@@ -164,7 +169,7 @@ func (c *GRPCClient) Parse(ctx context.Context, methodName string, inputJSON []b
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, fmt.Errorf("%s", resp.Error)
+		return nil, NewErrorWithStack(fmt.Errorf("%s", resp.Error), resp.Stacktrace)
 	}
 	return &ParseResult{Data: resp.DataJson}, nil
 }
