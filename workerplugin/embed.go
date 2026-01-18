@@ -4,7 +4,7 @@ import (
 	"embed"
 )
 
-//go:embed embed.go go.mod grpc.go plugin.go proto
+//go:embed embed.go go.mod go.sum grpc.go plugin.go proto
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)
