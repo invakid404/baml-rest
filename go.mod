@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest
 
-go 1.24.5
+go 1.25
 
 require (
 	github.com/containerd/containerd/v2 v2.2.1-0.20251115011841-efd86f2b0bc2

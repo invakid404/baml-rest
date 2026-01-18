@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest/pool
 
-go 1.24.5
+go 1.25
 
 require (
 	github.com/go-chi/metrics v0.1.1

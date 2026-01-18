@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
@@ -6,7 +6,7 @@ WORKDIR /app
 COPY integration/mockllm/ ./integration/mockllm/
 
 # Create a minimal go.mod with the correct module path
-RUN echo 'module github.com/invakid404/baml-rest' > go.mod && echo 'go 1.23' >> go.mod
+RUN echo 'module github.com/invakid404/baml-rest' > go.mod && echo 'go 1.25' >> go.mod
 
 # Build the mock server (standard library only, no external deps)
 RUN CGO_ENABLED=0 GOOS=linux go build -tags=integration -o /mockllm ./integration/mockllm/cmd
