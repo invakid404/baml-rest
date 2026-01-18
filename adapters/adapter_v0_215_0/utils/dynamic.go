@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"reflect"
+
 	"github.com/boundaryml/baml/engine/language_client_go/baml_go/serde"
 )
 
@@ -9,6 +11,11 @@ func UnwrapDynamicValue(value any) any {
 		return nil
 	}
 
+	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return nil
+	}
+
+	// Check pointer types
 	if class, ok := value.(*serde.DynamicClass); ok {
 		return UnwrapDynamicValue(class.Fields)
 	}
@@ -18,6 +25,19 @@ func UnwrapDynamicValue(value any) any {
 	}
 
 	if union, ok := value.(*serde.DynamicUnion); ok {
+		return UnwrapDynamicValue(union.Value)
+	}
+
+	// Check value types (BAML 0.215.0+ returns these as values instead of pointers)
+	if class, ok := value.(serde.DynamicClass); ok {
+		return UnwrapDynamicValue(class.Fields)
+	}
+
+	if enum, ok := value.(serde.DynamicEnum); ok {
+		return UnwrapDynamicValue(enum.Value)
+	}
+
+	if union, ok := value.(serde.DynamicUnion); ok {
 		return UnwrapDynamicValue(union.Value)
 	}
 
