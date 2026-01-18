@@ -408,6 +408,120 @@ func (x *GCResponse) GetHeapReleased() uint64 {
 	return 0
 }
 
+// Request to parse raw LLM output
+type ParseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MethodName    string                 `protobuf:"bytes,1,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
+	InputJson     []byte                 `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"` // JSON-encoded input (contains "raw" and optional "__baml_options__")
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ParseRequest) Reset() {
+	*x = ParseRequest{}
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ParseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ParseRequest) ProtoMessage() {}
+
+func (x *ParseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ParseRequest.ProtoReflect.Descriptor instead.
+func (*ParseRequest) Descriptor() ([]byte, []int) {
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ParseRequest) GetMethodName() string {
+	if x != nil {
+		return x.MethodName
+	}
+	return ""
+}
+
+func (x *ParseRequest) GetInputJson() []byte {
+	if x != nil {
+		return x.InputJson
+	}
+	return nil
+}
+
+// Parse response
+type ParseResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DataJson      []byte                 `protobuf:"bytes,1,opt,name=data_json,json=dataJson,proto3" json:"data_json,omitempty"` // JSON-encoded parsed result
+	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`                       // Error message (if parsing failed)
+	Stacktrace    string                 `protobuf:"bytes,3,opt,name=stacktrace,proto3" json:"stacktrace,omitempty"`             // Stacktrace (if parsing failed, when available)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ParseResponse) Reset() {
+	*x = ParseResponse{}
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ParseResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ParseResponse) ProtoMessage() {}
+
+func (x *ParseResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ParseResponse.ProtoReflect.Descriptor instead.
+func (*ParseResponse) Descriptor() ([]byte, []int) {
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ParseResponse) GetDataJson() []byte {
+	if x != nil {
+		return x.DataJson
+	}
+	return nil
+}
+
+func (x *ParseResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *ParseResponse) GetStacktrace() string {
+	if x != nil {
+		return x.Stacktrace
+	}
+	return ""
+}
+
 var File_workerplugin_proto_worker_proto protoreflect.FileDescriptor
 
 const file_workerplugin_proto_worker_proto_rawDesc = "" +
@@ -443,14 +557,26 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"GCResponse\x12*\n" +
 	"\x11heap_alloc_before\x18\x01 \x01(\x04R\x0fheapAllocBefore\x12(\n" +
 	"\x10heap_alloc_after\x18\x02 \x01(\x04R\x0eheapAllocAfter\x12#\n" +
-	"\rheap_released\x18\x03 \x01(\x04R\fheapReleased2\x8a\x02\n" +
+	"\rheap_released\x18\x03 \x01(\x04R\fheapReleased\"N\n" +
+	"\fParseRequest\x12\x1f\n" +
+	"\vmethod_name\x18\x01 \x01(\tR\n" +
+	"methodName\x12\x1d\n" +
+	"\n" +
+	"input_json\x18\x02 \x01(\fR\tinputJson\"b\n" +
+	"\rParseResponse\x12\x1b\n" +
+	"\tdata_json\x18\x01 \x01(\fR\bdataJson\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\x12\x1e\n" +
+	"\n" +
+	"stacktrace\x18\x03 \x01(\tR\n" +
+	"stacktrace2\xcc\x02\n" +
 	"\x06Worker\x12E\n" +
 	"\n" +
 	"CallStream\x12\x19.workerplugin.CallRequest\x1a\x1a.workerplugin.StreamResult0\x01\x12;\n" +
 	"\x06Health\x12\x13.workerplugin.Empty\x1a\x1c.workerplugin.HealthResponse\x12@\n" +
 	"\n" +
 	"GetMetrics\x12\x13.workerplugin.Empty\x1a\x1d.workerplugin.MetricsResponse\x12:\n" +
-	"\tTriggerGC\x12\x13.workerplugin.Empty\x1a\x18.workerplugin.GCResponseB.Z,github.com/invakid404/baml-rest/workerpluginb\x06proto3"
+	"\tTriggerGC\x12\x13.workerplugin.Empty\x1a\x18.workerplugin.GCResponse\x12@\n" +
+	"\x05Parse\x12\x1a.workerplugin.ParseRequest\x1a\x1b.workerplugin.ParseResponseB.Z,github.com/invakid404/baml-rest/workerpluginb\x06proto3"
 
 var (
 	file_workerplugin_proto_worker_proto_rawDescOnce sync.Once
@@ -465,7 +591,7 @@ func file_workerplugin_proto_worker_proto_rawDescGZIP() []byte {
 }
 
 var file_workerplugin_proto_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_workerplugin_proto_worker_proto_goTypes = []any{
 	(StreamResult_Kind)(0),  // 0: workerplugin.StreamResult.Kind
 	(*CallRequest)(nil),     // 1: workerplugin.CallRequest
@@ -474,6 +600,8 @@ var file_workerplugin_proto_worker_proto_goTypes = []any{
 	(*HealthResponse)(nil),  // 4: workerplugin.HealthResponse
 	(*MetricsResponse)(nil), // 5: workerplugin.MetricsResponse
 	(*GCResponse)(nil),      // 6: workerplugin.GCResponse
+	(*ParseRequest)(nil),    // 7: workerplugin.ParseRequest
+	(*ParseResponse)(nil),   // 8: workerplugin.ParseResponse
 }
 var file_workerplugin_proto_worker_proto_depIdxs = []int32{
 	0, // 0: workerplugin.StreamResult.kind:type_name -> workerplugin.StreamResult.Kind
@@ -481,12 +609,14 @@ var file_workerplugin_proto_worker_proto_depIdxs = []int32{
 	3, // 2: workerplugin.Worker.Health:input_type -> workerplugin.Empty
 	3, // 3: workerplugin.Worker.GetMetrics:input_type -> workerplugin.Empty
 	3, // 4: workerplugin.Worker.TriggerGC:input_type -> workerplugin.Empty
-	2, // 5: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
-	4, // 6: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
-	5, // 7: workerplugin.Worker.GetMetrics:output_type -> workerplugin.MetricsResponse
-	6, // 8: workerplugin.Worker.TriggerGC:output_type -> workerplugin.GCResponse
-	5, // [5:9] is the sub-list for method output_type
-	1, // [1:5] is the sub-list for method input_type
+	7, // 5: workerplugin.Worker.Parse:input_type -> workerplugin.ParseRequest
+	2, // 6: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
+	4, // 7: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
+	5, // 8: workerplugin.Worker.GetMetrics:output_type -> workerplugin.MetricsResponse
+	6, // 9: workerplugin.Worker.TriggerGC:output_type -> workerplugin.GCResponse
+	8, // 10: workerplugin.Worker.Parse:output_type -> workerplugin.ParseResponse
+	6, // [6:11] is the sub-list for method output_type
+	1, // [1:6] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
 	1, // [1:1] is the sub-list for extension extendee
 	0, // [0:1] is the sub-list for field type_name
@@ -503,7 +633,7 @@ func file_workerplugin_proto_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workerplugin_proto_worker_proto_rawDesc), len(file_workerplugin_proto_worker_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

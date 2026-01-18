@@ -71,6 +71,19 @@ func (s *GRPCServer) TriggerGC(ctx context.Context, req *pb.Empty) (*pb.GCRespon
 	}, nil
 }
 
+func (s *GRPCServer) Parse(ctx context.Context, req *pb.ParseRequest) (*pb.ParseResponse, error) {
+	result, err := s.Impl.Parse(ctx, req.MethodName, req.InputJson)
+	if err != nil {
+		resp := &pb.ParseResponse{Error: err.Error()}
+		// Extract stacktrace using %+v formatting (works with go-recovery and pkg/errors style errors)
+		if fullErr := fmt.Sprintf("%+v", err); fullErr != resp.Error {
+			resp.Stacktrace = fullErr
+		}
+		return resp, nil
+	}
+	return &pb.ParseResponse{DataJson: result.Data}, nil
+}
+
 // GRPCClient is the gRPC client that connects to the plugin
 type GRPCClient struct {
 	client pb.WorkerClient
@@ -145,4 +158,18 @@ func (c *GRPCClient) TriggerGC(ctx context.Context) (*GCResult, error) {
 		HeapAllocAfter:  resp.HeapAllocAfter,
 		HeapReleased:    resp.HeapReleased,
 	}, nil
+}
+
+func (c *GRPCClient) Parse(ctx context.Context, methodName string, inputJSON []byte) (*ParseResult, error) {
+	resp, err := c.client.Parse(ctx, &pb.ParseRequest{
+		MethodName: methodName,
+		InputJson:  inputJSON,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, NewErrorWithStack(fmt.Errorf("%s", resp.Error), resp.Stacktrace)
+	}
+	return &ParseResult{Data: resp.DataJson}, nil
 }

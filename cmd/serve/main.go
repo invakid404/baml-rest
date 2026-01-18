@@ -451,6 +451,28 @@ var serveCmd = &cobra.Command{
 
 				r.Post(fmt.Sprintf("/stream/%s", methodName), makeStreamHandler("stream", false))
 				r.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), makeStreamHandler("stream-with-raw", true))
+
+				// Parse endpoint - parses raw LLM output using this method's schema
+				r.Post(fmt.Sprintf("/parse/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
+					ctx, cancel := context.WithCancel(r.Context())
+					defer cancel()
+
+					rawBody, err := io.ReadAll(r.Body)
+					if err != nil {
+						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						return
+					}
+
+					result, err := workerPool.Parse(ctx, methodName, rawBody)
+					if err != nil {
+						httplogger.SetError(r.Context(), err)
+						http.Error(w, fmt.Sprintf("Error parsing with %s: %v", methodName, err), http.StatusInternalServerError)
+						return
+					}
+
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write(result.Data)
+				})
 			}
 		})
 

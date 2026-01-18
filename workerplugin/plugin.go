@@ -105,6 +105,11 @@ type GCResult struct {
 	HeapReleased    uint64
 }
 
+// ParseResult represents the result of parsing raw LLM output
+type ParseResult struct {
+	Data []byte // JSON-encoded parsed result
+}
+
 // Worker is the interface that the plugin implements.
 type Worker interface {
 	// CallStream executes a BAML method and streams results.
@@ -121,6 +126,9 @@ type Worker interface {
 
 	// TriggerGC forces garbage collection and releases memory to OS
 	TriggerGC(ctx context.Context) (*GCResult, error)
+
+	// Parse parses raw LLM output into structured data using a BAML method's schema
+	Parse(ctx context.Context, methodName string, inputJSON []byte) (*ParseResult, error)
 }
 
 // WorkerPlugin is the implementation of plugin.GRPCPlugin

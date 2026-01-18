@@ -35,6 +35,13 @@ type StreamingMethod struct {
 	Impl       StreamingPrompt
 }
 
+type ParsePrompt func(adapter Adapter, raw string) (any, error)
+
+type ParseMethod struct {
+	MakeOutput func() any
+	Impl       ParsePrompt
+}
+
 type ClientRegistry struct {
 	Primary *string           `json:"primary"`
 	Clients []*ClientProperty `json:"clients"`

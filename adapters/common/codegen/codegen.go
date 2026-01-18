@@ -1057,6 +1057,86 @@ func Generate(selfPkg string) {
 		Map(jen.String()).Add(streamingFunctionInterface).
 		Values(mapElements)
 
+	// Generate Parse methods
+	type parseMethodOut struct {
+		name             string
+		outputStructQual jen.Code
+	}
+	var parseMethods []parseMethodOut
+
+	for methodName := range introspected.ParseMethods {
+		// Get the sync function to determine return type
+		syncFuncValue, ok := introspected.SyncFuncs[methodName]
+		if !ok {
+			continue
+		}
+
+		syncFuncType := reflect.TypeOf(syncFuncValue)
+		if syncFuncType.Kind() != reflect.Func || syncFuncType.NumOut() < 1 {
+			continue
+		}
+
+		// Get the return type (first return value)
+		finalResultType := parseReflectType(syncFuncType.Out(0)).statement
+
+		// Generate the parse function: parse{MethodName}
+		parseFuncName := strcase.LowerCamelCase("parse_" + methodName)
+
+		// Build call parameters for Parse method
+		var parseCallParams []jen.Code
+		parseCallParams = append(parseCallParams, jen.Id("adapter")) // context
+		parseCallParams = append(parseCallParams, jen.Id("raw"))     // raw string
+		parseCallParams = append(parseCallParams,
+			jen.Id("options").Op("..."),
+		)
+
+		parseBody := []jen.Code{
+			jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id("makeOptionsFromAdapter").Call(jen.Id("adapter")),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Id("err")),
+			),
+			jen.List(jen.Id("result"), jen.Id("parseErr")).Op(":=").
+				Qual(common.GeneratedClientPkg, "Parse").Dot(methodName).Call(parseCallParams...),
+			jen.If(jen.Id("parseErr").Op("!=").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Id("parseErr")),
+			),
+			jen.Return(jen.Id("result"), jen.Nil()),
+		}
+
+		out.Func().
+			Id(parseFuncName).
+			Params(
+				jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+				jen.Id("raw").String(),
+			).
+			Params(jen.Any(), jen.Error()).
+			Block(parseBody...)
+
+		parseMethods = append(parseMethods, parseMethodOut{
+			name:             methodName,
+			outputStructQual: finalResultType,
+		})
+	}
+
+	// Generate the ParseMethods map
+	parseMethodInterface := jen.Qual(common.InterfacesPkg, "ParseMethod")
+
+	parseMapElements := make(jen.Dict)
+	for _, method := range parseMethods {
+		parseFuncName := strcase.LowerCamelCase("parse_" + method.name)
+		parseMapElements[jen.Lit(method.name)] = jen.Values(jen.Dict{
+			jen.Id("MakeOutput"): jen.Func().Params().Any().
+				Block(
+					jen.Return(jen.New(method.outputStructQual)),
+				),
+			jen.Id("Impl"): jen.Id(parseFuncName),
+		})
+	}
+
+	out.Var().Id("ParseMethods").Op("=").
+		Map(jen.String()).Add(parseMethodInterface).
+		Values(parseMapElements)
+
 	// Generate `MakeAdapter`
 	out.Func().Id("MakeAdapter").
 		Params(jen.Id("ctx").Qual("context", "Context")).
