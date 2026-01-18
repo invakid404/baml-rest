@@ -27,6 +27,19 @@ func UnwrapDynamicValue(value any) any {
 		return UnwrapDynamicValue(union.Value)
 	}
 
+	// Check value types (BAML may return these as values instead of pointers)
+	if class, ok := value.(serde.DynamicClass); ok {
+		return UnwrapDynamicValue(class.Fields)
+	}
+
+	if enum, ok := value.(serde.DynamicEnum); ok {
+		return UnwrapDynamicValue(enum.Value)
+	}
+
+	if union, ok := value.(serde.DynamicUnion); ok {
+		return UnwrapDynamicValue(union.Value)
+	}
+
 	if anyMap, ok := value.(map[string]any); ok {
 		result := make(map[string]any, len(anyMap))
 		for k, v := range anyMap {

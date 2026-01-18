@@ -4,6 +4,7 @@ go 1.24.5
 
 require (
 	github.com/containerd/containerd/v2 v2.2.1-0.20251115011841-efd86f2b0bc2
+	github.com/containerd/platforms v1.0.0-rc.2
 	github.com/docker/buildx v0.30.1
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
@@ -12,6 +13,7 @@ require (
 	github.com/go-chi/render v1.0.3
 	github.com/goccy/go-json v0.10.5
 	github.com/gregwebs/go-recovery v0.4.1
+	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.6.3
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000
@@ -24,6 +26,7 @@ require (
 	github.com/moby/moby/api v1.52.0
 	github.com/moby/moby/client v0.2.1
 	github.com/opencontainers/go-digest v1.0.0
+	github.com/opencontainers/image-spec v1.1.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/procfs v0.16.1
@@ -49,7 +52,6 @@ require (
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
-	github.com/containerd/platforms v1.0.0-rc.2 // indirect
 	github.com/containerd/ttrpc v1.2.7 // indirect
 	github.com/containerd/typeurl/v2 v2.2.3 // indirect
 	github.com/dave/jennifer v1.7.1 // indirect
@@ -72,7 +74,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gregwebs/stackfmt v0.1.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.2 // indirect
-	github.com/hashicorp/go-hclog v0.14.1 // indirect
 	github.com/hashicorp/yamux v0.1.1 // indirect
 	github.com/in-toto/in-toto-golang v0.9.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -92,7 +93,6 @@ require (
 	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037 // indirect
 	github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90 // indirect
 	github.com/oklog/run v1.0.0 // indirect
-	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -107,9 +107,6 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
-	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tonistiigi/fsutil v0.0.0-20250605211040-586307ad452f // indirect
 	github.com/tonistiigi/go-csvvalue v0.0.0-20240814133006-030d3b2625d0 // indirect
 	github.com/tonistiigi/units v0.0.0-20180711220420-6950e57a87ea // indirect
@@ -127,11 +124,11 @@ require (
 	go.opentelemetry.io/proto/otlp v1.7.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.42.0 // indirect
-	golang.org/x/net v0.44.0 // indirect
+	golang.org/x/crypto v0.43.0 // indirect
+	golang.org/x/net v0.46.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/sys v0.37.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/text v0.30.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250825161204-c5933d9347a5 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250825161204-c5933d9347a5 // indirect

@@ -160,11 +160,15 @@ func Generate(selfPkg string) {
 					jen.If(jen.Id("result").Dot("DynamicProperties").Op("!=").Nil()).Block(
 						jen.For(jen.List(jen.Id("key"), jen.Id("value")).Op(":=").Range().Id("result").Dot("DynamicProperties")).
 							Block(
+								// Try reflect.Value first (old BAML behavior)
 								jen.If(
 									jen.List(jen.Id("reflectValue"), jen.Id("ok")).Op(":=").Id("value").Assert(jen.Qual("reflect", "Value")),
 									jen.Id("ok"),
 								).Block(
 									jen.Id("result").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("reflectValue").Dot("Interface").Call()),
+								).Else().Block(
+									// Otherwise unwrap directly (BAML 0.215.0+ behavior)
+									jen.Id("result").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("value")),
 								),
 							),
 					),
