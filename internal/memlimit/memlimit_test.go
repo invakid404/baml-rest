@@ -58,12 +58,12 @@ func TestParseBytes(t *testing.T) {
 		{"Off", 0, false},
 
 		// Error cases
-		{"", 0, true},              // empty
-		{"abc", 0, true},           // no number
-		{"1.5GiB", 0, true},        // decimal not supported
-		{"1.0MB", 0, true},         // decimal not supported
-		{"-1GB", 0, true},          // negative (no number found)
-		{"1XB", 0, true},           // unknown suffix
+		{"", 0, true},                     // empty
+		{"abc", 0, true},                  // no number
+		{"1.5GiB", 0, true},               // decimal not supported
+		{"1.0MB", 0, true},                // decimal not supported
+		{"-1GB", 0, true},                 // negative (no number found)
+		{"1XB", 0, true},                  // unknown suffix
 		{"9999999999999999999T", 0, true}, // overflow
 	}
 

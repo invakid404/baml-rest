@@ -231,8 +231,8 @@ func (w *workerImpl) TriggerGC(ctx context.Context) (*workerplugin.GCResult, err
 
 // workerParseInput wraps the input for parse requests
 type workerParseInput struct {
-	Raw     string                    `json:"raw"`
-	Options *bamlutils.BamlOptions    `json:"__baml_options__,omitempty"`
+	Raw     string                 `json:"raw"`
+	Options *bamlutils.BamlOptions `json:"__baml_options__,omitempty"`
 }
 
 func (w *workerImpl) Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
