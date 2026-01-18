@@ -20,9 +20,9 @@ RUN case "${BUILDPLATFORM}" in \
     esac && \
     apt-get update && \
     apt-get install -y wget git ca-certificates && \
-    wget -q https://go.dev/dl/go1.25.5.linux-${BUILDARCH}.tar.gz && \
-    tar -C /usr/local -xzf go1.25.5.linux-${BUILDARCH}.tar.gz && \
-    rm go1.25.5.linux-${BUILDARCH}.tar.gz && \
+    wget -q https://go.dev/dl/go1.25.6.linux-${BUILDARCH}.tar.gz && \
+    tar -C /usr/local -xzf go1.25.6.linux-${BUILDARCH}.tar.gz && \
+    rm go1.25.6.linux-${BUILDARCH}.tar.gz && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -53,9 +53,9 @@ ARG TARGETARCH
 # Install Go for the target platform
 RUN apt-get update && \
     apt-get install -y wget git ca-certificates && \
-    wget -q https://go.dev/dl/go1.25.5.linux-${TARGETARCH}.tar.gz && \
-    tar -C /usr/local -xzf go1.25.5.linux-${TARGETARCH}.tar.gz && \
-    rm go1.25.5.linux-${TARGETARCH}.tar.gz && \
+    wget -q https://go.dev/dl/go1.25.6.linux-${TARGETARCH}.tar.gz && \
+    tar -C /usr/local -xzf go1.25.6.linux-${TARGETARCH}.tar.gz && \
+    rm go1.25.6.linux-${TARGETARCH}.tar.gz && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

@@ -2,12 +2,12 @@
 FROM node:22-bookworm AS builder
 
 # Install Go (multi-architecture support)
-ARG TARGETARCH
+ARG TARGETARCH{{ if .defaultTargetArch }}={{ .defaultTargetArch }}{{ end }}
 RUN apt-get update && \
     apt-get install -y wget git ca-certificates && \
-    wget -q https://go.dev/dl/go1.25.5.linux-${TARGETARCH}.tar.gz && \
-    tar -C /usr/local -xzf go1.25.5.linux-${TARGETARCH}.tar.gz && \
-    rm go1.25.5.linux-${TARGETARCH}.tar.gz && \
+    wget -q https://go.dev/dl/go1.25.6.linux-${TARGETARCH}.tar.gz && \
+    tar -C /usr/local -xzf go1.25.6.linux-${TARGETARCH}.tar.gz && \
+    rm go1.25.6.linux-${TARGETARCH}.tar.gz && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -37,8 +37,10 @@ COPY baml_src /workspace/baml_src
 # Copy baml_rest sources
 COPY baml_rest /workspace/baml_rest
 
+{{- if not .noCustomBamlLib }}
 # Copy custom BAML lib if provided (wildcard allows this to be optional)
 COPY custom_baml_lib.so* /workspace/
+{{- end }}
 
 # Copy custom BAML Go lib directory (always exists, may be empty)
 COPY custom_baml_go_lib /workspace/custom_baml_go_lib
@@ -57,11 +59,15 @@ ENV KEEP_SOURCE_DIR="{{ .keepSource }}"
 ENV DEBUG_BUILD="true"
 {{- end }}
 
-# Run build with unified cache mount
+# Run build
+{{- if .noCacheMount }}
+RUN /workspace/build.sh
+{{- else }}
 # build.sh will temporarily override BAML_CACHE_DIR to use a version-specific location in the cache mount,
 # then copy the cached shared library to BAML_CACHE_DIR at the end
 RUN --mount=type=cache,target=/cache \
     /workspace/build.sh
+{{- end }}
 
 # Final stage: Minimal Debian image
 FROM debian:bookworm-slim
