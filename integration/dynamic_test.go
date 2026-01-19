@@ -393,5 +393,70 @@ func TestDynamicTypes(t *testing.T) {
 				t.Errorf("Expected category 'ENTERPRISE', got %v", result.Category)
 			}
 		})
+
+		t.Run("dynamic_enum_field_in_dynamic_class", func(t *testing.T) {
+			// Test that a dynamic enum field added to a dynamic class
+			// appears in DynamicProperties (not as a top-level field)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			// Return a response with base_field and a dynamically added category field
+			content := `{"base_field": "test item", "category": "PREMIUM"}`
+			opts := setupNonStreamingScenario(t, "test-dynamic-enum-in-class", content)
+
+			// Add both:
+			// 1. The PREMIUM value to the DynamicCategory enum
+			// 2. A category field of type DynamicCategory to DynamicOutput
+			opts.TypeBuilder = &testutil.TypeBuilder{
+				BAMLSnippets: []string{
+					`dynamic enum DynamicCategory {
+						PREMIUM
+					}`,
+					`dynamic class DynamicOutput {
+						category DynamicCategory
+					}`,
+				},
+			}
+
+			resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+				Method:  "GetDynamic",
+				Input:   map[string]any{"input": "categorize this item"},
+				Options: opts,
+			})
+			if err != nil {
+				t.Fatalf("Call failed: %v", err)
+			}
+
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
+
+			var result struct {
+				BaseField         string         `json:"base_field"`
+				DynamicProperties map[string]any `json:"DynamicProperties"`
+			}
+			if err := json.Unmarshal(resp.Body, &result); err != nil {
+				t.Fatalf("Failed to unmarshal response: %v", err)
+			}
+
+			// Check base field
+			if result.BaseField != "test item" {
+				t.Errorf("Expected base_field 'test item', got %v", result.BaseField)
+			}
+
+			// Check that category is in DynamicProperties (not top-level)
+			if result.DynamicProperties == nil {
+				t.Fatalf("Expected DynamicProperties to be present, got nil")
+			}
+
+			category, ok := result.DynamicProperties["category"].(string)
+			if !ok {
+				t.Fatalf("Expected 'category' field in DynamicProperties, got %v", result.DynamicProperties)
+			}
+
+			if category != "PREMIUM" {
+				t.Errorf("Expected category 'PREMIUM', got %v", category)
+			}
+		})
 	})
 }
