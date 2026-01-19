@@ -4,8 +4,41 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/invakid404/baml-rest/bamlutils"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 )
+
+// streamModeToPb converts bamlutils.StreamMode to pb.StreamMode
+func streamModeToPb(m bamlutils.StreamMode) pb.StreamMode {
+	switch m {
+	case bamlutils.StreamModeCall:
+		return pb.StreamMode_STREAM_MODE_CALL
+	case bamlutils.StreamModeStream:
+		return pb.StreamMode_STREAM_MODE_STREAM
+	case bamlutils.StreamModeCallWithRaw:
+		return pb.StreamMode_STREAM_MODE_CALL_WITH_RAW
+	case bamlutils.StreamModeStreamWithRaw:
+		return pb.StreamMode_STREAM_MODE_STREAM_WITH_RAW
+	default:
+		return pb.StreamMode_STREAM_MODE_CALL
+	}
+}
+
+// pbToStreamMode converts pb.StreamMode to bamlutils.StreamMode
+func pbToStreamMode(m pb.StreamMode) bamlutils.StreamMode {
+	switch m {
+	case pb.StreamMode_STREAM_MODE_CALL:
+		return bamlutils.StreamModeCall
+	case pb.StreamMode_STREAM_MODE_STREAM:
+		return bamlutils.StreamModeStream
+	case pb.StreamMode_STREAM_MODE_CALL_WITH_RAW:
+		return bamlutils.StreamModeCallWithRaw
+	case pb.StreamMode_STREAM_MODE_STREAM_WITH_RAW:
+		return bamlutils.StreamModeStreamWithRaw
+	default:
+		return bamlutils.StreamModeCall
+	}
+}
 
 // GRPCServer is the gRPC server that the plugin runs
 type GRPCServer struct {
@@ -14,7 +47,7 @@ type GRPCServer struct {
 }
 
 func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStreamServer) error {
-	results, err := s.Impl.CallStream(stream.Context(), req.MethodName, req.InputJson, req.EnableRawCollection)
+	results, err := s.Impl.CallStream(stream.Context(), req.MethodName, req.InputJson, pbToStreamMode(req.StreamMode))
 	if err != nil {
 		return err
 	}
@@ -89,11 +122,11 @@ type GRPCClient struct {
 	client pb.WorkerClient
 }
 
-func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *StreamResult, error) {
+func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *StreamResult, error) {
 	stream, err := c.client.CallStream(ctx, &pb.CallRequest{
-		MethodName:          methodName,
-		InputJson:           inputJSON,
-		EnableRawCollection: enableRawCollection,
+		MethodName: methodName,
+		InputJson:  inputJSON,
+		StreamMode: streamModeToPb(streamMode),
 	})
 	if err != nil {
 		return nil, err

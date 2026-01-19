@@ -461,8 +461,8 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 
 // Call executes a BAML method and returns the final result.
 // Internally uses CallStream to benefit from hung detection on first partial result.
-func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (*workerplugin.CallResult, error) {
-	results, err := p.CallStream(ctx, methodName, inputJSON, enableRawCollection)
+func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (*workerplugin.CallResult, error) {
+	results, err := p.CallStream(ctx, methodName, inputJSON, streamMode)
 	if err != nil {
 		return nil, err
 	}
@@ -490,7 +490,7 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, en
 }
 
 // CallStream executes a BAML method and streams results
-func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *workerplugin.StreamResult, error) {
+func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
@@ -507,7 +507,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		handle.lastUsed = time.Now()
 		handle.mu.Unlock()
 
-		results, err := handle.worker.CallStream(attemptCtx, methodName, inputJSON, enableRawCollection)
+		results, err := handle.worker.CallStream(attemptCtx, methodName, inputJSON, streamMode)
 		if err != nil {
 			cleanup()
 			lastErr = err

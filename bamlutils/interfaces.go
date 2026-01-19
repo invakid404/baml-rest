@@ -27,6 +27,30 @@ const (
 	StreamResultKindHeartbeat
 )
 
+// StreamMode controls how streaming results are processed and what data is collected.
+type StreamMode int
+
+const (
+	// StreamModeCall - final only, no raw, no partials (for /call endpoint)
+	StreamModeCall StreamMode = iota
+	// StreamModeStream - partials + final, no raw (for /stream endpoint)
+	StreamModeStream
+	// StreamModeCallWithRaw - final + raw, no partials (for /call-with-raw endpoint)
+	StreamModeCallWithRaw
+	// StreamModeStreamWithRaw - partials + final + raw (for /stream-with-raw endpoint)
+	StreamModeStreamWithRaw
+)
+
+// NeedsRaw returns true if this mode requires raw LLM response collection.
+func (m StreamMode) NeedsRaw() bool {
+	return m == StreamModeCallWithRaw || m == StreamModeStreamWithRaw
+}
+
+// NeedsPartials returns true if this mode requires forwarding partial/intermediate results.
+func (m StreamMode) NeedsPartials() bool {
+	return m == StreamModeStream || m == StreamModeStreamWithRaw
+}
+
 type StreamingPrompt func(adapter Adapter, input any) (<-chan StreamResult, error)
 
 type StreamingMethod struct {
@@ -70,12 +94,10 @@ type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
 	SetTypeBuilder(typeBuilder *TypeBuilder) error
-	// SetRawCollection enables or disables raw LLM response collection.
-	// When true, the OnTick callback captures raw SSE data for the Raw() method.
-	// When false, just uses BAML's native streaming without raw collection overhead.
-	SetRawCollection(enabled bool)
-	// RawCollectionEnabled returns whether raw LLM response collection is enabled.
-	RawCollectionEnabled() bool
+	// SetStreamMode sets the streaming mode which controls partial forwarding and raw collection.
+	SetStreamMode(mode StreamMode)
+	// StreamMode returns the current streaming mode.
+	StreamMode() StreamMode
 }
 
 // BamlOptions contains optional configuration for BAML method calls

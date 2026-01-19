@@ -104,7 +104,7 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
 	return nil
 }
 
-func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *workerplugin.StreamResult, error) {
+func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
 	method, ok := baml_rest.Methods[methodName]
 	if !ok {
 		return nil, fmt.Errorf("method %q not found", methodName)
@@ -124,7 +124,7 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 
 	// Create adapter and apply options
 	adapter := baml_rest.MakeAdapter(ctx)
-	adapter.SetRawCollection(enableRawCollection)
+	adapter.SetStreamMode(streamMode)
 	if err := options.apply(adapter); err != nil {
 		return nil, fmt.Errorf("failed to apply options: %w", err)
 	}
