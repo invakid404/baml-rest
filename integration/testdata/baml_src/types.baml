@@ -51,3 +51,14 @@ class DynamicOutput {
     base_field string
     @@dynamic                  // Allows dynamic properties
 }
+
+// Dynamic enum (for type_builder testing)
+enum DynamicCategory {
+    DEFAULT
+    @@dynamic                  // Allows dynamic values
+}
+
+class DynamicEnumOutput {
+    name string
+    category DynamicCategory
+}

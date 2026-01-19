@@ -47,3 +47,10 @@ function GetDynamic(input: string) -> DynamicOutput {
     prompt #"{{ ctx.output_format }}
     Process: {{ input }}"#
 }
+
+// Dynamic enum output (for type_builder testing)
+function GetDynamicEnum(input: string) -> DynamicEnumOutput {
+    client TestClient
+    prompt #"{{ ctx.output_format }}
+    Categorize: {{ input }}"#
+}

@@ -253,4 +253,145 @@ func TestDynamicTypes(t *testing.T) {
 			}
 		})
 	})
+
+	t.Run("dynamic_enum_values", func(t *testing.T) {
+		// Test that dynamic enums can have values added at runtime
+		// The DynamicCategory enum has DEFAULT defined in BAML,
+		// but we can add new values like PREMIUM at runtime using TypeBuilder
+
+		t.Run("base_enum_value", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			// Return a response with the base DEFAULT category
+			content := `{"name": "Basic Plan", "category": "DEFAULT"}`
+			opts := setupNonStreamingScenario(t, "test-dynamic-enum-base", content)
+
+			// No type builder needed - DEFAULT is already defined
+			resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+				Method:  "GetDynamicEnum",
+				Input:   map[string]any{"input": "categorize this item"},
+				Options: opts,
+			})
+			if err != nil {
+				t.Fatalf("Call failed: %v", err)
+			}
+
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
+
+			var result struct {
+				Name     string `json:"name"`
+				Category string `json:"category"`
+			}
+			if err := json.Unmarshal(resp.Body, &result); err != nil {
+				t.Fatalf("Failed to unmarshal response: %v", err)
+			}
+
+			if result.Name != "Basic Plan" {
+				t.Errorf("Expected name 'Basic Plan', got %v", result.Name)
+			}
+
+			if result.Category != "DEFAULT" {
+				t.Errorf("Expected category 'DEFAULT', got %v", result.Category)
+			}
+		})
+
+		t.Run("dynamic_enum_value", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			// Return a response with a dynamically added PREMIUM category
+			content := `{"name": "Premium Plan", "category": "PREMIUM"}`
+			opts := setupNonStreamingScenario(t, "test-dynamic-enum-dynamic", content)
+
+			// Add PREMIUM value to the dynamic enum at runtime
+			opts.TypeBuilder = &testutil.TypeBuilder{
+				BAMLSnippets: []string{
+					`dynamic enum DynamicCategory {
+						PREMIUM
+					}`,
+				},
+			}
+
+			resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+				Method:  "GetDynamicEnum",
+				Input:   map[string]any{"input": "categorize this premium item"},
+				Options: opts,
+			})
+			if err != nil {
+				t.Fatalf("Call failed: %v", err)
+			}
+
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
+
+			var result struct {
+				Name     string `json:"name"`
+				Category string `json:"category"`
+			}
+			if err := json.Unmarshal(resp.Body, &result); err != nil {
+				t.Fatalf("Failed to unmarshal response: %v", err)
+			}
+
+			if result.Name != "Premium Plan" {
+				t.Errorf("Expected name 'Premium Plan', got %v", result.Name)
+			}
+
+			if result.Category != "PREMIUM" {
+				t.Errorf("Expected category 'PREMIUM', got %v", result.Category)
+			}
+		})
+
+		t.Run("multiple_dynamic_enum_values", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			// Return a response with a dynamically added ENTERPRISE category
+			content := `{"name": "Enterprise Solution", "category": "ENTERPRISE"}`
+			opts := setupNonStreamingScenario(t, "test-dynamic-enum-multiple", content)
+
+			// Add multiple new values to the dynamic enum at runtime
+			opts.TypeBuilder = &testutil.TypeBuilder{
+				BAMLSnippets: []string{
+					`dynamic enum DynamicCategory {
+						PREMIUM
+						ENTERPRISE
+						VIP
+					}`,
+				},
+			}
+
+			resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+				Method:  "GetDynamicEnum",
+				Input:   map[string]any{"input": "categorize this enterprise item"},
+				Options: opts,
+			})
+			if err != nil {
+				t.Fatalf("Call failed: %v", err)
+			}
+
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
+
+			var result struct {
+				Name     string `json:"name"`
+				Category string `json:"category"`
+			}
+			if err := json.Unmarshal(resp.Body, &result); err != nil {
+				t.Fatalf("Failed to unmarshal response: %v", err)
+			}
+
+			if result.Name != "Enterprise Solution" {
+				t.Errorf("Expected name 'Enterprise Solution', got %v", result.Name)
+			}
+
+			if result.Category != "ENTERPRISE" {
+				t.Errorf("Expected category 'ENTERPRISE', got %v", result.Category)
+			}
+		})
+	})
 }
