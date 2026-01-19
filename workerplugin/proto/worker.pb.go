@@ -21,6 +21,56 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// How raw LLM responses should be collected
+type RawCollectionMode int32
+
+const (
+	RawCollectionMode_RAW_COLLECTION_NONE       RawCollectionMode = 0 // No raw collection (default) - uses BAML's native streaming
+	RawCollectionMode_RAW_COLLECTION_FINAL_ONLY RawCollectionMode = 1 // Collect raw but skip intermediate parsing (for /call-with-raw)
+	RawCollectionMode_RAW_COLLECTION_ALL        RawCollectionMode = 2 // Full raw collection with intermediate parsing (for /stream-with-raw)
+)
+
+// Enum value maps for RawCollectionMode.
+var (
+	RawCollectionMode_name = map[int32]string{
+		0: "RAW_COLLECTION_NONE",
+		1: "RAW_COLLECTION_FINAL_ONLY",
+		2: "RAW_COLLECTION_ALL",
+	}
+	RawCollectionMode_value = map[string]int32{
+		"RAW_COLLECTION_NONE":       0,
+		"RAW_COLLECTION_FINAL_ONLY": 1,
+		"RAW_COLLECTION_ALL":        2,
+	}
+)
+
+func (x RawCollectionMode) Enum() *RawCollectionMode {
+	p := new(RawCollectionMode)
+	*p = x
+	return p
+}
+
+func (x RawCollectionMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RawCollectionMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_workerplugin_proto_worker_proto_enumTypes[0].Descriptor()
+}
+
+func (RawCollectionMode) Type() protoreflect.EnumType {
+	return &file_workerplugin_proto_worker_proto_enumTypes[0]
+}
+
+func (x RawCollectionMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RawCollectionMode.Descriptor instead.
+func (RawCollectionMode) EnumDescriptor() ([]byte, []int) {
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{0}
+}
+
 type StreamResult_Kind int32
 
 const (
@@ -57,11 +107,11 @@ func (x StreamResult_Kind) String() string {
 }
 
 func (StreamResult_Kind) Descriptor() protoreflect.EnumDescriptor {
-	return file_workerplugin_proto_worker_proto_enumTypes[0].Descriptor()
+	return file_workerplugin_proto_worker_proto_enumTypes[1].Descriptor()
 }
 
 func (StreamResult_Kind) Type() protoreflect.EnumType {
-	return &file_workerplugin_proto_worker_proto_enumTypes[0]
+	return &file_workerplugin_proto_worker_proto_enumTypes[1]
 }
 
 func (x StreamResult_Kind) Number() protoreflect.EnumNumber {
@@ -75,12 +125,12 @@ func (StreamResult_Kind) EnumDescriptor() ([]byte, []int) {
 
 // Request to call a BAML method
 type CallRequest struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	MethodName          string                 `protobuf:"bytes,1,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
-	InputJson           []byte                 `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`                                  // JSON-encoded input struct (includes __baml_options__ if present)
-	EnableRawCollection bool                   `protobuf:"varint,3,opt,name=enable_raw_collection,json=enableRawCollection,proto3" json:"enable_raw_collection,omitempty"` // When true, capture raw LLM response via OnTick/SSE parsing
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	MethodName        string                 `protobuf:"bytes,1,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
+	InputJson         []byte                 `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`                                                                // JSON-encoded input struct (includes __baml_options__ if present)
+	RawCollectionMode RawCollectionMode      `protobuf:"varint,3,opt,name=raw_collection_mode,json=rawCollectionMode,proto3,enum=workerplugin.RawCollectionMode" json:"raw_collection_mode,omitempty"` // How to collect raw LLM responses
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CallRequest) Reset() {
@@ -127,11 +177,11 @@ func (x *CallRequest) GetInputJson() []byte {
 	return nil
 }
 
-func (x *CallRequest) GetEnableRawCollection() bool {
+func (x *CallRequest) GetRawCollectionMode() RawCollectionMode {
 	if x != nil {
-		return x.EnableRawCollection
+		return x.RawCollectionMode
 	}
-	return false
+	return RawCollectionMode_RAW_COLLECTION_NONE
 }
 
 // Streaming result
@@ -526,13 +576,13 @@ var File_workerplugin_proto_worker_proto protoreflect.FileDescriptor
 
 const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x1fworkerplugin/proto/worker.proto\x12\fworkerplugin\"\x81\x01\n" +
+	"\x1fworkerplugin/proto/worker.proto\x12\fworkerplugin\"\x9e\x01\n" +
 	"\vCallRequest\x12\x1f\n" +
 	"\vmethod_name\x18\x01 \x01(\tR\n" +
 	"methodName\x12\x1d\n" +
 	"\n" +
-	"input_json\x18\x02 \x01(\fR\tinputJson\x122\n" +
-	"\x15enable_raw_collection\x18\x03 \x01(\bR\x13enableRawCollection\"\xf7\x01\n" +
+	"input_json\x18\x02 \x01(\fR\tinputJson\x12O\n" +
+	"\x13raw_collection_mode\x18\x03 \x01(\x0e2\x1f.workerplugin.RawCollectionModeR\x11rawCollectionMode\"\xf7\x01\n" +
 	"\fStreamResult\x123\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1f.workerplugin.StreamResult.KindR\x04kind\x12\x1b\n" +
 	"\tdata_json\x18\x02 \x01(\fR\bdataJson\x12\x10\n" +
@@ -568,7 +618,11 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12\x1e\n" +
 	"\n" +
 	"stacktrace\x18\x03 \x01(\tR\n" +
-	"stacktrace2\xcc\x02\n" +
+	"stacktrace*c\n" +
+	"\x11RawCollectionMode\x12\x17\n" +
+	"\x13RAW_COLLECTION_NONE\x10\x00\x12\x1d\n" +
+	"\x19RAW_COLLECTION_FINAL_ONLY\x10\x01\x12\x16\n" +
+	"\x12RAW_COLLECTION_ALL\x10\x022\xcc\x02\n" +
 	"\x06Worker\x12E\n" +
 	"\n" +
 	"CallStream\x12\x19.workerplugin.CallRequest\x1a\x1a.workerplugin.StreamResult0\x01\x12;\n" +
@@ -590,36 +644,38 @@ func file_workerplugin_proto_worker_proto_rawDescGZIP() []byte {
 	return file_workerplugin_proto_worker_proto_rawDescData
 }
 
-var file_workerplugin_proto_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_workerplugin_proto_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_workerplugin_proto_worker_proto_goTypes = []any{
-	(StreamResult_Kind)(0),  // 0: workerplugin.StreamResult.Kind
-	(*CallRequest)(nil),     // 1: workerplugin.CallRequest
-	(*StreamResult)(nil),    // 2: workerplugin.StreamResult
-	(*Empty)(nil),           // 3: workerplugin.Empty
-	(*HealthResponse)(nil),  // 4: workerplugin.HealthResponse
-	(*MetricsResponse)(nil), // 5: workerplugin.MetricsResponse
-	(*GCResponse)(nil),      // 6: workerplugin.GCResponse
-	(*ParseRequest)(nil),    // 7: workerplugin.ParseRequest
-	(*ParseResponse)(nil),   // 8: workerplugin.ParseResponse
+	(RawCollectionMode)(0),  // 0: workerplugin.RawCollectionMode
+	(StreamResult_Kind)(0),  // 1: workerplugin.StreamResult.Kind
+	(*CallRequest)(nil),     // 2: workerplugin.CallRequest
+	(*StreamResult)(nil),    // 3: workerplugin.StreamResult
+	(*Empty)(nil),           // 4: workerplugin.Empty
+	(*HealthResponse)(nil),  // 5: workerplugin.HealthResponse
+	(*MetricsResponse)(nil), // 6: workerplugin.MetricsResponse
+	(*GCResponse)(nil),      // 7: workerplugin.GCResponse
+	(*ParseRequest)(nil),    // 8: workerplugin.ParseRequest
+	(*ParseResponse)(nil),   // 9: workerplugin.ParseResponse
 }
 var file_workerplugin_proto_worker_proto_depIdxs = []int32{
-	0, // 0: workerplugin.StreamResult.kind:type_name -> workerplugin.StreamResult.Kind
-	1, // 1: workerplugin.Worker.CallStream:input_type -> workerplugin.CallRequest
-	3, // 2: workerplugin.Worker.Health:input_type -> workerplugin.Empty
-	3, // 3: workerplugin.Worker.GetMetrics:input_type -> workerplugin.Empty
-	3, // 4: workerplugin.Worker.TriggerGC:input_type -> workerplugin.Empty
-	7, // 5: workerplugin.Worker.Parse:input_type -> workerplugin.ParseRequest
-	2, // 6: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
-	4, // 7: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
-	5, // 8: workerplugin.Worker.GetMetrics:output_type -> workerplugin.MetricsResponse
-	6, // 9: workerplugin.Worker.TriggerGC:output_type -> workerplugin.GCResponse
-	8, // 10: workerplugin.Worker.Parse:output_type -> workerplugin.ParseResponse
-	6, // [6:11] is the sub-list for method output_type
-	1, // [1:6] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0, // 0: workerplugin.CallRequest.raw_collection_mode:type_name -> workerplugin.RawCollectionMode
+	1, // 1: workerplugin.StreamResult.kind:type_name -> workerplugin.StreamResult.Kind
+	2, // 2: workerplugin.Worker.CallStream:input_type -> workerplugin.CallRequest
+	4, // 3: workerplugin.Worker.Health:input_type -> workerplugin.Empty
+	4, // 4: workerplugin.Worker.GetMetrics:input_type -> workerplugin.Empty
+	4, // 5: workerplugin.Worker.TriggerGC:input_type -> workerplugin.Empty
+	8, // 6: workerplugin.Worker.Parse:input_type -> workerplugin.ParseRequest
+	3, // 7: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
+	5, // 8: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
+	6, // 9: workerplugin.Worker.GetMetrics:output_type -> workerplugin.MetricsResponse
+	7, // 10: workerplugin.Worker.TriggerGC:output_type -> workerplugin.GCResponse
+	9, // 11: workerplugin.Worker.Parse:output_type -> workerplugin.ParseResponse
+	7, // [7:12] is the sub-list for method output_type
+	2, // [2:7] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_workerplugin_proto_worker_proto_init() }
@@ -632,7 +688,7 @@ func file_workerplugin_proto_worker_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workerplugin_proto_worker_proto_rawDesc), len(file_workerplugin_proto_worker_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,

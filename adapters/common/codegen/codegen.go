@@ -488,7 +488,9 @@ func Generate(selfPkg string) {
 			Block(noRawBody...)
 
 		// ====== FULL IMPLEMENTATION: methodName_full ======
-		// This path uses the ParseStream goroutine for partial results
+		// This path uses the ParseStream goroutine for partial results.
+		// When skipIntermediateParsing is true, it skips ParseStream calls and intermediate emissions
+		// (used for FINAL_ONLY mode where we only need the final result + raw).
 		fullMethodName := strcase.LowerCamelCase(methodName + "_full")
 
 		var fullBody []jen.Code
@@ -497,6 +499,8 @@ func Generate(selfPkg string) {
 		fullBody = append(fullBody,
 			// Unbounded queue for passing FunctionLog from OnTick to partials goroutine (never drops)
 			jen.Id("funcLogQueue").Op(":=").Qual(common.GoConcurrentQueuePkg, "NewFIFO").Call(),
+			// Heartbeat tracking - sends heartbeat when first data is received (for first-byte detection)
+			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
 			// Context to signal partials goroutine to stop
 			// NOT derived from adapter - we only cancel after ticksDone to ensure no late enqueues
 			jen.List(jen.Id("queueCtx"), jen.Id("queueCancel")).Op(":=").Qual("context", "WithCancel").Call(jen.Qual("context", "Background").Call()),
@@ -659,6 +663,24 @@ func Generate(selfPkg string) {
 				jen.If(
 					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
 						jen.Func().Params().Error().Block(
+							// Send heartbeat on first data (for first-byte detection)
+							jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+								jen.Select().Block(
+									jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+										jen.Return(jen.Nil()),
+									),
+									jen.Default().Block(),
+								),
+								jen.Id("__hb").Op(":=").Id(getterFuncName).Call(),
+								jen.Id("__hb").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
+								jen.Select().Block(
+									jen.Case(jen.Id("out").Op("<-").Id("__hb")).Block(),
+									jen.Default().Block(
+										jen.Id("__hb").Dot("Release").Call(),
+									),
+								),
+							),
+
 							// Extract data from FunctionLog (moved from OnTick for async processing)
 							// Only fetch data for the LAST call - earlier calls are failed retries
 							jen.Id("calls").Op(",").Id("callsErr").Op(":=").Id("funcLog").Dot("Calls").Call(),
@@ -699,6 +721,11 @@ func Generate(selfPkg string) {
 								jen.Id("sseChunks"),
 							),
 							jen.Id("extractorMu").Dot("Unlock").Call(),
+
+							// If skipIntermediateParsing is true, we're done - just extracted raw for final
+							jen.If(jen.Id("skipIntermediateParsing")).Block(
+								jen.Return(jen.Nil()),
+							),
 
 							// Skip if no new content AND no reset signal
 							// (must emit reset even with empty delta so client discards stale state)
@@ -993,25 +1020,43 @@ func Generate(selfPkg string) {
 
 		// Generate the full implementation function
 		// Accepts output channel from caller, returns only error
+		// skipIntermediateParsing: when true, skips ParseStream and intermediate emissions (for FINAL_ONLY mode)
 		out.Func().
 			Id(fullMethodName).
 			Params(
 				jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
 				jen.Id("rawInput").Any(),
 				jen.Id("out").Chan().Add(streamResultInterface.Clone()),
+				jen.Id("skipIntermediateParsing").Bool(),
 			).
 			Error().
 			Block(fullBody...)
 
-		// Generate the public router function that dispatches based on RawCollectionEnabled()
+		// Generate the public router function that dispatches based on RawCollectionMode()
 		// Creates the output channel and passes it to the inner implementation
 		routerBody := []jen.Code{
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
 			jen.Var().Id("err").Error(),
-			jen.If(jen.Id("adapter").Dot("RawCollectionEnabled").Call()).Block(
-				jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out")),
-			).Else().Block(
-				jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out")),
+			jen.Id("mode").Op(":=").Id("adapter").Dot("RawCollectionMode").Call(),
+			jen.Switch(jen.Id("mode")).Block(
+				jen.Case(jen.Qual(common.InterfacesPkg, "RawCollectionNone")).Block(
+					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out")),
+				),
+				jen.Case(jen.Qual(common.InterfacesPkg, "RawCollectionFinalOnly")).Block(
+					// FINAL_ONLY mode: use _full with skipIntermediateParsing=true
+					// Note: still processes ticks to build finalRaw, just skips ParseStream + intermediate emissions
+					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True()),
+				),
+				jen.Case(jen.Qual(common.InterfacesPkg, "RawCollectionAll")).Block(
+					// ALL mode: use _full with skipIntermediateParsing=false
+					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False()),
+				),
+				jen.Default().Block(
+					jen.Id("err").Op("=").Qual("fmt", "Errorf").Call(
+						jen.Lit("unknown RawCollectionMode: %d"),
+						jen.Id("mode"),
+					),
+				),
 			),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),

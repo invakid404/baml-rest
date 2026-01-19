@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/invakid404/baml-rest/bamlutils"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 )
 
@@ -13,8 +14,31 @@ type GRPCServer struct {
 	Impl Worker
 }
 
+func protoToRawCollectionMode(mode pb.RawCollectionMode) bamlutils.RawCollectionMode {
+	switch mode {
+	case pb.RawCollectionMode_RAW_COLLECTION_FINAL_ONLY:
+		return bamlutils.RawCollectionFinalOnly
+	case pb.RawCollectionMode_RAW_COLLECTION_ALL:
+		return bamlutils.RawCollectionAll
+	default:
+		return bamlutils.RawCollectionNone
+	}
+}
+
+func rawCollectionModeToProto(mode bamlutils.RawCollectionMode) pb.RawCollectionMode {
+	switch mode {
+	case bamlutils.RawCollectionFinalOnly:
+		return pb.RawCollectionMode_RAW_COLLECTION_FINAL_ONLY
+	case bamlutils.RawCollectionAll:
+		return pb.RawCollectionMode_RAW_COLLECTION_ALL
+	default:
+		return pb.RawCollectionMode_RAW_COLLECTION_NONE
+	}
+}
+
 func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStreamServer) error {
-	results, err := s.Impl.CallStream(stream.Context(), req.MethodName, req.InputJson, req.EnableRawCollection)
+	rawCollectionMode := protoToRawCollectionMode(req.RawCollectionMode)
+	results, err := s.Impl.CallStream(stream.Context(), req.MethodName, req.InputJson, rawCollectionMode)
 	if err != nil {
 		return err
 	}
@@ -89,11 +113,11 @@ type GRPCClient struct {
 	client pb.WorkerClient
 }
 
-func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *StreamResult, error) {
+func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSON []byte, rawCollectionMode bamlutils.RawCollectionMode) (<-chan *StreamResult, error) {
 	stream, err := c.client.CallStream(ctx, &pb.CallRequest{
-		MethodName:          methodName,
-		InputJson:           inputJSON,
-		EnableRawCollection: enableRawCollection,
+		MethodName:        methodName,
+		InputJson:         inputJSON,
+		RawCollectionMode: rawCollectionModeToProto(rawCollectionMode),
 	})
 	if err != nil {
 		return nil, err
