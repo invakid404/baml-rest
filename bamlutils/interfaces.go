@@ -34,10 +34,16 @@ const (
 	// RawCollectionNone - no raw collection, uses BAML's native streaming
 	RawCollectionNone RawCollectionMode = iota
 	// RawCollectionFinalOnly - collect raw but skip intermediate parsing (for /call-with-raw)
+	// Note: still processes OnTick to build finalRaw, just skips ParseStream + intermediate emissions
 	RawCollectionFinalOnly
 	// RawCollectionAll - full raw collection with intermediate parsing (for /stream-with-raw)
 	RawCollectionAll
 )
+
+// Enabled returns true if raw collection is enabled (any mode other than None)
+func (m RawCollectionMode) Enabled() bool {
+	return m != RawCollectionNone
+}
 
 type StreamingPrompt func(adapter Adapter, input any) (<-chan StreamResult, error)
 

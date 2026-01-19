@@ -1037,17 +1037,25 @@ func Generate(selfPkg string) {
 		routerBody := []jen.Code{
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
 			jen.Var().Id("err").Error(),
-			jen.Switch(jen.Id("adapter").Dot("RawCollectionMode").Call()).Block(
+			jen.Id("mode").Op(":=").Id("adapter").Dot("RawCollectionMode").Call(),
+			jen.Switch(jen.Id("mode")).Block(
 				jen.Case(jen.Qual(common.InterfacesPkg, "RawCollectionNone")).Block(
 					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out")),
 				),
 				jen.Case(jen.Qual(common.InterfacesPkg, "RawCollectionFinalOnly")).Block(
 					// FINAL_ONLY mode: use _full with skipIntermediateParsing=true
+					// Note: still processes ticks to build finalRaw, just skips ParseStream + intermediate emissions
 					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True()),
 				),
 				jen.Case(jen.Qual(common.InterfacesPkg, "RawCollectionAll")).Block(
 					// ALL mode: use _full with skipIntermediateParsing=false
 					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False()),
+				),
+				jen.Default().Block(
+					jen.Id("err").Op("=").Qual("fmt", "Errorf").Call(
+						jen.Lit("unknown RawCollectionMode: %d"),
+						jen.Id("mode"),
+					),
 				),
 			),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
