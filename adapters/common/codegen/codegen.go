@@ -514,6 +514,9 @@ func Generate(selfPkg string) {
 			jen.Var().Id("allOnce").Qual("sync", "Once"),
 			jen.Var().Id("shutdownOnce").Qual("sync", "Once"),
 
+			// Heartbeat tracking - sends a single heartbeat when first data is received
+			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
+
 			// Fatal error storage
 			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
 			jen.Var().Id("fatalErr").Error(),
@@ -609,6 +612,18 @@ func Generate(selfPkg string) {
 								jen.Return(jen.Nil()),
 							),
 							jen.Default().Block(),
+						),
+
+						// Send heartbeat on first tick - signals "data received" for hung detection
+						jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+							jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+							jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
+							jen.Select().Block(
+								jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+								jen.Default().Block(
+									jen.Id("__r").Dot("Release").Call(),
+								),
+							),
 						),
 
 						// Reserve pending slot, then enqueue the FunctionLog directly
