@@ -27,6 +27,18 @@ const (
 	StreamResultKindHeartbeat
 )
 
+// RawCollectionMode controls how raw LLM responses are collected
+type RawCollectionMode int
+
+const (
+	// RawCollectionNone - no raw collection, uses BAML's native streaming
+	RawCollectionNone RawCollectionMode = iota
+	// RawCollectionFinalOnly - collect raw but skip intermediate parsing (for /call-with-raw)
+	RawCollectionFinalOnly
+	// RawCollectionAll - full raw collection with intermediate parsing (for /stream-with-raw)
+	RawCollectionAll
+)
+
 type StreamingPrompt func(adapter Adapter, input any) (<-chan StreamResult, error)
 
 type StreamingMethod struct {
@@ -70,12 +82,13 @@ type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
 	SetTypeBuilder(typeBuilder *TypeBuilder) error
-	// SetRawCollection enables or disables raw LLM response collection.
-	// When true, the OnTick callback captures raw SSE data for the Raw() method.
-	// When false, just uses BAML's native streaming without raw collection overhead.
-	SetRawCollection(enabled bool)
-	// RawCollectionEnabled returns whether raw LLM response collection is enabled.
-	RawCollectionEnabled() bool
+	// SetRawCollectionMode sets how raw LLM responses are collected.
+	// - RawCollectionNone: uses BAML's native streaming without raw collection
+	// - RawCollectionFinalOnly: collects raw but skips intermediate parsing (for /call-with-raw)
+	// - RawCollectionAll: full raw collection with intermediate parsing (for /stream-with-raw)
+	SetRawCollectionMode(mode RawCollectionMode)
+	// RawCollectionMode returns the current raw collection mode.
+	RawCollectionMode() RawCollectionMode
 }
 
 // BamlOptions contains optional configuration for BAML method calls

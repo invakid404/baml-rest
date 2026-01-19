@@ -16,10 +16,11 @@ type BamlAdapter struct {
 	ClientRegistry *baml.ClientRegistry
 	TypeBuilder    bamlutils.BamlTypeBuilder
 
-	// EnableRawCollection controls whether raw LLM response is captured via OnTick.
-	// When false (default), uses BAML's native streaming without raw collection overhead.
-	// When true, captures raw SSE data for the Raw() method.
-	EnableRawCollection bool
+	// rawCollectionMode controls how raw LLM responses are collected.
+	// - RawCollectionNone: uses BAML's native streaming without raw collection
+	// - RawCollectionFinalOnly: collects raw but skips intermediate parsing (for /call-with-raw)
+	// - RawCollectionAll: full raw collection with intermediate parsing (for /stream-with-raw)
+	rawCollectionMode bamlutils.RawCollectionMode
 }
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
@@ -54,12 +55,12 @@ func (b *BamlAdapter) SetTypeBuilder(typeBuilder *bamlutils.TypeBuilder) error {
 	return nil
 }
 
-func (b *BamlAdapter) SetRawCollection(enabled bool) {
-	b.EnableRawCollection = enabled
+func (b *BamlAdapter) SetRawCollectionMode(mode bamlutils.RawCollectionMode) {
+	b.rawCollectionMode = mode
 }
 
-func (b *BamlAdapter) RawCollectionEnabled() bool {
-	return b.EnableRawCollection
+func (b *BamlAdapter) RawCollectionMode() bamlutils.RawCollectionMode {
+	return b.rawCollectionMode
 }
 
 var _ bamlutils.Adapter = (*BamlAdapter)(nil)

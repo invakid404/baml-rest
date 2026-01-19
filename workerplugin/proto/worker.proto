@@ -4,11 +4,18 @@ package workerplugin;
 
 option go_package = "github.com/invakid404/baml-rest/workerplugin";
 
+// How raw LLM responses should be collected
+enum RawCollectionMode {
+  RAW_COLLECTION_NONE = 0;        // No raw collection (default) - uses BAML's native streaming
+  RAW_COLLECTION_FINAL_ONLY = 1;  // Collect raw but skip intermediate parsing (for /call-with-raw)
+  RAW_COLLECTION_ALL = 2;         // Full raw collection with intermediate parsing (for /stream-with-raw)
+}
+
 // Request to call a BAML method
 message CallRequest {
   string method_name = 1;
-  bytes input_json = 2;        // JSON-encoded input struct (includes __baml_options__ if present)
-  bool enable_raw_collection = 3;  // When true, capture raw LLM response via OnTick/SSE parsing
+  bytes input_json = 2;                      // JSON-encoded input struct (includes __baml_options__ if present)
+  RawCollectionMode raw_collection_mode = 3; // How to collect raw LLM responses
 }
 
 // Streaming result

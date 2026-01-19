@@ -115,7 +115,7 @@ type Worker interface {
 	// CallStream executes a BAML method and streams results.
 	// Used for both streaming and non-streaming calls - non-streaming callers
 	// simply wait for the final result while benefiting from hung detection.
-	CallStream(ctx context.Context, methodName string, inputJSON []byte, enableRawCollection bool) (<-chan *StreamResult, error)
+	CallStream(ctx context.Context, methodName string, inputJSON []byte, rawCollectionMode bamlutils.RawCollectionMode) (<-chan *StreamResult, error)
 
 	// Health checks if the worker is healthy
 	Health(ctx context.Context) (bool, error)
