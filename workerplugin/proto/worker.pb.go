@@ -21,53 +21,56 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// How raw LLM responses should be collected
-type RawCollectionMode int32
+// StreamMode controls how streaming results are processed
+type StreamMode int32
 
 const (
-	RawCollectionMode_RAW_COLLECTION_NONE       RawCollectionMode = 0 // No raw collection (default) - uses BAML's native streaming
-	RawCollectionMode_RAW_COLLECTION_FINAL_ONLY RawCollectionMode = 1 // Collect raw but skip intermediate parsing (for /call-with-raw)
-	RawCollectionMode_RAW_COLLECTION_ALL        RawCollectionMode = 2 // Full raw collection with intermediate parsing (for /stream-with-raw)
+	StreamMode_STREAM_MODE_CALL            StreamMode = 0 // final only, no raw, skip partials
+	StreamMode_STREAM_MODE_STREAM          StreamMode = 1 // partials + final, no raw
+	StreamMode_STREAM_MODE_CALL_WITH_RAW   StreamMode = 2 // final + raw, skip intermediate parsing
+	StreamMode_STREAM_MODE_STREAM_WITH_RAW StreamMode = 3 // partials + final + raw
 )
 
-// Enum value maps for RawCollectionMode.
+// Enum value maps for StreamMode.
 var (
-	RawCollectionMode_name = map[int32]string{
-		0: "RAW_COLLECTION_NONE",
-		1: "RAW_COLLECTION_FINAL_ONLY",
-		2: "RAW_COLLECTION_ALL",
+	StreamMode_name = map[int32]string{
+		0: "STREAM_MODE_CALL",
+		1: "STREAM_MODE_STREAM",
+		2: "STREAM_MODE_CALL_WITH_RAW",
+		3: "STREAM_MODE_STREAM_WITH_RAW",
 	}
-	RawCollectionMode_value = map[string]int32{
-		"RAW_COLLECTION_NONE":       0,
-		"RAW_COLLECTION_FINAL_ONLY": 1,
-		"RAW_COLLECTION_ALL":        2,
+	StreamMode_value = map[string]int32{
+		"STREAM_MODE_CALL":            0,
+		"STREAM_MODE_STREAM":          1,
+		"STREAM_MODE_CALL_WITH_RAW":   2,
+		"STREAM_MODE_STREAM_WITH_RAW": 3,
 	}
 )
 
-func (x RawCollectionMode) Enum() *RawCollectionMode {
-	p := new(RawCollectionMode)
+func (x StreamMode) Enum() *StreamMode {
+	p := new(StreamMode)
 	*p = x
 	return p
 }
 
-func (x RawCollectionMode) String() string {
+func (x StreamMode) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (RawCollectionMode) Descriptor() protoreflect.EnumDescriptor {
+func (StreamMode) Descriptor() protoreflect.EnumDescriptor {
 	return file_workerplugin_proto_worker_proto_enumTypes[0].Descriptor()
 }
 
-func (RawCollectionMode) Type() protoreflect.EnumType {
+func (StreamMode) Type() protoreflect.EnumType {
 	return &file_workerplugin_proto_worker_proto_enumTypes[0]
 }
 
-func (x RawCollectionMode) Number() protoreflect.EnumNumber {
+func (x StreamMode) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use RawCollectionMode.Descriptor instead.
-func (RawCollectionMode) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use StreamMode.Descriptor instead.
+func (StreamMode) EnumDescriptor() ([]byte, []int) {
 	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{0}
 }
 
@@ -125,12 +128,12 @@ func (StreamResult_Kind) EnumDescriptor() ([]byte, []int) {
 
 // Request to call a BAML method
 type CallRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	MethodName        string                 `protobuf:"bytes,1,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
-	InputJson         []byte                 `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`                                                                // JSON-encoded input struct (includes __baml_options__ if present)
-	RawCollectionMode RawCollectionMode      `protobuf:"varint,3,opt,name=raw_collection_mode,json=rawCollectionMode,proto3,enum=workerplugin.RawCollectionMode" json:"raw_collection_mode,omitempty"` // How to collect raw LLM responses
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MethodName    string                 `protobuf:"bytes,1,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
+	InputJson     []byte                 `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`                                  // JSON-encoded input struct (includes __baml_options__ if present)
+	StreamMode    StreamMode             `protobuf:"varint,3,opt,name=stream_mode,json=streamMode,proto3,enum=workerplugin.StreamMode" json:"stream_mode,omitempty"` // Controls partial forwarding and raw collection
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CallRequest) Reset() {
@@ -177,11 +180,11 @@ func (x *CallRequest) GetInputJson() []byte {
 	return nil
 }
 
-func (x *CallRequest) GetRawCollectionMode() RawCollectionMode {
+func (x *CallRequest) GetStreamMode() StreamMode {
 	if x != nil {
-		return x.RawCollectionMode
+		return x.StreamMode
 	}
-	return RawCollectionMode_RAW_COLLECTION_NONE
+	return StreamMode_STREAM_MODE_CALL
 }
 
 // Streaming result
@@ -576,13 +579,14 @@ var File_workerplugin_proto_worker_proto protoreflect.FileDescriptor
 
 const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x1fworkerplugin/proto/worker.proto\x12\fworkerplugin\"\x9e\x01\n" +
+	"\x1fworkerplugin/proto/worker.proto\x12\fworkerplugin\"\x88\x01\n" +
 	"\vCallRequest\x12\x1f\n" +
 	"\vmethod_name\x18\x01 \x01(\tR\n" +
 	"methodName\x12\x1d\n" +
 	"\n" +
-	"input_json\x18\x02 \x01(\fR\tinputJson\x12O\n" +
-	"\x13raw_collection_mode\x18\x03 \x01(\x0e2\x1f.workerplugin.RawCollectionModeR\x11rawCollectionMode\"\xf7\x01\n" +
+	"input_json\x18\x02 \x01(\fR\tinputJson\x129\n" +
+	"\vstream_mode\x18\x03 \x01(\x0e2\x18.workerplugin.StreamModeR\n" +
+	"streamMode\"\xf7\x01\n" +
 	"\fStreamResult\x123\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1f.workerplugin.StreamResult.KindR\x04kind\x12\x1b\n" +
 	"\tdata_json\x18\x02 \x01(\fR\bdataJson\x12\x10\n" +
@@ -618,11 +622,13 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12\x1e\n" +
 	"\n" +
 	"stacktrace\x18\x03 \x01(\tR\n" +
-	"stacktrace*c\n" +
-	"\x11RawCollectionMode\x12\x17\n" +
-	"\x13RAW_COLLECTION_NONE\x10\x00\x12\x1d\n" +
-	"\x19RAW_COLLECTION_FINAL_ONLY\x10\x01\x12\x16\n" +
-	"\x12RAW_COLLECTION_ALL\x10\x022\xcc\x02\n" +
+	"stacktrace*z\n" +
+	"\n" +
+	"StreamMode\x12\x14\n" +
+	"\x10STREAM_MODE_CALL\x10\x00\x12\x16\n" +
+	"\x12STREAM_MODE_STREAM\x10\x01\x12\x1d\n" +
+	"\x19STREAM_MODE_CALL_WITH_RAW\x10\x02\x12\x1f\n" +
+	"\x1bSTREAM_MODE_STREAM_WITH_RAW\x10\x032\xcc\x02\n" +
 	"\x06Worker\x12E\n" +
 	"\n" +
 	"CallStream\x12\x19.workerplugin.CallRequest\x1a\x1a.workerplugin.StreamResult0\x01\x12;\n" +
@@ -647,7 +653,7 @@ func file_workerplugin_proto_worker_proto_rawDescGZIP() []byte {
 var file_workerplugin_proto_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_workerplugin_proto_worker_proto_goTypes = []any{
-	(RawCollectionMode)(0),  // 0: workerplugin.RawCollectionMode
+	(StreamMode)(0),         // 0: workerplugin.StreamMode
 	(StreamResult_Kind)(0),  // 1: workerplugin.StreamResult.Kind
 	(*CallRequest)(nil),     // 2: workerplugin.CallRequest
 	(*StreamResult)(nil),    // 3: workerplugin.StreamResult
@@ -659,7 +665,7 @@ var file_workerplugin_proto_worker_proto_goTypes = []any{
 	(*ParseResponse)(nil),   // 9: workerplugin.ParseResponse
 }
 var file_workerplugin_proto_worker_proto_depIdxs = []int32{
-	0, // 0: workerplugin.CallRequest.raw_collection_mode:type_name -> workerplugin.RawCollectionMode
+	0, // 0: workerplugin.CallRequest.stream_mode:type_name -> workerplugin.StreamMode
 	1, // 1: workerplugin.StreamResult.kind:type_name -> workerplugin.StreamResult.Kind
 	2, // 2: workerplugin.Worker.CallStream:input_type -> workerplugin.CallRequest
 	4, // 3: workerplugin.Worker.Health:input_type -> workerplugin.Empty

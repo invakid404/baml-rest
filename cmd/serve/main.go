@@ -298,7 +298,7 @@ var serveCmd = &cobra.Command{
 
 				logger.Info().Str("prompt", methodName).Msg("Registering prompt")
 
-				makeCallHandler := func(rawCollectionMode bamlutils.RawCollectionMode) http.HandlerFunc {
+				makeCallHandler := func(streamMode bamlutils.StreamMode) http.HandlerFunc {
 					return func(w http.ResponseWriter, r *http.Request) {
 						ctx, cancel := context.WithCancel(r.Context())
 						defer cancel()
@@ -309,7 +309,7 @@ var serveCmd = &cobra.Command{
 							return
 						}
 
-						result, err := workerPool.Call(ctx, methodName, rawBody, rawCollectionMode)
+						result, err := workerPool.Call(ctx, methodName, rawBody, streamMode)
 						if err != nil {
 							httplogger.SetError(r.Context(), err)
 							http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
@@ -317,7 +317,7 @@ var serveCmd = &cobra.Command{
 						}
 
 						w.Header().Set("Content-Type", "application/json")
-						if rawCollectionMode != bamlutils.RawCollectionNone {
+						if streamMode.NeedsRaw() {
 							render.JSON(w, r, CallWithRawResponse{
 								Data: result.Data,
 								Raw:  result.Raw,
@@ -328,10 +328,10 @@ var serveCmd = &cobra.Command{
 					}
 				}
 
-				r.Post(fmt.Sprintf("/call/%s", methodName), makeCallHandler(bamlutils.RawCollectionNone))
-				r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(bamlutils.RawCollectionFinalOnly))
+				r.Post(fmt.Sprintf("/call/%s", methodName), makeCallHandler(bamlutils.StreamModeCall))
+				r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(bamlutils.StreamModeCallWithRaw))
 
-				makeStreamHandler := func(pathPrefix string, rawCollectionMode bamlutils.RawCollectionMode) http.HandlerFunc {
+				makeStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) http.HandlerFunc {
 					return func(w http.ResponseWriter, r *http.Request) {
 						topic := fmt.Sprintf("%s/%s/%p", pathPrefix, methodName, r)
 						ready := make(chan struct{})
@@ -353,7 +353,7 @@ var serveCmd = &cobra.Command{
 							return
 						}
 
-						results, err := workerPool.CallStream(ctx, methodName, rawBody, rawCollectionMode)
+						results, err := workerPool.CallStream(ctx, methodName, rawBody, streamMode)
 						if err != nil {
 							httplogger.SetError(r.Context(), err)
 							http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
@@ -407,7 +407,7 @@ var serveCmd = &cobra.Command{
 								}
 
 								data := result.Data
-								if rawCollectionMode != bamlutils.RawCollectionNone {
+								if streamMode.NeedsRaw() {
 									// Stream messages contain deltas, Final contains full raw
 									rawForOutput := result.Raw
 									if result.Kind == workerplugin.StreamResultKindStream {
@@ -450,8 +450,8 @@ var serveCmd = &cobra.Command{
 					}
 				}
 
-				r.Post(fmt.Sprintf("/stream/%s", methodName), makeStreamHandler("stream", bamlutils.RawCollectionNone))
-				r.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), makeStreamHandler("stream-with-raw", bamlutils.RawCollectionAll))
+				r.Post(fmt.Sprintf("/stream/%s", methodName), makeStreamHandler("stream", bamlutils.StreamModeStream))
+				r.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), makeStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw))
 
 				// Parse endpoint - parses raw LLM output using this method's schema
 				r.Post(fmt.Sprintf("/parse/%s", methodName), func(w http.ResponseWriter, r *http.Request) {

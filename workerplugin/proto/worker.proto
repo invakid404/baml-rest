@@ -4,18 +4,19 @@ package workerplugin;
 
 option go_package = "github.com/invakid404/baml-rest/workerplugin";
 
-// How raw LLM responses should be collected
-enum RawCollectionMode {
-  RAW_COLLECTION_NONE = 0;        // No raw collection (default) - uses BAML's native streaming
-  RAW_COLLECTION_FINAL_ONLY = 1;  // Collect raw but skip intermediate parsing (for /call-with-raw)
-  RAW_COLLECTION_ALL = 2;         // Full raw collection with intermediate parsing (for /stream-with-raw)
+// StreamMode controls how streaming results are processed
+enum StreamMode {
+  STREAM_MODE_CALL = 0;             // final only, no raw, skip partials
+  STREAM_MODE_STREAM = 1;           // partials + final, no raw
+  STREAM_MODE_CALL_WITH_RAW = 2;    // final + raw, skip intermediate parsing
+  STREAM_MODE_STREAM_WITH_RAW = 3;  // partials + final + raw
 }
 
 // Request to call a BAML method
 message CallRequest {
   string method_name = 1;
-  bytes input_json = 2;                      // JSON-encoded input struct (includes __baml_options__ if present)
-  RawCollectionMode raw_collection_mode = 3; // How to collect raw LLM responses
+  bytes input_json = 2;        // JSON-encoded input struct (includes __baml_options__ if present)
+  StreamMode stream_mode = 3;  // Controls partial forwarding and raw collection
 }
 
 // Streaming result

@@ -16,11 +16,8 @@ type BamlAdapter struct {
 	ClientRegistry *baml.ClientRegistry
 	TypeBuilder    bamlutils.BamlTypeBuilder
 
-	// rawCollectionMode controls how raw LLM responses are collected.
-	// - RawCollectionNone: uses BAML's native streaming without raw collection
-	// - RawCollectionFinalOnly: collects raw but skips intermediate parsing (for /call-with-raw)
-	// - RawCollectionAll: full raw collection with intermediate parsing (for /stream-with-raw)
-	rawCollectionMode bamlutils.RawCollectionMode
+	// streamMode controls how streaming results are processed.
+	streamMode bamlutils.StreamMode
 }
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
@@ -54,12 +51,12 @@ func (b *BamlAdapter) SetTypeBuilder(typeBuilder *bamlutils.TypeBuilder) error {
 	return nil
 }
 
-func (b *BamlAdapter) SetRawCollectionMode(mode bamlutils.RawCollectionMode) {
-	b.rawCollectionMode = mode
+func (b *BamlAdapter) SetStreamMode(mode bamlutils.StreamMode) {
+	b.streamMode = mode
 }
 
-func (b *BamlAdapter) RawCollectionMode() bamlutils.RawCollectionMode {
-	return b.rawCollectionMode
+func (b *BamlAdapter) StreamMode() bamlutils.StreamMode {
+	return b.streamMode
 }
 
 var _ bamlutils.Adapter = (*BamlAdapter)(nil)

@@ -27,22 +27,28 @@ const (
 	StreamResultKindHeartbeat
 )
 
-// RawCollectionMode controls how raw LLM responses are collected
-type RawCollectionMode int
+// StreamMode controls how streaming results are processed and what data is collected.
+type StreamMode int
 
 const (
-	// RawCollectionNone - no raw collection, uses BAML's native streaming
-	RawCollectionNone RawCollectionMode = iota
-	// RawCollectionFinalOnly - collect raw but skip intermediate parsing (for /call-with-raw)
-	// Note: still processes OnTick to build finalRaw, just skips ParseStream + intermediate emissions
-	RawCollectionFinalOnly
-	// RawCollectionAll - full raw collection with intermediate parsing (for /stream-with-raw)
-	RawCollectionAll
+	// StreamModeCall - final only, no raw, no partials (for /call endpoint)
+	StreamModeCall StreamMode = iota
+	// StreamModeStream - partials + final, no raw (for /stream endpoint)
+	StreamModeStream
+	// StreamModeCallWithRaw - final + raw, no partials (for /call-with-raw endpoint)
+	StreamModeCallWithRaw
+	// StreamModeStreamWithRaw - partials + final + raw (for /stream-with-raw endpoint)
+	StreamModeStreamWithRaw
 )
 
-// Enabled returns true if raw collection is enabled (any mode other than None)
-func (m RawCollectionMode) Enabled() bool {
-	return m != RawCollectionNone
+// NeedsRaw returns true if this mode requires raw LLM response collection.
+func (m StreamMode) NeedsRaw() bool {
+	return m == StreamModeCallWithRaw || m == StreamModeStreamWithRaw
+}
+
+// NeedsPartials returns true if this mode requires forwarding partial/intermediate results.
+func (m StreamMode) NeedsPartials() bool {
+	return m == StreamModeStream || m == StreamModeStreamWithRaw
 }
 
 type StreamingPrompt func(adapter Adapter, input any) (<-chan StreamResult, error)
@@ -88,13 +94,10 @@ type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
 	SetTypeBuilder(typeBuilder *TypeBuilder) error
-	// SetRawCollectionMode sets how raw LLM responses are collected.
-	// - RawCollectionNone: uses BAML's native streaming without raw collection
-	// - RawCollectionFinalOnly: collects raw but skips intermediate parsing (for /call-with-raw)
-	// - RawCollectionAll: full raw collection with intermediate parsing (for /stream-with-raw)
-	SetRawCollectionMode(mode RawCollectionMode)
-	// RawCollectionMode returns the current raw collection mode.
-	RawCollectionMode() RawCollectionMode
+	// SetStreamMode sets the streaming mode which controls partial forwarding and raw collection.
+	SetStreamMode(mode StreamMode)
+	// StreamMode returns the current streaming mode.
+	StreamMode() StreamMode
 }
 
 // BamlOptions contains optional configuration for BAML method calls

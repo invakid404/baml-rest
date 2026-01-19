@@ -390,21 +390,23 @@ func Generate(selfPkg string) {
 					jen.Continue(),
 				),
 
-				// Handle partial - forward BAML's native partial via Stream()
+				// Handle partial - forward BAML's native partial via Stream() (only if not skipping partials)
 				// Stream() returns *TStream - already a pointer, use directly
-				jen.If(jen.Id("partial").Op(":=").Id("streamVal").Dot("Stream").Call(), jen.Id("partial").Op("!=").Nil()).Block(
-					jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
-					jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
-					jen.Id("__r").Dot("parsed").Op("=").Id("partial"),
-					jen.Select().Block(
-						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
-						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-							jen.Id("__r").Dot("Release").Call(),
-							jen.Return(jen.Nil()),
+				jen.If(jen.Op("!").Id("skipPartials")).Block(
+					jen.If(jen.Id("partial").Op(":=").Id("streamVal").Dot("Stream").Call(), jen.Id("partial").Op("!=").Nil()).Block(
+						jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+						jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+						jen.Id("__r").Dot("parsed").Op("=").Id("partial"),
+						jen.Select().Block(
+							jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+								jen.Id("__r").Dot("Release").Call(),
+								jen.Return(jen.Nil()),
+							),
+							jen.Default().Block(
+								jen.Id("__r").Dot("Release").Call(),
+							), // Non-blocking send for partials - release if not sent
 						),
-						jen.Default().Block(
-							jen.Id("__r").Dot("Release").Call(),
-						), // Non-blocking send for partials - release if not sent
 					),
 				),
 			),
@@ -476,21 +478,20 @@ func Generate(selfPkg string) {
 		)
 
 		// Generate the noRaw implementation function
-		// Accepts output channel from caller, returns only error
+		// Accepts output channel from caller and skipPartials flag, returns only error
 		out.Func().
 			Id(noRawMethodName).
 			Params(
 				jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
 				jen.Id("rawInput").Any(),
 				jen.Id("out").Chan().Add(streamResultInterface.Clone()),
+				jen.Id("skipPartials").Bool(),
 			).
 			Error().
 			Block(noRawBody...)
 
 		// ====== FULL IMPLEMENTATION: methodName_full ======
-		// This path uses the ParseStream goroutine for partial results.
-		// When skipIntermediateParsing is true, it skips ParseStream calls and intermediate emissions
-		// (used for FINAL_ONLY mode where we only need the final result + raw).
+		// This path uses the ParseStream goroutine for partial results
 		fullMethodName := strcase.LowerCamelCase(methodName + "_full")
 
 		var fullBody []jen.Code
@@ -499,8 +500,6 @@ func Generate(selfPkg string) {
 		fullBody = append(fullBody,
 			// Unbounded queue for passing FunctionLog from OnTick to partials goroutine (never drops)
 			jen.Id("funcLogQueue").Op(":=").Qual(common.GoConcurrentQueuePkg, "NewFIFO").Call(),
-			// Heartbeat tracking - sends heartbeat when first data is received (for first-byte detection)
-			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
 			// Context to signal partials goroutine to stop
 			// NOT derived from adapter - we only cancel after ticksDone to ensure no late enqueues
 			jen.List(jen.Id("queueCtx"), jen.Id("queueCancel")).Op(":=").Qual("context", "WithCancel").Call(jen.Qual("context", "Background").Call()),
@@ -514,6 +513,9 @@ func Generate(selfPkg string) {
 			jen.Var().Id("ticksOnce").Qual("sync", "Once"),
 			jen.Var().Id("allOnce").Qual("sync", "Once"),
 			jen.Var().Id("shutdownOnce").Qual("sync", "Once"),
+
+			// Heartbeat tracking - sends a single heartbeat when first data is received
+			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
 
 			// Fatal error storage
 			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
@@ -612,6 +614,18 @@ func Generate(selfPkg string) {
 							jen.Default().Block(),
 						),
 
+						// Send heartbeat on first tick - signals "data received" for hung detection
+						jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+							jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+							jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
+							jen.Select().Block(
+								jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+								jen.Default().Block(
+									jen.Id("__r").Dot("Release").Call(),
+								),
+							),
+						),
+
 						// Reserve pending slot, then enqueue the FunctionLog directly
 						// All data extraction happens in the partials goroutine
 						// If enqueue fails (shouldn't happen with FIFO), rollback pending
@@ -663,24 +677,6 @@ func Generate(selfPkg string) {
 				jen.If(
 					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
 						jen.Func().Params().Error().Block(
-							// Send heartbeat on first data (for first-byte detection)
-							jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
-								jen.Select().Block(
-									jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-										jen.Return(jen.Nil()),
-									),
-									jen.Default().Block(),
-								),
-								jen.Id("__hb").Op(":=").Id(getterFuncName).Call(),
-								jen.Id("__hb").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
-								jen.Select().Block(
-									jen.Case(jen.Id("out").Op("<-").Id("__hb")).Block(),
-									jen.Default().Block(
-										jen.Id("__hb").Dot("Release").Call(),
-									),
-								),
-							),
-
 							// Extract data from FunctionLog (moved from OnTick for async processing)
 							// Only fetch data for the LAST call - earlier calls are failed retries
 							jen.Id("calls").Op(",").Id("callsErr").Op(":=").Id("funcLog").Dot("Calls").Call(),
@@ -722,7 +718,8 @@ func Generate(selfPkg string) {
 							),
 							jen.Id("extractorMu").Dot("Unlock").Call(),
 
-							// If skipIntermediateParsing is true, we're done - just extracted raw for final
+							// Skip ParseStream and partial emissions when skipIntermediateParsing is true
+							// (raw is still accumulated by extractor for final result)
 							jen.If(jen.Id("skipIntermediateParsing")).Block(
 								jen.Return(jen.Nil()),
 							),
@@ -1019,8 +1016,7 @@ func Generate(selfPkg string) {
 		)
 
 		// Generate the full implementation function
-		// Accepts output channel from caller, returns only error
-		// skipIntermediateParsing: when true, skips ParseStream and intermediate emissions (for FINAL_ONLY mode)
+		// Accepts output channel from caller and skipIntermediateParsing flag, returns only error
 		out.Func().
 			Id(fullMethodName).
 			Params(
@@ -1032,28 +1028,33 @@ func Generate(selfPkg string) {
 			Error().
 			Block(fullBody...)
 
-		// Generate the public router function that dispatches based on RawCollectionMode()
+		// Generate the public router function that dispatches based on StreamMode()
 		// Creates the output channel and passes it to the inner implementation
 		routerBody := []jen.Code{
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
 			jen.Var().Id("err").Error(),
-			jen.Id("mode").Op(":=").Id("adapter").Dot("RawCollectionMode").Call(),
+			jen.Id("mode").Op(":=").Id("adapter").Dot("StreamMode").Call(),
 			jen.Switch(jen.Id("mode")).Block(
-				jen.Case(jen.Qual(common.InterfacesPkg, "RawCollectionNone")).Block(
-					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out")),
+				// StreamModeCall: final only, no raw, skip partials
+				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCall")).Block(
+					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True()),
 				),
-				jen.Case(jen.Qual(common.InterfacesPkg, "RawCollectionFinalOnly")).Block(
-					// FINAL_ONLY mode: use _full with skipIntermediateParsing=true
-					// Note: still processes ticks to build finalRaw, just skips ParseStream + intermediate emissions
+				// StreamModeStream: partials + final, no raw
+				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeStream")).Block(
+					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False()),
+				),
+				// StreamModeCallWithRaw: final + raw, skip intermediate parsing
+				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCallWithRaw")).Block(
 					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True()),
 				),
-				jen.Case(jen.Qual(common.InterfacesPkg, "RawCollectionAll")).Block(
-					// ALL mode: use _full with skipIntermediateParsing=false
+				// StreamModeStreamWithRaw: partials + final + raw
+				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeStreamWithRaw")).Block(
 					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False()),
 				),
+				// Default case to prevent silent hangs if unknown mode
 				jen.Default().Block(
 					jen.Id("err").Op("=").Qual("fmt", "Errorf").Call(
-						jen.Lit("unknown RawCollectionMode: %d"),
+						jen.Lit("unknown StreamMode: %d"),
 						jen.Id("mode"),
 					),
 				),
