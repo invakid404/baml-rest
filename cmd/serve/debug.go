@@ -3,9 +3,11 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"runtime"
 	"runtime/debug"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
@@ -34,6 +36,32 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 		})
 	})
 	logger.Info().Msg("Debug endpoints enabled: /_debug/kill-worker")
+
+	// Configure pool settings (for testing)
+	r.Post("/_debug/config", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			FirstByteTimeoutMs *int64 `json:"first_byte_timeout_ms,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, map[string]interface{}{
+				"status": "error",
+				"error":  err.Error(),
+			})
+			return
+		}
+
+		if req.FirstByteTimeoutMs != nil {
+			workerPool.SetFirstByteTimeout(time.Duration(*req.FirstByteTimeoutMs) * time.Millisecond)
+			logger.Info().Int64("first_byte_timeout_ms", *req.FirstByteTimeoutMs).Msg("Updated FirstByteTimeout")
+		}
+
+		render.JSON(w, r, map[string]interface{}{
+			"status":                "ok",
+			"first_byte_timeout_ms": workerPool.GetFirstByteTimeout().Milliseconds(),
+		})
+	})
+	logger.Info().Msg("Debug endpoints enabled: /_debug/config")
 
 	r.Get("/_debug/gc", func(w http.ResponseWriter, r *http.Request) {
 		// Capture memory stats before GC (main process)

@@ -752,6 +752,21 @@ func (p *Pool) KillWorkerWithInFlight() (*KillWorkerResult, error) {
 	return nil, fmt.Errorf("no workers with in-flight requests found")
 }
 
+// SetFirstByteTimeout updates the timeout for hung detection.
+// This is primarily intended for testing purposes.
+func (p *Pool) SetFirstByteTimeout(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.config.FirstByteTimeout = d
+}
+
+// GetFirstByteTimeout returns the current first byte timeout.
+func (p *Pool) GetFirstByteTimeout() time.Duration {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.config.FirstByteTimeout
+}
+
 // Shutdown gracefully shuts down the pool, waiting for in-flight requests to complete
 func (p *Pool) Shutdown(ctx context.Context) error {
 	// Start draining - reject new requests

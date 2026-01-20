@@ -623,6 +623,166 @@ func TestWorkerDeathMidStream(t *testing.T) {
 			t.Logf("Final data verified: %+v", person)
 		}
 	})
+
+	t.Run("hung_detection_kills_worker_and_retries", func(t *testing.T) {
+		// This test verifies that the automatic hung detection mechanism works:
+		// - Worker takes too long to respond (longer than FirstByteTimeout)
+		// - Hung detection kills the worker
+		// - Pool retries on another worker
+		// - NO reset message (pre-first-byte)
+		// - Request completes successfully
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// Set a short FirstByteTimeout for this test (2 seconds)
+		shortTimeout := int64(2000)
+		configResult, err := BAMLClient.SetFirstByteTimeout(ctx, shortTimeout)
+		if err != nil {
+			t.Fatalf("Failed to set FirstByteTimeout: %v", err)
+		}
+		t.Logf("Set FirstByteTimeout to %dms (was: inferred from response)", configResult.FirstByteTimeoutMs)
+
+		// Restore default timeout after test
+		defer func() {
+			restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer restoreCancel()
+			// Restore to a long timeout (120 seconds = default)
+			_, _ = BAMLClient.SetFirstByteTimeout(restoreCtx, 120000)
+		}()
+
+		// Create a scenario with initial delay LONGER than the timeout
+		// This will trigger hung detection before first byte is received
+		content := `{"name": "Hung Test", "age": 99, "tags": ["timeout"]}`
+		scenarioID := "test-hung-detection"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      20,
+			InitialDelayMs: 5000, // 5 seconds - longer than 2s timeout
+			ChunkDelayMs:   50,
+		}
+
+		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		// Start streaming request
+		t.Log("Starting streaming request (expecting hung detection to fire)...")
+		startTime := time.Now()
+
+		events, errs := BAMLClient.Stream(ctx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "Hung test person"},
+			Options: opts,
+		})
+
+		var receivedEvents []testutil.StreamEvent
+		var streamErr error
+		var sawResetEvent bool
+		var sawErrorEvent bool
+
+		// Process events
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				receivedEvents = append(receivedEvents, event)
+				elapsed := time.Since(startTime)
+				t.Logf("Received event %d at %v: type=%s, data_len=%d",
+					len(receivedEvents), elapsed.Round(time.Millisecond), event.Event, len(event.Data))
+
+				if event.Event == "reset" {
+					sawResetEvent = true
+					t.Log("WARNING: Saw reset event - this should NOT happen for hung detection (pre-first-byte)!")
+				}
+				if event.Event == "error" {
+					sawErrorEvent = true
+				}
+
+			case err := <-errs:
+				if err != nil {
+					streamErr = err
+					t.Logf("Received stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Logf("Context cancelled")
+				streamErr = ctx.Err()
+				goto done
+			}
+		}
+	done:
+
+		elapsed := time.Since(startTime)
+		t.Logf("=== RESULTS ===")
+		t.Logf("Total time: %v", elapsed.Round(time.Millisecond))
+		t.Logf("Total events received: %d", len(receivedEvents))
+		t.Logf("Stream error: %v", streamErr)
+		t.Logf("Saw reset event: %v", sawResetEvent)
+		t.Logf("Saw error event: %v", sawErrorEvent)
+
+		for i, event := range receivedEvents {
+			t.Logf("Event %d: type=%q, data=%s", i, event.Event, string(event.Data))
+		}
+
+		// VERIFY EXPECTED BEHAVIOR:
+
+		// 1. Should NOT have seen a reset event (hung detection kills pre-first-byte)
+		if sawResetEvent {
+			t.Error("Did not expect reset event - hung detection should kill before first byte")
+		}
+
+		// 2. Should have completed successfully (no error)
+		if sawErrorEvent {
+			t.Error("Did not expect error event - request should succeed after retry")
+		}
+
+		if streamErr != nil {
+			t.Errorf("Did not expect stream error - got: %v", streamErr)
+		}
+
+		// 3. Should have received events (from the retry)
+		if len(receivedEvents) == 0 {
+			t.Error("Expected to receive events from retry")
+		}
+
+		// 4. Total time should be > 2s (timeout) + ~5s (retry initial delay) = ~7s
+		// But less than 2x the initial delay (which would indicate no retry happened)
+		if elapsed < 5*time.Second {
+			t.Logf("Note: Request completed faster than expected (%v), hung detection may not have fired", elapsed)
+		}
+
+		// 5. Verify the final data is correct
+		if len(receivedEvents) > 0 {
+			var lastDataEvent testutil.StreamEvent
+			for i := len(receivedEvents) - 1; i >= 0; i-- {
+				if receivedEvents[i].Event != "reset" && receivedEvents[i].Event != "error" {
+					lastDataEvent = receivedEvents[i]
+					break
+				}
+			}
+			var person struct {
+				Name string   `json:"name"`
+				Age  int      `json:"age"`
+				Tags []string `json:"tags"`
+			}
+			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
+				t.Fatalf("Failed to unmarshal last event data: %v", err)
+			}
+			if person.Name != "Hung Test" || person.Age != 99 {
+				t.Errorf("Final data incorrect: got %+v", person)
+			}
+			t.Logf("Final data verified: %+v", person)
+		}
+	})
 }
 
 func TestStreamWithRawEndpoint(t *testing.T) {

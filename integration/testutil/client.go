@@ -331,6 +331,50 @@ func (c *BAMLRestClient) KillWorker(ctx context.Context) (*KillWorkerResult, err
 	return &result, nil
 }
 
+// ConfigResult represents the response from /_debug/config.
+type ConfigResult struct {
+	Status              string `json:"status"`
+	FirstByteTimeoutMs  int64  `json:"first_byte_timeout_ms"`
+	Error               string `json:"error,omitempty"`
+}
+
+// SetFirstByteTimeout calls the /_debug/config endpoint to configure the first byte timeout.
+// This is only available in debug builds.
+func (c *BAMLRestClient) SetFirstByteTimeout(ctx context.Context, timeoutMs int64) (*ConfigResult, error) {
+	reqBody := map[string]any{
+		"first_byte_timeout_ms": timeoutMs,
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/_debug/config", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result ConfigResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &result, nil
+}
+
 func buildRequestBody(input map[string]any, opts *BAMLOptions) ([]byte, error) {
 	body := make(map[string]any)
 	for k, v := range input {
