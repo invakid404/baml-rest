@@ -16,9 +16,6 @@ import (
 // don't leak goroutines. This complements the cancellation leak tests by ensuring
 // the happy path is also clean.
 func TestGoroutineLeaks(t *testing.T) {
-	// Filter patterns for goroutines in our code and BAML library (comma-separated, case-insensitive)
-	leakFilter := "invakid404/baml-rest,boundaryml/baml"
-
 	// Helper to count total matching goroutines (main process + all workers)
 	countTotalMatches := func(result *testutil.GoroutinesResult) int {
 		total := result.MatchCount
@@ -34,7 +31,7 @@ func TestGoroutineLeaks(t *testing.T) {
 
 		// Let things settle and capture baseline
 		time.Sleep(200 * time.Millisecond)
-		baselineResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
 		}
@@ -82,7 +79,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get final goroutines: %v", err)
 		}
@@ -102,7 +99,7 @@ func TestGoroutineLeaks(t *testing.T) {
 
 		// Capture baseline
 		time.Sleep(200 * time.Millisecond)
-		baselineResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
 		}
@@ -153,7 +150,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get final goroutines: %v", err)
 		}
@@ -173,7 +170,7 @@ func TestGoroutineLeaks(t *testing.T) {
 
 		// Capture baseline
 		time.Sleep(200 * time.Millisecond)
-		baselineResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
 		}
@@ -251,7 +248,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get final goroutines: %v", err)
 		}
@@ -271,7 +268,7 @@ func TestGoroutineLeaks(t *testing.T) {
 
 		// Capture baseline
 		time.Sleep(200 * time.Millisecond)
-		baselineResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
 		}
@@ -342,7 +339,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get final goroutines: %v", err)
 		}
@@ -362,7 +359,7 @@ func TestGoroutineLeaks(t *testing.T) {
 
 		// Capture baseline
 		time.Sleep(200 * time.Millisecond)
-		baselineResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
 		}
@@ -401,7 +398,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get final goroutines: %v", err)
 		}
@@ -422,7 +419,7 @@ func TestGoroutineLeaks(t *testing.T) {
 
 		// Capture baseline
 		time.Sleep(200 * time.Millisecond)
-		baselineResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
 		}
@@ -489,7 +486,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, leakFilter)
+		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get final goroutines: %v", err)
 		}

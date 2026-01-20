@@ -857,13 +857,7 @@ func TestRequestCancellation(t *testing.T) {
 	//
 	// We fetch pprof data from baml-rest via /_debug/goroutines endpoint to detect
 	// leaks in the actual server process AND worker processes, filtering for
-	// goroutines in pool/, workerplugin/, baml-rest, and baml (boundaryml) code.
-	//
-	// The filter is case-insensitive.
-
-	// Filter patterns for goroutines in our code and BAML library (comma-separated)
-	// Covers: baml-rest (github.com/invakid404/baml-rest) and BAML (github.com/boundaryml/baml)
-	leakFilter := "invakid404/baml-rest,boundaryml/baml"
+	// goroutines in baml-rest and baml (boundaryml) code.
 
 	t.Run("cancel_mid_stream_cleans_up", func(t *testing.T) {
 		parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -880,7 +874,7 @@ func TestRequestCancellation(t *testing.T) {
 
 		// Let things settle and capture baseline from the SERVER
 		time.Sleep(100 * time.Millisecond)
-		baselineResult, err := BAMLClient.GetGoroutines(parentCtx, leakFilter)
+		baselineResult, err := BAMLClient.GetGoroutines(parentCtx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
 		}
@@ -963,7 +957,7 @@ func TestRequestCancellation(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		// Check for leaked goroutines in the SERVER (main process + workers)
-		finalResult, err := BAMLClient.GetGoroutines(parentCtx, leakFilter)
+		finalResult, err := BAMLClient.GetGoroutines(parentCtx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get final goroutines: %v", err)
 		}
@@ -1067,7 +1061,7 @@ func TestRequestCancellation(t *testing.T) {
 
 		// Capture baseline from the SERVER
 		time.Sleep(100 * time.Millisecond)
-		baselineResult, err := BAMLClient.GetGoroutines(parentCtx, leakFilter)
+		baselineResult, err := BAMLClient.GetGoroutines(parentCtx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
 		}
@@ -1151,7 +1145,7 @@ func TestRequestCancellation(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		// Check for leaked goroutines in the SERVER (main process + workers)
-		finalResult, err := BAMLClient.GetGoroutines(parentCtx, leakFilter)
+		finalResult, err := BAMLClient.GetGoroutines(parentCtx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get final goroutines: %v", err)
 		}
