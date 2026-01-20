@@ -3,8 +3,11 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"runtime"
+	"runtime/pprof"
+	"strings"
 	"testing"
 	"time"
 
@@ -851,16 +854,74 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 	})
 }
 
+// goroutineSnapshot captures goroutine stacks for leak detection.
+type goroutineSnapshot struct {
+	stacks string
+	count  int
+}
+
+// captureGoroutines returns a snapshot of current goroutines.
+func captureGoroutines() goroutineSnapshot {
+	var buf bytes.Buffer
+	// debug=2 gives full goroutine stacks
+	pprof.Lookup("goroutine").WriteTo(&buf, 2)
+	return goroutineSnapshot{
+		stacks: buf.String(),
+		count:  runtime.NumGoroutine(),
+	}
+}
+
+// countGoroutinesMatching counts goroutines whose stacks contain any of the given patterns.
+// This is used to find goroutines specifically in our code (pool/, workerplugin/).
+func countGoroutinesMatching(snapshot goroutineSnapshot, patterns []string) (int, []string) {
+	var count int
+	var matchedStacks []string
+
+	// Split by "goroutine " to get individual goroutine stacks
+	stacks := strings.Split(snapshot.stacks, "goroutine ")
+	for _, stack := range stacks {
+		if stack == "" {
+			continue
+		}
+		for _, pattern := range patterns {
+			if strings.Contains(stack, pattern) {
+				count++
+				// Truncate long stacks for readability
+				if len(stack) > 500 {
+					stack = stack[:500] + "..."
+				}
+				matchedStacks = append(matchedStacks, stack)
+				break // Don't double-count if multiple patterns match
+			}
+		}
+	}
+	return count, matchedStacks
+}
+
 func TestRequestCancellation(t *testing.T) {
 	// This test verifies that cancelling a request properly cleans up resources
 	// and doesn't leave the system in a bad state.
+	//
+	// We use pprof-based goroutine analysis to specifically look for leaks in
+	// our code (pool/, workerplugin/) rather than raw goroutine counts which
+	// can be affected by HTTP keep-alives and other Go runtime behavior.
+
+	// Patterns that indicate goroutines in OUR code (potential leaks we care about)
+	leakPatterns := []string{
+		"pool.(*Pool).CallStream",
+		"pool.(*Pool).Call",
+		"workerplugin.",
+		"baml-rest/pool.",
+	}
 
 	t.Run("cancel_mid_stream_cleans_up", func(t *testing.T) {
-		// Record baseline goroutine count (with some settling time)
+		// Let things settle and capture baseline
 		time.Sleep(100 * time.Millisecond)
-		runtime.GC() // Help clean up any pending finalizers
-		baselineGoroutines := runtime.NumGoroutine()
-		t.Logf("Baseline goroutine count: %d", baselineGoroutines)
+		runtime.GC()
+		baselineSnapshot := captureGoroutines()
+		baselinePoolGoroutines, _ := countGoroutinesMatching(baselineSnapshot, leakPatterns)
+		t.Logf("Baseline: %d total goroutines, %d in pool/workerplugin",
+			baselineSnapshot.count, baselinePoolGoroutines)
 
 		// Create a slow streaming scenario
 		content := `{"name": "Cancel Test", "age": 99, "tags": ["should", "be", "cancelled"]}`
@@ -870,9 +931,9 @@ func TestRequestCancellation(t *testing.T) {
 			ID:             scenarioID,
 			Provider:       "openai",
 			Content:        content,
-			ChunkSize:      5,    // Small chunks
-			InitialDelayMs: 100,  // Some initial delay
-			ChunkDelayMs:   500,  // Slow chunking so we have time to cancel
+			ChunkSize:      5,   // Small chunks
+			InitialDelayMs: 100, // Some initial delay
+			ChunkDelayMs:   500, // Slow chunking so we have time to cancel
 		}
 
 		parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -941,14 +1002,19 @@ func TestRequestCancellation(t *testing.T) {
 		runtime.GC()
 		time.Sleep(100 * time.Millisecond)
 
-		// Check goroutine count returned to baseline (with tolerance for background activity)
-		finalGoroutines := runtime.NumGoroutine()
-		t.Logf("Final goroutine count: %d (baseline was %d)", finalGoroutines, baselineGoroutines)
+		// Check for leaked goroutines specifically in our code
+		finalSnapshot := captureGoroutines()
+		finalPoolGoroutines, leakedStacks := countGoroutinesMatching(finalSnapshot, leakPatterns)
+		t.Logf("Final: %d total goroutines, %d in pool/workerplugin",
+			finalSnapshot.count, finalPoolGoroutines)
 
-		// Allow some tolerance (±5 goroutines) for background activity
-		goroutineDelta := finalGoroutines - baselineGoroutines
-		if goroutineDelta > 5 {
-			t.Errorf("Possible goroutine leak: %d more goroutines than baseline", goroutineDelta)
+		// Check for leaks in our code (more reliable than total count)
+		poolGoroutineDelta := finalPoolGoroutines - baselinePoolGoroutines
+		if poolGoroutineDelta > 0 {
+			t.Errorf("Goroutine leak detected: %d new goroutines in pool/workerplugin code", poolGoroutineDelta)
+			for i, stack := range leakedStacks {
+				t.Logf("Leaked goroutine %d:\n%s", i+1, stack)
+			}
 		}
 
 		// CRITICAL: Verify subsequent requests still work (pool not corrupted)
@@ -1014,6 +1080,14 @@ func TestRequestCancellation(t *testing.T) {
 
 	t.Run("cancel_before_first_byte_cleans_up", func(t *testing.T) {
 		// This tests cancellation during the "waiting for first byte" phase
+
+		// Capture baseline
+		time.Sleep(100 * time.Millisecond)
+		runtime.GC()
+		baselineSnapshot := captureGoroutines()
+		baselinePoolGoroutines, _ := countGoroutinesMatching(baselineSnapshot, leakPatterns)
+		t.Logf("Baseline: %d total goroutines, %d in pool/workerplugin",
+			baselineSnapshot.count, baselinePoolGoroutines)
 
 		parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer parentCancel()
@@ -1090,9 +1164,22 @@ func TestRequestCancellation(t *testing.T) {
 			t.Errorf("Cancellation took too long: %v (expected < 3s)", elapsed)
 		}
 
-		// Should have received zero events (cancelled before first byte)
-		if receivedEvents > 0 {
-			t.Logf("Note: Received %d events before cancellation took effect", receivedEvents)
+		// Wait for cleanup and check for leaks
+		time.Sleep(500 * time.Millisecond)
+		runtime.GC()
+		time.Sleep(100 * time.Millisecond)
+
+		finalSnapshot := captureGoroutines()
+		finalPoolGoroutines, leakedStacks := countGoroutinesMatching(finalSnapshot, leakPatterns)
+		t.Logf("Final: %d total goroutines, %d in pool/workerplugin",
+			finalSnapshot.count, finalPoolGoroutines)
+
+		poolGoroutineDelta := finalPoolGoroutines - baselinePoolGoroutines
+		if poolGoroutineDelta > 0 {
+			t.Errorf("Goroutine leak detected: %d new goroutines in pool/workerplugin code", poolGoroutineDelta)
+			for i, stack := range leakedStacks {
+				t.Logf("Leaked goroutine %d:\n%s", i+1, stack)
+			}
 		}
 	})
 }
