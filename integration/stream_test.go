@@ -466,6 +466,163 @@ func TestWorkerDeathMidStream(t *testing.T) {
 			t.Logf("Final data verified: %+v", person)
 		}
 	})
+
+	t.Run("worker_killed_before_first_byte_retries_without_reset", func(t *testing.T) {
+		// This test verifies pre-first-byte retry behavior:
+		// - Worker is killed BEFORE any data is sent to client
+		// - Pool retries on another worker
+		// - NO reset message should be sent (nothing to discard)
+		// - Request completes successfully
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// Create a scenario with LONG initial delay so we can kill before first byte
+		content := `{"name": "Jane Smith", "age": 25, "tags": ["tester"]}`
+		scenarioID := "test-worker-death-pre-first-byte"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      10,
+			InitialDelayMs: 3000, // 3 second initial delay - plenty of time to kill worker
+			ChunkDelayMs:   50,
+		}
+
+		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		// Start streaming request
+		events, errs := BAMLClient.Stream(ctx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "Jane, 25 years old"},
+			Options: opts,
+		})
+
+		var receivedEvents []testutil.StreamEvent
+		var streamErr error
+		var sawResetEvent bool
+		var sawErrorEvent bool
+		var killedWorker bool
+
+		// Kill the worker immediately after starting the request (before first byte)
+		// We do this in a goroutine so we don't block receiving events
+		go func() {
+			// Small delay to ensure the request is in-flight
+			time.Sleep(500 * time.Millisecond)
+
+			killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer killCancel()
+
+			result, err := BAMLClient.KillWorker(killCtx)
+			if err != nil {
+				t.Logf("Failed to kill worker: %v", err)
+				return
+			}
+			t.Logf("Killed worker %d with %d in-flight requests, gotFirstByte=%v",
+				result.WorkerID, result.InFlightCount, result.GotFirstByte)
+			killedWorker = true
+
+			// Verify gotFirstByte is false (we killed before first byte)
+			for _, got := range result.GotFirstByte {
+				if got {
+					t.Logf("WARNING: gotFirstByte was true, timing may be off")
+				}
+			}
+		}()
+
+		// Process events
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				receivedEvents = append(receivedEvents, event)
+				t.Logf("Received event %d: type=%s, data_len=%d", len(receivedEvents), event.Event, len(event.Data))
+
+				if event.Event == "reset" {
+					sawResetEvent = true
+					t.Log("WARNING: Saw reset event - this should NOT happen for pre-first-byte retry!")
+				}
+				if event.Event == "error" {
+					sawErrorEvent = true
+				}
+
+			case err := <-errs:
+				if err != nil {
+					streamErr = err
+					t.Logf("Received stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Logf("Context cancelled")
+				streamErr = ctx.Err()
+				goto done
+			}
+		}
+	done:
+
+		t.Logf("=== RESULTS ===")
+		t.Logf("Total events received: %d", len(receivedEvents))
+		t.Logf("Stream error: %v", streamErr)
+		t.Logf("Worker killed: %v", killedWorker)
+		t.Logf("Saw reset event: %v", sawResetEvent)
+		t.Logf("Saw error event: %v", sawErrorEvent)
+
+		for i, event := range receivedEvents {
+			t.Logf("Event %d: type=%q, data=%s", i, event.Event, string(event.Data))
+		}
+
+		// VERIFY EXPECTED BEHAVIOR:
+
+		// 1. Should NOT have seen a reset event (no data was sent before retry)
+		if sawResetEvent {
+			t.Error("Did not expect reset event - worker was killed before first byte, nothing to reset")
+		}
+
+		// 2. Should have completed successfully (no error)
+		if sawErrorEvent {
+			t.Error("Did not expect error event - request should succeed after retry")
+		}
+
+		if streamErr != nil {
+			t.Errorf("Did not expect stream error - got: %v", streamErr)
+		}
+
+		// 3. Should have received events (from the retry)
+		if len(receivedEvents) == 0 {
+			t.Error("Expected to receive events from retry")
+		}
+
+		// 4. Verify the final data is correct
+		if len(receivedEvents) > 0 {
+			var lastDataEvent testutil.StreamEvent
+			for i := len(receivedEvents) - 1; i >= 0; i-- {
+				if receivedEvents[i].Event != "reset" && receivedEvents[i].Event != "error" {
+					lastDataEvent = receivedEvents[i]
+					break
+				}
+			}
+			var person struct {
+				Name string   `json:"name"`
+				Age  int      `json:"age"`
+				Tags []string `json:"tags"`
+			}
+			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
+				t.Fatalf("Failed to unmarshal last event data: %v", err)
+			}
+			if person.Name != "Jane Smith" || person.Age != 25 {
+				t.Errorf("Final data incorrect: got %+v", person)
+			}
+			t.Logf("Final data verified: %+v", person)
+		}
+	})
 }
 
 func TestStreamWithRawEndpoint(t *testing.T) {
