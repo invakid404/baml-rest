@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -846,6 +847,252 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 		// Final raw should match the complete content
 		if lastRaw != content {
 			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
+		}
+	})
+}
+
+func TestRequestCancellation(t *testing.T) {
+	// This test verifies that cancelling a request properly cleans up resources
+	// and doesn't leave the system in a bad state.
+
+	t.Run("cancel_mid_stream_cleans_up", func(t *testing.T) {
+		// Record baseline goroutine count (with some settling time)
+		time.Sleep(100 * time.Millisecond)
+		runtime.GC() // Help clean up any pending finalizers
+		baselineGoroutines := runtime.NumGoroutine()
+		t.Logf("Baseline goroutine count: %d", baselineGoroutines)
+
+		// Create a slow streaming scenario
+		content := `{"name": "Cancel Test", "age": 99, "tags": ["should", "be", "cancelled"]}`
+		scenarioID := "test-cancel-midstream"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      5,    // Small chunks
+			InitialDelayMs: 100,  // Some initial delay
+			ChunkDelayMs:   500,  // Slow chunking so we have time to cancel
+		}
+
+		parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer parentCancel()
+
+		if err := MockClient.RegisterScenario(parentCtx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		// Create a cancellable context for the request
+		reqCtx, reqCancel := context.WithCancel(parentCtx)
+
+		// Start streaming request
+		t.Log("Starting streaming request...")
+		events, errs := BAMLClient.Stream(reqCtx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "Cancel test person"},
+			Options: opts,
+		})
+
+		var receivedEvents int
+		var cancelledAt time.Time
+
+		// Process events until we receive at least one, then cancel
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				receivedEvents++
+				t.Logf("Received event %d: type=%s, data_len=%d", receivedEvents, event.Event, len(event.Data))
+
+				// After receiving the first event, cancel the request
+				if receivedEvents == 1 {
+					t.Log("Cancelling request after first event...")
+					cancelledAt = time.Now()
+					reqCancel()
+				}
+
+			case err := <-errs:
+				if err != nil {
+					t.Logf("Received error (expected after cancel): %v", err)
+				}
+			case <-parentCtx.Done():
+				t.Fatal("Parent context cancelled unexpectedly")
+			}
+		}
+	done:
+
+		cancelDuration := time.Since(cancelledAt)
+		t.Logf("Stream closed %v after cancellation", cancelDuration)
+		t.Logf("Total events received: %d", receivedEvents)
+
+		// Verify cancellation was prompt (should be much faster than waiting for all chunks)
+		if cancelDuration > 2*time.Second {
+			t.Errorf("Cancellation took too long: %v (expected < 2s)", cancelDuration)
+		}
+
+		// Wait for cleanup to complete
+		time.Sleep(500 * time.Millisecond)
+		runtime.GC()
+		time.Sleep(100 * time.Millisecond)
+
+		// Check goroutine count returned to baseline (with tolerance for background activity)
+		finalGoroutines := runtime.NumGoroutine()
+		t.Logf("Final goroutine count: %d (baseline was %d)", finalGoroutines, baselineGoroutines)
+
+		// Allow some tolerance (±5 goroutines) for background activity
+		goroutineDelta := finalGoroutines - baselineGoroutines
+		if goroutineDelta > 5 {
+			t.Errorf("Possible goroutine leak: %d more goroutines than baseline", goroutineDelta)
+		}
+
+		// CRITICAL: Verify subsequent requests still work (pool not corrupted)
+		t.Log("Verifying subsequent request works...")
+		verifyCtx, verifyCancel := context.WithTimeout(parentCtx, 10*time.Second)
+		defer verifyCancel()
+
+		// Use a fast scenario for verification
+		verifyContent := `{"name": "Verify OK", "age": 1, "tags": []}`
+		verifyScenarioID := "test-cancel-verify"
+		verifyScenario := &mockllm.Scenario{
+			ID:             verifyScenarioID,
+			Provider:       "openai",
+			Content:        verifyContent,
+			ChunkSize:      100, // Large chunks for fast completion
+			InitialDelayMs: 0,
+			ChunkDelayMs:   0,
+		}
+
+		if err := MockClient.RegisterScenario(verifyCtx, verifyScenario); err != nil {
+			t.Fatalf("Failed to register verify scenario: %v", err)
+		}
+
+		verifyOpts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, verifyScenarioID),
+		}
+
+		verifyEvents, verifyErrs := BAMLClient.Stream(verifyCtx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "Verify request works"},
+			Options: verifyOpts,
+		})
+
+		var verifyEventCount int
+		var verifyErr error
+
+		for {
+			select {
+			case event, ok := <-verifyEvents:
+				if !ok {
+					goto verifyDone
+				}
+				verifyEventCount++
+				t.Logf("Verify event %d: type=%s", verifyEventCount, event.Event)
+			case err := <-verifyErrs:
+				if err != nil {
+					verifyErr = err
+				}
+			case <-verifyCtx.Done():
+				t.Fatal("Verify context cancelled")
+			}
+		}
+	verifyDone:
+
+		if verifyErr != nil {
+			t.Errorf("Subsequent request failed: %v", verifyErr)
+		}
+		if verifyEventCount == 0 {
+			t.Error("Subsequent request received no events")
+		}
+		t.Logf("Subsequent request succeeded with %d events", verifyEventCount)
+	})
+
+	t.Run("cancel_before_first_byte_cleans_up", func(t *testing.T) {
+		// This tests cancellation during the "waiting for first byte" phase
+
+		parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer parentCancel()
+
+		// Create a scenario with long initial delay
+		content := `{"name": "Pre-Cancel", "age": 0, "tags": []}`
+		scenarioID := "test-cancel-pre-first-byte"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      100,
+			InitialDelayMs: 10000, // 10 second delay - we'll cancel before this
+			ChunkDelayMs:   0,
+		}
+
+		if err := MockClient.RegisterScenario(parentCtx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		// Create a cancellable context
+		reqCtx, reqCancel := context.WithCancel(parentCtx)
+
+		// Start streaming request
+		t.Log("Starting streaming request with long initial delay...")
+		startTime := time.Now()
+		events, errs := BAMLClient.Stream(reqCtx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "Pre-cancel test"},
+			Options: opts,
+		})
+
+		// Cancel after a short delay (before first byte would arrive)
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			t.Log("Cancelling request before first byte...")
+			reqCancel()
+		}()
+
+		var receivedEvents int
+		var streamErr error
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				receivedEvents++
+				t.Logf("Received event: type=%s", event.Event)
+			case err := <-errs:
+				if err != nil {
+					streamErr = err
+					t.Logf("Received error: %v", err)
+				}
+			case <-parentCtx.Done():
+				t.Fatal("Parent context cancelled unexpectedly")
+			}
+		}
+	done:
+
+		elapsed := time.Since(startTime)
+		t.Logf("Request completed in %v", elapsed)
+		t.Logf("Events received: %d", receivedEvents)
+		t.Logf("Stream error: %v", streamErr)
+
+		// Should complete quickly (cancelled at ~500ms, not waiting 10s)
+		if elapsed > 3*time.Second {
+			t.Errorf("Cancellation took too long: %v (expected < 3s)", elapsed)
+		}
+
+		// Should have received zero events (cancelled before first byte)
+		if receivedEvents > 0 {
+			t.Logf("Note: Received %d events before cancellation took effect", receivedEvents)
 		}
 	})
 }
