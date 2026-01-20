@@ -219,10 +219,6 @@ var serveCmd = &cobra.Command{
 		if err != nil {
 			panic(err)
 		}
-		sseFinalKind, err := sse.NewType("final")
-		if err != nil {
-			panic(err)
-		}
 
 		// Create SSE server
 		s := &sse.Server{
@@ -436,11 +432,6 @@ var serveCmd = &cobra.Command{
 								// AppendData call, and never modified afterward. The string is consumed
 								// immediately by the SSE library.
 								message.AppendData(unsafeutil.BytesToString(data))
-
-								// Set final type for terminal success event
-								if result.Kind == workerplugin.StreamResultKindFinal {
-									message.Type = sseFinalKind
-								}
 							}
 
 							workerplugin.ReleaseStreamResult(result)

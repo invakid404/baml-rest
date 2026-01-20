@@ -345,7 +345,6 @@ func TestWorkerDeathMidStream(t *testing.T) {
 		var receivedEvents []testutil.StreamEvent
 		var streamErr error
 		var sawResetEvent bool
-		var sawFinalEvent bool
 		var sawErrorEvent bool
 		var killedWorker bool
 		var eventsBeforeKill int
@@ -363,9 +362,6 @@ func TestWorkerDeathMidStream(t *testing.T) {
 				if event.Event == "reset" {
 					sawResetEvent = true
 					t.Log(">>> SAW RESET EVENT - retry with reset working!")
-				}
-				if event.Event == "final" {
-					sawFinalEvent = true
 				}
 				if event.Event == "error" {
 					sawErrorEvent = true
@@ -407,7 +403,6 @@ func TestWorkerDeathMidStream(t *testing.T) {
 		t.Logf("Stream error: %v", streamErr)
 		t.Logf("Worker killed: %v", killedWorker)
 		t.Logf("Saw reset event: %v", sawResetEvent)
-		t.Logf("Saw final event: %v", sawFinalEvent)
 		t.Logf("Saw error event: %v", sawErrorEvent)
 
 		for i, event := range receivedEvents {
@@ -430,11 +425,7 @@ func TestWorkerDeathMidStream(t *testing.T) {
 			t.Error("Expected reset event after worker death - mid-stream retry should inject reset")
 		}
 
-		// 2. Should have completed successfully (final event, no error)
-		if !sawFinalEvent {
-			t.Error("Expected final event - request should complete successfully after retry")
-		}
-
+		// 2. Should have completed successfully (no error event, stream closed gracefully)
 		if sawErrorEvent {
 			t.Error("Did not expect error event - request should succeed after retry")
 		}
@@ -450,11 +441,13 @@ func TestWorkerDeathMidStream(t *testing.T) {
 				len(receivedEvents), eventsBeforeKill)
 		}
 
-		// Verify the final data is correct
-		if sawFinalEvent {
+		// 4. Verify the last event has correct final data
+		// (graceful stream termination means last event is the final result)
+		if len(receivedEvents) > 0 {
+			// Find the last non-reset data event
 			var lastDataEvent testutil.StreamEvent
 			for i := len(receivedEvents) - 1; i >= 0; i-- {
-				if receivedEvents[i].Event == "final" {
+				if receivedEvents[i].Event != "reset" && receivedEvents[i].Event != "error" {
 					lastDataEvent = receivedEvents[i]
 					break
 				}
@@ -465,7 +458,7 @@ func TestWorkerDeathMidStream(t *testing.T) {
 				Tags []string `json:"tags"`
 			}
 			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
-				t.Fatalf("Failed to unmarshal final event: %v", err)
+				t.Fatalf("Failed to unmarshal last event data: %v", err)
 			}
 			if person.Name != "John Doe" || person.Age != 30 {
 				t.Errorf("Final data incorrect: got %+v", person)
