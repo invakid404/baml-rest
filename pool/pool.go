@@ -603,6 +603,8 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				if needsReset && !injectedReset {
 					resetResult := workerplugin.GetStreamResult()
 					resetResult.Kind = workerplugin.StreamResultKindStream
+					resetResult.Data = nil // Clear any leftover data from pool
+					resetResult.Raw = ""   // Clear any leftover raw data
 					resetResult.Reset = true
 					select {
 					case wrappedResults <- resetResult:
