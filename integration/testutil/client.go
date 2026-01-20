@@ -294,6 +294,141 @@ func (c *BAMLRestClient) Health(ctx context.Context) error {
 	return nil
 }
 
+// KillWorkerResult represents the response from /_debug/kill-worker.
+type KillWorkerResult struct {
+	Status        string `json:"status"`
+	WorkerID      int    `json:"worker_id"`
+	InFlightCount int    `json:"in_flight_count"`
+	GotFirstByte  []bool `json:"got_first_byte"`
+	Error         string `json:"error,omitempty"`
+}
+
+// KillWorker calls the /_debug/kill-worker endpoint to kill a worker mid-request.
+// This is only available in debug builds.
+func (c *BAMLRestClient) KillWorker(ctx context.Context) (*KillWorkerResult, error) {
+	url := fmt.Sprintf("%s/_debug/kill-worker", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result KillWorkerResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// ConfigResult represents the response from /_debug/config.
+type ConfigResult struct {
+	Status              string `json:"status"`
+	FirstByteTimeoutMs  int64  `json:"first_byte_timeout_ms"`
+	Error               string `json:"error,omitempty"`
+}
+
+// SetFirstByteTimeout calls the /_debug/config endpoint to configure the first byte timeout.
+// This is only available in debug builds.
+func (c *BAMLRestClient) SetFirstByteTimeout(ctx context.Context, timeoutMs int64) (*ConfigResult, error) {
+	reqBody := map[string]any{
+		"first_byte_timeout_ms": timeoutMs,
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/_debug/config", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result ConfigResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// GoroutinesResult represents the response from /_debug/goroutines.
+type GoroutinesResult struct {
+	Status        string                   `json:"status"`
+	TotalCount    int                      `json:"total_count"`
+	Filter        string                   `json:"filter,omitempty"`
+	MatchCount    int                      `json:"match_count,omitempty"`
+	MatchedStacks []string                 `json:"matched_stacks,omitempty"`
+	Stacks        string                   `json:"stacks,omitempty"`
+	Workers       []WorkerGoroutinesResult `json:"workers,omitempty"`
+	Error         string                   `json:"error,omitempty"`
+}
+
+// WorkerGoroutinesResult represents goroutine data from a single worker.
+type WorkerGoroutinesResult struct {
+	WorkerID      int      `json:"worker_id"`
+	TotalCount    int      `json:"total_count,omitempty"`
+	MatchCount    int      `json:"match_count,omitempty"`
+	MatchedStacks []string `json:"matched_stacks,omitempty"`
+	Error         string   `json:"error,omitempty"`
+}
+
+// GetGoroutines fetches goroutine information from baml-rest.
+// If filter is provided, only goroutines matching those patterns are counted.
+// Filter should be a comma-separated list of patterns (e.g., "pool.,workerplugin.").
+func (c *BAMLRestClient) GetGoroutines(ctx context.Context, filter string) (*GoroutinesResult, error) {
+	url := fmt.Sprintf("%s/_debug/goroutines", c.baseURL)
+	if filter != "" {
+		url += "?filter=" + filter
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result GoroutinesResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &result, nil
+}
+
 func buildRequestBody(input map[string]any, opts *BAMLOptions) ([]byte, error) {
 	body := make(map[string]any)
 	for k, v := range input {

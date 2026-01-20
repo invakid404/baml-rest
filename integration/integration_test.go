@@ -25,6 +25,11 @@ var BAMLClient *testutil.BAMLRestClient
 // BAMLVersion is the version being tested
 const BAMLVersion = "0.214.0"
 
+// GoroutineLeakFilter contains comma-separated patterns for detecting goroutine leaks
+// in our code. Used by leak detection tests to filter pprof data. Case-insensitive.
+// Covers: baml-rest (github.com/invakid404/baml-rest) and BAML (github.com/boundaryml/baml)
+const GoroutineLeakFilter = "invakid404/baml-rest,boundaryml/baml"
+
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()

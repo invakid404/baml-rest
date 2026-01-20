@@ -69,6 +69,18 @@ message ParseResponse {
   string stacktrace = 3;       // Stacktrace (if parsing failed, when available)
 }
 
+// Goroutines request - for getting pprof data from worker
+message GetGoroutinesRequest {
+  string filter = 1;  // Optional comma-separated filter patterns (case-insensitive)
+}
+
+// Goroutines response - pprof goroutine data
+message GetGoroutinesResponse {
+  int32 total_count = 1;             // Total number of goroutines
+  int32 match_count = 2;             // Number of goroutines matching filter
+  repeated string matched_stacks = 3; // Stack traces of matching goroutines
+}
+
 // Worker service
 service Worker {
   // Streaming call - returns stream of results
@@ -86,4 +98,7 @@ service Worker {
 
   // Parse raw LLM output into structured data
   rpc Parse(ParseRequest) returns (ParseResponse);
+
+  // Get goroutine pprof data from worker process
+  rpc GetGoroutines(GetGoroutinesRequest) returns (GetGoroutinesResponse);
 }

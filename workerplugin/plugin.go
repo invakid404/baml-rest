@@ -110,6 +110,13 @@ type ParseResult struct {
 	Data []byte // JSON-encoded parsed result
 }
 
+// GoroutinesResult contains goroutine pprof data from a worker
+type GoroutinesResult struct {
+	TotalCount    int32    // Total number of goroutines
+	MatchCount    int32    // Number of goroutines matching filter
+	MatchedStacks []string // Stack traces of matching goroutines
+}
+
 // Worker is the interface that the plugin implements.
 type Worker interface {
 	// CallStream executes a BAML method and streams results.
@@ -129,6 +136,10 @@ type Worker interface {
 
 	// Parse parses raw LLM output into structured data using a BAML method's schema
 	Parse(ctx context.Context, methodName string, inputJSON []byte) (*ParseResult, error)
+
+	// GetGoroutines returns goroutine pprof data from the worker process
+	// filter is a comma-separated list of patterns to match (case-insensitive)
+	GetGoroutines(ctx context.Context, filter string) (*GoroutinesResult, error)
 }
 
 // WorkerPlugin is the implementation of plugin.GRPCPlugin

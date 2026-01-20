@@ -63,7 +63,8 @@ func (sw *StreamWriter) WriteDone() error {
 }
 
 // StreamResponse streams the scenario content with configured timing.
-func StreamResponse(ctx context.Context, w http.ResponseWriter, scenario *Scenario, provider Provider) error {
+// The effectiveDelay parameter overrides scenario.InitialDelayMs when specified (>= 0).
+func StreamResponse(ctx context.Context, w http.ResponseWriter, scenario *Scenario, provider Provider, effectiveDelay int) error {
 	sw, ok := NewStreamWriter(w, provider)
 	if !ok {
 		return nil // Can't stream, let caller handle
@@ -75,10 +76,10 @@ func StreamResponse(ctx context.Context, w http.ResponseWriter, scenario *Scenar
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Initial delay
-	if scenario.InitialDelayMs > 0 {
+	// Initial delay - use the effective delay passed from the caller
+	if effectiveDelay > 0 {
 		select {
-		case <-time.After(time.Duration(scenario.InitialDelayMs) * time.Millisecond):
+		case <-time.After(time.Duration(effectiveDelay) * time.Millisecond):
 		case <-ctx.Done():
 			return ctx.Err()
 		}
