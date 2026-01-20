@@ -14,6 +14,27 @@ import (
 )
 
 func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *pool.Pool) {
+	// Kill a worker that has in-flight requests (for testing mid-stream worker death)
+	r.Post("/_debug/kill-worker", func(w http.ResponseWriter, r *http.Request) {
+		result, err := workerPool.KillWorkerWithInFlight()
+		if err != nil {
+			render.Status(r, http.StatusNotFound)
+			render.JSON(w, r, map[string]interface{}{
+				"status": "no_worker_found",
+				"error":  err.Error(),
+			})
+			return
+		}
+
+		render.JSON(w, r, map[string]interface{}{
+			"status":          "killed",
+			"worker_id":       result.WorkerID,
+			"in_flight_count": result.InFlightCount,
+			"got_first_byte":  result.GotFirstByte,
+		})
+	})
+	logger.Info().Msg("Debug endpoints enabled: /_debug/kill-worker")
+
 	r.Get("/_debug/gc", func(w http.ResponseWriter, r *http.Request) {
 		// Capture memory stats before GC (main process)
 		var memBefore runtime.MemStats

@@ -294,6 +294,43 @@ func (c *BAMLRestClient) Health(ctx context.Context) error {
 	return nil
 }
 
+// KillWorkerResult represents the response from /_debug/kill-worker.
+type KillWorkerResult struct {
+	Status        string `json:"status"`
+	WorkerID      int    `json:"worker_id"`
+	InFlightCount int    `json:"in_flight_count"`
+	GotFirstByte  []bool `json:"got_first_byte"`
+	Error         string `json:"error,omitempty"`
+}
+
+// KillWorker calls the /_debug/kill-worker endpoint to kill a worker mid-request.
+// This is only available in debug builds.
+func (c *BAMLRestClient) KillWorker(ctx context.Context) (*KillWorkerResult, error) {
+	url := fmt.Sprintf("%s/_debug/kill-worker", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result KillWorkerResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &result, nil
+}
+
 func buildRequestBody(input map[string]any, opts *BAMLOptions) ([]byte, error) {
 	body := make(map[string]any)
 	for k, v := range input {

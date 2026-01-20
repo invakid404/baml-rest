@@ -296,6 +296,133 @@ func TestStreamMidStreamFailure(t *testing.T) {
 	})
 }
 
+func TestWorkerDeathMidStream(t *testing.T) {
+	// This test verifies what happens when a WORKER PROCESS dies mid-stream,
+	// as opposed to just the upstream LLM failing.
+	//
+	// This is testing infrastructure-level failures, not application-level failures.
+	// Uses the /_debug/kill-worker endpoint to kill a worker mid-request.
+
+	t.Run("worker_killed_after_first_byte", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Create a slow streaming scenario so we have time to kill the worker
+		content := `{"name": "John Doe", "age": 30, "tags": ["developer", "golang", "testing"]}`
+		scenarioID := "test-worker-death"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      5,   // Very small chunks
+			InitialDelayMs: 100, // Some initial delay
+			ChunkDelayMs:   500, // Slow chunking so we have time to kill worker
+		}
+
+		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		// Start streaming request
+		events, errs := BAMLClient.Stream(ctx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "John, 30 years old"},
+			Options: opts,
+		})
+
+		var receivedEvents []testutil.StreamEvent
+		var streamErr error
+		var sawResetEvent bool
+		var sawErrorEvent bool
+		var killedWorker bool
+
+		// Process events
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				receivedEvents = append(receivedEvents, event)
+				t.Logf("Received event %d: type=%s, data_len=%d", len(receivedEvents), event.Event, len(event.Data))
+
+				if event.Event == "reset" {
+					sawResetEvent = true
+				}
+				if event.Event == "error" {
+					sawErrorEvent = true
+				}
+
+				// After receiving the first event (first byte), kill the worker
+				if len(receivedEvents) == 1 && !killedWorker {
+					t.Log("First event received, killing worker...")
+					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
+					result, err := BAMLClient.KillWorker(killCtx)
+					killCancel()
+
+					if err != nil {
+						t.Logf("Failed to kill worker: %v", err)
+					} else {
+						t.Logf("Killed worker %d with %d in-flight requests, gotFirstByte=%v",
+							result.WorkerID, result.InFlightCount, result.GotFirstByte)
+						killedWorker = true
+					}
+				}
+
+			case err := <-errs:
+				if err != nil {
+					streamErr = err
+					t.Logf("Received stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Logf("Context cancelled")
+				streamErr = ctx.Err()
+				goto done
+			}
+		}
+	done:
+
+		t.Logf("=== RESULTS ===")
+		t.Logf("Total events received: %d", len(receivedEvents))
+		t.Logf("Stream error: %v", streamErr)
+		t.Logf("Worker killed: %v", killedWorker)
+		t.Logf("Saw reset event: %v", sawResetEvent)
+		t.Logf("Saw error event: %v", sawErrorEvent)
+
+		for i, event := range receivedEvents {
+			t.Logf("Event %d: type=%q, data=%s", i, event.Event, string(event.Data))
+		}
+
+		// EXPECTED BEHAVIOR:
+		// - We should have killed the worker successfully
+		// - We should receive partial data (at least the first event)
+		// - We should get an error (worker died)
+		// - We should NOT see a reset event (no retry happens after first byte)
+		// - The request should NOT be retried (first byte was received, so hung detection disabled)
+
+		if !killedWorker {
+			t.Error("Failed to kill worker - test setup issue")
+		}
+
+		if len(receivedEvents) == 0 {
+			t.Error("Expected to receive at least one event before worker death")
+		}
+
+		// Document the key observation: worker death after first byte = error, NOT retry
+		if sawResetEvent {
+			t.Log("UNEXPECTED: Saw reset event - this means a retry happened after worker death")
+			t.Log("This would indicate pool-level retries are working for mid-stream failures")
+		} else {
+			t.Log("CONFIRMED: No reset event - worker death after first byte results in error, not retry")
+		}
+	})
+}
+
 func TestStreamWithRawEndpoint(t *testing.T) {
 	t.Run("raw_accumulates", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -270,7 +270,7 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		bamlVersion:       opts.BAMLVersion,
 		adapterVersion:    opts.AdapterVersion,
 		keepSource:        opts.KeepSource,
-		debugBuild:        false,
+		debugBuild:        true, // Enable debug endpoints for testing (/_debug/*)
 		defaultTargetArch: "amd64", // Provide default since testcontainers may not set TARGETARCH
 		noCacheMount:      true,    // testcontainers doesn't reliably support BuildKit
 		noCustomBamlLib:   true,    // Integration tests don't use custom BAML lib

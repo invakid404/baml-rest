@@ -602,6 +602,58 @@ func (p *Pool) totalInFlight() int64 {
 	return total
 }
 
+// KillWorkerResult contains information about a killed worker
+type KillWorkerResult struct {
+	WorkerID       int
+	InFlightCount  int
+	GotFirstByte   []bool // For each in-flight request, whether it had received first byte
+	Killed         bool
+	Error          string
+}
+
+// KillWorkerWithInFlight finds a worker with in-flight requests and kills it.
+// This is intended for testing scenarios where we need to simulate worker death mid-request.
+// Returns information about the killed worker, or an error if no suitable worker was found.
+func (p *Pool) KillWorkerWithInFlight() (*KillWorkerResult, error) {
+	p.mu.RLock()
+	workers := p.workers
+	p.mu.RUnlock()
+
+	// Find a worker with in-flight requests
+	for _, handle := range workers {
+		if handle == nil {
+			continue
+		}
+
+		handle.inFlightMu.RLock()
+		inFlightCount := len(handle.inFlightReq)
+		var gotFirstByteList []bool
+		for _, req := range handle.inFlightReq {
+			gotFirstByteList = append(gotFirstByteList, req.gotFirstByte.Load())
+		}
+		handle.inFlightMu.RUnlock()
+
+		if inFlightCount > 0 {
+			// Found a worker with in-flight requests - kill it
+			p.logger.Warn().
+				Int("worker_id", handle.id).
+				Int("in_flight_count", inFlightCount).
+				Msg("DEBUG: Killing worker with in-flight requests")
+
+			p.killWorkerAndRetry(handle)
+
+			return &KillWorkerResult{
+				WorkerID:      handle.id,
+				InFlightCount: inFlightCount,
+				GotFirstByte:  gotFirstByteList,
+				Killed:        true,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no workers with in-flight requests found")
+}
+
 // Shutdown gracefully shuts down the pool, waiting for in-flight requests to complete
 func (p *Pool) Shutdown(ctx context.Context) error {
 	// Start draining - reject new requests
