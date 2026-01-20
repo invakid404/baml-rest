@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"runtime"
 	"runtime/debug"
+	"runtime/pprof"
+	"strings"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -227,6 +230,48 @@ func (w *workerImpl) TriggerGC(ctx context.Context) (*workerplugin.GCResult, err
 		HeapAllocAfter:  memAfter.HeapAlloc,
 		HeapReleased:    memAfter.HeapReleased - memBefore.HeapReleased,
 	}, nil
+}
+
+func (w *workerImpl) GetGoroutines(ctx context.Context, filter string) (*workerplugin.GoroutinesResult, error) {
+	// Capture goroutine profile with full stacks
+	var buf bytes.Buffer
+	if err := pprof.Lookup("goroutine").WriteTo(&buf, 2); err != nil {
+		return nil, fmt.Errorf("failed to capture goroutine profile: %w", err)
+	}
+
+	stacks := buf.String()
+	totalCount := int32(runtime.NumGoroutine())
+
+	result := &workerplugin.GoroutinesResult{
+		TotalCount: totalCount,
+	}
+
+	// If filter patterns provided, count matching goroutines (case-insensitive)
+	if filter != "" {
+		patterns := strings.Split(filter, ",")
+		goroutineStacks := strings.Split(stacks, "goroutine ")
+		for _, stack := range goroutineStacks {
+			if stack == "" {
+				continue
+			}
+			stackLower := strings.ToLower(stack)
+			for _, pattern := range patterns {
+				pattern = strings.TrimSpace(pattern)
+				patternLower := strings.ToLower(pattern)
+				if patternLower != "" && strings.Contains(stackLower, patternLower) {
+					result.MatchCount++
+					// Truncate for readability
+					if len(stack) > 1000 {
+						stack = stack[:1000] + "..."
+					}
+					result.MatchedStacks = append(result.MatchedStacks, "goroutine "+stack)
+					break
+				}
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // workerParseInput wraps the input for parse requests

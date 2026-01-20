@@ -977,3 +977,51 @@ func (p *Pool) TriggerAllWorkersGC(ctx context.Context) []WorkerGCResult {
 
 	return results
 }
+
+// WorkerGoroutinesResult contains goroutine pprof data for a single worker
+type WorkerGoroutinesResult struct {
+	WorkerID      int
+	TotalCount    int32
+	MatchCount    int32
+	MatchedStacks []string
+	Error         error
+}
+
+// GetAllWorkersGoroutines fetches goroutine pprof data from all healthy workers.
+// filter is a comma-separated list of patterns to match (case-insensitive).
+// Returns results for each worker.
+func (p *Pool) GetAllWorkersGoroutines(ctx context.Context, filter string) []WorkerGoroutinesResult {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var results []WorkerGoroutinesResult
+
+	for _, handle := range p.workers {
+		if handle == nil || !handle.healthy {
+			continue
+		}
+
+		// Use a short timeout for getting goroutines
+		goroutineCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		goroutineResult, err := handle.worker.GetGoroutines(goroutineCtx, filter)
+		cancel()
+
+		result := WorkerGoroutinesResult{
+			WorkerID: handle.id,
+			Error:    err,
+		}
+		if goroutineResult != nil {
+			result.TotalCount = goroutineResult.TotalCount
+			result.MatchCount = goroutineResult.MatchCount
+			result.MatchedStacks = goroutineResult.MatchedStacks
+		}
+
+		if err != nil {
+			p.logger.Warn().Int("worker", handle.id).Err(err).Msg("Failed to get goroutines from worker")
+		}
+
+		results = append(results, result)
+	}
+
+	return results
+}

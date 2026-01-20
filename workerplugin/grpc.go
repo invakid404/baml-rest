@@ -117,6 +117,18 @@ func (s *GRPCServer) Parse(ctx context.Context, req *pb.ParseRequest) (*pb.Parse
 	return &pb.ParseResponse{DataJson: result.Data}, nil
 }
 
+func (s *GRPCServer) GetGoroutines(ctx context.Context, req *pb.GetGoroutinesRequest) (*pb.GetGoroutinesResponse, error) {
+	result, err := s.Impl.GetGoroutines(ctx, req.Filter)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.GetGoroutinesResponse{
+		TotalCount:    result.TotalCount,
+		MatchCount:    result.MatchCount,
+		MatchedStacks: result.MatchedStacks,
+	}, nil
+}
+
 // GRPCClient is the gRPC client that connects to the plugin
 type GRPCClient struct {
 	client pb.WorkerClient
@@ -205,4 +217,18 @@ func (c *GRPCClient) Parse(ctx context.Context, methodName string, inputJSON []b
 		return nil, NewErrorWithStack(fmt.Errorf("%s", resp.Error), resp.Stacktrace)
 	}
 	return &ParseResult{Data: resp.DataJson}, nil
+}
+
+func (c *GRPCClient) GetGoroutines(ctx context.Context, filter string) (*GoroutinesResult, error) {
+	resp, err := c.client.GetGoroutines(ctx, &pb.GetGoroutinesRequest{
+		Filter: filter,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &GoroutinesResult{
+		TotalCount:    resp.TotalCount,
+		MatchCount:    resp.MatchCount,
+		MatchedStacks: resp.MatchedStacks,
+	}, nil
 }

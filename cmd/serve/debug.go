@@ -3,10 +3,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"runtime"
 	"runtime/debug"
+	"runtime/pprof"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -62,6 +66,98 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 		})
 	})
 	logger.Info().Msg("Debug endpoints enabled: /_debug/config")
+
+	// Get goroutine stacks for leak detection
+	// Returns pprof goroutine data with optional filtering (case-insensitive)
+	r.Get("/_debug/goroutines", func(w http.ResponseWriter, r *http.Request) {
+		// Get debug level (1 = counts, 2 = full stacks)
+		debugLevel := 2
+		if lvl := r.URL.Query().Get("debug"); lvl != "" {
+			if parsed, err := strconv.Atoi(lvl); err == nil {
+				debugLevel = parsed
+			}
+		}
+
+		// Optional filter patterns (comma-separated, case-insensitive matching)
+		filterPatterns := r.URL.Query().Get("filter")
+
+		// Capture goroutine profile from main process
+		var buf bytes.Buffer
+		if err := pprof.Lookup("goroutine").WriteTo(&buf, debugLevel); err != nil {
+			render.Status(r, http.StatusInternalServerError)
+			render.JSON(w, r, map[string]interface{}{
+				"status": "error",
+				"error":  err.Error(),
+			})
+			return
+		}
+
+		stacks := buf.String()
+		totalCount := runtime.NumGoroutine()
+
+		// If filter patterns provided, count matching goroutines (case-insensitive)
+		var matchCount int
+		var matchedStacks []string
+		if filterPatterns != "" {
+			patterns := strings.Split(filterPatterns, ",")
+			goroutineStacks := strings.Split(stacks, "goroutine ")
+			for _, stack := range goroutineStacks {
+				if stack == "" {
+					continue
+				}
+				stackLower := strings.ToLower(stack)
+				for _, pattern := range patterns {
+					pattern = strings.TrimSpace(pattern)
+					patternLower := strings.ToLower(pattern)
+					if patternLower != "" && strings.Contains(stackLower, patternLower) {
+						matchCount++
+						// Truncate for readability
+						if len(stack) > 1000 {
+							stack = stack[:1000] + "..."
+						}
+						matchedStacks = append(matchedStacks, "goroutine "+stack)
+						break
+					}
+				}
+			}
+		}
+
+		// Get worker goroutine data
+		workerResults := workerPool.GetAllWorkersGoroutines(r.Context(), filterPatterns)
+
+		// Build worker results for response
+		workers := make([]map[string]interface{}, 0, len(workerResults))
+		for _, wr := range workerResults {
+			workerData := map[string]interface{}{
+				"worker_id": wr.WorkerID,
+			}
+			if wr.Error != nil {
+				workerData["error"] = wr.Error.Error()
+			} else {
+				workerData["total_count"] = wr.TotalCount
+				workerData["match_count"] = wr.MatchCount
+				workerData["matched_stacks"] = wr.MatchedStacks
+			}
+			workers = append(workers, workerData)
+		}
+
+		response := map[string]interface{}{
+			"status":      "ok",
+			"total_count": totalCount,
+			"workers":     workers,
+		}
+
+		if filterPatterns != "" {
+			response["filter"] = filterPatterns
+			response["match_count"] = matchCount
+			response["matched_stacks"] = matchedStacks
+		} else {
+			response["stacks"] = stacks
+		}
+
+		render.JSON(w, r, response)
+	})
+	logger.Info().Msg("Debug endpoints enabled: /_debug/goroutines")
 
 	r.Get("/_debug/gc", func(w http.ResponseWriter, r *http.Request) {
 		// Capture memory stats before GC (main process)
