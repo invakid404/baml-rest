@@ -15,6 +15,8 @@ import (
 	"github.com/go-chi/metrics"
 	"github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -835,22 +837,34 @@ func isRetryableWorkerError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := err.Error()
 
-	// gRPC Unavailable typically means worker died or network issue
-	if strings.Contains(errStr, "code = Unavailable") {
-		return true
+	// First, try to extract gRPC status code (preferred method)
+	if st, ok := status.FromError(err); ok {
+		switch st.Code() {
+		case codes.Unavailable:
+			// Worker died, network issue, or connection refused
+			return true
+		case codes.Canceled:
+			// Request was canceled (e.g., by hung detection)
+			return true
+		}
+
+		// Also check the status message for specific infrastructure errors
+		msg := st.Message()
+		if strings.Contains(msg, "connection reset") ||
+			strings.Contains(msg, "error reading from server: EOF") ||
+			strings.Contains(msg, "transport is closing") {
+			return true
+		}
 	}
-	// Connection reset
-	if strings.Contains(errStr, "connection reset") {
-		return true
-	}
-	// EOF from server (worker crashed)
-	if strings.Contains(errStr, "error reading from server: EOF") {
-		return true
-	}
-	// Transport closing
-	if strings.Contains(errStr, "transport is closing") {
+
+	// Fallback: string matching for wrapped errors or non-gRPC errors
+	// This catches cases where the gRPC status couldn't be extracted
+	errStr := err.Error()
+	if strings.Contains(errStr, "code = Unavailable") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "error reading from server: EOF") ||
+		strings.Contains(errStr, "transport is closing") {
 		return true
 	}
 

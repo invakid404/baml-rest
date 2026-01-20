@@ -123,17 +123,22 @@ func TestStreamMidStreamFailure(t *testing.T) {
 	// 1. The hung detection (firstByteTimeout) ONLY monitors requests where gotFirstByte=false
 	//    See pool.go:330: "if !req.gotFirstByte.Load() && now.Sub(req.startedAt) > p.config.FirstByteTimeout"
 	//
-	// 2. Pool-level retries happen when handle.worker.CallStream() returns an error
-	//    See pool.go:510-534. The retry loop exits once CallStream returns successfully.
+	// 2. Pool-level retries happen in two scenarios:
+	//    a) When handle.worker.CallStream() returns an error (before first result)
+	//    b) When a retryable infrastructure error occurs mid-stream (worker death, gRPC Unavailable)
 	//
 	// 3. The gRPC client CallStream() blocks until the server sends response headers
 	//    Headers are sent when the first stream.Send() is called (see workerplugin/grpc.go:49-77)
 	//
-	// 4. Therefore: if the worker is slow to produce the FIRST result, the gRPC call blocks,
-	//    hung detection can fire, and RETRY WORKS.
+	// 4. Mid-stream INFRASTRUCTURE failures (worker crash, gRPC Unavailable) ARE retried:
+	//    - Pool detects isRetryableWorkerError() and retries on a new worker
+	//    - A "reset" message is injected to tell clients to discard partial state
+	//    - See TestWorkerDeathMidStream for tests of this behavior
 	//
-	// 5. BUT: once the first result is produced, gotFirstByte=true, and hung detection
-	//    no longer monitors that request. Mid-stream failures result in errors, NOT retries.
+	// 5. Mid-stream APPLICATION failures (LLM disconnect, timeout) are NOT retried:
+	//    - These come from the upstream LLM, not our infrastructure
+	//    - The error is passed through to the client
+	//    - This test suite covers these scenarios
 	//
 	// 6. For BAML-internal retries (rate limits, API errors), reset messages ARE sent correctly
 	//    via IncrementalExtractor detecting callCount changes.
