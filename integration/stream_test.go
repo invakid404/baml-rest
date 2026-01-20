@@ -302,14 +302,21 @@ func TestWorkerDeathMidStream(t *testing.T) {
 	//
 	// This is testing infrastructure-level failures, not application-level failures.
 	// Uses the /_debug/kill-worker endpoint to kill a worker mid-request.
+	//
+	// EXPECTED BEHAVIOR (after mid-stream retry implementation):
+	// - Worker is killed after first byte is received
+	// - Pool detects the retryable error (gRPC Unavailable/EOF)
+	// - Pool gets a new worker and retries the request
+	// - A "reset" message is injected to tell client to discard partial state
+	// - Request completes successfully on the new worker
 
-	t.Run("worker_killed_after_first_byte", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Run("worker_killed_after_first_byte_retries_with_reset", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
 		// Create a slow streaming scenario so we have time to kill the worker
 		content := `{"name": "John Doe", "age": 30, "tags": ["developer", "golang", "testing"]}`
-		scenarioID := "test-worker-death"
+		scenarioID := "test-worker-death-retry"
 
 		scenario := &mockllm.Scenario{
 			ID:             scenarioID,
@@ -338,8 +345,10 @@ func TestWorkerDeathMidStream(t *testing.T) {
 		var receivedEvents []testutil.StreamEvent
 		var streamErr error
 		var sawResetEvent bool
+		var sawFinalEvent bool
 		var sawErrorEvent bool
 		var killedWorker bool
+		var eventsBeforeKill int
 
 		// Process events
 		for {
@@ -353,6 +362,10 @@ func TestWorkerDeathMidStream(t *testing.T) {
 
 				if event.Event == "reset" {
 					sawResetEvent = true
+					t.Log(">>> SAW RESET EVENT - retry with reset working!")
+				}
+				if event.Event == "final" {
+					sawFinalEvent = true
 				}
 				if event.Event == "error" {
 					sawErrorEvent = true
@@ -360,6 +373,7 @@ func TestWorkerDeathMidStream(t *testing.T) {
 
 				// After receiving the first event (first byte), kill the worker
 				if len(receivedEvents) == 1 && !killedWorker {
+					eventsBeforeKill = len(receivedEvents)
 					t.Log("First event received, killing worker...")
 					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
 					result, err := BAMLClient.KillWorker(killCtx)
@@ -389,36 +403,74 @@ func TestWorkerDeathMidStream(t *testing.T) {
 
 		t.Logf("=== RESULTS ===")
 		t.Logf("Total events received: %d", len(receivedEvents))
+		t.Logf("Events before kill: %d", eventsBeforeKill)
 		t.Logf("Stream error: %v", streamErr)
 		t.Logf("Worker killed: %v", killedWorker)
 		t.Logf("Saw reset event: %v", sawResetEvent)
+		t.Logf("Saw final event: %v", sawFinalEvent)
 		t.Logf("Saw error event: %v", sawErrorEvent)
 
 		for i, event := range receivedEvents {
 			t.Logf("Event %d: type=%q, data=%s", i, event.Event, string(event.Data))
 		}
 
-		// EXPECTED BEHAVIOR:
-		// - We should have killed the worker successfully
-		// - We should receive partial data (at least the first event)
-		// - We should get an error (worker died)
-		// - We should NOT see a reset event (no retry happens after first byte)
-		// - The request should NOT be retried (first byte was received, so hung detection disabled)
-
+		// Verify test setup worked
 		if !killedWorker {
 			t.Error("Failed to kill worker - test setup issue")
 		}
 
-		if len(receivedEvents) == 0 {
+		if eventsBeforeKill == 0 {
 			t.Error("Expected to receive at least one event before worker death")
 		}
 
-		// Document the key observation: worker death after first byte = error, NOT retry
-		if sawResetEvent {
-			t.Log("UNEXPECTED: Saw reset event - this means a retry happened after worker death")
-			t.Log("This would indicate pool-level retries are working for mid-stream failures")
-		} else {
-			t.Log("CONFIRMED: No reset event - worker death after first byte results in error, not retry")
+		// VERIFY EXPECTED BEHAVIOR:
+
+		// 1. Should have seen a reset event (indicating retry happened)
+		if !sawResetEvent {
+			t.Error("Expected reset event after worker death - mid-stream retry should inject reset")
+		}
+
+		// 2. Should have completed successfully (final event, no error)
+		if !sawFinalEvent {
+			t.Error("Expected final event - request should complete successfully after retry")
+		}
+
+		if sawErrorEvent {
+			t.Error("Did not expect error event - request should succeed after retry")
+		}
+
+		if streamErr != nil {
+			t.Errorf("Did not expect stream error - got: %v", streamErr)
+		}
+
+		// 3. Should have received more events after reset (from the retry)
+		// Total should be: events before kill + reset + events from retry
+		if len(receivedEvents) <= eventsBeforeKill+1 {
+			t.Errorf("Expected more events after reset, got %d total with %d before kill",
+				len(receivedEvents), eventsBeforeKill)
+		}
+
+		// Verify the final data is correct
+		if sawFinalEvent {
+			var lastDataEvent testutil.StreamEvent
+			for i := len(receivedEvents) - 1; i >= 0; i-- {
+				if receivedEvents[i].Event == "final" {
+					lastDataEvent = receivedEvents[i]
+					break
+				}
+			}
+			var person struct {
+				Name string   `json:"name"`
+				Age  int      `json:"age"`
+				Tags []string `json:"tags"`
+			}
+			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
+				t.Fatalf("Failed to unmarshal final event: %v", err)
+			}
+			if person.Name != "John Doe" || person.Age != 30 {
+				t.Errorf("Final data incorrect: got %+v", person)
+			}
+			t.Logf("Final data verified: %+v", person)
 		}
 	})
 }

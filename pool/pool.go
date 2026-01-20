@@ -489,101 +489,199 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 	return nil, fmt.Errorf("no final result received")
 }
 
-// CallStream executes a BAML method and streams results
+// CallStream executes a BAML method and streams results.
+// Supports automatic retry on worker infrastructure failures (crashes, network issues),
+// both before first byte and mid-stream. On mid-stream retry, a reset message is injected
+// so clients can discard accumulated partial state.
 func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
-	var lastErr error
+	// Verify we can get at least one worker before starting
+	handle, err := p.getWorker()
+	if err != nil {
+		return nil, err
+	}
 
-	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
-		handle, err := p.getWorker()
-		if err != nil {
-			return nil, err
-		}
+	wrappedResults := make(chan *workerplugin.StreamResult)
 
-		// Create cancellable context for this attempt
-		attemptCtx, cancel := context.WithCancel(ctx)
-		req, cleanup := p.trackRequest(handle, cancel)
+	go func() {
+		defer close(wrappedResults)
 
-		handle.mu.Lock()
-		handle.lastUsed = time.Now()
-		handle.mu.Unlock()
+		currentHandle := handle
+		var sentAnyResults bool
 
-		results, err := handle.worker.CallStream(attemptCtx, methodName, inputJSON, streamMode)
-		if err != nil {
-			cleanup()
-			lastErr = err
-
-			// Check if the parent context is cancelled (user cancelled)
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+		for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
+			// For retry attempts, get a new worker
+			if attempt > 0 {
+				var err error
+				currentHandle, err = p.getWorker()
+				if err != nil {
+					errResult := workerplugin.GetStreamResult()
+					errResult.Kind = workerplugin.StreamResultKindError
+					errResult.Error = fmt.Errorf("retry failed, no workers available: %w", err)
+					select {
+					case wrappedResults <- errResult:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(errResult)
+					}
+					return
+				}
 			}
 
-			// If attempt context was cancelled but parent wasn't, worker was killed - retry
-			if attemptCtx.Err() != nil {
-				handle.logger.Info().Int("attempt", attempt+1).Msg("Retrying stream after worker kill")
-				continue
-			}
+			// Create cancellable context for this attempt
+			attemptCtx, cancel := context.WithCancel(ctx)
+			req, cleanup := p.trackRequest(currentHandle, cancel)
 
-			// Regular error - mark worker unhealthy and retry
-			handle.logger.Warn().Int("attempt", attempt+1).Err(err).Msg("Worker stream call failed")
+			currentHandle.mu.Lock()
+			currentHandle.lastUsed = time.Now()
+			currentHandle.mu.Unlock()
 
-			handle.mu.Lock()
-			handle.healthy = false
-			handle.mu.Unlock()
+			results, err := currentHandle.worker.CallStream(attemptCtx, methodName, inputJSON, streamMode)
+			if err != nil {
+				cleanup()
 
-			go p.restartWorker(handle.id)
-			continue
-		}
-
-		// Got a results channel - wrap it to track first byte and cleanup
-		wrappedResults := make(chan *workerplugin.StreamResult)
-		go func() {
-			defer close(wrappedResults)
-			defer cleanup()
-
-			firstByte := false
-			for result := range results {
-				if !firstByte {
-					firstByte = true
-					req.gotFirstByte.Store(true)
+				// Check if parent context was cancelled (user cancelled)
+				if ctx.Err() != nil {
+					return
 				}
 
-				// Filter out heartbeat - it's only for first-byte tracking, not for consumers
+				// If attempt context was cancelled (hung detection killed worker) or
+				// this is a retryable worker error, retry with another worker
+				if attemptCtx.Err() != nil || isRetryableWorkerError(err) {
+					currentHandle.logger.Info().
+						Int("attempt", attempt+1).
+						Err(err).
+						Msg("Retrying stream after worker failure")
+					currentHandle.mu.Lock()
+					currentHandle.healthy = false
+					currentHandle.mu.Unlock()
+					go p.restartWorker(currentHandle.id)
+					continue
+				}
+
+				// Non-retryable error - send to client
+				currentHandle.logger.Warn().
+					Int("attempt", attempt+1).
+					Err(err).
+					Msg("Worker stream call failed (non-retryable)")
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = err
+				select {
+				case wrappedResults <- errResult:
+				case <-ctx.Done():
+					workerplugin.ReleaseStreamResult(errResult)
+				}
+				return
+			}
+
+			// Got results channel - forward results with retry support
+			needsReset := sentAnyResults // Need to inject reset if this is a retry after sending data
+			var injectedReset bool
+			var shouldRetry bool
+
+			for result := range results {
+				// Mark first byte received (disables hung detection for this request)
+				req.gotFirstByte.Store(true)
+
+				// Filter heartbeat - only for first-byte tracking
 				if result.Kind == workerplugin.StreamResultKindHeartbeat {
 					workerplugin.ReleaseStreamResult(result)
 					continue
 				}
 
+				// Check for retryable worker errors mid-stream
+				if result.Kind == workerplugin.StreamResultKindError && isRetryableWorkerError(result.Error) {
+					currentHandle.logger.Info().
+						Int("attempt", attempt+1).
+						Err(result.Error).
+						Msg("Retryable error mid-stream, will retry")
+					workerplugin.ReleaseStreamResult(result)
+					shouldRetry = true
+					break
+				}
+
+				// Inject reset message before first result after retry
+				if needsReset && !injectedReset {
+					resetResult := workerplugin.GetStreamResult()
+					resetResult.Kind = workerplugin.StreamResultKindStream
+					resetResult.Reset = true
+					select {
+					case wrappedResults <- resetResult:
+						injectedReset = true
+						currentHandle.logger.Info().Msg("Injected reset message for mid-stream retry")
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(resetResult)
+						workerplugin.ReleaseStreamResult(result)
+						drainResults(results)
+						cleanup()
+						return
+					}
+				}
+
+				// Forward the result to the client
 				select {
 				case wrappedResults <- result:
+					sentAnyResults = true
 				case <-ctx.Done():
-					// Consumer cancelled, drain remaining results to unblock gRPC goroutine
-					// Release the current result that wasn't sent
 					workerplugin.ReleaseStreamResult(result)
-					go func() {
-						for r := range results {
-							workerplugin.ReleaseStreamResult(r)
-						}
-					}()
+					drainResults(results)
+					cleanup()
 					return
 				}
 
-				// FINAL and ERROR are terminal - drain any remaining results
-				// This prevents blocking if the gRPC stream sends more after terminal
-				if result.Kind == workerplugin.StreamResultKindFinal || result.Kind == workerplugin.StreamResultKindError {
-					go func() {
-						for r := range results {
-							workerplugin.ReleaseStreamResult(r)
-						}
-					}()
+				// Terminal states - we're done (successfully or with app error)
+				if result.Kind == workerplugin.StreamResultKindFinal ||
+					result.Kind == workerplugin.StreamResultKindError {
+					drainResults(results)
+					cleanup()
 					return
 				}
 			}
-		}()
 
-		return wrappedResults, nil
-	}
+			cleanup()
 
-	return nil, fmt.Errorf("all stream retries failed: %w", lastErr)
+			// If we need to retry, mark worker unhealthy and continue
+			if shouldRetry {
+				currentHandle.mu.Lock()
+				currentHandle.healthy = false
+				currentHandle.mu.Unlock()
+				go p.restartWorker(currentHandle.id)
+				continue
+			}
+
+			// Channel closed without terminal - unexpected EOF, treat as retryable
+			if attempt < p.config.MaxRetries {
+				currentHandle.logger.Warn().
+					Int("attempt", attempt+1).
+					Msg("Stream ended unexpectedly without terminal result, retrying")
+				currentHandle.mu.Lock()
+				currentHandle.healthy = false
+				currentHandle.mu.Unlock()
+				go p.restartWorker(currentHandle.id)
+				continue
+			}
+		}
+
+		// All retries exhausted
+		errResult := workerplugin.GetStreamResult()
+		errResult.Kind = workerplugin.StreamResultKindError
+		errResult.Error = fmt.Errorf("all stream retries exhausted")
+		select {
+		case wrappedResults <- errResult:
+		case <-ctx.Done():
+			workerplugin.ReleaseStreamResult(errResult)
+		}
+	}()
+
+	return wrappedResults, nil
+}
+
+// drainResults consumes remaining results from a channel to unblock the gRPC goroutine
+func drainResults(results <-chan *workerplugin.StreamResult) {
+	go func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	}()
 }
 
 // totalInFlight returns the total number of in-flight requests across all workers
@@ -713,6 +811,35 @@ type Stats struct {
 	TotalWorkers   int
 	HealthyWorkers int
 	InFlight       int64
+}
+
+// isRetryableWorkerError returns true if the error indicates a worker infrastructure
+// failure (crash, network issue) rather than an application-level error from BAML/LLM.
+// These errors should trigger automatic retry on another worker.
+func isRetryableWorkerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+
+	// gRPC Unavailable typically means worker died or network issue
+	if strings.Contains(errStr, "code = Unavailable") {
+		return true
+	}
+	// Connection reset
+	if strings.Contains(errStr, "connection reset") {
+		return true
+	}
+	// EOF from server (worker crashed)
+	if strings.Contains(errStr, "error reading from server: EOF") {
+		return true
+	}
+	// Transport closing
+	if strings.Contains(errStr, "transport is closing") {
+		return true
+	}
+
+	return false
 }
 
 func (p *Pool) Stats() Stats {
