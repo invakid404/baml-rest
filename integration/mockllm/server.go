@@ -192,13 +192,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	s.log("chat completions request: model=%s, stream=%v", req.Model, req.Stream)
 
-	// Look up scenario by model name
-	scenario, ok := s.store.Get(req.Model)
+	// Look up scenario by model name and get effective delay for this request
+	scenario, effectiveDelay, ok := s.store.GetAndAdvance(req.Model)
 	if !ok {
 		s.log("scenario not found for model: %s", req.Model)
 		http.Error(w, fmt.Sprintf("no scenario registered for model: %s", req.Model), http.StatusNotFound)
 		return
 	}
+
+	s.log("effective initial delay for this request: %dms", effectiveDelay)
 
 	provider, err := GetProvider(scenario.Provider)
 	if err != nil {
@@ -207,29 +209,29 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		s.handleStreamingResponse(w, r, scenario, provider)
+		s.handleStreamingResponse(w, r, scenario, provider, effectiveDelay)
 	} else {
-		s.handleNonStreamingResponse(w, scenario, provider)
+		s.handleNonStreamingResponse(w, scenario, provider, effectiveDelay)
 	}
 }
 
-func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, scenario *Scenario, provider Provider) {
+func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, scenario *Scenario, provider Provider, effectiveDelay int) {
 	ctx := r.Context()
 
 	// Use a timeout context to prevent hanging forever
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	if err := StreamResponse(ctx, w, scenario, provider); err != nil {
+	if err := StreamResponse(ctx, w, scenario, provider, effectiveDelay); err != nil {
 		s.log("streaming error: %v", err)
 		// Connection likely already closed, nothing we can do
 	}
 }
 
-func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, scenario *Scenario, provider Provider) {
+func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, scenario *Scenario, provider Provider, effectiveDelay int) {
 	// Apply initial delay for non-streaming too
-	if scenario.InitialDelayMs > 0 {
-		time.Sleep(time.Duration(scenario.InitialDelayMs) * time.Millisecond)
+	if effectiveDelay > 0 {
+		time.Sleep(time.Duration(effectiveDelay) * time.Millisecond)
 	}
 
 	// Check for failure

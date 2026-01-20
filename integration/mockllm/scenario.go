@@ -25,6 +25,12 @@ type Scenario struct {
 	// InitialDelayMs is the delay before the first chunk (simulates "thinking")
 	InitialDelayMs int `json:"initial_delay_ms"`
 
+	// InitialDelayMsPerRequest allows different delays for each request (0-indexed).
+	// If specified, the Nth request to this scenario uses InitialDelayMsPerRequest[N].
+	// If N >= len(InitialDelayMsPerRequest), uses the last value in the slice.
+	// If empty/nil, falls back to InitialDelayMs.
+	InitialDelayMsPerRequest []int `json:"initial_delay_ms_per_request,omitempty"`
+
 	// ChunkDelayMs is the base delay between chunks
 	ChunkDelayMs int `json:"chunk_delay_ms"`
 
@@ -40,14 +46,16 @@ type Scenario struct {
 
 // ScenarioStore provides thread-safe storage for test scenarios.
 type ScenarioStore struct {
-	mu        sync.RWMutex
-	scenarios map[string]*Scenario
+	mu            sync.RWMutex
+	scenarios     map[string]*Scenario
+	requestCounts map[string]int // tracks request count per scenario ID
 }
 
 // NewScenarioStore creates a new empty scenario store.
 func NewScenarioStore() *ScenarioStore {
 	return &ScenarioStore{
-		scenarios: make(map[string]*Scenario),
+		scenarios:     make(map[string]*Scenario),
+		requestCounts: make(map[string]int),
 	}
 }
 
@@ -66,12 +74,44 @@ func (s *ScenarioStore) Get(id string) (*Scenario, bool) {
 	return scenario, ok
 }
 
+// GetAndAdvance retrieves a scenario by ID and returns the effective InitialDelayMs
+// for this request, then increments the request counter.
+// If InitialDelayMsPerRequest is configured, uses that based on request count,
+// otherwise falls back to InitialDelayMs.
+func (s *ScenarioStore) GetAndAdvance(id string) (*Scenario, int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	scenario, ok := s.scenarios[id]
+	if !ok {
+		return nil, 0, false
+	}
+
+	// Get current request count and increment
+	reqCount := s.requestCounts[id]
+	s.requestCounts[id] = reqCount + 1
+
+	// Calculate effective initial delay
+	effectiveDelay := scenario.InitialDelayMs
+	if len(scenario.InitialDelayMsPerRequest) > 0 {
+		if reqCount < len(scenario.InitialDelayMsPerRequest) {
+			effectiveDelay = scenario.InitialDelayMsPerRequest[reqCount]
+		} else {
+			// Use last value for subsequent requests
+			effectiveDelay = scenario.InitialDelayMsPerRequest[len(scenario.InitialDelayMsPerRequest)-1]
+		}
+	}
+
+	return scenario, effectiveDelay, true
+}
+
 // Delete removes a scenario by ID.
 func (s *ScenarioStore) Delete(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, existed := s.scenarios[id]
 	delete(s.scenarios, id)
+	delete(s.requestCounts, id)
 	return existed
 }
 
@@ -80,6 +120,7 @@ func (s *ScenarioStore) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scenarios = make(map[string]*Scenario)
+	s.requestCounts = make(map[string]int)
 }
 
 // List returns all registered scenarios.

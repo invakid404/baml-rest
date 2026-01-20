@@ -626,18 +626,18 @@ func TestWorkerDeathMidStream(t *testing.T) {
 	})
 
 	t.Run("hung_detection_kills_worker_and_retries", func(t *testing.T) {
-		// This test verifies that the automatic hung detection mechanism fires correctly.
+		// This test verifies that the automatic hung detection mechanism fires correctly
+		// and successfully recovers on retry.
 		//
-		// NOTE: This test uses a mock LLM scenario that is ALWAYS slow (5s initial delay).
-		// Since every retry hits the same slow scenario, all retries will timeout.
-		// This is EXPECTED - hung detection is meant to recover from stuck WORKERS,
-		// not slow upstream LLMs. With a persistently slow LLM, retries won't help.
+		// Uses a stateful scenario where:
+		// - First request: 5 second delay (triggers hung detection)
+		// - Retry: 0ms delay (succeeds immediately)
 		//
 		// What this test verifies:
 		// - Hung detection fires when FirstByteTimeout is exceeded
-		// - Multiple retry attempts are made (observable from timing)
-		// - Error is returned after all retries are exhausted
-		// - No reset event (all timeouts are pre-first-byte)
+		// - Request is retried after hung detection kills worker
+		// - Retry succeeds on the fast second attempt
+		// - No reset event (hung detection kills pre-first-byte)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -658,19 +658,22 @@ func TestWorkerDeathMidStream(t *testing.T) {
 			_, _ = BAMLClient.SetFirstByteTimeout(restoreCtx, 120000)
 		}()
 
-		// Create a scenario with initial delay LONGER than the timeout
-		// This will trigger hung detection before first byte is received
-		// Since this delay applies to ALL requests, retries will also timeout
-		content := `{"name": "Hung Test", "age": 99, "tags": ["timeout"]}`
-		scenarioID := "test-hung-detection"
+		// Create a STATEFUL scenario:
+		// - Request 0 (first): 5000ms delay (triggers hung detection)
+		// - Request 1+ (retries): 0ms delay (succeeds immediately)
+		content := `{"name": "Hung Test Recovery", "age": 42, "tags": ["recovered"]}`
+		scenarioID := "test-hung-detection-recovery"
 
 		scenario := &mockllm.Scenario{
-			ID:             scenarioID,
-			Provider:       "openai",
-			Content:        content,
-			ChunkSize:      20,
-			InitialDelayMs: 5000, // 5 seconds - longer than 2s timeout, applies to ALL requests
-			ChunkDelayMs:   50,
+			ID:       scenarioID,
+			Provider: "openai",
+			Content:  content,
+			ChunkSize: 20,
+			// InitialDelayMsPerRequest makes the scenario stateful:
+			// [0]: first request uses 5000ms delay (triggers hung detection)
+			// [1]: second request (retry) uses 0ms delay (succeeds)
+			InitialDelayMsPerRequest: []int{5000, 0},
+			ChunkDelayMs:             50,
 		}
 
 		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
@@ -682,12 +685,12 @@ func TestWorkerDeathMidStream(t *testing.T) {
 		}
 
 		// Start streaming request
-		t.Log("Starting streaming request (expecting hung detection to fire on each attempt)...")
+		t.Log("Starting streaming request (expecting hung detection to fire, then retry succeeds)...")
 		startTime := time.Now()
 
 		events, errs := BAMLClient.Stream(ctx, testutil.CallRequest{
 			Method:  "GetPerson",
-			Input:   map[string]any{"description": "Hung test person"},
+			Input:   map[string]any{"description": "Hung test recovery person"},
 			Options: opts,
 		})
 
@@ -747,33 +750,54 @@ func TestWorkerDeathMidStream(t *testing.T) {
 			t.Error("Did not expect reset event - hung detection should kill before first byte")
 		}
 
-		// 2. Should have seen an error event (all retries exhausted against slow scenario)
-		if !sawErrorEvent {
-			t.Error("Expected error event - all retries should fail against persistently slow scenario")
+		// 2. Should NOT have error event (retry should succeed)
+		if sawErrorEvent {
+			t.Error("Did not expect error event - retry should succeed with fast second attempt")
 		}
 
-		// 3. Timing should show multiple attempts were made
-		// With 2s timeout and 3 attempts (0, 1, 2), expect ~6-8s total
-		expectedMinTime := 5 * time.Second  // At least 2+ attempts worth of timeouts
-		expectedMaxTime := 15 * time.Second // Not excessively long
+		// 3. Should have completed without stream error
+		if streamErr != nil {
+			t.Errorf("Did not expect stream error - got: %v", streamErr)
+		}
+
+		// 4. Timing should show hung detection fired (at least 2s) but not multiple failures
+		// With 2s timeout for first attempt + immediate success on retry, expect ~2-4s total
+		expectedMinTime := 2 * time.Second // At least one timeout worth
+		expectedMaxTime := 8 * time.Second // Not multiple full timeouts
 		if elapsed < expectedMinTime {
 			t.Errorf("Request completed too fast (%v) - hung detection may not have fired", elapsed)
 		}
 		if elapsed > expectedMaxTime {
-			t.Errorf("Request took too long (%v) - something unexpected happened", elapsed)
+			t.Errorf("Request took too long (%v) - retry may have also timed out", elapsed)
 		}
-		t.Logf("Timing indicates hung detection fired and retries were attempted (elapsed: %v)", elapsed)
+		t.Logf("Timing indicates hung detection fired and retry succeeded (elapsed: %v)", elapsed)
 
-		// 4. Error message should indicate retries were exhausted
+		// 5. Should have received data events (from successful retry)
+		if len(receivedEvents) == 0 {
+			t.Error("Expected to receive events from successful retry")
+		}
+
+		// 6. Verify the final data is correct
 		if len(receivedEvents) > 0 {
-			lastEvent := receivedEvents[len(receivedEvents)-1]
-			if lastEvent.Event == "error" {
-				errorMsg := string(lastEvent.Data)
-				if !strings.Contains(errorMsg, "retries exhausted") {
-					t.Errorf("Expected 'retries exhausted' in error message, got: %s", errorMsg)
+			var lastDataEvent testutil.StreamEvent
+			for i := len(receivedEvents) - 1; i >= 0; i-- {
+				if receivedEvents[i].Event != "reset" && receivedEvents[i].Event != "error" {
+					lastDataEvent = receivedEvents[i]
+					break
 				}
-				t.Logf("Error message confirms retries were exhausted: %s", errorMsg)
 			}
+			var person struct {
+				Name string   `json:"name"`
+				Age  int      `json:"age"`
+				Tags []string `json:"tags"`
+			}
+			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
+				t.Fatalf("Failed to unmarshal last event data: %v", err)
+			}
+			if person.Name != "Hung Test Recovery" || person.Age != 42 {
+				t.Errorf("Final data incorrect: got %+v", person)
+			}
+			t.Logf("Final data verified: %+v", person)
 		}
 	})
 }
