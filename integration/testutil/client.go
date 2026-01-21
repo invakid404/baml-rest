@@ -399,6 +399,11 @@ func (c *BAMLRestClient) KillWorker(ctx context.Context) (*KillWorkerResult, err
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
+	// Check if the server returned an error response
+	if result.Status == "no_worker_found" {
+		return nil, fmt.Errorf("no worker with in-flight requests found: %s", result.Error)
+	}
+
 	return &result, nil
 }
 
