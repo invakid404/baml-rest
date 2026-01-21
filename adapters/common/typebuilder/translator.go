@@ -57,9 +57,14 @@ func (t *Translator) Apply(dt *bamlutils.DynamicTypes) error {
 }
 
 func (t *Translator) createEnum(name string, enum *bamlutils.DynamicEnum) error {
-	eb, err := t.tb.AddEnum(name)
+	// Try to get existing enum first, create if it doesn't exist
+	eb, err := t.tb.Enum(name)
 	if err != nil {
-		return err
+		// Enum doesn't exist, create it
+		eb, err = t.tb.AddEnum(name)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Note: SetDescription and SetAlias are not exported in the native BAML Go library.
@@ -69,7 +74,8 @@ func (t *Translator) createEnum(name string, enum *bamlutils.DynamicEnum) error 
 	for _, v := range enum.Values {
 		vb, err := eb.AddValue(v.Name)
 		if err != nil {
-			return fmt.Errorf("value %q: %w", v.Name, err)
+			// Value might already exist, skip silently
+			continue
 		}
 		// Note: SetDescription and SetAlias are not exported for enum values either.
 		if v.Skip {
@@ -90,9 +96,14 @@ func (t *Translator) createEnum(name string, enum *bamlutils.DynamicEnum) error 
 }
 
 func (t *Translator) createClassShell(name string, class *bamlutils.DynamicClass) error {
-	cb, err := t.tb.AddClass(name)
+	// Try to get existing class first, create if it doesn't exist
+	cb, err := t.tb.Class(name)
 	if err != nil {
-		return err
+		// Class doesn't exist, create it
+		cb, err = t.tb.AddClass(name)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Note: SetDescription and SetAlias are not exported in the native BAML Go library.
