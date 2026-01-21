@@ -156,19 +156,14 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 
 // StreamEvent represents a single event from /stream endpoints (works for both SSE and NDJSON).
 type StreamEvent struct {
-	Event string          // Event type (e.g., "partial", "final", "reset", "error" for NDJSON; "" for SSE data)
+	Event string          // Event type: "data", "reset", "error" for NDJSON; "" for SSE data events, "reset"/"error" for SSE
 	Data  json.RawMessage // Event data
 	Raw   string          // For stream-with-raw, the raw LLM output at this point
 }
 
-// IsFinal returns true if this is a final event (NDJSON "final" or SSE last data event).
-func (e *StreamEvent) IsFinal() bool {
-	return e.Event == "final"
-}
-
-// IsPartial returns true if this is a partial event.
-func (e *StreamEvent) IsPartial() bool {
-	return e.Event == "partial" || e.Event == ""
+// IsData returns true if this is a data event.
+func (e *StreamEvent) IsData() bool {
+	return e.Event == "data" || e.Event == ""
 }
 
 // IsReset returns true if this is a reset event.
@@ -181,7 +176,7 @@ func (e *StreamEvent) IsError() bool {
 	return e.Event == "error"
 }
 
-// ParseStreamEvent parses a stream event's data into the target.
+// ParseData parses a stream event's data into the target.
 func (e *StreamEvent) ParseData(target any) error {
 	return json.Unmarshal(e.Data, target)
 }

@@ -32,16 +32,15 @@ const ContentTypeNDJSON = "application/x-ndjson"
 type NDJSONEventType string
 
 const (
-	NDJSONEventPartial NDJSONEventType = "partial"
-	NDJSONEventFinal   NDJSONEventType = "final"
-	NDJSONEventReset   NDJSONEventType = "reset"
-	NDJSONEventError   NDJSONEventType = "error"
+	NDJSONEventData  NDJSONEventType = "data"
+	NDJSONEventReset NDJSONEventType = "reset"
+	NDJSONEventError NDJSONEventType = "error"
 )
 
 // NDJSONEvent represents a single NDJSON streaming event.
 // The structure varies based on Type:
-//   - "partial"/"final": Data field contains the parsed data, Raw contains accumulated raw (if stream-with-raw)
-//   - "reset": No other fields
+//   - "data": Data field contains the parsed data, Raw contains accumulated raw (if stream-with-raw)
+//   - "reset": No other fields - client should discard accumulated state
 //   - "error": Error field contains the error message
 type NDJSONEvent struct {
 	Type  NDJSONEventType `json:"type"`
@@ -103,22 +102,10 @@ func (nw *NDJSONWriter) WriteEvent(event *NDJSONEvent) error {
 	return nil
 }
 
-// WritePartial writes a partial data event.
-func (nw *NDJSONWriter) WritePartial(data []byte, raw string) error {
+// WriteData writes a data event.
+func (nw *NDJSONWriter) WriteData(data []byte, raw string) error {
 	event := &NDJSONEvent{
-		Type: NDJSONEventPartial,
-		Data: data,
-	}
-	if raw != "" {
-		event.Raw = raw
-	}
-	return nw.WriteEvent(event)
-}
-
-// WriteFinal writes a final data event.
-func (nw *NDJSONWriter) WriteFinal(data []byte, raw string) error {
-	event := &NDJSONEvent{
-		Type: NDJSONEventFinal,
+		Type: NDJSONEventData,
 		Data: data,
 	}
 	if raw != "" {
@@ -242,15 +229,7 @@ func handleNDJSONStream(
 				}
 			}
 
-			// Write the appropriate event type
-			var writeErr error
-			if result.Kind == workerplugin.StreamResultKindFinal {
-				writeErr = nw.WriteFinal(result.Data, rawForOutput)
-			} else {
-				writeErr = nw.WritePartial(result.Data, rawForOutput)
-			}
-
-			if writeErr != nil {
+			if err := nw.WriteData(result.Data, rawForOutput); err != nil {
 				workerplugin.ReleaseStreamResult(result)
 				drainResults(results)
 				return
