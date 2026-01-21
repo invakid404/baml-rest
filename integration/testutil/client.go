@@ -407,6 +407,48 @@ func (c *BAMLRestClient) KillWorker(ctx context.Context) (*KillWorkerResult, err
 	return &result, nil
 }
 
+// InFlightResult represents the response from /_debug/in-flight.
+type InFlightResult struct {
+	Status  string             `json:"status"`
+	Workers []WorkerInFlight   `json:"workers"`
+}
+
+// WorkerInFlight represents the in-flight status of a single worker.
+type WorkerInFlight struct {
+	WorkerID     int    `json:"worker_id"`
+	Healthy      bool   `json:"healthy"`
+	InFlight     int    `json:"in_flight"`
+	GotFirstByte []bool `json:"got_first_byte"`
+}
+
+// GetInFlightStatus calls the /_debug/in-flight endpoint to get worker in-flight status.
+// This is only available in debug builds.
+func (c *BAMLRestClient) GetInFlightStatus(ctx context.Context) (*InFlightResult, error) {
+	url := fmt.Sprintf("%s/_debug/in-flight", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result InFlightResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &result, nil
+}
+
 // ConfigResult represents the response from /_debug/config.
 type ConfigResult struct {
 	Status              string `json:"status"`

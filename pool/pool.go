@@ -769,6 +769,48 @@ func (p *Pool) GetFirstByteTimeout() time.Duration {
 	return p.config.FirstByteTimeout
 }
 
+// WorkerInFlightInfo contains in-flight information for a single worker.
+type WorkerInFlightInfo struct {
+	WorkerID     int
+	Healthy      bool
+	InFlight     int
+	GotFirstByte []bool
+}
+
+// GetInFlightStatus returns the in-flight status of all workers for debugging.
+func (p *Pool) GetInFlightStatus() []WorkerInFlightInfo {
+	p.mu.RLock()
+	workers := p.workers
+	p.mu.RUnlock()
+
+	result := make([]WorkerInFlightInfo, 0, len(workers))
+	for _, handle := range workers {
+		if handle == nil {
+			continue
+		}
+
+		handle.mu.RLock()
+		healthy := handle.healthy
+		handle.mu.RUnlock()
+
+		handle.inFlightMu.RLock()
+		inFlightCount := len(handle.inFlightReq)
+		var gotFirstByteList []bool
+		for _, req := range handle.inFlightReq {
+			gotFirstByteList = append(gotFirstByteList, req.gotFirstByte.Load())
+		}
+		handle.inFlightMu.RUnlock()
+
+		result = append(result, WorkerInFlightInfo{
+			WorkerID:     handle.id,
+			Healthy:      healthy,
+			InFlight:     inFlightCount,
+			GotFirstByte: gotFirstByteList,
+		})
+	}
+	return result
+}
+
 // Shutdown gracefully shuts down the pool, waiting for in-flight requests to complete
 func (p *Pool) Shutdown(ctx context.Context) error {
 	// Start draining - reject new requests

@@ -1390,6 +1390,13 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 
 					if !killedWorker {
 						t.Log("All KillWorker attempts failed")
+						// Get in-flight status for debugging
+						if status, err := BAMLClient.GetInFlightStatus(ctx); err == nil {
+							for _, w := range status.Workers {
+								t.Logf("Worker %d: healthy=%v, in_flight=%d, got_first_byte=%v",
+									w.WorkerID, w.Healthy, w.InFlight, w.GotFirstByte)
+							}
+						}
 					}
 				}
 
