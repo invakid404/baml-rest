@@ -1364,7 +1364,17 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 				// After receiving the first data event, kill the worker
 				if len(receivedEvents) == 1 && !killedWorker && event.IsData() {
 					eventsBeforeKill = len(receivedEvents)
-					t.Log("First data event received, killing worker...")
+					t.Log("First data event received, checking in-flight status before kill...")
+
+					// Log in-flight status before attempting to kill
+					if status, err := BAMLClient.GetInFlightStatus(ctx); err == nil {
+						for _, w := range status.Workers {
+							t.Logf("BEFORE KILL - Worker %d: healthy=%v, in_flight=%d, got_first_byte=%v",
+								w.WorkerID, w.Healthy, w.InFlight, w.GotFirstByte)
+						}
+					}
+
+					t.Log("Now killing worker...")
 
 					// Retry KillWorker a few times in case of timing issues
 					for attempt := 0; attempt < 5; attempt++ {
