@@ -217,6 +217,10 @@ var serveCmd = &cobra.Command{
 		if err != nil {
 			panic(err)
 		}
+		sseFinalKind, err := sse.NewType("final")
+		if err != nil {
+			panic(err)
+		}
 
 		// Create SSE server
 		s := &sse.Server{
@@ -334,6 +338,7 @@ var serveCmd = &cobra.Command{
 						SSEServer:    s,
 						SSEErrorType: sseErrorKind,
 						SSEResetType: sseResetKind,
+						SSEFinalType: sseFinalKind,
 						PathPrefix:   pathPrefix,
 					}
 					return func(w http.ResponseWriter, r *http.Request) {

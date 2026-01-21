@@ -86,6 +86,7 @@ type SSEPublisher struct {
 	topic     string
 	errorType sse.EventType
 	resetType sse.EventType
+	finalType sse.EventType
 	needsRaw  bool
 	cancel    context.CancelFunc
 	done      <-chan struct{}
@@ -101,6 +102,7 @@ func NewSSEPublisher(
 	sseServer *sse.Server,
 	errorType sse.EventType,
 	resetType sse.EventType,
+	finalType sse.EventType,
 	needsRaw bool,
 	pathPrefix string,
 	methodName string,
@@ -142,6 +144,7 @@ func NewSSEPublisher(
 		topic:     topic,
 		errorType: errorType,
 		resetType: resetType,
+		finalType: finalType,
 		needsRaw:  needsRaw,
 		cancel:    cancel,
 		done:      sseDone,
@@ -170,7 +173,7 @@ func (p *SSEPublisher) PublishData(data []byte, raw string) error {
 func (p *SSEPublisher) PublishFinal(data []byte, raw string) error {
 	// SSE uses the same format for partial and final data events
 	// The distinction is made by using a "final" event type
-	message := &sse.Message{Type: sse.EventType("final")}
+	message := &sse.Message{Type: p.finalType}
 
 	if p.needsRaw {
 		wrapped, err := json.Marshal(CallWithRawResponse{
@@ -316,6 +319,7 @@ type StreamHandlerConfig struct {
 	SSEServer    *sse.Server
 	SSEErrorType sse.EventType
 	SSEResetType sse.EventType
+	SSEFinalType sse.EventType
 	PathPrefix   string
 }
 
@@ -346,6 +350,7 @@ func HandleStream(
 			config.SSEServer,
 			config.SSEErrorType,
 			config.SSEResetType,
+			config.SSEFinalType,
 			streamMode.NeedsRaw(),
 			config.PathPrefix,
 			methodName,
