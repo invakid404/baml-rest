@@ -165,7 +165,7 @@ type workerHandle struct {
 	logger      zerolog.Logger // pre-bound with worker id
 	client      *plugin.Client
 	worker      workerplugin.Worker
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	healthy     bool
 	lastUsed    time.Time
 	inFlightMu  sync.RWMutex
@@ -789,9 +789,9 @@ func (p *Pool) GetInFlightStatus() []WorkerInFlightInfo {
 			continue
 		}
 
-		handle.mu.Lock()
+		handle.mu.RLock()
 		healthy := handle.healthy
-		handle.mu.Unlock()
+		handle.mu.RUnlock()
 
 		handle.inFlightMu.RLock()
 		inFlightCount := len(handle.inFlightReq)

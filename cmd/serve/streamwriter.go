@@ -330,7 +330,9 @@ func HandleStream(
 	results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 	if err != nil {
 		httplogger.SetError(r.Context(), err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// Headers are already committed (HTTP 200), so we can't use http.Error.
+		// Send the error through the stream instead.
+		_ = publisher.PublishError(err.Error())
 		return
 	}
 
