@@ -255,6 +255,23 @@ func generateOpenAPISchema() *openapi3.T {
 			panic(err)
 		}
 
+		// Generate schema for stream/partial type (may differ from final type)
+		streamType := reflect.ValueOf(method.MakeStreamOutput()).Elem().Type()
+
+		streamTypeStruct := reflect.StructOf([]reflect.StructField{
+			{
+				Name: "X",
+				Type: streamType,
+				Tag:  reflect.StructTag(fmt.Sprintf(`json:"x"`)),
+			},
+		})
+
+		streamTypeStructInstance := reflect.New(streamTypeStruct)
+		streamTypeSchema, err := generator.NewSchemaRefForValue(streamTypeStructInstance.Interface(), schemas)
+		if err != nil {
+			panic(err)
+		}
+
 		// Response for /call endpoint
 		responses := openapi3.NewResponses()
 		description := fmt.Sprintf("Successful response for %s", methodName)
@@ -356,12 +373,7 @@ func generateOpenAPISchema() *openapi3.T {
 							Enum: []any{"data"},
 						},
 					},
-					"data": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type:        &openapi3.Types{openapi3.TypeObject},
-							Description: "Partial result - fields not yet parsed may be null",
-						},
-					},
+					"data": streamTypeSchema.Value.Properties["x"],
 				},
 				Required: []string{"type", "data"},
 			},
@@ -457,12 +469,7 @@ func generateOpenAPISchema() *openapi3.T {
 							Enum: []any{"data"},
 						},
 					},
-					"data": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type:        &openapi3.Types{openapi3.TypeObject},
-							Description: "Partial result - fields not yet parsed may be null",
-						},
-					},
+					"data": streamTypeSchema.Value.Properties["x"],
 					"raw": &openapi3.SchemaRef{
 						Value: &openapi3.Schema{
 							Type:        &openapi3.Types{openapi3.TypeString},
