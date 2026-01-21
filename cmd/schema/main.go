@@ -40,9 +40,42 @@ func main() {
 // streamSchemaSuffix is appended to component schema names for their nullable stream variants.
 const streamSchemaSuffix = "__Stream"
 
+// makeStreamEventSchema creates a streaming event schema with the given type and data schema.
+// If includeRaw is true, adds a "raw" field for LLM output.
+func makeStreamEventSchema(eventType, description string, dataSchema *openapi3.SchemaRef, includeRaw bool, rawDescription string) *openapi3.SchemaRef {
+	props := openapi3.Schemas{
+		"type": &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type: &openapi3.Types{openapi3.TypeString},
+				Enum: []any{eventType},
+			},
+		},
+		"data": dataSchema,
+	}
+	required := []string{"type", "data"}
+
+	if includeRaw {
+		props["raw"] = &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeString},
+				Description: rawDescription,
+			},
+		}
+		required = append(required, "raw")
+	}
+
+	return &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: description,
+			Properties:  props,
+			Required:    required,
+		},
+	}
+}
+
 // makeStreamSchemaFullyNullable recursively processes a schema to make all fields nullable.
 // This is necessary for streaming partial events where any field may be null during parsing.
-// Arrays are kept as-is (they can be empty but not null in Go).
 //
 // For $ref schemas, instead of inlining, this creates a new component schema named X__Stream
 // and returns a $ref to it. This keeps the schema smaller and allows reuse.
@@ -512,40 +545,18 @@ func generateOpenAPISchema() *openapi3.T {
 		// Partial data events contain intermediate results (may have null placeholders for unparsed fields)
 		// Make all fields in the stream type nullable since any field may be null during streaming
 		nullableStreamDataSchema := makeStreamSchemaFullyNullable(streamTypeSchema.Value.Properties["x"], schemas, make(map[string]bool))
-		streamPartialDataEventSchema := &openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Type:        &openapi3.Types{openapi3.TypeObject},
-				Description: "Partial data event containing an intermediate parsed result. Fields not yet parsed may be null.",
-				Properties: openapi3.Schemas{
-					"type": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{openapi3.TypeString},
-							Enum: []any{"data"},
-						},
-					},
-					"data": nullableStreamDataSchema,
-				},
-				Required: []string{"type", "data"},
-			},
-		}
+		finalDataSchema := resultTypeSchema.Value.Properties["x"]
 
-		// Final data events contain the complete, validated result
-		streamFinalDataEventSchema := &openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Type:        &openapi3.Types{openapi3.TypeObject},
-				Description: "Final data event containing the complete, validated result",
-				Properties: openapi3.Schemas{
-					"type": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{openapi3.TypeString},
-							Enum: []any{"final"},
-						},
-					},
-					"data": resultTypeSchema.Value.Properties["x"],
-				},
-				Required: []string{"type", "data"},
-			},
-		}
+		streamPartialDataEventSchema := makeStreamEventSchema(
+			"data",
+			"Partial data event containing an intermediate parsed result. Fields not yet parsed may be null.",
+			nullableStreamDataSchema, false, "",
+		)
+		streamFinalDataEventSchema := makeStreamEventSchema(
+			"final",
+			"Final data event containing the complete, validated result",
+			finalDataSchema, false, "",
+		)
 
 		streamDescription := fmt.Sprintf("Stream of partial and final results for %s", methodName)
 		sseStreamDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON, error/reset events use SSE event types."
@@ -607,54 +618,17 @@ func generateOpenAPISchema() *openapi3.T {
 		})
 
 		// Response for /stream-with-raw endpoint (NDJSON streaming with raw LLM output)
-		// Partial data events contain intermediate results with accumulated raw LLM response
 		// Reuse the same nullable stream data schema from above
-		streamWithRawPartialDataEventSchema := &openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Type:        &openapi3.Types{openapi3.TypeObject},
-				Description: "Partial data event containing an intermediate parsed result with accumulated raw LLM output. Fields not yet parsed may be null.",
-				Properties: openapi3.Schemas{
-					"type": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{openapi3.TypeString},
-							Enum: []any{"data"},
-						},
-					},
-					"data": nullableStreamDataSchema,
-					"raw": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type:        &openapi3.Types{openapi3.TypeString},
-							Description: "Accumulated raw LLM response text up to this point",
-						},
-					},
-				},
-				Required: []string{"type", "data", "raw"},
-			},
-		}
-
-		// Final data events contain the complete, validated result with full raw LLM response
-		streamWithRawFinalDataEventSchema := &openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Type:        &openapi3.Types{openapi3.TypeObject},
-				Description: "Final data event containing the complete, validated result with full raw LLM output",
-				Properties: openapi3.Schemas{
-					"type": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{openapi3.TypeString},
-							Enum: []any{"final"},
-						},
-					},
-					"data": resultTypeSchema.Value.Properties["x"],
-					"raw": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type:        &openapi3.Types{openapi3.TypeString},
-							Description: "Complete raw LLM response text",
-						},
-					},
-				},
-				Required: []string{"type", "data", "raw"},
-			},
-		}
+		streamWithRawPartialDataEventSchema := makeStreamEventSchema(
+			"data",
+			"Partial data event containing an intermediate parsed result with accumulated raw LLM output. Fields not yet parsed may be null.",
+			nullableStreamDataSchema, true, "Accumulated raw LLM response text up to this point",
+		)
+		streamWithRawFinalDataEventSchema := makeStreamEventSchema(
+			"final",
+			"Final data event containing the complete, validated result with full raw LLM output",
+			finalDataSchema, true, "Complete raw LLM response text",
+		)
 
 		streamWithRawDescription := fmt.Sprintf("Stream of partial and final results for %s with raw LLM output", methodName)
 		sseStreamWithRawDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON with 'data' and 'raw' fields, error/reset events use SSE event types."
