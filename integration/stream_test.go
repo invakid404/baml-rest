@@ -916,15 +916,12 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("ndjson_content_type_header", func(t *testing.T) {
-		// This test verifies the server returns the correct content-type for NDJSON
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+}
 
-		content := `{"message": "hello"}`
-		opts := setupScenario(t, "test-ndjson-content-type", content)
-
-		// Make a raw HTTP request to check headers
+func TestStreamAcceptHeaderNegotiation(t *testing.T) {
+	// Helper to make a raw HTTP request and return the Content-Type
+	makeRequest := func(t *testing.T, ctx context.Context, acceptHeader string, opts *testutil.BAMLOptions) string {
+		t.Helper()
 		body, err := json.Marshal(map[string]any{
 			"input":            "test",
 			"__baml_options__": opts,
@@ -935,6 +932,122 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 
 		req, err := http.NewRequestWithContext(ctx, "POST",
 			TestEnv.BAMLRestURL+"/stream/GetSimple",
+			bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if acceptHeader != "" {
+			req.Header.Set("Accept", acceptHeader)
+		}
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		return resp.Header.Get("Content-Type")
+	}
+
+	t.Run("no_accept_header_defaults_to_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-no-header", content)
+
+		contentType := makeRequest(t, ctx, "", opts)
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' with no Accept header, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_text_event_stream_returns_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-sse", content)
+
+		contentType := makeRequest(t, ctx, "text/event-stream", opts)
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' with Accept: text/event-stream, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_ndjson_returns_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-ndjson", content)
+
+		contentType := makeRequest(t, ctx, "application/x-ndjson", opts)
+		if contentType != "application/x-ndjson" {
+			t.Errorf("Expected Content-Type 'application/x-ndjson' with Accept: application/x-ndjson, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_with_quality_values_prefers_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-quality", content)
+
+		// Even with quality values, if NDJSON is listed, it should be used
+		contentType := makeRequest(t, ctx, "application/x-ndjson, text/event-stream;q=0.9", opts)
+		if contentType != "application/x-ndjson" {
+			t.Errorf("Expected Content-Type 'application/x-ndjson' with quality Accept header, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_unknown_type_defaults_to_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-unknown", content)
+
+		contentType := makeRequest(t, ctx, "application/json", opts)
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' with unknown Accept header, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_wildcard_defaults_to_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-wildcard", content)
+
+		contentType := makeRequest(t, ctx, "*/*", opts)
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' with wildcard Accept header, got '%s'", contentType)
+		}
+	})
+
+	t.Run("stream_with_raw_accept_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-raw-ndjson", content)
+
+		// Test stream-with-raw endpoint with NDJSON
+		body, err := json.Marshal(map[string]any{
+			"input":            "test",
+			"__baml_options__": opts,
+		})
+		if err != nil {
+			t.Fatalf("Failed to marshal request: %v", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			TestEnv.BAMLRestURL+"/stream-with-raw/GetSimple",
 			bytes.NewReader(body))
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
@@ -951,7 +1064,44 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 
 		contentType := resp.Header.Get("Content-Type")
 		if contentType != "application/x-ndjson" {
-			t.Errorf("Expected Content-Type 'application/x-ndjson', got '%s'", contentType)
+			t.Errorf("Expected Content-Type 'application/x-ndjson' for stream-with-raw, got '%s'", contentType)
+		}
+	})
+
+	t.Run("stream_with_raw_no_accept_defaults_to_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-raw-default", content)
+
+		// Test stream-with-raw endpoint without Accept header
+		body, err := json.Marshal(map[string]any{
+			"input":            "test",
+			"__baml_options__": opts,
+		})
+		if err != nil {
+			t.Fatalf("Failed to marshal request: %v", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			TestEnv.BAMLRestURL+"/stream-with-raw/GetSimple",
+			bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		contentType := resp.Header.Get("Content-Type")
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' for stream-with-raw without Accept, got '%s'", contentType)
 		}
 	})
 }
