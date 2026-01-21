@@ -292,6 +292,179 @@ func generateOpenAPISchema() *openapi3.T {
 				Responses: rawResponses,
 			},
 		})
+
+		// Shared event schemas for reset and error (same for both /stream and /stream-with-raw)
+		resetEventSchema := &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeObject},
+				Description: "Reset event indicating client should discard accumulated state (sent when a retry occurs)",
+				Properties: openapi3.Schemas{
+					"type": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type: &openapi3.Types{openapi3.TypeString},
+							Enum: []any{"reset"},
+						},
+					},
+				},
+				Required: []string{"type"},
+			},
+		}
+
+		errorEventSchema := &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeObject},
+				Description: "Error event indicating the stream has failed",
+				Properties: openapi3.Schemas{
+					"type": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type: &openapi3.Types{openapi3.TypeString},
+							Enum: []any{"error"},
+						},
+					},
+					"error": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type:        &openapi3.Types{openapi3.TypeString},
+							Description: "Error message describing what went wrong",
+						},
+					},
+				},
+				Required: []string{"type", "error"},
+			},
+		}
+
+		// Response for /stream endpoint (NDJSON streaming without raw)
+		// Data events contain only the parsed data, no raw LLM output
+		streamDataEventSchema := &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeObject},
+				Description: "Data event containing a partial or final parsed result",
+				Properties: openapi3.Schemas{
+					"type": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type: &openapi3.Types{openapi3.TypeString},
+							Enum: []any{"data"},
+						},
+					},
+					"data": resultTypeSchema.Value.Properties["x"],
+				},
+				Required: []string{"type", "data"},
+			},
+		}
+
+		streamDescription := fmt.Sprintf("NDJSON stream of partial and final results for %s", methodName)
+		streamResponses := openapi3.NewResponses()
+		streamResponses.Set("200", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &streamDescription,
+				Content: openapi3.Content{
+					"application/x-ndjson": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								OneOf: openapi3.SchemaRefs{
+									streamDataEventSchema,
+									resetEventSchema,
+									errorEventSchema,
+								},
+								Discriminator: &openapi3.Discriminator{
+									PropertyName: "type",
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+
+		streamPath := fmt.Sprintf("/stream/%s", methodName)
+		paths.Set(streamPath, &openapi3.PathItem{
+			Post: &openapi3.Operation{
+				OperationID: fmt.Sprintf("%sStream", methodName),
+				Summary:     fmt.Sprintf("Stream %s results", methodName),
+				Description: "Returns a stream of NDJSON events containing partial results as they become available, followed by the final result. Events have type 'data' for results, 'reset' if the stream restarts due to a retry, or 'error' for failures.",
+				RequestBody: &openapi3.RequestBodyRef{
+					Value: &openapi3.RequestBody{
+						Content: map[string]*openapi3.MediaType{
+							"application/json": {
+								Schema: &openapi3.SchemaRef{
+									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
+								},
+							},
+						},
+					},
+				},
+				Responses: streamResponses,
+			},
+		})
+
+		// Response for /stream-with-raw endpoint (NDJSON streaming with raw LLM output)
+		// Data events contain both parsed data AND accumulated raw LLM response
+		streamWithRawDataEventSchema := &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeObject},
+				Description: "Data event containing a partial or final parsed result with accumulated raw LLM output",
+				Properties: openapi3.Schemas{
+					"type": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type: &openapi3.Types{openapi3.TypeString},
+							Enum: []any{"data"},
+						},
+					},
+					"data": resultTypeSchema.Value.Properties["x"],
+					"raw": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type:        &openapi3.Types{openapi3.TypeString},
+							Description: "Accumulated raw LLM response text up to this point",
+						},
+					},
+				},
+				Required: []string{"type", "data", "raw"},
+			},
+		}
+
+		streamWithRawDescription := fmt.Sprintf("NDJSON stream of partial and final results for %s with raw LLM output", methodName)
+		streamWithRawResponses := openapi3.NewResponses()
+		streamWithRawResponses.Set("200", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &streamWithRawDescription,
+				Content: openapi3.Content{
+					"application/x-ndjson": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								OneOf: openapi3.SchemaRefs{
+									streamWithRawDataEventSchema,
+									resetEventSchema,
+									errorEventSchema,
+								},
+								Discriminator: &openapi3.Discriminator{
+									PropertyName: "type",
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+
+		streamWithRawPath := fmt.Sprintf("/stream-with-raw/%s", methodName)
+		paths.Set(streamWithRawPath, &openapi3.PathItem{
+			Post: &openapi3.Operation{
+				OperationID: fmt.Sprintf("%sStreamWithRaw", methodName),
+				Summary:     fmt.Sprintf("Stream %s results with raw LLM output", methodName),
+				Description: "Returns a stream of NDJSON events containing partial results and the accumulated raw LLM output as they become available. Events have type 'data' for results (includes 'raw' field), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
+				RequestBody: &openapi3.RequestBodyRef{
+					Value: &openapi3.RequestBody{
+						Content: map[string]*openapi3.MediaType{
+							"application/json": {
+								Schema: &openapi3.SchemaRef{
+									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
+								},
+							},
+						},
+					},
+				},
+				Responses: streamWithRawResponses,
+			},
+		})
 	}
 
 	return &openapi3.T{
