@@ -190,55 +190,65 @@ type NDJSONPublisher struct {
 }
 
 // NewNDJSONPublisher creates an NDJSON publisher.
-// Headers are set but not committed until the first write.
+// Headers are committed immediately to start the HTTP streaming response.
 func NewNDJSONPublisher(w http.ResponseWriter) *NDJSONPublisher {
-	// Set headers for NDJSON streaming (not committed until first write)
+	// Set headers for NDJSON streaming
 	w.Header().Set("Content-Type", ContentTypeNDJSON)
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("X-Content-Type-Options", "nosniff") // Prevents buffering
 
 	p := &NDJSONPublisher{
 		w:   w,
 		buf: bufio.NewWriter(w),
 	}
 
-	if f, ok := w.(http.Flusher); ok {
-		p.flusher = f
+	// Get flusher, unwrapping middleware wrappers if necessary
+	p.flusher = getFlusher(w)
+
+	// Immediately flush headers to start the streaming response.
+	// Don't call WriteHeader - let it be implicit on first write/flush.
+	// This matches how go-sse handles streaming.
+	if p.flusher != nil {
+		p.flusher.Flush()
 	}
+	p.committed = true
 
 	return p
 }
 
-// commitHeaders writes the status code and flushes to establish the connection.
-// Called automatically on first write.
-func (p *NDJSONPublisher) commitHeaders() {
-	if p.committed {
-		return
+// getFlusher extracts http.Flusher from a ResponseWriter, unwrapping middleware wrappers if needed.
+func getFlusher(w http.ResponseWriter) http.Flusher {
+	for {
+		if f, ok := w.(http.Flusher); ok {
+			return f
+		}
+		// Try to unwrap middleware wrappers
+		if u, ok := w.(interface{ Unwrap() http.ResponseWriter }); ok {
+			w = u.Unwrap()
+			continue
+		}
+		return nil
 	}
-	p.committed = true
-	// First write will implicitly commit headers with 200 OK
 }
 
 func (p *NDJSONPublisher) writeEvent(event *NDJSONEvent) error {
-	p.commitHeaders()
-
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
 
-	if _, err := p.buf.Write(data); err != nil {
+	// Write directly to ResponseWriter (bypassing bufio.Writer)
+	// This ensures each event is sent immediately
+	if _, err := p.w.Write(data); err != nil {
 		return err
 	}
-	if err := p.buf.WriteByte('\n'); err != nil {
+	if _, err := p.w.Write([]byte{'\n'}); err != nil {
 		return err
 	}
 
-	if err := p.buf.Flush(); err != nil {
-		return err
-	}
-
+	// Flush immediately after EVERY write - critical for streaming
 	if p.flusher != nil {
 		p.flusher.Flush()
 	}
