@@ -1193,6 +1193,32 @@ func Generate(selfPkg string) {
 		Map(jen.String()).Add(parseMethodInterface).
 		Values(parseMapElements)
 
+	// Generate helper to extract inner baml.TypeBuilder from *baml_client.TypeBuilder
+	// The generated TypeBuilder has an unexported 'inner' field that we need to access via reflection
+	out.Func().Id("extractInnerTypeBuilder").
+		Params(jen.Id("clientTb").Any()).
+		Params(jen.Qual(BamlPkg, "TypeBuilder"), jen.Error()).
+		Block(
+			jen.Id("v").Op(":=").Qual("reflect", "ValueOf").Call(jen.Id("clientTb")),
+			jen.If(jen.Id("v").Dot("Kind").Call().Op("==").Qual("reflect", "Ptr")).Block(
+				jen.Id("v").Op("=").Id("v").Dot("Elem").Call(),
+			),
+			jen.Id("innerField").Op(":=").Id("v").Dot("FieldByName").Call(jen.Lit("inner")),
+			jen.If(jen.Op("!").Id("innerField").Dot("IsValid").Call()).Block(
+				jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("TypeBuilder has no 'inner' field"))),
+			),
+			// Use reflect.NewAt with unsafe to access unexported interface field
+			jen.Id("rf").Op(":=").Qual("reflect", "NewAt").Call(
+				jen.Id("innerField").Dot("Type").Call(),
+				jen.Qual("unsafe", "Pointer").Call(jen.Id("innerField").Dot("UnsafeAddr").Call()),
+			).Dot("Elem").Call(),
+			jen.List(jen.Id("inner"), jen.Id("ok")).Op(":=").Id("rf").Dot("Interface").Call().Assert(jen.Qual(BamlPkg, "TypeBuilder")),
+			jen.If(jen.Op("!").Id("ok")).Block(
+				jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("inner field is not baml.TypeBuilder, got %T"), jen.Id("rf").Dot("Interface").Call())),
+			),
+			jen.Return(jen.Id("inner"), jen.Nil()),
+		)
+
 	// Generate `MakeAdapter`
 	out.Func().Id("MakeAdapter").
 		Params(jen.Id("ctx").Qual("context", "Context")).
@@ -1212,11 +1238,15 @@ func Generate(selfPkg string) {
 								jen.If(jen.Id("err").Op("!=").Nil()).Block(
 									jen.Return(jen.Nil(), jen.Id("err")),
 								),
-								// Pass both the native TypeBuilder (for WithTypeBuilder) and the underlying
-								// baml.TypeBuilder (for our wrapper operations) via Inner() method
+								// Extract the underlying baml.TypeBuilder from the generated wrapper
+								// using reflection (the 'inner' field is unexported)
+								jen.List(jen.Id("innerTb"), jen.Id("err")).Op(":=").Id("extractInnerTypeBuilder").Call(jen.Id("tb")),
+								jen.If(jen.Id("err").Op("!=").Nil()).Block(
+									jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to extract inner TypeBuilder: %w"), jen.Id("err"))),
+								),
 								jen.Return(jen.Qual(selfAdapterPkg, "WrapTypeBuilder").Call(
 									jen.Id("tb"),
-									jen.Id("tb").Dot("Inner").Call(),
+									jen.Id("innerTb"),
 								), jen.Nil()),
 							),
 					}),
