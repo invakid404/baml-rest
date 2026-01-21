@@ -154,17 +154,35 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 	return result, nil
 }
 
-// StreamEvent represents a single SSE event from /stream endpoints.
+// StreamEvent represents a single event from /stream endpoints (works for both SSE and NDJSON).
 type StreamEvent struct {
-	Event string          // Event type (e.g., "message", "reset", "error")
+	Event string          // Event type: "data", "reset", "error" for NDJSON; "" for SSE data events, "reset"/"error" for SSE
 	Data  json.RawMessage // Event data
 	Raw   string          // For stream-with-raw, the raw LLM output at this point
 }
 
-// ParseStreamEvent parses a stream event's data into the target.
+// IsData returns true if this is a data event.
+func (e *StreamEvent) IsData() bool {
+	return e.Event == "data" || e.Event == ""
+}
+
+// IsReset returns true if this is a reset event.
+func (e *StreamEvent) IsReset() bool {
+	return e.Event == "reset"
+}
+
+// IsError returns true if this is an error event.
+func (e *StreamEvent) IsError() bool {
+	return e.Event == "error"
+}
+
+// ParseData parses a stream event's data into the target.
 func (e *StreamEvent) ParseData(target any) error {
 	return json.Unmarshal(e.Data, target)
 }
+
+// ContentTypeNDJSON is the MIME type for NDJSON streams.
+const ContentTypeNDJSON = "application/x-ndjson"
 
 // Stream executes a /stream/{method} request and returns a channel of events.
 func (c *BAMLRestClient) Stream(ctx context.Context, req CallRequest) (<-chan StreamEvent, <-chan error) {
@@ -174,6 +192,59 @@ func (c *BAMLRestClient) Stream(ctx context.Context, req CallRequest) (<-chan St
 // StreamWithRaw executes a /stream-with-raw/{method} request and returns a channel of events.
 func (c *BAMLRestClient) StreamWithRaw(ctx context.Context, req CallRequest) (<-chan StreamEvent, <-chan error) {
 	return c.streamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/%s", c.baseURL, req.Method), req)
+}
+
+// StreamNDJSON executes a /stream/{method} request with NDJSON format and returns a channel of events.
+func (c *BAMLRestClient) StreamNDJSON(ctx context.Context, req CallRequest) (<-chan StreamEvent, <-chan error) {
+	return c.streamRequestNDJSON(ctx, fmt.Sprintf("%s/stream/%s", c.baseURL, req.Method), req)
+}
+
+// StreamWithRawNDJSON executes a /stream-with-raw/{method} request with NDJSON format.
+func (c *BAMLRestClient) StreamWithRawNDJSON(ctx context.Context, req CallRequest) (<-chan StreamEvent, <-chan error) {
+	return c.streamRequestNDJSON(ctx, fmt.Sprintf("%s/stream-with-raw/%s", c.baseURL, req.Method), req)
+}
+
+func (c *BAMLRestClient) streamRequestNDJSON(ctx context.Context, url string, req CallRequest) (<-chan StreamEvent, <-chan error) {
+	events := make(chan StreamEvent)
+	errs := make(chan error, 1)
+
+	go func() {
+		defer close(events)
+		defer close(errs)
+
+		body, err := buildRequestBody(req.Input, req.Options)
+		if err != nil {
+			errs <- err
+			return
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			errs <- err
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", ContentTypeNDJSON)
+
+		resp, err := c.http.Do(httpReq)
+		if err != nil {
+			errs <- err
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(resp.Body)
+			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+			return
+		}
+
+		if err := parseNDJSON(ctx, resp.Body, events); err != nil {
+			errs <- err
+		}
+	}()
+
+	return events, errs
 }
 
 func (c *BAMLRestClient) streamRequest(ctx context.Context, url string, req CallRequest) (<-chan StreamEvent, <-chan error) {
@@ -324,6 +395,53 @@ func (c *BAMLRestClient) KillWorker(ctx context.Context) (*KillWorkerResult, err
 	}
 
 	var result KillWorkerResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	// Check if the server returned an error response
+	if result.Status == "no_worker_found" {
+		return nil, fmt.Errorf("no worker with in-flight requests found: %s", result.Error)
+	}
+
+	return &result, nil
+}
+
+// InFlightResult represents the response from /_debug/in-flight.
+type InFlightResult struct {
+	Status  string             `json:"status"`
+	Workers []WorkerInFlight   `json:"workers"`
+}
+
+// WorkerInFlight represents the in-flight status of a single worker.
+type WorkerInFlight struct {
+	WorkerID     int    `json:"worker_id"`
+	Healthy      bool   `json:"healthy"`
+	InFlight     int    `json:"in_flight"`
+	GotFirstByte []bool `json:"got_first_byte"`
+}
+
+// GetInFlightStatus calls the /_debug/in-flight endpoint to get worker in-flight status.
+// This is only available in debug builds.
+func (c *BAMLRestClient) GetInFlightStatus(ctx context.Context) (*InFlightResult, error) {
+	url := fmt.Sprintf("%s/_debug/in-flight", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result InFlightResult
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
@@ -493,6 +611,51 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 	if dataBuffer.Len() > 0 {
 		currentEvent.Data = dataBuffer.Bytes()
 		events <- currentEvent
+	}
+
+	return scanner.Err()
+}
+
+// ndjsonEvent represents a single NDJSON streaming event from the server.
+type ndjsonEvent struct {
+	Type  string          `json:"type"`
+	Data  json.RawMessage `json:"data,omitempty"`
+	Raw   string          `json:"raw,omitempty"`
+	Error string          `json:"error,omitempty"`
+}
+
+func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) error {
+	scanner := bufio.NewScanner(r)
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var event ndjsonEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			return fmt.Errorf("failed to parse NDJSON line: %w", err)
+		}
+
+		streamEvent := StreamEvent{
+			Event: event.Type,
+			Data:  event.Data,
+			Raw:   event.Raw,
+		}
+
+		// For error events, store the error message in Data
+		if event.Type == "error" && event.Error != "" {
+			streamEvent.Data = json.RawMessage(`"` + event.Error + `"`)
+		}
+
+		events <- streamEvent
 	}
 
 	return scanner.Err()

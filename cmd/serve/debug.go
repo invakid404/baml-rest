@@ -41,6 +41,25 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 	})
 	logger.Info().Msg("Debug endpoints enabled: /_debug/kill-worker")
 
+	// Get in-flight status of all workers (for debugging)
+	r.Get("/_debug/in-flight", func(w http.ResponseWriter, r *http.Request) {
+		status := workerPool.GetInFlightStatus()
+		workers := make([]map[string]interface{}, 0, len(status))
+		for _, s := range status {
+			workers = append(workers, map[string]interface{}{
+				"worker_id":      s.WorkerID,
+				"healthy":        s.Healthy,
+				"in_flight":      s.InFlight,
+				"got_first_byte": s.GotFirstByte,
+			})
+		}
+		render.JSON(w, r, map[string]interface{}{
+			"status":  "ok",
+			"workers": workers,
+		})
+	})
+	logger.Info().Msg("Debug endpoints enabled: /_debug/in-flight")
+
 	// Configure pool settings (for testing)
 	r.Post("/_debug/config", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

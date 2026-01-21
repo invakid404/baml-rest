@@ -26,9 +26,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/httplogger"
 	"github.com/invakid404/baml-rest/internal/memlimit"
-	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
-	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
@@ -332,20 +330,13 @@ var serveCmd = &cobra.Command{
 				r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(bamlutils.StreamModeCallWithRaw))
 
 				makeStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) http.HandlerFunc {
+					config := &StreamHandlerConfig{
+						SSEServer:    s,
+						SSEErrorType: sseErrorKind,
+						SSEResetType: sseResetKind,
+						PathPrefix:   pathPrefix,
+					}
 					return func(w http.ResponseWriter, r *http.Request) {
-						topic := fmt.Sprintf("%s/%s/%p", pathPrefix, methodName, r)
-						ready := make(chan struct{})
-
-						ctx, cancel := context.WithCancel(
-							context.WithValue(
-								context.WithValue(r.Context(), sseContextKeyTopic, topic),
-								sseContextKeyReady, ready,
-							),
-						)
-						defer cancel()
-
-						r = r.WithContext(ctx)
-
 						rawBody, err := io.ReadAll(r.Body)
 						if err != nil {
 							httplogger.SetError(r.Context(), err)
@@ -353,100 +344,7 @@ var serveCmd = &cobra.Command{
 							return
 						}
 
-						results, err := workerPool.CallStream(ctx, methodName, rawBody, streamMode)
-						if err != nil {
-							httplogger.SetError(r.Context(), err)
-							http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
-							return
-						}
-
-						sseDone := make(chan struct{})
-						go recovery.Go(func() error {
-							defer close(sseDone)
-							s.ServeHTTP(w, r)
-							return nil
-						})
-
-						// Wait for SSE connection to be established before publishing
-						select {
-						case <-ready:
-							// SSE is ready, proceed
-						case <-ctx.Done():
-							// Context cancelled (client disconnected)
-							<-sseDone
-							return
-						}
-
-						// Accumulate raw deltas for SSE output (internal gRPC sends deltas to save bandwidth)
-						var accumulatedRaw strings.Builder
-
-						for result := range results {
-							message := &sse.Message{}
-
-							switch result.Kind {
-							case workerplugin.StreamResultKindError:
-								message.Type = sseErrorKind
-								if result.Error != nil {
-									message.AppendData(result.Error.Error())
-									// Log error with stacktrace if available
-									httplogger.SetError(r.Context(), workerplugin.NewErrorWithStack(result.Error, result.Stacktrace))
-								}
-							case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
-								// Handle reset signal (retry occurred) - send reset event and clear accumulated state
-								if result.Reset {
-									accumulatedRaw.Reset()
-									resetMessage := &sse.Message{Type: sseResetKind}
-									resetMessage.AppendData("{}")
-									if err := s.Publish(resetMessage, topic); err != nil {
-										workerplugin.ReleaseStreamResult(result)
-										for remaining := range results {
-											workerplugin.ReleaseStreamResult(remaining)
-										}
-										break
-									}
-								}
-
-								data := result.Data
-								if streamMode.NeedsRaw() {
-									// Stream messages contain deltas, Final contains full raw
-									rawForOutput := result.Raw
-									if result.Kind == workerplugin.StreamResultKindStream {
-										// Accumulate delta into full raw response for SSE output
-										accumulatedRaw.WriteString(result.Raw)
-										rawForOutput = accumulatedRaw.String()
-									}
-									var err error
-									data, err = json.Marshal(CallWithRawResponse{
-										Data: result.Data,
-										Raw:  rawForOutput,
-									})
-									if err != nil {
-										message.Type = sseErrorKind
-										message.AppendData(fmt.Sprintf("Failed to marshal response: %v", err))
-										_ = s.Publish(message, topic)
-										workerplugin.ReleaseStreamResult(result)
-										continue
-									}
-								}
-								// SAFETY: data is owned by this goroutine, used only for this
-								// AppendData call, and never modified afterward. The string is consumed
-								// immediately by the SSE library.
-								message.AppendData(unsafeutil.BytesToString(data))
-							}
-
-							workerplugin.ReleaseStreamResult(result)
-							if err := s.Publish(message, topic); err != nil {
-								// Drain and release remaining results to avoid leaking pooled structs
-								for remaining := range results {
-									workerplugin.ReleaseStreamResult(remaining)
-								}
-								break
-							}
-						}
-
-						// Cancel context to signal SSE server to stop, then wait for it
-						cancel()
-						<-sseDone
+						HandleStream(w, r, methodName, rawBody, streamMode, workerPool, config)
 					}
 				}
 

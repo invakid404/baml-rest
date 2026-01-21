@@ -538,3 +538,204 @@ func drainEvents(events <-chan testutil.StreamEvent, errs <-chan error, ctx cont
 		}
 	}
 }
+
+// TestNDJSONGoroutineLeaks verifies that NDJSON streaming operations don't leak goroutines.
+func TestNDJSONGoroutineLeaks(t *testing.T) {
+	// Helper to count total matching goroutines (main process + all workers)
+	countTotalMatches := func(result *testutil.GoroutinesResult) int {
+		total := result.MatchCount
+		for _, w := range result.Workers {
+			total += w.MatchCount
+		}
+		return total
+	}
+
+	t.Run("stream_ndjson_endpoint_no_leak", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// Capture baseline
+		time.Sleep(200 * time.Millisecond)
+		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
+		if err != nil {
+			t.Fatalf("Failed to get baseline goroutines: %v", err)
+		}
+		baselineMatches := countTotalMatches(baselineResult)
+		t.Logf("Baseline: %d total goroutines, %d matching filter", baselineResult.TotalCount, baselineMatches)
+
+		// Run multiple successful NDJSON stream requests
+		const numRequests = 10
+		for i := 0; i < numRequests; i++ {
+			scenarioID := "leak-test-stream-ndjson"
+			content := `{"name": "NDJSON Test", "age": 42, "tags": ["streaming"]}`
+
+			scenario := &mockllm.Scenario{
+				ID:             scenarioID,
+				Provider:       "openai",
+				Content:        content,
+				ChunkSize:      20,
+				InitialDelayMs: 0,
+				ChunkDelayMs:   10,
+			}
+
+			if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+				t.Fatalf("Failed to register scenario: %v", err)
+			}
+
+			opts := &testutil.BAMLOptions{
+				ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+			}
+
+			events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+				Method:  "GetPerson",
+				Input:   map[string]any{"description": "ndjson streaming test"},
+				Options: opts,
+			})
+
+			var eventCount int
+			var lastEvent testutil.StreamEvent
+		streamLoop:
+			for {
+				select {
+				case event, ok := <-events:
+					if !ok {
+						break streamLoop
+					}
+					eventCount++
+					lastEvent = event
+				case err := <-errs:
+					if err != nil {
+						t.Fatalf("StreamNDJSON %d error: %v", i, err)
+					}
+				case <-ctx.Done():
+					t.Fatalf("StreamNDJSON %d: context cancelled", i)
+				}
+			}
+
+			if eventCount == 0 {
+				t.Fatalf("StreamNDJSON %d: received no events", i)
+			}
+
+			// Verify final event has correct data
+			var person struct {
+				Name string `json:"name"`
+				Age  int    `json:"age"`
+			}
+			if err := json.Unmarshal(lastEvent.Data, &person); err != nil {
+				t.Fatalf("StreamNDJSON %d: failed to unmarshal: %v", i, err)
+			}
+			if person.Name != "NDJSON Test" {
+				t.Errorf("StreamNDJSON %d: expected 'NDJSON Test', got '%s'", i, person.Name)
+			}
+		}
+		t.Logf("Completed %d successful NDJSON /stream requests", numRequests)
+
+		// Wait for cleanup
+		time.Sleep(500 * time.Millisecond)
+
+		// Check for leaks
+		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
+		if err != nil {
+			t.Fatalf("Failed to get final goroutines: %v", err)
+		}
+		finalMatches := countTotalMatches(finalResult)
+		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+
+		goroutineDelta := finalMatches - baselineMatches
+		if goroutineDelta > 0 {
+			t.Errorf("Goroutine leak detected after %d NDJSON /stream requests: %d new goroutines", numRequests, goroutineDelta)
+			logLeakedStacks(t, finalResult)
+		}
+	})
+
+	t.Run("stream_with_raw_ndjson_endpoint_no_leak", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// Capture baseline
+		time.Sleep(200 * time.Millisecond)
+		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
+		if err != nil {
+			t.Fatalf("Failed to get baseline goroutines: %v", err)
+		}
+		baselineMatches := countTotalMatches(baselineResult)
+		t.Logf("Baseline: %d total goroutines, %d matching filter", baselineResult.TotalCount, baselineMatches)
+
+		// Run multiple successful NDJSON stream/raw requests
+		const numRequests = 10
+		for i := 0; i < numRequests; i++ {
+			scenarioID := "leak-test-stream-raw-ndjson"
+			content := `{"message": "ndjson stream raw test"}`
+
+			scenario := &mockllm.Scenario{
+				ID:             scenarioID,
+				Provider:       "openai",
+				Content:        content,
+				ChunkSize:      20,
+				InitialDelayMs: 0,
+				ChunkDelayMs:   10,
+			}
+
+			if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+				t.Fatalf("Failed to register scenario: %v", err)
+			}
+
+			opts := &testutil.BAMLOptions{
+				ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+			}
+
+			events, errs := BAMLClient.StreamWithRawNDJSON(ctx, testutil.CallRequest{
+				Method:  "GetSimple",
+				Input:   map[string]any{"input": "test"},
+				Options: opts,
+			})
+
+			var eventCount int
+			var lastRaw string
+		streamLoop:
+			for {
+				select {
+				case event, ok := <-events:
+					if !ok {
+						break streamLoop
+					}
+					eventCount++
+					if event.Raw != "" {
+						lastRaw = event.Raw
+					}
+				case err := <-errs:
+					if err != nil {
+						t.Fatalf("StreamWithRawNDJSON %d error: %v", i, err)
+					}
+				case <-ctx.Done():
+					t.Fatalf("StreamWithRawNDJSON %d: context cancelled", i)
+				}
+			}
+
+			if eventCount == 0 {
+				t.Fatalf("StreamWithRawNDJSON %d: received no events", i)
+			}
+			if lastRaw == "" {
+				t.Errorf("StreamWithRawNDJSON %d: expected raw content, got empty", i)
+			}
+		}
+		t.Logf("Completed %d successful NDJSON /stream-with-raw requests", numRequests)
+
+		// Wait for cleanup
+		time.Sleep(500 * time.Millisecond)
+
+		// Check for leaks
+		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
+		if err != nil {
+			t.Fatalf("Failed to get final goroutines: %v", err)
+		}
+		finalMatches := countTotalMatches(finalResult)
+		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+
+		goroutineDelta := finalMatches - baselineMatches
+		if goroutineDelta > 0 {
+			t.Errorf("Goroutine leak detected after %d NDJSON /stream-with-raw requests: %d new goroutines", numRequests, goroutineDelta)
+			logLeakedStacks(t, finalResult)
+		}
+	})
+}

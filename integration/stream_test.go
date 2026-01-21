@@ -3,7 +3,9 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -799,6 +801,681 @@ func TestWorkerDeathMidStream(t *testing.T) {
 				t.Fatalf("Failed to unmarshal last event data: %v", err)
 			}
 			if person.Name != "Hung Test Recovery" || person.Age != 42 {
+				t.Errorf("Final data incorrect: got %+v", person)
+			}
+			t.Logf("Final data verified: %+v", person)
+		}
+	})
+}
+
+func TestStreamNDJSONEndpoint(t *testing.T) {
+	t.Run("multiple_ndjson_events", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"name": "John Doe", "age": 30, "tags": []}`
+		opts := setupScenario(t, "test-stream-ndjson-person", content)
+
+		events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "John, 30 years old"},
+			Options: opts,
+		})
+
+		var eventCount int
+		var lastEvent testutil.StreamEvent
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				eventCount++
+				lastEvent = event
+				t.Logf("Event %d: type=%s, data_len=%d", eventCount, event.Event, len(event.Data))
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		// Should have received multiple events (chunked streaming)
+		if eventCount < 2 {
+			t.Errorf("Expected multiple events, got %d", eventCount)
+		}
+
+		// All events should be data events
+		if !lastEvent.IsData() {
+			t.Errorf("Expected data event, got type=%s", lastEvent.Event)
+		}
+
+		// Last event should have the complete data
+		var person struct {
+			Name string `json:"name"`
+			Age  int    `json:"age"`
+		}
+		if err := json.Unmarshal(lastEvent.Data, &person); err != nil {
+			t.Fatalf("Failed to unmarshal last event: %v", err)
+		}
+
+		if person.Name != "John Doe" || person.Age != 30 {
+			t.Errorf("Expected John Doe (30), got %s (%d)", person.Name, person.Age)
+		}
+	})
+
+	t.Run("streaming_array_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `[{"name": "Alice", "age": 25, "tags": []}, {"name": "Bob", "age": 35, "tags": []}]`
+		opts := setupScenario(t, "test-stream-ndjson-array", content)
+
+		events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetPeople",
+			Input:   map[string]any{"descriptions": "Alice and Bob"},
+			Options: opts,
+		})
+
+		var eventCount int
+		var lastEvent testutil.StreamEvent
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				eventCount++
+				lastEvent = event
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		// Verify final result is complete array
+		var people []struct {
+			Name string `json:"name"`
+			Age  int    `json:"age"`
+		}
+		if err := json.Unmarshal(lastEvent.Data, &people); err != nil {
+			t.Fatalf("Failed to unmarshal last event: %v", err)
+		}
+
+		if len(people) != 2 {
+			t.Errorf("Expected 2 people, got %d", len(people))
+		}
+	})
+
+}
+
+func TestStreamAcceptHeaderNegotiation(t *testing.T) {
+	// Helper to make a raw HTTP request and return the Content-Type
+	makeRequest := func(t *testing.T, ctx context.Context, acceptHeader string, opts *testutil.BAMLOptions) string {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"input":            "test",
+			"__baml_options__": opts,
+		})
+		if err != nil {
+			t.Fatalf("Failed to marshal request: %v", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			TestEnv.BAMLRestURL+"/stream/GetSimple",
+			bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if acceptHeader != "" {
+			req.Header.Set("Accept", acceptHeader)
+		}
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		return resp.Header.Get("Content-Type")
+	}
+
+	t.Run("no_accept_header_defaults_to_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-no-header", content)
+
+		contentType := makeRequest(t, ctx, "", opts)
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' with no Accept header, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_text_event_stream_returns_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-sse", content)
+
+		contentType := makeRequest(t, ctx, "text/event-stream", opts)
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' with Accept: text/event-stream, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_ndjson_returns_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-ndjson", content)
+
+		contentType := makeRequest(t, ctx, "application/x-ndjson", opts)
+		if contentType != "application/x-ndjson" {
+			t.Errorf("Expected Content-Type 'application/x-ndjson' with Accept: application/x-ndjson, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_with_quality_values_prefers_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-quality", content)
+
+		// Even with quality values, if NDJSON is listed, it should be used
+		contentType := makeRequest(t, ctx, "application/x-ndjson, text/event-stream;q=0.9", opts)
+		if contentType != "application/x-ndjson" {
+			t.Errorf("Expected Content-Type 'application/x-ndjson' with quality Accept header, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_unknown_type_defaults_to_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-unknown", content)
+
+		contentType := makeRequest(t, ctx, "application/json", opts)
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' with unknown Accept header, got '%s'", contentType)
+		}
+	})
+
+	t.Run("accept_wildcard_defaults_to_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-wildcard", content)
+
+		contentType := makeRequest(t, ctx, "*/*", opts)
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' with wildcard Accept header, got '%s'", contentType)
+		}
+	})
+
+	t.Run("stream_with_raw_accept_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-raw-ndjson", content)
+
+		// Test stream-with-raw endpoint with NDJSON
+		body, err := json.Marshal(map[string]any{
+			"input":            "test",
+			"__baml_options__": opts,
+		})
+		if err != nil {
+			t.Fatalf("Failed to marshal request: %v", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			TestEnv.BAMLRestURL+"/stream-with-raw/GetSimple",
+			bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/x-ndjson")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		contentType := resp.Header.Get("Content-Type")
+		if contentType != "application/x-ndjson" {
+			t.Errorf("Expected Content-Type 'application/x-ndjson' for stream-with-raw, got '%s'", contentType)
+		}
+	})
+
+	t.Run("stream_with_raw_no_accept_defaults_to_sse", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-accept-raw-default", content)
+
+		// Test stream-with-raw endpoint without Accept header
+		body, err := json.Marshal(map[string]any{
+			"input":            "test",
+			"__baml_options__": opts,
+		})
+		if err != nil {
+			t.Fatalf("Failed to marshal request: %v", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			TestEnv.BAMLRestURL+"/stream-with-raw/GetSimple",
+			bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		contentType := resp.Header.Get("Content-Type")
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream' for stream-with-raw without Accept, got '%s'", contentType)
+		}
+	})
+}
+
+func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
+	t.Run("raw_accumulates_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello world"}`
+		opts := setupScenario(t, "test-stream-raw-ndjson", content)
+
+		events, errs := BAMLClient.StreamWithRawNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetSimple",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+
+		var eventCount int
+		var lastRaw string
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				eventCount++
+				if event.Raw != "" {
+					lastRaw = event.Raw
+				}
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		// Should have received events
+		if eventCount == 0 {
+			t.Error("Expected to receive events")
+		}
+
+		// Final raw should match the complete content
+		if lastRaw != content {
+			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
+		}
+	})
+
+	t.Run("raw_grows_incrementally_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello world"}`
+		scenarioID := "test-stream-raw-incremental-ndjson"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      5, // Small chunks to see incremental growth
+			InitialDelayMs: 10,
+			ChunkDelayMs:   50,
+		}
+
+		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		events, errs := BAMLClient.StreamWithRawNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetSimple",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+
+		// Track raw lengths per segment (segments are separated by reset events)
+		var segments [][]int
+		var currentSegment []int
+		resetCount := 0
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				if event.IsReset() {
+					// Reset event: save current segment and start new one
+					if len(currentSegment) > 0 {
+						segments = append(segments, currentSegment)
+						currentSegment = nil
+					}
+					resetCount++
+				} else if event.Raw != "" {
+					currentSegment = append(currentSegment, len(event.Raw))
+				}
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		// Save final segment
+		if len(currentSegment) > 0 {
+			segments = append(segments, currentSegment)
+		}
+
+		// Should have at least one segment with multiple raw values
+		if len(segments) == 0 {
+			t.Fatal("Expected at least one segment with raw values")
+		}
+
+		totalRawValues := 0
+		for _, seg := range segments {
+			totalRawValues += len(seg)
+		}
+		if totalRawValues < 2 {
+			t.Errorf("Expected multiple raw values across all segments, got %d", totalRawValues)
+		}
+
+		// Raw lengths should be non-decreasing within each segment
+		for segIdx, segment := range segments {
+			for i := 1; i < len(segment); i++ {
+				if segment[i] < segment[i-1] {
+					t.Errorf("Segment %d: Raw length decreased from %d to %d at index %d",
+						segIdx, segment[i-1], segment[i], i)
+				}
+			}
+		}
+
+		if resetCount > 0 {
+			t.Logf("Stream had %d reset(s) (BAML internal retries)", resetCount)
+		}
+		t.Logf("Segments: %d, Raw lengths per segment: %v", len(segments), segments)
+	})
+}
+
+func TestStreamNDJSONMidStreamFailure(t *testing.T) {
+	t.Run("disconnect_after_first_byte_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Create a scenario that will disconnect after 3 chunks
+		content := `{"name": "John Doe", "age": 30, "tags": ["developer", "golang"]}`
+		scenarioID := "test-ndjson-midstream-disconnect"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      10, // Small chunks so we get multiple before failure
+			InitialDelayMs: 10,
+			ChunkDelayMs:   50,
+			FailAfter:      3, // Fail after 3 chunks
+			FailureMode:    "disconnect",
+		}
+
+		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "John, 30 years old"},
+			Options: opts,
+		})
+
+		var receivedEvents []testutil.StreamEvent
+		var streamErr error
+		var sawResetEvent bool
+		var sawErrorEvent bool
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				receivedEvents = append(receivedEvents, event)
+				t.Logf("Received event %d: type=%s, data_len=%d", len(receivedEvents), event.Event, len(event.Data))
+				if event.IsReset() {
+					sawResetEvent = true
+				}
+				if event.IsError() {
+					sawErrorEvent = true
+				}
+			case err := <-errs:
+				if err != nil {
+					streamErr = err
+					t.Logf("Received stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		t.Logf("Total events received: %d", len(receivedEvents))
+		t.Logf("Stream error: %v", streamErr)
+		t.Logf("Saw reset event: %v", sawResetEvent)
+		t.Logf("Saw error event: %v", sawErrorEvent)
+
+		// Should have received some events or an error
+		if len(receivedEvents) == 0 && streamErr == nil {
+			t.Error("Expected to receive some events or an error, got neither")
+		}
+
+		// Document: mid-stream failures don't trigger pool-level retries
+		if sawResetEvent {
+			t.Log("NOTE: Saw reset event - this indicates a BAML-internal retry occurred")
+		}
+	})
+}
+
+func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
+	t.Run("worker_killed_after_first_byte_retries_with_reset_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// Create a slow streaming scenario so we have time to kill the worker
+		content := `{"name": "John Doe", "age": 30, "tags": ["developer", "golang", "testing"]}`
+		scenarioID := "test-worker-death-retry-ndjson"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      5,   // Very small chunks
+			InitialDelayMs: 100, // Some initial delay
+			ChunkDelayMs:   500, // Slow chunking so we have time to kill worker
+		}
+
+		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		// Start streaming request with NDJSON
+		events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "John, 30 years old"},
+			Options: opts,
+		})
+
+		var receivedEvents []testutil.StreamEvent
+		var streamErr error
+		var sawResetEvent bool
+		var sawErrorEvent bool
+		var killedWorker bool
+		var eventsBeforeKill int
+
+		// Process events
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				receivedEvents = append(receivedEvents, event)
+				t.Logf("Received event %d: type=%s, data_len=%d", len(receivedEvents), event.Event, len(event.Data))
+
+				if event.IsReset() {
+					sawResetEvent = true
+					t.Log(">>> SAW RESET EVENT - retry with reset working in NDJSON!")
+				}
+				if event.IsError() {
+					sawErrorEvent = true
+				}
+
+				// After receiving the first event (first byte), kill the worker
+				if len(receivedEvents) == 1 && !killedWorker {
+					eventsBeforeKill = len(receivedEvents)
+					t.Log("First event received, killing worker...")
+					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
+					result, err := BAMLClient.KillWorker(killCtx)
+					killCancel()
+
+					if err != nil {
+						t.Logf("Failed to kill worker: %v", err)
+					} else {
+						t.Logf("Killed worker %d with %d in-flight requests, gotFirstByte=%v",
+							result.WorkerID, result.InFlightCount, result.GotFirstByte)
+						killedWorker = true
+					}
+				}
+
+			case err := <-errs:
+				if err != nil {
+					streamErr = err
+					t.Logf("Received stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Logf("Context cancelled")
+				streamErr = ctx.Err()
+				goto done
+			}
+		}
+	done:
+
+		t.Logf("=== RESULTS ===")
+		t.Logf("Total events received: %d", len(receivedEvents))
+		t.Logf("Events before kill: %d", eventsBeforeKill)
+		t.Logf("Stream error: %v", streamErr)
+		t.Logf("Worker killed: %v", killedWorker)
+		t.Logf("Saw reset event: %v", sawResetEvent)
+		t.Logf("Saw error event: %v", sawErrorEvent)
+
+		// Verify test setup worked
+		if !killedWorker {
+			t.Error("Failed to kill worker - test setup issue")
+		}
+
+		if eventsBeforeKill == 0 {
+			t.Error("Expected to receive at least one event before worker death")
+		}
+
+		// VERIFY EXPECTED BEHAVIOR:
+
+		// 1. Should have seen a reset event (indicating retry happened)
+		if !sawResetEvent {
+			t.Error("Expected reset event after worker death - mid-stream retry should inject reset")
+		}
+
+		// 2. Should have completed successfully (no error event, stream closed gracefully)
+		if sawErrorEvent {
+			t.Error("Did not expect error event - request should succeed after retry")
+		}
+
+		if streamErr != nil {
+			t.Errorf("Did not expect stream error - got: %v", streamErr)
+		}
+
+		// 3. Should have received more events after reset (from the retry)
+		if len(receivedEvents) <= eventsBeforeKill+1 {
+			t.Errorf("Expected more events after reset, got %d total with %d before kill",
+				len(receivedEvents), eventsBeforeKill)
+		}
+
+		// 4. Verify the last data event has correct final data
+		if len(receivedEvents) > 0 {
+			var lastDataEvent testutil.StreamEvent
+			for i := len(receivedEvents) - 1; i >= 0; i-- {
+				if receivedEvents[i].IsData() {
+					lastDataEvent = receivedEvents[i]
+					break
+				}
+			}
+			var person struct {
+				Name string   `json:"name"`
+				Age  int      `json:"age"`
+				Tags []string `json:"tags"`
+			}
+			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
+				t.Fatalf("Failed to unmarshal last event data: %v", err)
+			}
+			if person.Name != "John Doe" || person.Age != 30 {
 				t.Errorf("Final data incorrect: got %+v", person)
 			}
 			t.Logf("Final data verified: %+v", person)
