@@ -351,7 +351,8 @@ func generateOpenAPISchema() *openapi3.T {
 			},
 		}
 
-		streamDescription := fmt.Sprintf("NDJSON stream of partial and final results for %s", methodName)
+		streamDescription := fmt.Sprintf("Stream of partial and final results for %s", methodName)
+		sseStreamDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON, error/reset events use SSE event types."
 		streamResponses := openapi3.NewResponses()
 		streamResponses.Set("200", &openapi3.ResponseRef{
 			Value: &openapi3.Response{
@@ -371,6 +372,14 @@ func generateOpenAPISchema() *openapi3.T {
 							},
 						},
 					},
+					"text/event-stream": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type:        &openapi3.Types{openapi3.TypeString},
+								Description: sseStreamDescription,
+							},
+						},
+					},
 				},
 			},
 		})
@@ -380,7 +389,10 @@ func generateOpenAPISchema() *openapi3.T {
 			Post: &openapi3.Operation{
 				OperationID: fmt.Sprintf("%sStream", methodName),
 				Summary:     fmt.Sprintf("Stream %s results", methodName),
-				Description: "Returns a stream of NDJSON events containing partial results as they become available, followed by the final result. Events have type 'data' for results, 'reset' if the stream restarts due to a retry, or 'error' for failures.",
+				Description: "Returns a stream of events containing partial results as they become available, followed by the final result. " +
+					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
+					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
+					"Events have type 'data' for results, 'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
 						Content: map[string]*openapi3.MediaType{
@@ -421,7 +433,8 @@ func generateOpenAPISchema() *openapi3.T {
 			},
 		}
 
-		streamWithRawDescription := fmt.Sprintf("NDJSON stream of partial and final results for %s with raw LLM output", methodName)
+		streamWithRawDescription := fmt.Sprintf("Stream of partial and final results for %s with raw LLM output", methodName)
+		sseStreamWithRawDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON with 'data' and 'raw' fields, error/reset events use SSE event types."
 		streamWithRawResponses := openapi3.NewResponses()
 		streamWithRawResponses.Set("200", &openapi3.ResponseRef{
 			Value: &openapi3.Response{
@@ -441,6 +454,14 @@ func generateOpenAPISchema() *openapi3.T {
 							},
 						},
 					},
+					"text/event-stream": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type:        &openapi3.Types{openapi3.TypeString},
+								Description: sseStreamWithRawDescription,
+							},
+						},
+					},
 				},
 			},
 		})
@@ -450,7 +471,10 @@ func generateOpenAPISchema() *openapi3.T {
 			Post: &openapi3.Operation{
 				OperationID: fmt.Sprintf("%sStreamWithRaw", methodName),
 				Summary:     fmt.Sprintf("Stream %s results with raw LLM output", methodName),
-				Description: "Returns a stream of NDJSON events containing partial results and the accumulated raw LLM output as they become available. Events have type 'data' for results (includes 'raw' field), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
+				Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available. " +
+					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
+					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
+					"Events have type 'data' for results (includes 'raw' field), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
 						Content: map[string]*openapi3.MediaType{
