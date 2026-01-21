@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net/http"
@@ -185,7 +184,6 @@ func (p *SSEPublisher) Close() {
 type NDJSONPublisher struct {
 	w         http.ResponseWriter
 	flusher   http.Flusher
-	buf       *bufio.Writer
 	committed bool
 }
 
@@ -200,8 +198,7 @@ func NewNDJSONPublisher(w http.ResponseWriter) *NDJSONPublisher {
 	w.Header().Set("X-Content-Type-Options", "nosniff") // Prevents buffering
 
 	p := &NDJSONPublisher{
-		w:   w,
-		buf: bufio.NewWriter(w),
+		w: w,
 	}
 
 	// Get flusher, unwrapping middleware wrappers if necessary
@@ -239,8 +236,7 @@ func (p *NDJSONPublisher) writeEvent(event *NDJSONEvent) error {
 		return err
 	}
 
-	// Write directly to ResponseWriter (bypassing bufio.Writer)
-	// This ensures each event is sent immediately
+	// Write JSON event followed by newline
 	if _, err := p.w.Write(data); err != nil {
 		return err
 	}
