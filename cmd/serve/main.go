@@ -330,6 +330,12 @@ var serveCmd = &cobra.Command{
 				r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(bamlutils.StreamModeCallWithRaw))
 
 				makeStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) http.HandlerFunc {
+					config := &StreamHandlerConfig{
+						SSEServer:    s,
+						SSEErrorType: sseErrorKind,
+						SSEResetType: sseResetKind,
+						PathPrefix:   pathPrefix,
+					}
 					return func(w http.ResponseWriter, r *http.Request) {
 						rawBody, err := io.ReadAll(r.Body)
 						if err != nil {
@@ -338,14 +344,7 @@ var serveCmd = &cobra.Command{
 							return
 						}
 
-						// Determine output format based on Accept header
-						format := NegotiateStreamFormat(r)
-
-						if format == StreamFormatNDJSON {
-							handleNDJSONStream(w, r, methodName, rawBody, streamMode, workerPool)
-						} else {
-							handleSSEStream(w, r, methodName, rawBody, streamMode, workerPool, s, sseErrorKind, sseResetKind, pathPrefix)
-						}
+						HandleStream(w, r, methodName, rawBody, streamMode, workerPool, config)
 					}
 				}
 
