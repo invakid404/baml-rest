@@ -183,14 +183,16 @@ func (p *SSEPublisher) Close() {
 
 // NDJSONPublisher implements StreamPublisher for NDJSON format.
 type NDJSONPublisher struct {
-	w       http.ResponseWriter
-	flusher http.Flusher
-	buf     *bufio.Writer
+	w         http.ResponseWriter
+	flusher   http.Flusher
+	buf       *bufio.Writer
+	committed bool
 }
 
 // NewNDJSONPublisher creates an NDJSON publisher.
+// Headers are set but not committed until the first write.
 func NewNDJSONPublisher(w http.ResponseWriter) *NDJSONPublisher {
-	// Set headers for NDJSON streaming
+	// Set headers for NDJSON streaming (not committed until first write)
 	w.Header().Set("Content-Type", ContentTypeNDJSON)
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -208,7 +210,19 @@ func NewNDJSONPublisher(w http.ResponseWriter) *NDJSONPublisher {
 	return p
 }
 
+// commitHeaders writes the status code and flushes to establish the connection.
+// Called automatically on first write.
+func (p *NDJSONPublisher) commitHeaders() {
+	if p.committed {
+		return
+	}
+	p.committed = true
+	// First write will implicitly commit headers with 200 OK
+}
+
 func (p *NDJSONPublisher) writeEvent(event *NDJSONEvent) error {
+	p.commitHeaders()
+
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
