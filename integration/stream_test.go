@@ -1365,16 +1365,31 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 				if len(receivedEvents) == 1 && !killedWorker && event.IsData() {
 					eventsBeforeKill = len(receivedEvents)
 					t.Log("First data event received, killing worker...")
-					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
-					result, err := BAMLClient.KillWorker(killCtx)
-					killCancel()
 
-					if err != nil {
-						t.Logf("Failed to kill worker: %v", err)
-					} else {
+					// Retry KillWorker a few times in case of timing issues
+					for attempt := 0; attempt < 5; attempt++ {
+						if attempt > 0 {
+							t.Logf("Retrying KillWorker (attempt %d)...", attempt+1)
+							time.Sleep(50 * time.Millisecond)
+						}
+
+						killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
+						result, err := BAMLClient.KillWorker(killCtx)
+						killCancel()
+
+						if err != nil {
+							t.Logf("KillWorker attempt %d failed: %v", attempt+1, err)
+							continue // Retry
+						}
+
 						t.Logf("Killed worker %d with %d in-flight requests, gotFirstByte=%v",
 							result.WorkerID, result.InFlightCount, result.GotFirstByte)
 						killedWorker = true
+						break
+					}
+
+					if !killedWorker {
+						t.Log("All KillWorker attempts failed")
 					}
 				}
 
