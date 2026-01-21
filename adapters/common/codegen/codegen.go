@@ -1212,7 +1212,12 @@ func Generate(selfPkg string) {
 								jen.If(jen.Id("err").Op("!=").Nil()).Block(
 									jen.Return(jen.Nil(), jen.Id("err")),
 								),
-								jen.Return(jen.Qual(selfAdapterPkg, "WrapTypeBuilder").Call(jen.Id("tb")), jen.Nil()),
+								// Pass both the native TypeBuilder (for WithTypeBuilder) and the underlying
+								// baml.TypeBuilder (for our wrapper operations) via Inner() method
+								jen.Return(jen.Qual(selfAdapterPkg, "WrapTypeBuilder").Call(
+									jen.Id("tb"),
+									jen.Id("tb").Dot("Inner").Call(),
+								), jen.Nil()),
 							),
 					}),
 			),
@@ -1253,10 +1258,11 @@ func Generate(selfPkg string) {
 						jen.Id("adapter").Dot("TypeBuilder"),
 					)),
 				),
-				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("wrapper").Dot("Native").Call().Assert(jen.Qual(BamlPkg, "TypeBuilder")),
+				// Native() returns the *baml_client.TypeBuilder which is what WithTypeBuilder expects
+				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("wrapper").Dot("Native").Call().Assert(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder")),
 				jen.If(jen.Op("!").Id("ok")).Block(
 					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
-						jen.Lit("Native() did not return baml.TypeBuilder: got %T"),
+						jen.Lit("Native() did not return *baml_client.TypeBuilder: got %T"),
 						jen.Id("wrapper").Dot("Native").Call(),
 					)),
 				),

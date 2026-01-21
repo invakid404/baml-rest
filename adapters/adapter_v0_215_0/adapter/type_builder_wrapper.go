@@ -6,55 +6,61 @@ import (
 )
 
 // typeBuilderWrapper wraps a native BAML TypeBuilder to implement bamlutils.BamlTypeBuilder.
+// The inner field is stored as any because the generated baml_client.TypeBuilder type
+// is different from baml.TypeBuilder (the interface from the pkg).
 type typeBuilderWrapper struct {
-	inner baml.TypeBuilder
+	inner    any             // The native TypeBuilder (*baml_client.TypeBuilder)
+	bamlInner baml.TypeBuilder // The underlying baml.TypeBuilder for our operations
 }
 
 // WrapTypeBuilder creates a wrapper around a native BAML TypeBuilder.
-func WrapTypeBuilder(tb baml.TypeBuilder) bamlutils.BamlTypeBuilder {
-	return &typeBuilderWrapper{inner: tb}
+// It accepts any because the generated baml_client.TypeBuilder is not assignable to baml.TypeBuilder.
+// The native parameter is the *baml_client.TypeBuilder returned by NewTypeBuilder().
+// The bamlTb parameter is the underlying baml.TypeBuilder for internal operations.
+func WrapTypeBuilder(native any, bamlTb baml.TypeBuilder) bamlutils.BamlTypeBuilder {
+	return &typeBuilderWrapper{inner: native, bamlInner: bamlTb}
 }
 
-// Native returns the underlying native BAML TypeBuilder.
+// Native returns the underlying native BAML TypeBuilder (*baml_client.TypeBuilder).
 // This is used by generated code to extract the native type for BAML calls.
 func (w *typeBuilderWrapper) Native() any {
 	return w.inner
 }
 
 func (w *typeBuilderWrapper) AddBaml(baml string) error {
-	return w.inner.AddBaml(baml)
+	return w.bamlInner.AddBaml(baml)
 }
 
 func (w *typeBuilderWrapper) String() (bamlutils.BamlType, error) {
-	return w.inner.String()
+	return w.bamlInner.String()
 }
 
 func (w *typeBuilderWrapper) Int() (bamlutils.BamlType, error) {
-	return w.inner.Int()
+	return w.bamlInner.Int()
 }
 
 func (w *typeBuilderWrapper) Float() (bamlutils.BamlType, error) {
-	return w.inner.Float()
+	return w.bamlInner.Float()
 }
 
 func (w *typeBuilderWrapper) Bool() (bamlutils.BamlType, error) {
-	return w.inner.Bool()
+	return w.bamlInner.Bool()
 }
 
 func (w *typeBuilderWrapper) Null() (bamlutils.BamlType, error) {
-	return w.inner.Null()
+	return w.bamlInner.Null()
 }
 
 func (w *typeBuilderWrapper) LiteralString(value string) (bamlutils.BamlType, error) {
-	return w.inner.LiteralString(value)
+	return w.bamlInner.LiteralString(value)
 }
 
 func (w *typeBuilderWrapper) LiteralInt(value int64) (bamlutils.BamlType, error) {
-	return w.inner.LiteralInt(value)
+	return w.bamlInner.LiteralInt(value)
 }
 
 func (w *typeBuilderWrapper) LiteralBool(value bool) (bamlutils.BamlType, error) {
-	return w.inner.LiteralBool(value)
+	return w.bamlInner.LiteralBool(value)
 }
 
 func (w *typeBuilderWrapper) List(inner bamlutils.BamlType) (bamlutils.BamlType, error) {
@@ -63,7 +69,7 @@ func (w *typeBuilderWrapper) List(inner bamlutils.BamlType) (bamlutils.BamlType,
 		// If it's not a baml.Type directly, it might be wrapped
 		return nil, errInvalidType("List inner", inner)
 	}
-	return w.inner.List(t)
+	return w.bamlInner.List(t)
 }
 
 func (w *typeBuilderWrapper) Optional(inner bamlutils.BamlType) (bamlutils.BamlType, error) {
@@ -71,7 +77,7 @@ func (w *typeBuilderWrapper) Optional(inner bamlutils.BamlType) (bamlutils.BamlT
 	if !ok {
 		return nil, errInvalidType("Optional inner", inner)
 	}
-	return w.inner.Optional(t)
+	return w.bamlInner.Optional(t)
 }
 
 func (w *typeBuilderWrapper) Union(types []bamlutils.BamlType) (bamlutils.BamlType, error) {
@@ -83,7 +89,7 @@ func (w *typeBuilderWrapper) Union(types []bamlutils.BamlType) (bamlutils.BamlTy
 		}
 		bamlTypes[i] = bt
 	}
-	return w.inner.Union(bamlTypes)
+	return w.bamlInner.Union(bamlTypes)
 }
 
 func (w *typeBuilderWrapper) Map(key, value bamlutils.BamlType) (bamlutils.BamlType, error) {
@@ -95,11 +101,11 @@ func (w *typeBuilderWrapper) Map(key, value bamlutils.BamlType) (bamlutils.BamlT
 	if !ok {
 		return nil, errInvalidType("Map value", value)
 	}
-	return w.inner.Map(k, v)
+	return w.bamlInner.Map(k, v)
 }
 
 func (w *typeBuilderWrapper) AddClass(name string) (bamlutils.BamlClassBuilder, error) {
-	cb, err := w.inner.AddClass(name)
+	cb, err := w.bamlInner.AddClass(name)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +113,7 @@ func (w *typeBuilderWrapper) AddClass(name string) (bamlutils.BamlClassBuilder, 
 }
 
 func (w *typeBuilderWrapper) Class(name string) (bamlutils.BamlClassBuilder, error) {
-	cb, err := w.inner.Class(name)
+	cb, err := w.bamlInner.Class(name)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +121,7 @@ func (w *typeBuilderWrapper) Class(name string) (bamlutils.BamlClassBuilder, err
 }
 
 func (w *typeBuilderWrapper) AddEnum(name string) (bamlutils.BamlEnumBuilder, error) {
-	eb, err := w.inner.AddEnum(name)
+	eb, err := w.bamlInner.AddEnum(name)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +129,7 @@ func (w *typeBuilderWrapper) AddEnum(name string) (bamlutils.BamlEnumBuilder, er
 }
 
 func (w *typeBuilderWrapper) Enum(name string) (bamlutils.BamlEnumBuilder, error) {
-	eb, err := w.inner.Enum(name)
+	eb, err := w.bamlInner.Enum(name)
 	if err != nil {
 		return nil, err
 	}
