@@ -19,10 +19,6 @@ import (
 type BAMLRestClient struct {
 	baseURL string
 	http    *http.Client
-	// httpNDJSON is a separate client for NDJSON streaming with compression disabled.
-	// Go's HTTP client buffers responses when compression is enabled, which breaks
-	// line-by-line streaming for NDJSON. Disabling compression allows true streaming.
-	httpNDJSON *http.Client
 }
 
 // NewBAMLRestClient creates a new client for the baml-rest server.
@@ -30,17 +26,6 @@ func NewBAMLRestClient(baseURL string) *BAMLRestClient {
 	return &BAMLRestClient{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		http:    &http.Client{Timeout: 2 * time.Minute},
-		httpNDJSON: &http.Client{
-			Timeout: 2 * time.Minute,
-			Transport: &http.Transport{
-				// Disable compression to prevent response buffering during decompression
-				DisableCompression: true,
-				// Fresh connection for each request to avoid connection-level buffering
-				DisableKeepAlives: true,
-				// Force HTTP/1.1 - HTTP/2 has different buffering behavior
-				ForceAttemptHTTP2: false,
-			},
-		},
 	}
 }
 
@@ -240,11 +225,8 @@ func (c *BAMLRestClient) streamRequestNDJSON(ctx context.Context, url string, re
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", ContentTypeNDJSON)
-		// Disable Accept-Encoding to prevent server from compressing, which can cause buffering
-		httpReq.Header.Set("Accept-Encoding", "identity")
 
-		// Use the NDJSON-specific client with compression disabled for true streaming
-		resp, err := c.httpNDJSON.Do(httpReq)
+		resp, err := c.http.Do(httpReq)
 		if err != nil {
 			errs <- err
 			return
