@@ -62,3 +62,34 @@ class DynamicEnumOutput {
     name string
     category DynamicCategory
 }
+
+// Comprehensive type for OpenAPI schema validation testing
+// Combines: nested objects, optional fields, arrays, enums, and multiple primitive types
+enum Priority {
+    LOW
+    MEDIUM
+    HIGH
+    CRITICAL
+}
+
+class Tag {
+    name string
+    value string?
+}
+
+class Metadata {
+    created_by string
+    priority Priority
+    tags Tag[]
+}
+
+class ComprehensiveOutput {
+    id int
+    title string
+    description string?           // Optional string
+    score float                   // Float type
+    is_active bool                // Boolean type
+    metadata Metadata             // Nested object with enum and array
+    related_ids int[]             // Array of primitives
+    labels string[]?              // Optional array
+}

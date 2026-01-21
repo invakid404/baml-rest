@@ -1,0 +1,447 @@
+//go:build integration
+
+package integration
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/goccy/go-json"
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/getkin/kin-openapi/openapi3filter"
+	"github.com/getkin/kin-openapi/routers"
+	"github.com/getkin/kin-openapi/routers/gorillamux"
+	"github.com/invakid404/baml-rest/integration/testutil"
+)
+
+// schemaValidator holds the OpenAPI schema and router for validation.
+type schemaValidator struct {
+	doc    *openapi3.T
+	router routers.Router
+}
+
+// fetchAndParseSchema fetches the OpenAPI schema from the server and prepares it for validation.
+func fetchAndParseSchema(ctx context.Context, baseURL string) (*schemaValidator, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/openapi.json", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch schema: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read schema: %w", err)
+	}
+
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse schema: %w", err)
+	}
+
+	// Validate the schema itself
+	if err := doc.Validate(ctx); err != nil {
+		return nil, fmt.Errorf("schema validation failed: %w", err)
+	}
+
+	router, err := gorillamux.NewRouter(doc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create router: %w", err)
+	}
+
+	return &schemaValidator{doc: doc, router: router}, nil
+}
+
+// validateResponse validates an HTTP response against the OpenAPI schema.
+func (v *schemaValidator) validateResponse(
+	ctx context.Context,
+	method, path string,
+	statusCode int,
+	contentType string,
+	body []byte,
+) error {
+	// Parse the URL
+	parsedURL, err := url.Parse(path)
+	if err != nil {
+		return fmt.Errorf("failed to parse path: %w", err)
+	}
+
+	// Find the route
+	route, pathParams, err := v.router.FindRoute(&http.Request{
+		Method: method,
+		URL:    parsedURL,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to find route for %s %s: %w", method, path, err)
+	}
+
+	// Create request validation input (needed for response validation)
+	requestValidationInput := &openapi3filter.RequestValidationInput{
+		Request: &http.Request{
+			Method: method,
+			URL:    parsedURL,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+			},
+		},
+		PathParams: pathParams,
+		Route:      route,
+	}
+
+	// Create response validation input
+	responseValidationInput := &openapi3filter.ResponseValidationInput{
+		RequestValidationInput: requestValidationInput,
+		Status:                 statusCode,
+		Header: http.Header{
+			"Content-Type": []string{contentType},
+		},
+		Body: io.NopCloser(bytes.NewReader(body)),
+		Options: &openapi3filter.Options{
+			IncludeResponseStatus: true,
+		},
+	}
+
+	// Validate the response
+	if err := openapi3filter.ValidateResponse(ctx, responseValidationInput); err != nil {
+		return fmt.Errorf("response validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// validateNDJSONEvent validates a single NDJSON event against the streaming schema.
+func (v *schemaValidator) validateNDJSONEvent(
+	ctx context.Context,
+	path string,
+	eventJSON []byte,
+) error {
+	return v.validateResponse(ctx, "POST", path, 200, "application/x-ndjson", eventJSON)
+}
+
+func TestOpenAPISchemaValidation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Fetch and parse the OpenAPI schema from the running server
+	validator, err := fetchAndParseSchema(ctx, TestEnv.BAMLRestURL)
+	if err != nil {
+		t.Fatalf("Failed to fetch/parse OpenAPI schema: %v", err)
+	}
+
+	// Comprehensive test content that exercises multiple BAML features
+	comprehensiveContent := `{
+		"id": 42,
+		"title": "Test Item",
+		"description": "A test item with all features",
+		"score": 3.14,
+		"is_active": true,
+		"metadata": {
+			"created_by": "test-user",
+			"priority": "HIGH",
+			"tags": [
+				{"name": "important", "value": "yes"},
+				{"name": "category", "value": null}
+			]
+		},
+		"related_ids": [1, 2, 3],
+		"labels": ["alpha", "beta"]
+	}`
+
+	t.Run("call_endpoint", func(t *testing.T) {
+		opts := setupNonStreamingScenario(t, "schema-test-call", comprehensiveContent)
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method:  "GetComprehensive",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		// Validate response against schema
+		err = validator.validateResponse(
+			ctx, "POST", "/call/GetComprehensive",
+			resp.StatusCode, "application/json", resp.Body,
+		)
+		if err != nil {
+			t.Errorf("Schema validation failed for /call: %v", err)
+		}
+	})
+
+	t.Run("call_with_raw_endpoint", func(t *testing.T) {
+		opts := setupNonStreamingScenario(t, "schema-test-call-raw", comprehensiveContent)
+
+		resp, err := BAMLClient.CallWithRaw(ctx, testutil.CallRequest{
+			Method:  "GetComprehensive",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("CallWithRaw failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		// Reconstruct the full response body for validation
+		fullResponse, _ := json.Marshal(map[string]any{
+			"data": json.RawMessage(resp.Data),
+			"raw":  resp.Raw,
+		})
+
+		err = validator.validateResponse(
+			ctx, "POST", "/call-with-raw/GetComprehensive",
+			resp.StatusCode, "application/json", fullResponse,
+		)
+		if err != nil {
+			t.Errorf("Schema validation failed for /call-with-raw: %v", err)
+		}
+	})
+
+	t.Run("stream_ndjson_endpoint", func(t *testing.T) {
+		opts := setupScenario(t, "schema-test-stream", comprehensiveContent)
+
+		events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetComprehensive",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+
+		var eventCount int
+		var validationErrors []string
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				eventCount++
+
+				// Reconstruct the NDJSON event for validation
+				var eventJSON []byte
+				switch event.Event {
+				case "data", "":
+					eventJSON, _ = json.Marshal(map[string]any{
+						"type": "data",
+						"data": json.RawMessage(event.Data),
+					})
+				case "reset":
+					eventJSON, _ = json.Marshal(map[string]any{
+						"type": "reset",
+					})
+				case "error":
+					eventJSON, _ = json.Marshal(map[string]any{
+						"type":  "error",
+						"error": string(event.Data),
+					})
+				}
+
+				err := validator.validateNDJSONEvent(ctx, "/stream/GetComprehensive", eventJSON)
+				if err != nil {
+					validationErrors = append(validationErrors,
+						fmt.Sprintf("Event %d: %v", eventCount, err))
+				}
+
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		if eventCount == 0 {
+			t.Error("No events received")
+		}
+
+		if len(validationErrors) > 0 {
+			t.Errorf("Schema validation errors:\n%s", strings.Join(validationErrors, "\n"))
+		}
+	})
+
+	t.Run("stream_with_raw_ndjson_endpoint", func(t *testing.T) {
+		opts := setupScenario(t, "schema-test-stream-raw", comprehensiveContent)
+
+		events, errs := BAMLClient.StreamWithRawNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetComprehensive",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+
+		var eventCount int
+		var validationErrors []string
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				eventCount++
+
+				// Reconstruct the NDJSON event for validation
+				var eventJSON []byte
+				switch event.Event {
+				case "data", "":
+					eventJSON, _ = json.Marshal(map[string]any{
+						"type": "data",
+						"data": json.RawMessage(event.Data),
+						"raw":  event.Raw,
+					})
+				case "reset":
+					eventJSON, _ = json.Marshal(map[string]any{
+						"type": "reset",
+					})
+				case "error":
+					eventJSON, _ = json.Marshal(map[string]any{
+						"type":  "error",
+						"error": string(event.Data),
+					})
+				}
+
+				err := validator.validateNDJSONEvent(ctx, "/stream-with-raw/GetComprehensive", eventJSON)
+				if err != nil {
+					validationErrors = append(validationErrors,
+						fmt.Sprintf("Event %d: %v", eventCount, err))
+				}
+
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		if eventCount == 0 {
+			t.Error("No events received")
+		}
+
+		if len(validationErrors) > 0 {
+			t.Errorf("Schema validation errors:\n%s", strings.Join(validationErrors, "\n"))
+		}
+
+		// Verify that raw field was present in data events
+		// (This is implicit in schema validation, but good to double-check)
+	})
+}
+
+// TestOpenAPISchemaStructure validates the schema itself has expected structure.
+func TestOpenAPISchemaStructure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	validator, err := fetchAndParseSchema(ctx, TestEnv.BAMLRestURL)
+	if err != nil {
+		t.Fatalf("Failed to fetch/parse OpenAPI schema: %v", err)
+	}
+
+	t.Run("has_streaming_endpoints", func(t *testing.T) {
+		// Check that streaming endpoints exist
+		streamPath := validator.doc.Paths.Find("/stream/GetComprehensive")
+		if streamPath == nil {
+			t.Error("Missing /stream/GetComprehensive path")
+		} else if streamPath.Post == nil {
+			t.Error("Missing POST operation for /stream/GetComprehensive")
+		}
+
+		streamWithRawPath := validator.doc.Paths.Find("/stream-with-raw/GetComprehensive")
+		if streamWithRawPath == nil {
+			t.Error("Missing /stream-with-raw/GetComprehensive path")
+		} else if streamWithRawPath.Post == nil {
+			t.Error("Missing POST operation for /stream-with-raw/GetComprehensive")
+		}
+	})
+
+	t.Run("has_ndjson_content_type", func(t *testing.T) {
+		streamPath := validator.doc.Paths.Find("/stream/GetComprehensive")
+		if streamPath == nil || streamPath.Post == nil {
+			t.Skip("Stream path not found")
+		}
+
+		resp := streamPath.Post.Responses.Status(200)
+		if resp == nil {
+			t.Fatal("Missing 200 response")
+		}
+
+		ndjsonContent := resp.Value.Content.Get("application/x-ndjson")
+		if ndjsonContent == nil {
+			t.Error("Missing application/x-ndjson content type")
+		}
+
+		sseContent := resp.Value.Content.Get("text/event-stream")
+		if sseContent == nil {
+			t.Error("Missing text/event-stream content type")
+		}
+	})
+
+	t.Run("has_discriminated_union", func(t *testing.T) {
+		streamPath := validator.doc.Paths.Find("/stream/GetComprehensive")
+		if streamPath == nil || streamPath.Post == nil {
+			t.Skip("Stream path not found")
+		}
+
+		resp := streamPath.Post.Responses.Status(200)
+		if resp == nil {
+			t.Fatal("Missing 200 response")
+		}
+
+		ndjsonContent := resp.Value.Content.Get("application/x-ndjson")
+		if ndjsonContent == nil || ndjsonContent.Schema == nil {
+			t.Fatal("Missing NDJSON schema")
+		}
+
+		schema := ndjsonContent.Schema.Value
+		if schema == nil {
+			t.Fatal("Schema value is nil")
+		}
+
+		if len(schema.OneOf) == 0 {
+			t.Error("Expected oneOf for discriminated union")
+		}
+
+		if schema.Discriminator == nil {
+			t.Error("Expected discriminator")
+		} else if schema.Discriminator.PropertyName != "type" {
+			t.Errorf("Expected discriminator on 'type', got '%s'", schema.Discriminator.PropertyName)
+		}
+	})
+
+	t.Run("has_global_event_schemas", func(t *testing.T) {
+		resetSchema := validator.doc.Components.Schemas["__StreamResetEvent__"]
+		if resetSchema == nil {
+			t.Error("Missing __StreamResetEvent__ component schema")
+		}
+
+		errorSchema := validator.doc.Components.Schemas["__StreamErrorEvent__"]
+		if errorSchema == nil {
+			t.Error("Missing __StreamErrorEvent__ component schema")
+		}
+	})
+}
