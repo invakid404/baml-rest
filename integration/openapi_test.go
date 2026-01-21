@@ -164,6 +164,55 @@ func (v *schemaValidator) validateNDJSONEvent(
 	return nil
 }
 
+// getEventTypeSchema extracts the schema for a specific event type from the oneOf discriminated union.
+// eventType should be "data" for partial events, "final" for final events, etc.
+func (v *schemaValidator) getEventTypeSchema(path string, eventType string) (*openapi3.Schema, error) {
+	pathItem := v.doc.Paths.Find(path)
+	if pathItem == nil || pathItem.Post == nil {
+		return nil, fmt.Errorf("path %s not found in schema", path)
+	}
+
+	resp := pathItem.Post.Responses.Status(200)
+	if resp == nil || resp.Value == nil {
+		return nil, fmt.Errorf("no 200 response defined for %s", path)
+	}
+
+	ndjsonContent := resp.Value.Content.Get("application/x-ndjson")
+	if ndjsonContent == nil || ndjsonContent.Schema == nil || ndjsonContent.Schema.Value == nil {
+		return nil, fmt.Errorf("no application/x-ndjson schema defined for %s", path)
+	}
+
+	// Find the variant with the matching type enum
+	for _, variant := range ndjsonContent.Schema.Value.OneOf {
+		if variant.Value == nil || variant.Value.Properties == nil {
+			continue
+		}
+		typeSchema := variant.Value.Properties["type"]
+		if typeSchema == nil || typeSchema.Value == nil {
+			continue
+		}
+		if len(typeSchema.Value.Enum) > 0 && typeSchema.Value.Enum[0] == eventType {
+			return variant.Value, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no schema found for event type %q in %s", eventType, path)
+}
+
+// validateAgainstEventTypeSchema validates data against a specific event type's schema.
+func (v *schemaValidator) validateAgainstEventTypeSchema(path string, eventType string, data any) error {
+	schema, err := v.getEventTypeSchema(path, eventType)
+	if err != nil {
+		return err
+	}
+
+	if err := schema.VisitJSON(data); err != nil {
+		return fmt.Errorf("validation against %q schema failed: %w", eventType, err)
+	}
+
+	return nil
+}
+
 func TestOpenAPISchemaValidation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -399,6 +448,175 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 		// Verify that raw field was present in the final event
 		if finalRaw == "" {
 			t.Error("Expected raw field in final event")
+		}
+	})
+}
+
+// TestStreamAndFinalSchemasDiffer verifies that partial (data) and final schemas are meaningfully different.
+// This ensures that partial events with null fields fail final schema validation, proving the schemas
+// aren't accidentally identical.
+func TestStreamAndFinalSchemasDiffer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	validator, err := fetchAndParseSchema(ctx, TestEnv.BAMLRestURL)
+	if err != nil {
+		t.Fatalf("Failed to fetch/parse OpenAPI schema: %v", err)
+	}
+
+	// Use content that will generate partial events with null fields during streaming
+	comprehensiveContent := `{
+		"id": 42,
+		"title": "Test Item",
+		"description": "A test item with all features",
+		"score": 3.14,
+		"is_active": true,
+		"metadata": {
+			"created_by": "test-user",
+			"priority": "HIGH",
+			"tags": [
+				{"name": "important", "value": "yes"},
+				{"name": "category", "value": null}
+			]
+		},
+		"related_ids": [1, 2, 3],
+		"labels": ["alpha", "beta"]
+	}`
+
+	t.Run("partial_data_fails_final_schema", func(t *testing.T) {
+		opts := setupScenario(t, "schema-differ-test", comprehensiveContent)
+
+		events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetComprehensive",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+
+		var firstPartialData []byte
+		var finalData []byte
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+
+				// Capture the first partial event
+				if event.IsPartialData() && firstPartialData == nil {
+					firstPartialData = []byte(event.Data)
+				}
+
+				// Capture the final event
+				if event.IsFinal() {
+					finalData = []byte(event.Data)
+				}
+
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		if firstPartialData == nil {
+			t.Skip("No partial events received - cannot test schema difference")
+		}
+		if finalData == nil {
+			t.Fatal("No final event received")
+		}
+
+		// Parse the partial data
+		var partialParsed any
+		if err := json.Unmarshal(firstPartialData, &partialParsed); err != nil {
+			t.Fatalf("Failed to parse partial data: %v", err)
+		}
+
+		// Try to validate the first partial data against the final schema
+		// This should FAIL because partial data may have null fields that the final schema requires
+		partialAsFinal := map[string]any{
+			"type": "final",
+			"data": partialParsed,
+		}
+
+		err := validator.validateAgainstEventTypeSchema("/stream/GetComprehensive", "final", partialAsFinal)
+		if err == nil {
+			t.Error("Expected partial data to FAIL validation against final schema, but it passed. " +
+				"This suggests the partial and final schemas might be identical.")
+		} else {
+			t.Logf("Correctly rejected partial data against final schema: %v", err)
+		}
+
+		// Verify the final data passes the final schema (sanity check)
+		var finalParsed any
+		if err := json.Unmarshal(finalData, &finalParsed); err != nil {
+			t.Fatalf("Failed to parse final data: %v", err)
+		}
+
+		finalAsFinal := map[string]any{
+			"type": "final",
+			"data": finalParsed,
+		}
+
+		err = validator.validateAgainstEventTypeSchema("/stream/GetComprehensive", "final", finalAsFinal)
+		if err != nil {
+			t.Errorf("Final data should pass final schema validation: %v", err)
+		}
+	})
+
+	t.Run("final_data_passes_partial_schema", func(t *testing.T) {
+		opts := setupScenario(t, "schema-differ-test-2", comprehensiveContent)
+
+		events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetComprehensive",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+
+		var finalData []byte
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				if event.IsFinal() {
+					finalData = []byte(event.Data)
+				}
+
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		if finalData == nil {
+			t.Fatal("No final event received")
+		}
+
+		// Parse the final data
+		var finalParsed any
+		if err := json.Unmarshal(finalData, &finalParsed); err != nil {
+			t.Fatalf("Failed to parse final data: %v", err)
+		}
+
+		// Final data should pass the partial schema (partial schema is more permissive)
+		finalAsPartial := map[string]any{
+			"type": "data",
+			"data": finalParsed,
+		}
+
+		err := validator.validateAgainstEventTypeSchema("/stream/GetComprehensive", "data", finalAsPartial)
+		if err != nil {
+			t.Errorf("Final data should pass partial (data) schema validation since it's more permissive: %v", err)
 		}
 	})
 }
