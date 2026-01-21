@@ -344,16 +344,39 @@ func generateOpenAPISchema() *openapi3.T {
 		}
 
 		// Response for /stream endpoint (NDJSON streaming without raw)
-		// Data events contain only the parsed data, no raw LLM output
-		streamDataEventSchema := &openapi3.SchemaRef{
+		// Partial data events contain intermediate results (may have null placeholders for unparsed fields)
+		streamPartialDataEventSchema := &openapi3.SchemaRef{
 			Value: &openapi3.Schema{
 				Type:        &openapi3.Types{openapi3.TypeObject},
-				Description: "Data event containing a partial or final parsed result",
+				Description: "Partial data event containing an intermediate parsed result. Fields not yet parsed may be null.",
 				Properties: openapi3.Schemas{
 					"type": &openapi3.SchemaRef{
 						Value: &openapi3.Schema{
 							Type: &openapi3.Types{openapi3.TypeString},
 							Enum: []any{"data"},
+						},
+					},
+					"data": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type:        &openapi3.Types{openapi3.TypeObject},
+							Description: "Partial result - fields not yet parsed may be null",
+						},
+					},
+				},
+				Required: []string{"type", "data"},
+			},
+		}
+
+		// Final data events contain the complete, validated result
+		streamFinalDataEventSchema := &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeObject},
+				Description: "Final data event containing the complete, validated result",
+				Properties: openapi3.Schemas{
+					"type": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type: &openapi3.Types{openapi3.TypeString},
+							Enum: []any{"final"},
 						},
 					},
 					"data": resultTypeSchema.Value.Properties["x"],
@@ -373,7 +396,8 @@ func generateOpenAPISchema() *openapi3.T {
 						Schema: &openapi3.SchemaRef{
 							Value: &openapi3.Schema{
 								OneOf: openapi3.SchemaRefs{
-									streamDataEventSchema,
+									streamPartialDataEventSchema,
+									streamFinalDataEventSchema,
 									resetEventSchemaRef,
 									errorEventSchemaRef,
 								},
@@ -403,7 +427,8 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: "Returns a stream of events containing partial results as they become available, followed by the final result. " +
 					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
-					"Events have type 'data' for results, 'reset' if the stream restarts due to a retry, or 'error' for failures.",
+					"Events have type 'data' for partial results (fields may be null), 'final' for the complete validated result, " +
+					"'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
 						Content: map[string]*openapi3.MediaType{
@@ -420,11 +445,11 @@ func generateOpenAPISchema() *openapi3.T {
 		})
 
 		// Response for /stream-with-raw endpoint (NDJSON streaming with raw LLM output)
-		// Data events contain both parsed data AND accumulated raw LLM response
-		streamWithRawDataEventSchema := &openapi3.SchemaRef{
+		// Partial data events contain intermediate results with accumulated raw LLM response
+		streamWithRawPartialDataEventSchema := &openapi3.SchemaRef{
 			Value: &openapi3.Schema{
 				Type:        &openapi3.Types{openapi3.TypeObject},
-				Description: "Data event containing a partial or final parsed result with accumulated raw LLM output",
+				Description: "Partial data event containing an intermediate parsed result with accumulated raw LLM output. Fields not yet parsed may be null.",
 				Properties: openapi3.Schemas{
 					"type": &openapi3.SchemaRef{
 						Value: &openapi3.Schema{
@@ -432,11 +457,40 @@ func generateOpenAPISchema() *openapi3.T {
 							Enum: []any{"data"},
 						},
 					},
-					"data": resultTypeSchema.Value.Properties["x"],
+					"data": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type:        &openapi3.Types{openapi3.TypeObject},
+							Description: "Partial result - fields not yet parsed may be null",
+						},
+					},
 					"raw": &openapi3.SchemaRef{
 						Value: &openapi3.Schema{
 							Type:        &openapi3.Types{openapi3.TypeString},
 							Description: "Accumulated raw LLM response text up to this point",
+						},
+					},
+				},
+				Required: []string{"type", "data", "raw"},
+			},
+		}
+
+		// Final data events contain the complete, validated result with full raw LLM response
+		streamWithRawFinalDataEventSchema := &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeObject},
+				Description: "Final data event containing the complete, validated result with full raw LLM output",
+				Properties: openapi3.Schemas{
+					"type": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type: &openapi3.Types{openapi3.TypeString},
+							Enum: []any{"final"},
+						},
+					},
+					"data": resultTypeSchema.Value.Properties["x"],
+					"raw": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type:        &openapi3.Types{openapi3.TypeString},
+							Description: "Complete raw LLM response text",
 						},
 					},
 				},
@@ -455,7 +509,8 @@ func generateOpenAPISchema() *openapi3.T {
 						Schema: &openapi3.SchemaRef{
 							Value: &openapi3.Schema{
 								OneOf: openapi3.SchemaRefs{
-									streamWithRawDataEventSchema,
+									streamWithRawPartialDataEventSchema,
+									streamWithRawFinalDataEventSchema,
 									resetEventSchemaRef,
 									errorEventSchemaRef,
 								},
@@ -485,7 +540,8 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available. " +
 					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
-					"Events have type 'data' for results (includes 'raw' field), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
+					"Events have type 'data' for partial results (fields may be null, includes 'raw' field), 'final' for the complete validated result, " +
+					"'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
 						Content: map[string]*openapi3.MediaType{

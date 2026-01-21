@@ -258,7 +258,8 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 		})
 
 		var eventCount int
-		var lastDataEvent []byte
+		var partialCount int
+		var finalEvent []byte
 
 		for {
 			select {
@@ -268,15 +269,19 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 				}
 				eventCount++
 
-				// Only track data events for final validation
-				// Partial events intentionally have null values for unparsed fields
-				if event.Event == "data" || event.Event == "" {
+				// Track partial data events (type: "data")
+				if event.IsPartialData() {
+					partialCount++
+				}
+
+				// Capture the final event (type: "final") for validation
+				if event.IsFinal() {
 					// Reconstruct the NDJSON event for validation
 					eventJSON, _ := json.Marshal(map[string]any{
-						"type": "data",
+						"type": "final",
 						"data": json.RawMessage(event.Data),
 					})
-					lastDataEvent = eventJSON
+					finalEvent = eventJSON
 				}
 
 			case err := <-errs:
@@ -293,12 +298,18 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 			t.Error("No events received")
 		}
 
-		// Only validate the final event - partial events have null placeholders
-		if lastDataEvent != nil {
-			err := validator.validateNDJSONEvent(ctx, "/stream/GetComprehensive", lastDataEvent)
-			if err != nil {
-				t.Errorf("Final event schema validation failed: %v", err)
-			}
+		if partialCount == 0 {
+			t.Log("Warning: No partial events received (expected for short content)")
+		}
+
+		// Validate the final event against the strict schema
+		if finalEvent == nil {
+			t.Fatal("No final event received")
+		}
+
+		err := validator.validateNDJSONEvent(ctx, "/stream/GetComprehensive", finalEvent)
+		if err != nil {
+			t.Errorf("Final event schema validation failed: %v", err)
 		}
 	})
 
@@ -312,8 +323,9 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 		})
 
 		var eventCount int
-		var lastDataEvent []byte
-		var lastRaw string
+		var partialCount int
+		var finalEvent []byte
+		var finalRaw string
 
 		for {
 			select {
@@ -323,16 +335,20 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 				}
 				eventCount++
 
-				// Only track data events for final validation
-				// Partial events intentionally have null values for unparsed fields
-				if event.Event == "data" || event.Event == "" {
+				// Track partial data events (type: "data")
+				if event.IsPartialData() {
+					partialCount++
+				}
+
+				// Capture the final event (type: "final") for validation
+				if event.IsFinal() {
 					eventJSON, _ := json.Marshal(map[string]any{
-						"type": "data",
+						"type": "final",
 						"data": json.RawMessage(event.Data),
 						"raw":  event.Raw,
 					})
-					lastDataEvent = eventJSON
-					lastRaw = event.Raw
+					finalEvent = eventJSON
+					finalRaw = event.Raw
 				}
 
 			case err := <-errs:
@@ -349,17 +365,23 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 			t.Error("No events received")
 		}
 
-		// Only validate the final event - partial events have null placeholders
-		if lastDataEvent != nil {
-			err := validator.validateNDJSONEvent(ctx, "/stream-with-raw/GetComprehensive", lastDataEvent)
-			if err != nil {
-				t.Errorf("Final event schema validation failed: %v", err)
-			}
+		if partialCount == 0 {
+			t.Log("Warning: No partial events received (expected for short content)")
 		}
 
-		// Verify that raw field was present
-		if lastRaw == "" {
-			t.Error("Expected raw field in final data event")
+		// Validate the final event against the strict schema
+		if finalEvent == nil {
+			t.Fatal("No final event received")
+		}
+
+		err := validator.validateNDJSONEvent(ctx, "/stream-with-raw/GetComprehensive", finalEvent)
+		if err != nil {
+			t.Errorf("Final event schema validation failed: %v", err)
+		}
+
+		// Verify that raw field was present in the final event
+		if finalRaw == "" {
+			t.Error("Expected raw field in final event")
 		}
 	})
 }
@@ -434,14 +456,43 @@ func TestOpenAPISchemaStructure(t *testing.T) {
 			t.Fatal("Schema value is nil")
 		}
 
-		if len(schema.OneOf) == 0 {
-			t.Error("Expected oneOf for discriminated union")
+		// Should have 4 variants: partial data, final data, reset, error
+		if len(schema.OneOf) != 4 {
+			t.Errorf("Expected 4 oneOf variants (partial, final, reset, error), got %d", len(schema.OneOf))
 		}
 
 		if schema.Discriminator == nil {
 			t.Error("Expected discriminator")
 		} else if schema.Discriminator.PropertyName != "type" {
 			t.Errorf("Expected discriminator on 'type', got '%s'", schema.Discriminator.PropertyName)
+		}
+
+		// Verify we have separate partial ("data") and final ("final") event types
+		eventTypes := make(map[string]bool)
+		for _, variant := range schema.OneOf {
+			if variant.Value == nil || variant.Value.Properties == nil {
+				continue
+			}
+			typeSchema := variant.Value.Properties["type"]
+			if typeSchema == nil || typeSchema.Value == nil {
+				continue
+			}
+			if len(typeSchema.Value.Enum) > 0 {
+				eventTypes[typeSchema.Value.Enum[0].(string)] = true
+			}
+		}
+
+		if !eventTypes["data"] {
+			t.Error("Missing 'data' event type for partial events")
+		}
+		if !eventTypes["final"] {
+			t.Error("Missing 'final' event type for final events")
+		}
+		if !eventTypes["reset"] {
+			t.Error("Missing 'reset' event type")
+		}
+		if !eventTypes["error"] {
+			t.Error("Missing 'error' event type")
 		}
 	})
 

@@ -156,14 +156,27 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 
 // StreamEvent represents a single event from /stream endpoints (works for both SSE and NDJSON).
 type StreamEvent struct {
-	Event string          // Event type: "data", "reset", "error" for NDJSON; "" for SSE data events, "reset"/"error" for SSE
+	Event string          // Event type: "data", "final", "reset", "error" for NDJSON; "" for SSE data, "final"/"reset"/"error" for SSE
 	Data  json.RawMessage // Event data
 	Raw   string          // For stream-with-raw, the raw LLM output at this point
 }
 
-// IsData returns true if this is a data event.
-func (e *StreamEvent) IsData() bool {
+// IsPartialData returns true if this is a partial data event (type: "data").
+// Partial events may have null values for fields not yet parsed.
+func (e *StreamEvent) IsPartialData() bool {
 	return e.Event == "data" || e.Event == ""
+}
+
+// IsFinal returns true if this is a final data event (type: "final").
+// The final event contains the complete, validated result.
+func (e *StreamEvent) IsFinal() bool {
+	return e.Event == "final"
+}
+
+// IsData returns true if this is any kind of data event (partial or final).
+// For SSE, the default event type "" is also considered a data event.
+func (e *StreamEvent) IsData() bool {
+	return e.Event == "data" || e.Event == "final" || e.Event == ""
 }
 
 // IsReset returns true if this is a reset event.

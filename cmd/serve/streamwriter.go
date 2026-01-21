@@ -32,6 +32,7 @@ type NDJSONEventType string
 
 const (
 	NDJSONEventData  NDJSONEventType = "data"
+	NDJSONEventFinal NDJSONEventType = "final"
 	NDJSONEventReset NDJSONEventType = "reset"
 	NDJSONEventError NDJSONEventType = "error"
 )
@@ -66,8 +67,11 @@ func NegotiateStreamFormat(r *http.Request) StreamFormat {
 // StreamPublisher is the unified interface for publishing stream events.
 // Both SSE and NDJSON implementations use this interface.
 type StreamPublisher interface {
-	// PublishData sends a data event with parsed data and optional raw response.
+	// PublishData sends a partial data event with parsed data and optional raw response.
+	// Partial events may have null values for fields not yet parsed.
 	PublishData(data []byte, raw string) error
+	// PublishFinal sends the final data event with the complete, validated result.
+	PublishFinal(data []byte, raw string) error
 	// PublishReset sends a reset event indicating client should discard state.
 	PublishReset() error
 	// PublishError sends an error event.
@@ -146,6 +150,27 @@ func NewSSEPublisher(
 
 func (p *SSEPublisher) PublishData(data []byte, raw string) error {
 	message := &sse.Message{}
+
+	if p.needsRaw {
+		wrapped, err := json.Marshal(CallWithRawResponse{
+			Data: data,
+			Raw:  raw,
+		})
+		if err != nil {
+			return err
+		}
+		message.AppendData(unsafeutil.BytesToString(wrapped))
+	} else {
+		message.AppendData(unsafeutil.BytesToString(data))
+	}
+
+	return p.server.Publish(message, p.topic)
+}
+
+func (p *SSEPublisher) PublishFinal(data []byte, raw string) error {
+	// SSE uses the same format for partial and final data events
+	// The distinction is made by using a "final" event type
+	message := &sse.Message{Type: sse.EventType("final")}
 
 	if p.needsRaw {
 		wrapped, err := json.Marshal(CallWithRawResponse{
@@ -263,6 +288,17 @@ func (p *NDJSONPublisher) PublishData(data []byte, raw string) error {
 	return p.writeEvent(event)
 }
 
+func (p *NDJSONPublisher) PublishFinal(data []byte, raw string) error {
+	event := &NDJSONEvent{
+		Type: NDJSONEventFinal,
+		Data: data,
+	}
+	if raw != "" {
+		event.Raw = raw
+	}
+	return p.writeEvent(event)
+}
+
 func (p *NDJSONPublisher) PublishReset() error {
 	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventReset})
 }
@@ -359,7 +395,7 @@ func consumeStream(
 				_ = publisher.PublishError(result.Error.Error())
 			}
 
-		case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
+		case workerplugin.StreamResultKindStream:
 			// Handle reset signal (retry occurred)
 			if result.Reset {
 				accumulatedRaw.Reset()
@@ -373,17 +409,38 @@ func consumeStream(
 			// Determine raw output for this event
 			var rawForOutput string
 			if streamMode.NeedsRaw() {
-				if result.Kind == workerplugin.StreamResultKindStream {
-					// Accumulate delta into full raw response
-					accumulatedRaw.WriteString(result.Raw)
-					rawForOutput = accumulatedRaw.String()
-				} else {
-					// Final contains full raw
-					rawForOutput = result.Raw
+				// Accumulate delta into full raw response
+				accumulatedRaw.WriteString(result.Raw)
+				rawForOutput = accumulatedRaw.String()
+			}
+
+			// Publish partial data event (may have null placeholders for unparsed fields)
+			if err := publisher.PublishData(result.Data, rawForOutput); err != nil {
+				workerplugin.ReleaseStreamResult(result)
+				drainResults(results)
+				return
+			}
+
+		case workerplugin.StreamResultKindFinal:
+			// Handle reset signal (retry occurred) - unlikely but possible
+			if result.Reset {
+				accumulatedRaw.Reset()
+				if err := publisher.PublishReset(); err != nil {
+					workerplugin.ReleaseStreamResult(result)
+					drainResults(results)
+					return
 				}
 			}
 
-			if err := publisher.PublishData(result.Data, rawForOutput); err != nil {
+			// Determine raw output for final event
+			var rawForOutput string
+			if streamMode.NeedsRaw() {
+				// Final contains full raw
+				rawForOutput = result.Raw
+			}
+
+			// Publish final data event (complete, validated result)
+			if err := publisher.PublishFinal(result.Data, rawForOutput); err != nil {
 				workerplugin.ReleaseStreamResult(result)
 				drainResults(results)
 				return
