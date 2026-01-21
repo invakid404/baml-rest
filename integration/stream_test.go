@@ -1337,7 +1337,6 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 		defer cancel()
 
 		// Create a slow streaming scenario so we have time to kill the worker
-		// NDJSON has less overhead than SSE, so we need longer delays
 		content := `{"name": "John Doe", "age": 30, "tags": ["developer", "golang", "testing"]}`
 		scenarioID := "test-worker-death-retry-ndjson"
 
@@ -1345,9 +1344,9 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 			ID:             scenarioID,
 			Provider:       "openai",
 			Content:        content,
-			ChunkSize:      5,    // Very small chunks
-			InitialDelayMs: 500,  // Longer initial delay to ensure worker is tracked
-			ChunkDelayMs:   1000, // Slower chunking so we have time to kill worker
+			ChunkSize:      5,   // Very small chunks
+			InitialDelayMs: 100, // Some initial delay
+			ChunkDelayMs:   500, // Slow chunking so we have time to kill worker
 		}
 
 		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
