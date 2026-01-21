@@ -149,6 +149,25 @@ func generateOpenAPISchema() *openapi3.T {
 						// If field is not a pointer, it's required
 						if field.Type.Kind() != reflect.Ptr {
 							requiredFields = append(requiredFields, fieldName)
+						} else {
+							// Pointer fields are nullable - mark them in the schema
+							if propSchema, ok := schema.Properties[fieldName]; ok {
+								if propSchema.Ref != "" && strings.HasPrefix(propSchema.Ref, "#/") {
+									// For proper $ref schemas (like #/components/schemas/Foo),
+									// wrap with allOf to add nullable without modifying the referenced schema
+									schema.Properties[fieldName] = &openapi3.SchemaRef{
+										Value: &openapi3.Schema{
+											Nullable: true,
+											AllOf: openapi3.SchemaRefs{
+												{Ref: propSchema.Ref},
+											},
+										},
+									}
+								} else if propSchema.Value != nil {
+									// For inline schemas, directly set nullable
+									propSchema.Value.Nullable = true
+								}
+							}
 						}
 					}
 
