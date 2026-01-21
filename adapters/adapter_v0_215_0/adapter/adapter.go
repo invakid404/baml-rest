@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
+	"github.com/invakid404/baml-rest/adapters/common/typebuilder"
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
@@ -35,19 +36,28 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	return nil
 }
 
-func (b *BamlAdapter) SetTypeBuilder(typeBuilder *bamlutils.TypeBuilder) error {
-	tb, err := b.TypeBuilderFactory()
+func (b *BamlAdapter) SetTypeBuilder(tb *bamlutils.TypeBuilder) error {
+	wrapped, err := b.TypeBuilderFactory()
 	if err != nil {
 		return fmt.Errorf("failed to create type builder: %w", err)
 	}
 
-	for idx, input := range typeBuilder.BamlSnippets {
-		if err := tb.AddBaml(input); err != nil {
-			return fmt.Errorf("failed to add input at index %d: %w", idx, err)
+	// Process dynamic_types first (imperative API)
+	if tb.DynamicTypes != nil {
+		translator := typebuilder.NewTranslator(wrapped)
+		if err := translator.Apply(tb.DynamicTypes); err != nil {
+			return fmt.Errorf("failed to apply dynamic types: %w", err)
 		}
 	}
 
-	b.TypeBuilder = tb
+	// Then add BAML snippets (can reference types created above)
+	for idx, input := range tb.BamlSnippets {
+		if err := wrapped.AddBaml(input); err != nil {
+			return fmt.Errorf("baml_snippets[%d]: %w", idx, err)
+		}
+	}
+
+	b.TypeBuilder = wrapped
 
 	return nil
 }

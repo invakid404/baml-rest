@@ -4,6 +4,7 @@ go 1.25.6
 
 require (
 	github.com/dave/jennifer v1.7.1
+	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000
 	github.com/stoewer/go-strcase v1.3.1
 )
@@ -14,4 +15,7 @@ require (
 	github.com/stretchr/testify v1.11.1 // indirect
 )
 
-replace github.com/invakid404/baml-rest/introspected => ../../introspected
+replace (
+	github.com/invakid404/baml-rest/bamlutils => ../../bamlutils
+	github.com/invakid404/baml-rest/introspected => ../../introspected
+)

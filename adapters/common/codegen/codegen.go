@@ -1208,11 +1208,20 @@ func Generate(selfPkg string) {
 								jen.Error(),
 							).
 							Block(
-								jen.Return(jen.Qual(common.GeneratedClientPkg, "NewTypeBuilder").Call()),
+								jen.List(jen.Id("tb"), jen.Id("err")).Op(":=").Qual(common.GeneratedClientPkg, "NewTypeBuilder").Call(),
+								jen.If(jen.Id("err").Op("!=").Nil()).Block(
+									jen.Return(jen.Nil(), jen.Id("err")),
+								),
+								jen.Return(jen.Qual(selfAdapterPkg, "WrapTypeBuilder").Call(jen.Id("tb")), jen.Nil()),
 							),
 					}),
 			),
 		)
+
+	// Generate `nativeTypeBuilder` interface for extracting native TypeBuilder from wrapper
+	out.Type().Id("nativeTypeBuilder").Interface(
+		jen.Id("Native").Params().Any(),
+	)
 
 	// Generate `makeOptionsFromAdapter`
 	out.Func().Id("makeOptionsFromAdapter").
@@ -1236,11 +1245,19 @@ func Generate(selfPkg string) {
 						Call(jen.Id("adapter").Dot("ClientRegistry"))),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
-				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("adapter").Dot("TypeBuilder").Assert(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder")),
+				// Try to extract native TypeBuilder from wrapper
+				jen.List(jen.Id("wrapper"), jen.Id("ok")).Op(":=").Id("adapter").Dot("TypeBuilder").Assert(jen.Id("nativeTypeBuilder")),
 				jen.If(jen.Op("!").Id("ok")).Block(
 					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
-						jen.Lit("invalid TypeBuilder type: expected *TypeBuilder, got %T"),
+						jen.Lit("TypeBuilder does not implement nativeTypeBuilder interface: got %T"),
 						jen.Id("adapter").Dot("TypeBuilder"),
+					)),
+				),
+				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("wrapper").Dot("Native").Call().Assert(jen.Qual(BamlPkg, "TypeBuilder")),
+				jen.If(jen.Op("!").Id("ok")).Block(
+					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
+						jen.Lit("Native() did not return baml.TypeBuilder: got %T"),
+						jen.Id("wrapper").Dot("Native").Call(),
 					)),
 				),
 				jen.Id("result").Op("=").Append(jen.Id("result"),

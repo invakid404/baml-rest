@@ -460,3 +460,356 @@ func TestDynamicTypes(t *testing.T) {
 		})
 	})
 }
+
+// TestDynamicTypesImperative tests the new dynamic_types JSON schema-like API
+// that uses the imperative TypeBuilder under the hood.
+func TestDynamicTypesImperative(t *testing.T) {
+	t.Run("add_class_with_primitive_properties", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Return a response with dynamically defined fields
+		content := `{"base_field": "test", "name": "John", "age": 30, "active": true}`
+		opts := setupNonStreamingScenario(t, "test-dynamic-imperative-primitives", content)
+
+		// Use dynamic_types instead of baml_snippets
+		opts.TypeBuilder = &testutil.TypeBuilder{
+			DynamicTypes: &testutil.DynamicTypes{
+				Classes: map[string]*testutil.DynamicClass{
+					"DynamicOutput": {
+						Properties: map[string]*testutil.DynamicProperty{
+							"name":   {Type: "string"},
+							"age":    {Type: "int"},
+							"active": {Type: "bool"},
+						},
+					},
+				},
+			},
+		}
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method:  "GetDynamic",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result struct {
+			BaseField         string         `json:"base_field"`
+			DynamicProperties map[string]any `json:"DynamicProperties"`
+		}
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result.BaseField != "test" {
+			t.Errorf("Expected base_field 'test', got %v", result.BaseField)
+		}
+
+		if result.DynamicProperties == nil {
+			t.Fatalf("Expected DynamicProperties to be present, got nil")
+		}
+
+		if name, ok := result.DynamicProperties["name"].(string); !ok || name != "John" {
+			t.Errorf("Expected name 'John', got %v", result.DynamicProperties["name"])
+		}
+
+		if age, ok := result.DynamicProperties["age"].(float64); !ok || age != 30 {
+			t.Errorf("Expected age 30, got %v", result.DynamicProperties["age"])
+		}
+
+		if active, ok := result.DynamicProperties["active"].(bool); !ok || !active {
+			t.Errorf("Expected active true, got %v", result.DynamicProperties["active"])
+		}
+	})
+
+	t.Run("add_enum_with_values", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Return a response with a dynamically added enum value
+		content := `{"name": "Gold Member", "category": "GOLD"}`
+		opts := setupNonStreamingScenario(t, "test-dynamic-imperative-enum", content)
+
+		// Use dynamic_types to add GOLD value to DynamicCategory
+		opts.TypeBuilder = &testutil.TypeBuilder{
+			DynamicTypes: &testutil.DynamicTypes{
+				Enums: map[string]*testutil.DynamicEnum{
+					"DynamicCategory": {
+						Values: []*testutil.DynamicEnumValue{
+							{Name: "GOLD"},
+							{Name: "SILVER"},
+							{Name: "BRONZE"},
+						},
+					},
+				},
+			},
+		}
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method:  "GetDynamicEnum",
+			Input:   map[string]any{"input": "categorize gold member"},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result struct {
+			Name     string `json:"name"`
+			Category string `json:"category"`
+		}
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result.Name != "Gold Member" {
+			t.Errorf("Expected name 'Gold Member', got %v", result.Name)
+		}
+
+		if result.Category != "GOLD" {
+			t.Errorf("Expected category 'GOLD', got %v", result.Category)
+		}
+	})
+
+	t.Run("add_list_property", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Return a response with a list field
+		content := `{"base_field": "test", "tags": ["go", "baml", "rest"]}`
+		opts := setupNonStreamingScenario(t, "test-dynamic-imperative-list", content)
+
+		opts.TypeBuilder = &testutil.TypeBuilder{
+			DynamicTypes: &testutil.DynamicTypes{
+				Classes: map[string]*testutil.DynamicClass{
+					"DynamicOutput": {
+						Properties: map[string]*testutil.DynamicProperty{
+							"tags": {
+								Type:  "list",
+								Items: &testutil.DynamicTypeRef{Type: "string"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method:  "GetDynamic",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result struct {
+			BaseField         string         `json:"base_field"`
+			DynamicProperties map[string]any `json:"DynamicProperties"`
+		}
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result.DynamicProperties == nil {
+			t.Fatalf("Expected DynamicProperties to be present, got nil")
+		}
+
+		tags, ok := result.DynamicProperties["tags"].([]any)
+		if !ok {
+			t.Fatalf("Expected tags to be an array, got %T: %v", result.DynamicProperties["tags"], result.DynamicProperties["tags"])
+		}
+
+		if len(tags) != 3 {
+			t.Errorf("Expected 3 tags, got %d", len(tags))
+		}
+	})
+
+	t.Run("add_optional_property", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Return a response with an optional field that's present
+		content := `{"base_field": "test", "nickname": "Johnny"}`
+		opts := setupNonStreamingScenario(t, "test-dynamic-imperative-optional", content)
+
+		opts.TypeBuilder = &testutil.TypeBuilder{
+			DynamicTypes: &testutil.DynamicTypes{
+				Classes: map[string]*testutil.DynamicClass{
+					"DynamicOutput": {
+						Properties: map[string]*testutil.DynamicProperty{
+							"nickname": {
+								Type:  "optional",
+								Inner: &testutil.DynamicTypeRef{Type: "string"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method:  "GetDynamic",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result struct {
+			BaseField         string         `json:"base_field"`
+			DynamicProperties map[string]any `json:"DynamicProperties"`
+		}
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result.DynamicProperties == nil {
+			t.Fatalf("Expected DynamicProperties to be present, got nil")
+		}
+
+		if nickname, ok := result.DynamicProperties["nickname"].(string); !ok || nickname != "Johnny" {
+			t.Errorf("Expected nickname 'Johnny', got %v", result.DynamicProperties["nickname"])
+		}
+	})
+
+	t.Run("reference_existing_class", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Return a response referencing an existing SuccessResult class
+		content := `{"base_field": "test", "result": {"data": "success!"}}`
+		opts := setupNonStreamingScenario(t, "test-dynamic-imperative-ref", content)
+
+		opts.TypeBuilder = &testutil.TypeBuilder{
+			DynamicTypes: &testutil.DynamicTypes{
+				Classes: map[string]*testutil.DynamicClass{
+					"DynamicOutput": {
+						Properties: map[string]*testutil.DynamicProperty{
+							// Reference existing SuccessResult class from baml_src
+							"result": {Ref: "SuccessResult"},
+						},
+					},
+				},
+			},
+		}
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method:  "GetDynamic",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result struct {
+			BaseField         string         `json:"base_field"`
+			DynamicProperties map[string]any `json:"DynamicProperties"`
+		}
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result.DynamicProperties == nil {
+			t.Fatalf("Expected DynamicProperties to be present, got nil")
+		}
+
+		resultField, ok := result.DynamicProperties["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("Expected result to be a map, got %T: %v", result.DynamicProperties["result"], result.DynamicProperties["result"])
+		}
+
+		if data, ok := resultField["data"].(string); !ok || data != "success!" {
+			t.Errorf("Expected data 'success!', got %v", resultField["data"])
+		}
+	})
+
+	t.Run("combined_dynamic_types_and_snippets", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Test using both dynamic_types and baml_snippets together
+		// dynamic_types should be processed first, then snippets can reference them
+		content := `{"base_field": "test", "priority": "HIGH", "status": "complete"}`
+		opts := setupNonStreamingScenario(t, "test-dynamic-combined", content)
+
+		opts.TypeBuilder = &testutil.TypeBuilder{
+			// dynamic_types creates the Priority enum
+			DynamicTypes: &testutil.DynamicTypes{
+				Enums: map[string]*testutil.DynamicEnum{
+					"DynamicCategory": {
+						Values: []*testutil.DynamicEnumValue{
+							{Name: "HIGH"},
+							{Name: "LOW"},
+						},
+					},
+				},
+			},
+			// baml_snippets adds a field that uses the enum
+			BAMLSnippets: []string{
+				`dynamic class DynamicOutput {
+					priority DynamicCategory
+					status string
+				}`,
+			},
+		}
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method:  "GetDynamic",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result struct {
+			BaseField         string         `json:"base_field"`
+			DynamicProperties map[string]any `json:"DynamicProperties"`
+		}
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result.DynamicProperties == nil {
+			t.Fatalf("Expected DynamicProperties to be present, got nil")
+		}
+
+		if priority, ok := result.DynamicProperties["priority"].(string); !ok || priority != "HIGH" {
+			t.Errorf("Expected priority 'HIGH', got %v", result.DynamicProperties["priority"])
+		}
+
+		if status, ok := result.DynamicProperties["status"].(string); !ok || status != "complete" {
+			t.Errorf("Expected status 'complete', got %v", result.DynamicProperties["status"])
+		}
+	})
+}
