@@ -269,9 +269,17 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 				}
 				eventCount++
 
-				// Track partial data events (type: "data")
+				// Validate and track partial data events (type: "data")
 				if event.IsPartialData() {
 					partialCount++
+					// Validate partial event against stream type schema
+					partialJSON, _ := json.Marshal(map[string]any{
+						"type": "data",
+						"data": json.RawMessage(event.Data),
+					})
+					if err := validator.validateNDJSONEvent(ctx, "/stream/GetComprehensive", partialJSON); err != nil {
+						t.Errorf("Partial event %d schema validation failed: %v", partialCount, err)
+					}
 				}
 
 				// Capture the final event (type: "final") for validation
@@ -335,9 +343,18 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 				}
 				eventCount++
 
-				// Track partial data events (type: "data")
+				// Validate and track partial data events (type: "data")
 				if event.IsPartialData() {
 					partialCount++
+					// Validate partial event against stream type schema
+					partialJSON, _ := json.Marshal(map[string]any{
+						"type": "data",
+						"data": json.RawMessage(event.Data),
+						"raw":  event.Raw,
+					})
+					if err := validator.validateNDJSONEvent(ctx, "/stream-with-raw/GetComprehensive", partialJSON); err != nil {
+						t.Errorf("Partial event %d schema validation failed: %v", partialCount, err)
+					}
 				}
 
 				// Capture the final event (type: "final") for validation
