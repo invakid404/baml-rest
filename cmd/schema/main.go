@@ -37,6 +37,135 @@ func main() {
 	}
 }
 
+// streamSchemaSuffix is appended to component schema names for their nullable stream variants.
+const streamSchemaSuffix = "__Stream"
+
+// makeStreamSchemaFullyNullable recursively processes a schema to make all fields nullable.
+// This is necessary for streaming partial events where any field may be null during parsing.
+// Arrays are kept as-is (they can be empty but not null in Go).
+//
+// For $ref schemas, instead of inlining, this creates a new component schema named X__Stream
+// and returns a $ref to it. This keeps the schema smaller and allows reuse.
+func makeStreamSchemaFullyNullable(schemaRef *openapi3.SchemaRef, schemas openapi3.Schemas, inProgress map[string]bool) *openapi3.SchemaRef {
+	if schemaRef == nil {
+		return nil
+	}
+
+	// Handle $ref schemas - create X__Stream component schemas
+	if schemaRef.Ref != "" {
+		refName := strings.TrimPrefix(schemaRef.Ref, "#/components/schemas/")
+		streamName := refName + streamSchemaSuffix
+
+		// If stream schema already exists, just reference it
+		if _, exists := schemas[streamName]; exists {
+			return &openapi3.SchemaRef{
+				Ref: fmt.Sprintf("#/components/schemas/%s", streamName),
+			}
+		}
+
+		// If we're currently creating this schema (cycle detection), return a $ref
+		// The schema will be complete by the time it's needed
+		if inProgress[refName] {
+			return &openapi3.SchemaRef{
+				Ref: fmt.Sprintf("#/components/schemas/%s", streamName),
+			}
+		}
+
+		// Look up the original schema
+		refSchema, ok := schemas[refName]
+		if !ok || refSchema.Value == nil {
+			// Can't resolve - just wrap with nullable allOf
+			return &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Nullable: true,
+					AllOf: openapi3.SchemaRefs{
+						{Ref: schemaRef.Ref},
+					},
+				},
+			}
+		}
+
+		// Mark as in-progress before recursing
+		inProgress[refName] = true
+
+		// Create the stream version of the schema
+		streamSchema := makeStreamSchemaFullyNullable(refSchema, schemas, inProgress)
+
+		// Register it as a component schema
+		schemas[streamName] = streamSchema
+
+		// Return a $ref to the new stream schema
+		return &openapi3.SchemaRef{
+			Ref: fmt.Sprintf("#/components/schemas/%s", streamName),
+		}
+	}
+
+	if schemaRef.Value == nil {
+		return schemaRef
+	}
+
+	schema := schemaRef.Value
+
+	// Create a new schema to avoid mutating the original
+	newSchema := &openapi3.Schema{
+		Type:        schema.Type,
+		Description: schema.Description,
+		Enum:        schema.Enum,
+		Default:     schema.Default,
+		Nullable:    true, // All fields nullable in stream types
+		// Don't copy Required - stream types have no required fields
+	}
+
+	// Handle different schema types
+	if schema.Type != nil && len(*schema.Type) > 0 {
+		schemaType := (*schema.Type)[0]
+
+		switch schemaType {
+		case openapi3.TypeArray:
+			// In stream types, arrays can be null (not yet parsed)
+			// Items should also be nullable
+			if schema.Items != nil {
+				newSchema.Items = makeStreamSchemaFullyNullable(schema.Items, schemas, inProgress)
+			}
+			return &openapi3.SchemaRef{Value: newSchema}
+
+		case openapi3.TypeObject:
+			// Make all properties nullable and process them recursively
+			if schema.Properties != nil {
+				newSchema.Properties = make(openapi3.Schemas)
+				for propName, propSchema := range schema.Properties {
+					newSchema.Properties[propName] = makeStreamSchemaFullyNullable(propSchema, schemas, inProgress)
+				}
+			}
+			return &openapi3.SchemaRef{Value: newSchema}
+
+		default:
+			// Primitives (string, number, integer, boolean) - already set nullable above
+			return &openapi3.SchemaRef{Value: newSchema}
+		}
+	}
+
+	// Handle OneOf (union types)
+	if len(schema.OneOf) > 0 {
+		newSchema.OneOf = make(openapi3.SchemaRefs, len(schema.OneOf))
+		for i, oneOf := range schema.OneOf {
+			newSchema.OneOf[i] = makeStreamSchemaFullyNullable(oneOf, schemas, inProgress)
+		}
+		return &openapi3.SchemaRef{Value: newSchema}
+	}
+
+	// Handle AllOf
+	if len(schema.AllOf) > 0 {
+		newSchema.AllOf = make(openapi3.SchemaRefs, len(schema.AllOf))
+		for i, allOf := range schema.AllOf {
+			newSchema.AllOf[i] = makeStreamSchemaFullyNullable(allOf, schemas, inProgress)
+		}
+		return &openapi3.SchemaRef{Value: newSchema}
+	}
+
+	return &openapi3.SchemaRef{Value: newSchema}
+}
+
 func generateOpenAPISchema() *openapi3.T {
 	schemas := make(openapi3.Schemas)
 
@@ -381,6 +510,8 @@ func generateOpenAPISchema() *openapi3.T {
 
 		// Response for /stream endpoint (NDJSON streaming without raw)
 		// Partial data events contain intermediate results (may have null placeholders for unparsed fields)
+		// Make all fields in the stream type nullable since any field may be null during streaming
+		nullableStreamDataSchema := makeStreamSchemaFullyNullable(streamTypeSchema.Value.Properties["x"], schemas, make(map[string]bool))
 		streamPartialDataEventSchema := &openapi3.SchemaRef{
 			Value: &openapi3.Schema{
 				Type:        &openapi3.Types{openapi3.TypeObject},
@@ -392,7 +523,7 @@ func generateOpenAPISchema() *openapi3.T {
 							Enum: []any{"data"},
 						},
 					},
-					"data": streamTypeSchema.Value.Properties["x"],
+					"data": nullableStreamDataSchema,
 				},
 				Required: []string{"type", "data"},
 			},
@@ -477,6 +608,7 @@ func generateOpenAPISchema() *openapi3.T {
 
 		// Response for /stream-with-raw endpoint (NDJSON streaming with raw LLM output)
 		// Partial data events contain intermediate results with accumulated raw LLM response
+		// Reuse the same nullable stream data schema from above
 		streamWithRawPartialDataEventSchema := &openapi3.SchemaRef{
 			Value: &openapi3.Schema{
 				Type:        &openapi3.Types{openapi3.TypeObject},
@@ -488,7 +620,7 @@ func generateOpenAPISchema() *openapi3.T {
 							Enum: []any{"data"},
 						},
 					},
-					"data": streamTypeSchema.Value.Properties["x"],
+					"data": nullableStreamDataSchema,
 					"raw": &openapi3.SchemaRef{
 						Value: &openapi3.Schema{
 							Type:        &openapi3.Types{openapi3.TypeString},
