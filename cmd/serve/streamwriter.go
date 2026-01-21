@@ -249,8 +249,8 @@ func handleSSEStream(
 	streamMode bamlutils.StreamMode,
 	workerPool *pool.Pool,
 	sseServer *sse.Server,
-	sseErrorKind sse.Type,
-	sseResetKind sse.Type,
+	sseErrorKind sse.EventType,
+	sseResetKind sse.EventType,
 	pathPrefix string,
 ) {
 	// Use request pointer address to create unique topic per request
