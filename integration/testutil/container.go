@@ -156,6 +156,7 @@ func startMockLLMContainer(ctx context.Context, networkName string) (testcontain
 		FromDockerfile: testcontainers.FromDockerfile{
 			ContextArchive: buildCtx,
 			Dockerfile:     "integration/mockllm/Dockerfile",
+			PrintBuildLog:  true, // Enable build log output to see compilation errors
 		},
 		ExposedPorts: []string{MockLLMInternalPort},
 		Networks:     []string{networkName},
@@ -204,6 +205,7 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 		FromDockerfile: testcontainers.FromDockerfile{
 			ContextArchive: buildCtx,
 			Dockerfile:     "Dockerfile",
+			PrintBuildLog:  true, // Enable build log output to see compilation errors
 		},
 		ExposedPorts: []string{BAMLRestInternalPort},
 		Networks:     []string{networkName},
