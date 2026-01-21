@@ -127,12 +127,42 @@ func (v *schemaValidator) validateResponse(
 }
 
 // validateNDJSONEvent validates a single NDJSON event against the streaming schema.
+// Uses direct schema validation since kin-openapi's ValidateResponse doesn't support NDJSON content type.
 func (v *schemaValidator) validateNDJSONEvent(
 	ctx context.Context,
 	path string,
 	eventJSON []byte,
 ) error {
-	return v.validateResponse(ctx, "POST", path, 200, "application/x-ndjson", eventJSON)
+	// Find the path in the schema
+	pathItem := v.doc.Paths.Find(path)
+	if pathItem == nil || pathItem.Post == nil {
+		return fmt.Errorf("path %s not found in schema", path)
+	}
+
+	// Get the 200 response
+	resp := pathItem.Post.Responses.Status(200)
+	if resp == nil || resp.Value == nil {
+		return fmt.Errorf("no 200 response defined for %s", path)
+	}
+
+	// Get the NDJSON content type schema
+	ndjsonContent := resp.Value.Content.Get("application/x-ndjson")
+	if ndjsonContent == nil || ndjsonContent.Schema == nil {
+		return fmt.Errorf("no application/x-ndjson schema defined for %s", path)
+	}
+
+	// Parse the event JSON
+	var eventData any
+	if err := json.Unmarshal(eventJSON, &eventData); err != nil {
+		return fmt.Errorf("failed to parse event JSON: %w", err)
+	}
+
+	// Validate against the schema
+	if err := ndjsonContent.Schema.Value.VisitJSON(eventData); err != nil {
+		return fmt.Errorf("schema validation failed: %w", err)
+	}
+
+	return nil
 }
 
 func TestOpenAPISchemaValidation(t *testing.T) {
