@@ -54,3 +54,10 @@ function GetDynamicEnum(input: string) -> DynamicEnumOutput {
     prompt #"{{ ctx.output_format }}
     Categorize: {{ input }}"#
 }
+
+// Comprehensive output for OpenAPI schema validation
+function GetComprehensive(input: string) -> ComprehensiveOutput {
+    client TestClient
+    prompt #"{{ ctx.output_format }}
+    Analyze: {{ input }}"#
+}

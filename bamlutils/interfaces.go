@@ -54,9 +54,10 @@ func (m StreamMode) NeedsPartials() bool {
 type StreamingPrompt func(adapter Adapter, input any) (<-chan StreamResult, error)
 
 type StreamingMethod struct {
-	MakeInput  func() any
-	MakeOutput func() any
-	Impl       StreamingPrompt
+	MakeInput        func() any
+	MakeOutput       func() any
+	MakeStreamOutput func() any // Stream/partial type (may differ from final output type)
+	Impl             StreamingPrompt
 }
 
 type ParsePrompt func(adapter Adapter, raw string) (any, error)

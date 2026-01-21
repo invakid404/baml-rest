@@ -19,9 +19,10 @@ const (
 )
 
 type methodOut struct {
-	name             string
-	inputStructName  string
-	outputStructQual jen.Code
+	name                  string
+	inputStructName       string
+	outputStructQual      jen.Code
+	streamOutputStructQual jen.Code
 }
 
 // Generate generates the adapter.go file for the given adapter package.
@@ -1079,9 +1080,10 @@ func Generate(selfPkg string) {
 			Block(routerBody...)
 
 		methods = append(methods, methodOut{
-			name:             methodName,
-			inputStructName:  inputStructName,
-			outputStructQual: finalResultType,
+			name:                   methodName,
+			inputStructName:        inputStructName,
+			outputStructQual:       finalResultType,
+			streamOutputStructQual: streamType.statement,
 		})
 	}
 
@@ -1098,6 +1100,10 @@ func Generate(selfPkg string) {
 			jen.Id("MakeOutput"): jen.Func().Params().Any().
 				Block(
 					jen.Return(jen.New(method.outputStructQual)),
+				),
+			jen.Id("MakeStreamOutput"): jen.Func().Params().Any().
+				Block(
+					jen.Return(jen.New(method.streamOutputStructQual)),
 				),
 			jen.Id("Impl"): jen.Id(method.name),
 		})
