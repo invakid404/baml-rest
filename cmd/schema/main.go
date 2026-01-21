@@ -178,7 +178,8 @@ func generateOpenAPISchema() *openapi3.T {
 	schemas[bamlOptionsSchemaName] = bamlOptionsSchema
 
 	// Global streaming event schemas (shared across all methods)
-	streamResetEventSchemaName := "StreamResetEvent"
+	// Use double underscore prefix/suffix to avoid collision with user-defined BAML types
+	streamResetEventSchemaName := "__StreamResetEvent__"
 	schemas[streamResetEventSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
 			Type:        &openapi3.Types{openapi3.TypeObject},
@@ -195,7 +196,7 @@ func generateOpenAPISchema() *openapi3.T {
 		},
 	}
 
-	streamErrorEventSchemaName := "StreamErrorEvent"
+	streamErrorEventSchemaName := "__StreamErrorEvent__"
 	schemas[streamErrorEventSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
 			Type:        &openapi3.Types{openapi3.TypeObject},
