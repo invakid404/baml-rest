@@ -135,14 +135,6 @@ type classBuilderWrapper struct {
 	inner baml.ClassBuilder
 }
 
-func (w *classBuilderWrapper) SetDescription(description string) error {
-	return w.inner.SetDescription(description)
-}
-
-func (w *classBuilderWrapper) SetAlias(alias string) error {
-	return w.inner.SetAlias(alias)
-}
-
 func (w *classBuilderWrapper) AddProperty(name string, fieldType bamlutils.BamlType) (bamlutils.BamlPropertyBuilder, error) {
 	t, ok := fieldType.(baml.Type)
 	if !ok {
@@ -160,29 +152,14 @@ func (w *classBuilderWrapper) Type() (bamlutils.BamlType, error) {
 }
 
 // propertyBuilderWrapper wraps a native BAML ClassPropertyBuilder.
+// Note: The native BAML library doesn't expose SetDescription/SetAlias on properties.
 type propertyBuilderWrapper struct {
 	inner baml.ClassPropertyBuilder
-}
-
-func (w *propertyBuilderWrapper) SetDescription(description string) error {
-	return w.inner.SetDescription(description)
-}
-
-func (w *propertyBuilderWrapper) SetAlias(alias string) error {
-	return w.inner.SetAlias(alias)
 }
 
 // enumBuilderWrapper wraps a native BAML EnumBuilder.
 type enumBuilderWrapper struct {
 	inner baml.EnumBuilder
-}
-
-func (w *enumBuilderWrapper) SetDescription(description string) error {
-	return w.inner.SetDescription(description)
-}
-
-func (w *enumBuilderWrapper) SetAlias(alias string) error {
-	return w.inner.SetAlias(alias)
 }
 
 func (w *enumBuilderWrapper) AddValue(name string) (bamlutils.BamlEnumValueBuilder, error) {
@@ -200,14 +177,6 @@ func (w *enumBuilderWrapper) Type() (bamlutils.BamlType, error) {
 // enumValueBuilderWrapper wraps a native BAML EnumValueBuilder.
 type enumValueBuilderWrapper struct {
 	inner baml.EnumValueBuilder
-}
-
-func (w *enumValueBuilderWrapper) SetDescription(description string) error {
-	return w.inner.SetDescription(description)
-}
-
-func (w *enumValueBuilderWrapper) SetAlias(alias string) error {
-	return w.inner.SetAlias(alias)
 }
 
 func (w *enumValueBuilderWrapper) SetSkip(skip bool) error {

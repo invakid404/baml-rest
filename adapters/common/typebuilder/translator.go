@@ -62,32 +62,16 @@ func (t *Translator) createEnum(name string, enum *bamlutils.DynamicEnum) error 
 		return err
 	}
 
-	if enum.Description != "" {
-		if err := eb.SetDescription(enum.Description); err != nil {
-			return fmt.Errorf("set description: %w", err)
-		}
-	}
-	if enum.Alias != "" {
-		if err := eb.SetAlias(enum.Alias); err != nil {
-			return fmt.Errorf("set alias: %w", err)
-		}
-	}
+	// Note: SetDescription and SetAlias are not exported in the native BAML Go library.
+	// The description/alias fields in DynamicEnum are preserved for potential future use
+	// or for documentation purposes, but they are not applied at runtime.
 
 	for _, v := range enum.Values {
 		vb, err := eb.AddValue(v.Name)
 		if err != nil {
 			return fmt.Errorf("value %q: %w", v.Name, err)
 		}
-		if v.Description != "" {
-			if err := vb.SetDescription(v.Description); err != nil {
-				return fmt.Errorf("value %q set description: %w", v.Name, err)
-			}
-		}
-		if v.Alias != "" {
-			if err := vb.SetAlias(v.Alias); err != nil {
-				return fmt.Errorf("value %q set alias: %w", v.Name, err)
-			}
-		}
+		// Note: SetDescription and SetAlias are not exported for enum values either.
 		if v.Skip {
 			if err := vb.SetSkip(true); err != nil {
 				return fmt.Errorf("value %q set skip: %w", v.Name, err)
@@ -111,16 +95,9 @@ func (t *Translator) createClassShell(name string, class *bamlutils.DynamicClass
 		return err
 	}
 
-	if class.Description != "" {
-		if err := cb.SetDescription(class.Description); err != nil {
-			return fmt.Errorf("set description: %w", err)
-		}
-	}
-	if class.Alias != "" {
-		if err := cb.SetAlias(class.Alias); err != nil {
-			return fmt.Errorf("set alias: %w", err)
-		}
-	}
+	// Note: SetDescription and SetAlias are not exported in the native BAML Go library.
+	// The description/alias fields in DynamicClass are preserved for potential future use
+	// or for documentation purposes, but they are not applied at runtime.
 
 	// Cache the class type for references
 	typ, err := cb.Type()
@@ -145,21 +122,14 @@ func (t *Translator) addClassProperties(name string, class *bamlutils.DynamicCla
 			continue
 		}
 
-		pb, err := cb.AddProperty(propName, typ)
+		_, err = cb.AddProperty(propName, typ)
 		if err != nil {
 			return fmt.Errorf("property %q: %w", propName, err)
 		}
 
-		if prop.Description != "" {
-			if err := pb.SetDescription(prop.Description); err != nil {
-				return fmt.Errorf("property %q set description: %w", propName, err)
-			}
-		}
-		if prop.Alias != "" {
-			if err := pb.SetAlias(prop.Alias); err != nil {
-				return fmt.Errorf("property %q set alias: %w", propName, err)
-			}
-		}
+		// Note: SetDescription and SetAlias are not exported in the native BAML Go library
+		// for property builders. The description/alias fields in DynamicProperty are preserved
+		// for potential future use or for documentation purposes.
 	}
 
 	return nil

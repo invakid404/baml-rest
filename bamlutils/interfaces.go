@@ -189,30 +189,22 @@ type BamlTypeBuilder interface {
 
 // BamlClassBuilder for building classes imperatively.
 type BamlClassBuilder interface {
-	SetDescription(description string) error
-	SetAlias(alias string) error
 	AddProperty(name string, fieldType BamlType) (BamlPropertyBuilder, error)
 	Type() (BamlType, error)
 }
 
 // BamlPropertyBuilder for building class properties.
-type BamlPropertyBuilder interface {
-	SetDescription(description string) error
-	SetAlias(alias string) error
-}
+// Note: The native BAML library doesn't expose SetDescription/SetAlias on properties.
+type BamlPropertyBuilder interface{}
 
 // BamlEnumBuilder for building enums imperatively.
 type BamlEnumBuilder interface {
-	SetDescription(description string) error
-	SetAlias(alias string) error
 	AddValue(name string) (BamlEnumValueBuilder, error)
 	Type() (BamlType, error)
 }
 
 // BamlEnumValueBuilder for building enum values.
 type BamlEnumValueBuilder interface {
-	SetDescription(description string) error
-	SetAlias(alias string) error
 	SetSkip(skip bool) error
 }
 
