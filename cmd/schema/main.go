@@ -177,6 +177,47 @@ func generateOpenAPISchema() *openapi3.T {
 	}
 	schemas[bamlOptionsSchemaName] = bamlOptionsSchema
 
+	// Global streaming event schemas (shared across all methods)
+	streamResetEventSchemaName := "StreamResetEvent"
+	schemas[streamResetEventSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Reset event indicating client should discard accumulated state (sent when a retry occurs)",
+			Properties: openapi3.Schemas{
+				"type": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type: &openapi3.Types{openapi3.TypeString},
+						Enum: []any{"reset"},
+					},
+				},
+			},
+			Required: []string{"type"},
+		},
+	}
+
+	streamErrorEventSchemaName := "StreamErrorEvent"
+	schemas[streamErrorEventSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Error event indicating the stream has failed",
+			Properties: openapi3.Schemas{
+				"type": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type: &openapi3.Types{openapi3.TypeString},
+						Enum: []any{"error"},
+					},
+				},
+				"error": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Error message describing what went wrong",
+					},
+				},
+			},
+			Required: []string{"type", "error"},
+		},
+	}
+
 	for methodName, method := range baml_rest.Methods {
 		inputStruct := method.MakeInput()
 		inputStructInstance := reflect.ValueOf(inputStruct)
@@ -293,43 +334,12 @@ func generateOpenAPISchema() *openapi3.T {
 			},
 		})
 
-		// Shared event schemas for reset and error (same for both /stream and /stream-with-raw)
-		resetEventSchema := &openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Type:        &openapi3.Types{openapi3.TypeObject},
-				Description: "Reset event indicating client should discard accumulated state (sent when a retry occurs)",
-				Properties: openapi3.Schemas{
-					"type": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{openapi3.TypeString},
-							Enum: []any{"reset"},
-						},
-					},
-				},
-				Required: []string{"type"},
-			},
+		// References to global event schemas
+		resetEventSchemaRef := &openapi3.SchemaRef{
+			Ref: fmt.Sprintf("#/components/schemas/%s", streamResetEventSchemaName),
 		}
-
-		errorEventSchema := &openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Type:        &openapi3.Types{openapi3.TypeObject},
-				Description: "Error event indicating the stream has failed",
-				Properties: openapi3.Schemas{
-					"type": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{openapi3.TypeString},
-							Enum: []any{"error"},
-						},
-					},
-					"error": &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type:        &openapi3.Types{openapi3.TypeString},
-							Description: "Error message describing what went wrong",
-						},
-					},
-				},
-				Required: []string{"type", "error"},
-			},
+		errorEventSchemaRef := &openapi3.SchemaRef{
+			Ref: fmt.Sprintf("#/components/schemas/%s", streamErrorEventSchemaName),
 		}
 
 		// Response for /stream endpoint (NDJSON streaming without raw)
@@ -363,8 +373,8 @@ func generateOpenAPISchema() *openapi3.T {
 							Value: &openapi3.Schema{
 								OneOf: openapi3.SchemaRefs{
 									streamDataEventSchema,
-									resetEventSchema,
-									errorEventSchema,
+									resetEventSchemaRef,
+									errorEventSchemaRef,
 								},
 								Discriminator: &openapi3.Discriminator{
 									PropertyName: "type",
@@ -445,8 +455,8 @@ func generateOpenAPISchema() *openapi3.T {
 							Value: &openapi3.Schema{
 								OneOf: openapi3.SchemaRefs{
 									streamWithRawDataEventSchema,
-									resetEventSchema,
-									errorEventSchema,
+									resetEventSchemaRef,
+									errorEventSchemaRef,
 								},
 								Discriminator: &openapi3.Discriminator{
 									PropertyName: "type",
