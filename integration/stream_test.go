@@ -3,7 +3,9 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -803,6 +805,288 @@ func TestWorkerDeathMidStream(t *testing.T) {
 			}
 			t.Logf("Final data verified: %+v", person)
 		}
+	})
+}
+
+func TestStreamNDJSONEndpoint(t *testing.T) {
+	t.Run("multiple_ndjson_events", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"name": "John Doe", "age": 30, "tags": []}`
+		opts := setupScenario(t, "test-stream-ndjson-person", content)
+
+		events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "John, 30 years old"},
+			Options: opts,
+		})
+
+		var eventCount int
+		var lastEvent testutil.StreamEvent
+		var sawPartial, sawFinal bool
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				eventCount++
+				lastEvent = event
+
+				if event.IsPartial() {
+					sawPartial = true
+				}
+				if event.IsFinal() {
+					sawFinal = true
+				}
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		// Should have received multiple events (chunked streaming)
+		if eventCount < 2 {
+			t.Errorf("Expected multiple events, got %d", eventCount)
+		}
+
+		// Should have seen both partial and final events
+		if !sawPartial {
+			t.Error("Expected to see partial events")
+		}
+		if !sawFinal {
+			t.Error("Expected to see final event")
+		}
+
+		// Last event should be final with complete data
+		if !lastEvent.IsFinal() {
+			t.Errorf("Expected last event to be final, got type=%s", lastEvent.Event)
+		}
+
+		var person struct {
+			Name string `json:"name"`
+			Age  int    `json:"age"`
+		}
+		if err := json.Unmarshal(lastEvent.Data, &person); err != nil {
+			t.Fatalf("Failed to unmarshal last event: %v", err)
+		}
+
+		if person.Name != "John Doe" || person.Age != 30 {
+			t.Errorf("Expected John Doe (30), got %s (%d)", person.Name, person.Age)
+		}
+	})
+
+	t.Run("streaming_array_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `[{"name": "Alice", "age": 25, "tags": []}, {"name": "Bob", "age": 35, "tags": []}]`
+		opts := setupScenario(t, "test-stream-ndjson-array", content)
+
+		events, errs := BAMLClient.StreamNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetPeople",
+			Input:   map[string]any{"descriptions": "Alice and Bob"},
+			Options: opts,
+		})
+
+		var eventCount int
+		var lastEvent testutil.StreamEvent
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				eventCount++
+				lastEvent = event
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		// Verify final result is complete array
+		var people []struct {
+			Name string `json:"name"`
+			Age  int    `json:"age"`
+		}
+		if err := json.Unmarshal(lastEvent.Data, &people); err != nil {
+			t.Fatalf("Failed to unmarshal last event: %v", err)
+		}
+
+		if len(people) != 2 {
+			t.Errorf("Expected 2 people, got %d", len(people))
+		}
+	})
+
+	t.Run("ndjson_content_type_header", func(t *testing.T) {
+		// This test verifies the server returns the correct content-type for NDJSON
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello"}`
+		opts := setupScenario(t, "test-ndjson-content-type", content)
+
+		// Make a raw HTTP request to check headers
+		body, err := json.Marshal(map[string]any{
+			"input":            "test",
+			"__baml_options__": opts,
+		})
+		if err != nil {
+			t.Fatalf("Failed to marshal request: %v", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			TestEnv.BAMLRestURL+"/stream/GetSimple",
+			bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/x-ndjson")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		contentType := resp.Header.Get("Content-Type")
+		if contentType != "application/x-ndjson" {
+			t.Errorf("Expected Content-Type 'application/x-ndjson', got '%s'", contentType)
+		}
+	})
+}
+
+func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
+	t.Run("raw_accumulates_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello world"}`
+		opts := setupScenario(t, "test-stream-raw-ndjson", content)
+
+		events, errs := BAMLClient.StreamWithRawNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetSimple",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+
+		var eventCount int
+		var lastRaw string
+		var sawFinal bool
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				eventCount++
+				if event.Raw != "" {
+					lastRaw = event.Raw
+				}
+				if event.IsFinal() {
+					sawFinal = true
+				}
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		// Should have seen final event
+		if !sawFinal {
+			t.Error("Expected to see final event")
+		}
+
+		// Final raw should match the complete content
+		if lastRaw != content {
+			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
+		}
+	})
+
+	t.Run("raw_grows_incrementally_ndjson", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"message": "hello world"}`
+		scenarioID := "test-stream-raw-incremental-ndjson"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      5, // Small chunks to see incremental growth
+			InitialDelayMs: 10,
+			ChunkDelayMs:   50,
+		}
+
+		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		events, errs := BAMLClient.StreamWithRawNDJSON(ctx, testutil.CallRequest{
+			Method:  "GetSimple",
+			Input:   map[string]any{"input": "test"},
+			Options: opts,
+		})
+
+		var rawLengths []int
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				if event.Raw != "" {
+					rawLengths = append(rawLengths, len(event.Raw))
+				}
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	done:
+
+		// Should have multiple raw values
+		if len(rawLengths) < 2 {
+			t.Errorf("Expected multiple raw values, got %d", len(rawLengths))
+		}
+
+		// Raw lengths should be non-decreasing (accumulating)
+		for i := 1; i < len(rawLengths); i++ {
+			if rawLengths[i] < rawLengths[i-1] {
+				t.Errorf("Raw length decreased from %d to %d at index %d",
+					rawLengths[i-1], rawLengths[i], i)
+			}
+		}
+
+		t.Logf("Raw lengths progression: %v", rawLengths)
 	})
 }
 
