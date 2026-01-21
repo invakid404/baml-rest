@@ -1184,7 +1184,10 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 			Options: opts,
 		})
 
-		var rawLengths []int
+		// Track raw lengths per segment (segments are separated by reset events)
+		var segments [][]int
+		var currentSegment []int
+		resetCount := 0
 
 		for {
 			select {
@@ -1192,8 +1195,15 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 				if !ok {
 					goto done
 				}
-				if event.Raw != "" {
-					rawLengths = append(rawLengths, len(event.Raw))
+				if event.IsReset() {
+					// Reset event: save current segment and start new one
+					if len(currentSegment) > 0 {
+						segments = append(segments, currentSegment)
+						currentSegment = nil
+					}
+					resetCount++
+				} else if event.Raw != "" {
+					currentSegment = append(currentSegment, len(event.Raw))
 				}
 			case err := <-errs:
 				if err != nil {
@@ -1205,20 +1215,38 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 		}
 	done:
 
-		// Should have multiple raw values
-		if len(rawLengths) < 2 {
-			t.Errorf("Expected multiple raw values, got %d", len(rawLengths))
+		// Save final segment
+		if len(currentSegment) > 0 {
+			segments = append(segments, currentSegment)
 		}
 
-		// Raw lengths should be non-decreasing (accumulating)
-		for i := 1; i < len(rawLengths); i++ {
-			if rawLengths[i] < rawLengths[i-1] {
-				t.Errorf("Raw length decreased from %d to %d at index %d",
-					rawLengths[i-1], rawLengths[i], i)
+		// Should have at least one segment with multiple raw values
+		if len(segments) == 0 {
+			t.Fatal("Expected at least one segment with raw values")
+		}
+
+		totalRawValues := 0
+		for _, seg := range segments {
+			totalRawValues += len(seg)
+		}
+		if totalRawValues < 2 {
+			t.Errorf("Expected multiple raw values across all segments, got %d", totalRawValues)
+		}
+
+		// Raw lengths should be non-decreasing within each segment
+		for segIdx, segment := range segments {
+			for i := 1; i < len(segment); i++ {
+				if segment[i] < segment[i-1] {
+					t.Errorf("Segment %d: Raw length decreased from %d to %d at index %d",
+						segIdx, segment[i-1], segment[i], i)
+				}
 			}
 		}
 
-		t.Logf("Raw lengths progression: %v", rawLengths)
+		if resetCount > 0 {
+			t.Logf("Stream had %d reset(s) (BAML internal retries)", resetCount)
+		}
+		t.Logf("Segments: %d, Raw lengths per segment: %v", len(segments), segments)
 	})
 }
 
@@ -1309,6 +1337,7 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 		defer cancel()
 
 		// Create a slow streaming scenario so we have time to kill the worker
+		// NDJSON has less overhead than SSE, so we need longer delays
 		content := `{"name": "John Doe", "age": 30, "tags": ["developer", "golang", "testing"]}`
 		scenarioID := "test-worker-death-retry-ndjson"
 
@@ -1316,9 +1345,9 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 			ID:             scenarioID,
 			Provider:       "openai",
 			Content:        content,
-			ChunkSize:      5,   // Very small chunks
-			InitialDelayMs: 100, // Some initial delay
-			ChunkDelayMs:   500, // Slow chunking so we have time to kill worker
+			ChunkSize:      5,    // Very small chunks
+			InitialDelayMs: 500,  // Longer initial delay to ensure worker is tracked
+			ChunkDelayMs:   1000, // Slower chunking so we have time to kill worker
 		}
 
 		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
@@ -1361,52 +1390,20 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 					sawErrorEvent = true
 				}
 
-				// After receiving the first data event, kill the worker
-				if len(receivedEvents) == 1 && !killedWorker && event.IsData() {
+				// After receiving the first event (first byte), kill the worker
+				if len(receivedEvents) == 1 && !killedWorker {
 					eventsBeforeKill = len(receivedEvents)
-					t.Log("First data event received, checking in-flight status before kill...")
+					t.Log("First event received, killing worker...")
+					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
+					result, err := BAMLClient.KillWorker(killCtx)
+					killCancel()
 
-					// Log in-flight status before attempting to kill
-					if status, err := BAMLClient.GetInFlightStatus(ctx); err == nil {
-						for _, w := range status.Workers {
-							t.Logf("BEFORE KILL - Worker %d: healthy=%v, in_flight=%d, got_first_byte=%v",
-								w.WorkerID, w.Healthy, w.InFlight, w.GotFirstByte)
-						}
-					}
-
-					t.Log("Now killing worker...")
-
-					// Retry KillWorker a few times in case of timing issues
-					for attempt := 0; attempt < 5; attempt++ {
-						if attempt > 0 {
-							t.Logf("Retrying KillWorker (attempt %d)...", attempt+1)
-							time.Sleep(50 * time.Millisecond)
-						}
-
-						killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
-						result, err := BAMLClient.KillWorker(killCtx)
-						killCancel()
-
-						if err != nil {
-							t.Logf("KillWorker attempt %d failed: %v", attempt+1, err)
-							continue // Retry
-						}
-
+					if err != nil {
+						t.Logf("Failed to kill worker: %v", err)
+					} else {
 						t.Logf("Killed worker %d with %d in-flight requests, gotFirstByte=%v",
 							result.WorkerID, result.InFlightCount, result.GotFirstByte)
 						killedWorker = true
-						break
-					}
-
-					if !killedWorker {
-						t.Log("All KillWorker attempts failed")
-						// Get in-flight status for debugging
-						if status, err := BAMLClient.GetInFlightStatus(ctx); err == nil {
-							for _, w := range status.Workers {
-								t.Logf("Worker %d: healthy=%v, in_flight=%d, got_first_byte=%v",
-									w.WorkerID, w.Healthy, w.InFlight, w.GotFirstByte)
-							}
-						}
 					}
 				}
 
