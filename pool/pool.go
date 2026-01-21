@@ -789,9 +789,9 @@ func (p *Pool) GetInFlightStatus() []WorkerInFlightInfo {
 			continue
 		}
 
-		handle.mu.RLock()
+		handle.mu.Lock()
 		healthy := handle.healthy
-		handle.mu.RUnlock()
+		handle.mu.Unlock()
 
 		handle.inFlightMu.RLock()
 		inFlightCount := len(handle.inFlightReq)
