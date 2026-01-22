@@ -5,12 +5,13 @@ import (
 
 	baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/introspected"
 )
 
 // TypeBuilderFactory creates a new TypeBuilder and applies the TypeBuilder config.
 // The generated code implements this to have direct access to the generated
 // TypeBuilder methods for processing DynamicTypes and BamlSnippets.
-type TypeBuilderFactory func(tb *bamlutils.TypeBuilder) (any, error)
+type TypeBuilderFactory func(tb *bamlutils.TypeBuilder) (*introspected.TypeBuilder, error)
 
 type BamlAdapter struct {
 	context.Context
@@ -18,7 +19,7 @@ type BamlAdapter struct {
 	TypeBuilderFactory TypeBuilderFactory
 
 	ClientRegistry *baml.ClientRegistry
-	TypeBuilder    any // *baml_client.TypeBuilder
+	TypeBuilder    *introspected.TypeBuilder
 
 	// streamMode controls how streaming results are processed.
 	streamMode bamlutils.StreamMode

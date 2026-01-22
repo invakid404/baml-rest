@@ -1234,7 +1234,7 @@ func Generate(selfPkg string) {
 						jen.Id("Context"): jen.Id("ctx"),
 						jen.Id("TypeBuilderFactory"): jen.Func().
 							Params(jen.Id("config").Op("*").Qual(common.InterfacesPkg, "TypeBuilder")).
-							Params(jen.Any(), jen.Error()).
+							Params(jen.Op("*").Qual(common.IntrospectedPkg, "TypeBuilder"), jen.Error()).
 							Block(
 								jen.Return(jen.Id("createTypeBuilder").Call(jen.Id("config"))),
 							),
@@ -1264,17 +1264,9 @@ func Generate(selfPkg string) {
 						Call(jen.Id("adapter").Dot("ClientRegistry"))),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
-				// TypeBuilder is stored as any in the adapter, assert to introspected type
-				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("adapter").Dot("TypeBuilder").Assert(jen.Op("*").Qual(common.IntrospectedPkg, "TypeBuilder")),
-				jen.If(jen.Op("!").Id("ok")).Block(
-					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
-						jen.Lit("TypeBuilder is not *introspected.TypeBuilder: got %T"),
-						jen.Id("adapter").Dot("TypeBuilder"),
-					)),
-				),
 				jen.Id("result").Op("=").Append(jen.Id("result"),
 					jen.Qual(common.GeneratedClientPkg, "WithTypeBuilder").
-						Call(jen.Id("typeBuilder"))),
+						Call(jen.Id("adapter").Dot("TypeBuilder"))),
 			),
 			jen.Return(jen.Id("result"), jen.Nil()),
 		)
