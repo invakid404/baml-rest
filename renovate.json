@@ -10,6 +10,21 @@
       "matchStrings": ["\"latest\":\\s*\"(?<currentValue>[^\"]+)\""],
       "depNameTemplate": "@boundaryml/baml",
       "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^go\\.work$"],
+      "matchStrings": ["(?m)^go (?<currentValue>\\S+)"],
+      "depNameTemplate": "go",
+      "datasourceTemplate": "golang-version",
+      "versioningTemplate": "go-mod-directive"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchDepNames": ["go"],
+      "matchManagers": ["gomod", "custom.regex"],
+      "groupName": "golang"
     }
   ]
 }
