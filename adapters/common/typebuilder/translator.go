@@ -3,10 +3,15 @@
 package typebuilder
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 )
+
+// ErrUnresolvedRef is returned when a $ref cannot be resolved to a known type.
+// This is expected when referencing types defined in baml_src that we can't access.
+var ErrUnresolvedRef = errors.New("unresolved reference")
 
 // Translator converts DynamicTypes to imperative TypeBuilder calls.
 type Translator struct {
@@ -129,8 +134,12 @@ func (t *Translator) addClassProperties(name string, class *bamlutils.DynamicCla
 	for propName, prop := range class.Properties {
 		typ, err := t.resolvePropertyType(prop)
 		if err != nil {
-			// Skip unresolved refs - they may reference types in baml_src
-			continue
+			// Only skip unresolved refs - they may reference types in baml_src
+			// Other errors (e.g., invalid type specs) should be reported
+			if errors.Is(err, ErrUnresolvedRef) {
+				continue
+			}
+			return fmt.Errorf("property %q type: %w", propName, err)
 		}
 
 		_, err = cb.AddProperty(propName, typ)
@@ -294,5 +303,5 @@ func (t *Translator) resolveRef(name string) (bamlutils.BamlType, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("unresolved reference: %q", name)
+	return nil, fmt.Errorf("%w: %q", ErrUnresolvedRef, name)
 }
