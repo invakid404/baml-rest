@@ -246,28 +246,61 @@ func (w *workerImpl) GetGoroutines(ctx context.Context, filter string) (*workerp
 		TotalCount: totalCount,
 	}
 
-	// If filter patterns provided, count matching goroutines (case-insensitive)
+	// Parse include and exclude patterns (patterns prefixed with - are exclusions)
+	var includePatterns, excludePatterns []string
 	if filter != "" {
-		patterns := strings.Split(filter, ",")
+		for _, pattern := range strings.Split(filter, ",") {
+			pattern = strings.TrimSpace(pattern)
+			if pattern == "" {
+				continue
+			}
+			if strings.HasPrefix(pattern, "-") {
+				excludePatterns = append(excludePatterns, strings.ToLower(strings.TrimPrefix(pattern, "-")))
+			} else {
+				includePatterns = append(includePatterns, strings.ToLower(pattern))
+			}
+		}
+	}
+
+	// If include patterns provided, count matching goroutines (case-insensitive)
+	if len(includePatterns) > 0 {
 		goroutineStacks := strings.Split(stacks, "goroutine ")
 		for _, stack := range goroutineStacks {
 			if stack == "" {
 				continue
 			}
 			stackLower := strings.ToLower(stack)
-			for _, pattern := range patterns {
-				pattern = strings.TrimSpace(pattern)
-				patternLower := strings.ToLower(pattern)
-				if patternLower != "" && strings.Contains(stackLower, patternLower) {
-					result.MatchCount++
-					// Truncate for readability
-					if len(stack) > 1000 {
-						stack = stack[:1000] + "..."
-					}
-					result.MatchedStacks = append(result.MatchedStacks, "goroutine "+stack)
+
+			// Check if stack matches any include pattern
+			matched := false
+			for _, pattern := range includePatterns {
+				if strings.Contains(stackLower, pattern) {
+					matched = true
 					break
 				}
 			}
+			if !matched {
+				continue
+			}
+
+			// Check if stack matches any exclude pattern
+			excluded := false
+			for _, pattern := range excludePatterns {
+				if strings.Contains(stackLower, pattern) {
+					excluded = true
+					break
+				}
+			}
+			if excluded {
+				continue
+			}
+
+			result.MatchCount++
+			// Truncate for readability
+			if len(stack) > 1000 {
+				stack = stack[:1000] + "..."
+			}
+			result.MatchedStacks = append(result.MatchedStacks, "goroutine "+stack)
 		}
 	}
 

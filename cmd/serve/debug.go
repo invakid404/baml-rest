@@ -88,6 +88,8 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 
 	// Get goroutine stacks for leak detection
 	// Returns pprof goroutine data with optional filtering (case-insensitive)
+	// Supports both include patterns and exclude patterns (prefixed with -)
+	// Example: filter=invakid404/baml-rest,-healthChecker,-StartRSSMonitor
 	r.Get("/_debug/goroutines", func(w http.ResponseWriter, r *http.Request) {
 		// Get debug level (1 = counts, 2 = full stacks)
 		debugLevel := 2
@@ -98,6 +100,7 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 		}
 
 		// Optional filter patterns (comma-separated, case-insensitive matching)
+		// Patterns prefixed with - are exclusions
 		filterPatterns := r.URL.Query().Get("filter")
 
 		// Capture goroutine profile from main process
@@ -114,30 +117,63 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 		stacks := buf.String()
 		totalCount := runtime.NumGoroutine()
 
+		// Parse include and exclude patterns
+		var includePatterns, excludePatterns []string
+		if filterPatterns != "" {
+			for _, pattern := range strings.Split(filterPatterns, ",") {
+				pattern = strings.TrimSpace(pattern)
+				if pattern == "" {
+					continue
+				}
+				if strings.HasPrefix(pattern, "-") {
+					excludePatterns = append(excludePatterns, strings.ToLower(strings.TrimPrefix(pattern, "-")))
+				} else {
+					includePatterns = append(includePatterns, strings.ToLower(pattern))
+				}
+			}
+		}
+
 		// If filter patterns provided, count matching goroutines (case-insensitive)
 		var matchCount int
 		var matchedStacks []string
-		if filterPatterns != "" {
-			patterns := strings.Split(filterPatterns, ",")
+		if len(includePatterns) > 0 {
 			goroutineStacks := strings.Split(stacks, "goroutine ")
 			for _, stack := range goroutineStacks {
 				if stack == "" {
 					continue
 				}
 				stackLower := strings.ToLower(stack)
-				for _, pattern := range patterns {
-					pattern = strings.TrimSpace(pattern)
-					patternLower := strings.ToLower(pattern)
-					if patternLower != "" && strings.Contains(stackLower, patternLower) {
-						matchCount++
-						// Truncate for readability
-						if len(stack) > 1000 {
-							stack = stack[:1000] + "..."
-						}
-						matchedStacks = append(matchedStacks, "goroutine "+stack)
+
+				// Check if stack matches any include pattern
+				matched := false
+				for _, pattern := range includePatterns {
+					if strings.Contains(stackLower, pattern) {
+						matched = true
 						break
 					}
 				}
+				if !matched {
+					continue
+				}
+
+				// Check if stack matches any exclude pattern
+				excluded := false
+				for _, pattern := range excludePatterns {
+					if strings.Contains(stackLower, pattern) {
+						excluded = true
+						break
+					}
+				}
+				if excluded {
+					continue
+				}
+
+				matchCount++
+				// Truncate for readability
+				if len(stack) > 1000 {
+					stack = stack[:1000] + "..."
+				}
+				matchedStacks = append(matchedStacks, "goroutine "+stack)
 			}
 		}
 
