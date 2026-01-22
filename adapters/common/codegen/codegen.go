@@ -1468,10 +1468,21 @@ func generateApplyDynamicTypes(out *jen.File) {
 		).
 		Error().
 		Block(
-			// Try to get existing enum first, create if it doesn't exist
+			// Try to create enum, fall back to getting existing one
 			jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				jen.Return(jen.Id("err")),
+				// Enum might already exist, try to get it via InternalExport
+				jen.List(jen.Id("eb"), jen.Id("err")).Op("=").Id("tb").Dot("InternalExport").Call().Dot("Enum").Call(jen.Id("name")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create or get enum: %w"), jen.Id("err"))),
+				),
+				// Existing enum - just cache its type and return
+				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("eb").Dot("Type").Call(),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get type: %w"), jen.Id("err"))),
+				),
+				jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
+				jen.Return(jen.Nil()),
 			),
 			jen.Line(),
 			jen.For(jen.List(jen.Id("_"), jen.Id("v")).Op(":=").Range().Id("enum").Dot("Values")).Block(
@@ -1507,10 +1518,14 @@ func generateApplyDynamicTypes(out *jen.File) {
 		Error().
 		Block(
 			jen.Id("_").Op("=").Id("class"), // unused for now
-			// Create class
+			// Try to create class, fall back to getting existing one
 			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				jen.Return(jen.Id("err")),
+				// Class might already exist, try to get it via InternalExport
+				jen.List(jen.Id("cb"), jen.Id("err")).Op("=").Id("tb").Dot("InternalExport").Call().Dot("Class").Call(jen.Id("name")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create or get class: %w"), jen.Id("err"))),
+				),
 			),
 			jen.Line(),
 			// Cache the class type for references
@@ -1532,10 +1547,10 @@ func generateApplyDynamicTypes(out *jen.File) {
 		).
 		Error().
 		Block(
-			// Get the class builder
-			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
+			// Get the class builder (use InternalExport to access existing classes)
+			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("InternalExport").Call().Dot("Class").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				jen.Return(jen.Id("err")),
+				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get class: %w"), jen.Id("err"))),
 			),
 			jen.Line(),
 			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
@@ -1724,8 +1739,11 @@ func generateApplyDynamicTypes(out *jen.File) {
 				jen.Return(jen.Id("typ"), jen.Nil()),
 			),
 			jen.Line(),
+			// Use InternalExport() to access existing classes/enums via baml.TypeBuilder
+			jen.Id("inner").Op(":=").Id("tb").Dot("InternalExport").Call(),
+			jen.Line(),
 			// Try existing class in BAML runtime
-			jen.If(jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")), jen.Id("err").Op("==").Nil()).Block(
+			jen.If(jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("inner").Dot("Class").Call(jen.Id("name")), jen.Id("err").Op("==").Nil()).Block(
 				jen.If(jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("cb").Dot("Type").Call(), jen.Id("err").Op("==").Nil()).Block(
 					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
 					jen.Return(jen.Id("typ"), jen.Nil()),
@@ -1733,7 +1751,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 			),
 			jen.Line(),
 			// Try existing enum in BAML runtime
-			jen.If(jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")), jen.Id("err").Op("==").Nil()).Block(
+			jen.If(jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("inner").Dot("Enum").Call(jen.Id("name")), jen.Id("err").Op("==").Nil()).Block(
 				jen.If(jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("eb").Dot("Type").Call(), jen.Id("err").Op("==").Nil()).Block(
 					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
 					jen.Return(jen.Id("typ"), jen.Nil()),
