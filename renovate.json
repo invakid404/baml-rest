@@ -2,5 +2,14 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>invakid404/renovate-config"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^integration/baml_versions\\.json$"],
+      "matchStrings": ["\"latest\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "@boundaryml/baml",
+      "datasourceTemplate": "npm"
+    }
   ]
 }

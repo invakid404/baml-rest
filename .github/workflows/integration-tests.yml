@@ -10,9 +10,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  get-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build version matrix
+        id: set-matrix
+        run: |
+          # Read the versions file and build matrix combining pinned + latest
+          VERSIONS=$(jq -c '[.pinned[], .latest] | unique' integration/baml_versions.json)
+          echo "matrix={\"baml-version\":$VERSIONS}" >> $GITHUB_OUTPUT
+
   integration-tests:
+    needs: get-versions
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.get-versions.outputs.matrix) }}
 
     steps:
       - name: Checkout Repository
@@ -23,7 +42,9 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Run Integration Tests
+      - name: Run Integration Tests (BAML ${{ matrix.baml-version }})
+        env:
+          BAML_VERSION: ${{ matrix.baml-version }}
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
         # share state (server config, worker pool) that could cause flakiness if parallel
         run: go test -tags=integration -v -count=1 -p 1 ./integration/...

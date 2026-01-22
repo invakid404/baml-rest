@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,8 +23,46 @@ var MockClient *mockllm.Client
 // BAMLClient is the client for calling baml-rest
 var BAMLClient *testutil.BAMLRestClient
 
-// BAMLVersion is the version being tested
-const BAMLVersion = "0.214.0"
+// BAMLVersion is the version being tested (set at init time)
+var BAMLVersion string
+
+func init() {
+	BAMLVersion = getBAMLVersion()
+}
+
+// getBAMLVersion returns the BAML version to test.
+// Priority: BAML_VERSION env var > baml_versions.json "latest" field
+func getBAMLVersion() string {
+	if v := os.Getenv("BAML_VERSION"); v != "" {
+		return v
+	}
+
+	// Fall back to reading from baml_versions.json
+	paths := []string{
+		"integration/baml_versions.json",
+		"baml_versions.json",
+		"../baml_versions.json",
+	}
+
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+
+		var versions struct {
+			Latest string `json:"latest"`
+		}
+		if err := json.Unmarshal(data, &versions); err != nil {
+			continue
+		}
+		if versions.Latest != "" {
+			return versions.Latest
+		}
+	}
+
+	panic("BAML version not found: set BAML_VERSION env var or ensure integration/baml_versions.json exists")
+}
 
 // GoroutineLeakFilter contains comma-separated patterns for detecting goroutine leaks
 // in our code. Used by leak detection tests to filter pprof data. Case-insensitive.
