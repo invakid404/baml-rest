@@ -6,15 +6,23 @@
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["^integration/baml_versions\\.json$"],
-      "matchStrings": ["\"latest\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "managerFilePatterns": [
+        "/^integration/baml_versions\\.json$/"
+      ],
+      "matchStrings": [
+        "\"latest\":\\s*\"(?<currentValue>[^\"]+)\""
+      ],
       "depNameTemplate": "@boundaryml/baml",
       "datasourceTemplate": "npm"
     },
     {
       "customType": "regex",
-      "fileMatch": ["^go\\.work$"],
-      "matchStrings": ["(?m)^go (?<currentValue>\\S+)"],
+      "managerFilePatterns": [
+        "/^go\\.work$/"
+      ],
+      "matchStrings": [
+        "(?m)^go (?<currentValue>\\S+)"
+      ],
       "depNameTemplate": "go",
       "datasourceTemplate": "golang-version",
       "versioningTemplate": "loose"
@@ -22,14 +30,20 @@
   ],
   "packageRules": [
     {
-      "matchDatasources": ["golang-version"],
+      "matchDatasources": [
+        "golang-version"
+      ],
       "rangeStrategy": "bump",
       "groupName": "golang",
       "extractVersion": "^go(?<version>.*)$"
     },
     {
-      "matchPackageNames": ["github.com/boundaryml/baml"],
-      "matchFileNames": ["adapters/**/go.mod"],
+      "matchPackageNames": [
+        "github.com/boundaryml/baml"
+      ],
+      "matchFileNames": [
+        "adapters/**/go.mod"
+      ],
       "enabled": false
     }
   ]
