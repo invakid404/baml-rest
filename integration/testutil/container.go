@@ -213,7 +213,7 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 			networkName: {BAMLRestContainerName},
 		},
 		Env: map[string]string{
-			"BAML_LOG": "off",
+			"BAML_LOG": "debug",
 		},
 		WaitingFor: wait.ForHTTP("/openapi.json").WithPort(BAMLRestInternalPort).WithStartupTimeout(180 * time.Second),
 	}
