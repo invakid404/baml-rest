@@ -1193,6 +1193,36 @@ func Generate(selfPkg string) {
 		Map(jen.String()).Add(parseMethodInterface).
 		Values(parseMapElements)
 
+	// Generate `applyDynamicTypes` - translates DynamicTypes to TypeBuilder calls
+	generateApplyDynamicTypes(out)
+
+	// Generate `createTypeBuilder` - creates TypeBuilder and applies config
+	out.Func().Id("createTypeBuilder").
+		Params(jen.Id("config").Op("*").Qual(common.InterfacesPkg, "TypeBuilder")).
+		Params(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"), jen.Error()).
+		Block(
+			jen.List(jen.Id("tb"), jen.Id("err")).Op(":=").Qual(common.GeneratedClientPkg, "NewTypeBuilder").Call(),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Id("err")),
+			),
+			jen.If(jen.Id("config").Op("==").Nil()).Block(
+				jen.Return(jen.Id("tb"), jen.Nil()),
+			),
+			// Apply dynamic_types first (imperative API)
+			jen.If(jen.Id("config").Dot("DynamicTypes").Op("!=").Nil()).Block(
+				jen.If(jen.Id("err").Op(":=").Id("applyDynamicTypes").Call(jen.Id("tb"), jen.Id("config").Dot("DynamicTypes")), jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to apply dynamic types: %w"), jen.Id("err"))),
+				),
+			),
+			// Then add BAML snippets (can reference types created above)
+			jen.For(jen.List(jen.Id("idx"), jen.Id("input")).Op(":=").Range().Id("config").Dot("BamlSnippets")).Block(
+				jen.If(jen.Id("err").Op(":=").Id("tb").Dot("AddBaml").Call(jen.Id("input")), jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("baml_snippets[%d]: %w"), jen.Id("idx"), jen.Id("err"))),
+				),
+			),
+			jen.Return(jen.Id("tb"), jen.Nil()),
+		)
+
 	// Generate `MakeAdapter`
 	out.Func().Id("MakeAdapter").
 		Params(jen.Id("ctx").Qual("context", "Context")).
@@ -1202,30 +1232,15 @@ func Generate(selfPkg string) {
 				jen.Op("&").Qual(selfAdapterPkg, "BamlAdapter").
 					Values(jen.Dict{
 						jen.Id("Context"): jen.Id("ctx"),
-						jen.Id("TypeBuilderFactory"): jen.Func().Params().
-							Call(
-								jen.Qual(common.InterfacesPkg, "BamlTypeBuilder"),
-								jen.Error(),
-							).
+						jen.Id("TypeBuilderFactory"): jen.Func().
+							Params(jen.Id("config").Op("*").Qual(common.InterfacesPkg, "TypeBuilder")).
+							Params(jen.Any(), jen.Error()).
 							Block(
-								jen.List(jen.Id("tb"), jen.Id("err")).Op(":=").Qual(common.GeneratedClientPkg, "NewTypeBuilder").Call(),
-								jen.If(jen.Id("err").Op("!=").Nil()).Block(
-									jen.Return(jen.Nil(), jen.Id("err")),
-								),
-								// Use InternalExport() to get the underlying baml.TypeBuilder
-								jen.Return(jen.Qual(selfAdapterPkg, "WrapTypeBuilder").Call(
-									jen.Id("tb"),
-									jen.Id("tb").Dot("InternalExport").Call(),
-								), jen.Nil()),
+								jen.Return(jen.Id("createTypeBuilder").Call(jen.Id("config"))),
 							),
 					}),
 			),
 		)
-
-	// Generate `nativeTypeBuilder` interface for extracting native TypeBuilder from wrapper
-	out.Type().Id("nativeTypeBuilder").Interface(
-		jen.Id("Native").Params().Any(),
-	)
 
 	// Generate `makeOptionsFromAdapter`
 	out.Func().Id("makeOptionsFromAdapter").
@@ -1249,20 +1264,12 @@ func Generate(selfPkg string) {
 						Call(jen.Id("adapter").Dot("ClientRegistry"))),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
-				// Try to extract native TypeBuilder from wrapper
-				jen.List(jen.Id("wrapper"), jen.Id("ok")).Op(":=").Id("adapter").Dot("TypeBuilder").Assert(jen.Id("nativeTypeBuilder")),
+				// TypeBuilder is already *baml_client.TypeBuilder stored as any
+				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("adapter").Dot("TypeBuilder").Assert(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder")),
 				jen.If(jen.Op("!").Id("ok")).Block(
 					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
-						jen.Lit("TypeBuilder does not implement nativeTypeBuilder interface: got %T"),
+						jen.Lit("TypeBuilder is not *baml_client.TypeBuilder: got %T"),
 						jen.Id("adapter").Dot("TypeBuilder"),
-					)),
-				),
-				// Native() returns the *baml_client.TypeBuilder which is what WithTypeBuilder expects
-				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("wrapper").Dot("Native").Call().Assert(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder")),
-				jen.If(jen.Op("!").Id("ok")).Block(
-					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
-						jen.Lit("Native() did not return *baml_client.TypeBuilder: got %T"),
-						jen.Id("wrapper").Dot("Native").Call(),
 					)),
 				),
 				jen.Id("result").Op("=").Append(jen.Id("result"),
@@ -1406,4 +1413,333 @@ func hasDynamicPropertiesForType(typ reflect.Type) bool {
 
 	_, hasDynamicFields := typ.FieldByName("DynamicProperties")
 	return hasDynamicFields
+}
+
+// generateApplyDynamicTypes generates the applyDynamicTypes function that translates
+// DynamicTypes JSON schema to imperative TypeBuilder calls.
+func generateApplyDynamicTypes(out *jen.File) {
+	// Type alias for baml.Type for cleaner code
+	typeAlias := jen.Qual(BamlPkg, "Type")
+
+	// Generate applyDynamicTypes function
+	out.Func().Id("applyDynamicTypes").
+		Params(
+			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("dt").Op("*").Qual(common.InterfacesPkg, "DynamicTypes"),
+		).
+		Error().
+		Block(
+			jen.If(jen.Id("dt").Op("==").Nil()).Block(
+				jen.Return(jen.Nil()),
+			),
+			// Create type cache for resolving references
+			jen.Id("typeCache").Op(":=").Make(jen.Map(jen.String()).Add(typeAlias)),
+			jen.Line(),
+			// Phase 1: Create all enums (they have no dependencies)
+			jen.For(jen.List(jen.Id("name"), jen.Id("enum")).Op(":=").Range().Id("dt").Dot("Enums")).Block(
+				jen.If(jen.Id("err").Op(":=").Id("createEnum").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("enum %q: %w"), jen.Id("name"), jen.Id("err"))),
+				),
+			),
+			jen.Line(),
+			// Phase 2: Create all class shells (for forward references)
+			jen.For(jen.List(jen.Id("name"), jen.Id("class")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
+				jen.If(jen.Id("err").Op(":=").Id("createClassShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q: %w"), jen.Id("name"), jen.Id("err"))),
+				),
+			),
+			jen.Line(),
+			// Phase 3: Add properties to classes (all refs now resolvable)
+			jen.For(jen.List(jen.Id("name"), jen.Id("class")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
+				jen.If(jen.Id("err").Op(":=").Id("addClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q properties: %w"), jen.Id("name"), jen.Id("err"))),
+				),
+			),
+			jen.Return(jen.Nil()),
+		)
+
+	// Generate createEnum helper
+	out.Func().Id("createEnum").
+		Params(
+			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("name").String(),
+			jen.Id("enum").Op("*").Qual(common.InterfacesPkg, "DynamicEnum"),
+			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
+		).
+		Error().
+		Block(
+			// Try to get existing enum first, create if it doesn't exist
+			jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Id("err")),
+			),
+			jen.Line(),
+			jen.For(jen.List(jen.Id("_"), jen.Id("v")).Op(":=").Range().Id("enum").Dot("Values")).Block(
+				jen.List(jen.Id("vb"), jen.Id("err")).Op(":=").Id("eb").Dot("AddValue").Call(jen.Id("v").Dot("Name")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					// Value might already exist, skip silently
+					jen.Continue(),
+				),
+				jen.If(jen.Id("v").Dot("Skip")).Block(
+					jen.If(jen.Id("err").Op(":=").Id("vb").Dot("SetSkip").Call(jen.True()), jen.Id("err").Op("!=").Nil()).Block(
+						jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("value %q set skip: %w"), jen.Id("v").Dot("Name"), jen.Id("err"))),
+					),
+				),
+			),
+			jen.Line(),
+			// Cache the enum type for references
+			jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("eb").Dot("Type").Call(),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get type: %w"), jen.Id("err"))),
+			),
+			jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
+			jen.Return(jen.Nil()),
+		)
+
+	// Generate createClassShell helper
+	out.Func().Id("createClassShell").
+		Params(
+			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("name").String(),
+			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
+			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
+		).
+		Error().
+		Block(
+			jen.Id("_").Op("=").Id("class"), // unused for now
+			// Create class
+			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Id("err")),
+			),
+			jen.Line(),
+			// Cache the class type for references
+			jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("cb").Dot("Type").Call(),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get type: %w"), jen.Id("err"))),
+			),
+			jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
+			jen.Return(jen.Nil()),
+		)
+
+	// Generate addClassProperties helper
+	out.Func().Id("addClassProperties").
+		Params(
+			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("name").String(),
+			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
+			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
+		).
+		Error().
+		Block(
+			// Get the class builder
+			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Id("err")),
+			),
+			jen.Line(),
+			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
+				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					// Skip unresolved refs - they may reference types in baml_src
+					jen.If(jen.Qual("strings", "Contains").Call(jen.Id("err").Dot("Error").Call(), jen.Lit("unresolved reference"))).Block(
+						jen.Continue(),
+					),
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q type: %w"), jen.Id("propName"), jen.Id("err"))),
+				),
+				jen.Line(),
+				jen.List(jen.Id("_"), jen.Id("err")).Op("=").Id("cb").Dot("AddProperty").Call(jen.Id("propName"), jen.Id("typ")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q: %w"), jen.Id("propName"), jen.Id("err"))),
+				),
+			),
+			jen.Return(jen.Nil()),
+		)
+
+	// Generate resolvePropertyType helper
+	out.Func().Id("resolvePropertyType").
+		Params(
+			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("prop").Op("*").Qual(common.InterfacesPkg, "DynamicProperty"),
+			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
+		).
+		Params(typeAlias, jen.Error()).
+		Block(
+			// Handle $ref
+			jen.If(jen.Id("prop").Dot("Ref").Op("!=").Lit("")).Block(
+				jen.Return(jen.Id("resolveRef").Call(jen.Id("tb"), jen.Id("prop").Dot("Ref"), jen.Id("typeCache"))),
+			),
+			jen.Line(),
+			// Convert to DynamicTypeRef and resolve
+			jen.Return(jen.Id("resolveTypeRef").Call(
+				jen.Id("tb"),
+				jen.Op("&").Qual(common.InterfacesPkg, "DynamicTypeRef").Values(jen.Dict{
+					jen.Id("Type"):   jen.Id("prop").Dot("Type"),
+					jen.Id("Items"):  jen.Id("prop").Dot("Items"),
+					jen.Id("Inner"):  jen.Id("prop").Dot("Inner"),
+					jen.Id("OneOf"):  jen.Id("prop").Dot("OneOf"),
+					jen.Id("Keys"):   jen.Id("prop").Dot("Keys"),
+					jen.Id("Values"): jen.Id("prop").Dot("Values"),
+					jen.Id("Value"):  jen.Id("prop").Dot("Value"),
+				}),
+				jen.Id("typeCache"),
+			)),
+		)
+
+	// Generate resolveTypeRef helper
+	out.Func().Id("resolveTypeRef").
+		Params(
+			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("ref").Op("*").Qual(common.InterfacesPkg, "DynamicTypeRef"),
+			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
+		).
+		Params(typeAlias, jen.Error()).
+		Block(
+			jen.If(jen.Id("ref").Op("==").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("nil type reference"))),
+			),
+			jen.Line(),
+			// Handle $ref
+			jen.If(jen.Id("ref").Dot("Ref").Op("!=").Lit("")).Block(
+				jen.Return(jen.Id("resolveRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Ref"), jen.Id("typeCache"))),
+			),
+			jen.Line(),
+			jen.Switch(jen.Id("ref").Dot("Type")).Block(
+				jen.Case(jen.Lit("string")).Block(
+					jen.Return(jen.Id("tb").Dot("String").Call()),
+				),
+				jen.Case(jen.Lit("int")).Block(
+					jen.Return(jen.Id("tb").Dot("Int").Call()),
+				),
+				jen.Case(jen.Lit("float")).Block(
+					jen.Return(jen.Id("tb").Dot("Float").Call()),
+				),
+				jen.Case(jen.Lit("bool")).Block(
+					jen.Return(jen.Id("tb").Dot("Bool").Call()),
+				),
+				jen.Case(jen.Lit("null")).Block(
+					jen.Return(jen.Id("tb").Dot("Null").Call()),
+				),
+				jen.Case(jen.Lit("literal_string")).Block(
+					jen.List(jen.Id("str"), jen.Id("ok")).Op(":=").Id("ref").Dot("Value").Assert(jen.String()),
+					jen.If(jen.Op("!").Id("ok")).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("literal_string value must be a string, got %T"), jen.Id("ref").Dot("Value"))),
+					),
+					jen.Return(jen.Id("tb").Dot("LiteralString").Call(jen.Id("str"))),
+				),
+				jen.Case(jen.Lit("literal_int")).Block(
+					jen.Switch(jen.Id("v").Op(":=").Id("ref").Dot("Value").Assert(jen.Type())).Block(
+						jen.Case(jen.Float64()).Block(
+							jen.Return(jen.Id("tb").Dot("LiteralInt").Call(jen.Int64().Call(jen.Id("v")))),
+						),
+						jen.Case(jen.Int64()).Block(
+							jen.Return(jen.Id("tb").Dot("LiteralInt").Call(jen.Id("v"))),
+						),
+						jen.Case(jen.Int()).Block(
+							jen.Return(jen.Id("tb").Dot("LiteralInt").Call(jen.Int64().Call(jen.Id("v")))),
+						),
+						jen.Default().Block(
+							jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("literal_int value must be a number, got %T"), jen.Id("ref").Dot("Value"))),
+						),
+					),
+				),
+				jen.Case(jen.Lit("literal_bool")).Block(
+					jen.List(jen.Id("b"), jen.Id("ok")).Op(":=").Id("ref").Dot("Value").Assert(jen.Bool()),
+					jen.If(jen.Op("!").Id("ok")).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("literal_bool value must be a boolean, got %T"), jen.Id("ref").Dot("Value"))),
+					),
+					jen.Return(jen.Id("tb").Dot("LiteralBool").Call(jen.Id("b"))),
+				),
+				jen.Case(jen.Lit("list")).Block(
+					jen.If(jen.Id("ref").Dot("Items").Op("==").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("list type requires 'items' field"))),
+					),
+					jen.List(jen.Id("inner"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Items"), jen.Id("typeCache")),
+					jen.If(jen.Id("err").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("list items: %w"), jen.Id("err"))),
+					),
+					jen.Return(jen.Id("tb").Dot("List").Call(jen.Id("inner"))),
+				),
+				jen.Case(jen.Lit("optional")).Block(
+					jen.If(jen.Id("ref").Dot("Inner").Op("==").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("optional type requires 'inner' field"))),
+					),
+					jen.List(jen.Id("inner"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Inner"), jen.Id("typeCache")),
+					jen.If(jen.Id("err").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("optional inner: %w"), jen.Id("err"))),
+					),
+					jen.Return(jen.Id("tb").Dot("Optional").Call(jen.Id("inner"))),
+				),
+				jen.Case(jen.Lit("map")).Block(
+					jen.If(jen.Id("ref").Dot("Keys").Op("==").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("map type requires 'keys' field"))),
+					),
+					jen.If(jen.Id("ref").Dot("Values").Op("==").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("map type requires 'values' field"))),
+					),
+					jen.List(jen.Id("keys"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Keys"), jen.Id("typeCache")),
+					jen.If(jen.Id("err").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("map keys: %w"), jen.Id("err"))),
+					),
+					jen.List(jen.Id("values"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Values"), jen.Id("typeCache")),
+					jen.If(jen.Id("err").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("map values: %w"), jen.Id("err"))),
+					),
+					jen.Return(jen.Id("tb").Dot("Map").Call(jen.Id("keys"), jen.Id("values"))),
+				),
+				jen.Case(jen.Lit("union")).Block(
+					jen.If(jen.Len(jen.Id("ref").Dot("OneOf")).Op("==").Lit(0)).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("union type requires 'oneOf' field with at least one type"))),
+					),
+					jen.Id("types").Op(":=").Make(jen.Index().Add(typeAlias), jen.Lit(0), jen.Len(jen.Id("ref").Dot("OneOf"))),
+					jen.For(jen.List(jen.Id("i"), jen.Id("item")).Op(":=").Range().Id("ref").Dot("OneOf")).Block(
+						jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("item"), jen.Id("typeCache")),
+						jen.If(jen.Id("err").Op("!=").Nil()).Block(
+							jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("union oneOf[%d]: %w"), jen.Id("i"), jen.Id("err"))),
+						),
+						jen.Id("types").Op("=").Append(jen.Id("types"), jen.Id("typ")),
+					),
+					jen.Return(jen.Id("tb").Dot("Union").Call(jen.Id("types"))),
+				),
+				jen.Case(jen.Lit("")).Block(
+					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("type field is required"))),
+				),
+				jen.Default().Block(
+					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("unknown type: %q"), jen.Id("ref").Dot("Type"))),
+				),
+			),
+		)
+
+	// Generate resolveRef helper
+	out.Func().Id("resolveRef").
+		Params(
+			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("name").String(),
+			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
+		).
+		Params(typeAlias, jen.Error()).
+		Block(
+			// Check cache first (from dynamic_types)
+			jen.If(jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("typeCache").Index(jen.Id("name")), jen.Id("ok")).Block(
+				jen.Return(jen.Id("typ"), jen.Nil()),
+			),
+			jen.Line(),
+			// Try existing class in BAML runtime
+			jen.If(jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")), jen.Id("err").Op("==").Nil()).Block(
+				jen.If(jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("cb").Dot("Type").Call(), jen.Id("err").Op("==").Nil()).Block(
+					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
+					jen.Return(jen.Id("typ"), jen.Nil()),
+				),
+			),
+			jen.Line(),
+			// Try existing enum in BAML runtime
+			jen.If(jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")), jen.Id("err").Op("==").Nil()).Block(
+				jen.If(jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("eb").Dot("Type").Call(), jen.Id("err").Op("==").Nil()).Block(
+					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
+					jen.Return(jen.Id("typ"), jen.Nil()),
+				),
+			),
+			jen.Line(),
+			jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("unresolved reference: %q"), jen.Id("name"))),
+		)
 }

@@ -152,62 +152,6 @@ type DynamicEnumValue struct {
 	Skip        bool   `json:"skip,omitempty"`
 }
 
-// BamlType is a marker interface for BAML types returned by the TypeBuilder.
-type BamlType interface{}
-
-// BamlTypeBuilder interface for the native BAML TypeBuilder.
-type BamlTypeBuilder interface {
-	// AddBaml adds raw BAML schema definitions.
-	AddBaml(baml string) error
-
-	// Basic types
-	String() (BamlType, error)
-	Int() (BamlType, error)
-	Float() (BamlType, error)
-	Bool() (BamlType, error)
-	Null() (BamlType, error)
-
-	// Literal types
-	LiteralString(value string) (BamlType, error)
-	LiteralInt(value int64) (BamlType, error)
-	LiteralBool(value bool) (BamlType, error)
-
-	// Composite types
-	List(inner BamlType) (BamlType, error)
-	Optional(inner BamlType) (BamlType, error)
-	Union(types []BamlType) (BamlType, error)
-	Map(key, value BamlType) (BamlType, error)
-
-	// Class operations
-	AddClass(name string) (BamlClassBuilder, error)
-	Class(name string) (BamlClassBuilder, error)
-
-	// Enum operations
-	AddEnum(name string) (BamlEnumBuilder, error)
-	Enum(name string) (BamlEnumBuilder, error)
-}
-
-// BamlClassBuilder for building classes imperatively.
-type BamlClassBuilder interface {
-	AddProperty(name string, fieldType BamlType) (BamlPropertyBuilder, error)
-	Type() (BamlType, error)
-}
-
-// BamlPropertyBuilder for building class properties.
-// Note: The native BAML library doesn't expose SetDescription/SetAlias on properties.
-type BamlPropertyBuilder interface{}
-
-// BamlEnumBuilder for building enums imperatively.
-type BamlEnumBuilder interface {
-	AddValue(name string) (BamlEnumValueBuilder, error)
-	Type() (BamlType, error)
-}
-
-// BamlEnumValueBuilder for building enum values.
-type BamlEnumValueBuilder interface {
-	SetSkip(skip bool) error
-}
-
 type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
