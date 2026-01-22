@@ -67,7 +67,11 @@ func getBAMLVersion() string {
 // GoroutineLeakFilter contains comma-separated patterns for detecting goroutine leaks
 // in our code. Used by leak detection tests to filter pprof data. Case-insensitive.
 // Covers: baml-rest (github.com/invakid404/baml-rest) and BAML (github.com/boundaryml/baml)
-const GoroutineLeakFilter = "invakid404/baml-rest,boundaryml/baml"
+// Excludes known background goroutines:
+//   - StartRSSMonitor: RSS memory monitoring goroutine (runs for process lifetime)
+//   - healthChecker: Pool health check goroutine (runs for pool lifetime)
+//   - GetGoroutines: The goroutine running the pprof capture itself (self-capture)
+const GoroutineLeakFilter = "invakid404/baml-rest,boundaryml/baml,-StartRSSMonitor,-healthChecker,-GetGoroutines"
 
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)

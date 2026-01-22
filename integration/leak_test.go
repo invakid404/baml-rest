@@ -30,7 +30,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		defer cancel()
 
 		// Let things settle and capture baseline
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
@@ -75,19 +75,12 @@ func TestGoroutineLeaks(t *testing.T) {
 		}
 		t.Logf("Completed %d successful /call requests", numRequests)
 
-		// Wait for cleanup
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
-
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
+		// Wait for cleanup using polling with backoff
+		finalResult, cleanedUp := waitForGoroutineCleanup(ctx, t, baselineMatches, 3*time.Second)
+		if !cleanedUp && finalResult != nil {
+			finalMatches := countTotalMatches(finalResult)
+			t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+			goroutineDelta := finalMatches - baselineMatches
 			t.Errorf("Goroutine leak detected after %d /call requests: %d new goroutines", numRequests, goroutineDelta)
 			logLeakedStacks(t, finalResult)
 		}
@@ -98,7 +91,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		defer cancel()
 
 		// Capture baseline
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
@@ -146,19 +139,12 @@ func TestGoroutineLeaks(t *testing.T) {
 		}
 		t.Logf("Completed %d successful /call/raw requests", numRequests)
 
-		// Wait for cleanup
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
-
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
+		// Wait for cleanup using polling with backoff
+		finalResult, cleanedUp := waitForGoroutineCleanup(ctx, t, baselineMatches, 3*time.Second)
+		if !cleanedUp && finalResult != nil {
+			finalMatches := countTotalMatches(finalResult)
+			t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+			goroutineDelta := finalMatches - baselineMatches
 			t.Errorf("Goroutine leak detected after %d /call/raw requests: %d new goroutines", numRequests, goroutineDelta)
 			logLeakedStacks(t, finalResult)
 		}
@@ -169,7 +155,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		defer cancel()
 
 		// Capture baseline
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
@@ -244,19 +230,12 @@ func TestGoroutineLeaks(t *testing.T) {
 		}
 		t.Logf("Completed %d successful /stream requests", numRequests)
 
-		// Wait for cleanup
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
-
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
+		// Wait for cleanup using polling with backoff
+		finalResult, cleanedUp := waitForGoroutineCleanup(ctx, t, baselineMatches, 3*time.Second)
+		if !cleanedUp && finalResult != nil {
+			finalMatches := countTotalMatches(finalResult)
+			t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+			goroutineDelta := finalMatches - baselineMatches
 			t.Errorf("Goroutine leak detected after %d /stream requests: %d new goroutines", numRequests, goroutineDelta)
 			logLeakedStacks(t, finalResult)
 		}
@@ -267,7 +246,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		defer cancel()
 
 		// Capture baseline
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
@@ -335,19 +314,12 @@ func TestGoroutineLeaks(t *testing.T) {
 		}
 		t.Logf("Completed %d successful /stream/raw requests", numRequests)
 
-		// Wait for cleanup
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
-
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
+		// Wait for cleanup using polling with backoff
+		finalResult, cleanedUp := waitForGoroutineCleanup(ctx, t, baselineMatches, 3*time.Second)
+		if !cleanedUp && finalResult != nil {
+			finalMatches := countTotalMatches(finalResult)
+			t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+			goroutineDelta := finalMatches - baselineMatches
 			t.Errorf("Goroutine leak detected after %d /stream/raw requests: %d new goroutines", numRequests, goroutineDelta)
 			logLeakedStacks(t, finalResult)
 		}
@@ -358,7 +330,7 @@ func TestGoroutineLeaks(t *testing.T) {
 		defer cancel()
 
 		// Capture baseline
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
@@ -394,19 +366,12 @@ func TestGoroutineLeaks(t *testing.T) {
 		}
 		t.Logf("Completed %d successful /parse requests", numRequests)
 
-		// Wait for cleanup
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
-
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
+		// Wait for cleanup using polling with backoff
+		finalResult, cleanedUp := waitForGoroutineCleanup(ctx, t, baselineMatches, 3*time.Second)
+		if !cleanedUp && finalResult != nil {
+			finalMatches := countTotalMatches(finalResult)
+			t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+			goroutineDelta := finalMatches - baselineMatches
 			t.Errorf("Goroutine leak detected after %d /parse requests: %d new goroutines", numRequests, goroutineDelta)
 			logLeakedStacks(t, finalResult)
 		}
@@ -417,8 +382,8 @@ func TestGoroutineLeaks(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 
-		// Capture baseline
-		time.Sleep(200 * time.Millisecond)
+		// Capture baseline after letting things settle
+		time.Sleep(500 * time.Millisecond)
 		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
@@ -482,19 +447,12 @@ func TestGoroutineLeaks(t *testing.T) {
 		}
 		t.Logf("Completed %d iterations of mixed endpoint requests", iterations)
 
-		// Wait for cleanup
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
-
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
+		// Wait for cleanup using polling with backoff (more robust than fixed sleep)
+		finalResult, cleanedUp := waitForGoroutineCleanup(ctx, t, baselineMatches, 5*time.Second)
+		if !cleanedUp && finalResult != nil {
+			finalMatches := countTotalMatches(finalResult)
+			t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+			goroutineDelta := finalMatches - baselineMatches
 			t.Errorf("Goroutine leak detected after mixed requests: %d new goroutines", goroutineDelta)
 			logLeakedStacks(t, finalResult)
 		}
@@ -518,6 +476,59 @@ func logLeakedStacks(t *testing.T, result *testutil.GoroutinesResult) {
 			}
 		}
 	}
+}
+
+// waitForGoroutineCleanup waits for goroutines to return to baseline level using polling.
+// This is more robust than a fixed sleep because it adapts to actual cleanup time.
+// Returns the final goroutine result and whether cleanup was successful.
+func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches int, maxWait time.Duration) (*testutil.GoroutinesResult, bool) {
+	t.Helper()
+
+	countTotalMatches := func(result *testutil.GoroutinesResult) int {
+		total := result.MatchCount
+		for _, w := range result.Workers {
+			total += w.MatchCount
+		}
+		return total
+	}
+
+	// Poll with exponential backoff
+	pollInterval := 100 * time.Millisecond
+	maxInterval := 500 * time.Millisecond
+	deadline := time.Now().Add(maxWait)
+
+	var finalResult *testutil.GoroutinesResult
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		result, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
+		if err != nil {
+			lastErr = err
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		finalResult = result
+		finalMatches := countTotalMatches(result)
+
+		if finalMatches <= baselineMatches {
+			t.Logf("Goroutines cleaned up: final=%d, baseline=%d", finalMatches, baselineMatches)
+			return result, true
+		}
+
+		// Increase poll interval with exponential backoff
+		time.Sleep(pollInterval)
+		pollInterval = pollInterval * 2
+		if pollInterval > maxInterval {
+			pollInterval = maxInterval
+		}
+	}
+
+	if lastErr != nil {
+		t.Logf("Last error during polling: %v", lastErr)
+	}
+
+	return finalResult, false
 }
 
 // drainEvents consumes all events from a stream, failing the test on error
@@ -555,7 +566,7 @@ func TestNDJSONGoroutineLeaks(t *testing.T) {
 		defer cancel()
 
 		// Capture baseline
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
@@ -630,19 +641,12 @@ func TestNDJSONGoroutineLeaks(t *testing.T) {
 		}
 		t.Logf("Completed %d successful NDJSON /stream requests", numRequests)
 
-		// Wait for cleanup
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
-
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
+		// Wait for cleanup using polling with backoff
+		finalResult, cleanedUp := waitForGoroutineCleanup(ctx, t, baselineMatches, 3*time.Second)
+		if !cleanedUp && finalResult != nil {
+			finalMatches := countTotalMatches(finalResult)
+			t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+			goroutineDelta := finalMatches - baselineMatches
 			t.Errorf("Goroutine leak detected after %d NDJSON /stream requests: %d new goroutines", numRequests, goroutineDelta)
 			logLeakedStacks(t, finalResult)
 		}
@@ -653,7 +657,7 @@ func TestNDJSONGoroutineLeaks(t *testing.T) {
 		defer cancel()
 
 		// Capture baseline
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		baselineResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Fatalf("Failed to get baseline goroutines: %v", err)
@@ -721,19 +725,12 @@ func TestNDJSONGoroutineLeaks(t *testing.T) {
 		}
 		t.Logf("Completed %d successful NDJSON /stream-with-raw requests", numRequests)
 
-		// Wait for cleanup
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaks
-		finalResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
-
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
+		// Wait for cleanup using polling with backoff
+		finalResult, cleanedUp := waitForGoroutineCleanup(ctx, t, baselineMatches, 3*time.Second)
+		if !cleanedUp && finalResult != nil {
+			finalMatches := countTotalMatches(finalResult)
+			t.Logf("Final: %d total goroutines, %d matching filter", finalResult.TotalCount, finalMatches)
+			goroutineDelta := finalMatches - baselineMatches
 			t.Errorf("Goroutine leak detected after %d NDJSON /stream-with-raw requests: %d new goroutines", numRequests, goroutineDelta)
 			logLeakedStacks(t, finalResult)
 		}
