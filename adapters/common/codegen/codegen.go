@@ -1199,9 +1199,9 @@ func Generate(selfPkg string) {
 	// Generate `createTypeBuilder` - creates TypeBuilder and applies config
 	out.Func().Id("createTypeBuilder").
 		Params(jen.Id("config").Op("*").Qual(common.InterfacesPkg, "TypeBuilder")).
-		Params(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"), jen.Error()).
+		Params(jen.Op("*").Qual(common.IntrospectedPkg, "TypeBuilder"), jen.Error()).
 		Block(
-			jen.List(jen.Id("tb"), jen.Id("err")).Op(":=").Qual(common.GeneratedClientPkg, "NewTypeBuilder").Call(),
+			jen.List(jen.Id("tb"), jen.Id("err")).Op(":=").Qual(common.IntrospectedPkg, "NewTypeBuilder").Call(),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
 			),
@@ -1264,11 +1264,11 @@ func Generate(selfPkg string) {
 						Call(jen.Id("adapter").Dot("ClientRegistry"))),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
-				// TypeBuilder is already *baml_client.TypeBuilder stored as any
-				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("adapter").Dot("TypeBuilder").Assert(jen.Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder")),
+				// TypeBuilder is stored as any in the adapter, assert to introspected type
+				jen.List(jen.Id("typeBuilder"), jen.Id("ok")).Op(":=").Id("adapter").Dot("TypeBuilder").Assert(jen.Op("*").Qual(common.IntrospectedPkg, "TypeBuilder")),
 				jen.If(jen.Op("!").Id("ok")).Block(
 					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
-						jen.Lit("TypeBuilder is not *baml_client.TypeBuilder: got %T"),
+						jen.Lit("TypeBuilder is not *introspected.TypeBuilder: got %T"),
 						jen.Id("adapter").Dot("TypeBuilder"),
 					)),
 				),
@@ -1417,14 +1417,16 @@ func hasDynamicPropertiesForType(typ reflect.Type) bool {
 
 // generateApplyDynamicTypes generates the applyDynamicTypes function that translates
 // DynamicTypes JSON schema to imperative TypeBuilder calls.
+// Uses the introspected package for type lookups instead of reflection.
 func generateApplyDynamicTypes(out *jen.File) {
 	// Type alias for baml.Type for cleaner code
 	typeAlias := jen.Qual(BamlPkg, "Type")
+	introspectedPkg := common.IntrospectedPkg
 
 	// Generate applyDynamicTypes function
 	out.Func().Id("applyDynamicTypes").
 		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("dt").Op("*").Qual(common.InterfacesPkg, "DynamicTypes"),
 		).
 		Error().
@@ -1465,164 +1467,12 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Return(jen.Nil()),
 		)
 
-	// Generate getExistingEnumType helper - uses reflection to call generated tb.{EnumName}() method
-	out.Func().Id("getExistingEnumType").
-		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
-			jen.Id("name").String(),
-		).
-		Params(typeAlias, jen.Bool()).
-		Block(
-			// Look for generated method tb.{EnumName}()
-			jen.Id("method").Op(":=").Qual("reflect", "ValueOf").Call(jen.Id("tb")).Dot("MethodByName").Call(jen.Id("name")),
-			jen.If(jen.Op("!").Id("method").Dot("IsValid").Call()).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			// Call the method - signature is () (*{EnumName}EnumView, error)
-			jen.Id("results").Op(":=").Id("method").Dot("Call").Call(jen.Nil()),
-			jen.If(jen.Len(jen.Id("results")).Op("!=").Lit(2)).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			// Check if error (second return) is nil
-			jen.If(jen.Op("!").Id("results").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			// Get the view and call Type() on it
-			jen.Id("view").Op(":=").Id("results").Index(jen.Lit(0)),
-			jen.Id("typeMethod").Op(":=").Id("view").Dot("MethodByName").Call(jen.Lit("Type")),
-			jen.If(jen.Op("!").Id("typeMethod").Dot("IsValid").Call()).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			jen.Id("typeResults").Op(":=").Id("typeMethod").Dot("Call").Call(jen.Nil()),
-			jen.If(jen.Len(jen.Id("typeResults")).Op("!=").Lit(2)).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			jen.If(jen.Op("!").Id("typeResults").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			// Extract baml.Type from reflect.Value
-			jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("typeResults").Index(jen.Lit(0)).Dot("Interface").Call().Assert(typeAlias),
-			jen.If(jen.Op("!").Id("ok")).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			jen.Return(jen.Id("typ"), jen.True()),
-		)
-
-	// Generate getExistingClassType helper - uses reflection to call generated tb.{ClassName}() method
-	out.Func().Id("getExistingClassType").
-		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
-			jen.Id("name").String(),
-		).
-		Params(typeAlias, jen.Bool()).
-		Block(
-			// Look for generated method tb.{ClassName}()
-			jen.Id("method").Op(":=").Qual("reflect", "ValueOf").Call(jen.Id("tb")).Dot("MethodByName").Call(jen.Id("name")),
-			jen.If(jen.Op("!").Id("method").Dot("IsValid").Call()).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			// Call the method - signature is () (*{ClassName}ClassView, error) or (*{ClassName}ClassBuilder, error)
-			jen.Id("results").Op(":=").Id("method").Dot("Call").Call(jen.Nil()),
-			jen.If(jen.Len(jen.Id("results")).Op("!=").Lit(2)).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			// Check if error (second return) is nil
-			jen.If(jen.Op("!").Id("results").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			// Get the view/builder and call Type() on it
-			jen.Id("view").Op(":=").Id("results").Index(jen.Lit(0)),
-			jen.Id("typeMethod").Op(":=").Id("view").Dot("MethodByName").Call(jen.Lit("Type")),
-			jen.If(jen.Op("!").Id("typeMethod").Dot("IsValid").Call()).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			jen.Id("typeResults").Op(":=").Id("typeMethod").Dot("Call").Call(jen.Nil()),
-			jen.If(jen.Len(jen.Id("typeResults")).Op("!=").Lit(2)).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			jen.If(jen.Op("!").Id("typeResults").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			// Extract baml.Type from reflect.Value
-			jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("typeResults").Index(jen.Lit(0)).Dot("Interface").Call().Assert(typeAlias),
-			jen.If(jen.Op("!").Id("ok")).Block(
-				jen.Return(jen.Nil(), jen.False()),
-			),
-			jen.Return(jen.Id("typ"), jen.True()),
-		)
-
-	// Generate getClassBuilder helper - uses reflection to get a class builder for adding properties
-	// Returns the AddProperty method if available, nil otherwise
-	out.Func().Id("getClassBuilder").
-		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
-			jen.Id("name").String(),
-		).
-		Params(jen.Qual("reflect", "Value"), jen.Bool()).
-		Block(
-			// Look for generated method tb.{ClassName}()
-			jen.Id("method").Op(":=").Qual("reflect", "ValueOf").Call(jen.Id("tb")).Dot("MethodByName").Call(jen.Id("name")),
-			jen.If(jen.Op("!").Id("method").Dot("IsValid").Call()).Block(
-				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
-			),
-			// Call the method
-			jen.Id("results").Op(":=").Id("method").Dot("Call").Call(jen.Nil()),
-			jen.If(jen.Len(jen.Id("results")).Op("!=").Lit(2)).Block(
-				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
-			),
-			// Check if error is nil
-			jen.If(jen.Op("!").Id("results").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
-				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
-			),
-			// Get the builder and check if it has AddProperty
-			jen.Id("builder").Op(":=").Id("results").Index(jen.Lit(0)),
-			jen.Id("addPropMethod").Op(":=").Id("builder").Dot("MethodByName").Call(jen.Lit("AddProperty")),
-			jen.If(jen.Op("!").Id("addPropMethod").Dot("IsValid").Call()).Block(
-				// It's a ClassView (read-only), not a ClassBuilder
-				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
-			),
-			jen.Return(jen.Id("addPropMethod"), jen.True()),
-		)
-
-	// Generate getEnumBuilder helper - uses reflection to get an enum builder for adding values
-	// Returns the AddValue method if available (dynamic enum), nil otherwise (static enum)
-	out.Func().Id("getEnumBuilder").
-		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
-			jen.Id("name").String(),
-		).
-		Params(jen.Qual("reflect", "Value"), jen.Bool()).
-		Block(
-			// Look for generated method tb.{EnumName}()
-			jen.Id("method").Op(":=").Qual("reflect", "ValueOf").Call(jen.Id("tb")).Dot("MethodByName").Call(jen.Id("name")),
-			jen.If(jen.Op("!").Id("method").Dot("IsValid").Call()).Block(
-				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
-			),
-			// Call the method
-			jen.Id("results").Op(":=").Id("method").Dot("Call").Call(jen.Nil()),
-			jen.If(jen.Len(jen.Id("results")).Op("!=").Lit(2)).Block(
-				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
-			),
-			// Check if error is nil
-			jen.If(jen.Op("!").Id("results").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
-				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
-			),
-			// Get the builder and check if it has AddValue (dynamic enum)
-			jen.Id("builder").Op(":=").Id("results").Index(jen.Lit(0)),
-			jen.Id("addValueMethod").Op(":=").Id("builder").Dot("MethodByName").Call(jen.Lit("AddValue")),
-			jen.If(jen.Op("!").Id("addValueMethod").Dot("IsValid").Call()).Block(
-				// It's an EnumView (read-only/static), not an EnumBuilder
-				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
-			),
-			jen.Return(jen.Id("addValueMethod"), jen.True()),
-		)
-
 	// Generate createEnumShell helper - creates enum with values (new) or caches existing type (Phase 1)
 	// For NEW enums: creates enum AND adds values (since we have the builder)
-	// For EXISTING enums: just caches type (values added in Phase 2 via reflection)
+	// For EXISTING enums: just caches type (values added in Phase 2 via introspected accessors)
 	out.Func().Id("createEnumShell").
 		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
 			jen.Id("enum").Op("*").Qual(common.InterfacesPkg, "DynamicEnum"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
@@ -1632,9 +1482,13 @@ func generateApplyDynamicTypes(out *jen.File) {
 			// Try to create enum first (new dynamic enum)
 			jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				// Enum already exists - cache its type via reflection
+				// Enum already exists - get its type via introspected accessor
 				// Values will be added in Phase 2 for existing dynamic enums
-				jen.If(jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("getExistingEnumType").Call(jen.Id("tb"), jen.Id("name")), jen.Id("ok")).Block(
+				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Qual(introspectedPkg, "GetEnumType").Call(jen.Id("tb"), jen.Id("name")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get existing enum type: %w"), jen.Id("err"))),
+				),
+				jen.If(jen.Id("typ").Op("!=").Nil()).Block(
 					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
 					jen.Return(jen.Nil()),
 				),
@@ -1666,7 +1520,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 	// New enums already had values added in createEnumShell
 	out.Func().Id("addEnumValues").
 		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
 			jen.Id("enum").Op("*").Qual(common.InterfacesPkg, "DynamicEnum"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
@@ -1674,36 +1528,29 @@ func generateApplyDynamicTypes(out *jen.File) {
 		Error().
 		Block(
 			jen.Id("_").Op("=").Id("typeCache"), // unused
-			// Try to get the enum builder via reflection (for existing dynamic enums)
-			jen.List(jen.Id("addValueMethod"), jen.Id("ok")).Op(":=").Id("getEnumBuilder").Call(jen.Id("tb"), jen.Id("name")),
+			// Check if this is an existing dynamic enum via introspected accessor
+			jen.List(jen.Id("accessor"), jen.Id("ok")).Op(":=").Qual(introspectedPkg, "DynamicEnums").Index(jen.Id("name")),
 			jen.If(jen.Op("!").Id("ok")).Block(
 				// Not a dynamic enum OR it's a new enum (values already added in Phase 1)
 				jen.Return(jen.Nil()),
 			),
 			jen.Line(),
-			// Existing dynamic enum - add values via reflection
+			// Get the enum builder using the typed accessor
+			jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("accessor").Call(jen.Id("tb")),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get enum builder: %w"), jen.Id("err"))),
+			),
+			jen.Line(),
+			// Add values using the typed EnumBuilder interface
 			jen.For(jen.List(jen.Id("_"), jen.Id("v")).Op(":=").Range().Id("enum").Dot("Values")).Block(
-				jen.Id("results").Op(":=").Id("addValueMethod").Dot("Call").Call(
-					jen.Index().Qual("reflect", "Value").Values(
-						jen.Qual("reflect", "ValueOf").Call(jen.Id("v").Dot("Name")),
-					),
-				),
-				// Check for error (second return value)
-				jen.If(jen.Len(jen.Id("results")).Op(">=").Lit(2).Op("&&").Op("!").Id("results").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
+				jen.List(jen.Id("vb"), jen.Id("err")).Op(":=").Id("eb").Dot("AddValue").Call(jen.Id("v").Dot("Name")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					// Value might already exist, skip silently
 					jen.Continue(),
 				),
 				// Handle Skip flag if value was added successfully
-				jen.If(jen.Id("v").Dot("Skip").Op("&&").Len(jen.Id("results")).Op(">=").Lit(1).Op("&&").Op("!").Id("results").Index(jen.Lit(0)).Dot("IsNil").Call()).Block(
-					jen.Id("vb").Op(":=").Id("results").Index(jen.Lit(0)),
-					jen.Id("setSkipMethod").Op(":=").Id("vb").Dot("MethodByName").Call(jen.Lit("SetSkip")),
-					jen.If(jen.Id("setSkipMethod").Dot("IsValid").Call()).Block(
-						jen.Id("setSkipMethod").Dot("Call").Call(
-							jen.Index().Qual("reflect", "Value").Values(
-								jen.Qual("reflect", "ValueOf").Call(jen.True()),
-							),
-						),
-					),
+				jen.If(jen.Id("v").Dot("Skip")).Block(
+					jen.Id("_").Op("=").Id("vb").Dot("SetSkip").Call(jen.True()),
 				),
 			),
 			jen.Return(jen.Nil()),
@@ -1712,7 +1559,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 	// Generate createClassShell helper
 	out.Func().Id("createClassShell").
 		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
 			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
@@ -1723,8 +1570,12 @@ func generateApplyDynamicTypes(out *jen.File) {
 			// Try to create class first (new dynamic class)
 			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				// Class already exists, try to get its type via reflection
-				jen.If(jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("getExistingClassType").Call(jen.Id("tb"), jen.Id("name")), jen.Id("ok")).Block(
+				// Class already exists, get its type via introspected accessor
+				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Qual(introspectedPkg, "GetClassType").Call(jen.Id("tb"), jen.Id("name")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get existing class type: %w"), jen.Id("err"))),
+				),
+				jen.If(jen.Id("typ").Op("!=").Nil()).Block(
 					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
 					jen.Return(jen.Nil()),
 				),
@@ -1743,19 +1594,25 @@ func generateApplyDynamicTypes(out *jen.File) {
 	// Generate addClassProperties helper
 	out.Func().Id("addClassProperties").
 		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
 			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 		).
 		Error().
 		Block(
-			// Try to get the class builder via reflection
-			jen.List(jen.Id("addPropMethod"), jen.Id("ok")).Op(":=").Id("getClassBuilder").Call(jen.Id("tb"), jen.Id("name")),
+			// Check if this is a dynamic class via introspected accessor
+			jen.List(jen.Id("accessor"), jen.Id("ok")).Op(":=").Qual(introspectedPkg, "DynamicClasses").Index(jen.Id("name")),
 			jen.If(jen.Op("!").Id("ok")).Block(
-				// Class is read-only (ClassView) - cannot add properties
+				// Class is read-only (static) - cannot add properties
 				// This is expected for existing classes in baml_src
 				jen.Return(jen.Nil()),
+			),
+			jen.Line(),
+			// Get the class builder using the typed accessor
+			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("accessor").Call(jen.Id("tb")),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get class builder: %w"), jen.Id("err"))),
 			),
 			jen.Line(),
 			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
@@ -1768,21 +1625,10 @@ func generateApplyDynamicTypes(out *jen.File) {
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q type: %w"), jen.Id("propName"), jen.Id("err"))),
 				),
 				jen.Line(),
-				// Call AddProperty via reflection
-				jen.Id("results").Op(":=").Id("addPropMethod").Dot("Call").Call(
-					jen.Index().Qual("reflect", "Value").Values(
-						jen.Qual("reflect", "ValueOf").Call(jen.Id("propName")),
-						jen.Qual("reflect", "ValueOf").Call(jen.Id("typ")),
-					),
-				),
-				// Check for error (second return value)
-				jen.If(jen.Len(jen.Id("results")).Op(">=").Lit(2).Op("&&").Op("!").Id("results").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
-					jen.If(
-						jen.List(jen.Id("err"), jen.Id("ok")).Op(":=").Id("results").Index(jen.Lit(1)).Dot("Interface").Call().Assert(jen.Error()),
-						jen.Id("ok").Op("&&").Id("err").Op("!=").Nil(),
-					).Block(
-						jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q: %w"), jen.Id("propName"), jen.Id("err"))),
-					),
+				// Call AddProperty using the typed ClassBuilder interface
+				jen.List(jen.Id("_"), jen.Id("err")).Op("=").Id("cb").Dot("AddProperty").Call(jen.Id("propName"), jen.Id("typ")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q: %w"), jen.Id("propName"), jen.Id("err"))),
 				),
 			),
 			jen.Return(jen.Nil()),
@@ -1791,7 +1637,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 	// Generate resolvePropertyType helper
 	out.Func().Id("resolvePropertyType").
 		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("prop").Op("*").Qual(common.InterfacesPkg, "DynamicProperty"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 		).
@@ -1821,7 +1667,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 	// Generate resolveTypeRef helper
 	out.Func().Id("resolveTypeRef").
 		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("ref").Op("*").Qual(common.InterfacesPkg, "DynamicTypeRef"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 		).
@@ -1945,7 +1791,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 	// Generate resolveRef helper
 	out.Func().Id("resolveRef").
 		Params(
-			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 		).
@@ -1956,14 +1802,16 @@ func generateApplyDynamicTypes(out *jen.File) {
 				jen.Return(jen.Id("typ"), jen.Nil()),
 			),
 			jen.Line(),
-			// Try to get existing class via reflection (generated tb.{ClassName}() method)
-			jen.If(jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("getExistingClassType").Call(jen.Id("tb"), jen.Id("name")), jen.Id("ok")).Block(
+			// Try to get existing class via introspected accessor
+			jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Qual(introspectedPkg, "GetClassType").Call(jen.Id("tb"), jen.Id("name")),
+			jen.If(jen.Id("err").Op("==").Nil().Op("&&").Id("typ").Op("!=").Nil()).Block(
 				jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
 				jen.Return(jen.Id("typ"), jen.Nil()),
 			),
 			jen.Line(),
-			// Try to get existing enum via reflection (generated tb.{EnumName}() method)
-			jen.If(jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("getExistingEnumType").Call(jen.Id("tb"), jen.Id("name")), jen.Id("ok")).Block(
+			// Try to get existing enum via introspected accessor
+			jen.List(jen.Id("typ"), jen.Id("err")).Op("=").Qual(introspectedPkg, "GetEnumType").Call(jen.Id("tb"), jen.Id("name")),
+			jen.If(jen.Id("err").Op("==").Nil().Op("&&").Id("typ").Op("!=").Nil()).Block(
 				jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
 				jen.Return(jen.Id("typ"), jen.Nil()),
 			),

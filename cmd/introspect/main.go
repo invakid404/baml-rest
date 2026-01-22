@@ -22,12 +22,22 @@ type parsedFile struct {
 	path string
 }
 
+// TypeBuilderMethod represents a method on TypeBuilder that returns a class/enum accessor
+type TypeBuilderMethod struct {
+	Name       string // Method name on TypeBuilder (e.g., "Resume", "DynamicTestOutput")
+	TypeName   string // The BAML type name (same as method name)
+	ReturnType string // The return type name (e.g., "ResumeClassView", "DynamicTestOutputClassBuilder")
+	IsDynamic  bool   // true if returns Builder, false if returns View
+	IsClass    bool   // true for class, false for enum
+}
+
 func main() {
 	var (
-		streamFile      *parsedFile
-		parseFile       *parsedFile
-		parseStreamFile *parsedFile
-		syncFuncsFile   *parsedFile
+		streamFile         *parsedFile
+		parseFile          *parsedFile
+		parseStreamFile    *parsedFile
+		syncFuncsFile      *parsedFile
+		typeBuilderFiles   []*parsedFile
 	)
 
 	err := filepath.WalkDir("baml_client", func(path string, dirEntry os.DirEntry, err error) error {
@@ -64,6 +74,11 @@ func main() {
 			if parseStreamVar := file.Scope.Lookup("ParseStream"); parseStreamVar != nil {
 				parseStreamFile = &parsedFile{file: file, path: path}
 			}
+		}
+
+		// Collect type_builder files
+		if strings.Contains(path, "type_builder") && strings.HasSuffix(path, ".go") {
+			typeBuilderFiles = append(typeBuilderFiles, &parsedFile{file: file, path: path})
 		}
 
 		// Look for sync functions in functions.go (package-level functions with context.Context first param)
@@ -271,6 +286,101 @@ func main() {
 		parseStreamMethods = append(parseStreamMethods, funcDecl.Name.Name)
 	}
 
+	// Extract TypeBuilder methods (methods on *TypeBuilder that return class/enum accessors)
+	var typeBuilderMethods []TypeBuilderMethod
+	for _, tbFile := range typeBuilderFiles {
+		for _, decl := range tbFile.file.Decls {
+			funcDecl, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+
+			// Must be a method with receiver
+			if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+				continue
+			}
+
+			// Must be on *TypeBuilder
+			receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
+			if !ok {
+				continue
+			}
+			receiverIdent, ok := receiver.X.(*ast.Ident)
+			if !ok || receiverIdent.Name != "TypeBuilder" {
+				continue
+			}
+
+			// Must return (*SomeType, error) - check for 2 results
+			if funcDecl.Type.Results == nil || len(funcDecl.Type.Results.List) != 2 {
+				continue
+			}
+
+			// First result must be a pointer type
+			firstResult, ok := funcDecl.Type.Results.List[0].Type.(*ast.StarExpr)
+			if !ok {
+				continue
+			}
+
+			// Get the type name
+			returnTypeIdent, ok := firstResult.X.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			returnTypeName := returnTypeIdent.Name
+
+			// Determine if it's a class or enum, and if it's dynamic (Builder) or static (View)
+			var isClass, isDynamic bool
+			var typeName string
+
+			if strings.HasSuffix(returnTypeName, "ClassBuilder") {
+				isClass = true
+				isDynamic = true
+				typeName = strings.TrimSuffix(returnTypeName, "ClassBuilder")
+			} else if strings.HasSuffix(returnTypeName, "ClassView") {
+				isClass = true
+				isDynamic = false
+				typeName = strings.TrimSuffix(returnTypeName, "ClassView")
+			} else if strings.HasSuffix(returnTypeName, "EnumBuilder") {
+				isClass = false
+				isDynamic = true
+				typeName = strings.TrimSuffix(returnTypeName, "EnumBuilder")
+			} else if strings.HasSuffix(returnTypeName, "EnumView") {
+				isClass = false
+				isDynamic = false
+				typeName = strings.TrimSuffix(returnTypeName, "EnumView")
+			} else {
+				// Not a class/enum accessor method
+				continue
+			}
+
+			typeBuilderMethods = append(typeBuilderMethods, TypeBuilderMethod{
+				Name:       funcDecl.Name.Name,
+				TypeName:   typeName,
+				ReturnType: returnTypeName,
+				IsDynamic:  isDynamic,
+				IsClass:    isClass,
+			})
+		}
+	}
+
+	// Separate into categories for template
+	var dynamicClasses, staticClasses, dynamicEnums, staticEnums []TypeBuilderMethod
+	for _, m := range typeBuilderMethods {
+		if m.IsClass {
+			if m.IsDynamic {
+				dynamicClasses = append(dynamicClasses, m)
+			} else {
+				staticClasses = append(staticClasses, m)
+			}
+		} else {
+			if m.IsDynamic {
+				dynamicEnums = append(dynamicEnums, m)
+			} else {
+				staticEnums = append(staticEnums, m)
+			}
+		}
+	}
+
 	funcMap := template.FuncMap{
 		"quoteAndJoin": func(input []string) string {
 			quoted := make([]string, len(input))
@@ -284,13 +394,22 @@ func main() {
 	introspectedTemplate := template.Must(template.New("introspected.go").Funcs(funcMap).Parse(introspectedTemplateInput))
 	var introspectedTemplateOut bytes.Buffer
 
+	// Determine type_builder package path
+	typeBuilderPackagePath := fmt.Sprintf("github.com/invakid404/baml-rest/%s/type_builder", packageName)
+
 	introspectedTemplateArgs := map[string]any{
-		"streamPackageName":  packageBaseName,
-		"streamPackagePath":  fmt.Sprintf("github.com/invakid404/baml-rest/%s", packageName),
-		"streamMethods":      streamFunctions,
-		"syncMethods":        syncFunctions,
-		"parseMethods":       parseMethods,
-		"parseStreamMethods": parseStreamMethods,
+		"streamPackageName":      packageBaseName,
+		"streamPackagePath":      fmt.Sprintf("github.com/invakid404/baml-rest/%s", packageName),
+		"typeBuilderPackagePath": typeBuilderPackagePath,
+		"streamMethods":          streamFunctions,
+		"syncMethods":            syncFunctions,
+		"parseMethods":           parseMethods,
+		"parseStreamMethods":     parseStreamMethods,
+		"dynamicClasses":         dynamicClasses,
+		"staticClasses":          staticClasses,
+		"dynamicEnums":           dynamicEnums,
+		"staticEnums":            staticEnums,
+		"hasTypeBuilder":         len(typeBuilderFiles) > 0,
 	}
 	if err := introspectedTemplate.Execute(&introspectedTemplateOut, introspectedTemplateArgs); err != nil {
 		panic(err)
