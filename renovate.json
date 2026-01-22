@@ -26,6 +26,11 @@
       "rangeStrategy": "bump",
       "groupName": "golang",
       "extractVersion": "^go(?<version>.*)$"
+    },
+    {
+      "matchPackageNames": ["github.com/boundaryml/baml"],
+      "matchFileNames": ["adapters/**/go.mod"],
+      "enabled": false
     }
   ]
 }
