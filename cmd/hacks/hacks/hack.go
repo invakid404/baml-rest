@@ -2,9 +2,8 @@ package hacks
 
 import (
 	"fmt"
-	"strings"
 
-	"golang.org/x/mod/semver"
+	"github.com/invakid404/baml-rest/bamlutils"
 )
 
 // Hack defines the interface for a code transformation hack.
@@ -58,33 +57,22 @@ func ApplyAll(bamlVersion, bamlClientDir string) error {
 
 // isApplicable checks if a hack should be applied for the given version.
 func isApplicable(h Hack, version string) bool {
-	minVersion := normalizeSemver(h.MinVersion())
-	maxVersion := normalizeSemver(h.MaxVersion())
+	minVersion := h.MinVersion()
+	maxVersion := h.MaxVersion()
 
 	// Check minimum version constraint
 	if minVersion != "" {
-		if semver.Compare(version, minVersion) < 0 {
+		if bamlutils.CompareVersions(version, minVersion) < 0 {
 			return false
 		}
 	}
 
 	// Check maximum version constraint
 	if maxVersion != "" {
-		if semver.Compare(version, maxVersion) > 0 {
+		if bamlutils.CompareVersions(version, maxVersion) > 0 {
 			return false
 		}
 	}
 
 	return true
-}
-
-// normalizeSemver ensures the version string is in proper semver format.
-func normalizeSemver(version string) string {
-	if version == "" {
-		return ""
-	}
-	if !strings.HasPrefix(version, "v") {
-		return "v" + version
-	}
-	return version
 }

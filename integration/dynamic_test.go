@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
 
@@ -583,6 +584,12 @@ func TestDynamicTypesImperative(t *testing.T) {
 	})
 
 	t.Run("add_list_property", func(t *testing.T) {
+		// Skip for BAML versions < 0.215.0 due to a bug with list types in dynamic classes
+		// that was fixed in later versions
+		if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+			t.Skip("Skipping: list types in dynamic classes require BAML >= 0.215.0")
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -590,12 +597,18 @@ func TestDynamicTypesImperative(t *testing.T) {
 		content := `{"base_field": "test", "tags": ["go", "baml", "rest"]}`
 		opts := setupNonStreamingScenario(t, "test-dynamic-imperative-list", content)
 
-		// First, verify that baml_snippets with list works (to isolate the issue)
 		opts.TypeBuilder = &testutil.TypeBuilder{
-			BAMLSnippets: []string{
-				`dynamic class DynamicOutput {
-					tags string[]
-				}`,
+			DynamicTypes: &testutil.DynamicTypes{
+				Classes: map[string]*testutil.DynamicClass{
+					"DynamicOutput": {
+						Properties: map[string]*testutil.DynamicProperty{
+							"tags": {
+								Type:  "list",
+								Items: &testutil.DynamicTypeRef{Type: "string"},
+							},
+						},
+					},
+				},
 			},
 		}
 
