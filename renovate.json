@@ -22,8 +22,8 @@
   ],
   "packageRules": [
     {
-      "matchDepNames": ["go"],
-      "matchManagers": ["gomod", "custom.regex"],
+      "matchDatasources": ["golang-version"],
+      "rangeStrategy": "bump",
       "groupName": "golang"
     }
   ]
