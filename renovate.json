@@ -16,14 +16,16 @@
       "fileMatch": ["^go\\.work$"],
       "matchStrings": ["(?m)^go (?<currentValue>\\S+)"],
       "depNameTemplate": "go",
-      "datasourceTemplate": "golang-version"
+      "datasourceTemplate": "golang-version",
+      "versioningTemplate": "loose"
     }
   ],
   "packageRules": [
     {
       "matchDatasources": ["golang-version"],
       "rangeStrategy": "bump",
-      "groupName": "golang"
+      "groupName": "golang",
+      "extractVersion": "^go(?<version>.*)$"
     }
   ]
 }
