@@ -59,61 +59,72 @@ var ParseStreamFuncs = map[string]any{
 // TypeBuilder is the generated TypeBuilder type
 type TypeBuilder = type_builder.TypeBuilder
 
-// ClassBuilder is the interface for dynamic classes
-type ClassBuilder = type_builder.ClassBuilder
-
-// EnumBuilder is the interface for dynamic enums
-type EnumBuilder = type_builder.EnumBuilder
-
-// ClassView is the interface for static classes
-type ClassView = type_builder.ClassView
-
-// EnumView is the interface for static enums
-type EnumView = type_builder.EnumView
-
 // Type is the BAML type
 type Type = type_builder.Type
+
+// ClassPropertyBuilder is the interface for class property builders
+type ClassPropertyBuilder = type_builder.ClassPropertyBuilder
+
+// EnumValueBuilder is the interface for enum value builders
+type EnumValueBuilder = type_builder.EnumValueBuilder
 
 // NewTypeBuilder creates a new TypeBuilder using the BAML runtime's factory
 var NewTypeBuilder = {{ .streamPackageName }}.NewTypeBuilder
 
-// DynamicClassAccessor is a function that returns a ClassBuilder for a dynamic class
-type DynamicClassAccessor func(*TypeBuilder) (ClassBuilder, error)
+// Typed is a minimal interface for types that can return a Type
+type Typed interface {
+  Type() (Type, error)
+}
 
-// DynamicEnumAccessor is a function that returns an EnumBuilder for a dynamic enum
-type DynamicEnumAccessor func(*TypeBuilder) (EnumBuilder, error)
+// DynamicClassBuilder is the interface for dynamic classes (minimal: what generated types implement)
+type DynamicClassBuilder interface {
+  Type() (Type, error)
+  AddProperty(name string, fieldType Type) (ClassPropertyBuilder, error)
+}
 
-// StaticClassAccessor is a function that returns a ClassView for a static class
-type StaticClassAccessor func(*TypeBuilder) (ClassView, error)
+// DynamicEnumBuilder is the interface for dynamic enums (minimal: what generated types implement)
+type DynamicEnumBuilder interface {
+  Type() (Type, error)
+  AddValue(value string) (EnumValueBuilder, error)
+}
 
-// StaticEnumAccessor is a function that returns an EnumView for a static enum
-type StaticEnumAccessor func(*TypeBuilder) (EnumView, error)
+// DynamicClassAccessor is a function that returns a DynamicClassBuilder for a dynamic class
+type DynamicClassAccessor func(*TypeBuilder) (DynamicClassBuilder, error)
+
+// DynamicEnumAccessor is a function that returns a DynamicEnumBuilder for a dynamic enum
+type DynamicEnumAccessor func(*TypeBuilder) (DynamicEnumBuilder, error)
+
+// StaticClassAccessor is a function that returns a Typed for a static class
+type StaticClassAccessor func(*TypeBuilder) (Typed, error)
+
+// StaticEnumAccessor is a function that returns a Typed for a static enum
+type StaticEnumAccessor func(*TypeBuilder) (Typed, error)
 
 // DynamicClasses maps dynamic class names to their accessor functions
 var DynamicClasses = map[string]DynamicClassAccessor{
 {{- range .dynamicClasses }}
-  {{ .TypeName | printf "%q" }}: func(tb *TypeBuilder) (ClassBuilder, error) { return tb.{{ .Name }}() },
+  {{ .TypeName | printf "%q" }}: func(tb *TypeBuilder) (DynamicClassBuilder, error) { return tb.{{ .Name }}() },
 {{- end }}
 }
 
 // StaticClasses maps static class names to their accessor functions
 var StaticClasses = map[string]StaticClassAccessor{
 {{- range .staticClasses }}
-  {{ .TypeName | printf "%q" }}: func(tb *TypeBuilder) (ClassView, error) { return tb.{{ .Name }}() },
+  {{ .TypeName | printf "%q" }}: func(tb *TypeBuilder) (Typed, error) { return tb.{{ .Name }}() },
 {{- end }}
 }
 
 // DynamicEnums maps dynamic enum names to their accessor functions
 var DynamicEnums = map[string]DynamicEnumAccessor{
 {{- range .dynamicEnums }}
-  {{ .TypeName | printf "%q" }}: func(tb *TypeBuilder) (EnumBuilder, error) { return tb.{{ .Name }}() },
+  {{ .TypeName | printf "%q" }}: func(tb *TypeBuilder) (DynamicEnumBuilder, error) { return tb.{{ .Name }}() },
 {{- end }}
 }
 
 // StaticEnums maps static enum names to their accessor functions
 var StaticEnums = map[string]StaticEnumAccessor{
 {{- range .staticEnums }}
-  {{ .TypeName | printf "%q" }}: func(tb *TypeBuilder) (EnumView, error) { return tb.{{ .Name }}() },
+  {{ .TypeName | printf "%q" }}: func(tb *TypeBuilder) (Typed, error) { return tb.{{ .Name }}() },
 {{- end }}
 }
 
