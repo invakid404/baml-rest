@@ -1577,6 +1577,39 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Return(jen.Id("addPropMethod"), jen.True()),
 		)
 
+	// Generate getEnumBuilder helper - uses reflection to get an enum builder for adding values
+	// Returns the AddValue method if available (dynamic enum), nil otherwise (static enum)
+	out.Func().Id("getEnumBuilder").
+		Params(
+			jen.Id("tb").Op("*").Qual(common.GeneratedClientPkg, "TypeBuilder"),
+			jen.Id("name").String(),
+		).
+		Params(jen.Qual("reflect", "Value"), jen.Bool()).
+		Block(
+			// Look for generated method tb.{EnumName}()
+			jen.Id("method").Op(":=").Qual("reflect", "ValueOf").Call(jen.Id("tb")).Dot("MethodByName").Call(jen.Id("name")),
+			jen.If(jen.Op("!").Id("method").Dot("IsValid").Call()).Block(
+				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
+			),
+			// Call the method
+			jen.Id("results").Op(":=").Id("method").Dot("Call").Call(jen.Nil()),
+			jen.If(jen.Len(jen.Id("results")).Op("!=").Lit(2)).Block(
+				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
+			),
+			// Check if error is nil
+			jen.If(jen.Op("!").Id("results").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
+				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
+			),
+			// Get the builder and check if it has AddValue (dynamic enum)
+			jen.Id("builder").Op(":=").Id("results").Index(jen.Lit(0)),
+			jen.Id("addValueMethod").Op(":=").Id("builder").Dot("MethodByName").Call(jen.Lit("AddValue")),
+			jen.If(jen.Op("!").Id("addValueMethod").Dot("IsValid").Call()).Block(
+				// It's an EnumView (read-only/static), not an EnumBuilder
+				jen.Return(jen.Qual("reflect", "Value").Values(), jen.False()),
+			),
+			jen.Return(jen.Id("addValueMethod"), jen.True()),
+		)
+
 	// Generate createEnum helper
 	out.Func().Id("createEnum").
 		Params(
@@ -1590,33 +1623,40 @@ func generateApplyDynamicTypes(out *jen.File) {
 			// Try to create enum first (new dynamic enum)
 			jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				// Enum already exists - use InternalExport to get the EnumBuilder
-				// We need InternalExport here because the generated per-enum methods
-				// return EnumView (read-only), but we need EnumBuilder to add values
-				jen.List(jen.Id("innerEb"), jen.Id("innerErr")).Op(":=").Id("tb").Dot("InternalExport").Call().Dot("Enum").Call(jen.Id("name")),
-				jen.If(jen.Id("innerErr").Op("!=").Nil()).Block(
-					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create or get enum: %w"), jen.Id("err"))),
-				),
-				// Add values to existing enum
-				jen.For(jen.List(jen.Id("_"), jen.Id("v")).Op(":=").Range().Id("enum").Dot("Values")).Block(
-					jen.List(jen.Id("vb"), jen.Id("addErr")).Op(":=").Id("innerEb").Dot("AddValue").Call(jen.Id("v").Dot("Name")),
-					jen.If(jen.Id("addErr").Op("!=").Nil()).Block(
-						// Value might already exist, skip silently
-						jen.Continue(),
-					),
-					jen.If(jen.Id("v").Dot("Skip")).Block(
-						jen.If(jen.Id("err").Op(":=").Id("vb").Dot("SetSkip").Call(jen.True()), jen.Id("err").Op("!=").Nil()).Block(
-							jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("value %q set skip: %w"), jen.Id("v").Dot("Name"), jen.Id("err"))),
+				// Enum already exists - check if it's dynamic (has AddValue)
+				jen.If(jen.List(jen.Id("addValueMethod"), jen.Id("ok")).Op(":=").Id("getEnumBuilder").Call(jen.Id("tb"), jen.Id("name")), jen.Id("ok")).Block(
+					// Dynamic enum - add values via reflection
+					jen.For(jen.List(jen.Id("_"), jen.Id("v")).Op(":=").Range().Id("enum").Dot("Values")).Block(
+						jen.Id("results").Op(":=").Id("addValueMethod").Dot("Call").Call(
+							jen.Index().Qual("reflect", "Value").Values(
+								jen.Qual("reflect", "ValueOf").Call(jen.Id("v").Dot("Name")),
+							),
+						),
+						// Check for error (second return value)
+						jen.If(jen.Len(jen.Id("results")).Op(">=").Lit(2).Op("&&").Op("!").Id("results").Index(jen.Lit(1)).Dot("IsNil").Call()).Block(
+							// Value might already exist, skip silently
+							jen.Continue(),
+						),
+						// Handle Skip flag if value was added successfully
+						jen.If(jen.Id("v").Dot("Skip").Op("&&").Len(jen.Id("results")).Op(">=").Lit(1).Op("&&").Op("!").Id("results").Index(jen.Lit(0)).Dot("IsNil").Call()).Block(
+							jen.Id("vb").Op(":=").Id("results").Index(jen.Lit(0)),
+							jen.Id("setSkipMethod").Op(":=").Id("vb").Dot("MethodByName").Call(jen.Lit("SetSkip")),
+							jen.If(jen.Id("setSkipMethod").Dot("IsValid").Call()).Block(
+								jen.Id("setSkipMethod").Dot("Call").Call(
+									jen.Index().Qual("reflect", "Value").Values(
+										jen.Qual("reflect", "ValueOf").Call(jen.True()),
+									),
+								),
+							),
 						),
 					),
 				),
-				// Cache the enum type
-				jen.List(jen.Id("typ"), jen.Id("typErr")).Op(":=").Id("innerEb").Dot("Type").Call(),
-				jen.If(jen.Id("typErr").Op("!=").Nil()).Block(
-					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get type: %w"), jen.Id("typErr"))),
+				// Static enum or dynamic - cache the type either way
+				jen.If(jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("getExistingEnumType").Call(jen.Id("tb"), jen.Id("name")), jen.Id("ok")).Block(
+					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
+					jen.Return(jen.Nil()),
 				),
-				jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
-				jen.Return(jen.Nil()),
+				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create or get enum: %w"), jen.Id("err"))),
 			),
 			jen.Line(),
 			// Add values to new enum
