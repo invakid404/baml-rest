@@ -11,11 +11,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"text/template"
 	"time"
 
 	bamlrest "github.com/invakid404/baml-rest"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -485,38 +485,9 @@ func findProjectRoot() (string, error) {
 
 // GetAdapterVersionForBAML returns the appropriate adapter version path for a BAML version.
 func GetAdapterVersionForBAML(bamlVersion string) (string, error) {
-	const adapterPrefix = "adapters/adapter_v"
-
-	// Collect available adapter versions
-	var versions []string
-	for key := range bamlrest.Sources {
-		if strings.HasPrefix(key, adapterPrefix) {
-			versions = append(versions, key)
-		}
+	adapterInfo, err := bamlutils.GetAdapterForBAMLVersion(bamlrest.Sources, bamlVersion)
+	if err != nil {
+		return "", err
 	}
-
-	if len(versions) == 0 {
-		return "", fmt.Errorf("no adapter versions found")
-	}
-
-	// For simplicity, use a basic version comparison
-	// In production, you'd use semver comparison
-	targetVersion := "v" + bamlVersion
-
-	// Find the highest adapter version that's <= the target BAML version
-	var selected string
-	for _, v := range versions {
-		adapterVersion := "v" + strings.ReplaceAll(strings.TrimPrefix(v, adapterPrefix), "_", ".")
-		if adapterVersion <= targetVersion {
-			if selected == "" || adapterVersion > strings.ReplaceAll(strings.TrimPrefix(selected, adapterPrefix), "_", ".") {
-				selected = v
-			}
-		}
-	}
-
-	if selected == "" {
-		return "", fmt.Errorf("no compatible adapter found for BAML version %s", bamlVersion)
-	}
-
-	return selected, nil
+	return adapterInfo.Path, nil
 }

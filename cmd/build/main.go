@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"time"
 
@@ -35,7 +34,6 @@ import (
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/registry"
-	"golang.org/x/mod/semver"
 
 	"github.com/moby/moby/client"
 	"github.com/rs/zerolog"
@@ -149,11 +147,10 @@ func copyFSToDisk(dir fs.FS, targetDir string, mapper copyFSMapper) error {
 }
 
 const (
-	adapterPrefix = "adapters/adapter_v"
-	bamlRestDir   = "baml_rest"
-	bamlSrcDir    = "baml_src"
-	bamlFileExt   = ".baml"
-	bamlRestName  = "baml-rest"
+	bamlRestDir  = "baml_rest"
+	bamlSrcDir   = "baml_src"
+	bamlFileExt  = ".baml"
+	bamlRestName = "baml-rest"
 )
 
 var (
@@ -356,32 +353,12 @@ var rootCmd = &cobra.Command{
 
 		fmt.Printf("Found baml_src folder in %s\n", targetDir)
 
-		// Common setup: detect BAML and adapter versions
-		var availableAdapterVersions []string
-		adapterVersionToPath := make(map[string]string)
-
-		for key := range bamlrest.Sources {
-			if !strings.HasPrefix(key, adapterPrefix) {
-				continue
-			}
-
-			version := "v" + strings.ReplaceAll(strings.TrimPrefix(key, adapterPrefix), "_", ".")
-			availableAdapterVersions = append(
-				availableAdapterVersions,
-				version,
-			)
-			adapterVersionToPath[version] = key
-		}
-
-		semver.Sort(availableAdapterVersions)
-
+		// Detect BAML version
 		var detectedVersion string
-		var detectedVersionForComparison string
 
 		if bamlVersion != "" {
 			// Use the manually specified BAML version
 			detectedVersion = bamlVersion
-			detectedVersionForComparison = "v" + detectedVersion
 			fmt.Printf("Using manually specified BAML version: %s\n", detectedVersion)
 		} else {
 			// Auto-detect BAML version
@@ -402,34 +379,23 @@ var rootCmd = &cobra.Command{
 			}
 
 			detectedVersion = detectedVersions[0]
-			detectedVersionForComparison = "v" + detectedVersion
 		}
 
-		adapterVersionToUse := ""
-
-		for _, version := range slices.Backward(availableAdapterVersions) {
-			if semver.Compare(detectedVersionForComparison, version) >= 0 {
-				adapterVersionToUse = version
-				break
-			}
-		}
-
-		if adapterVersionToUse == "" {
-			return fmt.Errorf(
-				"BAML version %q is unsupported, the minimum supported version is %q",
-				detectedVersion, availableAdapterVersions[0],
-			)
+		// Get the appropriate adapter version
+		adapterInfo, err := bamlutils.GetAdapterForBAMLVersion(bamlrest.Sources, detectedVersion)
+		if err != nil {
+			return err
 		}
 
 		fmt.Printf("BAML version: %s\n", detectedVersion)
-		fmt.Printf("Adapter version: %s\n", adapterVersionToUse)
+		fmt.Printf("Adapter version: %s\n", adapterInfo.Version)
 		fmt.Printf("Build mode: %s\n", buildMode)
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild)
 		} else {
-			return buildNative(bamlSrcPath, detectedVersion, adapterVersionToPath[adapterVersionToUse], keepSource, customBamlLib, customBamlGoLib, debugBuild)
+			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild)
 		}
 	},
 }
