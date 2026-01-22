@@ -37,7 +37,7 @@ func Register(h Hack) {
 // ApplyAll applies all applicable hacks for the given BAML version.
 func ApplyAll(bamlVersion, bamlClientDir string) error {
 	// Normalize version to semver format (prepend 'v' if needed)
-	version := normalizeSemver(bamlVersion)
+	version := bamlutils.NormalizeVersion(bamlVersion)
 
 	for _, hack := range registry {
 		if !isApplicable(hack, version) {
