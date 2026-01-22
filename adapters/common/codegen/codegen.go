@@ -1590,12 +1590,33 @@ func generateApplyDynamicTypes(out *jen.File) {
 			// Try to create enum first (new dynamic enum)
 			jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				// Enum already exists, try to get its type via reflection
-				jen.If(jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("getExistingEnumType").Call(jen.Id("tb"), jen.Id("name")), jen.Id("ok")).Block(
-					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
-					jen.Return(jen.Nil()),
+				// Enum already exists - use InternalExport to get the EnumBuilder
+				// We need InternalExport here because the generated per-enum methods
+				// return EnumView (read-only), but we need EnumBuilder to add values
+				jen.List(jen.Id("innerEb"), jen.Id("innerErr")).Op(":=").Id("tb").Dot("InternalExport").Call().Dot("Enum").Call(jen.Id("name")),
+				jen.If(jen.Id("innerErr").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create or get enum: %w"), jen.Id("err"))),
 				),
-				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create or get enum: %w"), jen.Id("err"))),
+				// Add values to existing enum
+				jen.For(jen.List(jen.Id("_"), jen.Id("v")).Op(":=").Range().Id("enum").Dot("Values")).Block(
+					jen.List(jen.Id("vb"), jen.Id("addErr")).Op(":=").Id("innerEb").Dot("AddValue").Call(jen.Id("v").Dot("Name")),
+					jen.If(jen.Id("addErr").Op("!=").Nil()).Block(
+						// Value might already exist, skip silently
+						jen.Continue(),
+					),
+					jen.If(jen.Id("v").Dot("Skip")).Block(
+						jen.If(jen.Id("err").Op(":=").Id("vb").Dot("SetSkip").Call(jen.True()), jen.Id("err").Op("!=").Nil()).Block(
+							jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("value %q set skip: %w"), jen.Id("v").Dot("Name"), jen.Id("err"))),
+						),
+					),
+				),
+				// Cache the enum type
+				jen.List(jen.Id("typ"), jen.Id("typErr")).Op(":=").Id("innerEb").Dot("Type").Call(),
+				jen.If(jen.Id("typErr").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get type: %w"), jen.Id("typErr"))),
+				),
+				jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
+				jen.Return(jen.Nil()),
 			),
 			jen.Line(),
 			// Add values to new enum
