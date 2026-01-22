@@ -1,21 +1,17 @@
 package main
 
 import (
-	"bytes"
-	_ "embed"
+	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"text/template"
-)
 
-//go:embed introspected.go.tmpl
-var introspectedTemplateInput string
+	"github.com/dave/jennifer/jen"
+)
 
 type parsedFile struct {
 	file *ast.File
@@ -32,12 +28,66 @@ type TypeBuilderMethod struct {
 }
 
 func main() {
+	stubMode := flag.Bool("stub", false, "Generate stub file (no baml_client required)")
+	flag.Parse()
+
+	if *stubMode {
+		generateStub()
+		return
+	}
+
+	generateFull()
+}
+
+func generateStub() {
+	out := jen.NewFile("introspected")
+
+	// Stream stubs
+	out.Comment("Stream is the BAML streaming client instance")
+	out.Var().Id("Stream").Op("=").Op("&").Struct().Values()
+
+	out.Comment("StreamMethods is a map from method name to argument names")
+	out.Var().Id("StreamMethods").Op("=").Map(jen.String()).Index().String().Values()
+
+	out.Comment("SyncMethods maps sync function names to their argument names")
+	out.Var().Id("SyncMethods").Op("=").Map(jen.String()).Index().String().Values()
+
+	out.Comment("SyncFuncs maps sync function names to their function values (for reflection)")
+	out.Var().Id("SyncFuncs").Op("=").Map(jen.String()).Any().Values()
+
+	out.Comment("Parse is the parse API for parsing raw LLM responses into final types")
+	out.Var().Id("Parse").Op("=").Op("&").Struct().Values()
+
+	out.Comment("ParseMethods is a set of method names available on Parse")
+	out.Var().Id("ParseMethods").Op("=").Map(jen.String()).Struct().Values()
+
+	out.Comment("ParseStream is the parse_stream API for parsing raw LLM responses into partial/stream types")
+	out.Var().Id("ParseStream").Op("=").Op("&").Struct().Values()
+
+	out.Comment("ParseStreamMethods is a set of method names available on ParseStream")
+	out.Var().Id("ParseStreamMethods").Op("=").Map(jen.String()).Struct().Values()
+
+	out.Comment("ParseStreamFuncs maps ParseStream method names to their function values (for reflection)")
+	out.Var().Id("ParseStreamFuncs").Op("=").Map(jen.String()).Any().Values()
+
+	// TypeBuilder stubs
+	generateTypeBuilderTypes(out, true)
+	generateTypeBuilderInterfaces(out)
+	generateTypeBuilderMaps(out, nil, nil, nil, nil)
+	generateTypeBuilderHelpers(out, true)
+
+	if err := out.Save("introspected/introspected.go"); err != nil {
+		panic(err)
+	}
+}
+
+func generateFull() {
 	var (
-		streamFile         *parsedFile
-		parseFile          *parsedFile
-		parseStreamFile    *parsedFile
-		syncFuncsFile      *parsedFile
-		typeBuilderFiles   []*parsedFile
+		streamFile       *parsedFile
+		parseFile        *parsedFile
+		parseStreamFile  *parsedFile
+		syncFuncsFile    *parsedFile
+		typeBuilderFiles []*parsedFile
 	)
 
 	err := filepath.WalkDir("baml_client", func(path string, dirEntry os.DirEntry, err error) error {
@@ -81,21 +131,16 @@ func main() {
 			typeBuilderFiles = append(typeBuilderFiles, &parsedFile{file: file, path: path})
 		}
 
-		// Look for sync functions in functions.go (package-level functions with context.Context first param)
-		// We identify this file by having package-level functions but no Stream/Parse/ParseStream vars
-		// Actually, functions.go doesn't have these vars, but we need a better heuristic
-		// Let's look for package-level functions that take context.Context as first param
+		// Look for sync functions in functions.go
 		if syncFuncsFile == nil {
 			for _, decl := range file.Decls {
 				funcDecl, ok := decl.(*ast.FuncDecl)
 				if !ok {
 					continue
 				}
-				// Skip methods (functions with receivers)
 				if funcDecl.Recv != nil {
 					continue
 				}
-				// Check if first param is context.Context
 				if funcDecl.Type.Params == nil || len(funcDecl.Type.Params.List) == 0 {
 					continue
 				}
@@ -121,301 +166,631 @@ func main() {
 	if streamFile == nil {
 		panic("stream file not found")
 	}
-
 	if parseFile == nil {
 		panic("parse file not found")
 	}
-
 	if parseStreamFile == nil {
 		panic("parse_stream file not found")
 	}
-
 	if syncFuncsFile == nil {
 		panic("sync functions file not found")
 	}
 
 	packageName := streamFile.file.Name.Name
-	packageBaseName := packageName[strings.LastIndex(packageName, "/")+1:]
+	streamPkg := fmt.Sprintf("github.com/invakid404/baml-rest/%s", packageName)
+	typeBuilderPkg := fmt.Sprintf("github.com/invakid404/baml-rest/%s/type_builder", packageName)
 
-	// Extract stream methods (keeping for backwards compatibility / reference)
-	var streamFunctions []map[string]any
-	for _, decl := range streamFile.file.Decls {
+	// Extract methods
+	streamMethods := extractStreamMethods(streamFile)
+	syncMethods := extractSyncMethods(syncFuncsFile)
+	parseMethods := extractParseMethods(parseFile)
+	parseStreamMethods := extractParseStreamMethods(parseStreamFile)
+
+	// Extract TypeBuilder methods
+	var dynamicClasses, staticClasses, dynamicEnums, staticEnums []TypeBuilderMethod
+	for _, tbFile := range typeBuilderFiles {
+		methods := extractTypeBuilderMethods(tbFile)
+		for _, m := range methods {
+			if m.IsClass {
+				if m.IsDynamic {
+					dynamicClasses = append(dynamicClasses, m)
+				} else {
+					staticClasses = append(staticClasses, m)
+				}
+			} else {
+				if m.IsDynamic {
+					dynamicEnums = append(dynamicEnums, m)
+				} else {
+					staticEnums = append(staticEnums, m)
+				}
+			}
+		}
+	}
+
+	hasTypeBuilder := len(typeBuilderFiles) > 0
+
+	// Generate file
+	out := jen.NewFile("introspected")
+
+	// Imports are handled automatically by jennifer
+
+	// Stream
+	out.Comment("Stream is the BAML streaming client instance")
+	out.Var().Id("Stream").Op("=").Qual(streamPkg, "Stream")
+
+	// StreamMethods
+	out.Comment("StreamMethods is a map from method name to argument names")
+	out.Var().Id("StreamMethods").Op("=").Map(jen.String()).Index().String().Values(
+		streamMethodsDict(streamMethods)...,
+	)
+
+	// SyncMethods
+	out.Comment("SyncMethods maps sync function names to their argument names")
+	out.Var().Id("SyncMethods").Op("=").Map(jen.String()).Index().String().Values(
+		syncMethodsDict(syncMethods)...,
+	)
+
+	// SyncFuncs
+	out.Comment("SyncFuncs maps sync function names to their function values (for reflection)")
+	out.Var().Id("SyncFuncs").Op("=").Map(jen.String()).Any().Values(
+		syncFuncsDict(syncMethods, streamPkg)...,
+	)
+
+	// Parse
+	out.Comment("Parse is the parse API for parsing raw LLM responses into final types")
+	out.Var().Id("Parse").Op("=").Qual(streamPkg, "Parse")
+
+	// ParseMethods
+	out.Comment("ParseMethods is a set of method names available on Parse")
+	out.Var().Id("ParseMethods").Op("=").Map(jen.String()).Struct().Values(
+		parseMethodsDict(parseMethods)...,
+	)
+
+	// ParseStream
+	out.Comment("ParseStream is the parse_stream API for parsing raw LLM responses into partial/stream types")
+	out.Var().Id("ParseStream").Op("=").Qual(streamPkg, "ParseStream")
+
+	// ParseStreamMethods
+	out.Comment("ParseStreamMethods is a set of method names available on ParseStream")
+	out.Var().Id("ParseStreamMethods").Op("=").Map(jen.String()).Struct().Values(
+		parseMethodsDict(parseStreamMethods)...,
+	)
+
+	// ParseStreamFuncs
+	out.Comment("ParseStreamFuncs maps ParseStream method names to their function values (for reflection)")
+	out.Var().Id("ParseStreamFuncs").Op("=").Map(jen.String()).Any().Values(
+		parseStreamFuncsDict(parseStreamMethods, streamPkg)...,
+	)
+
+	// TypeBuilder types and helpers
+	if hasTypeBuilder {
+		generateTypeBuilderTypesWithAliases(out, typeBuilderPkg, streamPkg)
+		generateTypeBuilderInterfaces(out)
+		generateTypeBuilderMaps(out, dynamicClasses, staticClasses, dynamicEnums, staticEnums)
+		generateTypeBuilderHelpers(out, false)
+	}
+
+	if err := out.Save("introspected/introspected.go"); err != nil {
+		panic(err)
+	}
+}
+
+func generateTypeBuilderTypes(out *jen.File, isStub bool) {
+	out.Comment("TypeBuilder type")
+	out.Type().Id("TypeBuilder").Struct()
+
+	out.Comment("Type is the BAML type")
+	out.Type().Id("Type").Interface()
+
+	out.Comment("ClassPropertyBuilder is the interface for class property builders")
+	out.Type().Id("ClassPropertyBuilder").Interface()
+
+	out.Comment("EnumValueBuilder is the interface for enum value builders")
+	out.Type().Id("EnumValueBuilder").Interface(
+		jen.Id("SetDescription").Params(jen.Id("description").String()).Error(),
+		jen.Id("SetAlias").Params(jen.Id("alias").String()).Error(),
+		jen.Id("SetSkip").Params(jen.Id("skip").Bool()).Error(),
+	)
+
+	out.Comment("NewTypeBuilder creates a new TypeBuilder")
+	out.Var().Id("NewTypeBuilder").Op("=").Func().Params().Params(
+		jen.Op("*").Id("TypeBuilder"),
+		jen.Error(),
+	).Block(
+		jen.Return(jen.Nil(), jen.Nil()),
+	)
+}
+
+func generateTypeBuilderTypesWithAliases(out *jen.File, typeBuilderPkg, streamPkg string) {
+	out.Comment("TypeBuilder is the generated TypeBuilder type")
+	out.Type().Id("TypeBuilder").Op("=").Qual(typeBuilderPkg, "TypeBuilder")
+
+	out.Comment("Type is the BAML type")
+	out.Type().Id("Type").Op("=").Qual(typeBuilderPkg, "Type")
+
+	out.Comment("ClassPropertyBuilder is the interface for class property builders")
+	out.Type().Id("ClassPropertyBuilder").Op("=").Qual(typeBuilderPkg, "ClassPropertyBuilder")
+
+	out.Comment("EnumValueBuilder is the interface for enum value builders")
+	out.Type().Id("EnumValueBuilder").Op("=").Qual(typeBuilderPkg, "EnumValueBuilder")
+
+	out.Comment("NewTypeBuilder creates a new TypeBuilder using the BAML runtime's factory")
+	out.Var().Id("NewTypeBuilder").Op("=").Qual(streamPkg, "NewTypeBuilder")
+}
+
+func generateTypeBuilderInterfaces(out *jen.File) {
+	out.Comment("Typed is a minimal interface for types that can return a Type")
+	out.Type().Id("Typed").Interface(
+		jen.Id("Type").Params().Params(jen.Id("Type"), jen.Error()),
+	)
+
+	out.Comment("DynamicClassBuilder is the interface for dynamic classes")
+	out.Type().Id("DynamicClassBuilder").Interface(
+		jen.Id("Type").Params().Params(jen.Id("Type"), jen.Error()),
+		jen.Id("AddProperty").Params(
+			jen.Id("name").String(),
+			jen.Id("fieldType").Id("Type"),
+		).Params(jen.Id("ClassPropertyBuilder"), jen.Error()),
+	)
+
+	out.Comment("DynamicEnumBuilder is the interface for dynamic enums")
+	out.Type().Id("DynamicEnumBuilder").Interface(
+		jen.Id("Type").Params().Params(jen.Id("Type"), jen.Error()),
+		jen.Id("AddValue").Params(jen.Id("value").String()).Params(jen.Id("EnumValueBuilder"), jen.Error()),
+	)
+
+	out.Comment("DynamicClassAccessor is a function that returns a DynamicClassBuilder for a dynamic class")
+	out.Type().Id("DynamicClassAccessor").Func().Params(
+		jen.Op("*").Id("TypeBuilder"),
+	).Params(jen.Id("DynamicClassBuilder"), jen.Error())
+
+	out.Comment("DynamicEnumAccessor is a function that returns a DynamicEnumBuilder for a dynamic enum")
+	out.Type().Id("DynamicEnumAccessor").Func().Params(
+		jen.Op("*").Id("TypeBuilder"),
+	).Params(jen.Id("DynamicEnumBuilder"), jen.Error())
+
+	out.Comment("StaticClassAccessor is a function that returns a Typed for a static class")
+	out.Type().Id("StaticClassAccessor").Func().Params(
+		jen.Op("*").Id("TypeBuilder"),
+	).Params(jen.Id("Typed"), jen.Error())
+
+	out.Comment("StaticEnumAccessor is a function that returns a Typed for a static enum")
+	out.Type().Id("StaticEnumAccessor").Func().Params(
+		jen.Op("*").Id("TypeBuilder"),
+	).Params(jen.Id("Typed"), jen.Error())
+}
+
+func generateTypeBuilderMaps(out *jen.File, dynamicClasses, staticClasses, dynamicEnums, staticEnums []TypeBuilderMethod) {
+	// DynamicClasses
+	out.Comment("DynamicClasses maps dynamic class names to their accessor functions")
+	entries := make([]jen.Code, 0, len(dynamicClasses))
+	for _, m := range dynamicClasses {
+		entries = append(entries, jen.Lit(m.TypeName).Op(":").Func().Params(
+			jen.Id("tb").Op("*").Id("TypeBuilder"),
+		).Params(jen.Id("DynamicClassBuilder"), jen.Error()).Block(
+			jen.Return(jen.Id("tb").Dot(m.Name).Call()),
+		))
+	}
+	out.Var().Id("DynamicClasses").Op("=").Map(jen.String()).Id("DynamicClassAccessor").Values(entries...)
+
+	// StaticClasses
+	out.Comment("StaticClasses maps static class names to their accessor functions")
+	entries = make([]jen.Code, 0, len(staticClasses))
+	for _, m := range staticClasses {
+		entries = append(entries, jen.Lit(m.TypeName).Op(":").Func().Params(
+			jen.Id("tb").Op("*").Id("TypeBuilder"),
+		).Params(jen.Id("Typed"), jen.Error()).Block(
+			jen.Return(jen.Id("tb").Dot(m.Name).Call()),
+		))
+	}
+	out.Var().Id("StaticClasses").Op("=").Map(jen.String()).Id("StaticClassAccessor").Values(entries...)
+
+	// DynamicEnums
+	out.Comment("DynamicEnums maps dynamic enum names to their accessor functions")
+	entries = make([]jen.Code, 0, len(dynamicEnums))
+	for _, m := range dynamicEnums {
+		entries = append(entries, jen.Lit(m.TypeName).Op(":").Func().Params(
+			jen.Id("tb").Op("*").Id("TypeBuilder"),
+		).Params(jen.Id("DynamicEnumBuilder"), jen.Error()).Block(
+			jen.Return(jen.Id("tb").Dot(m.Name).Call()),
+		))
+	}
+	out.Var().Id("DynamicEnums").Op("=").Map(jen.String()).Id("DynamicEnumAccessor").Values(entries...)
+
+	// StaticEnums
+	out.Comment("StaticEnums maps static enum names to their accessor functions")
+	entries = make([]jen.Code, 0, len(staticEnums))
+	for _, m := range staticEnums {
+		entries = append(entries, jen.Lit(m.TypeName).Op(":").Func().Params(
+			jen.Id("tb").Op("*").Id("TypeBuilder"),
+		).Params(jen.Id("Typed"), jen.Error()).Block(
+			jen.Return(jen.Id("tb").Dot(m.Name).Call()),
+		))
+	}
+	out.Var().Id("StaticEnums").Op("=").Map(jen.String()).Id("StaticEnumAccessor").Values(entries...)
+}
+
+func generateTypeBuilderHelpers(out *jen.File, isStub bool) {
+	// AllClasses
+	out.Comment("AllClasses returns all known class names (both dynamic and static)")
+	if isStub {
+		out.Func().Id("AllClasses").Params().Index().String().Block(
+			jen.Return(jen.Nil()),
+		)
+	} else {
+		out.Func().Id("AllClasses").Params().Index().String().Block(
+			jen.Id("result").Op(":=").Make(jen.Index().String(), jen.Lit(0), jen.Len(jen.Id("DynamicClasses")).Op("+").Len(jen.Id("StaticClasses"))),
+			jen.For(jen.Id("name").Op(":=").Range().Id("DynamicClasses")).Block(
+				jen.Id("result").Op("=").Append(jen.Id("result"), jen.Id("name")),
+			),
+			jen.For(jen.Id("name").Op(":=").Range().Id("StaticClasses")).Block(
+				jen.Id("result").Op("=").Append(jen.Id("result"), jen.Id("name")),
+			),
+			jen.Return(jen.Id("result")),
+		)
+	}
+
+	// AllEnums
+	out.Comment("AllEnums returns all known enum names (both dynamic and static)")
+	if isStub {
+		out.Func().Id("AllEnums").Params().Index().String().Block(
+			jen.Return(jen.Nil()),
+		)
+	} else {
+		out.Func().Id("AllEnums").Params().Index().String().Block(
+			jen.Id("result").Op(":=").Make(jen.Index().String(), jen.Lit(0), jen.Len(jen.Id("DynamicEnums")).Op("+").Len(jen.Id("StaticEnums"))),
+			jen.For(jen.Id("name").Op(":=").Range().Id("DynamicEnums")).Block(
+				jen.Id("result").Op("=").Append(jen.Id("result"), jen.Id("name")),
+			),
+			jen.For(jen.Id("name").Op(":=").Range().Id("StaticEnums")).Block(
+				jen.Id("result").Op("=").Append(jen.Id("result"), jen.Id("name")),
+			),
+			jen.Return(jen.Id("result")),
+		)
+	}
+
+	// IsDynamicClass
+	out.Comment("IsDynamicClass returns true if the class exists and is dynamic")
+	if isStub {
+		out.Func().Id("IsDynamicClass").Params(jen.Id("name").String()).Bool().Block(
+			jen.Return(jen.False()),
+		)
+	} else {
+		out.Func().Id("IsDynamicClass").Params(jen.Id("name").String()).Bool().Block(
+			jen.List(jen.Id("_"), jen.Id("ok")).Op(":=").Id("DynamicClasses").Index(jen.Id("name")),
+			jen.Return(jen.Id("ok")),
+		)
+	}
+
+	// IsDynamicEnum
+	out.Comment("IsDynamicEnum returns true if the enum exists and is dynamic")
+	if isStub {
+		out.Func().Id("IsDynamicEnum").Params(jen.Id("name").String()).Bool().Block(
+			jen.Return(jen.False()),
+		)
+	} else {
+		out.Func().Id("IsDynamicEnum").Params(jen.Id("name").String()).Bool().Block(
+			jen.List(jen.Id("_"), jen.Id("ok")).Op(":=").Id("DynamicEnums").Index(jen.Id("name")),
+			jen.Return(jen.Id("ok")),
+		)
+	}
+
+	// ClassExists
+	out.Comment("ClassExists returns true if a class with this name exists (dynamic or static)")
+	if isStub {
+		out.Func().Id("ClassExists").Params(jen.Id("name").String()).Bool().Block(
+			jen.Return(jen.False()),
+		)
+	} else {
+		out.Func().Id("ClassExists").Params(jen.Id("name").String()).Bool().Block(
+			jen.List(jen.Id("_"), jen.Id("dynamic")).Op(":=").Id("DynamicClasses").Index(jen.Id("name")),
+			jen.List(jen.Id("_"), jen.Id("static")).Op(":=").Id("StaticClasses").Index(jen.Id("name")),
+			jen.Return(jen.Id("dynamic").Op("||").Id("static")),
+		)
+	}
+
+	// EnumExists
+	out.Comment("EnumExists returns true if an enum with this name exists (dynamic or static)")
+	if isStub {
+		out.Func().Id("EnumExists").Params(jen.Id("name").String()).Bool().Block(
+			jen.Return(jen.False()),
+		)
+	} else {
+		out.Func().Id("EnumExists").Params(jen.Id("name").String()).Bool().Block(
+			jen.List(jen.Id("_"), jen.Id("dynamic")).Op(":=").Id("DynamicEnums").Index(jen.Id("name")),
+			jen.List(jen.Id("_"), jen.Id("static")).Op(":=").Id("StaticEnums").Index(jen.Id("name")),
+			jen.Return(jen.Id("dynamic").Op("||").Id("static")),
+		)
+	}
+
+	// GetClassType
+	out.Comment("GetClassType returns the Type for a class by name")
+	if isStub {
+		out.Func().Id("GetClassType").Params(
+			jen.Id("tb").Op("*").Id("TypeBuilder"),
+			jen.Id("name").String(),
+		).Params(jen.Id("Type"), jen.Error()).Block(
+			jen.Return(jen.Nil(), jen.Nil()),
+		)
+	} else {
+		out.Func().Id("GetClassType").Params(
+			jen.Id("tb").Op("*").Id("TypeBuilder"),
+			jen.Id("name").String(),
+		).Params(jen.Id("Type"), jen.Error()).Block(
+			jen.If(
+				jen.List(jen.Id("accessor"), jen.Id("ok")).Op(":=").Id("DynamicClasses").Index(jen.Id("name")),
+				jen.Id("ok"),
+			).Block(
+				jen.List(jen.Id("builder"), jen.Id("err")).Op(":=").Id("accessor").Call(jen.Id("tb")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("err")),
+				),
+				jen.Return(jen.Id("builder").Dot("Type").Call()),
+			),
+			jen.If(
+				jen.List(jen.Id("accessor"), jen.Id("ok")).Op(":=").Id("StaticClasses").Index(jen.Id("name")),
+				jen.Id("ok"),
+			).Block(
+				jen.List(jen.Id("view"), jen.Id("err")).Op(":=").Id("accessor").Call(jen.Id("tb")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("err")),
+				),
+				jen.Return(jen.Id("view").Dot("Type").Call()),
+			),
+			jen.Return(jen.Nil(), jen.Nil()),
+		)
+	}
+
+	// GetEnumType
+	out.Comment("GetEnumType returns the Type for an enum by name")
+	if isStub {
+		out.Func().Id("GetEnumType").Params(
+			jen.Id("tb").Op("*").Id("TypeBuilder"),
+			jen.Id("name").String(),
+		).Params(jen.Id("Type"), jen.Error()).Block(
+			jen.Return(jen.Nil(), jen.Nil()),
+		)
+	} else {
+		out.Func().Id("GetEnumType").Params(
+			jen.Id("tb").Op("*").Id("TypeBuilder"),
+			jen.Id("name").String(),
+		).Params(jen.Id("Type"), jen.Error()).Block(
+			jen.If(
+				jen.List(jen.Id("accessor"), jen.Id("ok")).Op(":=").Id("DynamicEnums").Index(jen.Id("name")),
+				jen.Id("ok"),
+			).Block(
+				jen.List(jen.Id("builder"), jen.Id("err")).Op(":=").Id("accessor").Call(jen.Id("tb")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("err")),
+				),
+				jen.Return(jen.Id("builder").Dot("Type").Call()),
+			),
+			jen.If(
+				jen.List(jen.Id("accessor"), jen.Id("ok")).Op(":=").Id("StaticEnums").Index(jen.Id("name")),
+				jen.Id("ok"),
+			).Block(
+				jen.List(jen.Id("view"), jen.Id("err")).Op(":=").Id("accessor").Call(jen.Id("tb")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("err")),
+				),
+				jen.Return(jen.Id("view").Dot("Type").Call()),
+			),
+			jen.Return(jen.Nil(), jen.Nil()),
+		)
+	}
+}
+
+// Helper functions for extracting AST info
+
+func extractStreamMethods(f *parsedFile) []map[string]any {
+	var methods []map[string]any
+	for _, decl := range f.file.Decls {
 		funcDecl, ok := decl.(*ast.FuncDecl)
-		if !ok {
+		if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
 			continue
 		}
-
-		if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
-			continue
-		}
-
 		receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
 		if !ok {
 			continue
 		}
-
-		receiverIdentifier, ok := receiver.X.(*ast.Ident)
-		if !ok {
+		receiverIdent, ok := receiver.X.(*ast.Ident)
+		if !ok || receiverIdent.Name != "stream" {
 			continue
 		}
-
-		if receiverIdentifier.Name != "stream" {
-			continue
-		}
-
-		output := make(map[string]any)
-		output["name"] = funcDecl.Name.Name
-
 		var args []string
 		for _, param := range funcDecl.Type.Params.List {
 			args = append(args, param.Names[0].Name)
 		}
-		// Remove context and variadic args
-		output["args"] = args[1 : len(args)-1]
-
-		streamFunctions = append(streamFunctions, output)
+		methods = append(methods, map[string]any{
+			"name": funcDecl.Name.Name,
+			"args": args[1 : len(args)-1], // Remove context and variadic
+		})
 	}
+	return methods
+}
 
-	// Extract sync functions (package-level functions with context.Context first param)
-	var syncFunctions []map[string]any
-	for _, decl := range syncFuncsFile.file.Decls {
+func extractSyncMethods(f *parsedFile) []map[string]any {
+	var methods []map[string]any
+	for _, decl := range f.file.Decls {
 		funcDecl, ok := decl.(*ast.FuncDecl)
-		if !ok {
+		if !ok || funcDecl.Recv != nil {
 			continue
 		}
-
-		// Skip methods (functions with receivers)
-		if funcDecl.Recv != nil {
-			continue
-		}
-
-		// Check if first param is context.Context
 		if funcDecl.Type.Params == nil || len(funcDecl.Type.Params.List) == 0 {
 			continue
 		}
-
 		firstParam := funcDecl.Type.Params.List[0]
 		selectorExpr, ok := firstParam.Type.(*ast.SelectorExpr)
 		if !ok {
 			continue
 		}
-
 		ident, ok := selectorExpr.X.(*ast.Ident)
-		if !ok {
+		if !ok || ident.Name != "context" || selectorExpr.Sel.Name != "Context" {
 			continue
 		}
-
-		if ident.Name != "context" || selectorExpr.Sel.Name != "Context" {
-			continue
-		}
-
-		output := make(map[string]any)
-		output["name"] = funcDecl.Name.Name
-
 		var args []string
 		for _, param := range funcDecl.Type.Params.List {
 			for _, name := range param.Names {
 				args = append(args, name.Name)
 			}
 		}
-		// Remove context (first) and variadic opts (last) args
 		if len(args) >= 2 {
-			output["args"] = args[1 : len(args)-1]
-		} else {
-			output["args"] = []string{}
-		}
-
-		syncFunctions = append(syncFunctions, output)
-	}
-
-	// Extract parse methods (methods on *parse receiver)
-	var parseMethods []string
-	for _, decl := range parseFile.file.Decls {
-		funcDecl, ok := decl.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-
-		if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
-			continue
-		}
-
-		receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
-		if !ok {
-			continue
-		}
-
-		receiverIdentifier, ok := receiver.X.(*ast.Ident)
-		if !ok {
-			continue
-		}
-
-		if receiverIdentifier.Name != "parse" {
-			continue
-		}
-
-		parseMethods = append(parseMethods, funcDecl.Name.Name)
-	}
-
-	// Extract parse_stream methods (methods on *parse_stream receiver)
-	var parseStreamMethods []string
-	for _, decl := range parseStreamFile.file.Decls {
-		funcDecl, ok := decl.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-
-		if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
-			continue
-		}
-
-		receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
-		if !ok {
-			continue
-		}
-
-		receiverIdentifier, ok := receiver.X.(*ast.Ident)
-		if !ok {
-			continue
-		}
-
-		if receiverIdentifier.Name != "parse_stream" {
-			continue
-		}
-
-		parseStreamMethods = append(parseStreamMethods, funcDecl.Name.Name)
-	}
-
-	// Extract TypeBuilder methods (methods on *TypeBuilder that return class/enum accessors)
-	var typeBuilderMethods []TypeBuilderMethod
-	for _, tbFile := range typeBuilderFiles {
-		for _, decl := range tbFile.file.Decls {
-			funcDecl, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-
-			// Must be a method with receiver
-			if funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
-				continue
-			}
-
-			// Must be on *TypeBuilder
-			receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
-			if !ok {
-				continue
-			}
-			receiverIdent, ok := receiver.X.(*ast.Ident)
-			if !ok || receiverIdent.Name != "TypeBuilder" {
-				continue
-			}
-
-			// Must return (*SomeType, error) - check for 2 results
-			if funcDecl.Type.Results == nil || len(funcDecl.Type.Results.List) != 2 {
-				continue
-			}
-
-			// First result must be a pointer type
-			firstResult, ok := funcDecl.Type.Results.List[0].Type.(*ast.StarExpr)
-			if !ok {
-				continue
-			}
-
-			// Get the type name
-			returnTypeIdent, ok := firstResult.X.(*ast.Ident)
-			if !ok {
-				continue
-			}
-			returnTypeName := returnTypeIdent.Name
-
-			// Determine if it's a class or enum, and if it's dynamic (Builder) or static (View)
-			var isClass, isDynamic bool
-			var typeName string
-
-			if strings.HasSuffix(returnTypeName, "ClassBuilder") {
-				isClass = true
-				isDynamic = true
-				typeName = strings.TrimSuffix(returnTypeName, "ClassBuilder")
-			} else if strings.HasSuffix(returnTypeName, "ClassView") {
-				isClass = true
-				isDynamic = false
-				typeName = strings.TrimSuffix(returnTypeName, "ClassView")
-			} else if strings.HasSuffix(returnTypeName, "EnumBuilder") {
-				isClass = false
-				isDynamic = true
-				typeName = strings.TrimSuffix(returnTypeName, "EnumBuilder")
-			} else if strings.HasSuffix(returnTypeName, "EnumView") {
-				isClass = false
-				isDynamic = false
-				typeName = strings.TrimSuffix(returnTypeName, "EnumView")
-			} else {
-				// Not a class/enum accessor method
-				continue
-			}
-
-			typeBuilderMethods = append(typeBuilderMethods, TypeBuilderMethod{
-				Name:       funcDecl.Name.Name,
-				TypeName:   typeName,
-				ReturnType: returnTypeName,
-				IsDynamic:  isDynamic,
-				IsClass:    isClass,
+			methods = append(methods, map[string]any{
+				"name": funcDecl.Name.Name,
+				"args": args[1 : len(args)-1],
 			})
 		}
 	}
+	return methods
+}
 
-	// Separate into categories for template
-	var dynamicClasses, staticClasses, dynamicEnums, staticEnums []TypeBuilderMethod
-	for _, m := range typeBuilderMethods {
-		if m.IsClass {
-			if m.IsDynamic {
-				dynamicClasses = append(dynamicClasses, m)
-			} else {
-				staticClasses = append(staticClasses, m)
-			}
-		} else {
-			if m.IsDynamic {
-				dynamicEnums = append(dynamicEnums, m)
-			} else {
-				staticEnums = append(staticEnums, m)
-			}
+func extractParseMethods(f *parsedFile) []string {
+	var methods []string
+	for _, decl := range f.file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+			continue
 		}
+		receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		receiverIdent, ok := receiver.X.(*ast.Ident)
+		if !ok || receiverIdent.Name != "parse" {
+			continue
+		}
+		methods = append(methods, funcDecl.Name.Name)
 	}
+	return methods
+}
 
-	funcMap := template.FuncMap{
-		"quoteAndJoin": func(input []string) string {
-			quoted := make([]string, len(input))
-			for i, s := range input {
-				quoted[i] = strconv.Quote(s)
-			}
-			return strings.Join(quoted, ",")
-		},
+func extractParseStreamMethods(f *parsedFile) []string {
+	var methods []string
+	for _, decl := range f.file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+			continue
+		}
+		receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		receiverIdent, ok := receiver.X.(*ast.Ident)
+		if !ok || receiverIdent.Name != "parse_stream" {
+			continue
+		}
+		methods = append(methods, funcDecl.Name.Name)
 	}
+	return methods
+}
 
-	introspectedTemplate := template.Must(template.New("introspected.go").Funcs(funcMap).Parse(introspectedTemplateInput))
-	var introspectedTemplateOut bytes.Buffer
+func extractTypeBuilderMethods(f *parsedFile) []TypeBuilderMethod {
+	var methods []TypeBuilderMethod
+	for _, decl := range f.file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+			continue
+		}
+		receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		receiverIdent, ok := receiver.X.(*ast.Ident)
+		if !ok || receiverIdent.Name != "TypeBuilder" {
+			continue
+		}
+		if funcDecl.Type.Results == nil || len(funcDecl.Type.Results.List) != 2 {
+			continue
+		}
+		firstResult, ok := funcDecl.Type.Results.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		returnTypeIdent, ok := firstResult.X.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		returnTypeName := returnTypeIdent.Name
 
-	// Determine type_builder package path
-	typeBuilderPackagePath := fmt.Sprintf("github.com/invakid404/baml-rest/%s/type_builder", packageName)
+		var isClass, isDynamic bool
+		var typeName string
 
-	introspectedTemplateArgs := map[string]any{
-		"streamPackageName":      packageBaseName,
-		"streamPackagePath":      fmt.Sprintf("github.com/invakid404/baml-rest/%s", packageName),
-		"typeBuilderPackagePath": typeBuilderPackagePath,
-		"streamMethods":          streamFunctions,
-		"syncMethods":            syncFunctions,
-		"parseMethods":           parseMethods,
-		"parseStreamMethods":     parseStreamMethods,
-		"dynamicClasses":         dynamicClasses,
-		"staticClasses":          staticClasses,
-		"dynamicEnums":           dynamicEnums,
-		"staticEnums":            staticEnums,
-		"hasTypeBuilder":         len(typeBuilderFiles) > 0,
+		if strings.HasSuffix(returnTypeName, "ClassBuilder") {
+			isClass, isDynamic = true, true
+			typeName = strings.TrimSuffix(returnTypeName, "ClassBuilder")
+		} else if strings.HasSuffix(returnTypeName, "ClassView") {
+			isClass, isDynamic = true, false
+			typeName = strings.TrimSuffix(returnTypeName, "ClassView")
+		} else if strings.HasSuffix(returnTypeName, "EnumBuilder") {
+			isClass, isDynamic = false, true
+			typeName = strings.TrimSuffix(returnTypeName, "EnumBuilder")
+		} else if strings.HasSuffix(returnTypeName, "EnumView") {
+			isClass, isDynamic = false, false
+			typeName = strings.TrimSuffix(returnTypeName, "EnumView")
+		} else {
+			continue
+		}
+
+		methods = append(methods, TypeBuilderMethod{
+			Name:       funcDecl.Name.Name,
+			TypeName:   typeName,
+			ReturnType: returnTypeName,
+			IsDynamic:  isDynamic,
+			IsClass:    isClass,
+		})
 	}
-	if err := introspectedTemplate.Execute(&introspectedTemplateOut, introspectedTemplateArgs); err != nil {
-		panic(err)
-	}
+	return methods
+}
 
-	if err := os.WriteFile("introspected/introspected.go", introspectedTemplateOut.Bytes(), 0644); err != nil {
-		panic(err)
+// Dict builders for jennifer
+
+func streamMethodsDict(methods []map[string]any) []jen.Code {
+	entries := make([]jen.Code, 0, len(methods))
+	for _, m := range methods {
+		args := m["args"].([]string)
+		argLits := make([]jen.Code, len(args))
+		for i, a := range args {
+			argLits[i] = jen.Lit(a)
+		}
+		entries = append(entries, jen.Lit(m["name"].(string)).Op(":").Index().String().Values(argLits...))
 	}
+	return entries
+}
+
+func syncMethodsDict(methods []map[string]any) []jen.Code {
+	entries := make([]jen.Code, 0, len(methods))
+	for _, m := range methods {
+		args := m["args"].([]string)
+		argLits := make([]jen.Code, len(args))
+		for i, a := range args {
+			argLits[i] = jen.Lit(a)
+		}
+		entries = append(entries, jen.Lit(m["name"].(string)).Op(":").Index().String().Values(argLits...))
+	}
+	return entries
+}
+
+func syncFuncsDict(methods []map[string]any, streamPkg string) []jen.Code {
+	entries := make([]jen.Code, 0, len(methods))
+	for _, m := range methods {
+		name := m["name"].(string)
+		entries = append(entries, jen.Lit(name).Op(":").Qual(streamPkg, name))
+	}
+	return entries
+}
+
+func parseMethodsDict(methods []string) []jen.Code {
+	entries := make([]jen.Code, 0, len(methods))
+	for _, m := range methods {
+		entries = append(entries, jen.Lit(m).Op(":").Values())
+	}
+	return entries
+}
+
+func parseStreamFuncsDict(methods []string, streamPkg string) []jen.Code {
+	entries := make([]jen.Code, 0, len(methods))
+	for _, m := range methods {
+		entries = append(entries, jen.Lit(m).Op(":").Qual(streamPkg, "ParseStream").Dot(m))
+	}
+	return entries
 }
