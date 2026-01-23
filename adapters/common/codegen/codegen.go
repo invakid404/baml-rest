@@ -1493,6 +1493,12 @@ func generateApplyDynamicTypes(out *jen.File) {
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Continue(), // Value might already exist
 				),
+				jen.If(jen.Id("v").Dot("Description").Op("!=").Lit("")).Block(
+					jen.Id("_").Op("=").Id("vb").Dot("SetDescription").Call(jen.Id("v").Dot("Description")),
+				),
+				jen.If(jen.Id("v").Dot("Alias").Op("!=").Lit("")).Block(
+					jen.Id("_").Op("=").Id("vb").Dot("SetAlias").Call(jen.Id("v").Dot("Alias")),
+				),
 				jen.If(jen.Id("v").Dot("Skip")).Block(
 					jen.Id("_").Op("=").Id("vb").Dot("SetSkip").Call(jen.True()),
 				),
@@ -1540,7 +1546,13 @@ func generateApplyDynamicTypes(out *jen.File) {
 					// Value might already exist, skip silently
 					jen.Continue(),
 				),
-				// Handle Skip flag if value was added successfully
+				// Handle Description, Alias, Skip if value was added successfully
+				jen.If(jen.Id("v").Dot("Description").Op("!=").Lit("")).Block(
+					jen.Id("_").Op("=").Id("vb").Dot("SetDescription").Call(jen.Id("v").Dot("Description")),
+				),
+				jen.If(jen.Id("v").Dot("Alias").Op("!=").Lit("")).Block(
+					jen.Id("_").Op("=").Id("vb").Dot("SetAlias").Call(jen.Id("v").Dot("Alias")),
+				),
 				jen.If(jen.Id("v").Dot("Skip")).Block(
 					jen.Id("_").Op("=").Id("vb").Dot("SetSkip").Call(jen.True()),
 				),
