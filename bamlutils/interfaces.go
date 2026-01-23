@@ -91,10 +91,96 @@ func (b *TypeBuilder) Add(input string) {
 
 // DynamicTypes defines classes and enums to be created via the imperative TypeBuilder API.
 // This provides a JSON schema-like structure for defining types programmatically.
+//
+// # Overview
+//
+// DynamicTypes allows you to define BAML types at runtime without writing .baml files.
+// This is useful for:
+//   - Adding fields to existing dynamic classes based on user input
+//   - Creating entirely new types at runtime
+//   - Adding values to dynamic enums
+//
+// # Example Usage
+//
+//	typeBuilder := &bamlutils.TypeBuilder{
+//	    DynamicTypes: &bamlutils.DynamicTypes{
+//	        Classes: map[string]*bamlutils.DynamicClass{
+//	            "DynamicOutput": {
+//	                Properties: map[string]*bamlutils.DynamicProperty{
+//	                    "name":   {Type: "string"},
+//	                    "age":    {Type: "int"},
+//	                    "active": {Type: "bool"},
+//	                },
+//	            },
+//	        },
+//	        Enums: map[string]*bamlutils.DynamicEnum{
+//	            "Priority": {
+//	                Values: []*bamlutils.DynamicEnumValue{
+//	                    {Name: "HIGH", Alias: "high priority"},
+//	                    {Name: "MEDIUM"},
+//	                    {Name: "LOW"},
+//	                },
+//	            },
+//	        },
+//	    },
+//	}
+//
+// # Supported Types
+//
+// Primitive types: "string", "int", "float", "bool", "null"
+//
+// Composite types:
+//   - "list": requires "items" field with element type
+//   - "optional": requires "inner" field with wrapped type
+//   - "map": requires "keys" and "values" fields
+//   - "union": requires "oneOf" array with variant types
+//
+// Literal types:
+//   - "literal_string": requires "value" (string)
+//   - "literal_int": requires "value" (integer)
+//   - "literal_bool": requires "value" (boolean)
+//
+// References: use "$ref" to reference other classes/enums by name
+//
+// # JSON Schema Example
+//
+//	{
+//	  "classes": {
+//	    "Address": {
+//	      "properties": {
+//	        "street": {"type": "string"},
+//	        "city": {"type": "string"},
+//	        "zip": {"type": "optional", "inner": {"type": "string"}}
+//	      }
+//	    },
+//	    "Person": {
+//	      "description": "A person with an address",
+//	      "properties": {
+//	        "name": {"type": "string"},
+//	        "age": {"type": "int"},
+//	        "address": {"$ref": "Address"},
+//	        "tags": {"type": "list", "items": {"type": "string"}},
+//	        "metadata": {"type": "map", "keys": {"type": "string"}, "values": {"type": "string"}}
+//	      }
+//	    }
+//	  },
+//	  "enums": {
+//	    "Status": {
+//	      "values": [
+//	        {"name": "ACTIVE", "alias": "active", "description": "Active status"},
+//	        {"name": "INACTIVE", "skip": true}
+//	      ]
+//	    }
+//	  }
+//	}
 type DynamicTypes struct {
 	Classes map[string]*DynamicClass `json:"classes,omitempty"`
 	Enums   map[string]*DynamicEnum  `json:"enums,omitempty"`
 }
+
+// maxTypeDepth is the maximum nesting depth for type references.
+// This prevents stack overflow from maliciously deep or circular type definitions.
+const maxTypeDepth = 64
 
 // Validate checks the DynamicTypes schema for errors before processing.
 // Returns nil if valid, or an error describing the first issue found.
@@ -136,7 +222,7 @@ func (dt *DynamicTypes) Validate() error {
 			if prop == nil {
 				return fmt.Errorf("class %q: property %q is nil", name, propName)
 			}
-			if err := validateTypeRef(prop.Type, prop.Ref, prop.Items, prop.Inner, prop.OneOf, prop.Keys, prop.Values, prop.Value, definedTypes, fmt.Sprintf("class %q property %q", name, propName)); err != nil {
+			if err := validateTypeRef(prop.Type, prop.Ref, prop.Items, prop.Inner, prop.OneOf, prop.Keys, prop.Values, prop.Value, definedTypes, fmt.Sprintf("class %q property %q", name, propName), 0); err != nil {
 				return err
 			}
 		}
@@ -146,7 +232,11 @@ func (dt *DynamicTypes) Validate() error {
 }
 
 // validateTypeRef validates a type reference structure
-func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*DynamicTypeRef, keys, values *DynamicTypeRef, value any, definedTypes map[string]bool, path string) error {
+func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*DynamicTypeRef, keys, values *DynamicTypeRef, value any, definedTypes map[string]bool, path string, depth int) error {
+	if depth > maxTypeDepth {
+		return fmt.Errorf("%s: type nesting exceeds maximum depth of %d", path, maxTypeDepth)
+	}
+
 	// Must have either Type or Ref (or be a literal with Value)
 	hasType := typ != ""
 	hasRef := ref != ""
@@ -172,24 +262,24 @@ func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*Dyn
 		if items == nil {
 			return fmt.Errorf("%s: 'list' type requires 'items'", path)
 		}
-		if err := validateDynamicTypeRef(items, definedTypes, path+"[items]"); err != nil {
+		if err := validateDynamicTypeRef(items, definedTypes, path+"[items]", depth+1); err != nil {
 			return err
 		}
 	case "optional":
 		if inner == nil {
 			return fmt.Errorf("%s: 'optional' type requires 'inner'", path)
 		}
-		if err := validateDynamicTypeRef(inner, definedTypes, path+"[inner]"); err != nil {
+		if err := validateDynamicTypeRef(inner, definedTypes, path+"[inner]", depth+1); err != nil {
 			return err
 		}
 	case "map":
 		if keys == nil || values == nil {
 			return fmt.Errorf("%s: 'map' type requires 'keys' and 'values'", path)
 		}
-		if err := validateDynamicTypeRef(keys, definedTypes, path+"[keys]"); err != nil {
+		if err := validateDynamicTypeRef(keys, definedTypes, path+"[keys]", depth+1); err != nil {
 			return err
 		}
-		if err := validateDynamicTypeRef(values, definedTypes, path+"[values]"); err != nil {
+		if err := validateDynamicTypeRef(values, definedTypes, path+"[values]", depth+1); err != nil {
 			return err
 		}
 	case "union":
@@ -200,7 +290,7 @@ func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*Dyn
 			if variant == nil {
 				return fmt.Errorf("%s: 'oneOf[%d]' is nil", path, i)
 			}
-			if err := validateDynamicTypeRef(variant, definedTypes, fmt.Sprintf("%s[oneOf.%d]", path, i)); err != nil {
+			if err := validateDynamicTypeRef(variant, definedTypes, fmt.Sprintf("%s[oneOf.%d]", path, i), depth+1); err != nil {
 				return err
 			}
 		}
@@ -237,11 +327,11 @@ func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*Dyn
 }
 
 // validateDynamicTypeRef validates a nested DynamicTypeRef
-func validateDynamicTypeRef(ref *DynamicTypeRef, definedTypes map[string]bool, path string) error {
+func validateDynamicTypeRef(ref *DynamicTypeRef, definedTypes map[string]bool, path string, depth int) error {
 	if ref == nil {
 		return fmt.Errorf("%s: type reference is nil", path)
 	}
-	return validateTypeRef(ref.Type, ref.Ref, ref.Items, ref.Inner, ref.OneOf, ref.Keys, ref.Values, ref.Value, definedTypes, path)
+	return validateTypeRef(ref.Type, ref.Ref, ref.Items, ref.Inner, ref.OneOf, ref.Keys, ref.Values, ref.Value, definedTypes, path, depth)
 }
 
 // DynamicClass defines a class with properties.
@@ -287,18 +377,32 @@ type DynamicTypeRef struct {
 }
 
 // DynamicEnum defines an enum with values.
+// Use this to add new values to existing dynamic enums or create new enums entirely.
 type DynamicEnum struct {
-	Description string              `json:"description,omitempty"`
-	Alias       string              `json:"alias,omitempty"`
-	Values      []*DynamicEnumValue `json:"values,omitempty"`
+	Description string              `json:"description,omitempty"` // Description shown to the LLM
+	Alias       string              `json:"alias,omitempty"`       // Alternative name the LLM can use
+	Values      []*DynamicEnumValue `json:"values,omitempty"`      // List of enum values
 }
 
 // DynamicEnumValue defines a single enum value.
+//
+// Example with all fields:
+//
+//	{
+//	    "name": "HIGH",
+//	    "description": "High priority items that need immediate attention",
+//	    "alias": "high priority",
+//	    "skip": false
+//	}
+//
+// The Alias field is particularly useful for allowing the LLM to output
+// natural language values (like "high priority") that get mapped to
+// the canonical enum name ("HIGH").
 type DynamicEnumValue struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Alias       string `json:"alias,omitempty"`
-	Skip        bool   `json:"skip,omitempty"`
+	Name        string `json:"name"`                    // Required: the canonical enum value name
+	Description string `json:"description,omitempty"`   // Optional: description shown to the LLM
+	Alias       string `json:"alias,omitempty"`         // Optional: alternative name the LLM can output
+	Skip        bool   `json:"skip,omitempty"`          // Optional: if true, this value is hidden from the LLM
 }
 
 type Adapter interface {
