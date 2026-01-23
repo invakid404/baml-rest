@@ -1442,6 +1442,10 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.If(jen.Id("dt").Op("==").Nil()).Block(
 				jen.Return(jen.Nil()),
 			),
+			// Validate the schema before processing
+			jen.If(jen.Id("err").Op(":=").Id("dt").Dot("Validate").Call(), jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("invalid dynamic_types schema: %w"), jen.Id("err"))),
+			),
 			// Create type cache for resolving references
 			jen.Id("typeCache").Op(":=").Make(jen.Map(jen.String()).Add(typeAlias)),
 			jen.Line(),
