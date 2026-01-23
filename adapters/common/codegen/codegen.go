@@ -1407,6 +1407,22 @@ func hasDynamicPropertiesForType(typ reflect.Type) bool {
 	return hasDynamicFields
 }
 
+// enumValueAttrsCode returns jen.Code statements for setting Description, Alias, and Skip
+// on an enum value builder (vb) from a value struct (v).
+func enumValueAttrsCode() []jen.Code {
+	return []jen.Code{
+		jen.If(jen.Id("v").Dot("Description").Op("!=").Lit("")).Block(
+			jen.Id("_").Op("=").Id("vb").Dot("SetDescription").Call(jen.Id("v").Dot("Description")),
+		),
+		jen.If(jen.Id("v").Dot("Alias").Op("!=").Lit("")).Block(
+			jen.Id("_").Op("=").Id("vb").Dot("SetAlias").Call(jen.Id("v").Dot("Alias")),
+		),
+		jen.If(jen.Id("v").Dot("Skip")).Block(
+			jen.Id("_").Op("=").Id("vb").Dot("SetSkip").Call(jen.True()),
+		),
+	}
+}
+
 // generateApplyDynamicTypes generates the applyDynamicTypes function that translates
 // DynamicTypes JSON schema to imperative TypeBuilder calls.
 // Uses the introspected package for type lookups instead of reflection.
@@ -1489,19 +1505,12 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Line(),
 			// NEW enum - add values now since we have the builder
 			jen.For(jen.List(jen.Id("_"), jen.Id("v")).Op(":=").Range().Id("enum").Dot("Values")).Block(
-				jen.List(jen.Id("vb"), jen.Id("err")).Op(":=").Id("eb").Dot("AddValue").Call(jen.Id("v").Dot("Name")),
-				jen.If(jen.Id("err").Op("!=").Nil()).Block(
-					jen.Continue(), // Value might already exist
-				),
-				jen.If(jen.Id("v").Dot("Description").Op("!=").Lit("")).Block(
-					jen.Id("_").Op("=").Id("vb").Dot("SetDescription").Call(jen.Id("v").Dot("Description")),
-				),
-				jen.If(jen.Id("v").Dot("Alias").Op("!=").Lit("")).Block(
-					jen.Id("_").Op("=").Id("vb").Dot("SetAlias").Call(jen.Id("v").Dot("Alias")),
-				),
-				jen.If(jen.Id("v").Dot("Skip")).Block(
-					jen.Id("_").Op("=").Id("vb").Dot("SetSkip").Call(jen.True()),
-				),
+				append([]jen.Code{
+					jen.List(jen.Id("vb"), jen.Id("err")).Op(":=").Id("eb").Dot("AddValue").Call(jen.Id("v").Dot("Name")),
+					jen.If(jen.Id("err").Op("!=").Nil()).Block(
+						jen.Continue(), // Value might already exist
+					),
+				}, enumValueAttrsCode()...)...,
 			),
 			jen.Line(),
 			// Cache the new enum's type
@@ -1541,21 +1550,13 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Line(),
 			// Add values using the typed EnumBuilder interface
 			jen.For(jen.List(jen.Id("_"), jen.Id("v")).Op(":=").Range().Id("enum").Dot("Values")).Block(
-				jen.List(jen.Id("vb"), jen.Id("err")).Op(":=").Id("eb").Dot("AddValue").Call(jen.Id("v").Dot("Name")),
-				jen.If(jen.Id("err").Op("!=").Nil()).Block(
-					// Value might already exist, skip silently
-					jen.Continue(),
-				),
-				// Handle Description, Alias, Skip if value was added successfully
-				jen.If(jen.Id("v").Dot("Description").Op("!=").Lit("")).Block(
-					jen.Id("_").Op("=").Id("vb").Dot("SetDescription").Call(jen.Id("v").Dot("Description")),
-				),
-				jen.If(jen.Id("v").Dot("Alias").Op("!=").Lit("")).Block(
-					jen.Id("_").Op("=").Id("vb").Dot("SetAlias").Call(jen.Id("v").Dot("Alias")),
-				),
-				jen.If(jen.Id("v").Dot("Skip")).Block(
-					jen.Id("_").Op("=").Id("vb").Dot("SetSkip").Call(jen.True()),
-				),
+				append([]jen.Code{
+					jen.List(jen.Id("vb"), jen.Id("err")).Op(":=").Id("eb").Dot("AddValue").Call(jen.Id("v").Dot("Name")),
+					jen.If(jen.Id("err").Op("!=").Nil()).Block(
+						// Value might already exist, skip silently
+						jen.Continue(),
+					),
+				}, enumValueAttrsCode()...)...,
 			),
 			jen.Return(jen.Nil()),
 		)

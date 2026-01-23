@@ -221,13 +221,13 @@ func generateFull() {
 	// StreamMethods
 	out.Comment("StreamMethods is a map from method name to argument names")
 	out.Var().Id("StreamMethods").Op("=").Map(jen.String()).Index().String().Values(
-		streamMethodsDict(streamMethods)...,
+		methodsDict(streamMethods)...,
 	)
 
 	// SyncMethods
 	out.Comment("SyncMethods maps sync function names to their argument names")
 	out.Var().Id("SyncMethods").Op("=").Map(jen.String()).Index().String().Values(
-		syncMethodsDict(syncMethods)...,
+		methodsDict(syncMethods)...,
 	)
 
 	// SyncFuncs
@@ -744,20 +744,7 @@ func extractTypeBuilderMethods(f *parsedFile) []TypeBuilderMethod {
 
 // Dict builders for jennifer
 
-func streamMethodsDict(methods []map[string]any) []jen.Code {
-	entries := make([]jen.Code, 0, len(methods))
-	for _, m := range methods {
-		args := m["args"].([]string)
-		argLits := make([]jen.Code, len(args))
-		for i, a := range args {
-			argLits[i] = jen.Lit(a)
-		}
-		entries = append(entries, jen.Lit(m["name"].(string)).Op(":").Index().String().Values(argLits...))
-	}
-	return entries
-}
-
-func syncMethodsDict(methods []map[string]any) []jen.Code {
+func methodsDict(methods []map[string]any) []jen.Code {
 	entries := make([]jen.Code, 0, len(methods))
 	for _, m := range methods {
 		args := m["args"].([]string)
