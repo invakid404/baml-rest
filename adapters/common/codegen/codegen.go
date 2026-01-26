@@ -1565,7 +1565,9 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Return(jen.Nil()),
 		)
 
-	// Generate createClassShell helper
+	// Generate createClassShell helper - creates class with properties (new) or caches existing type
+	// For NEW classes: creates class AND adds properties (since we have the builder)
+	// For EXISTING classes: just caches type (properties added in Phase 4 via introspected accessors)
 	out.Func().Id("createClassShell").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
@@ -1575,11 +1577,11 @@ func generateApplyDynamicTypes(out *jen.File) {
 		).
 		Error().
 		Block(
-			jen.Id("_").Op("=").Id("class"), // unused for now
 			// Try to create class first (new dynamic class)
 			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				// Class already exists, get its type via introspected accessor
+				// Properties will be added in Phase 4 for existing dynamic classes
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Qual(introspectedPkg, "GetClassType").Call(jen.Id("tb"), jen.Id("name")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get existing class type: %w"), jen.Id("err"))),
@@ -1591,7 +1593,23 @@ func generateApplyDynamicTypes(out *jen.File) {
 				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create or get class: %w"), jen.Id("err"))),
 			),
 			jen.Line(),
-			// Cache the class type for references
+			// NEW class - add properties now since we have the builder
+			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
+				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					// Skip unresolved refs - they may reference types in baml_src
+					jen.If(jen.Qual("strings", "Contains").Call(jen.Id("err").Dot("Error").Call(), jen.Lit("unresolved reference"))).Block(
+						jen.Continue(),
+					),
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q type: %w"), jen.Id("propName"), jen.Id("err"))),
+				),
+				jen.List(jen.Id("_"), jen.Id("err")).Op("=").Id("cb").Dot("AddProperty").Call(jen.Id("propName"), jen.Id("typ")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q: %w"), jen.Id("propName"), jen.Id("err"))),
+				),
+			),
+			jen.Line(),
+			// Cache the new class's type
 			jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("cb").Dot("Type").Call(),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get type: %w"), jen.Id("err"))),
