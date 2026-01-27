@@ -821,13 +821,93 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		},
 	}
 
-	// Output schema schema
-	outputSchemaSchemaName := "__DynamicOutputSchema__"
-	schemas[outputSchemaSchemaName] = &openapi3.SchemaRef{
+	// Dynamic enum value schema
+	dynamicEnumValueSchemaName := "__DynamicEnumValue__"
+	schemas[dynamicEnumValueSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
 			Type:        &openapi3.Types{openapi3.TypeObject},
-			Description: "Output schema definition with properties map",
+			Description: "A single enum value definition",
 			Properties: openapi3.Schemas{
+				"name": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "The canonical enum value name",
+					},
+				},
+				"description": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Description shown to the LLM",
+					},
+				},
+				"alias": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Alternative name the LLM can output",
+					},
+				},
+				"skip": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeBoolean},
+						Description: "If true, this value is hidden from the LLM",
+					},
+				},
+			},
+			Required: []string{"name"},
+		},
+	}
+
+	// Dynamic enum schema
+	dynamicEnumSchemaName := "__DynamicEnum__"
+	schemas[dynamicEnumSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Enum type definition with values",
+			Properties: openapi3.Schemas{
+				"description": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Description shown to the LLM",
+					},
+				},
+				"alias": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Alternative name the LLM can use",
+					},
+				},
+				"values": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeArray},
+						Description: "List of enum values",
+						Items: &openapi3.SchemaRef{
+							Ref: fmt.Sprintf("#/components/schemas/%s", dynamicEnumValueSchemaName),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Dynamic class schema
+	dynamicClassSchemaName := "__DynamicClass__"
+	schemas[dynamicClassSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Class type definition with properties",
+			Properties: openapi3.Schemas{
+				"description": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Description shown to the LLM",
+					},
+				},
+				"alias": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Alternative name the LLM can use",
+					},
+				},
 				"properties": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeObject},
@@ -835,6 +915,50 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 						AdditionalProperties: openapi3.AdditionalProperties{
 							Schema: &openapi3.SchemaRef{
 								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicPropertySchemaName),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Output schema schema
+	outputSchemaSchemaName := "__DynamicOutputSchema__"
+	schemas[outputSchemaSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Output schema definition. Supports simple flat schemas with just 'properties', or nested structures with 'classes' and 'enums'.",
+			Properties: openapi3.Schemas{
+				"properties": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Map of property names to their definitions (required). These define the fields of the output object.",
+						AdditionalProperties: openapi3.AdditionalProperties{
+							Schema: &openapi3.SchemaRef{
+								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicPropertySchemaName),
+							},
+						},
+					},
+				},
+				"classes": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Map of class names to their definitions. Classes can be referenced via $ref in properties.",
+						AdditionalProperties: openapi3.AdditionalProperties{
+							Schema: &openapi3.SchemaRef{
+								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicClassSchemaName),
+							},
+						},
+					},
+				},
+				"enums": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Map of enum names to their definitions. Enums can be referenced via $ref in properties.",
+						AdditionalProperties: openapi3.AdditionalProperties{
+							Schema: &openapi3.SchemaRef{
+								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicEnumSchemaName),
 							},
 						},
 					},
