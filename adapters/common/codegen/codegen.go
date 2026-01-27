@@ -1482,8 +1482,8 @@ func generateApplyDynamicTypes(out *jen.File) {
 	// Generate createEnumShell helper - creates enum with values (new) or skips existing
 	// For NEW enums: creates enum AND adds values (since we have the builder)
 	// For EXISTING enums: does nothing (values added in Phase 2 via introspected accessors)
-	// IMPORTANT: We must NOT call GetEnumType here for existing enums because that would
-	// call Type() on the builder which "finalizes" the enum before Phase 2 adds values.
+	// IMPORTANT: We must check if the enum already exists BEFORE calling AddEnum, because
+	// calling AddEnum on an existing enum may have side effects in BAML's internal state.
 	out.Func().Id("createEnumShell").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
@@ -1493,12 +1493,16 @@ func generateApplyDynamicTypes(out *jen.File) {
 		).
 		Error().
 		Block(
-			// Try to create enum first (new dynamic enum)
+			// Check if enum already exists (either dynamic or static from baml_src)
+			// If so, skip - values will be added in Phase 2 for dynamic enums
+			jen.If(jen.Qual(introspectedPkg, "EnumExists").Call(jen.Id("name"))).Block(
+				jen.Return(jen.Nil()),
+			),
+			jen.Line(),
+			// Create new enum
 			jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				// Enum already exists - just return, values will be added in Phase 2
-				// DO NOT call GetEnumType here - that would finalize the enum prematurely
-				jen.Return(jen.Nil()),
+				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create enum: %w"), jen.Id("err"))),
 			),
 			jen.Line(),
 			// NEW enum - add values now since we have the builder
@@ -1562,8 +1566,8 @@ func generateApplyDynamicTypes(out *jen.File) {
 	// Generate createClassShell helper - creates class with properties (new) or skips existing
 	// For NEW classes: creates class AND adds properties (since we have the builder)
 	// For EXISTING classes: does nothing (properties added in Phase 4 via introspected accessors)
-	// IMPORTANT: We must NOT call GetClassType here for existing classes because that would
-	// call Type() on the builder which "finalizes" the class before Phase 4 adds properties.
+	// IMPORTANT: We must check if the class already exists BEFORE calling AddClass, because
+	// calling AddClass on an existing class may have side effects in BAML's internal state.
 	out.Func().Id("createClassShell").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
@@ -1573,12 +1577,16 @@ func generateApplyDynamicTypes(out *jen.File) {
 		).
 		Error().
 		Block(
-			// Try to create class first (new dynamic class)
+			// Check if class already exists (either dynamic or static from baml_src)
+			// If so, skip - properties will be added in Phase 4 for dynamic classes
+			jen.If(jen.Qual(introspectedPkg, "ClassExists").Call(jen.Id("name"))).Block(
+				jen.Return(jen.Nil()),
+			),
+			jen.Line(),
+			// Create new class
 			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				// Class already exists - just return, properties will be added in Phase 4
-				// DO NOT call GetClassType here - that would finalize the class prematurely
-				jen.Return(jen.Nil()),
+				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create class: %w"), jen.Id("err"))),
 			),
 			jen.Line(),
 			// NEW class - add properties now since we have the builder
