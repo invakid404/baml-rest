@@ -3,6 +3,8 @@ package bamlutils
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/tidwall/gjson"
 )
 
 // Dynamic endpoint constants
@@ -32,9 +34,47 @@ type DynamicMessage struct {
 	Metadata *MessageMetadata `json:"metadata,omitempty"`
 }
 
-// DynamicOutputSchema defines the output structure (simplified from DynamicTypes)
+// DynamicOutputSchema defines the output structure for dynamic endpoints.
+// It supports both simple flat schemas and complex nested structures.
+//
+// Simple flat schema:
+//
+//	{
+//	  "properties": {
+//	    "name": {"type": "string"},
+//	    "age": {"type": "int"}
+//	  }
+//	}
+//
+// Nested structures with classes and enums:
+//
+//	{
+//	  "classes": {
+//	    "Address": {
+//	      "properties": {
+//	        "street": {"type": "string"},
+//	        "city": {"type": "string"}
+//	      }
+//	    }
+//	  },
+//	  "enums": {
+//	    "Status": {
+//	      "values": [{"name": "ACTIVE"}, {"name": "INACTIVE"}]
+//	    }
+//	  },
+//	  "properties": {
+//	    "name": {"type": "string"},
+//	    "address": {"$ref": "Address"},
+//	    "status": {"$ref": "Status"}
+//	  }
+//	}
 type DynamicOutputSchema struct {
+	// Properties defines the fields of the output object (required)
 	Properties map[string]*DynamicProperty `json:"properties"`
+	// Classes defines additional class types that can be referenced via $ref (optional)
+	Classes map[string]*DynamicClass `json:"classes,omitempty"`
+	// Enums defines enum types that can be referenced via $ref (optional)
+	Enums map[string]*DynamicEnum `json:"enums,omitempty"`
 }
 
 // DynamicInput is the request body for dynamic endpoints
@@ -68,17 +108,24 @@ func (d *DynamicInput) Validate() error {
 
 // ToWorkerInput converts to the internal format for worker processing
 func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
+	// Build classes map: start with user-defined classes, then add the output class
+	classes := make(map[string]*DynamicClass)
+	for name, class := range d.OutputSchema.Classes {
+		classes[name] = class
+	}
+	// Add the output class with the top-level properties
+	classes["Baml_Rest_DynamicOutput"] = &DynamicClass{
+		Properties: d.OutputSchema.Properties,
+	}
+
 	internal := map[string]any{
 		"messages": d.Messages,
 		"__baml_options__": &BamlOptions{
 			ClientRegistry: d.ClientRegistry,
 			TypeBuilder: &TypeBuilder{
 				DynamicTypes: &DynamicTypes{
-					Classes: map[string]*DynamicClass{
-						"Baml_Rest_DynamicOutput": {
-							Properties: d.OutputSchema.Properties,
-						},
-					},
+					Classes: classes,
+					Enums:   d.OutputSchema.Enums,
 				},
 			},
 		},
@@ -105,19 +152,40 @@ func (d *DynamicParseInput) Validate() error {
 
 // ToWorkerInput converts to the internal format for worker processing
 func (d *DynamicParseInput) ToWorkerInput() ([]byte, error) {
+	// Build classes map: start with user-defined classes, then add the output class
+	classes := make(map[string]*DynamicClass)
+	for name, class := range d.OutputSchema.Classes {
+		classes[name] = class
+	}
+	// Add the output class with the top-level properties
+	classes["Baml_Rest_DynamicOutput"] = &DynamicClass{
+		Properties: d.OutputSchema.Properties,
+	}
+
 	internal := map[string]any{
 		"raw": d.Raw,
 		"__baml_options__": &BamlOptions{
 			TypeBuilder: &TypeBuilder{
 				DynamicTypes: &DynamicTypes{
-					Classes: map[string]*DynamicClass{
-						"Baml_Rest_DynamicOutput": {
-							Properties: d.OutputSchema.Properties,
-						},
-					},
+					Classes: classes,
+					Enums:   d.OutputSchema.Enums,
 				},
 			},
 		},
 	}
 	return json.Marshal(internal)
+}
+
+// FlattenDynamicOutput extracts the DynamicProperties field from a dynamic endpoint response.
+//
+// Input:  {"DynamicProperties": {"name": "John", "age": 30}}
+// Output: {"name": "John", "age": 30}
+//
+// If the input doesn't have a DynamicProperties field, it's returned as-is.
+func FlattenDynamicOutput(data []byte) ([]byte, error) {
+	dynProps := gjson.GetBytes(data, "DynamicProperties")
+	if !dynProps.Exists() {
+		return data, nil
+	}
+	return []byte(dynProps.Raw), nil
 }
