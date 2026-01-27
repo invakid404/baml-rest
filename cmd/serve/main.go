@@ -300,7 +300,7 @@ var serveCmd = &cobra.Command{
 				methodName := methodName // capture for closure
 
 				// Skip the internal dynamic method - it has dedicated endpoints
-				if methodName == bamlutils.DynamicMethodName {
+				if methodName == bamlutils.DynamicEndpointName {
 					continue
 				}
 
@@ -386,7 +386,7 @@ var serveCmd = &cobra.Command{
 			}
 
 			// Dynamic endpoint handlers (only if dynamic method exists - requires BAML >= 0.215.0)
-			hasDynamicMethod := slices.Contains(methodNames, bamlutils.DynamicMethodName)
+			hasDynamicMethod := slices.Contains(methodNames, bamlutils.DynamicEndpointName)
 			if !hasDynamicMethod {
 				logger.Info().Msg("Dynamic endpoints not available (BAML < 0.215.0 or dynamic.baml not injected)")
 			} else {
