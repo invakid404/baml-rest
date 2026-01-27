@@ -5,7 +5,7 @@
 - [ ] Compiler error if prompt inputs collide with imported package names in the
       generated BAML client
       ([issue](https://github.com/BoundaryML/baml/issues/2393))
-- [ ] Dynamic classes that do not include any static fields aren't properly
+- [x] Dynamic classes that do not include any static fields aren't properly
       handled ([issue](https://github.com/BoundaryML/baml/issues/2432))
 - [ ] BAML runtime leaks goroutines
       ([workaround](https://github.com/invakid404/baml-rest/blob/master/cmd/hacks/hacks/context_fix.go))
@@ -21,9 +21,9 @@
 
 ## Known broken versions
 
-Recommended version: **v0.214.0**
+Recommended version: **v0.217.0**
 
 - **v0.215.0**: Type builder is fully broken and panics the entire application
   when used ([issue](https://github.com/BoundaryML/baml/issues/2862))
-- **≥v0.216.0**: Various issues in dynamic field handling (e.g.,
+- **≥v0.216.0 <0.217.0**: Various issues in dynamic field handling (e.g.,
   [issue](https://github.com/BoundaryML/baml/issues/2966))
