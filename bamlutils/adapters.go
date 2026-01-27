@@ -11,6 +11,27 @@ import (
 
 const AdapterPrefix = "adapters/adapter_v"
 
+// NormalizeVersion ensures a version string has the "v" prefix required by semver.
+func NormalizeVersion(version string) string {
+	if !strings.HasPrefix(version, "v") {
+		return "v" + version
+	}
+	return version
+}
+
+// CompareVersions compares two version strings.
+// Returns -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2.
+// Versions can be with or without "v" prefix.
+func CompareVersions(v1, v2 string) int {
+	return semver.Compare(NormalizeVersion(v1), NormalizeVersion(v2))
+}
+
+// IsVersionAtLeast checks if version is >= minVersion.
+// Versions can be with or without "v" prefix.
+func IsVersionAtLeast(version, minVersion string) bool {
+	return CompareVersions(version, minVersion) >= 0
+}
+
 // AdapterInfo contains information about a selected adapter.
 type AdapterInfo struct {
 	// Version is the semver version string (e.g., "v0.215.0")
@@ -43,15 +64,12 @@ func GetAdapterForBAMLVersion(sources map[string]embed.FS, bamlVersion string) (
 	semver.Sort(availableVersions)
 
 	// Normalize BAML version to semver format
-	targetVersion := bamlVersion
-	if !strings.HasPrefix(targetVersion, "v") {
-		targetVersion = "v" + targetVersion
-	}
+	targetVersion := NormalizeVersion(bamlVersion)
 
 	// Find the highest adapter version that's <= the target BAML version
 	var selectedVersion string
 	for _, version := range slices.Backward(availableVersions) {
-		if semver.Compare(targetVersion, version) >= 0 {
+		if CompareVersions(targetVersion, version) >= 0 {
 			selectedVersion = version
 			break
 		}

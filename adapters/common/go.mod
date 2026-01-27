@@ -14,4 +14,7 @@ require (
 	github.com/stretchr/testify v1.11.1 // indirect
 )
 
-replace github.com/invakid404/baml-rest/introspected => ../../introspected
+replace (
+	github.com/invakid404/baml-rest/bamlutils => ../../bamlutils
+	github.com/invakid404/baml-rest/introspected => ../../introspected
+)

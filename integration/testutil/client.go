@@ -58,7 +58,62 @@ type ClientProperty struct {
 
 // TypeBuilder allows injecting dynamic types.
 type TypeBuilder struct {
-	BAMLSnippets []string `json:"baml_snippets,omitempty"`
+	BAMLSnippets []string      `json:"baml_snippets,omitempty"`
+	DynamicTypes *DynamicTypes `json:"dynamic_types,omitempty"`
+}
+
+// DynamicTypes defines classes and enums to be created via the imperative TypeBuilder API.
+type DynamicTypes struct {
+	Classes map[string]*DynamicClass `json:"classes,omitempty"`
+	Enums   map[string]*DynamicEnum  `json:"enums,omitempty"`
+}
+
+// DynamicClass defines a class with properties.
+type DynamicClass struct {
+	Description string                      `json:"description,omitempty"`
+	Alias       string                      `json:"alias,omitempty"`
+	Properties  map[string]*DynamicProperty `json:"properties,omitempty"`
+}
+
+// DynamicProperty defines a property on a class.
+type DynamicProperty struct {
+	Type        string            `json:"type,omitempty"`
+	Ref         string            `json:"$ref,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Alias       string            `json:"alias,omitempty"`
+	Items       *DynamicTypeRef   `json:"items,omitempty"`
+	Inner       *DynamicTypeRef   `json:"inner,omitempty"`
+	OneOf       []*DynamicTypeRef `json:"oneOf,omitempty"`
+	Keys        *DynamicTypeRef   `json:"keys,omitempty"`
+	Values      *DynamicTypeRef   `json:"values,omitempty"`
+	Value       any               `json:"value,omitempty"`
+}
+
+// DynamicTypeRef is a recursive type reference.
+type DynamicTypeRef struct {
+	Type   string            `json:"type,omitempty"`
+	Ref    string            `json:"$ref,omitempty"`
+	Items  *DynamicTypeRef   `json:"items,omitempty"`
+	Inner  *DynamicTypeRef   `json:"inner,omitempty"`
+	OneOf  []*DynamicTypeRef `json:"oneOf,omitempty"`
+	Keys   *DynamicTypeRef   `json:"keys,omitempty"`
+	Values *DynamicTypeRef   `json:"values,omitempty"`
+	Value  any               `json:"value,omitempty"`
+}
+
+// DynamicEnum defines an enum with values.
+type DynamicEnum struct {
+	Description string              `json:"description,omitempty"`
+	Alias       string              `json:"alias,omitempty"`
+	Values      []*DynamicEnumValue `json:"values,omitempty"`
+}
+
+// DynamicEnumValue defines a single enum value.
+type DynamicEnumValue struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Alias       string `json:"alias,omitempty"`
+	Skip        bool   `json:"skip,omitempty"`
 }
 
 // CallResponse represents a response from /call endpoint.

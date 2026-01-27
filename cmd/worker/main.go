@@ -70,7 +70,7 @@ func main() {
 	goplugin.Serve(&goplugin.ServeConfig{
 		HandshakeConfig: workerplugin.Handshake,
 		Plugins: map[string]goplugin.Plugin{
-			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg}},
+			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg, logger: logger}},
 		},
 		GRPCServer: goplugin.DefaultGRPCServer,
 		Logger:     logger,
@@ -80,6 +80,7 @@ func main() {
 // workerImpl implements the workerplugin.Worker interface
 type workerImpl struct {
 	metricsReg *prometheus.Registry
+	logger     bamlutils.Logger
 }
 
 // workerBamlOptions wraps the options for JSON parsing
@@ -127,6 +128,7 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 
 	// Create adapter and apply options
 	adapter := baml_rest.MakeAdapter(ctx)
+	adapter.SetLogger(w.logger)
 	adapter.SetStreamMode(streamMode)
 	if err := options.apply(adapter); err != nil {
 		return nil, fmt.Errorf("failed to apply options: %w", err)
@@ -331,6 +333,7 @@ func (w *workerImpl) Parse(ctx context.Context, methodName string, inputJSON []b
 
 	// Create adapter and apply options
 	adapter := baml_rest.MakeAdapter(ctx)
+	adapter.SetLogger(w.logger)
 	if input.Options != nil {
 		opts := workerBamlOptions{Options: input.Options}
 		if err := opts.apply(adapter); err != nil {
