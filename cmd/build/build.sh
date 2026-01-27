@@ -159,6 +159,20 @@ fi
 echo "Copying baml_src from ${USER_CONTEXT_PATH}..."
 cp -r "${USER_CONTEXT_PATH}/baml_src" "${BAML_WORK}/baml_src"
 
+# Inject dynamic prompt (file provided by baml_rest sources)
+# Requires BAML >= 0.215.0
+DYNAMIC_TEMPLATE="${USER_CONTEXT_PATH}/baml_rest/cmd/build/dynamic.baml"
+MIN_DYNAMIC_VERSION="0.215.0"
+if [ -f "${DYNAMIC_TEMPLATE}" ]; then
+    # Compare versions using sort -V
+    if printf '%s\n%s\n' "$MIN_DYNAMIC_VERSION" "$BAML_VERSION" | sort -V -C; then
+        echo "Injecting dynamic prompt (BAML ${BAML_VERSION} >= ${MIN_DYNAMIC_VERSION})..."
+        cp "${DYNAMIC_TEMPLATE}" "${BAML_WORK}/baml_src/__baml_rest_internal_dynamic__.baml"
+    else
+        echo "Skipping dynamic prompt injection (BAML ${BAML_VERSION} < ${MIN_DYNAMIC_VERSION})"
+    fi
+fi
+
 # Change to baml working directory
 cd "${BAML_WORK}"
 
