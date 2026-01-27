@@ -11,10 +11,12 @@ func UnwrapDynamicValue(value any) any {
 		return nil
 	}
 
-	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Ptr && rv.IsNil() {
+	rv := reflect.ValueOf(value)
+	if rv.Kind() == reflect.Ptr && rv.IsNil() {
 		return nil
 	}
 
+	// Check pointer types
 	if class, ok := value.(*serde.DynamicClass); ok {
 		return UnwrapDynamicValue(class.Fields)
 	}
@@ -52,6 +54,15 @@ func UnwrapDynamicValue(value any) any {
 		result := make([]any, len(anySlice))
 		for i, v := range anySlice {
 			result[i] = UnwrapDynamicValue(v)
+		}
+		return result
+	}
+
+	// Handle other slice types via reflection (BAML may return typed slices)
+	if rv.Kind() == reflect.Slice {
+		result := make([]any, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			result[i] = UnwrapDynamicValue(rv.Index(i).Interface())
 		}
 		return result
 	}
