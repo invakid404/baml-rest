@@ -1061,4 +1061,87 @@ func TestDynamicTypesImperative(t *testing.T) {
 			t.Errorf("Expected city 'Springfield', got %v", location["city"])
 		}
 	})
+
+	t.Run("nested_new_classes_parse_api", func(t *testing.T) {
+		// Test the same scenario as nested_new_classes but using the Parse API directly
+		// instead of going through a full LLM call. This helps isolate whether the bug
+		// is in the streaming API or also affects direct parsing.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := &testutil.BAMLOptions{
+			TypeBuilder: &testutil.TypeBuilder{
+				DynamicTypes: &testutil.DynamicTypes{
+					Classes: map[string]*testutil.DynamicClass{
+						// Create a new Location class
+						"Location": {
+							Properties: map[string]*testutil.DynamicProperty{
+								"street": {Type: "string"},
+								"city":   {Type: "string"},
+							},
+						},
+						// DynamicOutput references it
+						"DynamicOutput": {
+							Properties: map[string]*testutil.DynamicProperty{
+								"location": {Ref: "Location"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Raw JSON that would be returned by an LLM
+		rawResponse := `{"base_field": "test", "location": {"street": "123 Main St", "city": "Springfield"}}`
+
+		resp, err := BAMLClient.Parse(ctx, testutil.ParseRequest{
+			Method:  "GetDynamic",
+			Raw:     rawResponse,
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result struct {
+			BaseField         string         `json:"base_field"`
+			DynamicProperties map[string]any `json:"DynamicProperties"`
+		}
+		if err := json.Unmarshal(resp.Data, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result.DynamicProperties == nil {
+			t.Fatalf("Expected DynamicProperties to be present, got nil")
+		}
+
+		// The Parse API returns dynamic classes with a wrapper structure:
+		// {"Name": "ClassName", "Fields": {...actual fields...}}
+		location, ok := result.DynamicProperties["location"].(map[string]any)
+		if !ok {
+			t.Fatalf("Expected location to be a map, got %T: %v", result.DynamicProperties["location"], result.DynamicProperties["location"])
+		}
+
+		// Verify the class name
+		if location["Name"] != "Location" {
+			t.Errorf("Expected Name 'Location', got %v", location["Name"])
+		}
+
+		// Get the actual fields
+		fields, ok := location["Fields"].(map[string]any)
+		if !ok {
+			t.Fatalf("Expected Fields to be a map, got %T: %v", location["Fields"], location["Fields"])
+		}
+
+		if fields["street"] != "123 Main St" {
+			t.Errorf("Expected street '123 Main St', got %v", fields["street"])
+		}
+		if fields["city"] != "Springfield" {
+			t.Errorf("Expected city 'Springfield', got %v", fields["city"])
+		}
+	})
 }
