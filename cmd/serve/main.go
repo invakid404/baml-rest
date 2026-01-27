@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -298,6 +299,11 @@ var serveCmd = &cobra.Command{
 			for _, methodName := range methodNames {
 				methodName := methodName // capture for closure
 
+				// Skip the internal dynamic method - it has dedicated endpoints
+				if methodName == bamlutils.DynamicMethodName {
+					continue
+				}
+
 				logger.Info().Str("prompt", methodName).Msg("Registering prompt")
 
 				makeCallHandler := func(streamMode bamlutils.StreamMode) http.HandlerFunc {
@@ -377,6 +383,149 @@ var serveCmd = &cobra.Command{
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = w.Write(result.Data)
 				})
+			}
+
+			// Dynamic endpoint handlers (only if dynamic method exists - requires BAML >= 0.215.0)
+			hasDynamicMethod := slices.Contains(methodNames, bamlutils.DynamicMethodName)
+			if !hasDynamicMethod {
+				logger.Info().Msg("Dynamic endpoints not available (BAML < 0.215.0 or dynamic.baml not injected)")
+			} else {
+				logger.Info().Str("endpoint", bamlutils.DynamicEndpointName).Msg("Registering dynamic prompt")
+
+			makeDynamicCallHandler := func(streamMode bamlutils.StreamMode) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					ctx, cancel := context.WithCancel(r.Context())
+					defer cancel()
+
+					rawBody, err := io.ReadAll(r.Body)
+					if err != nil {
+						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						return
+					}
+
+					// Parse and validate dynamic input
+					var input bamlutils.DynamicInput
+					if err := json.Unmarshal(rawBody, &input); err != nil {
+						http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+						return
+					}
+
+					if err := input.Validate(); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+
+					// Convert to internal format
+					workerInput, err := input.ToWorkerInput()
+					if err != nil {
+						http.Error(w, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
+						return
+					}
+
+					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
+					if err != nil {
+						httplogger.SetError(r.Context(), err)
+						http.Error(w, fmt.Sprintf("Error calling dynamic prompt: %v", err), http.StatusInternalServerError)
+						return
+					}
+
+					w.Header().Set("Content-Type", "application/json")
+					if streamMode.NeedsRaw() {
+						render.JSON(w, r, CallWithRawResponse{
+							Data: result.Data,
+							Raw:  result.Raw,
+						})
+					} else {
+						_, _ = w.Write(result.Data)
+					}
+				}
+			}
+
+			r.Post(fmt.Sprintf("/call/%s", bamlutils.DynamicEndpointName), makeDynamicCallHandler(bamlutils.StreamModeCall))
+			r.Post(fmt.Sprintf("/call-with-raw/%s", bamlutils.DynamicEndpointName), makeDynamicCallHandler(bamlutils.StreamModeCallWithRaw))
+
+			makeDynamicStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) http.HandlerFunc {
+				config := &StreamHandlerConfig{
+					SSEServer:    s,
+					SSEErrorType: sseErrorKind,
+					SSEResetType: sseResetKind,
+					SSEFinalType: sseFinalKind,
+					PathPrefix:   pathPrefix,
+				}
+				return func(w http.ResponseWriter, r *http.Request) {
+					rawBody, err := io.ReadAll(r.Body)
+					if err != nil {
+						httplogger.SetError(r.Context(), err)
+						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						return
+					}
+
+					// Parse and validate dynamic input
+					var input bamlutils.DynamicInput
+					if err := json.Unmarshal(rawBody, &input); err != nil {
+						http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+						return
+					}
+
+					if err := input.Validate(); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+
+					// Convert to internal format
+					workerInput, err := input.ToWorkerInput()
+					if err != nil {
+						http.Error(w, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
+						return
+					}
+
+					HandleStream(w, r, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, config)
+				}
+			}
+
+			r.Post(fmt.Sprintf("/stream/%s", bamlutils.DynamicEndpointName), makeDynamicStreamHandler("stream", bamlutils.StreamModeStream))
+			r.Post(fmt.Sprintf("/stream-with-raw/%s", bamlutils.DynamicEndpointName), makeDynamicStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw))
+
+			// Dynamic parse endpoint
+			r.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), func(w http.ResponseWriter, r *http.Request) {
+				ctx, cancel := context.WithCancel(r.Context())
+				defer cancel()
+
+				rawBody, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+					return
+				}
+
+				// Parse and validate dynamic parse input
+				var input bamlutils.DynamicParseInput
+				if err := json.Unmarshal(rawBody, &input); err != nil {
+					http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+					return
+				}
+
+				if err := input.Validate(); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+
+				// Convert to internal format
+				workerInput, err := input.ToWorkerInput()
+				if err != nil {
+					http.Error(w, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
+					return
+				}
+
+				result, err := workerPool.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
+				if err != nil {
+					httplogger.SetError(r.Context(), err)
+					http.Error(w, fmt.Sprintf("Error parsing with dynamic prompt: %v", err), http.StatusInternalServerError)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(result.Data)
+			})
 			}
 		})
 
