@@ -405,6 +405,14 @@ type DynamicEnumValue struct {
 	Skip        bool   `json:"skip,omitempty"`          // Optional: if true, this value is hidden from the LLM
 }
 
+// Logger is a minimal logging interface compatible with hclog.Logger.
+type Logger interface {
+	Debug(msg string, args ...interface{})
+	Info(msg string, args ...interface{})
+	Warn(msg string, args ...interface{})
+	Error(msg string, args ...interface{})
+}
+
 type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
@@ -413,6 +421,10 @@ type Adapter interface {
 	SetStreamMode(mode StreamMode)
 	// StreamMode returns the current streaming mode.
 	StreamMode() StreamMode
+	// SetLogger sets the logger for debug output.
+	SetLogger(logger Logger)
+	// Logger returns the current logger, or nil if not set.
+	Logger() Logger
 }
 
 // BamlOptions contains optional configuration for BAML method calls

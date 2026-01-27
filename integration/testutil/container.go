@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"text/template"
 	"time"
 
@@ -272,10 +273,10 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		bamlVersion:       opts.BAMLVersion,
 		adapterVersion:    opts.AdapterVersion,
 		keepSource:        opts.KeepSource,
-		debugBuild:        true, // Enable debug endpoints for testing (/_debug/*)
-		defaultTargetArch: "amd64", // Provide default since testcontainers may not set TARGETARCH
-		noCacheMount:      true,    // testcontainers doesn't reliably support BuildKit
-		noCustomBamlLib:   true,    // Integration tests don't use custom BAML lib
+		debugBuild:        true,              // Enable debug endpoints for testing (/_debug/*)
+		defaultTargetArch: getDockerArch(),   // Use native architecture
+		noCacheMount:      true,              // testcontainers doesn't reliably support BuildKit
+		noCustomBamlLib:   true,              // Integration tests don't use custom BAML lib
 	}
 
 	var dockerfileBuf bytes.Buffer
@@ -490,4 +491,16 @@ func GetAdapterVersionForBAML(bamlVersion string) (string, error) {
 		return "", err
 	}
 	return adapterInfo.Path, nil
+}
+
+// getDockerArch returns the Docker-style architecture name for the current platform.
+func getDockerArch() string {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "arm64"
+	case "amd64":
+		return "amd64"
+	default:
+		return "amd64" // fallback
+	}
 }

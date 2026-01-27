@@ -11,7 +11,7 @@ import (
 // TypeBuilderFactory creates a new TypeBuilder and applies the TypeBuilder config.
 // The generated code implements this to have direct access to the generated
 // TypeBuilder methods for processing DynamicTypes and BamlSnippets.
-type TypeBuilderFactory func(tb *bamlutils.TypeBuilder) (*introspected.TypeBuilder, error)
+type TypeBuilderFactory func(tb *bamlutils.TypeBuilder, logger bamlutils.Logger) (*introspected.TypeBuilder, error)
 
 type BamlAdapter struct {
 	context.Context
@@ -23,6 +23,9 @@ type BamlAdapter struct {
 
 	// streamMode controls how streaming results are processed.
 	streamMode bamlutils.StreamMode
+
+	// logger is used for debug output during dynamic type processing.
+	logger bamlutils.Logger
 }
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
@@ -40,7 +43,7 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 }
 
 func (b *BamlAdapter) SetTypeBuilder(tb *bamlutils.TypeBuilder) error {
-	typeBuilder, err := b.TypeBuilderFactory(tb)
+	typeBuilder, err := b.TypeBuilderFactory(tb, b.logger)
 	if err != nil {
 		return err
 	}
@@ -54,6 +57,14 @@ func (b *BamlAdapter) SetStreamMode(mode bamlutils.StreamMode) {
 
 func (b *BamlAdapter) StreamMode() bamlutils.StreamMode {
 	return b.streamMode
+}
+
+func (b *BamlAdapter) SetLogger(logger bamlutils.Logger) {
+	b.logger = logger
+}
+
+func (b *BamlAdapter) Logger() bamlutils.Logger {
+	return b.logger
 }
 
 var _ bamlutils.Adapter = (*BamlAdapter)(nil)
