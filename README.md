@@ -14,6 +14,10 @@
       ([workaround](https://github.com/invakid404/baml-rest/commit/dead72721909a9b9ef47b0ffd025e58615ec23eb)
       applied) ([issue](https://github.com/BoundaryML/baml/issues/2767); fixed
       in >=0.215.0)
+- [ ] Streaming API doesn't propagate dynamically created classes to the parser.
+      When creating a new class via TypeBuilder and referencing it from an
+      existing `@@dynamic` class, the streaming API fails with "Class X not
+      found". The sync API and Parse API work correctly. (reported to BAML team)
 
 ## Known broken versions
 
