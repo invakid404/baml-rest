@@ -355,7 +355,7 @@ var serveCmd = &cobra.Command{
 							return
 						}
 
-						HandleStream(w, r, methodName, rawBody, streamMode, workerPool, config)
+						HandleStream(w, r, methodName, rawBody, streamMode, workerPool, config, false)
 					}
 				}
 
@@ -429,14 +429,22 @@ var serveCmd = &cobra.Command{
 						return
 					}
 
+					// Flatten DynamicProperties to root level for better UX
+					flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
+					if err != nil {
+						httplogger.SetError(r.Context(), err)
+						http.Error(w, fmt.Sprintf("Error flattening response: %v", err), http.StatusInternalServerError)
+						return
+					}
+
 					w.Header().Set("Content-Type", "application/json")
 					if streamMode.NeedsRaw() {
 						render.JSON(w, r, CallWithRawResponse{
-							Data: result.Data,
+							Data: flattenedData,
 							Raw:  result.Raw,
 						})
 					} else {
-						_, _ = w.Write(result.Data)
+						_, _ = w.Write(flattenedData)
 					}
 				}
 			}
@@ -479,7 +487,7 @@ var serveCmd = &cobra.Command{
 						return
 					}
 
-					HandleStream(w, r, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, config)
+					HandleStream(w, r, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, config, true)
 				}
 			}
 
@@ -523,8 +531,16 @@ var serveCmd = &cobra.Command{
 					return
 				}
 
+				// Flatten DynamicProperties to root level for better UX
+				flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
+				if err != nil {
+					httplogger.SetError(r.Context(), err)
+					http.Error(w, fmt.Sprintf("Error flattening response: %v", err), http.StatusInternalServerError)
+					return
+				}
+
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write(result.Data)
+				_, _ = w.Write(flattenedData)
 			})
 			}
 		})

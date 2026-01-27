@@ -325,6 +325,7 @@ type StreamHandlerConfig struct {
 
 // HandleStream is the unified stream handler that routes to SSE or NDJSON.
 // It creates the appropriate publisher and uses a single consumer loop.
+// If flattenDynamic is true, DynamicProperties fields will be flattened to the root level.
 func HandleStream(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -333,6 +334,7 @@ func HandleStream(
 	streamMode bamlutils.StreamMode,
 	workerPool *pool.Pool,
 	config *StreamHandlerConfig,
+	flattenDynamic bool,
 ) {
 	format := NegotiateStreamFormat(r)
 	ctx := r.Context()
@@ -378,16 +380,18 @@ func HandleStream(
 	}
 
 	// Single consumer loop - the unified pattern
-	consumeStream(r.Context(), results, publisher, streamMode)
+	consumeStream(r.Context(), results, publisher, streamMode, flattenDynamic)
 }
 
 // consumeStream is the single consumer that iterates over pool results
 // and publishes through the StreamPublisher interface.
+// If flattenDynamic is true, DynamicProperties fields will be flattened to the root level.
 func consumeStream(
 	requestCtx context.Context,
 	results <-chan *workerplugin.StreamResult,
 	publisher StreamPublisher,
 	streamMode bamlutils.StreamMode,
+	flattenDynamic bool,
 ) {
 	// Accumulate raw deltas for output (internal gRPC sends deltas to save bandwidth)
 	var accumulatedRaw strings.Builder
@@ -419,8 +423,16 @@ func consumeStream(
 				rawForOutput = accumulatedRaw.String()
 			}
 
+			// Flatten DynamicProperties for dynamic endpoints
+			data := result.Data
+			if flattenDynamic {
+				if flattened, err := bamlutils.FlattenDynamicOutput(data); err == nil {
+					data = flattened
+				}
+			}
+
 			// Publish partial data event (may have null placeholders for unparsed fields)
-			if err := publisher.PublishData(result.Data, rawForOutput); err != nil {
+			if err := publisher.PublishData(data, rawForOutput); err != nil {
 				workerplugin.ReleaseStreamResult(result)
 				drainResults(results)
 				return
@@ -444,8 +456,16 @@ func consumeStream(
 				rawForOutput = result.Raw
 			}
 
+			// Flatten DynamicProperties for dynamic endpoints
+			data := result.Data
+			if flattenDynamic {
+				if flattened, err := bamlutils.FlattenDynamicOutput(data); err == nil {
+					data = flattened
+				}
+			}
+
 			// Publish final data event (complete, validated result)
-			if err := publisher.PublishFinal(result.Data, rawForOutput); err != nil {
+			if err := publisher.PublishFinal(data, rawForOutput); err != nil {
 				workerplugin.ReleaseStreamResult(result)
 				drainResults(results)
 				return
