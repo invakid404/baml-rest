@@ -401,6 +401,11 @@ func generateOpenAPISchema() *openapi3.T {
 	}
 
 	for methodName, method := range baml_rest.Methods {
+		// Skip the internal dynamic method - it has dedicated endpoints with custom schema
+		if methodName == bamlutils.DynamicMethodName {
+			continue
+		}
+
 		inputStruct := method.MakeInput()
 		inputStructInstance := reflect.ValueOf(inputStruct)
 
@@ -690,6 +695,11 @@ func generateOpenAPISchema() *openapi3.T {
 		})
 	}
 
+	// Generate dynamic endpoint schemas (only if dynamic method exists - requires BAML >= 0.215.0)
+	if _, hasDynamic := baml_rest.Methods[bamlutils.DynamicMethodName]; hasDynamic {
+		generateDynamicEndpoints(schemas, paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName)
+	}
+
 	return &openapi3.T{
 		OpenAPI: "3.0.0",
 		Info: &openapi3.Info{
@@ -701,4 +711,486 @@ func generateOpenAPISchema() *openapi3.T {
 		},
 		Paths: paths,
 	}
+}
+
+// generateDynamicEndpoints adds the dynamic prompt endpoint schemas
+func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName string) {
+	endpointName := bamlutils.DynamicEndpointName
+
+	// Cache control schema
+	cacheControlSchemaName := "__DynamicCacheControl__"
+	schemas[cacheControlSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Anthropic prompt caching metadata",
+			Properties: openapi3.Schemas{
+				"type": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Cache control type (e.g., \"ephemeral\")",
+					},
+				},
+			},
+			Required: []string{"type"},
+		},
+	}
+
+	// Message metadata schema
+	messageMetadataSchemaName := "__DynamicMessageMetadata__"
+	schemas[messageMetadataSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Optional metadata for a message. Currently supports cache_control for Anthropic prompt caching.",
+			Properties: openapi3.Schemas{
+				"cache_control": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Nullable: true,
+						AllOf: openapi3.SchemaRefs{
+							{Ref: fmt.Sprintf("#/components/schemas/%s", cacheControlSchemaName)},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Dynamic message schema
+	dynamicMessageSchemaName := "__DynamicMessage__"
+	schemas[dynamicMessageSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "A chat message with role, content, and optional metadata",
+			Properties: openapi3.Schemas{
+				"role": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Message role (e.g., \"user\", \"assistant\", \"system\")",
+					},
+				},
+				"content": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Message content",
+					},
+				},
+				"metadata": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Nullable: true,
+						AllOf: openapi3.SchemaRefs{
+							{Ref: fmt.Sprintf("#/components/schemas/%s", messageMetadataSchemaName)},
+						},
+					},
+				},
+			},
+			Required: []string{"role", "content"},
+		},
+	}
+
+	// Output schema property schema (reuse DynamicProperty from BamlOptions)
+	dynamicPropertySchemaName := "__DynamicProperty__"
+	schemas[dynamicPropertySchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Dynamic property definition for output schema",
+			Properties: openapi3.Schemas{
+				"type": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Property type (string, int, float, bool, list, optional, map, union, literal_string, literal_int, literal_bool)",
+					},
+				},
+				"$ref": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Reference to another class/enum by name",
+					},
+				},
+				"description": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Property description",
+					},
+				},
+				"alias": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Alternative name for the property",
+					},
+				},
+			},
+		},
+	}
+
+	// Output schema schema
+	outputSchemaSchemaName := "__DynamicOutputSchema__"
+	schemas[outputSchemaSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Output schema definition with properties map",
+			Properties: openapi3.Schemas{
+				"properties": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Map of property names to their definitions",
+						AdditionalProperties: openapi3.AdditionalProperties{
+							Schema: &openapi3.SchemaRef{
+								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicPropertySchemaName),
+							},
+						},
+					},
+				},
+			},
+			Required: []string{"properties"},
+		},
+	}
+
+	// Dynamic input schema
+	dynamicInputSchemaName := "__DynamicInput__"
+	schemas[dynamicInputSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Request body for dynamic prompt endpoints",
+			Properties: openapi3.Schemas{
+				"messages": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeArray},
+						Description: "Array of chat messages",
+						Items: &openapi3.SchemaRef{
+							Ref: fmt.Sprintf("#/components/schemas/%s", dynamicMessageSchemaName),
+						},
+					},
+				},
+				"client_registry": &openapi3.SchemaRef{
+					Ref: "#/components/schemas/ClientRegistry",
+				},
+				"output_schema": &openapi3.SchemaRef{
+					Ref: fmt.Sprintf("#/components/schemas/%s", outputSchemaSchemaName),
+				},
+			},
+			Required: []string{"messages", "client_registry", "output_schema"},
+		},
+	}
+
+	// Dynamic parse input schema (different from call/stream - uses raw instead of messages)
+	dynamicParseInputSchemaName := "__DynamicParseInput__"
+	schemas[dynamicParseInputSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Request body for dynamic parse endpoint",
+			Properties: openapi3.Schemas{
+				"raw": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Raw LLM output text to parse",
+					},
+				},
+				"output_schema": &openapi3.SchemaRef{
+					Ref: fmt.Sprintf("#/components/schemas/%s", outputSchemaSchemaName),
+				},
+			},
+			Required: []string{"raw", "output_schema"},
+		},
+	}
+
+	// Dynamic output is dynamic (any object)
+	dynamicOutputSchemaName := "__DynamicOutput__"
+	schemas[dynamicOutputSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Dynamic output based on output_schema definition",
+			AdditionalProperties: openapi3.AdditionalProperties{
+				Has: boolPtr(true),
+			},
+		},
+	}
+
+	// References to global event schemas
+	resetEventSchemaRef := &openapi3.SchemaRef{
+		Ref: fmt.Sprintf("#/components/schemas/%s", streamResetEventSchemaName),
+	}
+	errorEventSchemaRef := &openapi3.SchemaRef{
+		Ref: fmt.Sprintf("#/components/schemas/%s", streamErrorEventSchemaName),
+	}
+
+	// /call endpoint
+	callDescription := "Successful response for dynamic prompt"
+	callResponses := openapi3.NewResponses()
+	callResponses.Set("200", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &callDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: &openapi3.SchemaRef{
+						Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
+					},
+				},
+			},
+		},
+	})
+
+	paths.Set(fmt.Sprintf("/call/%s", endpointName), &openapi3.PathItem{
+		Post: &openapi3.Operation{
+			OperationID: "dynamicCall",
+			Summary:     "Call dynamic prompt",
+			Description: "Execute a dynamic prompt with dynamic output schema. " +
+				"Provide messages, client configuration, and the expected output structure. " +
+				"The output_schema defines what fields the LLM should return.",
+			RequestBody: &openapi3.RequestBodyRef{
+				Value: &openapi3.RequestBody{
+					Content: map[string]*openapi3.MediaType{
+						"application/json": {
+							Schema: &openapi3.SchemaRef{
+								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
+							},
+						},
+					},
+				},
+			},
+			Responses: callResponses,
+		},
+	})
+
+	// /call-with-raw endpoint
+	callWithRawDescription := "Successful response for dynamic prompt with raw LLM output"
+	callWithRawResponses := openapi3.NewResponses()
+	callWithRawResponses.Set("200", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &callWithRawDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type: &openapi3.Types{openapi3.TypeObject},
+							Properties: openapi3.Schemas{
+								"data": &openapi3.SchemaRef{
+									Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
+								},
+								"raw": &openapi3.SchemaRef{
+									Value: &openapi3.Schema{
+										Type:        &openapi3.Types{openapi3.TypeString},
+										Description: "Raw LLM response text",
+									},
+								},
+							},
+							Required: []string{"data", "raw"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	paths.Set(fmt.Sprintf("/call-with-raw/%s", endpointName), &openapi3.PathItem{
+		Post: &openapi3.Operation{
+			OperationID: "dynamicCallWithRaw",
+			Summary:     "Call dynamic prompt with raw output",
+			Description: "Execute a dynamic prompt and return both the parsed result and raw LLM output.",
+			RequestBody: &openapi3.RequestBodyRef{
+				Value: &openapi3.RequestBody{
+					Content: map[string]*openapi3.MediaType{
+						"application/json": {
+							Schema: &openapi3.SchemaRef{
+								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
+							},
+						},
+					},
+				},
+			},
+			Responses: callWithRawResponses,
+		},
+	})
+
+	// Streaming event schemas for dynamic endpoint
+	dynamicStreamDataEventSchema := makeStreamEventSchema(
+		"data",
+		"Partial data event containing an intermediate parsed result. Fields not yet parsed may be null.",
+		&openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Nullable: true,
+				AllOf: openapi3.SchemaRefs{
+					{Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName)},
+				},
+			},
+		}, false, "",
+	)
+	dynamicStreamFinalEventSchema := makeStreamEventSchema(
+		"final",
+		"Final data event containing the complete, validated result",
+		&openapi3.SchemaRef{
+			Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
+		}, false, "",
+	)
+
+	// /stream endpoint
+	streamDescription := "Stream of partial and final results for dynamic prompt"
+	sseStreamDescription := "Server-Sent Events stream. Default format if Accept header is not set."
+	streamResponses := openapi3.NewResponses()
+	streamResponses.Set("200", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &streamDescription,
+			Content: openapi3.Content{
+				"application/x-ndjson": &openapi3.MediaType{
+					Schema: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							OneOf: openapi3.SchemaRefs{
+								dynamicStreamDataEventSchema,
+								dynamicStreamFinalEventSchema,
+								resetEventSchemaRef,
+								errorEventSchemaRef,
+							},
+							Discriminator: &openapi3.Discriminator{
+								PropertyName: "type",
+							},
+						},
+					},
+				},
+				"text/event-stream": &openapi3.MediaType{
+					Schema: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type:        &openapi3.Types{openapi3.TypeString},
+							Description: sseStreamDescription,
+						},
+					},
+				},
+			},
+		},
+	})
+
+	paths.Set(fmt.Sprintf("/stream/%s", endpointName), &openapi3.PathItem{
+		Post: &openapi3.Operation{
+			OperationID: "dynamicStream",
+			Summary:     "Stream dynamic prompt results",
+			Description: "Returns a stream of events containing partial results as they become available, followed by the final result. " +
+				"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
+				"Without an Accept header, returns Server-Sent Events (text/event-stream) by default.",
+			RequestBody: &openapi3.RequestBodyRef{
+				Value: &openapi3.RequestBody{
+					Content: map[string]*openapi3.MediaType{
+						"application/json": {
+							Schema: &openapi3.SchemaRef{
+								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
+							},
+						},
+					},
+				},
+			},
+			Responses: streamResponses,
+		},
+	})
+
+	// /stream-with-raw endpoint
+	dynamicStreamWithRawDataEventSchema := makeStreamEventSchema(
+		"data",
+		"Partial data event with accumulated raw LLM output. Fields not yet parsed may be null.",
+		&openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Nullable: true,
+				AllOf: openapi3.SchemaRefs{
+					{Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName)},
+				},
+			},
+		}, true, "Accumulated raw LLM response text up to this point",
+	)
+	dynamicStreamWithRawFinalEventSchema := makeStreamEventSchema(
+		"final",
+		"Final data event with complete raw LLM output",
+		&openapi3.SchemaRef{
+			Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
+		}, true, "Complete raw LLM response text",
+	)
+
+	streamWithRawDescription := "Stream of partial and final results for dynamic prompt with raw LLM output"
+	sseStreamWithRawDescription := "Server-Sent Events stream with raw LLM output."
+	streamWithRawResponses := openapi3.NewResponses()
+	streamWithRawResponses.Set("200", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &streamWithRawDescription,
+			Content: openapi3.Content{
+				"application/x-ndjson": &openapi3.MediaType{
+					Schema: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							OneOf: openapi3.SchemaRefs{
+								dynamicStreamWithRawDataEventSchema,
+								dynamicStreamWithRawFinalEventSchema,
+								resetEventSchemaRef,
+								errorEventSchemaRef,
+							},
+							Discriminator: &openapi3.Discriminator{
+								PropertyName: "type",
+							},
+						},
+					},
+				},
+				"text/event-stream": &openapi3.MediaType{
+					Schema: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type:        &openapi3.Types{openapi3.TypeString},
+							Description: sseStreamWithRawDescription,
+						},
+					},
+				},
+			},
+		},
+	})
+
+	paths.Set(fmt.Sprintf("/stream-with-raw/%s", endpointName), &openapi3.PathItem{
+		Post: &openapi3.Operation{
+			OperationID: "dynamicStreamWithRaw",
+			Summary:     "Stream dynamic prompt results with raw output",
+			Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available.",
+			RequestBody: &openapi3.RequestBodyRef{
+				Value: &openapi3.RequestBody{
+					Content: map[string]*openapi3.MediaType{
+						"application/json": {
+							Schema: &openapi3.SchemaRef{
+								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
+							},
+						},
+					},
+				},
+			},
+			Responses: streamWithRawResponses,
+		},
+	})
+
+	// /parse endpoint
+	parseDescription := "Parse raw LLM output using dynamic schema"
+	parseResponses := openapi3.NewResponses()
+	parseResponses.Set("200", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &parseDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: &openapi3.SchemaRef{
+						Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
+					},
+				},
+			},
+		},
+	})
+
+	paths.Set(fmt.Sprintf("/parse/%s", endpointName), &openapi3.PathItem{
+		Post: &openapi3.Operation{
+			OperationID: "dynamicParse",
+			Summary:     "Parse raw LLM output with dynamic schema",
+			Description: "Parse raw LLM output text using the provided output schema definition.",
+			RequestBody: &openapi3.RequestBodyRef{
+				Value: &openapi3.RequestBody{
+					Content: map[string]*openapi3.MediaType{
+						"application/json": {
+							Schema: &openapi3.SchemaRef{
+								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicParseInputSchemaName),
+							},
+						},
+					},
+				},
+			},
+			Responses: parseResponses,
+		},
+	})
+}
+
+// boolPtr returns a pointer to a bool value
+func boolPtr(b bool) *bool {
+	return &b
 }
