@@ -767,6 +767,8 @@ type DynamicCacheControl struct {
 // DynamicOutputSchema defines the output structure for dynamic endpoints.
 type DynamicOutputSchema struct {
 	Properties map[string]*DynamicProperty `json:"properties"`
+	Classes    map[string]*DynamicClass    `json:"classes,omitempty"`
+	Enums      map[string]*DynamicEnum     `json:"enums,omitempty"`
 }
 
 // DynamicRequest represents a request to /call/_dynamic, /stream/_dynamic, or /parse/_dynamic.

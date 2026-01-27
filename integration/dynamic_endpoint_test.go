@@ -64,13 +64,11 @@ func TestDynamicEndpoint(t *testing.T) {
 
 		t.Logf("Parsed result: %+v", result)
 
-		// The parse endpoint returns DynamicProperties for dynamic classes
+		// Response should be flattened (no DynamicProperties wrapper)
 		if result["DynamicProperties"] != nil {
-			props := result["DynamicProperties"].(map[string]any)
-			if props["answer"] != "4" {
-				t.Errorf("Expected answer '4', got %v", props["answer"])
-			}
-		} else if result["answer"] != "4" {
+			t.Errorf("Response should be flattened, but found DynamicProperties wrapper")
+		}
+		if result["answer"] != "4" {
 			t.Errorf("Expected answer '4', got %v", result["answer"])
 		}
 	})
@@ -112,21 +110,20 @@ func TestDynamicEndpoint(t *testing.T) {
 
 		t.Logf("Parsed result: %+v", result)
 
-		// Check properties (may be in DynamicProperties or top-level)
-		props := result
+		// Response should be flattened (no DynamicProperties wrapper)
 		if result["DynamicProperties"] != nil {
-			props = result["DynamicProperties"].(map[string]any)
+			t.Errorf("Response should be flattened, but found DynamicProperties wrapper")
 		}
 
-		if props["name"] != "John" {
-			t.Errorf("Expected name 'John', got %v", props["name"])
+		if result["name"] != "John" {
+			t.Errorf("Expected name 'John', got %v", result["name"])
 		}
 		// JSON unmarshals numbers as float64
-		if age, ok := props["age"].(float64); !ok || age != 30 {
-			t.Errorf("Expected age 30, got %v", props["age"])
+		if age, ok := result["age"].(float64); !ok || age != 30 {
+			t.Errorf("Expected age 30, got %v", result["age"])
 		}
-		if props["active"] != true {
-			t.Errorf("Expected active true, got %v", props["active"])
+		if result["active"] != true {
+			t.Errorf("Expected active true, got %v", result["active"])
 		}
 	})
 
@@ -168,18 +165,256 @@ func TestDynamicEndpoint(t *testing.T) {
 
 		t.Logf("Parsed result: %+v", result)
 
-		// Check properties (may be in DynamicProperties or top-level)
-		props := result
+		// Response should be flattened (no DynamicProperties wrapper)
 		if result["DynamicProperties"] != nil {
-			props = result["DynamicProperties"].(map[string]any)
+			t.Errorf("Response should be flattened, but found DynamicProperties wrapper")
 		}
 
-		tags, ok := props["tags"].([]any)
+		tags, ok := result["tags"].([]any)
 		if !ok {
-			t.Fatalf("Expected tags to be an array, got %T", props["tags"])
+			t.Fatalf("Expected tags to be an array, got %T", result["tags"])
 		}
 		if len(tags) != 3 {
 			t.Errorf("Expected 3 tags, got %d", len(tags))
+		}
+	})
+
+	t.Run("parse_nested_class", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Use unique class name to avoid conflict with existing BAML Address class
+		resp, err := BAMLClient.DynamicParse(ctx, testutil.DynamicParseRequest{
+			Raw: `{"name": "John", "location": {"street": "123 Main St", "city": "Boston"}}`,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Classes: map[string]*testutil.DynamicClass{
+					"DynamicLocation": {
+						Properties: map[string]*testutil.DynamicProperty{
+							"street": {Type: "string"},
+							"city":   {Type: "string"},
+						},
+					},
+				},
+				Properties: map[string]*testutil.DynamicProperty{
+					"name":     {Type: "string"},
+					"location": {Ref: "DynamicLocation"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicParse failed: %v", err)
+		}
+
+		t.Logf("Response status: %d", resp.StatusCode)
+		if resp.Data != nil {
+			t.Logf("Response data: %s", string(resp.Data))
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal(resp.Data, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		// Response should be flattened
+		if result["DynamicProperties"] != nil {
+			t.Errorf("Response should be flattened, but found DynamicProperties wrapper")
+		}
+
+		if result["name"] != "John" {
+			t.Errorf("Expected name 'John', got %v", result["name"])
+		}
+
+		location, ok := result["location"].(map[string]any)
+		if !ok {
+			t.Fatalf("Expected location to be an object, got %T", result["location"])
+		}
+
+		// Dynamic classes should be unwrapped - no Name/Fields wrapper
+		if location["Name"] != nil || location["Fields"] != nil {
+			t.Errorf("Dynamic class should be unwrapped, got internal format: %v", location)
+		}
+
+		if location["street"] != "123 Main St" {
+			t.Errorf("Expected street '123 Main St', got %v", location["street"])
+		}
+		if location["city"] != "Boston" {
+			t.Errorf("Expected city 'Boston', got %v", location["city"])
+		}
+	})
+
+	t.Run("parse_with_enum", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Use unique enum name to avoid conflicts
+		resp, err := BAMLClient.DynamicParse(ctx, testutil.DynamicParseRequest{
+			Raw: `{"name": "John", "status": "ACTIVE"}`,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Enums: map[string]*testutil.DynamicEnum{
+					"DynamicStatus": {
+						Values: []*testutil.DynamicEnumValue{
+							{Name: "ACTIVE"},
+							{Name: "INACTIVE"},
+							{Name: "PENDING"},
+						},
+					},
+				},
+				Properties: map[string]*testutil.DynamicProperty{
+					"name":   {Type: "string"},
+					"status": {Ref: "DynamicStatus"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicParse failed: %v", err)
+		}
+
+		t.Logf("Response status: %d", resp.StatusCode)
+		if resp.Data != nil {
+			t.Logf("Response data: %s", string(resp.Data))
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal(resp.Data, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		// Response should be flattened
+		if result["DynamicProperties"] != nil {
+			t.Errorf("Response should be flattened, but found DynamicProperties wrapper")
+		}
+
+		if result["name"] != "John" {
+			t.Errorf("Expected name 'John', got %v", result["name"])
+		}
+
+		// Dynamic enums should be unwrapped to plain string values
+		if result["status"] != "ACTIVE" {
+			t.Errorf("Expected status 'ACTIVE', got %v (type: %T)", result["status"], result["status"])
+		}
+
+		// Verify it's NOT in the internal format
+		if statusMap, isMap := result["status"].(map[string]any); isMap {
+			t.Errorf("Dynamic enum should be unwrapped to string, got internal format: %v", statusMap)
+		}
+	})
+
+	// Regression test: ensure deeply nested dynamic types are properly unwrapped
+	// This tests that DynamicClass and DynamicEnum internal representations
+	// ({"Name":"...", "Fields":{...}} and {"Name":"...", "Value":"..."}) are flattened
+	t.Run("regression_nested_dynamic_types_unwrapped", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Use unique names to avoid conflicts with existing BAML types
+		resp, err := BAMLClient.DynamicParse(ctx, testutil.DynamicParseRequest{
+			Raw: `{"employee": {"name": "Alice", "role": "ADMIN"}, "tasks": [{"id": 1, "priority": "HIGH"}]}`,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Enums: map[string]*testutil.DynamicEnum{
+					"DynRole": {
+						Values: []*testutil.DynamicEnumValue{
+							{Name: "ADMIN"},
+							{Name: "USER"},
+						},
+					},
+					"DynPriority": {
+						Values: []*testutil.DynamicEnumValue{
+							{Name: "HIGH"},
+							{Name: "LOW"},
+						},
+					},
+				},
+				Classes: map[string]*testutil.DynamicClass{
+					"DynEmployee": {
+						Properties: map[string]*testutil.DynamicProperty{
+							"name": {Type: "string"},
+							"role": {Ref: "DynRole"},
+						},
+					},
+					"DynTask": {
+						Properties: map[string]*testutil.DynamicProperty{
+							"id":       {Type: "int"},
+							"priority": {Ref: "DynPriority"},
+						},
+					},
+				},
+				Properties: map[string]*testutil.DynamicProperty{
+					"employee": {Ref: "DynEmployee"},
+					"tasks": {
+						Type:  "list",
+						Items: &testutil.DynamicTypeRef{Ref: "DynTask"},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicParse failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		t.Logf("Response data: %s", string(resp.Data))
+
+		var result map[string]any
+		if err := json.Unmarshal(resp.Data, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		// Verify no DynamicProperties wrapper
+		if result["DynamicProperties"] != nil {
+			t.Errorf("Response should be flattened, but found DynamicProperties wrapper")
+		}
+
+		// Verify nested class is unwrapped
+		employee, ok := result["employee"].(map[string]any)
+		if !ok {
+			t.Fatalf("Expected employee to be an object, got %T", result["employee"])
+		}
+		if employee["Name"] != nil || employee["Fields"] != nil {
+			t.Errorf("Nested class should be unwrapped, got internal format: %v", employee)
+		}
+		if employee["name"] != "Alice" {
+			t.Errorf("Expected employee.name 'Alice', got %v", employee["name"])
+		}
+
+		// Verify nested enum is unwrapped
+		if employee["role"] != "ADMIN" {
+			t.Errorf("Expected employee.role 'ADMIN', got %v (type: %T)", employee["role"], employee["role"])
+		}
+
+		// Verify array of nested classes with enums
+		tasks, ok := result["tasks"].([]any)
+		if !ok {
+			t.Fatalf("Expected tasks to be an array, got %T", result["tasks"])
+		}
+		if len(tasks) != 1 {
+			t.Fatalf("Expected 1 task, got %d", len(tasks))
+		}
+
+		task, ok := tasks[0].(map[string]any)
+		if !ok {
+			t.Fatalf("Expected task to be an object, got %T", tasks[0])
+		}
+		t.Logf("Task content: %+v", task)
+		if task["Name"] != nil || task["Fields"] != nil {
+			t.Errorf("Nested class in array should be unwrapped, got internal format: %v", task)
+		}
+		// Check id to verify the class was parsed at all
+		if task["id"] == nil {
+			t.Errorf("Expected task.id to be present, task=%v", task)
+		}
+		if task["priority"] != "HIGH" {
+			t.Errorf("Expected task.priority 'HIGH', got %v (type: %T)", task["priority"], task["priority"])
 		}
 	})
 
@@ -470,6 +705,9 @@ func TestDynamicEndpointOpenAPI(t *testing.T) {
 			"__DynamicOutput__",
 			"__DynamicMessage__",
 			"__DynamicOutputSchema__",
+			"__DynamicClass__",
+			"__DynamicEnum__",
+			"__DynamicEnumValue__",
 		}
 
 		for _, schemaName := range expectedSchemas {
