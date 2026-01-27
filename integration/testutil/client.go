@@ -746,3 +746,323 @@ func CreateTestClient(mockLLMURL string, scenarioID string) *ClientRegistry {
 		},
 	}
 }
+
+// DynamicMessage represents a chat message for the dynamic endpoint.
+type DynamicMessage struct {
+	Role     string                  `json:"role"`
+	Content  string                  `json:"content"`
+	Metadata *DynamicMessageMetadata `json:"metadata,omitempty"`
+}
+
+// DynamicMessageMetadata contains optional metadata for a message.
+type DynamicMessageMetadata struct {
+	CacheControl *DynamicCacheControl `json:"cache_control,omitempty"`
+}
+
+// DynamicCacheControl represents Anthropic prompt caching metadata.
+type DynamicCacheControl struct {
+	Type string `json:"type"`
+}
+
+// DynamicOutputSchema defines the output structure for dynamic endpoints.
+type DynamicOutputSchema struct {
+	Properties map[string]*DynamicProperty `json:"properties"`
+}
+
+// DynamicRequest represents a request to /call/_dynamic, /stream/_dynamic, or /parse/_dynamic.
+type DynamicRequest struct {
+	Messages       []DynamicMessage     `json:"messages"`
+	ClientRegistry *ClientRegistry      `json:"client_registry"`
+	OutputSchema   *DynamicOutputSchema `json:"output_schema"`
+}
+
+// DynamicCallResponse represents a response from /call/_dynamic endpoint.
+type DynamicCallResponse struct {
+	StatusCode int
+	Body       json.RawMessage
+	Error      string
+}
+
+// DynamicCallWithRawResponse represents a response from /call-with-raw/_dynamic endpoint.
+type DynamicCallWithRawResponse struct {
+	StatusCode int
+	Data       json.RawMessage `json:"data"`
+	Raw        string          `json:"raw"`
+	Error      string
+}
+
+// DynamicParseRequest represents a request to /parse/_dynamic endpoint.
+// Parse requires raw LLM output, not messages.
+type DynamicParseRequest struct {
+	Raw          string               `json:"raw"`
+	OutputSchema *DynamicOutputSchema `json:"output_schema"`
+}
+
+// DynamicParseResponse represents a response from /parse/_dynamic endpoint.
+type DynamicParseResponse struct {
+	StatusCode int
+	Data       json.RawMessage
+	Error      string
+}
+
+// DynamicCall executes a /call/_dynamic request.
+func (c *BAMLRestClient) DynamicCall(ctx context.Context, req DynamicRequest) (*DynamicCallResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/call/_dynamic", c.baseURL)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DynamicCallResponse{
+		StatusCode: resp.StatusCode,
+	}
+
+	if resp.StatusCode >= 400 {
+		result.Error = string(respBody)
+	} else {
+		result.Body = respBody
+	}
+
+	return result, nil
+}
+
+// DynamicCallWithRaw executes a /call-with-raw/_dynamic request.
+func (c *BAMLRestClient) DynamicCallWithRaw(ctx context.Context, req DynamicRequest) (*DynamicCallWithRawResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/call-with-raw/_dynamic", c.baseURL)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DynamicCallWithRawResponse{
+		StatusCode: resp.StatusCode,
+	}
+
+	if resp.StatusCode >= 400 {
+		result.Error = string(respBody)
+	} else {
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+	}
+
+	return result, nil
+}
+
+// DynamicStream executes a /stream/_dynamic request and returns a channel of events.
+func (c *BAMLRestClient) DynamicStream(ctx context.Context, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream/_dynamic", c.baseURL), req)
+}
+
+// DynamicStreamWithRaw executes a /stream-with-raw/_dynamic request and returns a channel of events.
+func (c *BAMLRestClient) DynamicStreamWithRaw(ctx context.Context, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/_dynamic", c.baseURL), req)
+}
+
+// DynamicStreamNDJSON executes a /stream/_dynamic request with NDJSON format.
+func (c *BAMLRestClient) DynamicStreamNDJSON(ctx context.Context, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+	return c.dynamicStreamRequestNDJSON(ctx, fmt.Sprintf("%s/stream/_dynamic", c.baseURL), req)
+}
+
+// DynamicStreamWithRawNDJSON executes a /stream-with-raw/_dynamic request with NDJSON format.
+func (c *BAMLRestClient) DynamicStreamWithRawNDJSON(ctx context.Context, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+	return c.dynamicStreamRequestNDJSON(ctx, fmt.Sprintf("%s/stream-with-raw/_dynamic", c.baseURL), req)
+}
+
+func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+	events := make(chan StreamEvent)
+	errs := make(chan error, 1)
+
+	go func() {
+		defer close(events)
+		defer close(errs)
+
+		body, err := json.Marshal(req)
+		if err != nil {
+			errs <- err
+			return
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			errs <- err
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+
+		resp, err := c.http.Do(httpReq)
+		if err != nil {
+			errs <- err
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(resp.Body)
+			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+			return
+		}
+
+		if err := parseSSE(ctx, resp.Body, events); err != nil {
+			errs <- err
+		}
+	}()
+
+	return events, errs
+}
+
+func (c *BAMLRestClient) dynamicStreamRequestNDJSON(ctx context.Context, url string, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+	events := make(chan StreamEvent)
+	errs := make(chan error, 1)
+
+	go func() {
+		defer close(events)
+		defer close(errs)
+
+		body, err := json.Marshal(req)
+		if err != nil {
+			errs <- err
+			return
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			errs <- err
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", ContentTypeNDJSON)
+
+		resp, err := c.http.Do(httpReq)
+		if err != nil {
+			errs <- err
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(resp.Body)
+			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+			return
+		}
+
+		if err := parseNDJSON(ctx, resp.Body, events); err != nil {
+			errs <- err
+		}
+	}()
+
+	return events, errs
+}
+
+// DynamicParse executes a /parse/_dynamic request.
+func (c *BAMLRestClient) DynamicParse(ctx context.Context, req DynamicParseRequest) (*DynamicParseResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/parse/_dynamic", c.baseURL)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DynamicParseResponse{
+		StatusCode: resp.StatusCode,
+	}
+
+	if resp.StatusCode >= 400 {
+		result.Error = string(respBody)
+	} else {
+		result.Data = respBody
+	}
+
+	return result, nil
+}
+
+// OpenAPISchema represents the parsed OpenAPI schema with commonly accessed fields.
+type OpenAPISchema struct {
+	Paths      map[string]any `json:"paths"`
+	Components struct {
+		Schemas map[string]any `json:"schemas"`
+	} `json:"components"`
+}
+
+// GetOpenAPISchema fetches and parses the OpenAPI schema from the server.
+func (c *BAMLRestClient) GetOpenAPISchema(ctx context.Context) (*OpenAPISchema, error) {
+	url := fmt.Sprintf("%s/openapi.json", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var schema OpenAPISchema
+	if err := json.Unmarshal(body, &schema); err != nil {
+		return nil, fmt.Errorf("failed to parse OpenAPI schema: %w", err)
+	}
+
+	return &schema, nil
+}
