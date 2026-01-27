@@ -1135,6 +1135,9 @@ func Generate(selfPkg string) {
 		// Get the return type (first return value)
 		finalResultType := parseReflectType(syncFuncType.Out(0)).statement
 
+		// Check if return type has DynamicProperties that need unwrapping
+		isDynamic := hasDynamicPropertiesForType(syncFuncType.Out(0))
+
 		// Generate the parse function: parse{MethodName}
 		parseFuncName := strcase.LowerCamelCase("parse_" + methodName)
 
@@ -1156,8 +1159,30 @@ func Generate(selfPkg string) {
 			jen.If(jen.Id("parseErr").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("parseErr")),
 			),
-			jen.Return(jen.Id("result"), jen.Nil()),
 		}
+
+		// Add DynamicProperties unwrapping for types that have it
+		if isDynamic {
+			parseBody = append(parseBody,
+				jen.If(jen.Id("result").Dot("DynamicProperties").Op("!=").Nil()).Block(
+					jen.For(jen.List(jen.Id("key"), jen.Id("value")).Op(":=").Range().Id("result").Dot("DynamicProperties")).
+						Block(
+							// Try reflect.Value first (old BAML behavior)
+							jen.If(
+								jen.List(jen.Id("reflectValue"), jen.Id("ok")).Op(":=").Id("value").Assert(jen.Qual("reflect", "Value")),
+								jen.Id("ok"),
+							).Block(
+								jen.Id("result").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("reflectValue").Dot("Interface").Call()),
+							).Else().Block(
+								// Otherwise unwrap directly (BAML 0.215.0+ behavior)
+								jen.Id("result").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("value")),
+							),
+						),
+				),
+			)
+		}
+
+		parseBody = append(parseBody, jen.Return(jen.Id("result"), jen.Nil()))
 
 		out.Func().
 			Id(parseFuncName).
@@ -1200,7 +1225,6 @@ func Generate(selfPkg string) {
 	out.Func().Id("createTypeBuilder").
 		Params(
 			jen.Id("config").Op("*").Qual(common.InterfacesPkg, "TypeBuilder"),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Params(jen.Op("*").Qual(common.IntrospectedPkg, "TypeBuilder"), jen.Error()).
 		Block(
@@ -1213,7 +1237,7 @@ func Generate(selfPkg string) {
 			),
 			// Apply dynamic_types first (imperative API)
 			jen.If(jen.Id("config").Dot("DynamicTypes").Op("!=").Nil()).Block(
-				jen.If(jen.Id("err").Op(":=").Id("applyDynamicTypes").Call(jen.Id("tb"), jen.Id("config").Dot("DynamicTypes"), jen.Id("logger")), jen.Id("err").Op("!=").Nil()).Block(
+				jen.If(jen.Id("err").Op(":=").Id("applyDynamicTypes").Call(jen.Id("tb"), jen.Id("config").Dot("DynamicTypes")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to apply dynamic types: %w"), jen.Id("err"))),
 				),
 			),
@@ -1238,11 +1262,10 @@ func Generate(selfPkg string) {
 						jen.Id("TypeBuilderFactory"): jen.Func().
 							Params(
 								jen.Id("config").Op("*").Qual(common.InterfacesPkg, "TypeBuilder"),
-								jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 							).
 							Params(jen.Op("*").Qual(common.IntrospectedPkg, "TypeBuilder"), jen.Error()).
 							Block(
-								jen.Return(jen.Id("createTypeBuilder").Call(jen.Id("config"), jen.Id("logger"))),
+								jen.Return(jen.Id("createTypeBuilder").Call(jen.Id("config"))),
 							),
 					}),
 			),
@@ -1437,26 +1460,14 @@ func generateApplyDynamicTypes(out *jen.File) {
 	// (both come from the generated client, not the runtime library directly)
 	introspectedPkg := common.IntrospectedPkg
 	typeAlias := jen.Qual(introspectedPkg, "Type")
-
-	// Helper to generate a debug log call that checks if logger is not nil
-	logDebug := func(msg string, args ...jen.Code) jen.Code {
-		logArgs := []jen.Code{jen.Lit(msg)}
-		logArgs = append(logArgs, args...)
-		return jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-			jen.Id("logger").Dot("Debug").Call(logArgs...),
-		)
-	}
-
 	// Generate applyDynamicTypes function
 	out.Func().Id("applyDynamicTypes").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("dt").Op("*").Qual(common.InterfacesPkg, "DynamicTypes"),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Error().
 		Block(
-			logDebug("[DYNAMIC_TYPES] applyDynamicTypes called"),
 			jen.If(jen.Id("dt").Op("==").Nil()).Block(
 				jen.Return(jen.Nil()),
 			),
@@ -1469,68 +1480,47 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Id("classBuilderCache").Op(":=").Make(jen.Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder")),
 			jen.Line(),
 			// Phase 1: Create all enum shells (for NEW enums only, with values since we have builder)
-			logDebug("[DYNAMIC_TYPES] Phase 1: Creating enum shells"),
 			jen.For(jen.List(jen.Id("name"), jen.Id("enum")).Op(":=").Range().Id("dt").Dot("Enums")).Block(
-				jen.If(jen.Id("err").Op(":=").Id("createEnumShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache"), jen.Id("logger")), jen.Id("err").Op("!=").Nil()).Block(
+				jen.If(jen.Id("err").Op(":=").Id("createEnumShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("enum %q: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
 			// Phase 2: Add values to EXISTING enums
-			logDebug("[DYNAMIC_TYPES] Phase 2: Adding values to existing enums"),
 			jen.For(jen.List(jen.Id("name"), jen.Id("enum")).Op(":=").Range().Id("dt").Dot("Enums")).Block(
-				jen.If(jen.Id("err").Op(":=").Id("addEnumValues").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache"), jen.Id("logger")), jen.Id("err").Op("!=").Nil()).Block(
+				jen.If(jen.Id("err").Op(":=").Id("addEnumValues").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("enum %q values: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
 			// Phase 3: Create all NEW class shells (no properties yet - just register the type)
-			logDebug("[DYNAMIC_TYPES] Phase 3: Creating class shells"),
 			jen.For(jen.List(jen.Id("name"), jen.Id("_")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
-				jen.If(jen.Id("err").Op(":=").Id("createClassShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")), jen.Id("err").Op("!=").Nil()).Block(
+				jen.If(jen.Id("err").Op(":=").Id("createClassShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("typeCache"), jen.Id("classBuilderCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
 			// Phase 4a: Add properties to NEW classes only (from classBuilderCache)
 			// These classes only have primitive types or reference other new classes
-			logDebug("[DYNAMIC_TYPES] Phase 4a: Adding properties to NEW classes"),
 			jen.For(jen.List(jen.Id("name"), jen.Id("class")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
-				jen.If(jen.Id("err").Op(":=").Id("addNewClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")), jen.Id("err").Op("!=").Nil()).Block(
+				jen.If(jen.Id("err").Op(":=").Id("addNewClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q properties: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
 			// Phase 4b: Cache types for all NEW classes (now that properties are added)
-			logDebug("[DYNAMIC_TYPES] Phase 4b: Caching types for NEW classes"),
 			jen.For(jen.List(jen.Id("name"), jen.Id("cb")).Op(":=").Range().Id("classBuilderCache")).Block(
-				jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-					jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]   calling Type() on new class"), jen.Lit("class"), jen.Id("name")),
-				),
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("cb").Dot("Type").Call(),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q type: %w"), jen.Id("name"), jen.Id("err"))),
-				),
-				jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-					jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]   cached type"), jen.Lit("class"), jen.Id("name")),
 				),
 				jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
 			),
 			jen.Line(),
 			// Phase 4c: Add properties to EXISTING dynamic classes (refs can now be resolved)
-			logDebug("[DYNAMIC_TYPES] Phase 4c: Adding properties to EXISTING classes"),
 			jen.For(jen.List(jen.Id("name"), jen.Id("class")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
-				jen.If(jen.Id("err").Op(":=").Id("addExistingClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")), jen.Id("err").Op("!=").Nil()).Block(
+				jen.If(jen.Id("err").Op(":=").Id("addExistingClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q properties: %w"), jen.Id("name"), jen.Id("err"))),
-				),
-			),
-			logDebug("[DYNAMIC_TYPES] applyDynamicTypes completed successfully"),
-			// Print TypeBuilder state for debugging
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(
-					jen.Lit("[DYNAMIC_TYPES] TypeBuilder state"),
-					jen.Lit("state"),
-					jen.Qual("fmt", "Sprintf").Call(jen.Lit("%v"), jen.Id("tb")),
 				),
 			),
 			jen.Return(jen.Nil()),
@@ -1547,11 +1537,9 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Id("name").String(),
 			jen.Id("enum").Op("*").Qual(common.InterfacesPkg, "DynamicEnum"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Error().
 		Block(
-			jen.Id("_").Op("=").Id("logger"), // may be unused
 			// Check if enum already exists (either dynamic or static from baml_src)
 			// If so, skip - values will be added in Phase 2 for dynamic enums
 			jen.If(jen.Qual(introspectedPkg, "EnumExists").Call(jen.Id("name"))).Block(
@@ -1559,9 +1547,6 @@ func generateApplyDynamicTypes(out *jen.File) {
 			),
 			jen.Line(),
 			// Create new enum
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]   AddEnum"), jen.Lit("name"), jen.Id("name")),
-			),
 			jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create enum: %w"), jen.Id("err"))),
@@ -1595,12 +1580,10 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Id("name").String(),
 			jen.Id("enum").Op("*").Qual(common.InterfacesPkg, "DynamicEnum"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Error().
 		Block(
 			jen.Id("_").Op("=").Id("typeCache"), // unused
-			jen.Id("_").Op("=").Id("logger"),    // may be unused
 			// Check if this is an existing dynamic enum via introspected accessor
 			jen.List(jen.Id("accessor"), jen.Id("ok")).Op(":=").Qual(introspectedPkg, "DynamicEnums").Index(jen.Id("name")),
 			jen.If(jen.Op("!").Id("ok")).Block(
@@ -1639,7 +1622,6 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Id("name").String(),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Error().
 		Block(
@@ -1647,16 +1629,10 @@ func generateApplyDynamicTypes(out *jen.File) {
 			// Check if class already exists (either dynamic or static from baml_src)
 			// If so, skip - properties will be added in Phase 4c for dynamic classes
 			jen.If(jen.Qual(introspectedPkg, "ClassExists").Call(jen.Id("name"))).Block(
-				jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-					jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]   class already exists (skipping shell creation)"), jen.Lit("class"), jen.Id("name")),
-				),
 				jen.Return(jen.Nil()),
 			),
 			jen.Line(),
 			// Create new class shell (no properties yet, no Type() call)
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]   AddClass (new class shell)"), jen.Lit("class"), jen.Id("name")),
-			),
 			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create class: %w"), jen.Id("err"))),
@@ -1678,7 +1654,6 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Error().
 		Block(
@@ -1689,28 +1664,19 @@ func generateApplyDynamicTypes(out *jen.File) {
 				jen.Return(jen.Nil()),
 			),
 			jen.Line(),
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]   adding properties to NEW class"), jen.Lit("class"), jen.Id("name")),
-			),
 			// Add properties to the new class builder
 			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
-				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")),
+				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					// Skip unresolved refs - they may reference existing types in baml_src
 					// which will be resolved when the type is used
 					jen.If(jen.Qual("strings", "Contains").Call(jen.Id("err").Dot("Error").Call(), jen.Lit("unresolved reference"))).Block(
-						jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-							jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]     skipping unresolved ref"), jen.Lit("class"), jen.Id("name"), jen.Lit("property"), jen.Id("propName"), jen.Lit("error"), jen.Id("err").Dot("Error").Call()),
-						),
 						jen.Continue(),
 					),
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q type: %w"), jen.Id("propName"), jen.Id("err"))),
 				),
 				jen.Line(),
 				// Call AddProperty using the typed ClassBuilder interface
-				jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-					jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]     AddProperty (new class)"), jen.Lit("class"), jen.Id("name"), jen.Lit("property"), jen.Id("propName")),
-				),
 				jen.List(jen.Id("_"), jen.Id("err")).Op("=").Id("cb").Dot("AddProperty").Call(jen.Id("propName"), jen.Id("typ")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q: %w"), jen.Id("propName"), jen.Id("err"))),
@@ -1729,7 +1695,6 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Error().
 		Block(
@@ -1746,9 +1711,6 @@ func generateApplyDynamicTypes(out *jen.File) {
 			),
 			jen.Line(),
 			// Get the class builder using the typed accessor
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]   getting EXISTING class builder"), jen.Lit("class"), jen.Id("name")),
-			),
 			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("accessor").Call(jen.Id("tb")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get class builder: %w"), jen.Id("err"))),
@@ -1756,33 +1718,20 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Line(),
 			// Add properties to the existing class builder
 			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
-				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")),
+				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					// Skip unresolved refs - they may reference types in baml_src
 					jen.If(jen.Qual("strings", "Contains").Call(jen.Id("err").Dot("Error").Call(), jen.Lit("unresolved reference"))).Block(
-						jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-							jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]     skipping unresolved ref"), jen.Lit("class"), jen.Id("name"), jen.Lit("property"), jen.Id("propName"), jen.Lit("error"), jen.Id("err").Dot("Error").Call()),
-						),
 						jen.Continue(),
 					),
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q type: %w"), jen.Id("propName"), jen.Id("err"))),
 				),
 				jen.Line(),
 				// Call AddProperty using the typed ClassBuilder interface
-				jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-					jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]     AddProperty (existing class)"), jen.Lit("class"), jen.Id("name"), jen.Lit("property"), jen.Id("propName")),
-				),
 				jen.List(jen.Id("_"), jen.Id("err")).Op("=").Id("cb").Dot("AddProperty").Call(jen.Id("propName"), jen.Id("typ")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q: %w"), jen.Id("propName"), jen.Id("err"))),
 				),
-			),
-			jen.Line(),
-			// NOTE: We do NOT call Type() on existing classes here.
-			// Unlike new classes (Phase 4b), existing dynamic classes should not have
-			// Type() called after adding properties - this matches the working repro behavior.
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]   finished adding properties to existing class (no Type() call)"), jen.Lit("class"), jen.Id("name")),
 			),
 			jen.Return(jen.Nil()),
 		)
@@ -1794,13 +1743,12 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Id("prop").Op("*").Qual(common.InterfacesPkg, "DynamicProperty"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Params(typeAlias, jen.Error()).
 		Block(
 			// Handle $ref
 			jen.If(jen.Id("prop").Dot("Ref").Op("!=").Lit("")).Block(
-				jen.Return(jen.Id("resolveRef").Call(jen.Id("tb"), jen.Id("prop").Dot("Ref"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger"))),
+				jen.Return(jen.Id("resolveRef").Call(jen.Id("tb"), jen.Id("prop").Dot("Ref"), jen.Id("typeCache"), jen.Id("classBuilderCache"))),
 			),
 			jen.Line(),
 			// Convert to DynamicTypeRef and resolve
@@ -1817,7 +1765,6 @@ func generateApplyDynamicTypes(out *jen.File) {
 				}),
 				jen.Id("typeCache"),
 				jen.Id("classBuilderCache"),
-				jen.Id("logger"),
 			)),
 		)
 
@@ -1828,7 +1775,6 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Id("ref").Op("*").Qual(common.InterfacesPkg, "DynamicTypeRef"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Params(typeAlias, jen.Error()).
 		Block(
@@ -1838,7 +1784,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Line(),
 			// Handle $ref
 			jen.If(jen.Id("ref").Dot("Ref").Op("!=").Lit("")).Block(
-				jen.Return(jen.Id("resolveRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Ref"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger"))),
+				jen.Return(jen.Id("resolveRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Ref"), jen.Id("typeCache"), jen.Id("classBuilderCache"))),
 			),
 			jen.Line(),
 			jen.Switch(jen.Id("ref").Dot("Type")).Block(
@@ -1891,7 +1837,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 					jen.If(jen.Id("ref").Dot("Items").Op("==").Nil()).Block(
 						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("list type requires 'items' field"))),
 					),
-					jen.List(jen.Id("inner"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Items"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")),
+					jen.List(jen.Id("inner"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Items"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 					jen.If(jen.Id("err").Op("!=").Nil()).Block(
 						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("list items: %w"), jen.Id("err"))),
 					),
@@ -1901,7 +1847,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 					jen.If(jen.Id("ref").Dot("Inner").Op("==").Nil()).Block(
 						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("optional type requires 'inner' field"))),
 					),
-					jen.List(jen.Id("inner"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Inner"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")),
+					jen.List(jen.Id("inner"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Inner"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 					jen.If(jen.Id("err").Op("!=").Nil()).Block(
 						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("optional inner: %w"), jen.Id("err"))),
 					),
@@ -1914,11 +1860,11 @@ func generateApplyDynamicTypes(out *jen.File) {
 					jen.If(jen.Id("ref").Dot("Values").Op("==").Nil()).Block(
 						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("map type requires 'values' field"))),
 					),
-					jen.List(jen.Id("keys"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Keys"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")),
+					jen.List(jen.Id("keys"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Keys"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 					jen.If(jen.Id("err").Op("!=").Nil()).Block(
 						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("map keys: %w"), jen.Id("err"))),
 					),
-					jen.List(jen.Id("values"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Values"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")),
+					jen.List(jen.Id("values"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("ref").Dot("Values"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 					jen.If(jen.Id("err").Op("!=").Nil()).Block(
 						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("map values: %w"), jen.Id("err"))),
 					),
@@ -1930,7 +1876,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 					),
 					jen.Id("types").Op(":=").Make(jen.Index().Add(typeAlias), jen.Lit(0), jen.Len(jen.Id("ref").Dot("OneOf"))),
 					jen.For(jen.List(jen.Id("i"), jen.Id("item")).Op(":=").Range().Id("ref").Dot("OneOf")).Block(
-						jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("item"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("logger")),
+						jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolveTypeRef").Call(jen.Id("tb"), jen.Id("item"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("union oneOf[%d]: %w"), jen.Id("i"), jen.Id("err"))),
 						),
@@ -1955,26 +1901,16 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Id("name").String(),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
-			jen.Id("logger").Qual(common.InterfacesPkg, "Logger"),
 		).
 		Params(typeAlias, jen.Error()).
 		Block(
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]     resolveRef"), jen.Lit("name"), jen.Id("name")),
-			),
 			// Check cache first (from dynamic_types)
 			jen.If(jen.List(jen.Id("typ"), jen.Id("ok")).Op(":=").Id("typeCache").Index(jen.Id("name")), jen.Id("ok")).Block(
-				jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-					jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]       -> found in typeCache"), jen.Lit("name"), jen.Id("name")),
-				),
 				jen.Return(jen.Id("typ"), jen.Nil()),
 			),
 			jen.Line(),
 			// Check if this is a newly created class - get type directly from builder
 			jen.If(jen.List(jen.Id("cb"), jen.Id("ok")).Op(":=").Id("classBuilderCache").Index(jen.Id("name")), jen.Id("ok")).Block(
-				jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-					jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]       -> found in classBuilderCache, calling Type()"), jen.Lit("name"), jen.Id("name")),
-				),
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("cb").Dot("Type").Call(),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("get type for class %q: %w"), jen.Id("name"), jen.Id("err"))),
@@ -1984,34 +1920,19 @@ func generateApplyDynamicTypes(out *jen.File) {
 			),
 			jen.Line(),
 			// Try to get existing class via introspected accessor
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]       -> trying GetClassType"), jen.Lit("name"), jen.Id("name")),
-			),
 			jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Qual(introspectedPkg, "GetClassType").Call(jen.Id("tb"), jen.Id("name")),
 			jen.If(jen.Id("err").Op("==").Nil().Op("&&").Id("typ").Op("!=").Nil()).Block(
-				jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-					jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]       -> found via GetClassType"), jen.Lit("name"), jen.Id("name")),
-				),
 				jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
 				jen.Return(jen.Id("typ"), jen.Nil()),
 			),
 			jen.Line(),
 			// Try to get existing enum via introspected accessor
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]       -> trying GetEnumType"), jen.Lit("name"), jen.Id("name")),
-			),
 			jen.List(jen.Id("typ"), jen.Id("err")).Op("=").Qual(introspectedPkg, "GetEnumType").Call(jen.Id("tb"), jen.Id("name")),
 			jen.If(jen.Id("err").Op("==").Nil().Op("&&").Id("typ").Op("!=").Nil()).Block(
-				jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-					jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]       -> found via GetEnumType"), jen.Lit("name"), jen.Id("name")),
-				),
 				jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
 				jen.Return(jen.Id("typ"), jen.Nil()),
 			),
 			jen.Line(),
-			jen.If(jen.Id("logger").Op("!=").Nil()).Block(
-				jen.Id("logger").Dot("Debug").Call(jen.Lit("[DYNAMIC_TYPES]       -> UNRESOLVED"), jen.Lit("name"), jen.Id("name")),
-			),
 			jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("unresolved reference: %q"), jen.Id("name"))),
 		)
 }
