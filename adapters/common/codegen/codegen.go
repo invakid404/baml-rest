@@ -19,9 +19,9 @@ const (
 )
 
 type methodOut struct {
-	name                  string
-	inputStructName       string
-	outputStructQual      jen.Code
+	name                   string
+	inputStructName        string
+	outputStructQual       jen.Code
 	streamOutputStructQual jen.Code
 }
 
@@ -509,8 +509,8 @@ func Generate(selfPkg string) {
 			jen.Var().Id("stopping").Qual("sync/atomic", "Bool"),   // shutdown requested
 			jen.Var().Id("inTick").Qual("sync/atomic", "Int64"),    // number of onTick currently executing
 			jen.Var().Id("pending").Qual("sync/atomic", "Int64"),   // number of queued items not yet completed
-			jen.Id("ticksDone").Op(":=").Make(jen.Chan().Struct()),  // closed when stopping && inTick==0
-			jen.Id("allDone").Op(":=").Make(jen.Chan().Struct()),    // closed when stopping && pending==0
+			jen.Id("ticksDone").Op(":=").Make(jen.Chan().Struct()), // closed when stopping && inTick==0
+			jen.Id("allDone").Op(":=").Make(jen.Chan().Struct()),   // closed when stopping && pending==0
 			jen.Var().Id("ticksOnce").Qual("sync", "Once"),
 			jen.Var().Id("allOnce").Qual("sync", "Once"),
 			jen.Var().Id("shutdownOnce").Qual("sync", "Once"),
@@ -762,10 +762,10 @@ func Generate(selfPkg string) {
 							// Pass adapter as context (hack adds ctx param to ParseStream methods)
 							jen.List(jen.Id("parsed"), jen.Id("parseErr")).Op(":=").
 								Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
-									jen.Id("adapter"),
-									jen.Id("raw"),
-									jen.Id("options").Op("..."),
-								),
+								jen.Id("adapter"),
+								jen.Id("raw"),
+								jen.Id("options").Op("..."),
+							),
 							jen.If(jen.Id("parseErr").Op("==").Nil()).Block(
 								// Pre-check: if adapter is cancelled, don't attempt send
 								// (avoids race where select randomly picks out <- after close)
@@ -1479,9 +1479,11 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Return(jen.Nil()),
 		)
 
-	// Generate createEnumShell helper - creates enum with values (new) or caches existing type (Phase 1)
+	// Generate createEnumShell helper - creates enum with values (new) or skips existing
 	// For NEW enums: creates enum AND adds values (since we have the builder)
-	// For EXISTING enums: just caches type (values added in Phase 2 via introspected accessors)
+	// For EXISTING enums: does nothing (values added in Phase 2 via introspected accessors)
+	// IMPORTANT: We must NOT call GetEnumType here for existing enums because that would
+	// call Type() on the builder which "finalizes" the enum before Phase 2 adds values.
 	out.Func().Id("createEnumShell").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
@@ -1494,17 +1496,9 @@ func generateApplyDynamicTypes(out *jen.File) {
 			// Try to create enum first (new dynamic enum)
 			jen.List(jen.Id("eb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddEnum").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				// Enum already exists - get its type via introspected accessor
-				// Values will be added in Phase 2 for existing dynamic enums
-				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Qual(introspectedPkg, "GetEnumType").Call(jen.Id("tb"), jen.Id("name")),
-				jen.If(jen.Id("err").Op("!=").Nil()).Block(
-					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get existing enum type: %w"), jen.Id("err"))),
-				),
-				jen.If(jen.Id("typ").Op("!=").Nil()).Block(
-					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
-					jen.Return(jen.Nil()),
-				),
-				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create or get enum: %w"), jen.Id("err"))),
+				// Enum already exists - just return, values will be added in Phase 2
+				// DO NOT call GetEnumType here - that would finalize the enum prematurely
+				jen.Return(jen.Nil()),
 			),
 			jen.Line(),
 			// NEW enum - add values now since we have the builder
@@ -1565,9 +1559,11 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Return(jen.Nil()),
 		)
 
-	// Generate createClassShell helper - creates class with properties (new) or caches existing type
+	// Generate createClassShell helper - creates class with properties (new) or skips existing
 	// For NEW classes: creates class AND adds properties (since we have the builder)
-	// For EXISTING classes: just caches type (properties added in Phase 4 via introspected accessors)
+	// For EXISTING classes: does nothing (properties added in Phase 4 via introspected accessors)
+	// IMPORTANT: We must NOT call GetClassType here for existing classes because that would
+	// call Type() on the builder which "finalizes" the class before Phase 4 adds properties.
 	out.Func().Id("createClassShell").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
@@ -1580,17 +1576,9 @@ func generateApplyDynamicTypes(out *jen.File) {
 			// Try to create class first (new dynamic class)
 			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				// Class already exists, get its type via introspected accessor
-				// Properties will be added in Phase 4 for existing dynamic classes
-				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Qual(introspectedPkg, "GetClassType").Call(jen.Id("tb"), jen.Id("name")),
-				jen.If(jen.Id("err").Op("!=").Nil()).Block(
-					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get existing class type: %w"), jen.Id("err"))),
-				),
-				jen.If(jen.Id("typ").Op("!=").Nil()).Block(
-					jen.Id("typeCache").Index(jen.Id("name")).Op("=").Id("typ"),
-					jen.Return(jen.Nil()),
-				),
-				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create or get class: %w"), jen.Id("err"))),
+				// Class already exists - just return, properties will be added in Phase 4
+				// DO NOT call GetClassType here - that would finalize the class prematurely
+				jen.Return(jen.Nil()),
 			),
 			jen.Line(),
 			// NEW class - add properties now since we have the builder
