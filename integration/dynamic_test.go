@@ -872,6 +872,11 @@ func TestDynamicTypesImperative(t *testing.T) {
 	})
 
 	t.Run("add_map_property", func(t *testing.T) {
+		// Skip for BAML versions < 0.215.0 due to a bug with map types in dynamic classes
+		if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+			t.Skip("Skipping: map types in dynamic classes require BAML >= 0.215.0")
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -1063,6 +1068,11 @@ func TestDynamicTypesImperative(t *testing.T) {
 	})
 
 	t.Run("nested_new_classes_parse_api", func(t *testing.T) {
+		// Skip for BAML versions < 0.215.0 due to a bug with nested dynamic classes
+		if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+			t.Skip("Skipping: nested dynamic classes require BAML >= 0.215.0")
+		}
+
 		// Test the same scenario as nested_new_classes but using the Parse API directly
 		// instead of going through a full LLM call. This helps isolate whether the bug
 		// is in the streaming API or also affects direct parsing.
