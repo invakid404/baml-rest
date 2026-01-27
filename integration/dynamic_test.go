@@ -1129,29 +1129,22 @@ func TestDynamicTypesImperative(t *testing.T) {
 			t.Fatalf("Expected DynamicProperties to be present, got nil")
 		}
 
-		// The Parse API returns dynamic classes with a wrapper structure:
-		// {"Name": "ClassName", "Fields": {...actual fields...}}
+		// Dynamic classes are unwrapped - fields are returned directly without Name/Fields wrapper
 		location, ok := result.DynamicProperties["location"].(map[string]any)
 		if !ok {
 			t.Fatalf("Expected location to be a map, got %T: %v", result.DynamicProperties["location"], result.DynamicProperties["location"])
 		}
 
-		// Verify the class name
-		if location["Name"] != "Location" {
-			t.Errorf("Expected Name 'Location', got %v", location["Name"])
+		// Verify the unwrapped format - no Name/Fields wrapper
+		if location["Name"] != nil || location["Fields"] != nil {
+			t.Errorf("Dynamic class should be unwrapped, got internal format: %v", location)
 		}
 
-		// Get the actual fields
-		fields, ok := location["Fields"].(map[string]any)
-		if !ok {
-			t.Fatalf("Expected Fields to be a map, got %T: %v", location["Fields"], location["Fields"])
+		if location["street"] != "123 Main St" {
+			t.Errorf("Expected street '123 Main St', got %v", location["street"])
 		}
-
-		if fields["street"] != "123 Main St" {
-			t.Errorf("Expected street '123 Main St', got %v", fields["street"])
-		}
-		if fields["city"] != "Springfield" {
-			t.Errorf("Expected city 'Springfield', got %v", fields["city"])
+		if location["city"] != "Springfield" {
+			t.Errorf("Expected city 'Springfield', got %v", location["city"])
 		}
 	})
 }
