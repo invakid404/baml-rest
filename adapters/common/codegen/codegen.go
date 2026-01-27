@@ -1446,33 +1446,35 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.If(jen.Id("err").Op(":=").Id("dt").Dot("Validate").Call(), jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("invalid dynamic_types schema: %w"), jen.Id("err"))),
 			),
-			// Create type cache for resolving references
+			// Create caches
 			jen.Id("typeCache").Op(":=").Make(jen.Map(jen.String()).Add(typeAlias)),
+			jen.Id("classBuilderCache").Op(":=").Make(jen.Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder")),
 			jen.Line(),
-			// Phase 1: Create all enum shells (cache types, no values yet)
+			// Phase 1: Create all enum shells (for NEW enums only, with values since we have builder)
 			jen.For(jen.List(jen.Id("name"), jen.Id("enum")).Op(":=").Range().Id("dt").Dot("Enums")).Block(
 				jen.If(jen.Id("err").Op(":=").Id("createEnumShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("enum %q: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
-			// Phase 2: Add values to enums (mirrors Phase 4 for classes)
+			// Phase 2: Add values to EXISTING enums
 			jen.For(jen.List(jen.Id("name"), jen.Id("enum")).Op(":=").Range().Id("dt").Dot("Enums")).Block(
 				jen.If(jen.Id("err").Op(":=").Id("addEnumValues").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("enum %q values: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
-			// Phase 3: Create all class shells (for forward references)
-			jen.For(jen.List(jen.Id("name"), jen.Id("class")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
-				jen.If(jen.Id("err").Op(":=").Id("createClassShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
+			// Phase 3: Create all NEW class shells (no properties yet - just register the type)
+			jen.For(jen.List(jen.Id("name"), jen.Id("_")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
+				jen.If(jen.Id("err").Op(":=").Id("createClassShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("typeCache"), jen.Id("classBuilderCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
-			// Phase 4: Add properties to classes (all refs now resolvable)
+			// Phase 4: Add properties to ALL classes (both new and existing)
+			// At this point, all types are registered so refs can be resolved
 			jen.For(jen.List(jen.Id("name"), jen.Id("class")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
-				jen.If(jen.Id("err").Op(":=").Id("addClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
+				jen.If(jen.Id("err").Op(":=").Id("addClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q properties: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
@@ -1563,17 +1565,19 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Return(jen.Nil()),
 		)
 
-	// Generate createClassShell helper - creates class with properties (new) or skips existing
-	// For NEW classes: creates class AND adds properties (since we have the builder)
+	// Generate createClassShell helper - creates class shell only (no properties)
+	// For NEW classes: creates class, caches builder for Phase 4, caches type for ref resolution
 	// For EXISTING classes: does nothing (properties added in Phase 4 via introspected accessors)
 	// IMPORTANT: We must check if the class already exists BEFORE calling AddClass, because
 	// calling AddClass on an existing class may have side effects in BAML's internal state.
+	// IMPORTANT: NO properties are added here - all property additions happen in Phase 4
+	// after ALL types are registered. This ensures forward references can be resolved.
 	out.Func().Id("createClassShell").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
-			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
+			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
 		).
 		Error().
 		Block(
@@ -1583,29 +1587,16 @@ func generateApplyDynamicTypes(out *jen.File) {
 				jen.Return(jen.Nil()),
 			),
 			jen.Line(),
-			// Create new class
+			// Create new class shell (no properties yet)
 			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("tb").Dot("AddClass").Call(jen.Id("name")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to create class: %w"), jen.Id("err"))),
 			),
 			jen.Line(),
-			// NEW class - add properties now since we have the builder
-			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
-				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache")),
-				jen.If(jen.Id("err").Op("!=").Nil()).Block(
-					// Skip unresolved refs - they may reference types in baml_src
-					jen.If(jen.Qual("strings", "Contains").Call(jen.Id("err").Dot("Error").Call(), jen.Lit("unresolved reference"))).Block(
-						jen.Continue(),
-					),
-					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q type: %w"), jen.Id("propName"), jen.Id("err"))),
-				),
-				jen.List(jen.Id("_"), jen.Id("err")).Op("=").Id("cb").Dot("AddProperty").Call(jen.Id("propName"), jen.Id("typ")),
-				jen.If(jen.Id("err").Op("!=").Nil()).Block(
-					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("property %q: %w"), jen.Id("propName"), jen.Id("err"))),
-				),
-			),
+			// Cache the builder for Phase 4 property additions
+			jen.Id("classBuilderCache").Index(jen.Id("name")).Op("=").Id("cb"),
 			jen.Line(),
-			// Cache the new class's type
+			// Cache the new class's type for ref resolution
 			jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("cb").Dot("Type").Call(),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get type: %w"), jen.Id("err"))),
@@ -1614,30 +1605,42 @@ func generateApplyDynamicTypes(out *jen.File) {
 			jen.Return(jen.Nil()),
 		)
 
-	// Generate addClassProperties helper
+	// Generate addClassProperties helper - adds properties to ALL classes in Phase 4
+	// For NEW classes: uses classBuilderCache to get the builder created in Phase 3
+	// For EXISTING dynamic classes: uses introspected accessor
+	// For static classes: skips (cannot add properties to non-dynamic classes)
 	out.Func().Id("addClassProperties").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
 			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
+			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
 		).
 		Error().
 		Block(
-			// Check if this is a dynamic class via introspected accessor
-			jen.List(jen.Id("accessor"), jen.Id("ok")).Op(":=").Qual(introspectedPkg, "DynamicClasses").Index(jen.Id("name")),
-			jen.If(jen.Op("!").Id("ok")).Block(
-				// Class is read-only (static) - cannot add properties
-				// This is expected for existing classes in baml_src
-				jen.Return(jen.Nil()),
+			jen.Var().Id("cb").Qual(introspectedPkg, "DynamicClassBuilder"),
+			jen.Line(),
+			// First check if this is a NEW class (created in Phase 3, cached)
+			jen.If(jen.List(jen.Id("cached"), jen.Id("ok")).Op(":=").Id("classBuilderCache").Index(jen.Id("name")), jen.Id("ok")).Block(
+				jen.Id("cb").Op("=").Id("cached"),
+			).Else().Block(
+				// Not a new class - check if it's an EXISTING dynamic class
+				jen.List(jen.Id("accessor"), jen.Id("ok")).Op(":=").Qual(introspectedPkg, "DynamicClasses").Index(jen.Id("name")),
+				jen.If(jen.Op("!").Id("ok")).Block(
+					// Class is read-only (static) - cannot add properties
+					jen.Return(jen.Nil()),
+				),
+				jen.Line(),
+				// Get the class builder using the typed accessor
+				jen.List(jen.Id("builder"), jen.Id("err")).Op(":=").Id("accessor").Call(jen.Id("tb")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get class builder: %w"), jen.Id("err"))),
+				),
+				jen.Id("cb").Op("=").Id("builder"),
 			),
 			jen.Line(),
-			// Get the class builder using the typed accessor
-			jen.List(jen.Id("cb"), jen.Id("err")).Op(":=").Id("accessor").Call(jen.Id("tb")),
-			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("get class builder: %w"), jen.Id("err"))),
-			),
-			jen.Line(),
+			// Add properties to the class builder
 			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
