@@ -424,9 +424,10 @@ func generateOpenAPISchema() *openapi3.T {
 		},
 	}
 
-	// Helper to create error response refs
-	errorResponseRef := &openapi3.SchemaRef{
-		Ref: fmt.Sprintf("#/components/schemas/%s", errorResponseSchemaName),
+	// Helper to create error response refs - creates new instance each time to avoid pointer reuse issues
+	errorResponseRefPath := fmt.Sprintf("#/components/schemas/%s", errorResponseSchemaName)
+	newErrorResponseRef := func() *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{Ref: errorResponseRefPath}
 	}
 	badRequestDescription := "Bad request - invalid input, missing required fields, or malformed JSON"
 	internalErrorDescription := "Internal server error"
@@ -507,7 +508,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &badRequestDescription,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: errorResponseRef,
+						Schema: newErrorResponseRef(),
 					},
 				},
 			},
@@ -517,7 +518,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &internalErrorDescription,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: errorResponseRef,
+						Schema: newErrorResponseRef(),
 					},
 				},
 			},
@@ -574,7 +575,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &badRequestDescription,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: errorResponseRef,
+						Schema: newErrorResponseRef(),
 					},
 				},
 			},
@@ -584,7 +585,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &internalErrorDescription,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: errorResponseRef,
+						Schema: newErrorResponseRef(),
 					},
 				},
 			},
@@ -672,7 +673,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &badRequestDescription,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: errorResponseRef,
+						Schema: newErrorResponseRef(),
 					},
 				},
 			},
@@ -682,7 +683,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &internalErrorDescription,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: errorResponseRef,
+						Schema: newErrorResponseRef(),
 					},
 				},
 			},
@@ -764,7 +765,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &badRequestDescription,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: errorResponseRef,
+						Schema: newErrorResponseRef(),
 					},
 				},
 			},
@@ -774,7 +775,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &internalErrorDescription,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: errorResponseRef,
+						Schema: newErrorResponseRef(),
 					},
 				},
 			},
@@ -808,7 +809,7 @@ func generateOpenAPISchema() *openapi3.T {
 
 	// Generate dynamic endpoint schemas (only if dynamic method exists - requires BAML >= 0.215.0)
 	if _, hasDynamic := baml_rest.Methods[bamlutils.DynamicMethodName]; hasDynamic {
-		generateDynamicEndpoints(schemas, paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName, errorResponseRef, badRequestDescription, internalErrorDescription)
+		generateDynamicEndpoints(schemas, paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName, newErrorResponseRef, badRequestDescription, internalErrorDescription)
 	}
 
 	return &openapi3.T{
@@ -825,7 +826,7 @@ func generateOpenAPISchema() *openapi3.T {
 }
 
 // generateDynamicEndpoints adds the dynamic prompt endpoint schemas
-func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName string, errorResponseRef *openapi3.SchemaRef, badRequestDescription, internalErrorDescription string) {
+func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName string, newErrorResponseRef func() *openapi3.SchemaRef, badRequestDescription, internalErrorDescription string) {
 	endpointName := bamlutils.DynamicEndpointName
 
 	// Cache control schema
@@ -1167,7 +1168,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &badRequestDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
@@ -1177,7 +1178,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &internalErrorDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
@@ -1239,7 +1240,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &badRequestDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
@@ -1249,7 +1250,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &internalErrorDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
@@ -1335,7 +1336,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &badRequestDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
@@ -1345,7 +1346,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &internalErrorDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
@@ -1432,7 +1433,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &badRequestDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
@@ -1442,7 +1443,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &internalErrorDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
@@ -1488,7 +1489,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &badRequestDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
@@ -1498,7 +1499,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &internalErrorDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: errorResponseRef,
+					Schema: newErrorResponseRef(),
 				},
 			},
 		},
