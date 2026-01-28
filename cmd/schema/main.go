@@ -400,6 +400,37 @@ func generateOpenAPISchema() *openapi3.T {
 		},
 	}
 
+	// Error response schema for non-streaming endpoints
+	errorResponseSchemaName := "__ErrorResponse__"
+	schemas[errorResponseSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Error response returned for failed requests",
+			Properties: openapi3.Schemas{
+				"error": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Error message describing what went wrong",
+					},
+				},
+				"request_id": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Request ID for debugging (from X-Request-Id header)",
+					},
+				},
+			},
+			Required: []string{"error"},
+		},
+	}
+
+	// Helper to create error response refs
+	errorResponseRef := &openapi3.SchemaRef{
+		Ref: fmt.Sprintf("#/components/schemas/%s", errorResponseSchemaName),
+	}
+	badRequestDescription := "Bad request - invalid input, missing required fields, or malformed JSON"
+	internalErrorDescription := "Internal server error"
+
 	for methodName, method := range baml_rest.Methods {
 		// Skip the internal dynamic method - it has dedicated endpoints with custom schema
 		if methodName == bamlutils.DynamicMethodName {
@@ -471,6 +502,26 @@ func generateOpenAPISchema() *openapi3.T {
 				},
 			},
 		})
+		responses.Set("400", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &badRequestDescription,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: errorResponseRef,
+					},
+				},
+			},
+		})
+		responses.Set("500", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &internalErrorDescription,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: errorResponseRef,
+					},
+				},
+			},
+		})
 
 		path := fmt.Sprintf("/call/%s", methodName)
 		paths.Set(path, &openapi3.PathItem{
@@ -514,6 +565,26 @@ func generateOpenAPISchema() *openapi3.T {
 								Required: []string{"data", "raw"},
 							},
 						},
+					},
+				},
+			},
+		})
+		rawResponses.Set("400", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &badRequestDescription,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: errorResponseRef,
+					},
+				},
+			},
+		})
+		rawResponses.Set("500", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &internalErrorDescription,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: errorResponseRef,
 					},
 				},
 			},
@@ -596,6 +667,26 @@ func generateOpenAPISchema() *openapi3.T {
 				},
 			},
 		})
+		streamResponses.Set("400", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &badRequestDescription,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: errorResponseRef,
+					},
+				},
+			},
+		})
+		streamResponses.Set("500", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &internalErrorDescription,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: errorResponseRef,
+					},
+				},
+			},
+		})
 
 		streamPath := fmt.Sprintf("/stream/%s", methodName)
 		paths.Set(streamPath, &openapi3.PathItem{
@@ -668,6 +759,26 @@ func generateOpenAPISchema() *openapi3.T {
 				},
 			},
 		})
+		streamWithRawResponses.Set("400", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &badRequestDescription,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: errorResponseRef,
+					},
+				},
+			},
+		})
+		streamWithRawResponses.Set("500", &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &internalErrorDescription,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: errorResponseRef,
+					},
+				},
+			},
+		})
 
 		streamWithRawPath := fmt.Sprintf("/stream-with-raw/%s", methodName)
 		paths.Set(streamWithRawPath, &openapi3.PathItem{
@@ -697,7 +808,7 @@ func generateOpenAPISchema() *openapi3.T {
 
 	// Generate dynamic endpoint schemas (only if dynamic method exists - requires BAML >= 0.215.0)
 	if _, hasDynamic := baml_rest.Methods[bamlutils.DynamicMethodName]; hasDynamic {
-		generateDynamicEndpoints(schemas, paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName)
+		generateDynamicEndpoints(schemas, paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName, errorResponseRef, badRequestDescription, internalErrorDescription)
 	}
 
 	return &openapi3.T{
@@ -714,7 +825,7 @@ func generateOpenAPISchema() *openapi3.T {
 }
 
 // generateDynamicEndpoints adds the dynamic prompt endpoint schemas
-func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName string) {
+func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName string, errorResponseRef *openapi3.SchemaRef, badRequestDescription, internalErrorDescription string) {
 	endpointName := bamlutils.DynamicEndpointName
 
 	// Cache control schema
@@ -1051,6 +1162,26 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			},
 		},
 	})
+	callResponses.Set("400", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &badRequestDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
+				},
+			},
+		},
+	})
+	callResponses.Set("500", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &internalErrorDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
+				},
+			},
+		},
+	})
 
 	paths.Set(fmt.Sprintf("/call/%s", endpointName), &openapi3.PathItem{
 		Post: &openapi3.Operation{
@@ -1099,6 +1230,26 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 							Required: []string{"data", "raw"},
 						},
 					},
+				},
+			},
+		},
+	})
+	callWithRawResponses.Set("400", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &badRequestDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
+				},
+			},
+		},
+	})
+	callWithRawResponses.Set("500", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &internalErrorDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
 				},
 			},
 		},
@@ -1175,6 +1326,26 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 							Description: sseStreamDescription,
 						},
 					},
+				},
+			},
+		},
+	})
+	streamResponses.Set("400", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &badRequestDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
+				},
+			},
+		},
+	})
+	streamResponses.Set("500", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &internalErrorDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
 				},
 			},
 		},
@@ -1256,6 +1427,26 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			},
 		},
 	})
+	streamWithRawResponses.Set("400", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &badRequestDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
+				},
+			},
+		},
+	})
+	streamWithRawResponses.Set("500", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &internalErrorDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
+				},
+			},
+		},
+	})
 
 	paths.Set(fmt.Sprintf("/stream-with-raw/%s", endpointName), &openapi3.PathItem{
 		Post: &openapi3.Operation{
@@ -1288,6 +1479,26 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 					Schema: &openapi3.SchemaRef{
 						Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
 					},
+				},
+			},
+		},
+	})
+	parseResponses.Set("400", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &badRequestDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
+				},
+			},
+		},
+	})
+	parseResponses.Set("500", &openapi3.ResponseRef{
+		Value: &openapi3.Response{
+			Description: &internalErrorDescription,
+			Content: openapi3.Content{
+				"application/json": &openapi3.MediaType{
+					Schema: errorResponseRef,
 				},
 			},
 		},
