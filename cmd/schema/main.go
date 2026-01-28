@@ -492,6 +492,7 @@ func generateOpenAPISchema() *openapi3.T {
 
 		// Response for /call endpoint
 		responses := openapi3.NewResponses()
+		responses.Delete("default") // Remove empty default response added by NewResponses()
 		description := fmt.Sprintf("Successful response for %s", methodName)
 		responses.Set("200", &openapi3.ResponseRef{
 			Value: &openapi3.Response{
@@ -546,6 +547,7 @@ func generateOpenAPISchema() *openapi3.T {
 		// Response for /call-with-raw endpoint
 		rawResponsesDescription := fmt.Sprintf("Successful response for %s with raw LLM output", methodName)
 		rawResponses := openapi3.NewResponses()
+		rawResponses.Delete("default")
 		rawResponses.Set("200", &openapi3.ResponseRef{
 			Value: &openapi3.Response{
 				Description: &rawResponsesDescription,
@@ -638,6 +640,7 @@ func generateOpenAPISchema() *openapi3.T {
 		streamDescription := fmt.Sprintf("Stream of partial and final results for %s", methodName)
 		sseStreamDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON, error/reset events use SSE event types."
 		streamResponses := openapi3.NewResponses()
+		streamResponses.Delete("default")
 		streamResponses.Set("200", &openapi3.ResponseRef{
 			Value: &openapi3.Response{
 				Description: &streamDescription,
@@ -730,6 +733,7 @@ func generateOpenAPISchema() *openapi3.T {
 		streamWithRawDescription := fmt.Sprintf("Stream of partial and final results for %s with raw LLM output", methodName)
 		sseStreamWithRawDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON with 'data' and 'raw' fields, error/reset events use SSE event types."
 		streamWithRawResponses := openapi3.NewResponses()
+		streamWithRawResponses.Delete("default")
 		streamWithRawResponses.Set("200", &openapi3.ResponseRef{
 			Value: &openapi3.Response{
 				Description: &streamWithRawDescription,
@@ -1151,6 +1155,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	// /call endpoint
 	callDescription := "Successful response for dynamic prompt"
 	callResponses := openapi3.NewResponses()
+	callResponses.Delete("default")
 	callResponses.Set("200", &openapi3.ResponseRef{
 		Value: &openapi3.Response{
 			Description: &callDescription,
@@ -1209,6 +1214,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	// /call-with-raw endpoint
 	callWithRawDescription := "Successful response for dynamic prompt with raw LLM output"
 	callWithRawResponses := openapi3.NewResponses()
+	callWithRawResponses.Delete("default")
 	callWithRawResponses.Set("200", &openapi3.ResponseRef{
 		Value: &openapi3.Response{
 			Description: &callWithRawDescription,
@@ -1301,6 +1307,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	streamDescription := "Stream of partial and final results for dynamic prompt"
 	sseStreamDescription := "Server-Sent Events stream. Default format if Accept header is not set."
 	streamResponses := openapi3.NewResponses()
+	streamResponses.Delete("default")
 	streamResponses.Set("200", &openapi3.ResponseRef{
 		Value: &openapi3.Response{
 			Description: &streamDescription,
@@ -1398,6 +1405,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	streamWithRawDescription := "Stream of partial and final results for dynamic prompt with raw LLM output"
 	sseStreamWithRawDescription := "Server-Sent Events stream with raw LLM output."
 	streamWithRawResponses := openapi3.NewResponses()
+	streamWithRawResponses.Delete("default")
 	streamWithRawResponses.Set("200", &openapi3.ResponseRef{
 		Value: &openapi3.Response{
 			Description: &streamWithRawDescription,
@@ -1472,6 +1480,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	// /parse endpoint
 	parseDescription := "Parse raw LLM output using dynamic schema"
 	parseResponses := openapi3.NewResponses()
+	parseResponses.Delete("default")
 	parseResponses.Set("200", &openapi3.ResponseRef{
 		Value: &openapi3.Response{
 			Description: &parseDescription,
