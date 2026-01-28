@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/gregwebs/go-recovery"
+	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/rs/zerolog"
 )
 
@@ -110,7 +111,7 @@ func RequestLogger(logger zerolog.Logger, opts *Options) func(http.Handler) http
 
 					// Return 500 if no status was written
 					if !wrapped.wroteHeader {
-						http.Error(wrapped, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+						apierror.WriteJSON(wrapped, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError, middleware.GetReqID(r.Context()))
 					}
 				}
 			} else {
