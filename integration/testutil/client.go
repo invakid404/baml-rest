@@ -15,6 +15,22 @@ import (
 	"github.com/goccy/go-json"
 )
 
+// errorResponse represents the JSON error response format from the server.
+type errorResponse struct {
+	Error     string `json:"error"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// extractErrorMessage extracts the error message from a JSON error response body.
+// If the body is not valid JSON or doesn't have an error field, returns the raw body as string.
+func extractErrorMessage(body []byte) string {
+	var errResp errorResponse
+	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
+		return errResp.Error
+	}
+	return string(body)
+}
+
 // BAMLRestClient is an HTTP client for testing baml-rest endpoints.
 type BAMLRestClient struct {
 	baseURL string
@@ -161,7 +177,7 @@ func (c *BAMLRestClient) Call(ctx context.Context, req CallRequest) (*CallRespon
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = string(respBody)
+		result.Error = extractErrorMessage(respBody)
 	} else {
 		result.Body = respBody
 	}
@@ -199,7 +215,7 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = string(respBody)
+		result.Error = extractErrorMessage(respBody)
 	} else {
 		if err := json.Unmarshal(respBody, result); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
@@ -303,7 +319,7 @@ func (c *BAMLRestClient) streamRequestNDJSON(ctx context.Context, url string, re
 
 		if resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(resp.Body)
-			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(body))
 			return
 		}
 
@@ -346,7 +362,7 @@ func (c *BAMLRestClient) streamRequest(ctx context.Context, url string, req Call
 
 		if resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(resp.Body)
-			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(body))
 			return
 		}
 
@@ -403,7 +419,7 @@ func (c *BAMLRestClient) Parse(ctx context.Context, req ParseRequest) (*ParseRes
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = string(respBody)
+		result.Error = extractErrorMessage(respBody)
 	} else {
 		result.Data = respBody
 	}
@@ -837,7 +853,7 @@ func (c *BAMLRestClient) DynamicCall(ctx context.Context, req DynamicRequest) (*
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = string(respBody)
+		result.Error = extractErrorMessage(respBody)
 	} else {
 		result.Body = respBody
 	}
@@ -875,7 +891,7 @@ func (c *BAMLRestClient) DynamicCallWithRaw(ctx context.Context, req DynamicRequ
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = string(respBody)
+		result.Error = extractErrorMessage(respBody)
 	} else {
 		if err := json.Unmarshal(respBody, result); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
@@ -936,7 +952,7 @@ func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, r
 
 		if resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(resp.Body)
-			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(body))
 			return
 		}
 
@@ -979,7 +995,7 @@ func (c *BAMLRestClient) dynamicStreamRequestNDJSON(ctx context.Context, url str
 
 		if resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(resp.Body)
-			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(body))
 			return
 		}
 
@@ -1021,7 +1037,7 @@ func (c *BAMLRestClient) DynamicParse(ctx context.Context, req DynamicParseReque
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = string(respBody)
+		result.Error = extractErrorMessage(respBody)
 	} else {
 		result.Data = respBody
 	}
