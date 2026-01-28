@@ -906,19 +906,15 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	dynamicPropertySchemaName := "__DynamicProperty__"
 	schemas[dynamicPropertySchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
-			Type:        &openapi3.Types{openapi3.TypeObject},
-			Description: "Dynamic property definition for output schema",
+			Type: &openapi3.Types{openapi3.TypeObject},
+			Description: "Dynamic property definition for output schema. " +
+				"Use either 'type' for primitives/composites or '$ref' (string) to reference another class/enum by name. " +
+				"The '$ref' field is a literal JSON property name, not a JSON Schema reference.",
 			Properties: openapi3.Schemas{
 				"type": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeString},
 						Description: "Property type (string, int, float, bool, list, optional, map, union, literal_string, literal_int, literal_bool)",
-					},
-				},
-				"$ref": &openapi3.SchemaRef{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeString},
-						Description: "Reference to another class/enum by name",
 					},
 				},
 				"description": &openapi3.SchemaRef{
@@ -933,6 +929,12 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 						Description: "Alternative name for the property",
 					},
 				},
+			},
+			// Note: the actual JSON schema also accepts a "$ref" string field for referencing
+			// classes/enums by name, but we cannot include it here because OpenAPI tooling
+			// (e.g., orval) misinterprets "$ref" as a JSON Schema keyword.
+			AdditionalProperties: openapi3.AdditionalProperties{
+				Has: boolPtr(true),
 			},
 		},
 	}
