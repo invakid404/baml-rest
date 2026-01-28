@@ -140,7 +140,7 @@ func (b *TypeBuilder) Add(input string) {
 //   - "literal_int": requires "value" (integer)
 //   - "literal_bool": requires "value" (boolean)
 //
-// References: use "$ref" to reference other classes/enums by name
+// References: use "ref" to reference other classes/enums by name
 //
 // # JSON Schema Example
 //
@@ -158,7 +158,7 @@ func (b *TypeBuilder) Add(input string) {
 //	      "properties": {
 //	        "name": {"type": "string"},
 //	        "age": {"type": "int"},
-//	        "address": {"$ref": "Address"},
+//	        "address": {"ref": "Address"},
 //	        "tags": {"type": "list", "items": {"type": "string"}},
 //	        "metadata": {"type": "map", "keys": {"type": "string"}, "values": {"type": "string"}}
 //	      }
@@ -232,7 +232,7 @@ func (dt *DynamicTypes) Validate() error {
 }
 
 // validateTypeRef validates a type reference structure
-func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*DynamicTypeRef, keys, values *DynamicTypeRef, value any, definedTypes map[string]bool, path string, depth int) error {
+func validateTypeRef(typ, ref string, items, inner *DynamicTypeSpec, oneOf []*DynamicTypeSpec, keys, values *DynamicTypeSpec, value any, definedTypes map[string]bool, path string, depth int) error {
 	if depth > maxTypeDepth {
 		return fmt.Errorf("%s: type nesting exceeds maximum depth of %d", path, maxTypeDepth)
 	}
@@ -243,7 +243,7 @@ func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*Dyn
 
 	if hasRef {
 		if hasType {
-			return fmt.Errorf("%s: cannot have both 'type' and '$ref'", path)
+			return fmt.Errorf("%s: cannot have both 'type' and 'ref'", path)
 		}
 		// Reference validation - check if the referenced type is defined
 		// Note: we allow references to types not in DynamicTypes as they may exist in baml_src
@@ -251,7 +251,7 @@ func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*Dyn
 	}
 
 	if !hasType {
-		return fmt.Errorf("%s: must have 'type' or '$ref'", path)
+		return fmt.Errorf("%s: must have 'type' or 'ref'", path)
 	}
 
 	// Validate based on type
@@ -262,24 +262,24 @@ func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*Dyn
 		if items == nil {
 			return fmt.Errorf("%s: 'list' type requires 'items'", path)
 		}
-		if err := validateDynamicTypeRef(items, definedTypes, path+"[items]", depth+1); err != nil {
+		if err := validateDynamicTypeSpec(items, definedTypes, path+"[items]", depth+1); err != nil {
 			return err
 		}
 	case "optional":
 		if inner == nil {
 			return fmt.Errorf("%s: 'optional' type requires 'inner'", path)
 		}
-		if err := validateDynamicTypeRef(inner, definedTypes, path+"[inner]", depth+1); err != nil {
+		if err := validateDynamicTypeSpec(inner, definedTypes, path+"[inner]", depth+1); err != nil {
 			return err
 		}
 	case "map":
 		if keys == nil || values == nil {
 			return fmt.Errorf("%s: 'map' type requires 'keys' and 'values'", path)
 		}
-		if err := validateDynamicTypeRef(keys, definedTypes, path+"[keys]", depth+1); err != nil {
+		if err := validateDynamicTypeSpec(keys, definedTypes, path+"[keys]", depth+1); err != nil {
 			return err
 		}
-		if err := validateDynamicTypeRef(values, definedTypes, path+"[values]", depth+1); err != nil {
+		if err := validateDynamicTypeSpec(values, definedTypes, path+"[values]", depth+1); err != nil {
 			return err
 		}
 	case "union":
@@ -290,7 +290,7 @@ func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*Dyn
 			if variant == nil {
 				return fmt.Errorf("%s: 'oneOf[%d]' is nil", path, i)
 			}
-			if err := validateDynamicTypeRef(variant, definedTypes, fmt.Sprintf("%s[oneOf.%d]", path, i), depth+1); err != nil {
+			if err := validateDynamicTypeSpec(variant, definedTypes, fmt.Sprintf("%s[oneOf.%d]", path, i), depth+1); err != nil {
 				return err
 			}
 		}
@@ -326,8 +326,8 @@ func validateTypeRef(typ, ref string, items, inner *DynamicTypeRef, oneOf []*Dyn
 	return nil
 }
 
-// validateDynamicTypeRef validates a nested DynamicTypeRef
-func validateDynamicTypeRef(ref *DynamicTypeRef, definedTypes map[string]bool, path string, depth int) error {
+// validateDynamicTypeSpec validates a nested DynamicTypeSpec
+func validateDynamicTypeSpec(ref *DynamicTypeSpec, definedTypes map[string]bool, path string, depth int) error {
 	if ref == nil {
 		return fmt.Errorf("%s: type reference is nil", path)
 	}
@@ -345,34 +345,37 @@ type DynamicClass struct {
 type DynamicProperty struct {
 	// Type specification - use Type for primitives/composites, Ref for references
 	Type string `json:"type,omitempty"` // "string", "int", "float", "bool", "null", "list", "optional", "map", "union", "literal_string", "literal_int", "literal_bool"
-	Ref  string `json:"$ref,omitempty"` // Reference to another class/enum by name
+	Ref  string `json:"ref,omitempty"`  // Reference to another class/enum by name
 
 	// Metadata
 	Description string `json:"description,omitempty"`
 	Alias       string `json:"alias,omitempty"`
 
 	// For composite types
-	Items  *DynamicTypeRef   `json:"items,omitempty"`  // For "list" type
-	Inner  *DynamicTypeRef   `json:"inner,omitempty"`  // For "optional" type
-	OneOf  []*DynamicTypeRef `json:"oneOf,omitempty"`  // For "union" type
-	Keys   *DynamicTypeRef   `json:"keys,omitempty"`   // For "map" type
-	Values *DynamicTypeRef   `json:"values,omitempty"` // For "map" type
+	Items  *DynamicTypeSpec   `json:"items,omitempty"`  // For "list" type
+	Inner  *DynamicTypeSpec   `json:"inner,omitempty"`  // For "optional" type
+	OneOf  []*DynamicTypeSpec `json:"oneOf,omitempty"`  // For "union" type
+	Keys   *DynamicTypeSpec   `json:"keys,omitempty"`   // For "map" type
+	Values *DynamicTypeSpec   `json:"values,omitempty"` // For "map" type
 
 	// For literal types
 	Value any `json:"value,omitempty"` // For literal_string, literal_int, literal_bool
 }
 
-// DynamicTypeRef is a recursive type reference used in composite types.
-type DynamicTypeRef struct {
+// DynamicTypeSpec is a recursive type specification used in composite types.
+// Note: This type was renamed from DynamicTypeRef to avoid a heuristic in
+// kin-openapi's openapi3gen that treats types ending in "Ref" with both
+// "Ref" and "Value" fields specially, generating incorrect oneOf schemas.
+type DynamicTypeSpec struct {
 	Type string `json:"type,omitempty"` // Primitive or composite type name
-	Ref  string `json:"$ref,omitempty"` // Reference to class/enum
+	Ref  string `json:"ref,omitempty"`  // Reference to class/enum
 
 	// For nested composite types
-	Items  *DynamicTypeRef   `json:"items,omitempty"`
-	Inner  *DynamicTypeRef   `json:"inner,omitempty"`
-	OneOf  []*DynamicTypeRef `json:"oneOf,omitempty"`
-	Keys   *DynamicTypeRef   `json:"keys,omitempty"`
-	Values *DynamicTypeRef   `json:"values,omitempty"`
+	Items  *DynamicTypeSpec   `json:"items,omitempty"`
+	Inner  *DynamicTypeSpec   `json:"inner,omitempty"`
+	OneOf  []*DynamicTypeSpec `json:"oneOf,omitempty"`
+	Keys   *DynamicTypeSpec   `json:"keys,omitempty"`
+	Values *DynamicTypeSpec   `json:"values,omitempty"`
 	Value  any               `json:"value,omitempty"`
 }
 

@@ -93,27 +93,27 @@ type DynamicClass struct {
 
 // DynamicProperty defines a property on a class.
 type DynamicProperty struct {
-	Type        string            `json:"type,omitempty"`
-	Ref         string            `json:"$ref,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Alias       string            `json:"alias,omitempty"`
-	Items       *DynamicTypeRef   `json:"items,omitempty"`
-	Inner       *DynamicTypeRef   `json:"inner,omitempty"`
-	OneOf       []*DynamicTypeRef `json:"oneOf,omitempty"`
-	Keys        *DynamicTypeRef   `json:"keys,omitempty"`
-	Values      *DynamicTypeRef   `json:"values,omitempty"`
-	Value       any               `json:"value,omitempty"`
+	Type        string             `json:"type,omitempty"`
+	Ref         string             `json:"ref,omitempty"`
+	Description string             `json:"description,omitempty"`
+	Alias       string             `json:"alias,omitempty"`
+	Items       *DynamicTypeSpec   `json:"items,omitempty"`
+	Inner       *DynamicTypeSpec   `json:"inner,omitempty"`
+	OneOf       []*DynamicTypeSpec `json:"oneOf,omitempty"`
+	Keys        *DynamicTypeSpec   `json:"keys,omitempty"`
+	Values      *DynamicTypeSpec   `json:"values,omitempty"`
+	Value       any                `json:"value,omitempty"`
 }
 
-// DynamicTypeRef is a recursive type reference.
-type DynamicTypeRef struct {
+// DynamicTypeSpec is a recursive type specification for nested types.
+type DynamicTypeSpec struct {
 	Type   string            `json:"type,omitempty"`
-	Ref    string            `json:"$ref,omitempty"`
-	Items  *DynamicTypeRef   `json:"items,omitempty"`
-	Inner  *DynamicTypeRef   `json:"inner,omitempty"`
-	OneOf  []*DynamicTypeRef `json:"oneOf,omitempty"`
-	Keys   *DynamicTypeRef   `json:"keys,omitempty"`
-	Values *DynamicTypeRef   `json:"values,omitempty"`
+	Ref    string            `json:"ref,omitempty"`
+	Items  *DynamicTypeSpec  `json:"items,omitempty"`
+	Inner  *DynamicTypeSpec  `json:"inner,omitempty"`
+	OneOf  []*DynamicTypeSpec `json:"oneOf,omitempty"`
+	Keys   *DynamicTypeSpec  `json:"keys,omitempty"`
+	Values *DynamicTypeSpec  `json:"values,omitempty"`
 	Value  any               `json:"value,omitempty"`
 }
 

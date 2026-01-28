@@ -137,7 +137,7 @@ func TestDynamicEndpoint(t *testing.T) {
 				Properties: map[string]*testutil.DynamicProperty{
 					"tags": {
 						Type:  "list",
-						Items: &testutil.DynamicTypeRef{Type: "string"},
+						Items: &testutil.DynamicTypeSpec{Type: "string"},
 					},
 				},
 			},
@@ -350,7 +350,7 @@ func TestDynamicEndpoint(t *testing.T) {
 					"employee": {Ref: "DynEmployee"},
 					"tasks": {
 						Type:  "list",
-						Items: &testutil.DynamicTypeRef{Ref: "DynTask"},
+						Items: &testutil.DynamicTypeSpec{Ref: "DynTask"},
 					},
 				},
 			},

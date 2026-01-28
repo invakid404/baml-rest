@@ -908,13 +908,18 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		Value: &openapi3.Schema{
 			Type: &openapi3.Types{openapi3.TypeObject},
 			Description: "Dynamic property definition for output schema. " +
-				"Use either 'type' for primitives/composites or '$ref' (string) to reference another class/enum by name. " +
-				"The '$ref' field is a literal JSON property name, not a JSON Schema reference.",
+				"Use either 'type' for primitives/composites or 'ref' (string) to reference another class/enum by name.",
 			Properties: openapi3.Schemas{
 				"type": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeString},
 						Description: "Property type (string, int, float, bool, list, optional, map, union, literal_string, literal_int, literal_bool)",
+					},
+				},
+				"ref": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Reference to another class or enum by name",
 					},
 				},
 				"description": &openapi3.SchemaRef{
@@ -929,12 +934,6 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 						Description: "Alternative name for the property",
 					},
 				},
-			},
-			// Note: the actual JSON schema also accepts a "$ref" string field for referencing
-			// classes/enums by name, but we cannot include it here because OpenAPI tooling
-			// (e.g., orval) misinterprets "$ref" as a JSON Schema keyword.
-			AdditionalProperties: openapi3.AdditionalProperties{
-				Has: boolPtr(true),
 			},
 		},
 	}
@@ -1062,7 +1061,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				"classes": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeObject},
-						Description: "Map of class names to their definitions. Classes can be referenced via $ref in properties.",
+						Description: "Map of class names to their definitions. Classes can be referenced via 'ref' in properties.",
 						AdditionalProperties: openapi3.AdditionalProperties{
 							Schema: &openapi3.SchemaRef{
 								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicClassSchemaName),
@@ -1073,7 +1072,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				"enums": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeObject},
-						Description: "Map of enum names to their definitions. Enums can be referenced via $ref in properties.",
+						Description: "Map of enum names to their definitions. Enums can be referenced via 'ref' in properties.",
 						AdditionalProperties: openapi3.AdditionalProperties{
 							Schema: &openapi3.SchemaRef{
 								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicEnumSchemaName),

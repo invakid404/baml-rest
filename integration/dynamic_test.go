@@ -604,7 +604,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 						Properties: map[string]*testutil.DynamicProperty{
 							"tags": {
 								Type:  "list",
-								Items: &testutil.DynamicTypeRef{Type: "string"},
+								Items: &testutil.DynamicTypeSpec{Type: "string"},
 							},
 						},
 					},
@@ -662,7 +662,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 						Properties: map[string]*testutil.DynamicProperty{
 							"nickname": {
 								Type:  "optional",
-								Inner: &testutil.DynamicTypeRef{Type: "string"},
+								Inner: &testutil.DynamicTypeSpec{Type: "string"},
 							},
 						},
 					},
@@ -891,8 +891,8 @@ func TestDynamicTypesImperative(t *testing.T) {
 						Properties: map[string]*testutil.DynamicProperty{
 							"metadata": {
 								Type:   "map",
-								Keys:   &testutil.DynamicTypeRef{Type: "string"},
-								Values: &testutil.DynamicTypeRef{Type: "string"},
+								Keys:   &testutil.DynamicTypeSpec{Type: "string"},
+								Values: &testutil.DynamicTypeSpec{Type: "string"},
 							},
 						},
 					},
@@ -950,7 +950,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 						Properties: map[string]*testutil.DynamicProperty{
 							"value": {
 								Type: "union",
-								OneOf: []*testutil.DynamicTypeRef{
+								OneOf: []*testutil.DynamicTypeSpec{
 									{Type: "string"},
 									{Type: "int"},
 									{Type: "bool"},

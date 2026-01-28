@@ -105,7 +105,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 					},
 				},
 			},
-			wantErr: `must have 'type' or '$ref'`,
+			wantErr: `must have 'type' or 'ref'`,
 		},
 		{
 			name: "property with both type and ref",
@@ -121,7 +121,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 					},
 				},
 			},
-			wantErr: `cannot have both 'type' and '$ref'`,
+			wantErr: `cannot have both 'type' and 'ref'`,
 		},
 		{
 			name: "valid primitive types",
@@ -174,7 +174,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 						Properties: map[string]*DynamicProperty{
 							"listProp": {
 								Type:  "list",
-								Items: &DynamicTypeRef{Type: "string"},
+								Items: &DynamicTypeSpec{Type: "string"},
 							},
 						},
 					},
@@ -203,7 +203,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 						Properties: map[string]*DynamicProperty{
 							"optProp": {
 								Type:  "optional",
-								Inner: &DynamicTypeRef{Type: "string"},
+								Inner: &DynamicTypeSpec{Type: "string"},
 							},
 						},
 					},
@@ -219,7 +219,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 						Properties: map[string]*DynamicProperty{
 							"mapProp": {
 								Type:   "map",
-								Values: &DynamicTypeRef{Type: "string"},
+								Values: &DynamicTypeSpec{Type: "string"},
 							},
 						},
 					},
@@ -235,7 +235,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 						Properties: map[string]*DynamicProperty{
 							"mapProp": {
 								Type: "map",
-								Keys: &DynamicTypeRef{Type: "string"},
+								Keys: &DynamicTypeSpec{Type: "string"},
 							},
 						},
 					},
@@ -251,8 +251,8 @@ func TestDynamicTypes_Validate(t *testing.T) {
 						Properties: map[string]*DynamicProperty{
 							"mapProp": {
 								Type:   "map",
-								Keys:   &DynamicTypeRef{Type: "string"},
-								Values: &DynamicTypeRef{Type: "int"},
+								Keys:   &DynamicTypeSpec{Type: "string"},
+								Values: &DynamicTypeSpec{Type: "int"},
 							},
 						},
 					},
@@ -281,7 +281,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 						Properties: map[string]*DynamicProperty{
 							"unionProp": {
 								Type:  "union",
-								OneOf: []*DynamicTypeRef{nil},
+								OneOf: []*DynamicTypeSpec{nil},
 							},
 						},
 					},
@@ -297,7 +297,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 						Properties: map[string]*DynamicProperty{
 							"unionProp": {
 								Type: "union",
-								OneOf: []*DynamicTypeRef{
+								OneOf: []*DynamicTypeSpec{
 									{Type: "string"},
 									{Type: "int"},
 								},
@@ -439,7 +439,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "valid $ref to class",
+			name: "valid ref to class",
 			dt: &DynamicTypes{
 				Classes: map[string]*DynamicClass{
 					"TestClass": {
@@ -453,7 +453,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "valid $ref to enum",
+			name: "valid ref to enum",
 			dt: &DynamicTypes{
 				Classes: map[string]*DynamicClass{
 					"TestClass": {
@@ -474,7 +474,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "$ref to undefined type is allowed (may exist in baml_src)",
+			name: "ref to undefined type is allowed (may exist in baml_src)",
 			dt: &DynamicTypes{
 				Classes: map[string]*DynamicClass{
 					"TestClass": {
@@ -494,14 +494,14 @@ func TestDynamicTypes_Validate(t *testing.T) {
 						Properties: map[string]*DynamicProperty{
 							"deepProp": {
 								Type: "optional",
-								Inner: &DynamicTypeRef{
+								Inner: &DynamicTypeSpec{
 									Type: "list",
-									Items: &DynamicTypeRef{
+									Items: &DynamicTypeSpec{
 										Type: "map",
-										Keys: &DynamicTypeRef{Type: "string"},
-										Values: &DynamicTypeRef{
+										Keys: &DynamicTypeSpec{Type: "string"},
+										Values: &DynamicTypeSpec{
 											Type: "union",
-											OneOf: []*DynamicTypeRef{
+											OneOf: []*DynamicTypeSpec{
 												{Type: "string"},
 												{Type: "int"},
 												{Ref: "OtherClass"},
@@ -525,7 +525,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 						Properties: map[string]*DynamicProperty{
 							"deepProp": {
 								Type: "list",
-								Items: &DynamicTypeRef{
+								Items: &DynamicTypeSpec{
 									Type: "optional",
 									// Missing Inner
 								},
@@ -577,7 +577,7 @@ func TestDynamicTypes_Validate(t *testing.T) {
 							"value": {Type: "string"},
 							"children": {
 								Type: "list",
-								Items: &DynamicTypeRef{
+								Items: &DynamicTypeSpec{
 									Ref: "TreeNode",
 								},
 							},
@@ -627,12 +627,12 @@ func TestDynamicTypes_Validate(t *testing.T) {
 
 func TestDynamicTypes_Validate_MaxDepth(t *testing.T) {
 	// Build a deeply nested type that exceeds maxTypeDepth
-	var buildDeepType func(depth int) *DynamicTypeRef
-	buildDeepType = func(depth int) *DynamicTypeRef {
+	var buildDeepType func(depth int) *DynamicTypeSpec
+	buildDeepType = func(depth int) *DynamicTypeSpec {
 		if depth <= 0 {
-			return &DynamicTypeRef{Type: "string"}
+			return &DynamicTypeSpec{Type: "string"}
 		}
-		return &DynamicTypeRef{
+		return &DynamicTypeSpec{
 			Type:  "optional",
 			Inner: buildDeepType(depth - 1),
 		}
