@@ -287,12 +287,12 @@ var serveCmd = &cobra.Command{
 
 			// Add /openapi.yaml endpoint
 			r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/yaml")
 				yamlData, err := yaml.Marshal(&schema)
 				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
+					writeJSONError(w, r, err.Error(), http.StatusInternalServerError)
 					return
 				}
+				w.Header().Set("Content-Type", "application/yaml")
 				_, _ = w.Write(yamlData)
 			})
 
@@ -313,14 +313,14 @@ var serveCmd = &cobra.Command{
 
 						rawBody, err := io.ReadAll(r.Body)
 						if err != nil {
-							http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+							writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 							return
 						}
 
 						result, err := workerPool.Call(ctx, methodName, rawBody, streamMode)
 						if err != nil {
 							httplogger.SetError(r.Context(), err)
-							http.Error(w, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
+							writeJSONError(w, r, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 							return
 						}
 
@@ -351,7 +351,7 @@ var serveCmd = &cobra.Command{
 						rawBody, err := io.ReadAll(r.Body)
 						if err != nil {
 							httplogger.SetError(r.Context(), err)
-							http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+							writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 							return
 						}
 
@@ -369,14 +369,14 @@ var serveCmd = &cobra.Command{
 
 					rawBody, err := io.ReadAll(r.Body)
 					if err != nil {
-						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 						return
 					}
 
 					result, err := workerPool.Parse(ctx, methodName, rawBody)
 					if err != nil {
 						httplogger.SetError(r.Context(), err)
-						http.Error(w, fmt.Sprintf("Error parsing with %s: %v", methodName, err), http.StatusInternalServerError)
+						writeJSONError(w, r, fmt.Sprintf("Error parsing with %s: %v", methodName, err), http.StatusInternalServerError)
 						return
 					}
 
@@ -399,33 +399,33 @@ var serveCmd = &cobra.Command{
 
 					rawBody, err := io.ReadAll(r.Body)
 					if err != nil {
-						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 						return
 					}
 
 					// Parse and validate dynamic input
 					var input bamlutils.DynamicInput
 					if err := json.Unmarshal(rawBody, &input); err != nil {
-						http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+						writeJSONError(w, r, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 						return
 					}
 
 					if err := input.Validate(); err != nil {
-						http.Error(w, err.Error(), http.StatusBadRequest)
+						writeJSONError(w, r, err.Error(), http.StatusBadRequest)
 						return
 					}
 
 					// Convert to internal format
 					workerInput, err := input.ToWorkerInput()
 					if err != nil {
-						http.Error(w, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
+						writeJSONError(w, r, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
 						return
 					}
 
 					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
 					if err != nil {
 						httplogger.SetError(r.Context(), err)
-						http.Error(w, fmt.Sprintf("Error calling dynamic prompt: %v", err), http.StatusInternalServerError)
+						writeJSONError(w, r, fmt.Sprintf("Error calling dynamic prompt: %v", err), http.StatusInternalServerError)
 						return
 					}
 
@@ -433,7 +433,7 @@ var serveCmd = &cobra.Command{
 					flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 					if err != nil {
 						httplogger.SetError(r.Context(), err)
-						http.Error(w, fmt.Sprintf("Error flattening response: %v", err), http.StatusInternalServerError)
+						writeJSONError(w, r, fmt.Sprintf("Error flattening response: %v", err), http.StatusInternalServerError)
 						return
 					}
 
@@ -464,26 +464,26 @@ var serveCmd = &cobra.Command{
 					rawBody, err := io.ReadAll(r.Body)
 					if err != nil {
 						httplogger.SetError(r.Context(), err)
-						http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 						return
 					}
 
 					// Parse and validate dynamic input
 					var input bamlutils.DynamicInput
 					if err := json.Unmarshal(rawBody, &input); err != nil {
-						http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+						writeJSONError(w, r, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 						return
 					}
 
 					if err := input.Validate(); err != nil {
-						http.Error(w, err.Error(), http.StatusBadRequest)
+						writeJSONError(w, r, err.Error(), http.StatusBadRequest)
 						return
 					}
 
 					// Convert to internal format
 					workerInput, err := input.ToWorkerInput()
 					if err != nil {
-						http.Error(w, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
+						writeJSONError(w, r, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
 						return
 					}
 
@@ -501,33 +501,33 @@ var serveCmd = &cobra.Command{
 
 				rawBody, err := io.ReadAll(r.Body)
 				if err != nil {
-					http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+					writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 					return
 				}
 
 				// Parse and validate dynamic parse input
 				var input bamlutils.DynamicParseInput
 				if err := json.Unmarshal(rawBody, &input); err != nil {
-					http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+					writeJSONError(w, r, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 					return
 				}
 
 				if err := input.Validate(); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
+					writeJSONError(w, r, err.Error(), http.StatusBadRequest)
 					return
 				}
 
 				// Convert to internal format
 				workerInput, err := input.ToWorkerInput()
 				if err != nil {
-					http.Error(w, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
+					writeJSONError(w, r, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
 					return
 				}
 
 				result, err := workerPool.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
 				if err != nil {
 					httplogger.SetError(r.Context(), err)
-					http.Error(w, fmt.Sprintf("Error parsing with dynamic prompt: %v", err), http.StatusInternalServerError)
+					writeJSONError(w, r, fmt.Sprintf("Error parsing with dynamic prompt: %v", err), http.StatusInternalServerError)
 					return
 				}
 
@@ -535,7 +535,7 @@ var serveCmd = &cobra.Command{
 				flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 				if err != nil {
 					httplogger.SetError(r.Context(), err)
-					http.Error(w, fmt.Sprintf("Error flattening response: %v", err), http.StatusInternalServerError)
+					writeJSONError(w, r, fmt.Sprintf("Error flattening response: %v", err), http.StatusInternalServerError)
 					return
 				}
 
