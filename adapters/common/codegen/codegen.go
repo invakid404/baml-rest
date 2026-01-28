@@ -1751,10 +1751,10 @@ func generateApplyDynamicTypes(out *jen.File) {
 				jen.Return(jen.Id("resolveRef").Call(jen.Id("tb"), jen.Id("prop").Dot("Ref"), jen.Id("typeCache"), jen.Id("classBuilderCache"))),
 			),
 			jen.Line(),
-			// Convert to DynamicTypeRef and resolve
+			// Convert to DynamicTypeSpec and resolve
 			jen.Return(jen.Id("resolveTypeRef").Call(
 				jen.Id("tb"),
-				jen.Op("&").Qual(common.InterfacesPkg, "DynamicTypeRef").Values(jen.Dict{
+				jen.Op("&").Qual(common.InterfacesPkg, "DynamicTypeSpec").Values(jen.Dict{
 					jen.Id("Type"):   jen.Id("prop").Dot("Type"),
 					jen.Id("Items"):  jen.Id("prop").Dot("Items"),
 					jen.Id("Inner"):  jen.Id("prop").Dot("Inner"),
@@ -1772,7 +1772,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 	out.Func().Id("resolveTypeRef").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
-			jen.Id("ref").Op("*").Qual(common.InterfacesPkg, "DynamicTypeRef"),
+			jen.Id("ref").Op("*").Qual(common.InterfacesPkg, "DynamicTypeSpec"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
 		).

@@ -64,16 +64,16 @@ type DynamicMessage struct {
 //	  },
 //	  "properties": {
 //	    "name": {"type": "string"},
-//	    "address": {"$ref": "Address"},
-//	    "status": {"$ref": "Status"}
+//	    "address": {"ref": "Address"},
+//	    "status": {"ref": "Status"}
 //	  }
 //	}
 type DynamicOutputSchema struct {
 	// Properties defines the fields of the output object (required)
 	Properties map[string]*DynamicProperty `json:"properties"`
-	// Classes defines additional class types that can be referenced via $ref (optional)
+	// Classes defines additional class types that can be referenced via ref (optional)
 	Classes map[string]*DynamicClass `json:"classes,omitempty"`
-	// Enums defines enum types that can be referenced via $ref (optional)
+	// Enums defines enum types that can be referenced via ref (optional)
 	Enums map[string]*DynamicEnum `json:"enums,omitempty"`
 }
 
