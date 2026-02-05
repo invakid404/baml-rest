@@ -6,7 +6,7 @@ require (
 	github.com/containerd/containerd/v2 v2.2.1
 	github.com/containerd/platforms v1.0.0-rc.2
 	github.com/dave/jennifer v1.7.1
-	github.com/docker/buildx v0.31.0
+	github.com/docker/buildx v0.31.1
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/go-chi/chi/v5 v5.2.4
