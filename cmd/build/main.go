@@ -162,6 +162,7 @@ var (
 	platform        string
 	customBamlLib   string
 	customBamlGoLib string
+	bamlSource      string
 	debugBuild      bool
 	prettyLogs      bool
 )
@@ -196,6 +197,7 @@ func init() {
 	rootCmd.Flags().StringVar(&customBamlLib, "custom-baml-lib", "", "Path to custom BAML FFI library (.so file for linux/amd64 or linux/arm64)")
 	rootCmd.Flags().StringVar(&customBamlGoLib, "custom-baml-go-lib", "", "Path to custom BAML Go library folder (replaces github.com/boundaryml/baml)")
 	rootCmd.Flags().BoolVar(&debugBuild, "debug", false, "Enable debug endpoints in the built binary (/_debug/gc)")
+	rootCmd.Flags().StringVar(&bamlSource, "baml-source", "", "Path to local BAML source repository for building from unreleased versions")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 
 	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
@@ -207,6 +209,7 @@ func init() {
 	_ = viper.BindPFlag("custom-baml-lib", rootCmd.Flags().Lookup("custom-baml-lib"))
 	_ = viper.BindPFlag("custom-baml-go-lib", rootCmd.Flags().Lookup("custom-baml-go-lib"))
 	_ = viper.BindPFlag("debug", rootCmd.Flags().Lookup("debug"))
+	_ = viper.BindPFlag("baml-source", rootCmd.Flags().Lookup("baml-source"))
 }
 
 var rootCmd = &cobra.Command{
@@ -224,6 +227,7 @@ var rootCmd = &cobra.Command{
 		customBamlLib = viper.GetString("custom-baml-lib")
 		customBamlGoLib = viper.GetString("custom-baml-go-lib")
 		debugBuild = viper.GetBool("debug")
+		bamlSource = viper.GetString("baml-source")
 
 		// Validate mode
 		if buildMode != "docker" && buildMode != "native" {
@@ -324,6 +328,32 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// Validate --baml-source flag
+		if bamlSource != "" {
+			if customBamlLib != "" || customBamlGoLib != "" {
+				return fmt.Errorf("--baml-source cannot be used with --custom-baml-lib or --custom-baml-go-lib")
+			}
+
+			engineDir := filepath.Join(bamlSource, "engine")
+			for _, required := range []string{
+				filepath.Join(bamlSource, "go.mod"),
+				filepath.Join(engineDir, "Cargo.toml"),
+				filepath.Join(engineDir, "language_client_cffi", "Cargo.toml"),
+				filepath.Join(engineDir, "language_client_go", "baml_go", "lib_common.go"),
+				filepath.Join(engineDir, "cli", "Cargo.toml"),
+			} {
+				if _, err := os.Stat(required); err != nil {
+					return fmt.Errorf("invalid BAML source directory, missing: %s", required)
+				}
+			}
+
+			absSource, err := filepath.Abs(bamlSource)
+			if err != nil {
+				return fmt.Errorf("failed to resolve BAML source path: %w", err)
+			}
+			bamlSource = absSource
+		}
+
 		targetDir := args[0]
 
 		// Common setup: validate directory structure
@@ -368,17 +398,25 @@ var rootCmd = &cobra.Command{
 			}
 
 			if len(detectedVersions) == 0 {
-				return fmt.Errorf("no BAML generators found in %q, cannot infer version", bamlSrcPath)
-			}
-
-			if len(detectedVersions) > 1 {
+				if bamlSource != "" {
+					// Fall back to version from BAML source Cargo.toml
+					srcVersion, err := detectBamlSourceVersion(bamlSource)
+					if err != nil {
+						return fmt.Errorf("no BAML generators found in %q and failed to detect version from source: %w", bamlSrcPath, err)
+					}
+					detectedVersion = srcVersion
+					fmt.Printf("Auto-detected BAML version from source: %s\n", detectedVersion)
+				} else {
+					return fmt.Errorf("no BAML generators found in %q, cannot infer version", bamlSrcPath)
+				}
+			} else if len(detectedVersions) > 1 {
 				return fmt.Errorf(
 					"detected multiple BAML versions in %q: %v, cannot infer which one to use",
 					bamlSrcPath, detectedVersions,
 				)
+			} else {
+				detectedVersion = detectedVersions[0]
 			}
-
-			detectedVersion = detectedVersions[0]
 		}
 
 		// Get the appropriate adapter version
@@ -390,17 +428,32 @@ var rootCmd = &cobra.Command{
 		fmt.Printf("BAML version: %s\n", detectedVersion)
 		fmt.Printf("Adapter version: %s\n", adapterInfo.Version)
 		fmt.Printf("Build mode: %s\n", buildMode)
+		if bamlSource != "" {
+			fmt.Printf("BAML source: %s\n", bamlSource)
+		}
+
+		// For native mode with --baml-source, build the CFFI library and CLI locally
+		var bamlLibraryPath, bamlCliPath string
+		if bamlSource != "" && buildMode == "native" {
+			var err error
+			bamlLibraryPath, bamlCliPath, err = buildBamlFromSource(bamlSource)
+			if err != nil {
+				return err
+			}
+			// Use the Go module from the BAML source root (go.mod is at repo root)
+			customBamlGoLib = bamlSource
+		}
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild, bamlSource)
 		} else {
-			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild)
+			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild, bamlLibraryPath, bamlCliPath)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool, bamlSource string) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	if platform != nil {
@@ -431,6 +484,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		"adapterVersion": adapterVersion,
 		"keepSource":     keepSource,
 		"debugBuild":     debugBuild,
+		"bamlSource":     bamlSource != "",
 	}
 	if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 		return fmt.Errorf("failed to render Dockerfile template: %w", err)
@@ -559,6 +613,44 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		if err := tarWriter.WriteHeader(&placeholderHeader); err != nil {
 			return fmt.Errorf("failed to write custom BAML Go lib placeholder: %w", err)
 		}
+	}
+
+	// Add BAML source to build context for --baml-source builds
+	if bamlSource != "" {
+		// Copy engine directory (for Rust CFFI/CLI build)
+		engineDir := filepath.Join(bamlSource, "engine")
+		err := copyDirToTarExclude(engineDir, tarWriter, func(path string, _ fs.DirEntry, _ fs.FileInfo) *string {
+			result := filepath.Join("baml_engine", path)
+			return &result
+		}, map[string]bool{"target": true, ".git": true, "node_modules": true})
+		if err != nil {
+			return fmt.Errorf("failed to copy BAML engine source to build context: %w", err)
+		}
+
+		// Copy go.mod and go.sum from repo root (needed to assemble the Go module for replace directive)
+		for _, fileName := range []string{"go.mod", "go.sum"} {
+			filePath := filepath.Join(bamlSource, fileName)
+			fileData, err := os.ReadFile(filePath)
+			if err != nil {
+				if os.IsNotExist(err) && fileName == "go.sum" {
+					continue // go.sum might not exist
+				}
+				return fmt.Errorf("failed to read BAML source %s: %w", fileName, err)
+			}
+			header := tar.Header{
+				Name: "baml_" + fileName,
+				Mode: 0644,
+				Size: int64(len(fileData)),
+			}
+			if err := tarWriter.WriteHeader(&header); err != nil {
+				return fmt.Errorf("failed to write BAML %s header: %w", fileName, err)
+			}
+			if _, err := tarWriter.Write(fileData); err != nil {
+				return fmt.Errorf("failed to write BAML %s to build context: %w", fileName, err)
+			}
+		}
+
+		fmt.Printf("Added BAML engine source to build context\n")
 	}
 
 	if err := tarWriter.Close(); err != nil {
@@ -695,11 +787,15 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	return nil
 }
 
-func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool) error {
+func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool, bamlLibraryPath string, bamlCliPath string) error {
 	fmt.Printf("\n=== Native Build Mode ===\n\n")
 
 	// Check prerequisites
-	requiredCommands := []string{"node", "npx", "go", "gawk"}
+	requiredCommands := []string{"go", "gawk"}
+	if bamlCliPath == "" {
+		// Node.js tools only needed when not using a custom BAML CLI (i.e., not building from source)
+		requiredCommands = append(requiredCommands, "node", "npx")
+	}
 	for _, cmd := range requiredCommands {
 		if _, err := exec.LookPath(cmd); err != nil {
 			return fmt.Errorf("required command %q not found in PATH. Please install it before using native mode", cmd)
@@ -828,6 +924,12 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	}
 	if debugBuild {
 		env = append(env, "DEBUG_BUILD=true")
+	}
+	if bamlLibraryPath != "" {
+		env = append(env, fmt.Sprintf("BAML_LIBRARY_PATH=%s", bamlLibraryPath))
+	}
+	if bamlCliPath != "" {
+		env = append(env, fmt.Sprintf("BAML_CLI_PATH=%s", bamlCliPath))
 	}
 
 	// Execute build.sh
@@ -1254,4 +1356,121 @@ func mapStatusResponseToSolveStatus(statusResponse *controlapi.StatusResponse) b
 		Logs:     logs,
 		Warnings: warnings,
 	}
+}
+
+// detectBamlSourceVersion reads the BAML version from the source repository's Cargo.toml
+func detectBamlSourceVersion(bamlSource string) (string, error) {
+	cargoToml := filepath.Join(bamlSource, "engine", "Cargo.toml")
+	content, err := os.ReadFile(cargoToml)
+	if err != nil {
+		return "", fmt.Errorf("failed to read %s: %w", cargoToml, err)
+	}
+
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "version") {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				version := strings.TrimSpace(parts[1])
+				version = strings.Trim(version, "\"'")
+				if version != "" {
+					return version, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("version not found in %s", cargoToml)
+}
+
+// buildBamlFromSource builds the BAML CFFI library and CLI binary from source
+func buildBamlFromSource(bamlSource string) (libPath string, cliPath string, err error) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		return "", "", fmt.Errorf("cargo not found in PATH (install Rust toolchain to build from BAML source)")
+	}
+
+	engineDir := filepath.Join(bamlSource, "engine")
+
+	fmt.Printf("\n=== Building BAML from source ===\n\n")
+	fmt.Printf("Engine directory: %s\n", engineDir)
+
+	cmd := exec.Command("cargo", "build", "--release", "-p", "baml-cli", "-p", "baml_cffi")
+	cmd.Dir = engineDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", "", fmt.Errorf("cargo build failed: %w", err)
+	}
+
+	// Determine library filename based on OS
+	var libName string
+	switch runtime.GOOS {
+	case "darwin":
+		libName = "libbaml_cffi.dylib"
+	case "linux":
+		libName = "libbaml_cffi.so"
+	default:
+		return "", "", fmt.Errorf("unsupported OS for native BAML build: %s", runtime.GOOS)
+	}
+
+	releaseDir := filepath.Join(engineDir, "target", "release")
+	libPath = filepath.Join(releaseDir, libName)
+	cliPath = filepath.Join(releaseDir, "baml-cli")
+
+	if _, err := os.Stat(libPath); err != nil {
+		return "", "", fmt.Errorf("CFFI library not found at expected path %s: %w", libPath, err)
+	}
+	if _, err := os.Stat(cliPath); err != nil {
+		return "", "", fmt.Errorf("CLI binary not found at expected path %s: %w", cliPath, err)
+	}
+
+	fmt.Printf("\nBAML CFFI library: %s\n", libPath)
+	fmt.Printf("BAML CLI: %s\n", cliPath)
+	fmt.Printf("\n=== BAML build complete ===\n\n")
+
+	return libPath, cliPath, nil
+}
+
+// copyDirToTarExclude copies a directory to a tar writer, excluding specified directory names
+func copyDirToTarExclude(path string, target *tar.Writer, mapper copyFSMapper, excludeDirs map[string]bool) error {
+	dir := os.DirFS(path)
+	tw := &tarWriter{tw: target}
+
+	return fs.WalkDir(dir, ".", func(filePath string, dirEntry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if dirEntry.IsDir() {
+			if filePath != "." && excludeDirs[filepath.Base(filePath)] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		if !dirEntry.Type().IsRegular() {
+			return nil
+		}
+
+		fileInfo, err := dirEntry.Info()
+		if err != nil {
+			return fmt.Errorf("failed to get file info for %s: %w", filePath, err)
+		}
+
+		name := mapper(filePath, dirEntry, fileInfo)
+		if name == nil {
+			return nil
+		}
+
+		file, err := dir.Open(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to open %s: %w", filePath, err)
+		}
+		defer func(file fs.File) {
+			_ = file.Close()
+		}(file)
+
+		return tw.WriteFile(*name, file, fileInfo.Size(), int64(fileInfo.Mode()))
+	})
 }
