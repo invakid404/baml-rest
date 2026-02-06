@@ -15,7 +15,7 @@ ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
 ENV GOPATH="/go"
 
 # Install protoc-gen-go (needed by CFFI build.rs for Go protobuf generation)
-RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.1
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@{{ .protocGenGoVersion }}
 
 # Copy engine source
 COPY baml_engine /baml_engine

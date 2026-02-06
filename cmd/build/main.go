@@ -486,6 +486,13 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		"debugBuild":     debugBuild,
 		"bamlSource":     bamlSource != "",
 	}
+	if bamlSource != "" {
+		protocGenGoVersion, err := detectProtocGenGoVersion(bamlSource)
+		if err != nil {
+			return fmt.Errorf("failed to detect protoc-gen-go version from BAML source: %w", err)
+		}
+		dockerfileTemplateArgs["protocGenGoVersion"] = protocGenGoVersion
+	}
 	if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 		return fmt.Errorf("failed to render Dockerfile template: %w", err)
 	}
@@ -1358,6 +1365,41 @@ func mapStatusResponseToSolveStatus(statusResponse *controlapi.StatusResponse) b
 	}
 }
 
+// detectProtocGenGoVersion finds the protoc-gen-go version from generated .pb.go files in the BAML source.
+// Generated files contain a comment like: "// 	protoc-gen-go v1.34.1"
+func detectProtocGenGoVersion(bamlSource string) (string, error) {
+	pbDir := filepath.Join(bamlSource, "engine", "language_client_go", "pkg", "cffi")
+
+	entries, err := os.ReadDir(pbDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to read %s: %w", pbDir, err)
+	}
+
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".pb.go") {
+			continue
+		}
+
+		content, err := os.ReadFile(filepath.Join(pbDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+
+		for _, line := range strings.Split(string(content), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "// ") && strings.Contains(line, "protoc-gen-go v") {
+				// Extract version from "// 	protoc-gen-go v1.34.1"
+				idx := strings.Index(line, "protoc-gen-go v")
+				if idx >= 0 {
+					return strings.TrimSpace(line[idx+len("protoc-gen-go "):]), nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no .pb.go files with protoc-gen-go version found in %s", pbDir)
+}
+
 // detectBamlSourceVersion reads the BAML version from the source repository's Cargo.toml
 func detectBamlSourceVersion(bamlSource string) (string, error) {
 	cargoToml := filepath.Join(bamlSource, "engine", "Cargo.toml")
@@ -1388,14 +1430,43 @@ func buildBamlFromSource(bamlSource string) (libPath string, cliPath string, err
 	if _, err := exec.LookPath("cargo"); err != nil {
 		return "", "", fmt.Errorf("cargo not found in PATH (install Rust toolchain to build from BAML source)")
 	}
+	if _, err := exec.LookPath("go"); err != nil {
+		return "", "", fmt.Errorf("go not found in PATH (needed to install protoc-gen-go for CFFI build)")
+	}
 
 	engineDir := filepath.Join(bamlSource, "engine")
 
 	fmt.Printf("\n=== Building BAML from source ===\n\n")
 	fmt.Printf("Engine directory: %s\n", engineDir)
 
+	// Detect and install the correct protoc-gen-go version into a temp GOBIN
+	protocGenGoVersion, err := detectProtocGenGoVersion(bamlSource)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to detect protoc-gen-go version: %w", err)
+	}
+
+	goBinDir, err := os.MkdirTemp("", "baml-gobin-*")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create temp GOBIN: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(goBinDir)
+	}()
+
+	fmt.Printf("Installing protoc-gen-go@%s...\n", protocGenGoVersion)
+	goInstall := exec.Command("go", "install", fmt.Sprintf("google.golang.org/protobuf/cmd/protoc-gen-go@%s", protocGenGoVersion))
+	goInstall.Env = append(os.Environ(), fmt.Sprintf("GOBIN=%s", goBinDir))
+	goInstall.Stdout = os.Stdout
+	goInstall.Stderr = os.Stderr
+	if err := goInstall.Run(); err != nil {
+		return "", "", fmt.Errorf("failed to install protoc-gen-go@%s: %w", protocGenGoVersion, err)
+	}
+
+	protocGenGoPath := filepath.Join(goBinDir, "protoc-gen-go")
+
 	cmd := exec.Command("cargo", "build", "--release", "-p", "baml-cli", "-p", "baml_cffi")
 	cmd.Dir = engineDir
+	cmd.Env = append(os.Environ(), fmt.Sprintf("PROTOC_GEN_GO_PATH=%s", protocGenGoPath))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
