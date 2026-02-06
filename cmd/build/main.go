@@ -1387,7 +1387,7 @@ func detectProtocGenGoVersion(bamlSource string) (string, error) {
 
 		for _, line := range strings.Split(string(content), "\n") {
 			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "// ") && strings.Contains(line, "protoc-gen-go v") {
+			if strings.HasPrefix(line, "//") && strings.Contains(line, "protoc-gen-go v") {
 				// Extract version from "// 	protoc-gen-go v1.34.1"
 				idx := strings.Index(line, "protoc-gen-go v")
 				if idx >= 0 {
