@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"text/template"
 	"time"
 
@@ -87,6 +88,9 @@ type SetupOptions struct {
 
 	// KeepSource keeps generated sources at the specified path (optional)
 	KeepSource string
+
+	// BAMLSource is the path to a local BAML source repository for building from unreleased versions
+	BAMLSource string
 }
 
 // Setup creates the test environment with mock LLM server and baml-rest container.
@@ -234,21 +238,25 @@ type dockerfileTemplateData struct {
 	debugBuild     bool
 
 	// Integration test specific flags
-	defaultTargetArch string // Provide default for TARGETARCH (testcontainers may not set it)
-	noCacheMount      bool   // Disable BuildKit cache mount (not supported in testcontainers)
-	noCustomBamlLib   bool   // Don't copy custom_baml_lib.so (not used in tests)
+	defaultTargetArch  string // Provide default for TARGETARCH (testcontainers may not set it)
+	noCacheMount       bool   // Disable BuildKit cache mount (not supported in testcontainers)
+	noCustomBamlLib    bool   // Don't copy custom_baml_lib.so (not used in tests)
+	bamlSource         bool   // Build from BAML source (enables cffi-builder stage)
+	protocGenGoVersion string // protoc-gen-go version for BAML source builds
 }
 
 // MarshalMap converts the template data to a map for template execution
 func (d dockerfileTemplateData) toMap() map[string]any {
 	return map[string]any{
-		"bamlVersion":       d.bamlVersion,
-		"adapterVersion":    d.adapterVersion,
-		"keepSource":        d.keepSource,
-		"debugBuild":        d.debugBuild,
-		"defaultTargetArch": d.defaultTargetArch,
-		"noCacheMount":      d.noCacheMount,
-		"noCustomBamlLib":   d.noCustomBamlLib,
+		"bamlVersion":        d.bamlVersion,
+		"adapterVersion":     d.adapterVersion,
+		"keepSource":         d.keepSource,
+		"debugBuild":         d.debugBuild,
+		"defaultTargetArch":  d.defaultTargetArch,
+		"noCacheMount":       d.noCacheMount,
+		"noCustomBamlLib":    d.noCustomBamlLib,
+		"bamlSource":         d.bamlSource,
+		"protocGenGoVersion": d.protocGenGoVersion,
 	}
 }
 
@@ -277,6 +285,15 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		defaultTargetArch: getDockerArch(),   // Use native architecture
 		noCacheMount:      true,              // testcontainers doesn't reliably support BuildKit
 		noCustomBamlLib:   true,              // Integration tests don't use custom BAML lib
+	}
+
+	if opts.BAMLSource != "" {
+		tmplData.bamlSource = true
+		protocGenGoVersion, err := detectProtocGenGoVersion(opts.BAMLSource)
+		if err != nil {
+			return nil, fmt.Errorf("failed to detect protoc-gen-go version: %w", err)
+		}
+		tmplData.protocGenGoVersion = protocGenGoVersion
 	}
 
 	var dockerfileBuf bytes.Buffer
@@ -332,6 +349,39 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		Size: 0,
 	}); err != nil {
 		return nil, err
+	}
+
+	// Add BAML source to build context for --baml-source builds
+	if opts.BAMLSource != "" {
+		// Copy engine directory (for Rust CFFI/CLI build), excluding large/irrelevant dirs
+		engineDir := filepath.Join(opts.BAMLSource, "engine")
+		if err := addDirToTarExclude(tw, engineDir, "baml_engine", map[string]bool{
+			"target": true, ".git": true, "node_modules": true,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to copy BAML engine source: %w", err)
+		}
+
+		// Copy go.mod and go.sum from repo root (needed for Go module replace directive)
+		for _, fileName := range []string{"go.mod", "go.sum"} {
+			filePath := filepath.Join(opts.BAMLSource, fileName)
+			fileData, err := os.ReadFile(filePath)
+			if err != nil {
+				if os.IsNotExist(err) && fileName == "go.sum" {
+					continue // go.sum might not exist
+				}
+				return nil, fmt.Errorf("failed to read BAML source %s: %w", fileName, err)
+			}
+			if err := tw.WriteHeader(&tar.Header{
+				Name: "baml_" + fileName,
+				Mode: 0644,
+				Size: int64(len(fileData)),
+			}); err != nil {
+				return nil, err
+			}
+			if _, err := tw.Write(fileData); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if err := tw.Close(); err != nil {
@@ -462,6 +512,107 @@ func addDirToTar(tw *tar.Writer, srcDir, dstPrefix string) error {
 		_, err = io.Copy(tw, file)
 		return err
 	})
+}
+
+func addDirToTarExclude(tw *tar.Writer, srcDir, dstPrefix string, excludeDirs map[string]bool) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if path != srcDir && excludeDirs[info.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+
+		dstPath := dstPrefix + "/" + relPath
+
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		header := &tar.Header{
+			Name: dstPath,
+			Mode: int64(info.Mode()),
+			Size: info.Size(),
+		}
+
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+
+		_, err = io.Copy(tw, file)
+		return err
+	})
+}
+
+// DetectBamlSourceVersion reads the BAML version from the source repository's engine/Cargo.toml.
+func DetectBamlSourceVersion(bamlSource string) (string, error) {
+	cargoToml := filepath.Join(bamlSource, "engine", "Cargo.toml")
+	content, err := os.ReadFile(cargoToml)
+	if err != nil {
+		return "", fmt.Errorf("failed to read %s: %w", cargoToml, err)
+	}
+
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "version") {
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				version := strings.TrimSpace(parts[1])
+				version = strings.Trim(version, "\"'")
+				if version != "" {
+					return version, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("version not found in %s", cargoToml)
+}
+
+// detectProtocGenGoVersion finds the protoc-gen-go version from generated .pb.go files in the BAML source.
+func detectProtocGenGoVersion(bamlSource string) (string, error) {
+	pbDir := filepath.Join(bamlSource, "engine", "language_client_go", "pkg", "cffi")
+
+	entries, err := os.ReadDir(pbDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to read %s: %w", pbDir, err)
+	}
+
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".pb.go") {
+			continue
+		}
+
+		content, err := os.ReadFile(filepath.Join(pbDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+
+		for _, line := range strings.Split(string(content), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "//") && strings.Contains(line, "protoc-gen-go v") {
+				idx := strings.Index(line, "protoc-gen-go v")
+				if idx >= 0 {
+					return strings.TrimSpace(line[idx+len("protoc-gen-go "):]), nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no .pb.go files with protoc-gen-go version found in %s", pbDir)
 }
 
 func findProjectRoot() (string, error) {
