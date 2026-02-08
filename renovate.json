@@ -39,6 +39,19 @@
       "datasourceTemplate": "git-refs",
       "packageNameTemplate": "https://github.com/BoundaryML/baml",
       "currentValueTemplate": "canary"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/Dockerfile\\.tmpl$/",
+        "/^Dockerfile\\.builder$/"
+      ],
+      "matchStrings": [
+        "go(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.linux"
+      ],
+      "depNameTemplate": "go",
+      "datasourceTemplate": "golang-version",
+      "versioningTemplate": "loose"
     }
   ],
   "packageRules": [
