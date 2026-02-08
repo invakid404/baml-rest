@@ -38,7 +38,7 @@ function Baml_Rest_Dynamic(messages: Baml_Rest_Message[]) -> Baml_Rest_DynamicOu
       {% else %}
         {{ _.role(m.role) }}
       {% endif %}
-      {{ m.content }}
+      {{ m.content | replace("{output_format}", ctx.output_format) }}
     {% endfor %}
   "#
 }

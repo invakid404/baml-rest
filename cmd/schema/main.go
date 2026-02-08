@@ -886,7 +886,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				"content": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeString},
-						Description: "Message content",
+						Description: "Message content. Use the placeholder {output_format} anywhere in the content to have it replaced with BAML's generated output format instructions (equivalent to {{ ctx.output_format }} in native BAML).",
 					},
 				},
 				"metadata": &openapi3.SchemaRef{
@@ -1196,7 +1196,8 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Summary:     "Call dynamic prompt",
 			Description: "Execute a dynamic prompt with dynamic output schema. " +
 				"Provide messages, client configuration, and the expected output structure. " +
-				"The output_schema defines what fields the LLM should return.",
+				"The output_schema defines what fields the LLM should return. " +
+				"Use {output_format} in message content to inject BAML's output format instructions.",
 			RequestBody: &openapi3.RequestBodyRef{
 				Value: &openapi3.RequestBody{
 					Content: map[string]*openapi3.MediaType{

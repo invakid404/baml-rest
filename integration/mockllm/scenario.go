@@ -44,11 +44,17 @@ type Scenario struct {
 	FailureMode string `json:"failure_mode,omitempty"`
 }
 
+// CapturedRequest stores the raw request body received by the mock LLM for a scenario.
+type CapturedRequest struct {
+	Body []byte `json:"body"`
+}
+
 // ScenarioStore provides thread-safe storage for test scenarios.
 type ScenarioStore struct {
 	mu            sync.RWMutex
 	scenarios     map[string]*Scenario
-	requestCounts map[string]int // tracks request count per scenario ID
+	requestCounts map[string]int        // tracks request count per scenario ID
+	lastRequests  map[string]*CapturedRequest // stores the last request per scenario ID
 }
 
 // NewScenarioStore creates a new empty scenario store.
@@ -56,6 +62,7 @@ func NewScenarioStore() *ScenarioStore {
 	return &ScenarioStore{
 		scenarios:     make(map[string]*Scenario),
 		requestCounts: make(map[string]int),
+		lastRequests:  make(map[string]*CapturedRequest),
 	}
 }
 
@@ -105,6 +112,21 @@ func (s *ScenarioStore) GetAndAdvance(id string) (*Scenario, int, bool) {
 	return scenario, effectiveDelay, true
 }
 
+// CaptureRequest stores the request body for a scenario.
+func (s *ScenarioStore) CaptureRequest(id string, body []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastRequests[id] = &CapturedRequest{Body: body}
+}
+
+// GetLastRequest returns the last captured request for a scenario.
+func (s *ScenarioStore) GetLastRequest(id string) (*CapturedRequest, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	req, ok := s.lastRequests[id]
+	return req, ok
+}
+
 // Delete removes a scenario by ID.
 func (s *ScenarioStore) Delete(id string) bool {
 	s.mu.Lock()
@@ -112,6 +134,7 @@ func (s *ScenarioStore) Delete(id string) bool {
 	_, existed := s.scenarios[id]
 	delete(s.scenarios, id)
 	delete(s.requestCounts, id)
+	delete(s.lastRequests, id)
 	return existed
 }
 
@@ -121,6 +144,7 @@ func (s *ScenarioStore) Clear() {
 	defer s.mu.Unlock()
 	s.scenarios = make(map[string]*Scenario)
 	s.requestCounts = make(map[string]int)
+	s.lastRequests = make(map[string]*CapturedRequest)
 }
 
 // List returns all registered scenarios.

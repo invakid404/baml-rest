@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -664,6 +665,62 @@ func TestDynamicEndpoint(t *testing.T) {
 
 		if !gotFinal {
 			t.Error("Expected to receive final event")
+		}
+	})
+
+	// Test that {output_format} placeholder in message content gets replaced
+	// with BAML's output format instructions before being sent to the LLM
+	t.Run("output_format_placeholder", func(t *testing.T) {
+		if BAMLSourcePath == "" {
+			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-dynamic-output-format"
+		content := `{"name": "Alice", "age": 30}`
+		opts := setupNonStreamingScenario(t, scenarioID, content)
+
+		// Send a request with {output_format} placeholder in message content
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{Role: "user", Content: "Extract info from: Alice is 30.\n\n{output_format}"},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"name": {Type: "string"},
+					"age":  {Type: "int"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		// Fetch the captured request from mock LLM to verify placeholder replacement
+		capturedBody, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+
+		capturedStr := string(capturedBody)
+		t.Logf("Captured request body: %s", capturedStr)
+
+		// The literal placeholder should NOT be in the prompt sent to the LLM
+		if strings.Contains(capturedStr, "{output_format}") {
+			t.Error("Prompt sent to LLM still contains literal {output_format} placeholder - replacement did not happen")
+		}
+
+		// The prompt should contain the output schema field names, which BAML
+		// includes in its generated output format instructions
+		if !strings.Contains(capturedStr, "name") || !strings.Contains(capturedStr, "age") {
+			t.Error("Prompt sent to LLM does not contain output schema field names - output format was not injected")
 		}
 	})
 }

@@ -37,6 +37,8 @@ func NewServer(addr string) *Server {
 	mux.HandleFunc("GET /_admin/scenarios", s.handleListScenarios)
 	mux.HandleFunc("GET /_admin/health", s.handleHealth)
 
+	mux.HandleFunc("GET /_admin/scenarios/{id}/last-request", s.handleGetLastRequest)
+
 	// OpenAI-compatible endpoints
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("POST /chat/completions", s.handleChatCompletions)
@@ -139,6 +141,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+func (s *Server) handleGetLastRequest(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "scenario ID is required", http.StatusBadRequest)
+		return
+	}
+
+	req, ok := s.store.GetLastRequest(id)
+	if !ok {
+		http.Error(w, "no request captured for scenario", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(req.Body)
+}
+
 // LLM endpoint handlers
 
 type chatCompletionsRequest struct {
@@ -199,6 +218,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("no scenario registered for model: %s", req.Model), http.StatusNotFound)
 		return
 	}
+
+	// Capture request body for test inspection
+	s.store.CaptureRequest(req.Model, body)
 
 	s.log("effective initial delay for this request: %dms", effectiveDelay)
 
@@ -316,6 +338,31 @@ func (c *Client) ClearScenarios(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// GetLastRequest returns the last request body received for a scenario.
+func (c *Client) GetLastRequest(ctx context.Context, scenarioID string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/_admin/scenarios/%s/last-request", c.baseURL, scenarioID), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return body, nil
 }
 
 // Health checks if the mock server is healthy.
