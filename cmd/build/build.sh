@@ -99,6 +99,35 @@ if [ -f "${CUSTOM_BAML_GO_LIB_PATH}/.provided" ]; then
     echo ""
 fi
 
+# Handle BAML library path (from --baml-source builds)
+if [ -n "${BAML_LIBRARY_PATH:-}" ]; then
+    echo ""
+    echo "=== Local BAML Library Detected ==="
+    echo "Path: ${BAML_LIBRARY_PATH}"
+
+    # Copy to BAML cache with platform-specific filename for runtime discovery
+    case "$(uname -s)" in
+        Linux)
+            case "${TARGETARCH}" in
+                amd64) BAML_LIB_FILENAME="libbaml_cffi-x86_64-unknown-linux-gnu.so" ;;
+                arm64) BAML_LIB_FILENAME="libbaml_cffi-aarch64-unknown-linux-gnu.so" ;;
+            esac
+            ;;
+        Darwin)
+            case "${TARGETARCH}" in
+                amd64) BAML_LIB_FILENAME="libbaml_cffi-x86_64-apple-darwin.dylib" ;;
+                arm64) BAML_LIB_FILENAME="libbaml_cffi-aarch64-apple-darwin.dylib" ;;
+            esac
+            ;;
+    esac
+
+    if [ -n "${BAML_LIB_FILENAME:-}" ]; then
+        echo "Installing to cache as: ${BAML_LIB_FILENAME}"
+        cp "${BAML_LIBRARY_PATH}" "${BAML_CACHE_DIR}/${BAML_LIB_FILENAME}"
+    fi
+    echo ""
+fi
+
 echo "============================================"
 echo "BAML REST API Build Script"
 echo "============================================"
@@ -116,6 +145,12 @@ if [ -n "${BAML_LIB_FILENAME:-}" ]; then
 fi
 if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
     echo "Custom BAML Go Lib: ${CUSTOM_BAML_GO_LIB}"
+fi
+if [ -n "${BAML_LIBRARY_PATH:-}" ]; then
+    echo "BAML Library Path: ${BAML_LIBRARY_PATH}"
+fi
+if [ -n "${BAML_CLI_PATH:-}" ]; then
+    echo "BAML CLI Path: ${BAML_CLI_PATH}"
 fi
 if [ "${DEBUG_BUILD:-false}" = "true" ]; then
     echo "Debug Build: enabled"
@@ -144,15 +179,17 @@ echo ""
 echo "=== Stage 1: Node.js Client Generation ==="
 echo ""
 
-# Check for required tools (Node.js stage)
-if ! command -v node &> /dev/null; then
-    echo "ERROR: node is not installed or not in PATH"
-    exit 1
-fi
+# Check for required tools (Node.js stage - only needed when not using custom CLI)
+if [ -z "${BAML_CLI_PATH:-}" ]; then
+    if ! command -v node &> /dev/null; then
+        echo "ERROR: node is not installed or not in PATH"
+        exit 1
+    fi
 
-if ! command -v npx &> /dev/null; then
-    echo "ERROR: npx is not installed or not in PATH"
-    exit 1
+    if ! command -v npx &> /dev/null; then
+        echo "ERROR: npx is not installed or not in PATH"
+        exit 1
+    fi
 fi
 
 # Copy user's baml_src to working directory
@@ -219,8 +256,13 @@ EOF
 cat clients.baml.template | envsubst | tee baml_src/baml_rest_client.baml
 
 # Generate BAML client
-echo "Running BAML client generation (npx @boundaryml/baml@${BAML_VERSION} generate)..."
-npx "@boundaryml/baml@${BAML_VERSION}" generate
+if [ -n "${BAML_CLI_PATH:-}" ]; then
+    echo "Running BAML client generation (${BAML_CLI_PATH} generate --no-version-check)..."
+    "${BAML_CLI_PATH}" generate --no-version-check
+else
+    echo "Running BAML client generation (npx @boundaryml/baml@${BAML_VERSION} generate)..."
+    npx "@boundaryml/baml@${BAML_VERSION}" generate
+fi
 
 echo ""
 echo "=== Stage 2: Go Build ==="
@@ -400,26 +442,35 @@ go run cmd/embed/main.go
 echo "Adapter cleanup complete!"
 echo ""
 
-# Get BAML dependency
-echo "Getting BAML Go dependency (github.com/boundaryml/baml@${BAML_VERSION})..."
-go get "github.com/boundaryml/baml@${BAML_VERSION}"
+# Handle BAML Go dependency
+if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
+    echo "Using custom BAML Go library: ${CUSTOM_BAML_GO_LIB}"
+    # Add replace directive FIRST so Go resolves locally (required for unreleased versions)
+    echo "Adding replace directive for custom BAML Go library to go.work..."
+    go work edit -replace "github.com/boundaryml/baml=${CUSTOM_BAML_GO_LIB}"
+
+    # Add placeholder require entry for baml_client (version resolved via replace)
+    pushd baml_client
+    echo "Adding placeholder BAML dependency to baml_client..."
+    go mod edit -require "github.com/boundaryml/baml@v0.0.0"
+    popd
+else
+    # Get BAML dependency from module proxy
+    echo "Getting BAML Go dependency (github.com/boundaryml/baml@${BAML_VERSION})..."
+    go get "github.com/boundaryml/baml@${BAML_VERSION}"
+fi
 
 # Sync Go workspace
 echo "Syncing Go workspace..."
 go work sync
 
-# Add replace directive to go.work for custom BAML Go library if provided
-# Note: replace directives in go.mod are ignored in workspace mode, so we must use go.work
-if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
-    echo "Adding replace directive for custom BAML Go library to go.work..."
-    go work edit -replace "github.com/boundaryml/baml=${CUSTOM_BAML_GO_LIB}"
+if [ -z "${CUSTOM_BAML_GO_LIB:-}" ]; then
+    # Ensure baml_client uses the correct BAML version
+    pushd baml_client
+    echo "Setting BAML version in baml_client to ${BAML_VERSION}..."
+    go get "github.com/boundaryml/baml@${BAML_VERSION}"
+    popd
 fi
-
-# Ensure baml_client uses the correct BAML version
-pushd baml_client
-echo "Setting BAML version in baml_client to ${BAML_VERSION}..."
-go get "github.com/boundaryml/baml@${BAML_VERSION}"
-popd
 
 # Run hacks to patch generated BAML client
 echo "Running hacks..."

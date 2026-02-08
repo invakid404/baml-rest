@@ -48,3 +48,32 @@ jobs:
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
         # share state (server config, worker pool) that could cause flakiness if parallel
         run: go test -tags=integration -v -count=1 -p 1 ./integration/...
+
+  integration-tests-baml-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Read BAML source commit
+        id: baml-source
+        run: echo "commit=$(jq -r '.source' integration/baml_versions.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout BAML Source
+        uses: actions/checkout@v6
+        with:
+          repository: BoundaryML/baml
+          ref: ${{ steps.baml-source.outputs.commit }}
+          path: baml-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.7'
+
+      - name: Run Integration Tests (BAML Source)
+        env:
+          BAML_SOURCE: ${{ github.workspace }}/baml-source
+        run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...

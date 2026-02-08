@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,14 +27,26 @@ var BAMLClient *testutil.BAMLRestClient
 // BAMLVersion is the version being tested (set at init time)
 var BAMLVersion string
 
+// BAMLSourcePath is the path to a local BAML source repo (set via BAML_SOURCE env var)
+var BAMLSourcePath string
+
 func init() {
+	BAMLSourcePath = os.Getenv("BAML_SOURCE")
 	BAMLVersion = getBAMLVersion()
 }
 
 // getBAMLVersion returns the BAML version to test.
-// Priority: BAML_VERSION env var > baml_versions.json "latest" field
+// Priority: BAML_VERSION env var > BAML source Cargo.toml > baml_versions.json "latest" field
 func getBAMLVersion() string {
 	if v := os.Getenv("BAML_VERSION"); v != "" {
+		return v
+	}
+
+	if BAMLSourcePath != "" {
+		v, err := testutil.DetectBamlSourceVersion(BAMLSourcePath)
+		if err != nil {
+			panic(fmt.Sprintf("BAML_SOURCE set but failed to detect version: %v", err))
+		}
 		return v
 	}
 
@@ -74,7 +87,11 @@ func getBAMLVersion() string {
 const GoroutineLeakFilter = "invakid404/baml-rest,boundaryml/baml,-StartRSSMonitor,-healthChecker,-GetGoroutines"
 
 func TestMain(m *testing.M) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	timeout := 10 * time.Minute
+	if BAMLSourcePath != "" {
+		timeout = 30 * time.Minute // Rust compilation is slow
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	// Find the testdata directory
@@ -95,12 +112,16 @@ func TestMain(m *testing.M) {
 	println("  BAML Version:", BAMLVersion)
 	println("  Adapter Version:", adapterVersion)
 	println("  BAML Src Path:", bamlSrcPath)
+	if BAMLSourcePath != "" {
+		println("  BAML Source:", BAMLSourcePath)
+	}
 
 	// Setup test environment
 	TestEnv, err = testutil.Setup(ctx, testutil.SetupOptions{
 		BAMLSrcPath:    bamlSrcPath,
 		BAMLVersion:    BAMLVersion,
 		AdapterVersion: adapterVersion,
+		BAMLSource:     BAMLSourcePath,
 	})
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
