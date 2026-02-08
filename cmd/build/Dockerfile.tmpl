@@ -3,7 +3,7 @@
 FROM rust:bookworm AS cffi-builder
 
 # Install Go (needed for protoc-gen-go during CFFI build)
-ARG TARGETARCH
+ARG TARGETARCH{{ if .defaultTargetArch }}={{ .defaultTargetArch }}{{ end }}
 RUN apt-get update && \
     apt-get install -y wget && \
     wget -q https://go.dev/dl/go1.25.6.linux-${TARGETARCH}.tar.gz && \
