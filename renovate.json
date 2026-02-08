@@ -26,6 +26,19 @@
       "depNameTemplate": "go",
       "datasourceTemplate": "golang-version",
       "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^integration/baml_versions\\.json$/"
+      ],
+      "matchStrings": [
+        "\"source\":\\s*\"(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "depNameTemplate": "BoundaryML/baml",
+      "datasourceTemplate": "git-refs",
+      "packageNameTemplate": "https://github.com/BoundaryML/baml",
+      "currentValueTemplate": "canary"
     }
   ],
   "packageRules": [

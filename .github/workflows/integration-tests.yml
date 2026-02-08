@@ -57,11 +57,15 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6
 
+      - name: Read BAML source commit
+        id: baml-source
+        run: echo "commit=$(jq -r '.source' integration/baml_versions.json)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout BAML Source
         uses: actions/checkout@v6
         with:
           repository: BoundaryML/baml
-          ref: a2b62a6c9463c96bec262719eedab21d6953d9f2
+          ref: ${{ steps.baml-source.outputs.commit }}
           path: baml-source
 
       - name: Set up Go

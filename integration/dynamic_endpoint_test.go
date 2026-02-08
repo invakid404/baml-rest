@@ -481,7 +481,9 @@ func TestDynamicEndpoint(t *testing.T) {
 
 	// Call/stream validation tests (skipped due to BAML bug)
 	t.Run("validation_call_missing_messages", func(t *testing.T) {
-		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		if BAMLSourcePath == "" {
+			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -505,7 +507,9 @@ func TestDynamicEndpoint(t *testing.T) {
 	})
 
 	t.Run("validation_call_missing_client_registry", func(t *testing.T) {
-		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		if BAMLSourcePath == "" {
+			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -535,7 +539,9 @@ func TestDynamicEndpoint(t *testing.T) {
 
 	t.Run("call_simple", func(t *testing.T) {
 		// Skip: Known BAML bug where streaming API doesn't propagate dynamic classes to parser
-		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		if BAMLSourcePath == "" {
+			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -580,7 +586,9 @@ func TestDynamicEndpoint(t *testing.T) {
 
 	t.Run("call_with_raw", func(t *testing.T) {
 		// Skip: Known BAML bug
-		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		if BAMLSourcePath == "" {
+			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -616,7 +624,9 @@ func TestDynamicEndpoint(t *testing.T) {
 
 	t.Run("stream_ndjson", func(t *testing.T) {
 		// Skip: Known BAML bug
-		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		if BAMLSourcePath == "" {
+			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
