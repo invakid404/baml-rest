@@ -37,7 +37,7 @@ require (
 	github.com/stoewer/go-strcase v1.3.1
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/tmaxmax/go-sse v0.11.0
-	golang.org/x/mod v0.32.0
+	golang.org/x/mod v0.33.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
