@@ -104,8 +104,8 @@ function DescribeOptionalImage(img: image?) -> string {
     prompt #"Describe if present: {{ img }}"#
 }
 
-// Edge case: direct param as list of optional media (image?[])
-function DescribeOptionalImages(images: image?[]) -> string {
+// Edge case: direct param as list of optional media ((image | null)[])
+function DescribeOptionalImages(images: (image | null)[]) -> string {
     client TestClient
     prompt #"Describe optional images: {{ images }}"#
 }
@@ -116,7 +116,7 @@ function DescribeGallery(gallery: ImageGallery) -> string {
     prompt #"Describe gallery '{{ gallery.title }}': {{ gallery.images }}"#
 }
 
-// Edge case: nested class with list of optional media (image?[])
+// Edge case: nested class with list of optional media ((image | null)[])
 function DescribeOptionalGallery(gallery: OptionalImageGallery) -> string {
     client TestClient
     prompt #"Describe optional gallery '{{ gallery.title }}': {{ gallery.images }}"#

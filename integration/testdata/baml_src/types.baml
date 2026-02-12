@@ -81,9 +81,9 @@ class ImageGallery {
     title string
 }
 
-// Edge case: class with a list of optional media (image?[])
+// Edge case: class with a list of optional media ((image | null)[])
 class OptionalImageGallery {
-    images image?[]
+    images (image | null)[]
     title string
 }
 
