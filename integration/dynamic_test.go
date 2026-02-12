@@ -996,7 +996,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 		// Skip: BAML streaming API has a bug where dynamically added classes are not
 		// visible to the parser. The sync API works fine, but we use streaming internally.
 		// Bug reported to BAML team.
-		if BAMLSourcePath == "" {
+		if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
 			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
 		}
 

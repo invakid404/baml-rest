@@ -482,7 +482,7 @@ func TestDynamicEndpoint(t *testing.T) {
 
 	// Call/stream validation tests (skipped due to BAML bug)
 	t.Run("validation_call_missing_messages", func(t *testing.T) {
-		if BAMLSourcePath == "" {
+		if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
 			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
 		}
 
@@ -508,7 +508,7 @@ func TestDynamicEndpoint(t *testing.T) {
 	})
 
 	t.Run("validation_call_missing_client_registry", func(t *testing.T) {
-		if BAMLSourcePath == "" {
+		if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
 			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
 		}
 
@@ -540,7 +540,7 @@ func TestDynamicEndpoint(t *testing.T) {
 
 	t.Run("call_simple", func(t *testing.T) {
 		// Skip: Known BAML bug where streaming API doesn't propagate dynamic classes to parser
-		if BAMLSourcePath == "" {
+		if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
 			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
 		}
 
@@ -587,7 +587,7 @@ func TestDynamicEndpoint(t *testing.T) {
 
 	t.Run("call_with_raw", func(t *testing.T) {
 		// Skip: Known BAML bug
-		if BAMLSourcePath == "" {
+		if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
 			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
 		}
 
@@ -625,7 +625,7 @@ func TestDynamicEndpoint(t *testing.T) {
 
 	t.Run("stream_ndjson", func(t *testing.T) {
 		// Skip: Known BAML bug
-		if BAMLSourcePath == "" {
+		if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
 			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
 		}
 
@@ -671,7 +671,7 @@ func TestDynamicEndpoint(t *testing.T) {
 	// Test that {output_format} placeholder in message content gets replaced
 	// with BAML's output format instructions before being sent to the LLM
 	t.Run("output_format_placeholder", func(t *testing.T) {
-		if BAMLSourcePath == "" {
+		if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
 			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
 		}
 
