@@ -1101,4 +1101,181 @@ func TestMediaEdgeCases(t *testing.T) {
 			t.Errorf("Expected result, got '%s'", result)
 		}
 	})
+
+	t.Run("direct_optional_image_list_ptr_slice", func(t *testing.T) {
+		// Tests image[]? as a direct param (P2: *[]Image where isPtr is true but inner is slice).
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-opt-img-list-p2", "Optional image list described")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeOptionalImageList",
+			Input: map[string]any{
+				"images": []any{
+					map[string]any{"url": "https://example.com/a.png"},
+					map[string]any{"url": "https://example.com/b.png"},
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Optional image list described" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("direct_optional_image_list_null", func(t *testing.T) {
+		// Tests image[]? with null (the entire list is null)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-opt-img-list-null", "No images provided")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeOptionalImageList",
+			Input: map[string]any{
+				"images": nil,
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "No images provided" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("optional_class_with_media", func(t *testing.T) {
+		// Tests ImageWithCaption? as a direct param (P1: *ClassWithMedia, ptr wrapping).
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-opt-class", "Optional class described")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeOptionalCaption",
+			Input: map[string]any{
+				"input": map[string]any{
+					"img": map[string]any{
+						"url": "https://example.com/opt-class.png",
+					},
+					"caption": "optional class test",
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Optional class described" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("optional_class_with_media_null", func(t *testing.T) {
+		// Tests ImageWithCaption? with null
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-opt-class-null", "No captioned image")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeOptionalCaption",
+			Input: map[string]any{
+				"input": nil,
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "No captioned image" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("list_of_class_with_media", func(t *testing.T) {
+		// Tests ImageWithCaption[] as a direct param (P1: []ClassWithMedia, slice wrapping).
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-class-list", "Class list described")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeCaptionList",
+			Input: map[string]any{
+				"inputs": []any{
+					map[string]any{
+						"img":     map[string]any{"url": "https://example.com/1.png"},
+						"caption": "first",
+					},
+					map[string]any{
+						"img":     map[string]any{"url": "https://example.com/2.png"},
+						"caption": "second",
+					},
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Class list described" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
 }

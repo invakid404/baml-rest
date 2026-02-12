@@ -121,3 +121,21 @@ function DescribeOptionalGallery(gallery: OptionalImageGallery) -> string {
     client TestClient
     prompt #"Describe optional gallery '{{ gallery.title }}': {{ gallery.images }}"#
 }
+
+// Edge case P2: optional list of media (image[]? -> *[]Image)
+function DescribeOptionalImageList(images: image[]?) -> string {
+    client TestClient
+    prompt #"Describe optional image list: {{ images }}"#
+}
+
+// Edge case P1: optional class param with media (ImageWithCaption? -> *ImageWithCaption)
+function DescribeOptionalCaption(input: ImageWithCaption?) -> string {
+    client TestClient
+    prompt #"Describe optional captioned image: {{ input }}"#
+}
+
+// Edge case P1: list of class params with media (ImageWithCaption[] -> []ImageWithCaption)
+function DescribeCaptionList(inputs: ImageWithCaption[]) -> string {
+    client TestClient
+    prompt #"Describe captioned images: {{ inputs }}"#
+}

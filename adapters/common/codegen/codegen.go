@@ -276,6 +276,55 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 	}
 
 	if isPtr {
+		innerAfterPtr := fieldType.Elem()
+		if innerAfterPtr.Kind() == reflect.Slice {
+			// *[]Image (optional list, e.g., image[]? inside a class) — unwrap pointer, then iterate
+			elemType := innerAfterPtr.Elem()
+			elemIsPtr := elemType.Kind() == reflect.Ptr
+
+			var elemAssert *jen.Statement
+			if elemIsPtr {
+				elemAssert = parseReflectType(elemType).statement
+			} else {
+				elemAssert = bamlType.Clone()
+			}
+
+			var miArg jen.Code
+			if elemIsPtr {
+				miArg = jen.Id("__mi")
+			} else {
+				miArg = jen.Op("&").Id("__mi")
+			}
+
+			var stmts []jen.Code
+			stmts = append(stmts,
+				jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
+					jen.Id("__ptrSlice").Op(":=").Make(
+						jen.Add(parseReflectType(innerAfterPtr).statement),
+						jen.Len(jen.Op("*").Add(srcExpr.Clone())),
+					),
+					jen.For(jen.Id("__i"), jen.Id("__mi").Op(":=").Range().Op("*").Add(srcExpr.Clone())).Block(
+						jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+							jen.Id("adapter"),
+							kindExpr.Clone(),
+							miArg,
+						),
+						jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+							jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+								jen.Lit(fieldName+"[%d]: %w"),
+								jen.Id("__i"),
+								jen.Id("__err"),
+							)),
+						),
+						jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Id("__raw").Assert(elemAssert),
+					),
+					jen.Id("result").Dot(fieldName).Op("=").Op("&").Id("__ptrSlice"),
+				),
+			)
+			return stmts
+		}
+
+		// *MediaInput -> *baml.Image (optional single value)
 		return []jen.Code{
 			jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
 				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
@@ -473,6 +522,7 @@ func Generate(selfPkg string) {
 			paramName   string
 			mirrorName  string
 			convertFunc string
+			paramType   reflect.Type // original param type (may be ptr/slice wrapped)
 		}
 		var structMediaParams []structMediaParam
 
@@ -506,6 +556,7 @@ func Generate(selfPkg string) {
 					paramName:   paramName,
 					mirrorName:  mirrorName,
 					convertFunc: "convert" + mirrorName,
+					paramType:   paramType,
 				})
 			} else {
 				fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(parseReflectType(paramType).statement)
@@ -747,22 +798,87 @@ func Generate(selfPkg string) {
 					preamble = append(preamble, mediaConversionCode(convertedVar, fieldName, paramType, mediaKind)...)
 				}
 
-				// Generate struct conversion code for params with nested media
+				// Generate struct conversion code for params with nested media.
+				// Must handle direct, pointer, and slice wrapping of the struct param.
 				for _, smp := range structMediaParams {
 					fieldName := strcase.UpperCamelCase(smp.paramName)
 					convertedVar := "__struct_" + smp.paramName
-					preamble = append(preamble,
-						jen.List(jen.Id(convertedVar), jen.Id("__err_"+convertedVar)).Op(":=").Id(smp.convertFunc).Call(
-							jen.Id("adapter"),
-							jen.Op("&").Id("input").Dot(fieldName),
-						),
-						jen.If(jen.Id("__err_"+convertedVar).Op("!=").Nil()).Block(
-							jen.Return(jen.Qual("fmt", "Errorf").Call(
-								jen.Lit(smp.paramName+": %w"),
-								jen.Id("__err_"+convertedVar),
-							)),
-						),
-					)
+					errVar := "__err_" + convertedVar
+
+					isPtr := smp.paramType.Kind() == reflect.Ptr
+					isSlice := smp.paramType.Kind() == reflect.Slice
+
+					if isSlice {
+						// []ClassWithMedia -> iterate and convert each element
+						elemType := smp.paramType.Elem()
+						elemIsPtr := elemType.Kind() == reflect.Ptr
+
+						// Determine how to pass the element to the conversion function
+						var vArg jen.Code
+						if elemIsPtr {
+							vArg = jen.Id("__v") // already *Mirror, pass directly
+						} else {
+							vArg = jen.Op("&").Id("__v") // Mirror, take address
+						}
+
+						preamble = append(preamble,
+							jen.Id(convertedVar).Op(":=").Make(
+								jen.Add(parseReflectType(smp.paramType).statement),
+								jen.Len(jen.Id("input").Dot(fieldName)),
+							),
+							jen.For(jen.Id("__i"), jen.Id("__v").Op(":=").Range().Id("input").Dot(fieldName)).Block(
+								jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
+									jen.Id("adapter"),
+									vArg,
+								),
+								jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
+									jen.Return(jen.Qual("fmt", "Errorf").Call(
+										jen.Lit(smp.paramName+"[%d]: %w"),
+										jen.Id("__i"),
+										jen.Id(errVar),
+									)),
+								),
+								func() jen.Code {
+									if elemIsPtr {
+										return jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
+									}
+									return jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Id("__converted")
+								}(),
+							),
+						)
+					} else if isPtr {
+						// *ClassWithMedia -> nil check, then convert the dereferenced value
+						preamble = append(preamble,
+							jen.Var().Id(convertedVar).Add(parseReflectType(smp.paramType).statement),
+							jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
+								jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
+									jen.Id("adapter"),
+									jen.Id("input").Dot(fieldName), // already *Mirror, pass directly
+								),
+								jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
+									jen.Return(jen.Qual("fmt", "Errorf").Call(
+										jen.Lit(smp.paramName+": %w"),
+										jen.Id(errVar),
+									)),
+								),
+								jen.Id(convertedVar).Op("=").Op("&").Id("__converted"),
+							),
+						)
+					} else {
+						// Direct: ClassWithMedia -> take address and convert
+						preamble = append(preamble,
+							jen.List(jen.Id(convertedVar), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
+								jen.Id("adapter"),
+								jen.Op("&").Id("input").Dot(fieldName),
+							),
+							jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
+								jen.Return(jen.Qual("fmt", "Errorf").Call(
+									jen.Lit(smp.paramName+": %w"),
+									jen.Id(errVar),
+								)),
+							),
+						)
+					}
 				}
 			}
 			return preamble
@@ -1913,7 +2029,55 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 	}
 
 	if isPtr {
-		// *MediaInput -> *baml.Image (optional)
+		innerAfterPtr := paramType.Elem()
+		if innerAfterPtr.Kind() == reflect.Slice {
+			// *[]Image (optional list, e.g., image[]?) — unwrap pointer, then iterate slice
+			elemType := innerAfterPtr.Elem()
+			elemIsPtr := elemType.Kind() == reflect.Ptr
+
+			var elemAssert *jen.Statement
+			if elemIsPtr {
+				elemAssert = parseReflectType(elemType).statement
+			} else {
+				elemAssert = bamlType.Clone()
+			}
+
+			var miArg jen.Code
+			if elemIsPtr {
+				miArg = jen.Id("__mi")
+			} else {
+				miArg = jen.Op("&").Id("__mi")
+			}
+
+			sliceVar := "__slice_" + convertedVar
+			return []jen.Code{
+				jen.Var().Id(convertedVar).Add(parseReflectType(paramType).statement),
+				jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
+					jen.Id(sliceVar).Op(":=").Make(
+						jen.Add(parseReflectType(innerAfterPtr).statement),
+						jen.Len(jen.Op("*").Id("input").Dot(fieldName)),
+					),
+					jen.For(jen.Id("__i"), jen.Id("__mi").Op(":=").Range().Op("*").Id("input").Dot(fieldName)).Block(
+						jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+							jen.Id("adapter"),
+							kindExpr.Clone(),
+							miArg,
+						),
+						jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+							jen.Return(jen.Qual("fmt", "Errorf").Call(
+								jen.Lit(fieldName+"[%d]: %w"),
+								jen.Id("__i"),
+								jen.Id("__err"),
+							)),
+						),
+						jen.Id(sliceVar).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(elemAssert),
+					),
+					jen.Id(convertedVar).Op("=").Op("&").Id(sliceVar),
+				),
+			}
+		}
+
+		// *MediaInput -> *baml.Image (optional single value)
 		return []jen.Code{
 			jen.Var().Id(convertedVar).Add(parseReflectType(paramType).statement),
 			jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
