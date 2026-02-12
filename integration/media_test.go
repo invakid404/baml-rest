@@ -884,3 +884,221 @@ func TestMediaOpenAPISchema(t *testing.T) {
 		}
 	})
 }
+
+// TestMediaEdgeCases exercises pointer/slice wrapping edge cases that previously
+// caused double-pointer compile errors in generated code.
+func TestMediaEdgeCases(t *testing.T) {
+	t.Run("direct_image_list", func(t *testing.T) {
+		// Tests image[] as a direct function param (mediaConversionCode slice path)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-img-list", "Two images described")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeImages",
+			Input: map[string]any{
+				"images": []any{
+					map[string]any{"url": "https://example.com/a.png"},
+					map[string]any{"url": "https://example.com/b.png"},
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Two images described" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("direct_optional_image", func(t *testing.T) {
+		// Tests image? as a direct function param (mediaConversionCode ptr path)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-opt-img", "Optional image described")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeOptionalImage",
+			Input: map[string]any{
+				"img": map[string]any{"url": "https://example.com/opt.png"},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Optional image described" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("direct_optional_image_null", func(t *testing.T) {
+		// Tests image? with null value (ptr path, nil case)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-opt-img-null", "No image provided")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeOptionalImage",
+			Input: map[string]any{
+				"img": nil,
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "No image provided" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("direct_optional_image_list", func(t *testing.T) {
+		// Tests image?[] as a direct function param — this is the exact edge case from
+		// finding 1: []*MediaInput where range variable is already a pointer.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-opt-img-list", "Optional images described")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeOptionalImages",
+			Input: map[string]any{
+				"images": []any{
+					map[string]any{"url": "https://example.com/a.png"},
+					nil,
+					map[string]any{"base64": "iVBORw0KGgo=", "media_type": "image/png"},
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Optional images described" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("nested_class_image_list", func(t *testing.T) {
+		// Tests class with image[] field (mediaFieldConversion slice path)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-gallery", "Gallery described")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeGallery",
+			Input: map[string]any{
+				"gallery": map[string]any{
+					"images": []any{
+						map[string]any{"url": "https://example.com/1.png"},
+						map[string]any{"url": "https://example.com/2.png"},
+					},
+					"title": "My Gallery",
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Gallery described" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("nested_class_optional_image_list", func(t *testing.T) {
+		// Tests class with image?[] field — this is the exact edge case from
+		// finding 2: []*MediaInput in a nested struct field.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-edge-opt-gallery", "Optional gallery described")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeOptionalGallery",
+			Input: map[string]any{
+				"gallery": map[string]any{
+					"images": []any{
+						map[string]any{"url": "https://example.com/1.png"},
+						nil,
+						map[string]any{"base64": "iVBORw0KGgo=", "media_type": "image/png"},
+					},
+					"title": "Optional Gallery",
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Optional gallery described" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+}

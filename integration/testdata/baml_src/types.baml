@@ -75,6 +75,18 @@ class DocumentBundle {
     title string
 }
 
+// Edge case: class with a list of media (image[])
+class ImageGallery {
+    images image[]
+    title string
+}
+
+// Edge case: class with a list of optional media (image?[])
+class OptionalImageGallery {
+    images image?[]
+    title string
+}
+
 // Comprehensive type for OpenAPI schema validation testing
 // Combines: nested objects, optional fields, arrays, enums, and multiple primitive types
 enum Priority {

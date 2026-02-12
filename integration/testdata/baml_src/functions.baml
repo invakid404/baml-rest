@@ -91,3 +91,33 @@ function ProcessDocument(bundle: DocumentBundle) -> string {
     client TestClient
     prompt #"Process document '{{ bundle.title }}': {{ bundle.document }}"#
 }
+
+// Edge case: direct param as list of media (image[])
+function DescribeImages(images: image[]) -> string {
+    client TestClient
+    prompt #"Describe all images: {{ images }}"#
+}
+
+// Edge case: direct param as optional media (image?)
+function DescribeOptionalImage(img: image?) -> string {
+    client TestClient
+    prompt #"Describe if present: {{ img }}"#
+}
+
+// Edge case: direct param as list of optional media (image?[])
+function DescribeOptionalImages(images: image?[]) -> string {
+    client TestClient
+    prompt #"Describe optional images: {{ images }}"#
+}
+
+// Edge case: nested class with list of media (image[])
+function DescribeGallery(gallery: ImageGallery) -> string {
+    client TestClient
+    prompt #"Describe gallery '{{ gallery.title }}': {{ gallery.images }}"#
+}
+
+// Edge case: nested class with list of optional media (image?[])
+function DescribeOptionalGallery(gallery: OptionalImageGallery) -> string {
+    client TestClient
+    prompt #"Describe optional gallery '{{ gallery.title }}': {{ gallery.images }}"#
+}

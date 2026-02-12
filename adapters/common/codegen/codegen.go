@@ -243,6 +243,15 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 			assertExpr = bamlType.Clone()
 		}
 
+		// When elem is a pointer, the range variable is already *MediaInput;
+		// pass it directly instead of taking &__mi (which would be **MediaInput).
+		var miArg jen.Code
+		if elemIsPtr {
+			miArg = jen.Id("__mi")
+		} else {
+			miArg = jen.Op("&").Id("__mi")
+		}
+
 		return []jen.Code{
 			jen.Id("result").Dot(fieldName).Op("=").Make(
 				jen.Add(parseReflectType(fieldType).statement),
@@ -252,7 +261,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
 					jen.Id("adapter"),
 					kindExpr.Clone(),
-					jen.Op("&").Id("__mi"),
+					miArg,
 				),
 				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
 					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
@@ -319,6 +328,17 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 
 	if isSlice {
 		elemType := fieldType.Elem()
+		elemIsPtr := elemType.Kind() == reflect.Ptr
+
+		// When elem is a pointer, the range variable is already *MirrorType;
+		// pass it directly instead of taking &__v (which would be **MirrorType).
+		var vArg jen.Code
+		if elemIsPtr {
+			vArg = jen.Id("__v")
+		} else {
+			vArg = jen.Op("&").Id("__v")
+		}
+
 		return []jen.Code{
 			jen.Id("result").Dot(fieldName).Op("=").Make(
 				jen.Add(parseReflectType(fieldType).statement),
@@ -327,7 +347,7 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 			jen.For(jen.Id("__i"), jen.Id("__v").Op(":=").Range().Add(srcExpr.Clone())).Block(
 				jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
 					jen.Id("adapter"),
-					jen.Op("&").Id("__v"),
+					vArg,
 				),
 				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
 					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
@@ -1860,6 +1880,15 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 			assertExpr = bamlType.Clone()
 		}
 
+		// When elem is a pointer, the range variable is already *MediaInput;
+		// pass it directly instead of taking &__mi (which would be **MediaInput).
+		var miArg jen.Code
+		if elemIsPtr {
+			miArg = jen.Id("__mi")
+		} else {
+			miArg = jen.Op("&").Id("__mi")
+		}
+
 		return []jen.Code{
 			jen.Id(convertedVar).Op(":=").Make(
 				jen.Index().Add(parseReflectType(paramType.Elem()).statement),
@@ -1869,7 +1898,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
 					jen.Id("adapter"),
 					kindExpr.Clone(),
-					jen.Op("&").Id("__mi"),
+					miArg,
 				),
 				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(
