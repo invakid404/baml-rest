@@ -21,7 +21,7 @@
 
 ## Known broken versions
 
-Recommended version: **v0.218.1**
+Recommended version: **v0.219.0**
 
 - **v0.215.0**: Type builder is fully broken and panics the entire application
   when used ([issue](https://github.com/BoundaryML/baml/issues/2862))
