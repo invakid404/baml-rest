@@ -79,3 +79,15 @@ function TranscribeAudio(audio: audio) -> string {
     client TestClient
     prompt #"Transcribe: {{ audio }}"#
 }
+
+// Nested media: class with image field
+function DescribeImageWithCaption(input: ImageWithCaption) -> string {
+    client TestClient
+    prompt #"Describe the image ({{ input.caption }}): {{ input.img }}"#
+}
+
+// Nested media: class with optional image + required pdf
+function ProcessDocument(bundle: DocumentBundle) -> string {
+    client TestClient
+    prompt #"Process document '{{ bundle.title }}': {{ bundle.document }}"#
+}

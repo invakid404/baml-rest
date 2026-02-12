@@ -219,6 +219,253 @@ func TestMediaCallEndpoint(t *testing.T) {
 	})
 }
 
+func TestNestedMediaCallEndpoint(t *testing.T) {
+	t.Run("class_with_image_field", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-nested-media-img", "A cat with the caption 'fluffy'")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeImageWithCaption",
+			Input: map[string]any{
+				"input": map[string]any{
+					"img": map[string]any{
+						"url": "https://example.com/cat.png",
+					},
+					"caption": "fluffy",
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "A cat with the caption 'fluffy'" {
+			t.Errorf("Expected description, got '%s'", result)
+		}
+	})
+
+	t.Run("class_with_base64_image", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-nested-media-b64", "Image description from base64")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "DescribeImageWithCaption",
+			Input: map[string]any{
+				"input": map[string]any{
+					"img": map[string]any{
+						"base64":     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+						"media_type": "image/png",
+					},
+					"caption": "test image",
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Image description from base64" {
+			t.Errorf("Expected description, got '%s'", result)
+		}
+	})
+
+	t.Run("class_with_optional_and_required_media", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-nested-media-doc", "Document processed successfully")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "ProcessDocument",
+			Input: map[string]any{
+				"bundle": map[string]any{
+					"document": map[string]any{
+						"base64":     "JVBERi0xLjQKMSAwIG9iago8PAovVHlwZSAvQ2F0YWxvZwo+PgplbmRvYmoK",
+						"media_type": "application/pdf",
+					},
+					"title": "Test Document",
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Document processed successfully" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+
+	t.Run("class_with_optional_media_provided", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-nested-media-optional", "Document with cover processed")
+
+		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+			Method: "ProcessDocument",
+			Input: map[string]any{
+				"bundle": map[string]any{
+					"cover": map[string]any{
+						"url": "https://example.com/cover.png",
+					},
+					"document": map[string]any{
+						"base64":     "JVBERi0xLjQKMSAwIG9iago8PAovVHlwZSAvQ2F0YWxvZwo+PgplbmRvYmoK",
+						"media_type": "application/pdf",
+					},
+					"title": "Test Document With Cover",
+				},
+			},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if result != "Document with cover processed" {
+			t.Errorf("Expected result, got '%s'", result)
+		}
+	})
+}
+
+func TestNestedMediaStreamEndpoint(t *testing.T) {
+	t.Run("class_with_image_stream", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := "Streaming description of the captioned image"
+		opts := setupScenario(t, "test-nested-media-stream", content)
+
+		events, errs := BAMLClient.Stream(ctx, testutil.CallRequest{
+			Method: "DescribeImageWithCaption",
+			Input: map[string]any{
+				"input": map[string]any{
+					"img": map[string]any{
+						"url": "https://example.com/stream-test.png",
+					},
+					"caption": "streaming test",
+				},
+			},
+			Options: opts,
+		})
+
+		var eventCount int
+		var lastEvent testutil.StreamEvent
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto doneNestedStream
+				}
+				eventCount++
+				lastEvent = event
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("Stream error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Context cancelled")
+			}
+		}
+	doneNestedStream:
+
+		if eventCount < 2 {
+			t.Errorf("Expected multiple events, got %d", eventCount)
+		}
+
+		var result string
+		if err := json.Unmarshal(lastEvent.Data, &result); err != nil {
+			t.Fatalf("Failed to unmarshal last event: %v", err)
+		}
+
+		if result != content {
+			t.Errorf("Expected '%s', got '%s'", content, result)
+		}
+	})
+}
+
+func TestNestedMediaOpenAPISchema(t *testing.T) {
+	t.Run("nested_media_endpoints_exist", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		schema, err := BAMLClient.GetOpenAPISchema(ctx)
+		if err != nil {
+			t.Fatalf("Failed to get OpenAPI schema: %v", err)
+		}
+
+		if schema.Paths["/call/DescribeImageWithCaption"] == nil {
+			t.Error("Missing /call/DescribeImageWithCaption path")
+		}
+		if schema.Paths["/call/ProcessDocument"] == nil {
+			t.Error("Missing /call/ProcessDocument path")
+		}
+		if schema.Paths["/stream/DescribeImageWithCaption"] == nil {
+			t.Error("Missing /stream/DescribeImageWithCaption path")
+		}
+	})
+
+	t.Run("nested_media_schema_has_media_input_refs", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		schema, err := BAMLClient.GetOpenAPISchema(ctx)
+		if err != nil {
+			t.Fatalf("Failed to get OpenAPI schema: %v", err)
+		}
+
+		// MediaInput should exist as a component schema (reused by nested types)
+		_, ok := schema.Components.Schemas["MediaInput"]
+		if !ok {
+			t.Error("Missing MediaInput component schema")
+		}
+	})
+}
+
 func TestMediaCallWithRawEndpoint(t *testing.T) {
 	t.Run("image_with_raw", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

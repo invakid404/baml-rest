@@ -26,6 +26,385 @@ type methodOut struct {
 	streamOutputStructQual jen.Code
 }
 
+// mediaTypeNames maps BAML media type names to their MediaKind.
+// Used for reflection-based detection of media types in struct fields.
+var mediaTypeNames = map[string]bamlutils.MediaKind{
+	"Image": bamlutils.MediaKindImage,
+	"Audio": bamlutils.MediaKindAudio,
+	"PDF":   bamlutils.MediaKindPDF,
+	"Video": bamlutils.MediaKindVideo,
+}
+
+// isMediaReflectType checks whether a type (after unwrapping ptr/slice) is a known
+// BAML media type. Detection is by type name (Image, Audio, PDF, Video) from any
+// BAML-related package (runtime or generated client).
+func isMediaReflectType(typ reflect.Type) (bamlutils.MediaKind, bool) {
+	// Unwrap pointer and slice layers
+	for typ.Kind() == reflect.Ptr || typ.Kind() == reflect.Slice {
+		typ = typ.Elem()
+	}
+	// Check if the type name matches a known media type and comes from a BAML package
+	if kind, ok := mediaTypeNames[typ.Name()]; ok {
+		pkgPath := typ.PkgPath()
+		if strings.Contains(pkgPath, "boundaryml/baml") || strings.Contains(pkgPath, "baml_client") {
+			return kind, true
+		}
+	}
+	return 0, false
+}
+
+// structContainsMedia recursively checks whether a struct type (or any nested struct)
+// contains BAML media-typed fields (Image, Audio, PDF, Video).
+func structContainsMedia(typ reflect.Type) bool {
+	// Unwrap pointer and slice layers
+	for typ.Kind() == reflect.Ptr || typ.Kind() == reflect.Slice {
+		typ = typ.Elem()
+	}
+	if typ.Kind() != reflect.Struct {
+		return false
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		ft := field.Type
+		// Unwrap ptr/slice for the check
+		inner := ft
+		for inner.Kind() == reflect.Ptr || inner.Kind() == reflect.Slice {
+			inner = inner.Elem()
+		}
+		if _, ok := isMediaReflectType(ft); ok {
+			return true
+		}
+		if inner.Kind() == reflect.Struct && structContainsMedia(ft) {
+			return true
+		}
+	}
+	return false
+}
+
+// mirrorStructs tracks which BAML struct types have already had a mirror input struct
+// generated, to avoid duplicates when the same type appears in multiple functions.
+// Maps the original BAML type name to the generated mirror struct name.
+type mirrorStructTracker struct {
+	generated map[reflect.Type]string // baml type -> mirror struct name
+}
+
+func newMirrorStructTracker() *mirrorStructTracker {
+	return &mirrorStructTracker{generated: make(map[reflect.Type]string)}
+}
+
+// mirrorInputName returns the name for a mirror input struct.
+func mirrorInputName(typ reflect.Type) string {
+	return typ.Name() + "MediaInput"
+}
+
+// ensureMirrorStruct generates a mirror struct and conversion function for a BAML struct
+// that contains media fields. Returns the mirror struct name. Skips generation if already done.
+func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type) string {
+	// Unwrap pointer/slice to get to the struct
+	inner := typ
+	for inner.Kind() == reflect.Ptr || inner.Kind() == reflect.Slice {
+		inner = inner.Elem()
+	}
+
+	if name, ok := m.generated[inner]; ok {
+		return name
+	}
+
+	mirrorName := mirrorInputName(inner)
+	m.generated[inner] = mirrorName
+
+	// First, recursively ensure mirror structs for any nested structs with media
+	for i := 0; i < inner.NumField(); i++ {
+		field := inner.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		fieldInner := field.Type
+		for fieldInner.Kind() == reflect.Ptr || fieldInner.Kind() == reflect.Slice {
+			fieldInner = fieldInner.Elem()
+		}
+		if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type) {
+			m.ensureMirrorStruct(out, field.Type)
+		}
+	}
+
+	// Generate the mirror struct
+	var fields []jen.Code
+	for i := 0; i < inner.NumField(); i++ {
+		field := inner.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		// Preserve the original json tag from the BAML struct
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" {
+			jsonTag = field.Name
+		}
+
+		var fieldCode *jen.Statement
+		if _, isMedia := isMediaReflectType(field.Type); isMedia {
+			// Replace media type with MediaInput, preserving ptr/slice wrapping
+			fieldCode = jen.Id(field.Name).Add(mediaFieldType(field.Type))
+		} else {
+			fieldInner := field.Type
+			for fieldInner.Kind() == reflect.Ptr || fieldInner.Kind() == reflect.Slice {
+				fieldInner = fieldInner.Elem()
+			}
+			if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type) {
+				// Nested struct with media: use its mirror type, preserving wrapping
+				nestedMirrorName := mirrorInputName(fieldInner)
+				fieldCode = jen.Id(field.Name).Add(mirrorFieldType(field.Type, nestedMirrorName))
+			} else {
+				fieldCode = jen.Id(field.Name).Add(parseReflectType(field.Type).statement)
+			}
+		}
+
+		fields = append(fields, fieldCode.Tag(map[string]string{"json": jsonTag}))
+	}
+	out.Type().Id(mirrorName).Struct(fields...)
+
+	// Generate the conversion function: convert<MirrorName>(adapter, input) -> (bamlType, error)
+	m.generateConversionFunc(out, inner, mirrorName)
+
+	return mirrorName
+}
+
+// generateConversionFunc generates a function that converts a mirror input struct
+// to the real BAML struct, handling media field conversion.
+func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType reflect.Type, mirrorName string) {
+	funcName := "convert" + mirrorName
+	bamlTypeExpr := parseReflectType(bamlType).statement
+
+	var bodyCode []jen.Code
+	bodyCode = append(bodyCode, jen.Var().Id("result").Add(bamlTypeExpr.Clone()))
+
+	for i := 0; i < bamlType.NumField(); i++ {
+		field := bamlType.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		fieldName := field.Name
+		srcExpr := jen.Id("input").Dot(fieldName)
+
+		if mediaKind, isMedia := isMediaReflectType(field.Type); isMedia {
+			bodyCode = append(bodyCode, mediaFieldConversion(fieldName, srcExpr, field.Type, mediaKind)...)
+		} else {
+			fieldInner := field.Type
+			for fieldInner.Kind() == reflect.Ptr || fieldInner.Kind() == reflect.Slice {
+				fieldInner = fieldInner.Elem()
+			}
+			if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type) {
+				bodyCode = append(bodyCode, nestedStructConversion(fieldName, srcExpr, field.Type, m)...)
+			} else {
+				// Direct copy
+				bodyCode = append(bodyCode, jen.Id("result").Dot(fieldName).Op("=").Add(srcExpr.Clone()))
+			}
+		}
+	}
+
+	bodyCode = append(bodyCode, jen.Return(jen.Id("result"), jen.Nil()))
+
+	out.Func().Id(funcName).
+		Params(
+			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("input").Op("*").Id(mirrorName),
+		).
+		Params(bamlTypeExpr.Clone(), jen.Error()).
+		Block(bodyCode...)
+}
+
+// mediaFieldConversion generates code to convert a MediaInput field to a BAML media type.
+// Handles direct, pointer, and slice wrapping.
+func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType reflect.Type, mediaKind bamlutils.MediaKind) []jen.Code {
+	kindExpr := jen.Qual(common.InterfacesPkg, mediaKind.ConstName())
+
+	isPtr := fieldType.Kind() == reflect.Ptr
+	isSlice := fieldType.Kind() == reflect.Slice
+
+	innerType := fieldType
+	for innerType.Kind() == reflect.Ptr || innerType.Kind() == reflect.Slice {
+		innerType = innerType.Elem()
+	}
+	bamlType := parseReflectType(innerType).statement
+
+	if isSlice {
+		elemType := fieldType.Elem()
+		elemIsPtr := elemType.Kind() == reflect.Ptr
+
+		var assertExpr *jen.Statement
+		if elemIsPtr {
+			assertExpr = parseReflectType(elemType).statement
+		} else {
+			assertExpr = bamlType.Clone()
+		}
+
+		return []jen.Code{
+			jen.Id("result").Dot(fieldName).Op("=").Make(
+				jen.Add(parseReflectType(fieldType).statement),
+				jen.Len(srcExpr.Clone()),
+			),
+			jen.For(jen.Id("__i"), jen.Id("__mi").Op(":=").Range().Add(srcExpr.Clone())).Block(
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+					jen.Id("adapter"),
+					kindExpr.Clone(),
+					jen.Op("&").Id("__mi"),
+				),
+				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+						jen.Lit(fieldName+"[%d]: %w"),
+						jen.Id("__i"),
+						jen.Id("__err"),
+					)),
+				),
+				jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
+			),
+		}
+	}
+
+	if isPtr {
+		return []jen.Code{
+			jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+					jen.Id("adapter"),
+					kindExpr.Clone(),
+					srcExpr.Clone(),
+				),
+				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+						jen.Lit(fieldName+": %w"),
+						jen.Id("__err"),
+					)),
+				),
+				jen.Id("__typed").Op(":=").Id("__raw").Assert(bamlType.Clone()),
+				jen.Id("result").Dot(fieldName).Op("=").Op("&").Id("__typed"),
+			),
+		}
+	}
+
+	// Direct
+	return []jen.Code{
+		jen.Block(
+			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+				jen.Id("adapter"),
+				kindExpr,
+				jen.Op("&").Add(srcExpr.Clone()),
+			),
+			jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+				jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+					jen.Lit(fieldName+": %w"),
+					jen.Id("__err"),
+				)),
+			),
+			jen.Id("result").Dot(fieldName).Op("=").Id("__raw").Assert(bamlType),
+		),
+	}
+}
+
+// nestedStructConversion generates code to convert a nested mirror struct field
+// to the real BAML struct via its conversion function. Handles ptr/slice wrapping.
+func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType reflect.Type, tracker *mirrorStructTracker) []jen.Code {
+	isPtr := fieldType.Kind() == reflect.Ptr
+	isSlice := fieldType.Kind() == reflect.Slice
+
+	innerType := fieldType
+	for innerType.Kind() == reflect.Ptr || innerType.Kind() == reflect.Slice {
+		innerType = innerType.Elem()
+	}
+	convertFunc := "convert" + mirrorInputName(innerType)
+
+	if isSlice {
+		elemType := fieldType.Elem()
+		return []jen.Code{
+			jen.Id("result").Dot(fieldName).Op("=").Make(
+				jen.Add(parseReflectType(fieldType).statement),
+				jen.Len(srcExpr.Clone()),
+			),
+			jen.For(jen.Id("__i"), jen.Id("__v").Op(":=").Range().Add(srcExpr.Clone())).Block(
+				jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
+					jen.Id("adapter"),
+					jen.Op("&").Id("__v"),
+				),
+				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+						jen.Lit(fieldName+"[%d]: %w"),
+						jen.Id("__i"),
+						jen.Id("__err"),
+					)),
+				),
+				func() jen.Code {
+					if elemType.Kind() == reflect.Ptr {
+						return jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
+					}
+					return jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Id("__converted")
+				}(),
+			),
+		}
+	}
+
+	if isPtr {
+		return []jen.Code{
+			jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
+				jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
+					jen.Id("adapter"),
+					srcExpr.Clone(),
+				),
+				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+						jen.Lit(fieldName+": %w"),
+						jen.Id("__err"),
+					)),
+				),
+				jen.Id("result").Dot(fieldName).Op("=").Op("&").Id("__converted"),
+			),
+		}
+	}
+
+	// Direct
+	return []jen.Code{
+		jen.Block(
+			jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
+				jen.Id("adapter"),
+				jen.Op("&").Add(srcExpr.Clone()),
+			),
+			jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+				jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+					jen.Lit(fieldName+": %w"),
+					jen.Id("__err"),
+				)),
+			),
+			jen.Id("result").Dot(fieldName).Op("=").Id("__converted"),
+		),
+	}
+}
+
+// mirrorFieldType returns a jen statement referencing a local mirror struct name,
+// preserving any pointer/slice wrapping from the original reflected type.
+func mirrorFieldType(typ reflect.Type, mirrorName string) *jen.Statement {
+	var ops []string
+	for {
+		if typ.Kind() == reflect.Ptr {
+			typ = typ.Elem()
+			ops = append(ops, "*")
+		} else if typ.Kind() == reflect.Slice {
+			typ = typ.Elem()
+			ops = append(ops, "[]")
+		} else {
+			break
+		}
+	}
+
+	statement := jen.Id(mirrorName)
+	for _, op := range slices.Backward(ops) {
+		statement = jen.Op(op).Add(statement)
+	}
+	return statement
+}
+
 // Generate generates the adapter.go file for the given adapter package.
 // selfPkg should be the full package path, e.g. "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0"
 func Generate(selfPkg string) {
@@ -35,6 +414,9 @@ func Generate(selfPkg string) {
 	out := common.MakeFile()
 
 	var methods []methodOut
+
+	// Track mirror structs to avoid duplicates
+	mirrors := newMirrorStructTracker()
 
 	// Iterate over sync functions (new approach using sync + onTick + ParseStream)
 	for methodName, args := range introspected.SyncMethods {
@@ -66,6 +448,14 @@ func Generate(selfPkg string) {
 		// Look up media params for this function
 		methodMediaParams := introspected.MediaParams[methodName]
 
+		// Track which params need struct conversion (nested media in classes)
+		type structMediaParam struct {
+			paramName   string
+			mirrorName  string
+			convertFunc string
+		}
+		var structMediaParams []structMediaParam
+
 		// Generate the input struct
 		var structFields []jen.Code
 
@@ -80,8 +470,23 @@ func Generate(selfPkg string) {
 
 			var fieldType *jen.Statement
 			if _, isMedia := methodMediaParams[paramName]; isMedia {
-				// Media-typed param: use MediaInput with the same pointer/slice wrapping
+				// Direct media-typed param: use MediaInput with the same pointer/slice wrapping
 				fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mediaFieldType(paramType))
+			} else if structContainsMedia(paramType) {
+				// Struct param containing nested media: use mirror struct
+				mirrorName := mirrors.ensureMirrorStruct(out, paramType)
+				fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mirrorFieldType(paramType, mirrorName))
+
+				// Unwrap to get the inner type for the convert function name
+				inner := paramType
+				for inner.Kind() == reflect.Ptr || inner.Kind() == reflect.Slice {
+					inner = inner.Elem()
+				}
+				structMediaParams = append(structMediaParams, structMediaParam{
+					paramName:   paramName,
+					mirrorName:  mirrorName,
+					convertFunc: "convert" + mirrorName,
+				})
 			} else {
 				fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(parseReflectType(paramType).statement)
 			}
@@ -303,7 +708,7 @@ func Generate(selfPkg string) {
 					),
 				)
 
-				// Generate media conversion code for each media-typed param
+				// Generate media conversion code for each direct media-typed param
 				for paramIdx := 1; paramIdx < syncFuncType.NumIn()-1; paramIdx++ {
 					argIdx := paramIdx - 1
 					if argIdx >= len(args) {
@@ -321,14 +726,41 @@ func Generate(selfPkg string) {
 
 					preamble = append(preamble, mediaConversionCode(convertedVar, fieldName, paramType, mediaKind)...)
 				}
+
+				// Generate struct conversion code for params with nested media
+				for _, smp := range structMediaParams {
+					fieldName := strcase.UpperCamelCase(smp.paramName)
+					convertedVar := "__struct_" + smp.paramName
+					preamble = append(preamble,
+						jen.List(jen.Id(convertedVar), jen.Id("__err_"+convertedVar)).Op(":=").Id(smp.convertFunc).Call(
+							jen.Id("adapter"),
+							jen.Op("&").Id("input").Dot(fieldName),
+						),
+						jen.If(jen.Id("__err_"+convertedVar).Op("!=").Nil()).Block(
+							jen.Return(jen.Qual("fmt", "Errorf").Call(
+								jen.Lit(smp.paramName+": %w"),
+								jen.Id("__err_"+convertedVar),
+							)),
+						),
+					)
+				}
 			}
 			return preamble
+		}
+
+		// Build a set of struct media param names for quick lookup
+		structMediaParamSet := make(map[string]bool, len(structMediaParams))
+		for _, smp := range structMediaParams {
+			structMediaParamSet[smp.paramName] = true
 		}
 
 		// Helper to build a call parameter for an arg, using the converted variable for media params
 		argCallParam := func(arg string) jen.Code {
 			if _, isMedia := methodMediaParams[arg]; isMedia {
 				return jen.Id("__media_" + arg)
+			}
+			if structMediaParamSet[arg] {
+				return jen.Id("__struct_" + arg)
 			}
 			return jen.Id("input").Dot(strcase.UpperCamelCase(arg))
 		}
