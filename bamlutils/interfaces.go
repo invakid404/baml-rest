@@ -376,7 +376,7 @@ type DynamicTypeSpec struct {
 	OneOf  []*DynamicTypeSpec `json:"oneOf,omitempty"`
 	Keys   *DynamicTypeSpec   `json:"keys,omitempty"`
 	Values *DynamicTypeSpec   `json:"values,omitempty"`
-	Value  any               `json:"value,omitempty"`
+	Value  any                `json:"value,omitempty"`
 }
 
 // DynamicEnum defines an enum with values.
@@ -402,10 +402,10 @@ type DynamicEnum struct {
 // natural language values (like "high priority") that get mapped to
 // the canonical enum name ("HIGH").
 type DynamicEnumValue struct {
-	Name        string `json:"name"`                    // Required: the canonical enum value name
-	Description string `json:"description,omitempty"`   // Optional: description shown to the LLM
-	Alias       string `json:"alias,omitempty"`         // Optional: alternative name the LLM can output
-	Skip        bool   `json:"skip,omitempty"`          // Optional: if true, this value is hidden from the LLM
+	Name        string `json:"name"`                  // Required: the canonical enum value name
+	Description string `json:"description,omitempty"` // Optional: description shown to the LLM
+	Alias       string `json:"alias,omitempty"`       // Optional: alternative name the LLM can output
+	Skip        bool   `json:"skip,omitempty"`        // Optional: if true, this value is hidden from the LLM
 }
 
 // Logger is a minimal logging interface compatible with hclog.Logger.
@@ -428,6 +428,12 @@ type Adapter interface {
 	SetLogger(logger Logger)
 	// Logger returns the current logger, or nil if not set.
 	Logger() Logger
+	// NewMediaFromURL creates a BAML media object from a URL.
+	// Returns the opaque BAML media interface (e.g., baml.Image) as any.
+	NewMediaFromURL(kind MediaKind, url string, mimeType *string) (any, error)
+	// NewMediaFromBase64 creates a BAML media object from base64-encoded data.
+	// Returns the opaque BAML media interface (e.g., baml.Image) as any.
+	NewMediaFromBase64(kind MediaKind, base64 string, mimeType *string) (any, error)
 }
 
 // BamlOptions contains optional configuration for BAML method calls

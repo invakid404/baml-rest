@@ -61,3 +61,21 @@ function GetComprehensive(input: string) -> ComprehensiveOutput {
     prompt #"{{ ctx.output_format }}
     Analyze: {{ input }}"#
 }
+
+// Media input: single image from URL or base64
+function DescribeImage(img: image) -> string {
+    client TestClient
+    prompt #"Describe the image: {{ img }}"#
+}
+
+// Media input: image alongside a text parameter
+function DescribeImageWithPrompt(img: image, prompt: string) -> string {
+    client TestClient
+    prompt #"{{ prompt }}: {{ img }}"#
+}
+
+// Media input: audio type
+function TranscribeAudio(audio: audio) -> string {
+    client TestClient
+    prompt #"Transcribe: {{ audio }}"#
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/dave/jennifer/jen"
 	"github.com/invakid404/baml-rest/adapters/common"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/introspected"
 	"github.com/stoewer/go-strcase"
 )
@@ -62,6 +63,9 @@ func Generate(selfPkg string) {
 			continue
 		}
 
+		// Look up media params for this function
+		methodMediaParams := introspected.MediaParams[methodName]
+
 		// Generate the input struct
 		var structFields []jen.Code
 
@@ -74,10 +78,16 @@ func Generate(selfPkg string) {
 			paramName := args[argIdx]
 			paramType := syncFuncType.In(paramIdx)
 
-			parsedType := jen.Id(strcase.UpperCamelCase(paramName)).Add(parseReflectType(paramType).statement)
+			var fieldType *jen.Statement
+			if _, isMedia := methodMediaParams[paramName]; isMedia {
+				// Media-typed param: use MediaInput with the same pointer/slice wrapping
+				fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mediaFieldType(paramType))
+			} else {
+				fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(parseReflectType(paramType).statement)
+			}
 
 			structFields = append(structFields,
-				parsedType.
+				fieldType.
 					Tag(map[string]string{
 						"json": paramName,
 					}))
@@ -292,16 +302,42 @@ func Generate(selfPkg string) {
 						)),
 					),
 				)
+
+				// Generate media conversion code for each media-typed param
+				for paramIdx := 1; paramIdx < syncFuncType.NumIn()-1; paramIdx++ {
+					argIdx := paramIdx - 1
+					if argIdx >= len(args) {
+						break
+					}
+					paramName := args[argIdx]
+					mediaKind, isMedia := methodMediaParams[paramName]
+					if !isMedia {
+						continue
+					}
+
+					fieldName := strcase.UpperCamelCase(paramName)
+					convertedVar := "__media_" + paramName
+					paramType := syncFuncType.In(paramIdx)
+
+					preamble = append(preamble, mediaConversionCode(convertedVar, fieldName, paramType, mediaKind)...)
+				}
 			}
 			return preamble
+		}
+
+		// Helper to build a call parameter for an arg, using the converted variable for media params
+		argCallParam := func(arg string) jen.Code {
+			if _, isMedia := methodMediaParams[arg]; isMedia {
+				return jen.Id("__media_" + arg)
+			}
+			return jen.Id("input").Dot(strcase.UpperCamelCase(arg))
 		}
 
 		// Build call parameters for Stream method
 		var streamCallParams []jen.Code
 		streamCallParams = append(streamCallParams, jen.Id("adapter")) // context
 		for _, arg := range args {
-			argName := strcase.UpperCamelCase(arg)
-			streamCallParams = append(streamCallParams, jen.Id("input").Dot(argName))
+			streamCallParams = append(streamCallParams, argCallParam(arg))
 		}
 		streamCallParams = append(streamCallParams,
 			jen.Append(
@@ -322,8 +358,7 @@ func Generate(selfPkg string) {
 		var streamCallParamsNoOnTick []jen.Code
 		streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, jen.Id("adapter")) // context
 		for _, arg := range args {
-			argName := strcase.UpperCamelCase(arg)
-			streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, jen.Id("input").Dot(argName))
+			streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, argCallParam(arg))
 		}
 		streamCallParamsNoOnTick = append(streamCallParamsNoOnTick,
 			jen.Append(
@@ -1267,8 +1302,54 @@ func Generate(selfPkg string) {
 							Block(
 								jen.Return(jen.Id("createTypeBuilder").Call(jen.Id("config"))),
 							),
+						jen.Id("MediaFactory"): jen.Id("createMedia"),
 					}),
 			),
+		)
+
+	// Generate `createMedia` - dispatches to baml_client's media constructors
+	out.Func().Id("createMedia").
+		Params(
+			jen.Id("kind").Qual(common.InterfacesPkg, "MediaKind"),
+			jen.Id("url").Op("*").String(),
+			jen.Id("base64").Op("*").String(),
+			jen.Id("mimeType").Op("*").String(),
+		).
+		Params(jen.Any(), jen.Error()).
+		Block(
+			jen.If(jen.Id("url").Op("!=").Nil()).Block(
+				jen.Switch(jen.Id("kind")).Block(
+					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindImage")).Block(
+						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewImageFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
+					),
+					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindAudio")).Block(
+						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewAudioFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
+					),
+					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindPDF")).Block(
+						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewPDFFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
+					),
+					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindVideo")).Block(
+						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewVideoFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
+					),
+				),
+			),
+			jen.If(jen.Id("base64").Op("!=").Nil()).Block(
+				jen.Switch(jen.Id("kind")).Block(
+					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindImage")).Block(
+						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewImageFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
+					),
+					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindAudio")).Block(
+						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewAudioFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
+					),
+					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindPDF")).Block(
+						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewPDFFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
+					),
+					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindVideo")).Block(
+						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewVideoFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
+					),
+				),
+			),
+			jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("unsupported media kind: %v"), jen.Id("kind"))),
 		)
 
 	// Generate `makeOptionsFromAdapter`
@@ -1315,6 +1396,124 @@ func Generate(selfPkg string) {
 type parsedReflectType struct {
 	statement *jen.Statement
 	generics  []jen.Code
+}
+
+// mediaConversionCode generates code that converts a MediaInput field to the
+// opaque BAML media type via bamlutils.ConvertMedia + a type assertion.
+// Handles direct, pointer (optional), and slice (list) media types.
+func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type, mediaKind bamlutils.MediaKind) []jen.Code {
+	// Determine the wrapping: direct, pointer, or slice
+	isPtr := paramType.Kind() == reflect.Ptr
+	isSlice := paramType.Kind() == reflect.Slice
+
+	// Resolve the innermost BAML type for the type assertion
+	innerType := paramType
+	for innerType.Kind() == reflect.Ptr || innerType.Kind() == reflect.Slice {
+		innerType = innerType.Elem()
+	}
+	bamlType := parseReflectType(innerType).statement
+
+	kindExpr := jen.Qual(common.InterfacesPkg, mediaKind.ConstName())
+
+	if isSlice {
+		// []MediaInput -> []baml.Image
+		// Generate a loop that converts each element
+		elemType := paramType.Elem()
+		elemIsPtr := elemType.Kind() == reflect.Ptr
+
+		var assertExpr *jen.Statement
+		if elemIsPtr {
+			assertExpr = parseReflectType(elemType).statement
+		} else {
+			assertExpr = bamlType.Clone()
+		}
+
+		return []jen.Code{
+			jen.Id(convertedVar).Op(":=").Make(
+				jen.Index().Add(parseReflectType(paramType.Elem()).statement),
+				jen.Len(jen.Id("input").Dot(fieldName)),
+			),
+			jen.For(jen.Id("__i"), jen.Id("__mi").Op(":=").Range().Id("input").Dot(fieldName)).Block(
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+					jen.Id("adapter"),
+					kindExpr.Clone(),
+					jen.Op("&").Id("__mi"),
+				),
+				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(
+						jen.Lit(fieldName+"[%d]: %w"),
+						jen.Id("__i"),
+						jen.Id("__err"),
+					)),
+				),
+				jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
+			),
+		}
+	}
+
+	if isPtr {
+		// *MediaInput -> *baml.Image (optional)
+		return []jen.Code{
+			jen.Var().Id(convertedVar).Add(parseReflectType(paramType).statement),
+			jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+					jen.Id("adapter"),
+					kindExpr.Clone(),
+					jen.Id("input").Dot(fieldName),
+				),
+				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(
+						jen.Lit(fieldName+": %w"),
+						jen.Id("__err"),
+					)),
+				),
+				jen.Id("__typed").Op(":=").Id("__raw").Assert(bamlType.Clone()),
+				jen.Id(convertedVar).Op("=").Op("&").Id("__typed"),
+			),
+		}
+	}
+
+	// Direct: MediaInput -> baml.Image
+	return []jen.Code{
+		jen.List(jen.Id("__raw_"+convertedVar), jen.Id("__err_"+convertedVar)).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+			jen.Id("adapter"),
+			kindExpr,
+			jen.Op("&").Id("input").Dot(fieldName),
+		),
+		jen.If(jen.Id("__err_" + convertedVar).Op("!=").Nil()).Block(
+			jen.Return(jen.Qual("fmt", "Errorf").Call(
+				jen.Lit(fieldName+": %w"),
+				jen.Id("__err_"+convertedVar),
+			)),
+		),
+		jen.Id(convertedVar).Op(":=").Id("__raw_" + convertedVar).Assert(bamlType),
+	}
+}
+
+// mediaFieldType returns a jen statement for a MediaInput field type,
+// preserving any pointer/slice wrapping from the original reflected type.
+// e.g., *baml.Image -> *bamlutils.MediaInput, []baml.Image -> []bamlutils.MediaInput
+func mediaFieldType(typ reflect.Type) *jen.Statement {
+	var ops []string
+	for {
+		if typ.Kind() == reflect.Ptr {
+			typ = typ.Elem()
+			ops = append(ops, "*")
+		} else if typ.Kind() == reflect.Slice {
+			typ = typ.Elem()
+			ops = append(ops, "[]")
+		} else {
+			break
+		}
+	}
+
+	statement := jen.Qual(common.InterfacesPkg, "MediaInput")
+
+	for _, op := range slices.Backward(ops) {
+		statement = jen.Op(op).Add(statement)
+	}
+
+	return statement
 }
 
 func parseReflectType(typ reflect.Type) parsedReflectType {

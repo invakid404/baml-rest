@@ -2,6 +2,8 @@
 
 package introspected
 
+import bamlutils "github.com/invakid404/baml-rest/bamlutils"
+
 // Stream is the BAML streaming client instance
 var Stream = &struct{}{}
 
@@ -29,6 +31,9 @@ var ParseStreamMethods = map[string]struct{}{}
 // ParseStreamFuncs maps ParseStream method names to their function values (for reflection)
 var ParseStreamFuncs = map[string]any{}
 
+// MediaParams maps function name -> param name -> media kind for parameters that are BAML media types.
+var MediaParams = map[string]map[string]bamlutils.MediaKind{}
+
 // TypeBuilder type
 type TypeBuilder struct{}
 
@@ -46,7 +51,9 @@ type EnumValueBuilder interface {
 }
 
 // NewTypeBuilder creates a new TypeBuilder
-var NewTypeBuilder = func() (*TypeBuilder, error) { return nil, nil }
+var NewTypeBuilder = func() (*TypeBuilder, error) {
+	return nil, nil
+}
 
 // Typed is a minimal interface for types that can return a Type
 type Typed interface {
