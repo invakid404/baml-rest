@@ -148,17 +148,20 @@ func TestMediaCallEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("audio_from_url", func(t *testing.T) {
+	t.Run("audio_from_base64_wav", func(t *testing.T) {
+		// Note: BAML pre-fetches audio URLs (unlike image URLs which are passed as references),
+		// so we test audio via base64 with different mime types instead of a fake URL.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		opts := setupNonStreamingScenario(t, "test-media-audio-url", "Hello, this is a test recording.")
+		opts := setupNonStreamingScenario(t, "test-media-audio-wav", "Hello, this is a test recording.")
 
 		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
 			Method: "TranscribeAudio",
 			Input: map[string]any{
 				"audio": map[string]any{
-					"url": "https://example.com/recording.mp3",
+					"base64":     "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=",
+					"media_type": "audio/wav",
 				},
 			},
 			Options: opts,
