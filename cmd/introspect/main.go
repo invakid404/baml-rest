@@ -797,25 +797,35 @@ var mediaTypeNames = map[string]string{
 	"Video": "MediaKindVideo",
 }
 
-// resolveBamlPkgAlias finds the import alias for the BAML runtime package in a file.
-// Returns the alias identifier (e.g., "baml", "pkg") or empty string if not found.
-func resolveBamlPkgAlias(file *ast.File) string {
+// resolveBamlPkgAliases finds all import aliases for BAML-related packages in a file.
+// This covers both the runtime package (github.com/boundaryml/baml/...) and the
+// generated client types package (baml_client/types), since different BAML versions
+// may place Image/Audio/PDF/Video types in different packages.
+// Returns a set of alias identifiers (e.g., {"baml": true, "types": true}).
+func resolveBamlPkgAliases(file *ast.File) map[string]bool {
+	aliases := make(map[string]bool)
 	for _, imp := range file.Imports {
 		path, err := strconv.Unquote(imp.Path.Value)
 		if err != nil {
 			continue
 		}
-		if path != bamlPkgPath {
+		// Match any BAML-related import: runtime or generated client packages
+		if !strings.Contains(path, "boundaryml/baml") && !strings.Contains(path, "baml_client") {
 			continue
 		}
+		var alias string
 		if imp.Name != nil {
-			return imp.Name.Name
+			alias = imp.Name.Name
+		} else {
+			// Default alias is the last path segment
+			parts := strings.Split(path, "/")
+			alias = parts[len(parts)-1]
 		}
-		// Default alias is the last path segment
-		parts := strings.Split(path, "/")
-		return parts[len(parts)-1]
+		if alias != "_" && alias != "." {
+			aliases[alias] = true
+		}
 	}
-	return ""
+	return aliases
 }
 
 // mediaParamInfo holds media type info for a single function parameter.
@@ -827,9 +837,9 @@ type mediaParamInfo struct {
 // extractMediaParams detects media-typed parameters in sync functions.
 // Returns a map of function name -> list of media param info.
 func extractMediaParams(f *parsedFile) map[string][]mediaParamInfo {
-	bamlAlias := resolveBamlPkgAlias(f.file)
-	if bamlAlias == "" {
-		return nil // No BAML import, no media types possible
+	bamlAliases := resolveBamlPkgAliases(f.file)
+	if len(bamlAliases) == 0 {
+		return nil // No BAML imports, no media types possible
 	}
 
 	result := make(map[string][]mediaParamInfo)
@@ -859,7 +869,7 @@ func extractMediaParams(f *parsedFile) map[string][]mediaParamInfo {
 		// Check each parameter (skip first=context, skip last=variadic opts)
 		params := funcDecl.Type.Params.List
 		for _, param := range params[1:] {
-			kindConst := resolveMediaType(param.Type, bamlAlias)
+			kindConst := resolveMediaType(param.Type, bamlAliases)
 			if kindConst == "" {
 				continue
 			}
@@ -884,23 +894,24 @@ func extractMediaParams(f *parsedFile) map[string][]mediaParamInfo {
 
 // resolveMediaType checks if a type expression is a BAML media type.
 // Handles direct types (pkg.Image), pointers (*pkg.Image), and slices ([]pkg.Image).
+// Checks against all known BAML package aliases.
 // Returns the MediaKind constant name or empty string if not a media type.
-func resolveMediaType(expr ast.Expr, bamlAlias string) string {
+func resolveMediaType(expr ast.Expr, bamlAliases map[string]bool) string {
 	switch t := expr.(type) {
 	case *ast.SelectorExpr:
 		// Direct type: pkg.Image
-		if ident, ok := t.X.(*ast.Ident); ok && ident.Name == bamlAlias {
+		if ident, ok := t.X.(*ast.Ident); ok && bamlAliases[ident.Name] {
 			if kindConst, ok := mediaTypeNames[t.Sel.Name]; ok {
 				return kindConst
 			}
 		}
 	case *ast.StarExpr:
 		// Pointer: *pkg.Image (optional media)
-		return resolveMediaType(t.X, bamlAlias)
+		return resolveMediaType(t.X, bamlAliases)
 	case *ast.ArrayType:
 		// Slice: []pkg.Image (list of media)
 		if t.Len == nil { // slice, not fixed-size array
-			return resolveMediaType(t.Elt, bamlAlias)
+			return resolveMediaType(t.Elt, bamlAliases)
 		}
 	}
 	return ""
