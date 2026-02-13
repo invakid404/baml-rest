@@ -87,6 +87,32 @@ class OptionalImageGallery {
     title string
 }
 
+// Self-referential types (recursive via type aliases)
+// Tests cycle detection in codegen and proper handling at runtime
+
+class TreeNode {
+    value string
+    children TreeNodeList?
+}
+
+type TreeNodeList = TreeNode[]
+
+// Self-referential type with media (recursive + media in same structure)
+class MediaTreeNode {
+    label string
+    thumbnail image?
+    children MediaTreeNodeList?
+}
+
+type MediaTreeNodeList = MediaTreeNode[]
+
+// JSON-like recursive type (deeply nested via type alias)
+type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>
+
+class JsonContainer {
+    data JsonValue
+}
+
 // Comprehensive type for OpenAPI schema validation testing
 // Combines: nested objects, optional fields, arrays, enums, and multiple primitive types
 enum Priority {

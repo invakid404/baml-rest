@@ -139,3 +139,24 @@ function DescribeCaptionList(inputs: ImageWithCaption[]) -> string {
     client TestClient
     prompt #"Describe captioned images: {{ inputs }}"#
 }
+
+// Self-referential types: recursive tree without media
+function ParseTree(input: string) -> TreeNode {
+    client TestClient
+    prompt #"{{ ctx.output_format }}
+    Parse as a tree: {{ input }}"#
+}
+
+// Self-referential types: recursive tree with media
+function ParseMediaTree(input: string) -> MediaTreeNode {
+    client TestClient
+    prompt #"{{ ctx.output_format }}
+    Parse as a media tree: {{ input }}"#
+}
+
+// Self-referential types: JSON-like recursive union
+function ParseJson(input: string) -> JsonContainer {
+    client TestClient
+    prompt #"{{ ctx.output_format }}
+    Parse as JSON: {{ input }}"#
+}
