@@ -46,46 +46,88 @@ type DynamicContentPart struct {
 	Video *MediaInput `json:"video,omitempty"`
 }
 
-// Validate checks that the content part has a valid type and the required payload.
+// payloadFieldNames returns the names of all payload fields that are set (non-nil).
+func (p *DynamicContentPart) payloadFieldNames() []string {
+	var names []string
+	if p.Text != nil {
+		names = append(names, "text")
+	}
+	if p.Image != nil {
+		names = append(names, "image")
+	}
+	if p.Audio != nil {
+		names = append(names, "audio")
+	}
+	if p.PDF != nil {
+		names = append(names, "pdf")
+	}
+	if p.Video != nil {
+		names = append(names, "video")
+	}
+	return names
+}
+
+// Validate checks that the content part has a valid type, the required payload,
+// and no extraneous payload fields. Exactly one payload field must be set and it
+// must match the declared type (output_format must have zero payload fields).
 func (p *DynamicContentPart) Validate(msgIdx, partIdx int) error {
+	prefix := fmt.Sprintf("message[%d].content[%d]", msgIdx, partIdx)
+	set := p.payloadFieldNames()
+
 	switch p.Type {
 	case "text":
 		if p.Text == nil {
-			return fmt.Errorf("message[%d].content[%d]: text part requires 'text' field", msgIdx, partIdx)
+			return fmt.Errorf("%s: text part requires 'text' field", prefix)
 		}
 	case "image":
 		if p.Image == nil {
-			return fmt.Errorf("message[%d].content[%d]: image part requires 'image' field", msgIdx, partIdx)
+			return fmt.Errorf("%s: image part requires 'image' field", prefix)
 		}
 		if err := p.Image.Validate(); err != nil {
-			return fmt.Errorf("message[%d].content[%d]: image %w", msgIdx, partIdx, err)
+			return fmt.Errorf("%s: image %w", prefix, err)
 		}
 	case "audio":
 		if p.Audio == nil {
-			return fmt.Errorf("message[%d].content[%d]: audio part requires 'audio' field", msgIdx, partIdx)
+			return fmt.Errorf("%s: audio part requires 'audio' field", prefix)
 		}
 		if err := p.Audio.Validate(); err != nil {
-			return fmt.Errorf("message[%d].content[%d]: audio %w", msgIdx, partIdx, err)
+			return fmt.Errorf("%s: audio %w", prefix, err)
 		}
 	case "pdf":
 		if p.PDF == nil {
-			return fmt.Errorf("message[%d].content[%d]: pdf part requires 'pdf' field", msgIdx, partIdx)
+			return fmt.Errorf("%s: pdf part requires 'pdf' field", prefix)
 		}
 		if err := p.PDF.Validate(); err != nil {
-			return fmt.Errorf("message[%d].content[%d]: pdf %w", msgIdx, partIdx, err)
+			return fmt.Errorf("%s: pdf %w", prefix, err)
 		}
 	case "video":
 		if p.Video == nil {
-			return fmt.Errorf("message[%d].content[%d]: video part requires 'video' field", msgIdx, partIdx)
+			return fmt.Errorf("%s: video part requires 'video' field", prefix)
 		}
 		if err := p.Video.Validate(); err != nil {
-			return fmt.Errorf("message[%d].content[%d]: video %w", msgIdx, partIdx, err)
+			return fmt.Errorf("%s: video %w", prefix, err)
 		}
 	case "output_format":
-		// No payload needed
+		if len(set) > 0 {
+			return fmt.Errorf("%s: output_format part must not have payload fields, got %v", prefix, set)
+		}
 	default:
-		return fmt.Errorf("message[%d].content[%d]: unknown content part type %q", msgIdx, partIdx, p.Type)
+		return fmt.Errorf("%s: unknown content part type %q", prefix, p.Type)
 	}
+
+	// For non-output_format types: exactly one payload field must be set and match the type
+	if p.Type != "output_format" {
+		if len(set) > 1 {
+			return fmt.Errorf("%s: %s part must have only its own payload field, got %v", prefix, p.Type, set)
+		}
+		// len(set)==1 is guaranteed here since the switch above verified the matching field is non-nil,
+		// but verify the single field matches the type (e.g. reject type:"text" with only "image" set —
+		// impossible via JSON since the switch already checked, but guards against future refactors).
+		if set[0] != p.Type {
+			return fmt.Errorf("%s: %s part has mismatched payload field %q", prefix, p.Type, set[0])
+		}
+	}
+
 	return nil
 }
 
