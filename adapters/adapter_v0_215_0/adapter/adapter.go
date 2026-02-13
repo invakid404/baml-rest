@@ -13,10 +13,15 @@ import (
 // TypeBuilder methods for processing DynamicTypes and BamlSnippets.
 type TypeBuilderFactory func(tb *bamlutils.TypeBuilder) (*introspected.TypeBuilder, error)
 
+// MediaFactory creates BAML media objects (image, audio, pdf, video) from URL or base64 data.
+// Populated by the generated code which has access to the baml_client package-level constructors.
+type MediaFactory func(kind bamlutils.MediaKind, url *string, base64 *string, mimeType *string) (any, error)
+
 type BamlAdapter struct {
 	context.Context
 
 	TypeBuilderFactory TypeBuilderFactory
+	MediaFactory       MediaFactory
 
 	ClientRegistry *baml.ClientRegistry
 	TypeBuilder    *introspected.TypeBuilder
@@ -66,6 +71,14 @@ func (b *BamlAdapter) SetLogger(logger bamlutils.Logger) {
 
 func (b *BamlAdapter) Logger() bamlutils.Logger {
 	return b.logger
+}
+
+func (b *BamlAdapter) NewMediaFromURL(kind bamlutils.MediaKind, url string, mimeType *string) (any, error) {
+	return b.MediaFactory(kind, &url, nil, mimeType)
+}
+
+func (b *BamlAdapter) NewMediaFromBase64(kind bamlutils.MediaKind, base64 string, mimeType *string) (any, error) {
+	return b.MediaFactory(kind, nil, &base64, mimeType)
 }
 
 var _ bamlutils.Adapter = (*BamlAdapter)(nil)

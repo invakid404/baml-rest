@@ -273,13 +273,72 @@ func generateOpenAPISchema() *openapi3.T {
 		return nil
 	}
 
+	isMediaInput := func(t reflect.Type) bool {
+		return t == reflect.TypeOf(bamlutils.MediaInput{})
+	}
+
+	handleMediaInput := func(schema *openapi3.Schema) {
+		// Replace auto-generated schema with a proper oneOf:
+		// either {url, media_type?} or {base64, media_type?}
+		mediaTypeProperty := &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeString},
+				Description: "MIME type (e.g., \"image/png\", \"audio/mp3\")",
+				Nullable:    true,
+			},
+		}
+
+		schema.Properties = nil
+		schema.Required = nil
+		schema.Type = nil
+		schema.Description = "Media input: provide either a URL or base64-encoded data"
+		schema.OneOf = openapi3.SchemaRefs{
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Media from URL",
+					Properties: openapi3.Schemas{
+						"url": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type:        &openapi3.Types{openapi3.TypeString},
+								Description: "URL of the media resource",
+							},
+						},
+						"media_type": mediaTypeProperty,
+					},
+					Required: []string{"url"},
+				},
+			},
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Media from base64-encoded data",
+					Properties: openapi3.Schemas{
+						"base64": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type:        &openapi3.Types{openapi3.TypeString},
+								Description: "Base64-encoded media data",
+							},
+						},
+						"media_type": mediaTypeProperty,
+					},
+					Required: []string{"base64"},
+				},
+			},
+		}
+	}
+
 	generator = openapi3gen.NewGenerator(
 		openapi3gen.UseAllExportedFields(),
 		openapi3gen.CreateComponentSchemas(openapi3gen.ExportComponentSchemasOptions{
 			ExportComponentSchemas: true,
 		}),
 		openapi3gen.SchemaCustomizer(func(name string, t reflect.Type, tag reflect.StructTag, schema *openapi3.Schema) error {
-			if isUnion(t) {
+			if isMediaInput(t) {
+				handleMediaInput(schema)
+				schemas[t.Name()] = &openapi3.SchemaRef{Value: schema}
+				return nil
+			} else if isUnion(t) {
 				if err := handleUnion(name, t, tag, schema); err != nil {
 					return err
 				}

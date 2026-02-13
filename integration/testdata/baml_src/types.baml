@@ -63,6 +63,30 @@ class DynamicEnumOutput {
     category DynamicCategory
 }
 
+// Classes containing media types (for nested media testing)
+class ImageWithCaption {
+    img image
+    caption string
+}
+
+class DocumentBundle {
+    cover image?
+    document pdf
+    title string
+}
+
+// Edge case: class with a list of media (image[])
+class ImageGallery {
+    images image[]
+    title string
+}
+
+// Edge case: class with a list of optional media ((image | null)[])
+class OptionalImageGallery {
+    images (image | null)[]
+    title string
+}
+
 // Comprehensive type for OpenAPI schema validation testing
 // Combines: nested objects, optional fields, arrays, enums, and multiple primitive types
 enum Priority {
