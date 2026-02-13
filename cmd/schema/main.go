@@ -17,9 +17,7 @@ func main() {
 	// Initialize BAML runtime for type introspection
 	baml_rest.InitBamlRuntime()
 
-	fmt.Fprintln(os.Stderr, "[schema] Starting schema generation...")
 	schema := generateOpenAPISchema()
-	fmt.Fprintln(os.Stderr, "[schema] Schema generation complete")
 
 	data, err := json.MarshalIndent(schema, "", "  ")
 	if err != nil {
@@ -210,7 +208,25 @@ func generateOpenAPISchema() *openapi3.T {
 		return strings.HasPrefix(t.Name(), "Union")
 	}
 
+	// processedUnions tracks union types that have already been processed by handleUnion.
+	// This prevents infinite recursion when a union type is self-referential (e.g., JsonValue
+	// which contains []JsonValue and map<string, JsonValue>). Without this guard, the
+	// SchemaCustomizer would re-enter handleUnion for the same union type via
+	// generator.NewSchemaRefForValue calls on variants that reference the union.
+	processedUnions := make(map[reflect.Type]bool)
+
 	handleUnion := func(name string, t reflect.Type, tag reflect.StructTag, schema *openapi3.Schema) error {
+		if processedUnions[t] {
+			// Already processed — the generator's cycle detection created a $ref for this
+			// type, but the SchemaCustomizer fires again on re-encounter. Return a oneOf
+			// referencing the already-registered component schema.
+			schema.OneOf = openapi3.SchemaRefs{
+				{Ref: fmt.Sprintf("#/components/schemas/%s", t.Name())},
+			}
+			return nil
+		}
+		processedUnions[t] = true
+
 		for idx := 0; idx < t.NumField(); idx++ {
 			field := t.Field(idx)
 			if field.Type.Kind() != reflect.Ptr {
@@ -336,7 +352,6 @@ func generateOpenAPISchema() *openapi3.T {
 			ExportComponentSchemas: true,
 		}),
 		openapi3gen.SchemaCustomizer(func(name string, t reflect.Type, tag reflect.StructTag, schema *openapi3.Schema) error {
-			fmt.Fprintf(os.Stderr, "[schema]     customizer: name=%q type=%s kind=%s\n", name, t.Name(), t.Kind())
 			if isMediaInput(t) {
 				handleMediaInput(schema)
 				schemas[t.Name()] = &openapi3.SchemaRef{Value: schema}
@@ -500,17 +515,13 @@ func generateOpenAPISchema() *openapi3.T {
 			continue
 		}
 
-		fmt.Fprintf(os.Stderr, "[schema] Processing method %s...\n", methodName)
-
 		inputStruct := method.MakeInput()
 		inputStructInstance := reflect.ValueOf(inputStruct)
 
-		fmt.Fprintf(os.Stderr, "[schema]   Generating input schema (type: %s)...\n", inputStructInstance.Elem().Type().Name())
 		inputSchema, err := generator.NewSchemaRefForValue(inputStructInstance.Interface(), schemas)
 		if err != nil {
 			panic(err)
 		}
-		fmt.Fprintln(os.Stderr, "[schema]   Input schema done")
 
 		if inputSchema.Value.Properties == nil {
 			inputSchema.Value.Properties = make(openapi3.Schemas)
@@ -533,13 +544,11 @@ func generateOpenAPISchema() *openapi3.T {
 			},
 		})
 
-		fmt.Fprintf(os.Stderr, "[schema]   Generating output schema (type: %s)...\n", finalType.Name())
 		resultTypeStructInstance := reflect.New(resultTypeStruct)
 		resultTypeSchema, err := generator.NewSchemaRefForValue(resultTypeStructInstance.Interface(), schemas)
 		if err != nil {
 			panic(err)
 		}
-		fmt.Fprintln(os.Stderr, "[schema]   Output schema done")
 
 		// Generate schema for stream/partial type (may differ from final type)
 		streamType := reflect.ValueOf(method.MakeStreamOutput()).Elem().Type()
@@ -552,13 +561,11 @@ func generateOpenAPISchema() *openapi3.T {
 			},
 		})
 
-		fmt.Fprintf(os.Stderr, "[schema]   Generating stream schema (type: %s)...\n", streamType.Name())
 		streamTypeStructInstance := reflect.New(streamTypeStruct)
 		streamTypeSchema, err := generator.NewSchemaRefForValue(streamTypeStructInstance.Interface(), schemas)
 		if err != nil {
 			panic(err)
 		}
-		fmt.Fprintln(os.Stderr, "[schema]   Stream schema done")
 
 		// Response for /call endpoint
 		responses := openapi3.NewResponses()
@@ -693,9 +700,7 @@ func generateOpenAPISchema() *openapi3.T {
 		// Response for /stream endpoint (NDJSON streaming without raw)
 		// Partial data events contain intermediate results (may have null placeholders for unparsed fields)
 		// Make all fields in the stream type nullable since any field may be null during streaming
-		fmt.Fprintf(os.Stderr, "[schema]   Making stream schema nullable for %s...\n", methodName)
 		nullableStreamDataSchema := makeStreamSchemaFullyNullable(streamTypeSchema.Value.Properties["x"], schemas, make(map[string]bool))
-		fmt.Fprintf(os.Stderr, "[schema]   Stream nullable done for %s\n", methodName)
 		finalDataSchema := resultTypeSchema.Value.Properties["x"]
 
 		streamPartialDataEventSchema := makeStreamEventSchema(
