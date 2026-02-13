@@ -2,13 +2,13 @@ FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
+# Copy dependency files first for better layer caching
+COPY go.mod go.sum ./
+
 # Copy mockllm source code to match the expected import path
 COPY integration/mockllm/ ./integration/mockllm/
 
-# Create a minimal go.mod with the correct module path
-RUN echo 'module github.com/invakid404/baml-rest' > go.mod && echo 'go 1.25' >> go.mod
-
-# Build the mock server (standard library only, no external deps)
+# Build the mock server
 RUN CGO_ENABLED=0 GOOS=linux go build -tags=integration -o /mockllm ./integration/mockllm/cmd
 
 FROM alpine:3.19

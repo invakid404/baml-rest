@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"runtime"
 	"runtime/debug"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
+	"github.com/goccy/go-json"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/rs/zerolog"
 )
