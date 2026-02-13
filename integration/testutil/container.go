@@ -187,7 +187,14 @@ func createMockLLMBuildContext() (io.ReadSeeker, error) {
 		return nil, err
 	}
 
-	// Add integration/mockllm directory (contains its own go.mod)
+	// Add go.mod and go.sum so the mockllm build uses the project's dependencies
+	for _, name := range []string{"go.mod", "go.sum"} {
+		if err := addFileToTar(tw, filepath.Join(projectRoot, name), name); err != nil {
+			return nil, fmt.Errorf("failed to add %s to build context: %w", name, err)
+		}
+	}
+
+	// Add integration/mockllm directory
 	mockLLMDir := filepath.Join(projectRoot, "integration", "mockllm")
 	if err := addDirToTar(tw, mockLLMDir, "integration/mockllm"); err != nil {
 		return nil, err
@@ -281,10 +288,10 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		bamlVersion:       opts.BAMLVersion,
 		adapterVersion:    opts.AdapterVersion,
 		keepSource:        opts.KeepSource,
-		debugBuild:        true,              // Enable debug endpoints for testing (/_debug/*)
-		defaultTargetArch: getDockerArch(),   // Use native architecture
-		noCacheMount:      true,              // testcontainers doesn't reliably support BuildKit
-		noCustomBamlLib:   true,              // Integration tests don't use custom BAML lib
+		debugBuild:        true,            // Enable debug endpoints for testing (/_debug/*)
+		defaultTargetArch: getDockerArch(), // Use native architecture
+		noCacheMount:      true,            // testcontainers doesn't reliably support BuildKit
+		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
 	}
 
 	if opts.BAMLSource != "" {
