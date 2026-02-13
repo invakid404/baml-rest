@@ -5,10 +5,11 @@ WORKDIR /app
 # Copy mockllm source code to match the expected import path
 COPY integration/mockllm/ ./integration/mockllm/
 
-# Create a minimal go.mod with the correct module path
+# Create a minimal go.mod with the correct module path and fetch dependencies
 RUN echo 'module github.com/invakid404/baml-rest' > go.mod && echo 'go 1.25' >> go.mod
+RUN go get github.com/goccy/go-json@v0.10.5
 
-# Build the mock server (standard library only, no external deps)
+# Build the mock server
 RUN CGO_ENABLED=0 GOOS=linux go build -tags=integration -o /mockllm ./integration/mockllm/cmd
 
 FROM alpine:3.19
