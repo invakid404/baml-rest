@@ -257,7 +257,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 				jen.Add(parseReflectType(fieldType).statement),
 				jen.Len(srcExpr.Clone()),
 			),
-			jen.For(jen.Id("__i"), jen.Id("__mi").Op(":=").Range().Add(srcExpr.Clone())).Block(
+			jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Add(srcExpr.Clone())).Block(
 				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
 					jen.Id("adapter"),
 					kindExpr.Clone(),
@@ -303,7 +303,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 						jen.Add(parseReflectType(innerAfterPtr).statement),
 						jen.Len(jen.Op("*").Add(srcExpr.Clone())),
 					),
-					jen.For(jen.Id("__i"), jen.Id("__mi").Op(":=").Range().Op("*").Add(srcExpr.Clone())).Block(
+					jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Op("*").Add(srcExpr.Clone())).Block(
 						jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
 							jen.Id("adapter"),
 							kindExpr.Clone(),
@@ -393,7 +393,7 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 				jen.Add(parseReflectType(fieldType).statement),
 				jen.Len(srcExpr.Clone()),
 			),
-			jen.For(jen.Id("__i"), jen.Id("__v").Op(":=").Range().Add(srcExpr.Clone())).Block(
+			jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Add(srcExpr.Clone())).Block(
 				jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
 					jen.Id("adapter"),
 					vArg,
@@ -826,7 +826,7 @@ func Generate(selfPkg string) {
 								jen.Add(parseReflectType(smp.paramType).statement),
 								jen.Len(jen.Id("input").Dot(fieldName)),
 							),
-							jen.For(jen.Id("__i"), jen.Id("__v").Op(":=").Range().Id("input").Dot(fieldName)).Block(
+							jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Id("input").Dot(fieldName)).Block(
 								jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
 									jen.Id("adapter"),
 									vArg,
@@ -2010,7 +2010,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 				jen.Index().Add(parseReflectType(paramType.Elem()).statement),
 				jen.Len(jen.Id("input").Dot(fieldName)),
 			),
-			jen.For(jen.Id("__i"), jen.Id("__mi").Op(":=").Range().Id("input").Dot(fieldName)).Block(
+			jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Id("input").Dot(fieldName)).Block(
 				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
 					jen.Id("adapter"),
 					kindExpr.Clone(),
@@ -2057,7 +2057,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 						jen.Add(parseReflectType(innerAfterPtr).statement),
 						jen.Len(jen.Op("*").Id("input").Dot(fieldName)),
 					),
-					jen.For(jen.Id("__i"), jen.Id("__mi").Op(":=").Range().Op("*").Id("input").Dot(fieldName)).Block(
+					jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Op("*").Id("input").Dot(fieldName)).Block(
 						jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
 							jen.Id("adapter"),
 							kindExpr.Clone(),
