@@ -208,7 +208,25 @@ func generateOpenAPISchema() *openapi3.T {
 		return strings.HasPrefix(t.Name(), "Union")
 	}
 
+	// processedUnions tracks union types that have already been processed by handleUnion.
+	// This prevents infinite recursion when a union type is self-referential (e.g., JsonValue
+	// which contains []JsonValue and map<string, JsonValue>). Without this guard, the
+	// SchemaCustomizer would re-enter handleUnion for the same union type via
+	// generator.NewSchemaRefForValue calls on variants that reference the union.
+	processedUnions := make(map[reflect.Type]bool)
+
 	handleUnion := func(name string, t reflect.Type, tag reflect.StructTag, schema *openapi3.Schema) error {
+		if processedUnions[t] {
+			// Already processed — the generator's cycle detection created a $ref for this
+			// type, but the SchemaCustomizer fires again on re-encounter. Return a oneOf
+			// referencing the already-registered component schema.
+			schema.OneOf = openapi3.SchemaRefs{
+				{Ref: fmt.Sprintf("#/components/schemas/%s", t.Name())},
+			}
+			return nil
+		}
+		processedUnions[t] = true
+
 		for idx := 0; idx < t.NumField(); idx++ {
 			field := t.Field(idx)
 			if field.Type.Kind() != reflect.Ptr {
