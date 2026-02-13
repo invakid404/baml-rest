@@ -5,7 +5,7 @@ go 1.25.6
 require (
 	github.com/hashicorp/go-plugin v1.7.0
 	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
-	google.golang.org/grpc v1.79.0
+	google.golang.org/grpc v1.79.1
 	google.golang.org/protobuf v1.36.11
 )
 
