@@ -1138,6 +1138,101 @@ func TestDynamicEndpointMultiPartValidation(t *testing.T) {
 			t.Errorf("Expected status 400, got %d", resp.StatusCode)
 		}
 	})
+
+	t.Run("output_format_with_extra_text", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "output_format", Text: strPtr("ignored")},
+					},
+				},
+			},
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"answer": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		if resp.StatusCode != 400 {
+			t.Errorf("Expected status 400 for output_format with extra text field, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("image_part_with_extra_text", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{
+							Type:  "image",
+							Image: &testutil.MediaInput{URL: strPtr("https://example.com/img.png")},
+							Text:  strPtr("extra text"),
+						},
+					},
+				},
+			},
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"answer": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		if resp.StatusCode != 400 {
+			t.Errorf("Expected status 400 for image part with extra text field, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("text_part_with_extra_image", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{
+							Type:  "text",
+							Text:  strPtr("hello"),
+							Image: &testutil.MediaInput{URL: strPtr("https://example.com/img.png")},
+						},
+					},
+				},
+			},
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"answer": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		if resp.StatusCode != 400 {
+			t.Errorf("Expected status 400 for text part with extra image field, got %d", resp.StatusCode)
+		}
+	})
 }
 
 // strPtr is a helper to create a string pointer for tests.
