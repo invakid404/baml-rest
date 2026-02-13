@@ -799,10 +799,28 @@ func CreateTestClient(mockLLMURL string, scenarioID string) *ClientRegistry {
 	}
 }
 
+// DynamicContentPart represents a single part within a multi-part message content.
+type DynamicContentPart struct {
+	Type  string      `json:"type"`
+	Text  *string     `json:"text,omitempty"`
+	Image *MediaInput `json:"image,omitempty"`
+	Audio *MediaInput `json:"audio,omitempty"`
+	PDF   *MediaInput `json:"pdf,omitempty"`
+	Video *MediaInput `json:"video,omitempty"`
+}
+
+// MediaInput is a JSON-friendly representation of a BAML media value for tests.
+type MediaInput struct {
+	URL       *string `json:"url,omitempty"`
+	Base64    *string `json:"base64,omitempty"`
+	MediaType *string `json:"media_type,omitempty"`
+}
+
 // DynamicMessage represents a chat message for the dynamic endpoint.
+// Content can be either a plain string or an array of content parts.
 type DynamicMessage struct {
 	Role     string                  `json:"role"`
-	Content  string                  `json:"content"`
+	Content  any                     `json:"content"` // string or []DynamicContentPart
 	Metadata *DynamicMessageMetadata `json:"metadata,omitempty"`
 }
 

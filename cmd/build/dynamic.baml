@@ -10,9 +10,22 @@ class Baml_Rest_MessageMetadata {
   // Future metadata fields go here
 }
 
+// A single content part within a multi-part message.
+// Exactly one field should be set per part.
+// Field names avoid BAML type keywords (image, audio, pdf, video).
+class Baml_Rest_ContentPart {
+  text string?
+  img image?
+  aud audio?
+  doc pdf?
+  vid video?
+  output_format bool?
+}
+
 class Baml_Rest_Message {
   role string
-  content string
+  content string?                       // Legacy: plain text content
+  parts Baml_Rest_ContentPart[]?        // Multi-part content with media support
   metadata Baml_Rest_MessageMetadata?
 }
 
@@ -31,14 +44,16 @@ client<llm> Baml_Rest_DynamicClient {
 
 function Baml_Rest_Dynamic(messages: Baml_Rest_Message[]) -> Baml_Rest_DynamicOutput {
   client Baml_Rest_DynamicClient
+  // Whitespace control (-%} / {%-) is used throughout to prevent Jinja
+  // control flow from injecting blank lines into the rendered prompt.
   prompt #"
-    {% for m in messages %}
-      {% if m.metadata and m.metadata.cache_control %}
-        {{ _.role(m.role, cache_control=m.metadata.cache_control) }}
-      {% else %}
-        {{ _.role(m.role) }}
-      {% endif %}
-      {{ m.content | replace("{output_format}", ctx.output_format) }}
-    {% endfor %}
+    {%- for m in messages %}
+      {%- if m.metadata and m.metadata.cache_control %}{{ _.role(m.role, cache_control=m.metadata.cache_control) }}{% else %}{{ _.role(m.role) }}{% endif -%}
+      {%- if m.parts -%}
+        {%- for p in m.parts -%}
+          {%- if p.text %}{{ p.text }}{% elif p.img %}{{ p.img }}{% elif p.aud %}{{ p.aud }}{% elif p.doc %}{{ p.doc }}{% elif p.vid %}{{ p.vid }}{% elif p.output_format %}{{ ctx.output_format }}{% endif -%}
+        {%- endfor -%}
+      {%- elif m.content %}{{ m.content | replace("{output_format}", ctx.output_format) }}{% endif -%}
+    {%- endfor %}
   "#
 }

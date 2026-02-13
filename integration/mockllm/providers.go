@@ -3,8 +3,9 @@
 package mockllm
 
 import (
-	"encoding/json"
 	"fmt"
+
+	"github.com/goccy/go-json"
 )
 
 // Provider interface for formatting LLM responses.

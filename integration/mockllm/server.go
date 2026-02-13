@@ -4,7 +4,6 @@ package mockllm
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 // Server is a mock LLM server for integration testing.
