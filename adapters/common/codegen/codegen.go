@@ -252,26 +252,37 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 			miArg = jen.Op("&").Id("__mi")
 		}
 
+		conversionBlock := []jen.Code{
+			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+				jen.Id("adapter"),
+				kindExpr.Clone(),
+				miArg,
+			),
+			jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+				jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+					jen.Lit(fieldName+"[%d]: %w"),
+					jen.Id("__i"),
+					jen.Id("__err"),
+				)),
+			),
+			jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
+		}
+
+		var loopBody []jen.Code
+		if elemIsPtr {
+			loopBody = []jen.Code{
+				jen.If(jen.Id("__mi").Op("!=").Nil()).Block(conversionBlock...),
+			}
+		} else {
+			loopBody = conversionBlock
+		}
+
 		return []jen.Code{
 			jen.Id("result").Dot(fieldName).Op("=").Make(
 				jen.Add(parseReflectType(fieldType).statement),
 				jen.Len(srcExpr.Clone()),
 			),
-			jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Add(srcExpr.Clone())).Block(
-				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
-					jen.Id("adapter"),
-					kindExpr.Clone(),
-					miArg,
-				),
-				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
-					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
-						jen.Lit(fieldName+"[%d]: %w"),
-						jen.Id("__i"),
-						jen.Id("__err"),
-					)),
-				),
-				jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
-			),
+			jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Add(srcExpr.Clone())).Block(loopBody...),
 		}
 	}
 
@@ -296,6 +307,31 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 				miArg = jen.Op("&").Id("__mi")
 			}
 
+			innerConvBlock := []jen.Code{
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+					jen.Id("adapter"),
+					kindExpr.Clone(),
+					miArg,
+				),
+				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+						jen.Lit(fieldName+"[%d]: %w"),
+						jen.Id("__i"),
+						jen.Id("__err"),
+					)),
+				),
+				jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Id("__raw").Assert(elemAssert),
+			}
+
+			var innerLoopBody []jen.Code
+			if elemIsPtr {
+				innerLoopBody = []jen.Code{
+					jen.If(jen.Id("__mi").Op("!=").Nil()).Block(innerConvBlock...),
+				}
+			} else {
+				innerLoopBody = innerConvBlock
+			}
+
 			var stmts []jen.Code
 			stmts = append(stmts,
 				jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
@@ -303,21 +339,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 						jen.Add(parseReflectType(innerAfterPtr).statement),
 						jen.Len(jen.Op("*").Add(srcExpr.Clone())),
 					),
-					jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Op("*").Add(srcExpr.Clone())).Block(
-						jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
-							jen.Id("adapter"),
-							kindExpr.Clone(),
-							miArg,
-						),
-						jen.If(jen.Id("__err").Op("!=").Nil()).Block(
-							jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
-								jen.Lit(fieldName+"[%d]: %w"),
-								jen.Id("__i"),
-								jen.Id("__err"),
-							)),
-						),
-						jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Id("__raw").Assert(elemAssert),
-					),
+					jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Op("*").Add(srcExpr.Clone())).Block(innerLoopBody...),
 					jen.Id("result").Dot(fieldName).Op("=").Op("&").Id("__ptrSlice"),
 				),
 			)
@@ -2005,26 +2027,39 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 			miArg = jen.Op("&").Id("__mi")
 		}
 
+		conversionBlock := []jen.Code{
+			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+				jen.Id("adapter"),
+				kindExpr.Clone(),
+				miArg,
+			),
+			jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+				jen.Return(jen.Qual("fmt", "Errorf").Call(
+					jen.Lit(fieldName+"[%d]: %w"),
+					jen.Id("__i"),
+					jen.Id("__err"),
+				)),
+			),
+			jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
+		}
+
+		// When elements are pointers (nullable), wrap the conversion in a nil check
+		// so that null array elements stay as nil in the output slice.
+		var loopBody []jen.Code
+		if elemIsPtr {
+			loopBody = []jen.Code{
+				jen.If(jen.Id("__mi").Op("!=").Nil()).Block(conversionBlock...),
+			}
+		} else {
+			loopBody = conversionBlock
+		}
+
 		return []jen.Code{
 			jen.Id(convertedVar).Op(":=").Make(
 				jen.Index().Add(parseReflectType(paramType.Elem()).statement),
 				jen.Len(jen.Id("input").Dot(fieldName)),
 			),
-			jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Id("input").Dot(fieldName)).Block(
-				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
-					jen.Id("adapter"),
-					kindExpr.Clone(),
-					miArg,
-				),
-				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
-					jen.Return(jen.Qual("fmt", "Errorf").Call(
-						jen.Lit(fieldName+"[%d]: %w"),
-						jen.Id("__i"),
-						jen.Id("__err"),
-					)),
-				),
-				jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
-			),
+			jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Id("input").Dot(fieldName)).Block(loopBody...),
 		}
 	}
 
