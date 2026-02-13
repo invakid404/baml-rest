@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,77 @@ import (
 
 	"github.com/goccy/go-json"
 )
+
+// doWithRetry executes an HTTP request with one automatic retry on transient
+// connection-level errors (connection refused, reset, EOF). Context errors
+// (deadline exceeded, cancelled) are never retried since some tests
+// intentionally trigger those.
+func (c *BAMLRestClient) doWithRetry(ctx context.Context, method, url string, body []byte) (*http.Response, []byte, error) {
+	const maxAttempts = 2
+	const retryDelay = 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			case <-time.After(retryDelay):
+			}
+		}
+
+		var bodyReader io.Reader
+		if body != nil {
+			bodyReader = bytes.NewReader(body)
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+		if err != nil {
+			return nil, nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.http.Do(httpReq)
+		if err != nil {
+			if isTransientConnError(err) && attempt < maxAttempts-1 {
+				lastErr = err
+				continue
+			}
+			if lastErr != nil {
+				return nil, nil, fmt.Errorf("%w (previous attempt: %v)", err, lastErr)
+			}
+			return nil, nil, err
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			if isTransientConnError(err) && attempt < maxAttempts-1 {
+				lastErr = err
+				continue
+			}
+			return nil, nil, err
+		}
+
+		return resp, respBody, nil
+	}
+	return nil, nil, lastErr
+}
+
+// isTransientConnError returns true for connection-level errors that are worth
+// retrying (container briefly unavailable, TCP reset, etc.). Context errors
+// are explicitly excluded since tests may trigger those intentionally.
+func isTransientConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "EOF")
+}
 
 // errorResponse represents the JSON error response format from the server.
 type errorResponse struct {
@@ -107,14 +179,14 @@ type DynamicProperty struct {
 
 // DynamicTypeSpec is a recursive type specification for nested types.
 type DynamicTypeSpec struct {
-	Type   string            `json:"type,omitempty"`
-	Ref    string            `json:"ref,omitempty"`
-	Items  *DynamicTypeSpec  `json:"items,omitempty"`
-	Inner  *DynamicTypeSpec  `json:"inner,omitempty"`
+	Type   string             `json:"type,omitempty"`
+	Ref    string             `json:"ref,omitempty"`
+	Items  *DynamicTypeSpec   `json:"items,omitempty"`
+	Inner  *DynamicTypeSpec   `json:"inner,omitempty"`
 	OneOf  []*DynamicTypeSpec `json:"oneOf,omitempty"`
-	Keys   *DynamicTypeSpec  `json:"keys,omitempty"`
-	Values *DynamicTypeSpec  `json:"values,omitempty"`
-	Value  any               `json:"value,omitempty"`
+	Keys   *DynamicTypeSpec   `json:"keys,omitempty"`
+	Values *DynamicTypeSpec   `json:"values,omitempty"`
+	Value  any                `json:"value,omitempty"`
 }
 
 // DynamicEnum defines an enum with values.
@@ -155,19 +227,7 @@ func (c *BAMLRestClient) Call(ctx context.Context, req CallRequest) (*CallRespon
 	}
 
 	url := fmt.Sprintf("%s/call/%s", c.baseURL, req.Method)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -193,19 +253,7 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 	}
 
 	url := fmt.Sprintf("%s/call-with-raw/%s", c.baseURL, req.Method)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -397,19 +445,7 @@ func (c *BAMLRestClient) Parse(ctx context.Context, req ParseRequest) (*ParseRes
 	}
 
 	url := fmt.Sprintf("%s/parse/%s", c.baseURL, req.Method)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -493,8 +529,8 @@ func (c *BAMLRestClient) KillWorker(ctx context.Context) (*KillWorkerResult, err
 
 // InFlightResult represents the response from /_debug/in-flight.
 type InFlightResult struct {
-	Status  string             `json:"status"`
-	Workers []WorkerInFlight   `json:"workers"`
+	Status  string           `json:"status"`
+	Workers []WorkerInFlight `json:"workers"`
 }
 
 // WorkerInFlight represents the in-flight status of a single worker.
@@ -535,9 +571,9 @@ func (c *BAMLRestClient) GetInFlightStatus(ctx context.Context) (*InFlightResult
 
 // ConfigResult represents the response from /_debug/config.
 type ConfigResult struct {
-	Status              string `json:"status"`
-	FirstByteTimeoutMs  int64  `json:"first_byte_timeout_ms"`
-	Error               string `json:"error,omitempty"`
+	Status             string `json:"status"`
+	FirstByteTimeoutMs int64  `json:"first_byte_timeout_ms"`
+	Error              string `json:"error,omitempty"`
 }
 
 // SetFirstByteTimeout calls the /_debug/config endpoint to configure the first byte timeout.
@@ -831,19 +867,7 @@ func (c *BAMLRestClient) DynamicCall(ctx context.Context, req DynamicRequest) (*
 	}
 
 	url := fmt.Sprintf("%s/call/_dynamic", c.baseURL)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -869,19 +893,7 @@ func (c *BAMLRestClient) DynamicCallWithRaw(ctx context.Context, req DynamicRequ
 	}
 
 	url := fmt.Sprintf("%s/call-with-raw/_dynamic", c.baseURL)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1015,19 +1027,7 @@ func (c *BAMLRestClient) DynamicParse(ctx context.Context, req DynamicParseReque
 	}
 
 	url := fmt.Sprintf("%s/parse/_dynamic", c.baseURL)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1056,25 +1056,13 @@ type OpenAPISchema struct {
 // GetOpenAPISchema fetches and parses the OpenAPI schema from the server.
 func (c *BAMLRestClient) GetOpenAPISchema(ctx context.Context) (*OpenAPISchema, error) {
 	url := fmt.Sprintf("%s/openapi.json", c.baseURL)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	resp, body, err := c.doWithRetry(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
 	}
 
 	var schema OpenAPISchema
