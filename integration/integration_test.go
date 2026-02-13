@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
+	"github.com/testcontainers/testcontainers-go"
 )
 
 // TestEnv holds the shared test environment
@@ -140,6 +142,13 @@ func TestMain(m *testing.M) {
 	// Run tests
 	code := m.Run()
 
+	// Dump container logs on failure to surface errors from inside
+	// the Docker containers (e.g. BAML runtime panics, worker crashes)
+	if code != 0 {
+		dumpContainerLogs("BAML REST", TestEnv.BAMLRest)
+		dumpContainerLogs("Mock LLM", TestEnv.MockLLM)
+	}
+
 	// Cleanup
 	println("Tearing down test environment...")
 	if err := TestEnv.Terminate(context.Background()); err != nil {
@@ -147,6 +156,33 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+// dumpContainerLogs fetches and prints logs from a Docker container.
+// Used on test failure to surface errors from inside containers
+// (e.g. BAML runtime Rust panics, worker crashes) that are otherwise invisible.
+func dumpContainerLogs(name string, container testcontainers.Container) {
+	if container == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	logs, err := container.Logs(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get %s container logs: %v\n", name, err)
+		return
+	}
+	defer logs.Close()
+
+	data, err := io.ReadAll(logs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to read %s container logs: %v\n", name, err)
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\n=== %s container logs ===\n%s=== end %s logs ===\n\n", name, data, name)
 }
 
 func findTestdataPath() (string, error) {
