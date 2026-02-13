@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3gen"
+	"github.com/goccy/go-json"
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 )
@@ -208,7 +208,25 @@ func generateOpenAPISchema() *openapi3.T {
 		return strings.HasPrefix(t.Name(), "Union")
 	}
 
+	// processedUnions tracks union types that have already been processed by handleUnion.
+	// This prevents infinite recursion when a union type is self-referential (e.g., JsonValue
+	// which contains []JsonValue and map<string, JsonValue>). Without this guard, the
+	// SchemaCustomizer would re-enter handleUnion for the same union type via
+	// generator.NewSchemaRefForValue calls on variants that reference the union.
+	processedUnions := make(map[reflect.Type]bool)
+
 	handleUnion := func(name string, t reflect.Type, tag reflect.StructTag, schema *openapi3.Schema) error {
+		if processedUnions[t] {
+			// Already processed — the generator's cycle detection created a $ref for this
+			// type, but the SchemaCustomizer fires again on re-encounter. Return a oneOf
+			// referencing the already-registered component schema.
+			schema.OneOf = openapi3.SchemaRefs{
+				{Ref: fmt.Sprintf("#/components/schemas/%s", t.Name())},
+			}
+			return nil
+		}
+		processedUnions[t] = true
+
 		for idx := 0; idx < t.NumField(); idx++ {
 			field := t.Field(idx)
 			if field.Type.Kind() != reflect.Ptr {
@@ -929,12 +947,183 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		},
 	}
 
+	// Media input schema (reused across content part types)
+	dynamicMediaInputSchemaName := "__DynamicMediaInput__"
+	schemas[dynamicMediaInputSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Description: "Media input: provide either a URL or base64-encoded data",
+			OneOf: openapi3.SchemaRefs{
+				{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Media from URL",
+						Properties: openapi3.Schemas{
+							"url": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type:        &openapi3.Types{openapi3.TypeString},
+									Description: "URL of the media resource",
+								},
+							},
+							"media_type": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type:        &openapi3.Types{openapi3.TypeString},
+									Description: "MIME type (e.g., \"image/png\", \"audio/mp3\")",
+									Nullable:    true,
+								},
+							},
+						},
+						Required: []string{"url"},
+					},
+				},
+				{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Media from base64-encoded data",
+						Properties: openapi3.Schemas{
+							"base64": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type:        &openapi3.Types{openapi3.TypeString},
+									Description: "Base64-encoded media data",
+								},
+							},
+							"media_type": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type:        &openapi3.Types{openapi3.TypeString},
+									Description: "MIME type (e.g., \"image/png\", \"audio/mp3\")",
+									Nullable:    true,
+								},
+							},
+						},
+						Required: []string{"base64"},
+					},
+				},
+			},
+		},
+	}
+
+	// Content part schema - discriminated by "type" field
+	dynamicContentPartSchemaName := "__DynamicContentPart__"
+	mediaInputRef := &openapi3.SchemaRef{
+		Ref: fmt.Sprintf("#/components/schemas/%s", dynamicMediaInputSchemaName),
+	}
+	schemas[dynamicContentPartSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Description: "A single content part within a multi-part message. The 'type' field determines which payload field is used.",
+			OneOf: openapi3.SchemaRefs{
+				{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Text content",
+						Properties: openapi3.Schemas{
+							"type": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type: &openapi3.Types{openapi3.TypeString},
+									Enum: []any{"text"},
+								},
+							},
+							"text": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type:        &openapi3.Types{openapi3.TypeString},
+									Description: "The text content",
+								},
+							},
+						},
+						Required: []string{"type", "text"},
+					},
+				},
+				{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Image content",
+						Properties: openapi3.Schemas{
+							"type": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type: &openapi3.Types{openapi3.TypeString},
+									Enum: []any{"image"},
+								},
+							},
+							"image": mediaInputRef,
+						},
+						Required: []string{"type", "image"},
+					},
+				},
+				{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Audio content",
+						Properties: openapi3.Schemas{
+							"type": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type: &openapi3.Types{openapi3.TypeString},
+									Enum: []any{"audio"},
+								},
+							},
+							"audio": mediaInputRef,
+						},
+						Required: []string{"type", "audio"},
+					},
+				},
+				{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "PDF content",
+						Properties: openapi3.Schemas{
+							"type": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type: &openapi3.Types{openapi3.TypeString},
+									Enum: []any{"pdf"},
+								},
+							},
+							"pdf": mediaInputRef,
+						},
+						Required: []string{"type", "pdf"},
+					},
+				},
+				{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Video content",
+						Properties: openapi3.Schemas{
+							"type": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type: &openapi3.Types{openapi3.TypeString},
+									Enum: []any{"video"},
+								},
+							},
+							"video": mediaInputRef,
+						},
+						Required: []string{"type", "video"},
+					},
+				},
+				{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeObject},
+						Description: "Output format placeholder - renders BAML's generated output format instructions (equivalent to {{ ctx.output_format }})",
+						Properties: openapi3.Schemas{
+							"type": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type: &openapi3.Types{openapi3.TypeString},
+									Enum: []any{"output_format"},
+								},
+							},
+						},
+						Required: []string{"type"},
+					},
+				},
+			},
+			Discriminator: &openapi3.Discriminator{
+				PropertyName: "type",
+			},
+		},
+	}
+
 	// Dynamic message schema
 	dynamicMessageSchemaName := "__DynamicMessage__"
 	schemas[dynamicMessageSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
-			Type:        &openapi3.Types{openapi3.TypeObject},
-			Description: "A chat message with role, content, and optional metadata",
+			Type: &openapi3.Types{openapi3.TypeObject},
+			Description: "A chat message with role, content, and optional metadata. " +
+				"Content can be either a plain string or an array of content parts for multi-modal messages.",
 			Properties: openapi3.Schemas{
 				"role": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
@@ -944,8 +1133,26 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				},
 				"content": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeString},
-						Description: "Message content. Use the placeholder {output_format} anywhere in the content to have it replaced with BAML's generated output format instructions (equivalent to {{ ctx.output_format }} in native BAML).",
+						Description: "Message content. Either a plain string (use {output_format} placeholder for output format instructions) " +
+							"or an array of content parts for multi-modal messages with media (images, audio, PDF, video) " +
+							"and explicit output_format parts.",
+						OneOf: openapi3.SchemaRefs{
+							{
+								Value: &openapi3.Schema{
+									Type:        &openapi3.Types{openapi3.TypeString},
+									Description: "Plain text content. Use {output_format} placeholder to inject output format instructions.",
+								},
+							},
+							{
+								Value: &openapi3.Schema{
+									Type:        &openapi3.Types{openapi3.TypeArray},
+									Description: "Array of content parts for multi-modal messages",
+									Items: &openapi3.SchemaRef{
+										Ref: fmt.Sprintf("#/components/schemas/%s", dynamicContentPartSchemaName),
+									},
+								},
+							},
+						},
 					},
 				},
 				"metadata": &openapi3.SchemaRef{
@@ -1256,7 +1463,8 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: "Execute a dynamic prompt with dynamic output schema. " +
 				"Provide messages, client configuration, and the expected output structure. " +
 				"The output_schema defines what fields the LLM should return. " +
-				"Use {output_format} in message content to inject BAML's output format instructions.",
+				"Messages support both plain text (with {output_format} placeholder) and " +
+				"multi-part content with media (images, audio, PDF, video) and explicit output_format parts.",
 			RequestBody: &openapi3.RequestBodyRef{
 				Value: &openapi3.RequestBody{
 					Content: map[string]*openapi3.MediaType{
