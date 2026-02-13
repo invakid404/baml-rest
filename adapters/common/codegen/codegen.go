@@ -55,7 +55,12 @@ func isMediaReflectType(typ reflect.Type) (bamlutils.MediaKind, bool) {
 
 // structContainsMedia recursively checks whether a struct type (or any nested struct)
 // contains BAML media-typed fields (Image, Audio, PDF, Video).
+// Uses a visited set to break cycles from self-referential or mutually recursive types.
 func structContainsMedia(typ reflect.Type) bool {
+	return structContainsMediaVisited(typ, make(map[reflect.Type]bool))
+}
+
+func structContainsMediaVisited(typ reflect.Type, visited map[reflect.Type]bool) bool {
 	// Unwrap pointer and slice layers
 	for typ.Kind() == reflect.Ptr || typ.Kind() == reflect.Slice {
 		typ = typ.Elem()
@@ -63,6 +68,10 @@ func structContainsMedia(typ reflect.Type) bool {
 	if typ.Kind() != reflect.Struct {
 		return false
 	}
+	if visited[typ] {
+		return false
+	}
+	visited[typ] = true
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		if !field.IsExported() {
@@ -77,7 +86,7 @@ func structContainsMedia(typ reflect.Type) bool {
 		if _, ok := isMediaReflectType(ft); ok {
 			return true
 		}
-		if inner.Kind() == reflect.Struct && structContainsMedia(ft) {
+		if inner.Kind() == reflect.Struct && structContainsMediaVisited(ft, visited) {
 			return true
 		}
 	}
@@ -432,12 +441,60 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 			vArg = jen.Op("&").Id("__v")
 		}
 
+		conversionBlock := []jen.Code{
+			jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
+				jen.Id("adapter"),
+				vArg,
+			),
+			jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+				jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
+					jen.Lit(fieldName+"[%d]: %w"),
+					jen.Id("__i"),
+					jen.Id("__err"),
+				)),
+			),
+			func() jen.Code {
+				if elemIsPtr {
+					return jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
+				}
+				return jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Id("__converted")
+			}(),
+		}
+
+		// For pointer elements, wrap in a nil guard to preserve null entries
+		var loopBody []jen.Code
+		if elemIsPtr {
+			loopBody = []jen.Code{
+				jen.If(jen.Id("__v").Op("!=").Nil()).Block(conversionBlock...),
+			}
+		} else {
+			loopBody = conversionBlock
+		}
+
 		return []jen.Code{
 			jen.Id("result").Dot(fieldName).Op("=").Make(
 				jen.Add(parseReflectType(fieldType).statement),
 				jen.Len(srcExpr.Clone()),
 			),
-			jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Add(srcExpr.Clone())).Block(
+			jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Add(srcExpr.Clone())).Block(loopBody...),
+		}
+	}
+
+	if isPtr {
+		innerAfterPtr := fieldType.Elem()
+		if innerAfterPtr.Kind() == reflect.Slice {
+			// *[]Struct (optional list of structs with media, e.g. ContentPart[]?)
+			elemType := innerAfterPtr.Elem()
+			elemIsPtr := elemType.Kind() == reflect.Ptr
+
+			var vArg jen.Code
+			if elemIsPtr {
+				vArg = jen.Id("__v")
+			} else {
+				vArg = jen.Op("&").Id("__v")
+			}
+
+			innerConvBlock := []jen.Code{
 				jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
 					jen.Id("adapter"),
 					vArg,
@@ -450,16 +507,36 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 					)),
 				),
 				func() jen.Code {
-					if elemType.Kind() == reflect.Ptr {
-						return jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
+					if elemIsPtr {
+						return jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
 					}
-					return jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Id("__converted")
+					return jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Id("__converted")
 				}(),
-			),
-		}
-	}
+			}
 
-	if isPtr {
+			// For pointer elements, wrap in a nil guard to preserve null entries
+			var innerLoopBody []jen.Code
+			if elemIsPtr {
+				innerLoopBody = []jen.Code{
+					jen.If(jen.Id("__v").Op("!=").Nil()).Block(innerConvBlock...),
+				}
+			} else {
+				innerLoopBody = innerConvBlock
+			}
+
+			return []jen.Code{
+				jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
+					jen.Id("__ptrSlice").Op(":=").Make(
+						jen.Add(parseReflectType(innerAfterPtr).statement),
+						jen.Len(jen.Op("*").Add(srcExpr.Clone())),
+					),
+					jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Op("*").Add(srcExpr.Clone())).Block(innerLoopBody...),
+					jen.Id("result").Dot(fieldName).Op("=").Op("&").Id("__ptrSlice"),
+				),
+			}
+		}
+
+		// *Struct (optional single nested struct with media)
 		return []jen.Code{
 			jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
 				jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
@@ -865,12 +942,58 @@ func Generate(selfPkg string) {
 							vArg = jen.Op("&").Id("__v") // Mirror, take address
 						}
 
+						convBlock := []jen.Code{
+							jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
+								jen.Id("adapter"),
+								vArg,
+							),
+							jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
+								jen.Return(jen.Qual("fmt", "Errorf").Call(
+									jen.Lit(smp.paramName+"[%d]: %w"),
+									jen.Id("__i"),
+									jen.Id(errVar),
+								)),
+							),
+							func() jen.Code {
+								if elemIsPtr {
+									return jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
+								}
+								return jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Id("__converted")
+							}(),
+						}
+
+						// For pointer elements, wrap in a nil guard to preserve null entries
+						var loopBody []jen.Code
+						if elemIsPtr {
+							loopBody = []jen.Code{
+								jen.If(jen.Id("__v").Op("!=").Nil()).Block(convBlock...),
+							}
+						} else {
+							loopBody = convBlock
+						}
+
 						preamble = append(preamble,
 							jen.Id(convertedVar).Op(":=").Make(
 								jen.Add(parseReflectType(smp.paramType).statement),
 								jen.Len(jen.Id("input").Dot(fieldName)),
 							),
-							jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Id("input").Dot(fieldName)).Block(
+							jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Id("input").Dot(fieldName)).Block(loopBody...),
+						)
+					} else if isPtr {
+						innerAfterPtr := smp.paramType.Elem()
+						if innerAfterPtr.Kind() == reflect.Slice {
+							// *[]ClassWithMedia -> nil check, iterate slice, convert each element
+							elemType := innerAfterPtr.Elem()
+							elemIsPtr := elemType.Kind() == reflect.Ptr
+
+							var vArg jen.Code
+							if elemIsPtr {
+								vArg = jen.Id("__v")
+							} else {
+								vArg = jen.Op("&").Id("__v")
+							}
+
+							innerConvBlock := []jen.Code{
 								jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
 									jen.Id("adapter"),
 									vArg,
@@ -884,30 +1007,51 @@ func Generate(selfPkg string) {
 								),
 								func() jen.Code {
 									if elemIsPtr {
-										return jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
+										return jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
 									}
-									return jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Id("__converted")
+									return jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Id("__converted")
 								}(),
-							),
-						)
-					} else if isPtr {
-						// *ClassWithMedia -> nil check, then convert the dereferenced value
-						preamble = append(preamble,
-							jen.Var().Id(convertedVar).Add(parseReflectType(smp.paramType).statement),
-							jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
-								jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
-									jen.Id("adapter"),
-									jen.Id("input").Dot(fieldName), // already *Mirror, pass directly
+							}
+
+							var innerLoopBody []jen.Code
+							if elemIsPtr {
+								innerLoopBody = []jen.Code{
+									jen.If(jen.Id("__v").Op("!=").Nil()).Block(innerConvBlock...),
+								}
+							} else {
+								innerLoopBody = innerConvBlock
+							}
+
+							preamble = append(preamble,
+								jen.Var().Id(convertedVar).Add(parseReflectType(smp.paramType).statement),
+								jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
+									jen.Id("__ptrSlice").Op(":=").Make(
+										jen.Add(parseReflectType(innerAfterPtr).statement),
+										jen.Len(jen.Op("*").Id("input").Dot(fieldName)),
+									),
+									jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Op("*").Id("input").Dot(fieldName)).Block(innerLoopBody...),
+									jen.Id(convertedVar).Op("=").Op("&").Id("__ptrSlice"),
 								),
-								jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
-									jen.Return(jen.Qual("fmt", "Errorf").Call(
-										jen.Lit(smp.paramName+": %w"),
-										jen.Id(errVar),
-									)),
+							)
+						} else {
+							// *ClassWithMedia -> nil check, then convert the dereferenced value
+							preamble = append(preamble,
+								jen.Var().Id(convertedVar).Add(parseReflectType(smp.paramType).statement),
+								jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
+									jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
+										jen.Id("adapter"),
+										jen.Id("input").Dot(fieldName), // already *Mirror, pass directly
+									),
+									jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
+										jen.Return(jen.Qual("fmt", "Errorf").Call(
+											jen.Lit(smp.paramName+": %w"),
+											jen.Id(errVar),
+										)),
+									),
+									jen.Id(convertedVar).Op("=").Op("&").Id("__converted"),
 								),
-								jen.Id(convertedVar).Op("=").Op("&").Id("__converted"),
-							),
-						)
+							)
+						}
 					} else {
 						// Direct: ClassWithMedia -> take address and convert
 						preamble = append(preamble,
