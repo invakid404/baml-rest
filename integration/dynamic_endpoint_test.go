@@ -725,6 +725,816 @@ func TestDynamicEndpoint(t *testing.T) {
 	})
 }
 
+// TestDynamicEndpointMultiPartContent tests multi-part content support in dynamic endpoints.
+func TestDynamicEndpointMultiPartContent(t *testing.T) {
+	// Dynamic endpoints require BAML >= 0.215.0
+	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+		t.Skip("Skipping: dynamic endpoints require BAML >= 0.215.0")
+	}
+	if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+	}
+
+	t.Run("text_parts_only", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"answer": "4"}`
+		opts := setupNonStreamingScenario(t, "test-dynamic-parts-text", content)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("What is 2+2?")},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"answer": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		props := result
+		if result["DynamicProperties"] != nil {
+			props = result["DynamicProperties"].(map[string]any)
+		}
+		if props["answer"] != "4" {
+			t.Errorf("Expected answer '4', got %v", props["answer"])
+		}
+	})
+
+	t.Run("output_format_part", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-dynamic-parts-output-format"
+		content := `{"name": "Alice", "age": 30}`
+		opts := setupNonStreamingScenario(t, scenarioID, content)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("Extract info from: Alice is 30.")},
+						{Type: "output_format"},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"name": {Type: "string"},
+					"age":  {Type: "int"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		// Verify the output format was injected into the prompt
+		capturedBody, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+		capturedStr := string(capturedBody)
+		t.Logf("Captured request body: %s", capturedStr)
+
+		// The prompt should contain output schema field names
+		if !strings.Contains(capturedStr, "name") || !strings.Contains(capturedStr, "age") {
+			t.Error("Prompt sent to LLM does not contain output schema field names - output_format part was not rendered")
+		}
+	})
+
+	t.Run("image_url_part", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-dynamic-parts-image-url"
+		content := `{"description": "A green ogre"}`
+		opts := setupNonStreamingScenario(t, scenarioID, content)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("Describe this image:")},
+						{Type: "image", Image: &testutil.MediaInput{
+							URL: strPtr("https://upload.wikimedia.org/wikipedia/en/4/4d/Shrek_%28character%29.png"),
+						}},
+						{Type: "output_format"},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"description": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		// Verify the LLM received image content parts
+		capturedBody, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+		capturedStr := string(capturedBody)
+		t.Logf("Captured request body: %s", capturedStr)
+
+		// The request to the LLM should contain an image_url content part
+		if !strings.Contains(capturedStr, "image_url") && !strings.Contains(capturedStr, "image") {
+			t.Error("Request to LLM does not contain image content - image part was not rendered")
+		}
+	})
+
+	t.Run("image_base64_part", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-dynamic-parts-image-b64"
+		content := `{"description": "A tiny pixel"}`
+		opts := setupNonStreamingScenario(t, scenarioID, content)
+
+		// Minimal valid 1x1 PNG base64
+		b64 := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAQApDs4AAAAASUVORK5CYII="
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("Describe this image:")},
+						{Type: "image", Image: &testutil.MediaInput{
+							Base64:    strPtr(b64),
+							MediaType: strPtr("image/png"),
+						}},
+						{Type: "output_format"},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"description": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		props := result
+		if result["DynamicProperties"] != nil {
+			props = result["DynamicProperties"].(map[string]any)
+		}
+		if props["description"] != "A tiny pixel" {
+			t.Errorf("Expected description 'A tiny pixel', got %v", props["description"])
+		}
+	})
+
+	t.Run("mixed_text_and_string_messages", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		content := `{"answer": "yes"}`
+		opts := setupNonStreamingScenario(t, "test-dynamic-parts-mixed", content)
+
+		// Mix of string content and parts content in different messages
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{Role: "system", Content: "You are a helpful assistant."},
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("Is this a valid image?")},
+						{Type: "image", Image: &testutil.MediaInput{
+							URL: strPtr("https://upload.wikimedia.org/wikipedia/en/4/4d/Shrek_%28character%29.png"),
+						}},
+						{Type: "output_format"},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"answer": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+	})
+
+	t.Run("stream_with_parts", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupScenario(t, "test-dynamic-parts-stream", `{"description": "An image"}`)
+
+		events, errs := BAMLClient.DynamicStreamNDJSON(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("Describe:")},
+						{Type: "image", Image: &testutil.MediaInput{
+							URL: strPtr("https://upload.wikimedia.org/wikipedia/en/4/4d/Shrek_%28character%29.png"),
+						}},
+						{Type: "output_format"},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"description": {Type: "string"},
+				},
+			},
+		})
+
+		var lastEvent *testutil.StreamEvent
+		for event := range events {
+			lastEvent = &event
+		}
+
+		if err := <-errs; err != nil {
+			t.Fatalf("Stream error: %v", err)
+		}
+
+		if lastEvent == nil {
+			t.Fatal("Expected at least one stream event")
+		}
+	})
+}
+
+// TestDynamicEndpointMultiPartValidation tests validation of multi-part content.
+func TestDynamicEndpointMultiPartValidation(t *testing.T) {
+	// Dynamic endpoints require BAML >= 0.215.0
+	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+		t.Skip("Skipping: dynamic endpoints require BAML >= 0.215.0")
+	}
+	if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+	}
+
+	t.Run("empty_parts_array", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role:    "user",
+					Content: []testutil.DynamicContentPart{},
+				},
+			},
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"answer": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		if resp.StatusCode != 400 {
+			t.Errorf("Expected status 400, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("invalid_part_type", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "invalid_type"},
+					},
+				},
+			},
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"answer": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		if resp.StatusCode != 400 {
+			t.Errorf("Expected status 400, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("image_part_missing_payload", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "image"}, // Missing image payload
+					},
+				},
+			},
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"answer": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		if resp.StatusCode != 400 {
+			t.Errorf("Expected status 400, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("image_part_both_url_and_base64", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "image", Image: &testutil.MediaInput{
+							URL:    strPtr("https://example.com/img.png"),
+							Base64: strPtr("abc123"),
+						}},
+					},
+				},
+			},
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Properties: map[string]*testutil.DynamicProperty{
+					"answer": {Type: "string"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+
+		if resp.StatusCode != 400 {
+			t.Errorf("Expected status 400, got %d", resp.StatusCode)
+		}
+	})
+}
+
+// strPtr is a helper to create a string pointer for tests.
+func strPtr(s string) *string {
+	return &s
+}
+
+// extractLLMMessageTexts parses a captured OpenAI chat completions request body
+// and returns the text content of each message. For multi-part content (array),
+// it concatenates text parts. For string content, it returns it directly.
+func extractLLMMessageTexts(t *testing.T, capturedBody []byte) []struct {
+	Role string
+	Text string
+} {
+	t.Helper()
+
+	var req struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("Failed to parse captured request: %v", err)
+	}
+
+	var result []struct {
+		Role string
+		Text string
+	}
+	for _, m := range req.Messages {
+		var text string
+
+		// Try string first
+		var str string
+		if err := json.Unmarshal(m.Content, &str); err == nil {
+			text = str
+		} else {
+			// Try array of content parts
+			var parts []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(m.Content, &parts); err == nil {
+				var texts []string
+				for _, p := range parts {
+					if p.Type == "text" {
+						texts = append(texts, p.Text)
+					}
+				}
+				text = strings.Join(texts, "")
+			}
+		}
+
+		result = append(result, struct {
+			Role string
+			Text string
+		}{Role: m.Role, Text: text})
+	}
+	return result
+}
+
+// TestDynamicEndpointPromptWhitespace tests that the Jinja template doesn't
+// inject spurious whitespace (blank lines, leading/trailing spaces) into the
+// prompt sent to the LLM. Whitespace artifacts can significantly affect LLM
+// output quality, so these tests act as a regression guard.
+func TestDynamicEndpointPromptWhitespace(t *testing.T) {
+	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+		t.Skip("Skipping: dynamic endpoints require BAML >= 0.215.0")
+	}
+	if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+	}
+
+	simpleOutputSchema := &testutil.DynamicOutputSchema{
+		Properties: map[string]*testutil.DynamicProperty{
+			"answer": {Type: "string"},
+		},
+	}
+
+	t.Run("single_string_message_no_leading_trailing_whitespace", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-ws-single-string"
+		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{Role: "user", Content: "What is 2+2? {output_format}"},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema:   simpleOutputSchema,
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+
+		messages := extractLLMMessageTexts(t, captured)
+		for i, m := range messages {
+			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+			if m.Text != strings.TrimSpace(m.Text) {
+				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			}
+		}
+	})
+
+	t.Run("single_text_part_no_leading_trailing_whitespace", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-ws-single-text-part"
+		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("What is 2+2?")},
+						{Type: "output_format"},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema:   simpleOutputSchema,
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+
+		messages := extractLLMMessageTexts(t, captured)
+		for i, m := range messages {
+			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+			if m.Text != strings.TrimSpace(m.Text) {
+				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			}
+		}
+	})
+
+	t.Run("multiple_text_parts_no_blank_lines_between", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-ws-multi-text-parts"
+		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("First line.")},
+						{Type: "text", Text: strPtr("Second line.")},
+						{Type: "text", Text: strPtr("Third line.")},
+						{Type: "output_format"},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema:   simpleOutputSchema,
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+
+		messages := extractLLMMessageTexts(t, captured)
+		for i, m := range messages {
+			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+			// Check for consecutive blank lines (two or more newlines in a row
+			// beyond what the user explicitly included)
+			if strings.Contains(m.Text, "\n\n\n") {
+				t.Errorf("Message[%d] has consecutive blank lines (3+ newlines): %q", i, m.Text)
+			}
+
+			if m.Text != strings.TrimSpace(m.Text) {
+				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			}
+		}
+	})
+
+	t.Run("multiple_messages_no_spurious_whitespace", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-ws-multi-messages"
+		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{Role: "system", Content: "You are helpful."},
+				{Role: "user", Content: "What is 2+2? {output_format}"},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema:   simpleOutputSchema,
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+
+		messages := extractLLMMessageTexts(t, captured)
+		for i, m := range messages {
+			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+			if m.Text != strings.TrimSpace(m.Text) {
+				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			}
+		}
+	})
+
+	t.Run("mixed_string_and_parts_messages_no_spurious_whitespace", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-ws-mixed-messages"
+		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{Role: "system", Content: "You are helpful."},
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("Describe this image:")},
+						{Type: "image", Image: &testutil.MediaInput{
+							URL: strPtr("https://upload.wikimedia.org/wikipedia/en/4/4d/Shrek_%28character%29.png"),
+						}},
+						{Type: "output_format"},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema:   simpleOutputSchema,
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+
+		messages := extractLLMMessageTexts(t, captured)
+		for i, m := range messages {
+			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+			if m.Text != strings.TrimSpace(m.Text) {
+				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			}
+
+			if strings.Contains(m.Text, "\n\n\n") {
+				t.Errorf("Message[%d] has consecutive blank lines: %q", i, m.Text)
+			}
+		}
+	})
+
+	t.Run("parts_with_output_format_between_text_no_extra_whitespace", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-ws-output-format-between"
+		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("Instructions here.")},
+						{Type: "output_format"},
+						{Type: "text", Text: strPtr("Now answer.")},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema:   simpleOutputSchema,
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+
+		messages := extractLLMMessageTexts(t, captured)
+		for i, m := range messages {
+			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+			if strings.Contains(m.Text, "\n\n\n") {
+				t.Errorf("Message[%d] has consecutive blank lines: %q", i, m.Text)
+			}
+
+			if m.Text != strings.TrimSpace(m.Text) {
+				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			}
+
+			// Verify the output format was actually injected (not blank)
+			if !strings.Contains(m.Text, "answer") {
+				t.Errorf("Message[%d] doesn't contain output schema field 'answer' - output_format part may not have rendered: %q", i, m.Text)
+			}
+		}
+	})
+
+	t.Run("many_messages_no_accumulated_whitespace", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		scenarioID := "test-ws-many-messages"
+		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{Role: "system", Content: "You are a helpful assistant."},
+				{Role: "user", Content: "First question."},
+				{Role: "assistant", Content: "First answer."},
+				{Role: "user", Content: "Second question."},
+				{Role: "assistant", Content: "Second answer."},
+				{Role: "user", Content: "Third question. {output_format}"},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema:   simpleOutputSchema,
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+		if err != nil {
+			t.Fatalf("Failed to get last request: %v", err)
+		}
+
+		messages := extractLLMMessageTexts(t, captured)
+		if len(messages) < 6 {
+			t.Fatalf("Expected at least 6 messages, got %d", len(messages))
+		}
+
+		for i, m := range messages {
+			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+			if m.Text != strings.TrimSpace(m.Text) {
+				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			}
+
+			if strings.Contains(m.Text, "\n\n\n") {
+				t.Errorf("Message[%d] has consecutive blank lines: %q", i, m.Text)
+			}
+		}
+	})
+}
+
 // TestDynamicEndpointOpenAPI tests that the OpenAPI schema includes the dynamic endpoints.
 func TestDynamicEndpointOpenAPI(t *testing.T) {
 	// Dynamic endpoints require BAML >= 0.215.0
@@ -771,6 +1581,8 @@ func TestDynamicEndpointOpenAPI(t *testing.T) {
 			"__DynamicInput__",
 			"__DynamicOutput__",
 			"__DynamicMessage__",
+			"__DynamicContentPart__",
+			"__DynamicMediaInput__",
 			"__DynamicOutputSchema__",
 			"__DynamicClass__",
 			"__DynamicEnum__",
