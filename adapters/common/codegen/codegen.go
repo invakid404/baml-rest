@@ -252,7 +252,19 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 			miArg = jen.Op("&").Id("__mi")
 		}
 
-		conversionBlock := []jen.Code{
+		var assignStmts []jen.Code
+		if elemIsPtr {
+			assignStmts = []jen.Code{
+				jen.Id("__converted").Op(":=").Id("__raw").Assert(bamlType.Clone()),
+				jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted"),
+			}
+		} else {
+			assignStmts = []jen.Code{
+				jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
+			}
+		}
+
+		conversionBlock := append([]jen.Code{
 			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
 				jen.Id("adapter"),
 				kindExpr.Clone(),
@@ -265,8 +277,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 					jen.Id("__err"),
 				)),
 			),
-			jen.Id("result").Dot(fieldName).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
-		}
+		}, assignStmts...)
 
 		var loopBody []jen.Code
 		if elemIsPtr {
@@ -307,7 +318,19 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 				miArg = jen.Op("&").Id("__mi")
 			}
 
-			innerConvBlock := []jen.Code{
+			var innerAssignStmts []jen.Code
+			if elemIsPtr {
+				innerAssignStmts = []jen.Code{
+					jen.Id("__converted").Op(":=").Id("__raw").Assert(bamlType.Clone()),
+					jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Op("&").Id("__converted"),
+				}
+			} else {
+				innerAssignStmts = []jen.Code{
+					jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Id("__raw").Assert(elemAssert),
+				}
+			}
+
+			innerConvBlock := append([]jen.Code{
 				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
 					jen.Id("adapter"),
 					kindExpr.Clone(),
@@ -320,8 +343,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 						jen.Id("__err"),
 					)),
 				),
-				jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Id("__raw").Assert(elemAssert),
-			}
+			}, innerAssignStmts...)
 
 			var innerLoopBody []jen.Code
 			if elemIsPtr {
@@ -2027,7 +2049,21 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 			miArg = jen.Op("&").Id("__mi")
 		}
 
-		conversionBlock := []jen.Code{
+		var assignStmts []jen.Code
+		if elemIsPtr {
+			// For pointer elements (e.g., []*Image): assert to base type, then take address.
+			// Can't type-assert `any` containing an interface value to a pointer-to-interface.
+			assignStmts = []jen.Code{
+				jen.Id("__converted").Op(":=").Id("__raw").Assert(bamlType.Clone()),
+				jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted"),
+			}
+		} else {
+			assignStmts = []jen.Code{
+				jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
+			}
+		}
+
+		conversionBlock := append([]jen.Code{
 			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
 				jen.Id("adapter"),
 				kindExpr.Clone(),
@@ -2040,8 +2076,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 					jen.Id("__err"),
 				)),
 			),
-			jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(assertExpr),
-		}
+		}, assignStmts...)
 
 		// When elements are pointers (nullable), wrap the conversion in a nil check
 		// so that null array elements stay as nil in the output slice.
@@ -2085,6 +2120,42 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 			}
 
 			sliceVar := "__slice_" + convertedVar
+
+			var ptrSliceAssign []jen.Code
+			if elemIsPtr {
+				ptrSliceAssign = []jen.Code{
+					jen.Id("__converted").Op(":=").Id("__raw").Assert(bamlType.Clone()),
+					jen.Id(sliceVar).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted"),
+				}
+			} else {
+				ptrSliceAssign = []jen.Code{
+					jen.Id(sliceVar).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(elemAssert),
+				}
+			}
+
+			ptrSliceConv := append([]jen.Code{
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+					jen.Id("adapter"),
+					kindExpr.Clone(),
+					miArg,
+				),
+				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
+					jen.Return(jen.Qual("fmt", "Errorf").Call(
+						jen.Lit(fieldName+"[%d]: %w"),
+						jen.Id("__i"),
+						jen.Id("__err"),
+					)),
+				),
+			}, ptrSliceAssign...)
+
+			var ptrSliceLoopBody []jen.Code
+			if elemIsPtr {
+				ptrSliceLoopBody = []jen.Code{
+					jen.If(jen.Id("__mi").Op("!=").Nil()).Block(ptrSliceConv...),
+				}
+			} else {
+				ptrSliceLoopBody = ptrSliceConv
+			}
 			return []jen.Code{
 				jen.Var().Id(convertedVar).Add(parseReflectType(paramType).statement),
 				jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
@@ -2092,21 +2163,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 						jen.Add(parseReflectType(innerAfterPtr).statement),
 						jen.Len(jen.Op("*").Id("input").Dot(fieldName)),
 					),
-					jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Op("*").Id("input").Dot(fieldName)).Block(
-						jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
-							jen.Id("adapter"),
-							kindExpr.Clone(),
-							miArg,
-						),
-						jen.If(jen.Id("__err").Op("!=").Nil()).Block(
-							jen.Return(jen.Qual("fmt", "Errorf").Call(
-								jen.Lit(fieldName+"[%d]: %w"),
-								jen.Id("__i"),
-								jen.Id("__err"),
-							)),
-						),
-						jen.Id(sliceVar).Index(jen.Id("__i")).Op("=").Id("__raw").Assert(elemAssert),
-					),
+					jen.For(jen.List(jen.Id("__i"), jen.Id("__mi")).Op(":=").Range().Op("*").Id("input").Dot(fieldName)).Block(ptrSliceLoopBody...),
 					jen.Id(convertedVar).Op("=").Op("&").Id(sliceVar),
 				),
 			}

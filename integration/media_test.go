@@ -1011,7 +1011,7 @@ func TestMediaEdgeCases(t *testing.T) {
 		}
 
 		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: error=%s body=%s", resp.StatusCode, resp.Error, string(resp.Body))
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
 		}
 
 		var result string
@@ -1089,7 +1089,7 @@ func TestMediaEdgeCases(t *testing.T) {
 		}
 
 		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: error=%s body=%s", resp.StatusCode, resp.Error, string(resp.Body))
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
 		}
 
 		var result string
