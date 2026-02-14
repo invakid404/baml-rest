@@ -140,6 +140,19 @@ function DescribeCaptionList(inputs: ImageWithCaption[]) -> string {
     prompt #"Describe captioned images: {{ inputs }}"#
 }
 
+// Regression test: parameter named "context" that shadows Go's context package.
+// BAML preserves user parameter names verbatim in generated Go code. When a parameter
+// is named "context", it shadows the "context" standard library import, causing
+// compilation errors in functions_build_request.go / functions_build_request_stream.go
+// (and previously in functions_parse.go / functions_parse_stream.go).
+// The context_fix hack (cmd/hacks/hacks/context_fix.go) works around this by rewriting
+// the generated code. If this function causes a build failure, the hack needs updating.
+// See: https://github.com/BoundaryML/baml/issues/2393
+function GetContextInput(context: string) -> string {
+    client TestClient
+    prompt #"Process context: {{ context }}"#
+}
+
 // Self-referential types: recursive tree without media
 function ParseTree(input: string) -> TreeNode {
     client TestClient
