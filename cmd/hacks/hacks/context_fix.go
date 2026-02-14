@@ -17,9 +17,10 @@ func init() {
 
 // ContextFixHack fixes the goroutine leak in BAML's generated client.
 //
-// The issue: parse and parse_stream methods pass context.Background() to
-// CallFunctionParse, which spawns a goroutine that waits for context
-// cancellation. Since context.Background() never cancels, goroutines leak.
+// The issue: parse, parse_stream, build_request, and build_request_stream
+// methods pass context.Background() to BAML runtime functions (CallFunctionParse,
+// BuildRequest, etc.), which spawn goroutines that wait for context cancellation.
+// Since context.Background() never cancels, goroutines leak.
 //
 // The fix: Add a context.Context parameter to these methods and pass it
 // instead of context.Background().
@@ -69,7 +70,7 @@ func (h *ContextFixHack) processFile(path string) (bool, error) {
 
 	modified := false
 
-	// Find all methods with *parse or *parse_stream receivers
+	// Find all methods with receivers that use context.Background()
 	for _, decl := range file.Decls {
 		funcDecl, ok := decl.(*ast.FuncDecl)
 		if !ok || funcDecl.Recv == nil {
@@ -77,7 +78,7 @@ func (h *ContextFixHack) processFile(path string) (bool, error) {
 		}
 
 		// Check receiver type
-		if !IsPointerReceiverOfTypes(funcDecl.Recv, "parse", "parse_stream") {
+		if !IsPointerReceiverOfTypes(funcDecl.Recv, "parse", "parse_stream", "build_request", "build_request_stream") {
 			continue
 		}
 
