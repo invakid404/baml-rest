@@ -1679,6 +1679,8 @@ func TestDynamicEndpointOpenAPI(t *testing.T) {
 			"__DynamicContentPart__",
 			"__DynamicMediaInput__",
 			"__DynamicOutputSchema__",
+			"__DynamicProperty__",
+			"__DynamicTypeSpec__",
 			"__DynamicClass__",
 			"__DynamicEnum__",
 			"__DynamicEnumValue__",
