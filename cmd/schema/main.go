@@ -893,6 +893,58 @@ func generateOpenAPISchema() *openapi3.T {
 		generateDynamicEndpoints(schemas, paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName, newErrorResponseRef, badRequestDescription, internalErrorDescription)
 	}
 
+	// Remove auto-generated flat schemas that were pulled in via
+	// BamlOptions -> TypeBuilder -> DynamicTypes. The hand-crafted oneOf
+	// schemas (__DynamicProperty__, __DynamicTypeSpec__, etc.) replace them
+	// with proper per-type-variant constraints.
+	if _, hasDynamic := baml_rest.Methods[bamlutils.DynamicMethodName]; hasDynamic {
+		for _, name := range []string{
+			"DynamicProperty", "DynamicTypeSpec", "DynamicClass",
+			"DynamicEnum", "DynamicEnumValue", "DynamicTypes",
+		} {
+			delete(schemas, name)
+		}
+
+		// Fix TypeBuilder.dynamic_types — the auto-generated $ref to DynamicTypes
+		// was just deleted; replace with an inline schema using the __ versions.
+		if tbSchema, ok := schemas["TypeBuilder"]; ok && tbSchema.Value != nil {
+			if _, hasDT := tbSchema.Value.Properties["dynamic_types"]; hasDT {
+				tbSchema.Value.Properties["dynamic_types"] = &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type: &openapi3.Types{openapi3.TypeObject},
+						Description: "Dynamic type definitions for classes and enums. " +
+							"These types can be referenced via 'ref' in property definitions.",
+						Nullable: true,
+						Properties: openapi3.Schemas{
+							"classes": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type:        &openapi3.Types{openapi3.TypeObject},
+									Description: "Map of class names to their definitions",
+									AdditionalProperties: openapi3.AdditionalProperties{
+										Schema: &openapi3.SchemaRef{
+											Ref: "#/components/schemas/__DynamicClass__",
+										},
+									},
+								},
+							},
+							"enums": &openapi3.SchemaRef{
+								Value: &openapi3.Schema{
+									Type:        &openapi3.Types{openapi3.TypeObject},
+									Description: "Map of enum names to their definitions",
+									AdditionalProperties: openapi3.AdditionalProperties{
+										Schema: &openapi3.SchemaRef{
+											Ref: "#/components/schemas/__DynamicEnum__",
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+			}
+		}
+	}
+
 	return &openapi3.T{
 		OpenAPI: "3.0.0",
 		Info: &openapi3.Info{
@@ -1168,43 +1220,26 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		},
 	}
 
-	// Output schema property schema (reuse DynamicProperty from BamlOptions)
+	// DynamicTypeSpec and DynamicProperty use oneOf to encode which fields are
+	// valid for each type. DynamicProperty extends each variant with optional
+	// description/alias metadata. Both replace the flat auto-generated schemas.
+	dynamicTypeSpecSchemaName := "__DynamicTypeSpec__"
 	dynamicPropertySchemaName := "__DynamicProperty__"
-	schemas[dynamicPropertySchemaName] = &openapi3.SchemaRef{
-		Value: &openapi3.Schema{
-			Type: &openapi3.Types{openapi3.TypeObject},
-			Description: "Dynamic property definition for output schema. " +
-				"Use either 'type' for primitives/composites or 'ref' (string) to reference another class/enum by name.",
-			Properties: openapi3.Schemas{
-				"type": &openapi3.SchemaRef{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeString},
-						Description: "Property type (string, int, float, bool, list, optional, map, union, literal_string, literal_int, literal_bool)",
-					},
-				},
-				"ref": &openapi3.SchemaRef{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeString},
-						Description: "Reference to another class or enum by name",
-					},
-				},
-				"description": &openapi3.SchemaRef{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeString},
-						Description: "Property description",
-					},
-				},
-				"alias": &openapi3.SchemaRef{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeString},
-						Description: "Alternative name for the property",
-					},
-				},
-			},
-		},
+
+	dynamicTypeSpecRef := &openapi3.SchemaRef{
+		Ref: fmt.Sprintf("#/components/schemas/%s", dynamicTypeSpecSchemaName),
 	}
 
-	// Dynamic enum value schema
+	schemas[dynamicTypeSpecSchemaName] = &openapi3.SchemaRef{
+		Value: makeDynamicTypeSchema(dynamicTypeSpecRef, false),
+	}
+	schemas[dynamicPropertySchemaName] = &openapi3.SchemaRef{
+		Value: makeDynamicTypeSchema(dynamicTypeSpecRef, true),
+	}
+
+	// DynamicClass, DynamicEnum, DynamicEnumValue — hand-crafted to reference
+	// the proper __DynamicProperty__ schema and to replace the auto-generated
+	// flat versions that lack descriptions.
 	dynamicEnumValueSchemaName := "__DynamicEnumValue__"
 	schemas[dynamicEnumValueSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
@@ -1240,7 +1275,6 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		},
 	}
 
-	// Dynamic enum schema
 	dynamicEnumSchemaName := "__DynamicEnum__"
 	schemas[dynamicEnumSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
@@ -1272,7 +1306,6 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		},
 	}
 
-	// Dynamic class schema
 	dynamicClassSchemaName := "__DynamicClass__"
 	schemas[dynamicClassSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
@@ -1802,6 +1835,204 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Responses: parseResponses,
 		},
 	})
+}
+
+// makeDynamicTypeSchema builds a oneOf-discriminated schema for type specifications.
+// Each variant encodes exactly which fields are required/allowed for that type.
+//
+// When withMetadata is true, every variant also includes optional "description" and
+// "alias" fields (used for DynamicProperty). When false, only type-related fields
+// are included (used for DynamicTypeSpec, the recursive inner type).
+//
+// The innerRef parameter is the $ref to use for nested type specifications
+// (e.g., list items, map keys/values). This is always DynamicTypeSpec regardless
+// of whether the outer schema is DynamicProperty or DynamicTypeSpec.
+func makeDynamicTypeSchema(innerRef *openapi3.SchemaRef, withMetadata bool) *openapi3.Schema {
+	metadataProps := func() openapi3.Schemas {
+		if !withMetadata {
+			return nil
+		}
+		return openapi3.Schemas{
+			"description": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeString},
+					Description: "Human-readable description. Included in the prompt to guide the LLM.",
+				},
+			},
+			"alias": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeString},
+					Description: "Alternative name shown to the LLM. The output will be mapped back to the original property name.",
+				},
+			},
+		}
+	}
+
+	// merge combines the type-specific properties with the optional metadata properties.
+	merge := func(props openapi3.Schemas) openapi3.Schemas {
+		for k, v := range metadataProps() {
+			props[k] = v
+		}
+		return props
+	}
+
+	typeProp := func(values ...string) *openapi3.SchemaRef {
+		enumVals := make([]any, len(values))
+		for i, v := range values {
+			enumVals[i] = v
+		}
+		return &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type: &openapi3.Types{openapi3.TypeString},
+				Enum: enumVals,
+			},
+		}
+	}
+
+	description := "Recursive type specification. Specify exactly one of 'type' or 'ref'."
+	if withMetadata {
+		description = "Dynamic property definition. Specify exactly one of 'type' or 'ref'. " +
+			"Optionally include 'description' and 'alias' to guide the LLM."
+	}
+
+	return &openapi3.Schema{
+		Description: description,
+		OneOf: openapi3.SchemaRefs{
+			// Primitive types: string, int, float, bool, null
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Primitive type",
+					Properties: merge(openapi3.Schemas{
+						"type": typeProp("string", "int", "float", "bool", "null"),
+					}),
+					Required:             []string{"type"},
+					AdditionalProperties: openapi3.AdditionalProperties{Has: boolPtr(false)},
+				},
+			},
+			// list: requires items
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "List type — requires 'items' to define the element type",
+					Properties: merge(openapi3.Schemas{
+						"type":  typeProp("list"),
+						"items": innerRef,
+					}),
+					Required:             []string{"type", "items"},
+					AdditionalProperties: openapi3.AdditionalProperties{Has: boolPtr(false)},
+				},
+			},
+			// optional: requires inner
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Optional type — requires 'inner' to define the wrapped type",
+					Properties: merge(openapi3.Schemas{
+						"type":  typeProp("optional"),
+						"inner": innerRef,
+					}),
+					Required:             []string{"type", "inner"},
+					AdditionalProperties: openapi3.AdditionalProperties{Has: boolPtr(false)},
+				},
+			},
+			// map: requires keys and values
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Map type — requires 'keys' and 'values' to define key and value types",
+					Properties: merge(openapi3.Schemas{
+						"type":   typeProp("map"),
+						"keys":   innerRef,
+						"values": innerRef,
+					}),
+					Required:             []string{"type", "keys", "values"},
+					AdditionalProperties: openapi3.AdditionalProperties{Has: boolPtr(false)},
+				},
+			},
+			// union: requires oneOf array
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Union type — requires 'oneOf' array with at least one variant type",
+					Properties: merge(openapi3.Schemas{
+						"type": typeProp("union"),
+						"oneOf": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type:     &openapi3.Types{openapi3.TypeArray},
+								Items:    innerRef,
+								MinItems: 1,
+							},
+						},
+					}),
+					Required:             []string{"type", "oneOf"},
+					AdditionalProperties: openapi3.AdditionalProperties{Has: boolPtr(false)},
+				},
+			},
+			// literal_string: requires value (string)
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Literal string — requires 'value' with the exact string",
+					Properties: merge(openapi3.Schemas{
+						"type": typeProp("literal_string"),
+						"value": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeString}},
+						},
+					}),
+					Required:             []string{"type", "value"},
+					AdditionalProperties: openapi3.AdditionalProperties{Has: boolPtr(false)},
+				},
+			},
+			// literal_int: requires value (integer)
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Literal integer — requires 'value' with the exact integer",
+					Properties: merge(openapi3.Schemas{
+						"type": typeProp("literal_int"),
+						"value": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeInteger}},
+						},
+					}),
+					Required:             []string{"type", "value"},
+					AdditionalProperties: openapi3.AdditionalProperties{Has: boolPtr(false)},
+				},
+			},
+			// literal_bool: requires value (boolean)
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Literal boolean — requires 'value' with the exact boolean",
+					Properties: merge(openapi3.Schemas{
+						"type": typeProp("literal_bool"),
+						"value": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{openapi3.TypeBoolean}},
+						},
+					}),
+					Required:             []string{"type", "value"},
+					AdditionalProperties: openapi3.AdditionalProperties{Has: boolPtr(false)},
+				},
+			},
+			// ref: reference to a class or enum by name
+			{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Reference to a class or enum defined in output_schema.classes or output_schema.enums",
+					Properties: merge(openapi3.Schemas{
+						"ref": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type:        &openapi3.Types{openapi3.TypeString},
+								Description: "Name of the referenced class or enum",
+							},
+						},
+					}),
+					Required:             []string{"ref"},
+					AdditionalProperties: openapi3.AdditionalProperties{Has: boolPtr(false)},
+				},
+			},
+		},
+	}
 }
 
 // boolPtr returns a pointer to a bool value
