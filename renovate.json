@@ -44,10 +44,11 @@
       "customType": "regex",
       "managerFilePatterns": [
         "/Dockerfile\\.tmpl$/",
-        "/^Dockerfile\\.builder$/"
+        "/^Dockerfile\\.builder$/",
+        "/^\\.github/workflows/.*\\.yml$/"
       ],
       "matchStrings": [
-        "go(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.linux"
+        "GO_VERSION[=:]\\s*['\"]?(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
       "depNameTemplate": "go",
       "datasourceTemplate": "golang-version",

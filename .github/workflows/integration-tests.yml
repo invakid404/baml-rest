@@ -9,6 +9,9 @@ concurrency:
   group: integration-tests-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  GO_VERSION: '1.26.0'
+
 jobs:
   get-versions:
     runs-on: ubuntu-latest
@@ -40,7 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.26.0'
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Run Integration Tests (BAML ${{ matrix.baml-version }})
         env:
@@ -71,7 +74,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.26.0'
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Run Integration Tests (BAML Source)
         env:
