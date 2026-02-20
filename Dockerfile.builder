@@ -2,6 +2,9 @@
 # This image includes Node.js, Go, and all required build tools
 # Can be used as a base image for faster builds
 
+# Go version (defined once, re-declared in each stage that needs it)
+ARG GO_VERSION=1.26.0
+
 # ============================================================================
 # Stage 1: Builder (native platform for fast builds with cross-compilation)
 # ============================================================================
@@ -11,6 +14,7 @@ FROM --platform=$BUILDPLATFORM node:22-bookworm AS builder
 ARG BUILDPLATFORM
 ARG TARGETOS
 ARG TARGETARCH
+ARG GO_VERSION
 
 # Extract build platform architecture (always amd64 on GitHub Actions)
 RUN case "${BUILDPLATFORM}" in \
@@ -20,9 +24,9 @@ RUN case "${BUILDPLATFORM}" in \
     esac && \
     apt-get update && \
     apt-get install -y wget git ca-certificates && \
-    wget -q https://go.dev/dl/go1.25.6.linux-${BUILDARCH}.tar.gz && \
-    tar -C /usr/local -xzf go1.25.6.linux-${BUILDARCH}.tar.gz && \
-    rm go1.25.6.linux-${BUILDARCH}.tar.gz && \
+    wget -q https://go.dev/dl/go${GO_VERSION}.linux-${BUILDARCH}.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.linux-${BUILDARCH}.tar.gz && \
+    rm go${GO_VERSION}.linux-${BUILDARCH}.tar.gz && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -49,13 +53,14 @@ FROM node:22-bookworm
 
 # Build arguments for target platform
 ARG TARGETARCH
+ARG GO_VERSION
 
 # Install Go for the target platform
 RUN apt-get update && \
     apt-get install -y wget git ca-certificates && \
-    wget -q https://go.dev/dl/go1.25.6.linux-${TARGETARCH}.tar.gz && \
-    tar -C /usr/local -xzf go1.25.6.linux-${TARGETARCH}.tar.gz && \
-    rm go1.25.6.linux-${TARGETARCH}.tar.gz && \
+    wget -q https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
+    rm go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

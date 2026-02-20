@@ -1,14 +1,18 @@
+# Go version (defined once, re-declared in each stage that needs it)
+ARG GO_VERSION=1.26.0
+
 {{- if .bamlSource }}
 # Rust builder stage: Build BAML CFFI library and CLI from source
 FROM rust:bookworm AS cffi-builder
 
 # Install Go (needed for protoc-gen-go during CFFI build)
 ARG TARGETARCH{{ if .defaultTargetArch }}={{ .defaultTargetArch }}{{ end }}
+ARG GO_VERSION
 RUN apt-get update && \
     apt-get install -y wget && \
-    wget -q https://go.dev/dl/go1.25.6.linux-${TARGETARCH}.tar.gz && \
-    tar -C /usr/local -xzf go1.25.6.linux-${TARGETARCH}.tar.gz && \
-    rm go1.25.6.linux-${TARGETARCH}.tar.gz && \
+    wget -q https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
+    rm go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"
@@ -31,11 +35,12 @@ FROM node:22-bookworm AS builder
 
 # Install Go (multi-architecture support)
 ARG TARGETARCH{{ if .defaultTargetArch }}={{ .defaultTargetArch }}{{ end }}
+ARG GO_VERSION
 RUN apt-get update && \
     apt-get install -y wget git ca-certificates && \
-    wget -q https://go.dev/dl/go1.25.6.linux-${TARGETARCH}.tar.gz && \
-    tar -C /usr/local -xzf go1.25.6.linux-${TARGETARCH}.tar.gz && \
-    rm go1.25.6.linux-${TARGETARCH}.tar.gz && \
+    wget -q https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
+    rm go${GO_VERSION}.linux-${TARGETARCH}.tar.gz && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
