@@ -227,8 +227,7 @@ func generateOpenAPISchema() *openapi3.T {
 		}
 		processedUnions[t] = true
 
-		for idx := 0; idx < t.NumField(); idx++ {
-			field := t.Field(idx)
+		for field := range t.Fields() {
 			if field.Type.Kind() != reflect.Ptr {
 				continue
 			}
@@ -368,8 +367,7 @@ func generateOpenAPISchema() *openapi3.T {
 				// Handle required vs optional fields based on pointer types
 				if t.Kind() == reflect.Struct {
 					var requiredFields []string
-					for i := 0; i < t.NumField(); i++ {
-						field := t.Field(i)
+					for field := range t.Fields() {
 						// Skip unexported fields
 						if !field.IsExported() {
 							continue
