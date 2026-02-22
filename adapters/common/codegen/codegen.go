@@ -72,8 +72,7 @@ func structContainsMediaVisited(typ reflect.Type, visited map[reflect.Type]bool)
 		return false
 	}
 	visited[typ] = true
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
 		if !field.IsExported() {
 			continue
 		}
@@ -126,8 +125,7 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 	m.generated[inner] = mirrorName
 
 	// First, recursively ensure mirror structs for any nested structs with media
-	for i := 0; i < inner.NumField(); i++ {
-		field := inner.Field(i)
+	for field := range inner.Fields() {
 		if !field.IsExported() {
 			continue
 		}
@@ -142,8 +140,7 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 
 	// Generate the mirror struct
 	var fields []jen.Code
-	for i := 0; i < inner.NumField(); i++ {
-		field := inner.Field(i)
+	for field := range inner.Fields() {
 		if !field.IsExported() {
 			continue
 		}
@@ -191,8 +188,7 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 	var bodyCode []jen.Code
 	bodyCode = append(bodyCode, jen.Var().Id("result").Add(bamlTypeExpr.Clone()))
 
-	for i := 0; i < bamlType.NumField(); i++ {
-		field := bamlType.Field(i)
+	for field := range bamlType.Fields() {
 		if !field.IsExported() {
 			continue
 		}
