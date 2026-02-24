@@ -1540,15 +1540,6 @@ func TestRequestCancellation(t *testing.T) {
 		parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer parentCancel()
 
-		// Helper to count total matching goroutines (main process + all workers)
-		countTotalMatches := func(result *testutil.GoroutinesResult) int {
-			total := result.MatchCount
-			for _, w := range result.Workers {
-				total += w.MatchCount
-			}
-			return total
-		}
-
 		// Let things settle and capture baseline from the SERVER
 		time.Sleep(100 * time.Millisecond)
 		baselineResult, err := BAMLClient.GetGoroutines(parentCtx, GoroutineLeakFilter)
@@ -1630,34 +1621,12 @@ func TestRequestCancellation(t *testing.T) {
 			t.Errorf("Cancellation took too long: %v (expected < 2s)", cancelDuration)
 		}
 
-		// Wait for cleanup to complete on the server
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaked goroutines in the SERVER (main process + workers)
-		finalResult, err := BAMLClient.GetGoroutines(parentCtx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Server final: %d total goroutines, %d matching filter (main: %d, workers: %d)",
-			finalResult.TotalCount, finalMatches, finalResult.MatchCount, finalMatches-finalResult.MatchCount)
-
-		// Check for leaks in our code
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
-			t.Errorf("Goroutine leak detected: %d new goroutines in baml-rest/baml code", goroutineDelta)
-			t.Logf("Main process leaked stacks:")
-			for i, stack := range finalResult.MatchedStacks {
-				t.Logf("Leaked goroutine %d:\n%s", i+1, stack)
-			}
-			for _, w := range finalResult.Workers {
-				if len(w.MatchedStacks) > 0 {
-					t.Logf("Worker %d leaked stacks:", w.WorkerID)
-					for i, stack := range w.MatchedStacks {
-						t.Logf("Leaked goroutine %d:\n%s", i+1, stack)
-					}
-				}
-			}
+		// Check for goroutine leaks
+		finalResult, cleanedUp := waitForGoroutineCleanup(parentCtx, t, baselineMatches, 5*time.Second)
+		if !cleanedUp {
+			finalMatches := countTotalMatches(finalResult)
+			t.Errorf("Goroutine leak detected: %d new goroutines in baml-rest/baml code", finalMatches-baselineMatches)
+			logLeakedStacks(t, finalResult)
 		}
 
 		// CRITICAL: Verify subsequent requests still work (pool not corrupted)
@@ -1726,15 +1695,6 @@ func TestRequestCancellation(t *testing.T) {
 
 		parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer parentCancel()
-
-		// Helper to count total matching goroutines (main process + all workers)
-		countTotalMatches := func(result *testutil.GoroutinesResult) int {
-			total := result.MatchCount
-			for _, w := range result.Workers {
-				total += w.MatchCount
-			}
-			return total
-		}
 
 		// Capture baseline from the SERVER
 		time.Sleep(100 * time.Millisecond)
@@ -1818,33 +1778,12 @@ func TestRequestCancellation(t *testing.T) {
 			t.Errorf("Cancellation took too long: %v (expected < 3s)", elapsed)
 		}
 
-		// Wait for cleanup on the server
-		time.Sleep(500 * time.Millisecond)
-
-		// Check for leaked goroutines in the SERVER (main process + workers)
-		finalResult, err := BAMLClient.GetGoroutines(parentCtx, GoroutineLeakFilter)
-		if err != nil {
-			t.Fatalf("Failed to get final goroutines: %v", err)
-		}
-		finalMatches := countTotalMatches(finalResult)
-		t.Logf("Server final: %d total goroutines, %d matching filter (main: %d, workers: %d)",
-			finalResult.TotalCount, finalMatches, finalResult.MatchCount, finalMatches-finalResult.MatchCount)
-
-		goroutineDelta := finalMatches - baselineMatches
-		if goroutineDelta > 0 {
-			t.Errorf("Goroutine leak detected: %d new goroutines in baml-rest/baml code", goroutineDelta)
-			t.Logf("Main process leaked stacks:")
-			for i, stack := range finalResult.MatchedStacks {
-				t.Logf("Leaked goroutine %d:\n%s", i+1, stack)
-			}
-			for _, w := range finalResult.Workers {
-				if len(w.MatchedStacks) > 0 {
-					t.Logf("Worker %d leaked stacks:", w.WorkerID)
-					for i, stack := range w.MatchedStacks {
-						t.Logf("Leaked goroutine %d:\n%s", i+1, stack)
-					}
-				}
-			}
+		// Check for goroutine leaks
+		finalResult, cleanedUp := waitForGoroutineCleanup(parentCtx, t, baselineMatches, 5*time.Second)
+		if !cleanedUp {
+			finalMatches := countTotalMatches(finalResult)
+			t.Errorf("Goroutine leak detected: %d new goroutines in baml-rest/baml code", finalMatches-baselineMatches)
+			logLeakedStacks(t, finalResult)
 		}
 	})
 }
