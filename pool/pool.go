@@ -188,6 +188,13 @@ func (h *workerHandle) kill() {
 	}
 }
 
+// touch updates the last-used timestamp.
+func (h *workerHandle) touch() {
+	h.mu.Lock()
+	h.lastUsed = time.Now()
+	h.mu.Unlock()
+}
+
 // finishRestart clears the CAS guard and wakes all goroutines waiting
 // for this restart to complete. Must be called exactly once on every
 // code path after a successful CompareAndSwap(false, true).
@@ -576,13 +583,38 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 	return nil, fmt.Errorf("no healthy workers available")
 }
 
+// getWorkerForRetry returns a healthy worker, handling the case where
+// the round-robin hands back the same handle that just failed (common
+// with pool size 1). If that happens, it waits for any in-progress
+// restart on that handle to complete before re-fetching, so the caller
+// doesn't burn retries against a dead process. For pool size > 1 the
+// round-robin typically returns a different healthy worker immediately.
+func (p *Pool) getWorkerForRetry(lastFailed *workerHandle) (*workerHandle, error) {
+	handle, err := p.getWorker()
+	if err != nil {
+		return nil, err
+	}
+	if handle != lastFailed {
+		return handle, nil
+	}
+
+	// Same handle as the one that just failed — a restart is likely
+	// in progress (pool size 1, or all other workers also dead).
+	// restartWorker is idempotent: if already replaced this is a
+	// fast no-op; if a restart is in progress we block on the
+	// CAS-loser wait path until it completes.
+	p.restartWorker(handle.id, handle)
+	return p.getWorker()
+}
+
 // Parse parses raw LLM output using a BAML method's schema.
 // Supports automatic retry on worker infrastructure failures (crashes, network issues).
 func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
 	var lastErr error
+	var lastFailed *workerHandle
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
-		handle, err := p.getWorker()
+		handle, err := p.getWorkerForRetry(lastFailed)
 		if err != nil {
 			if lastErr != nil {
 				return nil, fmt.Errorf("retry failed, no workers available: %w (previous: %v)", err, lastErr)
@@ -590,9 +622,7 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 			return nil, err
 		}
 
-		handle.mu.Lock()
-		handle.lastUsed = time.Now()
-		handle.mu.Unlock()
+		handle.touch()
 
 		result, err := handle.worker.Parse(ctx, methodName, inputJSON)
 		if err == nil {
@@ -609,7 +639,8 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 				Int("attempt", attempt+1).
 				Err(err).
 				Msg("Retrying parse after worker failure")
-			p.restartWorker(handle.id, handle)
+			go p.restartWorker(handle.id, handle)
+			lastFailed = handle
 			lastErr = err
 			continue
 		}
@@ -668,13 +699,14 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		defer close(wrappedResults)
 
 		currentHandle := handle
+		var lastFailed *workerHandle
 		var sentAnyResults bool
 
 		for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
-			// For retry attempts, get a new worker
+			// For retry attempts, get a new worker (may wait if pool size 1).
 			if attempt > 0 {
 				var err error
-				currentHandle, err = p.getWorker()
+				currentHandle, err = p.getWorkerForRetry(lastFailed)
 				if err != nil {
 					errResult := workerplugin.GetStreamResult()
 					errResult.Kind = workerplugin.StreamResultKindError
@@ -691,10 +723,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			// Create cancellable context for this attempt
 			attemptCtx, cancel := context.WithCancel(ctx)
 			req, cleanup := p.trackRequest(currentHandle, cancel)
-
-			currentHandle.mu.Lock()
-			currentHandle.lastUsed = time.Now()
-			currentHandle.mu.Unlock()
+			currentHandle.touch()
 
 			results, err := currentHandle.worker.CallStream(attemptCtx, methodName, inputJSON, streamMode)
 			if err != nil {
@@ -706,18 +735,14 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				}
 
 				// If attempt context was cancelled (hung detection killed worker) or
-				// this is a retryable worker error, retry with another worker
+				// this is a retryable worker error, restart in background and retry
 				if attemptCtx.Err() != nil || isRetryableWorkerError(err) {
 					currentHandle.logger.Info().
 						Int("attempt", attempt+1).
 						Err(err).
 						Msg("Retrying stream after worker failure")
-					// Synchronous hot-swap: starts replacement, swaps into
-					// slot, kills old process. The CAS guard ensures only one
-					// goroutine spawns a replacement. We do NOT mark the old
-					// handle unhealthy — it stays routable until the swap so
-					// other callers never see zero healthy workers.
-					p.restartWorker(currentHandle.id, currentHandle)
+					go p.restartWorker(currentHandle.id, currentHandle)
+					lastFailed = currentHandle
 					continue
 				}
 
@@ -737,8 +762,8 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				return
 			}
 
-			// Got results channel - forward results with retry support
-			needsReset := sentAnyResults // Need to inject reset if this is a retry after sending data
+			// Forward results from the worker channel with retry support.
+			needsReset := sentAnyResults
 			var injectedReset bool
 			var shouldRetry bool
 
@@ -808,20 +833,17 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 
 			cleanup()
 
-			// If we need to retry, trigger hot-swap and continue
-			if shouldRetry {
-				p.restartWorker(currentHandle.id, currentHandle)
-				continue
-			}
-
-			// Channel closed without terminal - unexpected EOF, treat as retryable
-			if attempt < p.config.MaxRetries {
+			// Reaching here means either a mid-stream retryable error or an
+			// unexpected EOF (channel closed without terminal). Both are
+			// retryable: restart in background and let the next iteration
+			// pick up a healthy worker.
+			if !shouldRetry {
 				currentHandle.logger.Warn().
 					Int("attempt", attempt+1).
 					Msg("Stream ended unexpectedly without terminal result, retrying")
-				p.restartWorker(currentHandle.id, currentHandle)
-				continue
 			}
+			go p.restartWorker(currentHandle.id, currentHandle)
+			lastFailed = currentHandle
 		}
 
 		// All retries exhausted
