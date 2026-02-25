@@ -15,7 +15,7 @@ env:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout Repository
@@ -31,5 +31,5 @@ jobs:
           # Adapter modules are version-pinned and tested by the integration test workflow
           find . -name go.mod -not -path '*/adapters/adapter_*' -exec dirname {} \; | while read dir; do
             echo "=== Testing $dir ==="
-            (cd "$dir" && go test -race -count=1 ./...)
+            (cd "$dir" && go test -race -count=100 ./...)
           done
