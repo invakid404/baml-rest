@@ -106,6 +106,7 @@ func newTestPool(t *testing.T, size int, factory func(id int) (*workerHandle, er
 		logger:    zerolog.Nop(),
 		workers:   make([]*workerHandle, size),
 		done:      make(chan struct{}),
+		drainCh:   make(chan struct{}),
 		newWorker: factory,
 	}
 	for i := 0; i < size; i++ {
