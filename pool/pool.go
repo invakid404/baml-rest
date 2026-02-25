@@ -487,9 +487,14 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 		p.mu.Unlock()
 
 		// Clear CAS and wake waiters so they can proceed (they'll find
-		// the worker unhealthy and fail gracefully).
+		// the worker unhealthy and fail gracefully). The mutex must be
+		// held when storing + broadcasting to avoid missed wakeups: a
+		// waiter that checked the predicate but hasn't called Wait()
+		// yet would miss a bare Broadcast.
+		failed.restartMu.Lock()
 		failed.restarting.Store(false)
 		failed.restartCond.Broadcast()
+		failed.restartMu.Unlock()
 
 		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to start replacement worker, marked unhealthy")
 		return
@@ -500,8 +505,10 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	if p.closed.Load() {
 		p.mu.Unlock()
 		newHandle.kill()
+		failed.restartMu.Lock()
 		failed.restarting.Store(false)
 		failed.restartCond.Broadcast()
+		failed.restartMu.Unlock()
 		return
 	}
 
@@ -510,8 +517,10 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	if p.workers[id] != failed {
 		p.mu.Unlock()
 		newHandle.kill()
+		failed.restartMu.Lock()
 		failed.restarting.Store(false)
 		failed.restartCond.Broadcast()
+		failed.restartMu.Unlock()
 		return
 	}
 
@@ -519,10 +528,12 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	p.workers[id] = newHandle
 	p.mu.Unlock()
 
-	// Clear CAS and wake waiters. The failed handle is now replaced in the
-	// slot, so waiters will find the new healthy worker via getWorker().
+	// Clear CAS and wake waiters. The mutex must be held around
+	// Store + Broadcast to prevent missed wakeups (see waiter loop).
+	failed.restartMu.Lock()
 	failed.restarting.Store(false)
 	failed.restartCond.Broadcast()
+	failed.restartMu.Unlock()
 
 	failed.kill()
 }
