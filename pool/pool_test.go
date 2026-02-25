@@ -307,14 +307,16 @@ func TestRestartStaleHandleNoop(t *testing.T) {
 
 	current := p.workers[0]
 
-	// Second restart with the stale handle should be a no-op.
+	// Second restart with the stale handle should be a no-op —
+	// the early ownership check prevents even spawning a process.
+	factoryCalls.Store(0)
 	p.restartWorker(0, stale)
 	if p.workers[0] != current {
 		t.Error("stale restart should not replace the current worker")
 	}
-	// Factory was called once more (for the attempted replacement) but
-	// the new handle was killed because the slot already changed.
-	// The important thing is the current worker survives.
+	if factoryCalls.Load() != 0 {
+		t.Errorf("stale restart should not spawn a process, got %d factory calls", factoryCalls.Load())
+	}
 }
 
 // ---------------------------------------------------------------------------

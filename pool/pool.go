@@ -463,6 +463,19 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	// rather than returning immediately. This prevents retry loops from
 	// burning through MaxRetries against the same failing handle while a
 	// replacement is booting.
+	// Early stale-handle check: if the slot already holds a different handle
+	// (a previous restart already completed), skip the expensive process
+	// spawn entirely. Without this, cancelled in-flight requests from an
+	// old handle each win the CAS (the old handle's restarting was reset),
+	// spawn a process, discover the slot changed, and kill the process —
+	// wasting CPU/memory exactly when the pool is recovering.
+	p.mu.RLock()
+	if p.workers[id] != failed {
+		p.mu.RUnlock()
+		return
+	}
+	p.mu.RUnlock()
+
 	if !failed.restarting.CompareAndSwap(false, true) {
 		// Wait for the in-progress restart to complete. The Cond.Wait()
 		// loop re-checks the predicate under the lock, so there is no
@@ -473,6 +486,17 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 			failed.restartCond.Wait()
 		}
 		failed.restartMu.Unlock()
+		return
+	}
+
+	// Double-check after winning CAS — the slot could have changed between
+	// the early check and the CAS.
+	p.mu.RLock()
+	stale := p.workers[id] != failed
+	p.mu.RUnlock()
+	if stale {
+		failed.restarting.Store(false)
+		failed.restartCond.Broadcast()
 		return
 	}
 
