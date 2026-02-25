@@ -2,7 +2,7 @@ package workerplugin
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"runtime"
 	"time"
 
@@ -179,13 +179,14 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 	allWorkers := []Worker{primary}
 	var conns []*grpc.ClientConn
 
+	// Extra connections are best-effort — the primary connection is always
+	// sufficient. If a broker dial fails (transient timeout, etc.), we
+	// continue with however many connections succeeded.
 	for i := uint32(1); i <= ExtraGRPCConns; i++ {
 		conn, err := broker.DialWithOptions(i, brokerDialOptions()...)
 		if err != nil {
-			for _, c := range conns {
-				c.Close()
-			}
-			return nil, fmt.Errorf("failed to dial extra gRPC connection %d: %w", i, err)
+			log.Printf("[WARN] failed to dial extra gRPC connection %d: %v", i, err)
+			break
 		}
 		conns = append(conns, conn)
 		allWorkers = append(allWorkers, NewGRPCClient(conn))
