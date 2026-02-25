@@ -169,9 +169,9 @@ type workerHandle struct {
 	worker      workerplugin.Worker
 	mu          sync.RWMutex
 	healthy     bool
-	restarting  atomic.Bool   // CAS guard: only one goroutine starts a replacement
-	restartMu   sync.Mutex    // protects restarted channel reassignment
-	restarted   chan struct{} // closed when restart completes (success or failure)
+	restarting  atomic.Bool // CAS guard: only one goroutine starts a replacement
+	restartMu   sync.Mutex  // held by waiters checking restarting
+	restartCond *sync.Cond  // signaled when restart completes (success or failure)
 	lastUsed    time.Time
 	inFlightMu  sync.RWMutex
 	inFlightReq map[uint64]*inFlightRequest
@@ -300,16 +300,17 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		Int("grpc_conns_target", 1+workerplugin.ExtraGRPCConns).
 		Msg("Started worker")
 
-	return &workerHandle{
+	h := &workerHandle{
 		id:          id,
 		logger:      workerLogger,
 		client:      client,
 		worker:      worker,
 		healthy:     true,
-		restarted:   make(chan struct{}),
 		lastUsed:    time.Now(),
 		inFlightReq: make(map[uint64]*inFlightRequest),
-	}, nil
+	}
+	h.restartCond = sync.NewCond(&h.restartMu)
+	return h, nil
 }
 
 func (p *Pool) healthChecker() {
@@ -456,12 +457,15 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	// burning through MaxRetries against the same failing handle while a
 	// replacement is booting.
 	if !failed.restarting.CompareAndSwap(false, true) {
-		// Read the channel under restartMu to avoid racing with
-		// reassignment on the failure path.
+		// Wait for the in-progress restart to complete. The Cond.Wait()
+		// loop re-checks the predicate under the lock, so there is no
+		// TOCTOU race: even if a new restart begins between Broadcast
+		// and our re-check, we simply wait again.
 		failed.restartMu.Lock()
-		ch := failed.restarted
+		for failed.restarting.Load() {
+			failed.restartCond.Wait()
+		}
 		failed.restartMu.Unlock()
-		<-ch
 		return
 	}
 
@@ -482,14 +486,10 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 		}
 		p.mu.Unlock()
 
-		// Signal waiters and prepare for future restart attempts
-		// (e.g. from the health checker).
-		failed.restartMu.Lock()
-		old := failed.restarted
-		failed.restarted = make(chan struct{})
+		// Clear CAS and wake waiters so they can proceed (they'll find
+		// the worker unhealthy and fail gracefully).
 		failed.restarting.Store(false)
-		failed.restartMu.Unlock()
-		close(old)
+		failed.restartCond.Broadcast()
 
 		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to start replacement worker, marked unhealthy")
 		return
@@ -500,7 +500,8 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	if p.closed.Load() {
 		p.mu.Unlock()
 		newHandle.kill()
-		close(failed.restarted)
+		failed.restarting.Store(false)
+		failed.restartCond.Broadcast()
 		return
 	}
 
@@ -509,7 +510,8 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	if p.workers[id] != failed {
 		p.mu.Unlock()
 		newHandle.kill()
-		close(failed.restarted)
+		failed.restarting.Store(false)
+		failed.restartCond.Broadcast()
 		return
 	}
 
@@ -517,9 +519,10 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	p.workers[id] = newHandle
 	p.mu.Unlock()
 
-	// Signal waiters. No lock needed — on the success path, the failed
-	// handle is replaced and no one will reassign its channel.
-	close(failed.restarted)
+	// Clear CAS and wake waiters. The failed handle is now replaced in the
+	// slot, so waiters will find the new healthy worker via getWorker().
+	failed.restarting.Store(false)
+	failed.restartCond.Broadcast()
 
 	failed.kill()
 }
