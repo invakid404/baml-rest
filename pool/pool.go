@@ -158,6 +158,8 @@ type Pool struct {
 	requestID atomic.Uint64
 	closed    atomic.Bool
 	draining  atomic.Bool
+	drainOnce sync.Once
+	drainCh   chan struct{} // closed when pool begins draining; selectable unlike atomic bool
 	wg        sync.WaitGroup
 	done      chan struct{}
 	newWorker func(id int) (*workerHandle, error) // override for testing; nil in production
@@ -257,6 +259,7 @@ func New(config *Config) (*Pool, error) {
 		logger:  logger,
 		workers: make([]*workerHandle, config.PoolSize),
 		done:    make(chan struct{}),
+		drainCh: make(chan struct{}),
 	}
 
 	// Initialize worker restart counter labels
@@ -647,29 +650,71 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 
 // getWorkerForRetry returns a healthy worker for a retry attempt.
 //
-// Three cases:
+// Four cases:
 //  1. getWorker() returns a different (healthy) handle → returned immediately.
 //  2. getWorker() returns the same handle that just failed (pool size 1,
 //     or all others also dead) → waits for the in-progress restart on
 //     that handle to complete, then re-fetches.
-//  3. getWorker() finds no healthy workers at all (the failed handle was
-//     marked unhealthy) → waits for its restart, then re-fetches. This
-//     is the pool-size-1 path after killWorkerAndRetry/checkHealth marks
-//     the handle unhealthy before firing the async restart.
+//  3. getWorker() finds no healthy workers and lastFailed is set → waits
+//     for its restart, then re-fetches. This is the pool-size-1 path
+//     after killWorkerAndRetry/checkHealth marks the handle unhealthy
+//     before firing the async restart.
+//  4. getWorker() finds no healthy workers and lastFailed is nil (new
+//     request arriving while a restart is in progress) → scans all
+//     workers for one that's restarting and waits for it. This prevents
+//     new requests from failing immediately with "no healthy workers"
+//     during the brief window between a worker being marked unhealthy
+//     and its replacement becoming ready.
 //
 // All waits are context-aware.
 func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) (*workerHandle, error) {
 	handle, err := p.getWorker()
 	if err != nil {
-		// No healthy workers. If we know which handle just failed, wait
-		// for its restart (already in progress) rather than giving up.
+		// Fast-reject: don't wait for restarts if the pool is shutting
+		// down — the caller should see the closed/draining error immediately.
+		if p.closed.Load() || p.draining.Load() {
+			return nil, err
+		}
+
+		// No healthy workers — wait for a restart to complete.
 		if lastFailed != nil {
+			// Retry path: wait for the specific handle that failed.
 			if awaitErr := p.awaitRestart(ctx, lastFailed); awaitErr != nil {
 				return nil, awaitErr
 			}
 			return p.getWorker()
 		}
-		return nil, err
+		// New request (not a retry): wait for ANY restarting worker
+		// to finish rather than picking one that might be slow.
+		// Loop because awaitAnyRestart can be woken by a failed restart
+		// (restartDone is always closed, even on startWorker failure) —
+		// keep waiting while restarts are still in progress.
+		yielded := false
+		for {
+			if awaitErr := p.awaitAnyRestart(ctx); awaitErr != nil {
+				if ctx.Err() != nil {
+					return nil, awaitErr
+				}
+				// No restarts visible. A restart goroutine may have been
+				// dispatched (healthy=false) but not yet scheduled
+				// (restarting still false). Yield once to let it start.
+				if !yielded && p.hasUnhealthyWorkers() {
+					yielded = true
+					runtime.Gosched()
+					continue
+				}
+				return nil, err // truly no restarts pending
+			}
+			yielded = false // reset after a successful await
+			if handle, retryErr := p.getWorker(); retryErr == nil {
+				return handle, nil
+			}
+			// Still no healthy workers. Re-check shutdown state.
+			if p.closed.Load() || p.draining.Load() {
+				return nil, err
+			}
+			// Loop: another restart may still be in progress.
+		}
 	}
 	if handle != lastFailed {
 		return handle, nil
@@ -680,6 +725,80 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 		return nil, err
 	}
 	return p.getWorker()
+}
+
+// awaitAnyRestart waits for ANY worker restart to complete, returning
+// as soon as the first one finishes. This is used for new requests
+// (not retries) that arrive while workers are restarting — we don't
+// care which worker recovers first, just that one does.
+//
+// Returns nil if a restart completed, ctx.Err() if the context was
+// cancelled, or a generic error if no workers are restarting at all.
+func (p *Pool) awaitAnyRestart(ctx context.Context) error {
+	// Snapshot handles that are currently restarting (have restarting=true
+	// or restartDone!=nil). awaitRestart handles both states internally.
+	p.mu.RLock()
+	var restarting []*workerHandle
+	for _, h := range p.workers {
+		if h == nil {
+			continue
+		}
+		h.restartMu.Lock()
+		pending := h.restarting.Load() || h.restartDone != nil
+		h.restartMu.Unlock()
+		if pending {
+			restarting = append(restarting, h)
+		}
+	}
+	p.mu.RUnlock()
+
+	if len(restarting) == 0 {
+		return fmt.Errorf("no workers restarting")
+	}
+
+	// Child context: cancelled on return so remaining goroutines don't
+	// leak when the first restart completes (or the parent ctx expires).
+	waitCtx, waitCancel := context.WithCancel(ctx)
+	defer waitCancel()
+
+	// Fan-in: call awaitRestart per handle, first to complete signals ready.
+	// awaitRestart already handles both the channel-ready fast path and
+	// the CAS-to-channel scheduling race, so no logic is duplicated here.
+	ready := make(chan struct{}, 1)
+	for _, h := range restarting {
+		go func(handle *workerHandle) {
+			if p.awaitRestart(waitCtx, handle) == nil {
+				select {
+				case ready <- struct{}{}:
+				default:
+				}
+			}
+		}(h)
+	}
+
+	select {
+	case <-ready:
+		return nil
+	case <-p.drainCh:
+		return fmt.Errorf("pool is draining")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// hasUnhealthyWorkers returns true if any worker is currently unhealthy.
+// Used to detect the async restart dispatch gap: a worker has been marked
+// unhealthy and a restart goroutine dispatched, but the goroutine hasn't
+// set restarting=true yet.
+func (p *Pool) hasUnhealthyWorkers() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, h := range p.workers {
+		if h != nil && !h.healthy.Load() {
+			return true
+		}
+	}
+	return false
 }
 
 // Parse parses raw LLM output using a BAML method's schema.
@@ -764,8 +883,11 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 // both before first byte and mid-stream. On mid-stream retry, a reset message is injected
 // so clients can discard accumulated partial state.
 func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
-	// Verify we can get at least one worker before starting
-	handle, err := p.getWorker()
+	// Verify we can get at least one worker before starting.
+	// Use getWorkerForRetry(nil) so that new requests arriving during a
+	// restart window wait for the replacement rather than failing immediately
+	// with "no healthy workers available".
+	handle, err := p.getWorkerForRetry(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1052,6 +1174,7 @@ func (p *Pool) GetInFlightStatus() []WorkerInFlightInfo {
 func (p *Pool) Shutdown(ctx context.Context) error {
 	// Start draining - reject new requests
 	p.draining.Store(true)
+	p.drainOnce.Do(func() { close(p.drainCh) })
 	p.logger.Info().Msg("Pool draining, waiting for in-flight requests to complete")
 
 	// Wait for in-flight requests to complete
@@ -1084,6 +1207,7 @@ func (p *Pool) Close() error {
 	}
 
 	p.draining.Store(true)
+	p.drainOnce.Do(func() { close(p.drainCh) })
 
 	// Signal health checker to stop
 	close(p.done)
