@@ -523,11 +523,12 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	defer failed.finishRestart()
 
 	// Double-check after winning CAS — the slot could have changed between
-	// the early check and the CAS.
+	// the early check and the CAS, or the pool may have been closed.
 	p.mu.RLock()
 	stale := p.workers[id] != failed
+	closed := p.closed.Load()
 	p.mu.RUnlock()
-	if stale {
+	if stale || closed {
 		return
 	}
 
