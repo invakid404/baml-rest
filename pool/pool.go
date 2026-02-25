@@ -160,6 +160,7 @@ type Pool struct {
 	draining  atomic.Bool
 	wg        sync.WaitGroup
 	done      chan struct{}
+	newWorker func(id int) (*workerHandle, error) // override for testing; nil in production
 }
 
 type workerHandle struct {
@@ -182,7 +183,9 @@ func (h *workerHandle) kill() {
 	if closer, ok := h.worker.(io.Closer); ok {
 		closer.Close()
 	}
-	h.client.Kill()
+	if h.client != nil {
+		h.client.Kill()
+	}
 }
 
 // New creates a new worker pool
@@ -239,6 +242,10 @@ func New(config *Config) (*Pool, error) {
 }
 
 func (p *Pool) startWorker(id int) (*workerHandle, error) {
+	if p.newWorker != nil {
+		return p.newWorker(id)
+	}
+
 	cmd := exec.Command(p.config.WorkerPath)
 
 	cmd.Env = append(os.Environ(), tokioWorkerThreads)
@@ -769,6 +776,11 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					}
 				}
 
+				// Save kind before sending — the consumer may ReleaseStreamResult
+				// immediately after receiving, zeroing the struct. Reading
+				// result.Kind after the send would race with that write.
+				resultKind := result.Kind
+
 				// Forward the result to the client
 				select {
 				case wrappedResults <- result:
@@ -781,8 +793,8 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				}
 
 				// Terminal states - we're done (successfully or with app error)
-				if result.Kind == workerplugin.StreamResultKindFinal ||
-					result.Kind == workerplugin.StreamResultKindError {
+				if resultKind == workerplugin.StreamResultKindFinal ||
+					resultKind == workerplugin.StreamResultKindError {
 					drainResults(results)
 					cleanup()
 					return
