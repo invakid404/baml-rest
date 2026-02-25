@@ -283,6 +283,35 @@ func TestRestartFailureSkipsToHealthyWorker(t *testing.T) {
 	}
 }
 
+// TestRestartFailureKillsOldWorker verifies that when startWorker fails,
+// the old process is killed. This is critical for the hung-request path
+// where context cancellation may not unblock a stuck RPC.
+func TestRestartFailureKillsOldWorker(t *testing.T) {
+	var failFactory atomic.Bool
+
+	factory := func(id int) (*workerHandle, error) {
+		if failFactory.Load() {
+			return nil, fmt.Errorf("simulated startup failure")
+		}
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	oldWorker := p.workers[0].worker.(*mockWorker)
+	failFactory.Store(true)
+	p.restartWorker(0, p.workers[0])
+
+	// The old worker's Close() should have been called by kill().
+	oldWorker.closeMu.Lock()
+	closed := oldWorker.closed
+	oldWorker.closeMu.Unlock()
+	if !closed {
+		t.Error("old worker should be killed (Close called) when replacement fails")
+	}
+}
+
 // TestRestartStaleHandleNoop verifies that restarting with a handle that
 // has already been replaced is a no-op (prevents killing fresh workers).
 func TestRestartStaleHandleNoop(t *testing.T) {

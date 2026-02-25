@@ -495,8 +495,10 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	stale := p.workers[id] != failed
 	p.mu.RUnlock()
 	if stale {
+		failed.restartMu.Lock()
 		failed.restarting.Store(false)
 		failed.restartCond.Broadcast()
+		failed.restartMu.Unlock()
 		return
 	}
 
@@ -517,6 +519,13 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 		}
 		p.mu.Unlock()
 
+		// Kill the old process. For the hung-request path
+		// (killWorkerAndRetry), the worker may be stuck in a syscall
+		// that context cancellation cannot unblock — only process death
+		// will free it. kill() is idempotent if the process is already
+		// dead (e.g. from a concurrent restart that swapped it out).
+		failed.kill()
+
 		// Clear CAS and wake waiters so they can proceed (they'll find
 		// the worker unhealthy and fail gracefully). The mutex must be
 		// held when storing + broadcasting to avoid missed wakeups: a
@@ -527,7 +536,7 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 		failed.restartCond.Broadcast()
 		failed.restartMu.Unlock()
 
-		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to start replacement worker, marked unhealthy")
+		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to start replacement worker, killed old process")
 		return
 	}
 
