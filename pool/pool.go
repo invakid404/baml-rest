@@ -15,7 +15,9 @@ import (
 	"github.com/go-chi/metrics"
 	"github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -167,9 +169,18 @@ type workerHandle struct {
 	worker      workerplugin.Worker
 	mu          sync.RWMutex
 	healthy     bool
+	restarting  atomic.Bool // CAS guard: only one goroutine starts a replacement
 	lastUsed    time.Time
 	inFlightMu  sync.RWMutex
 	inFlightReq map[uint64]*inFlightRequest
+}
+
+// kill closes brokered gRPC connections and kills the plugin process.
+func (h *workerHandle) kill() {
+	if closer, ok := h.worker.(io.Closer); ok {
+		closer.Close()
+	}
+	h.client.Kill()
 }
 
 // New creates a new worker pool
@@ -178,7 +189,7 @@ func New(config *Config) (*Pool, error) {
 		return nil, fmt.Errorf("WorkerPath is required")
 	}
 	if config.PoolSize <= 0 {
-		config.PoolSize = 4
+		config.PoolSize = 1
 	}
 	if config.LogOutput == nil {
 		config.LogOutput = os.Stdout
@@ -188,7 +199,7 @@ func New(config *Config) (*Pool, error) {
 	var output io.Writer = config.LogOutput
 	if config.PrettyLogs {
 		output = zerolog.ConsoleWriter{
-			Out: config.LogOutput,
+			Out:           config.LogOutput,
 			FormatPrepare: formatPrepareWithPriorityFields,
 		}
 	}
@@ -252,6 +263,13 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 			plugin.ProtocolGRPC,
 		},
 		Logger: pluginLogger,
+		GRPCDialOptions: []grpc.DialOption{
+			grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:                30 * time.Second, // Ping after 30s idle — detect dead connections quickly
+				Timeout:             10 * time.Second, // Wait 10s for ping ack
+				PermitWithoutStream: true,             // Keep pinging between request bursts
+			}),
+		},
 	})
 
 	rpcClient, err := client.Client()
@@ -260,6 +278,9 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		return nil, fmt.Errorf("failed to create RPC client: %w", err)
 	}
 
+	// Dispense returns a multiConnWorker (via GRPCClient) that distributes
+	// RPCs across 1 primary + N brokered gRPC connections, preventing
+	// HTTP/2 head-of-line blocking at high concurrency.
 	raw, err := rpcClient.Dispense("worker")
 	if err != nil {
 		client.Kill()
@@ -273,7 +294,9 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 	}
 
 	workerLogger := p.logger.With().Int("worker", id).Logger()
-	workerLogger.Info().Msg("Started worker")
+	workerLogger.Info().
+		Int("grpc_conns", 1+workerplugin.ExtraGRPCConns).
+		Msg("Started worker")
 
 	return &workerHandle{
 		id:          id,
@@ -292,7 +315,9 @@ func (p *Pool) healthChecker() {
 	healthTicker := time.NewTicker(p.config.HealthCheckInterval)
 	defer healthTicker.Stop()
 
-	// Check for hung requests more frequently
+	// Check for hung requests more frequently than health checks.
+	// Safe at any pool size thanks to hot-swap restarts (the replacement
+	// worker is started before the hung one is killed).
 	hungTicker := time.NewTicker(time.Second)
 	defer hungTicker.Stop()
 
@@ -347,17 +372,29 @@ func (p *Pool) checkHungRequests() {
 	}
 }
 
-// killWorkerAndRetry kills a worker and cancels all its in-flight requests
+// killWorkerAndRetry replaces a broken worker via hot-swap and then cancels
+// its in-flight requests so they can retry on the fresh replacement.
+//
+// The hot-swap inside restartWorker ensures the slot is never empty: the
+// replacement is started first, swapped into the slot, and only then is the
+// old process killed. In-flight requests are cancelled *after* the swap so
+// their retries immediately find the new worker via getWorker().
 func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
-	handle.mu.Lock()
-	handle.healthy = false
-	handle.mu.Unlock()
+	// NOTE: we intentionally do NOT mark the handle unhealthy here.
+	// The old worker stays "healthy" for routing so getWorker() never
+	// sees zero healthy workers. restartWorker atomically swaps the
+	// new worker in and kills the old process; in-flight gRPC calls
+	// on the old handle will fail with Unavailable and get retried.
 
-	// Kill the process immediately - don't wait for graceful shutdown
-	// This is critical for truly hung workers that won't respond to context cancellation
-	handle.client.Kill()
+	// Hot-swap: starts replacement, swaps into slot, kills old process.
+	// This is synchronous so that by the time we cancel in-flight requests
+	// below, the new worker is already serving.
+	p.restartWorker(handle.id, handle)
 
-	// Cancel all in-flight requests - they will retry on other workers
+	// Cancel all in-flight requests on the OLD handle. The old process is
+	// already dead (killed inside restartWorker), so these contexts just
+	// unblock the gRPC recv loops. The retry logic in CallStream will call
+	// getWorker() and find the new healthy worker.
 	handle.inFlightMu.Lock()
 	for _, req := range handle.inFlightReq {
 		if req.cancel != nil {
@@ -365,9 +402,6 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 		}
 	}
 	handle.inFlightMu.Unlock()
-
-	// Start a new worker to replace the killed one
-	go p.restartWorker(handle.id)
 }
 
 func (p *Pool) checkHealth() {
@@ -386,12 +420,11 @@ func (p *Pool) checkHealth() {
 		cancel()
 
 		if err != nil || !healthy {
-			handle.healthy = false
 			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 			handle.mu.Unlock()
 
 			workerRestarts.Inc(workerRestartLabels{Reason: RestartReasonUnhealthy})
-			p.restartWorker(handle.id)
+			p.restartWorker(handle.id, handle)
 		} else {
 			handle.healthy = true
 			handle.mu.Unlock()
@@ -399,26 +432,57 @@ func (p *Pool) checkHealth() {
 	}
 }
 
-func (p *Pool) restartWorker(id int) {
+// restartWorker replaces the worker at the given slot using a hot-swap
+// strategy: the replacement is started *before* the old worker is killed,
+// so the slot is never empty and getWorker() always finds a live worker.
+//
+// The caller must pass the handle it observed the failure on; if the slot
+// already holds a different handle (i.e. a concurrent restart already
+// completed), the call is a no-op. This prevents a thundering-herd of
+// restart calls from repeatedly killing freshly-started workers.
+func (p *Pool) restartWorker(id int, failed *workerHandle) {
+	// CAS guard: only one goroutine spawns a replacement process per worker.
+	// Without this, N concurrent retries (e.g. 100 in-flight requests that
+	// all hit gRPC Unavailable) would each call startWorker and spin up a
+	// new OS process, only to have N-1 of them killed by the thundering-herd
+	// check below. On resource-constrained CI runners this is enough to
+	// stall the whole system.
+	if !failed.restarting.CompareAndSwap(false, true) {
+		return
+	}
+
+	// Start replacement BEFORE acquiring the lock or killing anything.
+	// The old worker stays in the slot (possibly struggling, but better
+	// than nothing) while the new one boots up (~1-2s for process start
+	// and gRPC handshake).
+	newHandle, err := p.startWorker(id)
+	if err != nil {
+		failed.restarting.Store(false) // allow future attempts
+		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to start replacement worker (old worker stays in slot)")
+		return
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.closed.Load() {
+		newHandle.kill()
 		return
 	}
 
-	oldHandle := p.workers[id]
-	if oldHandle != nil {
-		oldHandle.client.Kill()
-	}
-
-	newHandle, err := p.startWorker(id)
-	if err != nil {
-		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to restart worker")
+	// Another goroutine already restarted this worker — kill the one we
+	// just started (wasteful but correct) and bail.
+	if p.workers[id] != failed {
+		newHandle.kill()
 		return
 	}
 
+	// Hot-swap: put new worker in the slot, then kill old.
 	p.workers[id] = newHandle
+
+	if failed != nil {
+		failed.kill()
+	}
 }
 
 // getWorker returns a worker using round-robin selection
@@ -448,17 +512,48 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 }
 
 // Parse parses raw LLM output using a BAML method's schema.
+// Supports automatic retry on worker infrastructure failures (crashes, network issues).
 func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
-	handle, err := p.getWorker()
-	if err != nil {
+	var lastErr error
+
+	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
+		handle, err := p.getWorker()
+		if err != nil {
+			if lastErr != nil {
+				return nil, fmt.Errorf("retry failed, no workers available: %w (previous: %v)", err, lastErr)
+			}
+			return nil, err
+		}
+
+		handle.mu.Lock()
+		handle.lastUsed = time.Now()
+		handle.mu.Unlock()
+
+		result, err := handle.worker.Parse(ctx, methodName, inputJSON)
+		if err == nil {
+			return result, nil
+		}
+
+		// Don't retry if the caller cancelled
+		if ctx.Err() != nil {
+			return nil, err
+		}
+
+		if isRetryableWorkerError(err) {
+			handle.logger.Info().
+				Int("attempt", attempt+1).
+				Err(err).
+				Msg("Retrying parse after worker failure")
+			p.restartWorker(handle.id, handle)
+			lastErr = err
+			continue
+		}
+
+		// Non-retryable error
 		return nil, err
 	}
 
-	handle.mu.Lock()
-	handle.lastUsed = time.Now()
-	handle.mu.Unlock()
-
-	return handle.worker.Parse(ctx, methodName, inputJSON)
+	return nil, fmt.Errorf("all parse retries exhausted: %w", lastErr)
 }
 
 // Call executes a BAML method and returns the final result.
@@ -552,10 +647,12 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 						Int("attempt", attempt+1).
 						Err(err).
 						Msg("Retrying stream after worker failure")
-					currentHandle.mu.Lock()
-					currentHandle.healthy = false
-					currentHandle.mu.Unlock()
-					go p.restartWorker(currentHandle.id)
+					// Synchronous hot-swap: starts replacement, swaps into
+					// slot, kills old process. The CAS guard ensures only one
+					// goroutine spawns a replacement. We do NOT mark the old
+					// handle unhealthy — it stays routable until the swap so
+					// other callers never see zero healthy workers.
+					p.restartWorker(currentHandle.id, currentHandle)
 					continue
 				}
 
@@ -641,12 +738,9 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 
 			cleanup()
 
-			// If we need to retry, mark worker unhealthy and continue
+			// If we need to retry, trigger hot-swap and continue
 			if shouldRetry {
-				currentHandle.mu.Lock()
-				currentHandle.healthy = false
-				currentHandle.mu.Unlock()
-				go p.restartWorker(currentHandle.id)
+				p.restartWorker(currentHandle.id, currentHandle)
 				continue
 			}
 
@@ -655,10 +749,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				currentHandle.logger.Warn().
 					Int("attempt", attempt+1).
 					Msg("Stream ended unexpectedly without terminal result, retrying")
-				currentHandle.mu.Lock()
-				currentHandle.healthy = false
-				currentHandle.mu.Unlock()
-				go p.restartWorker(currentHandle.id)
+				p.restartWorker(currentHandle.id, currentHandle)
 				continue
 			}
 		}
@@ -704,11 +795,11 @@ func (p *Pool) totalInFlight() int64 {
 
 // KillWorkerResult contains information about a killed worker
 type KillWorkerResult struct {
-	WorkerID       int
-	InFlightCount  int
-	GotFirstByte   []bool // For each in-flight request, whether it had received first byte
-	Killed         bool
-	Error          string
+	WorkerID      int
+	InFlightCount int
+	GotFirstByte  []bool // For each in-flight request, whether it had received first byte
+	Killed        bool
+	Error         string
 }
 
 // KillWorkerWithInFlight finds a worker with in-flight requests and kills it.
@@ -856,7 +947,7 @@ func (p *Pool) Close() error {
 
 	for _, handle := range p.workers {
 		if handle != nil {
-			handle.client.Kill()
+			handle.kill()
 		}
 	}
 
@@ -937,7 +1028,7 @@ func (p *Pool) Stats() Stats {
 
 // WorkerMetrics holds metrics from a single worker
 type WorkerMetrics struct {
-	WorkerID      int
+	WorkerID       int
 	MetricFamilies [][]byte
 }
 

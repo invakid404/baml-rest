@@ -20,6 +20,8 @@ import (
 	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -72,8 +74,21 @@ func main() {
 		Plugins: map[string]goplugin.Plugin{
 			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg, logger: logger}},
 		},
-		GRPCServer: goplugin.DefaultGRPCServer,
-		Logger:     logger,
+		GRPCServer: func(opts []grpc.ServerOption) *grpc.Server {
+			opts = append(opts,
+				grpc.KeepaliveParams(keepalive.ServerParameters{
+					Time:    30 * time.Second, // Server pings after 30s idle
+					Timeout: 10 * time.Second, // Wait 10s for ack
+				}),
+				grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+					MinTime:             10 * time.Second, // Must be <= client Time
+					PermitWithoutStream: true,             // Allow pings between bursts
+				}),
+				grpc.NumStreamWorkers(uint32(runtime.NumCPU())),
+			)
+			return grpc.NewServer(opts...)
+		},
+		Logger: logger,
 	})
 }
 
