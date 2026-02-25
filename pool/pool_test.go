@@ -313,6 +313,34 @@ func TestRestartFailureKillsOldWorker(t *testing.T) {
 	}
 }
 
+// TestKillWorkerAndRetryKillsImmediately verifies that killWorkerAndRetry
+// kills the old process synchronously (before the async restart starts),
+// so lingering gRPC references fail fast instead of blocking on a hung
+// transport while startWorker runs.
+func TestKillWorkerAndRetryKillsImmediately(t *testing.T) {
+	slowFactory := func(id int) (*workerHandle, error) {
+		time.Sleep(time.Second)
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	oldWorker := p.workers[0].worker.(*mockWorker)
+	p.newWorker = slowFactory
+
+	p.killWorkerAndRetry(p.workers[0])
+
+	// kill() must have been called synchronously — the slow replacement
+	// hasn't started yet but the old process is already dead.
+	oldWorker.closeMu.Lock()
+	killed := oldWorker.closed
+	oldWorker.closeMu.Unlock()
+	if !killed {
+		t.Error("old worker should be killed immediately, before replacement starts")
+	}
+}
+
 // TestRestartStaleHandleNoop verifies that restarting with a handle that
 // has already been replaced is a no-op (prevents killing fresh workers).
 func TestRestartStaleHandleNoop(t *testing.T) {

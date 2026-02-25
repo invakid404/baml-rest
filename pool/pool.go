@@ -170,9 +170,10 @@ type workerHandle struct {
 	worker      workerplugin.Worker
 	mu          sync.RWMutex
 	healthy     bool
-	restarting  atomic.Bool // CAS guard: only one goroutine starts a replacement
-	restartMu   sync.Mutex  // held by waiters checking restarting
-	restartCond *sync.Cond  // signaled when restart completes (success or failure)
+	restarting  atomic.Bool   // CAS guard: only one goroutine starts a replacement
+	restartMu   sync.Mutex    // protects restartDone; also used by restartCond
+	restartCond *sync.Cond    // signaled when restart completes (legacy CAS-loser path)
+	restartDone chan struct{} // closed when the current restart cycle completes; nil when idle
 	lastUsed    time.Time
 	inFlightMu  sync.RWMutex
 	inFlightReq map[uint64]*inFlightRequest
@@ -205,6 +206,10 @@ func (h *workerHandle) touch() {
 func (h *workerHandle) finishRestart() {
 	h.restartMu.Lock()
 	h.restarting.Store(false)
+	if h.restartDone != nil {
+		close(h.restartDone)
+		h.restartDone = nil
+	}
 	h.restartCond.Broadcast()
 	h.restartMu.Unlock()
 }
@@ -422,14 +427,21 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 	handle.healthy = false
 	handle.mu.Unlock()
 
+	// Kill the hung process immediately. This breaks the gRPC transport
+	// so any lingering references (stale in-flight RPCs) fail fast with
+	// Unavailable instead of blocking until startWorker completes.
+	// kill() is idempotent — restartWorker will call it again harmlessly.
+	handle.kill()
+
 	// Fire the restart in the background so in-flight requests are
 	// cancelled immediately below — even if startWorker is slow. The
 	// retry loops use getWorkerForRetry, which blocks on the CAS-loser
 	// wait path until the restart completes.
 	go p.restartWorker(handle.id, handle)
 
-	// Cancel all in-flight requests on the OLD handle so their retry
-	// loops can pick up a healthy worker via getWorkerForRetry.
+	// Cancel all in-flight request contexts (belt-and-suspenders: the
+	// process kill above already broke transport, but this ensures the
+	// context-based cleanup paths in CallStream/Parse also trigger).
 	handle.inFlightMu.Lock()
 	for _, req := range handle.inFlightReq {
 		if req.cancel != nil {
@@ -500,6 +512,13 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 		failed.restartMu.Unlock()
 		return
 	}
+
+	// CAS won — create a channel that awaitRestart callers can select on
+	// instead of spawning per-call goroutines. Must be set before the
+	// defer so finishRestart always finds a non-nil channel to close.
+	failed.restartMu.Lock()
+	failed.restartDone = make(chan struct{})
+	failed.restartMu.Unlock()
 
 	// INVARIANT: every code path after this point ends with finishRestart.
 	// defer guarantees this even if a new return is added later.
@@ -588,9 +607,33 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 }
 
 // awaitRestart waits for an in-progress restart of handle to complete,
-// respecting ctx cancellation. restartWorker is idempotent: if the slot
-// was already replaced this returns almost immediately.
+// respecting ctx cancellation.
+//
+// When the restart goroutine has already set up restartDone (the common
+// case), this is a pure select — no goroutine is spawned. A goroutine
+// is only used as a fallback for the rare scheduling race where the
+// restart CAS hasn't executed yet.
 func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
+	handle.restartMu.Lock()
+	ch := handle.restartDone
+	handle.restartMu.Unlock()
+
+	if ch != nil {
+		// Fast path: restart is in progress. Select on the shared
+		// channel — no goroutine needed, no accumulation.
+		select {
+		case <-ch:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	// Slow path: restartDone is nil, meaning the restart goroutine
+	// hasn't executed the CAS yet (scheduling race) or the restart
+	// already completed. Fall back to calling restartWorker, which
+	// handles both (CAS winner starts it, CAS loser waits, stale
+	// handle is a fast no-op).
 	done := make(chan struct{})
 	go func() {
 		p.restartWorker(handle.id, handle)
