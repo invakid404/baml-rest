@@ -12,6 +12,8 @@ import (
 )
 
 func TestParseEndpoint(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	t.Run("valid_json", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

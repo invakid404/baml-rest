@@ -257,6 +257,10 @@ func waitForHealthy(t *testing.T, timeout time.Duration) {
 func setupScenario(t *testing.T, scenarioID, content string) *testutil.BAMLOptions {
 	t.Helper()
 
+	// Ensure the server is healthy before setting up. Tests may run after
+	// destructive operations (worker kills, etc.) in any order.
+	waitForHealthy(t, 30*time.Second)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -282,6 +286,10 @@ func setupScenario(t *testing.T, scenarioID, content string) *testutil.BAMLOptio
 // Helper to register a non-streaming scenario
 func setupNonStreamingScenario(t *testing.T, scenarioID, content string) *testutil.BAMLOptions {
 	t.Helper()
+
+	// Ensure the server is healthy before setting up. Tests may run after
+	// destructive operations (worker kills, etc.) in any order.
+	waitForHealthy(t, 30*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

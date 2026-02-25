@@ -1632,6 +1632,8 @@ func TestDynamicEndpointPromptWhitespace(t *testing.T) {
 
 // TestDynamicEndpointOpenAPI tests that the OpenAPI schema includes the dynamic endpoints.
 func TestDynamicEndpointOpenAPI(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	// Dynamic endpoints require BAML >= 0.215.0
 	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
 		t.Skip("Skipping: dynamic endpoints require BAML >= 0.215.0")
