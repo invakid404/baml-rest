@@ -651,7 +651,7 @@ func TestGetWorkerForRetryDifferentWorker(t *testing.T) {
 	failed := p.workers[0]
 
 	requireCompleteWithin(t, time.Second, func() {
-		h, err := p.getWorkerForRetry(failed)
+		h, err := p.getWorkerForRetry(context.Background(), failed)
 		if err != nil {
 			t.Errorf("getWorkerForRetry: %v", err)
 			return
@@ -676,10 +676,41 @@ func TestGetWorkerForRetryAllDead(t *testing.T) {
 		h.mu.Unlock()
 	}
 
-	_, err := p.getWorkerForRetry(p.workers[0])
+	_, err := p.getWorkerForRetry(context.Background(), p.workers[0])
 	if err == nil {
 		t.Error("getWorkerForRetry should fail when all workers are dead")
 	}
+}
+
+// TestGetWorkerForRetryRespectsContext verifies that getWorkerForRetry
+// returns promptly when the caller's context is cancelled, even if
+// the restart would otherwise block (slow factory).
+func TestGetWorkerForRetryRespectsContext(t *testing.T) {
+	slowFactory := func(id int) (*workerHandle, error) {
+		// Simulate a very slow worker startup.
+		time.Sleep(10 * time.Second)
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	p := newTestPool(t, 1, goodFactory) // initial workers start fast
+	defer p.Close()
+
+	// Swap factory to slow one for the restart path.
+	p.newWorker = slowFactory
+	failed := p.workers[0]
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	requireCompleteWithin(t, 2*time.Second, func() {
+		_, err := p.getWorkerForRetry(ctx, failed)
+		if err == nil {
+			t.Error("expected context error, got nil")
+		}
+		if ctx.Err() == nil {
+			t.Error("context should be cancelled")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

@@ -181,6 +181,13 @@ func (p *WorkerPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) err
 	return nil
 }
 
+// brokerDialResult collects the outcome of a single broker dial goroutine.
+type brokerDialResult struct {
+	id   uint32
+	conn *grpc.ClientConn
+	err  error
+}
+
 func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker, c *grpc.ClientConn) (interface{}, error) {
 	primary := &GRPCClient{client: pb.NewWorkerClient(c)}
 
@@ -190,21 +197,35 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 	// Extra connections are best-effort — the primary connection is always
 	// sufficient. If a broker dial fails (transient timeout, etc.), we
 	// continue with however many connections succeeded.
-	var connected int
+	//
+	// Dials run in parallel so a single slow/stuck broker stream doesn't
+	// delay the others. Worst-case latency is max(per-conn) instead of
+	// sum(per-conn).
+	results := make(chan brokerDialResult, ExtraGRPCConns)
 	for i := uint32(1); i <= ExtraGRPCConns; i++ {
-		conn, err := dialBrokerConnWithRetry(ctx, broker, i)
-		if err != nil {
+		go func(id uint32) {
+			conn, err := dialBrokerConnWithRetry(ctx, broker, id)
+			results <- brokerDialResult{id: id, conn: conn, err: err}
+		}(i)
+	}
+
+	var connected int
+	for range ExtraGRPCConns {
+		r := <-results
+		if r.err != nil {
 			if ctx != nil && ctx.Err() != nil {
+				// Context cancelled — clean up any connections we already
+				// collected before returning.
 				for _, c := range conns {
 					c.Close()
 				}
 				return nil, ctx.Err()
 			}
-			log.Printf("[WARN] failed to dial extra gRPC connection %d after %d attempts: %v", i, extraGRPCDialRetries+1, err)
+			log.Printf("[WARN] failed to dial extra gRPC connection %d after %d attempts: %v", r.id, extraGRPCDialRetries+1, r.err)
 			continue
 		}
-		conns = append(conns, conn)
-		allWorkers = append(allWorkers, NewGRPCClient(conn))
+		conns = append(conns, r.conn)
+		allWorkers = append(allWorkers, NewGRPCClient(r.conn))
 		connected++
 	}
 

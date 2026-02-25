@@ -591,7 +591,10 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 // restart on that handle to complete before re-fetching, so the caller
 // doesn't burn retries against a dead process. For pool size > 1 the
 // round-robin typically returns a different healthy worker immediately.
-func (p *Pool) getWorkerForRetry(lastFailed *workerHandle) (*workerHandle, error) {
+//
+// The wait is context-aware: if ctx is cancelled while waiting for the
+// restart, the method returns immediately with the context error.
+func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) (*workerHandle, error) {
 	handle, err := p.getWorker()
 	if err != nil {
 		return nil, err
@@ -605,8 +608,22 @@ func (p *Pool) getWorkerForRetry(lastFailed *workerHandle) (*workerHandle, error
 	// restartWorker is idempotent: if already replaced this is a
 	// fast no-op; if a restart is in progress we block on the
 	// CAS-loser wait path until it completes.
-	p.restartWorker(handle.id, handle)
-	return p.getWorker()
+	//
+	// We run restartWorker in a goroutine so we can also listen for
+	// ctx cancellation — otherwise a slow startWorker would ignore
+	// the caller's deadline entirely.
+	done := make(chan struct{})
+	go func() {
+		p.restartWorker(handle.id, handle)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return p.getWorker()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Parse parses raw LLM output using a BAML method's schema.
@@ -616,7 +633,7 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 	var lastFailed *workerHandle
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
-		handle, err := p.getWorkerForRetry(lastFailed)
+		handle, err := p.getWorkerForRetry(ctx, lastFailed)
 		if err != nil {
 			if lastErr != nil {
 				return nil, fmt.Errorf("retry failed, no workers available: %w (previous: %v)", err, lastErr)
@@ -708,7 +725,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			// For retry attempts, get a new worker (may wait if pool size 1).
 			if attempt > 0 {
 				var err error
-				currentHandle, err = p.getWorkerForRetry(lastFailed)
+				currentHandle, err = p.getWorkerForRetry(ctx, lastFailed)
 				if err != nil {
 					errResult := workerplugin.GetStreamResult()
 					errResult.Kind = workerplugin.StreamResultKindError
