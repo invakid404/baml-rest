@@ -169,7 +169,7 @@ type workerHandle struct {
 	client      *plugin.Client
 	worker      workerplugin.Worker
 	mu          sync.RWMutex
-	healthy     bool
+	healthy     atomic.Bool
 	restarting  atomic.Bool   // CAS guard: only one goroutine starts a replacement
 	restartMu   sync.Mutex    // protects restartDone; also used by restartCond
 	restartCond *sync.Cond    // signaled when restart completes (legacy CAS-loser path)
@@ -338,11 +338,11 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		logger:      workerLogger,
 		client:      client,
 		worker:      worker,
-		healthy:     true,
 		lastUsed:    time.Now(),
 		inFlightReq: make(map[uint64]*inFlightRequest),
 	}
 	h.restartCond = sync.NewCond(&h.restartMu)
+	h.healthy.Store(true)
 	return h, nil
 }
 
@@ -423,9 +423,7 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 	// Without this, new requests would also hang on the same worker
 	// until FirstByteTimeout. For pool size 1, getWorkerForRetry will
 	// wait for the in-progress restart before re-fetching.
-	handle.mu.Lock()
-	handle.healthy = false
-	handle.mu.Unlock()
+	handle.healthy.Store(false)
 
 	// Kill the hung process immediately. This breaks the gRPC transport
 	// so any lingering references (stale in-flight RPCs) fail fast with
@@ -467,14 +465,14 @@ func (p *Pool) checkHealth() {
 		cancel()
 
 		if err != nil || !healthy {
-			handle.healthy = false
+			handle.healthy.Store(false)
 			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 			handle.mu.Unlock()
 
 			workerRestarts.Inc(workerRestartLabels{Reason: RestartReasonUnhealthy})
 			p.restartWorker(handle.id, handle)
 		} else {
-			handle.healthy = true
+			handle.healthy.Store(true)
 			handle.mu.Unlock()
 		}
 	}
@@ -542,9 +540,7 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 		// Mark the failed worker unhealthy so getWorker stops routing to it.
 		p.mu.Lock()
 		if p.workers[id] == failed {
-			failed.mu.Lock()
-			failed.healthy = false
-			failed.mu.Unlock()
+			failed.healthy.Store(false)
 		}
 		p.mu.Unlock()
 
@@ -598,7 +594,7 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 	for i := 0; i < len(p.workers); i++ {
 		idx := (start + uint64(i)) % uint64(len(p.workers))
 		handle := p.workers[idx]
-		if handle != nil && handle.healthy {
+		if handle != nil && handle.healthy.Load() {
 			return handle, nil
 		}
 	}
@@ -713,6 +709,8 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 		}
 
 		if isRetryableWorkerError(err) {
+			handle.healthy.Store(false)
+
 			handle.logger.Info().
 				Int("attempt", attempt+1).
 				Err(err).
@@ -818,6 +816,8 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// If attempt context was cancelled (hung detection killed worker) or
 				// this is a retryable worker error, restart in background and retry
 				if attemptCancelled || isRetryableWorkerError(err) {
+					currentHandle.healthy.Store(false)
+
 					currentHandle.logger.Info().
 						Int("attempt", attempt+1).
 						Err(err).
@@ -918,6 +918,8 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			// unexpected EOF (channel closed without terminal). Both are
 			// retryable: restart in background and let the next iteration
 			// pick up a healthy worker.
+			currentHandle.healthy.Store(false)
+
 			if !shouldRetry {
 				currentHandle.logger.Warn().
 					Int("attempt", attempt+1).
@@ -1053,9 +1055,7 @@ func (p *Pool) GetInFlightStatus() []WorkerInFlightInfo {
 			continue
 		}
 
-		handle.mu.RLock()
-		healthy := handle.healthy
-		handle.mu.RUnlock()
+		healthy := handle.healthy.Load()
 
 		handle.inFlightMu.RLock()
 		inFlightCount := len(handle.inFlightReq)
@@ -1187,7 +1187,7 @@ func (p *Pool) Stats() Stats {
 
 	for _, handle := range p.workers {
 		if handle != nil {
-			if handle.healthy {
+			if handle.healthy.Load() {
 				stats.HealthyWorkers++
 			}
 			handle.inFlightMu.RLock()
@@ -1214,7 +1214,7 @@ func (p *Pool) GatherWorkerMetrics(ctx context.Context) []WorkerMetrics {
 	var results []WorkerMetrics
 
 	for _, handle := range p.workers {
-		if handle == nil || !handle.healthy {
+		if handle == nil || !handle.healthy.Load() {
 			continue
 		}
 
@@ -1255,7 +1255,7 @@ func (p *Pool) TriggerAllWorkersGC(ctx context.Context) []WorkerGCResult {
 	var results []WorkerGCResult
 
 	for _, handle := range p.workers {
-		if handle == nil || !handle.healthy {
+		if handle == nil || !handle.healthy.Load() {
 			continue
 		}
 
@@ -1303,7 +1303,7 @@ func (p *Pool) GetAllWorkersGoroutines(ctx context.Context, filter string) []Wor
 	var results []WorkerGoroutinesResult
 
 	for _, handle := range p.workers {
-		if handle == nil || !handle.healthy {
+		if handle == nil || !handle.healthy.Load() {
 			continue
 		}
 

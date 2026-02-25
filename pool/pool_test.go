@@ -84,11 +84,11 @@ func newMockHandle(id int, w *mockWorker) *workerHandle {
 		id:          id,
 		logger:      zerolog.Nop(),
 		worker:      w,
-		healthy:     true,
 		lastUsed:    time.Now(),
 		inFlightReq: make(map[uint64]*inFlightRequest),
 	}
 	h.restartCond = sync.NewCond(&h.restartMu)
+	h.healthy.Store(true)
 	return h
 }
 
@@ -156,7 +156,7 @@ func TestRestartSingleWorker(t *testing.T) {
 	if p.workers[0] == old {
 		t.Fatal("old handle still in slot after restart")
 	}
-	if !p.workers[0].healthy {
+	if !p.workers[0].healthy.Load() {
 		t.Fatal("replacement worker should be healthy")
 	}
 }
@@ -205,7 +205,7 @@ func TestRestartConcurrentCallers(t *testing.T) {
 	if p.workers[0] == failed {
 		t.Error("old handle still in slot")
 	}
-	if !p.workers[0].healthy {
+	if !p.workers[0].healthy.Load() {
 		t.Error("replacement should be healthy")
 	}
 }
@@ -248,10 +248,7 @@ func TestRestartWaitersWakeOnFailure(t *testing.T) {
 	})
 
 	// Worker should be marked unhealthy.
-	failed.mu.RLock()
-	healthy := failed.healthy
-	failed.mu.RUnlock()
-	if healthy {
+	if failed.healthy.Load() {
 		t.Error("worker should be unhealthy after failed restart")
 	}
 }
@@ -700,9 +697,7 @@ func TestGetWorkerForRetryAllDead(t *testing.T) {
 	// Mark all workers unhealthy AND make the factory fail so the
 	// await-restart path can't recover.
 	for _, h := range p.workers {
-		h.mu.Lock()
-		h.healthy = false
-		h.mu.Unlock()
+		h.healthy.Store(false)
 	}
 	p.newWorker = func(id int) (*workerHandle, error) {
 		return nil, fmt.Errorf("startup failure")
@@ -724,9 +719,7 @@ func TestGetWorkerForRetryWaitsForRestart(t *testing.T) {
 	failed := p.workers[0]
 
 	// Mark unhealthy (simulating what killWorkerAndRetry does).
-	failed.mu.Lock()
-	failed.healthy = false
-	failed.mu.Unlock()
+	failed.healthy.Store(false)
 
 	// getWorkerForRetry should wait for restart, then return the new worker.
 	requireCompleteWithin(t, 2*time.Second, func() {
@@ -738,7 +731,7 @@ func TestGetWorkerForRetryWaitsForRestart(t *testing.T) {
 		if h == failed {
 			t.Error("should return the new replacement, not the failed handle")
 		}
-		if !h.healthy {
+		if !h.healthy.Load() {
 			t.Error("replacement should be healthy")
 		}
 	})
