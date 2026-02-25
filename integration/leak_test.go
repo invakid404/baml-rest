@@ -25,6 +25,8 @@ func countTotalMatches(result *testutil.GoroutinesResult) int {
 // don't leak goroutines. This complements the cancellation leak tests by ensuring
 // the happy path is also clean.
 func TestGoroutineLeaks(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	t.Run("call_endpoint_no_leak", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -545,6 +547,8 @@ func drainEvents(events <-chan testutil.StreamEvent, errs <-chan error, ctx cont
 
 // TestNDJSONGoroutineLeaks verifies that NDJSON streaming operations don't leak goroutines.
 func TestNDJSONGoroutineLeaks(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	t.Run("stream_ndjson_endpoint_no_leak", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()

@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/getkin/kin-openapi/routers/gorillamux"
+	"github.com/goccy/go-json"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
 
@@ -623,6 +623,8 @@ func TestStreamAndFinalSchemasDiffer(t *testing.T) {
 
 // TestOpenAPISchemaStructure validates the schema itself has expected structure.
 func TestOpenAPISchemaStructure(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

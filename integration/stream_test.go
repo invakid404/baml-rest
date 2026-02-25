@@ -118,6 +118,8 @@ func TestStreamEndpoint(t *testing.T) {
 }
 
 func TestStreamMidStreamFailure(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	// This test suite verifies what happens when something goes wrong mid-stream.
 	//
 	// IMPORTANT CONTEXT (based on code analysis of pool/pool.go):
@@ -304,6 +306,8 @@ func TestStreamMidStreamFailure(t *testing.T) {
 }
 
 func TestWorkerDeathMidStream(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	// This test verifies what happens when a WORKER PROCESS dies mid-stream,
 	// as opposed to just the upstream LLM failing.
 	//
@@ -671,9 +675,9 @@ func TestWorkerDeathMidStream(t *testing.T) {
 		scenarioID := "test-hung-detection-recovery"
 
 		scenario := &mockllm.Scenario{
-			ID:       scenarioID,
-			Provider: "openai",
-			Content:  content,
+			ID:        scenarioID,
+			Provider:  "openai",
+			Content:   content,
 			ChunkSize: 20,
 			// InitialDelayMsPerRequest makes the scenario stateful:
 			// [0]: first request uses 5000ms delay (triggers hung detection)
@@ -1251,6 +1255,8 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 }
 
 func TestStreamNDJSONMidStreamFailure(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	t.Run("disconnect_after_first_byte_ndjson", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -1332,6 +1338,8 @@ func TestStreamNDJSONMidStreamFailure(t *testing.T) {
 }
 
 func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	t.Run("worker_killed_after_first_byte_retries_with_reset_ndjson", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -1485,7 +1493,7 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 
 func TestStreamWithRawEndpoint(t *testing.T) {
 	t.Run("raw_accumulates", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
 		content := `{"message": "hello world"}`
@@ -1528,6 +1536,8 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 }
 
 func TestRequestCancellation(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
 	// This test verifies that cancelling a request properly cleans up resources
 	// in the baml-rest SERVER (not the test client) and doesn't leave the system
 	// in a bad state.

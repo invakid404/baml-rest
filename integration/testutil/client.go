@@ -463,26 +463,21 @@ func (c *BAMLRestClient) Parse(ctx context.Context, req ParseRequest) (*ParseRes
 	return result, nil
 }
 
-// Health checks the /health endpoint.
+// Health checks that the server is up AND at least one worker is healthy.
+// Uses the /_debug/in-flight endpoint (available in debug/integration builds).
 func (c *BAMLRestClient) Health(ctx context.Context) error {
-	url := fmt.Sprintf("%s/health", c.baseURL)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	result, err := c.GetInFlightStatus(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("health check failed: %w", err)
 	}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("health check failed: %d %s", resp.StatusCode, string(body))
+	for _, w := range result.Workers {
+		if w.Healthy {
+			return nil
+		}
 	}
 
-	return nil
+	return fmt.Errorf("no healthy workers (got %d workers)", len(result.Workers))
 }
 
 // KillWorkerResult represents the response from /_debug/kill-worker.
