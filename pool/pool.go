@@ -215,7 +215,7 @@ func New(config *Config) (*Pool, error) {
 		return nil, fmt.Errorf("WorkerPath is required")
 	}
 	if config.PoolSize <= 0 {
-		config.PoolSize = 1
+		config.PoolSize = 4 // match DefaultConfig
 	}
 	if config.LogOutput == nil {
 		config.LogOutput = os.Stdout
@@ -404,13 +404,14 @@ func (p *Pool) checkHungRequests() {
 	}
 }
 
-// killWorkerAndRetry replaces a broken worker via hot-swap and then cancels
-// its in-flight requests so they can retry on the fresh replacement.
+// killWorkerAndRetry fires an async replacement for a broken worker and
+// then cancels its in-flight requests so they can retry on the new worker.
 //
-// The hot-swap inside restartWorker ensures the slot is never empty: the
-// replacement is started first, swapped into the slot, and only then is the
-// old process killed. In-flight requests are cancelled *after* the swap so
-// their retries immediately find the new worker via getWorker().
+// The restart runs in the background because startWorker has no bounded
+// timeout and must not block in-flight request cancellation — otherwise
+// the health-check goroutine that calls this would stall as well. Retry
+// loops safely wait for the replacement via getWorkerForRetry's CAS-loser
+// wait path.
 func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 	// NOTE: we intentionally do NOT mark the handle unhealthy here.
 	// The old worker stays "healthy" for routing so getWorker() never
@@ -418,10 +419,11 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 	// new worker in and kills the old process; in-flight gRPC calls
 	// on the old handle will fail with Unavailable and get retried.
 
-	// Hot-swap: starts replacement, swaps into slot, kills old process.
-	// This is synchronous so that by the time we cancel in-flight requests
-	// below, the new worker is already serving.
-	p.restartWorker(handle.id, handle)
+	// Fire the restart in the background so in-flight requests are
+	// cancelled immediately below — even if startWorker is slow. The
+	// retry loops use getWorkerForRetry, which blocks on the CAS-loser
+	// wait path until the restart completes.
+	go p.restartWorker(handle.id, handle)
 
 	// Cancel all in-flight requests on the OLD handle. The old process is
 	// already dead (killed inside restartWorker), so these contexts just
@@ -727,6 +729,9 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 
 			results, err := currentHandle.worker.CallStream(attemptCtx, methodName, inputJSON, streamMode)
 			if err != nil {
+				// Save whether the attempt was pre-cancelled (by hung
+				// detection) *before* cleanup cancels the context.
+				attemptCancelled := attemptCtx.Err() != nil
 				cleanup()
 
 				// Check if parent context was cancelled (user cancelled)
@@ -736,7 +741,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 
 				// If attempt context was cancelled (hung detection killed worker) or
 				// this is a retryable worker error, restart in background and retry
-				if attemptCtx.Err() != nil || isRetryableWorkerError(err) {
+				if attemptCancelled || isRetryableWorkerError(err) {
 					currentHandle.logger.Info().
 						Int("attempt", attempt+1).
 						Err(err).

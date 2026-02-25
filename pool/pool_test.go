@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -556,5 +557,464 @@ func TestSequentialRestarts(t *testing.T) {
 	// Initial (1) + first replacement (2) + second replacement (3) = 3
 	if n := callNum.Load(); n != 3 {
 		t.Errorf("expected 3 factory calls (2 restarts), got %d", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: isRetryableWorkerError
+// ---------------------------------------------------------------------------
+
+func TestIsRetryableWorkerError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"Unavailable", status.Error(codes.Unavailable, "worker crashed"), true},
+		{"Canceled", status.Error(codes.Canceled, "request canceled"), true},
+		{"InvalidArgument", status.Error(codes.InvalidArgument, "bad input"), false},
+		{"Internal", status.Error(codes.Internal, "runtime panic"), false},
+		{"NotFound", status.Error(codes.NotFound, "method missing"), false},
+		{"OK", status.Error(codes.OK, ""), false},
+		{"connection reset string", errors.New("connection reset by peer"), true},
+		{"EOF string", errors.New("error reading from server: EOF"), true},
+		{"transport closing string", errors.New("transport is closing"), true},
+		{"code = Unavailable string", errors.New("rpc error: code = Unavailable desc = gone"), true},
+		{"plain error", errors.New("something broke"), false},
+		{"wrapped Unavailable message", status.Error(codes.Unknown, "connection reset"), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRetryableWorkerError(tt.err); got != tt.want {
+				t.Errorf("isRetryableWorkerError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: getWorker / getWorkerForRetry
+// ---------------------------------------------------------------------------
+
+// TestGetWorkerRoundRobin verifies round-robin distributes across all workers.
+func TestGetWorkerRoundRobin(t *testing.T) {
+	p := newTestPool(t, 3, goodFactory)
+	defer p.Close()
+
+	seen := make(map[int]int)
+	for i := 0; i < 30; i++ {
+		h, err := p.getWorker()
+		if err != nil {
+			t.Fatalf("getWorker: %v", err)
+		}
+		seen[h.id]++
+	}
+
+	if len(seen) != 3 {
+		t.Errorf("expected 3 distinct workers, got %d", len(seen))
+	}
+	// Each should get exactly 10 (30 / 3).
+	for id, count := range seen {
+		if count != 10 {
+			t.Errorf("worker %d got %d requests, expected 10", id, count)
+		}
+	}
+}
+
+// TestGetWorkerPoolClosedAndDraining verifies getWorker errors on closed/draining pools.
+func TestGetWorkerPoolClosedAndDraining(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+
+	// Draining rejects new requests.
+	p.draining.Store(true)
+	if _, err := p.getWorker(); err == nil {
+		t.Error("getWorker should fail when draining")
+	}
+	p.draining.Store(false)
+
+	// Closed pool rejects new requests.
+	p.Close()
+	if _, err := p.getWorker(); err == nil {
+		t.Error("getWorker should fail when closed")
+	}
+}
+
+// TestGetWorkerForRetryDifferentWorker verifies that with pool > 1,
+// getWorkerForRetry completes quickly (returns a different worker
+// via round-robin without blocking on a restart).
+func TestGetWorkerForRetryDifferentWorker(t *testing.T) {
+	p := newTestPool(t, 2, goodFactory)
+	defer p.Close()
+
+	failed := p.workers[0]
+
+	requireCompleteWithin(t, time.Second, func() {
+		h, err := p.getWorkerForRetry(failed)
+		if err != nil {
+			t.Errorf("getWorkerForRetry: %v", err)
+			return
+		}
+		// With 2 workers, round-robin should hand back the other one.
+		if h == failed {
+			t.Log("getWorkerForRetry returned same handle (restarted) — still OK")
+		}
+	})
+}
+
+// TestGetWorkerForRetryAllDead verifies error propagation when every
+// worker is unhealthy and replacement fails.
+func TestGetWorkerForRetryAllDead(t *testing.T) {
+	p := newTestPool(t, 2, goodFactory)
+	defer p.Close()
+
+	// Mark all workers unhealthy.
+	for _, h := range p.workers {
+		h.mu.Lock()
+		h.healthy = false
+		h.mu.Unlock()
+	}
+
+	_, err := p.getWorkerForRetry(p.workers[0])
+	if err == nil {
+		t.Error("getWorkerForRetry should fail when all workers are dead")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Parse edge cases
+// ---------------------------------------------------------------------------
+
+// TestParseContextCancelled verifies that Parse returns immediately when
+// the caller's context is cancelled — no retries attempted.
+func TestParseContextCancelled(t *testing.T) {
+	var parseCalls atomic.Int32
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.parseFn = func(ctx context.Context, _ string, _ []byte) (*workerplugin.ParseResult, error) {
+			parseCalls.Add(1)
+			return nil, ctx.Err()
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := p.Parse(ctx, "Test", []byte(`{}`))
+	if err == nil {
+		t.Fatal("Parse should fail with cancelled context")
+	}
+	if parseCalls.Load() != 1 {
+		t.Errorf("expected exactly 1 parse call (no retry), got %d", parseCalls.Load())
+	}
+}
+
+// TestParseNonRetryableError verifies that a non-retryable error (e.g.
+// InvalidArgument) is returned immediately without triggering restart.
+func TestParseNonRetryableError(t *testing.T) {
+	var parseCalls atomic.Int32
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.parseFn = func(_ context.Context, _ string, _ []byte) (*workerplugin.ParseResult, error) {
+			parseCalls.Add(1)
+			return nil, status.Error(codes.InvalidArgument, "bad input")
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	_, err := p.Parse(context.Background(), "Test", []byte(`{}`))
+	if err == nil {
+		t.Fatal("Parse should fail with non-retryable error")
+	}
+	if parseCalls.Load() != 1 {
+		t.Errorf("expected exactly 1 parse call (no retry for non-retryable), got %d", parseCalls.Load())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CallStream edge cases
+// ---------------------------------------------------------------------------
+
+// TestCallStreamUnexpectedEOF verifies that when the worker channel closes
+// without a terminal result (Final or Error), CallStream retries and
+// eventually succeeds.
+func TestCallStreamUnexpectedEOF(t *testing.T) {
+	var callCount atomic.Int32
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			n := callCount.Add(1)
+			ch := make(chan *workerplugin.StreamResult, 2)
+			if n == 1 {
+				// First attempt: partial then EOF (no terminal).
+				partial := workerplugin.GetStreamResult()
+				partial.Kind = workerplugin.StreamResultKindStream
+				partial.Data = []byte(`"partial"`)
+				ch <- partial
+				close(ch)
+			} else {
+				// Retry: clean Final.
+				final := workerplugin.GetStreamResult()
+				final.Kind = workerplugin.StreamResultKindFinal
+				final.Data = []byte(`"done"`)
+				ch <- final
+				close(ch)
+			}
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	var gotFinal bool
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			if r.Kind == workerplugin.StreamResultKindFinal {
+				gotFinal = true
+			}
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	if !gotFinal {
+		t.Error("expected final result after unexpected EOF retry")
+	}
+}
+
+// TestCallStreamExhaustsRetries verifies that when every attempt fails,
+// the consumer receives an error result.
+func TestCallStreamExhaustsRetries(t *testing.T) {
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			return nil, unavailableErr()
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup should succeed: %v", err)
+	}
+
+	var gotError bool
+	requireCompleteWithin(t, 10*time.Second, func() {
+		for r := range results {
+			if r.Kind == workerplugin.StreamResultKindError {
+				gotError = true
+			}
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	if !gotError {
+		t.Error("expected error after exhausting all retries")
+	}
+}
+
+// TestCallStreamNonRetryableError verifies that a non-retryable error
+// before streaming starts is forwarded to the consumer with no retry.
+func TestCallStreamNonRetryableError(t *testing.T) {
+	var callCounts atomic.Int32
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			callCounts.Add(1)
+			return nil, status.Error(codes.InvalidArgument, "bad request")
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup should succeed: %v", err)
+	}
+
+	var gotError bool
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			if r.Kind == workerplugin.StreamResultKindError {
+				gotError = true
+			}
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	if !gotError {
+		t.Error("expected non-retryable error forwarded to consumer")
+	}
+	if c := callCounts.Load(); c != 1 {
+		t.Errorf("expected 1 call (no retry for non-retryable), got %d", c)
+	}
+}
+
+// TestCallStreamContextCancelled verifies that when the parent context is
+// cancelled, the stream goroutine terminates promptly without hanging.
+func TestCallStreamContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(fnCtx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult)
+			// Block until context cancelled — simulates a long-running LLM call.
+			go func() {
+				<-fnCtx.Done()
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Cancel immediately.
+	cancel()
+
+	// The results channel must close promptly — no hang.
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+}
+
+// TestCallStreamResetNotInjectedOnFirstAttempt verifies that the reset
+// message is only injected when retrying after partial data was sent,
+// not on a clean first attempt.
+func TestCallStreamResetNotInjectedOnFirstAttempt(t *testing.T) {
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 2)
+			partial := workerplugin.GetStreamResult()
+			partial.Kind = workerplugin.StreamResultKindStream
+			partial.Data = []byte(`"data"`)
+			ch <- partial
+
+			final := workerplugin.GetStreamResult()
+			final.Kind = workerplugin.StreamResultKindFinal
+			final.Data = []byte(`"done"`)
+			ch <- final
+			close(ch)
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	var gotReset bool
+	for r := range results {
+		if r.Reset {
+			gotReset = true
+		}
+		workerplugin.ReleaseStreamResult(r)
+	}
+
+	if gotReset {
+		t.Error("reset should NOT be injected on a clean first attempt")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Pool lifecycle
+// ---------------------------------------------------------------------------
+
+// TestCloseIdempotent verifies that calling Close multiple times is safe.
+func TestCloseIdempotent(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+
+	if err := p.Close(); err != nil {
+		t.Errorf("first Close: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Concurrent multi-worker
+// ---------------------------------------------------------------------------
+
+// TestConcurrentParseMultiWorker exercises many goroutines calling Parse
+// on a 2-worker pool where one worker always fails. All calls should
+// succeed (via the healthy worker or a restarted replacement).
+func TestConcurrentParseMultiWorker(t *testing.T) {
+	var callNum atomic.Int32
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		n := callNum.Add(1)
+		if n == 1 {
+			// First worker always fails on Parse.
+			w.parseFn = func(_ context.Context, _ string, _ []byte) (*workerplugin.ParseResult, error) {
+				return nil, unavailableErr()
+			}
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 2, factory)
+	defer p.Close()
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	var successCount atomic.Int32
+	start := make(chan struct{})
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := p.Parse(context.Background(), "Test", []byte(`{}`))
+			if err == nil && result != nil {
+				successCount.Add(1)
+			}
+		}()
+	}
+
+	requireCompleteWithin(t, 10*time.Second, func() {
+		close(start)
+		wg.Wait()
+	})
+
+	if s := successCount.Load(); s != int32(goroutines) {
+		t.Errorf("expected all %d goroutines to succeed, got %d", goroutines, s)
 	}
 }
