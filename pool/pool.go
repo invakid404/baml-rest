@@ -413,11 +413,14 @@ func (p *Pool) checkHungRequests() {
 // loops safely wait for the replacement via getWorkerForRetry's CAS-loser
 // wait path.
 func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
-	// NOTE: we intentionally do NOT mark the handle unhealthy here.
-	// The old worker stays "healthy" for routing so getWorker() never
-	// sees zero healthy workers. restartWorker atomically swaps the
-	// new worker in and kills the old process; in-flight gRPC calls
-	// on the old handle will fail with Unavailable and get retried.
+	// Mark the hung worker unhealthy so getWorker() stops routing new
+	// requests to it while the replacement starts in the background.
+	// Without this, new requests would also hang on the same worker
+	// until FirstByteTimeout. For pool size 1, getWorkerForRetry will
+	// wait for the in-progress restart before re-fetching.
+	handle.mu.Lock()
+	handle.healthy = false
+	handle.mu.Unlock()
 
 	// Fire the restart in the background so in-flight requests are
 	// cancelled immediately below — even if startWorker is slow. The
@@ -425,10 +428,8 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 	// wait path until the restart completes.
 	go p.restartWorker(handle.id, handle)
 
-	// Cancel all in-flight requests on the OLD handle. The old process is
-	// already dead (killed inside restartWorker), so these contexts just
-	// unblock the gRPC recv loops. The retry logic in CallStream will call
-	// getWorker() and find the new healthy worker.
+	// Cancel all in-flight requests on the OLD handle so their retry
+	// loops can pick up a healthy worker via getWorkerForRetry.
 	handle.inFlightMu.Lock()
 	for _, req := range handle.inFlightReq {
 		if req.cancel != nil {
@@ -454,6 +455,7 @@ func (p *Pool) checkHealth() {
 		cancel()
 
 		if err != nil || !healthy {
+			handle.healthy = false
 			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 			handle.mu.Unlock()
 
@@ -585,33 +587,10 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 	return nil, fmt.Errorf("no healthy workers available")
 }
 
-// getWorkerForRetry returns a healthy worker, handling the case where
-// the round-robin hands back the same handle that just failed (common
-// with pool size 1). If that happens, it waits for any in-progress
-// restart on that handle to complete before re-fetching, so the caller
-// doesn't burn retries against a dead process. For pool size > 1 the
-// round-robin typically returns a different healthy worker immediately.
-//
-// The wait is context-aware: if ctx is cancelled while waiting for the
-// restart, the method returns immediately with the context error.
-func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) (*workerHandle, error) {
-	handle, err := p.getWorker()
-	if err != nil {
-		return nil, err
-	}
-	if handle != lastFailed {
-		return handle, nil
-	}
-
-	// Same handle as the one that just failed — a restart is likely
-	// in progress (pool size 1, or all other workers also dead).
-	// restartWorker is idempotent: if already replaced this is a
-	// fast no-op; if a restart is in progress we block on the
-	// CAS-loser wait path until it completes.
-	//
-	// We run restartWorker in a goroutine so we can also listen for
-	// ctx cancellation — otherwise a slow startWorker would ignore
-	// the caller's deadline entirely.
+// awaitRestart waits for an in-progress restart of handle to complete,
+// respecting ctx cancellation. restartWorker is idempotent: if the slot
+// was already replaced this returns almost immediately.
+func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 	done := make(chan struct{})
 	go func() {
 		p.restartWorker(handle.id, handle)
@@ -620,10 +599,47 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 
 	select {
 	case <-done:
-		return p.getWorker()
+		return nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return ctx.Err()
 	}
+}
+
+// getWorkerForRetry returns a healthy worker for a retry attempt.
+//
+// Three cases:
+//  1. getWorker() returns a different (healthy) handle → returned immediately.
+//  2. getWorker() returns the same handle that just failed (pool size 1,
+//     or all others also dead) → waits for the in-progress restart on
+//     that handle to complete, then re-fetches.
+//  3. getWorker() finds no healthy workers at all (the failed handle was
+//     marked unhealthy) → waits for its restart, then re-fetches. This
+//     is the pool-size-1 path after killWorkerAndRetry/checkHealth marks
+//     the handle unhealthy before firing the async restart.
+//
+// All waits are context-aware.
+func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) (*workerHandle, error) {
+	handle, err := p.getWorker()
+	if err != nil {
+		// No healthy workers. If we know which handle just failed, wait
+		// for its restart (already in progress) rather than giving up.
+		if lastFailed != nil {
+			if awaitErr := p.awaitRestart(ctx, lastFailed); awaitErr != nil {
+				return nil, awaitErr
+			}
+			return p.getWorker()
+		}
+		return nil, err
+	}
+	if handle != lastFailed {
+		return handle, nil
+	}
+
+	// Same handle — wait for the in-progress restart.
+	if err := p.awaitRestart(ctx, handle); err != nil {
+		return nil, err
+	}
+	return p.getWorker()
 }
 
 // Parse parses raw LLM output using a BAML method's schema.

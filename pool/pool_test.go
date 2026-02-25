@@ -669,17 +669,51 @@ func TestGetWorkerForRetryAllDead(t *testing.T) {
 	p := newTestPool(t, 2, goodFactory)
 	defer p.Close()
 
-	// Mark all workers unhealthy.
+	// Mark all workers unhealthy AND make the factory fail so the
+	// await-restart path can't recover.
 	for _, h := range p.workers {
 		h.mu.Lock()
 		h.healthy = false
 		h.mu.Unlock()
 	}
+	p.newWorker = func(id int) (*workerHandle, error) {
+		return nil, fmt.Errorf("startup failure")
+	}
 
 	_, err := p.getWorkerForRetry(context.Background(), p.workers[0])
 	if err == nil {
-		t.Error("getWorkerForRetry should fail when all workers are dead")
+		t.Error("getWorkerForRetry should fail when all workers are dead and restart fails")
 	}
+}
+
+// TestGetWorkerForRetryWaitsForRestart verifies that with pool size 1,
+// if the only worker is unhealthy and a restart is in progress,
+// getWorkerForRetry waits for the restart and then returns the new worker.
+func TestGetWorkerForRetryWaitsForRestart(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	failed := p.workers[0]
+
+	// Mark unhealthy (simulating what killWorkerAndRetry does).
+	failed.mu.Lock()
+	failed.healthy = false
+	failed.mu.Unlock()
+
+	// getWorkerForRetry should wait for restart, then return the new worker.
+	requireCompleteWithin(t, 2*time.Second, func() {
+		h, err := p.getWorkerForRetry(context.Background(), failed)
+		if err != nil {
+			t.Errorf("expected recovery after restart, got: %v", err)
+			return
+		}
+		if h == failed {
+			t.Error("should return the new replacement, not the failed handle")
+		}
+		if !h.healthy {
+			t.Error("replacement should be healthy")
+		}
+	})
 }
 
 // TestGetWorkerForRetryRespectsContext verifies that getWorkerForRetry
