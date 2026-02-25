@@ -671,9 +671,9 @@ func TestWorkerDeathMidStream(t *testing.T) {
 		scenarioID := "test-hung-detection-recovery"
 
 		scenario := &mockllm.Scenario{
-			ID:       scenarioID,
-			Provider: "openai",
-			Content:  content,
+			ID:        scenarioID,
+			Provider:  "openai",
+			Content:   content,
 			ChunkSize: 20,
 			// InitialDelayMsPerRequest makes the scenario stateful:
 			// [0]: first request uses 5000ms delay (triggers hung detection)
@@ -1484,8 +1484,12 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 }
 
 func TestStreamWithRawEndpoint(t *testing.T) {
+	// Wait for the server to be healthy before starting. This test runs after
+	// worker death tests which kill workers; the pool may still be recovering.
+	waitForHealthy(t, 30*time.Second)
+
 	t.Run("raw_accumulates", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
 		content := `{"message": "hello world"}`

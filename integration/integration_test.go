@@ -229,6 +229,30 @@ func findTestdataPath() (string, error) {
 	return "", os.ErrNotExist
 }
 
+// waitForHealthy polls the health endpoint until the server reports healthy or
+// the timeout expires. Useful after worker death tests where the pool may still
+// be recovering.
+func waitForHealthy(t *testing.T, timeout time.Duration) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if err := BAMLClient.Health(ctx); err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("Server did not become healthy within %s", timeout)
+		case <-ticker.C:
+		}
+	}
+}
+
 // Helper to register a scenario and create client options
 func setupScenario(t *testing.T, scenarioID, content string) *testutil.BAMLOptions {
 	t.Helper()

@@ -261,7 +261,20 @@ if [ -n "${BAML_CLI_PATH:-}" ]; then
     "${BAML_CLI_PATH}" generate --no-version-check
 else
     echo "Running BAML client generation (npx @boundaryml/baml@${BAML_VERSION} generate)..."
-    npx "@boundaryml/baml@${BAML_VERSION}" generate
+    NPX_MAX_RETRIES=3
+    NPX_RETRY_DELAY=5
+    for NPX_ATTEMPT in $(seq 1 "${NPX_MAX_RETRIES}"); do
+        if npx "@boundaryml/baml@${BAML_VERSION}" generate; then
+            break
+        fi
+        if [ "${NPX_ATTEMPT}" -eq "${NPX_MAX_RETRIES}" ]; then
+            echo "ERROR: npx failed after ${NPX_MAX_RETRIES} attempts"
+            exit 1
+        fi
+        echo "npx failed (attempt ${NPX_ATTEMPT}/${NPX_MAX_RETRIES}), retrying in ${NPX_RETRY_DELAY}s..."
+        sleep "${NPX_RETRY_DELAY}"
+        NPX_RETRY_DELAY=$((NPX_RETRY_DELAY * 2))
+    done
 fi
 
 echo ""
