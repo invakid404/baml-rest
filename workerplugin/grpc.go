@@ -6,7 +6,14 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
+	"google.golang.org/grpc"
 )
+
+// NewGRPCClient creates a GRPCClient from a raw gRPC connection.
+// Used by the pool to create additional connections to the same worker process.
+func NewGRPCClient(conn *grpc.ClientConn) *GRPCClient {
+	return &GRPCClient{client: pb.NewWorkerClient(conn)}
+}
 
 // streamModeToPb converts bamlutils.StreamMode to pb.StreamMode
 func streamModeToPb(m bamlutils.StreamMode) pb.StreamMode {

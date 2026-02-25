@@ -2,10 +2,14 @@ package workerplugin
 
 import (
 	"context"
+	"log"
+	"runtime"
+	"time"
 
 	"github.com/hashicorp/go-plugin"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 )
@@ -149,11 +153,145 @@ type WorkerPlugin struct {
 	Impl Worker
 }
 
+const (
+	// Number of retries per extra brokered connection dial (in addition to
+	// the initial attempt). This smooths over transient broker startup races.
+	extraGRPCDialRetries = 2
+	// Linear backoff base between retries.
+	extraGRPCDialRetryBackoff = 100 * time.Millisecond
+)
+
 func (p *WorkerPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {
-	pb.RegisterWorkerServer(s, &GRPCServer{Impl: p.Impl})
+	impl := &GRPCServer{Impl: p.Impl}
+	pb.RegisterWorkerServer(s, impl)
+
+	// Start extra gRPC servers via the broker for multi-connection support.
+	// Each brokered connection gets its own HTTP/2 transport, preventing
+	// head-of-line blocking when many concurrent RPCs share a connection.
+	for i := uint32(1); i <= ExtraGRPCConns; i++ {
+		id := i
+		go broker.AcceptAndServe(id, func(opts []grpc.ServerOption) *grpc.Server {
+			opts = append(opts, brokerServerOptions()...)
+			srv := grpc.NewServer(opts...)
+			pb.RegisterWorkerServer(srv, impl)
+			return srv
+		})
+	}
+
 	return nil
 }
 
+// brokerDialResult collects the outcome of a single broker dial goroutine.
+type brokerDialResult struct {
+	id   uint32
+	conn *grpc.ClientConn
+	err  error
+}
+
 func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker, c *grpc.ClientConn) (interface{}, error) {
-	return &GRPCClient{client: pb.NewWorkerClient(c)}, nil
+	primary := &GRPCClient{client: pb.NewWorkerClient(c)}
+
+	allWorkers := []Worker{primary}
+	var conns []*grpc.ClientConn
+
+	// Extra connections are best-effort — the primary connection is always
+	// sufficient. If a broker dial fails (transient timeout, etc.), we
+	// continue with however many connections succeeded.
+	//
+	// Dials run in parallel so a single slow/stuck broker stream doesn't
+	// delay the others. Worst-case latency is max(per-conn) instead of
+	// sum(per-conn).
+	results := make(chan brokerDialResult, ExtraGRPCConns)
+	for i := uint32(1); i <= ExtraGRPCConns; i++ {
+		go func(id uint32) {
+			conn, err := dialBrokerConnWithRetry(ctx, broker, id)
+			results <- brokerDialResult{id: id, conn: conn, err: err}
+		}(i)
+	}
+
+	var connected int
+	for range ExtraGRPCConns {
+		r := <-results
+		if r.err != nil {
+			if ctx != nil && ctx.Err() != nil {
+				// Context cancelled — clean up any connections we already
+				// collected before returning.
+				for _, c := range conns {
+					c.Close()
+				}
+				return nil, ctx.Err()
+			}
+			log.Printf("[WARN] failed to dial extra gRPC connection %d after %d attempts: %v", r.id, extraGRPCDialRetries+1, r.err)
+			continue
+		}
+		conns = append(conns, r.conn)
+		allWorkers = append(allWorkers, NewGRPCClient(r.conn))
+		connected++
+	}
+
+	if connected < ExtraGRPCConns {
+		log.Printf("[INFO] using %d/%d extra gRPC connections", connected, ExtraGRPCConns)
+	}
+
+	return &multiConnWorker{
+		workers: allWorkers,
+		conns:   conns,
+	}, nil
+}
+
+func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id uint32) (*grpc.ClientConn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= extraGRPCDialRetries; attempt++ {
+		conn, err := broker.DialWithOptions(id, brokerDialOptions()...)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt == extraGRPCDialRetries {
+			break
+		}
+
+		backoff := time.Duration(attempt+1) * extraGRPCDialRetryBackoff
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+
+	return nil, lastErr
+}
+
+// brokerDialOptions returns gRPC dial options for brokered connections.
+func brokerDialOptions() []grpc.DialOption {
+	return []grpc.DialOption{
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                30 * time.Second, // Ping after 30s idle — detect dead connections quickly
+			Timeout:             10 * time.Second, // Wait 10s for ping ack
+			PermitWithoutStream: true,             // Keep pinging between request bursts
+		}),
+	}
+}
+
+// brokerServerOptions returns gRPC server options for brokered connections.
+func brokerServerOptions() []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    30 * time.Second,
+			Timeout: 10 * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second, // Must be <= client Time
+			PermitWithoutStream: true,
+		}),
+		grpc.NumStreamWorkers(uint32(runtime.NumCPU())),
+	}
 }
