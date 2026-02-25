@@ -196,6 +196,22 @@ func (h *workerHandle) touch() {
 	h.mu.Unlock()
 }
 
+// workerSnapshot returns a point-in-time copy of all non-nil worker handles.
+// The returned handles are safe to use after the pool lock is released
+// because handles are never freed — only replaced in their slot.
+func (p *Pool) workerSnapshot() []*workerHandle {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	handles := make([]*workerHandle, 0, len(p.workers))
+	for _, h := range p.workers {
+		if h != nil {
+			handles = append(handles, h)
+		}
+	}
+	return handles
+}
+
 // finishRestart clears the CAS guard and wakes all goroutines waiting
 // for this restart to complete. Must be called exactly once on every
 // code path after a successful CompareAndSwap(false, true).
@@ -378,16 +394,8 @@ func (p *Pool) healthChecker() {
 
 // checkHungRequests looks for requests waiting too long for first byte
 func (p *Pool) checkHungRequests() {
-	p.mu.RLock()
-	workers := p.workers
-	p.mu.RUnlock()
-
 	now := time.Now()
-	for _, handle := range workers {
-		if handle == nil {
-			continue
-		}
-
+	for _, handle := range p.workerSnapshot() {
 		handle.inFlightMu.RLock()
 		var hungRequest *inFlightRequest
 		for _, req := range handle.inFlightReq {
@@ -450,15 +458,7 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 }
 
 func (p *Pool) checkHealth() {
-	p.mu.RLock()
-	workers := p.workers
-	p.mu.RUnlock()
-
-	for _, handle := range workers {
-		if handle == nil {
-			continue
-		}
-
+	for _, handle := range p.workerSnapshot() {
 		handle.mu.Lock()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		healthy, err := handle.worker.Health(ctx)
@@ -785,14 +785,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				var err error
 				currentHandle, err = p.getWorkerForRetry(ctx, lastFailed)
 				if err != nil {
-					errResult := workerplugin.GetStreamResult()
-					errResult.Kind = workerplugin.StreamResultKindError
-					errResult.Error = fmt.Errorf("retry failed, no workers available: %w", err)
-					select {
-					case wrappedResults <- errResult:
-					case <-ctx.Done():
-						workerplugin.ReleaseStreamResult(errResult)
-					}
+					sendStreamError(ctx, wrappedResults, fmt.Errorf("retry failed, no workers available: %w", err))
 					return
 				}
 			}
@@ -833,14 +826,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					Int("attempt", attempt+1).
 					Err(err).
 					Msg("Worker stream call failed (non-retryable)")
-				errResult := workerplugin.GetStreamResult()
-				errResult.Kind = workerplugin.StreamResultKindError
-				errResult.Error = err
-				select {
-				case wrappedResults <- errResult:
-				case <-ctx.Done():
-					workerplugin.ReleaseStreamResult(errResult)
-				}
+				sendStreamError(ctx, wrappedResults, err)
 				return
 			}
 
@@ -931,17 +917,23 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		}
 
 		// All retries exhausted
-		errResult := workerplugin.GetStreamResult()
-		errResult.Kind = workerplugin.StreamResultKindError
-		errResult.Error = fmt.Errorf("all stream retries exhausted")
-		select {
-		case wrappedResults <- errResult:
-		case <-ctx.Done():
-			workerplugin.ReleaseStreamResult(errResult)
-		}
+		sendStreamError(ctx, wrappedResults, fmt.Errorf("all stream retries exhausted"))
 	}()
 
 	return wrappedResults, nil
+}
+
+// sendStreamError sends an error result on ch, respecting ctx cancellation.
+// Used by CallStream to avoid repeating the get/send/release pattern.
+func sendStreamError(ctx context.Context, ch chan<- *workerplugin.StreamResult, err error) {
+	errResult := workerplugin.GetStreamResult()
+	errResult.Kind = workerplugin.StreamResultKindError
+	errResult.Error = err
+	select {
+	case ch <- errResult:
+	case <-ctx.Done():
+		workerplugin.ReleaseStreamResult(errResult)
+	}
 }
 
 // drainResults consumes remaining results from a channel to unblock the gRPC goroutine
@@ -955,16 +947,11 @@ func drainResults(results <-chan *workerplugin.StreamResult) {
 
 // totalInFlight returns the total number of in-flight requests across all workers
 func (p *Pool) totalInFlight() int64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	var total int64
-	for _, handle := range p.workers {
-		if handle != nil {
-			handle.inFlightMu.RLock()
-			total += int64(len(handle.inFlightReq))
-			handle.inFlightMu.RUnlock()
-		}
+	for _, handle := range p.workerSnapshot() {
+		handle.inFlightMu.RLock()
+		total += int64(len(handle.inFlightReq))
+		handle.inFlightMu.RUnlock()
 	}
 	return total
 }
@@ -982,16 +969,8 @@ type KillWorkerResult struct {
 // This is intended for testing scenarios where we need to simulate worker death mid-request.
 // Returns information about the killed worker, or an error if no suitable worker was found.
 func (p *Pool) KillWorkerWithInFlight() (*KillWorkerResult, error) {
-	p.mu.RLock()
-	workers := p.workers
-	p.mu.RUnlock()
-
 	// Find a worker with in-flight requests
-	for _, handle := range workers {
-		if handle == nil {
-			continue
-		}
-
+	for _, handle := range p.workerSnapshot() {
 		handle.inFlightMu.RLock()
 		inFlightCount := len(handle.inFlightReq)
 		var gotFirstByteList []bool
@@ -1046,16 +1025,9 @@ type WorkerInFlightInfo struct {
 
 // GetInFlightStatus returns the in-flight status of all workers for debugging.
 func (p *Pool) GetInFlightStatus() []WorkerInFlightInfo {
-	p.mu.RLock()
-	workers := p.workers
-	p.mu.RUnlock()
-
+	workers := p.workerSnapshot()
 	result := make([]WorkerInFlightInfo, 0, len(workers))
 	for _, handle := range workers {
-		if handle == nil {
-			continue
-		}
-
 		healthy := handle.healthy.Load()
 
 		handle.inFlightMu.RLock()
@@ -1179,22 +1151,17 @@ func isRetryableWorkerError(err error) bool {
 }
 
 func (p *Pool) Stats() Stats {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	stats := Stats{
-		TotalWorkers: len(p.workers),
+		TotalWorkers: p.config.PoolSize,
 	}
 
-	for _, handle := range p.workers {
-		if handle != nil {
-			if handle.healthy.Load() {
-				stats.HealthyWorkers++
-			}
-			handle.inFlightMu.RLock()
-			stats.InFlight += int64(len(handle.inFlightReq))
-			handle.inFlightMu.RUnlock()
+	for _, handle := range p.workerSnapshot() {
+		if handle.healthy.Load() {
+			stats.HealthyWorkers++
 		}
+		handle.inFlightMu.RLock()
+		stats.InFlight += int64(len(handle.inFlightReq))
+		handle.inFlightMu.RUnlock()
 	}
 
 	return stats
@@ -1209,13 +1176,10 @@ type WorkerMetrics struct {
 // GatherWorkerMetrics collects Prometheus metrics from all healthy workers.
 // Returns a slice of worker metrics, one per worker.
 func (p *Pool) GatherWorkerMetrics(ctx context.Context) []WorkerMetrics {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	var results []WorkerMetrics
 
-	for _, handle := range p.workers {
-		if handle == nil || !handle.healthy.Load() {
+	for _, handle := range p.workerSnapshot() {
+		if !handle.healthy.Load() {
 			continue
 		}
 
@@ -1250,13 +1214,10 @@ type WorkerGCResult struct {
 // TriggerAllWorkersGC triggers garbage collection on all healthy workers.
 // Returns results for each worker.
 func (p *Pool) TriggerAllWorkersGC(ctx context.Context) []WorkerGCResult {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	var results []WorkerGCResult
 
-	for _, handle := range p.workers {
-		if handle == nil || !handle.healthy.Load() {
+	for _, handle := range p.workerSnapshot() {
+		if !handle.healthy.Load() {
 			continue
 		}
 
@@ -1298,13 +1259,10 @@ type WorkerGoroutinesResult struct {
 // filter is a comma-separated list of patterns to match (case-insensitive).
 // Returns results for each worker.
 func (p *Pool) GetAllWorkersGoroutines(ctx context.Context, filter string) []WorkerGoroutinesResult {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	var results []WorkerGoroutinesResult
 
-	for _, handle := range p.workers {
-		if handle == nil || !handle.healthy.Load() {
+	for _, handle := range p.workerSnapshot() {
+		if !handle.healthy.Load() {
 			continue
 		}
 
