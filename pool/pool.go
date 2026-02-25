@@ -295,7 +295,7 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 
 	workerLogger := p.logger.With().Int("worker", id).Logger()
 	workerLogger.Info().
-		Int("grpc_conns", 1+workerplugin.ExtraGRPCConns).
+		Int("grpc_conns_target", 1+workerplugin.ExtraGRPCConns).
 		Msg("Started worker")
 
 	return &workerHandle{

@@ -153,6 +153,14 @@ type WorkerPlugin struct {
 	Impl Worker
 }
 
+const (
+	// Number of retries per extra brokered connection dial (in addition to
+	// the initial attempt). This smooths over transient broker startup races.
+	extraGRPCDialRetries = 2
+	// Linear backoff base between retries.
+	extraGRPCDialRetryBackoff = 100 * time.Millisecond
+)
+
 func (p *WorkerPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {
 	impl := &GRPCServer{Impl: p.Impl}
 	pb.RegisterWorkerServer(s, impl)
@@ -182,20 +190,63 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 	// Extra connections are best-effort — the primary connection is always
 	// sufficient. If a broker dial fails (transient timeout, etc.), we
 	// continue with however many connections succeeded.
+	var connected int
 	for i := uint32(1); i <= ExtraGRPCConns; i++ {
-		conn, err := broker.DialWithOptions(i, brokerDialOptions()...)
+		conn, err := dialBrokerConnWithRetry(ctx, broker, i)
 		if err != nil {
-			log.Printf("[WARN] failed to dial extra gRPC connection %d: %v", i, err)
-			break
+			if ctx != nil && ctx.Err() != nil {
+				for _, c := range conns {
+					c.Close()
+				}
+				return nil, ctx.Err()
+			}
+			log.Printf("[WARN] failed to dial extra gRPC connection %d after %d attempts: %v", i, extraGRPCDialRetries+1, err)
+			continue
 		}
 		conns = append(conns, conn)
 		allWorkers = append(allWorkers, NewGRPCClient(conn))
+		connected++
+	}
+
+	if connected < ExtraGRPCConns {
+		log.Printf("[INFO] using %d/%d extra gRPC connections", connected, ExtraGRPCConns)
 	}
 
 	return &multiConnWorker{
 		workers: allWorkers,
 		conns:   conns,
 	}, nil
+}
+
+func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id uint32) (*grpc.ClientConn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= extraGRPCDialRetries; attempt++ {
+		conn, err := broker.DialWithOptions(id, brokerDialOptions()...)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt == extraGRPCDialRetries {
+			break
+		}
+
+		backoff := time.Duration(attempt+1) * extraGRPCDialRetryBackoff
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+
+	return nil, lastErr
 }
 
 // brokerDialOptions returns gRPC dial options for brokered connections.
