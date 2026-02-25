@@ -463,9 +463,10 @@ func (c *BAMLRestClient) Parse(ctx context.Context, req ParseRequest) (*ParseRes
 	return result, nil
 }
 
-// Health checks the /health endpoint.
+// Health checks server readiness via /openapi.json (the BAML REST server
+// does not expose a dedicated health endpoint).
 func (c *BAMLRestClient) Health(ctx context.Context) error {
-	url := fmt.Sprintf("%s/health", c.baseURL)
+	url := fmt.Sprintf("%s/openapi.json", c.baseURL)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
