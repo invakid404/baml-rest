@@ -169,7 +169,9 @@ type workerHandle struct {
 	worker      workerplugin.Worker
 	mu          sync.RWMutex
 	healthy     bool
-	restarting  atomic.Bool // CAS guard: only one goroutine starts a replacement
+	restarting  atomic.Bool   // CAS guard: only one goroutine starts a replacement
+	restartMu   sync.Mutex    // protects restarted channel reassignment
+	restarted   chan struct{} // closed when restart completes (success or failure)
 	lastUsed    time.Time
 	inFlightMu  sync.RWMutex
 	inFlightReq map[uint64]*inFlightRequest
@@ -304,6 +306,7 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		client:      client,
 		worker:      worker,
 		healthy:     true,
+		restarted:   make(chan struct{}),
 		lastUsed:    time.Now(),
 		inFlightReq: make(map[uint64]*inFlightRequest),
 	}, nil
@@ -447,7 +450,18 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	// new OS process, only to have N-1 of them killed by the thundering-herd
 	// check below. On resource-constrained CI runners this is enough to
 	// stall the whole system.
+	//
+	// If another goroutine is already restarting, we wait for it to finish
+	// rather than returning immediately. This prevents retry loops from
+	// burning through MaxRetries against the same failing handle while a
+	// replacement is booting.
 	if !failed.restarting.CompareAndSwap(false, true) {
+		// Read the channel under restartMu to avoid racing with
+		// reassignment on the failure path.
+		failed.restartMu.Lock()
+		ch := failed.restarted
+		failed.restartMu.Unlock()
+		<-ch
 		return
 	}
 
@@ -457,32 +471,57 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	// and gRPC handshake).
 	newHandle, err := p.startWorker(id)
 	if err != nil {
-		failed.restarting.Store(false) // allow future attempts
-		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to start replacement worker (old worker stays in slot)")
+		// Mark the failed worker unhealthy so getWorker stops routing to it.
+		// Without this, requests keep hitting a known-bad worker and
+		// triggering restart storms until a later attempt succeeds.
+		p.mu.Lock()
+		if p.workers[id] == failed {
+			failed.mu.Lock()
+			failed.healthy = false
+			failed.mu.Unlock()
+		}
+		p.mu.Unlock()
+
+		// Signal waiters and prepare for future restart attempts
+		// (e.g. from the health checker).
+		failed.restartMu.Lock()
+		old := failed.restarted
+		failed.restarted = make(chan struct{})
+		failed.restarting.Store(false)
+		failed.restartMu.Unlock()
+		close(old)
+
+		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to start replacement worker, marked unhealthy")
 		return
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.closed.Load() {
+		p.mu.Unlock()
 		newHandle.kill()
+		close(failed.restarted)
 		return
 	}
 
 	// Another goroutine already restarted this worker — kill the one we
 	// just started (wasteful but correct) and bail.
 	if p.workers[id] != failed {
+		p.mu.Unlock()
 		newHandle.kill()
+		close(failed.restarted)
 		return
 	}
 
 	// Hot-swap: put new worker in the slot, then kill old.
 	p.workers[id] = newHandle
+	p.mu.Unlock()
 
-	if failed != nil {
-		failed.kill()
-	}
+	// Signal waiters. No lock needed — on the success path, the failed
+	// handle is replaced and no one will reassign its channel.
+	close(failed.restarted)
+
+	failed.kill()
 }
 
 // getWorker returns a worker using round-robin selection
