@@ -6,3 +6,6 @@ monitoring
 
 # Integration tests
 integration
+
+# Test files
+**/*_test.go

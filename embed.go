@@ -14,7 +14,7 @@ import (
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
-//go:embed adapter.go adapters cmd embed.go go.mod go.sum go.work go.work.sum internal renovate.json
+//go:embed adapter.go adapters cmd/build cmd/embed cmd/hacks cmd/introspect/main.go cmd/schema cmd/serve cmd/worker embed.go go.mod go.sum go.work go.work.sum internal/apierror internal/httplogger internal/memlimit/memlimit.go internal/unsafeutil renovate.json
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)
