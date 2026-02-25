@@ -188,6 +188,20 @@ func (h *workerHandle) kill() {
 	}
 }
 
+// finishRestart clears the CAS guard and wakes all goroutines waiting
+// for this restart to complete. Must be called exactly once on every
+// code path after a successful CompareAndSwap(false, true).
+//
+// The mutex is acquired internally so callers cannot forget it —
+// this was the source of repeated missed-wakeup bugs when the
+// Lock/Store/Broadcast/Unlock sequence was inlined at each call site.
+func (h *workerHandle) finishRestart() {
+	h.restartMu.Lock()
+	h.restarting.Store(false)
+	h.restartCond.Broadcast()
+	h.restartMu.Unlock()
+}
+
 // New creates a new worker pool
 func New(config *Config) (*Pool, error) {
 	if config.WorkerPath == "" {
@@ -452,23 +466,10 @@ func (p *Pool) checkHealth() {
 // completed), the call is a no-op. This prevents a thundering-herd of
 // restart calls from repeatedly killing freshly-started workers.
 func (p *Pool) restartWorker(id int, failed *workerHandle) {
-	// CAS guard: only one goroutine spawns a replacement process per worker.
-	// Without this, N concurrent retries (e.g. 100 in-flight requests that
-	// all hit gRPC Unavailable) would each call startWorker and spin up a
-	// new OS process, only to have N-1 of them killed by the thundering-herd
-	// check below. On resource-constrained CI runners this is enough to
-	// stall the whole system.
-	//
-	// If another goroutine is already restarting, we wait for it to finish
-	// rather than returning immediately. This prevents retry loops from
-	// burning through MaxRetries against the same failing handle while a
-	// replacement is booting.
 	// Early stale-handle check: if the slot already holds a different handle
-	// (a previous restart already completed), skip the expensive process
-	// spawn entirely. Without this, cancelled in-flight requests from an
-	// old handle each win the CAS (the old handle's restarting was reset),
-	// spawn a process, discover the slot changed, and kill the process —
-	// wasting CPU/memory exactly when the pool is recovering.
+	// (a previous restart already completed), skip entirely. Without this,
+	// cancelled in-flight requests from an old handle waste CPU/memory
+	// spawning processes that are immediately killed.
 	p.mu.RLock()
 	if p.workers[id] != failed {
 		p.mu.RUnlock()
@@ -489,28 +490,26 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 		return
 	}
 
+	// INVARIANT: every code path after this point ends with finishRestart.
+	// defer guarantees this even if a new return is added later.
+	defer failed.finishRestart()
+
 	// Double-check after winning CAS — the slot could have changed between
 	// the early check and the CAS.
 	p.mu.RLock()
 	stale := p.workers[id] != failed
 	p.mu.RUnlock()
 	if stale {
-		failed.restartMu.Lock()
-		failed.restarting.Store(false)
-		failed.restartCond.Broadcast()
-		failed.restartMu.Unlock()
 		return
 	}
 
-	// Start replacement BEFORE acquiring the lock or killing anything.
+	// Start replacement BEFORE acquiring the pool lock or killing anything.
 	// The old worker stays in the slot (possibly struggling, but better
 	// than nothing) while the new one boots up (~1-2s for process start
 	// and gRPC handshake).
 	newHandle, err := p.startWorker(id)
 	if err != nil {
 		// Mark the failed worker unhealthy so getWorker stops routing to it.
-		// Without this, requests keep hitting a known-bad worker and
-		// triggering restart storms until a later attempt succeeds.
 		p.mu.Lock()
 		if p.workers[id] == failed {
 			failed.mu.Lock()
@@ -522,20 +521,8 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 		// Kill the old process. For the hung-request path
 		// (killWorkerAndRetry), the worker may be stuck in a syscall
 		// that context cancellation cannot unblock — only process death
-		// will free it. kill() is idempotent if the process is already
-		// dead (e.g. from a concurrent restart that swapped it out).
+		// will free it. kill() is idempotent if already dead.
 		failed.kill()
-
-		// Clear CAS and wake waiters so they can proceed (they'll find
-		// the worker unhealthy and fail gracefully). The mutex must be
-		// held when storing + broadcasting to avoid missed wakeups: a
-		// waiter that checked the predicate but hasn't called Wait()
-		// yet would miss a bare Broadcast.
-		failed.restartMu.Lock()
-		failed.restarting.Store(false)
-		failed.restartCond.Broadcast()
-		failed.restartMu.Unlock()
-
 		p.logger.Error().Int("worker", id).Err(err).Msg("Failed to start replacement worker, killed old process")
 		return
 	}
@@ -545,10 +532,6 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	if p.closed.Load() {
 		p.mu.Unlock()
 		newHandle.kill()
-		failed.restartMu.Lock()
-		failed.restarting.Store(false)
-		failed.restartCond.Broadcast()
-		failed.restartMu.Unlock()
 		return
 	}
 
@@ -557,23 +540,12 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	if p.workers[id] != failed {
 		p.mu.Unlock()
 		newHandle.kill()
-		failed.restartMu.Lock()
-		failed.restarting.Store(false)
-		failed.restartCond.Broadcast()
-		failed.restartMu.Unlock()
 		return
 	}
 
 	// Hot-swap: put new worker in the slot, then kill old.
 	p.workers[id] = newHandle
 	p.mu.Unlock()
-
-	// Clear CAS and wake waiters. The mutex must be held around
-	// Store + Broadcast to prevent missed wakeups (see waiter loop).
-	failed.restartMu.Lock()
-	failed.restarting.Store(false)
-	failed.restartCond.Broadcast()
-	failed.restartMu.Unlock()
 
 	failed.kill()
 }
