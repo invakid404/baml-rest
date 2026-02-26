@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +22,9 @@ import (
 	"github.com/go-chi/metrics"
 	"github.com/go-chi/render"
 	"github.com/goccy/go-json"
+	"github.com/gofiber/fiber/v3"
+	fiberadaptor "github.com/gofiber/fiber/v3/middleware/adaptor"
+	fiberrecover "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/httplogger"
@@ -206,8 +208,8 @@ var serveCmd = &cobra.Command{
 
 		logger.Info().Int("size", poolSize).Msg("Worker pool initialized")
 
-		// Create Chi router
-		r := chi.NewRouter()
+		// Create Fiber app
+		app := fiber.New()
 
 		// Pre-allocate SSE event kinds
 		sseErrorKind, err := sse.NewType("error")
@@ -245,7 +247,7 @@ var serveCmd = &cobra.Command{
 			logger.Error().Err(err).Msg("Unhandled panic recovered")
 		}
 
-		r.Use(middleware.Recoverer)
+		app.Use(fiberrecover.New())
 
 		// Create combined gatherer that includes main process and worker metrics
 		combinedGatherer := &combinedMetricsGatherer{
@@ -255,115 +257,60 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Add /metrics endpoint for Prometheus scraping (no HTTP logging to reduce noise)
-		r.Handle("/metrics", promhttp.HandlerFor(
+		app.Get("/metrics", fiberadaptor.HTTPHandler(promhttp.HandlerFor(
 			combinedGatherer,
 			promhttp.HandlerOpts{},
-		))
+		)))
 
 		// Register debug endpoints (no-op unless built with -tags=debug)
-		registerDebugEndpoints(r, logger, workerPool)
+		debugRouter := chi.NewRouter()
+		registerDebugEndpoints(debugRouter, logger, workerPool)
+		app.Use("/_debug", fiberadaptor.HTTPHandler(debugRouter))
 
 		// Routes with HTTP request logging and metrics
-		r.Group(func(r chi.Router) {
-			r.Use(metrics.Collector(metrics.CollectorOpts{}))
-			r.Use(middleware.RequestID)
-			r.Use(func(next http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if reqID := middleware.GetReqID(r.Context()); reqID != "" {
-						w.Header().Set("X-Request-Id", reqID)
-					}
-					next.ServeHTTP(w, r)
-				})
+		app.Use(fiberadaptor.HTTPMiddleware(metrics.Collector(metrics.CollectorOpts{})))
+		app.Use(fiberadaptor.HTTPMiddleware(middleware.RequestID))
+		app.Use(fiberadaptor.HTTPMiddleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if reqID := middleware.GetReqID(r.Context()); reqID != "" {
+					w.Header().Set("X-Request-Id", reqID)
+				}
+				next.ServeHTTP(w, r)
 			})
+		}))
 
-			r.Use(httplogger.RequestLogger(logger, &httplogger.Options{
-				RecoverPanics: true,
-			}))
+		app.Use(fiberadaptor.HTTPMiddleware(httplogger.RequestLogger(logger, &httplogger.Options{
+			RecoverPanics: true,
+		})))
 
-			// Add /openapi.json endpoint
-			r.Get("/openapi.json", func(w http.ResponseWriter, r *http.Request) {
-				render.JSON(w, r, &schema)
-			})
+		// Add /openapi.json endpoint
+		app.Get("/openapi.json", fiberadaptor.HTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			render.JSON(w, r, &schema)
+		}))
 
-			// Add /openapi.yaml endpoint
-			r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
-				yamlData, err := yaml.Marshal(&schema)
-				if err != nil {
-					writeJSONError(w, r, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				w.Header().Set("Content-Type", "application/yaml")
-				_, _ = w.Write(yamlData)
-			})
+		// Add /openapi.yaml endpoint
+		app.Get("/openapi.yaml", fiberadaptor.HTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			yamlData, err := yaml.Marshal(&schema)
+			if err != nil {
+				writeJSONError(w, r, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/yaml")
+			_, _ = w.Write(yamlData)
+		}))
 
-			for _, methodName := range methodNames {
-				methodName := methodName // capture for closure
+		for _, methodName := range methodNames {
+			methodName := methodName // capture for closure
 
-				// Skip the internal dynamic method - it has dedicated endpoints
-				if methodName == bamlutils.DynamicEndpointName {
-					continue
-				}
+			// Skip the internal dynamic method - it has dedicated endpoints
+			if methodName == bamlutils.DynamicEndpointName {
+				continue
+			}
 
-				logger.Info().Str("prompt", methodName).Msg("Registering prompt")
+			logger.Info().Str("prompt", methodName).Msg("Registering prompt")
 
-				makeCallHandler := func(streamMode bamlutils.StreamMode) http.HandlerFunc {
-					return func(w http.ResponseWriter, r *http.Request) {
-						ctx, cancel := context.WithCancel(r.Context())
-						defer cancel()
-
-						rawBody, err := io.ReadAll(r.Body)
-						if err != nil {
-							writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
-							return
-						}
-
-						result, err := workerPool.Call(ctx, methodName, rawBody, streamMode)
-						if err != nil {
-							httplogger.SetError(r.Context(), err)
-							writeJSONError(w, r, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
-							return
-						}
-
-						w.Header().Set("Content-Type", "application/json")
-						if streamMode.NeedsRaw() {
-							render.JSON(w, r, CallWithRawResponse{
-								Data: result.Data,
-								Raw:  result.Raw,
-							})
-						} else {
-							_, _ = w.Write(result.Data)
-						}
-					}
-				}
-
-				r.Post(fmt.Sprintf("/call/%s", methodName), makeCallHandler(bamlutils.StreamModeCall))
-				r.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(bamlutils.StreamModeCallWithRaw))
-
-				makeStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) http.HandlerFunc {
-					config := &StreamHandlerConfig{
-						SSEServer:    s,
-						SSEErrorType: sseErrorKind,
-						SSEResetType: sseResetKind,
-						SSEFinalType: sseFinalKind,
-						PathPrefix:   pathPrefix,
-					}
-					return func(w http.ResponseWriter, r *http.Request) {
-						rawBody, err := io.ReadAll(r.Body)
-						if err != nil {
-							httplogger.SetError(r.Context(), err)
-							writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
-							return
-						}
-
-						HandleStream(w, r, methodName, rawBody, streamMode, workerPool, config, false)
-					}
-				}
-
-				r.Post(fmt.Sprintf("/stream/%s", methodName), makeStreamHandler("stream", bamlutils.StreamModeStream))
-				r.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), makeStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw))
-
-				// Parse endpoint - parses raw LLM output using this method's schema
-				r.Post(fmt.Sprintf("/parse/%s", methodName), func(w http.ResponseWriter, r *http.Request) {
+			makeCallHandler := func(streamMode bamlutils.StreamMode) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
 					ctx, cancel := context.WithCancel(r.Context())
 					defer cancel()
 
@@ -373,24 +320,80 @@ var serveCmd = &cobra.Command{
 						return
 					}
 
-					result, err := workerPool.Parse(ctx, methodName, rawBody)
+					result, err := workerPool.Call(ctx, methodName, rawBody, streamMode)
 					if err != nil {
 						httplogger.SetError(r.Context(), err)
-						writeJSONError(w, r, fmt.Sprintf("Error parsing with %s: %v", methodName, err), http.StatusInternalServerError)
+						writeJSONError(w, r, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 						return
 					}
 
 					w.Header().Set("Content-Type", "application/json")
-					_, _ = w.Write(result.Data)
-				})
+					if streamMode.NeedsRaw() {
+						render.JSON(w, r, CallWithRawResponse{
+							Data: result.Data,
+							Raw:  result.Raw,
+						})
+					} else {
+						_, _ = w.Write(result.Data)
+					}
+				}
 			}
 
-			// Dynamic endpoint handlers (only if dynamic method exists - requires BAML >= 0.215.0)
-			hasDynamicMethod := slices.Contains(methodNames, bamlutils.DynamicEndpointName)
-			if !hasDynamicMethod {
-				logger.Info().Msg("Dynamic endpoints not available (BAML < 0.215.0 or dynamic.baml not injected)")
-			} else {
-				logger.Info().Str("endpoint", bamlutils.DynamicEndpointName).Msg("Registering dynamic prompt")
+			app.Post(fmt.Sprintf("/call/%s", methodName), fiberadaptor.HTTPHandlerFunc(makeCallHandler(bamlutils.StreamModeCall)))
+			app.Post(fmt.Sprintf("/call-with-raw/%s", methodName), fiberadaptor.HTTPHandlerFunc(makeCallHandler(bamlutils.StreamModeCallWithRaw)))
+
+			makeStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) http.HandlerFunc {
+				config := &StreamHandlerConfig{
+					SSEServer:    s,
+					SSEErrorType: sseErrorKind,
+					SSEResetType: sseResetKind,
+					SSEFinalType: sseFinalKind,
+					PathPrefix:   pathPrefix,
+				}
+				return func(w http.ResponseWriter, r *http.Request) {
+					rawBody, err := io.ReadAll(r.Body)
+					if err != nil {
+						httplogger.SetError(r.Context(), err)
+						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						return
+					}
+
+					HandleStream(w, r, methodName, rawBody, streamMode, workerPool, config, false)
+				}
+			}
+
+			app.Post(fmt.Sprintf("/stream/%s", methodName), fiberadaptor.HTTPHandlerFunc(makeStreamHandler("stream", bamlutils.StreamModeStream)))
+			app.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), fiberadaptor.HTTPHandlerFunc(makeStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw)))
+
+			// Parse endpoint - parses raw LLM output using this method's schema
+			app.Post(fmt.Sprintf("/parse/%s", methodName), fiberadaptor.HTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx, cancel := context.WithCancel(r.Context())
+				defer cancel()
+
+				rawBody, err := io.ReadAll(r.Body)
+				if err != nil {
+					writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+					return
+				}
+
+				result, err := workerPool.Parse(ctx, methodName, rawBody)
+				if err != nil {
+					httplogger.SetError(r.Context(), err)
+					writeJSONError(w, r, fmt.Sprintf("Error parsing with %s: %v", methodName, err), http.StatusInternalServerError)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(result.Data)
+			}))
+		}
+
+		// Dynamic endpoint handlers (only if dynamic method exists - requires BAML >= 0.215.0)
+		hasDynamicMethod := slices.Contains(methodNames, bamlutils.DynamicEndpointName)
+		if !hasDynamicMethod {
+			logger.Info().Msg("Dynamic endpoints not available (BAML < 0.215.0 or dynamic.baml not injected)")
+		} else {
+			logger.Info().Str("endpoint", bamlutils.DynamicEndpointName).Msg("Registering dynamic prompt")
 
 			makeDynamicCallHandler := func(streamMode bamlutils.StreamMode) http.HandlerFunc {
 				return func(w http.ResponseWriter, r *http.Request) {
@@ -449,8 +452,8 @@ var serveCmd = &cobra.Command{
 				}
 			}
 
-			r.Post(fmt.Sprintf("/call/%s", bamlutils.DynamicEndpointName), makeDynamicCallHandler(bamlutils.StreamModeCall))
-			r.Post(fmt.Sprintf("/call-with-raw/%s", bamlutils.DynamicEndpointName), makeDynamicCallHandler(bamlutils.StreamModeCallWithRaw))
+			app.Post(fmt.Sprintf("/call/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerFunc(makeDynamicCallHandler(bamlutils.StreamModeCall)))
+			app.Post(fmt.Sprintf("/call-with-raw/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerFunc(makeDynamicCallHandler(bamlutils.StreamModeCallWithRaw)))
 
 			makeDynamicStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) http.HandlerFunc {
 				config := &StreamHandlerConfig{
@@ -474,7 +477,6 @@ var serveCmd = &cobra.Command{
 						writeJSONError(w, r, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 						return
 					}
-
 					if err := input.Validate(); err != nil {
 						writeJSONError(w, r, err.Error(), http.StatusBadRequest)
 						return
@@ -491,11 +493,11 @@ var serveCmd = &cobra.Command{
 				}
 			}
 
-			r.Post(fmt.Sprintf("/stream/%s", bamlutils.DynamicEndpointName), makeDynamicStreamHandler("stream", bamlutils.StreamModeStream))
-			r.Post(fmt.Sprintf("/stream-with-raw/%s", bamlutils.DynamicEndpointName), makeDynamicStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw))
+			app.Post(fmt.Sprintf("/stream/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerFunc(makeDynamicStreamHandler("stream", bamlutils.StreamModeStream)))
+			app.Post(fmt.Sprintf("/stream-with-raw/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerFunc(makeDynamicStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw)))
 
 			// Dynamic parse endpoint
-			r.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), func(w http.ResponseWriter, r *http.Request) {
+			app.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				ctx, cancel := context.WithCancel(r.Context())
 				defer cancel()
 
@@ -511,7 +513,6 @@ var serveCmd = &cobra.Command{
 					writeJSONError(w, r, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 					return
 				}
-
 				if err := input.Validate(); err != nil {
 					writeJSONError(w, r, err.Error(), http.StatusBadRequest)
 					return
@@ -541,14 +542,7 @@ var serveCmd = &cobra.Command{
 
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write(flattenedData)
-			})
-			}
-		})
-
-		// Create HTTP server
-		srv := &http.Server{
-			Addr:    fmt.Sprintf(":%d", port),
-			Handler: r,
+			}))
 		}
 
 		// Start server in a goroutine
@@ -559,10 +553,7 @@ var serveCmd = &cobra.Command{
 			logger.Info().Int("port", port).Msg("Starting server")
 			logger.Info().Msgf("OpenAPI JSON: http://localhost:%d/openapi.json", port)
 			logger.Info().Msgf("OpenAPI YAML: http://localhost:%d/openapi.yaml", port)
-			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				return err
-			}
-			return nil
+			return app.Listen(fmt.Sprintf(":%d", port), fiber.ListenConfig{DisableStartupMessage: true})
 		})
 
 		// Set up signal handling for graceful shutdown
@@ -581,15 +572,15 @@ var serveCmd = &cobra.Command{
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer shutdownCancel()
 
-			// Shutdown HTTP server - this will wait for active connections to finish
+			// Shutdown Fiber server - this will wait for active connections to finish
 			// Active connections are waiting on worker responses, so workers must stay alive
-			if err := srv.Shutdown(shutdownCtx); err != nil {
-				logger.Error().Err(err).Msg("Error during HTTP server shutdown")
+			if err := app.ShutdownWithContext(shutdownCtx); err != nil {
+				logger.Error().Err(err).Msg("Error during Fiber server shutdown")
 				_ = workerPool.Close()
 				return fmt.Errorf("shutdown error: %w", err)
 			}
 
-			logger.Info().Msg("HTTP server stopped, shutting down worker pool")
+			logger.Info().Msg("Fiber server stopped, shutting down worker pool")
 
 			// Gracefully shutdown worker pool - waits for any remaining in-flight requests
 			if err := workerPool.Shutdown(shutdownCtx); err != nil {
