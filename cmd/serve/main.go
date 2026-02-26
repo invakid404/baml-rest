@@ -12,22 +12,21 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/metrics"
-	"github.com/go-chi/render"
 	"github.com/goccy/go-json"
+	fiberzerolog "github.com/gofiber/contrib/v3/zerolog"
 	"github.com/gofiber/fiber/v3"
 	fiberadaptor "github.com/gofiber/fiber/v3/middleware/adaptor"
 	fiberrecover "github.com/gofiber/fiber/v3/middleware/recover"
+	fiberrequestid "github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/internal/httplogger"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -65,6 +64,67 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "baml-rest",
 	Short: "BAML REST API server",
+}
+
+var (
+	httpRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Total HTTP requests processed by the server",
+		},
+		[]string{"method", "path", "status"},
+	)
+	httpRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "HTTP request duration in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"method", "path", "status"},
+	)
+	registerHTTPMetricsOnce sync.Once
+)
+
+func registerHTTPMetrics() {
+	registerHTTPMetricsOnce.Do(func() {
+		for _, collector := range []prometheus.Collector{httpRequestsTotal, httpRequestDuration} {
+			if err := prometheus.Register(collector); err != nil {
+				if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
+					continue
+				}
+				panic(err)
+			}
+		}
+	})
+}
+
+func httpMetricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		wrapped := &statusCapturingResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(wrapped, r)
+
+		status := strconv.Itoa(wrapped.status)
+		path := r.URL.Path
+		httpRequestsTotal.WithLabelValues(r.Method, path, status).Inc()
+		httpRequestDuration.WithLabelValues(r.Method, path, status).Observe(time.Since(start).Seconds())
+	})
+}
+
+type statusCapturingResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *statusCapturingResponseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func writeJSONResponse(w http.ResponseWriter, statusCode int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 // extractWorker extracts the embedded worker binary to a cache location
@@ -263,29 +323,33 @@ var serveCmd = &cobra.Command{
 		)))
 
 		// Register debug endpoints (no-op unless built with -tags=debug)
-		debugRouter := chi.NewRouter()
-		registerDebugEndpoints(debugRouter, logger, workerPool)
-		app.Use("/_debug", fiberadaptor.HTTPHandler(debugRouter))
+		registerDebugEndpoints(app, logger, workerPool)
 
 		// Routes with HTTP request logging and metrics
-		app.Use(fiberadaptor.HTTPMiddleware(metrics.Collector(metrics.CollectorOpts{})))
-		app.Use(fiberadaptor.HTTPMiddleware(middleware.RequestID))
-		app.Use(fiberadaptor.HTTPMiddleware(func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if reqID := middleware.GetReqID(r.Context()); reqID != "" {
-					w.Header().Set("X-Request-Id", reqID)
-				}
-				next.ServeHTTP(w, r)
-			})
+		registerHTTPMetrics()
+		app.Use(fiberadaptor.HTTPMiddleware(httpMetricsMiddleware))
+		app.Use(fiberrequestid.New(fiberrequestid.Config{
+			Header: "X-Request-Id",
 		}))
-
-		app.Use(fiberadaptor.HTTPMiddleware(httplogger.RequestLogger(logger, &httplogger.Options{
-			RecoverPanics: true,
-		})))
+		app.Use(fiberzerolog.New(fiberzerolog.Config{
+			Logger: &logger,
+			Next: func(c fiber.Ctx) bool {
+				path := c.Path()
+				return path == "/metrics" || strings.HasPrefix(path, "/_debug")
+			},
+			Fields: []string{
+				fiberzerolog.FieldLatency,
+				fiberzerolog.FieldStatus,
+				fiberzerolog.FieldMethod,
+				fiberzerolog.FieldURL,
+				fiberzerolog.FieldRequestID,
+				fiberzerolog.FieldError,
+			},
+		}))
 
 		// Add /openapi.json endpoint
 		app.Get("/openapi.json", fiberadaptor.HTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			render.JSON(w, r, &schema)
+			writeJSONResponse(w, http.StatusOK, &schema)
 		}))
 
 		// Add /openapi.yaml endpoint
@@ -322,14 +386,13 @@ var serveCmd = &cobra.Command{
 
 					result, err := workerPool.Call(ctx, methodName, rawBody, streamMode)
 					if err != nil {
-						httplogger.SetError(r.Context(), err)
 						writeJSONError(w, r, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), http.StatusInternalServerError)
 						return
 					}
 
 					w.Header().Set("Content-Type", "application/json")
 					if streamMode.NeedsRaw() {
-						render.JSON(w, r, CallWithRawResponse{
+						writeJSONResponse(w, http.StatusOK, CallWithRawResponse{
 							Data: result.Data,
 							Raw:  result.Raw,
 						})
@@ -353,7 +416,6 @@ var serveCmd = &cobra.Command{
 				return func(w http.ResponseWriter, r *http.Request) {
 					rawBody, err := io.ReadAll(r.Body)
 					if err != nil {
-						httplogger.SetError(r.Context(), err)
 						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 						return
 					}
@@ -378,7 +440,6 @@ var serveCmd = &cobra.Command{
 
 				result, err := workerPool.Parse(ctx, methodName, rawBody)
 				if err != nil {
-					httplogger.SetError(r.Context(), err)
 					writeJSONError(w, r, fmt.Sprintf("Error parsing with %s: %v", methodName, err), http.StatusInternalServerError)
 					return
 				}
@@ -427,7 +488,6 @@ var serveCmd = &cobra.Command{
 
 					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
 					if err != nil {
-						httplogger.SetError(r.Context(), err)
 						writeJSONError(w, r, fmt.Sprintf("Error calling dynamic prompt: %v", err), http.StatusInternalServerError)
 						return
 					}
@@ -435,14 +495,13 @@ var serveCmd = &cobra.Command{
 					// Flatten DynamicProperties to root level for better UX
 					flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 					if err != nil {
-						httplogger.SetError(r.Context(), err)
 						writeJSONError(w, r, fmt.Sprintf("Error flattening response: %v", err), http.StatusInternalServerError)
 						return
 					}
 
 					w.Header().Set("Content-Type", "application/json")
 					if streamMode.NeedsRaw() {
-						render.JSON(w, r, CallWithRawResponse{
+						writeJSONResponse(w, http.StatusOK, CallWithRawResponse{
 							Data: flattenedData,
 							Raw:  result.Raw,
 						})
@@ -466,7 +525,6 @@ var serveCmd = &cobra.Command{
 				return func(w http.ResponseWriter, r *http.Request) {
 					rawBody, err := io.ReadAll(r.Body)
 					if err != nil {
-						httplogger.SetError(r.Context(), err)
 						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
 						return
 					}
@@ -527,7 +585,6 @@ var serveCmd = &cobra.Command{
 
 				result, err := workerPool.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
 				if err != nil {
-					httplogger.SetError(r.Context(), err)
 					writeJSONError(w, r, fmt.Sprintf("Error parsing with dynamic prompt: %v", err), http.StatusInternalServerError)
 					return
 				}
@@ -535,7 +592,6 @@ var serveCmd = &cobra.Command{
 				// Flatten DynamicProperties to root level for better UX
 				flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 				if err != nil {
-					httplogger.SetError(r.Context(), err)
 					writeJSONError(w, r, fmt.Sprintf("Error flattening response: %v", err), http.StatusInternalServerError)
 					return
 				}

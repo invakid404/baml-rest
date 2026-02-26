@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-chi/metrics"
 	"github.com/hashicorp/go-plugin"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -32,14 +32,28 @@ const (
 	RestartReasonUnhealthy WorkerRestartReason = "unhealthy"
 )
 
-type workerRestartLabels struct {
-	Reason WorkerRestartReason `label:"reason"`
-}
+var workerRestarts = newWorkerRestartCounter()
 
-var workerRestarts = metrics.CounterWith[workerRestartLabels](
-	"worker_restarts_total",
-	"Total number of worker restarts",
-)
+func newWorkerRestartCounter() *prometheus.CounterVec {
+	counter := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "worker_restarts_total",
+			Help: "Total number of worker restarts",
+		},
+		[]string{"reason"},
+	)
+
+	if err := prometheus.Register(counter); err != nil {
+		if alreadyRegistered, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := alreadyRegistered.ExistingCollector.(*prometheus.CounterVec); ok {
+				return existing
+			}
+		}
+		panic(err)
+	}
+
+	return counter
+}
 
 // priorityFields are fields to show before the message in pretty mode
 var priorityFields = [...]string{"worker", "hclog_name"}
@@ -261,8 +275,8 @@ func New(config *Config) (*Pool, error) {
 	}
 
 	// Initialize worker restart counter labels
-	workerRestarts.Add(0, workerRestartLabels{Reason: RestartReasonHung})
-	workerRestarts.Add(0, workerRestartLabels{Reason: RestartReasonUnhealthy})
+	workerRestarts.WithLabelValues(string(RestartReasonHung)).Add(0)
+	workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Add(0)
 
 	// Start workers
 	for i := 0; i < config.PoolSize; i++ {
@@ -406,7 +420,7 @@ func (p *Pool) checkHungRequests() {
 				Uint64("request_id", hungRequest.id).
 				Dur("waited", now.Sub(hungRequest.startedAt)).
 				Msg("Worker appears hung, killing")
-			workerRestarts.Inc(workerRestartLabels{Reason: RestartReasonHung})
+			workerRestarts.WithLabelValues(string(RestartReasonHung)).Inc()
 			p.killWorkerAndRetry(handle)
 		}
 	}
@@ -464,7 +478,7 @@ func (p *Pool) checkHealth() {
 			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 			handle.mu.Unlock()
 
-			workerRestarts.Inc(workerRestartLabels{Reason: RestartReasonUnhealthy})
+			workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Inc()
 			p.restartWorker(handle.id, handle)
 		} else {
 			handle.healthy.Store(true)

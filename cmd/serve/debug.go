@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"net/http"
 	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
@@ -12,27 +11,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/render"
 	"github.com/goccy/go-json"
+	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/rs/zerolog"
 )
 
-func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *pool.Pool) {
+func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *pool.Pool) {
 	// Kill a worker that has in-flight requests (for testing mid-stream worker death)
-	r.Post("/_debug/kill-worker", func(w http.ResponseWriter, r *http.Request) {
+	r.Post("/_debug/kill-worker", func(c fiber.Ctx) error {
 		result, err := workerPool.KillWorkerWithInFlight()
 		if err != nil {
-			render.Status(r, http.StatusNotFound)
-			render.JSON(w, r, map[string]interface{}{
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"status": "no_worker_found",
 				"error":  err.Error(),
 			})
-			return
 		}
 
-		render.JSON(w, r, map[string]interface{}{
+		return c.JSON(fiber.Map{
 			"status":          "killed",
 			"worker_id":       result.WorkerID,
 			"in_flight_count": result.InFlightCount,
@@ -42,18 +38,19 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 	logger.Info().Msg("Debug endpoints enabled: /_debug/kill-worker")
 
 	// Get in-flight status of all workers (for debugging)
-	r.Get("/_debug/in-flight", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/_debug/in-flight", func(c fiber.Ctx) error {
 		status := workerPool.GetInFlightStatus()
-		workers := make([]map[string]interface{}, 0, len(status))
+		workers := make([]map[string]any, 0, len(status))
 		for _, s := range status {
-			workers = append(workers, map[string]interface{}{
+			workers = append(workers, map[string]any{
 				"worker_id":      s.WorkerID,
 				"healthy":        s.Healthy,
 				"in_flight":      s.InFlight,
 				"got_first_byte": s.GotFirstByte,
 			})
 		}
-		render.JSON(w, r, map[string]interface{}{
+
+		return c.JSON(fiber.Map{
 			"status":  "ok",
 			"workers": workers,
 		})
@@ -61,17 +58,15 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 	logger.Info().Msg("Debug endpoints enabled: /_debug/in-flight")
 
 	// Configure pool settings (for testing)
-	r.Post("/_debug/config", func(w http.ResponseWriter, r *http.Request) {
+	r.Post("/_debug/config", func(c fiber.Ctx) error {
 		var req struct {
 			FirstByteTimeoutMs *int64 `json:"first_byte_timeout_ms,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			render.Status(r, http.StatusBadRequest)
-			render.JSON(w, r, map[string]interface{}{
+		if err := json.Unmarshal(c.Body(), &req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"status": "error",
 				"error":  err.Error(),
 			})
-			return
 		}
 
 		if req.FirstByteTimeoutMs != nil {
@@ -79,7 +74,7 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 			logger.Info().Int64("first_byte_timeout_ms", *req.FirstByteTimeoutMs).Msg("Updated FirstByteTimeout")
 		}
 
-		render.JSON(w, r, map[string]interface{}{
+		return c.JSON(fiber.Map{
 			"status":                "ok",
 			"first_byte_timeout_ms": workerPool.GetFirstByteTimeout().Milliseconds(),
 		})
@@ -90,10 +85,10 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 	// Returns pprof goroutine data with optional filtering (case-insensitive)
 	// Supports both include patterns and exclude patterns (prefixed with -)
 	// Example: filter=invakid404/baml-rest,-healthChecker,-StartRSSMonitor
-	r.Get("/_debug/goroutines", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/_debug/goroutines", func(c fiber.Ctx) error {
 		// Get debug level (1 = counts, 2 = full stacks)
 		debugLevel := 2
-		if lvl := r.URL.Query().Get("debug"); lvl != "" {
+		if lvl := c.Query("debug"); lvl != "" {
 			if parsed, err := strconv.Atoi(lvl); err == nil {
 				debugLevel = parsed
 			}
@@ -101,17 +96,15 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 
 		// Optional filter patterns (comma-separated, case-insensitive matching)
 		// Patterns prefixed with - are exclusions
-		filterPatterns := r.URL.Query().Get("filter")
+		filterPatterns := c.Query("filter")
 
 		// Capture goroutine profile from main process
 		var buf bytes.Buffer
 		if err := pprof.Lookup("goroutine").WriteTo(&buf, debugLevel); err != nil {
-			render.Status(r, http.StatusInternalServerError)
-			render.JSON(w, r, map[string]interface{}{
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"status": "error",
 				"error":  err.Error(),
 			})
-			return
 		}
 
 		stacks := buf.String()
@@ -178,12 +171,12 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 		}
 
 		// Get worker goroutine data
-		workerResults := workerPool.GetAllWorkersGoroutines(r.Context(), filterPatterns)
+		workerResults := workerPool.GetAllWorkersGoroutines(c.Context(), filterPatterns)
 
 		// Build worker results for response
-		workers := make([]map[string]interface{}, 0, len(workerResults))
+		workers := make([]map[string]any, 0, len(workerResults))
 		for _, wr := range workerResults {
-			workerData := map[string]interface{}{
+			workerData := map[string]any{
 				"worker_id": wr.WorkerID,
 			}
 			if wr.Error != nil {
@@ -196,7 +189,7 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 			workers = append(workers, workerData)
 		}
 
-		response := map[string]interface{}{
+		response := map[string]any{
 			"status":      "ok",
 			"total_count": totalCount,
 			"workers":     workers,
@@ -210,11 +203,11 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 			response["stacks"] = stacks
 		}
 
-		render.JSON(w, r, response)
+		return c.JSON(response)
 	})
 	logger.Info().Msg("Debug endpoints enabled: /_debug/goroutines")
 
-	r.Get("/_debug/gc", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/_debug/gc", func(c fiber.Ctx) error {
 		// Capture memory stats before GC (main process)
 		var memBefore runtime.MemStats
 		runtime.ReadMemStats(&memBefore)
@@ -230,12 +223,12 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 		runtime.ReadMemStats(&memAfter)
 
 		// Trigger GC on all workers
-		workerResults := workerPool.TriggerAllWorkersGC(r.Context())
+		workerResults := workerPool.TriggerAllWorkersGC(c.Context())
 
 		// Build worker results for response
-		workers := make([]map[string]interface{}, 0, len(workerResults))
+		workers := make([]map[string]any, 0, len(workerResults))
 		for _, wr := range workerResults {
-			workerData := map[string]interface{}{
+			workerData := map[string]any{
 				"worker_id": wr.WorkerID,
 			}
 			if wr.Error != nil {
@@ -249,10 +242,10 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 			workers = append(workers, workerData)
 		}
 
-		render.JSON(w, r, map[string]interface{}{
+		return c.JSON(map[string]any{
 			"status": "ok",
-			"main_process": map[string]interface{}{
-				"before": map[string]interface{}{
+			"main_process": map[string]any{
+				"before": map[string]any{
 					"alloc":         memBefore.Alloc,
 					"total_alloc":   memBefore.TotalAlloc,
 					"sys":           memBefore.Sys,
@@ -262,7 +255,7 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 					"heap_inuse":    memBefore.HeapInuse,
 					"heap_released": memBefore.HeapReleased,
 				},
-				"after": map[string]interface{}{
+				"after": map[string]any{
 					"alloc":         memAfter.Alloc,
 					"total_alloc":   memAfter.TotalAlloc,
 					"sys":           memAfter.Sys,
@@ -272,7 +265,7 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 					"heap_inuse":    memAfter.HeapInuse,
 					"heap_released": memAfter.HeapReleased,
 				},
-				"freed": map[string]interface{}{
+				"freed": map[string]any{
 					"heap_alloc":    memBefore.HeapAlloc - memAfter.HeapAlloc,
 					"heap_inuse":    memBefore.HeapInuse - memAfter.HeapInuse,
 					"heap_released": memAfter.HeapReleased - memBefore.HeapReleased,
@@ -285,12 +278,12 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 
 	// Native thread backtraces via gdb — shows where Rust/C threads are blocked.
 	// Requires gdb installed in the container and SYS_PTRACE capability.
-	r.Get("/_debug/native-stacks", func(w http.ResponseWriter, r *http.Request) {
-		results := workerPool.GetAllWorkersNativeStacks(r.Context())
+	r.Get("/_debug/native-stacks", func(c fiber.Ctx) error {
+		results := workerPool.GetAllWorkersNativeStacks(c.Context())
 
-		workers := make([]map[string]interface{}, 0, len(results))
+		workers := make([]map[string]any, 0, len(results))
 		for _, wr := range results {
-			workerData := map[string]interface{}{
+			workerData := map[string]any{
 				"worker_id": wr.WorkerID,
 				"pid":       wr.Pid,
 			}
@@ -302,7 +295,7 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 			workers = append(workers, workerData)
 		}
 
-		render.JSON(w, r, map[string]interface{}{
+		return c.JSON(map[string]any{
 			"status":  "ok",
 			"workers": workers,
 		})

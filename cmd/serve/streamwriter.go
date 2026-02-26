@@ -9,7 +9,6 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/internal/httplogger"
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -372,7 +371,6 @@ func HandleStream(
 	// Start the stream
 	results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 	if err != nil {
-		httplogger.SetError(r.Context(), err)
 		// Headers are already committed (HTTP 200), so we can't use http.Error.
 		// Send the error through the stream instead.
 		_ = publisher.PublishError(err.Error())
@@ -400,7 +398,6 @@ func consumeStream(
 		switch result.Kind {
 		case workerplugin.StreamResultKindError:
 			if result.Error != nil {
-				httplogger.SetError(requestCtx, workerplugin.NewErrorWithStack(result.Error, result.Stacktrace))
 				_ = publisher.PublishError(result.Error.Error())
 			}
 
