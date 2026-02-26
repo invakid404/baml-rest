@@ -282,4 +282,30 @@ func registerDebugEndpoints(r chi.Router, logger zerolog.Logger, workerPool *poo
 		})
 	})
 	logger.Info().Msg("Debug endpoints enabled: /_debug/gc")
+
+	// Native thread backtraces via gdb — shows where Rust/C threads are blocked.
+	// Requires gdb installed in the container and SYS_PTRACE capability.
+	r.Get("/_debug/native-stacks", func(w http.ResponseWriter, r *http.Request) {
+		results := workerPool.GetAllWorkersNativeStacks(r.Context())
+
+		workers := make([]map[string]interface{}, 0, len(results))
+		for _, wr := range results {
+			workerData := map[string]interface{}{
+				"worker_id": wr.WorkerID,
+				"pid":       wr.Pid,
+			}
+			if wr.Error != nil {
+				workerData["error"] = wr.Error.Error()
+			} else {
+				workerData["output"] = wr.Output
+			}
+			workers = append(workers, workerData)
+		}
+
+		render.JSON(w, r, map[string]interface{}{
+			"status":  "ok",
+			"workers": workers,
+		})
+	})
+	logger.Info().Msg("Debug endpoints enabled: /_debug/native-stacks")
 }
