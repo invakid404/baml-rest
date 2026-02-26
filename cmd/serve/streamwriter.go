@@ -127,6 +127,15 @@ func NewSSEPublisher(
 		return nil
 	})
 
+	// Ensure stream context is cancelled when the SSE connection closes.
+	// Fiber's net/http adaptor does not always propagate client disconnects via
+	// r.Context(), so tie cancellation directly to the SSE server lifecycle.
+	go recovery.Go(func() error {
+		<-sseDone
+		cancel()
+		return nil
+	})
+
 	// Wait for SSE connection to be established
 	select {
 	case <-ready:

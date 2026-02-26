@@ -98,27 +98,16 @@ func registerHTTPMetrics() {
 	})
 }
 
-func httpMetricsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		wrapped := &statusCapturingResponseWriter{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(wrapped, r)
+func httpMetricsMiddleware(c fiber.Ctx) error {
+	start := time.Now()
+	err := c.Next()
 
-		status := strconv.Itoa(wrapped.status)
-		path := r.URL.Path
-		httpRequestsTotal.WithLabelValues(r.Method, path, status).Inc()
-		httpRequestDuration.WithLabelValues(r.Method, path, status).Observe(time.Since(start).Seconds())
-	})
-}
+	status := strconv.Itoa(c.Response().StatusCode())
+	path := c.Path()
+	httpRequestsTotal.WithLabelValues(c.Method(), path, status).Inc()
+	httpRequestDuration.WithLabelValues(c.Method(), path, status).Observe(time.Since(start).Seconds())
 
-type statusCapturingResponseWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (rw *statusCapturingResponseWriter) WriteHeader(code int) {
-	rw.status = code
-	rw.ResponseWriter.WriteHeader(code)
+	return err
 }
 
 func writeJSONResponse(w http.ResponseWriter, statusCode int, value any) {
@@ -327,7 +316,7 @@ var serveCmd = &cobra.Command{
 
 		// Routes with HTTP request logging and metrics
 		registerHTTPMetrics()
-		app.Use(fiberadaptor.HTTPMiddleware(httpMetricsMiddleware))
+		app.Use(httpMetricsMiddleware)
 		app.Use(fiberrequestid.New(fiberrequestid.Config{
 			Header: "X-Request-Id",
 		}))
