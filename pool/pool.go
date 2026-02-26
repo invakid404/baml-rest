@@ -15,9 +15,7 @@ import (
 	"github.com/go-chi/metrics"
 	"github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -316,14 +314,8 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
 		},
-		Logger: pluginLogger,
-		GRPCDialOptions: []grpc.DialOption{
-			grpc.WithKeepaliveParams(keepalive.ClientParameters{
-				Time:                30 * time.Second, // Ping after 30s idle — detect dead connections quickly
-				Timeout:             10 * time.Second, // Wait 10s for ping ack
-				PermitWithoutStream: true,             // Keep pinging between request bursts
-			}),
-		},
+		Logger:          pluginLogger,
+		GRPCDialOptions: workerplugin.GRPCDialOptions(),
 	})
 
 	rpcClient, err := client.Client()
