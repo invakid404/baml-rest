@@ -110,10 +110,19 @@ type BAMLRestClient struct {
 }
 
 // NewBAMLRestClient creates a new client for the baml-rest server.
+// Uses a transport with high MaxIdleConnsPerHost to reuse TCP connections
+// and avoid ephemeral port exhaustion under stress test concurrency.
 func NewBAMLRestClient(baseURL string) *BAMLRestClient {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 200
+	transport.MaxIdleConns = 200
+
 	return &BAMLRestClient{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
-		http:    &http.Client{Timeout: 2 * time.Minute},
+		http: &http.Client{
+			Timeout:   2 * time.Minute,
+			Transport: transport,
+		},
 	}
 }
 
@@ -655,6 +664,49 @@ func (c *BAMLRestClient) GetGoroutines(ctx context.Context, filter string) (*Gor
 	}
 
 	var result GoroutinesResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// NativeStacksResult represents the response from /_debug/native-stacks.
+type NativeStacksResult struct {
+	Status  string                    `json:"status"`
+	Workers []WorkerNativeStackResult `json:"workers"`
+}
+
+// WorkerNativeStackResult represents native stack data from a single worker.
+type WorkerNativeStackResult struct {
+	WorkerID int    `json:"worker_id"`
+	Pid      int    `json:"pid"`
+	Output   string `json:"output,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// GetNativeStacks fetches native (OS-level) thread backtraces from all worker processes.
+// Uses gdb to attach to worker processes and dump thread stacks.
+// Requires gdb in the container and SYS_PTRACE capability.
+func (c *BAMLRestClient) GetNativeStacks(ctx context.Context) (*NativeStacksResult, error) {
+	url := fmt.Sprintf("%s/_debug/native-stacks", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result NativeStacksResult
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}

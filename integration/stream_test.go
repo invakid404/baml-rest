@@ -1583,6 +1583,7 @@ func TestRequestCancellation(t *testing.T) {
 
 		// Create a cancellable context for the request
 		reqCtx, reqCancel := context.WithCancel(parentCtx)
+		defer reqCancel()
 
 		// Start streaming request
 		t.Log("Starting streaming request...")

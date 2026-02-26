@@ -15,9 +15,7 @@ import (
 	"github.com/go-chi/metrics"
 	"github.com/hashicorp/go-plugin"
 	"github.com/rs/zerolog"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -316,14 +314,8 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
 		},
-		Logger: pluginLogger,
-		GRPCDialOptions: []grpc.DialOption{
-			grpc.WithKeepaliveParams(keepalive.ClientParameters{
-				Time:                30 * time.Second, // Ping after 30s idle — detect dead connections quickly
-				Timeout:             10 * time.Second, // Wait 10s for ping ack
-				PermitWithoutStream: true,             // Keep pinging between request bursts
-			}),
-		},
+		Logger:          pluginLogger,
+		GRPCDialOptions: workerplugin.GRPCDialOptions(),
 	})
 
 	rpcClient, err := client.Client()
@@ -1407,6 +1399,71 @@ func (p *Pool) GetAllWorkersGoroutines(ctx context.Context, filter string) []Wor
 
 		if err != nil {
 			p.logger.Warn().Int("worker", handle.id).Err(err).Msg("Failed to get goroutines from worker")
+		}
+
+		results = append(results, result)
+	}
+
+	return results
+}
+
+// WorkerNativeStacksResult contains native (OS-level) thread backtraces for a worker.
+type WorkerNativeStacksResult struct {
+	WorkerID int
+	Pid      int
+	Output   string // gdb output (thread backtraces)
+	Error    error
+}
+
+// GetAllWorkersNativeStacks uses gdb to capture native thread backtraces from all
+// worker processes. This reveals where Rust/C threads are blocked — information
+// that Go's pprof goroutine dump cannot provide.
+//
+// Requires: gdb installed in the container, SYS_PTRACE capability.
+func (p *Pool) GetAllWorkersNativeStacks(ctx context.Context) []WorkerNativeStacksResult {
+	var results []WorkerNativeStacksResult
+
+	for _, handle := range p.workerSnapshot() {
+		result := WorkerNativeStacksResult{WorkerID: handle.id}
+
+		// Get PID from go-plugin's ReattachConfig
+		reattach := handle.client.ReattachConfig()
+		if reattach == nil || reattach.Pid == 0 {
+			result.Error = fmt.Errorf("could not determine worker PID")
+			results = append(results, result)
+			continue
+		}
+		result.Pid = reattach.Pid
+
+		// Run gdb with a short timeout to avoid blocking if gdb hangs
+		gdbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		cmd := exec.CommandContext(gdbCtx, "gdb",
+			"-batch",
+			"-ex", "set pagination off",
+			"-ex", "set print thread-events off",
+			"-ex", "thread apply all bt",
+			"-p", fmt.Sprintf("%d", reattach.Pid),
+		)
+
+		var stdout, stderr strings.Builder
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		err := cmd.Run()
+		cancel()
+
+		if err != nil {
+			// gdb often exits non-zero even on success (e.g. detach warnings).
+			// If we got stdout output, treat it as success with a warning.
+			if stdout.Len() > 0 {
+				result.Output = stdout.String()
+				p.logger.Warn().Int("worker", handle.id).Err(err).
+					Msg("gdb exited non-zero but produced output")
+			} else {
+				result.Error = fmt.Errorf("gdb failed: %w (stderr: %s)", err, stderr.String())
+			}
+		} else {
+			result.Output = stdout.String()
 		}
 
 		results = append(results, result)

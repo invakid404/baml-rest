@@ -16,6 +16,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	bamlrest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/testcontainers/testcontainers-go"
@@ -226,6 +227,16 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 		},
 		Env: map[string]string{
 			"BAML_LOG": "debug",
+		},
+		HostConfigModifier: func(hc *container.HostConfig) {
+			if hc.Sysctls == nil {
+				hc.Sysctls = make(map[string]string)
+			}
+			hc.Sysctls["net.ipv4.tcp_tw_reuse"] = "1"
+
+			// SYS_PTRACE is required for gdb to attach to worker processes
+			// for native thread backtraces (/_debug/native-stacks endpoint).
+			hc.CapAdd = append(hc.CapAdd, "SYS_PTRACE")
 		},
 		WaitingFor: wait.ForHTTP("/openapi.json").WithPort(BAMLRestInternalPort).WithStartupTimeout(180 * time.Second),
 	}

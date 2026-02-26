@@ -121,8 +121,11 @@ RUN --mount=type=cache,target=/cache \
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y ca-certificates tzdata bash && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y ca-certificates tzdata bash \
+{{- if .debugBuild }}
+    gdb procps \
+{{- end }}
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /
 

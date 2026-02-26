@@ -171,7 +171,7 @@ func (p *WorkerPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) err
 	for i := uint32(1); i <= ExtraGRPCConns; i++ {
 		id := i
 		go broker.AcceptAndServe(id, func(opts []grpc.ServerOption) *grpc.Server {
-			opts = append(opts, brokerServerOptions()...)
+			opts = append(opts, GRPCServerOptions()...)
 			srv := grpc.NewServer(opts...)
 			pb.RegisterWorkerServer(srv, impl)
 			return srv
@@ -246,7 +246,7 @@ func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id 
 
 	var lastErr error
 	for attempt := 0; attempt <= extraGRPCDialRetries; attempt++ {
-		conn, err := broker.DialWithOptions(id, brokerDialOptions()...)
+		conn, err := broker.DialWithOptions(id, GRPCDialOptions()...)
 		if err == nil {
 			return conn, nil
 		}
@@ -270,19 +270,23 @@ func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id 
 	return nil, lastErr
 }
 
-// brokerDialOptions returns gRPC dial options for brokered connections.
-func brokerDialOptions() []grpc.DialOption {
+// GRPCDialOptions returns gRPC dial options shared by all connections
+// (primary go-plugin connection and brokered extra connections).
+func GRPCDialOptions() []grpc.DialOption {
 	return []grpc.DialOption{
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                30 * time.Second, // Ping after 30s idle — detect dead connections quickly
 			Timeout:             10 * time.Second, // Wait 10s for ping ack
 			PermitWithoutStream: true,             // Keep pinging between request bursts
 		}),
+		grpc.WithInitialWindowSize(4 << 20),     // 4 MB per-stream flow control window (default 64KB)
+		grpc.WithInitialConnWindowSize(4 << 20), // 4 MB per-connection flow control window (default 64KB)
 	}
 }
 
-// brokerServerOptions returns gRPC server options for brokered connections.
-func brokerServerOptions() []grpc.ServerOption {
+// GRPCServerOptions returns gRPC server options shared by all connections
+// (primary go-plugin server and brokered extra servers).
+func GRPCServerOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			Time:    30 * time.Second,
@@ -293,5 +297,7 @@ func brokerServerOptions() []grpc.ServerOption {
 			PermitWithoutStream: true,
 		}),
 		grpc.NumStreamWorkers(uint32(runtime.NumCPU())),
+		grpc.InitialWindowSize(4 << 20),     // 4 MB per-stream flow control window (default 64KB)
+		grpc.InitialConnWindowSize(4 << 20), // 4 MB per-connection flow control window (default 64KB)
 	}
 }
