@@ -963,7 +963,23 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			var injectedReset bool
 			var shouldRetry bool
 
-			for result := range results {
+		streamLoop:
+			for {
+				var (
+					result *workerplugin.StreamResult
+					ok     bool
+				)
+
+				select {
+				case <-ctx.Done():
+					cleanup()
+					drainResults(results)
+					return
+				case result, ok = <-results:
+					if !ok {
+						break streamLoop
+					}
+				}
 
 				// Mark first byte received (disables hung detection for this request)
 				req.gotFirstByte.Store(true)
@@ -1090,35 +1106,57 @@ type KillWorkerResult struct {
 // This is intended for testing scenarios where we need to simulate worker death mid-request.
 // Returns information about the killed worker, or an error if no suitable worker was found.
 func (p *Pool) KillWorkerWithInFlight() (*KillWorkerResult, error) {
-	// Find a worker with in-flight requests
+	// Prefer the worker with the most recently started in-flight request.
+	// This makes debug kills deterministic when a previous test leaves a stale
+	// in-flight request while a new stream has just started.
+	var selected *workerHandle
+	var selectedCount int
+	var selectedGotFirstByte []bool
+	var selectedNewestStartedAt time.Time
+
 	for _, handle := range p.workerSnapshot() {
 		handle.inFlightMu.RLock()
 		inFlightCount := len(handle.inFlightReq)
-		var gotFirstByteList []bool
+		if inFlightCount == 0 {
+			handle.inFlightMu.RUnlock()
+			continue
+		}
+
+		gotFirstByteList := make([]bool, 0, inFlightCount)
+		var newestStartedAt time.Time
 		for _, req := range handle.inFlightReq {
 			gotFirstByteList = append(gotFirstByteList, req.gotFirstByte.Load())
+			if req.startedAt.After(newestStartedAt) {
+				newestStartedAt = req.startedAt
+			}
 		}
 		handle.inFlightMu.RUnlock()
 
-		if inFlightCount > 0 {
-			// Found a worker with in-flight requests - kill it
-			p.logger.Warn().
-				Int("worker_id", handle.id).
-				Int("in_flight_count", inFlightCount).
-				Msg("DEBUG: Killing worker with in-flight requests")
-
-			p.killWorkerAndRetry(handle)
-
-			return &KillWorkerResult{
-				WorkerID:      handle.id,
-				InFlightCount: inFlightCount,
-				GotFirstByte:  gotFirstByteList,
-				Killed:        true,
-			}, nil
+		if selected == nil || newestStartedAt.After(selectedNewestStartedAt) {
+			selected = handle
+			selectedCount = inFlightCount
+			selectedGotFirstByte = gotFirstByteList
+			selectedNewestStartedAt = newestStartedAt
 		}
 	}
 
-	return nil, fmt.Errorf("no workers with in-flight requests found")
+	if selected == nil {
+		return nil, fmt.Errorf("no workers with in-flight requests found")
+	}
+
+	p.logger.Warn().
+		Int("worker_id", selected.id).
+		Int("in_flight_count", selectedCount).
+		Msg("DEBUG: Killing worker with in-flight requests")
+
+	p.killWorkerAndRetry(selected)
+
+	return &KillWorkerResult{
+		WorkerID:      selected.id,
+		InFlightCount: selectedCount,
+		GotFirstByte:  selectedGotFirstByte,
+		Killed:        true,
+	}, nil
 }
 
 // SetFirstByteTimeout updates the timeout for hung detection.
