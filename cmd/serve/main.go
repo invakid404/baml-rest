@@ -85,19 +85,23 @@ var (
 		[]string{"method", "path", "status"},
 	)
 	registerHTTPMetricsOnce sync.Once
+	registerHTTPMetricsErr  error
 )
 
-func registerHTTPMetrics() {
+func registerHTTPMetrics() error {
 	registerHTTPMetricsOnce.Do(func() {
 		for _, collector := range []prometheus.Collector{httpRequestsTotal, httpRequestDuration} {
 			if err := prometheus.Register(collector); err != nil {
 				if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
 					continue
 				}
-				panic(err)
+				registerHTTPMetricsErr = err
+				return
 			}
 		}
 	})
+
+	return registerHTTPMetricsErr
 }
 
 func httpMetricsMiddleware(c fiber.Ctx) error {
@@ -339,7 +343,10 @@ var serveCmd = &cobra.Command{
 		registerDebugEndpoints(app, logger, workerPool)
 
 		// Routes with HTTP request logging and metrics
-		registerHTTPMetrics()
+		if err := registerHTTPMetrics(); err != nil {
+			_ = workerPool.Close()
+			return fmt.Errorf("failed to register HTTP metrics: %w", err)
+		}
 		app.Use(httpMetricsMiddleware)
 		app.Use(fiberrequestid.New(fiberrequestid.Config{
 			Header: "X-Request-Id",
@@ -384,7 +391,7 @@ var serveCmd = &cobra.Command{
 
 			makeCallHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
-					ctx, cancel := context.WithCancel(c.Context())
+					ctx, cancel := context.WithCancel(c.RequestCtx())
 					defer cancel()
 
 					result, err := workerPool.Call(ctx, methodName, c.Body(), streamMode)
@@ -441,7 +448,7 @@ var serveCmd = &cobra.Command{
 
 			// Parse endpoint - parses raw LLM output using this method's schema
 			app.Post(fmt.Sprintf("/parse/%s", methodName), func(c fiber.Ctx) error {
-				ctx, cancel := context.WithCancel(c.Context())
+				ctx, cancel := context.WithCancel(c.RequestCtx())
 				defer cancel()
 
 				result, err := workerPool.Parse(ctx, methodName, c.Body())
@@ -463,7 +470,7 @@ var serveCmd = &cobra.Command{
 
 			makeDynamicCallHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
-					ctx, cancel := context.WithCancel(c.Context())
+					ctx, cancel := context.WithCancel(c.RequestCtx())
 					defer cancel()
 
 					rawBody := c.Body()
@@ -555,7 +562,7 @@ var serveCmd = &cobra.Command{
 
 			// Dynamic parse endpoint
 			app.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), func(c fiber.Ctx) error {
-				ctx, cancel := context.WithCancel(c.Context())
+				ctx, cancel := context.WithCancel(c.RequestCtx())
 				defer cancel()
 
 				rawBody := c.Body()
