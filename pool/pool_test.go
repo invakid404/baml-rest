@@ -531,10 +531,10 @@ func TestCallStreamMidStreamRetry(t *testing.T) {
 
 	var gotReset, gotFinal bool
 	for r := range results {
-		switch {
-		case r.Reset:
+		if r.Reset {
 			gotReset = true
-		case r.Kind == workerplugin.StreamResultKindFinal:
+		}
+		if r.Kind == workerplugin.StreamResultKindFinal {
 			gotFinal = true
 		}
 		workerplugin.ReleaseStreamResult(r)

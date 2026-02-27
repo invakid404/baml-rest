@@ -985,22 +985,14 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					break
 				}
 
-				// Inject reset message before first result after retry
+				// Mark the first forwarded result after a retry as reset so the
+				// stream writer emits a reset event immediately before this data.
+				// This ties reset signaling to the first real result that makes it
+				// to the client (instead of a standalone synthetic message).
 				if needsReset && !injectedReset {
-					resetResult := workerplugin.GetStreamResult()
-					resetResult.Kind = workerplugin.StreamResultKindStream
-					resetResult.Reset = true
-					select {
-					case wrappedResults <- resetResult:
-						injectedReset = true
-						currentHandle.logger.Info().Msg("Injected reset message for mid-stream retry")
-					case <-ctx.Done():
-						workerplugin.ReleaseStreamResult(resetResult)
-						workerplugin.ReleaseStreamResult(result)
-						drainResults(results)
-						cleanup()
-						return
-					}
+					result.Reset = true
+					injectedReset = true
+					currentHandle.logger.Info().Msg("Injected reset marker for mid-stream retry")
 				}
 
 				// Save kind before sending — the consumer may ReleaseStreamResult
