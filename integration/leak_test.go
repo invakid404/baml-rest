@@ -495,12 +495,14 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 	var finalResult *testutil.GoroutinesResult
 	prevMatches := -1
 
-	for time.Now().Before(deadline) {
-		time.Sleep(pollInterval)
-
+	for {
 		result, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Logf("Error during goroutine polling: %v", err)
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(pollInterval)
 			continue
 		}
 
@@ -513,12 +515,35 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 			return result, true
 		}
 
-		t.Logf("Waiting for goroutine cleanup: %d matching (baseline %d)...", finalMatches, baselineMatches)
 		prevMatches = finalMatches
+
+		if time.Now().After(deadline) {
+			break
+		}
+
+		t.Logf("Waiting for goroutine cleanup: %d matching (baseline %d)...", finalMatches, baselineMatches)
+		time.Sleep(pollInterval)
 	}
 
 	if finalResult == nil {
 		t.Fatalf("Failed to get any goroutine snapshot during %v polling window", maxWait)
+	}
+
+	finalMatches := countTotalMatches(finalResult)
+	if finalMatches <= baselineMatches {
+		time.Sleep(pollInterval)
+
+		graceResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
+		if err != nil {
+			t.Logf("Error during grace-period goroutine polling: %v", err)
+		} else {
+			graceMatches := countTotalMatches(graceResult)
+			if graceMatches <= baselineMatches && graceMatches == finalMatches {
+				t.Logf("Goroutines cleaned up during grace period: final=%d, baseline=%d", graceMatches, baselineMatches)
+				return graceResult, true
+			}
+			finalResult = graceResult
+		}
 	}
 
 	// Timed out without stabilization — never report success since we can't
