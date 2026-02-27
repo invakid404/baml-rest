@@ -28,6 +28,11 @@ const (
 // ContentTypeNDJSON is the MIME type for NDJSON streams.
 const ContentTypeNDJSON = "application/x-ndjson"
 
+const (
+	defaultSSEKeepaliveInterval = 1 * time.Second
+	minSSEKeepaliveInterval     = 1 * time.Second
+)
+
 // NDJSONEventType represents the type of NDJSON streaming event.
 type NDJSONEventType string
 
@@ -105,9 +110,12 @@ func NewSSEPublisher(
 	resetType sse.EventType,
 	finalType sse.EventType,
 	needsRaw bool,
+	keepaliveInterval time.Duration,
 	pathPrefix string,
 	methodName string,
 ) (*SSEPublisher, context.Context) {
+	keepaliveInterval = normalizeSSEKeepaliveInterval(keepaliveInterval)
+
 	// Create unique topic for this request
 	topic := pathPrefix + "/" + methodName + "/" + ptrString(r)
 	ready := make(chan struct{})
@@ -152,7 +160,7 @@ func NewSSEPublisher(
 	// Publish lightweight keepalive comments so dead client connections are
 	// detected even before the first real data event is available.
 	go recovery.Go(func() error {
-		ticker := time.NewTicker(250 * time.Millisecond)
+		ticker := time.NewTicker(keepaliveInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -359,11 +367,12 @@ func (p *NDJSONPublisher) Close() {
 
 // StreamHandlerConfig contains configuration for the unified stream handler.
 type StreamHandlerConfig struct {
-	SSEServer    *sse.Server
-	SSEErrorType sse.EventType
-	SSEResetType sse.EventType
-	SSEFinalType sse.EventType
-	PathPrefix   string
+	SSEServer            *sse.Server
+	SSEErrorType         sse.EventType
+	SSEResetType         sse.EventType
+	SSEFinalType         sse.EventType
+	SSEKeepaliveInterval time.Duration
+	PathPrefix           string
 }
 
 // HandleStream is the unified stream handler that routes to SSE or NDJSON.
@@ -418,6 +427,7 @@ func HandleStream(
 			config.SSEResetType,
 			config.SSEFinalType,
 			streamMode.NeedsRaw(),
+			config.SSEKeepaliveInterval,
 			config.PathPrefix,
 			methodName,
 		)
@@ -558,4 +568,14 @@ func drainResults(results <-chan *workerplugin.StreamResult) {
 // ptrString returns a string representation of a pointer for topic uniqueness.
 func ptrString(p any) string {
 	return fmt.Sprintf("%p", p)
+}
+
+func normalizeSSEKeepaliveInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return defaultSSEKeepaliveInterval
+	}
+	if interval < minSSEKeepaliveInterval {
+		return minSSEKeepaliveInterval
+	}
+	return interval
 }

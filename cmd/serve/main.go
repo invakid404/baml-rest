@@ -54,11 +54,12 @@ const (
 )
 
 var (
-	port             int
-	poolSize         int
-	firstByteTimeout time.Duration
-	prettyLogs       bool
-	memLimit         int64
+	port                 int
+	poolSize             int
+	firstByteTimeout     time.Duration
+	sseKeepaliveInterval time.Duration
+	prettyLogs           bool
+	memLimit             int64
 )
 
 var rootCmd = &cobra.Command{
@@ -103,7 +104,10 @@ func httpMetricsMiddleware(c fiber.Ctx) error {
 	err := c.Next()
 
 	status := strconv.Itoa(c.Response().StatusCode())
-	path := c.Path()
+	path := c.FullPath()
+	if path == "" {
+		path = "_unmatched"
+	}
 	httpRequestsTotal.WithLabelValues(c.Method(), path, status).Inc()
 	httpRequestDuration.WithLabelValues(c.Method(), path, status).Observe(time.Since(start).Seconds())
 
@@ -396,11 +400,12 @@ var serveCmd = &cobra.Command{
 
 			makeStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) http.HandlerFunc {
 				config := &StreamHandlerConfig{
-					SSEServer:    s,
-					SSEErrorType: sseErrorKind,
-					SSEResetType: sseResetKind,
-					SSEFinalType: sseFinalKind,
-					PathPrefix:   pathPrefix,
+					SSEServer:            s,
+					SSEErrorType:         sseErrorKind,
+					SSEResetType:         sseResetKind,
+					SSEFinalType:         sseFinalKind,
+					SSEKeepaliveInterval: sseKeepaliveInterval,
+					PathPrefix:           pathPrefix,
 				}
 				return func(w http.ResponseWriter, r *http.Request) {
 					rawBody, err := io.ReadAll(r.Body)
@@ -505,11 +510,12 @@ var serveCmd = &cobra.Command{
 
 			makeDynamicStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) http.HandlerFunc {
 				config := &StreamHandlerConfig{
-					SSEServer:    s,
-					SSEErrorType: sseErrorKind,
-					SSEResetType: sseResetKind,
-					SSEFinalType: sseFinalKind,
-					PathPrefix:   pathPrefix,
+					SSEServer:            s,
+					SSEErrorType:         sseErrorKind,
+					SSEResetType:         sseResetKind,
+					SSEFinalType:         sseFinalKind,
+					SSEKeepaliveInterval: sseKeepaliveInterval,
+					PathPrefix:           pathPrefix,
 				}
 				return func(w http.ResponseWriter, r *http.Request) {
 					rawBody, err := io.ReadAll(r.Body)
@@ -643,6 +649,7 @@ func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
+	serveCmd.Flags().DurationVar(&sseKeepaliveInterval, "sse-keepalive-interval", defaultSSEKeepaliveInterval, "Interval between SSE keepalive comments (minimum 1s)")
 	serveCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 	serveCmd.Flags().Int64Var(&memLimit, "mem-limit", 0, "Total memory limit in bytes (0 = auto-detect from cgroups/system)")
 

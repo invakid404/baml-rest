@@ -70,6 +70,12 @@ func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *p
 		}
 
 		if req.FirstByteTimeoutMs != nil {
+			if *req.FirstByteTimeoutMs < 0 {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"status": "error",
+					"error":  "first_byte_timeout_ms must be >= 0",
+				})
+			}
 			workerPool.SetFirstByteTimeout(time.Duration(*req.FirstByteTimeoutMs) * time.Millisecond)
 			logger.Info().Int64("first_byte_timeout_ms", *req.FirstByteTimeoutMs).Msg("Updated FirstByteTimeout")
 		}
