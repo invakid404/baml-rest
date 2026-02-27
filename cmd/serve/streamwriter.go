@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/gofiber/fiber/v3"
 	fiberadaptor "github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -54,7 +56,11 @@ type NDJSONEvent struct {
 // NegotiateStreamFormat determines the stream format based on Accept header.
 // Returns NDJSON only if explicitly requested, otherwise defaults to SSE.
 func NegotiateStreamFormat(r *http.Request) StreamFormat {
-	accept := r.Header.Get("Accept")
+	return NegotiateStreamFormatFromAccept(r.Header.Get("Accept"))
+}
+
+// NegotiateStreamFormatFromAccept determines the stream format from an Accept header value.
+func NegotiateStreamFormatFromAccept(accept string) StreamFormat {
 	if accept == "" {
 		return StreamFormatSSE
 	}
@@ -68,6 +74,97 @@ func NegotiateStreamFormat(r *http.Request) StreamFormat {
 	}
 
 	return StreamFormatSSE
+}
+
+// NDJSONStreamWriterPublisher implements StreamPublisher for native Fiber streaming.
+type NDJSONStreamWriterPublisher struct {
+	w      *bufio.Writer
+	cancel context.CancelFunc
+}
+
+func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	if _, err := p.w.Write(data); err != nil {
+		p.cancel()
+		return err
+	}
+	if err := p.w.WriteByte('\n'); err != nil {
+		p.cancel()
+		return err
+	}
+
+	if err := p.w.Flush(); err != nil {
+		p.cancel()
+		return err
+	}
+
+	return nil
+}
+
+func (p *NDJSONStreamWriterPublisher) PublishData(data []byte, raw string) error {
+	event := &NDJSONEvent{Type: NDJSONEventData, Data: data}
+	if raw != "" {
+		event.Raw = raw
+	}
+	return p.writeEvent(event)
+}
+
+func (p *NDJSONStreamWriterPublisher) PublishFinal(data []byte, raw string) error {
+	event := &NDJSONEvent{Type: NDJSONEventFinal, Data: data}
+	if raw != "" {
+		event.Raw = raw
+	}
+	return p.writeEvent(event)
+}
+
+func (p *NDJSONStreamWriterPublisher) PublishReset() error {
+	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventReset})
+}
+
+func (p *NDJSONStreamWriterPublisher) PublishError(errMsg string) error {
+	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventError, Error: errMsg})
+}
+
+func (p *NDJSONStreamWriterPublisher) Close() {
+	// No cleanup needed.
+}
+
+// HandleNDJSONStreamFiber handles NDJSON stream requests with native Fiber streaming.
+func HandleNDJSONStreamFiber(
+	c fiber.Ctx,
+	methodName string,
+	rawBody []byte,
+	streamMode bamlutils.StreamMode,
+	workerPool *pool.Pool,
+	flattenDynamic bool,
+) error {
+	c.Set(fiber.HeaderContentType, ContentTypeNDJSON)
+	c.Set(fiber.HeaderCacheControl, "no-cache")
+	c.Set(fiber.HeaderConnection, "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
+	c.Set("X-Content-Type-Options", "nosniff")
+
+	return c.SendStreamWriter(func(w *bufio.Writer) {
+		streamCtx, cancel := context.WithCancel(c.Context())
+		defer cancel()
+
+		publisher := &NDJSONStreamWriterPublisher{
+			w:      w,
+			cancel: cancel,
+		}
+
+		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
+		if err != nil {
+			_ = publisher.PublishError(err.Error())
+			return
+		}
+
+		consumeStream(streamCtx, results, publisher, streamMode, flattenDynamic)
+	})
 }
 
 // StreamPublisher is the unified interface for publishing stream events.
