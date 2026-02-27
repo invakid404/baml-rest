@@ -629,6 +629,7 @@ github.com/go-openapi/runtime v0.29.2/go.mod h1:biq5kJXRJKBJxTDJXAa00DOTa/anflQP
 github.com/go-openapi/spec v0.22.1/go.mod h1:c7aeIQT175dVowfp7FeCvXXnjN/MrpaONStibD2WtDA=
 github.com/go-openapi/strfmt v0.25.0/go.mod h1:nNXct7OzbwrMY9+5tLX4I21pzcmE6ccMGXl3jFdPfn8=
 github.com/go-openapi/swag v0.25.3 h1:FAa5wJXyDtI7yUztKDfZxDrSx+8WTg31MfCQ9s3PV+s=
+github.com/go-openapi/swag v0.25.3/go.mod h1:tX9vI8Mj8Ny+uCEk39I1QADvIPI7lkndX4qCsEqhkS8=
 github.com/go-openapi/swag/cmdutils v0.25.3/go.mod h1:pdae/AFo6WxLl5L0rq87eRzVPm/XRHM3MoYgRMvG4A0=
 github.com/go-openapi/swag/conv v0.25.3/go.mod h1:n4Ibfwhn8NJnPXNRhBO5Cqb9ez7alBR40JS4rbASUPU=
 github.com/go-openapi/swag/fileutils v0.25.3/go.mod h1:cdOT/PKbwcysVQ9Tpr0q20lQKH7MGhOEb6EwmHOirUk=
