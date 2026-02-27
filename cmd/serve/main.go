@@ -262,7 +262,10 @@ var serveCmd = &cobra.Command{
 		logger.Info().Int("size", poolSize).Msg("Worker pool initialized")
 
 		// Create Fiber app
-		app := fiber.New()
+		app := fiber.New(fiber.Config{
+			JSONEncoder: json.Marshal,
+			JSONDecoder: json.Unmarshal,
+		})
 
 		// Pre-allocate SSE event kinds
 		sseErrorKind, err := sse.NewType("error")

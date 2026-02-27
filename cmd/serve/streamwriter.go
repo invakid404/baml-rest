@@ -162,6 +162,7 @@ func NewSSEPublisher(
 	go recovery.Go(func() error {
 		ticker := time.NewTicker(keepaliveInterval)
 		defer ticker.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -393,14 +394,6 @@ func HandleStream(
 	if fiberCtx, ok := fiberadaptor.LocalContextFromHTTPRequest(r); ok && fiberCtx != nil {
 		mergedCtx, mergedCancel := context.WithCancel(ctx)
 		defer mergedCancel()
-		go recovery.Go(func() error {
-			select {
-			case <-ctx.Done():
-				mergedCancel()
-			case <-mergedCtx.Done():
-			}
-			return nil
-		})
 		go recovery.Go(func() error {
 			select {
 			case <-fiberCtx.Done():
