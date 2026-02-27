@@ -163,7 +163,7 @@ func HandleNDJSONStreamFiber(
 			return
 		}
 
-		consumeStream(streamCtx, results, publisher, streamMode, flattenDynamic)
+		consumeStream(results, publisher, streamMode, flattenDynamic)
 	})
 }
 
@@ -553,14 +553,13 @@ func HandleStream(
 	}
 
 	// Single consumer loop - the unified pattern
-	consumeStream(r.Context(), results, publisher, streamMode, flattenDynamic)
+	consumeStream(results, publisher, streamMode, flattenDynamic)
 }
 
 // consumeStream is the single consumer that iterates over pool results
 // and publishes through the StreamPublisher interface.
 // If flattenDynamic is true, DynamicProperties fields will be flattened to the root level.
 func consumeStream(
-	requestCtx context.Context,
 	results <-chan *workerplugin.StreamResult,
 	publisher StreamPublisher,
 	streamMode bamlutils.StreamMode,

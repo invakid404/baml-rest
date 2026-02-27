@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -50,9 +51,12 @@ var openapiJSON []byte
 type sseContextKey string
 
 const (
-	sseContextKeyTopic = sseContextKey("topic")
-	sseContextKeyReady = sseContextKey("ready")
+	sseContextKeyTopic  = sseContextKey("topic")
+	sseContextKeyReady  = sseContextKey("ready")
+	maxRequestBodyBytes = 4 * 1024 * 1024
 )
+
+var errRequestBodyTooLarge = errors.New("request body too large")
 
 var (
 	port                 int
@@ -273,6 +277,7 @@ var serveCmd = &cobra.Command{
 		app := fiber.New(fiber.Config{
 			JSONEncoder: json.Marshal,
 			JSONDecoder: json.Unmarshal,
+			BodyLimit:   maxRequestBodyBytes,
 		})
 
 		// Pre-allocate SSE event kinds
@@ -425,9 +430,13 @@ var serveCmd = &cobra.Command{
 				}
 
 				sseHandler := fiberadaptor.HTTPHandlerWithContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					rawBody, err := io.ReadAll(r.Body)
+					rawBody, err := readRequestBodyLimited(r)
 					if err != nil {
-						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						statusCode := http.StatusBadRequest
+						if errors.Is(err, errRequestBodyTooLarge) {
+							statusCode = http.StatusRequestEntityTooLarge
+						}
+						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), statusCode)
 						return
 					}
 
@@ -528,9 +537,13 @@ var serveCmd = &cobra.Command{
 				}
 
 				sseHandler := fiberadaptor.HTTPHandlerWithContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					rawBody, err := io.ReadAll(r.Body)
+					rawBody, err := readRequestBodyLimited(r)
 					if err != nil {
-						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+						statusCode := http.StatusBadRequest
+						if errors.Is(err, errRequestBodyTooLarge) {
+							statusCode = http.StatusRequestEntityTooLarge
+						}
+						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), statusCode)
 						return
 					}
 
@@ -645,6 +658,17 @@ var serveCmd = &cobra.Command{
 			return nil
 		}
 	},
+}
+
+func readRequestBodyLimited(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxRequestBodyBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxRequestBodyBytes {
+		return nil, errRequestBodyTooLarge
+	}
+	return body, nil
 }
 
 func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int, err error) {
