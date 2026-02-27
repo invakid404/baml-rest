@@ -521,21 +521,9 @@ var serveCmd = &cobra.Command{
 						return
 					}
 
-					// Parse and validate dynamic input
-					var input bamlutils.DynamicInput
-					if err := json.Unmarshal(rawBody, &input); err != nil {
-						writeJSONError(w, r, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
-						return
-					}
-					if err := input.Validate(); err != nil {
-						writeJSONError(w, r, err.Error(), http.StatusBadRequest)
-						return
-					}
-
-					// Convert to internal format
-					workerInput, err := input.ToWorkerInput()
+					workerInput, statusCode, err := parseDynamicStreamInput(rawBody)
 					if err != nil {
-						writeJSONError(w, r, fmt.Sprintf("Failed to convert input: %v", err), http.StatusInternalServerError)
+						writeJSONError(w, r, err.Error(), statusCode)
 						return
 					}
 
@@ -544,20 +532,9 @@ var serveCmd = &cobra.Command{
 
 				return func(c fiber.Ctx) error {
 					if NegotiateStreamFormatFromAccept(c.Get(fiber.HeaderAccept)) == StreamFormatNDJSON {
-						rawBody := c.Body()
-
-						// Parse and validate dynamic input
-						var input bamlutils.DynamicInput
-						if err := json.Unmarshal(rawBody, &input); err != nil {
-							return writeFiberJSONError(c, fmt.Sprintf("Invalid JSON: %v", err), fiber.StatusBadRequest)
-						}
-						if err := input.Validate(); err != nil {
-							return writeFiberJSONError(c, err.Error(), fiber.StatusBadRequest)
-						}
-
-						workerInput, err := input.ToWorkerInput()
+						workerInput, statusCode, err := parseDynamicStreamInput(c.Body())
 						if err != nil {
-							return writeFiberJSONError(c, fmt.Sprintf("Failed to convert input: %v", err), fiber.StatusInternalServerError)
+							return writeFiberJSONError(c, err.Error(), statusCode)
 						}
 
 						return HandleNDJSONStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
@@ -655,6 +632,24 @@ var serveCmd = &cobra.Command{
 			return nil
 		}
 	},
+}
+
+func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int, err error) {
+	var input bamlutils.DynamicInput
+	if err := json.Unmarshal(rawBody, &input); err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("Invalid JSON: %v", err)
+	}
+
+	if err := input.Validate(); err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+
+	workerInput, err = input.ToWorkerInput()
+	if err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to convert input: %v", err)
+	}
+
+	return workerInput, 0, nil
 }
 
 func init() {
