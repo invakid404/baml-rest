@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -318,15 +319,16 @@ var serveCmd = &cobra.Command{
 				return c.Status(fiber.StatusInternalServerError).SendString("failed to gather metrics\n")
 			}
 
-			c.Set(fiber.HeaderContentType, string(expfmt.FmtText))
-			encoder := expfmt.NewEncoder(c.Response().BodyWriter(), expfmt.FmtText)
+			var buf bytes.Buffer
+			encoder := expfmt.NewEncoder(&buf, expfmt.FmtText)
 			for _, mf := range metricFamilies {
 				if err := encoder.Encode(mf); err != nil {
 					return c.Status(fiber.StatusInternalServerError).SendString("failed to encode metrics\n")
 				}
 			}
 
-			return nil
+			c.Set(fiber.HeaderContentType, string(expfmt.FmtText))
+			return c.Send(buf.Bytes())
 		})
 
 		// Register debug endpoints (no-op unless built with -tags=debug)
@@ -637,7 +639,7 @@ var serveCmd = &cobra.Command{
 func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int, err error) {
 	var input bamlutils.DynamicInput
 	if err := json.Unmarshal(rawBody, &input); err != nil {
-		return nil, http.StatusBadRequest, fmt.Errorf("Invalid JSON: %v", err)
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err)
 	}
 
 	if err := input.Validate(); err != nil {
@@ -646,7 +648,7 @@ func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int
 
 	workerInput, err = input.ToWorkerInput()
 	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("Failed to convert input: %v", err)
+		return nil, http.StatusInternalServerError, fmt.Errorf("failed to convert input: %w", err)
 	}
 
 	return workerInput, 0, nil
