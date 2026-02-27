@@ -502,7 +502,9 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 			if time.Now().After(deadline) {
 				break
 			}
-			time.Sleep(pollInterval)
+			if !sleepWithContext(ctx, pollInterval) {
+				break
+			}
 			continue
 		}
 
@@ -522,7 +524,9 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 		}
 
 		t.Logf("Waiting for goroutine cleanup: %d matching (baseline %d)...", finalMatches, baselineMatches)
-		time.Sleep(pollInterval)
+		if !sleepWithContext(ctx, pollInterval) {
+			break
+		}
 	}
 
 	if finalResult == nil {
@@ -531,7 +535,9 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 
 	finalMatches := countTotalMatches(finalResult)
 	if finalMatches <= baselineMatches {
-		time.Sleep(pollInterval)
+		if !sleepWithContext(ctx, pollInterval) {
+			return finalResult, false
+		}
 
 		graceResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
@@ -549,6 +555,18 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 	// Timed out without stabilization — never report success since we can't
 	// distinguish a transient low reading from actual cleanup.
 	return finalResult, false
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // drainEvents consumes all events from a stream, failing the test on error
