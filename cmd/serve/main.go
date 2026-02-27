@@ -170,6 +170,10 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if sseKeepaliveInterval < minSSEKeepaliveInterval {
+			return fmt.Errorf("--sse-keepalive-interval must be >= %s", minSSEKeepaliveInterval)
+		}
+
 		// Initialize zerolog logger
 		var output io.Writer = os.Stdout
 		if prettyLogs {
