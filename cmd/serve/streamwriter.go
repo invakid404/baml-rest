@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/goccy/go-json"
+	fiberadaptor "github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
@@ -147,6 +149,26 @@ func NewSSEPublisher(
 		return nil, ctx
 	}
 
+	// Publish lightweight keepalive comments so dead client connections are
+	// detected even before the first real data event is available.
+	go recovery.Go(func() error {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				keepalive := &sse.Message{}
+				keepalive.AppendComment("keepalive")
+				if err := sseServer.Publish(keepalive, topic); err != nil {
+					cancel()
+					return nil
+				}
+			}
+		}
+	})
+
 	return &SSEPublisher{
 		server:    sseServer,
 		topic:     topic,
@@ -266,6 +288,19 @@ func getFlusher(w http.ResponseWriter) http.Flusher {
 	}
 }
 
+func getCloseNotify(w http.ResponseWriter) <-chan bool {
+	for {
+		if cn, ok := w.(http.CloseNotifier); ok {
+			return cn.CloseNotify()
+		}
+		if u, ok := w.(interface{ Unwrap() http.ResponseWriter }); ok {
+			w = u.Unwrap()
+			continue
+		}
+		return nil
+	}
+}
+
 func (p *NDJSONPublisher) writeEvent(event *NDJSONEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -346,6 +381,27 @@ func HandleStream(
 ) {
 	format := NegotiateStreamFormat(r)
 	ctx := r.Context()
+	if fiberCtx, ok := fiberadaptor.LocalContextFromHTTPRequest(r); ok && fiberCtx != nil {
+		mergedCtx, mergedCancel := context.WithCancel(ctx)
+		defer mergedCancel()
+		go recovery.Go(func() error {
+			select {
+			case <-ctx.Done():
+				mergedCancel()
+			case <-mergedCtx.Done():
+			}
+			return nil
+		})
+		go recovery.Go(func() error {
+			select {
+			case <-fiberCtx.Done():
+				mergedCancel()
+			case <-mergedCtx.Done():
+			}
+			return nil
+		})
+		ctx = mergedCtx
+	}
 
 	var publisher StreamPublisher
 	var streamCtx context.Context
@@ -376,6 +432,16 @@ func HandleStream(
 	// Create cancellable context for the stream
 	streamCtx, cancel := context.WithCancel(streamCtx)
 	defer cancel()
+	if closeNotify := getCloseNotify(w); closeNotify != nil {
+		go recovery.Go(func() error {
+			select {
+			case <-closeNotify:
+				cancel()
+			case <-streamCtx.Done():
+			}
+			return nil
+		})
+	}
 
 	// Start the stream
 	results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)

@@ -413,8 +413,8 @@ var serveCmd = &cobra.Command{
 				}
 			}
 
-			app.Post(fmt.Sprintf("/stream/%s", methodName), fiberadaptor.HTTPHandlerFunc(makeStreamHandler("stream", bamlutils.StreamModeStream)))
-			app.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), fiberadaptor.HTTPHandlerFunc(makeStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw)))
+			app.Post(fmt.Sprintf("/stream/%s", methodName), fiberadaptor.HTTPHandlerWithContext(makeStreamHandler("stream", bamlutils.StreamModeStream)))
+			app.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), fiberadaptor.HTTPHandlerWithContext(makeStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw)))
 
 			// Parse endpoint - parses raw LLM output using this method's schema
 			app.Post(fmt.Sprintf("/parse/%s", methodName), fiberadaptor.HTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -540,8 +540,8 @@ var serveCmd = &cobra.Command{
 				}
 			}
 
-			app.Post(fmt.Sprintf("/stream/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerFunc(makeDynamicStreamHandler("stream", bamlutils.StreamModeStream)))
-			app.Post(fmt.Sprintf("/stream-with-raw/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerFunc(makeDynamicStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw)))
+			app.Post(fmt.Sprintf("/stream/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerWithContext(makeDynamicStreamHandler("stream", bamlutils.StreamModeStream)))
+			app.Post(fmt.Sprintf("/stream-with-raw/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerWithContext(makeDynamicStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw)))
 
 			// Dynamic parse endpoint
 			app.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), fiberadaptor.HTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) {

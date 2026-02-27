@@ -972,10 +972,8 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 
 				select {
 				case <-ctx.Done():
-					if req.gotFirstByte.Load() {
-						currentHandle.healthy.Store(false)
-						go p.restartWorker(currentHandle.id, currentHandle)
-					}
+					currentHandle.healthy.Store(false)
+					go p.restartWorker(currentHandle.id, currentHandle)
 					cleanup()
 					drainResults(results)
 					return
@@ -1017,10 +1015,8 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					case <-ctx.Done():
 						workerplugin.ReleaseStreamResult(resetResult)
 						workerplugin.ReleaseStreamResult(result)
-						if req.gotFirstByte.Load() {
-							currentHandle.healthy.Store(false)
-							go p.restartWorker(currentHandle.id, currentHandle)
-						}
+						currentHandle.healthy.Store(false)
+						go p.restartWorker(currentHandle.id, currentHandle)
 						drainResults(results)
 						cleanup()
 						return
@@ -1038,10 +1034,8 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					sentAnyResults = true
 				case <-ctx.Done():
 					workerplugin.ReleaseStreamResult(result)
-					if req.gotFirstByte.Load() {
-						currentHandle.healthy.Store(false)
-						go p.restartWorker(currentHandle.id, currentHandle)
-					}
+					currentHandle.healthy.Store(false)
+					go p.restartWorker(currentHandle.id, currentHandle)
 					drainResults(results)
 					cleanup()
 					return
