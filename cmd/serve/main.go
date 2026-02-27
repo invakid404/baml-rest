@@ -112,7 +112,20 @@ func httpMetricsMiddleware(c fiber.Ctx) error {
 	start := time.Now()
 	err := c.Next()
 
-	status := strconv.Itoa(c.Response().StatusCode())
+	statusCode := c.Response().StatusCode()
+	if err != nil {
+		var fiberErr *fiber.Error
+		if errors.As(err, &fiberErr) {
+			statusCode = fiberErr.Code
+			if statusCode == 0 {
+				statusCode = fiber.StatusInternalServerError
+			}
+		} else if statusCode < 400 {
+			statusCode = fiber.StatusInternalServerError
+		}
+	}
+
+	status := strconv.Itoa(statusCode)
 	path := c.FullPath()
 	if path == "" {
 		path = "_unmatched"
@@ -401,7 +414,8 @@ var serveCmd = &cobra.Command{
 
 					result, err := workerPool.Call(ctx, methodName, c.Body(), streamMode)
 					if err != nil {
-						return writeFiberJSONError(c, fmt.Sprintf("Error calling prompt %s: %v", methodName, err), fiber.StatusInternalServerError)
+						logger.Error().Err(err).Str("method", methodName).Msg("worker call failed")
+						return writeFiberJSONError(c, "failed to process request", fiber.StatusInternalServerError)
 					}
 
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
@@ -462,7 +476,8 @@ var serveCmd = &cobra.Command{
 
 				result, err := workerPool.Parse(ctx, methodName, c.Body())
 				if err != nil {
-					return writeFiberJSONError(c, fmt.Sprintf("Error parsing with %s: %v", methodName, err), fiber.StatusInternalServerError)
+					logger.Error().Err(err).Str("method", methodName).Msg("worker parse failed")
+					return writeFiberJSONError(c, "failed to parse response", fiber.StatusInternalServerError)
 				}
 
 				c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
@@ -487,7 +502,7 @@ var serveCmd = &cobra.Command{
 					// Parse and validate dynamic input
 					var input bamlutils.DynamicInput
 					if err := json.Unmarshal(rawBody, &input); err != nil {
-						return writeFiberJSONError(c, fmt.Sprintf("Invalid JSON: %v", err), fiber.StatusBadRequest)
+						return writeFiberJSONError(c, "invalid JSON payload", fiber.StatusBadRequest)
 					}
 
 					if err := input.Validate(); err != nil {
@@ -497,18 +512,21 @@ var serveCmd = &cobra.Command{
 					// Convert to internal format
 					workerInput, err := input.ToWorkerInput()
 					if err != nil {
-						return writeFiberJSONError(c, fmt.Sprintf("Failed to convert input: %v", err), fiber.StatusInternalServerError)
+						logger.Error().Err(err).Msg("dynamic input conversion failed")
+						return writeFiberJSONError(c, "failed to process dynamic input", fiber.StatusInternalServerError)
 					}
 
 					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
 					if err != nil {
-						return writeFiberJSONError(c, fmt.Sprintf("Error calling dynamic prompt: %v", err), fiber.StatusInternalServerError)
+						logger.Error().Err(err).Msg("dynamic worker call failed")
+						return writeFiberJSONError(c, "failed to process request", fiber.StatusInternalServerError)
 					}
 
 					// Flatten DynamicProperties to root level for better UX
 					flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 					if err != nil {
-						return writeFiberJSONError(c, fmt.Sprintf("Error flattening response: %v", err), fiber.StatusInternalServerError)
+						logger.Error().Err(err).Msg("dynamic response flatten failed")
+						return writeFiberJSONError(c, "failed to process response", fiber.StatusInternalServerError)
 					}
 
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
@@ -549,7 +567,12 @@ var serveCmd = &cobra.Command{
 
 					workerInput, statusCode, err := parseDynamicStreamInput(rawBody)
 					if err != nil {
-						writeJSONError(w, r, err.Error(), statusCode)
+						message := err.Error()
+						if statusCode >= http.StatusInternalServerError {
+							logger.Error().Err(err).Msg("dynamic stream input parsing failed")
+							message = "failed to process dynamic stream input"
+						}
+						writeJSONError(w, r, message, statusCode)
 						return
 					}
 
@@ -560,7 +583,12 @@ var serveCmd = &cobra.Command{
 					if NegotiateStreamFormatFromAccept(c.Get(fiber.HeaderAccept)) == StreamFormatNDJSON {
 						workerInput, statusCode, err := parseDynamicStreamInput(c.Body())
 						if err != nil {
-							return writeFiberJSONError(c, err.Error(), statusCode)
+							message := err.Error()
+							if statusCode >= fiber.StatusInternalServerError {
+								logger.Error().Err(err).Msg("dynamic NDJSON input parsing failed")
+								message = "failed to process dynamic stream input"
+							}
+							return writeFiberJSONError(c, message, statusCode)
 						}
 
 						return HandleNDJSONStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
@@ -583,7 +611,7 @@ var serveCmd = &cobra.Command{
 				// Parse and validate dynamic parse input
 				var input bamlutils.DynamicParseInput
 				if err := json.Unmarshal(rawBody, &input); err != nil {
-					return writeFiberJSONError(c, fmt.Sprintf("Invalid JSON: %v", err), fiber.StatusBadRequest)
+					return writeFiberJSONError(c, "invalid JSON payload", fiber.StatusBadRequest)
 				}
 				if err := input.Validate(); err != nil {
 					return writeFiberJSONError(c, err.Error(), fiber.StatusBadRequest)
@@ -592,18 +620,21 @@ var serveCmd = &cobra.Command{
 				// Convert to internal format
 				workerInput, err := input.ToWorkerInput()
 				if err != nil {
-					return writeFiberJSONError(c, fmt.Sprintf("Failed to convert input: %v", err), fiber.StatusInternalServerError)
+					logger.Error().Err(err).Msg("dynamic parse input conversion failed")
+					return writeFiberJSONError(c, "failed to process dynamic input", fiber.StatusInternalServerError)
 				}
 
 				result, err := workerPool.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
 				if err != nil {
-					return writeFiberJSONError(c, fmt.Sprintf("Error parsing with dynamic prompt: %v", err), fiber.StatusInternalServerError)
+					logger.Error().Err(err).Msg("dynamic worker parse failed")
+					return writeFiberJSONError(c, "failed to parse response", fiber.StatusInternalServerError)
 				}
 
 				// Flatten DynamicProperties to root level for better UX
 				flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 				if err != nil {
-					return writeFiberJSONError(c, fmt.Sprintf("Error flattening response: %v", err), fiber.StatusInternalServerError)
+					logger.Error().Err(err).Msg("dynamic parse response flatten failed")
+					return writeFiberJSONError(c, "failed to process response", fiber.StatusInternalServerError)
 				}
 
 				c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
