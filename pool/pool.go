@@ -963,25 +963,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			var injectedReset bool
 			var shouldRetry bool
 
-		streamLoop:
-			for {
-				var (
-					result *workerplugin.StreamResult
-					ok     bool
-				)
-
-				select {
-				case <-ctx.Done():
-					currentHandle.healthy.Store(false)
-					go p.restartWorker(currentHandle.id, currentHandle)
-					cleanup()
-					drainResults(results)
-					return
-				case result, ok = <-results:
-					if !ok {
-						break streamLoop
-					}
-				}
+			for result := range results {
 
 				// Mark first byte received (disables hung detection for this request)
 				req.gotFirstByte.Store(true)
@@ -1015,8 +997,6 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					case <-ctx.Done():
 						workerplugin.ReleaseStreamResult(resetResult)
 						workerplugin.ReleaseStreamResult(result)
-						currentHandle.healthy.Store(false)
-						go p.restartWorker(currentHandle.id, currentHandle)
 						drainResults(results)
 						cleanup()
 						return
@@ -1034,8 +1014,6 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					sentAnyResults = true
 				case <-ctx.Done():
 					workerplugin.ReleaseStreamResult(result)
-					currentHandle.healthy.Store(false)
-					go p.restartWorker(currentHandle.id, currentHandle)
 					drainResults(results)
 					cleanup()
 					return
