@@ -308,6 +308,13 @@ func dumpDiagnostics(t *testing.T, ctx context.Context, reason string) {
 	t.Logf("=== END DIAGNOSTIC DUMP ===")
 }
 
+func skipUnlessCanarySourceRun(t *testing.T) {
+	t.Helper()
+	if BAMLSourcePath == "" {
+		t.Skip("Skipping: stress tests run only in BAML source canary runs")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TestStressNoDeadlock
 // ---------------------------------------------------------------------------
@@ -319,6 +326,8 @@ func dumpDiagnostics(t *testing.T, ctx context.Context, reason string) {
 // Telemetry: logs first 10 unique errors per endpoint, tracks latency percentiles,
 // detects stalls (zero progress for 30s) and dumps server-side diagnostics.
 func TestStressNoDeadlock(t *testing.T) {
+	skipUnlessCanarySourceRun(t)
+
 	const (
 		callRequests   = 40_000
 		streamRequests = 20_000
@@ -636,6 +645,8 @@ func TestStressNoDeadlock(t *testing.T) {
 // Telemetry: logs first 10 unique errors, tracks stream latency percentiles,
 // detects stalls and dumps server-side diagnostics.
 func TestStressConcurrentStreams(t *testing.T) {
+	skipUnlessCanarySourceRun(t)
+
 	const (
 		totalStreams   = 10_000
 		maxConcurrency = 50
