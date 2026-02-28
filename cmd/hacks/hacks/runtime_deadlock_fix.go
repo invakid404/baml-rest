@@ -60,7 +60,10 @@ var (
 //
 // This patch also improves stream cancellation callback cleanup behavior.
 func ApplyRuntimeDeadlockFix(bamlVersion string) error {
-	requestedVersion := bamlutils.NormalizeVersion(bamlVersion)
+	requestedVersion := strings.TrimSpace(bamlVersion)
+	if requestedVersion != "" {
+		requestedVersion = bamlutils.NormalizeVersion(requestedVersion)
+	}
 
 	resolvedVersion, err := bamlModuleVersion()
 	if err != nil {
@@ -165,10 +168,12 @@ func bamlModuleVersion() (string, error) {
 		return "", fmt.Errorf("failed to resolve baml module version: %w", err)
 	}
 
-	version := bamlutils.NormalizeVersion(strings.TrimSpace(string(out)))
-	if version == "" {
+	rawVersion := strings.TrimSpace(string(out))
+	if rawVersion == "" {
 		return "", fmt.Errorf("failed to resolve baml module version: go list returned empty version")
 	}
+
+	version := bamlutils.NormalizeVersion(rawVersion)
 
 	return version, nil
 }
