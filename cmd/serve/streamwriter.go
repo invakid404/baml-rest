@@ -148,8 +148,13 @@ func HandleNDJSONStreamFiber(
 	c.Set("X-Accel-Buffering", "no")
 	c.Set("X-Content-Type-Options", "nosniff")
 
+	streamParentCtx := c.Context()
+	if reqCtx := c.RequestCtx(); reqCtx != nil {
+		streamParentCtx = reqCtx
+	}
+
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		streamCtx, cancel := context.WithCancel(c.Context())
+		streamCtx, cancel := context.WithCancel(streamParentCtx)
 		defer cancel()
 
 		publisher := &NDJSONStreamWriterPublisher{
