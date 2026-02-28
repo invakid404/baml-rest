@@ -3,6 +3,7 @@ package hacks
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"embed"
 	"errors"
 	"fmt"
@@ -22,11 +23,31 @@ var runtimePatchFS embed.FS
 
 const (
 	pr3185PatchV219Path         = "patches/pr3185_v219.diff"
+	pr3185PatchV219Checksum     = "e52ff819519b29b34b350e5144286081ff3a60ed43a358fc65cf80a51ec664ed"
+	pr3185PatchV219Provenance   = "BoundaryML/baml PR #3185"
 	pr3185PatchV218BackportPath = "patches/pr3185_backport_v218.diff"
+	pr3185PatchV218Checksum     = "fc234a28025f8b2d7cd807dfd898f0b026c07801321bb8d59ce1ed21956c68df"
+	pr3185PatchV218Provenance   = "baml-rest backport aligned to BoundaryML/baml PR #3185"
 	patchedModuleCopyMarkerName = ".patched_copy_complete"
 	execTimeout                 = 30 * time.Second
 	patchExecTimeout            = 2 * time.Minute
 )
+
+type embeddedPatchMetadata struct {
+	checksum   string
+	provenance string
+}
+
+var patchMetadataByPath = map[string]embeddedPatchMetadata{
+	pr3185PatchV219Path: {
+		checksum:   pr3185PatchV219Checksum,
+		provenance: pr3185PatchV219Provenance,
+	},
+	pr3185PatchV218BackportPath: {
+		checksum:   pr3185PatchV218Checksum,
+		provenance: pr3185PatchV218Provenance,
+	},
+}
 
 var (
 	gnuPatchPath     string
@@ -39,9 +60,20 @@ var (
 //
 // This patch also improves stream cancellation callback cleanup behavior.
 func ApplyRuntimeDeadlockFix(bamlVersion string) error {
-	version := bamlutils.NormalizeVersion(bamlVersion)
+	requestedVersion := bamlutils.NormalizeVersion(bamlVersion)
+
+	resolvedVersion, err := bamlModuleVersion()
+	if err != nil {
+		return err
+	}
+
+	if requestedVersion != "" && bamlutils.CompareVersions(requestedVersion, resolvedVersion) != 0 {
+		return fmt.Errorf("baml version mismatch: requested %s but resolved %s", requestedVersion, resolvedVersion)
+	}
+
+	version := resolvedVersion
 	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
-		fmt.Printf("Skipping runtime-deadlock-fix (not needed for version %s)\n", bamlVersion)
+		fmt.Printf("Skipping runtime-deadlock-fix (resolved version %s is below v0.218.0)\n", version)
 		return nil
 	}
 
@@ -65,7 +97,7 @@ func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 		return err
 	}
 
-	applied, alreadyApplied, err := applyPatch(moduleDir, patchData)
+	applied, _, err := applyPatch(moduleDir, patchData)
 	if err != nil {
 		return fmt.Errorf("applying %s in %s: %w", filepath.Base(patchPath), moduleDir, err)
 	}
@@ -81,12 +113,8 @@ func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 		return nil
 	}
 
-	if alreadyApplied {
-		fmt.Printf("  Patch already applied: %s\n", filepath.Base(patchPath))
-		return nil
-	}
-
-	return fmt.Errorf("patch %s made no changes", filepath.Base(patchPath))
+	fmt.Printf("  Patch already applied: %s\n", filepath.Base(patchPath))
+	return nil
 }
 
 func readEmbeddedPatch(path string) ([]byte, error) {
@@ -94,7 +122,55 @@ func readEmbeddedPatch(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading embedded patch %s: %w", path, err)
 	}
+	if err := verifyEmbeddedPatchIntegrity(path, data); err != nil {
+		return nil, err
+	}
 	return data, nil
+}
+
+func verifyEmbeddedPatchIntegrity(path string, data []byte) error {
+	meta, ok := patchMetadataByPath[path]
+	if !ok {
+		return fmt.Errorf("missing embedded patch metadata for %s", path)
+	}
+
+	digest := sha256.Sum256(data)
+	actualChecksum := fmt.Sprintf("%x", digest)
+	if actualChecksum != meta.checksum {
+		return fmt.Errorf(
+			"embedded patch integrity check failed for %s (provenance: %s): expected sha256 %s, got %s",
+			path,
+			meta.provenance,
+			meta.checksum,
+			actualChecksum,
+		)
+	}
+
+	return nil
+}
+
+func bamlModuleVersion() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", "github.com/boundaryml/baml")
+	out, err := cmd.Output()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("timed out resolving baml module version after %s", execTimeout)
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("failed to resolve baml module version: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return "", fmt.Errorf("failed to resolve baml module version: %w", err)
+	}
+
+	version := bamlutils.NormalizeVersion(strings.TrimSpace(string(out)))
+	if version == "" {
+		return "", fmt.Errorf("failed to resolve baml module version: go list returned empty version")
+	}
+
+	return version, nil
 }
 
 func bamlModuleDir() (string, error) {
