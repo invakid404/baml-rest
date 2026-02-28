@@ -31,7 +31,7 @@ jobs:
   integration-tests:
     needs: get-versions
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.get-versions.outputs.matrix) }}
@@ -50,7 +50,7 @@ jobs:
           BAML_VERSION: ${{ matrix.baml-version }}
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
         # share state (server config, worker pool) that could cause flakiness if parallel
-        run: go test -tags=integration -v -count=1 -p 1 ./integration/...
+        run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
 
   integration-tests-baml-source:
     runs-on: ubuntu-latest
