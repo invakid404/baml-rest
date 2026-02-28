@@ -39,8 +39,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := hacks.ApplyRuntimeStreamCancelFix(*bamlVersion); err != nil {
-		fmt.Fprintf(os.Stderr, "Error applying runtime stream cancellation fix: %v\n", err)
+	if err := hacks.ApplyRuntimeDeadlockFix(*bamlVersion); err != nil {
+		fmt.Fprintf(os.Stderr, "Error applying runtime deadlock fix: %v\n", err)
 		os.Exit(1)
 	}
 

@@ -30,15 +30,14 @@ var (
 	gnuPatchPathOnce sync.Once
 )
 
-// ApplyRuntimeStreamCancelFix applies the PR #3185 callback/runtime fixes from
+// ApplyRuntimeDeadlockFix applies the PR #3185 runtime deadlock fix from
 // BoundaryML/baml to installed Go runtime sources.
 //
-// We intentionally target >=0.218.0, where stream callback wrapping changed and
-// cancellation leaks can manifest.
-func ApplyRuntimeStreamCancelFix(bamlVersion string) error {
+// This patch also improves stream cancellation callback cleanup behavior.
+func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 	version := bamlutils.NormalizeVersion(bamlVersion)
 	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
-		fmt.Printf("Skipping runtime-stream-cancel-fix (not needed for version %s)\n", bamlVersion)
+		fmt.Printf("Skipping runtime-deadlock-fix (not needed for version %s)\n", bamlVersion)
 		return nil
 	}
 
@@ -373,7 +372,7 @@ func writeAtomicFile(path string, content []byte, mode os.FileMode) error {
 }
 
 func applyPatch(moduleDir string, patchData []byte) (applied bool, alreadyApplied bool, err error) {
-	tmpFile, err := os.CreateTemp("", "baml-pr3185-*.diff")
+	tmpFile, err := os.CreateTemp("", "baml-pr3185-deadlock-*.diff")
 	if err != nil {
 		return false, false, fmt.Errorf("creating temp patch file: %w", err)
 	}
