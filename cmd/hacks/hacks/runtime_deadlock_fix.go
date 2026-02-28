@@ -70,19 +70,30 @@ func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 		return err
 	}
 
-	if requestedVersion != "" && bamlutils.CompareVersions(requestedVersion, resolvedVersion) != 0 {
-		fmt.Printf("Requested BAML version %s differs from resolved module version %s; using resolved version for runtime-deadlock-fix\n", requestedVersion, resolvedVersion)
-	}
-
-	version := resolvedVersion
-	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
-		fmt.Printf("Skipping runtime-deadlock-fix (resolved version %s is below v0.218.0)\n", version)
-		return nil
-	}
-
 	moduleDir, err := bamlModuleDir()
 	if err != nil {
 		return err
+	}
+
+	version := resolvedVersion
+
+	if requestedVersion != "" && bamlutils.CompareVersions(requestedVersion, resolvedVersion) != 0 {
+		usesLocalReplace, err := moduleUsesLocalReplace(moduleDir)
+		if err != nil {
+			return err
+		}
+
+		if usesLocalReplace {
+			version = requestedVersion
+			fmt.Printf("Requested BAML version %s differs from resolved module version %s and module is replaced from local path %s; using requested version for runtime-deadlock-fix routing\n", requestedVersion, resolvedVersion, moduleDir)
+		} else {
+			fmt.Printf("Requested BAML version %s differs from resolved module version %s; using resolved version for runtime-deadlock-fix\n", requestedVersion, resolvedVersion)
+		}
+	}
+
+	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
+		fmt.Printf("Skipping runtime-deadlock-fix (effective version %s is below v0.218.0)\n", version)
+		return nil
 	}
 
 	moduleDir, usingPatchedCopy, err := preparePatchedBamlModuleDir(moduleDir, version)
@@ -200,6 +211,15 @@ func bamlModuleDir() (string, error) {
 	}
 
 	return dir, nil
+}
+
+func moduleUsesLocalReplace(moduleDir string) (bool, error) {
+	goModCache, err := goEnv("GOMODCACHE")
+	if err != nil {
+		return false, err
+	}
+
+	return !pathWithin(moduleDir, goModCache), nil
 }
 
 func preparePatchedBamlModuleDir(moduleDir, version string) (string, bool, error) {
