@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1106,6 +1107,12 @@ type KillWorkerResult struct {
 // This is intended for testing scenarios where we need to simulate worker death mid-request.
 // Returns information about the killed worker, or an error if no suitable worker was found.
 func (p *Pool) KillWorkerWithInFlight() (*KillWorkerResult, error) {
+	type inFlightSnapshot struct {
+		id           uint64
+		startedAt    time.Time
+		gotFirstByte bool
+	}
+
 	// Prefer the worker with the most recently started in-flight request.
 	// This makes debug kills deterministic when a previous test leaves a stale
 	// in-flight request while a new stream has just started.
@@ -1122,15 +1129,32 @@ func (p *Pool) KillWorkerWithInFlight() (*KillWorkerResult, error) {
 			continue
 		}
 
-		gotFirstByteList := make([]bool, 0, inFlightCount)
+		snapshots := make([]inFlightSnapshot, 0, inFlightCount)
 		var newestStartedAt time.Time
 		for _, req := range handle.inFlightReq {
-			gotFirstByteList = append(gotFirstByteList, req.gotFirstByte.Load())
-			if req.startedAt.After(newestStartedAt) {
-				newestStartedAt = req.startedAt
+			snapshot := inFlightSnapshot{
+				id:           req.id,
+				startedAt:    req.startedAt,
+				gotFirstByte: req.gotFirstByte.Load(),
+			}
+			snapshots = append(snapshots, snapshot)
+			if snapshot.startedAt.After(newestStartedAt) {
+				newestStartedAt = snapshot.startedAt
 			}
 		}
 		handle.inFlightMu.RUnlock()
+
+		sort.Slice(snapshots, func(i, j int) bool {
+			if snapshots[i].startedAt.Equal(snapshots[j].startedAt) {
+				return snapshots[i].id < snapshots[j].id
+			}
+			return snapshots[i].startedAt.Before(snapshots[j].startedAt)
+		})
+
+		gotFirstByteList := make([]bool, 0, len(snapshots))
+		for _, snapshot := range snapshots {
+			gotFirstByteList = append(gotFirstByteList, snapshot.gotFirstByte)
+		}
 
 		if selected == nil || newestStartedAt.After(selectedNewestStartedAt) {
 			selected = handle

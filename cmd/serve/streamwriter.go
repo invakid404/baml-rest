@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -34,6 +36,8 @@ const (
 	defaultSSEKeepaliveInterval = 1 * time.Second
 	minSSEKeepaliveInterval     = 1 * time.Second
 )
+
+var closeNotifierFallbackLogOnce sync.Once
 
 // NDJSONEventType represents the type of NDJSON streaming event.
 type NDJSONEventType string
@@ -402,6 +406,9 @@ func getFlusher(w http.ResponseWriter) http.Flusher {
 func getCloseNotify(w http.ResponseWriter) <-chan bool {
 	for {
 		if cn, ok := w.(http.CloseNotifier); ok {
+			closeNotifierFallbackLogOnce.Do(func() {
+				log.Printf("getCloseNotify: using deprecated http.CloseNotifier fallback for client disconnect detection")
+			})
 			return cn.CloseNotify()
 		}
 		if u, ok := w.(interface{ Unwrap() http.ResponseWriter }); ok {
