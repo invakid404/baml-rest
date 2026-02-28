@@ -2,6 +2,7 @@ package hacks
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 )
@@ -22,6 +24,8 @@ const (
 	pr3185PatchV219Path         = "patches/pr3185_v219.diff"
 	pr3185PatchV218BackportPath = "patches/pr3185_backport_v218.diff"
 	patchedModuleCopyMarkerName = ".patched_copy_complete"
+	execTimeout                 = 30 * time.Second
+	patchExecTimeout            = 2 * time.Minute
 )
 
 var (
@@ -46,7 +50,7 @@ func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 		return err
 	}
 
-	moduleDir, err = preparePatchedBamlModuleDir(moduleDir, version)
+	moduleDir, usingPatchedCopy, err := preparePatchedBamlModuleDir(moduleDir, version)
 	if err != nil {
 		return err
 	}
@@ -64,6 +68,12 @@ func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 	applied, alreadyApplied, err := applyPatch(moduleDir, patchData)
 	if err != nil {
 		return fmt.Errorf("applying %s in %s: %w", filepath.Base(patchPath), moduleDir, err)
+	}
+	if usingPatchedCopy {
+		if err := setGoWorkReplace("github.com/boundaryml/baml", moduleDir); err != nil {
+			return err
+		}
+		fmt.Printf("  Using patched BAML module copy: %s\n", moduleDir)
 	}
 
 	if applied {
@@ -88,9 +98,15 @@ func readEmbeddedPatch(path string) ([]byte, error) {
 }
 
 func bamlModuleDir() (string, error) {
-	cmd := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/boundaryml/baml")
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Dir}}", "github.com/boundaryml/baml")
 	out, err := cmd.Output()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("timed out locating baml module dir after %s", execTimeout)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("failed to locate baml module dir: %s", strings.TrimSpace(string(exitErr.Stderr)))
 		}
@@ -105,52 +121,47 @@ func bamlModuleDir() (string, error) {
 	return dir, nil
 }
 
-func preparePatchedBamlModuleDir(moduleDir, version string) (string, error) {
+func preparePatchedBamlModuleDir(moduleDir, version string) (string, bool, error) {
 	goModCache, err := goEnv("GOMODCACHE")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	if !pathWithin(moduleDir, goModCache) {
-		return moduleDir, nil
+		return moduleDir, false, nil
 	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("getting working directory: %w", err)
+		return "", false, fmt.Errorf("getting working directory: %w", err)
 	}
 
 	safeVersion, err := sanitizeVersionPathComponent(version)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	patchedRoot := filepath.Join(cwd, ".baml_patched_modules")
 	patchedDir := filepath.Join(patchedRoot, "github.com_boundaryml_baml_"+safeVersion)
 	if !pathWithin(patchedDir, patchedRoot) {
-		return "", fmt.Errorf("computed patched directory escapes patched root: %q", patchedDir)
+		return "", false, fmt.Errorf("computed patched directory escapes patched root: %q", patchedDir)
 	}
 
 	copyMarkerPath := filepath.Join(patchedDir, patchedModuleCopyMarkerName)
 	if _, err := os.Stat(copyMarkerPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			if err := copyDir(moduleDir, patchedDir); err != nil {
-				return "", fmt.Errorf("copying BAML module to patched directory: %w", err)
+				return "", false, fmt.Errorf("copying BAML module to patched directory: %w", err)
 			}
 			if err := writeAtomicFile(copyMarkerPath, []byte("ok\n"), 0o644); err != nil {
-				return "", fmt.Errorf("marking patched BAML module copy complete: %w", err)
+				return "", false, fmt.Errorf("marking patched BAML module copy complete: %w", err)
 			}
 		} else {
-			return "", fmt.Errorf("checking patched BAML module directory: %w", err)
+			return "", false, fmt.Errorf("checking patched BAML module directory: %w", err)
 		}
 	}
 
-	if err := setGoWorkReplace("github.com/boundaryml/baml", patchedDir); err != nil {
-		return "", err
-	}
-
-	fmt.Printf("  Using patched BAML module copy: %s\n", patchedDir)
-	return patchedDir, nil
+	return patchedDir, true, nil
 }
 
 func sanitizeVersionPathComponent(version string) (string, error) {
@@ -180,9 +191,15 @@ func sanitizeVersionPathComponent(version string) (string, error) {
 }
 
 func goEnv(key string) (string, error) {
-	cmd := exec.Command("go", "env", key)
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "env", key)
 	out, err := cmd.Output()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("go env %s timed out after %s", key, execTimeout)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("go env %s failed: %s", key, strings.TrimSpace(string(exitErr.Stderr)))
 		}
@@ -213,18 +230,30 @@ func setGoWorkReplace(modulePath, moduleDir string) error {
 	}
 
 	arg := fmt.Sprintf("%s=%s", modulePath, moduleDir)
-	cmd := exec.Command("go", "work", "edit", "-replace", arg)
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "work", "edit", "-replace", arg)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("setting go.work replace for %s timed out after %s", modulePath, execTimeout)
+		}
 		return fmt.Errorf("setting go.work replace for %s: %v (%s)", modulePath, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
 
 func activeGoWorkFile() (string, error) {
-	cmd := exec.Command("go", "env", "GOWORK")
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "env", "GOWORK")
 	out, err := cmd.Output()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("go env GOWORK timed out after %s", execTimeout)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("go env GOWORK failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
 		}
@@ -283,7 +312,8 @@ func copyDir(src, dst string) error {
 		targetPath := filepath.Join(dst, relPath)
 
 		if info.IsDir() {
-			return os.MkdirAll(targetPath, info.Mode().Perm())
+			dirPerm := info.Mode().Perm() | 0o700
+			return os.MkdirAll(targetPath, dirPerm)
 		}
 
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -304,7 +334,22 @@ func copyDir(src, dst string) error {
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return err
 			}
-			return os.Symlink(linkTarget, targetPath)
+
+			symlinkTarget := linkTarget
+			if filepath.IsAbs(linkTarget) {
+				relToSrc, err := filepath.Rel(src, resolvedTarget)
+				if err != nil {
+					return err
+				}
+				rewrittenAbs := filepath.Join(dst, relToSrc)
+				rewrittenRel, err := filepath.Rel(filepath.Dir(targetPath), rewrittenAbs)
+				if err != nil {
+					return err
+				}
+				symlinkTarget = filepath.Clean(rewrittenRel)
+			}
+
+			return os.Symlink(symlinkTarget, targetPath)
 		}
 
 		return copyFile(path, targetPath, info.Mode())
@@ -435,7 +480,10 @@ func runPatch(moduleDir, patchPath string, dryRun, reverse bool) (exitCode int, 
 	}
 	args = append(args, "--input", patchPath)
 
-	cmd := exec.Command(patchPathBinary, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), patchExecTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, patchPathBinary, args...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -443,6 +491,9 @@ func runPatch(moduleDir, patchPath string, dryRun, reverse bool) (exitCode int, 
 	err = cmd.Run()
 	if err == nil {
 		return 0, out.String(), nil
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return -1, out.String(), fmt.Errorf("running patch command timed out after %s", patchExecTimeout)
 	}
 
 	var exitErr *exec.ExitError
@@ -455,24 +506,37 @@ func runPatch(moduleDir, patchPath string, dryRun, reverse bool) (exitCode int, 
 
 func ensureGNUPatchBinary() (string, error) {
 	gnuPatchPathOnce.Do(func() {
-		patchPathBinary, err := exec.LookPath("patch")
-		if err != nil {
-			gnuPatchPathErr = fmt.Errorf("patch binary not found; install patch or run in an environment with patch available: %w", err)
+		attemptErrors := make([]string, 0, 2)
+		for _, binaryName := range []string{"patch", "gpatch"} {
+			patchPathBinary, err := exec.LookPath(binaryName)
+			if err != nil {
+				attemptErrors = append(attemptErrors, fmt.Sprintf("%s: not found", binaryName))
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+			versionCmd := exec.CommandContext(ctx, patchPathBinary, "--version")
+			versionOut, versionErr := versionCmd.CombinedOutput()
+			cancel()
+
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				attemptErrors = append(attemptErrors, fmt.Sprintf("%s: timed out after %s", patchPathBinary, execTimeout))
+				continue
+			}
+			if versionErr != nil {
+				attemptErrors = append(attemptErrors, fmt.Sprintf("%s: %v (%s)", patchPathBinary, versionErr, strings.TrimSpace(string(versionOut))))
+				continue
+			}
+			if !strings.Contains(strings.ToLower(string(versionOut)), "gnu patch") {
+				attemptErrors = append(attemptErrors, fmt.Sprintf("%s: unsupported implementation (%s)", patchPathBinary, strings.TrimSpace(strings.SplitN(string(versionOut), "\n", 2)[0])))
+				continue
+			}
+
+			gnuPatchPath = patchPathBinary
 			return
 		}
 
-		versionCmd := exec.Command(patchPathBinary, "--version")
-		versionOut, versionErr := versionCmd.CombinedOutput()
-		if versionErr != nil {
-			gnuPatchPathErr = fmt.Errorf("failed to validate patch binary capabilities; GNU patch is required: %v (%s)", versionErr, strings.TrimSpace(string(versionOut)))
-			return
-		}
-		if !strings.Contains(strings.ToLower(string(versionOut)), "gnu patch") {
-			gnuPatchPathErr = fmt.Errorf("unsupported patch binary implementation detected; GNU patch is required (got: %s)", strings.TrimSpace(strings.SplitN(string(versionOut), "\n", 2)[0]))
-			return
-		}
-
-		gnuPatchPath = patchPathBinary
+		gnuPatchPathErr = fmt.Errorf("GNU patch binary not found or unsupported; tried patch and gpatch (%s)", strings.Join(attemptErrors, "; "))
 	})
 
 	if gnuPatchPathErr != nil {
