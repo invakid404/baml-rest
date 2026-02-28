@@ -71,7 +71,7 @@ func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 	}
 
 	if requestedVersion != "" && bamlutils.CompareVersions(requestedVersion, resolvedVersion) != 0 {
-		return fmt.Errorf("baml version mismatch: requested %s but resolved %s", requestedVersion, resolvedVersion)
+		fmt.Printf("Requested BAML version %s differs from resolved module version %s; using resolved version for runtime-deadlock-fix\n", requestedVersion, resolvedVersion)
 	}
 
 	version := resolvedVersion
