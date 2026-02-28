@@ -114,7 +114,7 @@ type Config struct {
 // DefaultConfig returns a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		PoolSize:            1,
+		PoolSize:            4,
 		MaxRetries:          2,
 		HealthCheckInterval: 10 * time.Second,
 		FirstByteTimeout:    120 * time.Second,
@@ -251,7 +251,7 @@ func New(config *Config) (*Pool, error) {
 		return nil, fmt.Errorf("WorkerPath is required")
 	}
 	if config.PoolSize <= 0 {
-		config.PoolSize = 1 // match DefaultConfig
+		config.PoolSize = 4 // match DefaultConfig
 	}
 	if config.LogOutput == nil {
 		config.LogOutput = os.Stdout
