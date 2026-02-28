@@ -3,6 +3,7 @@
 package mockllm
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -13,41 +14,41 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Server is a mock LLM server for integration testing.
 type Server struct {
-	store  *ScenarioStore
-	server *http.Server
-	debug  bool
+	store *ScenarioStore
+	app   *fiber.App
+	addr  string
+	debug bool
 }
 
 // NewServer creates a new mock LLM server.
 func NewServer(addr string) *Server {
 	s := &Server{
 		store: NewScenarioStore(),
+		addr:  addr,
 		debug: os.Getenv("MOCK_LLM_DEBUG") == "1",
 	}
 
-	mux := http.NewServeMux()
+	app := fiber.New()
 
 	// Admin API
-	mux.HandleFunc("POST /_admin/scenarios", s.handleRegisterScenario)
-	mux.HandleFunc("DELETE /_admin/scenarios", s.handleClearScenarios)
-	mux.HandleFunc("DELETE /_admin/scenarios/{id}", s.handleDeleteScenario)
-	mux.HandleFunc("GET /_admin/scenarios", s.handleListScenarios)
-	mux.HandleFunc("GET /_admin/health", s.handleHealth)
+	app.Post("/_admin/scenarios", s.handleRegisterScenario)
+	app.Delete("/_admin/scenarios", s.handleClearScenarios)
+	app.Delete("/_admin/scenarios/:id", s.handleDeleteScenario)
+	app.Get("/_admin/scenarios", s.handleListScenarios)
+	app.Get("/_admin/health", s.handleHealth)
 
-	mux.HandleFunc("GET /_admin/scenarios/{id}/last-request", s.handleGetLastRequest)
+	app.Get("/_admin/scenarios/:id/last-request", s.handleGetLastRequest)
 
 	// OpenAI-compatible endpoints
-	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
-	mux.HandleFunc("POST /chat/completions", s.handleChatCompletions)
+	app.Post("/v1/chat/completions", s.handleChatCompletions)
+	app.Post("/chat/completions", s.handleChatCompletions)
 
-	s.server = &http.Server{
-		Addr:    addr,
-		Handler: mux,
-	}
+	s.app = app
 
 	return s
 }
@@ -60,7 +61,7 @@ func (s *Server) Store() *ScenarioStore {
 // Start starts the server in the background.
 func (s *Server) Start() error {
 	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.app.Listen(s.addr, fiber.ListenConfig{DisableStartupMessage: true}); err != nil {
 			log.Printf("Mock LLM server error: %v", err)
 		}
 	}()
@@ -69,12 +70,12 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.server.Shutdown(ctx)
+	return s.app.ShutdownWithContext(ctx)
 }
 
 // Addr returns the server's address.
 func (s *Server) Addr() string {
-	return s.server.Addr
+	return s.addr
 }
 
 func (s *Server) log(format string, args ...any) {
@@ -85,16 +86,14 @@ func (s *Server) log(format string, args ...any) {
 
 // Admin handlers
 
-func (s *Server) handleRegisterScenario(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRegisterScenario(c fiber.Ctx) error {
 	var scenario Scenario
-	if err := json.NewDecoder(r.Body).Decode(&scenario); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
-		return
+	if err := json.Unmarshal(c.Body(), &scenario); err != nil {
+		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
 	}
 
 	if scenario.ID == "" {
-		http.Error(w, "scenario ID is required", http.StatusBadRequest)
-		return
+		return c.Status(fiber.StatusBadRequest).SendString("scenario ID is required")
 	}
 
 	if scenario.Provider == "" {
@@ -104,59 +103,51 @@ func (s *Server) handleRegisterScenario(w http.ResponseWriter, r *http.Request) 
 	s.store.Register(&scenario)
 	s.log("registered scenario: %s (provider=%s, content_len=%d)", scenario.ID, scenario.Provider, len(scenario.Content))
 
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "created", "id": scenario.ID})
+	return c.Status(fiber.StatusCreated).JSON(map[string]string{"status": "created", "id": scenario.ID})
 }
 
-func (s *Server) handleClearScenarios(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleClearScenarios(c fiber.Ctx) error {
 	s.store.Clear()
 	s.log("cleared all scenarios")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
+	return c.Status(fiber.StatusOK).JSON(map[string]string{"status": "cleared"})
 }
 
-func (s *Server) handleDeleteScenario(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+func (s *Server) handleDeleteScenario(c fiber.Ctx) error {
+	id := c.Params("id")
 	if id == "" {
-		http.Error(w, "scenario ID is required", http.StatusBadRequest)
-		return
+		return c.Status(fiber.StatusBadRequest).SendString("scenario ID is required")
 	}
 
 	if s.store.Delete(id) {
 		s.log("deleted scenario: %s", id)
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "id": id})
-	} else {
-		http.Error(w, "scenario not found", http.StatusNotFound)
+		return c.Status(fiber.StatusOK).JSON(map[string]string{"status": "deleted", "id": id})
 	}
+
+	return c.Status(fiber.StatusNotFound).SendString("scenario not found")
 }
 
-func (s *Server) handleListScenarios(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListScenarios(c fiber.Ctx) error {
 	scenarios := s.store.List()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(scenarios)
+	return c.JSON(scenarios)
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+func (s *Server) handleHealth(c fiber.Ctx) error {
+	return c.Status(fiber.StatusOK).JSON(map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleGetLastRequest(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+func (s *Server) handleGetLastRequest(c fiber.Ctx) error {
+	id := c.Params("id")
 	if id == "" {
-		http.Error(w, "scenario ID is required", http.StatusBadRequest)
-		return
+		return c.Status(fiber.StatusBadRequest).SendString("scenario ID is required")
 	}
 
 	req, ok := s.store.GetLastRequest(id)
 	if !ok {
-		http.Error(w, "no request captured for scenario", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString("no request captured for scenario")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(req.Body)
+	c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	return c.Send(req.Body)
 }
 
 // LLM endpoint handlers
@@ -197,17 +188,12 @@ func (m *chatMessage) GetContent() string {
 	return ""
 }
 
-func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to read body: %v", err), http.StatusBadRequest)
-		return
-	}
+func (s *Server) handleChatCompletions(c fiber.Ctx) error {
+	body := append([]byte(nil), c.Body()...)
 
 	var req chatCompletionsRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
-		return
+		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
 	}
 
 	s.log("chat completions request: model=%s, stream=%v", req.Model, req.Stream)
@@ -216,8 +202,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	scenario, effectiveDelay, ok := s.store.GetAndAdvance(req.Model)
 	if !ok {
 		s.log("scenario not found for model: %s", req.Model)
-		http.Error(w, fmt.Sprintf("no scenario registered for model: %s", req.Model), http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).SendString(fmt.Sprintf("no scenario registered for model: %s", req.Model))
 	}
 
 	// Capture request body for test inspection
@@ -227,31 +212,38 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	provider, err := GetProvider(scenario.Provider)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString(err.Error())
 	}
 
 	if req.Stream {
-		s.handleStreamingResponse(w, r, scenario, provider, effectiveDelay)
-	} else {
-		s.handleNonStreamingResponse(w, scenario, provider, effectiveDelay)
+		return s.handleStreamingResponse(c, scenario, provider, effectiveDelay)
 	}
+
+	return s.handleNonStreamingResponse(c, scenario, provider, effectiveDelay)
 }
 
-func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, scenario *Scenario, provider Provider, effectiveDelay int) {
-	ctx := r.Context()
+func (s *Server) handleStreamingResponse(c fiber.Ctx, scenario *Scenario, provider Provider, effectiveDelay int) error {
+	c.Set(fiber.HeaderContentType, provider.ContentType(true))
+	c.Set(fiber.HeaderCacheControl, "no-cache")
+	c.Set(fiber.HeaderConnection, "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
 
-	// Use a timeout context to prevent hanging forever
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
-	if err := StreamResponse(ctx, w, scenario, provider, effectiveDelay); err != nil {
-		s.log("streaming error: %v", err)
-		// Connection likely already closed, nothing we can do
+	streamParentCtx := c.Context()
+	if reqCtx := c.RequestCtx(); reqCtx != nil {
+		streamParentCtx = reqCtx
 	}
+
+	return c.SendStreamWriter(func(w *bufio.Writer) {
+		streamCtx, cancel := context.WithTimeout(streamParentCtx, 5*time.Minute)
+		defer cancel()
+
+		if err := StreamResponse(streamCtx, w, scenario, provider, effectiveDelay); err != nil {
+			s.log("streaming error: %v", err)
+		}
+	})
 }
 
-func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, scenario *Scenario, provider Provider, effectiveDelay int) {
+func (s *Server) handleNonStreamingResponse(c fiber.Ctx, scenario *Scenario, provider Provider, effectiveDelay int) error {
 	// Apply initial delay for non-streaming too
 	if effectiveDelay > 0 {
 		time.Sleep(time.Duration(effectiveDelay) * time.Millisecond)
@@ -261,22 +253,20 @@ func (s *Server) handleNonStreamingResponse(w http.ResponseWriter, scenario *Sce
 	if scenario.FailAfter > 0 && scenario.FailAfter <= 1 {
 		switch scenario.FailureMode {
 		case "500":
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
+			return c.Status(fiber.StatusInternalServerError).SendString("Internal Server Error")
 		case "timeout":
 			time.Sleep(10 * time.Minute) // Will likely timeout
-			return
+			return nil
 		}
 	}
 
 	data, err := provider.FormatNonStreaming(scenario.Content)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to format response: %v", err), http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to format response: %v", err))
 	}
 
-	w.Header().Set("Content-Type", provider.ContentType(false))
-	w.Write(data)
+	c.Set(fiber.HeaderContentType, provider.ContentType(false))
+	return c.Send(data)
 }
 
 // Client is an HTTP client for interacting with the mock server's admin API.
