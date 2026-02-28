@@ -433,6 +433,10 @@ func copyDir(src, dst string) error {
 			return os.Symlink(symlinkTarget, targetPath)
 		}
 
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("unsupported file type %s for %q", info.Mode().Type(), path)
+		}
+
 		return copyFile(path, targetPath, info.Mode())
 	})
 }
