@@ -39,5 +39,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := hacks.ApplyRuntimeDeadlockFix(*bamlVersion); err != nil {
+		fmt.Fprintf(os.Stderr, "Error applying runtime deadlock fix: %v\n", err)
+		os.Exit(1)
+	}
+
 	fmt.Println("All applicable hacks applied successfully")
 }
