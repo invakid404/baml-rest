@@ -86,7 +86,8 @@ func getBAMLVersion() string {
 //   - StartRSSMonitor: RSS memory monitoring goroutine (runs for process lifetime)
 //   - healthChecker: Pool health check goroutine (runs for pool lifetime)
 //   - GetGoroutines: The goroutine running the pprof capture itself (self-capture)
-const GoroutineLeakFilter = "invakid404/baml-rest,boundaryml/baml,-StartRSSMonitor,-healthChecker,-GetGoroutines"
+//   - acceptandserve: go-plugin broker goroutines that can outlive canceled requests
+const GoroutineLeakFilter = "invakid404/baml-rest,boundaryml/baml,-StartRSSMonitor,-healthChecker,-GetGoroutines,-acceptandserve"
 
 func TestMain(m *testing.M) {
 	timeout := 10 * time.Minute

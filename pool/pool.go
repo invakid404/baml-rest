@@ -7,13 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/go-chi/metrics"
 	"github.com/hashicorp/go-plugin"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -32,14 +33,28 @@ const (
 	RestartReasonUnhealthy WorkerRestartReason = "unhealthy"
 )
 
-type workerRestartLabels struct {
-	Reason WorkerRestartReason `label:"reason"`
-}
+var workerRestarts = newWorkerRestartCounter()
 
-var workerRestarts = metrics.CounterWith[workerRestartLabels](
-	"worker_restarts_total",
-	"Total number of worker restarts",
-)
+func newWorkerRestartCounter() *prometheus.CounterVec {
+	counter := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "worker_restarts_total",
+			Help: "Total number of worker restarts",
+		},
+		[]string{"reason"},
+	)
+
+	if err := prometheus.Register(counter); err != nil {
+		if alreadyRegistered, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := alreadyRegistered.ExistingCollector.(*prometheus.CounterVec); ok {
+				return existing
+			}
+		}
+		panic(err)
+	}
+
+	return counter
+}
 
 // priorityFields are fields to show before the message in pretty mode
 var priorityFields = [...]string{"worker", "hclog_name"}
@@ -261,8 +276,8 @@ func New(config *Config) (*Pool, error) {
 	}
 
 	// Initialize worker restart counter labels
-	workerRestarts.Add(0, workerRestartLabels{Reason: RestartReasonHung})
-	workerRestarts.Add(0, workerRestartLabels{Reason: RestartReasonUnhealthy})
+	workerRestarts.WithLabelValues(string(RestartReasonHung)).Add(0)
+	workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Add(0)
 
 	// Start workers
 	for i := 0; i < config.PoolSize; i++ {
@@ -406,7 +421,7 @@ func (p *Pool) checkHungRequests() {
 				Uint64("request_id", hungRequest.id).
 				Dur("waited", now.Sub(hungRequest.startedAt)).
 				Msg("Worker appears hung, killing")
-			workerRestarts.Inc(workerRestartLabels{Reason: RestartReasonHung})
+			workerRestarts.WithLabelValues(string(RestartReasonHung)).Inc()
 			p.killWorkerAndRetry(handle)
 		}
 	}
@@ -464,7 +479,7 @@ func (p *Pool) checkHealth() {
 			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 			handle.mu.Unlock()
 
-			workerRestarts.Inc(workerRestartLabels{Reason: RestartReasonUnhealthy})
+			workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Inc()
 			p.restartWorker(handle.id, handle)
 		} else {
 			handle.healthy.Store(true)
@@ -949,7 +964,24 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			var injectedReset bool
 			var shouldRetry bool
 
-			for result := range results {
+		streamLoop:
+			for {
+				var (
+					result *workerplugin.StreamResult
+					ok     bool
+				)
+
+				select {
+				case <-ctx.Done():
+					cleanup()
+					drainResults(results)
+					return
+				case result, ok = <-results:
+					if !ok {
+						break streamLoop
+					}
+				}
+
 				// Mark first byte received (disables hung detection for this request)
 				req.gotFirstByte.Store(true)
 
@@ -970,22 +1002,14 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					break
 				}
 
-				// Inject reset message before first result after retry
+				// Mark the first forwarded result after a retry as reset so the
+				// stream writer emits a reset event immediately before this data.
+				// This ties reset signaling to the first real result that makes it
+				// to the client (instead of a standalone synthetic message).
 				if needsReset && !injectedReset {
-					resetResult := workerplugin.GetStreamResult()
-					resetResult.Kind = workerplugin.StreamResultKindStream
-					resetResult.Reset = true
-					select {
-					case wrappedResults <- resetResult:
-						injectedReset = true
-						currentHandle.logger.Info().Msg("Injected reset message for mid-stream retry")
-					case <-ctx.Done():
-						workerplugin.ReleaseStreamResult(resetResult)
-						workerplugin.ReleaseStreamResult(result)
-						drainResults(results)
-						cleanup()
-						return
-					}
+					result.Reset = true
+					injectedReset = true
+					currentHandle.logger.Info().Msg("Injected reset marker for mid-stream retry")
 				}
 
 				// Save kind before sending — the consumer may ReleaseStreamResult
@@ -1083,35 +1107,80 @@ type KillWorkerResult struct {
 // This is intended for testing scenarios where we need to simulate worker death mid-request.
 // Returns information about the killed worker, or an error if no suitable worker was found.
 func (p *Pool) KillWorkerWithInFlight() (*KillWorkerResult, error) {
-	// Find a worker with in-flight requests
+	type inFlightSnapshot struct {
+		id           uint64
+		startedAt    time.Time
+		gotFirstByte bool
+	}
+
+	// Prefer the worker with the most recently started in-flight request.
+	// This makes debug kills deterministic when a previous test leaves a stale
+	// in-flight request while a new stream has just started.
+	var selected *workerHandle
+	var selectedCount int
+	var selectedGotFirstByte []bool
+	var selectedNewestStartedAt time.Time
+
 	for _, handle := range p.workerSnapshot() {
 		handle.inFlightMu.RLock()
 		inFlightCount := len(handle.inFlightReq)
-		var gotFirstByteList []bool
+		if inFlightCount == 0 {
+			handle.inFlightMu.RUnlock()
+			continue
+		}
+
+		snapshots := make([]inFlightSnapshot, 0, inFlightCount)
+		var newestStartedAt time.Time
 		for _, req := range handle.inFlightReq {
-			gotFirstByteList = append(gotFirstByteList, req.gotFirstByte.Load())
+			snapshot := inFlightSnapshot{
+				id:           req.id,
+				startedAt:    req.startedAt,
+				gotFirstByte: req.gotFirstByte.Load(),
+			}
+			snapshots = append(snapshots, snapshot)
+			if snapshot.startedAt.After(newestStartedAt) {
+				newestStartedAt = snapshot.startedAt
+			}
 		}
 		handle.inFlightMu.RUnlock()
 
-		if inFlightCount > 0 {
-			// Found a worker with in-flight requests - kill it
-			p.logger.Warn().
-				Int("worker_id", handle.id).
-				Int("in_flight_count", inFlightCount).
-				Msg("DEBUG: Killing worker with in-flight requests")
+		sort.Slice(snapshots, func(i, j int) bool {
+			if snapshots[i].startedAt.Equal(snapshots[j].startedAt) {
+				return snapshots[i].id < snapshots[j].id
+			}
+			return snapshots[i].startedAt.Before(snapshots[j].startedAt)
+		})
 
-			p.killWorkerAndRetry(handle)
+		gotFirstByteList := make([]bool, 0, len(snapshots))
+		for _, snapshot := range snapshots {
+			gotFirstByteList = append(gotFirstByteList, snapshot.gotFirstByte)
+		}
 
-			return &KillWorkerResult{
-				WorkerID:      handle.id,
-				InFlightCount: inFlightCount,
-				GotFirstByte:  gotFirstByteList,
-				Killed:        true,
-			}, nil
+		if selected == nil || newestStartedAt.After(selectedNewestStartedAt) {
+			selected = handle
+			selectedCount = inFlightCount
+			selectedGotFirstByte = gotFirstByteList
+			selectedNewestStartedAt = newestStartedAt
 		}
 	}
 
-	return nil, fmt.Errorf("no workers with in-flight requests found")
+	if selected == nil {
+		return nil, fmt.Errorf("no workers with in-flight requests found")
+	}
+
+	p.logger.Warn().
+		Int("worker_id", selected.id).
+		Int("in_flight_count", selectedCount).
+		Msg("DEBUG: Killing worker with in-flight requests")
+
+	p.killWorkerAndRetry(selected)
+
+	return &KillWorkerResult{
+		WorkerID:      selected.id,
+		InFlightCount: selectedCount,
+		GotFirstByte:  selectedGotFirstByte,
+		Killed:        true,
+	}, nil
 }
 
 // SetFirstByteTimeout updates the timeout for hung detection.

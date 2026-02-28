@@ -495,12 +495,25 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 	var finalResult *testutil.GoroutinesResult
 	prevMatches := -1
 
-	for time.Now().Before(deadline) {
-		time.Sleep(pollInterval)
+	for {
+		if !time.Now().Before(deadline) {
+			break
+		}
 
 		result, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Logf("Error during goroutine polling: %v", err)
+			if time.Now().After(deadline) {
+				break
+			}
+
+			sleepFor := pollInterval
+			if remaining := time.Until(deadline); remaining < sleepFor {
+				sleepFor = remaining
+			}
+			if sleepFor <= 0 || !sleepWithContext(ctx, sleepFor) {
+				break
+			}
 			continue
 		}
 
@@ -513,17 +526,60 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 			return result, true
 		}
 
-		t.Logf("Waiting for goroutine cleanup: %d matching (baseline %d)...", finalMatches, baselineMatches)
 		prevMatches = finalMatches
+
+		if time.Now().After(deadline) {
+			break
+		}
+
+		t.Logf("Waiting for goroutine cleanup: %d matching (baseline %d)...", finalMatches, baselineMatches)
+		sleepFor := pollInterval
+		if remaining := time.Until(deadline); remaining < sleepFor {
+			sleepFor = remaining
+		}
+		if sleepFor <= 0 || !sleepWithContext(ctx, sleepFor) {
+			break
+		}
 	}
 
 	if finalResult == nil {
 		t.Fatalf("Failed to get any goroutine snapshot during %v polling window", maxWait)
 	}
 
+	finalMatches := countTotalMatches(finalResult)
+	if finalMatches <= baselineMatches {
+		if !sleepWithContext(ctx, pollInterval) {
+			return finalResult, false
+		}
+
+		graceResult, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
+		if err != nil {
+			t.Logf("Error during grace-period goroutine polling: %v", err)
+		} else {
+			graceMatches := countTotalMatches(graceResult)
+			if graceMatches <= baselineMatches && graceMatches == finalMatches {
+				t.Logf("Goroutines cleaned up during grace period: final=%d, baseline=%d", graceMatches, baselineMatches)
+				return graceResult, true
+			}
+			finalResult = graceResult
+		}
+	}
+
 	// Timed out without stabilization — never report success since we can't
 	// distinguish a transient low reading from actual cleanup.
 	return finalResult, false
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // drainEvents consumes all events from a stream, failing the test on error

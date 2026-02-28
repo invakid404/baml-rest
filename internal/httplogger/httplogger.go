@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5/middleware"
+	fiberrequestid "github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/rs/zerolog"
@@ -80,7 +80,7 @@ func RequestLogger(logger zerolog.Logger, opts *Options) func(http.Handler) http
 
 			// Create request-scoped logger with request ID
 			reqLogger := logger.With().Logger()
-			if reqID := middleware.GetReqID(r.Context()); reqID != "" {
+			if reqID := fiberrequestid.FromContext(r.Context()); reqID != "" {
 				reqLogger = reqLogger.With().Str("request_id", reqID).Logger()
 			}
 
@@ -111,7 +111,7 @@ func RequestLogger(logger zerolog.Logger, opts *Options) func(http.Handler) http
 
 					// Return 500 if no status was written
 					if !wrapped.wroteHeader {
-						apierror.WriteJSON(wrapped, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError, middleware.GetReqID(r.Context()))
+						apierror.WriteJSON(wrapped, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError, fiberrequestid.FromContext(r.Context()))
 					}
 				}
 			} else {
