@@ -68,7 +68,7 @@ func NegotiateStreamFormatFromAccept(accept string) StreamFormat {
 	// Parse Accept header - it may contain multiple types with quality values
 	for _, part := range strings.Split(accept, ",") {
 		mediaType := strings.TrimSpace(strings.Split(part, ";")[0])
-		if mediaType == ContentTypeNDJSON {
+		if strings.EqualFold(mediaType, ContentTypeNDJSON) {
 			return StreamFormatNDJSON
 		}
 	}
