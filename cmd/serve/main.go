@@ -262,6 +262,7 @@ var serveCmd = &cobra.Command{
 				methodNames = append(methodNames, methodName)
 			}
 		}
+		slices.Sort(methodNames)
 
 		// Extract worker binary
 		workerPath, err := extractWorker(logger)
@@ -447,10 +448,13 @@ var serveCmd = &cobra.Command{
 					rawBody, err := readRequestBodyLimited(r)
 					if err != nil {
 						statusCode := http.StatusBadRequest
+						message := "failed to read request body"
 						if errors.Is(err, errRequestBodyTooLarge) {
 							statusCode = http.StatusRequestEntityTooLarge
+							message = "request body too large"
 						}
-						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), statusCode)
+						logger.Error().Err(err).Str("method", methodName).Msg("failed to read stream request body")
+						writeJSONError(w, r, message, statusCode)
 						return
 					}
 
@@ -558,10 +562,13 @@ var serveCmd = &cobra.Command{
 					rawBody, err := readRequestBodyLimited(r)
 					if err != nil {
 						statusCode := http.StatusBadRequest
+						message := "failed to read request body"
 						if errors.Is(err, errRequestBodyTooLarge) {
 							statusCode = http.StatusRequestEntityTooLarge
+							message = "request body too large"
 						}
-						writeJSONError(w, r, fmt.Sprintf("Failed to read request body: %v", err), statusCode)
+						logger.Error().Err(err).Str("method", bamlutils.DynamicMethodName).Msg("failed to read dynamic stream request body")
+						writeJSONError(w, r, message, statusCode)
 						return
 					}
 

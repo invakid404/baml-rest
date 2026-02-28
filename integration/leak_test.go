@@ -496,13 +496,22 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 	prevMatches := -1
 
 	for {
+		if !time.Now().Before(deadline) {
+			break
+		}
+
 		result, err := BAMLClient.GetGoroutines(ctx, GoroutineLeakFilter)
 		if err != nil {
 			t.Logf("Error during goroutine polling: %v", err)
 			if time.Now().After(deadline) {
 				break
 			}
-			if !sleepWithContext(ctx, pollInterval) {
+
+			sleepFor := pollInterval
+			if remaining := time.Until(deadline); remaining < sleepFor {
+				sleepFor = remaining
+			}
+			if sleepFor <= 0 || !sleepWithContext(ctx, sleepFor) {
 				break
 			}
 			continue
@@ -524,7 +533,11 @@ func waitForGoroutineCleanup(ctx context.Context, t *testing.T, baselineMatches 
 		}
 
 		t.Logf("Waiting for goroutine cleanup: %d matching (baseline %d)...", finalMatches, baselineMatches)
-		if !sleepWithContext(ctx, pollInterval) {
+		sleepFor := pollInterval
+		if remaining := time.Until(deadline); remaining < sleepFor {
+			sleepFor = remaining
+		}
+		if sleepFor <= 0 || !sleepWithContext(ctx, sleepFor) {
 			break
 		}
 	}
