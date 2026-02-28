@@ -201,7 +201,6 @@ func dumpDiagnostics(t *testing.T, ctx context.Context, reason string) {
 	if TestEnv != nil && TestEnv.BAMLRest != nil {
 		logCtx, logCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer logCancel()
-		since := time.Now().Add(-30 * time.Second)
 		reader, err := TestEnv.BAMLRest.Logs(logCtx)
 		if err != nil {
 			t.Logf("  [container-logs] ERROR: %v", err)
@@ -223,7 +222,6 @@ func dumpDiagnostics(t *testing.T, ctx context.Context, reason string) {
 			for _, line := range filtered {
 				t.Logf("    %s", line)
 			}
-			_ = since // suppress unused warning
 		}
 	}
 
@@ -450,7 +448,12 @@ func TestStressNoDeadlock(t *testing.T) {
 	wg.Add(callRequests)
 	go func() {
 		for i := 0; i < callRequests; i++ {
-			sem <- struct{}{}
+			select {
+			case <-ctx.Done():
+				wg.Add(-(callRequests - i))
+				return
+			case sem <- struct{}{}:
+			}
 			go func() {
 				defer wg.Done()
 				defer func() { <-sem }()
@@ -483,7 +486,12 @@ func TestStressNoDeadlock(t *testing.T) {
 	wg.Add(streamRequests)
 	go func() {
 		for i := 0; i < streamRequests; i++ {
-			sem <- struct{}{}
+			select {
+			case <-ctx.Done():
+				wg.Add(-(streamRequests - i))
+				return
+			case sem <- struct{}{}:
+			}
 			go func() {
 				defer wg.Done()
 				defer func() { <-sem }()
@@ -504,7 +512,11 @@ func TestStressNoDeadlock(t *testing.T) {
 							break loop
 						}
 						gotEvents = true
-					case err := <-errs:
+					case err, ok := <-errs:
+						if !ok {
+							errs = nil
+							continue
+						}
 						if err != nil {
 							streamFail.Add(1)
 							errSampler.record("stream", err, "")
@@ -533,7 +545,12 @@ func TestStressNoDeadlock(t *testing.T) {
 	wg.Add(parseRequests)
 	go func() {
 		for i := 0; i < parseRequests; i++ {
-			sem <- struct{}{}
+			select {
+			case <-ctx.Done():
+				wg.Add(-(parseRequests - i))
+				return
+			case sem <- struct{}{}:
+			}
 			go func() {
 				defer wg.Done()
 				defer func() { <-sem }()
@@ -733,7 +750,12 @@ func TestStressConcurrentStreams(t *testing.T) {
 	wg.Add(totalStreams)
 	go func() {
 		for i := 0; i < totalStreams; i++ {
-			sem <- struct{}{}
+			select {
+			case <-ctx.Done():
+				wg.Add(-(totalStreams - i))
+				return
+			case sem <- struct{}{}:
+			}
 			go func(idx int) {
 				defer wg.Done()
 				defer func() { <-sem }()
@@ -756,7 +778,11 @@ func TestStressConcurrentStreams(t *testing.T) {
 						if ev.IsFinal() {
 							gotFinal = true
 						}
-					case err := <-errs:
+					case err, ok := <-errs:
+						if !ok {
+							errs = nil
+							continue
+						}
 						if err != nil {
 							errCount.Add(1)
 							errSampler.record("stream", err, "")
