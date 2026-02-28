@@ -177,7 +177,7 @@ func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *p
 		}
 
 		// Get worker goroutine data
-		workerResults := workerPool.GetAllWorkersGoroutines(c.Context(), filterPatterns)
+		workerResults := workerPool.GetAllWorkersGoroutines(c.RequestCtx(), filterPatterns)
 
 		// Build worker results for response
 		workers := make([]map[string]any, 0, len(workerResults))
@@ -229,7 +229,7 @@ func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *p
 		runtime.ReadMemStats(&memAfter)
 
 		// Trigger GC on all workers
-		workerResults := workerPool.TriggerAllWorkersGC(c.Context())
+		workerResults := workerPool.TriggerAllWorkersGC(c.RequestCtx())
 
 		// Build worker results for response
 		workers := make([]map[string]any, 0, len(workerResults))
@@ -285,7 +285,7 @@ func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *p
 	// Native thread backtraces via gdb — shows where Rust/C threads are blocked.
 	// Requires gdb installed in the container and SYS_PTRACE capability.
 	r.Get("/_debug/native-stacks", func(c fiber.Ctx) error {
-		results := workerPool.GetAllWorkersNativeStacks(c.Context())
+		results := workerPool.GetAllWorkersNativeStacks(c.RequestCtx())
 
 		workers := make([]map[string]any, 0, len(results))
 		for _, wr := range results {
