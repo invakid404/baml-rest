@@ -729,7 +729,7 @@ func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int
 
 func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
-	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
+	serveCmd.Flags().IntVar(&poolSize, "pool-size", 1, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
 	serveCmd.Flags().DurationVar(&sseKeepaliveInterval, "sse-keepalive-interval", defaultSSEKeepaliveInterval, "Interval between SSE keepalive comments (minimum 1s)")
 	serveCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")

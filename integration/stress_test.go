@@ -334,7 +334,7 @@ func TestStressNoDeadlock(t *testing.T) {
 	t.Logf("Stress test: %d total requests (%d call, %d stream, %d parse) with max concurrency %d",
 		totalRequests, callRequests, streamRequests, parseRequests, maxConcurrency)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	// Register scenarios with zero delay for maximum throughput.
@@ -645,7 +645,7 @@ func TestStressConcurrentStreams(t *testing.T) {
 
 	t.Logf("Concurrent streams stress test: %d streams with max concurrency %d", totalStreams, maxConcurrency)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	scenarioID := "stress-concurrent-stream"
