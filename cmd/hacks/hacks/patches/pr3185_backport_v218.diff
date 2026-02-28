@@ -1,0 +1,150 @@
+diff --git a/engine/language_client_go/pkg/callbacks.go b/engine/language_client_go/pkg/callbacks.go
+--- a/engine/language_client_go/pkg/callbacks.go
++++ b/engine/language_client_go/pkg/callbacks.go
+@@ -9,10 +9,10 @@ import "C"
+ import (
+ 	"context"
+ 	"fmt"
+-	"math/rand"
+ 	"os"
+ 	"reflect"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 	"unsafe"
+ 
+@@ -59,6 +59,7 @@ type OnTickCallbackData interface {
+ var (
+ 	dynamicCallbacks   = make(map[uint32]CallbackData)
+ 	callbackMutex      sync.RWMutex
++	nextCallbackID     atomic.Uint32
+ 	typeMap            serde.TypeMap
+ 	callbackLogFile    *os.File
+ 	callbackLogFileMu  sync.Mutex
+@@ -107,6 +108,12 @@ func SetTypeMap(t map[string]reflect.Type) {
+ 
+ //export on_tick_callback
+ func on_tick_callback(id C.uint32_t) {
++	defer func() {
++		if r := recover(); r != nil {
++			callbackLog("[CLIENT_GO_CALLBACK_PANIC] on_tick id=%d panic=%v", uint32(id), r)
++		}
++	}()
++
+ 	callbackMutex.RLock()
+ 	id_uint := uint32(id)
+ 	callback, exists := dynamicCallbacks[id_uint]
+@@ -141,14 +148,14 @@ func error_callback(id C.uint32_t, isDone C.int, content *C.int8_t, length C.in
+ 		// Send the error to the callback
+ 		if content_str == "AbortError" {
+ 			// Special handling for AbortError
+-			callback.channel <- ResultCallback{Error: callback.ctx.Err()}
++			safeSend(callback.channel, ResultCallback{Error: callback.ctx.Err()})
+ 		} else {
+ 			// TODO: cast to the right error type
+ 			err := BamlError{Message: content_str}
+-			callback.channel <- ResultCallback{Error: err}
++			safeSend(callback.channel, ResultCallback{Error: err})
+ 		}
+ 
+-		close(callback.channel)
++		safeClose(callback.channel)
+ 		callbackMutex.Lock()
+ 		defer callbackMutex.Unlock()
+ 		deleteCallback(id_uint)
+@@ -168,8 +175,8 @@ func trigger_callback(id C.uint32_t, isDone C.int, content *C.int8_t, length C.
+ 		var content_holder cffi.CFFIValueHolder
+ 		err := proto.Unmarshal(content_bytes, &content_holder)
+ 		if err != nil {
+-			callback.channel <- ResultCallback{Error: err}
+-			close(callback.channel)
++			safeSend(callback.channel, ResultCallback{Error: err})
++			safeClose(callback.channel)
+ 			callbackMutex.Lock()
+ 			defer callbackMutex.Unlock()
+ 			deleteCallback(id_uint)
+@@ -189,9 +196,9 @@ func trigger_callback(id C.uint32_t, isDone C.int, content *C.int8_t, length C.
+ 			res = ResultCallback{HasStreamData: true, StreamData: decoded_data}
+ 		}
+ 
+-		callback.channel <- res
++		safeSend(callback.channel, res)
+ 		if isDone == 1 {
+-			close(callback.channel)
++			safeClose(callback.channel)
+ 			callbackMutex.Lock()
+ 			defer callbackMutex.Unlock()
+ 			deleteCallback(id_uint)
+@@ -200,13 +207,10 @@ func trigger_callback(id C.uint32_t, isDone C.int, content *C.int8_t, length C.
+ }
+ 
+ func create_unique_id(ctx context.Context, onTick OnTickCallbackData) (uint32, chan ResultCallback) {
++	id := nextCallbackID.Add(1)
+ 	callbackMutex.Lock()
+ 	defer callbackMutex.Unlock()
+-	id := uint32(rand.Intn(1000000))
+-	for _, exists := dynamicCallbacks[id]; exists; {
+-		id = uint32(rand.Intn(1000000))
+-	}
+-	dynamicCallbacks[id] = CallbackData{channel: make(chan ResultCallback), ctx: ctx, onTick: onTick}
++	dynamicCallbacks[id] = CallbackData{channel: make(chan ResultCallback, 64), ctx: ctx, onTick: onTick}
+ 	callbackLog("[CLIENT_GO_CALLBACK_ADD] id=%d map_size=%d", id, len(dynamicCallbacks))
+ 	return id, dynamicCallbacks[id].channel
+ }
+@@ -216,3 +220,30 @@ func deleteCallback(id uint32) {
+ 	delete(dynamicCallbacks, id)
+ 	callbackLog("[CLIENT_GO_CALLBACK_DEL] id=%d map_size=%d", id, len(dynamicCallbacks))
+ }
++
++func safeSend(ch chan ResultCallback, res ResultCallback) (sent bool) {
++	defer func() {
++		if r := recover(); r != nil {
++			callbackLog("[CLIENT_GO_CALLBACK_PANIC] safeSend panic=%v", r)
++			sent = false
++		}
++	}()
++	ch <- res
++	return true
++}
++
++func safeClose(ch chan ResultCallback) {
++	defer func() {
++		if r := recover(); r != nil {
++			callbackLog("[CLIENT_GO_CALLBACK_PANIC] safeClose panic=%v", r)
++		}
++	}()
++	close(ch)
++}
++
++func cleanupCallback(id uint32, ch chan ResultCallback) {
++	safeClose(ch)
++	callbackMutex.Lock()
++	defer callbackMutex.Unlock()
++	deleteCallback(id)
++}
+diff --git a/engine/language_client_go/pkg/runtime.go b/engine/language_client_go/pkg/runtime.go
+--- a/engine/language_client_go/pkg/runtime.go
++++ b/engine/language_client_go/pkg/runtime.go
+@@ -92,6 +92,6 @@ func (r *BamlRuntime) CallFunction(ctx context.Context, functionName string, enc
+ 
+ 	err := baml_go.CallFunctionFromC(r.runtime, functionName, encoded_args, callback_id)
+ 	if err != nil {
+-		close(callback)
++		cleanupCallback(callback_id, callback)
+ 		return nil, err
+ 	}
+@@ -104,5 +104,6 @@ func (r *BamlRuntime) CallFunctionStream(ctx context.Context, functionName strin
+ 
+ 	err := baml_go.CallFunctionStreamFromC(r.runtime, functionName, encoded_args, callback_id)
+ 	if err != nil {
++		cleanupCallback(callback_id, callback)
+ 		return nil, err
+ 	}
+@@ -151,5 +152,6 @@ func (r *BamlRuntime) CallFunctionParse(ctx context.Context, functionName string
+ 
+ 	err := baml_go.CallFunctionParseFromC(r.runtime, functionName, encoded_args, callback_id)
+ 	if err != nil {
++		cleanupCallback(callback_id, callback)
+ 		return nil, err
+ 	}
+ 
