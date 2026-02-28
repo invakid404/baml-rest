@@ -234,7 +234,7 @@ func (s *Server) handleStreamingResponse(c fiber.Ctx, scenario *Scenario, provid
 	}
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		streamCtx, cancel := context.WithTimeout(streamParentCtx, 5*time.Minute)
+		streamCtx, cancel := context.WithCancel(streamParentCtx)
 		defer cancel()
 
 		if err := StreamResponse(streamCtx, w, scenario, provider, effectiveDelay); err != nil {
