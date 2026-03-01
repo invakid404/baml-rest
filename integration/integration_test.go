@@ -23,8 +23,11 @@ var TestEnv *testutil.TestEnvironment
 // MockClient is the client for registering scenarios
 var MockClient *mockllm.Client
 
-// BAMLClient is the client for calling baml-rest
+// BAMLClient is the client for calling baml-rest (Fiber server)
 var BAMLClient *testutil.BAMLRestClient
+
+// UnaryCancelClient is the client for calling the unary cancel server (chi/net-http)
+var UnaryCancelClient *testutil.BAMLRestClient
 
 // BAMLVersion is the version being tested (set at init time)
 var BAMLVersion string
@@ -135,10 +138,12 @@ func TestMain(m *testing.M) {
 	println("  Mock LLM URL:", TestEnv.MockLLMURL)
 	println("  Mock LLM Internal URL:", TestEnv.MockLLMInternal)
 	println("  BAML REST URL:", TestEnv.BAMLRestURL)
+	println("  Unary Cancel URL:", TestEnv.BAMLRestUnaryCancelURL)
 
 	// Create clients
 	MockClient = mockllm.NewClient(TestEnv.MockLLMURL)
 	BAMLClient = testutil.NewBAMLRestClient(TestEnv.BAMLRestURL)
+	UnaryCancelClient = testutil.NewBAMLRestClient(TestEnv.BAMLRestUnaryCancelURL)
 
 	// Run tests
 	code := m.Run()

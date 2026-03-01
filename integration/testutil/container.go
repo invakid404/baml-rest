@@ -36,16 +36,20 @@ const (
 
 	// BAMLRestInternalPort is the port baml-rest listens on inside Docker
 	BAMLRestInternalPort = "8080/tcp"
+
+	// BAMLRestUnaryCancelPort is the port for the unary cancellation server inside Docker
+	BAMLRestUnaryCancelPort = "8081/tcp"
 )
 
 // TestEnvironment holds the running test containers and network.
 type TestEnvironment struct {
-	Network         *testcontainers.DockerNetwork
-	MockLLM         testcontainers.Container
-	BAMLRest        testcontainers.Container
-	MockLLMURL      string // URL to reach mock server from host (http://localhost:xxxxx)
-	BAMLRestURL     string // URL to reach baml-rest from host (http://localhost:xxxxx)
-	MockLLMInternal string // URL to reach mock server from baml-rest (http://mockllm:8080)
+	Network                *testcontainers.DockerNetwork
+	MockLLM                testcontainers.Container
+	BAMLRest               testcontainers.Container
+	MockLLMURL             string // URL to reach mock server from host (http://localhost:xxxxx)
+	BAMLRestURL            string // URL to reach baml-rest from host (http://localhost:xxxxx)
+	BAMLRestUnaryCancelURL string // URL to reach unary cancel server from host (http://localhost:xxxxx)
+	MockLLMInternal        string // URL to reach mock server from baml-rest (http://mockllm:8080)
 }
 
 // Terminate shuts down all containers and network.
@@ -135,7 +139,7 @@ func Setup(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
 	}
 	env.BAMLRest = bamlRest
 
-	// Get baml-rest mapped port
+	// Get baml-rest mapped ports
 	restPort, err := bamlRest.MappedPort(ctx, BAMLRestInternalPort)
 	if err != nil {
 		_ = env.Terminate(ctx)
@@ -147,6 +151,13 @@ func Setup(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
 		return nil, fmt.Errorf("failed to get baml-rest host: %w", err)
 	}
 	env.BAMLRestURL = fmt.Sprintf("http://%s:%s", restHost, restPort.Port())
+
+	unaryCancelPort, err := bamlRest.MappedPort(ctx, BAMLRestUnaryCancelPort)
+	if err != nil {
+		_ = env.Terminate(ctx)
+		return nil, fmt.Errorf("failed to get baml-rest unary cancel port: %w", err)
+	}
+	env.BAMLRestUnaryCancelURL = fmt.Sprintf("http://%s:%s", restHost, unaryCancelPort.Port())
 
 	return env, nil
 }
@@ -220,9 +231,10 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 			Dockerfile:     "Dockerfile",
 			PrintBuildLog:  true, // Enable build log output to see compilation errors
 		},
-		ExposedPorts: []string{BAMLRestInternalPort},
+		ExposedPorts: []string{BAMLRestInternalPort, BAMLRestUnaryCancelPort},
 		// Keep stream-cancellation tests responsive while still validating behavior.
-		Cmd:      []string{"--sse-keepalive-interval=100ms"},
+		// Enable the unary cancel server on port 8081 for integration testing.
+		Cmd:      []string{"--sse-keepalive-interval=100ms", "--unary-cancel-port=8081"},
 		Networks: []string{networkName},
 		NetworkAliases: map[string][]string{
 			networkName: {BAMLRestContainerName},

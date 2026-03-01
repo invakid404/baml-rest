@@ -1,0 +1,244 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/goccy/go-json"
+	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/apierror"
+	"github.com/invakid404/baml-rest/internal/httplogger"
+	"github.com/invakid404/baml-rest/pool"
+	"github.com/rs/zerolog"
+)
+
+// newUnaryRouter builds a chi router that registers only unary endpoints
+// (/call/*, /call-with-raw/*, /parse/*) against the shared worker pool.
+// These handlers use r.Context() for cancellation, giving true client-disconnect
+// detection on a real net/http server.
+func newUnaryRouter(
+	logger zerolog.Logger,
+	workerPool *pool.Pool,
+	methodNames []string,
+	hasDynamicMethod bool,
+) http.Handler {
+	r := chi.NewRouter()
+
+	// Middleware stack — mirrors the Fiber stack where it matters.
+	r.Use(middleware.RequestID)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if reqID := middleware.GetReqID(req.Context()); reqID != "" {
+				w.Header().Set("X-Request-Id", reqID)
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
+	r.Use(httplogger.RequestLogger(logger, &httplogger.Options{
+		RecoverPanics:    true,
+		RequestIDFromCtx: middleware.GetReqID,
+	}))
+
+	// Body size limiter.
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			req.Body = http.MaxBytesReader(w, req.Body, maxRequestBodyBytes)
+			next.ServeHTTP(w, req)
+		})
+	})
+
+	// Register static (schema-defined) endpoints.
+	for _, name := range methodNames {
+		if name == bamlutils.DynamicEndpointName {
+			continue
+		}
+
+		r.Post(fmt.Sprintf("/call/%s", name), makeChiCallHandler(workerPool, name, bamlutils.StreamModeCall))
+		r.Post(fmt.Sprintf("/call-with-raw/%s", name), makeChiCallHandler(workerPool, name, bamlutils.StreamModeCallWithRaw))
+		r.Post(fmt.Sprintf("/parse/%s", name), makeChiParseHandler(workerPool, name))
+	}
+
+	// Register dynamic endpoints.
+	if hasDynamicMethod {
+		r.Post(fmt.Sprintf("/call/%s", bamlutils.DynamicEndpointName), makeChiDynamicCallHandler(workerPool, bamlutils.StreamModeCall))
+		r.Post(fmt.Sprintf("/call-with-raw/%s", bamlutils.DynamicEndpointName), makeChiDynamicCallHandler(workerPool, bamlutils.StreamModeCallWithRaw))
+		r.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), makeChiDynamicParseHandler(workerPool))
+	}
+
+	return r
+}
+
+// ---------------------------------------------------------------------------
+// chi handler factories
+// ---------------------------------------------------------------------------
+
+func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.StreamMode) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeChiJSONError(w, r, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		result, err := p.Call(ctx, methodName, body, streamMode)
+		if err != nil {
+			httplogger.SetError(r.Context(), err)
+			writeChiJSONError(w, r, "failed to process request", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if streamMode.NeedsRaw() {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(CallWithRawResponse{
+				Data: result.Data,
+				Raw:  result.Raw,
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(result.Data)
+	}
+}
+
+func makeChiParseHandler(p *pool.Pool, methodName string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeChiJSONError(w, r, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		result, err := p.Parse(ctx, methodName, body)
+		if err != nil {
+			httplogger.SetError(r.Context(), err)
+			writeChiJSONError(w, r, "failed to parse response", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(result.Data)
+	}
+}
+
+func makeChiDynamicCallHandler(p *pool.Pool, streamMode bamlutils.StreamMode) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeChiJSONError(w, r, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		var input bamlutils.DynamicInput
+		if err := json.Unmarshal(body, &input); err != nil {
+			writeChiJSONError(w, r, "invalid JSON payload", http.StatusBadRequest)
+			return
+		}
+		if err := input.Validate(); err != nil {
+			writeChiJSONError(w, r, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		workerInput, err := input.ToWorkerInput()
+		if err != nil {
+			httplogger.SetError(r.Context(), err)
+			writeChiJSONError(w, r, "failed to process dynamic input", http.StatusInternalServerError)
+			return
+		}
+
+		result, err := p.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
+		if err != nil {
+			httplogger.SetError(r.Context(), err)
+			writeChiJSONError(w, r, "failed to process request", http.StatusInternalServerError)
+			return
+		}
+
+		flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
+		if err != nil {
+			httplogger.SetError(r.Context(), err)
+			writeChiJSONError(w, r, "failed to process response", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if streamMode.NeedsRaw() {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(CallWithRawResponse{
+				Data: flattenedData,
+				Raw:  result.Raw,
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(flattenedData)
+	}
+}
+
+func makeChiDynamicParseHandler(p *pool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeChiJSONError(w, r, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		var input bamlutils.DynamicParseInput
+		if err := json.Unmarshal(body, &input); err != nil {
+			writeChiJSONError(w, r, "invalid JSON payload", http.StatusBadRequest)
+			return
+		}
+		if err := input.Validate(); err != nil {
+			writeChiJSONError(w, r, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		workerInput, err := input.ToWorkerInput()
+		if err != nil {
+			httplogger.SetError(r.Context(), err)
+			writeChiJSONError(w, r, "failed to process dynamic input", http.StatusInternalServerError)
+			return
+		}
+
+		result, err := p.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
+		if err != nil {
+			httplogger.SetError(r.Context(), err)
+			writeChiJSONError(w, r, "failed to parse response", http.StatusInternalServerError)
+			return
+		}
+
+		flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
+		if err != nil {
+			httplogger.SetError(r.Context(), err)
+			writeChiJSONError(w, r, "failed to process response", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(flattenedData)
+	}
+}
+
+// writeChiJSONError writes a JSON error response using the standard apierror envelope.
+func writeChiJSONError(w http.ResponseWriter, r *http.Request, message string, statusCode int) {
+	apierror.WriteJSON(w, message, statusCode, middleware.GetReqID(r.Context()))
+}

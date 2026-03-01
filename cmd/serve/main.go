@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -51,6 +52,7 @@ const (
 
 var (
 	port                    int
+	unaryCancelPort         int
 	poolSize                int
 	firstByteTimeout        time.Duration
 	streamKeepaliveInterval time.Duration
@@ -542,7 +544,17 @@ var serveCmd = &cobra.Command{
 			})
 		}
 
-		// Start server in a goroutine
+		// Optionally start the chi-based unary cancellation server.
+		var unaryServer *http.Server
+		if unaryCancelPort > 0 {
+			unaryRouter := newUnaryRouter(logger, workerPool, methodNames, hasDynamicMethod)
+			unaryServer = &http.Server{
+				Addr:    fmt.Sprintf(":%d", unaryCancelPort),
+				Handler: unaryRouter,
+			}
+		}
+
+		// Start Fiber server in a goroutine.
 		serverErr := make(chan error, 1)
 		go recovery.GoHandler(func(err error) {
 			serverErr <- err
@@ -553,6 +565,21 @@ var serveCmd = &cobra.Command{
 			return app.Listen(fmt.Sprintf(":%d", port), fiber.ListenConfig{DisableStartupMessage: true})
 		})
 
+		// Start unary cancellation server in a goroutine (if enabled).
+		unaryServerErr := make(chan error, 1)
+		if unaryServer != nil {
+			go recovery.GoHandler(func(err error) {
+				unaryServerErr <- err
+			}, func() error {
+				logger.Info().Int("port", unaryCancelPort).Msg("Starting unary cancellation server (chi/net-http)")
+				err := unaryServer.ListenAndServe()
+				if errors.Is(err, http.ErrServerClosed) {
+					return nil
+				}
+				return err
+			})
+		}
+
 		// Set up signal handling for graceful shutdown
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -562,6 +589,9 @@ var serveCmd = &cobra.Command{
 		case err := <-serverErr:
 			_ = workerPool.Close()
 			return fmt.Errorf("server error: %w", err)
+		case err := <-unaryServerErr:
+			_ = workerPool.Close()
+			return fmt.Errorf("unary server error: %w", err)
 		case sig := <-sigChan:
 			logger.Info().Str("signal", sig.String()).Msg("Received signal, initiating graceful shutdown")
 
@@ -569,15 +599,23 @@ var serveCmd = &cobra.Command{
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer shutdownCancel()
 
-			// Shutdown Fiber server - this will wait for active connections to finish
-			// Active connections are waiting on worker responses, so workers must stay alive
+			// Shutdown both HTTP servers — active connections wait on worker responses,
+			// so workers must stay alive until all servers are drained.
 			if err := app.ShutdownWithContext(shutdownCtx); err != nil {
 				logger.Error().Err(err).Msg("Error during Fiber server shutdown")
 				_ = workerPool.Close()
 				return fmt.Errorf("shutdown error: %w", err)
 			}
 
-			logger.Info().Msg("Fiber server stopped, shutting down worker pool")
+			if unaryServer != nil {
+				if err := unaryServer.Shutdown(shutdownCtx); err != nil {
+					logger.Error().Err(err).Msg("Error during unary server shutdown")
+					_ = workerPool.Close()
+					return fmt.Errorf("unary shutdown error: %w", err)
+				}
+			}
+
+			logger.Info().Msg("HTTP servers stopped, shutting down worker pool")
 
 			// Gracefully shutdown worker pool - waits for any remaining in-flight requests
 			if err := workerPool.Shutdown(shutdownCtx); err != nil {
@@ -611,6 +649,7 @@ func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int
 
 func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
+	serveCmd.Flags().IntVar(&unaryCancelPort, "unary-cancel-port", 0, "Port for the unary cancellation server (0 = disabled). Runs /call/*, /call-with-raw/*, /parse/* on a real net/http server for reliable client-disconnect cancellation")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
 	serveCmd.Flags().DurationVar(&streamKeepaliveInterval, "sse-keepalive-interval", defaultStreamKeepaliveInterval, "Interval between stream keepalive signals for SSE/NDJSON (minimum 100ms)")
