@@ -289,6 +289,32 @@ func setupScenario(t *testing.T, scenarioID, content string) *testutil.BAMLOptio
 	}
 }
 
+// namedClient pairs a display name with a BAMLRestClient for parameterized testing.
+type namedClient struct {
+	Name   string
+	Client *testutil.BAMLRestClient
+}
+
+// unaryTestClients returns the set of clients to test unary endpoints against.
+// Both share the same worker pool; the chi server provides real r.Context() cancellation.
+func unaryTestClients() []namedClient {
+	return []namedClient{
+		{"fiber", BAMLClient},
+		{"chi", UnaryCancelClient},
+	}
+}
+
+// forEachUnaryClient runs fn as a subtest for each unary backend (Fiber and chi).
+// Use this wrapper for tests that exercise only unary endpoints (/call, /call-with-raw, /parse).
+func forEachUnaryClient(t *testing.T, fn func(t *testing.T, client *testutil.BAMLRestClient)) {
+	t.Helper()
+	for _, nc := range unaryTestClients() {
+		t.Run(nc.Name, func(t *testing.T) {
+			fn(t, nc.Client)
+		})
+	}
+}
+
 // Helper to register a non-streaming scenario
 func setupNonStreamingScenario(t *testing.T, scenarioID, content string) *testutil.BAMLOptions {
 	t.Helper()
