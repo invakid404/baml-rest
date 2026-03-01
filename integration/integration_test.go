@@ -125,7 +125,15 @@ func TestMain(m *testing.M) {
 	}
 
 	// Setup test environment
-	unaryServer, _ := strconv.ParseBool(os.Getenv("UNARY_SERVER"))
+	unaryServer := false
+	if v := os.Getenv("UNARY_SERVER"); v != "" {
+		var err error
+		unaryServer, err = strconv.ParseBool(v)
+		if err != nil {
+			println("Invalid UNARY_SERVER value:", v, "(expected true/false)")
+			os.Exit(1)
+		}
+	}
 	TestEnv, err = testutil.Setup(ctx, testutil.SetupOptions{
 		BAMLSrcPath:    bamlSrcPath,
 		BAMLVersion:    BAMLVersion,
