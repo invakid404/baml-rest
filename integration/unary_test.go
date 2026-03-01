@@ -4,6 +4,8 @@ package integration
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,9 +73,14 @@ func TestUnaryCancelCall(t *testing.T) {
 		})
 		elapsed := time.Since(startTime)
 
-		// Should get an error (context cancelled)
+		// Should get a cancellation error specifically, not just any error.
 		if err == nil {
-			t.Error("Expected error from cancelled request, got nil")
+			t.Fatal("Expected cancellation error, got nil")
+		}
+		if !errors.Is(err, context.Canceled) &&
+			!errors.Is(err, context.DeadlineExceeded) &&
+			!strings.Contains(strings.ToLower(err.Error()), "context canceled") {
+			t.Fatalf("Expected cancellation error, got: %v", err)
 		}
 		t.Logf("Unary cancel completed in %v (error: %v)", elapsed, err)
 

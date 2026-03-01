@@ -109,9 +109,9 @@ func registerHTTPMetrics() error {
 
 func httpMetricsMiddleware(c fiber.Ctx) error {
 	httpRequestsInflight.Inc()
+	defer httpRequestsInflight.Dec()
 	start := time.Now()
 	err := c.Next()
-	httpRequestsInflight.Dec()
 
 	statusCode := c.Response().StatusCode()
 	if err != nil {
@@ -557,8 +557,12 @@ var serveCmd = &cobra.Command{
 		if unaryPort > 0 {
 			unaryRouter := newUnaryRouter(logger, workerPool, methodNames, hasDynamicMethod)
 			unaryServer = &http.Server{
-				Addr:    fmt.Sprintf(":%d", unaryPort),
-				Handler: unaryRouter,
+				Addr:              fmt.Sprintf(":%d", unaryPort),
+				Handler:           unaryRouter,
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       30 * time.Second,
+				WriteTimeout:      5 * time.Minute,
+				IdleTimeout:       120 * time.Second,
 			}
 		}
 

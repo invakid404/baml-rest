@@ -93,8 +93,7 @@ func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.St
 
 		result, err := p.Call(ctx, methodName, body, streamMode)
 		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process request", http.StatusInternalServerError)
+			writeChiWorkerError(w, r, err, "failed to process request")
 			return
 		}
 
@@ -126,8 +125,7 @@ func makeChiParseHandler(p *pool.Pool, methodName string) http.HandlerFunc {
 
 		result, err := p.Parse(ctx, methodName, body)
 		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to parse response", http.StatusInternalServerError)
+			writeChiWorkerError(w, r, err, "failed to parse response")
 			return
 		}
 
@@ -167,8 +165,7 @@ func makeChiDynamicCallHandler(p *pool.Pool, streamMode bamlutils.StreamMode) ht
 
 		result, err := p.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
 		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process request", http.StatusInternalServerError)
+			writeChiWorkerError(w, r, err, "failed to process request")
 			return
 		}
 
@@ -224,8 +221,7 @@ func makeChiDynamicParseHandler(p *pool.Pool) http.HandlerFunc {
 
 		result, err := p.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
 		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to parse response", http.StatusInternalServerError)
+			writeChiWorkerError(w, r, err, "failed to parse response")
 			return
 		}
 
@@ -261,18 +257,28 @@ func writeChiJSONError(w http.ResponseWriter, r *http.Request, message string, s
 	apierror.WriteJSON(w, message, statusCode, middleware.GetReqID(r.Context()))
 }
 
+// writeChiWorkerError classifies worker errors: context cancellation is reported
+// as 408 (not 500) so it doesn't inflate error metrics.
+func writeChiWorkerError(w http.ResponseWriter, r *http.Request, err error, fallbackMessage string) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		writeChiJSONError(w, r, "request canceled", http.StatusRequestTimeout)
+		return
+	}
+	httplogger.SetError(r.Context(), err)
+	writeChiJSONError(w, r, fallbackMessage, http.StatusInternalServerError)
+}
+
 // chiMetricsMiddleware records the same HTTP metrics as the Fiber middleware
 // (http_requests_total, http_request_duration_seconds, http_requests_inflight)
 // using the shared prometheus collectors.
 func chiMetricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		httpRequestsInflight.Inc()
+		defer httpRequestsInflight.Dec()
 		start := time.Now()
 
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
-
-		httpRequestsInflight.Dec()
 
 		rctx := chi.RouteContext(r.Context())
 		path := rctx.RoutePattern()
