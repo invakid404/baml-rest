@@ -46,6 +46,22 @@ type NDJSONEvent struct {
 	Error string          `json:"error,omitempty"`
 }
 
+func withRequestCancellation(parent context.Context, requestDone <-chan struct{}) (context.Context, context.CancelFunc) {
+	streamCtx, cancel := context.WithCancel(parent)
+
+	if requestDone != nil {
+		go func() {
+			select {
+			case <-requestDone:
+				cancel()
+			case <-streamCtx.Done():
+			}
+		}()
+	}
+
+	return streamCtx, cancel
+}
+
 // NegotiateStreamFormatFromAccept determines the stream format from an Accept header value.
 func NegotiateStreamFormatFromAccept(accept string) StreamFormat {
 	if accept == "" {
@@ -136,12 +152,14 @@ func HandleNDJSONStreamFiber(
 	c.Set("X-Content-Type-Options", "nosniff")
 
 	streamParentCtx := c.Context()
+	var requestDone <-chan struct{}
 	if reqCtx := c.RequestCtx(); reqCtx != nil {
 		reqCtx.Response.ImmediateHeaderFlush = true
+		requestDone = reqCtx.Done()
 	}
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		streamCtx, cancel := context.WithCancel(streamParentCtx)
+		streamCtx, cancel := withRequestCancellation(streamParentCtx, requestDone)
 		defer cancel()
 
 		publisher := &NDJSONStreamWriterPublisher{
@@ -381,12 +399,14 @@ func HandleSSEStreamFiber(
 	c.Set("X-Content-Type-Options", "nosniff")
 
 	streamParentCtx := c.Context()
+	var requestDone <-chan struct{}
 	if reqCtx := c.RequestCtx(); reqCtx != nil {
 		reqCtx.Response.ImmediateHeaderFlush = true
+		requestDone = reqCtx.Done()
 	}
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		streamCtx, cancel := context.WithCancel(streamParentCtx)
+		streamCtx, cancel := withRequestCancellation(streamParentCtx, requestDone)
 		defer cancel()
 
 		publisher := &SSEStreamWriterPublisher{
