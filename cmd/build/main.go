@@ -164,6 +164,7 @@ var (
 	customBamlGoLib string
 	bamlSource      string
 	debugBuild      bool
+	unaryServer     bool
 	prettyLogs      bool
 )
 
@@ -197,6 +198,7 @@ func init() {
 	rootCmd.Flags().StringVar(&customBamlLib, "custom-baml-lib", "", "Path to custom BAML FFI library (.so file for linux/amd64 or linux/arm64)")
 	rootCmd.Flags().StringVar(&customBamlGoLib, "custom-baml-go-lib", "", "Path to custom BAML Go library folder (replaces github.com/boundaryml/baml)")
 	rootCmd.Flags().BoolVar(&debugBuild, "debug", false, "Enable debug endpoints in the built binary (/_debug/gc)")
+	rootCmd.Flags().BoolVar(&unaryServer, "unary-server", false, "Enable the chi-based unary HTTP server for client-disconnect cancellation")
 	rootCmd.Flags().StringVar(&bamlSource, "baml-source", "", "Path to local BAML source repository for building from unreleased versions")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 
@@ -209,6 +211,7 @@ func init() {
 	_ = viper.BindPFlag("custom-baml-lib", rootCmd.Flags().Lookup("custom-baml-lib"))
 	_ = viper.BindPFlag("custom-baml-go-lib", rootCmd.Flags().Lookup("custom-baml-go-lib"))
 	_ = viper.BindPFlag("debug", rootCmd.Flags().Lookup("debug"))
+	_ = viper.BindPFlag("unary-server", rootCmd.Flags().Lookup("unary-server"))
 	_ = viper.BindPFlag("baml-source", rootCmd.Flags().Lookup("baml-source"))
 }
 
@@ -227,6 +230,7 @@ var rootCmd = &cobra.Command{
 		customBamlLib = viper.GetString("custom-baml-lib")
 		customBamlGoLib = viper.GetString("custom-baml-go-lib")
 		debugBuild = viper.GetBool("debug")
+		unaryServer = viper.GetBool("unary-server")
 		bamlSource = viper.GetString("baml-source")
 
 		// Validate mode
@@ -446,14 +450,14 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild, bamlSource)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild, unaryServer, bamlSource)
 		} else {
-			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild, bamlLibraryPath, bamlCliPath)
+			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild, unaryServer, bamlLibraryPath, bamlCliPath)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool, bamlSource string) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, bamlSource string) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	if platform != nil {
@@ -484,6 +488,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		"adapterVersion": adapterVersion,
 		"keepSource":     keepSource,
 		"debugBuild":     debugBuild,
+		"unaryServer":    unaryServer,
 		"bamlSource":     bamlSource != "",
 	}
 	if bamlSource != "" {
@@ -794,7 +799,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	return nil
 }
 
-func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool, bamlLibraryPath string, bamlCliPath string) error {
+func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, bamlLibraryPath string, bamlCliPath string) error {
 	fmt.Printf("\n=== Native Build Mode ===\n\n")
 
 	// Check prerequisites
@@ -931,6 +936,9 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	}
 	if debugBuild {
 		env = append(env, "DEBUG_BUILD=true")
+	}
+	if unaryServer {
+		env = append(env, "UNARY_SERVER=true")
 	}
 	if bamlLibraryPath != "" {
 		env = append(env, fmt.Sprintf("BAML_LIBRARY_PATH=%s", bamlLibraryPath))
