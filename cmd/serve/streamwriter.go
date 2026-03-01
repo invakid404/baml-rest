@@ -279,6 +279,10 @@ func (p *SSEStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Con
 	}
 
 	go func() {
+		if ctx.Err() != nil {
+			return
+		}
+
 		wrote, err := p.writeComment("keepalive")
 		if err != nil {
 			return
@@ -295,6 +299,10 @@ func (p *SSEStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Con
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
+
 				wrote, err := p.writeComment("keepalive")
 				if err != nil {
 					return
