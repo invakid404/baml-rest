@@ -155,12 +155,22 @@ fi
 if [ "${DEBUG_BUILD:-false}" = "true" ]; then
     echo "Debug Build: enabled"
 fi
+if [ "${UNARY_SERVER:-false}" = "true" ]; then
+    echo "Unary Server: enabled"
+fi
 echo "============================================"
 
 # Set up Go build tags
-GO_BUILD_TAGS=""
+BUILD_TAGS=""
 if [ "${DEBUG_BUILD:-false}" = "true" ]; then
-    GO_BUILD_TAGS="-tags=debug"
+    BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}debug"
+fi
+if [ "${UNARY_SERVER:-false}" = "true" ]; then
+    BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}unaryserver"
+fi
+GO_BUILD_TAGS=""
+if [ -n "${BUILD_TAGS}" ]; then
+    GO_BUILD_TAGS="-tags=${BUILD_TAGS}"
 fi
 
 # Create working directory structure
