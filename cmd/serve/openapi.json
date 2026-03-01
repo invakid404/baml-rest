@@ -1,8 +1,381 @@
 {
-  "openapi": "3.0.0",
+  "components": {
+    "schemas": {
+      "BamlOptions": {
+        "properties": {
+          "client_registry": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClientRegistry"
+              }
+            ],
+            "nullable": true
+          },
+          "type_builder": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TypeBuilder"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "type": "object"
+      },
+      "ClientProperty": {
+        "nullable": true,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "options": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "retry_policy": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "provider",
+          "options"
+        ],
+        "type": "object"
+      },
+      "ClientRegistry": {
+        "nullable": true,
+        "properties": {
+          "clients": {
+            "items": {
+              "$ref": "#/components/schemas/ClientProperty"
+            },
+            "type": "array"
+          },
+          "primary": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "clients"
+        ],
+        "type": "object"
+      },
+      "DynamicClass": {
+        "nullable": true,
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "properties": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DynamicProperty"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "description",
+          "alias",
+          "properties"
+        ],
+        "type": "object"
+      },
+      "DynamicEnum": {
+        "nullable": true,
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/DynamicEnumValue"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "description",
+          "alias",
+          "values"
+        ],
+        "type": "object"
+      },
+      "DynamicEnumValue": {
+        "nullable": true,
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "skip": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "alias",
+          "skip"
+        ],
+        "type": "object"
+      },
+      "DynamicProperty": {
+        "nullable": true,
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "inner": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DynamicTypeSpec"
+              }
+            ],
+            "nullable": true
+          },
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DynamicTypeSpec"
+              }
+            ],
+            "nullable": true
+          },
+          "keys": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DynamicTypeSpec"
+              }
+            ],
+            "nullable": true
+          },
+          "oneOf": {
+            "items": {
+              "$ref": "#/components/schemas/DynamicTypeSpec"
+            },
+            "type": "array"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "value": {},
+          "values": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DynamicTypeSpec"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "required": [
+          "type",
+          "ref",
+          "description",
+          "alias",
+          "oneOf",
+          "value"
+        ],
+        "type": "object"
+      },
+      "DynamicTypeSpec": {
+        "nullable": true,
+        "properties": {
+          "inner": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DynamicTypeSpec"
+              }
+            ],
+            "nullable": true
+          },
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DynamicTypeSpec"
+              }
+            ],
+            "nullable": true
+          },
+          "keys": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DynamicTypeSpec"
+              }
+            ],
+            "nullable": true
+          },
+          "oneOf": {
+            "items": {
+              "$ref": "#/components/schemas/DynamicTypeSpec"
+            },
+            "type": "array"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "value": {},
+          "values": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DynamicTypeSpec"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "required": [
+          "type",
+          "ref",
+          "oneOf",
+          "value"
+        ],
+        "type": "object"
+      },
+      "DynamicTypes": {
+        "nullable": true,
+        "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DynamicClass"
+            },
+            "type": "object"
+          },
+          "enums": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DynamicEnum"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "classes",
+          "enums"
+        ],
+        "type": "object"
+      },
+      "TypeBuilder": {
+        "nullable": true,
+        "properties": {
+          "baml_snippets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dynamic_types": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DynamicTypes"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "required": [
+          "baml_snippets"
+        ],
+        "type": "object"
+      },
+      "__ErrorResponse__": {
+        "description": "Error response returned for failed requests",
+        "properties": {
+          "error": {
+            "description": "Error message describing what went wrong",
+            "type": "string"
+          },
+          "request_id": {
+            "description": "Request ID for debugging (from X-Request-Id header)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "__StreamErrorEvent__": {
+        "description": "Error event indicating the stream has failed",
+        "properties": {
+          "error": {
+            "description": "Error message describing what went wrong",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "error"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "error"
+        ],
+        "type": "object"
+      },
+      "__StreamHeartbeatEvent__": {
+        "description": "Heartbeat event used to keep the NDJSON stream active before the first data event",
+        "properties": {
+          "type": {
+            "enum": [
+              "heartbeat"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "__StreamResetEvent__": {
+        "description": "Reset event indicating client should discard accumulated state (sent when a retry occurs)",
+        "properties": {
+          "type": {
+            "enum": [
+              "reset"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      }
+    }
+  },
   "info": {
     "title": "baml-rest",
     "version": "1.0.0"
   },
+  "openapi": "3.0.0",
   "paths": {}
 }

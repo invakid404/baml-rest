@@ -36,6 +36,7 @@ const (
 	NDJSONEventFinal NDJSONEventType = "final"
 	NDJSONEventReset NDJSONEventType = "reset"
 	NDJSONEventError NDJSONEventType = "error"
+	NDJSONEventPing  NDJSONEventType = "heartbeat"
 )
 
 // NDJSONEvent represents a single NDJSON streaming event.
@@ -44,22 +45,6 @@ type NDJSONEvent struct {
 	Data  json.RawMessage `json:"data,omitempty"`
 	Raw   string          `json:"raw,omitempty"`
 	Error string          `json:"error,omitempty"`
-}
-
-func withRequestCancellation(parent context.Context, requestDone <-chan struct{}) (context.Context, context.CancelFunc) {
-	streamCtx, cancel := context.WithCancel(parent)
-
-	if requestDone != nil {
-		go func() {
-			select {
-			case <-requestDone:
-				cancel()
-			case <-streamCtx.Done():
-			}
-		}()
-	}
-
-	return streamCtx, cancel
 }
 
 // NegotiateStreamFormatFromAccept determines the stream format from an Accept header value.
@@ -83,9 +68,15 @@ func NegotiateStreamFormatFromAccept(accept string) StreamFormat {
 type NDJSONStreamWriterPublisher struct {
 	w      *bufio.Writer
 	cancel context.CancelFunc
+
+	mu         sync.Mutex
+	wroteEvent bool
 }
 
 func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -105,7 +96,81 @@ func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
 		return err
 	}
 
+	p.wroteEvent = true
+
 	return nil
+}
+
+func (p *NDJSONStreamWriterPublisher) writeKeepalive() (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.wroteEvent {
+		return false, nil
+	}
+
+	data, err := json.Marshal(&NDJSONEvent{Type: NDJSONEventPing})
+	if err != nil {
+		return false, err
+	}
+
+	if _, err := p.w.Write(data); err != nil {
+		p.cancel()
+		return false, err
+	}
+	if err := p.w.WriteByte('\n'); err != nil {
+		p.cancel()
+		return false, err
+	}
+
+	if err := p.w.Flush(); err != nil {
+		p.cancel()
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (p *NDJSONStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+
+	go func() {
+		if ctx.Err() != nil {
+			return
+		}
+
+		wrote, err := p.writeKeepalive()
+		if err != nil {
+			return
+		}
+		if !wrote {
+			return
+		}
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
+
+				wrote, err := p.writeKeepalive()
+				if err != nil {
+					return
+				}
+				if !wrote {
+					return
+				}
+			}
+		}
+	}()
 }
 
 func (p *NDJSONStreamWriterPublisher) PublishData(data []byte, raw string) error {
@@ -152,20 +217,19 @@ func HandleNDJSONStreamFiber(
 	c.Set("X-Content-Type-Options", "nosniff")
 
 	streamParentCtx := c.Context()
-	var requestDone <-chan struct{}
 	if reqCtx := c.RequestCtx(); reqCtx != nil {
 		reqCtx.Response.ImmediateHeaderFlush = true
-		requestDone = reqCtx.Done()
 	}
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		streamCtx, cancel := withRequestCancellation(streamParentCtx, requestDone)
+		streamCtx, cancel := context.WithCancel(streamParentCtx)
 		defer cancel()
 
 		publisher := &NDJSONStreamWriterPublisher{
 			w:      w,
 			cancel: cancel,
 		}
+		publisher.startKeepaliveUntilFirstEvent(streamCtx, preFirstByteKeepaliveInterval)
 
 		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 		if err != nil {
@@ -399,14 +463,12 @@ func HandleSSEStreamFiber(
 	c.Set("X-Content-Type-Options", "nosniff")
 
 	streamParentCtx := c.Context()
-	var requestDone <-chan struct{}
 	if reqCtx := c.RequestCtx(); reqCtx != nil {
 		reqCtx.Response.ImmediateHeaderFlush = true
-		requestDone = reqCtx.Done()
 	}
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		streamCtx, cancel := withRequestCancellation(streamParentCtx, requestDone)
+		streamCtx, cancel := context.WithCancel(streamParentCtx)
 		defer cancel()
 
 		publisher := &SSEStreamWriterPublisher{
