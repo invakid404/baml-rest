@@ -1751,11 +1751,10 @@ func TestRequestCancellation(t *testing.T) {
 		})
 
 		// Cancel after a short delay (before first byte would arrive)
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			t.Log("Cancelling request before first byte...")
+		cancelTimer := time.AfterFunc(500*time.Millisecond, func() {
 			reqCancel()
-		}()
+		})
+		defer cancelTimer.Stop()
 
 		var receivedEvents int
 		var streamErr error
@@ -1767,11 +1766,11 @@ func TestRequestCancellation(t *testing.T) {
 					goto done
 				}
 				receivedEvents++
-				t.Logf("Received event: type=%s", event.Event)
+				t.Logf("Received SSE event: type=%s", event.Event)
 			case err := <-errs:
 				if err != nil {
 					streamErr = err
-					t.Logf("Received error: %v", err)
+					t.Logf("Received SSE error: %v", err)
 				}
 			case <-parentCtx.Done():
 				t.Fatal("Parent context cancelled unexpectedly")
@@ -2007,11 +2006,10 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 		})
 
 		// Cancel after a short delay (before first byte would arrive)
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			t.Log("Cancelling NDJSON request before first byte...")
+		cancelTimer := time.AfterFunc(500*time.Millisecond, func() {
 			reqCancel()
-		}()
+		})
+		defer cancelTimer.Stop()
 
 		var receivedEvents int
 		var streamErr error
