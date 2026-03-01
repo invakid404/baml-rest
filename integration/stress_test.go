@@ -337,6 +337,16 @@ func TestStressNoDeadlock(t *testing.T) {
 		stallWindow = 30 * time.Second
 	)
 
+	// Use the chi unary server for call/parse when available (production path),
+	// otherwise fall back to Fiber.
+	unaryClient := BAMLClient
+	if UnaryClient != nil {
+		unaryClient = UnaryClient
+		t.Log("Using chi unary server for call/parse requests")
+	} else {
+		t.Log("Using Fiber for call/parse requests (unary server not enabled)")
+	}
+
 	totalRequests := callRequests + streamRequests + parseRequests
 	t.Logf("Stress test: %d total requests (%d call, %d stream, %d parse) with max concurrency %d",
 		totalRequests, callRequests, streamRequests, parseRequests, maxConcurrency)
@@ -459,7 +469,7 @@ func TestStressNoDeadlock(t *testing.T) {
 				defer func() { <-sem }()
 
 				reqStart := time.Now()
-				resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
+				resp, err := unaryClient.Call(ctx, testutil.CallRequest{
 					Method:  "GetSimple",
 					Input:   map[string]any{"input": "stress"},
 					Options: callOpts,
@@ -556,7 +566,7 @@ func TestStressNoDeadlock(t *testing.T) {
 				defer func() { <-sem }()
 
 				reqStart := time.Now()
-				resp, err := BAMLClient.Parse(ctx, testutil.ParseRequest{
+				resp, err := unaryClient.Parse(ctx, testutil.ParseRequest{
 					Method: "GetPerson",
 					Raw:    `{"name": "Stress Test", "age": 1, "tags": ["parse"]}`,
 				})
