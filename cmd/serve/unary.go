@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -30,6 +32,7 @@ func newUnaryRouter(
 	r := chi.NewRouter()
 
 	// Middleware stack — mirrors the Fiber stack where it matters.
+	r.Use(chiMetricsMiddleware)
 	r.Use(middleware.RequestID)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -256,4 +259,29 @@ func readUnaryBody(r *http.Request) ([]byte, int, error) {
 // writeChiJSONError writes a JSON error response using the standard apierror envelope.
 func writeChiJSONError(w http.ResponseWriter, r *http.Request, message string, statusCode int) {
 	apierror.WriteJSON(w, message, statusCode, middleware.GetReqID(r.Context()))
+}
+
+// chiMetricsMiddleware records the same HTTP metrics as the Fiber middleware
+// (http_requests_total, http_request_duration_seconds, http_requests_inflight)
+// using the shared prometheus collectors.
+func chiMetricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpRequestsInflight.Inc()
+		start := time.Now()
+
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+
+		httpRequestsInflight.Dec()
+
+		rctx := chi.RouteContext(r.Context())
+		path := rctx.RoutePattern()
+		if path == "" {
+			path = "_unmatched"
+		}
+
+		code := strconv.Itoa(ww.Status())
+		httpRequestsTotal.WithLabelValues(r.Method, path, code).Inc()
+		httpRequestDuration.WithLabelValues(r.Method, path, code).Observe(time.Since(start).Seconds())
+	})
 }

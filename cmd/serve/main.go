@@ -71,7 +71,7 @@ var (
 			Name: "http_requests_total",
 			Help: "Total HTTP requests processed by the server",
 		},
-		[]string{"method", "path", "status"},
+		[]string{"method", "path", "code"},
 	)
 	httpRequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -79,7 +79,13 @@ var (
 			Help:    "HTTP request duration in seconds",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"method", "path", "status"},
+		[]string{"method", "path", "code"},
+	)
+	httpRequestsInflight = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "http_requests_inflight",
+			Help: "Number of HTTP requests currently being processed",
+		},
 	)
 	registerHTTPMetricsOnce sync.Once
 	registerHTTPMetricsErr  error
@@ -87,7 +93,7 @@ var (
 
 func registerHTTPMetrics() error {
 	registerHTTPMetricsOnce.Do(func() {
-		for _, collector := range []prometheus.Collector{httpRequestsTotal, httpRequestDuration} {
+		for _, collector := range []prometheus.Collector{httpRequestsTotal, httpRequestDuration, httpRequestsInflight} {
 			if err := prometheus.Register(collector); err != nil {
 				if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
 					continue
@@ -102,8 +108,10 @@ func registerHTTPMetrics() error {
 }
 
 func httpMetricsMiddleware(c fiber.Ctx) error {
+	httpRequestsInflight.Inc()
 	start := time.Now()
 	err := c.Next()
+	httpRequestsInflight.Dec()
 
 	statusCode := c.Response().StatusCode()
 	if err != nil {
@@ -118,13 +126,13 @@ func httpMetricsMiddleware(c fiber.Ctx) error {
 		}
 	}
 
-	status := strconv.Itoa(statusCode)
+	code := strconv.Itoa(statusCode)
 	path := c.FullPath()
 	if path == "" {
 		path = "_unmatched"
 	}
-	httpRequestsTotal.WithLabelValues(c.Method(), path, status).Inc()
-	httpRequestDuration.WithLabelValues(c.Method(), path, status).Observe(time.Since(start).Seconds())
+	httpRequestsTotal.WithLabelValues(c.Method(), path, code).Inc()
+	httpRequestDuration.WithLabelValues(c.Method(), path, code).Observe(time.Since(start).Seconds())
 
 	return err
 }
