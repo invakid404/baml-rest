@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,7 +23,6 @@ import (
 	"github.com/goccy/go-json"
 	fiberzerolog "github.com/gofiber/contrib/v3/zerolog"
 	"github.com/gofiber/fiber/v3"
-	fiberadaptor "github.com/gofiber/fiber/v3/middleware/adaptor"
 	fiberrecover "github.com/gofiber/fiber/v3/middleware/recover"
 	fiberrequestid "github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/gregwebs/go-recovery"
@@ -35,7 +33,6 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/rs/zerolog"
-	"github.com/tmaxmax/go-sse"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/spf13/cobra"
@@ -48,23 +45,16 @@ var workerBinary []byte
 //go:embed openapi.json
 var openapiJSON []byte
 
-type sseContextKey string
-
 const (
-	sseContextKeyTopic  = sseContextKey("topic")
-	sseContextKeyReady  = sseContextKey("ready")
 	maxRequestBodyBytes = 4 * 1024 * 1024
 )
 
-var errRequestBodyTooLarge = errors.New("request body too large")
-
 var (
-	port                 int
-	poolSize             int
-	firstByteTimeout     time.Duration
-	sseKeepaliveInterval time.Duration
-	prettyLogs           bool
-	memLimit             int64
+	port             int
+	poolSize         int
+	firstByteTimeout time.Duration
+	prettyLogs       bool
+	memLimit         int64
 )
 
 var rootCmd = &cobra.Command{
@@ -191,10 +181,6 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if sseKeepaliveInterval < minSSEKeepaliveInterval {
-			return fmt.Errorf("--sse-keepalive-interval must be >= %s", minSSEKeepaliveInterval)
-		}
-
 		// Initialize zerolog logger
 		var output io.Writer = os.Stdout
 		if prettyLogs {
@@ -293,37 +279,6 @@ var serveCmd = &cobra.Command{
 			JSONDecoder: json.Unmarshal,
 			BodyLimit:   maxRequestBodyBytes,
 		})
-
-		// Pre-allocate SSE event kinds
-		sseErrorKind, err := sse.NewType("error")
-		if err != nil {
-			panic(err)
-		}
-		sseResetKind, err := sse.NewType("reset")
-		if err != nil {
-			panic(err)
-		}
-		sseFinalKind, err := sse.NewType("final")
-		if err != nil {
-			panic(err)
-		}
-
-		// Create SSE server
-		s := &sse.Server{
-			OnSession: func(_ http.ResponseWriter, req *http.Request) (topics []string, permitted bool) {
-				topic, ok := req.Context().Value(sseContextKeyTopic).(string)
-				if !ok {
-					return nil, false
-				}
-
-				// Signal that SSE connection is ready for publishing
-				if ready, ok := req.Context().Value(sseContextKeyReady).(chan struct{}); ok {
-					close(ready)
-				}
-
-				return []string{topic}, true
-			},
-		}
 
 		// Set global panic recovery handler to use structured logging
 		recovery.ErrorHandler = func(err error) {
@@ -434,44 +389,18 @@ var serveCmd = &cobra.Command{
 			app.Post(fmt.Sprintf("/call/%s", methodName), makeCallHandler(bamlutils.StreamModeCall))
 			app.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(bamlutils.StreamModeCallWithRaw))
 
-			makeStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) fiber.Handler {
-				config := &StreamHandlerConfig{
-					SSEServer:            s,
-					SSEErrorType:         sseErrorKind,
-					SSEResetType:         sseResetKind,
-					SSEFinalType:         sseFinalKind,
-					SSEKeepaliveInterval: sseKeepaliveInterval,
-					PathPrefix:           pathPrefix,
-				}
-
-				sseHandler := fiberadaptor.HTTPHandlerWithContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					rawBody, err := readRequestBodyLimited(r)
-					if err != nil {
-						statusCode := http.StatusBadRequest
-						message := "failed to read request body"
-						if errors.Is(err, errRequestBodyTooLarge) {
-							statusCode = http.StatusRequestEntityTooLarge
-							message = "request body too large"
-						}
-						logger.Error().Err(err).Str("method", methodName).Msg("failed to read stream request body")
-						writeJSONError(w, r, message, statusCode)
-						return
-					}
-
-					HandleStream(w, r, methodName, rawBody, streamMode, workerPool, config, false)
-				}))
-
+			makeStreamHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
 					if NegotiateStreamFormatFromAccept(c.Get(fiber.HeaderAccept)) == StreamFormatNDJSON {
 						return HandleNDJSONStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false)
 					}
 
-					return sseHandler(c)
+					return HandleSSEStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false)
 				}
 			}
 
-			app.Post(fmt.Sprintf("/stream/%s", methodName), makeStreamHandler("stream", bamlutils.StreamModeStream))
-			app.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), makeStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw))
+			app.Post(fmt.Sprintf("/stream/%s", methodName), makeStreamHandler(bamlutils.StreamModeStream))
+			app.Post(fmt.Sprintf("/stream-with-raw/%s", methodName), makeStreamHandler(bamlutils.StreamModeStreamWithRaw))
 
 			// Parse endpoint - parses raw LLM output using this method's schema
 			app.Post(fmt.Sprintf("/parse/%s", methodName), func(c fiber.Ctx) error {
@@ -548,65 +477,28 @@ var serveCmd = &cobra.Command{
 			app.Post(fmt.Sprintf("/call/%s", bamlutils.DynamicEndpointName), makeDynamicCallHandler(bamlutils.StreamModeCall))
 			app.Post(fmt.Sprintf("/call-with-raw/%s", bamlutils.DynamicEndpointName), makeDynamicCallHandler(bamlutils.StreamModeCallWithRaw))
 
-			makeDynamicStreamHandler := func(pathPrefix string, streamMode bamlutils.StreamMode) fiber.Handler {
-				config := &StreamHandlerConfig{
-					SSEServer:            s,
-					SSEErrorType:         sseErrorKind,
-					SSEResetType:         sseResetKind,
-					SSEFinalType:         sseFinalKind,
-					SSEKeepaliveInterval: sseKeepaliveInterval,
-					PathPrefix:           pathPrefix,
-				}
-
-				sseHandler := fiberadaptor.HTTPHandlerWithContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					rawBody, err := readRequestBodyLimited(r)
-					if err != nil {
-						statusCode := http.StatusBadRequest
-						message := "failed to read request body"
-						if errors.Is(err, errRequestBodyTooLarge) {
-							statusCode = http.StatusRequestEntityTooLarge
-							message = "request body too large"
-						}
-						logger.Error().Err(err).Str("method", bamlutils.DynamicMethodName).Msg("failed to read dynamic stream request body")
-						writeJSONError(w, r, message, statusCode)
-						return
-					}
-
-					workerInput, statusCode, err := parseDynamicStreamInput(rawBody)
+			makeDynamicStreamHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
+				return func(c fiber.Ctx) error {
+					workerInput, statusCode, err := parseDynamicStreamInput(c.Body())
 					if err != nil {
 						message := err.Error()
-						if statusCode >= http.StatusInternalServerError {
+						if statusCode >= fiber.StatusInternalServerError {
 							logger.Error().Err(err).Msg("dynamic stream input parsing failed")
 							message = "failed to process dynamic stream input"
 						}
-						writeJSONError(w, r, message, statusCode)
-						return
+						return writeFiberJSONError(c, message, statusCode)
 					}
 
-					HandleStream(w, r, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, config, true)
-				}))
-
-				return func(c fiber.Ctx) error {
 					if NegotiateStreamFormatFromAccept(c.Get(fiber.HeaderAccept)) == StreamFormatNDJSON {
-						workerInput, statusCode, err := parseDynamicStreamInput(c.Body())
-						if err != nil {
-							message := err.Error()
-							if statusCode >= fiber.StatusInternalServerError {
-								logger.Error().Err(err).Msg("dynamic NDJSON input parsing failed")
-								message = "failed to process dynamic stream input"
-							}
-							return writeFiberJSONError(c, message, statusCode)
-						}
-
 						return HandleNDJSONStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
 					}
 
-					return sseHandler(c)
+					return HandleSSEStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
 				}
 			}
 
-			app.Post(fmt.Sprintf("/stream/%s", bamlutils.DynamicEndpointName), makeDynamicStreamHandler("stream", bamlutils.StreamModeStream))
-			app.Post(fmt.Sprintf("/stream-with-raw/%s", bamlutils.DynamicEndpointName), makeDynamicStreamHandler("stream-with-raw", bamlutils.StreamModeStreamWithRaw))
+			app.Post(fmt.Sprintf("/stream/%s", bamlutils.DynamicEndpointName), makeDynamicStreamHandler(bamlutils.StreamModeStream))
+			app.Post(fmt.Sprintf("/stream-with-raw/%s", bamlutils.DynamicEndpointName), makeDynamicStreamHandler(bamlutils.StreamModeStreamWithRaw))
 
 			// Dynamic parse endpoint
 			app.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), func(c fiber.Ctx) error {
@@ -698,30 +590,19 @@ var serveCmd = &cobra.Command{
 	},
 }
 
-func readRequestBodyLimited(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxRequestBodyBytes)+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > maxRequestBodyBytes {
-		return nil, errRequestBodyTooLarge
-	}
-	return body, nil
-}
-
 func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int, err error) {
 	var input bamlutils.DynamicInput
 	if err := json.Unmarshal(rawBody, &input); err != nil {
-		return nil, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err)
+		return nil, fiber.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err)
 	}
 
 	if err := input.Validate(); err != nil {
-		return nil, http.StatusBadRequest, err
+		return nil, fiber.StatusBadRequest, err
 	}
 
 	workerInput, err = input.ToWorkerInput()
 	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("failed to convert input: %w", err)
+		return nil, fiber.StatusInternalServerError, fmt.Errorf("failed to convert input: %w", err)
 	}
 
 	return workerInput, 0, nil
@@ -731,7 +612,6 @@ func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
-	serveCmd.Flags().DurationVar(&sseKeepaliveInterval, "sse-keepalive-interval", defaultSSEKeepaliveInterval, "Interval between SSE keepalive comments (minimum 1s)")
 	serveCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 	serveCmd.Flags().Int64Var(&memLimit, "mem-limit", 0, "Total memory limit in bytes (0 = auto-detect from cgroups/system)")
 
