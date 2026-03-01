@@ -243,10 +243,38 @@ func (s *Server) handleStreamingResponse(c fiber.Ctx, scenario *Scenario, provid
 	})
 }
 
+func waitForDurationOrCancel(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(d)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *Server) handleNonStreamingResponse(c fiber.Ctx, scenario *Scenario, provider Provider, effectiveDelay int) error {
+	reqCtx := c.Context()
+	if requestCtx := c.RequestCtx(); requestCtx != nil {
+		reqCtx = requestCtx
+	}
+
 	// Apply initial delay for non-streaming too
-	if effectiveDelay > 0 {
-		time.Sleep(time.Duration(effectiveDelay) * time.Millisecond)
+	if err := waitForDurationOrCancel(reqCtx, time.Duration(effectiveDelay)*time.Millisecond); err != nil {
+		return err
 	}
 
 	// Check for failure
@@ -255,7 +283,9 @@ func (s *Server) handleNonStreamingResponse(c fiber.Ctx, scenario *Scenario, pro
 		case "500":
 			return c.Status(fiber.StatusInternalServerError).SendString("Internal Server Error")
 		case "timeout":
-			time.Sleep(10 * time.Minute) // Will likely timeout
+			if err := waitForDurationOrCancel(reqCtx, 10*time.Minute); err != nil {
+				return err
+			}
 			return nil
 		}
 	}
