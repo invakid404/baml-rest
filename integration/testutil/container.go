@@ -252,7 +252,10 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 			// for native thread backtraces (/_debug/native-stacks endpoint).
 			hc.CapAdd = append(hc.CapAdd, "SYS_PTRACE")
 		},
-		WaitingFor: wait.ForHTTP("/openapi.json").WithPort(BAMLRestInternalPort).WithStartupTimeout(180 * time.Second),
+		WaitingFor: wait.ForAll(
+			wait.ForHTTP("/openapi.json").WithPort(BAMLRestInternalPort).WithStartupTimeout(180*time.Second),
+			wait.ForListeningPort(BAMLRestUnaryCancelPort).WithStartupTimeout(180*time.Second),
+		),
 	}
 
 	return testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

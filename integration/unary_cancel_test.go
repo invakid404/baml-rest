@@ -82,8 +82,8 @@ func TestUnaryCancelCall(t *testing.T) {
 	})
 }
 
-// TestUnaryCancelParse verifies cancellation on /parse endpoints.
-func TestUnaryCancelParse(t *testing.T) {
+// TestUnaryParse verifies /parse works on the unary cancel server.
+func TestUnaryParse(t *testing.T) {
 	parentCtx, parentCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer parentCancel()
 

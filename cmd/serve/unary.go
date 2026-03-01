@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -81,9 +82,9 @@ func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.St
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
-		body, err := io.ReadAll(r.Body)
+		body, statusCode, err := readUnaryBody(r)
 		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", http.StatusBadRequest)
+			writeChiJSONError(w, r, "failed to read request body", statusCode)
 			return
 		}
 
@@ -114,9 +115,9 @@ func makeChiParseHandler(p *pool.Pool, methodName string) http.HandlerFunc {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
-		body, err := io.ReadAll(r.Body)
+		body, statusCode, err := readUnaryBody(r)
 		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", http.StatusBadRequest)
+			writeChiJSONError(w, r, "failed to read request body", statusCode)
 			return
 		}
 
@@ -138,9 +139,9 @@ func makeChiDynamicCallHandler(p *pool.Pool, streamMode bamlutils.StreamMode) ht
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
-		body, err := io.ReadAll(r.Body)
+		body, statusCode, err := readUnaryBody(r)
 		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", http.StatusBadRequest)
+			writeChiJSONError(w, r, "failed to read request body", statusCode)
 			return
 		}
 
@@ -195,9 +196,9 @@ func makeChiDynamicParseHandler(p *pool.Pool) http.HandlerFunc {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
-		body, err := io.ReadAll(r.Body)
+		body, statusCode, err := readUnaryBody(r)
 		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", http.StatusBadRequest)
+			writeChiJSONError(w, r, "failed to read request body", statusCode)
 			return
 		}
 
@@ -236,6 +237,20 @@ func makeChiDynamicParseHandler(p *pool.Pool) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(flattenedData)
 	}
+}
+
+// readUnaryBody reads the request body and returns the appropriate HTTP status
+// code on failure. MaxBytesReader errors yield 413; other read errors yield 400.
+func readUnaryBody(r *http.Request) ([]byte, int, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return nil, http.StatusRequestEntityTooLarge, err
+		}
+		return nil, http.StatusBadRequest, err
+	}
+	return body, 0, nil
 }
 
 // writeChiJSONError writes a JSON error response using the standard apierror envelope.
