@@ -107,7 +107,7 @@ func TestUnaryParse(t *testing.T) {
 
 		resp, err := client.Parse(ctx, testutil.ParseRequest{
 			Method: "GetSimple",
-			Raw:    `Hello, world!`,
+			Raw:    `{"message": "hello world"}`,
 		})
 		if err != nil {
 			t.Fatalf("Parse failed: %v", err)
