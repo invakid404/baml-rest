@@ -32,27 +32,14 @@ func TestDynamicTypes(t *testing.T) {
 				},
 			}
 
-			resp, err := client.Call(ctx, testutil.CallRequest{
+			result := callAndDecode[struct {
+				BaseField         string         `json:"base_field"`
+				DynamicProperties map[string]any `json:"DynamicProperties"`
+			}](t, client, ctx, testutil.CallRequest{
 				Method:  "GetDynamic",
 				Input:   map[string]any{"input": "test"},
 				Options: opts,
 			})
-			if err != nil {
-				t.Fatalf("Call failed: %v", err)
-			}
-
-			if resp.StatusCode != 200 {
-				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-			}
-
-			// Parse the response - should include both fields
-			var result struct {
-				BaseField         string         `json:"base_field"`
-				DynamicProperties map[string]any `json:"DynamicProperties"`
-			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
-				t.Fatalf("Failed to unmarshal response: %v", err)
-			}
 
 			// Check base field
 			if result.BaseField != "base value" {
@@ -789,26 +776,14 @@ func TestDynamicTypesImperative(t *testing.T) {
 				},
 			}
 
-			resp, err := client.Call(ctx, testutil.CallRequest{
+			result := callAndDecode[struct {
+				BaseField         string         `json:"base_field"`
+				DynamicProperties map[string]any `json:"DynamicProperties"`
+			}](t, client, ctx, testutil.CallRequest{
 				Method:  "GetDynamic",
 				Input:   map[string]any{"input": "test"},
 				Options: opts,
 			})
-			if err != nil {
-				t.Fatalf("Call failed: %v", err)
-			}
-
-			if resp.StatusCode != 200 {
-				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-			}
-
-			var result struct {
-				BaseField         string         `json:"base_field"`
-				DynamicProperties map[string]any `json:"DynamicProperties"`
-			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
-				t.Fatalf("Failed to unmarshal response: %v", err)
-			}
 
 			if result.DynamicProperties == nil {
 				t.Fatalf("Expected DynamicProperties to be present, got nil")
@@ -903,26 +878,14 @@ func TestDynamicTypesImperative(t *testing.T) {
 				},
 			}
 
-			resp, err := client.Call(ctx, testutil.CallRequest{
+			result := callAndDecode[struct {
+				BaseField         string         `json:"base_field"`
+				DynamicProperties map[string]any `json:"DynamicProperties"`
+			}](t, client, ctx, testutil.CallRequest{
 				Method:  "GetDynamic",
 				Input:   map[string]any{"input": "test"},
 				Options: opts,
 			})
-			if err != nil {
-				t.Fatalf("Call failed: %v", err)
-			}
-
-			if resp.StatusCode != 200 {
-				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-			}
-
-			var result struct {
-				BaseField         string         `json:"base_field"`
-				DynamicProperties map[string]any `json:"DynamicProperties"`
-			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
-				t.Fatalf("Failed to unmarshal response: %v", err)
-			}
 
 			if result.DynamicProperties == nil {
 				t.Fatalf("Expected DynamicProperties to be present, got nil")
@@ -1009,51 +972,37 @@ func TestDynamicTypesImperative(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			// Return a response with nested dynamically created classes
-			// Use unique class names to avoid conflicts with existing baml_src classes
+			// Return a response with nested dynamically created classes.
+			// Use __IT prefix to avoid conflicts with existing baml_src classes.
 			content := `{"base_field": "test", "location": {"street": "123 Main St", "city": "Springfield"}}`
 			opts := setupNonStreamingScenario(t, "test-dynamic-imperative-nested", content)
 
 			opts.TypeBuilder = &testutil.TypeBuilder{
 				DynamicTypes: &testutil.DynamicTypes{
 					Classes: map[string]*testutil.DynamicClass{
-						// Create a new Location class (unique name to avoid conflicts)
-						"Location": {
+						"__ITNestedLocation": {
 							Properties: map[string]*testutil.DynamicProperty{
 								"street": {Type: "string"},
 								"city":   {Type: "string"},
 							},
 						},
-						// Then DynamicOutput references it
 						"DynamicOutput": {
 							Properties: map[string]*testutil.DynamicProperty{
-								"location": {Ref: "Location"},
+								"location": {Ref: "__ITNestedLocation"},
 							},
 						},
 					},
 				},
 			}
 
-			resp, err := client.Call(ctx, testutil.CallRequest{
+			result := callAndDecode[struct {
+				BaseField         string         `json:"base_field"`
+				DynamicProperties map[string]any `json:"DynamicProperties"`
+			}](t, client, ctx, testutil.CallRequest{
 				Method:  "GetDynamic",
 				Input:   map[string]any{"input": "test"},
 				Options: opts,
 			})
-			if err != nil {
-				t.Fatalf("Call failed: %v", err)
-			}
-
-			if resp.StatusCode != 200 {
-				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-			}
-
-			var result struct {
-				BaseField         string         `json:"base_field"`
-				DynamicProperties map[string]any `json:"DynamicProperties"`
-			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
-				t.Fatalf("Failed to unmarshal response: %v", err)
-			}
 
 			if result.DynamicProperties == nil {
 				t.Fatalf("Expected DynamicProperties to be present, got nil")
@@ -1088,17 +1037,15 @@ func TestDynamicTypesImperative(t *testing.T) {
 				TypeBuilder: &testutil.TypeBuilder{
 					DynamicTypes: &testutil.DynamicTypes{
 						Classes: map[string]*testutil.DynamicClass{
-							// Create a new Location class
-							"Location": {
+							"__ITNestedLocation": {
 								Properties: map[string]*testutil.DynamicProperty{
 									"street": {Type: "string"},
 									"city":   {Type: "string"},
 								},
 							},
-							// DynamicOutput references it
 							"DynamicOutput": {
 								Properties: map[string]*testutil.DynamicProperty{
-									"location": {Ref: "Location"},
+									"location": {Ref: "__ITNestedLocation"},
 								},
 							},
 						},

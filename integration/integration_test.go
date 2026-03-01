@@ -324,6 +324,25 @@ func forEachUnaryClient(t *testing.T, fn func(t *testing.T, client *testutil.BAM
 	}
 }
 
+// callAndDecode calls client.Call, asserts status 200, and unmarshals the
+// response body into T. Reduces boilerplate in tests that follow the common
+// call → assert-200 → unmarshal pattern.
+func callAndDecode[T any](t *testing.T, client *testutil.BAMLRestClient, ctx context.Context, req testutil.CallRequest) T {
+	t.Helper()
+	resp, err := client.Call(ctx, req)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+	}
+	var result T
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	return result
+}
+
 // Helper to register a non-streaming scenario
 func setupNonStreamingScenario(t *testing.T, scenarioID, content string) *testutil.BAMLOptions {
 	t.Helper()
