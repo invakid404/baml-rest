@@ -2040,6 +2040,10 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 		t.Logf("NDJSON events received: %d", receivedEvents)
 		t.Logf("NDJSON stream error: %v", streamErr)
 
+		if receivedEvents != 0 {
+			t.Errorf("Expected zero NDJSON events before cancellation, got %d", receivedEvents)
+		}
+
 		// Should complete quickly (cancelled at ~500ms, not waiting 10s)
 		if elapsed > 3*time.Second {
 			t.Errorf("Cancellation took too long: %v (expected < 3s)", elapsed)

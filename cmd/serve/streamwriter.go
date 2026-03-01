@@ -100,30 +100,7 @@ func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
 }
 
 func (p *NDJSONStreamWriterPublisher) writeKeepalive() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	data, err := json.Marshal(&NDJSONEvent{Type: NDJSONEventPing})
-	if err != nil {
-		p.cancel()
-		return err
-	}
-
-	if _, err := p.w.Write(data); err != nil {
-		p.cancel()
-		return err
-	}
-	if err := p.w.WriteByte('\n'); err != nil {
-		p.cancel()
-		return err
-	}
-
-	if err := p.w.Flush(); err != nil {
-		p.cancel()
-		return err
-	}
-
-	return nil
+	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventPing})
 }
 
 func (p *NDJSONStreamWriterPublisher) startKeepalive(ctx context.Context, interval time.Duration) {
@@ -216,7 +193,7 @@ func HandleNDJSONStreamFiber(
 			w:      w,
 			cancel: cancel,
 		}
-		publisher.startKeepalive(streamCtx, streamKeepaliveInterval)
+		publisher.startKeepalive(streamCtx, normalizeStreamKeepaliveInterval(streamKeepaliveInterval))
 
 		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 		if err != nil {
@@ -252,8 +229,19 @@ const (
 	// fasthttp RequestCtx.Done() is server-shutdown scoped, not client-disconnect scoped.
 	// We force early stream writes and periodic keepalives so disconnects surface
 	// as write errors and upstream generation is canceled promptly.
-	streamKeepaliveInterval = 100 * time.Millisecond
+	defaultStreamKeepaliveInterval = 1 * time.Second
+	minStreamKeepaliveInterval     = 100 * time.Millisecond
 )
+
+func normalizeStreamKeepaliveInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return defaultStreamKeepaliveInterval
+	}
+	if interval < minStreamKeepaliveInterval {
+		return minStreamKeepaliveInterval
+	}
+	return interval
+}
 
 // SSEStreamWriterPublisher implements StreamPublisher for native Fiber SSE streaming.
 type SSEStreamWriterPublisher struct {
@@ -451,7 +439,7 @@ func HandleSSEStreamFiber(
 			cancel:   cancel,
 			needsRaw: streamMode.NeedsRaw(),
 		}
-		publisher.startKeepalive(streamCtx, streamKeepaliveInterval)
+		publisher.startKeepalive(streamCtx, normalizeStreamKeepaliveInterval(streamKeepaliveInterval))
 
 		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 		if err != nil {

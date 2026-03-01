@@ -50,11 +50,12 @@ const (
 )
 
 var (
-	port             int
-	poolSize         int
-	firstByteTimeout time.Duration
-	prettyLogs       bool
-	memLimit         int64
+	port                    int
+	poolSize                int
+	firstByteTimeout        time.Duration
+	streamKeepaliveInterval time.Duration
+	prettyLogs              bool
+	memLimit                int64
 )
 
 var rootCmd = &cobra.Command{
@@ -612,6 +613,7 @@ func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
+	serveCmd.Flags().DurationVar(&streamKeepaliveInterval, "sse-keepalive-interval", defaultStreamKeepaliveInterval, "Interval between stream keepalive signals for SSE/NDJSON (minimum 100ms)")
 	serveCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 	serveCmd.Flags().Int64Var(&memLimit, "mem-limit", 0, "Total memory limit in bytes (0 = auto-detect from cgroups/system)")
 

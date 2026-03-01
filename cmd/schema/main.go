@@ -462,7 +462,7 @@ func generateOpenAPISchema() *openapi3.T {
 	schemas[streamHeartbeatEventSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
 			Type:        &openapi3.Types{openapi3.TypeObject},
-			Description: "Heartbeat event used to keep the NDJSON stream active before the first data event",
+			Description: "Heartbeat event used to keep the NDJSON stream active during idle periods (including before the first data event)",
 			Properties: openapi3.Schemas{
 				"type": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
@@ -803,7 +803,7 @@ func generateOpenAPISchema() *openapi3.T {
 					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
 					"Events have type 'data' for partial results (fields may be null), 'final' for the complete validated result, " +
-					"'heartbeat' for keepalive before first data (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
+					"'heartbeat' for keepalive during idle periods (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
 						Content: map[string]*openapi3.MediaType{
@@ -897,7 +897,7 @@ func generateOpenAPISchema() *openapi3.T {
 					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
 					"Events have type 'data' for partial results (fields may be null, includes 'raw' field), 'final' for the complete validated result, " +
-					"'heartbeat' for keepalive before first data (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
+					"'heartbeat' for keepalive during idle periods (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
 						Content: map[string]*openapi3.MediaType{
@@ -1698,7 +1698,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: "Returns a stream of events containing partial results as they become available, followed by the final result. " +
 				"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 				"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
-				"NDJSON may include 'heartbeat' events before the first data event; clients should ignore them.",
+				"NDJSON may include 'heartbeat' events during idle periods (including before the first data event); clients should ignore them.",
 			RequestBody: &openapi3.RequestBodyRef{
 				Value: &openapi3.RequestBody{
 					Content: map[string]*openapi3.MediaType{
@@ -1796,7 +1796,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			OperationID: "dynamicStreamWithRaw",
 			Summary:     "Stream dynamic prompt results with raw output",
 			Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available. " +
-				"NDJSON may include 'heartbeat' events before the first data event; clients should ignore them.",
+				"NDJSON may include 'heartbeat' events during idle periods (including before the first data event); clients should ignore them.",
 			RequestBody: &openapi3.RequestBodyRef{
 				Value: &openapi3.RequestBody{
 					Content: map[string]*openapi3.MediaType{

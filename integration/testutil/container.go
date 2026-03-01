@@ -221,7 +221,9 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 			PrintBuildLog:  true, // Enable build log output to see compilation errors
 		},
 		ExposedPorts: []string{BAMLRestInternalPort},
-		Networks:     []string{networkName},
+		// Keep stream-cancellation tests responsive while still validating behavior.
+		Cmd:      []string{"--sse-keepalive-interval=100ms"},
+		Networks: []string{networkName},
 		NetworkAliases: map[string][]string{
 			networkName: {BAMLRestContainerName},
 		},
