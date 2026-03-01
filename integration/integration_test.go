@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -124,7 +125,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// Setup test environment
-	unaryServer := os.Getenv("UNARY_SERVER") == "true"
+	unaryServer, _ := strconv.ParseBool(os.Getenv("UNARY_SERVER"))
 	TestEnv, err = testutil.Setup(ctx, testutil.SetupOptions{
 		BAMLSrcPath:    bamlSrcPath,
 		BAMLVersion:    BAMLVersion,

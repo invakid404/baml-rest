@@ -11,6 +11,7 @@ require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/goccy/go-json v0.10.5
 	github.com/gofiber/contrib/v3/zerolog v1.0.0
 	github.com/gofiber/fiber/v3 v3.1.0
@@ -70,7 +71,6 @@ require (
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
-	github.com/go-chi/chi/v5 v5.2.5 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect

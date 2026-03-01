@@ -286,7 +286,11 @@ func chiMetricsMiddleware(next http.Handler) http.Handler {
 			path = "_unmatched"
 		}
 
-		code := strconv.Itoa(ww.Status())
+		status := ww.Status()
+		if status == 0 {
+			status = http.StatusOK // net/http implicit default
+		}
+		code := strconv.Itoa(status)
 		httpRequestsTotal.WithLabelValues(r.Method, path, code).Inc()
 		httpRequestDuration.WithLabelValues(r.Method, path, code).Observe(time.Since(start).Seconds())
 	})
