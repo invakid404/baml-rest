@@ -106,6 +106,9 @@ ENV KEEP_SOURCE_DIR="{{ .keepSource }}"
 {{- if .debugBuild }}
 ENV DEBUG_BUILD="true"
 {{- end }}
+{{- if .unaryServer }}
+ENV UNARY_SERVER="true"
+{{- end }}
 
 # Run build
 {{- if .noCacheMount }}

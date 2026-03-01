@@ -553,18 +553,9 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Optionally start the chi-based unary server on a separate port.
-		var unaryServer *http.Server
-		if unaryPort > 0 {
-			unaryRouter := newUnaryRouter(logger, workerPool, methodNames, hasDynamicMethod)
-			unaryServer = &http.Server{
-				Addr:              fmt.Sprintf(":%d", unaryPort),
-				Handler:           unaryRouter,
-				ReadHeaderTimeout: 10 * time.Second,
-				ReadTimeout:       30 * time.Second,
-				WriteTimeout:      5 * time.Minute,
-				IdleTimeout:       120 * time.Second,
-			}
-		}
+		// newUnaryServer returns nil when the unaryserver build tag is absent
+		// or when --unary-port is set to 0.
+		unaryServer := newUnaryServer(logger, workerPool, methodNames, hasDynamicMethod)
 
 		// Start Fiber server in a goroutine.
 		serverErr := make(chan error, 1)
@@ -661,7 +652,6 @@ func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int
 
 func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
-	serveCmd.Flags().IntVar(&unaryPort, "unary-port", 0, "Port for the unary server (0 = disabled). Serves /call/*, /call-with-raw/*, /parse/* on a net/http server with reliable client-disconnect cancellation")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
 	serveCmd.Flags().DurationVar(&streamKeepaliveInterval, "sse-keepalive-interval", defaultStreamKeepaliveInterval, "Interval between stream keepalive signals for SSE/NDJSON (minimum 100ms)")

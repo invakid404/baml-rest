@@ -236,8 +236,9 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 
 	var waitFor wait.Strategy = waitStrategy
 	if opts.UnaryServer {
+		// When built with the unaryserver tag, the default port is 8081.
+		// No need to pass --unary-port explicitly.
 		exposedPorts = append(exposedPorts, BAMLRestUnaryPort)
-		cmd = append(cmd, "--unary-port=8081")
 		waitFor = wait.ForAll(
 			waitStrategy,
 			wait.ForListeningPort(BAMLRestUnaryPort).WithStartupTimeout(180*time.Second),
@@ -292,6 +293,7 @@ type dockerfileTemplateData struct {
 	noCustomBamlLib    bool   // Don't copy custom_baml_lib.so (not used in tests)
 	bamlSource         bool   // Build from BAML source (enables cffi-builder stage)
 	protocGenGoVersion string // protoc-gen-go version for BAML source builds
+	unaryServer        bool   // Build with unaryserver tag for chi unary server
 }
 
 // MarshalMap converts the template data to a map for template execution
@@ -306,6 +308,7 @@ func (d dockerfileTemplateData) toMap() map[string]any {
 		"noCustomBamlLib":    d.noCustomBamlLib,
 		"bamlSource":         d.bamlSource,
 		"protocGenGoVersion": d.protocGenGoVersion,
+		"unaryServer":        d.unaryServer,
 	}
 }
 
@@ -330,10 +333,11 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		bamlVersion:       opts.BAMLVersion,
 		adapterVersion:    opts.AdapterVersion,
 		keepSource:        opts.KeepSource,
-		debugBuild:        true,            // Enable debug endpoints for testing (/_debug/*)
-		defaultTargetArch: getDockerArch(), // Use native architecture
-		noCacheMount:      true,            // testcontainers doesn't reliably support BuildKit
-		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
+		debugBuild:        true,               // Enable debug endpoints for testing (/_debug/*)
+		defaultTargetArch: getDockerArch(),    // Use native architecture
+		noCacheMount:      true,               // testcontainers doesn't reliably support BuildKit
+		noCustomBamlLib:   true,               // Integration tests don't use custom BAML lib
+		unaryServer:       opts.UnaryServer,
 	}
 
 	if opts.BAMLSource != "" {

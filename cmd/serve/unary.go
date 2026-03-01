@@ -1,3 +1,5 @@
+//go:build unaryserver
+
 package main
 
 import (
@@ -18,6 +20,28 @@ import (
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/rs/zerolog"
 )
+
+const defaultUnaryPort = 8081
+
+func init() {
+	serveCmd.Flags().IntVar(&unaryPort, "unary-port", defaultUnaryPort, "Port for the unary server (0 = disabled). Serves /call/*, /call-with-raw/*, /parse/* on a net/http server with reliable client-disconnect cancellation")
+}
+
+// newUnaryServer creates the chi-based unary HTTP server if unaryPort > 0.
+// Returns nil when the unary server is disabled.
+func newUnaryServer(logger zerolog.Logger, workerPool *pool.Pool, methodNames []string, hasDynamicMethod bool) *http.Server {
+	if unaryPort <= 0 {
+		return nil
+	}
+	return &http.Server{
+		Addr:              fmt.Sprintf(":%d", unaryPort),
+		Handler:           newUnaryRouter(logger, workerPool, methodNames, hasDynamicMethod),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+	}
+}
 
 // newUnaryRouter builds a chi router that registers only unary endpoints
 // (/call/*, /call-with-raw/*, /parse/*) against the shared worker pool.
