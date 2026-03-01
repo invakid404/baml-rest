@@ -19,82 +19,84 @@ import (
 // and kills a worker mid-flight. All requests should complete successfully
 // thanks to the pool's hot-swap restart and retry logic.
 func TestConcurrentCallsDuringWorkerDeath(t *testing.T) {
-	waitForHealthy(t, 30*time.Second)
+	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
+		waitForHealthy(t, 30*time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
 
-	const concurrency = 20
-	content := `{"name": "ConcurrentTest", "age": 42, "tags": ["resilience"]}`
-	scenarioID := "resilience-concurrent-calls"
+		const concurrency = 20
+		content := `{"name": "ConcurrentTest", "age": 42, "tags": ["resilience"]}`
+		scenarioID := "resilience-concurrent-calls"
 
-	scenario := &mockllm.Scenario{
-		ID:             scenarioID,
-		Provider:       "openai",
-		Content:        content,
-		ChunkSize:      10,
-		InitialDelayMs: 200, // enough time for requests to be in-flight
-		ChunkDelayMs:   50,
-	}
-	if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
-		t.Fatalf("Failed to register scenario: %v", err)
-	}
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      10,
+			InitialDelayMs: 200, // enough time for requests to be in-flight
+			ChunkDelayMs:   50,
+		}
+		if err := MockClient.RegisterScenario(ctx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
 
-	opts := &testutil.BAMLOptions{
-		ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
-	}
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
 
-	var wg sync.WaitGroup
-	var failures atomic.Int32
+		var wg sync.WaitGroup
+		var failures atomic.Int32
 
-	// Fire concurrent requests.
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
+		// Fire concurrent requests.
+		for i := 0; i < concurrency; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
 
-			resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
-				Method:  "GetPerson",
-				Input:   map[string]any{"description": fmt.Sprintf("person_%d", idx)},
-				Options: opts,
-			})
-			if err != nil {
-				t.Logf("Request %d transport error: %v", idx, err)
-				failures.Add(1)
-				return
-			}
-			if resp.StatusCode != 200 {
-				t.Logf("Request %d status %d: %s", idx, resp.StatusCode, resp.Error)
-				failures.Add(1)
-				return
-			}
+				resp, err := client.Call(ctx, testutil.CallRequest{
+					Method:  "GetPerson",
+					Input:   map[string]any{"description": fmt.Sprintf("person_%d", idx)},
+					Options: opts,
+				})
+				if err != nil {
+					t.Logf("Request %d transport error: %v", idx, err)
+					failures.Add(1)
+					return
+				}
+				if resp.StatusCode != 200 {
+					t.Logf("Request %d status %d: %s", idx, resp.StatusCode, resp.Error)
+					failures.Add(1)
+					return
+				}
 
-			var person struct {
-				Name string `json:"name"`
-			}
-			if err := json.Unmarshal(resp.Body, &person); err != nil {
-				t.Logf("Request %d unmarshal error: %v", idx, err)
-				failures.Add(1)
-			}
-		}(i)
-	}
+				var person struct {
+					Name string `json:"name"`
+				}
+				if err := json.Unmarshal(resp.Body, &person); err != nil {
+					t.Logf("Request %d unmarshal error: %v", idx, err)
+					failures.Add(1)
+				}
+			}(i)
+		}
 
-	// Wait for some requests to be in-flight, then kill a worker.
-	time.Sleep(300 * time.Millisecond)
-	killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
-	result, err := BAMLClient.KillWorker(killCtx)
-	killCancel()
-	if err != nil {
-		t.Logf("KillWorker failed (may be ok if no in-flight): %v", err)
-	} else {
-		t.Logf("Killed worker %d (%d in-flight)", result.WorkerID, result.InFlightCount)
-	}
+		// Wait for some requests to be in-flight, then kill a worker.
+		time.Sleep(300 * time.Millisecond)
+		killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
+		result, err := BAMLClient.KillWorker(killCtx)
+		killCancel()
+		if err != nil {
+			t.Logf("KillWorker failed (may be ok if no in-flight): %v", err)
+		} else {
+			t.Logf("Killed worker %d (%d in-flight)", result.WorkerID, result.InFlightCount)
+		}
 
-	wg.Wait()
+		wg.Wait()
 
-	if f := failures.Load(); f > 0 {
-		t.Errorf("%d/%d concurrent call requests failed during worker death", f, concurrency)
-	}
+		if f := failures.Load(); f > 0 {
+			t.Errorf("%d/%d concurrent call requests failed during worker death", f, concurrency)
+		}
+	})
 }
 
 // TestConcurrentStreamsDuringWorkerDeath fires many concurrent Stream

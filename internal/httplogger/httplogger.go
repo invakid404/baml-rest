@@ -26,6 +26,10 @@ type Options struct {
 	// LogRequestHeaders specifies which headers to include in logs.
 	// If nil, no headers are logged.
 	LogRequestHeaders []string
+
+	// RequestIDFromCtx extracts a request ID from context for logging.
+	// If nil, defaults to fiberrequestid.FromContext.
+	RequestIDFromCtx func(ctx context.Context) string
 }
 
 // responseWriter wraps http.ResponseWriter to capture the status code
@@ -67,6 +71,13 @@ func RequestLogger(logger zerolog.Logger, opts *Options) func(http.Handler) http
 		opts = &Options{}
 	}
 
+	getReqID := opts.RequestIDFromCtx
+	if getReqID == nil {
+		getReqID = func(ctx context.Context) string {
+			return fiberrequestid.FromContext(ctx)
+		}
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check if we should skip logging
@@ -80,7 +91,7 @@ func RequestLogger(logger zerolog.Logger, opts *Options) func(http.Handler) http
 
 			// Create request-scoped logger with request ID
 			reqLogger := logger.With().Logger()
-			if reqID := fiberrequestid.FromContext(r.Context()); reqID != "" {
+			if reqID := getReqID(r.Context()); reqID != "" {
 				reqLogger = reqLogger.With().Str("request_id", reqID).Logger()
 			}
 
@@ -111,7 +122,7 @@ func RequestLogger(logger zerolog.Logger, opts *Options) func(http.Handler) http
 
 					// Return 500 if no status was written
 					if !wrapped.wroteHeader {
-						apierror.WriteJSON(wrapped, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError, fiberrequestid.FromContext(r.Context()))
+						apierror.WriteJSON(wrapped, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError, getReqID(r.Context()))
 					}
 				}
 			} else {

@@ -11,6 +11,7 @@ require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/goccy/go-json v0.10.5
 	github.com/gofiber/contrib/v3/zerolog v1.0.0
 	github.com/gofiber/fiber/v3 v3.1.0

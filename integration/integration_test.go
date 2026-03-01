@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -23,8 +24,12 @@ var TestEnv *testutil.TestEnvironment
 // MockClient is the client for registering scenarios
 var MockClient *mockllm.Client
 
-// BAMLClient is the client for calling baml-rest
+// BAMLClient is the client for calling baml-rest (Fiber server)
 var BAMLClient *testutil.BAMLRestClient
+
+// UnaryClient is the client for calling the unary server (chi/net-http).
+// nil when the unary server is not enabled.
+var UnaryClient *testutil.BAMLRestClient
 
 // BAMLVersion is the version being tested (set at init time)
 var BAMLVersion string
@@ -120,11 +125,21 @@ func TestMain(m *testing.M) {
 	}
 
 	// Setup test environment
+	unaryServer := false
+	if v := os.Getenv("UNARY_SERVER"); v != "" {
+		var err error
+		unaryServer, err = strconv.ParseBool(v)
+		if err != nil {
+			println("Invalid UNARY_SERVER value:", v, "(expected true/false)")
+			os.Exit(1)
+		}
+	}
 	TestEnv, err = testutil.Setup(ctx, testutil.SetupOptions{
 		BAMLSrcPath:    bamlSrcPath,
 		BAMLVersion:    BAMLVersion,
 		AdapterVersion: adapterVersion,
 		BAMLSource:     BAMLSourcePath,
+		UnaryServer:    unaryServer,
 	})
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
@@ -135,10 +150,14 @@ func TestMain(m *testing.M) {
 	println("  Mock LLM URL:", TestEnv.MockLLMURL)
 	println("  Mock LLM Internal URL:", TestEnv.MockLLMInternal)
 	println("  BAML REST URL:", TestEnv.BAMLRestURL)
+	println("  Unary URL:", TestEnv.BAMLRestUnaryURL)
 
 	// Create clients
 	MockClient = mockllm.NewClient(TestEnv.MockLLMURL)
 	BAMLClient = testutil.NewBAMLRestClient(TestEnv.BAMLRestURL)
+	if TestEnv.BAMLRestUnaryURL != "" {
+		UnaryClient = testutil.NewBAMLRestClient(TestEnv.BAMLRestUnaryURL)
+	}
 
 	// Run tests
 	code := m.Run()
@@ -282,6 +301,55 @@ func setupScenario(t *testing.T, scenarioID, content string) *testutil.BAMLOptio
 	return &testutil.BAMLOptions{
 		ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
 	}
+}
+
+// namedClient pairs a display name with a BAMLRestClient for parameterized testing.
+type namedClient struct {
+	Name   string
+	Client *testutil.BAMLRestClient
+}
+
+// unaryTestClients returns the set of clients to test unary endpoints against.
+// When the unary server is enabled, both Fiber and chi are tested;
+// otherwise only Fiber is tested.
+func unaryTestClients() []namedClient {
+	clients := []namedClient{
+		{"fiber", BAMLClient},
+	}
+	if UnaryClient != nil {
+		clients = append(clients, namedClient{"chi", UnaryClient})
+	}
+	return clients
+}
+
+// forEachUnaryClient runs fn as a subtest for each unary backend (Fiber and chi).
+// Use this wrapper for tests that exercise only unary endpoints (/call, /call-with-raw, /parse).
+func forEachUnaryClient(t *testing.T, fn func(t *testing.T, client *testutil.BAMLRestClient)) {
+	t.Helper()
+	for _, nc := range unaryTestClients() {
+		t.Run(nc.Name, func(t *testing.T) {
+			fn(t, nc.Client)
+		})
+	}
+}
+
+// callAndDecode calls client.Call, asserts status 200, and unmarshals the
+// response body into T. Reduces boilerplate in tests that follow the common
+// call → assert-200 → unmarshal pattern.
+func callAndDecode[T any](t *testing.T, client *testutil.BAMLRestClient, ctx context.Context, req testutil.CallRequest) T {
+	t.Helper()
+	resp, err := client.Call(ctx, req)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+	}
+	var result T
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	return result
 }
 
 // Helper to register a non-streaming scenario

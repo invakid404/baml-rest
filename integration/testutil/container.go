@@ -36,16 +36,20 @@ const (
 
 	// BAMLRestInternalPort is the port baml-rest listens on inside Docker
 	BAMLRestInternalPort = "8080/tcp"
+
+	// BAMLRestUnaryPort is the port for the unary server inside Docker
+	BAMLRestUnaryPort = "8081/tcp"
 )
 
 // TestEnvironment holds the running test containers and network.
 type TestEnvironment struct {
-	Network         *testcontainers.DockerNetwork
-	MockLLM         testcontainers.Container
-	BAMLRest        testcontainers.Container
-	MockLLMURL      string // URL to reach mock server from host (http://localhost:xxxxx)
-	BAMLRestURL     string // URL to reach baml-rest from host (http://localhost:xxxxx)
-	MockLLMInternal string // URL to reach mock server from baml-rest (http://mockllm:8080)
+	Network          *testcontainers.DockerNetwork
+	MockLLM          testcontainers.Container
+	BAMLRest         testcontainers.Container
+	MockLLMURL       string // URL to reach mock server from host (http://localhost:xxxxx)
+	BAMLRestURL      string // URL to reach baml-rest from host (http://localhost:xxxxx)
+	BAMLRestUnaryURL string // URL to reach unary server from host (http://localhost:xxxxx)
+	MockLLMInternal  string // URL to reach mock server from baml-rest (http://mockllm:8080)
 }
 
 // Terminate shuts down all containers and network.
@@ -92,6 +96,9 @@ type SetupOptions struct {
 
 	// BAMLSource is the path to a local BAML source repository for building from unreleased versions
 	BAMLSource string
+
+	// UnaryServer enables the opt-in chi/net-http unary server on port 8081.
+	UnaryServer bool
 }
 
 // Setup creates the test environment with mock LLM server and baml-rest container.
@@ -135,7 +142,7 @@ func Setup(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
 	}
 	env.BAMLRest = bamlRest
 
-	// Get baml-rest mapped port
+	// Get baml-rest mapped ports
 	restPort, err := bamlRest.MappedPort(ctx, BAMLRestInternalPort)
 	if err != nil {
 		_ = env.Terminate(ctx)
@@ -147,6 +154,15 @@ func Setup(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
 		return nil, fmt.Errorf("failed to get baml-rest host: %w", err)
 	}
 	env.BAMLRestURL = fmt.Sprintf("http://%s:%s", restHost, restPort.Port())
+
+	if opts.UnaryServer {
+		unaryPort, err := bamlRest.MappedPort(ctx, BAMLRestUnaryPort)
+		if err != nil {
+			_ = env.Terminate(ctx)
+			return nil, fmt.Errorf("failed to get baml-rest unary port: %w", err)
+		}
+		env.BAMLRestUnaryURL = fmt.Sprintf("http://%s:%s", restHost, unaryPort.Port())
+	}
 
 	return env, nil
 }
@@ -214,16 +230,29 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 		return nil, fmt.Errorf("failed to create baml-rest build context: %w", err)
 	}
 
+	exposedPorts := []string{BAMLRestInternalPort}
+	cmd := []string{"--sse-keepalive-interval=100ms"}
+	waitStrategy := wait.ForHTTP("/openapi.json").WithPort(BAMLRestInternalPort).WithStartupTimeout(180 * time.Second)
+
+	var waitFor wait.Strategy = waitStrategy
+	if opts.UnaryServer {
+		exposedPorts = append(exposedPorts, BAMLRestUnaryPort)
+		cmd = append(cmd, "--unary-port=8081")
+		waitFor = wait.ForAll(
+			waitStrategy,
+			wait.ForListeningPort(BAMLRestUnaryPort).WithStartupTimeout(180*time.Second),
+		)
+	}
+
 	req := testcontainers.ContainerRequest{
 		FromDockerfile: testcontainers.FromDockerfile{
 			ContextArchive: buildCtx,
 			Dockerfile:     "Dockerfile",
 			PrintBuildLog:  true, // Enable build log output to see compilation errors
 		},
-		ExposedPorts: []string{BAMLRestInternalPort},
-		// Keep stream-cancellation tests responsive while still validating behavior.
-		Cmd:      []string{"--sse-keepalive-interval=100ms"},
-		Networks: []string{networkName},
+		ExposedPorts: exposedPorts,
+		Cmd:          cmd,
+		Networks:     []string{networkName},
 		NetworkAliases: map[string][]string{
 			networkName: {BAMLRestContainerName},
 		},
@@ -240,7 +269,7 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 			// for native thread backtraces (/_debug/native-stacks endpoint).
 			hc.CapAdd = append(hc.CapAdd, "SYS_PTRACE")
 		},
-		WaitingFor: wait.ForHTTP("/openapi.json").WithPort(BAMLRestInternalPort).WithStartupTimeout(180 * time.Second),
+		WaitingFor: waitFor,
 	}
 
 	return testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

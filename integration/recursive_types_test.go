@@ -350,60 +350,62 @@ func TestRecursiveTypesWithMedia(t *testing.T) {
 // TestRecursiveJsonType tests the deeply recursive JSON-like union type
 // (JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>).
 func TestRecursiveJsonType(t *testing.T) {
-	t.Run("simple_string_value", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
+		t.Run("simple_string_value", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		content := `{"data": "hello"}`
-		opts := setupNonStreamingScenario(t, "test-json-string", content)
+			content := `{"data": "hello"}`
+			opts := setupNonStreamingScenario(t, "test-json-string", content)
 
-		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
-			Method:  "ParseJson",
-			Input:   map[string]any{"input": "a string value"},
-			Options: opts,
+			resp, err := client.Call(ctx, testutil.CallRequest{
+				Method:  "ParseJson",
+				Input:   map[string]any{"input": "a string value"},
+				Options: opts,
+			})
+			if err != nil {
+				t.Fatalf("Call failed: %v", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
 		})
-		if err != nil {
-			t.Fatalf("Call failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
-	})
 
-	t.Run("nested_object_and_array", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		t.Run("nested_object_and_array", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		// Deeply nested JSON structure
-		content := `{"data": {"name": "test", "items": [1, "two", true, null, {"nested": "value"}]}}`
-		opts := setupNonStreamingScenario(t, "test-json-nested", content)
+			// Deeply nested JSON structure
+			content := `{"data": {"name": "test", "items": [1, "two", true, null, {"nested": "value"}]}}`
+			opts := setupNonStreamingScenario(t, "test-json-nested", content)
 
-		resp, err := BAMLClient.Call(ctx, testutil.CallRequest{
-			Method:  "ParseJson",
-			Input:   map[string]any{"input": "nested JSON"},
-			Options: opts,
+			resp, err := client.Call(ctx, testutil.CallRequest{
+				Method:  "ParseJson",
+				Input:   map[string]any{"input": "nested JSON"},
+				Options: opts,
+			})
+			if err != nil {
+				t.Fatalf("Call failed: %v", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
 		})
-		if err != nil {
-			t.Fatalf("Call failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
-	})
 
-	t.Run("parse_json_value", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		t.Run("parse_json_value", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		resp, err := BAMLClient.Parse(ctx, testutil.ParseRequest{
-			Method: "ParseJson",
-			Raw:    `{"data": [1, "hello", {"key": [true, null]}]}`,
+			resp, err := client.Parse(ctx, testutil.ParseRequest{
+				Method: "ParseJson",
+				Raw:    `{"data": [1, "hello", {"key": [true, null]}]}`,
+			})
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
 		})
-		if err != nil {
-			t.Fatalf("Parse failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
 	})
 }

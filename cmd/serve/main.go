@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -51,6 +52,7 @@ const (
 
 var (
 	port                    int
+	unaryPort               int
 	poolSize                int
 	firstByteTimeout        time.Duration
 	streamKeepaliveInterval time.Duration
@@ -69,7 +71,7 @@ var (
 			Name: "http_requests_total",
 			Help: "Total HTTP requests processed by the server",
 		},
-		[]string{"method", "path", "status"},
+		[]string{"method", "path", "code"},
 	)
 	httpRequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -77,7 +79,13 @@ var (
 			Help:    "HTTP request duration in seconds",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"method", "path", "status"},
+		[]string{"method", "path", "code"},
+	)
+	httpRequestsInflight = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "http_requests_inflight",
+			Help: "Number of HTTP requests currently being processed",
+		},
 	)
 	registerHTTPMetricsOnce sync.Once
 	registerHTTPMetricsErr  error
@@ -85,7 +93,7 @@ var (
 
 func registerHTTPMetrics() error {
 	registerHTTPMetricsOnce.Do(func() {
-		for _, collector := range []prometheus.Collector{httpRequestsTotal, httpRequestDuration} {
+		for _, collector := range []prometheus.Collector{httpRequestsTotal, httpRequestDuration, httpRequestsInflight} {
 			if err := prometheus.Register(collector); err != nil {
 				if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
 					continue
@@ -100,6 +108,8 @@ func registerHTTPMetrics() error {
 }
 
 func httpMetricsMiddleware(c fiber.Ctx) error {
+	httpRequestsInflight.Inc()
+	defer httpRequestsInflight.Dec()
 	start := time.Now()
 	err := c.Next()
 
@@ -116,13 +126,13 @@ func httpMetricsMiddleware(c fiber.Ctx) error {
 		}
 	}
 
-	status := strconv.Itoa(statusCode)
+	code := strconv.Itoa(statusCode)
 	path := c.FullPath()
 	if path == "" {
 		path = "_unmatched"
 	}
-	httpRequestsTotal.WithLabelValues(c.Method(), path, status).Inc()
-	httpRequestDuration.WithLabelValues(c.Method(), path, status).Observe(time.Since(start).Seconds())
+	httpRequestsTotal.WithLabelValues(c.Method(), path, code).Inc()
+	httpRequestDuration.WithLabelValues(c.Method(), path, code).Observe(time.Since(start).Seconds())
 
 	return err
 }
@@ -542,7 +552,21 @@ var serveCmd = &cobra.Command{
 			})
 		}
 
-		// Start server in a goroutine
+		// Optionally start the chi-based unary server on a separate port.
+		var unaryServer *http.Server
+		if unaryPort > 0 {
+			unaryRouter := newUnaryRouter(logger, workerPool, methodNames, hasDynamicMethod)
+			unaryServer = &http.Server{
+				Addr:              fmt.Sprintf(":%d", unaryPort),
+				Handler:           unaryRouter,
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       30 * time.Second,
+				WriteTimeout:      5 * time.Minute,
+				IdleTimeout:       120 * time.Second,
+			}
+		}
+
+		// Start Fiber server in a goroutine.
 		serverErr := make(chan error, 1)
 		go recovery.GoHandler(func(err error) {
 			serverErr <- err
@@ -553,6 +577,21 @@ var serveCmd = &cobra.Command{
 			return app.Listen(fmt.Sprintf(":%d", port), fiber.ListenConfig{DisableStartupMessage: true})
 		})
 
+		// Start unary server in a goroutine (if enabled).
+		unaryServerErr := make(chan error, 1)
+		if unaryServer != nil {
+			go recovery.GoHandler(func(err error) {
+				unaryServerErr <- err
+			}, func() error {
+				logger.Info().Int("port", unaryPort).Msg("Starting unary server (chi/net-http)")
+				err := unaryServer.ListenAndServe()
+				if errors.Is(err, http.ErrServerClosed) {
+					return nil
+				}
+				return err
+			})
+		}
+
 		// Set up signal handling for graceful shutdown
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -562,6 +601,9 @@ var serveCmd = &cobra.Command{
 		case err := <-serverErr:
 			_ = workerPool.Close()
 			return fmt.Errorf("server error: %w", err)
+		case err := <-unaryServerErr:
+			_ = workerPool.Close()
+			return fmt.Errorf("unary server error: %w", err)
 		case sig := <-sigChan:
 			logger.Info().Str("signal", sig.String()).Msg("Received signal, initiating graceful shutdown")
 
@@ -569,15 +611,23 @@ var serveCmd = &cobra.Command{
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer shutdownCancel()
 
-			// Shutdown Fiber server - this will wait for active connections to finish
-			// Active connections are waiting on worker responses, so workers must stay alive
+			// Shutdown both HTTP servers — active connections wait on worker responses,
+			// so workers must stay alive until all servers are drained.
 			if err := app.ShutdownWithContext(shutdownCtx); err != nil {
 				logger.Error().Err(err).Msg("Error during Fiber server shutdown")
 				_ = workerPool.Close()
 				return fmt.Errorf("shutdown error: %w", err)
 			}
 
-			logger.Info().Msg("Fiber server stopped, shutting down worker pool")
+			if unaryServer != nil {
+				if err := unaryServer.Shutdown(shutdownCtx); err != nil {
+					logger.Error().Err(err).Msg("Error during unary server shutdown")
+					_ = workerPool.Close()
+					return fmt.Errorf("unary shutdown error: %w", err)
+				}
+			}
+
+			logger.Info().Msg("HTTP servers stopped, shutting down worker pool")
 
 			// Gracefully shutdown worker pool - waits for any remaining in-flight requests
 			if err := workerPool.Shutdown(shutdownCtx); err != nil {
@@ -611,6 +661,7 @@ func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int
 
 func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
+	serveCmd.Flags().IntVar(&unaryPort, "unary-port", 0, "Port for the unary server (0 = disabled). Serves /call/*, /call-with-raw/*, /parse/* on a net/http server with reliable client-disconnect cancellation")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
 	serveCmd.Flags().DurationVar(&streamKeepaliveInterval, "sse-keepalive-interval", defaultStreamKeepaliveInterval, "Interval between stream keepalive signals for SSE/NDJSON (minimum 100ms)")

@@ -882,6 +882,12 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 		workerplugin.ReleaseStreamResult(result)
 	}
 
+	// Stream closed without a final result. If the context was cancelled
+	// (client disconnect, deadline exceeded), surface that so callers can
+	// distinguish cancellation from unexpected stream termination.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	return nil, fmt.Errorf("no final result received")
 }
 

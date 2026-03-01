@@ -1022,216 +1022,218 @@ func TestDynamicEndpointMultiPartValidation(t *testing.T) {
 		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
 	}
 
-	t.Run("empty_parts_array", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
+		t.Run("empty_parts_array", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role:    "user",
-					Content: []testutil.DynamicContentPart{},
-				},
-			},
-			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
-			OutputSchema: &testutil.DynamicOutputSchema{
-				Properties: map[string]*testutil.DynamicProperty{
-					"answer": {Type: "string"},
-				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		if resp.StatusCode != 400 {
-			t.Errorf("Expected status 400, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("invalid_part_type", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{Type: "invalid_type"},
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role:    "user",
+						Content: []testutil.DynamicContentPart{},
 					},
 				},
-			},
-			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
-			OutputSchema: &testutil.DynamicOutputSchema{
-				Properties: map[string]*testutil.DynamicProperty{
-					"answer": {Type: "string"},
-				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		if resp.StatusCode != 400 {
-			t.Errorf("Expected status 400, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("image_part_missing_payload", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{Type: "image"}, // Missing image payload
+				ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+				OutputSchema: &testutil.DynamicOutputSchema{
+					Properties: map[string]*testutil.DynamicProperty{
+						"answer": {Type: "string"},
 					},
 				},
-			},
-			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
-			OutputSchema: &testutil.DynamicOutputSchema{
-				Properties: map[string]*testutil.DynamicProperty{
-					"answer": {Type: "string"},
-				},
-			},
+			})
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+
+			if resp.StatusCode != 400 {
+				t.Errorf("Expected status 400, got %d", resp.StatusCode)
+			}
 		})
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
 
-		if resp.StatusCode != 400 {
-			t.Errorf("Expected status 400, got %d", resp.StatusCode)
-		}
-	})
+		t.Run("invalid_part_type", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-	t.Run("image_part_both_url_and_base64", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{Type: "image", Image: &testutil.MediaInput{
-							URL:    strPtr("https://example.com/img.png"),
-							Base64: strPtr("abc123"),
-						}},
-					},
-				},
-			},
-			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
-			OutputSchema: &testutil.DynamicOutputSchema{
-				Properties: map[string]*testutil.DynamicProperty{
-					"answer": {Type: "string"},
-				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		if resp.StatusCode != 400 {
-			t.Errorf("Expected status 400, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("output_format_with_extra_text", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{Type: "output_format", Text: strPtr("ignored")},
-					},
-				},
-			},
-			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
-			OutputSchema: &testutil.DynamicOutputSchema{
-				Properties: map[string]*testutil.DynamicProperty{
-					"answer": {Type: "string"},
-				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
-
-		if resp.StatusCode != 400 {
-			t.Errorf("Expected status 400 for output_format with extra text field, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("image_part_with_extra_text", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{
-							Type:  "image",
-							Image: &testutil.MediaInput{URL: strPtr("https://example.com/img.png")},
-							Text:  strPtr("extra text"),
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{Type: "invalid_type"},
 						},
 					},
 				},
-			},
-			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
-			OutputSchema: &testutil.DynamicOutputSchema{
-				Properties: map[string]*testutil.DynamicProperty{
-					"answer": {Type: "string"},
+				ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+				OutputSchema: &testutil.DynamicOutputSchema{
+					Properties: map[string]*testutil.DynamicProperty{
+						"answer": {Type: "string"},
+					},
 				},
-			},
+			})
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+
+			if resp.StatusCode != 400 {
+				t.Errorf("Expected status 400, got %d", resp.StatusCode)
+			}
 		})
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
 
-		if resp.StatusCode != 400 {
-			t.Errorf("Expected status 400 for image part with extra text field, got %d", resp.StatusCode)
-		}
-	})
+		t.Run("image_part_missing_payload", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-	t.Run("text_part_with_extra_image", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{
-							Type:  "text",
-							Text:  strPtr("hello"),
-							Image: &testutil.MediaInput{URL: strPtr("https://example.com/img.png")},
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{Type: "image"}, // Missing image payload
 						},
 					},
 				},
-			},
-			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
-			OutputSchema: &testutil.DynamicOutputSchema{
-				Properties: map[string]*testutil.DynamicProperty{
-					"answer": {Type: "string"},
+				ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+				OutputSchema: &testutil.DynamicOutputSchema{
+					Properties: map[string]*testutil.DynamicProperty{
+						"answer": {Type: "string"},
+					},
 				},
-			},
-		})
-		if err != nil {
-			t.Fatalf("Request failed: %v", err)
-		}
+			})
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
 
-		if resp.StatusCode != 400 {
-			t.Errorf("Expected status 400 for text part with extra image field, got %d", resp.StatusCode)
-		}
+			if resp.StatusCode != 400 {
+				t.Errorf("Expected status 400, got %d", resp.StatusCode)
+			}
+		})
+
+		t.Run("image_part_both_url_and_base64", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{Type: "image", Image: &testutil.MediaInput{
+								URL:    strPtr("https://example.com/img.png"),
+								Base64: strPtr("abc123"),
+							}},
+						},
+					},
+				},
+				ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+				OutputSchema: &testutil.DynamicOutputSchema{
+					Properties: map[string]*testutil.DynamicProperty{
+						"answer": {Type: "string"},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+
+			if resp.StatusCode != 400 {
+				t.Errorf("Expected status 400, got %d", resp.StatusCode)
+			}
+		})
+
+		t.Run("output_format_with_extra_text", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{Type: "output_format", Text: strPtr("ignored")},
+						},
+					},
+				},
+				ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+				OutputSchema: &testutil.DynamicOutputSchema{
+					Properties: map[string]*testutil.DynamicProperty{
+						"answer": {Type: "string"},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+
+			if resp.StatusCode != 400 {
+				t.Errorf("Expected status 400 for output_format with extra text field, got %d", resp.StatusCode)
+			}
+		})
+
+		t.Run("image_part_with_extra_text", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{
+								Type:  "image",
+								Image: &testutil.MediaInput{URL: strPtr("https://example.com/img.png")},
+								Text:  strPtr("extra text"),
+							},
+						},
+					},
+				},
+				ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+				OutputSchema: &testutil.DynamicOutputSchema{
+					Properties: map[string]*testutil.DynamicProperty{
+						"answer": {Type: "string"},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+
+			if resp.StatusCode != 400 {
+				t.Errorf("Expected status 400 for image part with extra text field, got %d", resp.StatusCode)
+			}
+		})
+
+		t.Run("text_part_with_extra_image", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{
+								Type:  "text",
+								Text:  strPtr("hello"),
+								Image: &testutil.MediaInput{URL: strPtr("https://example.com/img.png")},
+							},
+						},
+					},
+				},
+				ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, "test"),
+				OutputSchema: &testutil.DynamicOutputSchema{
+					Properties: map[string]*testutil.DynamicProperty{
+						"answer": {Type: "string"},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+
+			if resp.StatusCode != 400 {
+				t.Errorf("Expected status 400 for text part with extra image field, got %d", resp.StatusCode)
+			}
+		})
 	})
 }
 
@@ -1313,320 +1315,322 @@ func TestDynamicEndpointPromptWhitespace(t *testing.T) {
 		},
 	}
 
-	t.Run("single_string_message_no_leading_trailing_whitespace", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
+		t.Run("single_string_message_no_leading_trailing_whitespace", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		scenarioID := "test-ws-single-string"
-		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+			scenarioID := "test-ws-single-string"
+			opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
 
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{Role: "user", Content: "What is 2+2? {output_format}"},
-			},
-			ClientRegistry: opts.ClientRegistry,
-			OutputSchema:   simpleOutputSchema,
-		})
-		if err != nil {
-			t.Fatalf("DynamicCall failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
-
-		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
-		if err != nil {
-			t.Fatalf("Failed to get last request: %v", err)
-		}
-
-		messages := extractLLMMessageTexts(t, captured)
-		for i, m := range messages {
-			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
-
-			if m.Text != strings.TrimSpace(m.Text) {
-				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{Role: "user", Content: "What is 2+2? {output_format}"},
+				},
+				ClientRegistry: opts.ClientRegistry,
+				OutputSchema:   simpleOutputSchema,
+			})
+			if err != nil {
+				t.Fatalf("DynamicCall failed: %v", err)
 			}
-		}
-	})
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
 
-	t.Run("single_text_part_no_leading_trailing_whitespace", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+			captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+			if err != nil {
+				t.Fatalf("Failed to get last request: %v", err)
+			}
 
-		scenarioID := "test-ws-single-text-part"
-		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+			messages := extractLLMMessageTexts(t, captured)
+			for i, m := range messages {
+				t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
 
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{Type: "text", Text: strPtr("What is 2+2?")},
-						{Type: "output_format"},
+				if m.Text != strings.TrimSpace(m.Text) {
+					t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+				}
+			}
+		})
+
+		t.Run("single_text_part_no_leading_trailing_whitespace", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			scenarioID := "test-ws-single-text-part"
+			opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{Type: "text", Text: strPtr("What is 2+2?")},
+							{Type: "output_format"},
+						},
 					},
 				},
-			},
-			ClientRegistry: opts.ClientRegistry,
-			OutputSchema:   simpleOutputSchema,
-		})
-		if err != nil {
-			t.Fatalf("DynamicCall failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
-
-		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
-		if err != nil {
-			t.Fatalf("Failed to get last request: %v", err)
-		}
-
-		messages := extractLLMMessageTexts(t, captured)
-		for i, m := range messages {
-			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
-
-			if m.Text != strings.TrimSpace(m.Text) {
-				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+				ClientRegistry: opts.ClientRegistry,
+				OutputSchema:   simpleOutputSchema,
+			})
+			if err != nil {
+				t.Fatalf("DynamicCall failed: %v", err)
 			}
-		}
-	})
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
 
-	t.Run("multiple_text_parts_no_blank_lines_between", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+			captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+			if err != nil {
+				t.Fatalf("Failed to get last request: %v", err)
+			}
 
-		scenarioID := "test-ws-multi-text-parts"
-		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+			messages := extractLLMMessageTexts(t, captured)
+			for i, m := range messages {
+				t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
 
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{Type: "text", Text: strPtr("First line.")},
-						{Type: "text", Text: strPtr("Second line.")},
-						{Type: "text", Text: strPtr("Third line.")},
-						{Type: "output_format"},
+				if m.Text != strings.TrimSpace(m.Text) {
+					t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+				}
+			}
+		})
+
+		t.Run("multiple_text_parts_no_blank_lines_between", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			scenarioID := "test-ws-multi-text-parts"
+			opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{Type: "text", Text: strPtr("First line.")},
+							{Type: "text", Text: strPtr("Second line.")},
+							{Type: "text", Text: strPtr("Third line.")},
+							{Type: "output_format"},
+						},
 					},
 				},
-			},
-			ClientRegistry: opts.ClientRegistry,
-			OutputSchema:   simpleOutputSchema,
+				ClientRegistry: opts.ClientRegistry,
+				OutputSchema:   simpleOutputSchema,
+			})
+			if err != nil {
+				t.Fatalf("DynamicCall failed: %v", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
+
+			captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+			if err != nil {
+				t.Fatalf("Failed to get last request: %v", err)
+			}
+
+			messages := extractLLMMessageTexts(t, captured)
+			for i, m := range messages {
+				t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+				// Check for consecutive blank lines (two or more newlines in a row
+				// beyond what the user explicitly included)
+				if strings.Contains(m.Text, "\n\n\n") {
+					t.Errorf("Message[%d] has consecutive blank lines (3+ newlines): %q", i, m.Text)
+				}
+
+				if m.Text != strings.TrimSpace(m.Text) {
+					t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+				}
+			}
 		})
-		if err != nil {
-			t.Fatalf("DynamicCall failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
 
-		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
-		if err != nil {
-			t.Fatalf("Failed to get last request: %v", err)
-		}
+		t.Run("multiple_messages_no_spurious_whitespace", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		messages := extractLLMMessageTexts(t, captured)
-		for i, m := range messages {
-			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+			scenarioID := "test-ws-multi-messages"
+			opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
 
-			// Check for consecutive blank lines (two or more newlines in a row
-			// beyond what the user explicitly included)
-			if strings.Contains(m.Text, "\n\n\n") {
-				t.Errorf("Message[%d] has consecutive blank lines (3+ newlines): %q", i, m.Text)
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{Role: "system", Content: "You are helpful."},
+					{Role: "user", Content: "What is 2+2? {output_format}"},
+				},
+				ClientRegistry: opts.ClientRegistry,
+				OutputSchema:   simpleOutputSchema,
+			})
+			if err != nil {
+				t.Fatalf("DynamicCall failed: %v", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
 			}
 
-			if m.Text != strings.TrimSpace(m.Text) {
-				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+			if err != nil {
+				t.Fatalf("Failed to get last request: %v", err)
 			}
-		}
-	})
 
-	t.Run("multiple_messages_no_spurious_whitespace", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+			messages := extractLLMMessageTexts(t, captured)
+			for i, m := range messages {
+				t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
 
-		scenarioID := "test-ws-multi-messages"
-		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
-
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{Role: "system", Content: "You are helpful."},
-				{Role: "user", Content: "What is 2+2? {output_format}"},
-			},
-			ClientRegistry: opts.ClientRegistry,
-			OutputSchema:   simpleOutputSchema,
+				if m.Text != strings.TrimSpace(m.Text) {
+					t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+				}
+			}
 		})
-		if err != nil {
-			t.Fatalf("DynamicCall failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
 
-		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
-		if err != nil {
-			t.Fatalf("Failed to get last request: %v", err)
-		}
+		t.Run("mixed_string_and_parts_messages_no_spurious_whitespace", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		messages := extractLLMMessageTexts(t, captured)
-		for i, m := range messages {
-			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+			scenarioID := "test-ws-mixed-messages"
+			opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
 
-			if m.Text != strings.TrimSpace(m.Text) {
-				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
-			}
-		}
-	})
-
-	t.Run("mixed_string_and_parts_messages_no_spurious_whitespace", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		scenarioID := "test-ws-mixed-messages"
-		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
-
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{Role: "system", Content: "You are helpful."},
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{Type: "text", Text: strPtr("Describe this image:")},
-						{Type: "image", Image: &testutil.MediaInput{
-							URL: strPtr("https://upload.wikimedia.org/wikipedia/en/4/4d/Shrek_%28character%29.png"),
-						}},
-						{Type: "output_format"},
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{Role: "system", Content: "You are helpful."},
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{Type: "text", Text: strPtr("Describe this image:")},
+							{Type: "image", Image: &testutil.MediaInput{
+								URL: strPtr("https://upload.wikimedia.org/wikipedia/en/4/4d/Shrek_%28character%29.png"),
+							}},
+							{Type: "output_format"},
+						},
 					},
 				},
-			},
-			ClientRegistry: opts.ClientRegistry,
-			OutputSchema:   simpleOutputSchema,
+				ClientRegistry: opts.ClientRegistry,
+				OutputSchema:   simpleOutputSchema,
+			})
+			if err != nil {
+				t.Fatalf("DynamicCall failed: %v", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
+
+			captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+			if err != nil {
+				t.Fatalf("Failed to get last request: %v", err)
+			}
+
+			messages := extractLLMMessageTexts(t, captured)
+			for i, m := range messages {
+				t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+				if m.Text != strings.TrimSpace(m.Text) {
+					t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+				}
+
+				if strings.Contains(m.Text, "\n\n\n") {
+					t.Errorf("Message[%d] has consecutive blank lines: %q", i, m.Text)
+				}
+			}
 		})
-		if err != nil {
-			t.Fatalf("DynamicCall failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
 
-		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
-		if err != nil {
-			t.Fatalf("Failed to get last request: %v", err)
-		}
+		t.Run("parts_with_output_format_between_text_no_extra_whitespace", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		messages := extractLLMMessageTexts(t, captured)
-		for i, m := range messages {
-			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+			scenarioID := "test-ws-output-format-between"
+			opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
 
-			if m.Text != strings.TrimSpace(m.Text) {
-				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
-			}
-
-			if strings.Contains(m.Text, "\n\n\n") {
-				t.Errorf("Message[%d] has consecutive blank lines: %q", i, m.Text)
-			}
-		}
-	})
-
-	t.Run("parts_with_output_format_between_text_no_extra_whitespace", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		scenarioID := "test-ws-output-format-between"
-		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
-
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{
-					Role: "user",
-					Content: []testutil.DynamicContentPart{
-						{Type: "text", Text: strPtr("Instructions here.")},
-						{Type: "output_format"},
-						{Type: "text", Text: strPtr("Now answer.")},
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{
+						Role: "user",
+						Content: []testutil.DynamicContentPart{
+							{Type: "text", Text: strPtr("Instructions here.")},
+							{Type: "output_format"},
+							{Type: "text", Text: strPtr("Now answer.")},
+						},
 					},
 				},
-			},
-			ClientRegistry: opts.ClientRegistry,
-			OutputSchema:   simpleOutputSchema,
+				ClientRegistry: opts.ClientRegistry,
+				OutputSchema:   simpleOutputSchema,
+			})
+			if err != nil {
+				t.Fatalf("DynamicCall failed: %v", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
+
+			captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+			if err != nil {
+				t.Fatalf("Failed to get last request: %v", err)
+			}
+
+			messages := extractLLMMessageTexts(t, captured)
+			for i, m := range messages {
+				t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+
+				if strings.Contains(m.Text, "\n\n\n") {
+					t.Errorf("Message[%d] has consecutive blank lines: %q", i, m.Text)
+				}
+
+				if m.Text != strings.TrimSpace(m.Text) {
+					t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+				}
+
+				// Verify the output format was actually injected (not blank)
+				if !strings.Contains(m.Text, "answer") {
+					t.Errorf("Message[%d] doesn't contain output schema field 'answer' - output_format part may not have rendered: %q", i, m.Text)
+				}
+			}
 		})
-		if err != nil {
-			t.Fatalf("DynamicCall failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
 
-		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
-		if err != nil {
-			t.Fatalf("Failed to get last request: %v", err)
-		}
+		t.Run("many_messages_no_accumulated_whitespace", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		messages := extractLLMMessageTexts(t, captured)
-		for i, m := range messages {
-			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
+			scenarioID := "test-ws-many-messages"
+			opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
 
-			if strings.Contains(m.Text, "\n\n\n") {
-				t.Errorf("Message[%d] has consecutive blank lines: %q", i, m.Text)
+			resp, err := client.DynamicCall(ctx, testutil.DynamicRequest{
+				Messages: []testutil.DynamicMessage{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "First question."},
+					{Role: "assistant", Content: "First answer."},
+					{Role: "user", Content: "Second question."},
+					{Role: "assistant", Content: "Second answer."},
+					{Role: "user", Content: "Third question. {output_format}"},
+				},
+				ClientRegistry: opts.ClientRegistry,
+				OutputSchema:   simpleOutputSchema,
+			})
+			if err != nil {
+				t.Fatalf("DynamicCall failed: %v", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
 			}
 
-			if m.Text != strings.TrimSpace(m.Text) {
-				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+			captured, err := MockClient.GetLastRequest(ctx, scenarioID)
+			if err != nil {
+				t.Fatalf("Failed to get last request: %v", err)
 			}
 
-			// Verify the output format was actually injected (not blank)
-			if !strings.Contains(m.Text, "answer") {
-				t.Errorf("Message[%d] doesn't contain output schema field 'answer' - output_format part may not have rendered: %q", i, m.Text)
+			messages := extractLLMMessageTexts(t, captured)
+			if len(messages) < 6 {
+				t.Fatalf("Expected at least 6 messages, got %d", len(messages))
 			}
-		}
-	})
 
-	t.Run("many_messages_no_accumulated_whitespace", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+			for i, m := range messages {
+				t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
 
-		scenarioID := "test-ws-many-messages"
-		opts := setupNonStreamingScenario(t, scenarioID, `{"answer": "ok"}`)
+				if m.Text != strings.TrimSpace(m.Text) {
+					t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
+				}
 
-		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
-			Messages: []testutil.DynamicMessage{
-				{Role: "system", Content: "You are a helpful assistant."},
-				{Role: "user", Content: "First question."},
-				{Role: "assistant", Content: "First answer."},
-				{Role: "user", Content: "Second question."},
-				{Role: "assistant", Content: "Second answer."},
-				{Role: "user", Content: "Third question. {output_format}"},
-			},
-			ClientRegistry: opts.ClientRegistry,
-			OutputSchema:   simpleOutputSchema,
+				if strings.Contains(m.Text, "\n\n\n") {
+					t.Errorf("Message[%d] has consecutive blank lines: %q", i, m.Text)
+				}
+			}
 		})
-		if err != nil {
-			t.Fatalf("DynamicCall failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
-
-		captured, err := MockClient.GetLastRequest(ctx, scenarioID)
-		if err != nil {
-			t.Fatalf("Failed to get last request: %v", err)
-		}
-
-		messages := extractLLMMessageTexts(t, captured)
-		if len(messages) < 6 {
-			t.Fatalf("Expected at least 6 messages, got %d", len(messages))
-		}
-
-		for i, m := range messages {
-			t.Logf("Message[%d] role=%s text=%q", i, m.Role, m.Text)
-
-			if m.Text != strings.TrimSpace(m.Text) {
-				t.Errorf("Message[%d] has leading/trailing whitespace: %q", i, m.Text)
-			}
-
-			if strings.Contains(m.Text, "\n\n\n") {
-				t.Errorf("Message[%d] has consecutive blank lines: %q", i, m.Text)
-			}
-		}
 	})
 }
 
