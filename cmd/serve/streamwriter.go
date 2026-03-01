@@ -307,28 +307,35 @@ func (p *SSEStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Con
 	}()
 }
 
-func (p *SSEStreamWriterPublisher) PublishData(data []byte, raw string) error {
-	if p.needsRaw {
-		wrapped, err := json.Marshal(CallWithRawResponse{Data: data, Raw: raw})
-		if err != nil {
-			return err
-		}
-		return p.writeEvent("", unsafeutil.BytesToString(wrapped))
+func (p *SSEStreamWriterPublisher) formatPayload(data []byte, raw string) (string, error) {
+	if !p.needsRaw {
+		return unsafeutil.BytesToString(data), nil
 	}
 
-	return p.writeEvent("", unsafeutil.BytesToString(data))
+	wrapped, err := json.Marshal(CallWithRawResponse{Data: data, Raw: raw})
+	if err != nil {
+		return "", err
+	}
+
+	return unsafeutil.BytesToString(wrapped), nil
+}
+
+func (p *SSEStreamWriterPublisher) PublishData(data []byte, raw string) error {
+	payload, err := p.formatPayload(data, raw)
+	if err != nil {
+		return err
+	}
+
+	return p.writeEvent("", payload)
 }
 
 func (p *SSEStreamWriterPublisher) PublishFinal(data []byte, raw string) error {
-	if p.needsRaw {
-		wrapped, err := json.Marshal(CallWithRawResponse{Data: data, Raw: raw})
-		if err != nil {
-			return err
-		}
-		return p.writeEvent(sseEventFinal, unsafeutil.BytesToString(wrapped))
+	payload, err := p.formatPayload(data, raw)
+	if err != nil {
+		return err
 	}
 
-	return p.writeEvent(sseEventFinal, unsafeutil.BytesToString(data))
+	return p.writeEvent(sseEventFinal, payload)
 }
 
 func (p *SSEStreamWriterPublisher) PublishReset() error {
