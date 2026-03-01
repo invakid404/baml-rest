@@ -5,7 +5,6 @@ import (
 	"context"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -191,7 +190,7 @@ type SSEStreamWriterPublisher struct {
 	needsRaw bool
 
 	mu         sync.Mutex
-	wroteEvent atomic.Bool
+	wroteEvent bool
 }
 
 func (p *SSEStreamWriterPublisher) writeEvent(eventType string, payload string) error {
@@ -240,34 +239,38 @@ func (p *SSEStreamWriterPublisher) writeEvent(eventType string, payload string) 
 		return err
 	}
 
-	p.wroteEvent.Store(true)
+	p.wroteEvent = true
 
 	return nil
 }
 
-func (p *SSEStreamWriterPublisher) writeComment(comment string) error {
+func (p *SSEStreamWriterPublisher) writeComment(comment string) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.wroteEvent {
+		return false, nil
+	}
+
 	if _, err := p.w.WriteString(": "); err != nil {
 		p.cancel()
-		return err
+		return false, err
 	}
 	if _, err := p.w.WriteString(comment); err != nil {
 		p.cancel()
-		return err
+		return false, err
 	}
 	if _, err := p.w.WriteString("\n\n"); err != nil {
 		p.cancel()
-		return err
+		return false, err
 	}
 
 	if err := p.w.Flush(); err != nil {
 		p.cancel()
-		return err
+		return false, err
 	}
 
-	return nil
+	return true, nil
 }
 
 func (p *SSEStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Context, interval time.Duration) {
@@ -276,7 +279,11 @@ func (p *SSEStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Con
 	}
 
 	go func() {
-		if err := p.writeComment("keepalive"); err != nil {
+		wrote, err := p.writeComment("keepalive")
+		if err != nil {
+			return
+		}
+		if !wrote {
 			return
 		}
 
@@ -288,10 +295,11 @@ func (p *SSEStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Con
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if p.wroteEvent.Load() {
+				wrote, err := p.writeComment("keepalive")
+				if err != nil {
 					return
 				}
-				if err := p.writeComment("keepalive"); err != nil {
+				if !wrote {
 					return
 				}
 			}
