@@ -345,7 +345,12 @@ func (p *SSEStreamWriterPublisher) PublishReset() error {
 }
 
 func (p *SSEStreamWriterPublisher) PublishError(errMsg string) error {
-	return p.writeEvent(sseEventError, errMsg)
+	payload, err := json.Marshal(map[string]string{"error": errMsg})
+	if err != nil {
+		return p.writeEvent(sseEventError, errMsg)
+	}
+
+	return p.writeEvent(sseEventError, unsafeutil.BytesToString(payload))
 }
 
 func (p *SSEStreamWriterPublisher) Close() {
