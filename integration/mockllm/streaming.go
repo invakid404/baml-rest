@@ -3,78 +3,57 @@
 package mockllm
 
 import (
+	"bufio"
 	"context"
 	"math/rand"
-	"net/http"
 	"time"
 )
 
 // StreamWriter handles writing SSE chunks with timing.
 type StreamWriter struct {
-	w        http.ResponseWriter
-	flusher  http.Flusher
+	w        *bufio.Writer
 	provider Provider
 }
 
 // NewStreamWriter creates a new stream writer.
-func NewStreamWriter(w http.ResponseWriter, provider Provider) (*StreamWriter, bool) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return nil, false
-	}
+func NewStreamWriter(w *bufio.Writer, provider Provider) *StreamWriter {
 	return &StreamWriter{
 		w:        w,
-		flusher:  flusher,
 		provider: provider,
-	}, true
+	}
 }
 
 // WriteChunk writes a single chunk and flushes.
 func (sw *StreamWriter) WriteChunk(content string, index int) error {
 	chunk := sw.provider.FormatChunk(content, index)
-	_, err := sw.w.Write([]byte(chunk))
-	if err != nil {
+	if _, err := sw.w.WriteString(chunk); err != nil {
 		return err
 	}
-	sw.flusher.Flush()
-	return nil
+	return sw.w.Flush()
 }
 
 // WriteFinalChunk writes the final chunk with finish_reason: "stop".
 func (sw *StreamWriter) WriteFinalChunk(index int) error {
 	chunk := sw.provider.FormatFinalChunk(index)
-	_, err := sw.w.Write([]byte(chunk))
-	if err != nil {
+	if _, err := sw.w.WriteString(chunk); err != nil {
 		return err
 	}
-	sw.flusher.Flush()
-	return nil
+	return sw.w.Flush()
 }
 
 // WriteDone writes the completion marker.
 func (sw *StreamWriter) WriteDone() error {
 	done := sw.provider.FormatDone()
-	_, err := sw.w.Write([]byte(done))
-	if err != nil {
+	if _, err := sw.w.WriteString(done); err != nil {
 		return err
 	}
-	sw.flusher.Flush()
-	return nil
+	return sw.w.Flush()
 }
 
 // StreamResponse streams the scenario content with configured timing.
 // The effectiveDelay parameter overrides scenario.InitialDelayMs when specified (>= 0).
-func StreamResponse(ctx context.Context, w http.ResponseWriter, scenario *Scenario, provider Provider, effectiveDelay int) error {
-	sw, ok := NewStreamWriter(w, provider)
-	if !ok {
-		return nil // Can't stream, let caller handle
-	}
-
-	// Set headers for SSE
-	w.Header().Set("Content-Type", provider.ContentType(true))
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
+func StreamResponse(ctx context.Context, w *bufio.Writer, scenario *Scenario, provider Provider, effectiveDelay int) error {
+	sw := NewStreamWriter(w, provider)
 
 	// Initial delay - use the effective delay passed from the caller
 	if effectiveDelay > 0 {
