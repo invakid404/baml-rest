@@ -52,7 +52,7 @@ const (
 
 var (
 	port                    int
-	unaryCancelPort         int
+	unaryPort               int
 	poolSize                int
 	firstByteTimeout        time.Duration
 	streamKeepaliveInterval time.Duration
@@ -552,12 +552,12 @@ var serveCmd = &cobra.Command{
 			})
 		}
 
-		// Optionally start the chi-based unary cancellation server.
+		// Optionally start the chi-based unary server on a separate port.
 		var unaryServer *http.Server
-		if unaryCancelPort > 0 {
+		if unaryPort > 0 {
 			unaryRouter := newUnaryRouter(logger, workerPool, methodNames, hasDynamicMethod)
 			unaryServer = &http.Server{
-				Addr:    fmt.Sprintf(":%d", unaryCancelPort),
+				Addr:    fmt.Sprintf(":%d", unaryPort),
 				Handler: unaryRouter,
 			}
 		}
@@ -573,13 +573,13 @@ var serveCmd = &cobra.Command{
 			return app.Listen(fmt.Sprintf(":%d", port), fiber.ListenConfig{DisableStartupMessage: true})
 		})
 
-		// Start unary cancellation server in a goroutine (if enabled).
+		// Start unary server in a goroutine (if enabled).
 		unaryServerErr := make(chan error, 1)
 		if unaryServer != nil {
 			go recovery.GoHandler(func(err error) {
 				unaryServerErr <- err
 			}, func() error {
-				logger.Info().Int("port", unaryCancelPort).Msg("Starting unary cancellation server (chi/net-http)")
+				logger.Info().Int("port", unaryPort).Msg("Starting unary server (chi/net-http)")
 				err := unaryServer.ListenAndServe()
 				if errors.Is(err, http.ErrServerClosed) {
 					return nil
@@ -657,7 +657,7 @@ func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int
 
 func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the server on")
-	serveCmd.Flags().IntVar(&unaryCancelPort, "unary-cancel-port", 0, "Port for the unary cancellation server (0 = disabled). Runs /call/*, /call-with-raw/*, /parse/* on a real net/http server for reliable client-disconnect cancellation")
+	serveCmd.Flags().IntVar(&unaryPort, "unary-port", 0, "Port for the unary server (0 = disabled). Serves /call/*, /call-with-raw/*, /parse/* on a net/http server with reliable client-disconnect cancellation")
 	serveCmd.Flags().IntVar(&poolSize, "pool-size", 4, "Number of workers in the pool")
 	serveCmd.Flags().DurationVar(&firstByteTimeout, "first-byte-timeout", 120*time.Second, "Timeout for first byte from worker (deadlock detection)")
 	serveCmd.Flags().DurationVar(&streamKeepaliveInterval, "sse-keepalive-interval", defaultStreamKeepaliveInterval, "Interval between stream keepalive signals for SSE/NDJSON (minimum 100ms)")

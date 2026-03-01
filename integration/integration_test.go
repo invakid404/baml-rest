@@ -26,8 +26,9 @@ var MockClient *mockllm.Client
 // BAMLClient is the client for calling baml-rest (Fiber server)
 var BAMLClient *testutil.BAMLRestClient
 
-// UnaryCancelClient is the client for calling the unary cancel server (chi/net-http)
-var UnaryCancelClient *testutil.BAMLRestClient
+// UnaryClient is the client for calling the unary server (chi/net-http).
+// nil when the unary server is not enabled.
+var UnaryClient *testutil.BAMLRestClient
 
 // BAMLVersion is the version being tested (set at init time)
 var BAMLVersion string
@@ -123,11 +124,13 @@ func TestMain(m *testing.M) {
 	}
 
 	// Setup test environment
+	unaryServer := os.Getenv("UNARY_SERVER") == "true"
 	TestEnv, err = testutil.Setup(ctx, testutil.SetupOptions{
 		BAMLSrcPath:    bamlSrcPath,
 		BAMLVersion:    BAMLVersion,
 		AdapterVersion: adapterVersion,
 		BAMLSource:     BAMLSourcePath,
+		UnaryServer:    unaryServer,
 	})
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
@@ -138,12 +141,14 @@ func TestMain(m *testing.M) {
 	println("  Mock LLM URL:", TestEnv.MockLLMURL)
 	println("  Mock LLM Internal URL:", TestEnv.MockLLMInternal)
 	println("  BAML REST URL:", TestEnv.BAMLRestURL)
-	println("  Unary Cancel URL:", TestEnv.BAMLRestUnaryCancelURL)
+	println("  Unary URL:", TestEnv.BAMLRestUnaryURL)
 
 	// Create clients
 	MockClient = mockllm.NewClient(TestEnv.MockLLMURL)
 	BAMLClient = testutil.NewBAMLRestClient(TestEnv.BAMLRestURL)
-	UnaryCancelClient = testutil.NewBAMLRestClient(TestEnv.BAMLRestUnaryCancelURL)
+	if TestEnv.BAMLRestUnaryURL != "" {
+		UnaryClient = testutil.NewBAMLRestClient(TestEnv.BAMLRestUnaryURL)
+	}
 
 	// Run tests
 	code := m.Run()
@@ -296,12 +301,16 @@ type namedClient struct {
 }
 
 // unaryTestClients returns the set of clients to test unary endpoints against.
-// Both share the same worker pool; the chi server provides real r.Context() cancellation.
+// When the unary server is enabled, both Fiber and chi are tested;
+// otherwise only Fiber is tested.
 func unaryTestClients() []namedClient {
-	return []namedClient{
+	clients := []namedClient{
 		{"fiber", BAMLClient},
-		{"chi", UnaryCancelClient},
 	}
+	if UnaryClient != nil {
+		clients = append(clients, namedClient{"chi", UnaryClient})
+	}
+	return clients
 }
 
 // forEachUnaryClient runs fn as a subtest for each unary backend (Fiber and chi).

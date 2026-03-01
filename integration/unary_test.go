@@ -11,9 +11,19 @@ import (
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
 
+func requireUnaryClient(t *testing.T) *testutil.BAMLRestClient {
+	t.Helper()
+	if UnaryClient == nil {
+		t.Skip("unary server not enabled (set UNARY_SERVER=true)")
+	}
+	return UnaryClient
+}
+
 // TestUnaryCancelCall verifies that cancelling an in-flight /call request on the
-// chi/net-http unary cancel server actually terminates the worker call promptly.
+// chi/net-http unary server actually terminates the worker call promptly.
 func TestUnaryCancelCall(t *testing.T) {
+	client := requireUnaryClient(t)
+
 	parentCtx, parentCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer parentCancel()
 
@@ -54,7 +64,7 @@ func TestUnaryCancelCall(t *testing.T) {
 		defer cancelTimer.Stop()
 
 		startTime := time.Now()
-		_, err = UnaryCancelClient.Call(reqCtx, testutil.CallRequest{
+		_, err = client.Call(reqCtx, testutil.CallRequest{
 			Method:  "GetPerson",
 			Input:   map[string]any{"description": "cancel test"},
 			Options: opts,
@@ -82,20 +92,20 @@ func TestUnaryCancelCall(t *testing.T) {
 	})
 }
 
-// TestUnaryParse verifies /parse works on the unary cancel server.
+// TestUnaryParse verifies /parse works on the unary server.
 func TestUnaryParse(t *testing.T) {
+	client := requireUnaryClient(t)
+
 	parentCtx, parentCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer parentCancel()
 
 	waitForHealthy(t, 30*time.Second)
 
-	// Parse is typically fast, but we can still exercise the cancellation path
-	// by verifying the endpoint is functional on the unary server.
 	t.Run("basic_parse_works", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(parentCtx, 30*time.Second)
 		defer cancel()
 
-		resp, err := UnaryCancelClient.Parse(ctx, testutil.ParseRequest{
+		resp, err := client.Parse(ctx, testutil.ParseRequest{
 			Method: "GetSimple",
 			Raw:    `Hello, world!`,
 		})

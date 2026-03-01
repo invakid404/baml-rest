@@ -25,8 +25,9 @@ jobs:
         id: set-matrix
         run: |
           # Read the versions file and build matrix combining pinned + latest
+          # Cross with unary-server on/off to test both configurations
           VERSIONS=$(jq -c '[.pinned[], .latest] | unique' integration/baml_versions.json)
-          echo "matrix={\"baml-version\":$VERSIONS}" >> $GITHUB_OUTPUT
+          echo "matrix={\"baml-version\":$VERSIONS,\"unary-server\":[false,true]}" >> $GITHUB_OUTPUT
 
   integration-tests:
     needs: get-versions
@@ -45,9 +46,10 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run Integration Tests (BAML ${{ matrix.baml-version }})
+      - name: Run Integration Tests (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         env:
           BAML_VERSION: ${{ matrix.baml-version }}
+          UNARY_SERVER: ${{ matrix.unary-server }}
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
         # share state (server config, worker pool) that could cause flakiness if parallel
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
@@ -55,6 +57,10 @@ jobs:
   integration-tests-baml-source:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        unary-server: [false, true]
 
     steps:
       - name: Checkout Repository
@@ -76,7 +82,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run Integration Tests (BAML Source)
+      - name: Run Integration Tests (BAML Source, unary=${{ matrix.unary-server }})
         env:
           BAML_SOURCE: ${{ github.workspace }}/baml-source
+          UNARY_SERVER: ${{ matrix.unary-server }}
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
