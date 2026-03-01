@@ -69,8 +69,7 @@ type NDJSONStreamWriterPublisher struct {
 	w      *bufio.Writer
 	cancel context.CancelFunc
 
-	mu         sync.Mutex
-	wroteEvent bool
+	mu sync.Mutex
 }
 
 func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
@@ -97,43 +96,37 @@ func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
 		return err
 	}
 
-	p.wroteEvent = true
-
 	return nil
 }
 
-func (p *NDJSONStreamWriterPublisher) writeKeepalive() (bool, error) {
+func (p *NDJSONStreamWriterPublisher) writeKeepalive() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	if p.wroteEvent {
-		return false, nil
-	}
 
 	data, err := json.Marshal(&NDJSONEvent{Type: NDJSONEventPing})
 	if err != nil {
 		p.cancel()
-		return false, err
+		return err
 	}
 
 	if _, err := p.w.Write(data); err != nil {
 		p.cancel()
-		return false, err
+		return err
 	}
 	if err := p.w.WriteByte('\n'); err != nil {
 		p.cancel()
-		return false, err
+		return err
 	}
 
 	if err := p.w.Flush(); err != nil {
 		p.cancel()
-		return false, err
+		return err
 	}
 
-	return true, nil
+	return nil
 }
 
-func (p *NDJSONStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Context, interval time.Duration) {
+func (p *NDJSONStreamWriterPublisher) startKeepalive(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
@@ -143,11 +136,7 @@ func (p *NDJSONStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.
 			return
 		}
 
-		wrote, err := p.writeKeepalive()
-		if err != nil {
-			return
-		}
-		if !wrote {
+		if err := p.writeKeepalive(); err != nil {
 			return
 		}
 
@@ -163,11 +152,7 @@ func (p *NDJSONStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.
 					return
 				}
 
-				wrote, err := p.writeKeepalive()
-				if err != nil {
-					return
-				}
-				if !wrote {
+				if err := p.writeKeepalive(); err != nil {
 					return
 				}
 			}
@@ -231,7 +216,7 @@ func HandleNDJSONStreamFiber(
 			w:      w,
 			cancel: cancel,
 		}
-		publisher.startKeepaliveUntilFirstEvent(streamCtx, preFirstByteKeepaliveInterval)
+		publisher.startKeepalive(streamCtx, streamKeepaliveInterval)
 
 		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 		if err != nil {
@@ -265,9 +250,9 @@ const (
 	sseEventError = "error"
 
 	// fasthttp RequestCtx.Done() is server-shutdown scoped, not client-disconnect scoped.
-	// We force early stream writes and pre-first-byte keepalives so disconnects surface
+	// We force early stream writes and periodic keepalives so disconnects surface
 	// as write errors and upstream generation is canceled promptly.
-	preFirstByteKeepaliveInterval = 100 * time.Millisecond
+	streamKeepaliveInterval = 100 * time.Millisecond
 )
 
 // SSEStreamWriterPublisher implements StreamPublisher for native Fiber SSE streaming.
@@ -276,8 +261,7 @@ type SSEStreamWriterPublisher struct {
 	cancel   context.CancelFunc
 	needsRaw bool
 
-	mu         sync.Mutex
-	wroteEvent bool
+	mu sync.Mutex
 }
 
 func (p *SSEStreamWriterPublisher) writeEvent(eventType string, payload string) error {
@@ -326,41 +310,35 @@ func (p *SSEStreamWriterPublisher) writeEvent(eventType string, payload string) 
 		return err
 	}
 
-	p.wroteEvent = true
-
 	return nil
 }
 
-func (p *SSEStreamWriterPublisher) writeComment(comment string) (bool, error) {
+func (p *SSEStreamWriterPublisher) writeComment(comment string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.wroteEvent {
-		return false, nil
-	}
-
 	if _, err := p.w.WriteString(": "); err != nil {
 		p.cancel()
-		return false, err
+		return err
 	}
 	if _, err := p.w.WriteString(comment); err != nil {
 		p.cancel()
-		return false, err
+		return err
 	}
 	if _, err := p.w.WriteString("\n\n"); err != nil {
 		p.cancel()
-		return false, err
+		return err
 	}
 
 	if err := p.w.Flush(); err != nil {
 		p.cancel()
-		return false, err
+		return err
 	}
 
-	return true, nil
+	return nil
 }
 
-func (p *SSEStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Context, interval time.Duration) {
+func (p *SSEStreamWriterPublisher) startKeepalive(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
@@ -370,11 +348,7 @@ func (p *SSEStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Con
 			return
 		}
 
-		wrote, err := p.writeComment("keepalive")
-		if err != nil {
-			return
-		}
-		if !wrote {
+		if err := p.writeComment("keepalive"); err != nil {
 			return
 		}
 
@@ -390,11 +364,7 @@ func (p *SSEStreamWriterPublisher) startKeepaliveUntilFirstEvent(ctx context.Con
 					return
 				}
 
-				wrote, err := p.writeComment("keepalive")
-				if err != nil {
-					return
-				}
-				if !wrote {
+				if err := p.writeComment("keepalive"); err != nil {
 					return
 				}
 			}
@@ -481,7 +451,7 @@ func HandleSSEStreamFiber(
 			cancel:   cancel,
 			needsRaw: streamMode.NeedsRaw(),
 		}
-		publisher.startKeepaliveUntilFirstEvent(streamCtx, preFirstByteKeepaliveInterval)
+		publisher.startKeepalive(streamCtx, streamKeepaliveInterval)
 
 		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 		if err != nil {
