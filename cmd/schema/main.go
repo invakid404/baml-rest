@@ -433,6 +433,12 @@ func generateOpenAPISchema() *openapi3.T {
 	}
 	schemas[bamlOptionsSchemaName] = bamlOptionsSchema
 
+	if clientRegistrySchema, ok := schemas["ClientRegistry"]; ok && clientRegistrySchema.Value != nil {
+		if clientsSchema, ok := clientRegistrySchema.Value.Properties["clients"]; ok && clientsSchema.Value != nil {
+			clientsSchema.Value.MaxItems = uint64Ptr(1000)
+		}
+	}
+
 	// Global streaming event schemas (shared across all methods)
 	// Use double underscore prefix/suffix to avoid collision with user-defined BAML types
 	streamResetEventSchemaName := "__StreamResetEvent__"
@@ -2065,4 +2071,8 @@ func makeDynamicTypeSchema(innerRef *openapi3.SchemaRef, withMetadata bool) *ope
 // boolPtr returns a pointer to a bool value
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func uint64Ptr(v uint64) *uint64 {
+	return &v
 }

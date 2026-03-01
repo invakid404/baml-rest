@@ -79,6 +79,7 @@ func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
 
 	data, err := json.Marshal(event)
 	if err != nil {
+		p.cancel()
 		return err
 	}
 
@@ -111,6 +112,7 @@ func (p *NDJSONStreamWriterPublisher) writeKeepalive() (bool, error) {
 
 	data, err := json.Marshal(&NDJSONEvent{Type: NDJSONEventPing})
 	if err != nil {
+		p.cancel()
 		return false, err
 	}
 
@@ -262,6 +264,9 @@ const (
 	sseEventReset = "reset"
 	sseEventError = "error"
 
+	// fasthttp RequestCtx.Done() is server-shutdown scoped, not client-disconnect scoped.
+	// We force early stream writes and pre-first-byte keepalives so disconnects surface
+	// as write errors and upstream generation is canceled promptly.
 	preFirstByteKeepaliveInterval = 100 * time.Millisecond
 )
 

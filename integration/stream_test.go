@@ -1878,6 +1878,9 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 			}
 		}
 	done:
+		if cancelledAt.IsZero() {
+			t.Fatalf("Did not reach cancellation point before stream ended (received_events=%d)", receivedEvents)
+		}
 
 		cancelDuration := time.Since(cancelledAt)
 		t.Logf("NDJSON stream closed %v after cancellation", cancelDuration)
