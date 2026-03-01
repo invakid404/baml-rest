@@ -137,7 +137,7 @@ func HandleNDJSONStreamFiber(
 
 	streamParentCtx := c.Context()
 	if reqCtx := c.RequestCtx(); reqCtx != nil {
-		streamParentCtx = reqCtx
+		reqCtx.Response.ImmediateHeaderFlush = true
 	}
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
@@ -323,6 +323,7 @@ func (p *SSEStreamWriterPublisher) formatPayload(data []byte, raw string) (strin
 func (p *SSEStreamWriterPublisher) PublishData(data []byte, raw string) error {
 	payload, err := p.formatPayload(data, raw)
 	if err != nil {
+		p.cancel()
 		return err
 	}
 
@@ -332,6 +333,7 @@ func (p *SSEStreamWriterPublisher) PublishData(data []byte, raw string) error {
 func (p *SSEStreamWriterPublisher) PublishFinal(data []byte, raw string) error {
 	payload, err := p.formatPayload(data, raw)
 	if err != nil {
+		p.cancel()
 		return err
 	}
 
@@ -368,7 +370,6 @@ func HandleSSEStreamFiber(
 	streamParentCtx := c.Context()
 	if reqCtx := c.RequestCtx(); reqCtx != nil {
 		reqCtx.Response.ImmediateHeaderFlush = true
-		streamParentCtx = reqCtx
 	}
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
