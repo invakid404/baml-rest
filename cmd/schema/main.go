@@ -433,6 +433,12 @@ func generateOpenAPISchema() *openapi3.T {
 	}
 	schemas[bamlOptionsSchemaName] = bamlOptionsSchema
 
+	if clientRegistrySchema, ok := schemas["ClientRegistry"]; ok && clientRegistrySchema.Value != nil {
+		if clientsSchema, ok := clientRegistrySchema.Value.Properties["clients"]; ok && clientsSchema.Value != nil {
+			clientsSchema.Value.MaxItems = uint64Ptr(1000)
+		}
+	}
+
 	// Global streaming event schemas (shared across all methods)
 	// Use double underscore prefix/suffix to avoid collision with user-defined BAML types
 	streamResetEventSchemaName := "__StreamResetEvent__"
@@ -445,6 +451,23 @@ func generateOpenAPISchema() *openapi3.T {
 					Value: &openapi3.Schema{
 						Type: &openapi3.Types{openapi3.TypeString},
 						Enum: []any{"reset"},
+					},
+				},
+			},
+			Required: []string{"type"},
+		},
+	}
+
+	streamHeartbeatEventSchemaName := "__StreamHeartbeatEvent__"
+	schemas[streamHeartbeatEventSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Heartbeat event used to keep the NDJSON stream active during idle periods (including before the first data event)",
+			Properties: openapi3.Schemas{
+				"type": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type: &openapi3.Types{openapi3.TypeString},
+						Enum: []any{"heartbeat"},
 					},
 				},
 			},
@@ -691,6 +714,9 @@ func generateOpenAPISchema() *openapi3.T {
 		resetEventSchemaRef := &openapi3.SchemaRef{
 			Ref: fmt.Sprintf("#/components/schemas/%s", streamResetEventSchemaName),
 		}
+		heartbeatEventSchemaRef := &openapi3.SchemaRef{
+			Ref: fmt.Sprintf("#/components/schemas/%s", streamHeartbeatEventSchemaName),
+		}
 		errorEventSchemaRef := &openapi3.SchemaRef{
 			Ref: fmt.Sprintf("#/components/schemas/%s", streamErrorEventSchemaName),
 		}
@@ -726,6 +752,7 @@ func generateOpenAPISchema() *openapi3.T {
 								OneOf: openapi3.SchemaRefs{
 									streamPartialDataEventSchema,
 									streamFinalDataEventSchema,
+									heartbeatEventSchemaRef,
 									resetEventSchemaRef,
 									errorEventSchemaRef,
 								},
@@ -776,7 +803,7 @@ func generateOpenAPISchema() *openapi3.T {
 					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
 					"Events have type 'data' for partial results (fields may be null), 'final' for the complete validated result, " +
-					"'reset' if the stream restarts due to a retry, or 'error' for failures.",
+					"'heartbeat' for keepalive during idle periods (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
 						Content: map[string]*openapi3.MediaType{
@@ -819,6 +846,7 @@ func generateOpenAPISchema() *openapi3.T {
 								OneOf: openapi3.SchemaRefs{
 									streamWithRawPartialDataEventSchema,
 									streamWithRawFinalDataEventSchema,
+									heartbeatEventSchemaRef,
 									resetEventSchemaRef,
 									errorEventSchemaRef,
 								},
@@ -869,7 +897,7 @@ func generateOpenAPISchema() *openapi3.T {
 					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
 					"Events have type 'data' for partial results (fields may be null, includes 'raw' field), 'final' for the complete validated result, " +
-					"'reset' if the stream restarts due to a retry, or 'error' for failures.",
+					"'heartbeat' for keepalive during idle periods (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
 						Content: map[string]*openapi3.MediaType{
@@ -888,7 +916,7 @@ func generateOpenAPISchema() *openapi3.T {
 
 	// Generate dynamic endpoint schemas (only if dynamic method exists - requires BAML >= 0.215.0)
 	if _, hasDynamic := baml_rest.Methods[bamlutils.DynamicMethodName]; hasDynamic {
-		generateDynamicEndpoints(schemas, paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName, newErrorResponseRef, badRequestDescription, internalErrorDescription)
+		generateDynamicEndpoints(schemas, paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamHeartbeatEventSchemaName, streamErrorEventSchemaName, newErrorResponseRef, badRequestDescription, internalErrorDescription)
 	}
 
 	// Remove auto-generated flat schemas that were pulled in via
@@ -957,7 +985,7 @@ func generateOpenAPISchema() *openapi3.T {
 }
 
 // generateDynamicEndpoints adds the dynamic prompt endpoint schemas
-func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamErrorEventSchemaName string, newErrorResponseRef func() *openapi3.SchemaRef, badRequestDescription, internalErrorDescription string) {
+func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, bamlOptionsSchemaName, streamResetEventSchemaName, streamHeartbeatEventSchemaName, streamErrorEventSchemaName string, newErrorResponseRef func() *openapi3.SchemaRef, badRequestDescription, internalErrorDescription string) {
 	endpointName := bamlutils.DynamicEndpointName
 
 	// Cache control schema
@@ -1446,6 +1474,9 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	resetEventSchemaRef := &openapi3.SchemaRef{
 		Ref: fmt.Sprintf("#/components/schemas/%s", streamResetEventSchemaName),
 	}
+	heartbeatEventSchemaRef := &openapi3.SchemaRef{
+		Ref: fmt.Sprintf("#/components/schemas/%s", streamHeartbeatEventSchemaName),
+	}
 	errorEventSchemaRef := &openapi3.SchemaRef{
 		Ref: fmt.Sprintf("#/components/schemas/%s", streamErrorEventSchemaName),
 	}
@@ -1618,6 +1649,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 							OneOf: openapi3.SchemaRefs{
 								dynamicStreamDataEventSchema,
 								dynamicStreamFinalEventSchema,
+								heartbeatEventSchemaRef,
 								resetEventSchemaRef,
 								errorEventSchemaRef,
 							},
@@ -1665,7 +1697,8 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Summary:     "Stream dynamic prompt results",
 			Description: "Returns a stream of events containing partial results as they become available, followed by the final result. " +
 				"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
-				"Without an Accept header, returns Server-Sent Events (text/event-stream) by default.",
+				"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
+				"NDJSON may include 'heartbeat' events during idle periods (including before the first data event); clients should ignore them.",
 			RequestBody: &openapi3.RequestBodyRef{
 				Value: &openapi3.RequestBody{
 					Content: map[string]*openapi3.MediaType{
@@ -1716,6 +1749,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 							OneOf: openapi3.SchemaRefs{
 								dynamicStreamWithRawDataEventSchema,
 								dynamicStreamWithRawFinalEventSchema,
+								heartbeatEventSchemaRef,
 								resetEventSchemaRef,
 								errorEventSchemaRef,
 							},
@@ -1761,7 +1795,8 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		Post: &openapi3.Operation{
 			OperationID: "dynamicStreamWithRaw",
 			Summary:     "Stream dynamic prompt results with raw output",
-			Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available.",
+			Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available. " +
+				"NDJSON may include 'heartbeat' events during idle periods (including before the first data event); clients should ignore them.",
 			RequestBody: &openapi3.RequestBodyRef{
 				Value: &openapi3.RequestBody{
 					Content: map[string]*openapi3.MediaType{
@@ -2036,4 +2071,8 @@ func makeDynamicTypeSchema(innerRef *openapi3.SchemaRef, withMetadata bool) *ope
 // boolPtr returns a pointer to a bool value
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func uint64Ptr(v uint64) *uint64 {
+	return &v
 }

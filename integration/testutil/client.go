@@ -811,6 +811,10 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 			return fmt.Errorf("failed to parse NDJSON line: %w", err)
 		}
 
+		if event.Type == "heartbeat" {
+			continue
+		}
+
 		streamEvent := StreamEvent{
 			Event: event.Type,
 			Data:  event.Data,

@@ -3,22 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
-	"fmt"
-	"log"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/goccy/go-json"
 	"github.com/gofiber/fiber/v3"
-	fiberadaptor "github.com/gofiber/fiber/v3/middleware/adaptor"
-	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
-	"github.com/tmaxmax/go-sse"
 )
 
 // StreamFormat represents the output format for streaming responses.
@@ -32,12 +26,7 @@ const (
 // ContentTypeNDJSON is the MIME type for NDJSON streams.
 const ContentTypeNDJSON = "application/x-ndjson"
 
-const (
-	defaultSSEKeepaliveInterval = 1 * time.Second
-	minSSEKeepaliveInterval     = 1 * time.Second
-)
-
-var closeNotifierFallbackLogOnce sync.Once
+const contentTypeSSE = "text/event-stream"
 
 // NDJSONEventType represents the type of NDJSON streaming event.
 type NDJSONEventType string
@@ -47,6 +36,7 @@ const (
 	NDJSONEventFinal NDJSONEventType = "final"
 	NDJSONEventReset NDJSONEventType = "reset"
 	NDJSONEventError NDJSONEventType = "error"
+	NDJSONEventPing  NDJSONEventType = "heartbeat"
 )
 
 // NDJSONEvent represents a single NDJSON streaming event.
@@ -55,12 +45,6 @@ type NDJSONEvent struct {
 	Data  json.RawMessage `json:"data,omitempty"`
 	Raw   string          `json:"raw,omitempty"`
 	Error string          `json:"error,omitempty"`
-}
-
-// NegotiateStreamFormat determines the stream format based on Accept header.
-// Returns NDJSON only if explicitly requested, otherwise defaults to SSE.
-func NegotiateStreamFormat(r *http.Request) StreamFormat {
-	return NegotiateStreamFormatFromAccept(r.Header.Get("Accept"))
 }
 
 // NegotiateStreamFormatFromAccept determines the stream format from an Accept header value.
@@ -84,11 +68,17 @@ func NegotiateStreamFormatFromAccept(accept string) StreamFormat {
 type NDJSONStreamWriterPublisher struct {
 	w      *bufio.Writer
 	cancel context.CancelFunc
+
+	mu sync.Mutex
 }
 
 func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	data, err := json.Marshal(event)
 	if err != nil {
+		p.cancel()
 		return err
 	}
 
@@ -107,6 +97,44 @@ func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
 	}
 
 	return nil
+}
+
+func (p *NDJSONStreamWriterPublisher) writeKeepalive() error {
+	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventPing})
+}
+
+func (p *NDJSONStreamWriterPublisher) startKeepalive(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+
+	go func() {
+		if ctx.Err() != nil {
+			return
+		}
+
+		if err := p.writeKeepalive(); err != nil {
+			return
+		}
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
+
+				if err := p.writeKeepalive(); err != nil {
+					return
+				}
+			}
+		}
+	}()
 }
 
 func (p *NDJSONStreamWriterPublisher) PublishData(data []byte, raw string) error {
@@ -154,7 +182,7 @@ func HandleNDJSONStreamFiber(
 
 	streamParentCtx := c.Context()
 	if reqCtx := c.RequestCtx(); reqCtx != nil {
-		streamParentCtx = reqCtx
+		reqCtx.Response.ImmediateHeaderFlush = true
 	}
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
@@ -165,6 +193,7 @@ func HandleNDJSONStreamFiber(
 			w:      w,
 			cancel: cancel,
 		}
+		publisher.startKeepalive(streamCtx, normalizeStreamKeepaliveInterval(streamKeepaliveInterval))
 
 		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 		if err != nil {
@@ -192,380 +221,234 @@ type StreamPublisher interface {
 	Close()
 }
 
-// SSEPublisher implements StreamPublisher for Server-Sent Events.
-type SSEPublisher struct {
-	server    *sse.Server
-	topic     string
-	errorType sse.EventType
-	resetType sse.EventType
-	finalType sse.EventType
-	needsRaw  bool
-	cancel    context.CancelFunc
-	done      <-chan struct{}
+const (
+	sseEventFinal = "final"
+	sseEventReset = "reset"
+	sseEventError = "error"
+
+	// fasthttp RequestCtx.Done() is server-shutdown scoped, not client-disconnect scoped.
+	// We force early stream writes and periodic keepalives so disconnects surface
+	// as write errors and upstream generation is canceled promptly.
+	defaultStreamKeepaliveInterval = 1 * time.Second
+	minStreamKeepaliveInterval     = 100 * time.Millisecond
+)
+
+func normalizeStreamKeepaliveInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return defaultStreamKeepaliveInterval
+	}
+	if interval < minStreamKeepaliveInterval {
+		return minStreamKeepaliveInterval
+	}
+	return interval
 }
 
-// NewSSEPublisher creates an SSE publisher and starts the SSE server.
-// It blocks until the SSE connection is ready or context is cancelled.
-// Returns nil if the connection could not be established.
-func NewSSEPublisher(
-	ctx context.Context,
-	w http.ResponseWriter,
-	r *http.Request,
-	sseServer *sse.Server,
-	errorType sse.EventType,
-	resetType sse.EventType,
-	finalType sse.EventType,
-	needsRaw bool,
-	keepaliveInterval time.Duration,
-	pathPrefix string,
-	methodName string,
-) (*SSEPublisher, context.Context) {
-	keepaliveInterval = normalizeSSEKeepaliveInterval(keepaliveInterval)
+// SSEStreamWriterPublisher implements StreamPublisher for native Fiber SSE streaming.
+type SSEStreamWriterPublisher struct {
+	w        *bufio.Writer
+	cancel   context.CancelFunc
+	needsRaw bool
 
-	// Create unique topic for this request
-	topic := pathPrefix + "/" + methodName + "/" + ptrString(r)
-	ready := make(chan struct{})
+	mu sync.Mutex
+}
 
-	ctx, cancel := context.WithCancel(
-		context.WithValue(
-			context.WithValue(ctx, sseContextKeyTopic, topic),
-			sseContextKeyReady, ready,
-		),
-	)
+func (p *SSEStreamWriterPublisher) writeEvent(eventType string, payload string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	req := r.WithContext(ctx)
-
-	// Start SSE server in background
-	sseDone := make(chan struct{})
-	go recovery.Go(func() error {
-		defer close(sseDone)
-		sseServer.ServeHTTP(w, req)
-		return nil
-	})
-
-	// Ensure stream context is cancelled when the SSE connection closes.
-	// Fiber's net/http adaptor does not always propagate client disconnects via
-	// r.Context(), so tie cancellation directly to the SSE server lifecycle.
-	go recovery.Go(func() error {
-		<-sseDone
-		cancel()
-		return nil
-	})
-
-	// Wait for SSE connection to be established
-	select {
-	case <-ready:
-		// SSE is ready
-	case <-ctx.Done():
-		// Context cancelled
-		cancel()
-		<-sseDone
-		return nil, ctx
+	if eventType != "" {
+		if _, err := p.w.WriteString("event: "); err != nil {
+			p.cancel()
+			return err
+		}
+		if _, err := p.w.WriteString(eventType); err != nil {
+			p.cancel()
+			return err
+		}
+		if err := p.w.WriteByte('\n'); err != nil {
+			p.cancel()
+			return err
+		}
 	}
 
-	// Publish lightweight keepalive comments so dead client connections are
-	// detected even before the first real data event is available.
-	go recovery.Go(func() error {
-		ticker := time.NewTicker(keepaliveInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-ticker.C:
-				keepalive := &sse.Message{}
-				keepalive.AppendComment("keepalive")
-				if err := sseServer.Publish(keepalive, topic); err != nil {
-					cancel()
-					return nil
-				}
+	if payload != "" {
+		for _, line := range strings.Split(payload, "\n") {
+			if _, err := p.w.WriteString("data: "); err != nil {
+				p.cancel()
+				return err
+			}
+			if _, err := p.w.WriteString(line); err != nil {
+				p.cancel()
+				return err
+			}
+			if err := p.w.WriteByte('\n'); err != nil {
+				p.cancel()
+				return err
 			}
 		}
-	})
-
-	return &SSEPublisher{
-		server:    sseServer,
-		topic:     topic,
-		errorType: errorType,
-		resetType: resetType,
-		finalType: finalType,
-		needsRaw:  needsRaw,
-		cancel:    cancel,
-		done:      sseDone,
-	}, ctx
-}
-
-func (p *SSEPublisher) PublishData(data []byte, raw string) error {
-	message := &sse.Message{}
-
-	if p.needsRaw {
-		wrapped, err := json.Marshal(CallWithRawResponse{
-			Data: data,
-			Raw:  raw,
-		})
-		if err != nil {
-			return err
-		}
-		message.AppendData(unsafeutil.BytesToString(wrapped))
-	} else {
-		message.AppendData(unsafeutil.BytesToString(data))
 	}
 
-	return p.server.Publish(message, p.topic)
-}
-
-func (p *SSEPublisher) PublishFinal(data []byte, raw string) error {
-	// SSE uses the same format for partial and final data events
-	// The distinction is made by using a "final" event type
-	message := &sse.Message{Type: p.finalType}
-
-	if p.needsRaw {
-		wrapped, err := json.Marshal(CallWithRawResponse{
-			Data: data,
-			Raw:  raw,
-		})
-		if err != nil {
-			return err
-		}
-		message.AppendData(unsafeutil.BytesToString(wrapped))
-	} else {
-		message.AppendData(unsafeutil.BytesToString(data))
-	}
-
-	return p.server.Publish(message, p.topic)
-}
-
-func (p *SSEPublisher) PublishReset() error {
-	message := &sse.Message{Type: p.resetType}
-	message.AppendData("{}")
-	return p.server.Publish(message, p.topic)
-}
-
-func (p *SSEPublisher) PublishError(errMsg string) error {
-	message := &sse.Message{Type: p.errorType}
-	message.AppendData(errMsg)
-	return p.server.Publish(message, p.topic)
-}
-
-func (p *SSEPublisher) Close() {
-	p.cancel()
-	<-p.done
-}
-
-// NDJSONPublisher implements StreamPublisher for NDJSON format.
-type NDJSONPublisher struct {
-	w         http.ResponseWriter
-	flusher   http.Flusher
-	committed bool
-}
-
-// NewNDJSONPublisher creates an NDJSON publisher.
-// Headers are committed immediately to start the HTTP streaming response.
-func NewNDJSONPublisher(w http.ResponseWriter) *NDJSONPublisher {
-	// Set headers for NDJSON streaming
-	w.Header().Set("Content-Type", ContentTypeNDJSON)
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("X-Content-Type-Options", "nosniff") // Prevents buffering
-
-	p := &NDJSONPublisher{
-		w: w,
-	}
-
-	// Get flusher, unwrapping middleware wrappers if necessary
-	p.flusher = getFlusher(w)
-
-	// Immediately flush headers to start the streaming response.
-	// Don't call WriteHeader - let it be implicit on first write/flush.
-	// This matches how go-sse handles streaming.
-	if p.flusher != nil {
-		p.flusher.Flush()
-	}
-	p.committed = true
-
-	return p
-}
-
-// getFlusher extracts http.Flusher from a ResponseWriter, unwrapping middleware wrappers if needed.
-func getFlusher(w http.ResponseWriter) http.Flusher {
-	for {
-		if f, ok := w.(http.Flusher); ok {
-			return f
-		}
-		// Try to unwrap middleware wrappers
-		if u, ok := w.(interface{ Unwrap() http.ResponseWriter }); ok {
-			w = u.Unwrap()
-			continue
-		}
-		return nil
-	}
-}
-
-func getCloseNotify(w http.ResponseWriter) <-chan bool {
-	for {
-		if cn, ok := w.(http.CloseNotifier); ok {
-			closeNotifierFallbackLogOnce.Do(func() {
-				log.Printf("getCloseNotify: using deprecated http.CloseNotifier fallback for client disconnect detection")
-			})
-			return cn.CloseNotify()
-		}
-		if u, ok := w.(interface{ Unwrap() http.ResponseWriter }); ok {
-			w = u.Unwrap()
-			continue
-		}
-		return nil
-	}
-}
-
-func (p *NDJSONPublisher) writeEvent(event *NDJSONEvent) error {
-	data, err := json.Marshal(event)
-	if err != nil {
+	if err := p.w.WriteByte('\n'); err != nil {
+		p.cancel()
 		return err
 	}
 
-	// Write JSON event followed by newline
-	if _, err := p.w.Write(data); err != nil {
+	if err := p.w.Flush(); err != nil {
+		p.cancel()
 		return err
-	}
-	if _, err := p.w.Write([]byte{'\n'}); err != nil {
-		return err
-	}
-
-	// Flush immediately after EVERY write - critical for streaming
-	if p.flusher != nil {
-		p.flusher.Flush()
 	}
 
 	return nil
 }
 
-func (p *NDJSONPublisher) PublishData(data []byte, raw string) error {
-	event := &NDJSONEvent{
-		Type: NDJSONEventData,
-		Data: data,
+func (p *SSEStreamWriterPublisher) writeComment(comment string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, err := p.w.WriteString(": "); err != nil {
+		p.cancel()
+		return err
 	}
-	if raw != "" {
-		event.Raw = raw
+	if _, err := p.w.WriteString(comment); err != nil {
+		p.cancel()
+		return err
 	}
-	return p.writeEvent(event)
-}
-
-func (p *NDJSONPublisher) PublishFinal(data []byte, raw string) error {
-	event := &NDJSONEvent{
-		Type: NDJSONEventFinal,
-		Data: data,
+	if _, err := p.w.WriteString("\n\n"); err != nil {
+		p.cancel()
+		return err
 	}
-	if raw != "" {
-		event.Raw = raw
+
+	if err := p.w.Flush(); err != nil {
+		p.cancel()
+		return err
 	}
-	return p.writeEvent(event)
+
+	return nil
 }
 
-func (p *NDJSONPublisher) PublishReset() error {
-	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventReset})
+func (p *SSEStreamWriterPublisher) startKeepalive(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+
+	go func() {
+		if ctx.Err() != nil {
+			return
+		}
+
+		if err := p.writeComment("keepalive"); err != nil {
+			return
+		}
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
+
+				if err := p.writeComment("keepalive"); err != nil {
+					return
+				}
+			}
+		}
+	}()
 }
 
-func (p *NDJSONPublisher) PublishError(errMsg string) error {
-	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventError, Error: errMsg})
+func (p *SSEStreamWriterPublisher) formatPayload(data []byte, raw string) (string, error) {
+	if !p.needsRaw {
+		return unsafeutil.BytesToString(data), nil
+	}
+
+	wrapped, err := json.Marshal(CallWithRawResponse{Data: data, Raw: raw})
+	if err != nil {
+		return "", err
+	}
+
+	return unsafeutil.BytesToString(wrapped), nil
 }
 
-func (p *NDJSONPublisher) Close() {
-	// NDJSON doesn't need cleanup
+func (p *SSEStreamWriterPublisher) PublishData(data []byte, raw string) error {
+	payload, err := p.formatPayload(data, raw)
+	if err != nil {
+		p.cancel()
+		return err
+	}
+
+	return p.writeEvent("", payload)
 }
 
-// StreamHandlerConfig contains configuration for the unified stream handler.
-type StreamHandlerConfig struct {
-	SSEServer            *sse.Server
-	SSEErrorType         sse.EventType
-	SSEResetType         sse.EventType
-	SSEFinalType         sse.EventType
-	SSEKeepaliveInterval time.Duration
-	PathPrefix           string
+func (p *SSEStreamWriterPublisher) PublishFinal(data []byte, raw string) error {
+	payload, err := p.formatPayload(data, raw)
+	if err != nil {
+		p.cancel()
+		return err
+	}
+
+	return p.writeEvent(sseEventFinal, payload)
 }
 
-// HandleStream is the unified stream handler that routes to SSE or NDJSON.
-// It creates the appropriate publisher and uses a single consumer loop.
-// If flattenDynamic is true, DynamicProperties fields will be flattened to the root level.
-func HandleStream(
-	w http.ResponseWriter,
-	r *http.Request,
+func (p *SSEStreamWriterPublisher) PublishReset() error {
+	return p.writeEvent(sseEventReset, "{}")
+}
+
+func (p *SSEStreamWriterPublisher) PublishError(errMsg string) error {
+	payload, err := json.Marshal(map[string]string{"error": errMsg})
+	if err != nil {
+		return p.writeEvent(sseEventError, errMsg)
+	}
+
+	return p.writeEvent(sseEventError, unsafeutil.BytesToString(payload))
+}
+
+func (p *SSEStreamWriterPublisher) Close() {
+	// No cleanup needed.
+}
+
+// HandleSSEStreamFiber handles SSE stream requests with native Fiber streaming.
+func HandleSSEStreamFiber(
+	c fiber.Ctx,
 	methodName string,
 	rawBody []byte,
 	streamMode bamlutils.StreamMode,
 	workerPool *pool.Pool,
-	config *StreamHandlerConfig,
 	flattenDynamic bool,
-) {
-	format := NegotiateStreamFormat(r)
-	ctx := r.Context()
-	if fiberCtx, ok := fiberadaptor.LocalContextFromHTTPRequest(r); ok && fiberCtx != nil {
-		mergedCtx, mergedCancel := context.WithCancel(ctx)
-		defer mergedCancel()
-		go recovery.Go(func() error {
-			select {
-			case <-fiberCtx.Done():
-				mergedCancel()
-			case <-mergedCtx.Done():
-			}
-			return nil
-		})
-		ctx = mergedCtx
+) error {
+	c.Set(fiber.HeaderContentType, contentTypeSSE)
+	c.Set(fiber.HeaderCacheControl, "no-cache")
+	c.Set(fiber.HeaderConnection, "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
+	c.Set("X-Content-Type-Options", "nosniff")
+
+	streamParentCtx := c.Context()
+	if reqCtx := c.RequestCtx(); reqCtx != nil {
+		reqCtx.Response.ImmediateHeaderFlush = true
 	}
 
-	var publisher StreamPublisher
-	var streamCtx context.Context
+	return c.SendStreamWriter(func(w *bufio.Writer) {
+		streamCtx, cancel := context.WithCancel(streamParentCtx)
+		defer cancel()
 
-	if format == StreamFormatNDJSON {
-		publisher = NewNDJSONPublisher(w)
-		streamCtx = ctx
-	} else {
-		var ssePublisher *SSEPublisher
-		ssePublisher, streamCtx = NewSSEPublisher(
-			ctx, w, r,
-			config.SSEServer,
-			config.SSEErrorType,
-			config.SSEResetType,
-			config.SSEFinalType,
-			streamMode.NeedsRaw(),
-			config.SSEKeepaliveInterval,
-			config.PathPrefix,
-			methodName,
-		)
-		if ssePublisher == nil {
-			// SSE connection failed to establish
+		publisher := &SSEStreamWriterPublisher{
+			w:        w,
+			cancel:   cancel,
+			needsRaw: streamMode.NeedsRaw(),
+		}
+		publisher.startKeepalive(streamCtx, normalizeStreamKeepaliveInterval(streamKeepaliveInterval))
+
+		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
+		if err != nil {
+			_ = publisher.PublishError(err.Error())
 			return
 		}
-		publisher = ssePublisher
-	}
-	defer publisher.Close()
 
-	// Create cancellable context for the stream
-	streamCtx, cancel := context.WithCancel(streamCtx)
-	defer cancel()
-	if closeNotify := getCloseNotify(w); closeNotify != nil {
-		go recovery.Go(func() error {
-			select {
-			case <-closeNotify:
-				cancel()
-			case <-streamCtx.Done():
-			}
-			return nil
-		})
-	}
-
-	// Start the stream
-	results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
-	if err != nil {
-		// Headers are already committed (HTTP 200), so we can't use http.Error.
-		// Send the error through the stream instead.
-		_ = publisher.PublishError(err.Error())
-		return
-	}
-
-	// Single consumer loop - the unified pattern
-	consumeStream(results, publisher, streamMode, flattenDynamic)
+		consumeStream(results, publisher, streamMode, flattenDynamic)
+	})
 }
 
 // consumeStream is the single consumer that iterates over pool results
@@ -664,19 +547,4 @@ func drainResults(results <-chan *workerplugin.StreamResult) {
 	for remaining := range results {
 		workerplugin.ReleaseStreamResult(remaining)
 	}
-}
-
-// ptrString returns a string representation of a pointer for topic uniqueness.
-func ptrString(p any) string {
-	return fmt.Sprintf("%p", p)
-}
-
-func normalizeSSEKeepaliveInterval(interval time.Duration) time.Duration {
-	if interval <= 0 {
-		return defaultSSEKeepaliveInterval
-	}
-	if interval < minSSEKeepaliveInterval {
-		return minSSEKeepaliveInterval
-	}
-	return interval
 }

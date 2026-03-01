@@ -693,9 +693,9 @@ func TestOpenAPISchemaStructure(t *testing.T) {
 			t.Fatal("Schema value is nil")
 		}
 
-		// Should have 4 variants: partial data, final data, reset, error
-		if len(schema.OneOf) != 4 {
-			t.Errorf("Expected 4 oneOf variants (partial, final, reset, error), got %d", len(schema.OneOf))
+		// Should have 5 variants: partial data, final data, heartbeat, reset, error
+		if len(schema.OneOf) != 5 {
+			t.Errorf("Expected 5 oneOf variants (partial, final, heartbeat, reset, error), got %d", len(schema.OneOf))
 		}
 
 		if schema.Discriminator == nil {
@@ -725,6 +725,9 @@ func TestOpenAPISchemaStructure(t *testing.T) {
 		if !eventTypes["final"] {
 			t.Error("Missing 'final' event type for final events")
 		}
+		if !eventTypes["heartbeat"] {
+			t.Error("Missing 'heartbeat' event type")
+		}
 		if !eventTypes["reset"] {
 			t.Error("Missing 'reset' event type")
 		}
@@ -737,6 +740,11 @@ func TestOpenAPISchemaStructure(t *testing.T) {
 		resetSchema := validator.doc.Components.Schemas["__StreamResetEvent__"]
 		if resetSchema == nil {
 			t.Error("Missing __StreamResetEvent__ component schema")
+		}
+
+		heartbeatSchema := validator.doc.Components.Schemas["__StreamHeartbeatEvent__"]
+		if heartbeatSchema == nil {
+			t.Error("Missing __StreamHeartbeatEvent__ component schema")
 		}
 
 		errorSchema := validator.doc.Components.Schemas["__StreamErrorEvent__"]

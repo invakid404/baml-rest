@@ -1798,3 +1798,263 @@ func TestRequestCancellation(t *testing.T) {
 		}
 	})
 }
+
+func TestRequestCancellationNDJSON(t *testing.T) {
+	waitForHealthy(t, 30*time.Second)
+
+	t.Run("cancel_mid_stream_cleans_up_ndjson", func(t *testing.T) {
+		parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer parentCancel()
+
+		// Let things settle and capture baseline from the SERVER
+		time.Sleep(100 * time.Millisecond)
+		baselineResult, err := BAMLClient.GetGoroutines(parentCtx, GoroutineLeakFilter)
+		if err != nil {
+			t.Fatalf("Failed to get baseline goroutines: %v", err)
+		}
+		baselineMatches := countTotalMatches(baselineResult)
+		t.Logf("Server baseline: %d total goroutines, %d matching filter (main: %d, workers: %d)",
+			baselineResult.TotalCount, baselineMatches, baselineResult.MatchCount, baselineMatches-baselineResult.MatchCount)
+
+		// Create a slow streaming scenario
+		content := `{"name": "Cancel NDJSON Test", "age": 99, "tags": ["should", "be", "cancelled"]}`
+		scenarioID := "test-cancel-midstream-ndjson"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      5,
+			InitialDelayMs: 100,
+			ChunkDelayMs:   500,
+		}
+
+		if err := MockClient.RegisterScenario(parentCtx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		// Create a cancellable context for the request
+		reqCtx, reqCancel := context.WithCancel(parentCtx)
+		defer reqCancel()
+
+		// Start streaming request
+		t.Log("Starting NDJSON streaming request...")
+		events, errs := BAMLClient.StreamNDJSON(reqCtx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "Cancel NDJSON test person"},
+			Options: opts,
+		})
+
+		var receivedEvents int
+		var cancelledAt time.Time
+
+		// Process events until we receive at least one, then cancel
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				receivedEvents++
+				t.Logf("Received NDJSON event %d: type=%s, data_len=%d", receivedEvents, event.Event, len(event.Data))
+
+				// After receiving the first event, cancel the request
+				if receivedEvents == 1 {
+					t.Log("Cancelling NDJSON request after first event...")
+					cancelledAt = time.Now()
+					reqCancel()
+				}
+
+			case err := <-errs:
+				if err != nil {
+					t.Logf("Received NDJSON error (expected after cancel): %v", err)
+				}
+			case <-parentCtx.Done():
+				t.Fatal("Parent context cancelled unexpectedly")
+			}
+		}
+	done:
+		if cancelledAt.IsZero() {
+			t.Fatalf("Did not reach cancellation point before stream ended (received_events=%d)", receivedEvents)
+		}
+
+		cancelDuration := time.Since(cancelledAt)
+		t.Logf("NDJSON stream closed %v after cancellation", cancelDuration)
+		t.Logf("Total NDJSON events received: %d", receivedEvents)
+
+		// Verify cancellation was prompt (should be much faster than waiting for all chunks)
+		if cancelDuration > 2*time.Second {
+			t.Errorf("Cancellation took too long: %v (expected < 2s)", cancelDuration)
+		}
+
+		// Check for goroutine leaks
+		finalResult, cleanedUp := waitForGoroutineCleanup(parentCtx, t, baselineMatches, 5*time.Second)
+		if !cleanedUp {
+			finalMatches := countTotalMatches(finalResult)
+			t.Errorf("Goroutine leak detected: %d new goroutines in baml-rest/baml code", finalMatches-baselineMatches)
+			logLeakedStacks(t, finalResult)
+		}
+
+		// CRITICAL: Verify subsequent requests still work (pool not corrupted)
+		t.Log("Verifying subsequent NDJSON request works...")
+		verifyCtx, verifyCancel := context.WithTimeout(parentCtx, 10*time.Second)
+		defer verifyCancel()
+
+		verifyContent := `{"name": "Verify NDJSON OK", "age": 1, "tags": []}`
+		verifyScenarioID := "test-cancel-verify-ndjson"
+		verifyScenario := &mockllm.Scenario{
+			ID:             verifyScenarioID,
+			Provider:       "openai",
+			Content:        verifyContent,
+			ChunkSize:      100,
+			InitialDelayMs: 0,
+			ChunkDelayMs:   0,
+		}
+
+		if err := MockClient.RegisterScenario(verifyCtx, verifyScenario); err != nil {
+			t.Fatalf("Failed to register verify scenario: %v", err)
+		}
+
+		verifyOpts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, verifyScenarioID),
+		}
+
+		verifyEvents, verifyErrs := BAMLClient.StreamNDJSON(verifyCtx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "Verify NDJSON request works"},
+			Options: verifyOpts,
+		})
+
+		var verifyEventCount int
+		var verifyErr error
+
+		for {
+			select {
+			case event, ok := <-verifyEvents:
+				if !ok {
+					goto verifyDone
+				}
+				verifyEventCount++
+				t.Logf("Verify NDJSON event %d: type=%s", verifyEventCount, event.Event)
+			case err := <-verifyErrs:
+				if err != nil {
+					verifyErr = err
+				}
+			case <-verifyCtx.Done():
+				t.Fatal("Verify context cancelled")
+			}
+		}
+	verifyDone:
+
+		if verifyErr != nil {
+			t.Errorf("Subsequent NDJSON request failed: %v", verifyErr)
+		}
+		if verifyEventCount == 0 {
+			t.Error("Subsequent NDJSON request received no events")
+		}
+		t.Logf("Subsequent NDJSON request succeeded with %d events", verifyEventCount)
+	})
+
+	t.Run("cancel_before_first_byte_cleans_up_ndjson", func(t *testing.T) {
+		parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer parentCancel()
+
+		// Capture baseline from the SERVER
+		time.Sleep(100 * time.Millisecond)
+		baselineResult, err := BAMLClient.GetGoroutines(parentCtx, GoroutineLeakFilter)
+		if err != nil {
+			t.Fatalf("Failed to get baseline goroutines: %v", err)
+		}
+		baselineMatches := countTotalMatches(baselineResult)
+		t.Logf("Server baseline: %d total goroutines, %d matching filter (main: %d, workers: %d)",
+			baselineResult.TotalCount, baselineMatches, baselineResult.MatchCount, baselineMatches-baselineResult.MatchCount)
+
+		// Create a scenario with long initial delay
+		content := `{"name": "Pre-Cancel NDJSON", "age": 0, "tags": []}`
+		scenarioID := "test-cancel-pre-first-byte-ndjson"
+
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      100,
+			InitialDelayMs: 10000, // 10 second delay - we'll cancel before this
+			ChunkDelayMs:   0,
+		}
+
+		if err := MockClient.RegisterScenario(parentCtx, scenario); err != nil {
+			t.Fatalf("Failed to register scenario: %v", err)
+		}
+
+		opts := &testutil.BAMLOptions{
+			ClientRegistry: testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID),
+		}
+
+		// Create a cancellable context
+		reqCtx, reqCancel := context.WithCancel(parentCtx)
+
+		// Start streaming request
+		t.Log("Starting NDJSON streaming request with long initial delay...")
+		startTime := time.Now()
+		events, errs := BAMLClient.StreamNDJSON(reqCtx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "Pre-cancel NDJSON test"},
+			Options: opts,
+		})
+
+		// Cancel after a short delay (before first byte would arrive)
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			t.Log("Cancelling NDJSON request before first byte...")
+			reqCancel()
+		}()
+
+		var receivedEvents int
+		var streamErr error
+
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					goto done
+				}
+				receivedEvents++
+				t.Logf("Received NDJSON event: type=%s", event.Event)
+			case err := <-errs:
+				if err != nil {
+					streamErr = err
+					t.Logf("Received NDJSON error: %v", err)
+				}
+			case <-parentCtx.Done():
+				t.Fatal("Parent context cancelled unexpectedly")
+			}
+		}
+	done:
+
+		elapsed := time.Since(startTime)
+		t.Logf("NDJSON request completed in %v", elapsed)
+		t.Logf("NDJSON events received: %d", receivedEvents)
+		t.Logf("NDJSON stream error: %v", streamErr)
+
+		if receivedEvents != 0 {
+			t.Errorf("Expected zero NDJSON events before cancellation, got %d", receivedEvents)
+		}
+
+		// Should complete quickly (cancelled at ~500ms, not waiting 10s)
+		if elapsed > 3*time.Second {
+			t.Errorf("Cancellation took too long: %v (expected < 3s)", elapsed)
+		}
+
+		// Check for goroutine leaks
+		finalResult, cleanedUp := waitForGoroutineCleanup(parentCtx, t, baselineMatches, 5*time.Second)
+		if !cleanedUp {
+			finalMatches := countTotalMatches(finalResult)
+			t.Errorf("Goroutine leak detected: %d new goroutines in baml-rest/baml code", finalMatches-baselineMatches)
+			logLeakedStacks(t, finalResult)
+		}
+	})
+}
