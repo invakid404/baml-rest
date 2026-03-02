@@ -134,6 +134,8 @@ github.com/goccy/go-json v0.10.5/go.mod h1:oq7eo15ShAhp70Anwd5lgX2pLfOS3QCiwU/PU
 github.com/godbus/dbus/v5 v5.0.4/go.mod h1:xhWf0FNVPg57R7Z0UbKHbJfkEywrmjJnf7w5xrFpKfA=
 github.com/gofiber/contrib/v3/zerolog v1.0.0 h1:/uFEy8us4UTogvGvFL5HYocstXXDolQqC4VrFvlZ2CU=
 github.com/gofiber/contrib/v3/zerolog v1.0.0/go.mod h1:gocaAwNSo3TQeWxA5tAZwFDpLTma5htkjYEVFiYSwJQ=
+github.com/gofiber/contrib/v3/zerolog v1.0.1 h1:Sr9T4g0Z1DAOoo5X0tAKFd9uNKFu++vwaZOk1ymIq1s=
+github.com/gofiber/contrib/v3/zerolog v1.0.1/go.mod h1:LgfsEgvOp0Yg4ra77kr3Md3UyQ2BjPO6T8LNV/gkCi4=
 github.com/gofiber/fiber/v3 v3.1.0 h1:1p4I820pIa+FGxfwWuQZ5rAyX0WlGZbGT6Hnuxt6hKY=
 github.com/gofiber/fiber/v3 v3.1.0/go.mod h1:n2nYQovvL9z3Too/FGOfgtERjW3GQcAUqgfoezGBZdU=
 github.com/gofiber/schema v1.7.0 h1:yNM+FNRZjyYEli9Ey0AXRBrAY9jTnb+kmGs3lJGPvKg=
