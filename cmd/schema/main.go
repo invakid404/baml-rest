@@ -589,6 +589,13 @@ func generateOpenAPISchema() *openapi3.T {
 		}
 
 		// Response for /call endpoint
+		callResponseSchema := resultTypeSchema.Value.Properties["x"]
+		if callResponseSchema.Ref == "" {
+			// Inline schema (e.g., array or map of a named type) — register as named
+			// component so Go codegen tools don't encounter inline schemas with embedded $refs.
+			callResponseSchema = registerSchema(schemas, fmt.Sprintf("__%sResponse__", methodName), callResponseSchema)
+		}
+
 		responses := openapi3.NewResponses()
 		responses.Delete("default") // Remove empty default response added by NewResponses()
 		description := fmt.Sprintf("Successful response for %s", methodName)
@@ -597,7 +604,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &description,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: resultTypeSchema.Value.Properties["x"],
+						Schema: callResponseSchema,
 					},
 				},
 			},
@@ -643,6 +650,24 @@ func generateOpenAPISchema() *openapi3.T {
 		})
 
 		// Response for /call-with-raw endpoint
+		// Register the {data, raw} wrapper as a named component so Go codegen tools
+		// don't encounter inline schemas with embedded $refs.
+		withRawResponseRef := registerSchema(schemas, fmt.Sprintf("__%sWithRawResponse__", methodName), &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type: &openapi3.Types{openapi3.TypeObject},
+				Properties: openapi3.Schemas{
+					"data": resultTypeSchema.Value.Properties["x"],
+					"raw": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type:        &openapi3.Types{openapi3.TypeString},
+							Description: "Raw LLM response text",
+						},
+					},
+				},
+				Required: []string{"data", "raw"},
+			},
+		})
+
 		rawResponsesDescription := fmt.Sprintf("Successful response for %s with raw LLM output", methodName)
 		rawResponses := openapi3.NewResponses()
 		rawResponses.Delete("default")
@@ -651,21 +676,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &rawResponsesDescription,
 				Content: openapi3.Content{
 					"application/json": &openapi3.MediaType{
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{
-								Type: &openapi3.Types{openapi3.TypeObject},
-								Properties: openapi3.Schemas{
-									"data": resultTypeSchema.Value.Properties["x"],
-									"raw": &openapi3.SchemaRef{
-										Value: &openapi3.Schema{
-											Type:        &openapi3.Types{openapi3.TypeString},
-											Description: "Raw LLM response text",
-										},
-									},
-								},
-								Required: []string{"data", "raw"},
-							},
-						},
+						Schema: withRawResponseRef,
 					},
 				},
 			},
@@ -727,15 +738,12 @@ func generateOpenAPISchema() *openapi3.T {
 		nullableStreamDataSchema := makeStreamSchemaFullyNullable(streamTypeSchema.Value.Properties["x"], schemas, make(map[string]bool))
 		finalDataSchema := resultTypeSchema.Value.Properties["x"]
 
-		streamPartialDataEventSchema := makeStreamEventSchema(
-			"data",
-			"Partial data event containing an intermediate parsed result. Fields not yet parsed may be null.",
-			nullableStreamDataSchema, false, "",
-		)
-		streamFinalDataEventSchema := makeStreamEventSchema(
-			"final",
-			"Final data event containing the complete, validated result",
-			finalDataSchema, false, "",
+		// Register stream event schemas as named components for Go codegen compatibility.
+		// Inline oneOf variants in a discriminated union break oapi-codegen and ogen.
+		streamEventRef := buildStreamEventUnion(
+			schemas, fmt.Sprintf("__%sStream", methodName),
+			nullableStreamDataSchema, finalDataSchema, false,
+			heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
 		)
 
 		streamDescription := fmt.Sprintf("Stream of partial and final results for %s", methodName)
@@ -747,20 +755,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &streamDescription,
 				Content: openapi3.Content{
 					"application/x-ndjson": &openapi3.MediaType{
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{
-								OneOf: openapi3.SchemaRefs{
-									streamPartialDataEventSchema,
-									streamFinalDataEventSchema,
-									heartbeatEventSchemaRef,
-									resetEventSchemaRef,
-									errorEventSchemaRef,
-								},
-								Discriminator: &openapi3.Discriminator{
-									PropertyName: "type",
-								},
-							},
-						},
+						Schema: streamEventRef,
 					},
 					"text/event-stream": &openapi3.MediaType{
 						Schema: &openapi3.SchemaRef{
@@ -821,15 +816,10 @@ func generateOpenAPISchema() *openapi3.T {
 
 		// Response for /stream-with-raw endpoint (NDJSON streaming with raw LLM output)
 		// Reuse the same nullable stream data schema from above
-		streamWithRawPartialDataEventSchema := makeStreamEventSchema(
-			"data",
-			"Partial data event containing an intermediate parsed result with accumulated raw LLM output. Fields not yet parsed may be null.",
-			nullableStreamDataSchema, true, "Accumulated raw LLM response text up to this point",
-		)
-		streamWithRawFinalDataEventSchema := makeStreamEventSchema(
-			"final",
-			"Final data event containing the complete, validated result with full raw LLM output",
-			finalDataSchema, true, "Complete raw LLM response text",
+		streamWithRawEventRef := buildStreamEventUnion(
+			schemas, fmt.Sprintf("__%sStreamWithRaw", methodName),
+			nullableStreamDataSchema, finalDataSchema, true,
+			heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
 		)
 
 		streamWithRawDescription := fmt.Sprintf("Stream of partial and final results for %s with raw LLM output", methodName)
@@ -841,20 +831,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: &streamWithRawDescription,
 				Content: openapi3.Content{
 					"application/x-ndjson": &openapi3.MediaType{
-						Schema: &openapi3.SchemaRef{
-							Value: &openapi3.Schema{
-								OneOf: openapi3.SchemaRefs{
-									streamWithRawPartialDataEventSchema,
-									streamWithRawFinalDataEventSchema,
-									heartbeatEventSchemaRef,
-									resetEventSchemaRef,
-									errorEventSchemaRef,
-								},
-								Discriminator: &openapi3.Discriminator{
-									PropertyName: "type",
-								},
-							},
-						},
+						Schema: streamWithRawEventRef,
 					},
 					"text/event-stream": &openapi3.MediaType{
 						Schema: &openapi3.SchemaRef{
@@ -1079,118 +1056,161 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		},
 	}
 
-	// Content part schema - discriminated by "type" field
+	// Content part schema - discriminated by "type" field.
+	// Each variant is a named component schema so Go codegen tools (oapi-codegen, ogen)
+	// can generate proper named types for the discriminated union.
 	dynamicContentPartSchemaName := "__DynamicContentPart__"
 	mediaInputRef := &openapi3.SchemaRef{
 		Ref: fmt.Sprintf("#/components/schemas/%s", dynamicMediaInputSchemaName),
 	}
+
+	type contentPartVariant struct {
+		name      string
+		discValue string
+		schemaRef *openapi3.SchemaRef
+	}
+
+	contentPartVariants := []contentPartVariant{
+		{
+			name:      "__DynamicContentPart_Text__",
+			discValue: "text",
+			schemaRef: &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Text content",
+					Properties: openapi3.Schemas{
+						"type": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type: &openapi3.Types{openapi3.TypeString},
+								Enum: []any{"text"},
+							},
+						},
+						"text": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type:        &openapi3.Types{openapi3.TypeString},
+								Description: "The text content",
+							},
+						},
+					},
+					Required: []string{"type", "text"},
+				},
+			},
+		},
+		{
+			name:      "__DynamicContentPart_Image__",
+			discValue: "image",
+			schemaRef: &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Image content",
+					Properties: openapi3.Schemas{
+						"type": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type: &openapi3.Types{openapi3.TypeString},
+								Enum: []any{"image"},
+							},
+						},
+						"image": mediaInputRef,
+					},
+					Required: []string{"type", "image"},
+				},
+			},
+		},
+		{
+			name:      "__DynamicContentPart_Audio__",
+			discValue: "audio",
+			schemaRef: &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Audio content",
+					Properties: openapi3.Schemas{
+						"type": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type: &openapi3.Types{openapi3.TypeString},
+								Enum: []any{"audio"},
+							},
+						},
+						"audio": mediaInputRef,
+					},
+					Required: []string{"type", "audio"},
+				},
+			},
+		},
+		{
+			name:      "__DynamicContentPart_Pdf__",
+			discValue: "pdf",
+			schemaRef: &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "PDF content",
+					Properties: openapi3.Schemas{
+						"type": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type: &openapi3.Types{openapi3.TypeString},
+								Enum: []any{"pdf"},
+							},
+						},
+						"pdf": mediaInputRef,
+					},
+					Required: []string{"type", "pdf"},
+				},
+			},
+		},
+		{
+			name:      "__DynamicContentPart_Video__",
+			discValue: "video",
+			schemaRef: &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Video content",
+					Properties: openapi3.Schemas{
+						"type": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type: &openapi3.Types{openapi3.TypeString},
+								Enum: []any{"video"},
+							},
+						},
+						"video": mediaInputRef,
+					},
+					Required: []string{"type", "video"},
+				},
+			},
+		},
+		{
+			name:      "__DynamicContentPart_OutputFormat__",
+			discValue: "output_format",
+			schemaRef: &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Description: "Output format placeholder - renders BAML's generated output format instructions (equivalent to {{ ctx.output_format }})",
+					Properties: openapi3.Schemas{
+						"type": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type: &openapi3.Types{openapi3.TypeString},
+								Enum: []any{"output_format"},
+							},
+						},
+					},
+					Required: []string{"type"},
+				},
+			},
+		},
+	}
+
+	contentPartOneOf := make(openapi3.SchemaRefs, len(contentPartVariants))
+	contentPartMapping := make(map[string]string, len(contentPartVariants))
+	for i, v := range contentPartVariants {
+		contentPartOneOf[i] = registerSchema(schemas, v.name, v.schemaRef)
+		contentPartMapping[v.discValue] = fmt.Sprintf("#/components/schemas/%s", v.name)
+	}
+
 	schemas[dynamicContentPartSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
 			Description: "A single content part within a multi-part message. The 'type' field determines which payload field is used.",
-			OneOf: openapi3.SchemaRefs{
-				{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeObject},
-						Description: "Text content",
-						Properties: openapi3.Schemas{
-							"type": &openapi3.SchemaRef{
-								Value: &openapi3.Schema{
-									Type: &openapi3.Types{openapi3.TypeString},
-									Enum: []any{"text"},
-								},
-							},
-							"text": &openapi3.SchemaRef{
-								Value: &openapi3.Schema{
-									Type:        &openapi3.Types{openapi3.TypeString},
-									Description: "The text content",
-								},
-							},
-						},
-						Required: []string{"type", "text"},
-					},
-				},
-				{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeObject},
-						Description: "Image content",
-						Properties: openapi3.Schemas{
-							"type": &openapi3.SchemaRef{
-								Value: &openapi3.Schema{
-									Type: &openapi3.Types{openapi3.TypeString},
-									Enum: []any{"image"},
-								},
-							},
-							"image": mediaInputRef,
-						},
-						Required: []string{"type", "image"},
-					},
-				},
-				{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeObject},
-						Description: "Audio content",
-						Properties: openapi3.Schemas{
-							"type": &openapi3.SchemaRef{
-								Value: &openapi3.Schema{
-									Type: &openapi3.Types{openapi3.TypeString},
-									Enum: []any{"audio"},
-								},
-							},
-							"audio": mediaInputRef,
-						},
-						Required: []string{"type", "audio"},
-					},
-				},
-				{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeObject},
-						Description: "PDF content",
-						Properties: openapi3.Schemas{
-							"type": &openapi3.SchemaRef{
-								Value: &openapi3.Schema{
-									Type: &openapi3.Types{openapi3.TypeString},
-									Enum: []any{"pdf"},
-								},
-							},
-							"pdf": mediaInputRef,
-						},
-						Required: []string{"type", "pdf"},
-					},
-				},
-				{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeObject},
-						Description: "Video content",
-						Properties: openapi3.Schemas{
-							"type": &openapi3.SchemaRef{
-								Value: &openapi3.Schema{
-									Type: &openapi3.Types{openapi3.TypeString},
-									Enum: []any{"video"},
-								},
-							},
-							"video": mediaInputRef,
-						},
-						Required: []string{"type", "video"},
-					},
-				},
-				{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeObject},
-						Description: "Output format placeholder - renders BAML's generated output format instructions (equivalent to {{ ctx.output_format }})",
-						Properties: openapi3.Schemas{
-							"type": &openapi3.SchemaRef{
-								Value: &openapi3.Schema{
-									Type: &openapi3.Types{openapi3.TypeString},
-									Enum: []any{"output_format"},
-								},
-							},
-						},
-						Required: []string{"type"},
-					},
-				},
-			},
+			OneOf:       contentPartOneOf,
 			Discriminator: &openapi3.Discriminator{
 				PropertyName: "type",
+				Mapping:      contentPartMapping,
 			},
 		},
 	}
@@ -1543,6 +1563,24 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	})
 
 	// /call-with-raw endpoint
+	dynamicWithRawResponseRef := registerSchema(schemas, "__DynamicWithRawResponse__", &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type: &openapi3.Types{openapi3.TypeObject},
+			Properties: openapi3.Schemas{
+				"data": &openapi3.SchemaRef{
+					Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
+				},
+				"raw": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Raw LLM response text",
+					},
+				},
+			},
+			Required: []string{"data", "raw"},
+		},
+	})
+
 	callWithRawDescription := "Successful response for dynamic prompt with raw LLM output"
 	callWithRawResponses := openapi3.NewResponses()
 	callWithRawResponses.Delete("default")
@@ -1551,23 +1589,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &callWithRawDescription,
 			Content: openapi3.Content{
 				"application/json": &openapi3.MediaType{
-					Schema: &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							Type: &openapi3.Types{openapi3.TypeObject},
-							Properties: openapi3.Schemas{
-								"data": &openapi3.SchemaRef{
-									Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
-								},
-								"raw": &openapi3.SchemaRef{
-									Value: &openapi3.Schema{
-										Type:        &openapi3.Types{openapi3.TypeString},
-										Description: "Raw LLM response text",
-									},
-								},
-							},
-							Required: []string{"data", "raw"},
-						},
-					},
+					Schema: dynamicWithRawResponseRef,
 				},
 			},
 		},
@@ -1613,25 +1635,23 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		},
 	})
 
-	// Streaming event schemas for dynamic endpoint
-	dynamicStreamDataEventSchema := makeStreamEventSchema(
-		"data",
-		"Partial data event containing an intermediate parsed result. Fields not yet parsed may be null.",
-		&openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Nullable: true,
-				AllOf: openapi3.SchemaRefs{
-					{Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName)},
-				},
+	// Streaming event schemas for dynamic endpoint — register as named components.
+	dynamicNullableOutputRef := &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Nullable: true,
+			AllOf: openapi3.SchemaRefs{
+				{Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName)},
 			},
-		}, false, "",
-	)
-	dynamicStreamFinalEventSchema := makeStreamEventSchema(
-		"final",
-		"Final data event containing the complete, validated result",
-		&openapi3.SchemaRef{
-			Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
-		}, false, "",
+		},
+	}
+	dynamicFinalOutputRef := &openapi3.SchemaRef{
+		Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
+	}
+
+	dynamicStreamEventRef := buildStreamEventUnion(
+		schemas, "__DynamicStream",
+		dynamicNullableOutputRef, dynamicFinalOutputRef, false,
+		heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
 	)
 
 	// /stream endpoint
@@ -1644,20 +1664,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &streamDescription,
 			Content: openapi3.Content{
 				"application/x-ndjson": &openapi3.MediaType{
-					Schema: &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							OneOf: openapi3.SchemaRefs{
-								dynamicStreamDataEventSchema,
-								dynamicStreamFinalEventSchema,
-								heartbeatEventSchemaRef,
-								resetEventSchemaRef,
-								errorEventSchemaRef,
-							},
-							Discriminator: &openapi3.Discriminator{
-								PropertyName: "type",
-							},
-						},
-					},
+					Schema: dynamicStreamEventRef,
 				},
 				"text/event-stream": &openapi3.MediaType{
 					Schema: &openapi3.SchemaRef{
@@ -1715,24 +1722,10 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	})
 
 	// /stream-with-raw endpoint
-	dynamicStreamWithRawDataEventSchema := makeStreamEventSchema(
-		"data",
-		"Partial data event with accumulated raw LLM output. Fields not yet parsed may be null.",
-		&openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Nullable: true,
-				AllOf: openapi3.SchemaRefs{
-					{Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName)},
-				},
-			},
-		}, true, "Accumulated raw LLM response text up to this point",
-	)
-	dynamicStreamWithRawFinalEventSchema := makeStreamEventSchema(
-		"final",
-		"Final data event with complete raw LLM output",
-		&openapi3.SchemaRef{
-			Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
-		}, true, "Complete raw LLM response text",
+	dynamicStreamWithRawEventRef := buildStreamEventUnion(
+		schemas, "__DynamicStreamWithRaw",
+		dynamicNullableOutputRef, dynamicFinalOutputRef, true,
+		heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
 	)
 
 	streamWithRawDescription := "Stream of partial and final results for dynamic prompt with raw LLM output"
@@ -1744,20 +1737,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Description: &streamWithRawDescription,
 			Content: openapi3.Content{
 				"application/x-ndjson": &openapi3.MediaType{
-					Schema: &openapi3.SchemaRef{
-						Value: &openapi3.Schema{
-							OneOf: openapi3.SchemaRefs{
-								dynamicStreamWithRawDataEventSchema,
-								dynamicStreamWithRawFinalEventSchema,
-								heartbeatEventSchemaRef,
-								resetEventSchemaRef,
-								errorEventSchemaRef,
-							},
-							Discriminator: &openapi3.Discriminator{
-								PropertyName: "type",
-							},
-						},
-					},
+					Schema: dynamicStreamWithRawEventRef,
 				},
 				"text/event-stream": &openapi3.MediaType{
 					Schema: &openapi3.SchemaRef{
@@ -2075,4 +2055,71 @@ func boolPtr(b bool) *bool {
 
 func uint64Ptr(v uint64) *uint64 {
 	return &v
+}
+
+// registerSchema adds a schema to the schemas map and returns a $ref to it.
+func registerSchema(schemas openapi3.Schemas, name string, schemaRef *openapi3.SchemaRef) *openapi3.SchemaRef {
+	schemas[name] = schemaRef
+	return &openapi3.SchemaRef{Ref: fmt.Sprintf("#/components/schemas/%s", name)}
+}
+
+// buildStreamEventUnion creates a discriminated union schema for streaming events.
+// It registers three named component schemas:
+//   - {namePrefix}DataEvent__: partial data event
+//   - {namePrefix}FinalEvent__: final data event
+//   - {namePrefix}Event__: the union of all event types
+//
+// namePrefix should include the leading __ and everything before "DataEvent"/"FinalEvent"/"Event",
+// e.g., "__GetFooStream" or "__DynamicStreamWithRaw".
+func buildStreamEventUnion(
+	schemas openapi3.Schemas,
+	namePrefix string,
+	dataSchema *openapi3.SchemaRef,
+	finalSchema *openapi3.SchemaRef,
+	includeRaw bool,
+	heartbeatRef *openapi3.SchemaRef,
+	resetRef *openapi3.SchemaRef,
+	errorRef *openapi3.SchemaRef,
+) *openapi3.SchemaRef {
+	dataDesc := "Partial data event containing an intermediate parsed result. Fields not yet parsed may be null."
+	finalDesc := "Final data event containing the complete, validated result"
+	var dataRawDesc, finalRawDesc string
+	if includeRaw {
+		dataDesc = "Partial data event containing an intermediate parsed result with accumulated raw LLM output. Fields not yet parsed may be null."
+		dataRawDesc = "Accumulated raw LLM response text up to this point"
+		finalDesc = "Final data event containing the complete, validated result with full raw LLM output"
+		finalRawDesc = "Complete raw LLM response text"
+	}
+
+	dataEventName := namePrefix + "DataEvent__"
+	dataEventRef := registerSchema(schemas, dataEventName, makeStreamEventSchema(
+		"data", dataDesc, dataSchema, includeRaw, dataRawDesc,
+	))
+
+	finalEventName := namePrefix + "FinalEvent__"
+	finalEventRef := registerSchema(schemas, finalEventName, makeStreamEventSchema(
+		"final", finalDesc, finalSchema, includeRaw, finalRawDesc,
+	))
+
+	return registerSchema(schemas, namePrefix+"Event__", &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			OneOf: openapi3.SchemaRefs{
+				dataEventRef,
+				finalEventRef,
+				heartbeatRef,
+				resetRef,
+				errorRef,
+			},
+			Discriminator: &openapi3.Discriminator{
+				PropertyName: "type",
+				Mapping: map[string]string{
+					"data":      fmt.Sprintf("#/components/schemas/%s", dataEventName),
+					"final":     fmt.Sprintf("#/components/schemas/%s", finalEventName),
+					"heartbeat": heartbeatRef.Ref,
+					"reset":     resetRef.Ref,
+					"error":     errorRef.Ref,
+				},
+			},
+		},
+	})
 }
