@@ -740,42 +740,11 @@ func generateOpenAPISchema() *openapi3.T {
 
 		// Register stream event schemas as named components for Go codegen compatibility.
 		// Inline oneOf variants in a discriminated union break oapi-codegen and ogen.
-		streamDataEventName := fmt.Sprintf("__%sStreamDataEvent__", methodName)
-		streamDataEventRef := registerSchema(schemas, streamDataEventName, makeStreamEventSchema(
-			"data",
-			"Partial data event containing an intermediate parsed result. Fields not yet parsed may be null.",
-			nullableStreamDataSchema, false, "",
-		))
-		streamFinalEventName := fmt.Sprintf("__%sStreamFinalEvent__", methodName)
-		streamFinalEventRef := registerSchema(schemas, streamFinalEventName, makeStreamEventSchema(
-			"final",
-			"Final data event containing the complete, validated result",
-			finalDataSchema, false, "",
-		))
-
-		// Register the stream event union as a named component with discriminator mapping.
-		streamEventName := fmt.Sprintf("__%sStreamEvent__", methodName)
-		streamEventRef := registerSchema(schemas, streamEventName, &openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				OneOf: openapi3.SchemaRefs{
-					streamDataEventRef,
-					streamFinalEventRef,
-					heartbeatEventSchemaRef,
-					resetEventSchemaRef,
-					errorEventSchemaRef,
-				},
-				Discriminator: &openapi3.Discriminator{
-					PropertyName: "type",
-					Mapping: map[string]string{
-						"data":      fmt.Sprintf("#/components/schemas/%s", streamDataEventName),
-						"final":     fmt.Sprintf("#/components/schemas/%s", streamFinalEventName),
-						"heartbeat": fmt.Sprintf("#/components/schemas/%s", streamHeartbeatEventSchemaName),
-						"reset":     fmt.Sprintf("#/components/schemas/%s", streamResetEventSchemaName),
-						"error":     fmt.Sprintf("#/components/schemas/%s", streamErrorEventSchemaName),
-					},
-				},
-			},
-		})
+		streamEventRef := buildStreamEventUnion(
+			schemas, fmt.Sprintf("__%sStream", methodName),
+			nullableStreamDataSchema, finalDataSchema, false,
+			heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
+		)
 
 		streamDescription := fmt.Sprintf("Stream of partial and final results for %s", methodName)
 		sseStreamDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON, error/reset events use SSE event types."
@@ -847,41 +816,11 @@ func generateOpenAPISchema() *openapi3.T {
 
 		// Response for /stream-with-raw endpoint (NDJSON streaming with raw LLM output)
 		// Reuse the same nullable stream data schema from above
-		streamWithRawDataEventName := fmt.Sprintf("__%sStreamWithRawDataEvent__", methodName)
-		streamWithRawDataEventRef := registerSchema(schemas, streamWithRawDataEventName, makeStreamEventSchema(
-			"data",
-			"Partial data event containing an intermediate parsed result with accumulated raw LLM output. Fields not yet parsed may be null.",
-			nullableStreamDataSchema, true, "Accumulated raw LLM response text up to this point",
-		))
-		streamWithRawFinalEventName := fmt.Sprintf("__%sStreamWithRawFinalEvent__", methodName)
-		streamWithRawFinalEventRef := registerSchema(schemas, streamWithRawFinalEventName, makeStreamEventSchema(
-			"final",
-			"Final data event containing the complete, validated result with full raw LLM output",
-			finalDataSchema, true, "Complete raw LLM response text",
-		))
-
-		streamWithRawEventName := fmt.Sprintf("__%sStreamWithRawEvent__", methodName)
-		streamWithRawEventRef := registerSchema(schemas, streamWithRawEventName, &openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				OneOf: openapi3.SchemaRefs{
-					streamWithRawDataEventRef,
-					streamWithRawFinalEventRef,
-					heartbeatEventSchemaRef,
-					resetEventSchemaRef,
-					errorEventSchemaRef,
-				},
-				Discriminator: &openapi3.Discriminator{
-					PropertyName: "type",
-					Mapping: map[string]string{
-						"data":      fmt.Sprintf("#/components/schemas/%s", streamWithRawDataEventName),
-						"final":     fmt.Sprintf("#/components/schemas/%s", streamWithRawFinalEventName),
-						"heartbeat": fmt.Sprintf("#/components/schemas/%s", streamHeartbeatEventSchemaName),
-						"reset":     fmt.Sprintf("#/components/schemas/%s", streamResetEventSchemaName),
-						"error":     fmt.Sprintf("#/components/schemas/%s", streamErrorEventSchemaName),
-					},
-				},
-			},
-		})
+		streamWithRawEventRef := buildStreamEventUnion(
+			schemas, fmt.Sprintf("__%sStreamWithRaw", methodName),
+			nullableStreamDataSchema, finalDataSchema, true,
+			heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
+		)
 
 		streamWithRawDescription := fmt.Sprintf("Stream of partial and final results for %s with raw LLM output", methodName)
 		sseStreamWithRawDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON with 'data' and 'raw' fields, error/reset events use SSE event types."
@@ -1697,49 +1636,23 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	})
 
 	// Streaming event schemas for dynamic endpoint — register as named components.
-	dynamicStreamDataEventName := "__DynamicStreamDataEvent__"
-	dynamicStreamDataEventRef := registerSchema(schemas, dynamicStreamDataEventName, makeStreamEventSchema(
-		"data",
-		"Partial data event containing an intermediate parsed result. Fields not yet parsed may be null.",
-		&openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Nullable: true,
-				AllOf: openapi3.SchemaRefs{
-					{Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName)},
-				},
-			},
-		}, false, "",
-	))
-	dynamicStreamFinalEventName := "__DynamicStreamFinalEvent__"
-	dynamicStreamFinalEventRef := registerSchema(schemas, dynamicStreamFinalEventName, makeStreamEventSchema(
-		"final",
-		"Final data event containing the complete, validated result",
-		&openapi3.SchemaRef{
-			Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
-		}, false, "",
-	))
-
-	dynamicStreamEventRef := registerSchema(schemas, "__DynamicStreamEvent__", &openapi3.SchemaRef{
+	dynamicNullableOutputRef := &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
-			OneOf: openapi3.SchemaRefs{
-				dynamicStreamDataEventRef,
-				dynamicStreamFinalEventRef,
-				heartbeatEventSchemaRef,
-				resetEventSchemaRef,
-				errorEventSchemaRef,
-			},
-			Discriminator: &openapi3.Discriminator{
-				PropertyName: "type",
-				Mapping: map[string]string{
-					"data":      fmt.Sprintf("#/components/schemas/%s", dynamicStreamDataEventName),
-					"final":     fmt.Sprintf("#/components/schemas/%s", dynamicStreamFinalEventName),
-					"heartbeat": fmt.Sprintf("#/components/schemas/%s", streamHeartbeatEventSchemaName),
-					"reset":     fmt.Sprintf("#/components/schemas/%s", streamResetEventSchemaName),
-					"error":     fmt.Sprintf("#/components/schemas/%s", streamErrorEventSchemaName),
-				},
+			Nullable: true,
+			AllOf: openapi3.SchemaRefs{
+				{Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName)},
 			},
 		},
-	})
+	}
+	dynamicFinalOutputRef := &openapi3.SchemaRef{
+		Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
+	}
+
+	dynamicStreamEventRef := buildStreamEventUnion(
+		schemas, "__DynamicStream",
+		dynamicNullableOutputRef, dynamicFinalOutputRef, false,
+		heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
+	)
 
 	// /stream endpoint
 	streamDescription := "Stream of partial and final results for dynamic prompt"
@@ -1809,49 +1722,11 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	})
 
 	// /stream-with-raw endpoint
-	dynamicStreamWithRawDataEventName := "__DynamicStreamWithRawDataEvent__"
-	dynamicStreamWithRawDataEventRef := registerSchema(schemas, dynamicStreamWithRawDataEventName, makeStreamEventSchema(
-		"data",
-		"Partial data event with accumulated raw LLM output. Fields not yet parsed may be null.",
-		&openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Nullable: true,
-				AllOf: openapi3.SchemaRefs{
-					{Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName)},
-				},
-			},
-		}, true, "Accumulated raw LLM response text up to this point",
-	))
-	dynamicStreamWithRawFinalEventName := "__DynamicStreamWithRawFinalEvent__"
-	dynamicStreamWithRawFinalEventRef := registerSchema(schemas, dynamicStreamWithRawFinalEventName, makeStreamEventSchema(
-		"final",
-		"Final data event with complete raw LLM output",
-		&openapi3.SchemaRef{
-			Ref: fmt.Sprintf("#/components/schemas/%s", dynamicOutputSchemaName),
-		}, true, "Complete raw LLM response text",
-	))
-
-	dynamicStreamWithRawEventRef := registerSchema(schemas, "__DynamicStreamWithRawEvent__", &openapi3.SchemaRef{
-		Value: &openapi3.Schema{
-			OneOf: openapi3.SchemaRefs{
-				dynamicStreamWithRawDataEventRef,
-				dynamicStreamWithRawFinalEventRef,
-				heartbeatEventSchemaRef,
-				resetEventSchemaRef,
-				errorEventSchemaRef,
-			},
-			Discriminator: &openapi3.Discriminator{
-				PropertyName: "type",
-				Mapping: map[string]string{
-					"data":      fmt.Sprintf("#/components/schemas/%s", dynamicStreamWithRawDataEventName),
-					"final":     fmt.Sprintf("#/components/schemas/%s", dynamicStreamWithRawFinalEventName),
-					"heartbeat": fmt.Sprintf("#/components/schemas/%s", streamHeartbeatEventSchemaName),
-					"reset":     fmt.Sprintf("#/components/schemas/%s", streamResetEventSchemaName),
-					"error":     fmt.Sprintf("#/components/schemas/%s", streamErrorEventSchemaName),
-				},
-			},
-		},
-	})
+	dynamicStreamWithRawEventRef := buildStreamEventUnion(
+		schemas, "__DynamicStreamWithRaw",
+		dynamicNullableOutputRef, dynamicFinalOutputRef, true,
+		heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
+	)
 
 	streamWithRawDescription := "Stream of partial and final results for dynamic prompt with raw LLM output"
 	sseStreamWithRawDescription := "Server-Sent Events stream with raw LLM output."
@@ -2186,4 +2061,65 @@ func uint64Ptr(v uint64) *uint64 {
 func registerSchema(schemas openapi3.Schemas, name string, schemaRef *openapi3.SchemaRef) *openapi3.SchemaRef {
 	schemas[name] = schemaRef
 	return &openapi3.SchemaRef{Ref: fmt.Sprintf("#/components/schemas/%s", name)}
+}
+
+// buildStreamEventUnion creates a discriminated union schema for streaming events.
+// It registers three named component schemas:
+//   - {namePrefix}DataEvent__: partial data event
+//   - {namePrefix}FinalEvent__: final data event
+//   - {namePrefix}Event__: the union of all event types
+//
+// namePrefix should include the leading __ and everything before "DataEvent"/"FinalEvent"/"Event",
+// e.g., "__GetFooStream" or "__DynamicStreamWithRaw".
+func buildStreamEventUnion(
+	schemas openapi3.Schemas,
+	namePrefix string,
+	dataSchema *openapi3.SchemaRef,
+	finalSchema *openapi3.SchemaRef,
+	includeRaw bool,
+	heartbeatRef *openapi3.SchemaRef,
+	resetRef *openapi3.SchemaRef,
+	errorRef *openapi3.SchemaRef,
+) *openapi3.SchemaRef {
+	dataDesc := "Partial data event containing an intermediate parsed result. Fields not yet parsed may be null."
+	finalDesc := "Final data event containing the complete, validated result"
+	var dataRawDesc, finalRawDesc string
+	if includeRaw {
+		dataDesc = "Partial data event containing an intermediate parsed result with accumulated raw LLM output. Fields not yet parsed may be null."
+		dataRawDesc = "Accumulated raw LLM response text up to this point"
+		finalDesc = "Final data event containing the complete, validated result with full raw LLM output"
+		finalRawDesc = "Complete raw LLM response text"
+	}
+
+	dataEventName := namePrefix + "DataEvent__"
+	dataEventRef := registerSchema(schemas, dataEventName, makeStreamEventSchema(
+		"data", dataDesc, dataSchema, includeRaw, dataRawDesc,
+	))
+
+	finalEventName := namePrefix + "FinalEvent__"
+	finalEventRef := registerSchema(schemas, finalEventName, makeStreamEventSchema(
+		"final", finalDesc, finalSchema, includeRaw, finalRawDesc,
+	))
+
+	return registerSchema(schemas, namePrefix+"Event__", &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			OneOf: openapi3.SchemaRefs{
+				dataEventRef,
+				finalEventRef,
+				heartbeatRef,
+				resetRef,
+				errorRef,
+			},
+			Discriminator: &openapi3.Discriminator{
+				PropertyName: "type",
+				Mapping: map[string]string{
+					"data":      fmt.Sprintf("#/components/schemas/%s", dataEventName),
+					"final":     fmt.Sprintf("#/components/schemas/%s", finalEventName),
+					"heartbeat": heartbeatRef.Ref,
+					"reset":     resetRef.Ref,
+					"error":     errorRef.Ref,
+				},
+			},
+		},
+	})
 }
