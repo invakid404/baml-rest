@@ -593,7 +593,7 @@ func generateOpenAPISchema() *openapi3.T {
 		if callResponseSchema.Ref == "" {
 			// Inline schema (e.g., array or map of a named type) — register as named
 			// component so Go codegen tools don't encounter inline schemas with embedded $refs.
-			callResponseSchema = registerSchema(schemas, fmt.Sprintf("__%sResponse__", methodName), callResponseSchema)
+			callResponseSchema = registerSchema(schemas, fmt.Sprintf("__%sOutput__", methodName), callResponseSchema)
 		}
 
 		responses := openapi3.NewResponses()
@@ -652,7 +652,7 @@ func generateOpenAPISchema() *openapi3.T {
 		// Response for /call-with-raw endpoint
 		// Register the {data, raw} wrapper as a named component so Go codegen tools
 		// don't encounter inline schemas with embedded $refs.
-		withRawResponseRef := registerSchema(schemas, fmt.Sprintf("__%sWithRawResponse__", methodName), &openapi3.SchemaRef{
+		withRawResponseRef := registerSchema(schemas, fmt.Sprintf("__%sWithRawOutput__", methodName), &openapi3.SchemaRef{
 			Value: &openapi3.Schema{
 				Type: &openapi3.Types{openapi3.TypeObject},
 				Properties: openapi3.Schemas{
@@ -1563,7 +1563,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	})
 
 	// /call-with-raw endpoint
-	dynamicWithRawResponseRef := registerSchema(schemas, "__DynamicWithRawResponse__", &openapi3.SchemaRef{
+	dynamicWithRawResponseRef := registerSchema(schemas, "__DynamicWithRawOutput__", &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
 			Type: &openapi3.Types{openapi3.TypeObject},
 			Properties: openapi3.Schemas{
