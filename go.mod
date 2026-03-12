@@ -12,7 +12,7 @@ require (
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/go-chi/chi/v5 v5.2.5
-	github.com/goccy/go-json v0.10.5
+	github.com/goccy/go-json v0.10.6
 	github.com/gofiber/contrib/v3/zerolog v1.0.1
 	github.com/gofiber/fiber/v3 v3.1.0
 	github.com/gregwebs/go-recovery v0.4.1
