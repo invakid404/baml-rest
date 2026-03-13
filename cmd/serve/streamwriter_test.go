@@ -57,6 +57,11 @@ func TestNegotiateStreamFormatFromAccept(t *testing.T) {
 			want:   StreamFormatNDJSON,
 		},
 		{
+			name:   "selects SSE when it is only supported type",
+			accept: contentTypeSSE,
+			want:   StreamFormatSSE,
+		},
+		{
 			name:   "prefers higher quality SSE over NDJSON",
 			accept: ContentTypeNDJSON + ";q=0.5, " + contentTypeSSE + ";q=0.9",
 			want:   StreamFormatSSE,
@@ -75,6 +80,26 @@ func TestNegotiateStreamFormatFromAccept(t *testing.T) {
 			name:   "keeps first supported type when quality ties",
 			accept: ContentTypeNDJSON + ";q=0.8, " + contentTypeSSE + ";q=0.8",
 			want:   StreamFormatNDJSON,
+		},
+		{
+			name:   "ignores unsupported types",
+			accept: "text/plain, " + ContentTypeNDJSON,
+			want:   StreamFormatNDJSON,
+		},
+		{
+			name:   "skips invalid q-value",
+			accept: ContentTypeNDJSON + ";q=invalid, " + contentTypeSSE,
+			want:   StreamFormatSSE,
+		},
+		{
+			name:   "skips out of range q-value",
+			accept: ContentTypeNDJSON + ";q=1.5, " + contentTypeSSE,
+			want:   StreamFormatSSE,
+		},
+		{
+			name:   "defaults to SSE for wildcard",
+			accept: "*/*",
+			want:   StreamFormatSSE,
 		},
 	}
 

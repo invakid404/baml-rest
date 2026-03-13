@@ -55,12 +55,13 @@ func NegotiateStreamFormatFromAccept(accept string) StreamFormat {
 		return StreamFormatSSE
 	}
 
+	parts := strings.Split(accept, ",")
 	bestFormat := StreamFormatSSE
 	bestQ := -1.0
-	bestIndex := len(strings.Split(accept, ","))
+	bestIndex := len(parts)
 	foundSupportedType := false
 
-	for index, part := range strings.Split(accept, ",") {
+	for index, part := range parts {
 		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
 		if err != nil {
 			continue
@@ -91,6 +92,7 @@ func NegotiateStreamFormatFromAccept(accept string) StreamFormat {
 	return StreamFormatSSE
 }
 
+// streamFormatForMediaType maps a supported media type to its stream format.
 func streamFormatForMediaType(mediaType string) (StreamFormat, bool) {
 	switch {
 	case strings.EqualFold(mediaType, ContentTypeNDJSON):
@@ -102,6 +104,7 @@ func streamFormatForMediaType(mediaType string) (StreamFormat, bool) {
 	}
 }
 
+// parseAcceptQuality parses an Accept quality value and validates the range.
 func parseAcceptQuality(raw string) (float64, bool) {
 	if raw == "" {
 		return 1, true
