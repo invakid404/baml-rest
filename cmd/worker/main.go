@@ -144,11 +144,31 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 		return nil, fmt.Errorf("failed to call method: %w", err)
 	}
 
-	// Convert to plugin stream results
+	return bridgeStreamResults(ctx, resultChan), nil
+
+}
+
+// Convert to plugin stream results
+
+func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.StreamResult) <-chan *workerplugin.StreamResult {
 	out := make(chan *workerplugin.StreamResult)
 	go func() {
 		defer close(out)
-		for result := range resultChan {
+		for {
+			var (
+				result bamlutils.StreamResult
+				ok     bool
+			)
+
+			select {
+			case <-ctx.Done():
+				return
+			case result, ok = <-resultChan:
+				if !ok {
+					return
+				}
+			}
+
 			pluginResult := workerplugin.GetStreamResult()
 
 			switch result.Kind() {
@@ -192,7 +212,7 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 		}
 	}()
 
-	return out, nil
+	return out
 }
 
 func (w *workerImpl) Health(ctx context.Context) (bool, error) {
