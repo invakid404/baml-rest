@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"mime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,15 +55,64 @@ func NegotiateStreamFormatFromAccept(accept string) StreamFormat {
 		return StreamFormatSSE
 	}
 
-	// Parse Accept header - it may contain multiple types with quality values
-	for _, part := range strings.Split(accept, ",") {
-		mediaType := strings.TrimSpace(strings.Split(part, ";")[0])
-		if strings.EqualFold(mediaType, ContentTypeNDJSON) {
-			return StreamFormatNDJSON
+	bestFormat := StreamFormatSSE
+	bestQ := -1.0
+	bestIndex := len(strings.Split(accept, ","))
+	foundSupportedType := false
+
+	for index, part := range strings.Split(accept, ",") {
+		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+
+		format, ok := streamFormatForMediaType(mediaType)
+		if !ok {
+			continue
+		}
+
+		q, ok := parseAcceptQuality(params["q"])
+		if !ok || q == 0 {
+			continue
+		}
+
+		if !foundSupportedType || q > bestQ || (q == bestQ && index < bestIndex) {
+			bestFormat = format
+			bestQ = q
+			bestIndex = index
+			foundSupportedType = true
 		}
 	}
 
+	if foundSupportedType {
+		return bestFormat
+	}
+
 	return StreamFormatSSE
+}
+
+func streamFormatForMediaType(mediaType string) (StreamFormat, bool) {
+	switch {
+	case strings.EqualFold(mediaType, ContentTypeNDJSON):
+		return StreamFormatNDJSON, true
+	case strings.EqualFold(mediaType, contentTypeSSE):
+		return StreamFormatSSE, true
+	default:
+		return StreamFormatSSE, false
+	}
+}
+
+func parseAcceptQuality(raw string) (float64, bool) {
+	if raw == "" {
+		return 1, true
+	}
+
+	q, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || q < 0 || q > 1 {
+		return 0, false
+	}
+
+	return q, true
 }
 
 // NDJSONStreamWriterPublisher implements StreamPublisher for native Fiber streaming.

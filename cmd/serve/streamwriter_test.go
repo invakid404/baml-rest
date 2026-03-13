@@ -39,3 +39,51 @@ func TestFormatSSEComment(t *testing.T) {
 		t.Fatalf("formatted SSE comment = %q, want %q", got, want)
 	}
 }
+
+func TestNegotiateStreamFormatFromAccept(t *testing.T) {
+	tests := []struct {
+		name   string
+		accept string
+		want   StreamFormat
+	}{
+		{
+			name:   "defaults to SSE when accept is empty",
+			accept: "",
+			want:   StreamFormatSSE,
+		},
+		{
+			name:   "selects NDJSON when it is only supported type",
+			accept: ContentTypeNDJSON,
+			want:   StreamFormatNDJSON,
+		},
+		{
+			name:   "prefers higher quality SSE over NDJSON",
+			accept: ContentTypeNDJSON + ";q=0.5, " + contentTypeSSE + ";q=0.9",
+			want:   StreamFormatSSE,
+		},
+		{
+			name:   "prefers higher quality NDJSON over SSE",
+			accept: contentTypeSSE + ";q=0.5, " + ContentTypeNDJSON + ";q=0.9",
+			want:   StreamFormatNDJSON,
+		},
+		{
+			name:   "skips unacceptable NDJSON",
+			accept: ContentTypeNDJSON + ";q=0, " + contentTypeSSE + ";q=0.1",
+			want:   StreamFormatSSE,
+		},
+		{
+			name:   "keeps first supported type when quality ties",
+			accept: ContentTypeNDJSON + ";q=0.8, " + contentTypeSSE + ";q=0.8",
+			want:   StreamFormatNDJSON,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NegotiateStreamFormatFromAccept(tt.accept)
+			if got != tt.want {
+				t.Fatalf("NegotiateStreamFormatFromAccept(%q) = %v, want %v", tt.accept, got, tt.want)
+			}
+		})
+	}
+}
