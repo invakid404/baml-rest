@@ -434,6 +434,107 @@ func TestHungRequestConfirmationSkipsProgressedRequest(t *testing.T) {
 	}
 }
 
+// TestCheckHungRequestsRestartsHungWorker verifies the end-to-end hung path:
+// a request that has exceeded the first-byte timeout causes the worker to be
+// killed and replaced.
+func TestCheckHungRequestsRestartsHungWorker(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	old := p.workers[0]
+	oldWorker := old.worker.(*mockWorker)
+	closed := make(chan struct{}, 1)
+	oldWorker.closeFn = func() error {
+		select {
+		case closed <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	p.SetFirstByteTimeout(time.Second)
+
+	old.inFlightMu.Lock()
+	old.inFlightReq[1] = &inFlightRequest{
+		id:        1,
+		startedAt: time.Now().Add(-10 * time.Second),
+	}
+	old.inFlightMu.Unlock()
+
+	p.checkHungRequests()
+
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hung worker was not killed")
+	}
+
+	requireCompleteWithin(t, 2*time.Second, func() {
+		for {
+			p.mu.RLock()
+			current := p.workers[0]
+			p.mu.RUnlock()
+			if current != old {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	p.mu.RLock()
+	replacement := p.workers[0]
+	p.mu.RUnlock()
+	if !replacement.healthy.Load() {
+		t.Fatal("replacement worker should be healthy")
+	}
+}
+
+// TestCheckHungRequestsSkipsRequestWithFirstByte verifies the end-to-end
+// negative path: once first byte has been received, hung detection should not
+// kill or replace the worker even if the request is old.
+func TestCheckHungRequestsSkipsRequestWithFirstByte(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	old := p.workers[0]
+	oldWorker := old.worker.(*mockWorker)
+	closed := make(chan struct{}, 1)
+	oldWorker.closeFn = func() error {
+		select {
+		case closed <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	p.SetFirstByteTimeout(time.Second)
+
+	req := &inFlightRequest{
+		id:        1,
+		startedAt: time.Now().Add(-10 * time.Second),
+	}
+	req.gotFirstByte.Store(true)
+
+	old.inFlightMu.Lock()
+	old.inFlightReq[1] = req
+	old.inFlightMu.Unlock()
+
+	p.checkHungRequests()
+
+	select {
+	case <-closed:
+		t.Fatal("worker should not be killed after first byte")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	p.mu.RLock()
+	current := p.workers[0]
+	p.mu.RUnlock()
+	if current != old {
+		t.Fatal("worker should not be replaced after first byte")
+	}
+}
+
 // TestRestartStaleHandleNoop verifies that restarting with a handle that
 // has already been replaced is a no-op (prevents killing fresh workers).
 func TestRestartStaleHandleNoop(t *testing.T) {
@@ -857,6 +958,52 @@ func TestGetWorkerForRetryWaitsForPendingAsyncRestart(t *testing.T) {
 			t.Error("replacement should be healthy")
 		}
 	})
+}
+
+// TestDispatchRestartPublishesPendingState verifies the actual async dispatch
+// helper publishes pending restart state before handing control to the
+// goroutine, so new requests do not fail during the dispatch gap.
+func TestDispatchRestartPublishesPendingState(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	failed := p.workers[0]
+	failed.healthy.Store(false)
+
+	blockedFactory := make(chan struct{})
+	p.newWorker = func(id int) (*workerHandle, error) {
+		<-blockedFactory
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	p.dispatchRestart(failed)
+
+	recoveryDone := make(chan struct{})
+	go func() {
+		defer close(recoveryDone)
+		h, err := p.getWorkerForRetry(context.Background(), nil)
+		if err != nil {
+			t.Errorf("expected recovery after dispatchRestart, got: %v", err)
+			return
+		}
+		if h == failed {
+			t.Error("should return the replacement, not the failed handle")
+		}
+	}()
+
+	select {
+	case <-recoveryDone:
+		t.Fatal("getWorkerForRetry returned before replacement was allowed to start")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(blockedFactory)
+
+	select {
+	case <-recoveryDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("getWorkerForRetry did not recover after replacement was released")
+	}
 }
 
 // TestGetWorkerForRetryRespectsContext verifies that getWorkerForRetry
