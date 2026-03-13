@@ -22,13 +22,13 @@
 ### baml-rest
 
 - [ ] Optional (nullable) media types (`image?`, `(image | null)[]`, etc.) are
-      not supported on BAML versions prior to 0.215.0. The BAML runtime's encoder
-      rejects `*Image` with `unsupported type for BAML encoding`. Non-optional
-      media types and nil optional values work on all versions.
+      not supported on BAML versions prior to 0.215.0. The BAML runtime's
+      encoder rejects `*Image` with `unsupported type for BAML encoding`.
+      Non-optional media types and nil optional values work on all versions.
 
 ## Known broken versions
 
-Recommended version: **v0.219.0**
+Recommended version: **v0.220.0**
 
 - **v0.215.0**: Type builder is fully broken and panics the entire application
   when used ([issue](https://github.com/BoundaryML/baml/issues/2862))
