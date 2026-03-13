@@ -183,13 +183,11 @@ type workerHandle struct {
 	logger      zerolog.Logger // pre-bound with worker id
 	client      *plugin.Client
 	worker      workerplugin.Worker
-	mu          sync.RWMutex
 	healthy     atomic.Bool
 	restarting  atomic.Bool   // CAS guard: only one goroutine starts a replacement
 	restartMu   sync.Mutex    // protects restartDone; also used by restartCond
 	restartCond *sync.Cond    // signaled when restart completes (legacy CAS-loser path)
 	restartDone chan struct{} // closed when the current restart cycle completes; nil when idle
-	lastUsed    time.Time
 	inFlightMu  sync.RWMutex
 	inFlightReq map[uint64]*inFlightRequest
 }
@@ -202,13 +200,6 @@ func (h *workerHandle) kill() {
 	if h.client != nil {
 		h.client.Kill()
 	}
-}
-
-// touch updates the last-used timestamp.
-func (h *workerHandle) touch() {
-	h.mu.Lock()
-	h.lastUsed = time.Now()
-	h.mu.Unlock()
 }
 
 // workerSnapshot returns a point-in-time copy of all non-nil worker handles.
@@ -364,7 +355,6 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		logger:      workerLogger,
 		client:      client,
 		worker:      worker,
-		lastUsed:    time.Now(),
 		inFlightReq: make(map[uint64]*inFlightRequest),
 	}
 	h.restartCond = sync.NewCond(&h.restartMu)
@@ -458,18 +448,22 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 	// Cancel all in-flight request contexts (belt-and-suspenders: the
 	// process kill above already broke transport, but this ensures the
 	// context-based cleanup paths in CallStream/Parse also trigger).
-	handle.inFlightMu.Lock()
+	handle.inFlightMu.RLock()
+	cancels := make([]context.CancelFunc, 0, len(handle.inFlightReq))
 	for _, req := range handle.inFlightReq {
 		if req.cancel != nil {
-			req.cancel()
+			cancels = append(cancels, req.cancel)
 		}
 	}
-	handle.inFlightMu.Unlock()
+	handle.inFlightMu.RUnlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 func (p *Pool) checkHealth() {
 	for _, handle := range p.workerSnapshot() {
-		handle.mu.Lock()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		healthy, err := handle.worker.Health(ctx)
 		cancel()
@@ -477,13 +471,11 @@ func (p *Pool) checkHealth() {
 		if err != nil || !healthy {
 			handle.healthy.Store(false)
 			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
-			handle.mu.Unlock()
 
 			workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Inc()
 			p.restartWorker(handle.id, handle)
 		} else {
 			handle.healthy.Store(true)
-			handle.mu.Unlock()
 		}
 	}
 }
@@ -744,12 +736,8 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 	// Snapshot handles that are currently restarting (have restarting=true
 	// or restartDone!=nil). awaitRestart handles both states internally.
-	p.mu.RLock()
 	var restarting []*workerHandle
-	for _, h := range p.workers {
-		if h == nil {
-			continue
-		}
+	for _, h := range p.workerSnapshot() {
 		h.restartMu.Lock()
 		pending := h.restarting.Load() || h.restartDone != nil
 		h.restartMu.Unlock()
@@ -757,7 +745,6 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 			restarting = append(restarting, h)
 		}
 	}
-	p.mu.RUnlock()
 
 	if len(restarting) == 0 {
 		return fmt.Errorf("no workers restarting")
@@ -822,8 +809,6 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 			}
 			return nil, err
 		}
-
-		handle.touch()
 
 		result, err := handle.worker.Parse(ctx, methodName, inputJSON)
 		if err == nil {
@@ -928,7 +913,6 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			// Create cancellable context for this attempt
 			attemptCtx, cancel := context.WithCancel(ctx)
 			req, cleanup := p.trackRequest(currentHandle, cancel)
-			currentHandle.touch()
 
 			results, err := currentHandle.worker.CallStream(attemptCtx, methodName, inputJSON, streamMode)
 			if err != nil {
