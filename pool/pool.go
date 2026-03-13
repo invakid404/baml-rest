@@ -1279,13 +1279,14 @@ func (p *Pool) Close() error {
 	// Signal health checker to stop
 	close(p.done)
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	// Snapshot current workers and release the pool lock before doing any
+	// potentially blocking work. Holding p.mu across kill()/wg.Wait() can
+	// deadlock with the health-check goroutine if it is concurrently trying
+	// to enter restartWorker(), which needs p.mu before the goroutine can exit.
+	handles := p.workerSnapshot()
 
-	for _, handle := range p.workers {
-		if handle != nil {
-			handle.kill()
-		}
+	for _, handle := range handles {
+		handle.kill()
 	}
 
 	p.wg.Wait()
