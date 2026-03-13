@@ -1198,10 +1198,10 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	}
 
 	contentPartOneOf := make(openapi3.SchemaRefs, len(contentPartVariants))
-	contentPartMapping := make(map[string]string, len(contentPartVariants))
+	contentPartMapping := make(openapi3.StringMap[openapi3.MappingRef], len(contentPartVariants))
 	for i, v := range contentPartVariants {
 		contentPartOneOf[i] = registerSchema(schemas, v.name, v.schemaRef)
-		contentPartMapping[v.discValue] = fmt.Sprintf("#/components/schemas/%s", v.name)
+		contentPartMapping[v.discValue] = openapi3.MappingRef{Ref: fmt.Sprintf("#/components/schemas/%s", v.name)}
 	}
 
 	schemas[dynamicContentPartSchemaName] = &openapi3.SchemaRef{
@@ -2112,12 +2112,12 @@ func buildStreamEventUnion(
 			},
 			Discriminator: &openapi3.Discriminator{
 				PropertyName: "type",
-				Mapping: map[string]string{
-					"data":      fmt.Sprintf("#/components/schemas/%s", dataEventName),
-					"final":     fmt.Sprintf("#/components/schemas/%s", finalEventName),
-					"heartbeat": heartbeatRef.Ref,
-					"reset":     resetRef.Ref,
-					"error":     errorRef.Ref,
+				Mapping: openapi3.StringMap[openapi3.MappingRef]{
+					"data":      {Ref: fmt.Sprintf("#/components/schemas/%s", dataEventName)},
+					"final":     {Ref: fmt.Sprintf("#/components/schemas/%s", finalEventName)},
+					"heartbeat": {Ref: heartbeatRef.Ref},
+					"reset":     {Ref: resetRef.Ref},
+					"error":     {Ref: errorRef.Ref},
 				},
 			},
 		},
