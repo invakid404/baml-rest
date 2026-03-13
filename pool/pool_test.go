@@ -802,6 +802,71 @@ func TestShutdownWaitsForInFlightParse(t *testing.T) {
 	}
 }
 
+// TestCheckHungRequestsIgnoresTrackedParse verifies that parse attempts are
+// tracked for drain/cancel accounting without being mistaken for first-byte
+// hung stream requests.
+func TestCheckHungRequestsIgnoresTrackedParse(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	killed := make(chan struct{}, 1)
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.parseFn = func(context.Context, string, []byte) (*workerplugin.ParseResult, error) {
+			close(started)
+			<-release
+			return &workerplugin.ParseResult{Data: []byte(`"parsed"`)}, nil
+		}
+		w.closeFn = func() error {
+			select {
+			case killed <- struct{}{}:
+			default:
+			}
+			return nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer func() {
+		p.workers[0].worker.(*mockWorker).closeFn = nil
+		_ = p.Close()
+	}()
+	p.SetFirstByteTimeout(time.Millisecond)
+
+	parseDone := make(chan error, 1)
+	go func() {
+		_, err := p.Parse(context.Background(), "Test", []byte(`{}`))
+		parseDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Parse did not start")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	p.checkHungRequests()
+
+	select {
+	case <-killed:
+		t.Fatal("parse request should not be treated as hung")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-parseDone:
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Parse did not finish")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests: CallStream / Call retry
 // ---------------------------------------------------------------------------
@@ -1166,6 +1231,31 @@ func TestAwaitAnyRestartPendingPathRespectsCancellation(t *testing.T) {
 
 	if got := startCalls.Load(); got != 0 {
 		t.Fatalf("awaitAnyRestart spawned %d replacement(s); want 0", got)
+	}
+}
+
+// TestAwaitRestartReturnsOnDrain verifies retry waiters stop promptly when the
+// pool begins draining instead of waiting for restart completion.
+func TestAwaitRestartReturnsOnDrain(t *testing.T) {
+	var startCalls atomic.Int32
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	p.newWorker = func(id int) (*workerHandle, error) {
+		startCalls.Add(1)
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	failed := p.workers[0]
+	p.draining.Store(true)
+	p.drainOnce.Do(func() { close(p.drainCh) })
+
+	err := p.awaitRestart(context.Background(), failed)
+	if err == nil || err.Error() != "pool is draining" {
+		t.Fatalf("expected pool is draining error, got %v", err)
+	}
+	if got := startCalls.Load(); got != 0 {
+		t.Fatalf("awaitRestart spawned %d replacement(s); want 0", got)
 	}
 }
 
@@ -1843,6 +1933,27 @@ func TestCheckHealthDispatchesRestartAsync(t *testing.T) {
 	}
 
 	close(blockedFactory)
+}
+
+// TestCheckHealthDoesNotReHealthyRestartingWorker verifies a stale successful
+// probe does not mark a handle healthy again once restart has been queued.
+func TestCheckHealthDoesNotReHealthyRestartingWorker(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	handle := p.workers[0]
+	handle.healthy.Store(false)
+	handle.restartPending.Add(1)
+	defer handle.restartPending.Add(-1)
+	handle.worker.(*mockWorker).healthFn = func(context.Context) (bool, error) {
+		return true, nil
+	}
+
+	p.checkHealth()
+
+	if handle.healthy.Load() {
+		t.Fatal("worker should remain unhealthy while restart is pending")
+	}
 }
 
 // TestCloseDuringHealthRestartDoesNotBlock verifies that Close() is not held

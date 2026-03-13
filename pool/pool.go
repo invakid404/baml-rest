@@ -617,7 +617,7 @@ func (p *Pool) checkHealth() {
 
 			workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Inc()
 			p.dispatchRestart(handle)
-		} else {
+		} else if handle.restartPending.Load() == 0 && !handle.restarting.Load() {
 			handle.healthy.Store(true)
 		}
 	}
@@ -777,6 +777,8 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 			select {
 			case <-ch:
 				return nil
+			case <-p.drainCh:
+				return fmt.Errorf("pool is draining")
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -791,12 +793,20 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 		sawPending = true
 
 		select {
+		case <-p.drainCh:
+			return fmt.Errorf("pool is draining")
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
 		runtime.Gosched()
+	}
+
+	select {
+	case <-p.drainCh:
+		return fmt.Errorf("pool is draining")
+	default:
 	}
 
 	done := make(chan struct{})
@@ -808,6 +818,8 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 	select {
 	case <-done:
 		return nil
+	case <-p.drainCh:
+		return fmt.Errorf("pool is draining")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -863,6 +875,9 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 				if handle, retryErr := p.getWorker(); retryErr == nil {
 					return handle, nil
 				}
+				if p.closed.Load() || p.draining.Load() {
+					return nil, awaitErr
+				}
 				// No restarts visible. The common async-restart gap is
 				// covered by restartPending, but a narrow synchronous window
 				// still exists between marking a worker unhealthy and
@@ -872,7 +887,7 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 					runtime.Gosched()
 					continue
 				}
-				return nil, err // truly no restarts pending
+				return nil, awaitErr
 			}
 			yielded = false // reset after a successful await
 			if handle, retryErr := p.getWorker(); retryErr == nil {
@@ -989,7 +1004,8 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 		}
 
 		attemptCtx, cancel := context.WithCancel(ctx)
-		_, cleanup := p.trackRequest(handle, cancel)
+		req, cleanup := p.trackRequest(handle, cancel)
+		req.gotFirstByte.Store(true)
 		result, err := handle.worker.Parse(attemptCtx, methodName, inputJSON)
 		cleanup()
 		if err == nil {
