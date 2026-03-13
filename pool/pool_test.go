@@ -88,7 +88,6 @@ func newMockHandle(id int, w *mockWorker) *workerHandle {
 		id:          id,
 		logger:      zerolog.Nop(),
 		worker:      w,
-		lastUsed:    time.Now(),
 		inFlightReq: make(map[uint64]*inFlightRequest),
 	}
 	h.restartCond = sync.NewCond(&h.restartMu)
@@ -340,6 +339,44 @@ func TestKillWorkerAndRetryKillsImmediately(t *testing.T) {
 	oldWorker.closeMu.Unlock()
 	if !killed {
 		t.Error("old worker should be killed immediately, before replacement starts")
+	}
+}
+
+// TestKillWorkerAndRetryCancelsOutsideInFlightLock verifies that request
+// cancellation runs after the in-flight lock is released.
+func TestKillWorkerAndRetryCancelsOutsideInFlightLock(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	handle := p.workers[0]
+	cancelCalled := make(chan struct{})
+
+	handle.inFlightMu.Lock()
+	handle.inFlightReq[1] = &inFlightRequest{
+		cancel: func() {
+			close(cancelCalled)
+			handle.inFlightMu.Lock()
+			handle.inFlightMu.Unlock()
+		},
+	}
+	handle.inFlightMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		p.killWorkerAndRetry(handle)
+		close(done)
+	}()
+
+	select {
+	case <-cancelCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel was not invoked")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("killWorkerAndRetry blocked while cancelling requests")
 	}
 }
 
