@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest/bamlutils
 
-go 1.26.0
+go 1.26.1
 
 require (
 	github.com/alecthomas/participle/v2 v2.1.4
