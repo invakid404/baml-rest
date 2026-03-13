@@ -2,7 +2,9 @@ package workerplugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
@@ -158,7 +160,7 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 			resp, err := stream.Recv()
 			if err != nil {
 				// EOF means stream ended normally
-				if err.Error() == "EOF" {
+				if errors.Is(err, io.EOF) {
 					return
 				}
 				errResult := GetStreamResult()
