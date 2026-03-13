@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -511,7 +512,7 @@ func (p *Pool) checkHealth() {
 			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 
 			workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Inc()
-			p.restartWorker(handle.id, handle)
+			p.dispatchRestart(handle)
 		} else {
 			handle.healthy.Store(true)
 		}
@@ -647,30 +648,45 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 // respecting ctx cancellation.
 //
 // When the restart goroutine has already set up restartDone (the common
-// case), this is a pure select — no goroutine is spawned. A goroutine
-// is only used as a fallback for the rare scheduling race where the
-// restart CAS hasn't executed yet.
+// case), this is a pure select. During the rare scheduling race where
+// async dispatch has published restartPending but restartDone is not yet
+// visible, poll until the channel is published or the restart disappears.
+// Only if no restart state is visible at all do we fall back to kicking
+// off restartWorker ourselves.
 func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
-	handle.restartMu.Lock()
-	ch := handle.restartDone
-	handle.restartMu.Unlock()
+	sawPending := false
+	for {
+		handle.restartMu.Lock()
+		ch := handle.restartDone
+		pending := handle.restartPending.Load() > 0 || handle.restarting.Load() || ch != nil
+		handle.restartMu.Unlock()
 
-	if ch != nil {
-		// Fast path: restart is in progress. Select on the shared
-		// channel — no goroutine needed, no accumulation.
+		if ch != nil {
+			select {
+			case <-ch:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		if !pending {
+			if sawPending {
+				return nil
+			}
+			break
+		}
+		sawPending = true
+
 		select {
-		case <-ch:
-			return nil
 		case <-ctx.Done():
 			return ctx.Err()
+		default:
 		}
+
+		runtime.Gosched()
 	}
 
-	// Slow path: restartDone is nil, meaning the restart goroutine
-	// hasn't executed the CAS yet (scheduling race) or the restart
-	// already completed. Fall back to calling restartWorker, which
-	// handles both (CAS winner starts it, CAS loser waits, stale
-	// handle is a fast no-op).
 	done := make(chan struct{})
 	go func() {
 		p.restartWorker(handle.id, handle)
@@ -773,49 +789,57 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 // Returns nil if a restart completed, ctx.Err() if the context was
 // cancelled, or a generic error if no workers are restarting at all.
 func (p *Pool) awaitAnyRestart(ctx context.Context) error {
-	// Snapshot handles that are currently restarting (have restarting=true
-	// or restartDone!=nil). awaitRestart handles both states internally.
-	var restarting []*workerHandle
-	for _, h := range p.workerSnapshot() {
-		h.restartMu.Lock()
-		pending := h.restartPending.Load() > 0 || h.restarting.Load() || h.restartDone != nil
-		h.restartMu.Unlock()
-		if pending {
-			restarting = append(restarting, h)
+	sawPending := false
+	for {
+		cases := []reflect.SelectCase{
+			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())},
+			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(p.drainCh)},
 		}
-	}
+		pending := false
 
-	if len(restarting) == 0 {
-		return fmt.Errorf("no workers restarting")
-	}
-
-	// Child context: cancelled on return so remaining goroutines don't
-	// leak when the first restart completes (or the parent ctx expires).
-	waitCtx, waitCancel := context.WithCancel(ctx)
-	defer waitCancel()
-
-	// Fan-in: call awaitRestart per handle, first to complete signals ready.
-	// awaitRestart already handles both the channel-ready fast path and
-	// the CAS-to-channel scheduling race, so no logic is duplicated here.
-	ready := make(chan struct{}, 1)
-	for _, h := range restarting {
-		go func(handle *workerHandle) {
-			if p.awaitRestart(waitCtx, handle) == nil {
-				select {
-				case ready <- struct{}{}:
-				default:
-				}
+		for _, h := range p.workerSnapshot() {
+			h.restartMu.Lock()
+			ch := h.restartDone
+			hasRestart := h.restartPending.Load() > 0 || h.restarting.Load() || ch != nil
+			h.restartMu.Unlock()
+			if !hasRestart {
+				continue
 			}
-		}(h)
-	}
+			pending = true
+			if ch != nil {
+				cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ch)})
+			}
+		}
 
-	select {
-	case <-ready:
-		return nil
-	case <-p.drainCh:
-		return fmt.Errorf("pool is draining")
-	case <-ctx.Done():
-		return ctx.Err()
+		if len(cases) > 2 {
+			chosen, _, _ := reflect.Select(cases)
+			switch chosen {
+			case 0:
+				return ctx.Err()
+			case 1:
+				return fmt.Errorf("pool is draining")
+			default:
+				return nil
+			}
+		}
+
+		if !pending {
+			if sawPending {
+				return nil
+			}
+			return fmt.Errorf("no workers restarting")
+		}
+		sawPending = true
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.drainCh:
+			return fmt.Errorf("pool is draining")
+		default:
+		}
+
+		runtime.Gosched()
 	}
 }
 
@@ -849,7 +873,10 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 			return nil, err
 		}
 
-		result, err := handle.worker.Parse(ctx, methodName, inputJSON)
+		attemptCtx, cancel := context.WithCancel(ctx)
+		_, cleanup := p.trackRequest(handle, cancel)
+		result, err := handle.worker.Parse(attemptCtx, methodName, inputJSON)
+		cleanup()
 		if err == nil {
 			return result, nil
 		}
@@ -1021,6 +1048,13 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				}
 
 				// Check for retryable worker errors mid-stream
+				if result.Kind == workerplugin.StreamResultKindError && ctx.Err() != nil {
+					workerplugin.ReleaseStreamResult(result)
+					drainResults(results)
+					cleanup()
+					return
+				}
+
 				if result.Kind == workerplugin.StreamResultKindError && isRetryableWorkerError(result.Error) {
 					currentHandle.logger.Info().
 						Int("attempt", attempt+1).
@@ -1067,6 +1101,10 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			}
 
 			cleanup()
+
+			if ctx.Err() != nil {
+				return
+			}
 
 			// Reaching here means either a mid-stream retryable error or an
 			// unexpected EOF (channel closed without terminal). Both are
