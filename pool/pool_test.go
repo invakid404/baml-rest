@@ -98,7 +98,7 @@ func newMockHandle(id int, w *mockWorker) *workerHandle {
 // newTestPool creates a Pool backed by mock workers.
 // The factory is invoked for every startWorker call (initial + replacements).
 // The health checker is NOT started.
-func newTestPool(t *testing.T, size int, factory func(id int) (*workerHandle, error)) *Pool {
+func newTestPool(t testing.TB, size int, factory func(id int) (*workerHandle, error)) *Pool {
 	t.Helper()
 	p := &Pool{
 		config: &Config{
