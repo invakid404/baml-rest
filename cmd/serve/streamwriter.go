@@ -72,21 +72,19 @@ type NDJSONStreamWriterPublisher struct {
 	mu sync.Mutex
 }
 
-func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
+func encodeNDJSONEvent(event *NDJSONEvent) ([]byte, error) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+func (p *NDJSONStreamWriterPublisher) writeFrame(frame []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	data, err := json.Marshal(event)
-	if err != nil {
-		p.cancel()
-		return err
-	}
-
-	if _, err := p.w.Write(data); err != nil {
-		p.cancel()
-		return err
-	}
-	if err := p.w.WriteByte('\n'); err != nil {
+	if _, err := p.w.Write(frame); err != nil {
 		p.cancel()
 		return err
 	}
@@ -97,6 +95,16 @@ func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
 	}
 
 	return nil
+}
+
+func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
+	frame, err := encodeNDJSONEvent(event)
+	if err != nil {
+		p.cancel()
+		return err
+	}
+
+	return p.writeFrame(frame)
 }
 
 func (p *NDJSONStreamWriterPublisher) writeKeepalive() error {
@@ -252,43 +260,36 @@ type SSEStreamWriterPublisher struct {
 	mu sync.Mutex
 }
 
-func (p *SSEStreamWriterPublisher) writeEvent(eventType string, payload string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func formatSSEEvent(eventType string, payload string) string {
+	var frame strings.Builder
 
 	if eventType != "" {
-		if _, err := p.w.WriteString("event: "); err != nil {
-			p.cancel()
-			return err
-		}
-		if _, err := p.w.WriteString(eventType); err != nil {
-			p.cancel()
-			return err
-		}
-		if err := p.w.WriteByte('\n'); err != nil {
-			p.cancel()
-			return err
-		}
+		frame.WriteString("event: ")
+		frame.WriteString(eventType)
+		frame.WriteByte('\n')
 	}
 
 	if payload != "" {
 		for _, line := range strings.Split(payload, "\n") {
-			if _, err := p.w.WriteString("data: "); err != nil {
-				p.cancel()
-				return err
-			}
-			if _, err := p.w.WriteString(line); err != nil {
-				p.cancel()
-				return err
-			}
-			if err := p.w.WriteByte('\n'); err != nil {
-				p.cancel()
-				return err
-			}
+			frame.WriteString("data: ")
+			frame.WriteString(line)
+			frame.WriteByte('\n')
 		}
 	}
 
-	if err := p.w.WriteByte('\n'); err != nil {
+	frame.WriteByte('\n')
+	return frame.String()
+}
+
+func formatSSEComment(comment string) string {
+	return ": " + comment + "\n\n"
+}
+
+func (p *SSEStreamWriterPublisher) writeFrame(frame string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, err := p.w.WriteString(frame); err != nil {
 		p.cancel()
 		return err
 	}
@@ -301,29 +302,12 @@ func (p *SSEStreamWriterPublisher) writeEvent(eventType string, payload string) 
 	return nil
 }
 
+func (p *SSEStreamWriterPublisher) writeEvent(eventType string, payload string) error {
+	return p.writeFrame(formatSSEEvent(eventType, payload))
+}
+
 func (p *SSEStreamWriterPublisher) writeComment(comment string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if _, err := p.w.WriteString(": "); err != nil {
-		p.cancel()
-		return err
-	}
-	if _, err := p.w.WriteString(comment); err != nil {
-		p.cancel()
-		return err
-	}
-	if _, err := p.w.WriteString("\n\n"); err != nil {
-		p.cancel()
-		return err
-	}
-
-	if err := p.w.Flush(); err != nil {
-		p.cancel()
-		return err
-	}
-
-	return nil
+	return p.writeFrame(formatSSEComment(comment))
 }
 
 func (p *SSEStreamWriterPublisher) startKeepalive(ctx context.Context, interval time.Duration) {
