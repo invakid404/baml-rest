@@ -110,6 +110,8 @@ type Config struct {
 	WorkerPath string
 	// WorkerMemLimit is the GOMEMLIMIT for each worker process (0 = no limit)
 	WorkerMemLimit int64
+	// WorkerStartTimeout bounds worker startup and restart handshake work (0 = no timeout)
+	WorkerStartTimeout time.Duration
 }
 
 // DefaultConfig returns a default configuration
@@ -119,6 +121,7 @@ func DefaultConfig() *Config {
 		MaxRetries:          2,
 		HealthCheckInterval: 10 * time.Second,
 		FirstByteTimeout:    120 * time.Second,
+		WorkerStartTimeout:  30 * time.Second,
 	}
 }
 
@@ -169,19 +172,22 @@ func (p *Pool) trackRequest(handle *workerHandle, cancel context.CancelFunc) (*i
 
 // Pool manages a pool of worker processes
 type Pool struct {
-	config    *Config
-	logger    zerolog.Logger
-	workers   []*workerHandle
-	mu        sync.RWMutex
-	next      atomic.Uint64
-	requestID atomic.Uint64
-	closed    atomic.Bool
-	draining  atomic.Bool
-	drainOnce sync.Once
-	drainCh   chan struct{} // closed when pool begins draining; selectable unlike atomic bool
-	wg        sync.WaitGroup
-	done      chan struct{}
-	newWorker func(id int) (*workerHandle, error) // override for testing; nil in production
+	config             *Config
+	logger             zerolog.Logger
+	workers            []*workerHandle
+	mu                 sync.RWMutex
+	restartMu          sync.Mutex
+	next               atomic.Uint64
+	requestID          atomic.Uint64
+	closed             atomic.Bool
+	draining           atomic.Bool
+	drainOnce          sync.Once
+	drainCh            chan struct{} // closed when pool begins draining; selectable unlike atomic bool
+	wg                 sync.WaitGroup
+	restartWG          sync.WaitGroup
+	done               chan struct{}
+	newWorker          func(id int) (*workerHandle, error) // override for testing; nil in production
+	beforeRestartStart func()
 }
 
 type workerHandle struct {
@@ -297,9 +303,26 @@ func New(config *Config) (*Pool, error) {
 	return p, nil
 }
 
+var errWorkerStartAborted = fmt.Errorf("worker startup aborted")
+
+type workerStartResult struct {
+	handle *workerHandle
+	err    error
+}
+
 func (p *Pool) startWorker(id int) (*workerHandle, error) {
+	return p.startWorkerWithStop(id, nil)
+}
+
+func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle, error) {
+	select {
+	case <-stop:
+		return nil, errWorkerStartAborted
+	default:
+	}
+
 	if p.newWorker != nil {
-		return p.newWorker(id)
+		return p.startTestWorker(id, stop)
 	}
 
 	cmd := exec.Command(p.config.WorkerPath)
@@ -330,6 +353,78 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		Logger:          pluginLogger,
 		GRPCDialOptions: workerplugin.GRPCDialOptions(),
 	})
+
+	select {
+	case <-stop:
+		client.Kill()
+		return nil, errWorkerStartAborted
+	default:
+	}
+
+	resultCh := make(chan workerStartResult, 1)
+	go func() {
+		handle, err := p.finishWorkerStartup(id, client)
+		resultCh <- workerStartResult{handle: handle, err: err}
+	}()
+
+	if p.config.WorkerStartTimeout > 0 {
+		timer := time.NewTimer(p.config.WorkerStartTimeout)
+		defer timer.Stop()
+
+		select {
+		case result := <-resultCh:
+			return result.handle, result.err
+		case <-timer.C:
+			client.Kill()
+			go reapWorkerStartResult(resultCh)
+			return nil, fmt.Errorf("worker startup timed out after %s", p.config.WorkerStartTimeout)
+		case <-stop:
+			client.Kill()
+			go reapWorkerStartResult(resultCh)
+			return nil, errWorkerStartAborted
+		}
+	}
+
+	select {
+	case result := <-resultCh:
+		return result.handle, result.err
+	case <-stop:
+		client.Kill()
+		go reapWorkerStartResult(resultCh)
+		return nil, errWorkerStartAborted
+	}
+}
+
+func (p *Pool) startTestWorker(id int, stop <-chan struct{}) (*workerHandle, error) {
+	select {
+	case <-stop:
+		return nil, errWorkerStartAborted
+	default:
+	}
+
+	resultCh := make(chan workerStartResult, 1)
+	go func() {
+		handle, err := p.newWorker(id)
+		resultCh <- workerStartResult{handle: handle, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		return result.handle, result.err
+	case <-stop:
+		go reapWorkerStartResult(resultCh)
+		return nil, errWorkerStartAborted
+	}
+}
+
+func reapWorkerStartResult(resultCh <-chan workerStartResult) {
+	result := <-resultCh
+	if result.handle != nil {
+		result.handle.kill()
+	}
+}
+
+func (p *Pool) finishWorkerStartup(id int, client *plugin.Client) (*workerHandle, error) {
 
 	rpcClient, err := client.Client()
 	if err != nil {
@@ -449,8 +544,17 @@ func (h *workerHandle) isHungRequestStillHung(snapshot hungRequestSnapshot, now 
 }
 
 func (p *Pool) dispatchRestart(handle *workerHandle) {
+	p.restartMu.Lock()
+	if p.closed.Load() {
+		p.restartMu.Unlock()
+		return
+	}
+	p.restartWG.Add(1)
 	handle.restartPending.Add(1)
+	p.restartMu.Unlock()
+
 	go func() {
+		defer p.restartWG.Done()
 		defer handle.restartPending.Add(-1)
 		p.restartWorker(handle.id, handle)
 	}()
@@ -577,8 +681,16 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	// The old worker stays in the slot (possibly struggling, but better
 	// than nothing) while the new one boots up (~1-2s for process start
 	// and gRPC handshake).
-	newHandle, err := p.startWorker(id)
+	if p.beforeRestartStart != nil {
+		p.beforeRestartStart()
+	}
+
+	newHandle, err := p.startWorkerWithStop(id, p.done)
 	if err != nil {
+		if err == errWorkerStartAborted || p.closed.Load() {
+			return
+		}
+
 		// Mark the failed worker unhealthy so getWorker stops routing to it.
 		p.mu.Lock()
 		if p.workers[id] == failed {
@@ -747,6 +859,9 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 			if awaitErr := p.awaitAnyRestart(ctx); awaitErr != nil {
 				if ctx.Err() != nil {
 					return nil, awaitErr
+				}
+				if handle, retryErr := p.getWorker(); retryErr == nil {
+					return handle, nil
 				}
 				// No restarts visible. The common async-restart gap is
 				// covered by restartPending, but a narrow synchronous window
@@ -1340,6 +1455,11 @@ func (p *Pool) Close() error {
 	// Signal health checker to stop
 	close(p.done)
 
+	// Prevent any new restart goroutine from registering with restartWG while
+	// Close begins waiting below.
+	p.restartMu.Lock()
+	p.restartMu.Unlock()
+
 	// Snapshot current workers and release the pool lock before doing any
 	// potentially blocking work. Holding p.mu across kill()/wg.Wait() can
 	// deadlock with the health-check goroutine if it is concurrently trying
@@ -1350,6 +1470,7 @@ func (p *Pool) Close() error {
 		handle.kill()
 	}
 
+	p.restartWG.Wait()
 	p.wg.Wait()
 	p.logger.Info().Msg("Worker pool closed")
 	return nil

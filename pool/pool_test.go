@@ -1901,6 +1901,115 @@ func TestCloseDuringHealthRestartDoesNotBlock(t *testing.T) {
 	close(blockedFactory)
 }
 
+// TestCloseCancelsBlockedAsyncRestart verifies that Close cancels an async
+// restart that is stalled in worker startup and returns without installing a
+// replacement afterward.
+func TestCloseCancelsBlockedAsyncRestart(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+
+	failed := p.workers[0]
+	failed.healthy.Store(false)
+
+	blockedFactory := make(chan struct{})
+	restartStarted := make(chan struct{})
+	var signalRestartStart sync.Once
+	p.newWorker = func(id int) (*workerHandle, error) {
+		signalRestartStart.Do(func() { close(restartStarted) })
+		<-blockedFactory
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	p.dispatchRestart(failed)
+
+	select {
+	case <-restartStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement startup did not begin")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- p.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked on async restart")
+	}
+
+	close(blockedFactory)
+	time.Sleep(100 * time.Millisecond)
+
+	p.mu.RLock()
+	current := p.workers[0]
+	p.mu.RUnlock()
+	if current != failed {
+		t.Fatal("replacement should not be installed after Close")
+	}
+}
+
+// TestClosePreventsReplacementStart verifies that once Close begins, a queued
+// async restart cannot start a new replacement worker afterward.
+func TestClosePreventsReplacementStart(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+
+	failed := p.workers[0]
+	failed.healthy.Store(false)
+
+	hookStarted := make(chan struct{})
+	releaseHook := make(chan struct{})
+	var signalHook sync.Once
+	p.beforeRestartStart = func() {
+		signalHook.Do(func() { close(hookStarted) })
+		<-releaseHook
+	}
+	defer func() { p.beforeRestartStart = nil }()
+
+	var startCalls atomic.Int32
+	p.newWorker = func(id int) (*workerHandle, error) {
+		startCalls.Add(1)
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	p.dispatchRestart(failed)
+
+	select {
+	case <-hookStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart did not reach pre-start hook")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- p.Close()
+	}()
+
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned before blocked restart path was released")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseHook)
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not finish after releasing restart hook")
+	}
+
+	if calls := startCalls.Load(); calls != 0 {
+		t.Fatalf("replacement started %d time(s) after Close began, want 0", calls)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests: Concurrent multi-worker
 // ---------------------------------------------------------------------------
