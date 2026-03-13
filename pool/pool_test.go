@@ -1006,6 +1006,71 @@ func TestDispatchRestartPublishesPendingState(t *testing.T) {
 	}
 }
 
+// TestDispatchRestartConcurrentWaiters verifies that multiple new requests can
+// wait through the async restart publication window and all recover once the
+// replacement becomes available.
+func TestDispatchRestartConcurrentWaiters(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	failed := p.workers[0]
+	failed.healthy.Store(false)
+
+	blockedFactory := make(chan struct{})
+	p.newWorker = func(id int) (*workerHandle, error) {
+		<-blockedFactory
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	p.dispatchRestart(failed)
+
+	const waiters = 16
+	errCh := make(chan error, waiters)
+	var wg sync.WaitGroup
+	for i := 0; i < waiters; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h, err := p.getWorkerForRetry(context.Background(), nil)
+			if err != nil {
+				errCh <- fmt.Errorf("getWorkerForRetry: %w", err)
+				return
+			}
+			if h == failed {
+				errCh <- fmt.Errorf("waiter received failed handle")
+				return
+			}
+			if !h.healthy.Load() {
+				errCh <- fmt.Errorf("waiter received unhealthy replacement")
+			}
+		}()
+	}
+
+	waitDone := make(chan struct{})
+	go func() {
+		defer close(waitDone)
+		wg.Wait()
+	}()
+
+	select {
+	case <-waitDone:
+		t.Fatal("waiters returned before replacement was allowed to start")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(blockedFactory)
+
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiters did not recover after replacement was released")
+	}
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+}
+
 // TestGetWorkerForRetryRespectsContext verifies that getWorkerForRetry
 // returns promptly when the caller's context is cancelled, even if
 // the restart would otherwise block (slow factory).
