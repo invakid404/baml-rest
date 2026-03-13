@@ -129,6 +129,11 @@ type inFlightRequest struct {
 	cancel       context.CancelFunc
 }
 
+type hungRequestSnapshot struct {
+	id        uint64
+	startedAt time.Time
+}
+
 // inFlightRequestPool reduces allocations for request tracking
 var inFlightRequestPool = bamlutils.NewPool(func() *inFlightRequest {
 	return &inFlightRequest{}
@@ -396,17 +401,8 @@ func (p *Pool) healthChecker() {
 func (p *Pool) checkHungRequests() {
 	now := time.Now()
 	for _, handle := range p.workerSnapshot() {
-		handle.inFlightMu.RLock()
-		var hungRequest *inFlightRequest
-		for _, req := range handle.inFlightReq {
-			if !req.gotFirstByte.Load() && now.Sub(req.startedAt) > p.config.FirstByteTimeout {
-				hungRequest = req
-				break
-			}
-		}
-		handle.inFlightMu.RUnlock()
-
-		if hungRequest != nil {
+		hungRequest, ok := handle.firstHungRequestSnapshot(now, p.config.FirstByteTimeout)
+		if ok {
 			handle.logger.Warn().
 				Uint64("request_id", hungRequest.id).
 				Dur("waited", now.Sub(hungRequest.startedAt)).
@@ -415,6 +411,22 @@ func (p *Pool) checkHungRequests() {
 			p.killWorkerAndRetry(handle)
 		}
 	}
+}
+
+func (h *workerHandle) firstHungRequestSnapshot(now time.Time, timeout time.Duration) (hungRequestSnapshot, bool) {
+	h.inFlightMu.RLock()
+	defer h.inFlightMu.RUnlock()
+
+	for _, req := range h.inFlightReq {
+		if !req.gotFirstByte.Load() && now.Sub(req.startedAt) > timeout {
+			return hungRequestSnapshot{
+				id:        req.id,
+				startedAt: req.startedAt,
+			}, true
+		}
+	}
+
+	return hungRequestSnapshot{}, false
 }
 
 // killWorkerAndRetry fires an async replacement for a broken worker and

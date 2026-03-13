@@ -380,6 +380,37 @@ func TestKillWorkerAndRetryCancelsOutsideInFlightLock(t *testing.T) {
 	}
 }
 
+// TestFirstHungRequestSnapshotCopiesState verifies that hung-request detection
+// copies request fields while holding the in-flight lock instead of retaining a
+// pointer to pooled request state after unlock.
+func TestFirstHungRequestSnapshotCopiesState(t *testing.T) {
+	handle := newMockHandle(0, newMockWorker())
+	startedAt := time.Now().Add(-10 * time.Second)
+	req := &inFlightRequest{
+		id:        42,
+		startedAt: startedAt,
+	}
+	handle.inFlightReq[req.id] = req
+
+	snapshot, ok := handle.firstHungRequestSnapshot(time.Now(), time.Second)
+	if !ok {
+		t.Fatal("expected hung request snapshot")
+	}
+
+	// Simulate request cleanup and object reuse after the lock is released.
+	*req = inFlightRequest{}
+	req.id = 99
+	req.startedAt = time.Now()
+	req.gotFirstByte.Store(true)
+
+	if snapshot.id != 42 {
+		t.Fatalf("snapshot id = %d, want 42", snapshot.id)
+	}
+	if !snapshot.startedAt.Equal(startedAt) {
+		t.Fatalf("snapshot startedAt = %v, want %v", snapshot.startedAt, startedAt)
+	}
+}
+
 // TestRestartStaleHandleNoop verifies that restarting with a handle that
 // has already been replaced is a no-op (prevents killing fresh workers).
 func TestRestartStaleHandleNoop(t *testing.T) {
