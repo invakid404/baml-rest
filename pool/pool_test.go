@@ -26,6 +26,7 @@ type mockWorker struct {
 	parseFn      func(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error)
 	callStreamFn func(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error)
 	healthFn     func(ctx context.Context) (bool, error)
+	closeFn      func() error
 
 	closeMu sync.Mutex
 	closed  bool
@@ -72,6 +73,9 @@ func (m *mockWorker) Close() error {
 	m.closeMu.Lock()
 	defer m.closeMu.Unlock()
 	m.closed = true
+	if m.closeFn != nil {
+		return m.closeFn()
+	}
 	return nil
 }
 
@@ -1052,6 +1056,67 @@ func TestCloseIdempotent(t *testing.T) {
 	}
 	if err := p.Close(); err != nil {
 		t.Errorf("second Close: %v", err)
+	}
+}
+
+// TestCloseDuringHealthCheckDoesNotDeadlock reproduces the shutdown deadlock
+// where Close() waits on the health-check goroutine while still holding p.mu,
+// and the health-check goroutine needs p.mu to enter restartWorker().
+func TestCloseDuringHealthCheckDoesNotDeadlock(t *testing.T) {
+	healthStarted := make(chan struct{})
+	releaseHealth := make(chan struct{})
+	closeStarted := make(chan struct{})
+
+	var signalCloseStart sync.Once
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.healthFn = func(context.Context) (bool, error) {
+			close(healthStarted)
+			<-releaseHealth
+			return false, nil
+		}
+		w.closeFn = func() error {
+			signalCloseStart.Do(func() { close(closeStarted) })
+			return nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.checkHealth()
+	}()
+
+	select {
+	case <-healthStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("health check did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- p.Close()
+	}()
+
+	select {
+	case <-closeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not begin worker shutdown")
+	}
+
+	close(releaseHealth)
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close deadlocked with concurrent health check")
 	}
 }
 
