@@ -411,6 +411,29 @@ func TestFirstHungRequestSnapshotCopiesState(t *testing.T) {
 	}
 }
 
+// TestHungRequestConfirmationSkipsProgressedRequest verifies that once a
+// request receives its first byte after the initial hung snapshot, the worker
+// is no longer considered hung for that request.
+func TestHungRequestConfirmationSkipsProgressedRequest(t *testing.T) {
+	handle := newMockHandle(0, newMockWorker())
+	req := &inFlightRequest{
+		id:        42,
+		startedAt: time.Now().Add(-10 * time.Second),
+	}
+	handle.inFlightReq[req.id] = req
+
+	snapshot, ok := handle.firstHungRequestSnapshot(time.Now(), time.Second)
+	if !ok {
+		t.Fatal("expected hung request snapshot")
+	}
+
+	req.gotFirstByte.Store(true)
+
+	if handle.isHungRequestStillHung(snapshot, time.Now(), time.Second) {
+		t.Fatal("request should not still be treated as hung after first byte")
+	}
+}
+
 // TestRestartStaleHandleNoop verifies that restarting with a handle that
 // has already been replaced is a no-op (prevents killing fresh workers).
 func TestRestartStaleHandleNoop(t *testing.T) {
@@ -803,6 +826,32 @@ func TestGetWorkerForRetryWaitsForRestart(t *testing.T) {
 		}
 		if h == failed {
 			t.Error("should return the new replacement, not the failed handle")
+		}
+		if !h.healthy.Load() {
+			t.Error("replacement should be healthy")
+		}
+	})
+}
+
+// TestGetWorkerForRetryWaitsForPendingAsyncRestart verifies that a new request
+// waits when async restart dispatch has been published, even before
+// restartDone is visible.
+func TestGetWorkerForRetryWaitsForPendingAsyncRestart(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	failed := p.workers[0]
+	failed.healthy.Store(false)
+	failed.restartPending.Add(1)
+	defer failed.restartPending.Add(-1)
+
+	requireCompleteWithin(t, 2*time.Second, func() {
+		h, err := p.getWorkerForRetry(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("expected recovery after published async restart, got: %v", err)
+		}
+		if h == failed {
+			t.Error("should return the replacement, not the failed handle")
 		}
 		if !h.healthy.Load() {
 			t.Error("replacement should be healthy")

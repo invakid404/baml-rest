@@ -184,17 +184,18 @@ type Pool struct {
 }
 
 type workerHandle struct {
-	id          int
-	logger      zerolog.Logger // pre-bound with worker id
-	client      *plugin.Client
-	worker      workerplugin.Worker
-	healthy     atomic.Bool
-	restarting  atomic.Bool   // CAS guard: only one goroutine starts a replacement
-	restartMu   sync.Mutex    // protects restartDone; also used by restartCond
-	restartCond *sync.Cond    // signaled when restart completes (legacy CAS-loser path)
-	restartDone chan struct{} // closed when the current restart cycle completes; nil when idle
-	inFlightMu  sync.RWMutex
-	inFlightReq map[uint64]*inFlightRequest
+	id             int
+	logger         zerolog.Logger // pre-bound with worker id
+	client         *plugin.Client
+	worker         workerplugin.Worker
+	healthy        atomic.Bool
+	restartPending atomic.Int32  // async restart dispatches published before restartDone is visible
+	restarting     atomic.Bool   // CAS guard: only one goroutine starts a replacement
+	restartMu      sync.Mutex    // protects restartDone; also used by restartCond
+	restartCond    *sync.Cond    // signaled when restart completes (legacy CAS-loser path)
+	restartDone    chan struct{} // closed when the current restart cycle completes; nil when idle
+	inFlightMu     sync.RWMutex
+	inFlightReq    map[uint64]*inFlightRequest
 }
 
 // kill closes brokered gRPC connections and kills the plugin process.
@@ -399,13 +400,18 @@ func (p *Pool) healthChecker() {
 
 // checkHungRequests looks for requests waiting too long for first byte
 func (p *Pool) checkHungRequests() {
+	timeout := p.GetFirstByteTimeout()
 	now := time.Now()
 	for _, handle := range p.workerSnapshot() {
-		hungRequest, ok := handle.firstHungRequestSnapshot(now, p.config.FirstByteTimeout)
+		hungRequest, ok := handle.firstHungRequestSnapshot(now, timeout)
 		if ok {
+			confirmNow := time.Now()
+			if !handle.isHungRequestStillHung(hungRequest, confirmNow, timeout) {
+				continue
+			}
 			handle.logger.Warn().
 				Uint64("request_id", hungRequest.id).
-				Dur("waited", now.Sub(hungRequest.startedAt)).
+				Dur("waited", confirmNow.Sub(hungRequest.startedAt)).
 				Msg("Worker appears hung, killing")
 			workerRestarts.WithLabelValues(string(RestartReasonHung)).Inc()
 			p.killWorkerAndRetry(handle)
@@ -427,6 +433,26 @@ func (h *workerHandle) firstHungRequestSnapshot(now time.Time, timeout time.Dura
 	}
 
 	return hungRequestSnapshot{}, false
+}
+
+func (h *workerHandle) isHungRequestStillHung(snapshot hungRequestSnapshot, now time.Time, timeout time.Duration) bool {
+	h.inFlightMu.RLock()
+	defer h.inFlightMu.RUnlock()
+
+	req, ok := h.inFlightReq[snapshot.id]
+	if !ok || !req.startedAt.Equal(snapshot.startedAt) {
+		return false
+	}
+
+	return !req.gotFirstByte.Load() && now.Sub(req.startedAt) > timeout
+}
+
+func (p *Pool) dispatchRestart(handle *workerHandle) {
+	handle.restartPending.Add(1)
+	go func() {
+		defer handle.restartPending.Add(-1)
+		p.restartWorker(handle.id, handle)
+	}()
 }
 
 // killWorkerAndRetry fires an async replacement for a broken worker and
@@ -455,7 +481,7 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 	// cancelled immediately below — even if startWorker is slow. The
 	// retry loops use getWorkerForRetry, which blocks on the CAS-loser
 	// wait path until the restart completes.
-	go p.restartWorker(handle.id, handle)
+	p.dispatchRestart(handle)
 
 	// Cancel all in-flight request contexts (belt-and-suspenders: the
 	// process kill above already broke transport, but this ensures the
@@ -706,9 +732,10 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 				if ctx.Err() != nil {
 					return nil, awaitErr
 				}
-				// No restarts visible. A restart goroutine may have been
-				// dispatched (healthy=false) but not yet scheduled
-				// (restarting still false). Yield once to let it start.
+				// No restarts visible. The common async-restart gap is
+				// covered by restartPending, but a narrow synchronous window
+				// still exists between marking a worker unhealthy and
+				// publishing restart state. Yield once to let that path run.
 				if !yielded && p.hasUnhealthyWorkers() {
 					yielded = true
 					runtime.Gosched()
@@ -751,7 +778,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 	var restarting []*workerHandle
 	for _, h := range p.workerSnapshot() {
 		h.restartMu.Lock()
-		pending := h.restarting.Load() || h.restartDone != nil
+		pending := h.restartPending.Load() > 0 || h.restarting.Load() || h.restartDone != nil
 		h.restartMu.Unlock()
 		if pending {
 			restarting = append(restarting, h)
@@ -839,7 +866,7 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 				Int("attempt", attempt+1).
 				Err(err).
 				Msg("Retrying parse after worker failure")
-			go p.restartWorker(handle.id, handle)
+			p.dispatchRestart(handle)
 			lastFailed = handle
 			lastErr = err
 			continue
@@ -947,7 +974,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 						Int("attempt", attempt+1).
 						Err(err).
 						Msg("Retrying stream after worker failure")
-					go p.restartWorker(currentHandle.id, currentHandle)
+					p.dispatchRestart(currentHandle)
 					lastFailed = currentHandle
 					continue
 				}
@@ -1052,7 +1079,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					Int("attempt", attempt+1).
 					Msg("Stream ended unexpectedly without terminal result, retrying")
 			}
-			go p.restartWorker(currentHandle.id, currentHandle)
+			p.dispatchRestart(currentHandle)
 			lastFailed = currentHandle
 		}
 
