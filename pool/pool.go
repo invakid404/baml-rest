@@ -952,6 +952,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 
 			// Create cancellable context for this attempt
 			attemptCtx, cancel := context.WithCancel(ctx)
+			attemptCtx = workerplugin.WithCallerContext(attemptCtx, ctx)
 			req, cleanup := p.trackRequest(currentHandle, cancel)
 
 			results, err := currentHandle.worker.CallStream(attemptCtx, methodName, inputJSON, streamMode)

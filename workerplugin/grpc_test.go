@@ -70,11 +70,12 @@ func (c *testCallStreamClient) RecvMsg(any) error            { return nil }
 
 func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 	tests := []struct {
-		name      string
-		recvErr   error
-		cancelCtx bool
-		wantKinds []StreamResultKind
-		wantErr   error
+		name          string
+		recvErr       error
+		cancelCtx     bool
+		cancelAttempt bool
+		wantKinds     []StreamResultKind
+		wantErr       error
 	}{
 		{
 			name:      "exact eof ends stream cleanly",
@@ -94,6 +95,12 @@ func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 			wantErr:   context.Canceled,
 		},
 		{
+			name:          "attempt canceled eof stays clean when caller is alive",
+			recvErr:       io.EOF,
+			cancelAttempt: true,
+			wantKinds:     []StreamResultKind{StreamResultKindStream},
+		},
+		{
 			name:      "non eof becomes stream error",
 			recvErr:   fmt.Errorf("stream failed: %w", io.ErrUnexpectedEOF),
 			wantKinds: []StreamResultKind{StreamResultKindStream, StreamResultKindError},
@@ -104,11 +111,18 @@ func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
+			callerCtx := context.Background()
 			if tt.cancelCtx {
+				var cancel context.CancelFunc
+				callerCtx, cancel = context.WithCancel(context.Background())
+				cancel()
+			}
+			if tt.cancelAttempt {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(context.Background())
 				cancel()
 			}
+			ctx = WithCallerContext(ctx, callerCtx)
 
 			client := &GRPCClient{client: &testWorkerClient{stream: &testCallStreamClient{events: []testStreamEvent{
 				{resp: &pb.StreamResult{Kind: pb.StreamResult_STREAM, DataJson: []byte(`"chunk"`)}},
