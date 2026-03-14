@@ -136,6 +136,49 @@ func TestBridgeStreamResultsReleasesPostCancelResultsUntilClosed(t *testing.T) {
 	}
 }
 
+func TestDrainStreamResultsReturnsWhenChannelStaysOpen(t *testing.T) {
+	t.Parallel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindStream)
+	in <- fake
+
+	done := make(chan struct{})
+	go func() {
+		drainStreamResults(in)
+		close(done)
+	}()
+
+	select {
+	case <-fake.released:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected queued result to be released")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(streamDrainMaxDuration + 250*time.Millisecond):
+		t.Fatal("expected drainStreamResults to return even if channel stays open")
+	}
+}
+
+func TestDrainStreamResultsReturnsWhenChannelStaysIdle(t *testing.T) {
+	t.Parallel()
+
+	in := make(chan bamlutils.StreamResult)
+	done := make(chan struct{})
+	go func() {
+		drainStreamResults(in)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(streamDrainIdleTimeout + 250*time.Millisecond):
+		t.Fatal("expected idle drainStreamResults to return without channel close")
+	}
+}
+
 func TestBridgeStreamResultsForwardsFinalResult(t *testing.T) {
 	t.Parallel()
 

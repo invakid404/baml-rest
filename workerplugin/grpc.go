@@ -61,6 +61,7 @@ func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStream
 		return err
 	}
 
+	sentTerminal := false
 	for result := range results {
 		pbResult := &pb.StreamResult{
 			Kind:     pb.StreamResult_Kind(result.Kind),
@@ -79,8 +80,16 @@ func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStream
 			ReleaseStreamResult(result)
 			return err
 		}
+		if result.Kind == StreamResultKindFinal || result.Kind == StreamResultKindError {
+			sentTerminal = true
+		}
 		// Release the StreamResult back to pool after Send completes
 		ReleaseStreamResult(result)
+	}
+	if !sentTerminal {
+		if err := stream.Context().Err(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -161,12 +170,6 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 			if err != nil {
 				// EOF means stream ended normally
 				if errors.Is(err, io.EOF) {
-					if ctxErr := callerContext(ctx).Err(); ctxErr != nil {
-						errResult := GetStreamResult()
-						errResult.Kind = StreamResultKindError
-						errResult.Error = ctxErr
-						results <- errResult
-					}
 					return
 				}
 				errResult := GetStreamResult()

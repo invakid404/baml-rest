@@ -13,6 +13,48 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+type testWorkerImpl struct {
+	callStream func(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *StreamResult, error)
+}
+
+func (w *testWorkerImpl) CallStream(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *StreamResult, error) {
+	if w.callStream != nil {
+		return w.callStream(ctx, methodName, inputJSON, streamMode)
+	}
+	panic("unexpected CallStream call")
+}
+
+func (w *testWorkerImpl) Health(context.Context) (bool, error) { panic("unexpected Health call") }
+func (w *testWorkerImpl) GetMetrics(context.Context) ([][]byte, error) {
+	panic("unexpected GetMetrics call")
+}
+func (w *testWorkerImpl) TriggerGC(context.Context) (*GCResult, error) {
+	panic("unexpected TriggerGC call")
+}
+func (w *testWorkerImpl) Parse(context.Context, string, []byte) (*ParseResult, error) {
+	panic("unexpected Parse call")
+}
+func (w *testWorkerImpl) GetGoroutines(context.Context, string) (*GoroutinesResult, error) {
+	panic("unexpected GetGoroutines call")
+}
+
+type testCallStreamServer struct {
+	ctx  context.Context
+	sent []*pb.StreamResult
+}
+
+func (s *testCallStreamServer) Send(resp *pb.StreamResult) error {
+	s.sent = append(s.sent, resp)
+	return nil
+}
+
+func (s *testCallStreamServer) SetHeader(metadata.MD) error  { return nil }
+func (s *testCallStreamServer) SendHeader(metadata.MD) error { return nil }
+func (s *testCallStreamServer) SetTrailer(metadata.MD)       {}
+func (s *testCallStreamServer) Context() context.Context     { return s.ctx }
+func (s *testCallStreamServer) SendMsg(any) error            { return nil }
+func (s *testCallStreamServer) RecvMsg(any) error            { return nil }
+
 type testWorkerClient struct {
 	stream grpc.ServerStreamingClient[pb.StreamResult]
 	err    error
@@ -70,12 +112,10 @@ func (c *testCallStreamClient) RecvMsg(any) error            { return nil }
 
 func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 	tests := []struct {
-		name          string
-		recvErr       error
-		cancelCtx     bool
-		cancelAttempt bool
-		wantKinds     []StreamResultKind
-		wantErr       error
+		name      string
+		recvErr   error
+		wantKinds []StreamResultKind
+		wantErr   error
 	}{
 		{
 			name:      "exact eof ends stream cleanly",
@@ -88,19 +128,6 @@ func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 			wantKinds: []StreamResultKind{StreamResultKindStream},
 		},
 		{
-			name:      "canceled eof becomes cancellation error",
-			recvErr:   io.EOF,
-			cancelCtx: true,
-			wantKinds: []StreamResultKind{StreamResultKindStream, StreamResultKindError},
-			wantErr:   context.Canceled,
-		},
-		{
-			name:          "attempt canceled eof stays clean when caller is alive",
-			recvErr:       io.EOF,
-			cancelAttempt: true,
-			wantKinds:     []StreamResultKind{StreamResultKindStream},
-		},
-		{
 			name:      "non eof becomes stream error",
 			recvErr:   fmt.Errorf("stream failed: %w", io.ErrUnexpectedEOF),
 			wantKinds: []StreamResultKind{StreamResultKindStream, StreamResultKindError},
@@ -110,26 +137,12 @@ func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			callerCtx := context.Background()
-			if tt.cancelCtx {
-				var cancel context.CancelFunc
-				callerCtx, cancel = context.WithCancel(context.Background())
-				cancel()
-			}
-			if tt.cancelAttempt {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithCancel(context.Background())
-				cancel()
-			}
-			ctx = WithCallerContext(ctx, callerCtx)
-
 			client := &GRPCClient{client: &testWorkerClient{stream: &testCallStreamClient{events: []testStreamEvent{
 				{resp: &pb.StreamResult{Kind: pb.StreamResult_STREAM, DataJson: []byte(`"chunk"`)}},
 				{err: tt.recvErr},
 			}}}}
 
-			results, err := client.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+			results, err := client.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
 			if err != nil {
 				t.Fatalf("CallStream() error = %v", err)
 			}
@@ -161,5 +174,66 @@ func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 				ReleaseStreamResult(result)
 			}
 		})
+	}
+}
+
+func TestGRPCServerCallStreamReturnsCancellationWithoutTerminal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := &testWorkerImpl{
+		callStream: func(streamCtx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *StreamResult, error) {
+			ch := make(chan *StreamResult, 1)
+			result := GetStreamResult()
+			result.Kind = StreamResultKindStream
+			result.Data = []byte(`"chunk"`)
+			ch <- result
+			go func() {
+				<-streamCtx.Done()
+				close(ch)
+			}()
+			return ch, nil
+		},
+	}
+	server := &GRPCServer{Impl: worker}
+	stream := &testCallStreamServer{ctx: ctx}
+
+	cancel()
+	err := server.CallStream(&pb.CallRequest{MethodName: "Test"}, stream)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CallStream() error = %v, want context canceled", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent results = %d, want 1", len(stream.sent))
+	}
+	if stream.sent[0].Kind != pb.StreamResult_STREAM {
+		t.Fatalf("sent result kind = %v, want STREAM", stream.sent[0].Kind)
+	}
+}
+
+func TestGRPCServerCallStreamDoesNotOverrideTerminalCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := &testWorkerImpl{
+		callStream: func(context.Context, string, []byte, bamlutils.StreamMode) (<-chan *StreamResult, error) {
+			ch := make(chan *StreamResult, 1)
+			result := GetStreamResult()
+			result.Kind = StreamResultKindFinal
+			result.Data = []byte(`"done"`)
+			ch <- result
+			close(ch)
+			return ch, nil
+		},
+	}
+	server := &GRPCServer{Impl: worker}
+	stream := &testCallStreamServer{ctx: ctx}
+
+	cancel()
+	err := server.CallStream(&pb.CallRequest{MethodName: "Test"}, stream)
+	if err != nil {
+		t.Fatalf("CallStream() error = %v, want nil", err)
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent results = %d, want 1", len(stream.sent))
+	}
+	if stream.sent[0].Kind != pb.StreamResult_FINAL {
+		t.Fatalf("sent result kind = %v, want FINAL", stream.sent[0].Kind)
 	}
 }

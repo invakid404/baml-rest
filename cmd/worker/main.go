@@ -225,9 +225,37 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 	return out
 }
 
+const (
+	streamDrainIdleTimeout = 50 * time.Millisecond
+	streamDrainMaxDuration = time.Second
+)
+
 func drainStreamResults(resultChan <-chan bamlutils.StreamResult) {
-	for result := range resultChan {
-		result.Release()
+	idleTimer := time.NewTimer(streamDrainIdleTimeout)
+	defer idleTimer.Stop()
+
+	maxTimer := time.NewTimer(streamDrainMaxDuration)
+	defer maxTimer.Stop()
+
+	for {
+		select {
+		case <-idleTimer.C:
+			return
+		case <-maxTimer.C:
+			return
+		case result, ok := <-resultChan:
+			if !ok {
+				return
+			}
+			result.Release()
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			idleTimer.Reset(streamDrainIdleTimeout)
+		}
 	}
 }
 
