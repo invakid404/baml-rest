@@ -3,8 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"mime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,14 +13,6 @@ import (
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
-)
-
-// StreamFormat represents the output format for streaming responses.
-type StreamFormat int
-
-const (
-	StreamFormatSSE StreamFormat = iota
-	StreamFormatNDJSON
 )
 
 // ContentTypeNDJSON is the MIME type for NDJSON streams.
@@ -47,167 +37,6 @@ type NDJSONEvent struct {
 	Data  json.RawMessage `json:"data,omitempty"`
 	Raw   string          `json:"raw,omitempty"`
 	Error string          `json:"error,omitempty"`
-}
-
-// serverRepresentations lists the stream formats the server can produce,
-// ordered by server preference (used as a final tie-breaker).
-var serverRepresentations = [...]struct {
-	format   StreamFormat
-	mainType string
-	subType  string
-}{
-	{StreamFormatSSE, "text", "event-stream"},
-	{StreamFormatNDJSON, "application", "x-ndjson"},
-}
-
-// acceptEntry is a parsed media range from an Accept header.
-type acceptEntry struct {
-	mainType string
-	subType  string
-	q        float64
-	index    int // position in the Accept header (for tie-breaking)
-}
-
-// parseAcceptEntries parses all valid media ranges from an Accept header value.
-func parseAcceptEntries(accept string) []acceptEntry {
-	parts := strings.Split(accept, ",")
-	entries := make([]acceptEntry, 0, len(parts))
-
-	for i, part := range parts {
-		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
-		if err != nil {
-			continue
-		}
-
-		q, ok := parseAcceptQuality(params["q"])
-		if !ok {
-			continue
-		}
-
-		slash := strings.IndexByte(mediaType, '/')
-		if slash < 0 {
-			continue
-		}
-
-		entries = append(entries, acceptEntry{
-			mainType: mediaType[:slash],
-			subType:  mediaType[slash+1:],
-			q:        q,
-			index:    i,
-		})
-	}
-
-	return entries
-}
-
-// matchSpecificity returns the specificity of an Accept entry for a server
-// representation: 3 = exact type/subtype, 2 = type/*, 1 = */*, 0 = no match.
-func matchSpecificity(entryMain, entrySub, reprMain, reprSub string) int {
-	if strings.EqualFold(entryMain, reprMain) && strings.EqualFold(entrySub, reprSub) {
-		return 3 // exact match
-	}
-	if strings.EqualFold(entryMain, reprMain) && entrySub == "*" {
-		return 2 // type/*
-	}
-	if entryMain == "*" && entrySub == "*" {
-		return 1 // */*
-	}
-	return 0
-}
-
-// reprScore holds the effective quality score of a server representation after
-// matching it against the Accept list using most-specific-match-wins semantics.
-type reprScore struct {
-	matched     bool
-	q           float64
-	specificity int // specificity of the winning Accept entry (3=exact, 2=type/*, 1=*/*)
-	acceptIndex int // index of the winning Accept entry
-}
-
-// scoreRepresentation finds the most-specific Accept entry that matches the
-// given representation and returns its quality value. When two entries share
-// the same specificity level, the one that appeared first in the Accept header
-// wins (lowest index).
-func scoreRepresentation(reprMain, reprSub string, entries []acceptEntry) reprScore {
-	bestSpecificity := 0
-	result := reprScore{}
-
-	for _, entry := range entries {
-		spec := matchSpecificity(entry.mainType, entry.subType, reprMain, reprSub)
-		if spec == 0 || spec < bestSpecificity {
-			continue
-		}
-
-		if spec > bestSpecificity {
-			bestSpecificity = spec
-			result = reprScore{matched: true, q: entry.q, specificity: spec, acceptIndex: entry.index}
-		}
-	}
-
-	return result
-}
-
-// NegotiateStreamFormatFromAccept determines the stream format from an Accept
-// header value using RFC 7231 most-specific-match-wins semantics.
-//
-// It returns the chosen StreamFormat and true when a format is acceptable, or
-// (StreamFormatSSE, false) when no representation is acceptable (the caller
-// should return HTTP 406).
-func NegotiateStreamFormatFromAccept(accept string) (StreamFormat, bool) {
-	if accept == "" {
-		return StreamFormatSSE, true
-	}
-
-	entries := parseAcceptEntries(accept)
-	if len(entries) == 0 {
-		// Every entry was unparseable; treat as absent Accept header.
-		return StreamFormatSSE, true
-	}
-
-	type candidate struct {
-		format      StreamFormat
-		q           float64
-		specificity int
-		acceptIndex int
-	}
-
-	var best *candidate
-
-	for _, repr := range serverRepresentations {
-		score := scoreRepresentation(repr.mainType, repr.subType, entries)
-		if !score.matched || score.q == 0 {
-			continue
-		}
-
-		better := best == nil ||
-			score.q > best.q ||
-			(score.q == best.q && score.specificity > best.specificity) ||
-			(score.q == best.q && score.specificity == best.specificity && score.acceptIndex < best.acceptIndex)
-
-		if better {
-			best = &candidate{format: repr.format, q: score.q, specificity: score.specificity, acceptIndex: score.acceptIndex}
-		}
-	}
-
-	if best != nil {
-		return best.format, true
-	}
-
-	return StreamFormatSSE, false
-}
-
-// parseAcceptQuality parses an Accept quality value and validates the range.
-func parseAcceptQuality(raw string) (float64, bool) {
-	if raw == "" {
-		return 1, true
-	}
-
-	q, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	if err != nil || q < 0 || q > 1 {
-		return 0, false
-	}
-
-	return q, true
 }
 
 // NDJSONStreamWriterPublisher implements StreamPublisher for native Fiber streaming.
