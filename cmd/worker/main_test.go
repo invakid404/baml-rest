@@ -60,6 +60,43 @@ func TestBridgeStreamResultsCancelsWhileUpstreamBlocked(t *testing.T) {
 	}
 }
 
+func TestBridgeStreamResultsReleasesBufferedResultsOnCancel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	in := make(chan bamlutils.StreamResult, 2)
+	first := newFakeStreamResult(bamlutils.StreamResultKindStream)
+	second := newFakeStreamResult(bamlutils.StreamResultKindFinal)
+	in <- first
+	in <- second
+	close(in)
+
+	out := bridgeStreamResults(ctx, in)
+
+	select {
+	case <-first.released:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected first buffered result to be released")
+	}
+
+	select {
+	case <-second.released:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected second buffered result to be released")
+	}
+
+	select {
+	case _, ok := <-out:
+		if ok {
+			t.Fatal("expected bridged output channel to close after cancellation")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridge goroutine to exit after cancellation")
+	}
+}
+
 func TestBridgeStreamResultsForwardsFinalResult(t *testing.T) {
 	t.Parallel()
 
@@ -224,10 +261,12 @@ func TestBridgeStreamResultsCancelsDuringDownstreamSend(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	in := make(chan bamlutils.StreamResult, 1)
+	in := make(chan bamlutils.StreamResult, 2)
 	fake := newFakeStreamResult(bamlutils.StreamResultKindStream)
 	fake.stream = map[string]string{"delta": "hi"}
+	queued := newFakeStreamResult(bamlutils.StreamResultKindHeartbeat)
 	in <- fake
+	in <- queued
 	close(in)
 
 	out := bridgeStreamResults(ctx, in)
@@ -247,5 +286,11 @@ func TestBridgeStreamResultsCancelsDuringDownstreamSend(t *testing.T) {
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridge goroutine to exit after cancellation")
+	}
+
+	select {
+	case <-queued.released:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected queued buffered result to be released after cancellation")
 	}
 }

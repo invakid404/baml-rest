@@ -155,6 +155,13 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 	go func() {
 		defer close(out)
 		for {
+			select {
+			case <-ctx.Done():
+				drainReadyStreamResults(resultChan)
+				return
+			default:
+			}
+
 			var (
 				result bamlutils.StreamResult
 				ok     bool
@@ -162,6 +169,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 
 			select {
 			case <-ctx.Done():
+				drainReadyStreamResults(resultChan)
 				return
 			case result, ok = <-resultChan:
 				if !ok {
@@ -208,12 +216,27 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 			case <-ctx.Done():
 				// Release the plugin result we couldn't send
 				workerplugin.ReleaseStreamResult(pluginResult)
+				drainReadyStreamResults(resultChan)
 				return
 			}
 		}
 	}()
 
 	return out
+}
+
+func drainReadyStreamResults(resultChan <-chan bamlutils.StreamResult) {
+	for {
+		select {
+		case result, ok := <-resultChan:
+			if !ok {
+				return
+			}
+			result.Release()
+		default:
+			return
+		}
+	}
 }
 
 func (w *workerImpl) Health(ctx context.Context) (bool, error) {
