@@ -145,11 +145,11 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 	}
 
 	return bridgeStreamResults(ctx, resultChan), nil
-
 }
 
-// Convert to plugin stream results
-
+// bridgeStreamResults converts adapter stream results into plugin stream results
+// while respecting cancellation both before reading upstream and before sending
+// downstream.
 func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.StreamResult) <-chan *workerplugin.StreamResult {
 	out := make(chan *workerplugin.StreamResult)
 	go func() {
@@ -170,6 +170,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 			}
 
 			pluginResult := workerplugin.GetStreamResult()
+			pluginResult.Reset = result.Reset()
 
 			switch result.Kind() {
 			case bamlutils.StreamResultKindError:
