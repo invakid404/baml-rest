@@ -1213,11 +1213,17 @@ func TestAwaitAnyRestartPendingPathRespectsCancellation(t *testing.T) {
 		return newMockHandle(id, newMockWorker()), nil
 	}
 
+	var cleanup []*workerHandle
 	for _, failed := range p.workers {
 		failed.healthy.Store(false)
 		failed.restartPending.Add(1)
-		defer failed.restartPending.Add(-1)
+		cleanup = append(cleanup, failed)
 	}
+	defer func() {
+		for _, failed := range cleanup {
+			failed.restartPending.Add(-1)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()

@@ -766,6 +766,7 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 // Only if no restart state is visible at all do we fall back to kicking
 // off restartWorker ourselves.
 func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
+	spins := 0
 	sawPending := false
 	for {
 		handle.restartMu.Lock()
@@ -791,6 +792,7 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 			break
 		}
 		sawPending = true
+		spins++
 
 		select {
 		case <-p.drainCh:
@@ -800,7 +802,11 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 		default:
 		}
 
-		runtime.Gosched()
+		if spins > 10 {
+			time.Sleep(time.Millisecond)
+		} else {
+			runtime.Gosched()
+		}
 	}
 
 	select {
