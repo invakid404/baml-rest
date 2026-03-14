@@ -1021,6 +1021,13 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				}
 
 				// Check for retryable worker errors mid-stream
+				if result.Kind == workerplugin.StreamResultKindError && ctx.Err() != nil {
+					workerplugin.ReleaseStreamResult(result)
+					drainResults(results)
+					cleanup()
+					return
+				}
+
 				if result.Kind == workerplugin.StreamResultKindError && isRetryableWorkerError(result.Error) {
 					currentHandle.logger.Info().
 						Int("attempt", attempt+1).
@@ -1067,6 +1074,10 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			}
 
 			cleanup()
+
+			if ctx.Err() != nil {
+				return
+			}
 
 			// Reaching here means either a mid-stream retryable error or an
 			// unexpected EOF (channel closed without terminal). Both are
