@@ -32,6 +32,27 @@ type mockWorker struct {
 	closed  bool
 }
 
+type manualCancelContext struct {
+	mu  sync.RWMutex
+	err error
+}
+
+func (c *manualCancelContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *manualCancelContext) Done() <-chan struct{}       { return nil }
+func (c *manualCancelContext) Value(any) any               { return nil }
+
+func (c *manualCancelContext) Err() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.err
+}
+
+func (c *manualCancelContext) cancel(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.err = err
+}
+
 func newMockWorker() *mockWorker { return &mockWorker{} }
 
 func (m *mockWorker) Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
@@ -1326,6 +1347,169 @@ func TestCallStreamContextCancelled(t *testing.T) {
 			workerplugin.ReleaseStreamResult(r)
 		}
 	})
+}
+
+// TestCallStreamContextCancelledStillRestartsRetryableError verifies that a
+// real worker failure still schedules a restart even if the caller cancels.
+func TestCallStreamContextCancelledStillRestartsRetryableError(t *testing.T) {
+	ctx := &manualCancelContext{}
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 1)
+			go func() {
+				<-releaseErr
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Unavailable, "worker died")
+				ch <- errResult
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	ctx.cancel(context.Canceled)
+	close(releaseErr)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker should restart after retryable failure even if caller canceled")
+	}
+}
+
+// TestCallStreamContextCancelledDoesNotRestartOnCanceledError verifies that a
+// cancellation race with a canceled stream error also avoids a restart.
+func TestCallStreamContextCancelledDoesNotRestartOnCanceledError(t *testing.T) {
+	ctx := &manualCancelContext{}
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 1)
+			go func() {
+				<-releaseErr
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Canceled, "request canceled")
+				ch <- errResult
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	original := p.workers[0]
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	ctx.cancel(context.Canceled)
+	close(releaseErr)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+		t.Fatal("worker should not restart after client cancellation")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if p.workers[0] != original {
+		t.Fatal("worker should not be replaced after client cancellation")
+	}
+}
+
+// TestCallStreamInternalCanceledErrorStillRestartsWorker verifies that a
+// cancellation-shaped stream error still triggers restart when the parent
+// request context is not canceled.
+func TestCallStreamInternalCanceledErrorStillRestartsWorker(t *testing.T) {
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 1)
+			go func() {
+				<-releaseErr
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Canceled, "internal restart canceled stream")
+				ch <- errResult
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	close(releaseErr)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker should restart after internal cancellation error")
+	}
 }
 
 // TestCallStreamResetNotInjectedOnFirstAttempt verifies that the reset

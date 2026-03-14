@@ -144,12 +144,41 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 		return nil, fmt.Errorf("failed to call method: %w", err)
 	}
 
-	// Convert to plugin stream results
+	return bridgeStreamResults(ctx, resultChan), nil
+}
+
+// bridgeStreamResults converts adapter stream results into plugin stream results
+// while respecting cancellation both before reading upstream and before sending
+// downstream.
+func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.StreamResult) <-chan *workerplugin.StreamResult {
 	out := make(chan *workerplugin.StreamResult)
 	go func() {
 		defer close(out)
-		for result := range resultChan {
+		for {
+			select {
+			case <-ctx.Done():
+				go drainStreamResults(resultChan)
+				return
+			default:
+			}
+
+			var (
+				result bamlutils.StreamResult
+				ok     bool
+			)
+
+			select {
+			case <-ctx.Done():
+				go drainStreamResults(resultChan)
+				return
+			case result, ok = <-resultChan:
+				if !ok {
+					return
+				}
+			}
+
 			pluginResult := workerplugin.GetStreamResult()
+			pluginResult.Reset = result.Reset()
 
 			switch result.Kind() {
 			case bamlutils.StreamResultKindError:
@@ -187,12 +216,47 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 			case <-ctx.Done():
 				// Release the plugin result we couldn't send
 				workerplugin.ReleaseStreamResult(pluginResult)
+				go drainStreamResults(resultChan)
 				return
 			}
 		}
 	}()
 
-	return out, nil
+	return out
+}
+
+const (
+	streamDrainIdleTimeout = 50 * time.Millisecond
+	streamDrainMaxDuration = time.Second
+)
+
+func drainStreamResults(resultChan <-chan bamlutils.StreamResult) {
+	idleTimer := time.NewTimer(streamDrainIdleTimeout)
+	defer idleTimer.Stop()
+
+	maxTimer := time.NewTimer(streamDrainMaxDuration)
+	defer maxTimer.Stop()
+
+	for {
+		select {
+		case <-idleTimer.C:
+			return
+		case <-maxTimer.C:
+			return
+		case result, ok := <-resultChan:
+			if !ok {
+				return
+			}
+			result.Release()
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			idleTimer.Reset(streamDrainIdleTimeout)
+		}
+	}
 }
 
 func (w *workerImpl) Health(ctx context.Context) (bool, error) {
