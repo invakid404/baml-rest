@@ -99,6 +99,12 @@ func streamFormatForMediaType(mediaType string) (StreamFormat, bool) {
 		return StreamFormatNDJSON, true
 	case strings.EqualFold(mediaType, contentTypeSSE):
 		return StreamFormatSSE, true
+	case strings.EqualFold(mediaType, "application/*"):
+		return StreamFormatNDJSON, true
+	case strings.EqualFold(mediaType, "text/*"):
+		return StreamFormatSSE, true
+	case strings.EqualFold(mediaType, "*/*"):
+		return StreamFormatSSE, true
 	default:
 		return StreamFormatSSE, false
 	}

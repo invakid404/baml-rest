@@ -101,6 +101,31 @@ func TestNegotiateStreamFormatFromAccept(t *testing.T) {
 			accept: "*/*",
 			want:   StreamFormatSSE,
 		},
+		{
+			name:   "maps application wildcard to NDJSON",
+			accept: "application/*",
+			want:   StreamFormatNDJSON,
+		},
+		{
+			name:   "maps text wildcard to SSE",
+			accept: "text/*",
+			want:   StreamFormatSSE,
+		},
+		{
+			name:   "considers wildcard quality values",
+			accept: "text/*;q=0.9, " + ContentTypeNDJSON + ";q=0.5",
+			want:   StreamFormatSSE,
+		},
+		{
+			name:   "prefers exact match over lower quality wildcard",
+			accept: "text/*;q=0.3, " + ContentTypeNDJSON + ";q=0.8",
+			want:   StreamFormatNDJSON,
+		},
+		{
+			name:   "skips unacceptable wildcard",
+			accept: "application/*;q=0, text/event-stream;q=0.5",
+			want:   StreamFormatSSE,
+		},
 	}
 
 	for _, tt := range tests {
