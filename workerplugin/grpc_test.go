@@ -72,6 +72,7 @@ func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 	tests := []struct {
 		name      string
 		recvErr   error
+		cancelCtx bool
 		wantKinds []StreamResultKind
 		wantErr   error
 	}{
@@ -86,6 +87,13 @@ func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 			wantKinds: []StreamResultKind{StreamResultKindStream},
 		},
 		{
+			name:      "canceled eof becomes cancellation error",
+			recvErr:   io.EOF,
+			cancelCtx: true,
+			wantKinds: []StreamResultKind{StreamResultKindStream, StreamResultKindError},
+			wantErr:   context.Canceled,
+		},
+		{
 			name:      "non eof becomes stream error",
 			recvErr:   fmt.Errorf("stream failed: %w", io.ErrUnexpectedEOF),
 			wantKinds: []StreamResultKind{StreamResultKindStream, StreamResultKindError},
@@ -95,12 +103,19 @@ func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tt.cancelCtx {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(context.Background())
+				cancel()
+			}
+
 			client := &GRPCClient{client: &testWorkerClient{stream: &testCallStreamClient{events: []testStreamEvent{
 				{resp: &pb.StreamResult{Kind: pb.StreamResult_STREAM, DataJson: []byte(`"chunk"`)}},
 				{err: tt.recvErr},
 			}}}}
 
-			results, err := client.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+			results, err := client.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
 			if err != nil {
 				t.Fatalf("CallStream() error = %v", err)
 			}

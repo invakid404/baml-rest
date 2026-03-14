@@ -153,7 +153,7 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 		return nil, err
 	}
 
-	results := make(chan *StreamResult)
+	results := make(chan *StreamResult, 1)
 	go func() {
 		defer close(results)
 		for {
@@ -161,6 +161,12 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 			if err != nil {
 				// EOF means stream ended normally
 				if errors.Is(err, io.EOF) {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						errResult := GetStreamResult()
+						errResult.Kind = StreamResultKindError
+						errResult.Error = ctxErr
+						results <- errResult
+					}
 					return
 				}
 				errResult := GetStreamResult()

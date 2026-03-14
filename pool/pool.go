@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1021,7 +1022,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				}
 
 				// Check for retryable worker errors mid-stream
-				if result.Kind == workerplugin.StreamResultKindError && ctx.Err() != nil {
+				if result.Kind == workerplugin.StreamResultKindError && isCallerCancellationError(result.Error) {
 					workerplugin.ReleaseStreamResult(result)
 					drainResults(results)
 					cleanup()
@@ -1074,10 +1075,6 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			}
 
 			cleanup()
-
-			if ctx.Err() != nil {
-				return
-			}
 
 			// Reaching here means either a mid-stream retryable error or an
 			// unexpected EOF (channel closed without terminal). Both are
@@ -1371,6 +1368,25 @@ func isRetryableWorkerError(err error) bool {
 		strings.Contains(errStr, "error reading from server: EOF") ||
 		strings.Contains(errStr, "transport is closing") {
 		return true
+	}
+
+	return false
+}
+
+func isCallerCancellationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	if st, ok := status.FromError(err); ok {
+		switch st.Code() {
+		case codes.Canceled, codes.DeadlineExceeded:
+			return true
+		}
 	}
 
 	return false
