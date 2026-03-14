@@ -1022,7 +1022,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				}
 
 				// Check for retryable worker errors mid-stream
-				if result.Kind == workerplugin.StreamResultKindError && isCallerCancellationError(result.Error) {
+				if result.Kind == workerplugin.StreamResultKindError && ctx.Err() != nil && isCallerCancellationError(result.Error) {
 					workerplugin.ReleaseStreamResult(result)
 					drainResults(results)
 					cleanup()
