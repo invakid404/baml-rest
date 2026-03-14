@@ -1694,8 +1694,9 @@ func TestCallStreamClientCancelMidStreamDoesNotRestartWorker(t *testing.T) {
 			workerplugin.ReleaseStreamResult(result)
 		}
 	})
-
-	time.Sleep(100 * time.Millisecond)
+	requireCompleteWithin(t, time.Second, func() {
+		p.restartWG.Wait()
+	})
 
 	if calls := factoryCalls.Load(); calls != 0 {
 		t.Fatalf("expected no restart after client cancellation, got %d replacement starts", calls)
@@ -1765,8 +1766,9 @@ func TestCallStreamClientCancelUnexpectedCloseDoesNotRestartWorker(t *testing.T)
 			workerplugin.ReleaseStreamResult(result)
 		}
 	})
-
-	time.Sleep(100 * time.Millisecond)
+	requireCompleteWithin(t, time.Second, func() {
+		p.restartWG.Wait()
+	})
 
 	if calls := factoryCalls.Load(); calls != 0 {
 		t.Fatalf("expected no restart after client cancellation, got %d replacement starts", calls)

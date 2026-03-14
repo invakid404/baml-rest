@@ -925,6 +925,7 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 // Returns nil if a restart completed, ctx.Err() if the context was
 // cancelled, or a generic error if no workers are restarting at all.
 func (p *Pool) awaitAnyRestart(ctx context.Context) error {
+	spins := 0
 	sawPending := false
 	for {
 		cases := []reflect.SelectCase{
@@ -966,6 +967,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 			return fmt.Errorf("no workers restarting")
 		}
 		sawPending = true
+		spins++
 
 		select {
 		case <-ctx.Done():
@@ -975,7 +977,11 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 		default:
 		}
 
-		runtime.Gosched()
+		if spins > 10 {
+			time.Sleep(time.Millisecond)
+		} else {
+			runtime.Gosched()
+		}
 	}
 }
 
