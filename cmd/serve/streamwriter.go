@@ -15,14 +15,6 @@ import (
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
-// StreamFormat represents the output format for streaming responses.
-type StreamFormat int
-
-const (
-	StreamFormatSSE StreamFormat = iota
-	StreamFormatNDJSON
-)
-
 // ContentTypeNDJSON is the MIME type for NDJSON streams.
 const ContentTypeNDJSON = "application/x-ndjson"
 
@@ -45,23 +37,6 @@ type NDJSONEvent struct {
 	Data  json.RawMessage `json:"data,omitempty"`
 	Raw   string          `json:"raw,omitempty"`
 	Error string          `json:"error,omitempty"`
-}
-
-// NegotiateStreamFormatFromAccept determines the stream format from an Accept header value.
-func NegotiateStreamFormatFromAccept(accept string) StreamFormat {
-	if accept == "" {
-		return StreamFormatSSE
-	}
-
-	// Parse Accept header - it may contain multiple types with quality values
-	for _, part := range strings.Split(accept, ",") {
-		mediaType := strings.TrimSpace(strings.Split(part, ";")[0])
-		if strings.EqualFold(mediaType, ContentTypeNDJSON) {
-			return StreamFormatNDJSON
-		}
-	}
-
-	return StreamFormatSSE
 }
 
 // NDJSONStreamWriterPublisher implements StreamPublisher for native Fiber streaming.

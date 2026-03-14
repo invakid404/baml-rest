@@ -402,11 +402,14 @@ var serveCmd = &cobra.Command{
 
 			makeStreamHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
-					if NegotiateStreamFormatFromAccept(c.Get(fiber.HeaderAccept)) == StreamFormatNDJSON {
+					switch c.Accepts(contentTypeSSE, ContentTypeNDJSON) {
+					case ContentTypeNDJSON:
 						return HandleNDJSONStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false)
+					case contentTypeSSE:
+						return HandleSSEStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false)
+					default:
+						return writeFiberJSONError(c, "Not Acceptable: server can produce text/event-stream or application/x-ndjson", fiber.StatusNotAcceptable)
 					}
-
-					return HandleSSEStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false)
 				}
 			}
 
@@ -500,11 +503,14 @@ var serveCmd = &cobra.Command{
 						return writeFiberJSONError(c, message, statusCode)
 					}
 
-					if NegotiateStreamFormatFromAccept(c.Get(fiber.HeaderAccept)) == StreamFormatNDJSON {
+					switch c.Accepts(contentTypeSSE, ContentTypeNDJSON) {
+					case ContentTypeNDJSON:
 						return HandleNDJSONStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
+					case contentTypeSSE:
+						return HandleSSEStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
+					default:
+						return writeFiberJSONError(c, "Not Acceptable: server can produce text/event-stream or application/x-ndjson", fiber.StatusNotAcceptable)
 					}
-
-					return HandleSSEStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
 				}
 			}
 
