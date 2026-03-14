@@ -97,6 +97,45 @@ func TestBridgeStreamResultsReleasesBufferedResultsOnCancel(t *testing.T) {
 	}
 }
 
+func TestBridgeStreamResultsReleasesPostCancelResultsUntilClosed(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	in := make(chan bamlutils.StreamResult)
+	out := bridgeStreamResults(ctx, in)
+
+	cancel()
+
+	select {
+	case _, ok := <-out:
+		if ok {
+			t.Fatal("expected bridged output channel to close after cancellation")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridge goroutine to exit after cancellation")
+	}
+
+	late := newFakeStreamResult(bamlutils.StreamResultKindStream)
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		in <- late
+		close(in)
+	}()
+
+	select {
+	case <-sent:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected post-cancel sender to be drained")
+	}
+
+	select {
+	case <-late.released:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected post-cancel result to be released")
+	}
+}
+
 func TestBridgeStreamResultsForwardsFinalResult(t *testing.T) {
 	t.Parallel()
 
