@@ -144,12 +144,41 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 		return nil, fmt.Errorf("failed to call method: %w", err)
 	}
 
-	// Convert to plugin stream results
+	return bridgeStreamResults(ctx, resultChan), nil
+}
+
+// bridgeStreamResults converts adapter stream results into plugin stream results
+// while respecting cancellation both before reading upstream and before sending
+// downstream.
+func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.StreamResult) <-chan *workerplugin.StreamResult {
 	out := make(chan *workerplugin.StreamResult)
 	go func() {
 		defer close(out)
-		for result := range resultChan {
+		for {
+			select {
+			case <-ctx.Done():
+				go drainStreamResults(resultChan)
+				return
+			default:
+			}
+
+			var (
+				result bamlutils.StreamResult
+				ok     bool
+			)
+
+			select {
+			case <-ctx.Done():
+				go drainStreamResults(resultChan)
+				return
+			case result, ok = <-resultChan:
+				if !ok {
+					return
+				}
+			}
+
 			pluginResult := workerplugin.GetStreamResult()
+			pluginResult.Reset = result.Reset()
 
 			switch result.Kind() {
 			case bamlutils.StreamResultKindError:
@@ -187,12 +216,32 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 			case <-ctx.Done():
 				// Release the plugin result we couldn't send
 				workerplugin.ReleaseStreamResult(pluginResult)
+				go drainStreamResults(resultChan)
 				return
 			}
 		}
 	}()
 
-	return out, nil
+	return out
+}
+
+// drainStreamResults consumes and releases remaining results from the BAML
+// adapter's stream channel after the bridge goroutine exits due to context
+// cancellation. Each result holds native (Rust) memory via Release(); failing
+// to drain leaves those resources leaked and can block the producer goroutine
+// on an unbuffered send.
+//
+// The function drains until the channel is closed (i.e. the producer finishes).
+// There is intentionally no timeout: a timeout would cause the drain goroutine
+// to exit while the producer is still alive, stranding unreleased native
+// results and blocking the producer on its next send. If the producer never
+// closes the channel (pathological), this goroutine leaks — but the producer
+// goroutine itself also leaks in that case, so the timeout would not prevent
+// the leak, only add native memory loss on top of it.
+func drainStreamResults(resultChan <-chan bamlutils.StreamResult) {
+	for result := range resultChan {
+		result.Release()
+	}
 }
 
 func (w *workerImpl) Health(ctx context.Context) (bool, error) {

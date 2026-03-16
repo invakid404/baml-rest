@@ -32,6 +32,34 @@ type mockWorker struct {
 	closed  bool
 }
 
+type manualCancelContext struct {
+	mu   sync.RWMutex
+	err  error
+	done chan struct{}
+	once sync.Once
+}
+
+func newManualCancelContext() *manualCancelContext {
+	return &manualCancelContext{done: make(chan struct{})}
+}
+
+func (c *manualCancelContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *manualCancelContext) Done() <-chan struct{}       { return c.done }
+func (c *manualCancelContext) Value(any) any               { return nil }
+
+func (c *manualCancelContext) Err() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.err
+}
+
+func (c *manualCancelContext) cancel(err error) {
+	c.mu.Lock()
+	c.err = err
+	c.mu.Unlock()
+	c.once.Do(func() { close(c.done) })
+}
+
 func newMockWorker() *mockWorker { return &mockWorker{} }
 
 func (m *mockWorker) Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
@@ -795,6 +823,7 @@ func TestIsRetryableWorkerError(t *testing.T) {
 		{"nil", nil, false},
 		{"Unavailable", status.Error(codes.Unavailable, "worker crashed"), true},
 		{"Canceled", status.Error(codes.Canceled, "request canceled"), true},
+		{"DeadlineExceeded", status.Error(codes.DeadlineExceeded, "request timed out"), true},
 		{"InvalidArgument", status.Error(codes.InvalidArgument, "bad input"), false},
 		{"Internal", status.Error(codes.Internal, "runtime panic"), false},
 		{"NotFound", status.Error(codes.NotFound, "method missing"), false},
@@ -803,7 +832,34 @@ func TestIsRetryableWorkerError(t *testing.T) {
 		{"EOF string", errors.New("error reading from server: EOF"), true},
 		{"transport closing string", errors.New("transport is closing"), true},
 		{"code = Unavailable string", errors.New("rpc error: code = Unavailable desc = gone"), true},
+		// Serialized cancellation errors (lost gRPC status across boundary)
+		{"code = Canceled string", errors.New("rpc error: code = Canceled desc = request canceled"), true},
+		{"code = DeadlineExceeded string", errors.New("rpc error: code = DeadlineExceeded desc = timeout"), true},
+		// Plain cancellation strings are NOT retryable — they can come from
+		// application-level errors (e.g. upstream LLM timeout). Only the
+		// serialized gRPC forms above indicate transport-level cancellation.
+		{"plain context.Canceled", fmt.Errorf("context canceled"), false},
+		{"plain context.DeadlineExceeded", fmt.Errorf("context deadline exceeded"), false},
+		{"wrapped context.Canceled", fmt.Errorf("stream failed: context canceled"), false},
 		{"plain error", errors.New("something broke"), false},
+		// Regression: gRPC status is authoritative — non-retryable codes must
+		// not be misclassified just because the message text contains
+		// cancellation strings. Infrastructure patterns ("connection reset",
+		// "transport is closing") are still checked because they indicate
+		// transport failures regardless of the reported gRPC code.
+		{"Internal with context canceled message", status.Error(codes.Internal, "context canceled"), false},
+		{"Internal with deadline exceeded message", status.Error(codes.Internal, "context deadline exceeded"), false},
+		{"InvalidArgument with context canceled message", status.Error(codes.InvalidArgument, "context canceled"), false},
+		// Regression: serialized gRPC errors (lost *status.Status across
+		// boundary) — the top-level serialized code is authoritative.
+		{"serialized Internal with context canceled", fmt.Errorf("rpc error: code = Internal desc = context canceled"), false},
+		{"serialized Internal with deadline exceeded", fmt.Errorf("rpc error: code = Internal desc = context deadline exceeded"), false},
+		{"serialized NotFound with context canceled", fmt.Errorf("rpc error: code = NotFound desc = context canceled"), false},
+		// Regression: nested serialized gRPC errors — only the top-level code matters.
+		{"nested Internal over Canceled", fmt.Errorf("rpc error: code = Internal desc = rpc error: code = Canceled desc = context canceled"), false},
+		{"nested Internal over Unavailable", fmt.Errorf("rpc error: code = Internal desc = rpc error: code = Unavailable desc = connection refused"), false},
+		{"nested Canceled over Internal", fmt.Errorf("rpc error: code = Canceled desc = rpc error: code = Internal desc = something"), true},
+		{"nested Unavailable over Internal", fmt.Errorf("rpc error: code = Unavailable desc = rpc error: code = Internal desc = something"), true},
 		{"wrapped Unavailable message", status.Error(codes.Unknown, "connection reset"), true},
 	}
 
@@ -811,6 +867,59 @@ func TestIsRetryableWorkerError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isRetryableWorkerError(tt.err); got != tt.want {
 				t.Errorf("isRetryableWorkerError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: isCallerCancellationError
+// ---------------------------------------------------------------------------
+
+func TestIsCallerCancellationError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"context.Canceled", context.Canceled, true},
+		{"context.DeadlineExceeded", context.DeadlineExceeded, true},
+		{"wrapped context.Canceled", fmt.Errorf("call failed: %w", context.Canceled), true},
+		{"gRPC Canceled", status.Error(codes.Canceled, "request canceled"), true},
+		{"gRPC DeadlineExceeded", status.Error(codes.DeadlineExceeded, "deadline"), true},
+		{"gRPC Internal", status.Error(codes.Internal, "runtime panic"), false},
+		{"gRPC Unavailable", status.Error(codes.Unavailable, "worker crashed"), false},
+		// Regression: Unavailable with cancellation text in message must NOT
+		// be treated as caller cancellation — it's a dead worker whose
+		// transport teardown message happens to contain "context canceled".
+		{"gRPC Unavailable with context canceled message", status.Error(codes.Unavailable, "transport: context canceled"), false},
+		{"gRPC Unavailable with deadline exceeded message", status.Error(codes.Unavailable, "context deadline exceeded"), false},
+		// String-serialized gRPC errors (lost status object across gRPC boundary,
+		// but the "rpc error: code = ..." format is preserved in the text).
+		{"serialized gRPC Canceled", fmt.Errorf("rpc error: code = Canceled desc = request canceled"), true},
+		{"serialized gRPC DeadlineExceeded", fmt.Errorf("rpc error: code = DeadlineExceeded desc = timeout"), true},
+		// Regression: serialized Unavailable with cancellation text must NOT
+		// be treated as caller cancellation — the gRPC code is authoritative.
+		{"serialized gRPC Unavailable with context canceled", fmt.Errorf("rpc error: code = Unavailable desc = context canceled"), false},
+		{"serialized gRPC Internal with deadline text", fmt.Errorf("rpc error: code = Internal desc = context deadline exceeded"), false},
+		{"wrapped serialized gRPC Unavailable", fmt.Errorf("call failed: rpc error: code = Unavailable desc = context canceled"), false},
+		// Regression: nested serialized gRPC errors — only the top-level code matters.
+		{"nested Internal over Canceled", fmt.Errorf("rpc error: code = Internal desc = rpc error: code = Canceled desc = context canceled"), false},
+		{"nested Canceled over Internal", fmt.Errorf("rpc error: code = Canceled desc = rpc error: code = Internal desc = something"), true},
+		// Plain string-serialized cancellation errors (no gRPC structure at all)
+		{"string context canceled", fmt.Errorf("context canceled"), true},
+		{"string context deadline exceeded", fmt.Errorf("context deadline exceeded"), true},
+		{"wrapped string context canceled", fmt.Errorf("stream failed: context canceled"), true},
+		{"wrapped string deadline", fmt.Errorf("call failed: context deadline exceeded"), true},
+		{"plain error", fmt.Errorf("something broke"), false},
+		{"unrelated cancel substring", fmt.Errorf("cancelled by admin"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCallerCancellationError(tt.err); got != tt.want {
+				t.Errorf("isCallerCancellationError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}
@@ -1326,6 +1435,548 @@ func TestCallStreamContextCancelled(t *testing.T) {
 			workerplugin.ReleaseStreamResult(r)
 		}
 	})
+}
+
+// TestCallStreamContextCancelledStillRestartsRetryableError verifies that a
+// real worker failure still schedules a restart even if the caller cancels.
+func TestCallStreamContextCancelledStillRestartsRetryableError(t *testing.T) {
+	ctx := newManualCancelContext()
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+	errSent := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 1)
+			go func() {
+				<-releaseErr
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Unavailable, "worker died")
+				ch <- errResult
+				close(errSent)
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Buffer the error BEFORE cancelling the context so both ctx.Done()
+	// and the result channel are simultaneously ready in the streamLoop
+	// select. Whichever branch wins, the restart must still be dispatched.
+	close(releaseErr)
+	<-errSent
+	ctx.cancel(context.Canceled)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker should restart after retryable failure even if caller canceled")
+	}
+}
+
+// TestCallStreamMidStreamRetryableErrorWithCallerCancel verifies that when
+// a retryable mid-stream error (Unavailable) wins the select race against
+// ctx.Done(), the worker IS restarted but NO second attempt is started.
+// Without the ctx.Err() check after restart dispatch, the cancelled caller
+// would trigger a wasted retry on another worker.
+func TestCallStreamMidStreamRetryableErrorWithCallerCancel(t *testing.T) {
+	ctx := newManualCancelContext()
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+	errSent := make(chan struct{})
+	var attempts atomic.Int32
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			attempts.Add(1)
+			ch := make(chan *workerplugin.StreamResult, 1)
+			go func() {
+				<-releaseErr
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Unavailable, "worker died")
+				ch <- errResult
+				close(errSent)
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			attempts.Add(1)
+			ch := make(chan *workerplugin.StreamResult, 1)
+			close(ch)
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Cancel FIRST, then release the error. This guarantees ctx.Err()
+	// is non-nil by the time the streamLoop processes the Unavailable
+	// error, regardless of goroutine scheduling. Without this ordering,
+	// the streamLoop can race through shouldRetry → cleanup →
+	// dispatchRestart → ctx.Err() check before cancel() is called.
+	ctx.cancel(context.Canceled)
+	close(releaseErr)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	// Restart must happen (dead worker).
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker should restart after mid-stream Unavailable even if caller canceled")
+	}
+
+	// By the time results is drained and closed, the CallStream
+	// goroutine has exited. No need for a sleep.
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 attempt, got %d (cancelled caller triggered a wasted retry)", got)
+	}
+}
+
+// TestCallStreamContextCancelledDoesNotRestartOnCanceledError verifies that a
+// cancellation race with a canceled stream error also avoids a restart.
+func TestCallStreamContextCancelledDoesNotRestartOnCanceledError(t *testing.T) {
+	ctx := newManualCancelContext()
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 1)
+			go func() {
+				<-releaseErr
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Canceled, "request canceled")
+				ch <- errResult
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	original := p.workers[0]
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Cancel context FIRST, then release the error. This ensures
+	// ctx.Err() is non-nil when the Canceled error is processed.
+	// Regardless of which select branch wins (ctx.Done() or results),
+	// no restart should happen: codes.Canceled + cancelled context
+	// is a caller cancellation, not a worker failure.
+	ctx.cancel(context.Canceled)
+	close(releaseErr)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+		t.Fatal("worker should not restart after client cancellation")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if p.workers[0] != original {
+		t.Fatal("worker should not be replaced after client cancellation")
+	}
+}
+
+// TestCallStreamCallerCancelWithNonRetryableSetupError verifies that
+// a caller cancellation racing with a non-retryable setup error (like
+// InvalidArgument) does NOT trigger a spurious worker restart. The
+// worker is healthy — only the request was bad.
+func TestCallStreamCallerCancelWithNonRetryableSetupError(t *testing.T) {
+	ctx := newManualCancelContext()
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(fnCtx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			// Block until context is cancelled, then return a non-retryable error.
+			<-fnCtx.Done()
+			return nil, status.Error(codes.InvalidArgument, "bad input")
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	original := p.workers[0]
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Cancel — the mock returns InvalidArgument.
+	ctx.cancel(context.Canceled)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+		t.Fatal("worker should not restart after non-retryable setup error + caller cancel")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if p.workers[0] != original {
+		t.Fatal("worker should not be replaced after non-retryable setup error")
+	}
+}
+
+// TestCallStreamSetupUnavailableWithCallerCancel verifies that when
+// worker.CallStream itself returns Unavailable (worker dead) and the
+// caller's context is also cancelled, the worker is still restarted.
+// This exercises the setup-path fix: restart is dispatched before the
+// ctx.Err() early return.
+func TestCallStreamSetupUnavailableWithCallerCancel(t *testing.T) {
+	ctx := newManualCancelContext()
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(fnCtx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			// Block until context is cancelled, then return Unavailable
+			// as if the worker process died.
+			<-fnCtx.Done()
+			return nil, status.Error(codes.Unavailable, "worker died")
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Cancel the context — unblocks the factory's CallStream which
+	// returns Unavailable. The setup-path fix must dispatch restart
+	// before the ctx.Err() early return.
+	ctx.cancel(context.Canceled)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker should restart after Unavailable even when caller cancelled")
+	}
+}
+
+// TestCallStreamDrainCatchesSecondInSequenceError verifies that when
+// ctx.Done() wins the select and a non-error result is buffered before
+// the retryable error, the restart-aware drain reads past the non-error
+// result and still dispatches a restart for the retryable error.
+func TestCallStreamDrainCatchesSecondInSequenceError(t *testing.T) {
+	ctx := newManualCancelContext()
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 2)
+			go func() {
+				<-releaseErr
+				// Non-error result first
+				partial := workerplugin.GetStreamResult()
+				partial.Kind = workerplugin.StreamResultKindStream
+				partial.Data = []byte(`"partial"`)
+				ch <- partial
+				// Retryable error second
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Unavailable, "worker died")
+				ch <- errResult
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Cancel context BEFORE releasing results. The streamLoop select
+	// sees only ctx.Done() (results channel is empty) and takes it.
+	// The drain goroutine then reads both the partial and the error.
+	ctx.cancel(context.Canceled)
+	close(releaseErr)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain should catch retryable error after non-error result")
+	}
+}
+
+// TestCallStreamDrainCatchesDelayedError verifies that when ctx.Done()
+// wins and the retryable error arrives after the select (not simultaneously
+// buffered), the restart-aware drain goroutine still catches it.
+func TestCallStreamDrainCatchesDelayedError(t *testing.T) {
+	ctx := newManualCancelContext()
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			// Unbuffered: the send blocks until the drain goroutine reads.
+			ch := make(chan *workerplugin.StreamResult)
+			go func() {
+				<-releaseErr
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Unavailable, "worker died")
+				ch <- errResult
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Cancel the context — the streamLoop takes ctx.Done(), starts the
+	// drain goroutine, then closes wrappedResults (via defer).
+	ctx.cancel(context.Canceled)
+
+	// Wait for wrappedResults to close — this proves the streamLoop
+	// goroutine has exited and the drain goroutine is running.
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	// NOW release the error. The drain goroutine reads it from the
+	// unbuffered channel, detects the retryable error, and restarts.
+	close(releaseErr)
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain should catch delayed retryable error after ctx.Done()")
+	}
+}
+
+// TestCallStreamInternalCanceledErrorStillRestartsWorker verifies that a
+// cancellation-shaped stream error still triggers restart when the parent
+// request context is not canceled.
+func TestCallStreamInternalCanceledErrorStillRestartsWorker(t *testing.T) {
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 1)
+			go func() {
+				<-releaseErr
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Canceled, "internal restart canceled stream")
+				ch <- errResult
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	close(releaseErr)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker should restart after internal cancellation error")
+	}
+}
+
+// TestCallStreamSerializedCanceledErrorTriggersRestart verifies that a
+// cancellation error that has been serialized across the gRPC boundary
+// (losing its *status.Status wrapper) still triggers a restart when the
+// caller context is NOT cancelled. This simulates the production path:
+// worker emits codes.Canceled → GRPCServer serializes via .Error() →
+// GRPCClient reconstructs via fmt.Errorf → pool receives plain string.
+func TestCallStreamSerializedCanceledErrorTriggersRestart(t *testing.T) {
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+	releaseErr := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 1)
+			go func() {
+				<-releaseErr
+				// Simulate what survives the gRPC round-trip: the
+				// status.Error is serialized to a plain string by
+				// GRPCServer (.Error()) and reconstructed by GRPCClient
+				// as fmt.Errorf — no *status.Status wrapper remains.
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = fmt.Errorf("rpc error: code = Canceled desc = internal restart canceled stream")
+				ch <- errResult
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	// Caller context is NOT cancelled — this is an internal/worker
+	// cancellation, not a caller cancellation.
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	close(releaseErr)
+
+	requireCompleteWithin(t, 5*time.Second, func() {
+		for r := range results {
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serialized Canceled error should trigger restart when caller is not cancelled")
+	}
 }
 
 // TestCallStreamResetNotInjectedOnFirstAttempt verifies that the reset
