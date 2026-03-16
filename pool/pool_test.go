@@ -685,6 +685,195 @@ func TestParsePoolSizeOne(t *testing.T) {
 	}
 }
 
+// TestParseTracksInFlightRequests verifies that Parse registers and cleans up
+// in-flight work so shutdown accounting sees unary parse requests.
+func TestParseTracksInFlightRequests(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.parseFn = func(context.Context, string, []byte) (*workerplugin.ParseResult, error) {
+			close(started)
+			<-release
+			return &workerplugin.ParseResult{Data: []byte(`"parsed"`)}, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	parseDone := make(chan error, 1)
+	go func() {
+		_, err := p.Parse(context.Background(), "Test", []byte(`{}`))
+		parseDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Parse did not start")
+	}
+
+	requireCompleteWithin(t, time.Second, func() {
+		for p.totalInFlight() != 1 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	close(release)
+
+	select {
+	case err := <-parseDone:
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Parse did not finish")
+	}
+
+	if got := p.totalInFlight(); got != 0 {
+		t.Fatalf("in-flight count = %d, want 0", got)
+	}
+}
+
+// TestShutdownWaitsForInFlightParse verifies that graceful shutdown waits for
+// Parse requests that are already running.
+func TestShutdownWaitsForInFlightParse(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.parseFn = func(context.Context, string, []byte) (*workerplugin.ParseResult, error) {
+			close(started)
+			<-release
+			return &workerplugin.ParseResult{Data: []byte(`"parsed"`)}, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	parseDone := make(chan error, 1)
+	go func() {
+		_, err := p.Parse(context.Background(), "Test", []byte(`{}`))
+		parseDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Parse did not start")
+	}
+
+	requireCompleteWithin(t, time.Second, func() {
+		for p.totalInFlight() != 1 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		shutdownDone <- p.Shutdown(ctx)
+	}()
+
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned before Parse completed: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-parseDone:
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Parse did not finish")
+	}
+
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("Shutdown failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown did not finish after Parse completed")
+	}
+}
+
+// TestCheckHungRequestsIgnoresTrackedParse verifies that parse attempts are
+// tracked for drain/cancel accounting without being mistaken for first-byte
+// hung stream requests.
+func TestCheckHungRequestsIgnoresTrackedParse(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	killed := make(chan struct{}, 1)
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.parseFn = func(context.Context, string, []byte) (*workerplugin.ParseResult, error) {
+			close(started)
+			<-release
+			return &workerplugin.ParseResult{Data: []byte(`"parsed"`)}, nil
+		}
+		w.closeFn = func() error {
+			select {
+			case killed <- struct{}{}:
+			default:
+			}
+			return nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer func() {
+		p.workers[0].worker.(*mockWorker).closeFn = nil
+		_ = p.Close()
+	}()
+	p.SetFirstByteTimeout(time.Millisecond)
+
+	parseDone := make(chan error, 1)
+	go func() {
+		_, err := p.Parse(context.Background(), "Test", []byte(`{}`))
+		parseDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Parse did not start")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	p.checkHungRequests()
+
+	select {
+	case <-killed:
+		t.Fatal("parse request should not be treated as hung")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-parseDone:
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Parse did not finish")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests: CallStream / Call retry
 // ---------------------------------------------------------------------------
@@ -1044,16 +1233,15 @@ func TestGetWorkerForRetryWaitsForRestart(t *testing.T) {
 }
 
 // TestGetWorkerForRetryWaitsForPendingAsyncRestart verifies that a new request
-// waits when async restart dispatch has been published, even before
-// restartDone is visible.
+// waits for an actual async restart dispatch instead of failing during the
+// publication window before restartDone becomes visible.
 func TestGetWorkerForRetryWaitsForPendingAsyncRestart(t *testing.T) {
 	p := newTestPool(t, 1, goodFactory)
 	defer p.Close()
 
 	failed := p.workers[0]
 	failed.healthy.Store(false)
-	failed.restartPending.Add(1)
-	defer failed.restartPending.Add(-1)
+	p.dispatchRestart(failed)
 
 	requireCompleteWithin(t, 2*time.Second, func() {
 		h, err := p.getWorkerForRetry(context.Background(), nil)
@@ -1067,6 +1255,147 @@ func TestGetWorkerForRetryWaitsForPendingAsyncRestart(t *testing.T) {
 			t.Error("replacement should be healthy")
 		}
 	})
+}
+
+// TestAwaitRestartPendingPathRespectsCancellation verifies the slow path does
+// not spawn replacement work when only restartPending is visible.
+func TestAwaitRestartPendingPathRespectsCancellation(t *testing.T) {
+	var startCalls atomic.Int32
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	p.newWorker = func(id int) (*workerHandle, error) {
+		startCalls.Add(1)
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	failed := p.workers[0]
+	failed.healthy.Store(false)
+	failed.restartPending.Add(1)
+	defer failed.restartPending.Add(-1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	requireCompleteWithin(t, time.Second, func() {
+		err := p.awaitRestart(ctx, failed)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected context deadline exceeded, got %v", err)
+		}
+	})
+
+	if got := startCalls.Load(); got != 0 {
+		t.Fatalf("awaitRestart spawned %d replacement(s); want 0", got)
+	}
+}
+
+// TestAwaitAnyRestartPendingPathRespectsCancellation verifies fan-in waiting
+// does not fan out restart attempts when only restartPending is visible.
+func TestAwaitAnyRestartPendingPathRespectsCancellation(t *testing.T) {
+	var startCalls atomic.Int32
+	p := newTestPool(t, 4, goodFactory)
+	defer p.Close()
+
+	p.newWorker = func(id int) (*workerHandle, error) {
+		startCalls.Add(1)
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	var cleanup []*workerHandle
+	for _, failed := range p.workers {
+		failed.healthy.Store(false)
+		failed.restartPending.Add(1)
+		cleanup = append(cleanup, failed)
+	}
+	defer func() {
+		for _, failed := range cleanup {
+			failed.restartPending.Add(-1)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	requireCompleteWithin(t, time.Second, func() {
+		err := p.awaitAnyRestart(ctx)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected context deadline exceeded, got %v", err)
+		}
+	})
+
+	if got := startCalls.Load(); got != 0 {
+		t.Fatalf("awaitAnyRestart spawned %d replacement(s); want 0", got)
+	}
+}
+
+// TestAwaitAnyRestartReturnsFirstCompletionAcrossMixedStates verifies that a
+// pending-only restart cannot be hidden behind another worker's published
+// restartDone channel.
+func TestAwaitAnyRestartReturnsFirstCompletionAcrossMixedStates(t *testing.T) {
+	p := newTestPool(t, 2, goodFactory)
+	defer p.Close()
+
+	slow := p.workers[0]
+	fast := p.workers[1]
+
+	slow.restartMu.Lock()
+	slow.restartDone = make(chan struct{})
+	slow.restartMu.Unlock()
+	defer func() {
+		slow.restartMu.Lock()
+		if slow.restartDone != nil {
+			close(slow.restartDone)
+			slow.restartDone = nil
+		}
+		slow.restartMu.Unlock()
+	}()
+
+	fast.restartPending.Add(1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- p.awaitAnyRestart(context.Background())
+	}()
+
+	// Give awaitAnyRestart time to observe both restart states. The old
+	// implementation blocks on slow.restartDone here and misses fast's
+	// earlier completion entirely.
+	time.Sleep(50 * time.Millisecond)
+	fast.restartPending.Add(-1)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("awaitAnyRestart returned error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("awaitAnyRestart blocked on slower published restart")
+	}
+}
+
+// TestAwaitRestartReturnsOnDrain verifies retry waiters stop promptly when the
+// pool begins draining instead of waiting for restart completion.
+func TestAwaitRestartReturnsOnDrain(t *testing.T) {
+	var startCalls atomic.Int32
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	p.newWorker = func(id int) (*workerHandle, error) {
+		startCalls.Add(1)
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	failed := p.workers[0]
+	p.draining.Store(true)
+	p.drainOnce.Do(func() { close(p.drainCh) })
+
+	err := p.awaitRestart(context.Background(), failed)
+	if err == nil || err.Error() != "pool is draining" {
+		t.Fatalf("expected pool is draining error, got %v", err)
+	}
+	if got := startCalls.Load(); got != 0 {
+		t.Fatalf("awaitRestart spawned %d replacement(s); want 0", got)
+	}
 }
 
 // TestDispatchRestartPublishesPendingState verifies the actual async dispatch
@@ -1637,6 +1966,154 @@ func TestCallStreamContextCancelledDoesNotRestartOnCanceledError(t *testing.T) {
 	}
 }
 
+// TestCallStreamClientCancelMidStreamDoesNotRestartWorker verifies that a
+// client-side cancellation surfaced as a mid-stream canceled error does not
+// mark the worker unhealthy or trigger a restart.
+func TestCallStreamClientCancelMidStreamDoesNotRestartWorker(t *testing.T) {
+	var factoryCalls atomic.Int32
+	releaseCancelErr := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		factoryCalls.Add(1)
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 2)
+
+			partial := workerplugin.GetStreamResult()
+			partial.Kind = workerplugin.StreamResultKindStream
+			partial.Data = []byte(`"partial"`)
+			ch <- partial
+
+			go func() {
+				<-releaseCancelErr
+				errResult := workerplugin.GetStreamResult()
+				errResult.Kind = workerplugin.StreamResultKindError
+				errResult.Error = status.Error(codes.Canceled, "request canceled")
+				ch <- errResult
+				close(ch)
+			}()
+
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+	original := p.workers[0]
+	factoryCalls.Store(0)
+
+	ctx := newManualCancelContext()
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	select {
+	case result, ok := <-results:
+		if !ok {
+			t.Fatal("stream closed before first result")
+		}
+		workerplugin.ReleaseStreamResult(result)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first stream result")
+	}
+
+	ctx.cancel(context.Canceled)
+	close(releaseCancelErr)
+
+	requireCompleteWithin(t, 2*time.Second, func() {
+		for result := range results {
+			workerplugin.ReleaseStreamResult(result)
+		}
+	})
+	requireCompleteWithin(t, time.Second, func() {
+		p.restartWG.Wait()
+	})
+
+	if calls := factoryCalls.Load(); calls != 0 {
+		t.Fatalf("expected no restart after client cancellation, got %d replacement starts", calls)
+	}
+	if p.workers[0] != original {
+		t.Fatal("worker should not be replaced after client cancellation")
+	}
+	if !original.healthy.Load() {
+		t.Fatal("worker should remain healthy after client cancellation")
+	}
+}
+
+// TestCallStreamClientCancelUnexpectedCloseDoesNotRestartWorker verifies that
+// a client-side cancellation followed by stream closure without a terminal
+// result does not trigger retry/restart.
+func TestCallStreamClientCancelUnexpectedCloseDoesNotRestartWorker(t *testing.T) {
+	var factoryCalls atomic.Int32
+	releaseClose := make(chan struct{})
+
+	factory := func(id int) (*workerHandle, error) {
+		factoryCalls.Add(1)
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 1)
+
+			partial := workerplugin.GetStreamResult()
+			partial.Kind = workerplugin.StreamResultKindStream
+			partial.Data = []byte(`"partial"`)
+			ch <- partial
+
+			go func() {
+				<-releaseClose
+				close(ch)
+			}()
+
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+	original := p.workers[0]
+	factoryCalls.Store(0)
+
+	ctx := newManualCancelContext()
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	select {
+	case result, ok := <-results:
+		if !ok {
+			t.Fatal("stream closed before first result")
+		}
+		workerplugin.ReleaseStreamResult(result)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first stream result")
+	}
+
+	ctx.cancel(context.Canceled)
+	close(releaseClose)
+
+	requireCompleteWithin(t, 2*time.Second, func() {
+		for result := range results {
+			workerplugin.ReleaseStreamResult(result)
+		}
+	})
+	requireCompleteWithin(t, time.Second, func() {
+		p.restartWG.Wait()
+	})
+
+	if calls := factoryCalls.Load(); calls != 0 {
+		t.Fatalf("expected no restart after client cancellation, got %d replacement starts", calls)
+	}
+	if p.workers[0] != original {
+		t.Fatal("worker should not be replaced after client cancellation")
+	}
+	if !original.healthy.Load() {
+		t.Fatal("worker should remain healthy after client cancellation")
+	}
+}
+
 // TestCallStreamCallerCancelWithNonRetryableSetupError verifies that
 // a caller cancellation racing with a non-retryable setup error (like
 // InvalidArgument) does NOT trigger a spurious worker restart. The
@@ -2097,6 +2574,271 @@ func TestCloseDuringHealthCheckDoesNotDeadlock(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Close deadlocked with concurrent health check")
+	}
+}
+
+// TestCheckHealthDispatchesRestartAsync verifies that an unhealthy worker does
+// not block checkHealth() while replacement startup is stalled.
+func TestCheckHealthDispatchesRestartAsync(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	failed := p.workers[0]
+	failed.worker.(*mockWorker).healthFn = func(context.Context) (bool, error) {
+		return false, nil
+	}
+
+	blockedFactory := make(chan struct{})
+	restartStarted := make(chan struct{})
+	var signalRestartStart sync.Once
+	p.newWorker = func(id int) (*workerHandle, error) {
+		signalRestartStart.Do(func() { close(restartStarted) })
+		<-blockedFactory
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	checkDone := make(chan struct{})
+	go func() {
+		defer close(checkDone)
+		p.checkHealth()
+	}()
+
+	select {
+	case <-restartStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement startup did not begin")
+	}
+
+	select {
+	case <-checkDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("checkHealth blocked on replacement startup")
+	}
+
+	close(blockedFactory)
+}
+
+// TestCheckHealthSkipsDuplicateRestartDispatch verifies repeated unhealthy
+// probes do not queue extra async restart waiters for the same handle while a
+// replacement is already pending.
+func TestCheckHealthSkipsDuplicateRestartDispatch(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	failed := p.workers[0]
+	failed.worker.(*mockWorker).healthFn = func(context.Context) (bool, error) {
+		return false, nil
+	}
+
+	blockedFactory := make(chan struct{})
+	restartStarted := make(chan struct{})
+	var signalRestartStart sync.Once
+	p.newWorker = func(id int) (*workerHandle, error) {
+		signalRestartStart.Do(func() { close(restartStarted) })
+		<-blockedFactory
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	for i := 0; i < 4; i++ {
+		p.checkHealth()
+	}
+
+	select {
+	case <-restartStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement startup did not begin")
+	}
+
+	if got := failed.restartPending.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 pending restart, got %d", got)
+	}
+
+	close(blockedFactory)
+}
+
+// TestCheckHealthDoesNotReHealthyRestartingWorker verifies a stale successful
+// probe does not mark a handle healthy again once restart has been queued.
+func TestCheckHealthDoesNotReHealthyRestartingWorker(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	handle := p.workers[0]
+	handle.healthy.Store(false)
+	handle.restartPending.Add(1)
+	defer handle.restartPending.Add(-1)
+	handle.worker.(*mockWorker).healthFn = func(context.Context) (bool, error) {
+		return true, nil
+	}
+
+	p.checkHealth()
+
+	if handle.healthy.Load() {
+		t.Fatal("worker should remain unhealthy while restart is pending")
+	}
+}
+
+// TestCloseDuringHealthRestartDoesNotBlock verifies that Close() is not held
+// open by a health check that dispatches a restart whose startup is stalled.
+func TestCloseDuringHealthRestartDoesNotBlock(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+
+	failed := p.workers[0]
+	failed.worker.(*mockWorker).healthFn = func(context.Context) (bool, error) {
+		return false, nil
+	}
+
+	blockedFactory := make(chan struct{})
+	restartStarted := make(chan struct{})
+	var signalRestartStart sync.Once
+	p.newWorker = func(id int) (*workerHandle, error) {
+		signalRestartStart.Do(func() { close(restartStarted) })
+		<-blockedFactory
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	checkDone := make(chan struct{})
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		defer close(checkDone)
+		p.checkHealth()
+	}()
+
+	select {
+	case <-restartStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement startup did not begin")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- p.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked on health-check restart")
+	}
+
+	select {
+	case <-checkDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("health check did not exit promptly during Close")
+	}
+
+	close(blockedFactory)
+}
+
+// TestCloseCancelsBlockedAsyncRestart verifies that Close cancels an async
+// restart that is stalled in worker startup and returns without installing a
+// replacement afterward.
+func TestCloseCancelsBlockedAsyncRestart(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+
+	failed := p.workers[0]
+	failed.healthy.Store(false)
+
+	blockedFactory := make(chan struct{})
+	restartStarted := make(chan struct{})
+	var signalRestartStart sync.Once
+	p.newWorker = func(id int) (*workerHandle, error) {
+		signalRestartStart.Do(func() { close(restartStarted) })
+		<-blockedFactory
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	p.dispatchRestart(failed)
+
+	select {
+	case <-restartStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement startup did not begin")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- p.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked on async restart")
+	}
+
+	close(blockedFactory)
+	time.Sleep(100 * time.Millisecond)
+
+	p.mu.RLock()
+	current := p.workers[0]
+	p.mu.RUnlock()
+	if current != failed {
+		t.Fatal("replacement should not be installed after Close")
+	}
+}
+
+// TestClosePreventsReplacementStart verifies that once Close begins, a queued
+// async restart cannot start a new replacement worker afterward.
+func TestClosePreventsReplacementStart(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+
+	failed := p.workers[0]
+	failed.healthy.Store(false)
+
+	hookStarted := make(chan struct{})
+	releaseHook := make(chan struct{})
+	var signalHook sync.Once
+	p.beforeRestartStart = func() {
+		signalHook.Do(func() { close(hookStarted) })
+		<-releaseHook
+	}
+	defer func() { p.beforeRestartStart = nil }()
+
+	var startCalls atomic.Int32
+	p.newWorker = func(id int) (*workerHandle, error) {
+		startCalls.Add(1)
+		return newMockHandle(id, newMockWorker()), nil
+	}
+
+	p.dispatchRestart(failed)
+
+	select {
+	case <-hookStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart did not reach pre-start hook")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- p.Close()
+	}()
+
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned before blocked restart path was released")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseHook)
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not finish after releasing restart hook")
+	}
+
+	if calls := startCalls.Load(); calls != 0 {
+		t.Fatalf("replacement started %d time(s) after Close began, want 0", calls)
 	}
 }
 

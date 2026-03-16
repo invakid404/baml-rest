@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -110,6 +111,8 @@ type Config struct {
 	WorkerPath string
 	// WorkerMemLimit is the GOMEMLIMIT for each worker process (0 = no limit)
 	WorkerMemLimit int64
+	// WorkerStartTimeout bounds worker startup and restart handshake work (0 = no timeout)
+	WorkerStartTimeout time.Duration
 }
 
 // DefaultConfig returns a default configuration
@@ -119,6 +122,7 @@ func DefaultConfig() *Config {
 		MaxRetries:          2,
 		HealthCheckInterval: 10 * time.Second,
 		FirstByteTimeout:    120 * time.Second,
+		WorkerStartTimeout:  30 * time.Second,
 	}
 }
 
@@ -169,19 +173,22 @@ func (p *Pool) trackRequest(handle *workerHandle, cancel context.CancelFunc) (*i
 
 // Pool manages a pool of worker processes
 type Pool struct {
-	config    *Config
-	logger    zerolog.Logger
-	workers   []*workerHandle
-	mu        sync.RWMutex
-	next      atomic.Uint64
-	requestID atomic.Uint64
-	closed    atomic.Bool
-	draining  atomic.Bool
-	drainOnce sync.Once
-	drainCh   chan struct{} // closed when pool begins draining; selectable unlike atomic bool
-	wg        sync.WaitGroup
-	done      chan struct{}
-	newWorker func(id int) (*workerHandle, error) // override for testing; nil in production
+	config             *Config
+	logger             zerolog.Logger
+	workers            []*workerHandle
+	mu                 sync.RWMutex
+	restartMu          sync.Mutex
+	next               atomic.Uint64
+	requestID          atomic.Uint64
+	closed             atomic.Bool
+	draining           atomic.Bool
+	drainOnce          sync.Once
+	drainCh            chan struct{} // closed when pool begins draining; selectable unlike atomic bool
+	wg                 sync.WaitGroup
+	restartWG          sync.WaitGroup
+	done               chan struct{}
+	newWorker          func(id int) (*workerHandle, error) // override for testing; nil in production
+	beforeRestartStart func()
 }
 
 type workerHandle struct {
@@ -243,6 +250,18 @@ func (h *workerHandle) finishRestart() {
 	h.restartMu.Unlock()
 }
 
+// snapshotRestartState returns the currently published restart-completion
+// channel, if any, plus whether any restart work is visible for this handle.
+// restartPending covers the async dispatch window before restartDone exists.
+func snapshotRestartState(h *workerHandle) (chan struct{}, bool) {
+	h.restartMu.Lock()
+	defer h.restartMu.Unlock()
+
+	ch := h.restartDone
+	visible := h.restartPending.Load() > 0 || h.restarting.Load() || ch != nil
+	return ch, visible
+}
+
 // New creates a new worker pool
 func New(config *Config) (*Pool, error) {
 	if config.WorkerPath == "" {
@@ -297,9 +316,26 @@ func New(config *Config) (*Pool, error) {
 	return p, nil
 }
 
+var errWorkerStartAborted = fmt.Errorf("worker startup aborted")
+
+type workerStartResult struct {
+	handle *workerHandle
+	err    error
+}
+
 func (p *Pool) startWorker(id int) (*workerHandle, error) {
+	return p.startWorkerWithStop(id, nil)
+}
+
+func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle, error) {
+	select {
+	case <-stop:
+		return nil, errWorkerStartAborted
+	default:
+	}
+
 	if p.newWorker != nil {
-		return p.newWorker(id)
+		return p.startTestWorker(id, stop)
 	}
 
 	cmd := exec.Command(p.config.WorkerPath)
@@ -330,6 +366,78 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 		Logger:          pluginLogger,
 		GRPCDialOptions: workerplugin.GRPCDialOptions(),
 	})
+
+	select {
+	case <-stop:
+		client.Kill()
+		return nil, errWorkerStartAborted
+	default:
+	}
+
+	resultCh := make(chan workerStartResult, 1)
+	go func() {
+		handle, err := p.finishWorkerStartup(id, client)
+		resultCh <- workerStartResult{handle: handle, err: err}
+	}()
+
+	if p.config.WorkerStartTimeout > 0 {
+		timer := time.NewTimer(p.config.WorkerStartTimeout)
+		defer timer.Stop()
+
+		select {
+		case result := <-resultCh:
+			return result.handle, result.err
+		case <-timer.C:
+			client.Kill()
+			go reapWorkerStartResult(resultCh)
+			return nil, fmt.Errorf("worker startup timed out after %s", p.config.WorkerStartTimeout)
+		case <-stop:
+			client.Kill()
+			go reapWorkerStartResult(resultCh)
+			return nil, errWorkerStartAborted
+		}
+	}
+
+	select {
+	case result := <-resultCh:
+		return result.handle, result.err
+	case <-stop:
+		client.Kill()
+		go reapWorkerStartResult(resultCh)
+		return nil, errWorkerStartAborted
+	}
+}
+
+func (p *Pool) startTestWorker(id int, stop <-chan struct{}) (*workerHandle, error) {
+	select {
+	case <-stop:
+		return nil, errWorkerStartAborted
+	default:
+	}
+
+	resultCh := make(chan workerStartResult, 1)
+	go func() {
+		handle, err := p.newWorker(id)
+		resultCh <- workerStartResult{handle: handle, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		return result.handle, result.err
+	case <-stop:
+		go reapWorkerStartResult(resultCh)
+		return nil, errWorkerStartAborted
+	}
+}
+
+func reapWorkerStartResult(resultCh <-chan workerStartResult) {
+	result := <-resultCh
+	if result.handle != nil {
+		result.handle.kill()
+	}
+}
+
+func (p *Pool) finishWorkerStartup(id int, client *plugin.Client) (*workerHandle, error) {
 
 	rpcClient, err := client.Client()
 	if err != nil {
@@ -449,8 +557,17 @@ func (h *workerHandle) isHungRequestStillHung(snapshot hungRequestSnapshot, now 
 }
 
 func (p *Pool) dispatchRestart(handle *workerHandle) {
+	p.restartMu.Lock()
+	if p.closed.Load() {
+		p.restartMu.Unlock()
+		return
+	}
+	p.restartWG.Add(1)
 	handle.restartPending.Add(1)
+	p.restartMu.Unlock()
+
 	go func() {
+		defer p.restartWG.Done()
 		defer handle.restartPending.Add(-1)
 		p.restartWorker(handle.id, handle)
 	}()
@@ -509,11 +626,19 @@ func (p *Pool) checkHealth() {
 
 		if err != nil || !healthy {
 			handle.healthy.Store(false)
+
+			// Once a restart is already pending/in progress for this handle,
+			// another failed probe adds no new information. Re-dispatching would
+			// only enqueue extra async waiters behind the same restart.
+			if _, restartVisible := snapshotRestartState(handle); restartVisible {
+				continue
+			}
+
 			handle.logger.Warn().Err(err).Msg("Worker unhealthy, restarting")
 
 			workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Inc()
-			p.restartWorker(handle.id, handle)
-		} else {
+			p.dispatchRestart(handle)
+		} else if _, restartVisible := snapshotRestartState(handle); !restartVisible {
 			handle.healthy.Store(true)
 		}
 	}
@@ -577,8 +702,16 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	// The old worker stays in the slot (possibly struggling, but better
 	// than nothing) while the new one boots up (~1-2s for process start
 	// and gRPC handshake).
-	newHandle, err := p.startWorker(id)
+	if p.beforeRestartStart != nil {
+		p.beforeRestartStart()
+	}
+
+	newHandle, err := p.startWorkerWithStop(id, p.done)
 	if err != nil {
+		if err == errWorkerStartAborted || p.closed.Load() {
+			return
+		}
+
 		// Mark the failed worker unhealthy so getWorker stops routing to it.
 		p.mu.Lock()
 		if p.workers[id] == failed {
@@ -648,30 +781,58 @@ func (p *Pool) getWorker() (*workerHandle, error) {
 // respecting ctx cancellation.
 //
 // When the restart goroutine has already set up restartDone (the common
-// case), this is a pure select — no goroutine is spawned. A goroutine
-// is only used as a fallback for the rare scheduling race where the
-// restart CAS hasn't executed yet.
+// case), this is a pure select. During the rare scheduling race where
+// async dispatch has published restartPending but restartDone is not yet
+// visible, poll until the channel is published or the restart disappears.
+// Only if no restart state is visible at all do we fall back to kicking
+// off restartWorker ourselves.
 func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
-	handle.restartMu.Lock()
-	ch := handle.restartDone
-	handle.restartMu.Unlock()
+	spins := 0
+	sawPending := false
+	for {
+		ch, pending := snapshotRestartState(handle)
 
-	if ch != nil {
-		// Fast path: restart is in progress. Select on the shared
-		// channel — no goroutine needed, no accumulation.
+		if ch != nil {
+			select {
+			case <-ch:
+				return nil
+			case <-p.drainCh:
+				return fmt.Errorf("pool is draining")
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		if !pending {
+			if sawPending {
+				return nil
+			}
+			break
+		}
+		sawPending = true
+		spins++
+
 		select {
-		case <-ch:
-			return nil
+		case <-p.drainCh:
+			return fmt.Errorf("pool is draining")
 		case <-ctx.Done():
 			return ctx.Err()
+		default:
+		}
+
+		if spins > 10 {
+			time.Sleep(time.Millisecond)
+		} else {
+			runtime.Gosched()
 		}
 	}
 
-	// Slow path: restartDone is nil, meaning the restart goroutine
-	// hasn't executed the CAS yet (scheduling race) or the restart
-	// already completed. Fall back to calling restartWorker, which
-	// handles both (CAS winner starts it, CAS loser waits, stale
-	// handle is a fast no-op).
+	select {
+	case <-p.drainCh:
+		return fmt.Errorf("pool is draining")
+	default:
+	}
+
 	done := make(chan struct{})
 	go func() {
 		p.restartWorker(handle.id, handle)
@@ -681,6 +842,8 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 	select {
 	case <-done:
 		return nil
+	case <-p.drainCh:
+		return fmt.Errorf("pool is draining")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -733,6 +896,12 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 				if ctx.Err() != nil {
 					return nil, awaitErr
 				}
+				if handle, retryErr := p.getWorker(); retryErr == nil {
+					return handle, nil
+				}
+				if p.closed.Load() || p.draining.Load() {
+					return nil, awaitErr
+				}
 				// No restarts visible. The common async-restart gap is
 				// covered by restartPending, but a narrow synchronous window
 				// still exists between marking a worker unhealthy and
@@ -742,7 +911,7 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 					runtime.Gosched()
 					continue
 				}
-				return nil, err // truly no restarts pending
+				return nil, awaitErr
 			}
 			yielded = false // reset after a successful await
 			if handle, retryErr := p.getWorker(); retryErr == nil {
@@ -774,49 +943,106 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 // Returns nil if a restart completed, ctx.Err() if the context was
 // cancelled, or a generic error if no workers are restarting at all.
 func (p *Pool) awaitAnyRestart(ctx context.Context) error {
-	// Snapshot handles that are currently restarting (have restarting=true
-	// or restartDone!=nil). awaitRestart handles both states internally.
-	var restarting []*workerHandle
-	for _, h := range p.workerSnapshot() {
-		h.restartMu.Lock()
-		pending := h.restartPending.Load() > 0 || h.restarting.Load() || h.restartDone != nil
-		h.restartMu.Unlock()
-		if pending {
-			restarting = append(restarting, h)
+	spins := 0
+	sawPending := false
+	prevVisible := map[*workerHandle]chan struct{}{}
+	for {
+		cases := []reflect.SelectCase{
+			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())},
+			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(p.drainCh)},
 		}
-	}
+		currentVisible := make(map[*workerHandle]chan struct{})
+		hasPendingOnly := false
 
-	if len(restarting) == 0 {
-		return fmt.Errorf("no workers restarting")
-	}
+		for _, h := range p.workerSnapshot() {
+			ch, hasRestart := snapshotRestartState(h)
+			if !hasRestart {
+				continue
+			}
+			currentVisible[h] = ch
+			if ch != nil {
+				cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ch)})
+			} else {
+				hasPendingOnly = true
+			}
+		}
 
-	// Child context: cancelled on return so remaining goroutines don't
-	// leak when the first restart completes (or the parent ctx expires).
-	waitCtx, waitCancel := context.WithCancel(ctx)
-	defer waitCancel()
-
-	// Fan-in: call awaitRestart per handle, first to complete signals ready.
-	// awaitRestart already handles both the channel-ready fast path and
-	// the CAS-to-channel scheduling race, so no logic is duplicated here.
-	ready := make(chan struct{}, 1)
-	for _, h := range restarting {
-		go func(handle *workerHandle) {
-			if p.awaitRestart(waitCtx, handle) == nil {
-				select {
-				case ready <- struct{}{}:
-				default:
+		if sawPending {
+			// A previously visible restart vanished (or a published restart was
+			// replaced with a different channel), which means some restart finished
+			// while we were polling through the publication gap.
+			for handle, prevCh := range prevVisible {
+				curCh, ok := currentVisible[handle]
+				if !ok {
+					return nil
+				}
+				if prevCh != nil && curCh != prevCh {
+					return nil
 				}
 			}
-		}(h)
-	}
+		}
 
-	select {
-	case <-ready:
-		return nil
-	case <-p.drainCh:
-		return fmt.Errorf("pool is draining")
-	case <-ctx.Done():
-		return ctx.Err()
+		if len(currentVisible) == 0 {
+			if sawPending {
+				return nil
+			}
+			return fmt.Errorf("no workers restarting")
+		}
+		sawPending = true
+
+		if len(cases) > 2 {
+			if !hasPendingOnly {
+				chosen, _, _ := reflect.Select(cases)
+				switch chosen {
+				case 0:
+					return ctx.Err()
+				case 1:
+					return fmt.Errorf("pool is draining")
+				default:
+					return nil
+				}
+			}
+
+			// When any restart is still pending-only, do not block on the already
+			// published channels: a faster restart could still complete before its
+			// restartDone channel is visible.
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectDefault})
+			chosen, _, _ := reflect.Select(cases)
+			switch chosen {
+			case 0:
+				return ctx.Err()
+			case 1:
+				return fmt.Errorf("pool is draining")
+			case len(cases) - 1:
+			default:
+				return nil
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-p.drainCh:
+				return fmt.Errorf("pool is draining")
+			default:
+			}
+		}
+
+		prevVisible = currentVisible
+		spins++
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.drainCh:
+			return fmt.Errorf("pool is draining")
+		default:
+		}
+
+		if spins > 10 {
+			time.Sleep(time.Millisecond)
+		} else {
+			runtime.Gosched()
+		}
 	}
 }
 
@@ -850,7 +1076,11 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 			return nil, err
 		}
 
-		result, err := handle.worker.Parse(ctx, methodName, inputJSON)
+		attemptCtx, cancel := context.WithCancel(ctx)
+		req, cleanup := p.trackRequest(handle, cancel)
+		req.gotFirstByte.Store(true)
+		result, err := handle.worker.Parse(attemptCtx, methodName, inputJSON)
+		cleanup()
 		if err == nil {
 			return result, nil
 		}
@@ -1353,6 +1583,11 @@ func (p *Pool) Close() error {
 	// Signal health checker to stop
 	close(p.done)
 
+	// Prevent any new restart goroutine from registering with restartWG while
+	// Close begins waiting below.
+	p.restartMu.Lock()
+	p.restartMu.Unlock()
+
 	// Snapshot current workers and release the pool lock before doing any
 	// potentially blocking work. Holding p.mu across kill()/wg.Wait() can
 	// deadlock with the health-check goroutine if it is concurrently trying
@@ -1363,6 +1598,7 @@ func (p *Pool) Close() error {
 		handle.kill()
 	}
 
+	p.restartWG.Wait()
 	p.wg.Wait()
 	p.logger.Info().Msg("Worker pool closed")
 	return nil
