@@ -187,6 +187,8 @@ type Pool struct {
 	wg                 sync.WaitGroup
 	restartWG          sync.WaitGroup
 	done               chan struct{}
+	shutdownCtx        context.Context                     // cancelled on Close(); health RPCs derive from this
+	shutdownCancel     context.CancelFunc                  // cancels shutdownCtx
 	newWorker          func(id int) (*workerHandle, error) // override for testing; nil in production
 	beforeRestartStart func()
 }
@@ -284,12 +286,16 @@ func New(config *Config) (*Pool, error) {
 	}
 	logger := zerolog.New(output).With().Timestamp().Logger()
 
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+
 	p := &Pool{
-		config:  config,
-		logger:  logger,
-		workers: make([]*workerHandle, config.PoolSize),
-		done:    make(chan struct{}),
-		drainCh: make(chan struct{}),
+		config:         config,
+		logger:         logger,
+		workers:        make([]*workerHandle, config.PoolSize),
+		done:           make(chan struct{}),
+		drainCh:        make(chan struct{}),
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
 	}
 
 	// Initialize worker restart counter labels
@@ -620,9 +626,21 @@ func (p *Pool) killWorkerAndRetry(handle *workerHandle) {
 
 func (p *Pool) checkHealth() {
 	for _, handle := range p.workerSnapshot() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// Abort the sweep once shutdown begins so Close() is not blocked
+		// waiting for remaining health RPCs to time out.
+		if p.shutdownCtx.Err() != nil {
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(p.shutdownCtx, 5*time.Second)
 		healthy, err := handle.worker.Health(ctx)
 		cancel()
+
+		// If the health RPC was interrupted by shutdown, don't treat it
+		// as an unhealthy probe — just stop the sweep.
+		if p.shutdownCtx.Err() != nil {
+			return
+		}
 
 		if err != nil || !healthy {
 			handle.healthy.Store(false)
@@ -1543,9 +1561,15 @@ func (p *Pool) GetInFlightStatus() []WorkerInFlightInfo {
 
 // Shutdown gracefully shuts down the pool, waiting for in-flight requests to complete
 func (p *Pool) Shutdown(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+
 	// Start draining - reject new requests
 	p.draining.Store(true)
-	p.drainOnce.Do(func() { close(p.drainCh) })
+	if p.drainCh != nil {
+		p.drainOnce.Do(func() { close(p.drainCh) })
+	}
 	p.logger.Info().Msg("Pool draining, waiting for in-flight requests to complete")
 
 	// Wait for in-flight requests to complete
@@ -1573,15 +1597,29 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 
 // Close immediately shuts down the pool and kills all workers
 func (p *Pool) Close() error {
+	if p == nil {
+		return nil
+	}
+
 	if p.closed.Swap(true) {
 		return nil // Already closed
 	}
 
 	p.draining.Store(true)
-	p.drainOnce.Do(func() { close(p.drainCh) })
+	if p.drainCh != nil {
+		p.drainOnce.Do(func() { close(p.drainCh) })
+	}
+
+	// Cancel pool-level context so in-progress health RPCs abort immediately
+	// instead of blocking for their full timeout.
+	if p.shutdownCancel != nil {
+		p.shutdownCancel()
+	}
 
 	// Signal health checker to stop
-	close(p.done)
+	if p.done != nil {
+		close(p.done)
+	}
 
 	// Prevent any new restart goroutine from registering with restartWG while
 	// Close begins waiting below.

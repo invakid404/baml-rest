@@ -128,17 +128,20 @@ func newMockHandle(id int, w *mockWorker) *workerHandle {
 // The health checker is NOT started.
 func newTestPool(t testing.TB, size int, factory func(id int) (*workerHandle, error)) *Pool {
 	t.Helper()
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	p := &Pool{
 		config: &Config{
 			PoolSize:         size,
 			MaxRetries:       2,
 			FirstByteTimeout: 5 * time.Second,
 		},
-		logger:    zerolog.Nop(),
-		workers:   make([]*workerHandle, size),
-		done:      make(chan struct{}),
-		drainCh:   make(chan struct{}),
-		newWorker: factory,
+		logger:         zerolog.Nop(),
+		workers:        make([]*workerHandle, size),
+		done:           make(chan struct{}),
+		drainCh:        make(chan struct{}),
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
+		newWorker:      factory,
 	}
 	for i := 0; i < size; i++ {
 		h, err := p.startWorker(i)
@@ -2577,6 +2580,58 @@ func TestCloseDuringHealthCheckDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+// TestCloseInterruptsSlowHealthChecks verifies that Close() returns promptly
+// even when a health-check sweep is blocked on slow/hanging health RPCs.
+// Before the fix, checkHealth used context.Background() so each health RPC
+// could block for up to 5s regardless of shutdown.
+func TestCloseInterruptsSlowHealthChecks(t *testing.T) {
+	healthStarted := make(chan struct{}, 4)
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.healthFn = func(ctx context.Context) (bool, error) {
+			select {
+			case healthStarted <- struct{}{}:
+			default:
+			}
+			// Block until the context is cancelled (simulates a slow/stuck RPC).
+			<-ctx.Done()
+			return false, ctx.Err()
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 4, factory)
+
+	// Start a health check sweep in the background.
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.checkHealth()
+	}()
+
+	// Wait for at least one health RPC to start.
+	select {
+	case <-healthStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("health check did not start")
+	}
+
+	// Close must return promptly — not blocked for 5s * pool_size.
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- p.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked waiting for slow health checks to time out")
+	}
+}
+
 // TestCheckHealthDispatchesRestartAsync verifies that an unhealthy worker does
 // not block checkHealth() while replacement startup is stalled.
 func TestCheckHealthDispatchesRestartAsync(t *testing.T) {
@@ -2890,5 +2945,43 @@ func TestConcurrentParseMultiWorker(t *testing.T) {
 
 	if s := successCount.Load(); s != int32(goroutines) {
 		t.Errorf("expected all %d goroutines to succeed, got %d", goroutines, s)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: nil / zero-value Pool safety
+// ---------------------------------------------------------------------------
+
+func TestCloseNilPool(t *testing.T) {
+	var p *Pool
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close on nil *Pool returned error: %v", err)
+	}
+}
+
+func TestCloseZeroValuePool(t *testing.T) {
+	var p Pool
+	// Both calls must succeed without panic.
+	if err := p.Close(); err != nil {
+		t.Fatalf("first Close on zero-value Pool returned error: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("second Close on zero-value Pool returned error: %v", err)
+	}
+}
+
+func TestShutdownNilPool(t *testing.T) {
+	var p *Pool
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown on nil *Pool returned error: %v", err)
+	}
+}
+
+func TestShutdownZeroValuePool(t *testing.T) {
+	var p Pool
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown on zero-value Pool returned error: %v", err)
 	}
 }
