@@ -601,8 +601,37 @@ func Generate(selfPkg string) {
 
 	var methods []methodOut
 
+	// emitDynamicUnwrapFunc generates an in-place dynamic properties unwrap function
+	// for a pointer type. The generated function mutates val.DynamicProperties once
+	// so getters need no work. Used by both the streaming-method loop and the
+	// parse-only method loop to avoid duplicating the Jen AST.
+	emitDynamicUnwrapFunc := func(funcName string, typePtr *jen.Statement) {
+		out.Func().Id(funcName).
+			Params(jen.Id("val").Add(typePtr.Clone())).
+			Block(
+				jen.If(jen.Id("val").Op("==").Nil()).Block(jen.Return()),
+				jen.If(jen.Id("val").Dot("DynamicProperties").Op("==").Nil()).Block(jen.Return()),
+				jen.For(jen.List(jen.Id("key"), jen.Id("value")).Op(":=").Range().Id("val").Dot("DynamicProperties")).
+					Block(
+						jen.If(
+							jen.List(jen.Id("reflectValue"), jen.Id("ok")).Op(":=").Id("value").Assert(jen.Qual("reflect", "Value")),
+							jen.Id("ok"),
+						).Block(
+							jen.Id("val").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("reflectValue").Dot("Interface").Call()),
+						).Else().Block(
+							jen.Id("val").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("value")),
+						),
+					),
+			)
+	}
+
 	// Track mirror structs to avoid duplicates
 	mirrors := newMirrorStructTracker()
+
+	// Track which methods had their dynamic unwrap helpers emitted by the streaming loop.
+	// Parse-only methods (in ParseMethods but not ParseStreamMethods) won't get helpers
+	// from the streaming loop, so the parse-method loop must emit them itself.
+	emittedUnwrapHelpers := make(map[string]bool)
 
 	// Iterate over sync functions (new approach using sync + onTick + ParseStream)
 	for methodName, args := range introspected.SyncMethods {
@@ -700,28 +729,6 @@ func Generate(selfPkg string) {
 			finalResultType = jen.Any()
 		}
 
-		// Output struct holds: kind, raw LLM response, parsed value, error
-		out.Type().Id(outputStructName).Struct(
-			jen.Id("kind").Qual(common.InterfacesPkg, "StreamResultKind"),
-			jen.Id("raw").String(),
-			jen.Id("parsed").Any(),
-			jen.Id("err").Error(),
-			jen.Id("reset").Bool(), // true when client should discard accumulated state (retry occurred)
-		)
-
-		// Implement `StreamResult` interface for the output struct
-		selfName := jen.Id("v")
-		selfParam := selfName.Clone().Op("*").Id(outputStructName)
-
-		// Kind() method
-		out.Func().
-			Params(selfParam.Clone()).
-			Id("Kind").Params().
-			Qual(common.InterfacesPkg, "StreamResultKind").
-			Block(
-				jen.Return(selfName.Clone().Dot("kind")),
-			)
-
 		// Get the ParseStream function for stream type reflection
 		parseStreamFuncValue, hasParseStreamFunc := introspected.ParseStreamFuncs[methodName]
 
@@ -749,56 +756,58 @@ func Generate(selfPkg string) {
 			isDynamicStream = isDynamicFinal
 		}
 
-		// Helper to create value getter with specific type
-		makeValueGetter := func(typePtr *jen.Statement, isDynamic bool) []jen.Code {
-			baseCode := []jen.Code{
-				jen.List(jen.Id("result"), jen.Id("ok")).Op(":=").Add(selfName.Clone().Dot("parsed")).Assert(typePtr.Clone()),
-				jen.If(jen.Op("!").Id("ok").Op("||").Id("result").Op("==").Nil()).Block(
-					jen.Return(selfName.Clone().Dot("parsed")),
-				),
-			}
+		// Output struct holds: kind, raw LLM response, typed parsed values, error.
+		// streamParsed and finalParsed are typed pointer fields that eliminate the
+		// interface boxing and runtime type assertions of a single `parsed any` field.
+		out.Type().Id(outputStructName).Struct(
+			jen.Id("kind").Qual(common.InterfacesPkg, "StreamResultKind"),
+			jen.Id("raw").String(),
+			jen.Id("streamParsed").Add(streamTypePtr.Clone()),
+			jen.Id("finalParsed").Add(finalTypePtr.Clone()),
+			jen.Id("err").Error(),
+			jen.Id("reset").Bool(), // true when client should discard accumulated state (retry occurred)
+		)
 
-			// Only add DynamicProperties unwrapping for types that have it
-			if isDynamic {
-				baseCode = append(baseCode,
-					jen.If(jen.Id("result").Dot("DynamicProperties").Op("!=").Nil()).Block(
-						jen.For(jen.List(jen.Id("key"), jen.Id("value")).Op(":=").Range().Id("result").Dot("DynamicProperties")).
-							Block(
-								// Try reflect.Value first (old BAML behavior)
-								jen.If(
-									jen.List(jen.Id("reflectValue"), jen.Id("ok")).Op(":=").Id("value").Assert(jen.Qual("reflect", "Value")),
-									jen.Id("ok"),
-								).Block(
-									jen.Id("result").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("reflectValue").Dot("Interface").Call()),
-								).Else().Block(
-									// Otherwise unwrap directly (BAML 0.215.0+ behavior)
-									jen.Id("result").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("value")),
-								),
-							),
-					),
-				)
-			}
+		// Implement `StreamResult` interface for the output struct
+		selfName := jen.Id("v")
+		selfParam := selfName.Clone().Op("*").Id(outputStructName)
 
-			baseCode = append(baseCode, jen.Return(jen.Id("result")))
-			return baseCode
+		// Kind() method
+		out.Func().
+			Params(selfParam.Clone()).
+			Id("Kind").Params().
+			Qual(common.InterfacesPkg, "StreamResultKind").
+			Block(
+				jen.Return(selfName.Clone().Dot("kind")),
+			)
+
+		// Generate unwrap helpers for dynamic types (called at setter time, not getter time)
+		unwrapStreamFuncName := strcase.LowerCamelCase(fmt.Sprintf("unwrapDynamic%sStream", outputStructName))
+		unwrapFinalFuncName := strcase.LowerCamelCase(fmt.Sprintf("unwrapDynamic%sFinal", outputStructName))
+		if isDynamicStream {
+			emitDynamicUnwrapFunc(unwrapStreamFuncName, streamTypePtr)
+		}
+		if isDynamicFinal {
+			emitDynamicUnwrapFunc(unwrapFinalFuncName, finalTypePtr)
+			emittedUnwrapHelpers[unwrapFinalFuncName] = true
 		}
 
-		// Stream() method - uses stream type (*stream_types.X)
+		// Stream() method - returns typed streamParsed field directly (no type assertion)
 		out.Func().
 			Params(selfParam.Clone()).
 			Id("Stream").Params().
 			Any().
 			Block(
-				makeValueGetter(streamTypePtr, isDynamicStream)...,
+				jen.Return(selfName.Clone().Dot("streamParsed")),
 			)
 
-		// Final() method - uses final type (*types.X)
+		// Final() method - returns typed finalParsed field directly (no type assertion)
 		out.Func().
 			Params(selfParam.Clone()).
 			Id("Final").Params().
 			Any().
 			Block(
-				makeValueGetter(finalTypePtr, isDynamicFinal)...,
+				jen.Return(selfName.Clone().Dot("finalParsed")),
 			)
 
 		// Error() method
@@ -1086,38 +1095,21 @@ func Generate(selfPkg string) {
 		}
 
 		// Build call parameters for Stream method
-		var streamCallParams []jen.Code
-		streamCallParams = append(streamCallParams, jen.Id("adapter")) // context
-		for _, arg := range args {
-			streamCallParams = append(streamCallParams, argCallParam(arg))
-		}
-		streamCallParams = append(streamCallParams,
-			jen.Append(
-				jen.Index().Qual(common.GeneratedClientPkg, "CallOptionFunc").Values(
-					jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
-				),
-				jen.Id("options").Op("..."),
-			).Op("..."),
-		)
-
 		// ====== SIMPLIFIED IMPLEMENTATION: methodName_noRaw ======
 		// This path uses BAML's native streaming without raw collection overhead.
 		// Partials come directly from BAML's stream, no OnTick/SSE parsing needed.
 		noRawMethodName := strcase.LowerCamelCase(methodName + "_noRaw")
 
-		// Build call parameters for Stream method WITH OnTick for heartbeat tracking
-		// The OnTick callback is lightweight - it only sends a heartbeat on first invocation
-		var streamCallParamsNoOnTick []jen.Code
-		streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, jen.Id("adapter")) // context
+		// Build call parameters for the noRaw Stream call (includes WithOnTick for heartbeat)
+		var noRawStreamCallParams []jen.Code
+		noRawStreamCallParams = append(noRawStreamCallParams, jen.Id("adapter")) // context
 		for _, arg := range args {
-			streamCallParamsNoOnTick = append(streamCallParamsNoOnTick, argCallParam(arg))
+			noRawStreamCallParams = append(noRawStreamCallParams, argCallParam(arg))
 		}
-		streamCallParamsNoOnTick = append(streamCallParamsNoOnTick,
+		noRawStreamCallParams = append(noRawStreamCallParams,
 			jen.Append(
-				jen.Index().Qual(common.GeneratedClientPkg, "CallOptionFunc").Values(
-					jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
-				),
-				jen.Id("options").Op("..."),
+				jen.Id("options"),
+				jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
 			).Op("..."),
 		)
 
@@ -1125,7 +1117,7 @@ func Generate(selfPkg string) {
 		noRawGoroutineBody := []jen.Code{
 			// Call Stream WITH OnTick for heartbeat tracking, but still use native streaming for data
 			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
-				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(streamCallParamsNoOnTick...),
+				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(noRawStreamCallParams...),
 
 			// If stream creation failed, emit error
 			jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
@@ -1163,11 +1155,17 @@ func Generate(selfPkg string) {
 				),
 
 				// Handle final result
-				// Final() returns *TFinal - already a pointer, use directly
+				// Final() already returns *TFinal from the BAML generated client — assign directly.
 				jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
 					jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
 					jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindFinal"),
-					jen.Id("__r").Dot("parsed").Op("=").Id("streamVal").Dot("Final").Call(),
+					jen.Id("__r").Dot("finalParsed").Op("=").Id("streamVal").Dot("Final").Call(),
+					func() jen.Code {
+						if isDynamicFinal {
+							return jen.Id(unwrapFinalFuncName).Call(jen.Id("__r").Dot("finalParsed"))
+						}
+						return jen.Null()
+					}(),
 					jen.Select().Block(
 						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
@@ -1179,12 +1177,18 @@ func Generate(selfPkg string) {
 				),
 
 				// Handle partial - forward BAML's native partial via Stream() (only if not skipping partials)
-				// Stream() returns *TStream - already a pointer, use directly
+				// Stream() already returns *TStream from the BAML generated client — assign directly.
 				jen.If(jen.Op("!").Id("skipPartials")).Block(
-					jen.If(jen.Id("partial").Op(":=").Id("streamVal").Dot("Stream").Call(), jen.Id("partial").Op("!=").Nil()).Block(
+					jen.If(jen.Id("__partial").Op(":=").Id("streamVal").Dot("Stream").Call(), jen.Id("__partial").Op("!=").Nil()).Block(
+						func() jen.Code {
+							if isDynamicStream {
+								return jen.Id(unwrapStreamFuncName).Call(jen.Id("__partial"))
+							}
+							return jen.Null()
+						}(),
 						jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
 						jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
-						jen.Id("__r").Dot("parsed").Op("=").Id("partial"),
+						jen.Id("__r").Dot("streamParsed").Op("=").Id("__partial"),
 						jen.Select().Block(
 							jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
@@ -1204,65 +1208,28 @@ func Generate(selfPkg string) {
 
 		noRawBody := makePreamble()
 
-		// Add heartbeat tracking state - sends a single heartbeat when first data is received
+		// Delegate to shared orchestration helper - supplies per-method closures
 		noRawBody = append(noRawBody,
-			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
-		)
-
-		// Define lightweight onTick callback that only sends heartbeat on first invocation
-		// Unlike the _full implementation, this doesn't process FunctionLog - it just signals "data received"
-		noRawOnTickBody := []jen.Code{
-			jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
-				// Check adapter.Done() first to avoid race with channel close on cancellation
-				jen.Select().Block(
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-						jen.Return(jen.Nil()),
-					),
-					jen.Default().Block(),
+			jen.Return(jen.Id("runNoRawOrchestration").Call(
+				jen.Id("adapter"),
+				jen.Id("out"),
+				// newHeartbeat
+				jen.Func().Params().Qual(common.InterfacesPkg, "StreamResult").Block(
+					jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+					jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
+					jen.Return(jen.Id("__r")),
 				),
-				// Send heartbeat - non-blocking to avoid blocking BAML
-				jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
-				jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
-				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
-					jen.Default().Block(
-						jen.Id("__r").Dot("Release").Call(),
-					),
+				// newError
+				jen.Func().Params(jen.Id("err").Error()).Qual(common.InterfacesPkg, "StreamResult").Block(
+					jen.Return(jen.Id(errorConstructorName).Call(jen.Id("err"))),
 				),
-			),
-			jen.Return(jen.Nil()),
-		}
-
-		noRawBody = append(noRawBody,
-			jen.Id("onTick").Op(":=").Func().Params(
-				jen.Id("_").Qual("context", "Context"),
-				jen.Id("_").Qual(BamlPkg, "TickReason"),
-				jen.Id("_").Qual(BamlPkg, "FunctionLog"),
-			).Qual(BamlPkg, "FunctionSignal").Block(noRawOnTickBody...),
-		)
-
-		noRawBody = append(noRawBody,
-			// Stream goroutine - uses BAML's native streaming, forwards partials directly
-			// Wrapped in gorecovery.GoHandler for panic resilience
-			jen.Go().Func().Params().Block(
-				jen.Defer().Close(jen.Id("out")),
-				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
-					// Error handler - emit panic as error to output channel
-					jen.Func().Params(jen.Id("err").Error()).Block(
-						jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("err")),
-						jen.Select().Block(
-							jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
-							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-								jen.Id("__errR").Dot("Release").Call(),
-							),
-						),
-					),
-					// Main goroutine function
-					jen.Func().Params().Error().Block(noRawGoroutineBody...),
+				// release
+				jen.Func().Params(jen.Id("__r").Qual(common.InterfacesPkg, "StreamResult")).Block(
+					jen.Id("__r").Dot("Release").Call(),
 				),
-			).Call(),
-
-			jen.Return(jen.Nil()),
+				// body - receives onTick, handles stream creation and iteration
+				jen.Func().Params(jen.Id("onTick").Add(onTickType())).Error().Block(noRawGoroutineBody...),
+			)),
 		)
 
 		// Generate the noRaw implementation function
@@ -1282,525 +1249,193 @@ func Generate(selfPkg string) {
 		// This path uses the ParseStream goroutine for partial results
 		fullMethodName := strcase.LowerCamelCase(methodName + "_full")
 
-		var fullBody []jen.Code
-		fullBody = append(fullBody, makePreamble()...)
-
-		fullBody = append(fullBody,
-			// Unbounded queue for passing FunctionLog from OnTick to partials goroutine (never drops)
-			jen.Id("funcLogQueue").Op(":=").Qual(common.GoConcurrentQueuePkg, "NewFIFO").Call(),
-			// Context to signal partials goroutine to stop
-			// NOT derived from adapter - we only cancel after ticksDone to ensure no late enqueues
-			jen.List(jen.Id("queueCtx"), jen.Id("queueCancel")).Op(":=").Qual("context", "WithCancel").Call(jen.Qual("context", "Background").Call()),
-
-			// Two-phase shutdown state
-			jen.Var().Id("stopping").Qual("sync/atomic", "Bool"),   // shutdown requested
-			jen.Var().Id("inTick").Qual("sync/atomic", "Int64"),    // number of onTick currently executing
-			jen.Var().Id("pending").Qual("sync/atomic", "Int64"),   // number of queued items not yet completed
-			jen.Id("ticksDone").Op(":=").Make(jen.Chan().Struct()), // closed when stopping && inTick==0
-			jen.Id("allDone").Op(":=").Make(jen.Chan().Struct()),   // closed when stopping && pending==0
-			jen.Var().Id("ticksOnce").Qual("sync", "Once"),
-			jen.Var().Id("allOnce").Qual("sync", "Once"),
-			jen.Var().Id("shutdownOnce").Qual("sync", "Once"),
-
-			// Heartbeat tracking - sends a single heartbeat when first data is received
-			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
-
-			// Fatal error storage
-			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
-			jen.Var().Id("fatalErr").Error(),
-
-			// Incremental extractor for SSE chunks (tracks cursor to avoid re-parsing)
-			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
-			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
-
-			// Two-phase shutdown function - guarded by shutdownOnce
-			jen.Id("doShutdown").Op(":=").Func().Params().Block(
-				// Phase 1: Stop accepting new ticks
-				jen.Id("stopping").Dot("Store").Call(jen.True()),
-				jen.If(jen.Id("inTick").Dot("Load").Call().Op("==").Lit(0)).Block(
-					jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(
-						jen.Close(jen.Id("ticksDone")),
-					)),
-				).Else().Block(
-					jen.Op("<-").Id("ticksDone"),
-				),
-
-				// Phase 2: Cancel queue and wait for pending items
-				jen.Id("queueCancel").Call(),
-				jen.If(jen.Id("pending").Dot("Load").Call().Op("==").Lit(0)).Block(
-					jen.Id("allOnce").Dot("Do").Call(jen.Func().Params().Block(
-						jen.Close(jen.Id("allDone")),
-					)),
-				).Else().Block(
-					jen.Op("<-").Id("allDone"),
-				),
-			),
-
-			// Error handler for goroutine panics - records error and initiates shutdown
-			// Triggers full teardown asynchronously so errors abort promptly even if stream hangs
-			jen.Id("errHandler").Op(":=").Func().Params(jen.Id("err").Error()).Block(
-				jen.Id("fatalMu").Dot("Lock").Call(),
-				jen.If(jen.Id("fatalErr").Op("==").Nil()).Block(
-					jen.Id("fatalErr").Op("=").Id("err"),
-				),
-				jen.Id("fatalMu").Dot("Unlock").Call(),
-
-				// Initiate shutdown and kick off full teardown asynchronously
-				jen.If(jen.Id("stopping").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
-					jen.If(jen.Id("inTick").Dot("Load").Call().Op("==").Lit(0)).Block(
-						jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(
-							jen.Close(jen.Id("ticksDone")),
-						)),
-					),
-					// Trigger full shutdown asynchronously (non-blocking)
-					jen.Go().Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
-				),
-			),
-		)
-
-		// Watcher goroutine: trigger shutdown when adapter (HTTP request) is cancelled
-		// This ensures prompt cleanup on client disconnect while respecting shutdown ordering
-		fullBody = append(fullBody,
-			jen.Go().Func().Params().Block(
-				jen.Op("<-").Id("adapter").Dot("Done").Call(),
-				jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
-			).Call(),
-		)
-
-		// Build the onTick callback - enqueues FunctionLog for async processing
-		// IMPORTANT: OnTick is called synchronously by BAML, so we must return ASAP
-		// All data extraction happens in the partials goroutine, not here
-		// Uses panic recovery and inTick barrier for safe shutdown
-		onTickBody := []jen.Code{
-			// Wrap in gorecovery.Call for panic safety - call errHandler if panic occurs
-			jen.If(
-				jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
-					jen.Func().Params().Error().Block(
-						// CRITICAL: increment inTick FIRST, before any checks
-						// This prevents the race where shutdown sees inTick==0 while we're between
-						// checking stopping and incrementing inTick
-						jen.Id("inTick").Dot("Add").Call(jen.Lit(1)),
-						// Defer exit: decrement counter and close ticksDone if we're the last and stopping
-						jen.Defer().Func().Params().Block(
-							jen.If(
-								jen.Id("inTick").Dot("Add").Call(jen.Lit(-1)).Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call(),
-							).Block(
-								jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(
-									jen.Close(jen.Id("ticksDone")),
-								)),
-							),
-						).Call(),
-
-						// Now check if we should bail out (after inTick is incremented)
-						jen.If(jen.Id("stopping").Dot("Load").Call()).Block(
-							jen.Return(jen.Nil()),
-						),
-						jen.Select().Block(
-							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-								jen.Return(jen.Nil()),
-							),
-							jen.Default().Block(),
-						),
-
-						// Send heartbeat on first tick - signals "data received" for hung detection
-						jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
-							jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
-							jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
-							jen.Select().Block(
-								jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
-								jen.Default().Block(
-									jen.Id("__r").Dot("Release").Call(),
-								),
-							),
-						),
-
-						// Reserve pending slot, then enqueue the FunctionLog directly
-						// All data extraction happens in the partials goroutine
-						// If enqueue fails (shouldn't happen with FIFO), rollback pending
-						jen.Id("pending").Dot("Add").Call(jen.Lit(1)),
-						jen.If(jen.Id("err").Op(":=").Id("funcLogQueue").Dot("Enqueue").Call(jen.Id("funcLog")), jen.Id("err").Op("!=").Nil()).Block(
-							// Rollback and check if we need to close allDone
-							jen.If(
-								jen.Id("pending").Dot("Add").Call(jen.Lit(-1)).Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call(),
-							).Block(
-								jen.Id("allOnce").Dot("Do").Call(jen.Func().Params().Block(
-									jen.Close(jen.Id("allDone")),
-								)),
-							),
-						),
-
-						jen.Return(jen.Nil()),
-					),
-				),
-				jen.Id("err").Op("!=").Nil(),
-			).Block(
-				jen.Id("errHandler").Call(jen.Id("err")),
-			),
-
-			jen.Return(jen.Nil()),
-		}
-
-		// Helper to decrement pending and maybe close allDone
-		decrementPending := []jen.Code{
-			jen.If(
-				jen.Id("pending").Dot("Add").Call(jen.Lit(-1)).Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call(),
-			).Block(
-				jen.Id("allOnce").Dot("Do").Call(jen.Func().Params().Block(
-					jen.Close(jen.Id("allDone")),
-				)),
-			),
-		}
-
-		// Build the partials processing goroutine body - reads FunctionLog from queue, extracts data, calls ParseStream, emits partials
-		// Each item is processed in a separate function call so defers run per-item
-		// Per-item panics are caught and reported but don't exit the loop
-		// The entire loop iteration is wrapped in gorecovery.Call to catch panics from queue operations
-		partialsGoroutineBody := []jen.Code{
-			// Define process function - handles one queue item with defer and panic recovery
-			jen.Id("process").Op(":=").Func().Params(jen.Id("funcLog").Qual(BamlPkg, "FunctionLog")).Block(
-				// Defer pending decrement - runs when THIS function returns (per-item)
-				jen.Defer().Func().Params().Block(decrementPending...).Call(),
-
-				// Wrap extraction+parse+send in gorecovery.Call - if panic, call errHandler but DON'T exit
-				jen.If(
-					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
-						jen.Func().Params().Error().Block(
-							// Extract data from FunctionLog (moved from OnTick for async processing)
-							// Only fetch data for the LAST call - earlier calls are failed retries
-							jen.Id("calls").Op(",").Id("callsErr").Op(":=").Id("funcLog").Dot("Calls").Call(),
-							jen.If(jen.Id("callsErr").Op("!=").Nil()).Block(
-								jen.Return(jen.Nil()),
-							),
-							jen.Id("callCount").Op(":=").Len(jen.Id("calls")),
-							jen.If(jen.Id("callCount").Op("==").Lit(0)).Block(
-								jen.Return(jen.Nil()),
-							),
-
-							// Get only the last call (current attempt) - avoid FFI calls for failed retries
-							jen.Id("lastCall").Op(":=").Id("calls").Index(jen.Id("callCount").Op("-").Lit(1)),
-							jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("lastCall").Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
-							jen.If(jen.Op("!").Id("ok")).Block(
-								jen.Return(jen.Nil()),
-							),
-							jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
-							jen.If(jen.Id("provErr").Op("!=").Nil()).Block(
-								jen.Return(jen.Nil()),
-							),
-							jen.Id("chunks").Op(",").Id("chunksErr").Op(":=").Id("streamCall").Dot("SSEChunks").Call(),
-							jen.If(jen.Id("chunksErr").Op("!=").Nil()).Block(
-								jen.Return(jen.Nil()),
-							),
-
-							// Convert chunks to SSEChunk interface slice
-							jen.Id("sseChunks").Op(":=").Make(jen.Index().Qual(common.SSEPkg, "SSEChunk"), jen.Len(jen.Id("chunks"))),
-							jen.For(jen.List(jen.Id("i"), jen.Id("chunk")).Op(":=").Range().Id("chunks")).Block(
-								jen.Id("sseChunks").Index(jen.Id("i")).Op("=").Id("chunk"),
-							),
-
-							// Extract new content incrementally (only processes new chunks)
-							jen.Id("extractorMu").Dot("Lock").Call(),
-							jen.Id("extractResult").Op(":=").Id("extractor").Dot("Extract").Call(
-								jen.Id("callCount"),
-								jen.Id("provider"),
-								jen.Id("sseChunks"),
-							),
-							jen.Id("extractorMu").Dot("Unlock").Call(),
-
-							// Skip ParseStream and partial emissions when skipIntermediateParsing is true
-							// (raw is still accumulated by extractor for final result)
-							jen.If(jen.Id("skipIntermediateParsing")).Block(
-								jen.Return(jen.Nil()),
-							),
-
-							// Skip if no new content AND no reset signal
-							// (must emit reset even with empty delta so client discards stale state)
-							jen.If(jen.Id("extractResult").Dot("Delta").Op("==").Lit("").Op("&&").Op("!").Id("extractResult").Dot("Reset")).Block(
-								jen.Return(jen.Nil()),
-							),
-
-							jen.Id("raw").Op(":=").Id("extractResult").Dot("Full"),
-							jen.Id("rawDelta").Op(":=").Id("extractResult").Dot("Delta"),
-
-							// Short-circuit: if rawDelta is empty or raw is empty, skip ParseStream
-							// (no new content to parse, or nothing accumulated yet)
-							jen.If(jen.Id("rawDelta").Op("==").Lit("").Op("||").Id("raw").Op("==").Lit("")).Block(
-								// Pre-check adapter cancellation
-								jen.Select().Block(
-									jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-										jen.Return(jen.Nil()),
-									),
-									jen.Default().Block(),
-								),
-								// Emit reset-only result (no parsed content)
-								jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
-								jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
-								jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
-								jen.Id("__r").Dot("reset").Op("=").Id("extractResult").Dot("Reset"),
-								jen.Select().Block(
-									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
-									jen.Default().Block(
-										jen.Id("__r").Dot("Release").Call(),
-									),
-								),
-								jen.Return(jen.Nil()),
-							),
-
-							// Call ParseStream outside of OnTick callback context (avoids deadlock)
-							// Pass adapter as context (hack adds ctx param to ParseStream methods)
-							jen.List(jen.Id("parsed"), jen.Id("parseErr")).Op(":=").
-								Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
-								jen.Id("adapter"),
-								jen.Id("raw"),
-								jen.Id("options").Op("..."),
-							),
-							jen.If(jen.Id("parseErr").Op("==").Nil()).Block(
-								// Pre-check: if adapter is cancelled, don't attempt send
-								// (avoids race where select randomly picks out <- after close)
-								jen.Select().Block(
-									jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-										jen.Return(jen.Nil()),
-									),
-									jen.Default().Block(),
-								),
-
-								// ParseStream returns a concrete type - always take address for consistency
-								jen.Id("parsedPtr").Op(":=").Op("&").Id("parsed"),
-
-								// Best-effort send (non-blocking) - send only delta to save bandwidth
-								jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
-								jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
-								jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
-								jen.Id("__r").Dot("parsed").Op("=").Id("parsedPtr"),
-								jen.Id("__r").Dot("reset").Op("=").Id("extractResult").Dot("Reset"),
-								jen.Select().Block(
-									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
-									jen.Default().Block(
-										jen.Id("__r").Dot("Release").Call(),
-									),
-								),
-							),
-							jen.Return(jen.Nil()),
-						),
-					),
-					jen.Id("err").Op("!=").Nil(),
-				).Block(
-					// Record fatal error but DON'T return - let defer run and continue loop
-					jen.Id("errHandler").Call(jen.Id("err")),
-				),
-			),
-
-			// Drain helper - processes remaining queue items, checking for adapter cancellation
-			jen.Id("drain").Op(":=").Func().Params().Block(
-				jen.For().Block(
-					// Check if adapter is cancelled - if so, just decrement pending without processing
-					jen.Select().Block(
-						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-							// Request cancelled - decrement all remaining pending items and exit
-							jen.For().Block(
-								jen.List(jen.Id("_"), jen.Id("drainErr")).Op(":=").Id("funcLogQueue").Dot("Dequeue").Call(),
-								jen.If(jen.Id("drainErr").Op("!=").Nil()).Block(
-									jen.Return(), // Queue empty
-								),
-								jen.Block(decrementPending...),
-							),
-						),
-						jen.Default().Block(),
-					),
-
-					jen.List(jen.Id("remaining"), jen.Id("drainErr")).Op(":=").Id("funcLogQueue").Dot("Dequeue").Call(),
-					jen.If(jen.Id("drainErr").Op("!=").Nil()).Block(
-						jen.Return(), // Queue empty
-					),
-					jen.List(jen.Id("funcLog"), jen.Id("ok")).Op(":=").Id("remaining").Assert(jen.Qual(BamlPkg, "FunctionLog")),
-					jen.If(jen.Op("!").Id("ok")).Block(
-						jen.Block(decrementPending...),
-						jen.Continue(),
-					),
-					jen.Id("process").Call(jen.Id("funcLog")),
-				),
-			),
-
-			// Main loop: wait for items from queue until context is cancelled
-			// Entire loop iteration wrapped in gorecovery.Call1 to catch panics from queue operations
-			jen.For().Block(
-				jen.List(jen.Id("shouldExit"), jen.Id("err")).Op(":=").Qual("github.com/gregwebs/go-recovery", "Call1").Types(jen.Bool()).Call(
-					jen.Func().Params().Params(jen.Bool(), jen.Error()).Block(
-						jen.List(jen.Id("item"), jen.Id("err")).Op(":=").Id("funcLogQueue").Dot("DequeueOrWaitForNextElementContext").Call(jen.Id("queueCtx")),
-						jen.If(jen.Id("err").Op("!=").Nil()).Block(
-							// Context cancelled - drain remaining items and exit
-							jen.Id("drain").Call(),
-							jen.Return(jen.True(), jen.Nil()),
-						),
-						jen.List(jen.Id("funcLog"), jen.Id("ok")).Op(":=").Id("item").Assert(jen.Qual(BamlPkg, "FunctionLog")),
-						jen.If(jen.Op("!").Id("ok")).Block(
-							jen.Block(decrementPending...),
-							jen.Return(jen.False(), jen.Nil()), // Continue loop
-						),
-						jen.Id("process").Call(jen.Id("funcLog")),
-						jen.Return(jen.False(), jen.Nil()),
-					),
-				),
-				jen.If(jen.Id("err").Op("!=").Nil()).Block(
-					jen.Id("errHandler").Call(jen.Id("err")),
-					jen.Continue(), // Keep looping after panic
-				),
-				jen.If(jen.Id("shouldExit")).Block(
-					jen.Return(jen.Nil()),
-				),
-			),
-			jen.Return(jen.Nil()),
-		}
-
-		// Build the stream drain goroutine - drains stream channel, waits for partials via two-phase shutdown, emits final/error
-		streamDrainBody := []jen.Code{
-			// Call the Stream method with WithOnTick
-			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
-				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(streamCallParams...),
-
-			// If initial stream creation failed, shutdown and emit error
-			jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
-				jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
-				jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("streamErr")),
-				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-						jen.Id("__errR").Dot("Release").Call(),
-					),
-				),
-				jen.Return(jen.Nil()),
-			),
-
-			// Drain the stream channel - ignore partials (we get ours from ParseStream)
-			jen.Var().Id("result").Any(),
-			jen.Var().Id("streamErr2").Error(),
-			jen.For(jen.Id("streamVal").Op(":=").Range().Id("stream")).Block(
-				jen.If(jen.Id("streamVal").Dot("IsError")).Block(
-					jen.Id("streamErr2").Op("=").Id("streamVal").Dot("Error"),
-					jen.Continue(),
-				),
-				jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
-					jen.Id("result").Op("=").Id("streamVal").Dot("Final").Call(),
-				),
-				// Ignore non-final partials - our partials come from the ParseStream goroutine
-			),
-
-			// Perform two-phase shutdown - waits for all ticks and pending items
-			jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
-
-			// Check if there was a fatal error from one of the goroutines
-			jen.Id("fatalMu").Dot("Lock").Call(),
-			jen.Id("fatalErrCopy").Op(":=").Id("fatalErr"),
-			jen.Id("fatalMu").Dot("Unlock").Call(),
-			jen.If(jen.Id("fatalErrCopy").Op("!=").Nil()).Block(
-				jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("fatalErrCopy")),
-				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-						jen.Id("__errR").Dot("Release").Call(),
-					),
-				),
-				jen.Return(jen.Nil()),
-			),
-
-			// Now emit final/error (after all partials have been sent)
-			jen.If(jen.Id("streamErr2").Op("!=").Nil()).Block(
-				jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("streamErr2")),
-				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-						jen.Id("__errR").Dot("Release").Call(),
-					),
-				),
-				jen.Return(jen.Nil()),
-			),
-
-			// Get the final raw response from extractor
+		// Build the per-tick processing closure for the full path.
+		// This captures method-specific state (options, adapter, output pool, ParseStream call).
+		processTickBody := []jen.Code{
+			jen.Id("calls").Op(",").Id("callsErr").Op(":=").Id("funcLog").Dot("Calls").Call(),
+			jen.If(jen.Id("callsErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
+			jen.Id("callCount").Op(":=").Len(jen.Id("calls")),
+			jen.If(jen.Id("callCount").Op("==").Lit(0)).Block(jen.Return(jen.Nil())),
+			jen.Id("lastCall").Op(":=").Id("calls").Index(jen.Id("callCount").Op("-").Lit(1)),
+			jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("lastCall").Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
+			jen.If(jen.Op("!").Id("ok")).Block(jen.Return(jen.Nil())),
+			jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
+			jen.If(jen.Id("provErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
+			jen.Id("chunks").Op(",").Id("chunksErr").Op(":=").Id("streamCall").Dot("SSEChunks").Call(),
+			jen.If(jen.Id("chunksErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
+			// Extract incrementally (no interface boxing).
+			// Defer unlock so a panic in ExtractFrom does not leave the mutex held.
 			jen.Id("extractorMu").Dot("Lock").Call(),
-			jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
-			jen.Id("extractorMu").Dot("Unlock").Call(),
+			jen.Defer().Id("extractorMu").Dot("Unlock").Call(),
+			jen.Id("extractResult").Op(":=").Qual(common.SSEPkg, "ExtractFrom").Call(
+				jen.Id("extractor"), jen.Id("callCount"), jen.Id("provider"), jen.Id("chunks"),
+			),
+			jen.If(jen.Id("skipIntermediateParsing")).Block(jen.Return(jen.Nil())),
+			jen.If(jen.Id("extractResult").Dot("Delta").Op("==").Lit("").Op("&&").Op("!").Id("extractResult").Dot("Reset")).Block(jen.Return(jen.Nil())),
+			jen.Id("raw").Op(":=").Id("extractResult").Dot("Full"),
+			jen.Id("rawDelta").Op(":=").Id("extractResult").Dot("Delta"),
+			// Short-circuit: empty delta/raw → emit reset-only result
+			jen.If(jen.Id("rawDelta").Op("==").Lit("").Op("||").Id("raw").Op("==").Lit("")).Block(
+				jen.Select().Block(
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
+					jen.Default().Block(),
+				),
+				jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+				jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+				jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
+				jen.Id("__r").Dot("reset").Op("=").Id("extractResult").Dot("Reset"),
+				// Reset-bearing partials must not be dropped: block until sent or cancelled.
+				jen.If(jen.Id("extractResult").Dot("Reset")).Block(
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.Id("__r").Dot("Release").Call(),
+						),
+					),
+				).Else().Block(
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+						jen.Default().Block(jen.Id("__r").Dot("Release").Call()),
+					),
+				),
+				jen.Return(jen.Nil()),
+			),
+			// Call ParseStream
+			jen.List(jen.Id("parsed"), jen.Id("parseErr")).Op(":=").
+				Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
+				jen.Id("adapter"), jen.Id("raw"), jen.Id("options").Op("..."),
+			),
+			jen.If(jen.Id("parseErr").Op("==").Nil()).Block(
+				jen.Select().Block(
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
+					jen.Default().Block(),
+				),
+				jen.Id("parsedPtr").Op(":=").Op("&").Id("parsed"),
+				func() jen.Code {
+					if isDynamicStream {
+						return jen.Id(unwrapStreamFuncName).Call(jen.Id("parsedPtr"))
+					}
+					return jen.Null()
+				}(),
+				jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+				jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+				jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
+				jen.Id("__r").Dot("streamParsed").Op("=").Id("parsedPtr"),
+				jen.Id("__r").Dot("reset").Op("=").Id("extractResult").Dot("Reset"),
+				// Reset-bearing partials must not be dropped: block until sent or cancelled.
+				jen.If(jen.Id("extractResult").Dot("Reset")).Block(
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.Id("__r").Dot("Release").Call(),
+						),
+					),
+				).Else().Block(
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+						jen.Default().Block(jen.Id("__r").Dot("Release").Call()),
+					),
+				),
+			),
+			jen.Return(jen.Nil()),
+		}
 
-			// Send final result - handle both pointer and value types from streamVal.Final()
-			jen.Var().Id("finalParsed").Any(),
+		// Build call parameters for the driveStream closure.
+		// The closure receives a pre-built opts slice (already contains WithOnTick)
+		// from the orchestration helper, so we use opts... directly.
+		var driveStreamCallParams []jen.Code
+		driveStreamCallParams = append(driveStreamCallParams, jen.Id("adapter"))
+		for _, arg := range args {
+			driveStreamCallParams = append(driveStreamCallParams, argCallParam(arg))
+		}
+		driveStreamCallParams = append(driveStreamCallParams, jen.Id("opts").Op("..."))
+
+		// Build the driveStream closure: creates the BAML stream, iterates, returns (finalResult, lastError).
+		driveStreamBody := []jen.Code{
+			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
+				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(driveStreamCallParams...),
+			jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Id("streamErr")),
+			),
+			jen.Var().Id("result").Any(),
+			jen.Var().Id("lastErr").Error(),
+			jen.For(jen.Id("streamVal").Op(":=").Range().Id("stream")).Block(
+				jen.If(jen.Id("streamVal").Dot("IsError")).Block(jen.Id("lastErr").Op("=").Id("streamVal").Dot("Error"), jen.Continue()),
+				jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(jen.Id("result").Op("=").Id("streamVal").Dot("Final").Call()),
+			),
+			jen.Return(jen.Id("result"), jen.Id("lastErr")),
+		}
+
+		// Build the emitFinal closure: wraps final result with type-specific handling.
+		// Sets the typed finalParsed field directly — no interface boxing.
+		emitFinalBody := []jen.Code{
+			jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+			jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindFinal"),
+			jen.Id("__r").Dot("raw").Op("=").Id("raw"),
 			jen.If(jen.Id("result").Op("!=").Nil()).Block(
-				// First try pointer type (BAML often returns pointers from Final())
 				jen.If(
 					jen.List(jen.Id("ptr"), jen.Id("ok")).Op(":=").Id("result").Assert(finalTypePtr.Clone()),
 					jen.Id("ok"),
 				).Block(
-					jen.Id("finalParsed").Op("=").Id("ptr"),
+					func() jen.Code {
+						if isDynamicFinal {
+							return jen.Id(unwrapFinalFuncName).Call(jen.Id("ptr"))
+						}
+						return jen.Null()
+					}(),
+					jen.Id("__r").Dot("finalParsed").Op("=").Id("ptr"),
 				).Else().If(
 					jen.List(jen.Id("val"), jen.Id("ok")).Op(":=").Id("result").Assert(finalType.statement.Clone()),
 					jen.Id("ok"),
 				).Block(
-					jen.Id("finalParsed").Op("=").Op("&").Id("val"),
-				).Else().Block(
-					jen.Id("finalParsed").Op("=").Id("result"),
+					func() jen.Code {
+						if isDynamicFinal {
+							return jen.Id(unwrapFinalFuncName).Call(jen.Op("&").Id("val"))
+						}
+						return jen.Null()
+					}(),
+					jen.Id("__r").Dot("finalParsed").Op("=").Op("&").Id("val"),
 				),
 			),
-			jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
-			jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindFinal"),
-			jen.Id("__r").Dot("raw").Op("=").Id("finalRaw"),
-			jen.Id("__r").Dot("parsed").Op("=").Id("finalParsed"),
-			jen.Select().Block(
-				jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
-				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+			jen.Return(jen.Id("__r")),
+		}
+
+		var fullBody []jen.Code
+		fullBody = append(fullBody, makePreamble()...)
+
+		// Delegate to shared full orchestration helper with per-method closures
+		fullBody = append(fullBody,
+			jen.Return(jen.Id("runFullOrchestration").Call(
+				jen.Id("adapter"),
+				jen.Id("out"),
+				jen.Id("options"),
+				// newHeartbeat
+				jen.Func().Params().Qual(common.InterfacesPkg, "StreamResult").Block(
+					jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+					jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
+					jen.Return(jen.Id("__r")),
+				),
+				// newError
+				jen.Func().Params(jen.Id("err").Error()).Qual(common.InterfacesPkg, "StreamResult").Block(
+					jen.Return(jen.Id(errorConstructorName).Call(jen.Id("err"))),
+				),
+				// release
+				jen.Func().Params(jen.Id("__r").Qual(common.InterfacesPkg, "StreamResult")).Block(
 					jen.Id("__r").Dot("Release").Call(),
 				),
-			),
-
-			jen.Return(jen.Nil()),
-		}
-
-		// Define the onTick callback variable
-		fullBody = append(fullBody,
-			jen.Id("onTick").Op(":=").Func().Params(
-				jen.Id("ctx").Qual("context", "Context"),
-				jen.Id("reason").Qual(BamlPkg, "TickReason"),
-				jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
-			).Qual(BamlPkg, "FunctionSignal").Block(onTickBody...),
-		)
-
-		// Start the partials processing goroutine wrapped in GoHandler for panic safety
-		fullBody = append(fullBody,
-			jen.Go().Func().Params().Block(
-				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
-					jen.Id("errHandler"),
-					jen.Func().Params().Error().Block(partialsGoroutineBody...),
-				),
-			).Call(),
-		)
-
-		// Shutdown call for error handler - uses shutdownOnce to ensure only one shutdown runs
-		doShutdownCode := []jen.Code{
-			jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
-		}
-
-		// Start the stream drain goroutine (drains stream, cancels queue context, waits for partials, emits final)
-		fullBody = append(fullBody,
-			jen.Go().Func().Params().Block(
-				jen.Defer().Close(jen.Id("out")),
-				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
-					// Error handler function - performs full shutdown then emits error
-					jen.Func().Params(jen.Id("err").Error()).Block(
-						append(doShutdownCode,
-							jen.Id("__errR").Op(":=").Id(errorConstructorName).Call(jen.Id("err")),
-							jen.Select().Block(
-								jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
-								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-									jen.Id("__errR").Dot("Release").Call(),
-								),
-							),
-						)...,
-					),
-					// Main goroutine function
-					jen.Func().Params().Error().Block(streamDrainBody...),
-				),
-			).Call(),
-		)
-
-		// Return the channel
-		fullBody = append(fullBody,
-			jen.Return(jen.Nil()),
+				// processTick
+				jen.Func().Params(
+					jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
+					jen.Id("extractor").Op("*").Qual(common.SSEPkg, "IncrementalExtractor"),
+					jen.Id("extractorMu").Op("*").Qual("sync", "Mutex"),
+				).Error().Block(processTickBody...),
+				// driveStream
+				jen.Func().Params(
+					jen.Id("opts").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+				).Params(jen.Any(), jen.Error()).Block(driveStreamBody...),
+				// emitFinal
+				jen.Func().Params(jen.Id("result").Any(), jen.Id("raw").String()).Qual(common.InterfacesPkg, "StreamResult").Block(emitFinalBody...),
+			)),
 		)
 
 		// Generate the full implementation function
@@ -1948,24 +1583,19 @@ func Generate(selfPkg string) {
 			),
 		}
 
-		// Add DynamicProperties unwrapping for types that have it
+		// Unwrap DynamicProperties at parse time.
+		// For streaming methods the helper was already emitted by the streaming loop.
+		// For parse-only methods we must emit it here.
 		if isDynamic {
+			parseUnwrapName := strcase.LowerCamelCase(fmt.Sprintf("unwrapDynamic%sFinal", strcase.UpperCamelCase(fmt.Sprintf("%sOutput", methodName))))
+			if !emittedUnwrapHelpers[parseUnwrapName] {
+				finalTypeForParse := parseReflectType(syncFuncType.Out(0))
+				finalTypePtrForParse := jen.Op("*").Add(finalTypeForParse.statement.Clone())
+				emitDynamicUnwrapFunc(parseUnwrapName, finalTypePtrForParse)
+				emittedUnwrapHelpers[parseUnwrapName] = true
+			}
 			parseBody = append(parseBody,
-				jen.If(jen.Id("result").Dot("DynamicProperties").Op("!=").Nil()).Block(
-					jen.For(jen.List(jen.Id("key"), jen.Id("value")).Op(":=").Range().Id("result").Dot("DynamicProperties")).
-						Block(
-							// Try reflect.Value first (old BAML behavior)
-							jen.If(
-								jen.List(jen.Id("reflectValue"), jen.Id("ok")).Op(":=").Id("value").Assert(jen.Qual("reflect", "Value")),
-								jen.Id("ok"),
-							).Block(
-								jen.Id("result").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("reflectValue").Dot("Interface").Call()),
-							).Else().Block(
-								// Otherwise unwrap directly (BAML 0.215.0+ behavior)
-								jen.Id("result").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("value")),
-							),
-						),
-				),
+				jen.Id(parseUnwrapName).Call(jen.Op("&").Id("result")),
 			)
 		}
 
@@ -2119,7 +1749,8 @@ func Generate(selfPkg string) {
 					jen.Id("adapterIn"),
 				)),
 			),
-			jen.Var().Id("result").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			// Pre-size with capacity 3: room for ClientRegistry + TypeBuilder + WithOnTick
+			jen.Id("result").Op(":=").Make(jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"), jen.Lit(0), jen.Lit(3)),
 			jen.If(jen.Id("adapter").Dot("ClientRegistry").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),
 					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
@@ -2139,6 +1770,9 @@ func Generate(selfPkg string) {
 		Block(
 			jen.Qual(common.GeneratedClientPkg, "InitRuntime").Call(),
 		)
+
+	// Generate shared streaming orchestration helpers (emitted once, called per-method)
+	generateStreamHelpers(out)
 
 	if err := common.Commit(out); err != nil {
 		panic(err)
@@ -2990,5 +2624,336 @@ func generateApplyDynamicTypes(out *jen.File) {
 			),
 			jen.Line(),
 			jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("unresolved reference: %q"), jen.Id("name"))),
+		)
+}
+
+// onTickType returns the jen type for the BAML OnTick callback signature.
+func onTickType() *jen.Statement {
+	return jen.Func().Params(
+		jen.Qual("context", "Context"),
+		jen.Qual(BamlPkg, "TickReason"),
+		jen.Qual(BamlPkg, "FunctionLog"),
+	).Qual(BamlPkg, "FunctionSignal")
+}
+
+// generateStreamHelpers emits shared orchestration functions that encapsulate
+// the goroutine management, heartbeat tracking, panic recovery, and shutdown
+// state machine common to all streaming methods. Per-method code supplies
+// only the method-specific closures.
+func generateStreamHelpers(out *jen.File) {
+	streamResultIface := jen.Qual(common.InterfacesPkg, "StreamResult")
+
+	// ──────────────────────────────────────────────────────────────────
+	// runNoRawOrchestration
+	// ──────────────────────────────────────────────────────────────────
+	out.Comment("runNoRawOrchestration manages the noRaw streaming lifecycle:")
+	out.Comment("heartbeat tracking, onTick callback, goroutine launch, and panic recovery.")
+	out.Comment("The per-method body closure handles stream creation and iteration.")
+	out.Func().Id("runNoRawOrchestration").
+		Params(
+			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("out").Chan().Add(streamResultIface.Clone()),
+			jen.Id("newHeartbeat").Func().Params().Add(streamResultIface.Clone()),
+			jen.Id("newError").Func().Params(jen.Error()).Add(streamResultIface.Clone()),
+			jen.Id("release").Func().Params(streamResultIface.Clone()),
+			jen.Id("body").Func().Params(jen.Add(onTickType())).Error(),
+		).
+		Error().
+		Block(
+			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
+
+			jen.Id("onTick").Op(":=").Func().Params(
+				jen.Id("_").Qual("context", "Context"),
+				jen.Id("_").Qual(BamlPkg, "TickReason"),
+				jen.Id("_").Qual(BamlPkg, "FunctionLog"),
+			).Qual(BamlPkg, "FunctionSignal").Block(
+				jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+					jen.Select().Block(
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
+						jen.Default().Block(),
+					),
+					jen.Id("__r").Op(":=").Id("newHeartbeat").Call(),
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+						jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
+					),
+				),
+				jen.Return(jen.Nil()),
+			),
+
+			jen.Go().Func().Params().Block(
+				jen.Defer().Close(jen.Id("out")),
+				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
+					jen.Func().Params(jen.Id("err").Error()).Block(
+						jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("err")),
+						jen.Select().Block(
+							jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+								jen.Id("release").Call(jen.Id("__errR")),
+							),
+						),
+					),
+					jen.Func().Params().Error().Block(
+						jen.Return(jen.Id("body").Call(jen.Id("onTick"))),
+					),
+				),
+			).Call(),
+
+			jen.Return(jen.Nil()),
+		)
+
+	// ──────────────────────────────────────────────────────────────────
+	// runFullOrchestration
+	// ──────────────────────────────────────────────────────────────────
+	out.Comment("runFullOrchestration manages the full streaming lifecycle:")
+	out.Comment("queue management, two-phase shutdown, heartbeat, onTick, partials goroutine,")
+	out.Comment("stream drain goroutine, and panic recovery.")
+	out.Comment("Per-method code supplies processTick, driveStream, and emitFinal closures.")
+	out.Func().Id("runFullOrchestration").
+		Params(
+			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("out").Chan().Add(streamResultIface.Clone()),
+			jen.Id("options").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Id("newHeartbeat").Func().Params().Add(streamResultIface.Clone()),
+			jen.Id("newError").Func().Params(jen.Error()).Add(streamResultIface.Clone()),
+			jen.Id("release").Func().Params(streamResultIface.Clone()),
+			// processTick: handle one FunctionLog tick (extract chunks, parse, emit partial).
+			// Receives the shared extractor + mutex.
+			jen.Id("processTick").Func().Params(
+				jen.Qual(BamlPkg, "FunctionLog"),
+				jen.Op("*").Qual(common.SSEPkg, "IncrementalExtractor"),
+				jen.Op("*").Qual("sync", "Mutex"),
+			).Error(),
+			// driveStream: create the BAML stream and iterate it, returning (finalResult, lastError).
+			jen.Id("driveStream").Func().Params(
+				jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			).Params(jen.Any(), jen.Error()),
+			// emitFinal: wrap and emit the final result.
+			jen.Id("emitFinal").Func().Params(jen.Any(), jen.String()).Add(streamResultIface.Clone()),
+		).
+		Error().
+		Block(
+			// Queue + context
+			jen.Id("funcLogQueue").Op(":=").Qual(common.GoConcurrentQueuePkg, "NewFIFO").Call(),
+			jen.List(jen.Id("queueCtx"), jen.Id("queueCancel")).Op(":=").Qual("context", "WithCancel").Call(jen.Qual("context", "Background").Call()),
+
+			// Shutdown state
+			jen.Var().Id("stopping").Qual("sync/atomic", "Bool"),
+			jen.Var().Id("inTick").Qual("sync/atomic", "Int64"),
+			jen.Var().Id("pending").Qual("sync/atomic", "Int64"),
+			jen.Id("ticksDone").Op(":=").Make(jen.Chan().Struct()),
+			jen.Id("allDone").Op(":=").Make(jen.Chan().Struct()),
+			jen.Var().Id("ticksOnce").Qual("sync", "Once"),
+			jen.Var().Id("allOnce").Qual("sync", "Once"),
+			jen.Var().Id("shutdownOnce").Qual("sync", "Once"),
+			// watcherDone is closed when the stream drain goroutine finishes, allowing
+			// the watcher goroutine to exit without waiting for adapter cancellation.
+			jen.Id("watcherDone").Op(":=").Make(jen.Chan().Struct()),
+			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
+			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
+			jen.Var().Id("fatalErr").Error(),
+
+			// Extractor
+			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
+			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
+
+			// doShutdown
+			jen.Id("doShutdown").Op(":=").Func().Params().Block(
+				jen.Id("stopping").Dot("Store").Call(jen.True()),
+				jen.If(jen.Id("inTick").Dot("Load").Call().Op("==").Lit(0)).Block(
+					jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(jen.Close(jen.Id("ticksDone")))),
+				).Else().Block(jen.Op("<-").Id("ticksDone")),
+				jen.Id("queueCancel").Call(),
+				jen.If(jen.Id("pending").Dot("Load").Call().Op("==").Lit(0)).Block(
+					jen.Id("allOnce").Dot("Do").Call(jen.Func().Params().Block(jen.Close(jen.Id("allDone")))),
+				).Else().Block(jen.Op("<-").Id("allDone")),
+			),
+
+			// errHandler
+			jen.Id("errHandler").Op(":=").Func().Params(jen.Id("err").Error()).Block(
+				jen.Id("fatalMu").Dot("Lock").Call(),
+				jen.If(jen.Id("fatalErr").Op("==").Nil()).Block(jen.Id("fatalErr").Op("=").Id("err")),
+				jen.Id("fatalMu").Dot("Unlock").Call(),
+				jen.If(jen.Id("stopping").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+					jen.If(jen.Id("inTick").Dot("Load").Call().Op("==").Lit(0)).Block(
+						jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(jen.Close(jen.Id("ticksDone")))),
+					),
+					jen.Go().Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
+				),
+			),
+
+			// Watcher goroutine — exits on adapter cancellation OR normal stream completion.
+			jen.Go().Func().Params().Block(
+				jen.Select().Block(
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
+					),
+					jen.Case(jen.Op("<-").Id("watcherDone")).Block(),
+				),
+			).Call(),
+
+			// decrementPending helper
+			jen.Id("decrementPending").Op(":=").Func().Params().Block(
+				jen.If(jen.Id("pending").Dot("Add").Call(jen.Lit(-1)).Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call()).Block(
+					jen.Id("allOnce").Dot("Do").Call(jen.Func().Params().Block(jen.Close(jen.Id("allDone")))),
+				),
+			),
+
+			// onTick callback
+			jen.Id("onTick").Op(":=").Func().Params(
+				jen.Id("_").Qual("context", "Context"),
+				jen.Id("_").Qual(BamlPkg, "TickReason"),
+				jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
+			).Qual(BamlPkg, "FunctionSignal").Block(
+				jen.If(
+					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
+						jen.Func().Params().Error().Block(
+							jen.Id("inTick").Dot("Add").Call(jen.Lit(1)),
+							jen.Defer().Func().Params().Block(
+								jen.If(jen.Id("inTick").Dot("Add").Call(jen.Lit(-1)).Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call()).Block(
+									jen.Id("ticksOnce").Dot("Do").Call(jen.Func().Params().Block(jen.Close(jen.Id("ticksDone")))),
+								),
+							).Call(),
+							jen.If(jen.Id("stopping").Dot("Load").Call()).Block(jen.Return(jen.Nil())),
+							jen.Select().Block(
+								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
+								jen.Default().Block(),
+							),
+							// Heartbeat
+							jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+								jen.Id("__r").Op(":=").Id("newHeartbeat").Call(),
+								jen.Select().Block(
+									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+									jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
+								),
+							),
+							// Enqueue
+							jen.Id("pending").Dot("Add").Call(jen.Lit(1)),
+							jen.If(jen.Id("err").Op(":=").Id("funcLogQueue").Dot("Enqueue").Call(jen.Id("funcLog")), jen.Id("err").Op("!=").Nil()).Block(
+								jen.If(jen.Id("pending").Dot("Add").Call(jen.Lit(-1)).Op("==").Lit(0).Op("&&").Id("stopping").Dot("Load").Call()).Block(
+									jen.Id("allOnce").Dot("Do").Call(jen.Func().Params().Block(jen.Close(jen.Id("allDone")))),
+								),
+							),
+							jen.Return(jen.Nil()),
+						),
+					),
+					jen.Id("err").Op("!=").Nil(),
+				).Block(jen.Id("errHandler").Call(jen.Id("err"))),
+				jen.Return(jen.Nil()),
+			),
+
+			// Partials goroutine: process function + drain + main loop
+			jen.Id("processItem").Op(":=").Func().Params(jen.Id("funcLog").Qual(BamlPkg, "FunctionLog")).Block(
+				jen.Defer().Id("decrementPending").Call(),
+				jen.If(
+					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
+						jen.Func().Params().Error().Block(
+							jen.Return(jen.Id("processTick").Call(jen.Id("funcLog"), jen.Id("extractor"), jen.Op("&").Id("extractorMu"))),
+						),
+					),
+					jen.Id("err").Op("!=").Nil(),
+				).Block(jen.Id("errHandler").Call(jen.Id("err"))),
+			),
+
+			jen.Id("drain").Op(":=").Func().Params().Block(
+				jen.For().Block(
+					jen.Select().Block(
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.For().Block(
+								jen.List(jen.Id("_"), jen.Id("drainErr")).Op(":=").Id("funcLogQueue").Dot("Dequeue").Call(),
+								jen.If(jen.Id("drainErr").Op("!=").Nil()).Block(jen.Return()),
+								jen.Id("decrementPending").Call(),
+							),
+						),
+						jen.Default().Block(),
+					),
+					jen.List(jen.Id("remaining"), jen.Id("drainErr")).Op(":=").Id("funcLogQueue").Dot("Dequeue").Call(),
+					jen.If(jen.Id("drainErr").Op("!=").Nil()).Block(jen.Return()),
+					jen.List(jen.Id("funcLog"), jen.Id("ok")).Op(":=").Id("remaining").Assert(jen.Qual(BamlPkg, "FunctionLog")),
+					jen.If(jen.Op("!").Id("ok")).Block(jen.Id("decrementPending").Call(), jen.Continue()),
+					jen.Id("processItem").Call(jen.Id("funcLog")),
+				),
+			),
+
+			// Partials goroutine
+			jen.Go().Func().Params().Block(
+				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
+					jen.Id("errHandler"),
+					jen.Func().Params().Error().Block(
+						jen.For().Block(
+							jen.List(jen.Id("shouldExit"), jen.Id("err")).Op(":=").Qual("github.com/gregwebs/go-recovery", "Call1").Types(jen.Bool()).Call(
+								jen.Func().Params().Params(jen.Bool(), jen.Error()).Block(
+									jen.List(jen.Id("item"), jen.Id("err")).Op(":=").Id("funcLogQueue").Dot("DequeueOrWaitForNextElementContext").Call(jen.Id("queueCtx")),
+									jen.If(jen.Id("err").Op("!=").Nil()).Block(jen.Id("drain").Call(), jen.Return(jen.True(), jen.Nil())),
+									jen.List(jen.Id("funcLog"), jen.Id("ok")).Op(":=").Id("item").Assert(jen.Qual(BamlPkg, "FunctionLog")),
+									jen.If(jen.Op("!").Id("ok")).Block(jen.Id("decrementPending").Call(), jen.Return(jen.False(), jen.Nil())),
+									jen.Id("processItem").Call(jen.Id("funcLog")),
+									jen.Return(jen.False(), jen.Nil()),
+								),
+							),
+							jen.If(jen.Id("err").Op("!=").Nil()).Block(jen.Id("errHandler").Call(jen.Id("err")), jen.Continue()),
+							jen.If(jen.Id("shouldExit")).Block(jen.Return(jen.Nil())),
+						),
+						jen.Return(jen.Nil()),
+					),
+				),
+			).Call(),
+
+			// Stream drain goroutine
+			jen.Go().Func().Params().Block(
+				jen.Defer().Close(jen.Id("out")),
+				jen.Defer().Close(jen.Id("watcherDone")),
+				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
+					jen.Func().Params(jen.Id("err").Error()).Block(
+						jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
+						jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("err")),
+						jen.Select().Block(
+							jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__errR"))),
+						),
+					),
+					jen.Func().Params().Error().Block(
+						jen.Id("opts").Op(":=").Append(jen.Id("options"), jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick"))),
+						jen.List(jen.Id("finalResult"), jen.Id("lastErr")).Op(":=").Id("driveStream").Call(jen.Id("opts")),
+						jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
+
+						// Check fatal error
+						jen.Id("fatalMu").Dot("Lock").Call(),
+						jen.Id("fatalErrCopy").Op(":=").Id("fatalErr"),
+						jen.Id("fatalMu").Dot("Unlock").Call(),
+						jen.If(jen.Id("fatalErrCopy").Op("!=").Nil()).Block(
+							jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("fatalErrCopy")),
+							jen.Select().Block(
+								jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__errR"))),
+							),
+							jen.Return(jen.Nil()),
+						),
+
+						// Check stream error
+						jen.If(jen.Id("lastErr").Op("!=").Nil()).Block(
+							jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("lastErr")),
+							jen.Select().Block(
+								jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__errR"))),
+							),
+							jen.Return(jen.Nil()),
+						),
+
+						// Emit final
+						jen.Id("extractorMu").Dot("Lock").Call(),
+						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
+						jen.Id("extractorMu").Dot("Unlock").Call(),
+						jen.Id("__r").Op(":=").Id("emitFinal").Call(jen.Id("finalResult"), jen.Id("finalRaw")),
+						jen.Select().Block(
+							jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__r"))),
+						),
+						jen.Return(jen.Nil()),
+					),
+				),
+			).Call(),
+
+			jen.Return(jen.Nil()),
 		)
 }

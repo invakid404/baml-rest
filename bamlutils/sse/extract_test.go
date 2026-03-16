@@ -241,6 +241,134 @@ func TestIncrementalExtractor_ZeroCallCount(t *testing.T) {
 	}
 }
 
+// concreteChunk is a distinct type (not mockChunk) to test ExtractFrom with
+// a concrete non-interface slice, verifying the generic path avoids boxing.
+type concreteChunk struct {
+	text string
+}
+
+func (c concreteChunk) Text() (string, error) { return c.text, nil }
+func (c concreteChunk) JSON() (any, error)    { return nil, nil }
+
+func TestExtractFrom_MatchesExtract(t *testing.T) {
+	// Run the same sequence through both Extract (interface slice) and
+	// ExtractFrom (concrete slice) and verify identical results.
+
+	ext1 := NewIncrementalExtractor()
+	ext2 := NewIncrementalExtractor()
+
+	ifaceChunks := []SSEChunk{
+		mockChunk{`{"choices":[{"delta":{"content":"Hello"}}]}`},
+		mockChunk{`{"choices":[{"delta":{"content":" world"}}]}`},
+	}
+	concreteChunks := []concreteChunk{
+		{`{"choices":[{"delta":{"content":"Hello"}}]}`},
+		{`{"choices":[{"delta":{"content":" world"}}]}`},
+	}
+
+	r1 := ext1.Extract(1, "openai", ifaceChunks)
+	r2 := ExtractFrom(ext2, 1, "openai", concreteChunks)
+
+	if r1.Delta != r2.Delta {
+		t.Errorf("Delta mismatch: Extract=%q, ExtractFrom=%q", r1.Delta, r2.Delta)
+	}
+	if r1.Full != r2.Full {
+		t.Errorf("Full mismatch: Extract=%q, ExtractFrom=%q", r1.Full, r2.Full)
+	}
+	if r1.Reset != r2.Reset {
+		t.Errorf("Reset mismatch: Extract=%v, ExtractFrom=%v", r1.Reset, r2.Reset)
+	}
+
+	// Second tick: add one chunk
+	ifaceChunks = append(ifaceChunks, mockChunk{`{"choices":[{"delta":{"content":"!"}}]}`})
+	concreteChunks = append(concreteChunks, concreteChunk{`{"choices":[{"delta":{"content":"!"}}]}`})
+
+	r1 = ext1.Extract(1, "openai", ifaceChunks)
+	r2 = ExtractFrom(ext2, 1, "openai", concreteChunks)
+
+	if r1.Delta != r2.Delta {
+		t.Errorf("Delta mismatch (tick 2): Extract=%q, ExtractFrom=%q", r1.Delta, r2.Delta)
+	}
+	if r1.Full != r2.Full {
+		t.Errorf("Full mismatch (tick 2): Extract=%q, ExtractFrom=%q", r1.Full, r2.Full)
+	}
+	if r1.Reset != r2.Reset {
+		t.Errorf("Reset mismatch (tick 2): Extract=%v, ExtractFrom=%v", r1.Reset, r2.Reset)
+	}
+}
+
+func TestExtractFrom_RetryReset(t *testing.T) {
+	ext := NewIncrementalExtractor()
+
+	chunks1 := []concreteChunk{
+		{`{"choices":[{"delta":{"content":"First"}}]}`},
+	}
+	r1 := ExtractFrom(ext, 1, "openai", chunks1)
+	if r1.Reset {
+		t.Error("expected Reset=false for first extraction")
+	}
+
+	// Retry: new call with different chunks
+	chunks2 := []concreteChunk{
+		{`{"choices":[{"delta":{"content":"Retry"}}]}`},
+	}
+	r2 := ExtractFrom(ext, 2, "openai", chunks2)
+	if !r2.Reset {
+		t.Error("expected Reset=true on retry")
+	}
+	if r2.Full != "Retry" {
+		t.Errorf("expected Full 'Retry', got %q", r2.Full)
+	}
+}
+
+func TestExtractFrom_ZeroCallCount(t *testing.T) {
+	ext := NewIncrementalExtractor()
+
+	result := ExtractFrom(ext, 0, "openai", []concreteChunk(nil))
+	if result.Delta != "" || result.Full != "" || result.Reset {
+		t.Error("expected empty result for callCount=0")
+	}
+}
+
+func TestIncrementalExtractor_Clear(t *testing.T) {
+	ext := NewIncrementalExtractor()
+
+	// Populate state with two ticks
+	chunks := []SSEChunk{
+		mockChunk{`{"choices":[{"delta":{"content":"Hello"}}]}`},
+		mockChunk{`{"choices":[{"delta":{"content":" world"}}]}`},
+	}
+	r := ext.Extract(1, "openai", chunks)
+	if r.Full != "Hello world" {
+		t.Fatalf("setup: expected 'Hello world', got %q", r.Full)
+	}
+	if ext.Full() != "Hello world" {
+		t.Fatalf("setup: Full() should return accumulated content")
+	}
+
+	// Clear resets all internal state
+	ext.Clear()
+
+	if ext.Full() != "" {
+		t.Errorf("after Clear: Full() should be empty, got %q", ext.Full())
+	}
+
+	// Next extraction should behave like a first extraction (Reset == false)
+	chunks2 := []SSEChunk{
+		mockChunk{`{"choices":[{"delta":{"content":"New"}}]}`},
+	}
+	r2 := ext.Extract(1, "openai", chunks2)
+	if r2.Reset {
+		t.Error("after Clear: first extraction should have Reset=false")
+	}
+	if r2.Full != "New" {
+		t.Errorf("after Clear: expected Full='New', got %q", r2.Full)
+	}
+	if r2.Delta != "New" {
+		t.Errorf("after Clear: expected Delta='New', got %q", r2.Delta)
+	}
+}
+
 func TestIncrementalExtractor_ResetOnChunksDecreased(t *testing.T) {
 	extractor := NewIncrementalExtractor()
 
