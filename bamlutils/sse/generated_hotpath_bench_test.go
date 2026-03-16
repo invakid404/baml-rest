@@ -79,25 +79,41 @@ func BenchmarkExtractFromConcreteChunks(b *testing.B) {
 	}
 }
 
-// BenchmarkExtractFromSteadyState simulates the real per-tick behavior in the
-// generated adapter: one extractor is reused across many ticks, each tick
-// appending a fixed window of new chunks. The chunk slice is preallocated to
-// avoid measuring slice-growth overhead — only incremental extraction cost.
+// BenchmarkExtractFromSteadyState measures the cost of a single incremental
+// tick in steady state. The extractor is pre-warmed with half the chunks during
+// setup so the benchmarked call only processes the new chunk window, matching
+// the real per-tick path in generated adapters. Each b.N iteration is one tick.
 func BenchmarkExtractFromSteadyState(b *testing.B) {
 	const totalChunks = 1024
+	const warmupChunks = totalChunks / 2
 	const chunksPerTick = 4
 
-	// Preallocate all chunks up front
 	allChunks := makeBenchChunks(totalChunks)
+
+	// Pre-warm: advance the extractor to a mid-stream position.
+	extractor := NewIncrementalExtractor()
+	for end := chunksPerTick; end <= warmupChunks; end += chunksPerTick {
+		ExtractFrom(extractor, 1, "openai", allChunks[:end])
+	}
+	cursor := warmupChunks
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		extractor := NewIncrementalExtractor()
-		// Simulate ticks: each tick the extractor sees a growing slice
-		for end := chunksPerTick; end <= totalChunks; end += chunksPerTick {
-			benchExtractResultSink = ExtractFrom(extractor, 1, "openai", allChunks[:end])
+		next := cursor + chunksPerTick
+		if next > totalChunks {
+			// Wrap around: reset extractor and re-warm so we stay in steady state
+			b.StopTimer()
+			extractor = NewIncrementalExtractor()
+			for end := chunksPerTick; end <= warmupChunks; end += chunksPerTick {
+				ExtractFrom(extractor, 1, "openai", allChunks[:end])
+			}
+			cursor = warmupChunks
+			next = cursor + chunksPerTick
+			b.StartTimer()
 		}
+		benchExtractResultSink = ExtractFrom(extractor, 1, "openai", allChunks[:next])
+		cursor = next
 	}
 }
