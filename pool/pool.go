@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -960,21 +961,36 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				attemptCancelled := attemptCtx.Err() != nil
 				cleanup()
 
-				// Check if parent context was cancelled (user cancelled)
-				if ctx.Err() != nil {
+				workerFailed := isRetryableWorkerError(err)
+				callerCancelled := ctx.Err() != nil
+
+				// attemptCancelled is only a meaningful signal when the
+				// caller has NOT cancelled — because attemptCtx is derived
+				// from ctx, a caller cancel always propagates, making
+				// attemptCancelled true even for non-retryable errors like
+				// InvalidArgument. When the caller has cancelled, only
+				// workerFailed (the error itself) determines restart.
+				shouldRestart := workerFailed || (!callerCancelled && attemptCancelled)
+
+				// Restart for infrastructure failures or hung detection.
+				// Skip cancellation-shaped errors when the caller also
+				// cancelled — that's gRPC propagating the caller's context.
+				if shouldRestart && !(callerCancelled && isCallerCancellationError(err)) {
+					currentHandle.healthy.Store(false)
+					p.dispatchRestart(currentHandle)
+				}
+
+				// Caller cancelled — don't retry, the caller is gone.
+				// The restart above (if triggered) ensures pool health.
+				if callerCancelled {
 					return
 				}
 
-				// If attempt context was cancelled (hung detection killed worker) or
-				// this is a retryable worker error, restart in background and retry
-				if attemptCancelled || isRetryableWorkerError(err) {
-					currentHandle.healthy.Store(false)
-
+				if shouldRestart {
 					currentHandle.logger.Info().
 						Int("attempt", attempt+1).
 						Err(err).
 						Msg("Retrying stream after worker failure")
-					p.dispatchRestart(currentHandle)
 					lastFailed = currentHandle
 					continue
 				}
@@ -1003,7 +1019,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				select {
 				case <-ctx.Done():
 					cleanup()
-					drainResults(results)
+					p.drainResultsAndCheckRestart(results, currentHandle)
 					return
 				case result, ok = <-results:
 					if !ok {
@@ -1021,6 +1037,13 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				}
 
 				// Check for retryable worker errors mid-stream
+				if result.Kind == workerplugin.StreamResultKindError && ctx.Err() != nil && isCallerCancellationError(result.Error) {
+					workerplugin.ReleaseStreamResult(result)
+					drainResults(results)
+					cleanup()
+					return
+				}
+
 				if result.Kind == workerplugin.StreamResultKindError && isRetryableWorkerError(result.Error) {
 					currentHandle.logger.Info().
 						Int("attempt", attempt+1).
@@ -1052,7 +1075,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					sentAnyResults = true
 				case <-ctx.Done():
 					workerplugin.ReleaseStreamResult(result)
-					drainResults(results)
+					p.drainResultsAndCheckRestart(results, currentHandle)
 					cleanup()
 					return
 				}
@@ -1079,7 +1102,16 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					Int("attempt", attempt+1).
 					Msg("Stream ended unexpectedly without terminal result, retrying")
 			}
+
 			p.dispatchRestart(currentHandle)
+
+			// If the caller cancelled while we were processing the
+			// mid-stream error, don't start another attempt — the
+			// caller is gone. The restart above ensures pool health.
+			if ctx.Err() != nil {
+				return
+			}
+
 			lastFailed = currentHandle
 		}
 
@@ -1101,6 +1133,25 @@ func sendStreamError(ctx context.Context, ch chan<- *workerplugin.StreamResult, 
 	case <-ctx.Done():
 		workerplugin.ReleaseStreamResult(errResult)
 	}
+}
+
+// drainResultsAndCheckRestart drains all remaining results from the channel
+// in a background goroutine, releasing each one. If any result is a retryable
+// infrastructure error (not a caller cancellation), it marks the worker
+// unhealthy and dispatches a restart. This catches errors that arrive at any
+// point during the drain — not just those that were simultaneously buffered
+// when ctx.Done() won the select.
+func (p *Pool) drainResultsAndCheckRestart(results <-chan *workerplugin.StreamResult, handle *workerHandle) {
+	go func() {
+		for r := range results {
+			if r.Kind == workerplugin.StreamResultKindError &&
+				isRetryableWorkerError(r.Error) && !isCallerCancellationError(r.Error) {
+				handle.healthy.Store(false)
+				p.dispatchRestart(handle)
+			}
+			workerplugin.ReleaseStreamResult(r)
+		}
+	}()
 }
 
 // drainResults consumes remaining results from a channel to unblock the gRPC goroutine
@@ -1324,6 +1375,34 @@ type Stats struct {
 	InFlight       int64
 }
 
+// parseSerializedGRPCCode extracts the top-level gRPC status code name from
+// a serialized gRPC error string. gRPC errors serialize as
+// "rpc error: code = <Code> desc = <Message>". This function parses only
+// the FIRST (top-level) code, not any codes that may appear in nested error
+// descriptions like "rpc error: code = Internal desc = rpc error: code = Canceled ...".
+// Returns the code name (e.g. "Internal", "Canceled") and true, or ("", false)
+// if the string doesn't match the format.
+func parseSerializedGRPCCode(errStr string) (string, bool) {
+	const prefix = "rpc error: code = "
+	idx := strings.Index(errStr, prefix)
+	if idx < 0 {
+		return "", false
+	}
+	start := idx + len(prefix)
+	if start >= len(errStr) {
+		return "", false
+	}
+	rest := errStr[start:]
+	end := strings.IndexByte(rest, ' ')
+	if end <= 0 {
+		if len(rest) > 0 {
+			return rest, true
+		}
+		return "", false
+	}
+	return rest[:end], true
+}
+
 // isRetryableWorkerError returns true if the error indicates a worker infrastructure
 // failure (crash, network issue) rather than an application-level error from BAML/LLM.
 // These errors should trigger automatic retry on another worker.
@@ -1332,7 +1411,11 @@ func isRetryableWorkerError(err error) bool {
 		return false
 	}
 
-	// First, try to extract gRPC status code (preferred method)
+	// First, try to extract gRPC status code (preferred method).
+	// When a gRPC status is present, it is authoritative — do NOT fall
+	// through to substring matching. An error like codes.Internal with
+	// "context canceled" in its message is an application error, not a
+	// retryable infrastructure failure.
 	if st, ok := status.FromError(err); ok {
 		switch st.Code() {
 		case codes.Unavailable:
@@ -1340,6 +1423,9 @@ func isRetryableWorkerError(err error) bool {
 			return true
 		case codes.Canceled:
 			// Request was canceled (e.g., by hung detection)
+			return true
+		case codes.DeadlineExceeded:
+			// Request timed out (e.g., hung detection deadline)
 			return true
 		}
 
@@ -1350,15 +1436,83 @@ func isRetryableWorkerError(err error) bool {
 			strings.Contains(msg, "transport is closing") {
 			return true
 		}
+
+		// Any other gRPC status code is not retryable.
+		return false
 	}
 
-	// Fallback: string matching for wrapped errors or non-gRPC errors
-	// This catches cases where the gRPC status couldn't be extracted
+	// No gRPC status object — the error may be a string-serialized gRPC
+	// error from the boundary (GRPCServer serializes via .Error(),
+	// GRPCClient reconstructs with fmt.Errorf), or a plain Go error.
 	errStr := err.Error()
-	if strings.Contains(errStr, "code = Unavailable") ||
-		strings.Contains(errStr, "connection reset") ||
+
+	// Serialized gRPC errors: parse the top-level code and use it as the
+	// authoritative signal. This correctly handles nested errors like
+	// "rpc error: code = Internal desc = rpc error: code = Canceled ..."
+	// by only looking at the first (top-level) code.
+	if code, ok := parseSerializedGRPCCode(errStr); ok {
+		switch code {
+		case "Unavailable", "Canceled", "DeadlineExceeded":
+			return true
+		}
+		return false
+	}
+
+	// Plain error without gRPC structure — only match transport-level
+	// infrastructure patterns. Plain "context canceled" / "context deadline
+	// exceeded" strings are NOT treated as retryable here because they can
+	// come from application-level errors (e.g. upstream LLM timeout via the
+	// BAML adapter). Transport-level cancellations are already caught above
+	// via the serialized gRPC code ("rpc error: code = Canceled ...").
+	if strings.Contains(errStr, "connection reset") ||
 		strings.Contains(errStr, "error reading from server: EOF") ||
 		strings.Contains(errStr, "transport is closing") {
+		return true
+	}
+
+	return false
+}
+
+func isCallerCancellationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	if st, ok := status.FromError(err); ok {
+		// gRPC status is available — use it as the authoritative signal.
+		// Do NOT fall through to string matching: a non-cancellation status
+		// like Unavailable can contain "context canceled" in its message
+		// text (e.g. transport teardown) without being a caller cancellation.
+		// Falling through would misclassify a dead worker as a cancelled
+		// caller and suppress restart.
+		switch st.Code() {
+		case codes.Canceled, codes.DeadlineExceeded:
+			return true
+		default:
+			return false
+		}
+	}
+
+	// No gRPC status object — the error may be a string-serialized gRPC
+	// error from the boundary (GRPCServer serializes via .Error(),
+	// GRPCClient reconstructs with fmt.Errorf), or a plain Go error.
+	errStr := err.Error()
+
+	// Serialized gRPC errors: parse the top-level code. This correctly
+	// handles nested errors by only looking at the first code.
+	if code, ok := parseSerializedGRPCCode(errStr); ok {
+		return code == "Canceled" || code == "DeadlineExceeded"
+	}
+
+	// Plain error without gRPC structure (e.g. fmt.Errorf("context canceled")
+	// from boundary serialization of a non-gRPC error). Use simple substring
+	// matching for the canonical Go error messages.
+	if strings.Contains(errStr, context.Canceled.Error()) ||
+		strings.Contains(errStr, context.DeadlineExceeded.Error()) {
 		return true
 	}
 

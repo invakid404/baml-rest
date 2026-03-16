@@ -1008,16 +1008,39 @@ func TestStreamAcceptHeaderNegotiation(t *testing.T) {
 		}
 	})
 
-	t.Run("accept_unknown_type_defaults_to_sse", func(t *testing.T) {
+	t.Run("accept_unknown_type_returns_406", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		content := `{"message": "hello"}`
 		opts := setupScenario(t, "test-accept-unknown", content)
 
-		contentType := makeRequest(t, ctx, "application/json", opts)
-		if contentType != "text/event-stream" {
-			t.Errorf("Expected Content-Type 'text/event-stream' with unknown Accept header, got '%s'", contentType)
+		body, err := json.Marshal(map[string]any{
+			"input":            "test",
+			"__baml_options__": opts,
+		})
+		if err != nil {
+			t.Fatalf("Failed to marshal request: %v", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST",
+			TestEnv.BAMLRestURL+"/stream/GetSimple",
+			bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotAcceptable {
+			t.Errorf("Expected 406 Not Acceptable for unsupported Accept type, got %d", resp.StatusCode)
 		}
 	})
 
