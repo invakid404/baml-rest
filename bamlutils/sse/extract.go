@@ -47,13 +47,20 @@ func GetCurrentContent(data *StreamingData) (string, error) {
 	return sb.String(), nil
 }
 
-// ExtractDeltaContent extracts the text delta from an SSE chunk based on provider
+// ExtractDeltaContent extracts the text delta from an SSE chunk based on provider.
 func ExtractDeltaContent(provider string, chunk SSEChunk) (string, error) {
 	rawText, err := chunk.Text()
 	if err != nil {
 		return "", fmt.Errorf("failed to get chunk text: %w", err)
 	}
+	return extractDeltaFromText(provider, rawText)
+}
 
+// extractDeltaFromText contains the provider-specific delta extraction logic,
+// operating on the raw text string. This is split out so the generic
+// ExtractFrom path can call chunk.Text() on the concrete type and pass the
+// string here, avoiding per-element interface boxing.
+func extractDeltaFromText(provider string, rawText string) (string, error) {
 	switch provider {
 	// OpenAI-compatible providers (Chat Completions API format)
 	// Path: choices[0].delta.content
@@ -155,12 +162,31 @@ type ExtractResult struct {
 //   - First extraction (initial state)
 //   - Call count changed (retry added a new call)
 //   - Chunk count decreased (shouldn't happen normally)
+//
+// Extract delegates to ExtractFrom[SSEChunk] so the logic is defined once.
 func (e *IncrementalExtractor) Extract(callCount int, provider string, chunks []SSEChunk) ExtractResult {
+	return ExtractFrom(e, callCount, provider, chunks)
+}
+
+// Clear resets the extractor state.
+func (e *IncrementalExtractor) Clear() {
+	e.callCount = 0
+	e.cursor = 0
+	e.accumulated.Reset()
+}
+
+// ExtractFrom is like Extract but accepts a concrete slice type via generics,
+// avoiding the overhead of boxing each element into an []SSEChunk interface slice.
+// The caller can pass the concrete chunk slice directly (e.g., from the BAML FFI layer)
+// without first copying it into []SSEChunk.
+//
+// Internally it calls chunk.Text() on the concrete type and passes the raw
+// string to extractDeltaFromText, so no per-element interface boxing occurs.
+func ExtractFrom[T SSEChunk](e *IncrementalExtractor, callCount int, provider string, chunks []T) ExtractResult {
 	if callCount == 0 {
 		return ExtractResult{}
 	}
 
-	// Determine rebuild reasons
 	isFirstExtraction := e.callCount == 0
 	isRetry := !isFirstExtraction && callCount != e.callCount
 	chunksDecreased := !isFirstExtraction && len(chunks) < e.cursor
@@ -168,13 +194,16 @@ func (e *IncrementalExtractor) Extract(callCount int, provider string, chunks []
 	needsRebuild := isFirstExtraction || isRetry || chunksDecreased
 
 	if needsRebuild {
-		// Full rebuild: reset state and process all chunks from last call
 		e.callCount = callCount
 		e.cursor = 0
 		e.accumulated.Reset()
 
 		for _, chunk := range chunks {
-			delta, err := ExtractDeltaContent(provider, chunk)
+			rawText, err := chunk.Text()
+			if err != nil {
+				continue
+			}
+			delta, err := extractDeltaFromText(provider, rawText)
 			if err == nil && delta != "" {
 				e.accumulated.WriteString(delta)
 			}
@@ -184,7 +213,6 @@ func (e *IncrementalExtractor) Extract(callCount int, provider string, chunks []
 		return ExtractResult{
 			Delta: e.accumulated.String(),
 			Full:  e.accumulated.String(),
-			// Signal reset when retry occurred or chunks decreased (client state is invalid)
 			Reset: isRetry || chunksDecreased,
 		}
 	}
@@ -192,7 +220,11 @@ func (e *IncrementalExtractor) Extract(callCount int, provider string, chunks []
 	// Incremental: only process new chunks
 	var deltaBuf strings.Builder
 	for i := e.cursor; i < len(chunks); i++ {
-		delta, err := ExtractDeltaContent(provider, chunks[i])
+		rawText, err := chunks[i].Text()
+		if err != nil {
+			continue
+		}
+		delta, err := extractDeltaFromText(provider, rawText)
 		if err == nil && delta != "" {
 			deltaBuf.WriteString(delta)
 			e.accumulated.WriteString(delta)
@@ -205,13 +237,6 @@ func (e *IncrementalExtractor) Extract(callCount int, provider string, chunks []
 		Full:  e.accumulated.String(),
 		Reset: false,
 	}
-}
-
-// Clear resets the extractor state.
-func (e *IncrementalExtractor) Clear() {
-	e.callCount = 0
-	e.cursor = 0
-	e.accumulated.Reset()
 }
 
 // Full returns the complete accumulated content without processing new data.
