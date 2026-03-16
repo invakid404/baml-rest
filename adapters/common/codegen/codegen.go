@@ -1336,6 +1336,24 @@ func Generate(selfPkg string) {
 						jen.Default().Block(jen.Id("__r").Dot("Release").Call()),
 					),
 				),
+			).Else().If(jen.Id("extractResult").Dot("Reset")).Block(
+				// ParseStream failed on a rebuild tick. The reset boundary must still
+				// reach the client so it discards stale state, even though we have no
+				// parsed content to send. Emit a raw-only/reset-only partial.
+				jen.Select().Block(
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
+					jen.Default().Block(),
+				),
+				jen.Id("__r").Op(":=").Id(getterFuncName).Call(),
+				jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+				jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
+				jen.Id("__r").Dot("reset").Op("=").Lit(true),
+				jen.Select().Block(
+					jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Id("__r").Dot("Release").Call(),
+					),
+				),
 			),
 			jen.Return(jen.Nil()),
 		}
