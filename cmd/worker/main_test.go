@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestBridgeStreamResultsCancelsWhileUpstreamBlocked(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	in := make(chan bamlutils.StreamResult)
-	out := bridgeStreamResults(ctx, in)
+	out := bridgeStreamResults(ctx, in, nil)
 
 	cancel()
 
@@ -78,7 +79,7 @@ func TestBridgeStreamResultsReleasesBufferedResultsOnCancel(t *testing.T) {
 	in <- second
 	close(in)
 
-	out := bridgeStreamResults(ctx, in)
+	out := bridgeStreamResults(ctx, in, nil)
 
 	select {
 	case <-first.released:
@@ -107,7 +108,7 @@ func TestBridgeStreamResultsReleasesPostCancelResultsUntilClosed(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	in := make(chan bamlutils.StreamResult)
-	out := bridgeStreamResults(ctx, in)
+	out := bridgeStreamResults(ctx, in, nil)
 
 	cancel()
 
@@ -151,7 +152,7 @@ func TestDrainStreamResultsReleasesAndReturnsOnClose(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		drainStreamResults(in)
+		drainStreamResults(in, nil)
 		close(done)
 	}()
 
@@ -174,7 +175,7 @@ func TestDrainStreamResultsReleasesLateResult(t *testing.T) {
 	in := make(chan bamlutils.StreamResult)
 	done := make(chan struct{})
 	go func() {
-		drainStreamResults(in)
+		drainStreamResults(in, nil)
 		close(done)
 	}()
 
@@ -214,7 +215,7 @@ func TestBridgeStreamResultsForwardsFinalResult(t *testing.T) {
 	in <- fake
 	close(in)
 
-	out := bridgeStreamResults(ctx, in)
+	out := bridgeStreamResults(ctx, in, nil)
 
 	select {
 	case <-fake.released:
@@ -271,7 +272,7 @@ func TestBridgeStreamResultsForwardsStreamResult(t *testing.T) {
 	in <- fake
 	close(in)
 
-	out := bridgeStreamResults(ctx, in)
+	out := bridgeStreamResults(ctx, in, nil)
 
 	select {
 	case got, ok := <-out:
@@ -307,7 +308,7 @@ func TestBridgeStreamResultsForwardsHeartbeat(t *testing.T) {
 	in <- fake
 	close(in)
 
-	out := bridgeStreamResults(ctx, in)
+	out := bridgeStreamResults(ctx, in, nil)
 
 	select {
 	case got, ok := <-out:
@@ -341,7 +342,7 @@ func TestBridgeStreamResultsPropagatesErrors(t *testing.T) {
 	in <- fake
 	close(in)
 
-	out := bridgeStreamResults(ctx, in)
+	out := bridgeStreamResults(ctx, in, nil)
 
 	select {
 	case got, ok := <-out:
@@ -372,7 +373,7 @@ func TestBridgeStreamResultsCancelsDuringDownstreamSend(t *testing.T) {
 	in <- queued
 	close(in)
 
-	out := bridgeStreamResults(ctx, in)
+	out := bridgeStreamResults(ctx, in, nil)
 
 	select {
 	case <-fake.released:
@@ -402,5 +403,155 @@ func TestBridgeStreamResultsCancelsDuringDownstreamSend(t *testing.T) {
 	case <-queued.released:
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("expected queued buffered result to be released after cancellation")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: drain leak detection
+// ---------------------------------------------------------------------------
+
+func TestDrainStreamResultsTracksActiveGoroutines(t *testing.T) {
+	// Not parallel: asserts on the process-global activeDrainGoroutines
+	// counter. Running concurrently with other tests that spawn drain
+	// goroutines causes nondeterministic failures.
+
+	before := ActiveDrainGoroutines()
+
+	in := make(chan bamlutils.StreamResult)
+	done := make(chan struct{})
+	go func() {
+		drainStreamResults(in, nil)
+		close(done)
+	}()
+
+	// Wait for the drain goroutine to register itself.
+	deadline := time.After(time.Second)
+	for {
+		delta := ActiveDrainGoroutines() - before
+		if delta >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("drain goroutine did not increment activeDrainGoroutines")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	// Close the channel — drain should exit and decrement the counter.
+	close(in)
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("drain goroutine did not exit after channel close")
+	}
+
+	after := ActiveDrainGoroutines()
+	if after != before {
+		t.Fatalf("activeDrainGoroutines = %d after drain completed, want %d", after, before)
+	}
+}
+
+type testLogger struct {
+	warnings []string
+	mu       sync.Mutex
+}
+
+func (l *testLogger) Debug(string, ...interface{}) {}
+func (l *testLogger) Info(string, ...interface{})  {}
+func (l *testLogger) Error(string, ...interface{}) {}
+func (l *testLogger) Warn(msg string, args ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warnings = append(l.warnings, msg)
+}
+func (l *testLogger) getWarnings() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cp := make([]string, len(l.warnings))
+	copy(cp, l.warnings)
+	return cp
+}
+
+func TestDrainStreamResultsLogsLeakWarning(t *testing.T) {
+	// Not parallel: modifies package-level threshold.
+	origThreshold := getDrainLeakThreshold()
+	setDrainLeakThreshold(50 * time.Millisecond)
+	defer setDrainLeakThreshold(origThreshold)
+
+	logger := &testLogger{}
+	in := make(chan bamlutils.StreamResult)
+	done := make(chan struct{})
+	go func() {
+		drainStreamResults(in, logger)
+		close(done)
+	}()
+
+	// Wait for the warning to fire.
+	deadline := time.After(2 * time.Second)
+	for {
+		warnings := logger.getWarnings()
+		if len(warnings) > 0 {
+			found := false
+			for _, w := range warnings {
+				if strings.Contains(w, "drain goroutine still waiting") {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("expected leak warning to be logged after threshold")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	// Clean up: close the channel so the drain goroutine exits.
+	close(in)
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("drain goroutine did not exit after channel close")
+	}
+}
+
+func TestDrainStreamResultsNoWarningOnFastClose(t *testing.T) {
+	// Not parallel: modifies package-level threshold.
+	origThreshold := getDrainLeakThreshold()
+	setDrainLeakThreshold(500 * time.Millisecond)
+	defer setDrainLeakThreshold(origThreshold)
+
+	logger := &testLogger{}
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindStream)
+	in <- fake
+	close(in)
+
+	done := make(chan struct{})
+	go func() {
+		drainStreamResults(in, logger)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("drain goroutine did not exit after channel close")
+	}
+
+	// Give the warning goroutine time to clean up.
+	time.Sleep(50 * time.Millisecond)
+
+	warnings := logger.getWarnings()
+	if len(warnings) > 0 {
+		t.Fatalf("expected no warnings for fast drain, got: %v", warnings)
 	}
 }

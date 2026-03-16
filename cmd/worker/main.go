@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"runtime/pprof"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -81,6 +82,39 @@ func main() {
 	})
 }
 
+// defaultDrainLeakThreshold is how long a drain goroutine waits before logging
+// a warning that the producer has not closed its result channel. This does NOT
+// add a hard timeout — the drain still waits for close — but alerts operators
+// to a likely leak so they can investigate the misbehaving adapter.
+const defaultDrainLeakThreshold = 30 * time.Second
+
+// drainLeakThreshold stores the current threshold in nanoseconds. Tests can
+// override it via setDrainLeakThreshold. The atomic avoids data races between
+// test goroutines and drain goroutines from earlier tests.
+var drainLeakThresholdNs atomic.Int64
+
+func init() {
+	drainLeakThresholdNs.Store(int64(defaultDrainLeakThreshold))
+}
+
+func getDrainLeakThreshold() time.Duration {
+	return time.Duration(drainLeakThresholdNs.Load())
+}
+
+func setDrainLeakThreshold(d time.Duration) {
+	drainLeakThresholdNs.Store(int64(d))
+}
+
+// activeDrainGoroutines tracks how many drain goroutines are currently running.
+// Exported for operational monitoring (e.g. Prometheus gauge, debug endpoint).
+var activeDrainGoroutines atomic.Int64
+
+// ActiveDrainGoroutines returns the number of drain goroutines currently
+// waiting for a producer to close its result channel.
+func ActiveDrainGoroutines() int64 {
+	return activeDrainGoroutines.Load()
+}
+
 // workerImpl implements the workerplugin.Worker interface
 type workerImpl struct {
 	metricsReg *prometheus.Registry
@@ -144,20 +178,20 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 		return nil, fmt.Errorf("failed to call method: %w", err)
 	}
 
-	return bridgeStreamResults(ctx, resultChan), nil
+	return bridgeStreamResults(ctx, resultChan, w.logger), nil
 }
 
 // bridgeStreamResults converts adapter stream results into plugin stream results
 // while respecting cancellation both before reading upstream and before sending
 // downstream.
-func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.StreamResult) <-chan *workerplugin.StreamResult {
+func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.StreamResult, logger bamlutils.Logger) <-chan *workerplugin.StreamResult {
 	out := make(chan *workerplugin.StreamResult)
 	go func() {
 		defer close(out)
 		for {
 			select {
 			case <-ctx.Done():
-				go drainStreamResults(resultChan)
+				go drainStreamResults(resultChan, logger)
 				return
 			default:
 			}
@@ -169,7 +203,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 
 			select {
 			case <-ctx.Done():
-				go drainStreamResults(resultChan)
+				go drainStreamResults(resultChan, logger)
 				return
 			case result, ok = <-resultChan:
 				if !ok {
@@ -216,7 +250,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 			case <-ctx.Done():
 				// Release the plugin result we couldn't send
 				workerplugin.ReleaseStreamResult(pluginResult)
-				go drainStreamResults(resultChan)
+				go drainStreamResults(resultChan, logger)
 				return
 			}
 		}
@@ -232,16 +266,43 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 // on an unbuffered send.
 //
 // The function drains until the channel is closed (i.e. the producer finishes).
-// There is intentionally no timeout: a timeout would cause the drain goroutine
-// to exit while the producer is still alive, stranding unreleased native
-// results and blocking the producer on its next send. If the producer never
-// closes the channel (pathological), this goroutine leaks — but the producer
-// goroutine itself also leaks in that case, so the timeout would not prevent
-// the leak, only add native memory loss on top of it.
-func drainStreamResults(resultChan <-chan bamlutils.StreamResult) {
+// There is intentionally no hard timeout: a timeout would cause the drain
+// goroutine to exit while the producer is still alive, stranding unreleased
+// native results and blocking the producer on its next send.
+//
+// However, if the producer has not closed the channel after drainLeakThreshold
+// (default 30s), a warning is logged so operators can investigate. The drain
+// goroutine is also tracked in activeDrainGoroutines for monitoring.
+func drainStreamResults(resultChan <-chan bamlutils.StreamResult, logger bamlutils.Logger) {
+	activeDrainGoroutines.Add(1)
+	defer activeDrainGoroutines.Add(-1)
+
+	// Start a background timer that fires a warning if the drain takes
+	// too long. The done channel signals the timer goroutine to exit
+	// when the drain completes before the threshold.
+	threshold := getDrainLeakThreshold()
+	done := make(chan struct{})
+	timer := time.NewTimer(threshold)
+	go func() {
+		select {
+		case <-timer.C:
+			active := activeDrainGoroutines.Load()
+			if logger != nil {
+				logger.Warn("drain goroutine still waiting for producer to close result channel",
+					"waited", threshold.String(),
+					"active_drain_goroutines", active,
+				)
+			}
+		case <-done:
+		}
+	}()
+
 	for result := range resultChan {
 		result.Release()
 	}
+
+	timer.Stop()
+	close(done)
 }
 
 func (w *workerImpl) Health(ctx context.Context) (bool, error) {
