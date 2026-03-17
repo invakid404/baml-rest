@@ -1381,15 +1381,19 @@ func splitInlineStatements(s string) []string {
 // into separate scannable lines.
 func expandBlockLines(block []string) []string {
 	var expanded []string
-	for _, line := range block {
+	for i, line := range block {
 		trimmed := strings.TrimSpace(line)
-		// If the line contains both { and }, extract and split the inner content
-		openIdx := strings.Index(trimmed, "{")
-		closeIdx := strings.LastIndex(trimmed, "}")
-		if openIdx >= 0 && closeIdx > openIdx {
-			inner := strings.TrimSpace(trimmed[openIdx+1 : closeIdx])
-			if inner != "" {
-				expanded = append(expanded, splitInlineStatements(inner)...)
+		// Only expand the first line (block header) for inline key-value pairs.
+		// Inner lines pass through as-is — nestedDepth tracking in the block
+		// parsers handles nested blocks like options { ... } correctly.
+		if i == 0 {
+			openIdx := strings.Index(trimmed, "{")
+			closeIdx := strings.LastIndex(trimmed, "}")
+			if openIdx >= 0 && closeIdx > openIdx {
+				inner := strings.TrimSpace(trimmed[openIdx+1 : closeIdx])
+				if inner != "" {
+					expanded = append(expanded, splitInlineStatements(inner)...)
+				}
 			}
 		}
 		expanded = append(expanded, trimmed)

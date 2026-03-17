@@ -679,3 +679,22 @@ func TestStripInlineComment(t *testing.T) {
 		}
 	}
 }
+
+func TestParseBamlFile_NestedSingleLineBlock(t *testing.T) {
+	cfg := &bamlConfig{
+		clientProvider:    make(map[string]string),
+		clientRetryPolicy: make(map[string]string),
+		functionClient:    make(map[string]string),
+		retryPolicies:     make(map[string]parsedRetryPolicy),
+	}
+	content := `
+client<llm> MyClient {
+    options { provider "should-be-ignored" }
+    provider openai
+}
+`
+	parseBamlFile(cfg, content)
+	if cfg.clientProvider["MyClient"] != "openai" {
+		t.Errorf("expected provider=openai, got %q (nested single-line options leaked)", cfg.clientProvider["MyClient"])
+	}
+}
