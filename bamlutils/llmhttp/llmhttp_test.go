@@ -3,6 +3,7 @@ package llmhttp
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -141,9 +142,20 @@ func TestExecuteStreamContextCancellation(t *testing.T) {
 	defer resp.Close()
 
 	var events []sseclient.Event
-	for ev := range resp.Events {
-		events = append(events, ev)
+	// Drain events with a safety timeout to avoid hanging if channel doesn't close
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev, ok := <-resp.Events:
+			if !ok {
+				goto drained
+			}
+			events = append(events, ev)
+		case <-deadline:
+			t.Fatal("timed out waiting for events channel to close")
+		}
 	}
+drained:
 
 	// Should get at least the first event
 	if len(events) < 1 {
@@ -158,9 +170,9 @@ func TestExecuteStreamContextCancellation(t *testing.T) {
 }
 
 func TestExecuteStreamHeadersForwarded(t *testing.T) {
-	var receivedHeaders http.Header
+	headersCh := make(chan http.Header, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaders = r.Header.Clone()
+		headersCh <- r.Header.Clone()
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		fmt.Fprint(w, "data: ok\n\n")
@@ -183,11 +195,11 @@ func TestExecuteStreamHeadersForwarded(t *testing.T) {
 	}
 	defer resp.Close()
 
-	// Drain events
 	for range resp.Events {
 	}
 	<-resp.Errc
 
+	receivedHeaders := <-headersCh
 	if receivedHeaders.Get("Authorization") != "Bearer sk-test-123" {
 		t.Errorf("Authorization header not forwarded: %q", receivedHeaders.Get("Authorization"))
 	}
@@ -197,9 +209,17 @@ func TestExecuteStreamHeadersForwarded(t *testing.T) {
 }
 
 func TestExecuteStreamConnectionRefused(t *testing.T) {
+	// Grab a free port, then close the listener so the port is guaranteed closed
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
 	client := NewClient(nil)
-	_, err := client.ExecuteStream(context.Background(), &Request{
-		URL:    "http://127.0.0.1:1", // Port 1 should be refused
+	_, err = client.ExecuteStream(context.Background(), &Request{
+		URL:    "http://" + addr,
 		Method: "POST",
 		Body:   `{}`,
 	})
@@ -222,11 +242,11 @@ func TestExecuteStreamInvalidURL(t *testing.T) {
 }
 
 func TestExecuteStreamEmptyBody(t *testing.T) {
-	var receivedBody string
+	bodyCh := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, 1024)
 		n, _ := r.Body.Read(buf)
-		receivedBody = string(buf[:n])
+		bodyCh <- string(buf[:n])
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		fmt.Fprint(w, "data: ok\n\n")
@@ -247,6 +267,7 @@ func TestExecuteStreamEmptyBody(t *testing.T) {
 	}
 	<-resp.Errc
 
+	receivedBody := <-bodyCh
 	if receivedBody != "" {
 		t.Errorf("expected empty body, got %q", receivedBody)
 	}
