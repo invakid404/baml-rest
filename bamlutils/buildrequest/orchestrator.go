@@ -219,6 +219,10 @@ func RunStreamOrchestration(
 	parseFinal ParseFinalFunc,
 	newResult NewResultFunc,
 ) error {
+	if httpClient == nil {
+		httpClient = llmhttp.DefaultClient
+	}
+
 	var heartbeatSent atomic.Bool
 
 	// Send initial heartbeat for hung detection
@@ -251,7 +255,6 @@ func RunStreamOrchestration(
 
 		var accumulated strings.Builder
 		var lastParseTime time.Time
-		var eventCount int
 
 		for ev := range resp.Events {
 			// Extract text delta from SSE event
@@ -265,7 +268,6 @@ func RunStreamOrchestration(
 			}
 
 			accumulated.WriteString(delta)
-			eventCount++
 
 			// Emit partial if needed.
 			// Non-blocking sends for partials/deltas: drop when the output
