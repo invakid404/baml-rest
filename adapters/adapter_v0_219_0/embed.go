@@ -1,10 +1,10 @@
-package introspected
+package adapter_v0_219_0
 
 import (
 	"embed"
 )
 
-//go:embed embed.go go.mod go.sum introspected.go
+//go:embed adapter cmd embed.go go.mod go.sum utils/dynamic.go
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)

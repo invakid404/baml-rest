@@ -2,7 +2,10 @@
 
 package introspected
 
-import bamlutils "github.com/invakid404/baml-rest/bamlutils"
+import (
+	bamlutils "github.com/invakid404/baml-rest/bamlutils"
+	retry "github.com/invakid404/baml-rest/bamlutils/retry"
+)
 
 // Stream is the BAML streaming client instance
 var Stream = &struct{}{}
@@ -33,6 +36,34 @@ var ParseStreamFuncs = map[string]any{}
 
 // MediaParams maps function name -> param name -> media kind for parameters that are BAML media types.
 var MediaParams = map[string]map[string]bamlutils.MediaKind{}
+
+// Request is nil when BAML version < 0.219.0 (no BuildRequest API)
+var Request any
+var RequestMethods = map[string][]string{}
+var RequestFuncs = map[string]any{}
+
+// StreamRequest is nil when BAML version < 0.219.0 (no BuildRequest API)
+var StreamRequest any
+var StreamRequestMethods = map[string][]string{}
+var StreamRequestFuncs = map[string]any{}
+
+// FunctionClient maps BAML function names to their default client name
+var FunctionClient = map[string]string{}
+
+// FunctionProvider maps BAML function names to their default provider string
+var FunctionProvider = map[string]string{}
+
+// ClientProvider maps BAML client names to their provider strings
+var ClientProvider = map[string]string{}
+
+// RetryPolicies maps retry policy names to their resolved Policy structs
+var RetryPolicies = map[string]*retry.Policy{}
+
+// FunctionRetryPolicy maps BAML function names to their retry policy name
+var FunctionRetryPolicy = map[string]string{}
+
+// FallbackChains maps strategy client names to their ordered list of child client names
+var FallbackChains = map[string][]string{}
 
 // TypeBuilder type
 type TypeBuilder struct{}

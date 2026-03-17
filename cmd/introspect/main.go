@@ -83,6 +83,12 @@ func generateStub() {
 	// MediaParams stub
 	generateMediaParams(out, nil)
 
+	// BuildRequest/StreamRequest stubs (nil = not available)
+	generateBuildRequestVars(out, nil, nil, "")
+
+	// .baml config stubs (empty maps)
+	generateBamlConfigVars(out)
+
 	// TypeBuilder stubs
 	generateTypeBuilderTypes(out, true)
 	generateTypeBuilderInterfaces(out)
@@ -101,6 +107,10 @@ func generateFull() {
 		parseStreamFile  *parsedFile
 		syncFuncsFile    *parsedFile
 		typeBuilderFiles []*parsedFile
+
+		// BuildRequest API (BAML v0.219.0+)
+		requestFile       *parsedFile
+		streamRequestFile *parsedFile
 	)
 
 	err := filepath.WalkDir("baml_client", func(path string, dirEntry os.DirEntry, err error) error {
@@ -120,22 +130,36 @@ func generateFull() {
 
 		// Look for Stream variable (functions_stream.go)
 		if streamFile == nil {
-			if streamVar := file.Scope.Lookup("Stream"); streamVar != nil {
+			if streamVar := file.Scope.Lookup("Stream"); streamVar != nil && streamVar.Kind == ast.Var {
 				streamFile = &parsedFile{file: file, path: path}
 			}
 		}
 
 		// Look for Parse variable (functions_parse.go)
 		if parseFile == nil {
-			if parseVar := file.Scope.Lookup("Parse"); parseVar != nil {
+			if parseVar := file.Scope.Lookup("Parse"); parseVar != nil && parseVar.Kind == ast.Var {
 				parseFile = &parsedFile{file: file, path: path}
 			}
 		}
 
 		// Look for ParseStream variable (functions_parse_stream.go)
 		if parseStreamFile == nil {
-			if parseStreamVar := file.Scope.Lookup("ParseStream"); parseStreamVar != nil {
+			if parseStreamVar := file.Scope.Lookup("ParseStream"); parseStreamVar != nil && parseStreamVar.Kind == ast.Var {
 				parseStreamFile = &parsedFile{file: file, path: path}
+			}
+		}
+
+		// Look for Request variable (functions_build_request.go, BAML v0.219.0+)
+		if requestFile == nil {
+			if requestVar := file.Scope.Lookup("Request"); requestVar != nil && requestVar.Kind == ast.Var {
+				requestFile = &parsedFile{file: file, path: path}
+			}
+		}
+
+		// Look for StreamRequest variable (functions_build_request_stream.go, BAML v0.219.0+)
+		if streamRequestFile == nil {
+			if streamRequestVar := file.Scope.Lookup("StreamRequest"); streamRequestVar != nil && streamRequestVar.Kind == ast.Var {
+				streamRequestFile = &parsedFile{file: file, path: path}
 			}
 		}
 
@@ -278,6 +302,12 @@ func generateFull() {
 	out.Var().Id("ParseStreamFuncs").Op("=").Map(jen.String()).Any().Values(
 		parseStreamFuncsDict(parseStreamMethods, streamPkg)...,
 	)
+
+	// --- BuildRequest/StreamRequest API (BAML v0.219.0+) ---
+	generateBuildRequestVars(out, requestFile, streamRequestFile, streamPkg)
+
+	// --- .baml introspection data for provider detection and retry ---
+	generateBamlConfigVars(out)
 
 	// MediaParams
 	generateMediaParams(out, mediaParams)
@@ -955,4 +985,576 @@ func parseStreamFuncsDict(methods []string, streamPkg string) []jen.Code {
 		entries = append(entries, jen.Lit(m).Op(":").Qual(streamPkg, "ParseStream").Dot(m))
 	}
 	return entries
+}
+
+// --- BuildRequest/StreamRequest extraction and generation ---
+
+// extractBuildRequestMethods extracts methods from a *build_request or
+// *build_request_stream receiver type. The methods have the same signature
+// pattern as Stream methods: (ctx, args..., opts...) -> (baml.HTTPRequest, error)
+func extractBuildRequestMethods(f *parsedFile, receiverName string) []map[string]any {
+	var methods []map[string]any
+	for _, decl := range f.file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+			continue
+		}
+		receiver, ok := funcDecl.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		receiverIdent, ok := receiver.X.(*ast.Ident)
+		if !ok || receiverIdent.Name != receiverName {
+			continue
+		}
+		var args []string
+		for _, param := range funcDecl.Type.Params.List {
+			for _, name := range param.Names {
+				args = append(args, name.Name)
+			}
+		}
+		// Remove ctx (first) and opts (last variadic) to get just the function args
+		if len(args) >= 2 {
+			methods = append(methods, map[string]any{
+				"name": funcDecl.Name.Name,
+				"args": args[1 : len(args)-1],
+			})
+		}
+	}
+	return methods
+}
+
+// generateBuildRequestVars generates the Request/StreamRequest variables and
+// their method/func maps. If requestFile or streamRequestFile is nil, generates
+// nil/empty stubs (for BAML versions < 0.219.0).
+func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *parsedFile, streamPkg string) {
+	retryPkg := "github.com/invakid404/baml-rest/bamlutils/retry"
+	// Force the import so the stub compiles even when the maps are empty
+	out.Anon(retryPkg)
+
+	if requestFile != nil {
+		requestMethods := extractBuildRequestMethods(requestFile, "build_request")
+
+		out.Comment("Request is the BAML Request singleton for building non-streaming HTTP requests")
+		out.Var().Id("Request").Op("=").Qual(streamPkg, "Request")
+
+		out.Comment("RequestMethods maps method names to argument names on the Request singleton")
+		out.Var().Id("RequestMethods").Op("=").Map(jen.String()).Index().String().Values(
+			methodsDict(requestMethods)...,
+		)
+
+		out.Comment("RequestFuncs maps Request method names to their function values (for reflection)")
+		entries := make([]jen.Code, 0, len(requestMethods))
+		for _, m := range requestMethods {
+			name := m["name"].(string)
+			entries = append(entries, jen.Lit(name).Op(":").Qual(streamPkg, "Request").Dot(name))
+		}
+		out.Var().Id("RequestFuncs").Op("=").Map(jen.String()).Any().Values(entries...)
+	} else {
+		out.Comment("Request is nil when BAML version < 0.219.0 (no BuildRequest API)")
+		out.Var().Id("Request").Any()
+		out.Var().Id("RequestMethods").Op("=").Map(jen.String()).Index().String().Values()
+		out.Var().Id("RequestFuncs").Op("=").Map(jen.String()).Any().Values()
+	}
+
+	if streamRequestFile != nil {
+		streamRequestMethods := extractBuildRequestMethods(streamRequestFile, "build_request_stream")
+
+		out.Comment("StreamRequest is the BAML StreamRequest singleton for building streaming HTTP requests")
+		out.Var().Id("StreamRequest").Op("=").Qual(streamPkg, "StreamRequest")
+
+		out.Comment("StreamRequestMethods maps method names to argument names on the StreamRequest singleton")
+		out.Var().Id("StreamRequestMethods").Op("=").Map(jen.String()).Index().String().Values(
+			methodsDict(streamRequestMethods)...,
+		)
+
+		out.Comment("StreamRequestFuncs maps StreamRequest method names to their function values (for reflection)")
+		entries := make([]jen.Code, 0, len(streamRequestMethods))
+		for _, m := range streamRequestMethods {
+			name := m["name"].(string)
+			entries = append(entries, jen.Lit(name).Op(":").Qual(streamPkg, "StreamRequest").Dot(name))
+		}
+		out.Var().Id("StreamRequestFuncs").Op("=").Map(jen.String()).Any().Values(entries...)
+	} else {
+		out.Comment("StreamRequest is nil when BAML version < 0.219.0 (no BuildRequest API)")
+		out.Var().Id("StreamRequest").Any()
+		out.Var().Id("StreamRequestMethods").Op("=").Map(jen.String()).Index().String().Values()
+		out.Var().Id("StreamRequestFuncs").Op("=").Map(jen.String()).Any().Values()
+	}
+}
+
+// bamlConfig holds parsed .baml configuration data.
+type bamlConfig struct {
+	// clientProvider maps client name → provider string
+	clientProvider map[string]string
+	// clientRetryPolicy maps client name → retry policy name
+	clientRetryPolicy map[string]string
+	// functionClient maps function name → client name
+	functionClient map[string]string
+	// retryPolicies maps policy name → {max_retries, strategy type, delay params}
+	retryPolicies map[string]parsedRetryPolicy
+}
+
+type parsedRetryPolicy struct {
+	maxRetries int
+	strategy   string // "constant_delay" or "exponential_backoff"
+	delayMs    int
+	multiplier float64
+	maxDelayMs int
+}
+
+// parseBamlSourceDir recursively reads all .baml files in the given directory
+// tree and extracts client, function, and retry_policy blocks. Uses
+// filepath.WalkDir so nested subdirectories (which real BAML projects use)
+// are included.
+func parseBamlSourceDir(dir string) *bamlConfig {
+	cfg := &bamlConfig{
+		clientProvider:    make(map[string]string),
+		clientRetryPolicy: make(map[string]string),
+		functionClient:    make(map[string]string),
+		retryPolicies:     make(map[string]parsedRetryPolicy),
+	}
+
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".baml") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil // skip unreadable files
+		}
+		parseBamlFile(cfg, string(data))
+		return nil
+	})
+	if err != nil {
+		// baml_src may not exist during stub generation
+		return cfg
+	}
+
+	return cfg
+}
+
+// parseBamlFile extracts client, function, and retry_policy blocks from a
+// single .baml file's content. Uses simple line-by-line parsing.
+func parseBamlFile(cfg *bamlConfig, content string) {
+	lines := strings.Split(content, "\n")
+	i := 0
+	for i < len(lines) {
+		line := strings.TrimSpace(lines[i])
+
+		// Skip comments and empty lines
+		if line == "" || strings.HasPrefix(line, "//") {
+			i++
+			continue
+		}
+
+		// client<llm> Name { ... }
+		if strings.HasPrefix(line, "client<llm>") || strings.HasPrefix(line, "client <llm>") {
+			name := extractBlockName(line, "client")
+			if name != "" {
+				block, end := collectBlock(lines, i)
+				parseClientBlock(cfg, name, block)
+				i = end + 1
+				continue
+			}
+		}
+
+		// function Name(...) -> Type { ... }
+		if strings.HasPrefix(line, "function ") {
+			name := extractFunctionName(line)
+			if name != "" {
+				block, end := collectBlock(lines, i)
+				parseFunctionBlock(cfg, name, block)
+				i = end + 1
+				continue
+			}
+		}
+
+		// retry_policy Name { ... }
+		if strings.HasPrefix(line, "retry_policy ") {
+			name := extractBlockName(line, "retry_policy")
+			if name != "" {
+				block, end := collectBlock(lines, i)
+				parseRetryPolicyBlock(cfg, name, block)
+				i = end + 1
+				continue
+			}
+		}
+
+		i++
+	}
+}
+
+// stripStringLiterals removes content inside BAML string literals from a line
+// before brace counting. Handles #"..."# raw strings and "..." regular strings.
+func stripStringLiterals(line string) string {
+	var result strings.Builder
+	i := 0
+	for i < len(line) {
+		// Check for #"..."# raw string
+		if i+1 < len(line) && line[i] == '#' && line[i+1] == '"' {
+			// Skip until closing "#
+			i += 2
+			for i+1 < len(line) {
+				if line[i] == '"' && line[i+1] == '#' {
+					i += 2
+					break
+				}
+				i++
+			}
+			continue
+		}
+		// Check for "..." regular string
+		if line[i] == '"' {
+			i++
+			for i < len(line) && line[i] != '"' {
+				if line[i] == '\\' {
+					i++ // skip escaped char
+				}
+				i++
+			}
+			if i < len(line) {
+				i++ // skip closing quote
+			}
+			continue
+		}
+		result.WriteByte(line[i])
+		i++
+	}
+	return result.String()
+}
+
+// collectBlock collects lines from startLine until the matching closing brace.
+// Handles both multi-line and single-line blocks (e.g., `client<llm> Foo { provider openai }`).
+func collectBlock(lines []string, startLine int) ([]string, int) {
+	depth := 0
+	opened := false
+	var block []string
+	for i := startLine; i < len(lines); i++ {
+		line := lines[i]
+		block = append(block, line)
+		stripped := stripStringLiterals(line)
+		depth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
+		if strings.Contains(stripped, "{") {
+			opened = true
+		}
+		if opened && depth <= 0 {
+			return block, i
+		}
+	}
+	return block, len(lines) - 1
+}
+
+func extractBlockName(line, keyword string) string {
+	// Remove the keyword prefix and any type params like <llm>
+	rest := line
+	idx := strings.Index(rest, keyword)
+	if idx < 0 {
+		return ""
+	}
+	rest = rest[idx+len(keyword):]
+	// Skip optional <...> type parameter
+	if idx := strings.Index(rest, ">"); idx >= 0 {
+		rest = rest[idx+1:]
+	}
+	rest = strings.TrimSpace(rest)
+	// Name is the first word before '{'
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimSuffix(parts[0], "{")
+}
+
+func extractFunctionName(line string) string {
+	// "function Name(...) -> ..."
+	rest := strings.TrimPrefix(line, "function ")
+	rest = strings.TrimSpace(rest)
+	parenIdx := strings.Index(rest, "(")
+	if parenIdx <= 0 {
+		return ""
+	}
+	return rest[:parenIdx]
+}
+
+// stripInlineComment removes a trailing `// ...` comment from a BAML value.
+// BAML allows inline comments like `provider openai // default`. The comment
+// must be stripped before further processing so the value is just `openai`.
+func stripInlineComment(s string) string {
+	if idx := strings.Index(s, "//"); idx >= 0 {
+		return strings.TrimSpace(s[:idx])
+	}
+	return s
+}
+
+// stripBamlQuotes removes surrounding double quotes from a BAML value.
+// BAML allows both `provider openai` and `provider "openai"` — both must
+// resolve to the bare string `openai`.
+func stripBamlQuotes(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// isNestedBlockStart returns true if the trimmed line opens a nested block
+// whose contents should not be scanned for config keys (prompt bodies,
+// options blocks, strategy blocks that we handle separately, etc.).
+// Prompt blocks start with `prompt ` and may use #"..."# or jinja syntax.
+func isNestedBlockStart(line string) bool {
+	if strings.HasPrefix(line, "prompt ") || strings.HasPrefix(line, "prompt\t") {
+		return true
+	}
+	if strings.HasPrefix(line, "options ") || strings.HasPrefix(line, "options{") {
+		return true
+	}
+	return false
+}
+
+// bamlConfigKeys are the recognized top-level config keywords inside .baml blocks.
+// Used by expandBlockLines to split compact single-line blocks into separate
+// key-value statements.
+var bamlConfigKeys = []string{
+	"provider ",
+	"retry_policy ",
+	"client ",
+	"max_retries ",
+	"type ",
+	"delay_ms ",
+	"multiplier ",
+	"max_delay_ms ",
+	"prompt ",
+	"options ",
+}
+
+// splitInlineStatements splits a string like "provider openai retry_policy Fast"
+// into ["provider openai", "retry_policy Fast"] by finding recognized keyword
+// boundaries.
+func splitInlineStatements(s string) []string {
+	type span struct {
+		pos int
+		key string
+	}
+	var spans []span
+	for _, key := range bamlConfigKeys {
+		idx := 0
+		for {
+			pos := strings.Index(s[idx:], key)
+			if pos < 0 {
+				break
+			}
+			spans = append(spans, span{pos: idx + pos, key: key})
+			idx += pos + len(key)
+		}
+	}
+	if len(spans) == 0 {
+		return []string{s}
+	}
+	// Sort spans by position
+	for i := 1; i < len(spans); i++ {
+		for j := i; j > 0 && spans[j].pos < spans[j-1].pos; j-- {
+			spans[j], spans[j-1] = spans[j-1], spans[j]
+		}
+	}
+	var result []string
+	for i, sp := range spans {
+		var end int
+		if i+1 < len(spans) {
+			end = spans[i+1].pos
+		} else {
+			end = len(s)
+		}
+		stmt := strings.TrimSpace(s[sp.pos:end])
+		if stmt != "" {
+			result = append(result, stmt)
+		}
+	}
+	return result
+}
+
+// expandBlockLines takes the raw block lines and normalizes them for scanning.
+// For single-line blocks like `client<llm> Foo { provider openai }`, extracts
+// the content between braces and splits multiple inline key-value statements
+// into separate scannable lines.
+func expandBlockLines(block []string) []string {
+	var expanded []string
+	for _, line := range block {
+		trimmed := strings.TrimSpace(line)
+		// If the line contains both { and }, extract and split the inner content
+		openIdx := strings.Index(trimmed, "{")
+		closeIdx := strings.LastIndex(trimmed, "}")
+		if openIdx >= 0 && closeIdx > openIdx {
+			inner := strings.TrimSpace(trimmed[openIdx+1 : closeIdx])
+			if inner != "" {
+				expanded = append(expanded, splitInlineStatements(inner)...)
+			}
+		}
+		expanded = append(expanded, trimmed)
+	}
+	return expanded
+}
+
+// cleanBamlValue strips inline comments, trims whitespace, and removes quotes.
+func cleanBamlValue(s string) string {
+	return stripBamlQuotes(strings.TrimSpace(stripInlineComment(s)))
+}
+
+func parseClientBlock(cfg *bamlConfig, name string, block []string) {
+	nestedDepth := 0
+	for _, line := range expandBlockLines(block) {
+		// Track nested block depth — skip lines inside options/prompt/strategy blocks
+		if nestedDepth > 0 {
+			nestedDepth += strings.Count(stripStringLiterals(line), "{") - strings.Count(stripStringLiterals(line), "}")
+			continue
+		}
+		if isNestedBlockStart(line) {
+			stripped := stripStringLiterals(line)
+			nestedDepth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
+			continue
+		}
+		if strings.HasPrefix(line, "provider ") {
+			cfg.clientProvider[name] = cleanBamlValue(strings.TrimPrefix(line, "provider "))
+		}
+		if strings.HasPrefix(line, "retry_policy ") {
+			cfg.clientRetryPolicy[name] = cleanBamlValue(strings.TrimPrefix(line, "retry_policy "))
+		}
+	}
+}
+
+func parseFunctionBlock(cfg *bamlConfig, name string, block []string) {
+	nestedDepth := 0
+	inRawString := false
+	for _, line := range expandBlockLines(block) {
+		trimmed := strings.TrimSpace(line)
+
+		// Track raw string blocks (#"..."#) which don't use brace nesting
+		if inRawString {
+			if strings.Contains(trimmed, `"#`) {
+				inRawString = false
+			}
+			continue
+		}
+
+		// Track nested brace-delimited blocks (options, strategy)
+		if nestedDepth > 0 {
+			nestedDepth += strings.Count(stripStringLiterals(trimmed), "{") - strings.Count(stripStringLiterals(trimmed), "}")
+			continue
+		}
+		if isNestedBlockStart(trimmed) {
+			// Check if this opens a raw string (prompt #"..."#)
+			if strings.Contains(trimmed, `#"`) && !strings.Contains(trimmed, `"#`) {
+				inRawString = true
+				continue
+			}
+			stripped := stripStringLiterals(trimmed)
+			nestedDepth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "client ") {
+			cfg.functionClient[name] = cleanBamlValue(strings.TrimPrefix(trimmed, "client "))
+		}
+	}
+}
+
+func parseRetryPolicyBlock(cfg *bamlConfig, name string, block []string) {
+	p := parsedRetryPolicy{}
+	for _, line := range expandBlockLines(block) {
+		if strings.HasPrefix(line, "max_retries ") {
+			p.maxRetries, _ = strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "max_retries ")))
+		}
+		if strings.HasPrefix(line, "type ") {
+			p.strategy = cleanBamlValue(strings.TrimPrefix(line, "type "))
+		}
+		if strings.HasPrefix(line, "delay_ms ") {
+			p.delayMs, _ = strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "delay_ms ")))
+		}
+		if strings.HasPrefix(line, "multiplier ") {
+			p.multiplier, _ = strconv.ParseFloat(cleanBamlValue(strings.TrimPrefix(line, "multiplier ")), 64)
+		}
+		if strings.HasPrefix(line, "max_delay_ms ") {
+			p.maxDelayMs, _ = strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "max_delay_ms ")))
+		}
+	}
+	cfg.retryPolicies[name] = p
+}
+
+// generateBamlConfigVars parses .baml source files and generates introspected
+// variables for provider detection and retry policy configuration.
+func generateBamlConfigVars(out *jen.File) {
+	retryPkg := "github.com/invakid404/baml-rest/bamlutils/retry"
+
+	// Parse .baml source files from baml_src/ directory
+	cfg := parseBamlSourceDir("baml_src")
+
+	// Build FunctionClient: function → client name
+	out.Comment("FunctionClient maps BAML function names to their default client name")
+	fcEntries := make([]jen.Code, 0, len(cfg.functionClient))
+	for funcName, clientName := range cfg.functionClient {
+		fcEntries = append(fcEntries, jen.Lit(funcName).Op(":").Lit(clientName))
+	}
+	out.Var().Id("FunctionClient").Op("=").Map(jen.String()).String().Values(fcEntries...)
+
+	// Build FunctionProvider: function → provider (resolved through client)
+	functionProvider := make(map[string]string)
+	for funcName, clientName := range cfg.functionClient {
+		if provider, ok := cfg.clientProvider[clientName]; ok {
+			functionProvider[funcName] = provider
+		}
+	}
+
+	out.Comment("FunctionProvider maps BAML function names to their default provider string")
+	fpEntries := make([]jen.Code, 0, len(functionProvider))
+	for funcName, provider := range functionProvider {
+		fpEntries = append(fpEntries, jen.Lit(funcName).Op(":").Lit(provider))
+	}
+	out.Var().Id("FunctionProvider").Op("=").Map(jen.String()).String().Values(fpEntries...)
+
+	// Build ClientProvider
+	out.Comment("ClientProvider maps BAML client names to their provider strings")
+	cpEntries := make([]jen.Code, 0, len(cfg.clientProvider))
+	for clientName, provider := range cfg.clientProvider {
+		cpEntries = append(cpEntries, jen.Lit(clientName).Op(":").Lit(provider))
+	}
+	out.Var().Id("ClientProvider").Op("=").Map(jen.String()).String().Values(cpEntries...)
+
+	// Build RetryPolicies
+	out.Comment("RetryPolicies maps retry policy names to their resolved Policy structs")
+	rpEntries := make([]jen.Code, 0, len(cfg.retryPolicies))
+	for policyName, p := range cfg.retryPolicies {
+		strategyDict := jen.Dict{
+			jen.Id("Type"):    jen.Lit(p.strategy),
+			jen.Id("DelayMs"): jen.Lit(p.delayMs),
+		}
+		if p.strategy == "exponential_backoff" {
+			strategyDict[jen.Id("Multiplier")] = jen.Lit(p.multiplier)
+			strategyDict[jen.Id("MaxDelayMs")] = jen.Lit(p.maxDelayMs)
+		}
+		rpEntries = append(rpEntries, jen.Lit(policyName).Op(":").Op("&").Qual(retryPkg, "Policy").Values(jen.Dict{
+			jen.Id("MaxRetries"):     jen.Lit(p.maxRetries),
+			jen.Id("StrategyConfig"): jen.Op("&").Qual(retryPkg, "StrategyConfig").Values(strategyDict),
+		}))
+	}
+	out.Var().Id("RetryPolicies").Op("=").Map(jen.String()).Op("*").Qual(retryPkg, "Policy").Values(rpEntries...)
+
+	// Build FunctionRetryPolicy: function → policy name (resolved through client)
+	functionRetryPolicy := make(map[string]string)
+	for funcName, clientName := range cfg.functionClient {
+		if policyName, ok := cfg.clientRetryPolicy[clientName]; ok {
+			functionRetryPolicy[funcName] = policyName
+		}
+	}
+
+	out.Comment("FunctionRetryPolicy maps BAML function names to their retry policy name")
+	frpEntries := make([]jen.Code, 0, len(functionRetryPolicy))
+	for funcName, policyName := range functionRetryPolicy {
+		frpEntries = append(frpEntries, jen.Lit(funcName).Op(":").Lit(policyName))
+	}
+	out.Var().Id("FunctionRetryPolicy").Op("=").Map(jen.String()).String().Values(frpEntries...)
+
+	// FallbackChains (not yet parsed — requires strategy client syntax)
+	out.Comment("FallbackChains maps strategy client names to their ordered list of child client names")
+	out.Var().Id("FallbackChains").Op("=").Map(jen.String()).Index().String().Values()
 }

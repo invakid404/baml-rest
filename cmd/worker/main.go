@@ -143,6 +143,10 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
 		}
 	}
 
+	if o.Options.Retry != nil {
+		adapter.SetRetryConfig(o.Options.Retry)
+	}
+
 	return nil
 }
 
@@ -152,13 +156,16 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 		return nil, fmt.Errorf("method %q not found", methodName)
 	}
 
-	// Parse input (unknown fields like __baml_options__ are ignored)
+	// Parse input — the typed input struct ignores unknown fields like __baml_options__
 	input := method.MakeInput()
 	if err := json.Unmarshal(inputJSON, input); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
 	}
 
-	// Parse options from the same input (only extracts __baml_options__ field)
+	// Parse options separately — only extracts __baml_options__ field.
+	// This is a second pass over the same JSON. A single-pass approach would
+	// require a combined struct, but the input type is generated per-method
+	// and not known at compile time. The cost is minor for typical payloads.
 	var options workerBamlOptions
 	if err := json.Unmarshal(inputJSON, &options); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal options: %w", err)

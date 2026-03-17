@@ -53,14 +53,17 @@ func ExtractDeltaContent(provider string, chunk SSEChunk) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get chunk text: %w", err)
 	}
-	return extractDeltaFromText(provider, rawText)
+	return ExtractDeltaFromText(provider, rawText)
 }
 
-// extractDeltaFromText contains the provider-specific delta extraction logic,
-// operating on the raw text string. This is split out so the generic
-// ExtractFrom path can call chunk.Text() on the concrete type and pass the
-// string here, avoiding per-element interface boxing.
-func extractDeltaFromText(provider string, rawText string) (string, error) {
+// ExtractDeltaFromText contains the provider-specific delta extraction logic,
+// operating on the raw text string. It takes a provider name and the raw JSON
+// text of a single SSE event, and returns the text delta content.
+//
+// This function is used by both:
+//   - The existing OnTick/IncrementalExtractor path (via ExtractFrom)
+//   - The new BuildRequest streaming path (called directly per SSE event)
+func ExtractDeltaFromText(provider string, rawText string) (string, error) {
 	switch provider {
 	// OpenAI-compatible providers (Chat Completions API format)
 	// Path: choices[0].delta.content
@@ -203,7 +206,7 @@ func ExtractFrom[T SSEChunk](e *IncrementalExtractor, callCount int, provider st
 			if err != nil {
 				continue
 			}
-			delta, err := extractDeltaFromText(provider, rawText)
+			delta, err := ExtractDeltaFromText(provider, rawText)
 			if err == nil && delta != "" {
 				e.accumulated.WriteString(delta)
 			}
@@ -224,7 +227,7 @@ func ExtractFrom[T SSEChunk](e *IncrementalExtractor, callCount int, provider st
 		if err != nil {
 			continue
 		}
-		delta, err := extractDeltaFromText(provider, rawText)
+		delta, err := ExtractDeltaFromText(provider, rawText)
 		if err == nil && delta != "" {
 			deltaBuf.WriteString(delta)
 			e.accumulated.WriteString(delta)

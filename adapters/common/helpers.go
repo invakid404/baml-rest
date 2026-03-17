@@ -11,6 +11,9 @@ const (
 	IntrospectedPkg      = RootPkg + "/introspected"
 	InterfacesPkg        = RootPkg + "/bamlutils"
 	SSEPkg               = InterfacesPkg + "/sse"
+	BuildRequestPkg      = InterfacesPkg + "/buildrequest"
+	LLMHTTPPkg           = InterfacesPkg + "/llmhttp"
+	RetryPkg             = InterfacesPkg + "/retry"
 	GeneratedClientPkg   = RootPkg + "/baml_client"
 	GoConcurrentQueuePkg = "github.com/enriquebris/goconcurrentqueue"
 

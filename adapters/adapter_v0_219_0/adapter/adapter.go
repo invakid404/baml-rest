@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"fmt"
 
 	baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -40,7 +41,8 @@ type BamlAdapter struct {
 	// the runtime ClientRegistry override. Empty if no override.
 	clientRegistryProvider string
 
-	// originalClientRegistry stores the original request ClientRegistry.
+	// originalClientRegistry stores the original request ClientRegistry
+	// for named-client provider resolution in the BuildRequest router.
 	originalClientRegistry *bamlutils.ClientRegistry
 }
 
@@ -53,11 +55,19 @@ func (b *BamlAdapter) RetryConfig() *bamlutils.RetryConfig {
 }
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
+	if clientRegistry == nil {
+		b.ClientRegistry = nil
+		b.clientRegistryProvider = ""
+		b.originalClientRegistry = nil
+		return nil
+	}
+
 	b.originalClientRegistry = clientRegistry
 	b.ClientRegistry = baml.NewClientRegistry()
 
 	for _, client := range clientRegistry.Clients {
-		b.ClientRegistry.AddLlmClient(client.Name, client.Provider, WrapMapValues(client.Options))
+		// BAML 0.219.0+ properly handles nested maps, no WrapMapValues needed
+		b.ClientRegistry.AddLlmClient(client.Name, client.Provider, client.Options)
 	}
 
 	if clientRegistry.Primary != nil {
@@ -82,6 +92,10 @@ func (b *BamlAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
 }
 
 func (b *BamlAdapter) SetTypeBuilder(tb *bamlutils.TypeBuilder) error {
+	if b.TypeBuilderFactory == nil {
+		return fmt.Errorf("adapter: TypeBuilderFactory not set")
+	}
+
 	typeBuilder, err := b.TypeBuilderFactory(tb)
 	if err != nil {
 		return err
@@ -107,10 +121,18 @@ func (b *BamlAdapter) Logger() bamlutils.Logger {
 }
 
 func (b *BamlAdapter) NewMediaFromURL(kind bamlutils.MediaKind, url string, mimeType *string) (any, error) {
+	if b.MediaFactory == nil {
+		return nil, fmt.Errorf("adapter: MediaFactory not set")
+	}
+
 	return b.MediaFactory(kind, &url, nil, mimeType)
 }
 
 func (b *BamlAdapter) NewMediaFromBase64(kind bamlutils.MediaKind, base64 string, mimeType *string) (any, error) {
+	if b.MediaFactory == nil {
+		return nil, fmt.Errorf("adapter: MediaFactory not set")
+	}
+
 	return b.MediaFactory(kind, nil, &base64, mimeType)
 }
 
