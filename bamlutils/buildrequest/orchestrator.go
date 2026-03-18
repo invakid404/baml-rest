@@ -75,6 +75,9 @@ func ResolveProvider(adapter bamlutils.Adapter, defaultClientName string, intros
 	// Check if the function's default client was overridden by name
 	if reg := adapter.OriginalClientRegistry(); reg != nil && defaultClientName != "" {
 		for _, client := range reg.Clients {
+			if client == nil {
+				continue
+			}
 			if client.Name == defaultClientName {
 				return client.Provider
 			}
@@ -115,6 +118,9 @@ func ResolveRetryPolicy(
 		// has no retry_policy, skip straight to the introspected default.
 		if reg.Primary != nil {
 			for _, client := range reg.Clients {
+				if client == nil {
+					continue
+				}
 				if client.Name == *reg.Primary && client.RetryPolicy != nil {
 					if p, ok := introspectedPolicies[*client.RetryPolicy]; ok {
 						return p
@@ -126,6 +132,9 @@ func ResolveRetryPolicy(
 		} else if defaultClientName != "" {
 			// No primary set — check the function's default client name
 			for _, client := range reg.Clients {
+				if client == nil {
+					continue
+				}
 				if client.Name == defaultClientName && client.RetryPolicy != nil {
 					if p, ok := introspectedPolicies[*client.RetryPolicy]; ok {
 						return p
