@@ -44,6 +44,10 @@ type BamlAdapter struct {
 	// originalClientRegistry stores the original request ClientRegistry
 	// for named-client provider resolution in the BuildRequest router.
 	originalClientRegistry *bamlutils.ClientRegistry
+
+	// httpClient is an optional custom HTTP client for the BuildRequest path.
+	// When nil, llmhttp.DefaultClient is used.
+	httpClient *llmhttp.Client
 }
 
 func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
@@ -144,7 +148,7 @@ func (b *BamlAdapter) NewMediaFromBase64(kind bamlutils.MediaKind, base64 string
 }
 
 func (b *BamlAdapter) HTTPClient() *llmhttp.Client {
-	return nil
+	return b.httpClient
 }
 
 var _ bamlutils.Adapter = (*BamlAdapter)(nil)
