@@ -117,10 +117,11 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 	}
 
 	// Validate Content-Type for SSE — reject anything that isn't explicitly
-	// text/event-stream or application/x-ndjson. Missing Content-Type is also
-	// rejected to fail closed against proxy error pages or misconfigured servers.
+	// text/event-stream. Missing Content-Type is also rejected to fail closed
+	// against proxy error pages or misconfigured servers. NDJSON is not
+	// accepted because the SSE parser requires data: framing.
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
-	if !strings.Contains(ct, "text/event-stream") && !strings.Contains(ct, "application/x-ndjson") {
+	if !strings.Contains(ct, "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
 		if ct == "" {
