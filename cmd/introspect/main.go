@@ -1331,6 +1331,7 @@ var bamlConfigKeys = []string{
 	"max_delay_ms ",
 	"max_retries ",
 	"multiplier ",
+	"strategy ",
 	"provider ",
 	"delay_ms ",
 	"options ",
@@ -1570,9 +1571,58 @@ func parseFunctionBlock(cfg *bamlConfig, name string, block []string) {
 	}
 }
 
+// expandStrategyBlock extracts lines from a `strategy { ... }` nested block
+// within a retry_policy. For compact forms like `strategy { type x delay_ms 100 }`,
+// it extracts the inner content and splits it into separate key-value statements.
+// For multi-line forms, the inner lines are returned as-is.
+func expandStrategyBlock(block []string) []string {
+	var lines []string
+	inStrategy := false
+	depth := 0
+	for _, line := range block {
+		trimmed := strings.TrimSpace(line)
+		if !inStrategy {
+			if strings.HasPrefix(trimmed, "strategy ") || strings.HasPrefix(trimmed, "strategy{") {
+				inStrategy = true
+				// Check for inline strategy block on the same line
+				openIdx := strings.Index(trimmed, "{")
+				closeIdx := strings.LastIndex(trimmed, "}")
+				if openIdx >= 0 && closeIdx > openIdx {
+					inner := strings.TrimSpace(trimmed[openIdx+1 : closeIdx])
+					if inner != "" {
+						lines = append(lines, splitInlineStatements(inner)...)
+					}
+					// Check if block closes on same line
+					stripped := stripStringLiterals(trimmed)
+					depth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
+					if depth <= 0 {
+						inStrategy = false
+					}
+				} else {
+					stripped := stripStringLiterals(trimmed)
+					depth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
+				}
+			}
+			continue
+		}
+		// Inside multi-line strategy block
+		stripped := stripStringLiterals(trimmed)
+		depth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
+		lines = append(lines, trimmed)
+		if depth <= 0 {
+			inStrategy = false
+		}
+	}
+	return lines
+}
+
 func parseRetryPolicyBlock(cfg *bamlConfig, name string, block []string) {
 	p := parsedRetryPolicy{}
-	for _, line := range expandBlockLines(block) {
+	// First pass: expand strategy block contents so type/delay_ms/etc are visible
+	expanded := expandBlockLines(block)
+	strategyLines := expandStrategyBlock(expanded)
+	allLines := append(expanded, strategyLines...)
+	for _, line := range allLines {
 		if strings.HasPrefix(line, "max_retries ") {
 			if v, err := strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "max_retries "))); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: invalid max_retries value in retry_policy %s: %v\n", name, err)

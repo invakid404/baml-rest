@@ -868,3 +868,67 @@ retry_policy Fast {
 		t.Errorf("expected retry_policy=Fast, got %q (// in URL truncated remaining statements)", cfg.clientRetryPolicy["URLClient"])
 	}
 }
+
+func TestParseBamlFile_CompactRetryPolicyWithStrategy(t *testing.T) {
+	// A one-line retry_policy with an inline strategy { ... } block
+	// must correctly parse the strategy contents.
+	cfg := &bamlConfig{
+		clientProvider:    make(map[string]string),
+		clientRetryPolicy: make(map[string]string),
+		functionClient:    make(map[string]string),
+		retryPolicies:     make(map[string]parsedRetryPolicy),
+	}
+
+	content := `
+retry_policy Fast { max_retries 3 strategy { type constant_delay delay_ms 100 } }
+`
+	parseBamlFile(cfg, content)
+
+	rp, ok := cfg.retryPolicies["Fast"]
+	if !ok {
+		t.Fatal("Fast policy not found")
+	}
+	if rp.maxRetries != 3 {
+		t.Errorf("expected maxRetries=3, got %d", rp.maxRetries)
+	}
+	if rp.strategy != "constant_delay" {
+		t.Errorf("expected strategy=constant_delay, got %q", rp.strategy)
+	}
+	if rp.delayMs != 100 {
+		t.Errorf("expected delayMs=100, got %d", rp.delayMs)
+	}
+}
+
+func TestParseBamlFile_CompactRetryPolicyExponential(t *testing.T) {
+	cfg := &bamlConfig{
+		clientProvider:    make(map[string]string),
+		clientRetryPolicy: make(map[string]string),
+		functionClient:    make(map[string]string),
+		retryPolicies:     make(map[string]parsedRetryPolicy),
+	}
+
+	content := `
+retry_policy ExpRetry { max_retries 5 strategy { type exponential_backoff delay_ms 200 multiplier 2.0 max_delay_ms 10000 } }
+`
+	parseBamlFile(cfg, content)
+
+	rp, ok := cfg.retryPolicies["ExpRetry"]
+	if !ok {
+		t.Fatal("ExpRetry policy not found")
+	}
+	if rp.maxRetries != 5 {
+		t.Errorf("expected maxRetries=5, got %d", rp.maxRetries)
+	}
+	if rp.strategy != "exponential_backoff" {
+		t.Errorf("expected strategy=exponential_backoff, got %q", rp.strategy)
+	}
+	if rp.delayMs != 200 {
+		t.Errorf("expected delayMs=200, got %d", rp.delayMs)
+	}
+	if rp.multiplier != 2.0 {
+		t.Errorf("expected multiplier=2.0, got %f", rp.multiplier)
+	}
+	if rp.maxDelayMs != 10000 {
+		t.Errorf("expected maxDelayMs=10000, got %d", rp.maxDelayMs)
+	}
+}
