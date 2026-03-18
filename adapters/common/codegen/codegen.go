@@ -1481,9 +1481,10 @@ func Generate(selfPkg string) {
 		if hasBuildRequest {
 
 			// Build the StreamRequest call params (same pattern as the Stream call)
-			// StreamRequest.Method takes (args..., opts...) — NO ctx parameter.
-			// It uses context.Background() internally.
+			// StreamRequest.Method takes (ctx, args..., opts...) after the
+			// context_fix hack rewrites context.Background() → ctx.
 			var buildRequestCallParams []jen.Code
+			buildRequestCallParams = append(buildRequestCallParams, jen.Id("adapter"))
 			for _, arg := range args {
 				buildRequestCallParams = append(buildRequestCallParams, argCallParam(arg))
 			}
@@ -1536,26 +1537,30 @@ func Generate(selfPkg string) {
 					}), jen.Nil())
 				}),
 
-				// parseStreamFn: calls ParseStream.Method(accumulated, opts...) — NO ctx parameter
+				// parseStreamFn: calls ParseStream.Method(ctx, accumulated, opts...)
+				// The context_fix hack adds ctx as first param to ParseStream methods.
 				jen.Id("parseStreamFn").Op(":=").Func().Params(
-					jen.Id("_").Qual("context", "Context"),
+					jen.Id("ctx").Qual("context", "Context"),
 					jen.Id("accumulated").String(),
 				).Params(jen.Any(), jen.Error()).Block(
 					jen.Return(
 						jen.Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
+							jen.Id("ctx"),
 							jen.Id("accumulated"),
 							jen.Id("options").Op("..."),
 						),
 					),
 				),
 
-				// parseFinalFn: calls Parse.Method(accumulated, opts...) — NO ctx parameter
+				// parseFinalFn: calls Parse.Method(ctx, accumulated, opts...)
+				// The context_fix hack adds ctx as first param to Parse methods.
 				jen.Id("parseFinalFn").Op(":=").Func().Params(
-					jen.Id("_").Qual("context", "Context"),
+					jen.Id("ctx").Qual("context", "Context"),
 					jen.Id("accumulated").String(),
 				).Params(jen.Any(), jen.Error()).Block(
 					jen.Return(
 						jen.Qual(common.GeneratedClientPkg, "Parse").Dot(methodName).Call(
+							jen.Id("ctx"),
 							jen.Id("accumulated"),
 							jen.Id("options").Op("..."),
 						),
