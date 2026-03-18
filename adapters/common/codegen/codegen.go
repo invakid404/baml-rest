@@ -1480,11 +1480,11 @@ func Generate(selfPkg string) {
 
 		if hasBuildRequest {
 
-			// Build the StreamRequest call params (same pattern as the Stream call)
-			// StreamRequest.Method takes (ctx, args..., opts...) after the
-			// context_fix hack rewrites context.Background() → ctx.
+			// Build the StreamRequest call params. After the context_fix hack,
+			// StreamRequest.Method takes (ctx, args..., opts...). We use the
+			// closure's ctx parameter, not the outer adapter reference.
 			var buildRequestCallParams []jen.Code
-			buildRequestCallParams = append(buildRequestCallParams, jen.Id("adapter"))
+			buildRequestCallParams = append(buildRequestCallParams, jen.Id("ctx"))
 			for _, arg := range args {
 				buildRequestCallParams = append(buildRequestCallParams, argCallParam(arg))
 			}
