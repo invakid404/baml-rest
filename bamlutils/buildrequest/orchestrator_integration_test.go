@@ -23,43 +23,70 @@ import (
 
 func makeAnthropicServer(chunks []string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		// message_start
 		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-test\"}}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 		// content_block_start
 		fmt.Fprint(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 		// content deltas
 		for _, chunk := range chunks {
 			fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"%s\"}}\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 		// message_stop
 		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 	}))
 }
 
 func makeGoogleAIServer(chunks []string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		for _, chunk := range chunks {
 			fmt.Fprintf(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"%s\"}],\"role\":\"model\"}}]}\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 	}))
 }
 
 func makeOpenAIResponsesServer(chunks []string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		// response.created
 		fmt.Fprint(w, "data: {\"type\":\"response.created\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 		// output_text deltas
 		for _, chunk := range chunks {
 			fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"%s\"}\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 		// response.completed
 		fmt.Fprint(w, "data: {\"type\":\"response.completed\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 	}))
 }
 

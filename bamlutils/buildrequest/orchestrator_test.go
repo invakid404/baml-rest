@@ -39,12 +39,19 @@ func newTestResult(kind bamlutils.StreamResultKind, stream, final any, raw strin
 
 func makeOpenAIServer(chunks []string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		for _, chunk := range chunks {
 			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%s\"}}]}\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 	}))
 }
 
