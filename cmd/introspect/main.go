@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -1284,8 +1285,15 @@ func extractFunctionName(line string) string {
 // BAML allows inline comments like `provider openai // default`. The comment
 // must be stripped before further processing so the value is just `openai`.
 func stripInlineComment(s string) string {
-	if idx := strings.Index(s, "//"); idx >= 0 {
-		return strings.TrimSpace(s[:idx])
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote && i+1 < len(s) && s[i] == '/' && s[i+1] == '/' {
+			return strings.TrimSpace(s[:i])
+		}
 	}
 	return s
 }
@@ -1467,19 +1475,35 @@ func parseRetryPolicyBlock(cfg *bamlConfig, name string, block []string) {
 	p := parsedRetryPolicy{}
 	for _, line := range expandBlockLines(block) {
 		if strings.HasPrefix(line, "max_retries ") {
-			p.maxRetries, _ = strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "max_retries ")))
+			if v, err := strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "max_retries "))); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: invalid max_retries value in retry_policy %s: %v\n", name, err)
+			} else {
+				p.maxRetries = v
+			}
 		}
 		if strings.HasPrefix(line, "type ") {
 			p.strategy = cleanBamlValue(strings.TrimPrefix(line, "type "))
 		}
 		if strings.HasPrefix(line, "delay_ms ") {
-			p.delayMs, _ = strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "delay_ms ")))
+			if v, err := strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "delay_ms "))); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: invalid delay_ms value in retry_policy %s: %v\n", name, err)
+			} else {
+				p.delayMs = v
+			}
 		}
 		if strings.HasPrefix(line, "multiplier ") {
-			p.multiplier, _ = strconv.ParseFloat(cleanBamlValue(strings.TrimPrefix(line, "multiplier ")), 64)
+			if v, err := strconv.ParseFloat(cleanBamlValue(strings.TrimPrefix(line, "multiplier ")), 64); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: invalid multiplier value in retry_policy %s: %v\n", name, err)
+			} else {
+				p.multiplier = v
+			}
 		}
 		if strings.HasPrefix(line, "max_delay_ms ") {
-			p.maxDelayMs, _ = strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "max_delay_ms ")))
+			if v, err := strconv.Atoi(cleanBamlValue(strings.TrimPrefix(line, "max_delay_ms "))); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: invalid max_delay_ms value in retry_policy %s: %v\n", name, err)
+			} else {
+				p.maxDelayMs = v
+			}
 		}
 	}
 	cfg.retryPolicies[name] = p
@@ -1496,7 +1520,13 @@ func generateBamlConfigVars(out *jen.File) {
 	// Build FunctionClient: function → client name
 	out.Comment("FunctionClient maps BAML function names to their default client name")
 	fcEntries := make([]jen.Code, 0, len(cfg.functionClient))
-	for funcName, clientName := range cfg.functionClient {
+	fcKeys := make([]string, 0, len(cfg.functionClient))
+	for k := range cfg.functionClient {
+		fcKeys = append(fcKeys, k)
+	}
+	sort.Strings(fcKeys)
+	for _, funcName := range fcKeys {
+		clientName := cfg.functionClient[funcName]
 		fcEntries = append(fcEntries, jen.Lit(funcName).Op(":").Lit(clientName))
 	}
 	out.Var().Id("FunctionClient").Op("=").Map(jen.String()).String().Values(fcEntries...)
@@ -1511,7 +1541,13 @@ func generateBamlConfigVars(out *jen.File) {
 
 	out.Comment("FunctionProvider maps BAML function names to their default provider string")
 	fpEntries := make([]jen.Code, 0, len(functionProvider))
-	for funcName, provider := range functionProvider {
+	fpKeys := make([]string, 0, len(functionProvider))
+	for k := range functionProvider {
+		fpKeys = append(fpKeys, k)
+	}
+	sort.Strings(fpKeys)
+	for _, funcName := range fpKeys {
+		provider := functionProvider[funcName]
 		fpEntries = append(fpEntries, jen.Lit(funcName).Op(":").Lit(provider))
 	}
 	out.Var().Id("FunctionProvider").Op("=").Map(jen.String()).String().Values(fpEntries...)
@@ -1519,7 +1555,13 @@ func generateBamlConfigVars(out *jen.File) {
 	// Build ClientProvider
 	out.Comment("ClientProvider maps BAML client names to their provider strings")
 	cpEntries := make([]jen.Code, 0, len(cfg.clientProvider))
-	for clientName, provider := range cfg.clientProvider {
+	cpKeys := make([]string, 0, len(cfg.clientProvider))
+	for k := range cfg.clientProvider {
+		cpKeys = append(cpKeys, k)
+	}
+	sort.Strings(cpKeys)
+	for _, clientName := range cpKeys {
+		provider := cfg.clientProvider[clientName]
 		cpEntries = append(cpEntries, jen.Lit(clientName).Op(":").Lit(provider))
 	}
 	out.Var().Id("ClientProvider").Op("=").Map(jen.String()).String().Values(cpEntries...)
@@ -1527,7 +1569,13 @@ func generateBamlConfigVars(out *jen.File) {
 	// Build RetryPolicies
 	out.Comment("RetryPolicies maps retry policy names to their resolved Policy structs")
 	rpEntries := make([]jen.Code, 0, len(cfg.retryPolicies))
-	for policyName, p := range cfg.retryPolicies {
+	rpKeys := make([]string, 0, len(cfg.retryPolicies))
+	for k := range cfg.retryPolicies {
+		rpKeys = append(rpKeys, k)
+	}
+	sort.Strings(rpKeys)
+	for _, policyName := range rpKeys {
+		p := cfg.retryPolicies[policyName]
 		strategyDict := jen.Dict{
 			jen.Id("Type"):    jen.Lit(p.strategy),
 			jen.Id("DelayMs"): jen.Lit(p.delayMs),
@@ -1553,7 +1601,13 @@ func generateBamlConfigVars(out *jen.File) {
 
 	out.Comment("FunctionRetryPolicy maps BAML function names to their retry policy name")
 	frpEntries := make([]jen.Code, 0, len(functionRetryPolicy))
-	for funcName, policyName := range functionRetryPolicy {
+	frpKeys := make([]string, 0, len(functionRetryPolicy))
+	for k := range functionRetryPolicy {
+		frpKeys = append(frpKeys, k)
+	}
+	sort.Strings(frpKeys)
+	for _, funcName := range frpKeys {
+		policyName := functionRetryPolicy[funcName]
 		frpEntries = append(frpEntries, jen.Lit(funcName).Op(":").Lit(policyName))
 	}
 	out.Var().Id("FunctionRetryPolicy").Op("=").Map(jen.String()).String().Values(frpEntries...)
