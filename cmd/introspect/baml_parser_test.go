@@ -640,6 +640,12 @@ func TestStripInlineComment(t *testing.T) {
 		{"// full line comment", ""},
 		{"no comment here", "no comment here"},
 		{"", ""},
+		// Escaped quotes: // inside escaped-quote context should not end the string
+		{`"value with \" escaped // not a comment" // real comment`, `"value with \" escaped // not a comment"`},
+		// Double-escaped backslash before quote: \\" means the quote IS real
+		{`"val\\\\" // comment`, `"val\\\\"`},
+		// URL inside quotes: // should not be treated as comment
+		{`"https://example.com" // comment`, `"https://example.com"`},
 	}
 	for _, tt := range tests {
 		if got := stripInlineComment(tt.input); got != tt.expected {
