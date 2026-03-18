@@ -114,7 +114,7 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 
 	// Validate Content-Type for SSE — a 2xx JSON/HTML response should not
 	// be silently misinterpreted as an empty SSE stream.
-	ct := resp.Header.Get("Content-Type")
+	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	if ct != "" && !strings.Contains(ct, "text/event-stream") && !strings.Contains(ct, "application/x-ndjson") {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()

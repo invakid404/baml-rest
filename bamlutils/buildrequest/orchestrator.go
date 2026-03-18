@@ -348,8 +348,8 @@ func RunStreamOrchestration(
 		heartbeatSent.Store(false)
 	})
 
-	if err != nil {
-		// Emit error result
+	if err != nil && ctx.Err() == nil {
+		// Emit error result (skip if context was cancelled — cancellation is not an error)
 		r := newResult(bamlutils.StreamResultKindError, nil, nil, "", err, false)
 		select {
 		case out <- r:

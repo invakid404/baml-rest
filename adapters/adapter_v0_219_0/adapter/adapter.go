@@ -63,6 +63,7 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	}
 
 	b.originalClientRegistry = clientRegistry
+	b.clientRegistryProvider = "" // Clear before scanning to avoid stale values
 	b.ClientRegistry = baml.NewClientRegistry()
 
 	for _, client := range clientRegistry.Clients {
