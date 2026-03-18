@@ -264,8 +264,9 @@ func RunStreamOrchestration(
 			// Extract text delta from SSE event
 			delta, extractErr := sse.ExtractDeltaFromText(config.Provider, ev.Data)
 			if extractErr != nil {
-				// Unknown provider or parse error — skip this event
-				continue
+				// Extraction error — fail the attempt so retry logic can handle it
+				// rather than silently accumulating incomplete text.
+				return nil, fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
 			}
 			if delta == "" {
 				continue
