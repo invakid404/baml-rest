@@ -1237,7 +1237,9 @@ func collectBlock(lines []string, startLine int) ([]string, int) {
 	for i := startLine; i < len(lines); i++ {
 		line := lines[i]
 		block = append(block, line)
-		stripped := stripStringLiterals(line)
+		// Strip both string literals and inline comments before counting braces.
+		// A comment like `// }` must not perturb the depth count.
+		stripped := stripInlineComment(stripStringLiterals(line))
 		depth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
 		if strings.Contains(stripped, "{") {
 			opened = true
@@ -1527,11 +1529,11 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 	for _, line := range expandBlockLines(block) {
 		// Track nested block depth — skip lines inside options/prompt/strategy blocks
 		if nestedDepth > 0 {
-			nestedDepth += strings.Count(stripStringLiterals(line), "{") - strings.Count(stripStringLiterals(line), "}")
+			nestedDepth += strings.Count(stripInlineComment(stripStringLiterals(line)), "{") - strings.Count(stripInlineComment(stripStringLiterals(line)), "}")
 			continue
 		}
 		if isNestedBlockStart(line) {
-			stripped := stripStringLiterals(line)
+			stripped := stripInlineComment(stripStringLiterals(line))
 			nestedDepth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
 			continue
 		}
@@ -1560,7 +1562,7 @@ func parseFunctionBlock(cfg *bamlConfig, name string, block []string) {
 
 		// Track nested brace-delimited blocks (options, strategy)
 		if nestedDepth > 0 {
-			nestedDepth += strings.Count(stripStringLiterals(trimmed), "{") - strings.Count(stripStringLiterals(trimmed), "}")
+			nestedDepth += strings.Count(stripInlineComment(stripStringLiterals(trimmed)), "{") - strings.Count(stripInlineComment(stripStringLiterals(trimmed)), "}")
 			continue
 		}
 		if isNestedBlockStart(trimmed) {
@@ -1569,7 +1571,7 @@ func parseFunctionBlock(cfg *bamlConfig, name string, block []string) {
 				inRawString = true
 				continue
 			}
-			stripped := stripStringLiterals(trimmed)
+			stripped := stripInlineComment(stripStringLiterals(trimmed))
 			nestedDepth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
 			continue
 		}
@@ -1601,20 +1603,20 @@ func expandStrategyBlock(block []string) []string {
 						lines = append(lines, splitInlineStatements(inner)...)
 					}
 					// Check if block closes on same line
-					stripped := stripStringLiterals(trimmed)
+					stripped := stripInlineComment(stripStringLiterals(trimmed))
 					depth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
 					if depth <= 0 {
 						inStrategy = false
 					}
 				} else {
-					stripped := stripStringLiterals(trimmed)
+					stripped := stripInlineComment(stripStringLiterals(trimmed))
 					depth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
 				}
 			}
 			continue
 		}
 		// Inside multi-line strategy block
-		stripped := stripStringLiterals(trimmed)
+		stripped := stripInlineComment(stripStringLiterals(trimmed))
 		depth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
 		lines = append(lines, trimmed)
 		if depth <= 0 {
