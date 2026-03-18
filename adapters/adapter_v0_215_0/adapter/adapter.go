@@ -5,6 +5,7 @@ import (
 
 	baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/introspected"
 )
 
@@ -31,9 +32,28 @@ type BamlAdapter struct {
 
 	// logger is used for debug output during dynamic type processing.
 	logger bamlutils.Logger
+
+	// retryConfig holds per-request retry overrides from __baml_options__.retry.
+	retryConfig *bamlutils.RetryConfig
+
+	// clientRegistryProvider is the provider of the primary client from
+	// the runtime ClientRegistry override. Empty if no override.
+	clientRegistryProvider string
+
+	// originalClientRegistry stores the original request ClientRegistry.
+	originalClientRegistry *bamlutils.ClientRegistry
+}
+
+func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
+	b.retryConfig = config
+}
+
+func (b *BamlAdapter) RetryConfig() *bamlutils.RetryConfig {
+	return b.retryConfig
 }
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
+	b.originalClientRegistry = clientRegistry
 	b.ClientRegistry = baml.NewClientRegistry()
 
 	for _, client := range clientRegistry.Clients {
@@ -43,9 +63,23 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 
 	if clientRegistry.Primary != nil {
 		b.ClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
+		for _, client := range clientRegistry.Clients {
+			if client.Name == *clientRegistry.Primary {
+				b.clientRegistryProvider = client.Provider
+				break
+			}
+		}
 	}
 
 	return nil
+}
+
+func (b *BamlAdapter) ClientRegistryProvider() string {
+	return b.clientRegistryProvider
+}
+
+func (b *BamlAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
+	return b.originalClientRegistry
 }
 
 func (b *BamlAdapter) SetTypeBuilder(tb *bamlutils.TypeBuilder) error {
@@ -79,6 +113,10 @@ func (b *BamlAdapter) NewMediaFromURL(kind bamlutils.MediaKind, url string, mime
 
 func (b *BamlAdapter) NewMediaFromBase64(kind bamlutils.MediaKind, base64 string, mimeType *string) (any, error) {
 	return b.MediaFactory(kind, nil, &base64, mimeType)
+}
+
+func (b *BamlAdapter) HTTPClient() *llmhttp.Client {
+	return nil
 }
 
 var _ bamlutils.Adapter = (*BamlAdapter)(nil)

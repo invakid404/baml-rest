@@ -1469,12 +1469,295 @@ func Generate(selfPkg string) {
 			Error().
 			Block(fullBody...)
 
+		// ====== BUILD REQUEST PATH: methodName_buildRequest ======
+		// This path uses BAML's BuildRequest/StreamRequest API to get the raw HTTP
+		// request, executes it ourselves, and parses SSE events directly.
+		// Only emitted when introspected.StreamRequestMethods contains this method
+		// (BAML >= 0.219.0). For older BAML versions the symbol baml_client.StreamRequest
+		// doesn't exist, so we must not generate code that references it.
+		_, hasBuildRequest := introspected.StreamRequestMethods[methodName]
+		buildRequestMethodName := strcase.LowerCamelCase(methodName + "_buildRequest")
+
+		if hasBuildRequest {
+
+			// Build the StreamRequest call params. After the context_fix hack,
+			// StreamRequest.Method takes (ctx, args..., opts...). We use the
+			// closure's ctx parameter, not the outer adapter reference.
+			var buildRequestCallParams []jen.Code
+			buildRequestCallParams = append(buildRequestCallParams, jen.Id("ctx"))
+			for _, arg := range args {
+				buildRequestCallParams = append(buildRequestCallParams, argCallParam(arg))
+			}
+			buildRequestCallParams = append(buildRequestCallParams, jen.Id("options").Op("..."))
+
+			// The _buildRequest body
+			buildRequestBody := makePreamble()
+
+			// Build the closures for RunStreamOrchestration
+			buildRequestBody = append(buildRequestBody,
+				// buildRequestFn: calls StreamRequest.Method(ctx, args, opts...) -> baml.HTTPRequest -> llmhttp.Request
+				jen.Id("buildRequestFn").Op(":=").Func().Params(
+					jen.Id("ctx").Qual("context", "Context"),
+				).Params(
+					jen.Op("*").Qual(common.LLMHTTPPkg, "Request"),
+					jen.Error(),
+				).BlockFunc(func(g *jen.Group) {
+					// Call StreamRequest.Method(adapter, args..., options...)
+					g.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
+						Qual(common.GeneratedClientPkg, "StreamRequest").Dot(methodName).Call(buildRequestCallParams...)
+					g.If(jen.Id("err").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Id("err")),
+					)
+					// Convert baml.HTTPRequest to llmhttp.Request
+					g.List(jen.Id("url"), jen.Id("urlErr")).Op(":=").Id("httpReq").Dot("Url").Call()
+					g.If(jen.Id("urlErr").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get URL: %w"), jen.Id("urlErr"))),
+					)
+					g.List(jen.Id("method"), jen.Id("methodErr")).Op(":=").Id("httpReq").Dot("Method").Call()
+					g.If(jen.Id("methodErr").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get method: %w"), jen.Id("methodErr"))),
+					)
+					g.List(jen.Id("headers"), jen.Id("headersErr")).Op(":=").Id("httpReq").Dot("Headers").Call()
+					g.If(jen.Id("headersErr").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get headers: %w"), jen.Id("headersErr"))),
+					)
+					g.List(jen.Id("body"), jen.Id("bodyErr")).Op(":=").Id("httpReq").Dot("Body").Call()
+					g.If(jen.Id("bodyErr").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get body: %w"), jen.Id("bodyErr"))),
+					)
+					g.List(jen.Id("bodyText"), jen.Id("bodyTextErr")).Op(":=").Id("body").Dot("Text").Call()
+					g.If(jen.Id("bodyTextErr").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get body text: %w"), jen.Id("bodyTextErr"))),
+					)
+					g.Return(jen.Op("&").Qual(common.LLMHTTPPkg, "Request").Values(jen.Dict{
+						jen.Id("URL"):     jen.Id("url"),
+						jen.Id("Method"):  jen.Id("method"),
+						jen.Id("Headers"): jen.Id("headers"),
+						jen.Id("Body"):    jen.Id("bodyText"),
+					}), jen.Nil())
+				}),
+
+				// parseStreamFn: calls ParseStream.Method(ctx, accumulated, opts...)
+				// The context_fix hack adds ctx as first param to ParseStream methods.
+				jen.Id("parseStreamFn").Op(":=").Func().Params(
+					jen.Id("ctx").Qual("context", "Context"),
+					jen.Id("accumulated").String(),
+				).Params(jen.Any(), jen.Error()).Block(
+					jen.Return(
+						jen.Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
+							jen.Id("ctx"),
+							jen.Id("accumulated"),
+							jen.Id("options").Op("..."),
+						),
+					),
+				),
+
+				// parseFinalFn: calls Parse.Method(ctx, accumulated, opts...)
+				// The context_fix hack adds ctx as first param to Parse methods.
+				jen.Id("parseFinalFn").Op(":=").Func().Params(
+					jen.Id("ctx").Qual("context", "Context"),
+					jen.Id("accumulated").String(),
+				).Params(jen.Any(), jen.Error()).Block(
+					jen.Return(
+						jen.Qual(common.GeneratedClientPkg, "Parse").Dot(methodName).Call(
+							jen.Id("ctx"),
+							jen.Id("accumulated"),
+							jen.Id("options").Op("..."),
+						),
+					),
+				),
+
+				// newResultFn: creates a pooled StreamResult.
+				// ParseStream/Parse may return either a pointer (*T) or a value (T),
+				// so we try pointer assertion first, then value assertion with &v.
+				// This matches the legacy paths which handle both shapes.
+				// Dynamic unwrap helpers are called when applicable, matching the
+				// legacy _full path's behavior for DynamicProperties outputs.
+				jen.Id("newResultFn").Op(":=").Func().Params(
+					jen.Id("kind").Qual(common.InterfacesPkg, "StreamResultKind"),
+					jen.Id("stream").Any(),
+					jen.Id("final").Any(),
+					jen.Id("raw").String(),
+					jen.Id("err").Error(),
+					jen.Id("reset").Bool(),
+				).Params(jen.Qual(common.InterfacesPkg, "StreamResult")).Block(
+					jen.Id("r").Op(":=").Id(getterFuncName).Call(),
+					jen.Id("r").Dot("kind").Op("=").Id("kind"),
+					jen.Id("r").Dot("raw").Op("=").Id("raw"),
+					jen.Id("r").Dot("err").Op("=").Id("err"),
+					jen.Id("r").Dot("reset").Op("=").Id("reset"),
+					// Set stream field: try *T first (pointer return), then T (value return → take address)
+					jen.If(jen.Id("stream").Op("!=").Nil()).Block(
+						jen.If(
+							jen.List(jen.Id("v"), jen.Id("ok")).Op(":=").Id("stream").Assert(streamTypePtr.Clone()),
+							jen.Id("ok"),
+						).Block(
+							func() jen.Code {
+								if isDynamicStream {
+									return jen.Id(unwrapStreamFuncName).Call(jen.Id("v"))
+								}
+								return jen.Null()
+							}(),
+							jen.Id("r").Dot("streamParsed").Op("=").Id("v"),
+						).Else().If(
+							jen.List(jen.Id("v"), jen.Id("ok")).Op(":=").Id("stream").Assert(streamType.statement.Clone()),
+							jen.Id("ok"),
+						).Block(
+							func() jen.Code {
+								if isDynamicStream {
+									return jen.Id(unwrapStreamFuncName).Call(jen.Op("&").Id("v"))
+								}
+								return jen.Null()
+							}(),
+							jen.Id("r").Dot("streamParsed").Op("=").Op("&").Id("v"),
+						),
+					),
+					// Set final field: try *T first, then T
+					jen.If(jen.Id("final").Op("!=").Nil()).Block(
+						jen.If(
+							jen.List(jen.Id("v"), jen.Id("ok")).Op(":=").Id("final").Assert(finalTypePtr.Clone()),
+							jen.Id("ok"),
+						).Block(
+							func() jen.Code {
+								if isDynamicFinal {
+									return jen.Id(unwrapFinalFuncName).Call(jen.Id("v"))
+								}
+								return jen.Null()
+							}(),
+							jen.Id("r").Dot("finalParsed").Op("=").Id("v"),
+						).Else().If(
+							jen.List(jen.Id("v"), jen.Id("ok")).Op(":=").Id("final").Assert(finalType.statement.Clone()),
+							jen.Id("ok"),
+						).Block(
+							func() jen.Code {
+								if isDynamicFinal {
+									return jen.Id(unwrapFinalFuncName).Call(jen.Op("&").Id("v"))
+								}
+								return jen.Null()
+							}(),
+							jen.Id("r").Dot("finalParsed").Op("=").Op("&").Id("v"),
+						),
+					),
+					jen.Return(jen.Id("r")),
+				),
+
+				// StreamConfig
+				jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
+					jen.Id("Provider"):      jen.Id("provider"),
+					jen.Id("RetryPolicy"):   jen.Id("retryPolicy"),
+					jen.Id("NeedsPartials"): jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
+					jen.Id("NeedsRaw"):      jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+				}),
+
+				// Run the orchestration in a goroutine with panic recovery, matching
+				// the _noRaw/_full pattern. On panic, an error result is emitted so
+				// the worker can surface it instead of crashing.
+				// Resolve HTTP client: use adapter override if provided, else default
+				jen.Id("__httpClient").Op(":=").Qual(common.LLMHTTPPkg, "DefaultClient"),
+				jen.If(
+					jen.Id("__c").Op(":=").Id("adapter").Dot("HTTPClient").Call(),
+					jen.Id("__c").Op("!=").Nil(),
+				).Block(
+					jen.Id("__httpClient").Op("=").Id("__c"),
+				),
+
+				jen.Go().Func().Params().Block(
+					jen.Defer().Close(jen.Id("out")),
+					jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
+						jen.Func().Params(jen.Id("err").Error()).Block(
+							jen.Id("__errR").Op(":=").Id("newResultFn").Call(
+								jen.Qual(common.InterfacesPkg, "StreamResultKindError"),
+								jen.Nil(), jen.Nil(), jen.Lit(""), jen.Id("err"), jen.False(),
+							),
+							jen.Select().Block(
+								jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+									jen.Id("__errR").Dot("Release").Call(),
+								),
+							),
+						),
+						jen.Func().Params().Error().Block(
+							jen.Return(jen.Qual(common.BuildRequestPkg, "RunStreamOrchestration").Call(
+								jen.Id("adapter"),
+								jen.Id("out"),
+								jen.Id("streamConfig"),
+								jen.Id("__httpClient"),
+								jen.Id("buildRequestFn"),
+								jen.Id("parseStreamFn"),
+								jen.Id("parseFinalFn"),
+								jen.Id("newResultFn"),
+							)),
+						),
+					),
+				).Call(),
+				jen.Return(jen.Nil()),
+			)
+
+			out.Func().
+				Id(buildRequestMethodName).
+				Params(
+					jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+					jen.Id("rawInput").Any(),
+					jen.Id("out").Chan().Add(streamResultInterface.Clone()),
+					jen.Id("provider").String(),
+					jen.Id("retryPolicy").Op("*").Qual(common.RetryPkg, "Policy"),
+				).
+				Error().
+				Block(buildRequestBody...)
+
+		} // end if hasBuildRequest
+
 		// Generate the public router function that dispatches based on StreamMode()
-		// Creates the output channel and passes it to the inner implementation
+		// Creates the output channel and passes it to the inner implementation.
+		//
+		// When the BuildRequest path is available and the feature flag is set,
+		// it takes priority for all stream modes (it handles raw and partials
+		// natively). Falls back to legacy paths for unsupported providers or
+		// when the feature flag is off.
 		routerBody := []jen.Code{
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
 			jen.Var().Id("err").Error(),
 			jen.Id("mode").Op(":=").Id("adapter").Dot("StreamMode").Call(),
+		}
+
+		// Only emit the BuildRequest router branch when the method exists in
+		// StreamRequestMethods. For BAML < 0.219.0 the symbol baml_client.StreamRequest
+		// doesn't exist, so we must not generate any code that references it.
+		if hasBuildRequest {
+			routerBody = append(routerBody,
+				jen.Comment("Try BuildRequest path: check feature flag, StreamRequest availability, and provider support"),
+				jen.If(
+					jen.Qual(common.BuildRequestPkg, "UseBuildRequest").Call().
+						Op("&&").Qual(common.IntrospectedPkg, "StreamRequest").Op("!=").Nil(),
+				).Block(
+					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveProvider").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
+					),
+					jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
+						jen.Id("retryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
+							jen.Id("adapter"),
+							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+							jen.Qual(common.IntrospectedPkg, "FunctionRetryPolicy").Index(jen.Lit(methodName)),
+							jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
+						),
+						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
+							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
+							jen.Id("provider"), jen.Id("retryPolicy"),
+						),
+						jen.If(jen.Id("err").Op("!=").Nil()).Block(
+							jen.Return(jen.Nil(), jen.Id("err")),
+						),
+						jen.Return(jen.Id("out"), jen.Nil()),
+					),
+				),
+			)
+		}
+
+		routerBody = append(routerBody,
+			// Legacy path: dispatch based on StreamMode
+			jen.Comment("Legacy path: CallStream + OnTick (for unsupported providers or when BuildRequest is disabled)"),
 			jen.Switch(jen.Id("mode")).Block(
 				// StreamModeCall: final only, no raw, skip partials
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCall")).Block(
@@ -1504,7 +1787,7 @@ func Generate(selfPkg string) {
 				jen.Return(jen.Nil(), jen.Id("err")),
 			),
 			jen.Return(jen.Id("out"), jen.Nil()),
-		}
+		)
 
 		out.Func().
 			Id(methodName).

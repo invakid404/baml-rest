@@ -3,6 +3,8 @@ package bamlutils
 import (
 	"context"
 	"fmt"
+
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 )
 
 type StreamResult interface {
@@ -434,10 +436,51 @@ type Adapter interface {
 	// NewMediaFromBase64 creates a BAML media object from base64-encoded data.
 	// Returns the opaque BAML media interface (e.g., baml.Image) as any.
 	NewMediaFromBase64(kind MediaKind, base64 string, mimeType *string) (any, error)
+	// SetRetryConfig sets the per-request retry configuration override.
+	// When set, the BuildRequest path uses this instead of the .baml-introspected policy.
+	SetRetryConfig(config *RetryConfig)
+	// RetryConfig returns the per-request retry config, or nil if not set.
+	RetryConfig() *RetryConfig
+	// ClientRegistryProvider returns the provider string of the primary client
+	// from the runtime ClientRegistry override, or empty string if no override.
+	// Used by the BuildRequest router to select the correct SSE delta extractor.
+	ClientRegistryProvider() string
+	// OriginalClientRegistry returns the original bamlutils.ClientRegistry
+	// that was passed to SetClientRegistry, or nil if no override was set.
+	// Used by the BuildRequest router to resolve named client overrides.
+	OriginalClientRegistry() *ClientRegistry
+	// HTTPClient returns a custom llmhttp.Client for the BuildRequest path,
+	// or nil to use llmhttp.DefaultClient. This allows injecting a custom
+	// HTTP client (e.g., for testing or proxy support).
+	HTTPClient() *llmhttp.Client
 }
 
 // BamlOptions contains optional configuration for BAML method calls
 type BamlOptions struct {
 	ClientRegistry *ClientRegistry `json:"client_registry"`
 	TypeBuilder    *TypeBuilder    `json:"type_builder"`
+	Retry          *RetryConfig    `json:"retry,omitempty"`
+}
+
+// RetryConfig provides explicit retry configuration for the BuildRequest path.
+// When present in __baml_options__.retry, it overrides any .baml-introspected
+// retry policy for that request. Zero-value fields use defaults from the retry
+// package (200ms delay, 1.5x multiplier, 10s max delay) — see
+// buildrequest.RetryConfigToPolicy for the conversion logic.
+type RetryConfig struct {
+	MaxRetries int     `json:"max_retries"`
+	Strategy   string  `json:"strategy,omitempty"`     // "constant_delay" or "exponential_backoff"
+	DelayMs    int     `json:"delay_ms,omitempty"`     // Delay in milliseconds (default: 200)
+	Multiplier float64 `json:"multiplier,omitempty"`   // For exponential_backoff (default: 1.5)
+	MaxDelayMs int     `json:"max_delay_ms,omitempty"` // For exponential_backoff (default: 10000)
+}
+
+// HasRetryConfig returns true if the adapter has a per-request retry config.
+func HasRetryConfig(adapter Adapter) bool {
+	return adapter.RetryConfig() != nil
+}
+
+// GetRetryConfig returns the adapter's retry config, or nil.
+func GetRetryConfig(adapter Adapter) *RetryConfig {
+	return adapter.RetryConfig()
 }

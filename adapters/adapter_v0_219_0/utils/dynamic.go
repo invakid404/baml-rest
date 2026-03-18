@@ -1,0 +1,80 @@
+package utils
+
+import (
+	"reflect"
+
+	"github.com/boundaryml/baml/engine/language_client_go/baml_go/serde"
+)
+
+func UnwrapDynamicValue(value any) any {
+	if value == nil {
+		return nil
+	}
+
+	rv := reflect.ValueOf(value)
+	if rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return nil
+	}
+
+	// Check pointer types
+	if class, ok := value.(*serde.DynamicClass); ok {
+		return UnwrapDynamicValue(class.Fields)
+	}
+
+	if enum, ok := value.(*serde.DynamicEnum); ok {
+		return UnwrapDynamicValue(enum.Value)
+	}
+
+	if union, ok := value.(*serde.DynamicUnion); ok {
+		return UnwrapDynamicValue(union.Value)
+	}
+
+	// Check value types (BAML 0.219.0+ returns these as values instead of pointers)
+	if class, ok := value.(serde.DynamicClass); ok {
+		return UnwrapDynamicValue(class.Fields)
+	}
+
+	if enum, ok := value.(serde.DynamicEnum); ok {
+		return UnwrapDynamicValue(enum.Value)
+	}
+
+	if union, ok := value.(serde.DynamicUnion); ok {
+		return UnwrapDynamicValue(union.Value)
+	}
+
+	if anyMap, ok := value.(map[string]any); ok {
+		if anyMap == nil {
+			return value
+		}
+		result := make(map[string]any, len(anyMap))
+		for k, v := range anyMap {
+			result[k] = UnwrapDynamicValue(v)
+		}
+		return result
+	}
+
+	if anySlice, ok := value.([]any); ok {
+		if anySlice == nil {
+			return value
+		}
+		result := make([]any, len(anySlice))
+		for i, v := range anySlice {
+			result[i] = UnwrapDynamicValue(v)
+		}
+		return result
+	}
+
+	// Handle other slice types via reflection (BAML may return typed slices)
+	if rv.Kind() == reflect.Slice {
+		if rv.IsNil() {
+			return value
+		}
+		result := make([]any, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			result[i] = UnwrapDynamicValue(rv.Index(i).Interface())
+		}
+		return result
+	}
+
+	return value
+}
