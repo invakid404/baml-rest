@@ -294,6 +294,10 @@ func RunStreamOrchestration(
 					time.Since(lastParseTime) >= config.ParseThrottleInterval
 
 				if shouldParse {
+					// Update throttle timestamp regardless of parse success/failure
+					// so that repeated failures don't bypass the throttle interval.
+					lastParseTime = time.Now()
+
 					parsed, parseErr := parseStream(ctx, accumulated.String())
 					if parseErr == nil && parsed != nil {
 						rawForResult := ""
@@ -309,7 +313,6 @@ func RunStreamOrchestration(
 						default:
 							r.Release() // Drop partial — buffer full
 						}
-						lastParseTime = time.Now()
 					}
 				}
 			} else if config.NeedsRaw {
