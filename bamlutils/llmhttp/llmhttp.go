@@ -92,6 +92,10 @@ var DefaultClient = NewClient(nil)
 // On error (non-2xx status, connection failure), an error is returned and
 // no cleanup is needed.
 func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamResponse, error) {
+	if c == nil || c.httpClient == nil {
+		return nil, fmt.Errorf("llmhttp: nil client")
+	}
+
 	httpReq, err := buildHTTPRequest(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("llmhttp: failed to build request: %w", err)
