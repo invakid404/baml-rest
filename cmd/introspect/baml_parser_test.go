@@ -764,6 +764,7 @@ func TestMaskInlineContent(t *testing.T) {
 		{`provider "my client provider"`},
 		{`strategy { type constant_delay }`},
 		{`max_retries 3 strategy { type x }`},
+		{`provider openai // retry_policy Fast`},
 	}
 
 	for _, tt := range tests {
@@ -782,5 +783,61 @@ func TestMaskInlineContent(t *testing.T) {
 				t.Errorf("maskInlineContent(%q) still contains 'type': %q", tt.input, got)
 			}
 		}
+		if tt.input == `provider openai // retry_policy Fast` {
+			if strings.Contains(got, "retry_policy") {
+				t.Errorf("maskInlineContent(%q) still contains 'retry_policy' from comment: %q", tt.input, got)
+			}
+		}
+	}
+}
+
+func TestParseBamlFile_MaxDelayMsCompactBlock(t *testing.T) {
+	// max_delay_ms must not be split at the embedded delay_ms keyword
+	cfg := &bamlConfig{
+		clientProvider:    make(map[string]string),
+		clientRetryPolicy: make(map[string]string),
+		functionClient:    make(map[string]string),
+		retryPolicies:     make(map[string]parsedRetryPolicy),
+	}
+
+	content := `
+retry_policy ExpRetry { max_retries 3 max_delay_ms 5000 delay_ms 100 }
+`
+	parseBamlFile(cfg, content)
+
+	rp, ok := cfg.retryPolicies["ExpRetry"]
+	if !ok {
+		t.Fatal("ExpRetry policy not found")
+	}
+	if rp.maxRetries != 3 {
+		t.Errorf("expected maxRetries=3, got %d", rp.maxRetries)
+	}
+	if rp.maxDelayMs != 5000 {
+		t.Errorf("expected maxDelayMs=5000, got %d", rp.maxDelayMs)
+	}
+	if rp.delayMs != 100 {
+		t.Errorf("expected delayMs=100, got %d", rp.delayMs)
+	}
+}
+
+func TestParseBamlFile_CompactBlockWithInlineComment(t *testing.T) {
+	// Keywords in inline comments must not trigger splits
+	cfg := &bamlConfig{
+		clientProvider:    make(map[string]string),
+		clientRetryPolicy: make(map[string]string),
+		functionClient:    make(map[string]string),
+		retryPolicies:     make(map[string]parsedRetryPolicy),
+	}
+
+	content := `
+client<llm> CommentClient { provider openai // retry_policy Fast }
+`
+	parseBamlFile(cfg, content)
+
+	if cfg.clientProvider["CommentClient"] != "openai" {
+		t.Errorf("expected provider=openai, got %q", cfg.clientProvider["CommentClient"])
+	}
+	if cfg.clientRetryPolicy["CommentClient"] != "" {
+		t.Errorf("expected no retry_policy (was in comment), got %q", cfg.clientRetryPolicy["CommentClient"])
 	}
 }

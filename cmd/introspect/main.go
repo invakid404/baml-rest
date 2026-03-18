@@ -1324,28 +1324,38 @@ func isNestedBlockStart(line string) bool {
 
 // bamlConfigKeys are the recognized top-level config keywords inside .baml blocks.
 // Used by expandBlockLines to split compact single-line blocks into separate
-// key-value statements.
+// key-value statements. Sorted longest-first so that `max_delay_ms` is matched
+// before the embedded `delay_ms` substring.
 var bamlConfigKeys = []string{
-	"provider ",
 	"retry_policy ",
-	"client ",
-	"max_retries ",
-	"type ",
-	"delay_ms ",
-	"multiplier ",
 	"max_delay_ms ",
-	"prompt ",
+	"max_retries ",
+	"multiplier ",
+	"provider ",
+	"delay_ms ",
 	"options ",
+	"client ",
+	"prompt ",
+	"type ",
 }
 
-// maskInlineContent replaces content inside quotes, raw strings, and nested
-// braces with spaces, preserving string length so positions remain valid.
-// This prevents keyword detection from triggering inside quoted values like
-// `provider "my client provider"` or nested blocks like `strategy { type x }`.
+// maskInlineContent replaces content inside quotes, raw strings, nested
+// braces, and // comments with spaces, preserving string length so positions
+// remain valid. This prevents keyword detection from triggering inside quoted
+// values like `provider "my client provider"`, nested blocks like
+// `strategy { type x }`, or comments like `// retry_policy Fast`.
 func maskInlineContent(s string) string {
 	buf := []byte(s)
 	i := 0
 	for i < len(buf) {
+		// Inline comment: // ... (mask everything from here to end)
+		if i+1 < len(buf) && buf[i] == '/' && buf[i+1] == '/' {
+			for i < len(buf) {
+				buf[i] = ' '
+				i++
+			}
+			break
+		}
 		// Raw string: #"..."#
 		if i+1 < len(buf) && buf[i] == '#' && buf[i+1] == '"' {
 			buf[i] = ' '
@@ -1430,12 +1440,30 @@ func splitInlineStatements(s string) []string {
 	if len(spans) == 0 {
 		return []string{s}
 	}
-	// Sort spans by position
+	// Sort spans by position, then by key length descending (longer keys first)
 	for i := 1; i < len(spans); i++ {
-		for j := i; j > 0 && spans[j].pos < spans[j-1].pos; j-- {
-			spans[j], spans[j-1] = spans[j-1], spans[j]
+		for j := i; j > 0; j-- {
+			if spans[j].pos < spans[j-1].pos ||
+				(spans[j].pos == spans[j-1].pos && len(spans[j].key) > len(spans[j-1].key)) {
+				spans[j], spans[j-1] = spans[j-1], spans[j]
+			} else {
+				break
+			}
 		}
 	}
+	// Remove overlapping spans — if a shorter keyword starts inside a longer
+	// one's range (e.g. "delay_ms " inside "max_delay_ms "), drop the shorter.
+	var deduped []span
+	for _, sp := range spans {
+		if len(deduped) > 0 {
+			prev := deduped[len(deduped)-1]
+			if sp.pos < prev.pos+len(prev.key) {
+				continue // overlapping with previous longer keyword
+			}
+		}
+		deduped = append(deduped, sp)
+	}
+	spans = deduped
 	var result []string
 	for i, sp := range spans {
 		var end int

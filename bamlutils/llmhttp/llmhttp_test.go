@@ -361,3 +361,29 @@ func TestNewClientCustom(t *testing.T) {
 		t.Error("NewClient should use the provided client")
 	}
 }
+
+func TestExecuteStreamMissingContentType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return 200 with no Content-Type header.
+		// Must call WriteHeader before writing body to prevent Go's
+		// auto-detection from setting Content-Type based on body content.
+		w.Header()["Content-Type"] = nil // explicitly remove
+		w.WriteHeader(200)
+		w.Write([]byte("raw bytes"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client())
+	_, err := client.ExecuteStream(context.Background(), &Request{
+		URL:    server.URL,
+		Method: "POST",
+		Body:   `{}`,
+	})
+
+	if err == nil {
+		t.Fatal("expected error for missing Content-Type")
+	}
+	if !strings.Contains(err.Error(), "missing Content-Type") {
+		t.Errorf("error should mention missing Content-Type: %v", err)
+	}
+}
