@@ -112,12 +112,16 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 		}
 	}
 
-	// Validate Content-Type for SSE — a 2xx JSON/HTML response should not
-	// be silently misinterpreted as an empty SSE stream.
+	// Validate Content-Type for SSE — reject anything that isn't explicitly
+	// text/event-stream or application/x-ndjson. Missing Content-Type is also
+	// rejected to fail closed against proxy error pages or misconfigured servers.
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
-	if ct != "" && !strings.Contains(ct, "text/event-stream") && !strings.Contains(ct, "application/x-ndjson") {
+	if !strings.Contains(ct, "text/event-stream") && !strings.Contains(ct, "application/x-ndjson") {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
+		if ct == "" {
+			return nil, fmt.Errorf("llmhttp: missing Content-Type header (expected text/event-stream): %s", string(body))
+		}
 		return nil, fmt.Errorf("llmhttp: unexpected Content-Type %q (expected text/event-stream): %s", ct, string(body))
 	}
 

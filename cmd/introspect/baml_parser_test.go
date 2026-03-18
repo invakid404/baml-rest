@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -696,5 +697,90 @@ client<llm> MyClient {
 	parseBamlFile(cfg, content)
 	if cfg.clientProvider["MyClient"] != "openai" {
 		t.Errorf("expected provider=openai, got %q (nested single-line options leaked)", cfg.clientProvider["MyClient"])
+	}
+}
+
+func TestParseBamlFile_KeywordsInQuotedValues(t *testing.T) {
+	// Keywords inside quoted values must not trigger splits
+	cfg := &bamlConfig{
+		clientProvider:    make(map[string]string),
+		clientRetryPolicy: make(map[string]string),
+		functionClient:    make(map[string]string),
+		retryPolicies:     make(map[string]parsedRetryPolicy),
+	}
+
+	content := `
+client<llm> QuotedClient { provider "my client provider" }
+`
+	parseBamlFile(cfg, content)
+
+	if cfg.clientProvider["QuotedClient"] != "my client provider" {
+		t.Errorf("expected provider='my client provider', got %q (keyword in quoted value caused misparsing)", cfg.clientProvider["QuotedClient"])
+	}
+}
+
+func TestParseBamlFile_NestedStrategyBlock(t *testing.T) {
+	// Keywords inside nested strategy { ... } blocks must not be split
+	// as top-level statements by splitInlineStatements
+	cfg := &bamlConfig{
+		clientProvider:    make(map[string]string),
+		clientRetryPolicy: make(map[string]string),
+		functionClient:    make(map[string]string),
+		retryPolicies:     make(map[string]parsedRetryPolicy),
+	}
+
+	// Multi-line retry_policy with strategy block (the normal form)
+	content := `
+retry_policy MyRetry {
+    max_retries 3
+    strategy {
+        type constant_delay
+        delay_ms 200
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	rp, ok := cfg.retryPolicies["MyRetry"]
+	if !ok {
+		t.Fatal("MyRetry policy not found")
+	}
+	if rp.maxRetries != 3 {
+		t.Errorf("expected maxRetries=3, got %d", rp.maxRetries)
+	}
+	if rp.strategy != "constant_delay" {
+		t.Errorf("expected strategy=constant_delay, got %q", rp.strategy)
+	}
+	if rp.delayMs != 200 {
+		t.Errorf("expected delayMs=200, got %d", rp.delayMs)
+	}
+}
+
+func TestMaskInlineContent(t *testing.T) {
+	tests := []struct {
+		input string
+	}{
+		{`provider openai`},
+		{`provider "my client provider"`},
+		{`strategy { type constant_delay }`},
+		{`max_retries 3 strategy { type x }`},
+	}
+
+	for _, tt := range tests {
+		got := maskInlineContent(tt.input)
+		if len(got) != len(tt.input) {
+			t.Errorf("maskInlineContent(%q): length changed from %d to %d", tt.input, len(tt.input), len(got))
+		}
+		// Verify masked content doesn't contain keywords that were inside quotes/braces
+		if tt.input == `provider "my client provider"` {
+			if strings.Contains(got, "client") {
+				t.Errorf("maskInlineContent(%q) still contains 'client': %q", tt.input, got)
+			}
+		}
+		if tt.input == `strategy { type constant_delay }` {
+			if strings.Contains(got, "type") {
+				t.Errorf("maskInlineContent(%q) still contains 'type': %q", tt.input, got)
+			}
+		}
 	}
 }

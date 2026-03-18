@@ -1338,10 +1338,79 @@ var bamlConfigKeys = []string{
 	"options ",
 }
 
+// maskInlineContent replaces content inside quotes, raw strings, and nested
+// braces with spaces, preserving string length so positions remain valid.
+// This prevents keyword detection from triggering inside quoted values like
+// `provider "my client provider"` or nested blocks like `strategy { type x }`.
+func maskInlineContent(s string) string {
+	buf := []byte(s)
+	i := 0
+	for i < len(buf) {
+		// Raw string: #"..."#
+		if i+1 < len(buf) && buf[i] == '#' && buf[i+1] == '"' {
+			buf[i] = ' '
+			buf[i+1] = ' '
+			i += 2
+			for i+1 < len(buf) {
+				if buf[i] == '"' && buf[i+1] == '#' {
+					buf[i] = ' '
+					buf[i+1] = ' '
+					i += 2
+					break
+				}
+				buf[i] = ' '
+				i++
+			}
+			continue
+		}
+		// Regular string: "..."
+		if buf[i] == '"' {
+			buf[i] = ' '
+			i++
+			for i < len(buf) && buf[i] != '"' {
+				if buf[i] == '\\' && i+1 < len(buf) {
+					buf[i] = ' '
+					i++
+				}
+				buf[i] = ' '
+				i++
+			}
+			if i < len(buf) {
+				buf[i] = ' ' // closing quote
+				i++
+			}
+			continue
+		}
+		// Nested braces: { ... }
+		if buf[i] == '{' {
+			depth := 1
+			buf[i] = ' '
+			i++
+			for i < len(buf) && depth > 0 {
+				if buf[i] == '{' {
+					depth++
+				} else if buf[i] == '}' {
+					depth--
+				}
+				buf[i] = ' '
+				i++
+			}
+			continue
+		}
+		i++
+	}
+	return string(buf)
+}
+
 // splitInlineStatements splits a string like "provider openai retry_policy Fast"
 // into ["provider openai", "retry_policy Fast"] by finding recognized keyword
-// boundaries.
+// boundaries. Keywords inside quoted strings, raw strings (#"..."#), or nested
+// braces are ignored — only top-level config keys trigger a split.
 func splitInlineStatements(s string) []string {
+	// Mask quoted/raw-string content and nested braces so keyword detection
+	// only fires on actual top-level config keys.
+	masked := maskInlineContent(s)
+
 	type span struct {
 		pos int
 		key string
@@ -1350,7 +1419,7 @@ func splitInlineStatements(s string) []string {
 	for _, key := range bamlConfigKeys {
 		idx := 0
 		for {
-			pos := strings.Index(s[idx:], key)
+			pos := strings.Index(masked[idx:], key)
 			if pos < 0 {
 				break
 			}
