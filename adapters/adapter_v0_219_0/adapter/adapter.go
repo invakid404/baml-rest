@@ -67,6 +67,9 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	b.ClientRegistry = baml.NewClientRegistry()
 
 	for _, client := range clientRegistry.Clients {
+		if client == nil {
+			continue
+		}
 		// BAML 0.219.0+ properly handles nested maps, no WrapMapValues needed
 		b.ClientRegistry.AddLlmClient(client.Name, client.Provider, client.Options)
 	}
@@ -74,6 +77,9 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	if clientRegistry.Primary != nil {
 		b.ClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
 		for _, client := range clientRegistry.Clients {
+			if client == nil {
+				continue
+			}
 			if client.Name == *clientRegistry.Primary {
 				b.clientRegistryProvider = client.Provider
 				break

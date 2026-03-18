@@ -223,6 +223,10 @@ func RunStreamOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
+	if config.Provider == "" || !IsProviderSupported(config.Provider) {
+		return fmt.Errorf("buildrequest: unsupported or empty provider %q", config.Provider)
+	}
+
 	var heartbeatSent atomic.Bool
 
 	// Send initial heartbeat for hung detection
