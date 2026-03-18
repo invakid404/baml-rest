@@ -186,8 +186,11 @@ func TestParseBamlSourceDir_NonExistent(t *testing.T) {
 func TestParseBamlFile_IntegrationTestData(t *testing.T) {
 	// Parse the actual integration test .baml files to verify real-world syntax
 	dir := filepath.Join("..", "..", "integration", "testdata", "baml_src")
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		t.Skip("integration testdata not available")
+	if _, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("integration testdata not available")
+		}
+		t.Fatalf("os.Stat(%q): %v", dir, err)
 	}
 	cfg := parseBamlSourceDir(dir)
 
