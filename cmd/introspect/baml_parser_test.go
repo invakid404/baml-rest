@@ -7,13 +7,17 @@ import (
 	"testing"
 )
 
-func TestParseBamlFile_ClientAndFunction(t *testing.T) {
-	cfg := &bamlConfig{
+func newTestBamlConfig() *bamlConfig {
+	return &bamlConfig{
 		clientProvider:    make(map[string]string),
 		clientRetryPolicy: make(map[string]string),
 		functionClient:    make(map[string]string),
 		retryPolicies:     make(map[string]parsedRetryPolicy),
 	}
+}
+
+func TestParseBamlFile_ClientAndFunction(t *testing.T) {
+	cfg := newTestBamlConfig()
 
 	content := `
 // Test client
@@ -66,12 +70,7 @@ function GetSummary(text: string) -> string {
 }
 
 func TestParseBamlFile_RetryPolicy(t *testing.T) {
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 retry_policy ConstantRetry {
@@ -208,12 +207,7 @@ func TestParseBamlFile_IntegrationTestData(t *testing.T) {
 func TestParseBamlFile_QuotedValues(t *testing.T) {
 	// Real builds inject dynamic.baml which uses `provider "openai"` (quoted).
 	// The parser must strip surrounding quotes.
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 client<llm> DynamicClient {
@@ -374,12 +368,7 @@ retry_policy AggressiveRetry {
 func TestParseBamlFile_PromptTextIgnored(t *testing.T) {
 	// Prompt body can contain lines that look like config keys.
 	// The parser must stop scanning for config once it hits the prompt block.
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 client<llm> RealClient {
@@ -417,12 +406,7 @@ function ExtractInfo(text: string) -> string {
 func TestParseBamlFile_SingleLineBlocks(t *testing.T) {
 	// Some .baml files use compact single-line formatting.
 	// The parser must handle blocks where opening and closing braces are on one line.
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 client<llm> CompactClient { provider anthropic }
@@ -473,12 +457,7 @@ function NormalFunc(input: string) -> string {
 
 func TestParseBamlFile_MultiEntryCompactBlocks(t *testing.T) {
 	// Single-line blocks with multiple key-value entries must be split correctly.
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 client<llm> Foo { provider openai retry_policy Fast }
@@ -538,12 +517,7 @@ func TestSplitInlineStatements(t *testing.T) {
 }
 
 func TestParseBamlFile_InlineComments(t *testing.T) {
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 client<llm> TestClient {
@@ -597,12 +571,7 @@ retry_policy Fast {
 }
 
 func TestParseBamlFile_KeysAfterNestedSections(t *testing.T) {
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 client<llm> MyClient {
@@ -633,12 +602,7 @@ function MyFunc(input: string) -> string {
 }
 
 func TestParseBamlFile_MultilineRawPromptBraces(t *testing.T) {
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 function BraceFunc(input: string) -> string {
@@ -685,12 +649,7 @@ func TestStripInlineComment(t *testing.T) {
 }
 
 func TestParseBamlFile_NestedSingleLineBlock(t *testing.T) {
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 	content := `
 client<llm> MyClient {
     options { provider "should-be-ignored" }
@@ -705,12 +664,7 @@ client<llm> MyClient {
 
 func TestParseBamlFile_KeywordsInQuotedValues(t *testing.T) {
 	// Keywords inside quoted values must not trigger splits
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 client<llm> QuotedClient { provider "my client provider" }
@@ -725,12 +679,7 @@ client<llm> QuotedClient { provider "my client provider" }
 func TestParseBamlFile_NestedStrategyBlock(t *testing.T) {
 	// Keywords inside nested strategy { ... } blocks must not be split
 	// as top-level statements by splitInlineStatements
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	// Multi-line retry_policy with strategy block (the normal form)
 	content := `
@@ -796,12 +745,7 @@ func TestMaskInlineContent(t *testing.T) {
 
 func TestParseBamlFile_MaxDelayMsCompactBlock(t *testing.T) {
 	// max_delay_ms must not be split at the embedded delay_ms keyword
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 retry_policy ExpRetry { max_retries 3 max_delay_ms 5000 delay_ms 100 }
@@ -825,12 +769,7 @@ retry_policy ExpRetry { max_retries 3 max_delay_ms 5000 delay_ms 100 }
 
 func TestParseBamlFile_CompactBlockWithInlineComment(t *testing.T) {
 	// Keywords in inline comments must not trigger splits
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 client<llm> CommentClient { provider openai // retry_policy Fast }
@@ -848,12 +787,7 @@ client<llm> CommentClient { provider openai // retry_policy Fast }
 func TestParseBamlFile_URLInQuotedValueCompactBlock(t *testing.T) {
 	// A URL containing // inside a quoted value must not be treated as a comment.
 	// The // must not truncate later statements in the compact block.
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 client<llm> URLClient { provider "https://api.example.com" retry_policy Fast }
@@ -875,12 +809,7 @@ retry_policy Fast {
 func TestParseBamlFile_CompactRetryPolicyWithStrategy(t *testing.T) {
 	// A one-line retry_policy with an inline strategy { ... } block
 	// must correctly parse the strategy contents.
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 retry_policy Fast { max_retries 3 strategy { type constant_delay delay_ms 100 } }
@@ -903,12 +832,7 @@ retry_policy Fast { max_retries 3 strategy { type constant_delay delay_ms 100 } 
 }
 
 func TestParseBamlFile_CompactRetryPolicyExponential(t *testing.T) {
-	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-	}
+	cfg := newTestBamlConfig()
 
 	content := `
 retry_policy ExpRetry { max_retries 5 strategy { type exponential_backoff delay_ms 200 multiplier 2.0 max_delay_ms 10000 } }
