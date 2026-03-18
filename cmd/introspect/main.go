@@ -1288,7 +1288,15 @@ func stripInlineComment(s string) string {
 	inQuote := false
 	for i := 0; i < len(s); i++ {
 		if s[i] == '"' {
-			inQuote = !inQuote
+			// Count preceding backslashes to detect escaped quotes.
+			// An odd number means the quote is escaped (e.g. \"); even means it's real.
+			backslashes := 0
+			for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
+				backslashes++
+			}
+			if backslashes%2 == 0 {
+				inQuote = !inQuote
+			}
 			continue
 		}
 		if !inQuote && i+1 < len(s) && s[i] == '/' && s[i+1] == '/' {
