@@ -1348,15 +1348,8 @@ func maskInlineContent(s string) string {
 	buf := []byte(s)
 	i := 0
 	for i < len(buf) {
-		// Inline comment: // ... (mask everything from here to end)
-		if i+1 < len(buf) && buf[i] == '/' && buf[i+1] == '/' {
-			for i < len(buf) {
-				buf[i] = ' '
-				i++
-			}
-			break
-		}
-		// Raw string: #"..."#
+		// Raw string: #"..."# — must be checked before // comments
+		// so that // inside raw strings is not treated as a comment.
 		if i+1 < len(buf) && buf[i] == '#' && buf[i+1] == '"' {
 			buf[i] = ' '
 			buf[i+1] = ' '
@@ -1390,6 +1383,15 @@ func maskInlineContent(s string) string {
 				i++
 			}
 			continue
+		}
+		// Inline comment: // ... (mask everything from here to end).
+		// Checked after quote handlers so // inside strings is not a comment.
+		if i+1 < len(buf) && buf[i] == '/' && buf[i+1] == '/' {
+			for i < len(buf) {
+				buf[i] = ' '
+				i++
+			}
+			break
 		}
 		// Nested braces: { ... }
 		if buf[i] == '{' {

@@ -841,3 +841,30 @@ client<llm> CommentClient { provider openai // retry_policy Fast }
 		t.Errorf("expected no retry_policy (was in comment), got %q", cfg.clientRetryPolicy["CommentClient"])
 	}
 }
+
+func TestParseBamlFile_URLInQuotedValueCompactBlock(t *testing.T) {
+	// A URL containing // inside a quoted value must not be treated as a comment.
+	// The // must not truncate later statements in the compact block.
+	cfg := &bamlConfig{
+		clientProvider:    make(map[string]string),
+		clientRetryPolicy: make(map[string]string),
+		functionClient:    make(map[string]string),
+		retryPolicies:     make(map[string]parsedRetryPolicy),
+	}
+
+	content := `
+client<llm> URLClient { provider "https://api.example.com" retry_policy Fast }
+
+retry_policy Fast {
+    max_retries 2
+}
+`
+	parseBamlFile(cfg, content)
+
+	if cfg.clientProvider["URLClient"] != "https://api.example.com" {
+		t.Errorf("expected provider='https://api.example.com', got %q (URL was truncated at //)", cfg.clientProvider["URLClient"])
+	}
+	if cfg.clientRetryPolicy["URLClient"] != "Fast" {
+		t.Errorf("expected retry_policy=Fast, got %q (// in URL truncated remaining statements)", cfg.clientRetryPolicy["URLClient"])
+	}
+}
