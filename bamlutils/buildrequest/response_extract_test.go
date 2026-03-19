@@ -255,6 +255,15 @@ func TestExtractResponseContent_OpenAIResponsesEmptyContent(t *testing.T) {
 	}
 }
 
+func TestExtractResponseContent_OpenAIResponsesNonObjectOutputElement(t *testing.T) {
+	// Non-object element in output array → error (not silently skipped)
+	body := `{"output":[123,{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for non-object element in output array")
+	}
+}
+
 func TestExtractResponseContent_OpenAIResponsesMissingOutput(t *testing.T) {
 	body := `{"id":"resp_01"}`
 	_, _, err := ExtractResponseContent("openai-responses", body)
@@ -362,7 +371,7 @@ func TestExtractResponseContent_OpenAIArrayContent(t *testing.T) {
 }
 
 func TestExtractResponseContent_OpenAIArrayContentMixed(t *testing.T) {
-	// Array with non-text parts (image_url, refusal) — only text extracted
+	// Array with non-text parts (image_url) — only text parts extracted
 	body := `{"choices":[{"message":{"content":[
 		{"type":"text","text":"Before image. "},
 		{"type":"image_url","image_url":{"url":"https://example.com/img.png"}},
@@ -741,7 +750,7 @@ func TestCallProviderWhitelistMatchesExtractor(t *testing.T) {
 			}
 			parseable, _, err := ExtractResponseContent(provider, body)
 			if err != nil {
-				t.Errorf("ExtractResponseContent(%q) returned error: %v", provider, err)
+				t.Fatalf("ExtractResponseContent(%q) returned error: %v", provider, err)
 			}
 			if parseable != "test" {
 				t.Errorf("ExtractResponseContent(%q) parseable = %q, expected 'test'", provider, parseable)

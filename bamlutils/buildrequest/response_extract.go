@@ -252,12 +252,15 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 		return "", fmt.Errorf("%s: could not extract text content from response (output array not found)", provider)
 	}
 
-	// Find the first output item with type == "message"
+	// Find the first output item with type == "message".
+	// Reject non-object elements to prevent false-success on malformed payloads.
 	var messageItem gjson.Result
 	var found bool
+	var outputErr error
 	output.ForEach(func(_, item gjson.Result) bool {
 		if !item.IsObject() {
-			return true // skip non-object items
+			outputErr = fmt.Errorf("%s: non-object element in output array (got %s)", provider, item.Type)
+			return false
 		}
 		if item.Get("type").String() == "message" {
 			messageItem = item
@@ -267,6 +270,9 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 		return true
 	})
 
+	if outputErr != nil {
+		return "", outputErr
+	}
 	if !found {
 		return "", fmt.Errorf("%s: no message item found in output array", provider)
 	}
