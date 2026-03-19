@@ -703,8 +703,8 @@ func TestRunCallOrchestration_RetryHeartbeats(t *testing.T) {
 		results = append(results, r)
 	}
 
-	// 2 onRetry heartbeats (before backoff sleep) + 1 onSuccess heartbeat
-	// (after 2xx on 3rd attempt) + 1 final result = 4 results minimum.
+	// Exactly 3 heartbeats: 2 onRetry (before backoff sleep after each
+	// failed attempt) + 1 onSuccess (after 2xx on 3rd attempt).
 	heartbeats := 0
 	hasFinal := false
 	for _, r := range results {
@@ -719,8 +719,8 @@ func TestRunCallOrchestration_RetryHeartbeats(t *testing.T) {
 	if !hasFinal {
 		t.Fatal("expected a final result")
 	}
-	if heartbeats < 3 {
-		t.Errorf("expected at least 3 heartbeats (2 onRetry + 1 onSuccess), got %d", heartbeats)
+	if heartbeats != 3 {
+		t.Errorf("expected exactly 3 heartbeats (2 onRetry + 1 onSuccess), got %d", heartbeats)
 	}
 }
 

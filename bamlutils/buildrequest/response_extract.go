@@ -71,10 +71,15 @@ func ExtractResponseContent(provider string, responseBody string) (parseable, ra
 func extractOpenAIContent(provider string, responseBody string) (string, error) {
 	// Check for refusal first. OpenAI returns refusals either as a
 	// top-level message.refusal field or as a content array part with
-	// type == "refusal". Both indicate the model refused to complete.
+	// type == "refusal". The presence of the refusal field means the model
+	// refused, regardless of its value (empty, non-string, etc.).
 	refusal := gjson.Get(responseBody, "choices.0.message.refusal")
-	if refusal.Exists() && refusal.Type == gjson.String && refusal.String() != "" {
-		return "", fmt.Errorf("%s: model refused request: %s", provider, refusal.String())
+	if refusal.Exists() && refusal.Type != gjson.Null {
+		refusalText := "unknown reason"
+		if refusal.Type == gjson.String && refusal.String() != "" {
+			refusalText = refusal.String()
+		}
+		return "", fmt.Errorf("%s: model refused request: %s", provider, refusalText)
 	}
 
 	content := gjson.Get(responseBody, "choices.0.message.content")

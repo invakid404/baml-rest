@@ -93,6 +93,30 @@ func TestExtractResponseContent_OpenAIRefusal(t *testing.T) {
 	}
 }
 
+func TestExtractResponseContent_OpenAIRefusalEmptyTopLevel(t *testing.T) {
+	// message.refusal is an empty string with null content — still a refusal
+	body := `{"choices":[{"message":{"refusal":"","content":null}}]}`
+	_, _, err := ExtractResponseContent("openai", body)
+	if err == nil {
+		t.Fatal("expected error for empty top-level refusal")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Errorf("expected refusal error, got: %v", err)
+	}
+}
+
+func TestExtractResponseContent_OpenAIRefusalNonString(t *testing.T) {
+	// message.refusal is a non-string type — still a refusal
+	body := `{"choices":[{"message":{"refusal":true,"content":null}}]}`
+	_, _, err := ExtractResponseContent("openai", body)
+	if err == nil {
+		t.Fatal("expected error for non-string top-level refusal")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Errorf("expected refusal error, got: %v", err)
+	}
+}
+
 func TestExtractResponseContent_OpenAIRefusalInContentArray(t *testing.T) {
 	// {"type":"refusal"} part in content array → error
 	body := `{"choices":[{"message":{"content":[{"type":"refusal","refusal":"Not allowed"}]}}]}`
