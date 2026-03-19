@@ -1,7 +1,7 @@
 // Package llmhttp provides a thin HTTP client wrapper for executing LLM
-// streaming requests. It converts a generic request specification (URL,
-// method, headers, body) into an HTTP request, sends it, and returns the
-// response as a stream of SSE events.
+// requests (both streaming and non-streaming). It converts a generic request
+// specification (URL, method, headers, body) into an HTTP request, sends it,
+// and returns either a stream of SSE events or the complete response body.
 //
 // This package does NOT depend on the BAML SDK. The conversion from
 // baml.HTTPRequest to the types in this package is done in the generated
@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils/sseclient"
 )
@@ -60,9 +61,32 @@ func (s *StreamResponse) Close() {
 	s.body = nil
 }
 
-// Client wraps an *http.Client for making LLM streaming requests.
-// Use DefaultClient for a pre-configured client, or create one with
-// NewClient for custom settings.
+// Response represents a completed non-streaming HTTP response from an LLM
+// provider. Unlike StreamResponse, the full body has already been read.
+type Response struct {
+	// StatusCode is the HTTP response status code.
+	StatusCode int
+
+	// Headers are the HTTP response headers.
+	Headers http.Header
+
+	// Body is the complete response body as a string.
+	Body string
+}
+
+// MaxResponseBodyBytes is the maximum response body size that Execute() will
+// read. This prevents unbounded memory consumption from misconfigured
+// endpoints. 16 MiB is generous for any LLM completion.
+const MaxResponseBodyBytes = 16 << 20 // 16 MiB
+
+// MaxErrorBodyBytes is the maximum response body read for non-2xx error
+// responses. Error bodies are included in HTTPError for diagnostics but
+// do not need the full MaxResponseBodyBytes allowance.
+const MaxErrorBodyBytes = 4096
+
+// Client wraps an *http.Client for making LLM requests (streaming and
+// non-streaming). Use DefaultClient for a pre-configured client, or create
+// one with NewClient for custom settings.
 type Client struct {
 	httpClient *http.Client
 }
@@ -108,7 +132,7 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 
 	// Check for non-success status codes
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
 		resp.Body.Close()
 		return nil, &HTTPError{
 			StatusCode: resp.StatusCode,
@@ -122,7 +146,7 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 	// accepted because the SSE parser requires data: framing.
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	if !strings.Contains(ct, "text/event-stream") {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
 		resp.Body.Close()
 		if ct == "" {
 			return nil, fmt.Errorf("llmhttp: missing Content-Type header (expected text/event-stream): %s", string(body))
@@ -139,6 +163,106 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 		Events:     events,
 		Errc:       errc,
 		body:       resp.Body,
+	}, nil
+}
+
+// DefaultCallTimeout is the maximum time Execute() will wait for a
+// non-streaming LLM response when the caller's context has no deadline.
+// This prevents a stalled provider from pinning a worker indefinitely
+// after the early heartbeat has satisfied the pool's hung detector.
+//
+// The value is deliberately generous: most non-streaming completions finish
+// in under 60 s, but complex prompts with large output can take longer.
+// Callers that need a tighter or looser bound should set their own deadline
+// on the context passed to Execute().
+const DefaultCallTimeout = 5 * time.Minute
+
+// Execute sends the given request and returns the complete response.
+//
+// Unlike ExecuteStream, this reads the entire response body (up to
+// MaxResponseBodyBytes) and returns it as a string. The request is expected
+// to be for a non-streaming LLM endpoint (the body should contain
+// "stream": false or equivalent). No Content-Type validation is performed
+// since non-streaming responses are typically application/json.
+//
+// If the provided context has no deadline, Execute wraps it with
+// DefaultCallTimeout so that a stalled upstream cannot block forever.
+// Callers that supply their own deadline are not affected.
+//
+// The optional onSuccess callback, if non-nil, is invoked after the HTTP
+// response returns a 2xx status but before the response body is read.
+// This allows the caller to emit a liveness signal (e.g. heartbeat) once
+// a real provider response has been confirmed, without waiting for the
+// full body to be buffered. This is important because body reads can be
+// slow for large responses and the caller may have external timeouts
+// (e.g. pool hung detection) that need a signal before the body is fully
+// available.
+//
+// On error (non-2xx status, connection failure, timeout), an error is returned.
+func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*Response, error) {
+	if c == nil || c.httpClient == nil {
+		return nil, fmt.Errorf("llmhttp: nil client")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Enforce a deadline on the outbound call if the caller didn't set one.
+	// The HTTP client is shared with ExecuteStream (which must not have a
+	// fixed timeout), so the timeout is applied per-request via context
+	// rather than on the http.Client itself.
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultCallTimeout)
+		defer cancel()
+	}
+
+	httpReq, err := buildHTTPRequest(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("llmhttp: failed to build request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("llmhttp: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check HTTP status before reading the full body. For error responses,
+	// read only a small diagnostic body (4KB, same as ExecuteStream) to
+	// avoid tying up the worker on a large or slow error body. The full
+	// MaxResponseBodyBytes limit is reserved for successful responses only.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			Body:       string(errBody),
+		}
+	}
+
+	// Signal that a real 2xx response has been received from the provider.
+	// Fired before body read so the caller can emit liveness signals
+	// (e.g. heartbeat) without waiting for the full body to buffer.
+	if onSuccess != nil {
+		onSuccess()
+	}
+
+	// Read successful response body with size limit to prevent unbounded
+	// memory usage. Read MaxResponseBodyBytes+1 to detect truncation: if
+	// we get exactly that many bytes, the response exceeded the limit.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("llmhttp: failed to read response body: %w", err)
+	}
+
+	if int64(len(body)) > MaxResponseBodyBytes {
+		return nil, fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", MaxResponseBodyBytes)
+	}
+
+	return &Response{
+		StatusCode: resp.StatusCode,
+		Headers:    resp.Header,
+		Body:       string(body),
 	}, nil
 }
 

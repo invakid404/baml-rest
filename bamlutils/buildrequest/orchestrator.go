@@ -59,6 +59,34 @@ func IsProviderSupported(provider string) bool {
 	return supportedProviders[provider]
 }
 
+// callSupportedProviders is the set of providers whose non-streaming JSON
+// response format is handled by ExtractResponseContent. This is separate
+// from supportedProviders because the streaming path requires SSE format
+// compatibility while the non-streaming path requires JSON response format
+// compatibility — different constraints that may evolve independently.
+//
+// "openai-responses" is excluded until its non-streaming response format is
+// verified. "aws-bedrock" is excluded pending verification that BAML's
+// Request API supports Bedrock (see design doc Section 5.3).
+var callSupportedProviders = map[string]bool{
+	"openai":         true,
+	"openai-generic": true,
+	"azure-openai":   true,
+	"ollama":         true,
+	"openrouter":     true,
+	"anthropic":      true,
+	"google-ai":      true,
+	"vertex-ai":      true,
+}
+
+// IsCallProviderSupported returns true if the provider's non-streaming JSON
+// response format is handled by ExtractResponseContent and the provider
+// supports BAML's Request API. Unknown providers fall back to the legacy
+// CallStream+OnTick path.
+func IsCallProviderSupported(provider string) bool {
+	return callSupportedProviders[provider]
+}
+
 // ResolveProvider determines the provider for a function by checking the
 // runtime ClientRegistry override first, then falling back to the static
 // introspected default. The resolution order is:
