@@ -264,6 +264,15 @@ func TestExtractResponseContent_OpenAIResponsesNonObjectOutputElement(t *testing
 	}
 }
 
+func TestExtractResponseContent_OpenAIResponsesTrailingNonObjectOutputElement(t *testing.T) {
+	// Non-object element AFTER a valid message item → still an error
+	body := `{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"},123]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for trailing non-object element in output array")
+	}
+}
+
 func TestExtractResponseContent_OpenAIResponsesMissingOutput(t *testing.T) {
 	body := `{"id":"resp_01"}`
 	_, _, err := ExtractResponseContent("openai-responses", body)
