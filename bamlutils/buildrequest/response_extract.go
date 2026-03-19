@@ -274,7 +274,13 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 			outputErr = fmt.Errorf("%s: non-object element in output array (got %s)", provider, item.Type)
 			return false
 		}
-		if !found && item.Get("type").String() == "message" {
+		// Require a type discriminator on every output item
+		itemTypeField := item.Get("type")
+		if itemTypeField.Type != gjson.String || itemTypeField.String() == "" {
+			outputErr = fmt.Errorf("%s: output array element missing required 'type' field", provider)
+			return false
+		}
+		if !found && itemTypeField.String() == "message" {
 			messageItem = item
 			found = true
 		}

@@ -264,6 +264,24 @@ func TestExtractResponseContent_OpenAIResponsesNonObjectOutputElement(t *testing
 	}
 }
 
+func TestExtractResponseContent_OpenAIResponsesOutputMissingType(t *testing.T) {
+	// Output item with no type field before valid message → error
+	body := `{"output":[{"foo":"bar"},{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for output item missing type field")
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesOutputNonStringType(t *testing.T) {
+	// Output item with non-string type before valid message → error
+	body := `{"output":[{"type":true},{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for output item with non-string type field")
+	}
+}
+
 func TestExtractResponseContent_OpenAIResponsesTrailingNonObjectOutputElement(t *testing.T) {
 	// Non-object element AFTER a valid message item → still an error
 	body := `{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"},123]}`
