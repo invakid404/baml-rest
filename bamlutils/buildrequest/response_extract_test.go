@@ -415,6 +415,31 @@ func TestExtractResponseContent_OpenAIArrayContentSingleText(t *testing.T) {
 	}
 }
 
+func TestExtractResponseContent_OpenAIArrayContentMissingType(t *testing.T) {
+	// Content part with no type field → error (not silently skipped)
+	body := `{"choices":[{"message":{"content":[{"text":"ok"}]}}]}`
+	_, _, err := ExtractResponseContent("openai", body)
+	if err == nil {
+		t.Fatal("expected error for content part missing type field")
+	}
+}
+
+func TestExtractResponseContent_AnthropicMissingBlockType(t *testing.T) {
+	body := `{"content":[{"text":"ok"}]}`
+	_, _, err := ExtractResponseContent("anthropic", body)
+	if err == nil {
+		t.Fatal("expected error for Anthropic content block missing type field")
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesMissingContentType(t *testing.T) {
+	body := `{"output":[{"type":"message","content":[{"text":"ok"}],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for Responses API content entry missing type field")
+	}
+}
+
 func TestExtractResponseContent_OpenAIArrayContentEmpty(t *testing.T) {
 	body := `{"choices":[{"message":{"content":[]}}]}`
 	text, _, err := ExtractResponseContent("openai", body)

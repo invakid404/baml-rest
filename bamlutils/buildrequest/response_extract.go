@@ -103,8 +103,13 @@ func extractOpenAIContent(provider string, responseBody string) (string, error) 
 				iterErr = fmt.Errorf("%s: non-object element in content array (got %s)", provider, part.Type)
 				return false
 			}
-			partType := part.Get("type").String()
-			switch partType {
+			// Require a type discriminator on every content part
+			partTypeField := part.Get("type")
+			if partTypeField.Type != gjson.String || partTypeField.String() == "" {
+				iterErr = fmt.Errorf("%s: content array element missing required 'type' field", provider)
+				return false
+			}
+			switch partTypeField.String() {
 			case "text":
 				textField := part.Get("text")
 				if textField.Type != gjson.String {
@@ -169,7 +174,13 @@ func extractAnthropicContent(provider string, responseBody string) (parseable, r
 				iterErr = fmt.Errorf("%s: non-object element in content array (got %s)", provider, value.Type)
 				return false
 			}
-			switch value.Get("type").String() {
+			// Require a type discriminator on every content block
+			blockTypeField := value.Get("type")
+			if blockTypeField.Type != gjson.String || blockTypeField.String() == "" {
+				iterErr = fmt.Errorf("%s: content array element missing required 'type' field", provider)
+				return false
+			}
+			switch blockTypeField.String() {
 			case "text":
 				textField := value.Get("text")
 				if textField.Type != gjson.String {
@@ -290,7 +301,13 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 			iterErr = fmt.Errorf("%s: non-object element in message content array (got %s)", provider, entry.Type)
 			return false
 		}
-		switch entry.Get("type").String() {
+		// Require a type discriminator on every content entry
+		entryTypeField := entry.Get("type")
+		if entryTypeField.Type != gjson.String || entryTypeField.String() == "" {
+			iterErr = fmt.Errorf("%s: message content element missing required 'type' field", provider)
+			return false
+		}
+		switch entryTypeField.String() {
 		case "output_text":
 			textField := entry.Get("text")
 			if textField.Type != gjson.String {
