@@ -48,6 +48,10 @@ func ExtractResponseContent(provider string, responseBody string) (parseable, ra
 	case "anthropic":
 		return extractAnthropicContent(provider, responseBody)
 
+	case "openai-responses":
+		text, extractErr := extractOpenAIResponsesContent(provider, responseBody)
+		return text, text, extractErr
+
 	case "google-ai", "vertex-ai":
 		text, extractErr := extractGeminiContent(provider, responseBody)
 		return text, text, extractErr
@@ -225,4 +229,74 @@ func extractGeminiContent(provider string, responseBody string) (string, error) 
 	}
 
 	return "", fmt.Errorf("%s: could not extract text content from response (candidates[0].content.parts not found)", provider)
+}
+
+// extractOpenAIResponsesContent extracts text from an OpenAI Responses API
+// non-streaming response. The format differs from Chat Completions:
+//
+//	{
+//	  "output": [
+//	    {"type": "reasoning", "content": [], "summary": []},
+//	    {"type": "message", "status": "completed", "content": [
+//	      {"type": "output_text", "text": "The response text."}
+//	    ], "role": "assistant"}
+//	  ]
+//	}
+//
+// We find the first output item with type == "message" and concatenate all
+// content entries with type == "output_text". Reasoning items are skipped
+// (they are not part of the model's answer).
+func extractOpenAIResponsesContent(provider string, responseBody string) (string, error) {
+	output := gjson.Get(responseBody, "output")
+	if !output.IsArray() {
+		return "", fmt.Errorf("%s: could not extract text content from response (output array not found)", provider)
+	}
+
+	// Find the first output item with type == "message"
+	var messageItem gjson.Result
+	var found bool
+	output.ForEach(func(_, item gjson.Result) bool {
+		if !item.IsObject() {
+			return true // skip non-object items
+		}
+		if item.Get("type").String() == "message" {
+			messageItem = item
+			found = true
+			return false // stop iteration
+		}
+		return true
+	})
+
+	if !found {
+		return "", fmt.Errorf("%s: no message item found in output array", provider)
+	}
+
+	contentArray := messageItem.Get("content")
+	if !contentArray.IsArray() {
+		return "", fmt.Errorf("%s: message item has no content array", provider)
+	}
+
+	var sb strings.Builder
+	var iterErr error
+	contentArray.ForEach(func(_, entry gjson.Result) bool {
+		// Reject non-object array elements
+		if !entry.IsObject() {
+			iterErr = fmt.Errorf("%s: non-object element in message content array (got %s)", provider, entry.Type)
+			return false
+		}
+		if entry.Get("type").String() == "output_text" {
+			textField := entry.Get("text")
+			if textField.Type != gjson.String {
+				iterErr = fmt.Errorf("%s: unexpected type for output_text text field (got %s)", provider, textField.Type)
+				return false
+			}
+			sb.WriteString(textField.String())
+		}
+		return true
+	})
+	if iterErr != nil {
+		return "", iterErr
+	}
+
+	return sb.String(), nil
 }

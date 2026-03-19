@@ -190,6 +190,108 @@ func TestExtractResponseContent_GeminiNonObjectElement(t *testing.T) {
 	}
 }
 
+// ======== OpenAI Responses API tests ========
+
+func TestExtractResponseContent_OpenAIResponses(t *testing.T) {
+	body := `{"output":[{"type":"message","status":"completed","content":[{"type":"output_text","text":"Hello from Responses API"}],"role":"assistant"}]}`
+	text, _, err := ExtractResponseContent("openai-responses", body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "Hello from Responses API" {
+		t.Errorf("expected 'Hello from Responses API', got %q", text)
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesMultiPart(t *testing.T) {
+	body := `{"output":[{"type":"message","content":[
+		{"type":"output_text","text":"Part one. "},
+		{"type":"output_text","text":"Part two."}
+	],"role":"assistant"}]}`
+	text, _, err := ExtractResponseContent("openai-responses", body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "Part one. Part two." {
+		t.Errorf("expected 'Part one. Part two.', got %q", text)
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesWithReasoning(t *testing.T) {
+	// Reasoning items should be skipped; only message items are extracted
+	body := `{"output":[
+		{"type":"reasoning","content":[],"summary":[]},
+		{"type":"message","status":"completed","content":[
+			{"type":"output_text","text":"The answer is 42"}
+		],"role":"assistant"}
+	]}`
+	text, _, err := ExtractResponseContent("openai-responses", body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "The answer is 42" {
+		t.Errorf("expected 'The answer is 42', got %q", text)
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesNoMessageItem(t *testing.T) {
+	// No message item in output → error
+	body := `{"output":[{"type":"reasoning","content":[],"summary":[]}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for missing message item")
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesEmptyContent(t *testing.T) {
+	// Message item with empty content array → empty string (valid)
+	body := `{"output":[{"type":"message","content":[],"role":"assistant"}]}`
+	text, _, err := ExtractResponseContent("openai-responses", body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "" {
+		t.Errorf("expected empty string, got %q", text)
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesMissingOutput(t *testing.T) {
+	body := `{"id":"resp_01"}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for missing output array")
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesMalformedTextField(t *testing.T) {
+	// output_text with non-string text → error
+	body := `{"output":[{"type":"message","content":[{"type":"output_text","text":123}],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for non-string text field")
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesNonObjectContent(t *testing.T) {
+	// Non-object element in content array → error
+	body := `{"output":[{"type":"message","content":["not an object"],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for non-object content element")
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesMissingContentArray(t *testing.T) {
+	// Message item with no content field → error
+	body := `{"output":[{"type":"message","role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for missing content array in message item")
+	}
+}
+
+// ======== OpenAI Chat Completions array content tests ========
+
 func TestExtractResponseContent_OpenAIArrayContent(t *testing.T) {
 	// Multimodal / structured content: content is an array of typed parts
 	body := `{"choices":[{"message":{"content":[
@@ -566,14 +668,15 @@ func TestExtractResponseContent_WhitespaceOnlyBody(t *testing.T) {
 func TestCallProviderWhitelistMatchesExtractor(t *testing.T) {
 	// Use a realistic response body that works for all OpenAI-compatible providers
 	testBodies := map[string]string{
-		"openai":         `{"choices":[{"message":{"content":"test"}}]}`,
-		"openai-generic": `{"choices":[{"message":{"content":"test"}}]}`,
-		"azure-openai":   `{"choices":[{"message":{"content":"test"}}]}`,
-		"ollama":         `{"choices":[{"message":{"content":"test"}}]}`,
-		"openrouter":     `{"choices":[{"message":{"content":"test"}}]}`,
-		"anthropic":      `{"content":[{"type":"text","text":"test"}]}`,
-		"google-ai":      `{"candidates":[{"content":{"parts":[{"text":"test"}]}}]}`,
-		"vertex-ai":      `{"candidates":[{"content":{"parts":[{"text":"test"}]}}]}`,
+		"openai":           `{"choices":[{"message":{"content":"test"}}]}`,
+		"openai-generic":   `{"choices":[{"message":{"content":"test"}}]}`,
+		"azure-openai":     `{"choices":[{"message":{"content":"test"}}]}`,
+		"ollama":           `{"choices":[{"message":{"content":"test"}}]}`,
+		"openrouter":       `{"choices":[{"message":{"content":"test"}}]}`,
+		"openai-responses": `{"output":[{"type":"message","content":[{"type":"output_text","text":"test"}],"role":"assistant"}]}`,
+		"anthropic":        `{"content":[{"type":"text","text":"test"}]}`,
+		"google-ai":        `{"candidates":[{"content":{"parts":[{"text":"test"}]}}]}`,
+		"vertex-ai":        `{"candidates":[{"content":{"parts":[{"text":"test"}]}}]}`,
 	}
 
 	for provider := range callSupportedProviders {

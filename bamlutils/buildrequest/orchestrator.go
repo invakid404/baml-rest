@@ -65,18 +65,18 @@ func IsProviderSupported(provider string) bool {
 // compatibility while the non-streaming path requires JSON response format
 // compatibility — different constraints that may evolve independently.
 //
-// "openai-responses" is excluded until its non-streaming response format is
-// verified. "aws-bedrock" is excluded pending verification that BAML's
-// Request API supports Bedrock (see design doc Section 5.3).
+// "aws-bedrock" is excluded pending verification that BAML's Request API
+// supports Bedrock (see design doc Section 5.3).
 var callSupportedProviders = map[string]bool{
-	"openai":         true,
-	"openai-generic": true,
-	"azure-openai":   true,
-	"ollama":         true,
-	"openrouter":     true,
-	"anthropic":      true,
-	"google-ai":      true,
-	"vertex-ai":      true,
+	"openai":           true,
+	"openai-generic":   true,
+	"azure-openai":     true,
+	"ollama":           true,
+	"openrouter":       true,
+	"openai-responses": true,
+	"anthropic":        true,
+	"google-ai":        true,
+	"vertex-ai":        true,
 }
 
 // IsCallProviderSupported returns true if the provider's non-streaming JSON

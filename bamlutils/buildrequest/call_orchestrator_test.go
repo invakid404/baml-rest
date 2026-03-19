@@ -725,14 +725,14 @@ func TestRunCallOrchestration_RetryHeartbeats(t *testing.T) {
 }
 
 func TestIsCallProviderSupported(t *testing.T) {
-	supported := []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter", "anthropic", "google-ai", "vertex-ai"}
+	supported := []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter", "openai-responses", "anthropic", "google-ai", "vertex-ai"}
 	for _, p := range supported {
 		if !IsCallProviderSupported(p) {
 			t.Errorf("expected %q to be supported", p)
 		}
 	}
 
-	unsupported := []string{"aws-bedrock", "openai-responses", "unknown", ""}
+	unsupported := []string{"aws-bedrock", "unknown", ""}
 	for _, p := range unsupported {
 		if IsCallProviderSupported(p) {
 			t.Errorf("expected %q to be unsupported", p)
