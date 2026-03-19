@@ -284,13 +284,24 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 			iterErr = fmt.Errorf("%s: non-object element in message content array (got %s)", provider, entry.Type)
 			return false
 		}
-		if entry.Get("type").String() == "output_text" {
+		switch entry.Get("type").String() {
+		case "output_text":
 			textField := entry.Get("text")
 			if textField.Type != gjson.String {
 				iterErr = fmt.Errorf("%s: unexpected type for output_text text field (got %s)", provider, textField.Type)
 				return false
 			}
 			sb.WriteString(textField.String())
+		case "refusal":
+			// A refusal part means the model refused — never a valid
+			// completion. Same pattern as Chat Completions refusal handling.
+			refusalField := entry.Get("refusal")
+			refusalText := "unknown reason"
+			if refusalField.Type == gjson.String && refusalField.String() != "" {
+				refusalText = refusalField.String()
+			}
+			iterErr = fmt.Errorf("%s: model refused request: %s", provider, refusalText)
+			return false
 		}
 		return true
 	})

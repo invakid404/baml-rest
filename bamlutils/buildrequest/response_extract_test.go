@@ -290,6 +290,60 @@ func TestExtractResponseContent_OpenAIResponsesMissingContentArray(t *testing.T)
 	}
 }
 
+func TestExtractResponseContent_OpenAIResponsesRefusal(t *testing.T) {
+	// Refusal-only response → error with refusal text
+	body := `{"output":[{"type":"message","content":[{"type":"refusal","refusal":"I cannot help with that"}],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for refusal content part")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Errorf("expected refusal error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "I cannot help with that") {
+		t.Errorf("expected refusal text in error, got: %v", err)
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesRefusalBeforeText(t *testing.T) {
+	// Refusal part before output_text — refusal takes priority
+	body := `{"output":[{"type":"message","content":[
+		{"type":"refusal","refusal":"Not allowed"},
+		{"type":"output_text","text":"Should not reach this"}
+	],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for refusal part even with output_text present")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Errorf("expected refusal error, got: %v", err)
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesRefusalEmptyText(t *testing.T) {
+	// Refusal part with empty refusal field — still an error
+	body := `{"output":[{"type":"message","content":[{"type":"refusal","refusal":""}],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for refusal part with empty text")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Errorf("expected refusal error, got: %v", err)
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesRefusalMissingField(t *testing.T) {
+	// Refusal part with no refusal field — still an error
+	body := `{"output":[{"type":"message","content":[{"type":"refusal"}],"role":"assistant"}]}`
+	_, _, err := ExtractResponseContent("openai-responses", body)
+	if err == nil {
+		t.Fatal("expected error for refusal part with missing field")
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Errorf("expected refusal error, got: %v", err)
+	}
+}
+
 // ======== OpenAI Chat Completions array content tests ========
 
 func TestExtractResponseContent_OpenAIArrayContent(t *testing.T) {
