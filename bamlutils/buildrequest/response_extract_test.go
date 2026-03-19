@@ -105,6 +105,18 @@ func TestExtractResponseContent_OpenAIRefusalEmptyTopLevel(t *testing.T) {
 	}
 }
 
+func TestExtractResponseContent_OpenAIRefusalNullFallsThrough(t *testing.T) {
+	// Explicit null refusal with valid content — not a refusal, normal extraction
+	body := `{"choices":[{"message":{"refusal":null,"content":"Hello world"}}]}`
+	text, _, err := ExtractResponseContent("openai", body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "Hello world" {
+		t.Errorf("expected 'Hello world', got %q", text)
+	}
+}
+
 func TestExtractResponseContent_OpenAIRefusalNonString(t *testing.T) {
 	// message.refusal is a non-string type — still a refusal
 	body := `{"choices":[{"message":{"refusal":true,"content":null}}]}`
