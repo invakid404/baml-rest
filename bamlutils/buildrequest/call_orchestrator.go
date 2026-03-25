@@ -41,15 +41,20 @@ type ExtractResponseFunc func(provider string, responseBody string) (parseable, 
 // RunCallOrchestration executes the non-streaming BuildRequest path.
 //
 // Flow:
-//  1. buildRequest(ctx) → llmhttp.Request (once, before retry)
-//  2. Retry loop (HTTP roundtrip only):
-//     a. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
-//     b. onSuccess callback emits heartbeat after 2xx status, before body read
-//     c. on failure: onRetry emits heartbeat to maintain liveness during backoff
-//  3. After retry succeeds with a response body:
+//  1. Retry loop (build request + HTTP roundtrip):
+//     a. buildRequest(ctx) → llmhttp.Request
+//     b. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
+//     c. onSuccess callback emits heartbeat after 2xx status, before body read
+//     d. on failure: onRetry emits heartbeat to maintain liveness during backoff
+//  2. After retry succeeds with a response body:
 //     a. extractResponse(provider, body) → parseable + raw text
 //     b. parseFinal(ctx, parseable) → typed result
 //     c. emit StreamResultKindFinal on channel
+//
+// The request is rebuilt on each attempt because retry policies may route
+// through different models/providers — BAML's Request API may return a
+// different HTTP request on each invocation depending on the client
+// strategy (e.g., fallback, round-robin).
 //
 // Extraction and parsing happen OUTSIDE the retry loop because they are
 // deterministic: a malformed 200 response or a parse failure will produce
@@ -123,18 +128,15 @@ func RunCallOrchestration(
 		}
 	}
 
-	// Build the request once before the retry loop. This is a local
-	// operation (no network call) — if it fails, it's deterministic
-	// and retrying won't help.
-	req, err := buildRequest(ctx)
-	if err != nil {
-		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, "", fmt.Errorf("buildrequest: failed to build request: %w", err), false))
-		return nil
-	}
-
-	// Retry only the HTTP roundtrip. Extraction and parsing are
-	// deterministic and happen after the retry loop succeeds.
+	// Each attempt rebuilds the request and executes the HTTP roundtrip.
+	// The request must be rebuilt per attempt because retry policies may
+	// cover multiple models — BAML's Request API can return a different
+	// HTTP request on each call depending on the client strategy.
 	attemptHTTP := func(attempt int) (any, error) {
+		req, err := buildRequest(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("buildrequest: failed to build request: %w", err)
+		}
 		resp, httpErr := httpClient.Execute(ctx, req, sendHeartbeat)
 		if httpErr != nil {
 			return nil, httpErr

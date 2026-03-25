@@ -724,6 +724,88 @@ func TestRunCallOrchestration_RetryHeartbeats(t *testing.T) {
 	}
 }
 
+func TestRunCallOrchestration_RetryRebuildsRequest(t *testing.T) {
+	// Verify that buildRequest is called on every retry attempt, not just
+	// once before the retry loop. This matters for retry policies that may
+	// route through different models/providers — BAML's Request API can
+	// return a different HTTP request on each invocation.
+	var buildCalls atomic.Int32
+	var attempts atomic.Int32
+
+	// Two servers simulating different "providers" that the retry rotates to.
+	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		fmt.Fprint(w, `{"error":"server1 fails"}`)
+	}))
+	defer server1.Close()
+
+	server2 := makeJSONServer(200, `{"choices":[{"message":{"content":"server2 ok"}}]}`)
+	defer server2.Close()
+
+	// buildRequest returns different URLs on each call, simulating a
+	// retry policy that rotates across providers.
+	buildFn := func(ctx context.Context) (*llmhttp.Request, error) {
+		call := int(buildCalls.Add(1))
+		url := server1.URL
+		if call > 1 {
+			url = server2.URL
+		}
+		return &llmhttp.Request{
+			URL:    url,
+			Method: "POST",
+			Body:   `{"model":"test","stream":false}`,
+		}, nil
+	}
+
+	// Use server2's client which can reach both localhost servers.
+	client := llmhttp.NewClient(server2.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &CallConfig{
+		Provider:    "openai",
+		RetryPolicy: &retry.Policy{MaxRetries: 3, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+	}
+
+	// Track actual HTTP attempts via a wrapper that counts.
+	originalBuildFn := buildFn
+	buildFn = func(ctx context.Context) (*llmhttp.Request, error) {
+		attempts.Add(1)
+		return originalBuildFn(ctx)
+	}
+
+	err := RunCallOrchestration(
+		context.Background(), out, config, client,
+		buildFn,
+		identityParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// buildRequest must be called on each attempt, not just once.
+	if got := buildCalls.Load(); got < 2 {
+		t.Errorf("expected buildRequest called on each attempt (got %d calls); request may be cached incorrectly", got)
+	}
+
+	// The first attempt hits server1 (500), retry rebuilds and hits server2 (200).
+	hasFinal := false
+	for r := range out {
+		if r.Kind() == bamlutils.StreamResultKindFinal {
+			hasFinal = true
+			if r.Final() != "server2 ok" {
+				t.Errorf("expected 'server2 ok', got %v", r.Final())
+			}
+		}
+	}
+	if !hasFinal {
+		t.Fatal("expected a final result from server2 after retry rotation")
+	}
+}
+
 func TestIsCallProviderSupported(t *testing.T) {
 	supported := []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter", "openai-responses", "anthropic", "google-ai", "vertex-ai"}
 	for _, p := range supported {
