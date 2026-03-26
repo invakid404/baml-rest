@@ -215,6 +215,16 @@ func (s *Server) handleChatCompletions(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).SendString(err.Error())
 	}
 
+	// Immediate failure: FailAfter=1 with FailureMode="500" returns HTTP 500
+	// BEFORE the response body (streaming or otherwise) starts. This is needed
+	// because once SSE streaming begins, the HTTP status is already 200 and
+	// cannot be changed — a mid-stream disconnect is not reliably treated as
+	// an error by all LLM runtimes.
+	if scenario.FailAfter > 0 && scenario.FailAfter <= 1 && scenario.FailureMode == "500" {
+		s.log("immediate 500 failure for scenario %s", scenario.ID)
+		return c.Status(fiber.StatusInternalServerError).SendString("Internal Server Error")
+	}
+
 	if req.Stream {
 		return s.handleStreamingResponse(c, scenario, provider, effectiveDelay)
 	}
