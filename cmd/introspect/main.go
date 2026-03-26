@@ -1564,26 +1564,26 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 				inOptions = true
 				stripped := stripInlineComment(stripStringLiterals(line))
 				optionsDepth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
-				// Check for inline options block: options { strategy [...] }
-				if optionsDepth <= 0 {
-					inOptions = false
-				} else {
-					// Check if strategy is on the same line as options {
-					trimmed := strings.TrimSpace(line)
-					openIdx := strings.Index(trimmed, "{")
-					if openIdx >= 0 {
-						inner := trimmed[openIdx+1:]
-						if closeIdx := strings.LastIndex(inner, "}"); closeIdx >= 0 {
-							inner = inner[:closeIdx]
-						}
-						inner = strings.TrimSpace(inner)
-						if strings.HasPrefix(inner, "strategy ") {
-							chain := parseStrategyList(inner)
-							if len(chain) > 0 {
-								cfg.fallbackChains[name] = chain
-							}
+				// Check if strategy is on the same line as options {
+				// This handles both inline (options { strategy [...] }) and
+				// multi-line blocks where strategy appears on the opening line.
+				trimmed := strings.TrimSpace(line)
+				openIdx := strings.Index(trimmed, "{")
+				if openIdx >= 0 {
+					inner := trimmed[openIdx+1:]
+					if closeIdx := strings.LastIndex(inner, "}"); closeIdx >= 0 {
+						inner = inner[:closeIdx]
+					}
+					inner = strings.TrimSpace(inner)
+					if strings.HasPrefix(inner, "strategy ") {
+						chain := parseStrategyList(inner)
+						if len(chain) > 0 {
+							cfg.fallbackChains[name] = chain
 						}
 					}
+				}
+				if optionsDepth <= 0 {
+					inOptions = false
 				}
 				continue
 			}
