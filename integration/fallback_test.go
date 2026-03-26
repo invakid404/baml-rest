@@ -258,31 +258,23 @@ func TestFallbackStream(t *testing.T) {
 			ChunkDelayMs:   10,
 		})
 
-		partials, errc, err := BAMLClient.Stream(ctx, testutil.CallRequest{
+		partials, errc := BAMLClient.Stream(ctx, testutil.CallRequest{
 			Method: "GetGreetingFallbackPair",
 			Input:  map[string]any{"name": "World"},
 		})
-		if err != nil {
-			t.Fatalf("Stream failed: %v", err)
-		}
 
-		var lastPartial string
-		var finalResult string
+		var finalData json.RawMessage
 		for ev := range partials {
-			if ev.IsFinal {
-				finalResult = ev.Data
-			} else {
-				lastPartial = ev.Data
+			if ev.IsFinal() {
+				finalData = ev.Data
 			}
 		}
 		if streamErr := <-errc; streamErr != nil {
 			t.Fatalf("Stream error: %v", streamErr)
 		}
 
-		_ = lastPartial // partials received
-
 		var result string
-		if err := json.Unmarshal([]byte(finalResult), &result); err != nil {
+		if err := json.Unmarshal(finalData, &result); err != nil {
 			t.Fatalf("Failed to unmarshal final: %v", err)
 		}
 		if result != "Streaming from primary!" {
@@ -315,18 +307,15 @@ func TestFallbackStream(t *testing.T) {
 			ChunkDelayMs:   10,
 		})
 
-		partials, errc, err := BAMLClient.Stream(ctx, testutil.CallRequest{
+		partials, errc := BAMLClient.Stream(ctx, testutil.CallRequest{
 			Method: "GetGreetingFallbackPair",
 			Input:  map[string]any{"name": "World"},
 		})
-		if err != nil {
-			t.Fatalf("Stream failed: %v", err)
-		}
 
-		var finalResult string
+		var finalData json.RawMessage
 		for ev := range partials {
-			if ev.IsFinal {
-				finalResult = ev.Data
+			if ev.IsFinal() {
+				finalData = ev.Data
 			}
 		}
 		if streamErr := <-errc; streamErr != nil {
@@ -334,7 +323,7 @@ func TestFallbackStream(t *testing.T) {
 		}
 
 		var result string
-		if err := json.Unmarshal([]byte(finalResult), &result); err != nil {
+		if err := json.Unmarshal(finalData, &result); err != nil {
 			t.Fatalf("Failed to unmarshal final: %v", err)
 		}
 		if result != "Streaming from secondary!" {
@@ -359,17 +348,14 @@ func TestFallbackStream(t *testing.T) {
 			})
 		}
 
-		partials, errc, err := BAMLClient.Stream(ctx, testutil.CallRequest{
+		partials, errc := BAMLClient.Stream(ctx, testutil.CallRequest{
 			Method: "GetGreetingFallbackPair",
 			Input:  map[string]any{"name": "World"},
 		})
-		if err != nil {
-			t.Fatalf("Stream setup failed: %v", err)
-		}
 
 		var gotError bool
 		for ev := range partials {
-			if ev.Error != "" {
+			if ev.IsError() {
 				gotError = true
 			}
 		}
