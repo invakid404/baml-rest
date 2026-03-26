@@ -26,7 +26,7 @@ require (
 	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/workerplugin v0.0.0-00010101000000-000000000000
-	github.com/moby/buildkit v0.28.0
+	github.com/moby/buildkit v0.28.1
 	github.com/moby/moby/api v1.54.0
 	github.com/moby/moby/client v0.3.0
 	github.com/opencontainers/go-digest v1.0.0
@@ -104,7 +104,7 @@ require (
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.2.0 // indirect
 	github.com/moby/locker v1.0.1 // indirect
-	github.com/moby/patternmatcher v0.6.0 // indirect
+	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
 	github.com/moby/sys/signal v0.7.1 // indirect
 	github.com/moby/sys/user v0.4.0 // indirect
