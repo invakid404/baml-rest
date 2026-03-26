@@ -1533,6 +1533,14 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 	nestedDepth := 0
 	inOptions := false
 	optionsDepth := 0
+	// inStrategyList accumulates lines when a "strategy [" is seen without
+	// a closing "]" on the same line. This handles multi-line strategy lists:
+	//   strategy [
+	//       ClientA,
+	//       ClientB,
+	//   ]
+	inStrategyList := false
+	var strategyBuf strings.Builder
 	for _, line := range expandBlockLines(block) {
 		// Track nested block depth — skip lines inside prompt/strategy blocks
 		// but enter options blocks to extract strategy lists for fallback chains.
@@ -1541,21 +1549,53 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 			continue
 		}
 		if inOptions {
+			// Handle multi-line strategy accumulation. Once we see "strategy ["
+			// without a closing "]", we buffer lines until we find the "]".
+			if inStrategyList {
+				strategyBuf.WriteString(" ")
+				strategyBuf.WriteString(strings.TrimSpace(line))
+				if strings.Contains(line, "]") {
+					inStrategyList = false
+					chain := parseStrategyList(strategyBuf.String())
+					if len(chain) > 0 {
+						cfg.fallbackChains[name] = chain
+					}
+				}
+				// Still need to update depth — the "]" line might also close options
+				stripped := stripInlineComment(stripStringLiterals(line))
+				optionsDepth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
+				if optionsDepth <= 0 {
+					inOptions = false
+					inStrategyList = false
+					nestedDepth = 0
+				}
+				continue
+			}
+
 			// Parse strategy BEFORE updating depth — a line like
 			// "strategy [A, B] }" contains both the strategy list and
 			// the closing brace. If we check depth first, the brace
 			// drops depth to 0 and we exit before parsing.
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "strategy ") {
-				chain := parseStrategyList(trimmed)
-				if len(chain) > 0 {
-					cfg.fallbackChains[name] = chain
+				if strings.Contains(trimmed, "]") {
+					// Single-line: strategy [A, B, C]
+					chain := parseStrategyList(trimmed)
+					if len(chain) > 0 {
+						cfg.fallbackChains[name] = chain
+					}
+				} else if strings.Contains(trimmed, "[") {
+					// Multi-line start: strategy [
+					inStrategyList = true
+					strategyBuf.Reset()
+					strategyBuf.WriteString(trimmed)
 				}
 			}
 			stripped := stripInlineComment(stripStringLiterals(line))
 			optionsDepth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
 			if optionsDepth <= 0 {
 				inOptions = false
+				inStrategyList = false
 				nestedDepth = 0
 			}
 			continue

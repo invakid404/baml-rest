@@ -968,6 +968,61 @@ client<llm> ClosingBrace {
 	}
 }
 
+func TestParseBamlFile_FallbackChain_MultiLineStrategy(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> MultiLineStrategy {
+    provider baml-fallback
+    options {
+        strategy [
+            ClientA,
+            ClientB,
+            ClientC,
+        ]
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	chain, ok := cfg.fallbackChains["MultiLineStrategy"]
+	if !ok {
+		t.Fatal("expected fallback chain for MultiLineStrategy (multi-line strategy list)")
+	}
+	if len(chain) != 3 {
+		t.Fatalf("expected 3 children, got %d: %v", len(chain), chain)
+	}
+	if chain[0] != "ClientA" || chain[1] != "ClientB" || chain[2] != "ClientC" {
+		t.Errorf("unexpected chain: %v", chain)
+	}
+}
+
+func TestParseBamlFile_FallbackChain_MultiLineNoTrailingComma(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> NoTrailingComma {
+    provider baml-fallback
+    options {
+        strategy [
+            Fast
+            Slow
+        ]
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	chain, ok := cfg.fallbackChains["NoTrailingComma"]
+	if !ok {
+		t.Fatal("expected fallback chain for NoTrailingComma")
+	}
+	if len(chain) != 2 {
+		t.Fatalf("expected 2 children, got %d: %v", len(chain), chain)
+	}
+	if chain[0] != "Fast" || chain[1] != "Slow" {
+		t.Errorf("unexpected chain: %v", chain)
+	}
+}
+
 func TestParseStrategyList(t *testing.T) {
 	tests := []struct {
 		input    string

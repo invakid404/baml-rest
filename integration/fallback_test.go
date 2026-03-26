@@ -26,6 +26,16 @@ func registerFallbackScenario(t *testing.T, scenario *mockllm.Scenario) {
 
 // ============================================================
 // /call endpoint — fallback chain tests
+//
+// These tests exercise baml-fallback client strategies. The BAML runtime
+// handles fallback routing internally (legacy CallStream+OnTick path).
+// When a child client fails (disconnect), the runtime retries with the
+// next child in the strategy list.
+//
+// NOTE: The mock's streaming FailAfter check happens AFTER writing each
+// chunk, so FailureMode must be "disconnect" (not "500") and ChunkSize
+// must be > 0 to trigger failure before all content is sent. The mock
+// cannot change HTTP status mid-stream.
 // ============================================================
 
 func TestFallbackCall(t *testing.T) {
@@ -70,22 +80,26 @@ func TestFallbackCall(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			// Primary always returns 500
+			// Primary disconnects immediately. ChunkSize must be > 0 so the
+			// streaming FailAfter check triggers before all content is sent.
+			// FailureMode "disconnect" is used because the mock can't change
+			// HTTP status to 500 once SSE streaming has started.
 			registerFallbackScenario(t, &mockllm.Scenario{
 				ID:          "fallback-primary",
 				Provider:    "openai",
-				Content:     "should not see this",
-				ChunkSize:   0,
+				Content:     "should not see this content",
+				ChunkSize:   1,
 				FailAfter:   1,
-				FailureMode: "500",
+				FailureMode: "disconnect",
 			})
 			// Secondary succeeds
 			registerFallbackScenario(t, &mockllm.Scenario{
 				ID:             "fallback-secondary",
 				Provider:       "openai",
 				Content:        "Hello from secondary!",
-				ChunkSize:      0,
+				ChunkSize:      20,
 				InitialDelayMs: 50,
+				ChunkDelayMs:   5,
 			})
 
 			resp, err := client.Call(ctx, testutil.CallRequest{
@@ -114,30 +128,31 @@ func TestFallbackCall(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			// Primary and secondary fail
+			// Primary and secondary disconnect immediately
 			registerFallbackScenario(t, &mockllm.Scenario{
 				ID:          "fallback-primary",
 				Provider:    "openai",
 				Content:     "nope",
-				ChunkSize:   0,
+				ChunkSize:   1,
 				FailAfter:   1,
-				FailureMode: "500",
+				FailureMode: "disconnect",
 			})
 			registerFallbackScenario(t, &mockllm.Scenario{
 				ID:          "fallback-secondary",
 				Provider:    "openai",
 				Content:     "nope",
-				ChunkSize:   0,
+				ChunkSize:   1,
 				FailAfter:   1,
-				FailureMode: "500",
+				FailureMode: "disconnect",
 			})
 			// Tertiary succeeds
 			registerFallbackScenario(t, &mockllm.Scenario{
 				ID:             "fallback-tertiary",
 				Provider:       "openai",
 				Content:        "Hello from tertiary!",
-				ChunkSize:      0,
+				ChunkSize:      20,
 				InitialDelayMs: 50,
+				ChunkDelayMs:   5,
 			})
 
 			resp, err := client.Call(ctx, testutil.CallRequest{
@@ -166,15 +181,15 @@ func TestFallbackCall(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			// All fail
+			// All disconnect immediately
 			for _, id := range []string{"fallback-primary", "fallback-secondary"} {
 				registerFallbackScenario(t, &mockllm.Scenario{
 					ID:          id,
 					Provider:    "openai",
 					Content:     "nope",
-					ChunkSize:   0,
+					ChunkSize:   1,
 					FailAfter:   1,
-					FailureMode: "500",
+					FailureMode: "disconnect",
 				})
 			}
 
@@ -197,21 +212,22 @@ func TestFallbackCall(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			// Primary fails, secondary returns structured output
+			// Primary disconnects, secondary returns structured output
 			registerFallbackScenario(t, &mockllm.Scenario{
 				ID:          "fallback-primary",
 				Provider:    "openai",
 				Content:     "nope",
-				ChunkSize:   0,
+				ChunkSize:   1,
 				FailAfter:   1,
-				FailureMode: "500",
+				FailureMode: "disconnect",
 			})
 			registerFallbackScenario(t, &mockllm.Scenario{
 				ID:             "fallback-secondary",
 				Provider:       "openai",
 				Content:        `{"message": "fallback structured"}`,
-				ChunkSize:      0,
+				ChunkSize:      20,
 				InitialDelayMs: 50,
+				ChunkDelayMs:   5,
 			})
 
 			resp, err := client.Call(ctx, testutil.CallRequest{
@@ -288,14 +304,14 @@ func TestFallbackStream(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// Primary fails immediately
+		// Primary disconnects immediately
 		registerFallbackScenario(t, &mockllm.Scenario{
 			ID:          "fallback-primary",
 			Provider:    "openai",
 			Content:     "nope",
-			ChunkSize:   10,
+			ChunkSize:   1,
 			FailAfter:   1,
-			FailureMode: "500",
+			FailureMode: "disconnect",
 		})
 		// Secondary streams successfully
 		registerFallbackScenario(t, &mockllm.Scenario{
@@ -342,9 +358,9 @@ func TestFallbackStream(t *testing.T) {
 				ID:          id,
 				Provider:    "openai",
 				Content:     "nope",
-				ChunkSize:   10,
+				ChunkSize:   1,
 				FailAfter:   1,
-				FailureMode: "500",
+				FailureMode: "disconnect",
 			})
 		}
 
@@ -384,16 +400,17 @@ func TestFallbackCallWithRaw(t *testing.T) {
 				ID:          "fallback-primary",
 				Provider:    "openai",
 				Content:     "nope",
-				ChunkSize:   0,
+				ChunkSize:   1,
 				FailAfter:   1,
-				FailureMode: "500",
+				FailureMode: "disconnect",
 			})
 			registerFallbackScenario(t, &mockllm.Scenario{
 				ID:             "fallback-secondary",
 				Provider:       "openai",
 				Content:        "raw fallback response",
-				ChunkSize:      0,
+				ChunkSize:      20,
 				InitialDelayMs: 50,
+				ChunkDelayMs:   5,
 			})
 
 			resp, err := client.CallWithRaw(ctx, testutil.CallRequest{
