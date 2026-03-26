@@ -222,6 +222,22 @@ func makeAttemptProviderResolver(
 	}
 }
 
+// resolveChildProvider returns the provider for a named client, checking
+// runtime client_registry overrides before the introspected defaults. This
+// mirrors ResolveProvider's per-client resolution (lines 104-112) so that
+// runtime overrides that change a child's provider are respected for both
+// extraction format selection and the supported-provider gate.
+func resolveChildProvider(reg *bamlutils.ClientRegistry, clientName string, introspectedProviders map[string]string) string {
+	if reg != nil {
+		for _, client := range reg.Clients {
+			if client != nil && client.Name == clientName && client.Provider != "" {
+				return client.Provider
+			}
+		}
+	}
+	return introspectedProviders[clientName]
+}
+
 // ResolveFallbackChain determines whether a function's client is a fallback
 // strategy client and, if so, returns the ordered child chain and a map of
 // child client names to their providers. Returns nil, nil if the function
@@ -252,12 +268,17 @@ func ResolveFallbackChain(
 		return nil, nil
 	}
 
-	// Verify ALL children have supported providers. If any child is
-	// unsupported, fall back to the legacy path for the entire chain.
+	// Resolve each child's provider, checking runtime client_registry
+	// overrides first (same precedence as ResolveProvider). If any child
+	// is unsupported or has no provider, fall back to the legacy path.
+	var reg *bamlutils.ClientRegistry
+	if adapter != nil {
+		reg = adapter.OriginalClientRegistry()
+	}
 	providers = make(map[string]string, len(chain))
 	for _, child := range chain {
-		p, exists := clientProviders[child]
-		if !exists || !isProviderSupported(p) {
+		p := resolveChildProvider(reg, child, clientProviders)
+		if p == "" || !isProviderSupported(p) {
 			return nil, nil
 		}
 		providers[child] = p

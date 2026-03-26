@@ -581,6 +581,71 @@ func TestResolveFallbackChain_UnsupportedChild(t *testing.T) {
 	}
 }
 
+func TestResolveFallbackChain_RuntimeOverrideChild(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	// Introspected: ClientA=openai, ClientB=anthropic
+	clientProviders := map[string]string{
+		"ClientA": "openai",
+		"ClientB": "anthropic",
+	}
+
+	// Runtime override changes ClientB from anthropic to google-ai
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "ClientB", Provider: "google-ai"},
+			},
+		},
+	}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" || p == "google-ai" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2, got %d", len(chain))
+	}
+	// ClientB should use the runtime override, not the introspected value
+	if providers["ClientB"] != "google-ai" {
+		t.Errorf("expected ClientB provider 'google-ai' (runtime override), got %q", providers["ClientB"])
+	}
+	if providers["ClientA"] != "openai" {
+		t.Errorf("expected ClientA provider 'openai' (introspected), got %q", providers["ClientA"])
+	}
+}
+
+func TestResolveFallbackChain_RuntimeOverrideUnsupported(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"ClientA": "openai",
+		"ClientB": "anthropic",
+	}
+
+	// Runtime override changes ClientB to an unsupported provider
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "ClientB", Provider: "aws-bedrock"},
+			},
+		},
+	}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	// Should fall back to legacy path because runtime override made ClientB unsupported
+	if chain != nil || providers != nil {
+		t.Errorf("expected nil when runtime override makes child unsupported, got chain=%v providers=%v", chain, providers)
+	}
+}
+
 func TestResolveFallbackChain_NotFallback(t *testing.T) {
 	fallbackChains := map[string][]string{}
 	clientProviders := map[string]string{"GPT4": "openai"}
