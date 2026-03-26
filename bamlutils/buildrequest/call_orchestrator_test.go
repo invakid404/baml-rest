@@ -25,7 +25,7 @@ func makeJSONServer(statusCode int, body string) *httptest.Server {
 }
 
 func makeBuildCallRequest(serverURL string) BuildCallRequestFunc {
-	return func(ctx context.Context) (*llmhttp.Request, error) {
+	return func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 		return &llmhttp.Request{
 			URL:    serverURL,
 			Method: "POST",
@@ -366,7 +366,7 @@ func TestRunCallOrchestration_UnsupportedProvider(t *testing.T) {
 
 	err := RunCallOrchestration(
 		context.Background(), out, config, nil,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: "http://localhost", Method: "POST"}, nil
 		},
 		identityParseFinal,
@@ -390,7 +390,7 @@ func TestRunCallOrchestration_EmptyProvider(t *testing.T) {
 
 	err := RunCallOrchestration(
 		context.Background(), out, config, nil,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return nil, nil
 		},
 		identityParseFinal,
@@ -411,7 +411,7 @@ func TestRunCallOrchestration_BuildRequestError(t *testing.T) {
 
 	_ = RunCallOrchestration(
 		context.Background(), out, config, llmhttp.DefaultClient,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return nil, fmt.Errorf("build request failed")
 		},
 		identityParseFinal,
@@ -744,7 +744,7 @@ func TestRunCallOrchestration_RetryRebuildsRequest(t *testing.T) {
 
 	// buildRequest returns different URLs on each call, simulating a
 	// retry policy that rotates across providers.
-	buildFn := func(ctx context.Context) (*llmhttp.Request, error) {
+	buildFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 		call := int(buildCalls.Add(1))
 		url := server1.URL
 		if call > 1 {
@@ -768,9 +768,9 @@ func TestRunCallOrchestration_RetryRebuildsRequest(t *testing.T) {
 
 	// Track actual HTTP attempts via a wrapper that counts.
 	originalBuildFn := buildFn
-	buildFn = func(ctx context.Context) (*llmhttp.Request, error) {
+	buildFn = func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 		attempts.Add(1)
-		return originalBuildFn(ctx)
+		return originalBuildFn(ctx, clientOverride)
 	}
 
 	err := RunCallOrchestration(
@@ -855,5 +855,89 @@ func TestRunCallOrchestration_NilHTTPClient(t *testing.T) {
 	}
 	if !hasFinal {
 		t.Fatal("expected final result from nil-client fallback path")
+	}
+}
+
+func TestRunCallOrchestration_FallbackChain(t *testing.T) {
+	// Simulate a fallback chain: first child (openai-shaped) returns 500,
+	// second child (anthropic-shaped) returns 200. The orchestrator should
+	// retry to the second child and use the correct provider for extraction.
+	var attempts atomic.Int32
+
+	// Server that returns OpenAI-shaped 500 for attempt 1,
+	// Anthropic-shaped 200 for attempt 2.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := int(attempts.Add(1))
+		if attempt == 1 {
+			w.WriteHeader(500)
+			fmt.Fprint(w, `{"error":"openai down"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, `{"content":[{"type":"text","text":"anthropic ok"}]}`)
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &CallConfig{
+		Provider:      "",
+		RetryPolicy:   &retry.Policy{MaxRetries: 3, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+		FallbackChain: []string{"OpenAIClient", "AnthropicClient"},
+		ClientProviders: map[string]string{
+			"OpenAIClient":    "openai",
+			"AnthropicClient": "anthropic",
+		},
+	}
+
+	// buildRequest uses the same server but records the clientOverride
+	var overrides []string
+	buildFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		overrides = append(overrides, clientOverride)
+		return &llmhttp.Request{
+			URL:    server.URL,
+			Method: "POST",
+			Body:   `{"stream":false}`,
+		}, nil
+	}
+
+	err := RunCallOrchestration(
+		context.Background(), out, config, client,
+		buildFn,
+		identityParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify client overrides were passed correctly
+	if len(overrides) < 2 {
+		t.Fatalf("expected at least 2 attempts, got %d overrides: %v", len(overrides), overrides)
+	}
+	if overrides[0] != "OpenAIClient" {
+		t.Errorf("first attempt should use OpenAIClient, got %q", overrides[0])
+	}
+	if overrides[1] != "AnthropicClient" {
+		t.Errorf("second attempt should use AnthropicClient, got %q", overrides[1])
+	}
+
+	// Verify the result was extracted with the anthropic provider
+	hasFinal := false
+	for r := range out {
+		if r.Kind() == bamlutils.StreamResultKindFinal {
+			hasFinal = true
+			if r.Final() != "anthropic ok" {
+				t.Errorf("expected 'anthropic ok', got %v", r.Final())
+			}
+		}
+	}
+	if !hasFinal {
+		t.Fatal("expected a final result from anthropic fallback")
 	}
 }

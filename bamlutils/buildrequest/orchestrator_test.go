@@ -73,7 +73,7 @@ func TestRunStreamOrchestration_Success(t *testing.T) {
 		out,
 		config,
 		client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{
 				URL:    server.URL,
 				Method: "POST",
@@ -153,7 +153,7 @@ func TestRunStreamOrchestration_NoPartials(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		nil, // No parseStream needed
@@ -213,7 +213,7 @@ func TestRunStreamOrchestration_HTTPError(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return nil, nil },
@@ -272,7 +272,7 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -334,7 +334,7 @@ func TestRunStreamOrchestration_ContextCancellation(t *testing.T) {
 
 	RunStreamOrchestration(
 		ctx, out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -420,7 +420,7 @@ func TestRunStreamOrchestration_Anthropic(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -471,7 +471,7 @@ func TestRunStreamOrchestration_ParseThrottle(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) {
@@ -490,5 +490,108 @@ func TestRunStreamOrchestration_ParseThrottle(t *testing.T) {
 	// (At minimum once for the first event, then throttled)
 	if parseCount >= 20 {
 		t.Errorf("expected throttled parse calls (< 20), got %d", parseCount)
+	}
+}
+
+func TestMakeAttemptProviderResolver_SingleProvider(t *testing.T) {
+	resolve := makeAttemptProviderResolver("openai", nil, nil)
+
+	for attempt := 0; attempt < 5; attempt++ {
+		provider, clientOverride := resolve(attempt)
+		if provider != "openai" {
+			t.Errorf("attempt %d: expected provider 'openai', got %q", attempt, provider)
+		}
+		if clientOverride != "" {
+			t.Errorf("attempt %d: expected empty clientOverride, got %q", attempt, clientOverride)
+		}
+	}
+}
+
+func TestMakeAttemptProviderResolver_FallbackChain(t *testing.T) {
+	chain := []string{"ClientA", "ClientB", "ClientC"}
+	providers := map[string]string{
+		"ClientA": "openai",
+		"ClientB": "anthropic",
+		"ClientC": "google-ai",
+	}
+	resolve := makeAttemptProviderResolver("", chain, providers)
+
+	expected := []struct {
+		provider       string
+		clientOverride string
+	}{
+		{"openai", "ClientA"},
+		{"anthropic", "ClientB"},
+		{"google-ai", "ClientC"},
+		{"openai", "ClientA"},    // wraps around
+		{"anthropic", "ClientB"}, // wraps around
+	}
+
+	for i, want := range expected {
+		provider, clientOverride := resolve(i)
+		if provider != want.provider {
+			t.Errorf("attempt %d: expected provider %q, got %q", i, want.provider, provider)
+		}
+		if clientOverride != want.clientOverride {
+			t.Errorf("attempt %d: expected clientOverride %q, got %q", i, want.clientOverride, clientOverride)
+		}
+	}
+}
+
+func TestResolveFallbackChain_AllSupported(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"ClientA": "openai",
+		"ClientB": "anthropic",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2, got %d", len(chain))
+	}
+	if providers["ClientA"] != "openai" || providers["ClientB"] != "anthropic" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+}
+
+func TestResolveFallbackChain_UnsupportedChild(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"ClientA": "openai",
+		"ClientB": "aws-bedrock", // unsupported
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if chain != nil || providers != nil {
+		t.Errorf("expected nil chain/providers when child has unsupported provider, got chain=%v providers=%v", chain, providers)
+	}
+}
+
+func TestResolveFallbackChain_NotFallback(t *testing.T) {
+	fallbackChains := map[string][]string{}
+	clientProviders := map[string]string{"GPT4": "openai"}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "GPT4", fallbackChains, clientProviders,
+		func(p string) bool { return true },
+	)
+
+	if chain != nil || providers != nil {
+		t.Errorf("expected nil for non-fallback client, got chain=%v providers=%v", chain, providers)
 	}
 }
