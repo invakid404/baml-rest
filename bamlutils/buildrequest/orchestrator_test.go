@@ -543,8 +543,9 @@ func TestResolveFallbackChain_AllSupported(t *testing.T) {
 		"MyFallback": {"ClientA", "ClientB"},
 	}
 	clientProviders := map[string]string{
-		"ClientA": "openai",
-		"ClientB": "anthropic",
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
 	}
 
 	adapter := &mockAdapter{Context: context.Background()}
@@ -566,8 +567,9 @@ func TestResolveFallbackChain_UnsupportedChild(t *testing.T) {
 		"MyFallback": {"ClientA", "ClientB"},
 	}
 	clientProviders := map[string]string{
-		"ClientA": "openai",
-		"ClientB": "aws-bedrock", // unsupported
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "aws-bedrock", // unsupported
 	}
 
 	adapter := &mockAdapter{Context: context.Background()}
@@ -587,8 +589,9 @@ func TestResolveFallbackChain_RuntimeOverrideChild(t *testing.T) {
 	}
 	// Introspected: ClientA=openai, ClientB=anthropic
 	clientProviders := map[string]string{
-		"ClientA": "openai",
-		"ClientB": "anthropic",
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
 	}
 
 	// Runtime override changes ClientB from anthropic to google-ai
@@ -622,8 +625,9 @@ func TestResolveFallbackChain_RuntimeOverrideUnsupported(t *testing.T) {
 		"MyFallback": {"ClientA", "ClientB"},
 	}
 	clientProviders := map[string]string{
-		"ClientA": "openai",
-		"ClientB": "anthropic",
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
 	}
 
 	// Runtime override changes ClientB to an unsupported provider
@@ -658,5 +662,53 @@ func TestResolveFallbackChain_NotFallback(t *testing.T) {
 
 	if chain != nil || providers != nil {
 		t.Errorf("expected nil for non-fallback client, got chain=%v providers=%v", chain, providers)
+	}
+}
+
+func TestResolveFallbackChain_RoundRobinGated(t *testing.T) {
+	// baml-roundrobin should NOT use the BuildRequest path because the
+	// orchestrator has no cross-request state to distribute load.
+	fallbackChains := map[string][]string{
+		"MyRoundRobin": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyRoundRobin": "baml-roundrobin",
+		"ClientA":      "openai",
+		"ClientB":      "anthropic",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyRoundRobin", fallbackChains, clientProviders,
+		func(p string) bool { return true },
+	)
+
+	if chain != nil || providers != nil {
+		t.Errorf("expected nil for baml-roundrobin (should use legacy path), got chain=%v providers=%v", chain, providers)
+	}
+}
+
+func TestResolveFallbackChain_FallbackAllowed(t *testing.T) {
+	// baml-fallback SHOULD use the BuildRequest path.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2 for baml-fallback, got %d", len(chain))
+	}
+	if providers["ClientA"] != "openai" || providers["ClientB"] != "anthropic" {
+		t.Errorf("unexpected providers: %v", providers)
 	}
 }

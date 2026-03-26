@@ -268,6 +268,19 @@ func ResolveFallbackChain(
 		return nil, nil
 	}
 
+	// Only support baml-fallback in the BuildRequest path. baml-roundrobin
+	// requires cross-request state to distribute load (each new request
+	// should start at a different child), which the per-request orchestrator
+	// does not have. Without it, round-robin degrades to fallback (always
+	// starting at child 0), which is silently wrong. Leave round-robin on
+	// the legacy path where the BAML runtime handles the rotation.
+	parentProvider := resolveChildProvider(
+		adapter.OriginalClientRegistry(), clientName, clientProviders,
+	)
+	if parentProvider != "baml-fallback" {
+		return nil, nil
+	}
+
 	// Resolve each child's provider, checking runtime client_registry
 	// overrides first (same precedence as ResolveProvider). If any child
 	// is unsupported or has no provider, fall back to the legacy path.

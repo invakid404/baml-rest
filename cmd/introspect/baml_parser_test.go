@@ -945,6 +945,29 @@ client<llm> RegularClient {
 	}
 }
 
+func TestParseBamlFile_FallbackChain_StrategyOnClosingBraceLine(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> ClosingBrace {
+    provider baml-fallback
+    options {
+        strategy [ClientA, ClientB] }
+}
+`
+	parseBamlFile(cfg, content)
+
+	chain, ok := cfg.fallbackChains["ClosingBrace"]
+	if !ok {
+		t.Fatal("expected fallback chain for ClosingBrace (strategy on same line as closing })")
+	}
+	if len(chain) != 2 {
+		t.Fatalf("expected 2 children, got %d: %v", len(chain), chain)
+	}
+	if chain[0] != "ClientA" || chain[1] != "ClientB" {
+		t.Errorf("unexpected chain: %v", chain)
+	}
+}
+
 func TestParseStrategyList(t *testing.T) {
 	tests := []struct {
 		input    string
