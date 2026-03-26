@@ -10,8 +10,10 @@ package llmhttp
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -100,10 +102,39 @@ func NewClient(httpClient *http.Client) *Client {
 	return &Client{httpClient: httpClient}
 }
 
-// DefaultClient is a Client using http.DefaultClient. It is safe for
-// concurrent use. Go's default transport provides connection pooling,
-// HTTP/2 for TLS, and reasonable timeouts.
-var DefaultClient = NewClient(nil)
+// defaultLLMTransport is an HTTP transport tuned for LLM provider traffic.
+//
+// The BuildRequest path moves outbound HTTP calls from the BAML Rust runtime
+// into Go. Go's http.DefaultTransport has MaxIdleConnsPerHost=2, which is
+// far too low for a worker process that funnels many concurrent requests to
+// the same small set of provider hosts (api.openai.com, api.anthropic.com,
+// etc.). With the default, almost every request under concurrent load creates
+// a new TCP+TLS connection (~100-300ms handshake overhead per request).
+//
+// The values below mirror http.DefaultTransport (Go 1.26) with connection
+// pool sizes raised for the LLM provider traffic pattern: many concurrent
+// requests to few hosts.
+var defaultLLMTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	ForceAttemptHTTP2: true,
+	TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	},
+	TLSHandshakeTimeout:   10 * time.Second,
+	MaxIdleConns:          256,
+	MaxIdleConnsPerHost:   64,
+	IdleConnTimeout:       90 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+}
+
+// DefaultClient is a Client with a transport tuned for LLM provider traffic.
+// It is safe for concurrent use. See defaultLLMTransport for details on
+// why the defaults differ from http.DefaultTransport.
+var DefaultClient = NewClient(&http.Client{Transport: defaultLLMTransport})
 
 // ExecuteStream sends the given request and returns a StreamResponse with
 // SSE events parsed from the response body.
