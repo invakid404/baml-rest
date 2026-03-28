@@ -8,7 +8,7 @@ require (
 	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/workerplugin v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.23.2
-	github.com/rs/zerolog v1.34.0
+	github.com/rs/zerolog v1.35.0
 	google.golang.org/grpc v1.79.3
 )
 
