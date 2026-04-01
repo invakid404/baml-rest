@@ -260,6 +260,10 @@ func TestFallbackCall(t *testing.T) {
 
 // ============================================================
 // /stream endpoint — fallback chain tests
+//
+// Streaming is only available on the Fiber backend; the chi unary
+// server does not expose /stream endpoints. Therefore these tests
+// use BAMLClient directly instead of iterating with forEachUnaryClient.
 // ============================================================
 
 func TestFallbackStream(t *testing.T) {
@@ -382,7 +386,9 @@ func TestFallbackStream(t *testing.T) {
 			}
 		}
 		// Drain the error channel
-		<-errc
+		if streamErr := <-errc; streamErr != nil {
+			t.Logf("Stream error channel: %v", streamErr)
+		}
 
 		if !gotError {
 			t.Error("Expected an error event when all fallback clients fail")
