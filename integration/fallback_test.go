@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -74,6 +75,10 @@ func TestFallbackCall(t *testing.T) {
 		})
 
 		t.Run("primary_fails_secondary_succeeds", func(t *testing.T) {
+			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+				t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
+			}
+
 			waitForHealthy(t, 30*time.Second)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -118,6 +123,10 @@ func TestFallbackCall(t *testing.T) {
 		})
 
 		t.Run("three_client_chain_first_two_fail", func(t *testing.T) {
+			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+				t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
+			}
+
 			waitForHealthy(t, 30*time.Second)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -199,6 +208,10 @@ func TestFallbackCall(t *testing.T) {
 		})
 
 		t.Run("object_output_through_fallback", func(t *testing.T) {
+			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+				t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
+			}
+
 			waitForHealthy(t, 30*time.Second)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -290,6 +303,10 @@ func TestFallbackStream(t *testing.T) {
 	})
 
 	t.Run("primary_fails_secondary_succeeds_stream", func(t *testing.T) {
+		if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+			t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
+		}
+
 		waitForHealthy(t, 30*time.Second)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -380,6 +397,10 @@ func TestFallbackStream(t *testing.T) {
 func TestFallbackCallWithRaw(t *testing.T) {
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		t.Run("fallback_returns_raw", func(t *testing.T) {
+			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+				t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
+			}
+
 			waitForHealthy(t, 30*time.Second)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
