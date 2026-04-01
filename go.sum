@@ -60,6 +60,8 @@ github.com/containerd/platforms v1.0.0-rc.2 h1:0SPgaNZPVWGEi4grZdV8VRYQn78y+nm6a
 github.com/containerd/platforms v1.0.0-rc.2/go.mod h1:J71L7B+aiM5SdIEqmd9wp6THLVRzJGXfNuWCZCllLA4=
 github.com/containerd/platforms v1.0.0-rc.3 h1:YdvwaHtrN6wHcGJ2mYRYP3Nso8OcysuqFe9Hxm1X/tI=
 github.com/containerd/platforms v1.0.0-rc.3/go.mod h1:gw0R+alP3nFQPh1L4K9bv13fRWeeyokLGLu2fKuqI10=
+github.com/containerd/platforms v1.0.0-rc.4 h1:M42JrUT4zfZTqtkUwkr0GzmUWbfyO5VO0Q5b3op97T4=
+github.com/containerd/platforms v1.0.0-rc.4/go.mod h1:lKlMXyLybmBedS/JJm11uDofzI8L2v0J2ZbYvNsbq1A=
 github.com/containerd/plugin v1.0.0 h1:c8Kf1TNl6+e2TtMHZt+39yAPDbouRH9WAToRjex483Y=
 github.com/containerd/plugin v1.0.0/go.mod h1:hQfJe5nmWfImiqT1q8Si3jLv3ynMUIBB47bQ+KexvO8=
 github.com/containerd/stargz-snapshotter v0.17.0 h1:djNS4KU8ztFhLdEDZ1bsfzOiYuVHT6TgSU5qwRk+cNc=
