@@ -259,6 +259,59 @@ func TestFallbackCall(t *testing.T) {
 }
 
 // ============================================================
+// /call-with-raw endpoint — fallback chain tests
+//
+// Placed before TestFallbackStream so that the all_clients_fail_stream
+// subtest (which exhausts retries and may leave stale in-flight requests)
+// does not run before this test.
+// ============================================================
+
+func TestFallbackCallWithRaw(t *testing.T) {
+	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
+		t.Run("fallback_returns_raw", func(t *testing.T) {
+			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+				t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
+			}
+
+			waitForHealthy(t, 30*time.Second)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			registerFallbackScenario(t, &mockllm.Scenario{
+				ID:          "fallback-primary",
+				Provider:    "openai",
+				Content:     "nope",
+				FailAfter:   1,
+				FailureMode: "500",
+			})
+			registerFallbackScenario(t, &mockllm.Scenario{
+				ID:             "fallback-secondary",
+				Provider:       "openai",
+				Content:        "raw fallback response",
+				ChunkSize:      20,
+				InitialDelayMs: 50,
+				ChunkDelayMs:   5,
+			})
+
+			resp, err := client.CallWithRaw(ctx, testutil.CallRequest{
+				Method: "GetGreetingFallbackPair",
+				Input:  map[string]any{"name": "World"},
+			})
+			if err != nil {
+				t.Fatalf("CallWithRaw failed: %v", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+			}
+			if resp.Raw == "" {
+				t.Fatalf("Expected non-empty Raw field in call-with-raw response; Data=%s StatusCode=%d", string(resp.Data), resp.StatusCode)
+			}
+		})
+	})
+}
+
+// ============================================================
 // /stream endpoint — fallback chain tests
 //
 // Streaming is only available on the Fiber backend; the chi unary
@@ -393,54 +446,5 @@ func TestFallbackStream(t *testing.T) {
 		if !gotError {
 			t.Error("Expected an error event when all fallback clients fail")
 		}
-	})
-}
-
-// ============================================================
-// /call-with-raw endpoint — fallback chain tests
-// ============================================================
-
-func TestFallbackCallWithRaw(t *testing.T) {
-	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
-		t.Run("fallback_returns_raw", func(t *testing.T) {
-			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
-				t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
-			}
-
-			waitForHealthy(t, 30*time.Second)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			registerFallbackScenario(t, &mockllm.Scenario{
-				ID:          "fallback-primary",
-				Provider:    "openai",
-				Content:     "nope",
-				FailAfter:   1,
-				FailureMode: "500",
-			})
-			registerFallbackScenario(t, &mockllm.Scenario{
-				ID:             "fallback-secondary",
-				Provider:       "openai",
-				Content:        "raw fallback response",
-				ChunkSize:      20,
-				InitialDelayMs: 50,
-				ChunkDelayMs:   5,
-			})
-
-			resp, err := client.CallWithRaw(ctx, testutil.CallRequest{
-				Method: "GetGreetingFallbackPair",
-				Input:  map[string]any{"name": "World"},
-			})
-			if err != nil {
-				t.Fatalf("CallWithRaw failed: %v", err)
-			}
-			if resp.StatusCode != 200 {
-				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-			}
-			if resp.Raw == "" {
-				t.Error("Expected non-empty Raw field in call-with-raw response")
-			}
-		})
 	})
 }
