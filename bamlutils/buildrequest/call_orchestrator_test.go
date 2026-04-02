@@ -941,3 +941,74 @@ func TestRunCallOrchestration_FallbackChain(t *testing.T) {
 		t.Fatal("expected a final result from anthropic fallback")
 	}
 }
+
+func TestRunCallOrchestration_FallbackChainWithRaw(t *testing.T) {
+	// Same setup as TestRunCallOrchestration_FallbackChain but with
+	// NeedsRaw=true — verifies the raw response text propagates
+	// through the fallback path.
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := int(attempts.Add(1))
+		if attempt == 1 {
+			w.WriteHeader(500)
+			fmt.Fprint(w, `{"error":"primary down"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, `{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"fallback ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &CallConfig{
+		Provider:      "",
+		RetryPolicy:   &retry.Policy{MaxRetries: 3, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+		NeedsRaw:      true,
+		FallbackChain: []string{"PrimaryClient", "SecondaryClient"},
+		ClientProviders: map[string]string{
+			"PrimaryClient":   "openai",
+			"SecondaryClient": "openai",
+		},
+	}
+
+	buildFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		return &llmhttp.Request{
+			URL:    server.URL,
+			Method: "POST",
+			Body:   `{"stream":false}`,
+		}, nil
+	}
+
+	err := RunCallOrchestration(
+		context.Background(), out, config, client,
+		buildFn,
+		identityParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var hasFinal bool
+	for r := range out {
+		if r.Kind() == bamlutils.StreamResultKindFinal {
+			hasFinal = true
+			if r.Final() != "fallback ok" {
+				t.Errorf("expected 'fallback ok', got %v", r.Final())
+			}
+			if r.Raw() != "fallback ok" {
+				t.Errorf("expected Raw()='fallback ok', got %q", r.Raw())
+			}
+		}
+	}
+	if !hasFinal {
+		t.Fatal("expected a final result from fallback")
+	}
+}

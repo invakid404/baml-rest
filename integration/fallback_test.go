@@ -305,7 +305,7 @@ func TestFallbackCallWithRaw(t *testing.T) {
 				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
 			}
 			if resp.Raw == "" {
-				t.Fatalf("Expected non-empty Raw field in call-with-raw response; Data=%s StatusCode=%d", string(resp.Data), resp.StatusCode)
+				t.Fatalf("Expected non-empty Raw field in call-with-raw response; Data=%s StatusCode=%d RespBody=%s", string(resp.Data), resp.StatusCode, resp.RespBody)
 			}
 		})
 	})
