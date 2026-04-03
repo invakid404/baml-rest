@@ -73,6 +73,7 @@ func (s *ScenarioStore) Register(scenario *Scenario) {
 	defer s.mu.Unlock()
 	s.scenarios[scenario.ID] = scenario
 	s.requestCounts[scenario.ID] = 0
+	delete(s.lastRequests, scenario.ID)
 }
 
 // Get retrieves a scenario by ID.

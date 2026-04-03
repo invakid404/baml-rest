@@ -503,6 +503,7 @@ go run cmd/hacks/main.go --baml-client-dir ./baml_client --baml-version "${BAML_
 # parse .baml files for fallback chains, client providers, retry policies, etc.
 # (baml_src lives in the BAML working directory; the build runs here.)
 echo "Copying baml_src for introspection..."
+rm -rf ./baml_src
 cp -r "${BAML_WORK}/baml_src" ./baml_src
 
 # Run introspection
