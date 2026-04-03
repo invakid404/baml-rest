@@ -226,7 +226,6 @@ type CallWithRawResponse struct {
 	Data       json.RawMessage `json:"data"`
 	Raw        string          `json:"raw"`
 	Error      string
-	RespBody   string `json:"-"` // raw HTTP response body for debugging
 }
 
 // Call executes a /call/{method} request.
@@ -270,7 +269,6 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 
 	result := &CallWithRawResponse{
 		StatusCode: resp.StatusCode,
-		RespBody:   string(respBody),
 	}
 
 	if resp.StatusCode >= 400 {
