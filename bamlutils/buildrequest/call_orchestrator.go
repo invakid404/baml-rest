@@ -56,7 +56,7 @@ type ExtractResponseFunc func(provider string, responseBody string) (parseable, 
 //
 // Flow:
 //  1. Retry loop (build request + HTTP roundtrip):
-//     a. buildRequest(ctx) → llmhttp.Request
+//     a. buildRequest(ctx, clientOverride) → llmhttp.Request
 //     b. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
 //     c. onSuccess callback emits heartbeat after 2xx status, before body read
 //     d. on failure: onRetry emits heartbeat to maintain liveness during backoff
@@ -65,10 +65,12 @@ type ExtractResponseFunc func(provider string, responseBody string) (parseable, 
 //     b. parseFinal(ctx, parseable) → typed result
 //     c. emit StreamResultKindFinal on channel
 //
-// The request is rebuilt on each attempt because retry policies may route
-// through different models/providers — BAML's Request API may return a
-// different HTTP request on each invocation depending on the client
-// strategy (e.g., fallback, round-robin).
+// The request is rebuilt on each attempt because BuildRequest fallback routing
+// may select a different child client/provider per retry. The generated
+// adapter passes the chosen child via clientOverride, and Request may return a
+// different HTTP request on each invocation. baml-roundrobin stays on the
+// legacy path because this per-request orchestrator does not keep cross-request
+// rotation state.
 //
 // Extraction and parsing happen OUTSIDE the retry loop because they are
 // deterministic: a malformed 200 response or a parse failure will produce

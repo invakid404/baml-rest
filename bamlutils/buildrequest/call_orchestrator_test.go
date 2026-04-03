@@ -787,8 +787,8 @@ func TestRunCallOrchestration_RetryRebuildsRequest(t *testing.T) {
 	}
 
 	// buildRequest must be called on each attempt, not just once.
-	if got := buildCalls.Load(); got < 2 {
-		t.Errorf("expected buildRequest called on each attempt (got %d calls); request may be cached incorrectly", got)
+	if got := buildCalls.Load(); got != 2 {
+		t.Errorf("expected exactly 2 buildRequest calls (one per attempt), got %d", got)
 	}
 
 	// The first attempt hits server1 (500), retry rebuilds and hits server2 (200).
