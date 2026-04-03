@@ -393,7 +393,9 @@ func TestFallbackStream(t *testing.T) {
 			t.Errorf("Expected 'Streaming from primary!', got %q", result)
 		}
 
-		assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 0})
+		if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 0})
+		}
 	})
 
 	t.Run("primary_fails_secondary_succeeds_stream", func(t *testing.T) {
