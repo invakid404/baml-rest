@@ -412,7 +412,13 @@ func TestFallbackStream(t *testing.T) {
 			t.Errorf("Expected 'Streaming from primary!', got %q", result)
 		}
 
-		assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 0})
+		// BAML < 0.219.0 uses the legacy streaming fallback path, which may
+		// contact the secondary child even when the primary succeeds. Unary does
+		// not share that behavior, so only assert the exact streaming hit counts
+		// on versions that use the BuildRequest fallback orchestrator.
+		if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 0})
+		}
 	})
 
 	t.Run("primary_fails_secondary_succeeds_stream", func(t *testing.T) {
