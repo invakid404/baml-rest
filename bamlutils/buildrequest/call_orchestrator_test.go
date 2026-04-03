@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -916,15 +917,10 @@ func TestRunCallOrchestration_FallbackChain(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify client overrides were passed correctly
-	if len(overrides) < 2 {
-		t.Fatalf("expected at least 2 attempts, got %d overrides: %v", len(overrides), overrides)
-	}
-	if overrides[0] != "OpenAIClient" {
-		t.Errorf("first attempt should use OpenAIClient, got %q", overrides[0])
-	}
-	if overrides[1] != "AnthropicClient" {
-		t.Errorf("second attempt should use AnthropicClient, got %q", overrides[1])
+	// Verify client overrides were passed exactly once per attempt and stop
+	// after the successful anthropic retry.
+	if want := []string{"OpenAIClient", "AnthropicClient"}; !slices.Equal(overrides, want) {
+		t.Errorf("expected override sequence %v, got %v", want, overrides)
 	}
 
 	// Verify the result was extracted with the anthropic provider

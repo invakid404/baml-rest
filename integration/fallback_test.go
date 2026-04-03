@@ -25,6 +25,17 @@ func registerFallbackScenario(t *testing.T, scenario *mockllm.Scenario) {
 	}
 }
 
+// clearFallbackScenarios removes all mock fallback scenarios so each subtest
+// starts from a clean request-count state with no stale tertiary entries.
+func clearFallbackScenarios(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := MockClient.ClearScenarios(ctx); err != nil {
+		t.Fatalf("Failed to clear fallback scenarios: %v", err)
+	}
+}
+
 // assertHitCounts verifies that each scenario received exactly the expected
 // number of requests.  This proves the fallback chain was traversed correctly
 // rather than just checking the terminal result.
@@ -46,10 +57,11 @@ func assertHitCounts(t *testing.T, expected map[string]int) {
 // ============================================================
 // /call endpoint — fallback chain tests
 //
-// These tests exercise baml-fallback client strategies. The BAML runtime
-// handles fallback routing internally (legacy CallStream+OnTick path).
-// When a child client fails (HTTP 500), the runtime retries with the
-// next child in the strategy list.
+// These tests exercise baml-fallback client strategies across both routing
+// implementations. On supported BuildRequest configurations, fallback chains
+// run through the BuildRequest orchestrators; otherwise they fall back to the
+// legacy CallStream+OnTick path. In either case, when a child client fails
+// (HTTP 500), the next child in the strategy list should be tried.
 //
 // Failure scenarios use FailAfter=1, FailureMode="500", ChunkSize=0.
 // The mock returns HTTP 500 before any response body for this combination,
@@ -60,6 +72,7 @@ func TestFallbackCall(t *testing.T) {
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		t.Run("primary_succeeds", func(t *testing.T) {
 			waitForHealthy(t, 30*time.Second)
+			clearFallbackScenarios(t)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -104,6 +117,7 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			waitForHealthy(t, 30*time.Second)
+			clearFallbackScenarios(t)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -154,6 +168,7 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			waitForHealthy(t, 30*time.Second)
+			clearFallbackScenarios(t)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -207,6 +222,7 @@ func TestFallbackCall(t *testing.T) {
 
 		t.Run("all_clients_fail", func(t *testing.T) {
 			waitForHealthy(t, 30*time.Second)
+			clearFallbackScenarios(t)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
@@ -245,6 +261,7 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			waitForHealthy(t, 30*time.Second)
+			clearFallbackScenarios(t)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -304,6 +321,7 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			}
 
 			waitForHealthy(t, 30*time.Second)
+			clearFallbackScenarios(t)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -354,6 +372,7 @@ func TestFallbackCallWithRaw(t *testing.T) {
 func TestFallbackStream(t *testing.T) {
 	t.Run("primary_succeeds_stream", func(t *testing.T) {
 		waitForHealthy(t, 30*time.Second)
+		clearFallbackScenarios(t)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -402,6 +421,7 @@ func TestFallbackStream(t *testing.T) {
 		}
 
 		waitForHealthy(t, 30*time.Second)
+		clearFallbackScenarios(t)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -452,6 +472,7 @@ func TestFallbackStream(t *testing.T) {
 
 	t.Run("all_clients_fail_stream", func(t *testing.T) {
 		waitForHealthy(t, 30*time.Second)
+		clearFallbackScenarios(t)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
