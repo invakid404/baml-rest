@@ -129,6 +129,20 @@ func (s *ScenarioStore) GetLastRequest(id string) (*CapturedRequest, bool) {
 	return req, ok
 }
 
+// GetRequestCount returns the number of requests received for a scenario.
+func (s *ScenarioStore) GetRequestCount(id string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.requestCounts[id]
+}
+
+// ResetRequestCount resets the request counter for a scenario to zero.
+func (s *ScenarioStore) ResetRequestCount(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requestCounts[id] = 0
+}
+
 // Delete removes a scenario by ID.
 func (s *ScenarioStore) Delete(id string) bool {
 	s.mu.Lock()

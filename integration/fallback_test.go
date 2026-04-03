@@ -25,6 +25,24 @@ func registerFallbackScenario(t *testing.T, scenario *mockllm.Scenario) {
 	}
 }
 
+// assertHitCounts verifies that each scenario received exactly the expected
+// number of requests.  This proves the fallback chain was traversed correctly
+// rather than just checking the terminal result.
+func assertHitCounts(t *testing.T, expected map[string]int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for id, want := range expected {
+		got, err := MockClient.GetRequestCount(ctx, id)
+		if err != nil {
+			t.Fatalf("Failed to get request count for %q: %v", id, err)
+		}
+		if got != want {
+			t.Errorf("scenario %q: expected %d requests, got %d", id, want, got)
+		}
+	}
+}
+
 // ============================================================
 // /call endpoint — fallback chain tests
 //
@@ -53,6 +71,10 @@ func TestFallbackCall(t *testing.T) {
 				ChunkSize:      0,
 				InitialDelayMs: 50,
 			})
+			// Register secondary to reset its counter even though it shouldn't be hit.
+			registerFallbackScenario(t, &mockllm.Scenario{
+				ID: "fallback-secondary", Provider: "openai", Content: "unused",
+			})
 
 			resp, err := client.Call(ctx, testutil.CallRequest{
 				Method: "GetGreetingFallbackPair",
@@ -72,6 +94,8 @@ func TestFallbackCall(t *testing.T) {
 			if result != "Hello from primary!" {
 				t.Errorf("Expected 'Hello from primary!', got %q", result)
 			}
+
+			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 0})
 		})
 
 		t.Run("primary_fails_secondary_succeeds", func(t *testing.T) {
@@ -120,6 +144,8 @@ func TestFallbackCall(t *testing.T) {
 			if result != "Hello from secondary!" {
 				t.Errorf("Expected 'Hello from secondary!', got %q", result)
 			}
+
+			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
 		})
 
 		t.Run("three_client_chain_first_two_fail", func(t *testing.T) {
@@ -175,6 +201,8 @@ func TestFallbackCall(t *testing.T) {
 			if result != "Hello from tertiary!" {
 				t.Errorf("Expected 'Hello from tertiary!', got %q", result)
 			}
+
+			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1, "fallback-tertiary": 1})
 		})
 
 		t.Run("all_clients_fail", func(t *testing.T) {
@@ -205,6 +233,8 @@ func TestFallbackCall(t *testing.T) {
 			if resp.StatusCode == 200 {
 				t.Fatalf("Expected non-200 status when all fallback clients fail, got 200")
 			}
+
+			assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
 		})
 
 		t.Run("object_output_through_fallback", func(t *testing.T) {
@@ -254,6 +284,8 @@ func TestFallbackCall(t *testing.T) {
 			if result.Message != "fallback structured" {
 				t.Errorf("Expected 'fallback structured', got %q", result.Message)
 			}
+
+			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
 		})
 	})
 }
@@ -307,6 +339,8 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			if resp.Raw == "" {
 				t.Fatal("Expected non-empty Raw field in call-with-raw response")
 			}
+
+			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
 		})
 	})
 }
@@ -334,6 +368,9 @@ func TestFallbackStream(t *testing.T) {
 			InitialDelayMs: 50,
 			ChunkDelayMs:   10,
 		})
+		registerFallbackScenario(t, &mockllm.Scenario{
+			ID: "fallback-secondary", Provider: "openai", Content: "unused",
+		})
 
 		partials, errc := BAMLClient.Stream(ctx, testutil.CallRequest{
 			Method: "GetGreetingFallbackPair",
@@ -357,6 +394,8 @@ func TestFallbackStream(t *testing.T) {
 		if result != "Streaming from primary!" {
 			t.Errorf("Expected 'Streaming from primary!', got %q", result)
 		}
+
+		assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 0})
 	})
 
 	t.Run("primary_fails_secondary_succeeds_stream", func(t *testing.T) {
@@ -409,6 +448,8 @@ func TestFallbackStream(t *testing.T) {
 		if result != "Streaming from secondary!" {
 			t.Errorf("Expected 'Streaming from secondary!', got %q", result)
 		}
+
+		assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
 	})
 
 	t.Run("all_clients_fail_stream", func(t *testing.T) {
@@ -446,5 +487,7 @@ func TestFallbackStream(t *testing.T) {
 		if !gotError {
 			t.Error("Expected an error event when all fallback clients fail")
 		}
+
+		assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
 	})
 }

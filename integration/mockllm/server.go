@@ -43,6 +43,8 @@ func NewServer(addr string) *Server {
 	app.Get("/_admin/health", s.handleHealth)
 
 	app.Get("/_admin/scenarios/:id/last-request", s.handleGetLastRequest)
+	app.Get("/_admin/scenarios/:id/request-count", s.handleGetRequestCount)
+	app.Post("/_admin/scenarios/:id/reset-count", s.handleResetRequestCount)
 
 	// OpenAI-compatible endpoints
 	app.Post("/v1/chat/completions", s.handleChatCompletions)
@@ -150,6 +152,24 @@ func (s *Server) handleGetLastRequest(c fiber.Ctx) error {
 	return c.Send(req.Body)
 }
 
+func (s *Server) handleGetRequestCount(c fiber.Ctx) error {
+	id := c.Params("id")
+	if id == "" {
+		return c.Status(fiber.StatusBadRequest).SendString("scenario ID is required")
+	}
+	count := s.store.GetRequestCount(id)
+	return c.JSON(fiber.Map{"count": count})
+}
+
+func (s *Server) handleResetRequestCount(c fiber.Ctx) error {
+	id := c.Params("id")
+	if id == "" {
+		return c.Status(fiber.StatusBadRequest).SendString("scenario ID is required")
+	}
+	s.store.ResetRequestCount(id)
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
 // LLM endpoint handlers
 
 type chatCompletionsRequest struct {
@@ -221,6 +241,17 @@ func (s *Server) handleChatCompletions(c fiber.Ctx) error {
 	// cannot be changed — a mid-stream disconnect is not reliably treated as
 	// an error by all LLM runtimes.
 	if scenario.FailAfter > 0 && scenario.FailAfter <= 1 && scenario.FailureMode == "500" {
+		// Honour effectiveDelay so the failure timing is consistent with the
+		// rest of the mock scenario model (e.g. for timeout-based retry tests).
+		if effectiveDelay > 0 {
+			reqCtx := c.Context()
+			if requestCtx := c.RequestCtx(); requestCtx != nil {
+				reqCtx = requestCtx
+			}
+			if err := waitForDurationOrCancel(reqCtx, time.Duration(effectiveDelay)*time.Millisecond); err != nil {
+				return err
+			}
+		}
 		s.log("immediate 500 failure for scenario %s", scenario.ID)
 		return c.Status(fiber.StatusInternalServerError).SendString("Internal Server Error")
 	}
@@ -394,6 +425,48 @@ func (c *Client) GetLastRequest(ctx context.Context, scenarioID string) ([]byte,
 	}
 
 	return body, nil
+}
+
+// GetRequestCount returns the number of requests the mock server received for a scenario.
+func (c *Client) GetRequestCount(ctx context.Context, scenarioID string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/_admin/scenarios/%s/request-count", c.baseURL, scenarioID), nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+	var result struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("failed to decode response: %w", err)
+	}
+	return result.Count, nil
+}
+
+// ResetRequestCount resets the request counter for a scenario to zero.
+func (c *Client) ResetRequestCount(ctx context.Context, scenarioID string) error {
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/_admin/scenarios/%s/reset-count", c.baseURL, scenarioID), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 // Health checks if the mock server is healthy.
