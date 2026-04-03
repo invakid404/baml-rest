@@ -352,8 +352,8 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			if resp.StatusCode != 200 {
 				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
 			}
-			if resp.Raw == "" {
-				t.Fatal("Expected non-empty Raw field in call-with-raw response")
+			if resp.Raw != "raw fallback response" {
+				t.Fatalf("Expected Raw()='raw fallback response', got %q", resp.Raw)
 			}
 
 			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
