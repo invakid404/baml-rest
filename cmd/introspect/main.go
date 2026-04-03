@@ -1094,6 +1094,10 @@ type bamlConfig struct {
 	functionClient map[string]string
 	// retryPolicies maps policy name → {max_retries, strategy type, delay params}
 	retryPolicies map[string]parsedRetryPolicy
+	// fallbackChains maps strategy client name → ordered list of child client names.
+	// Populated when a client has provider "baml-fallback" or "baml-roundrobin"
+	// and an options block containing strategy [ClientA, ClientB, ...].
+	fallbackChains map[string][]string
 }
 
 type parsedRetryPolicy struct {
@@ -1114,6 +1118,7 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 		clientRetryPolicy: make(map[string]string),
 		functionClient:    make(map[string]string),
 		retryPolicies:     make(map[string]parsedRetryPolicy),
+		fallbackChains:    make(map[string][]string),
 	}
 
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -1526,13 +1531,104 @@ func cleanBamlValue(s string) string {
 
 func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 	nestedDepth := 0
+	inOptions := false
+	optionsDepth := 0
+	// inStrategyList accumulates lines when a "strategy [" is seen without
+	// a closing "]" on the same line. This handles multi-line strategy lists:
+	//   strategy [
+	//       ClientA,
+	//       ClientB,
+	//   ]
+	inStrategyList := false
+	var strategyBuf strings.Builder
 	for _, line := range expandBlockLines(block) {
-		// Track nested block depth — skip lines inside options/prompt/strategy blocks
-		if nestedDepth > 0 {
+		// Track nested block depth — skip lines inside prompt/strategy blocks
+		// but enter options blocks to extract strategy lists for fallback chains.
+		if nestedDepth > 0 && !inOptions {
 			nestedDepth += strings.Count(stripInlineComment(stripStringLiterals(line)), "{") - strings.Count(stripInlineComment(stripStringLiterals(line)), "}")
 			continue
 		}
+		if inOptions {
+			// Handle multi-line strategy accumulation. Once we see "strategy ["
+			// without a closing "]", we buffer lines until we find the "]".
+			if inStrategyList {
+				strategyBuf.WriteString(" ")
+				strategyBuf.WriteString(strings.TrimSpace(line))
+				if strings.Contains(line, "]") {
+					inStrategyList = false
+					chain := parseStrategyList(strategyBuf.String())
+					if len(chain) > 0 {
+						cfg.fallbackChains[name] = chain
+					}
+				}
+				// Still need to update depth — the "]" line might also close options
+				stripped := stripInlineComment(stripStringLiterals(line))
+				optionsDepth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
+				if optionsDepth <= 0 {
+					inOptions = false
+					inStrategyList = false
+					nestedDepth = 0
+				}
+				continue
+			}
+
+			// Parse strategy BEFORE updating depth — a line like
+			// "strategy [A, B] }" contains both the strategy list and
+			// the closing brace. If we check depth first, the brace
+			// drops depth to 0 and we exit before parsing.
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "strategy ") {
+				if strings.Contains(trimmed, "]") {
+					// Single-line: strategy [A, B, C]
+					chain := parseStrategyList(trimmed)
+					if len(chain) > 0 {
+						cfg.fallbackChains[name] = chain
+					}
+				} else if strings.Contains(trimmed, "[") {
+					// Multi-line start: strategy [
+					inStrategyList = true
+					strategyBuf.Reset()
+					strategyBuf.WriteString(trimmed)
+				}
+			}
+			stripped := stripInlineComment(stripStringLiterals(line))
+			optionsDepth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
+			if optionsDepth <= 0 {
+				inOptions = false
+				inStrategyList = false
+				nestedDepth = 0
+			}
+			continue
+		}
 		if isNestedBlockStart(line) {
+			// Enter options blocks to extract strategy lists
+			if strings.HasPrefix(line, "options ") || strings.HasPrefix(line, "options{") {
+				inOptions = true
+				stripped := stripInlineComment(stripStringLiterals(line))
+				optionsDepth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
+				// Check if strategy is on the same line as options {
+				// This handles both inline (options { strategy [...] }) and
+				// multi-line blocks where strategy appears on the opening line.
+				trimmed := strings.TrimSpace(line)
+				openIdx := strings.Index(trimmed, "{")
+				if openIdx >= 0 {
+					inner := trimmed[openIdx+1:]
+					if closeIdx := strings.LastIndex(inner, "}"); closeIdx >= 0 {
+						inner = inner[:closeIdx]
+					}
+					inner = strings.TrimSpace(inner)
+					if strings.HasPrefix(inner, "strategy ") {
+						chain := parseStrategyList(inner)
+						if len(chain) > 0 {
+							cfg.fallbackChains[name] = chain
+						}
+					}
+				}
+				if optionsDepth <= 0 {
+					inOptions = false
+				}
+				continue
+			}
 			stripped := stripInlineComment(stripStringLiterals(line))
 			nestedDepth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
 			continue
@@ -1544,6 +1640,37 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 			cfg.clientRetryPolicy[name] = cleanBamlValue(strings.TrimPrefix(line, "retry_policy "))
 		}
 	}
+}
+
+// parseStrategyList extracts client names from a strategy line like
+// "strategy [ClientA, ClientB, ClientC]" or "strategy [ClientA ClientB]".
+// Returns nil if the line doesn't contain a valid list.
+func parseStrategyList(line string) []string {
+	// Find the bracket-enclosed list
+	openIdx := strings.Index(line, "[")
+	closeIdx := strings.LastIndex(line, "]")
+	if openIdx < 0 || closeIdx <= openIdx {
+		return nil
+	}
+
+	inner := strings.TrimSpace(line[openIdx+1 : closeIdx])
+	if inner == "" {
+		return nil
+	}
+
+	// Split by comma or whitespace
+	var clients []string
+	for _, part := range strings.FieldsFunc(inner, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	}) {
+		name := strings.TrimSpace(part)
+		name = stripBamlQuotes(name)
+		if name != "" {
+			clients = append(clients, name)
+		}
+	}
+
+	return clients
 }
 
 func parseFunctionBlock(cfg *bamlConfig, name string, block []string) {
@@ -1771,7 +1898,24 @@ func generateBamlConfigVars(out *jen.File) {
 	}
 	out.Var().Id("FunctionRetryPolicy").Op("=").Map(jen.String()).String().Values(frpEntries...)
 
-	// FallbackChains (not yet parsed — requires strategy client syntax)
+	// FallbackChains: maps strategy client names (baml-fallback, baml-roundrobin)
+	// to their ordered list of child client names from the strategy option.
 	out.Comment("FallbackChains maps strategy client names to their ordered list of child client names")
-	out.Var().Id("FallbackChains").Op("=").Map(jen.String()).Index().String().Values()
+	{
+		entries := make([]jen.Code, 0, len(cfg.fallbackChains))
+		keys := make([]string, 0, len(cfg.fallbackChains))
+		for k := range cfg.fallbackChains {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, clientName := range keys {
+			chain := cfg.fallbackChains[clientName]
+			childLits := make([]jen.Code, 0, len(chain))
+			for _, child := range chain {
+				childLits = append(childLits, jen.Lit(child))
+			}
+			entries = append(entries, jen.Lit(clientName).Op(":").Index().String().Values(childLits...))
+		}
+		out.Var().Id("FallbackChains").Op("=").Map(jen.String()).Index().String().Values(entries...)
+	}
 }

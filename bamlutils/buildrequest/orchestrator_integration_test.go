@@ -110,7 +110,7 @@ func runOrchestrationCollectWithClient(t *testing.T, serverURL string, provider 
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: serverURL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -327,7 +327,7 @@ func TestEmptyCompletion_LetParseFinalDecide(t *testing.T) {
 
 	RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -393,7 +393,7 @@ func TestRetry_SuccessAfterFailures(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -449,7 +449,7 @@ func TestRetry_AllAttemptsExhausted(t *testing.T) {
 
 	RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return nil, nil },
@@ -506,7 +506,7 @@ func TestRetry_ExponentialBackoff(t *testing.T) {
 
 	RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -554,7 +554,7 @@ func TestHeartbeat_SentOnce(t *testing.T) {
 
 	RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -590,7 +590,7 @@ func TestStreamResultOrder(t *testing.T) {
 
 	RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -641,7 +641,7 @@ func TestRawAccumulation(t *testing.T) {
 
 	RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },

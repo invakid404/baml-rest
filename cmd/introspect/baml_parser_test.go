@@ -13,6 +13,7 @@ func newTestBamlConfig() *bamlConfig {
 		clientRetryPolicy: make(map[string]string),
 		functionClient:    make(map[string]string),
 		retryPolicies:     make(map[string]parsedRetryPolicy),
+		fallbackChains:    make(map[string][]string),
 	}
 }
 
@@ -863,5 +864,189 @@ retry_policy ExpRetry { max_retries 5 strategy { type exponential_backoff delay_
 	}
 	if rp.maxDelayMs != 10000 {
 		t.Errorf("expected maxDelayMs=10000, got %d", rp.maxDelayMs)
+	}
+}
+
+func TestParseBamlFile_FallbackChain_MultiLine(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> MyFallback {
+    provider baml-fallback
+    options {
+        strategy [ClientA, ClientB, ClientC]
+    }
+}
+
+client<llm> ClientA {
+    provider openai
+}
+
+client<llm> ClientB {
+    provider anthropic
+}
+
+client<llm> ClientC {
+    provider google-ai
+}
+`
+	parseBamlFile(cfg, content)
+
+	chain, ok := cfg.fallbackChains["MyFallback"]
+	if !ok {
+		t.Fatal("expected fallback chain for MyFallback")
+	}
+	if len(chain) != 3 {
+		t.Fatalf("expected 3 children, got %d: %v", len(chain), chain)
+	}
+	if chain[0] != "ClientA" || chain[1] != "ClientB" || chain[2] != "ClientC" {
+		t.Errorf("unexpected chain: %v", chain)
+	}
+	if cfg.clientProvider["MyFallback"] != "baml-fallback" {
+		t.Errorf("expected provider 'baml-fallback', got %q", cfg.clientProvider["MyFallback"])
+	}
+}
+
+func TestParseBamlFile_FallbackChain_Inline(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> InlineFallback {
+    provider baml-fallback
+    options { strategy [Fast, Slow] }
+}
+`
+	parseBamlFile(cfg, content)
+
+	chain, ok := cfg.fallbackChains["InlineFallback"]
+	if !ok {
+		t.Fatal("expected fallback chain for InlineFallback")
+	}
+	if len(chain) != 2 {
+		t.Fatalf("expected 2 children, got %d: %v", len(chain), chain)
+	}
+	if chain[0] != "Fast" || chain[1] != "Slow" {
+		t.Errorf("unexpected chain: %v", chain)
+	}
+}
+
+func TestParseBamlFile_NonFallbackClient_NoChain(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> RegularClient {
+    provider openai
+    options {
+        model "gpt-4"
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	if len(cfg.fallbackChains) != 0 {
+		t.Errorf("expected no fallback chains for regular client, got %v", cfg.fallbackChains)
+	}
+}
+
+func TestParseBamlFile_FallbackChain_StrategyOnClosingBraceLine(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> ClosingBrace {
+    provider baml-fallback
+    options {
+        strategy [ClientA, ClientB] }
+}
+`
+	parseBamlFile(cfg, content)
+
+	chain, ok := cfg.fallbackChains["ClosingBrace"]
+	if !ok {
+		t.Fatal("expected fallback chain for ClosingBrace (strategy on same line as closing })")
+	}
+	if len(chain) != 2 {
+		t.Fatalf("expected 2 children, got %d: %v", len(chain), chain)
+	}
+	if chain[0] != "ClientA" || chain[1] != "ClientB" {
+		t.Errorf("unexpected chain: %v", chain)
+	}
+}
+
+func TestParseBamlFile_FallbackChain_MultiLineStrategy(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> MultiLineStrategy {
+    provider baml-fallback
+    options {
+        strategy [
+            ClientA,
+            ClientB,
+            ClientC,
+        ]
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	chain, ok := cfg.fallbackChains["MultiLineStrategy"]
+	if !ok {
+		t.Fatal("expected fallback chain for MultiLineStrategy (multi-line strategy list)")
+	}
+	if len(chain) != 3 {
+		t.Fatalf("expected 3 children, got %d: %v", len(chain), chain)
+	}
+	if chain[0] != "ClientA" || chain[1] != "ClientB" || chain[2] != "ClientC" {
+		t.Errorf("unexpected chain: %v", chain)
+	}
+}
+
+func TestParseBamlFile_FallbackChain_MultiLineNoTrailingComma(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> NoTrailingComma {
+    provider baml-fallback
+    options {
+        strategy [
+            Fast
+            Slow
+        ]
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	chain, ok := cfg.fallbackChains["NoTrailingComma"]
+	if !ok {
+		t.Fatal("expected fallback chain for NoTrailingComma")
+	}
+	if len(chain) != 2 {
+		t.Fatalf("expected 2 children, got %d: %v", len(chain), chain)
+	}
+	if chain[0] != "Fast" || chain[1] != "Slow" {
+		t.Errorf("unexpected chain: %v", chain)
+	}
+}
+
+func TestParseStrategyList(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"strategy [A, B, C]", []string{"A", "B", "C"}},
+		{"strategy [A B C]", []string{"A", "B", "C"}},
+		{"strategy [SingleClient]", []string{"SingleClient"}},
+		{"strategy []", nil},
+		{"strategy", nil},
+		{"not a strategy", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := parseStrategyList(tt.input)
+			if len(got) != len(tt.expected) {
+				t.Fatalf("expected %v, got %v", tt.expected, got)
+			}
+			for i := range got {
+				if got[i] != tt.expected[i] {
+					t.Errorf("index %d: expected %q, got %q", i, tt.expected[i], got[i])
+				}
+			}
+		})
 	}
 }

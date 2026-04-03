@@ -53,7 +53,7 @@ type CapturedRequest struct {
 type ScenarioStore struct {
 	mu            sync.RWMutex
 	scenarios     map[string]*Scenario
-	requestCounts map[string]int        // tracks request count per scenario ID
+	requestCounts map[string]int              // tracks request count per scenario ID
 	lastRequests  map[string]*CapturedRequest // stores the last request per scenario ID
 }
 
@@ -66,11 +66,14 @@ func NewScenarioStore() *ScenarioStore {
 	}
 }
 
-// Register adds or updates a scenario.
+// Register adds or updates a scenario, resetting the request counter
+// so subsequent requests see a clean state.
 func (s *ScenarioStore) Register(scenario *Scenario) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scenarios[scenario.ID] = scenario
+	s.requestCounts[scenario.ID] = 0
+	delete(s.lastRequests, scenario.ID)
 }
 
 // Get retrieves a scenario by ID.
@@ -125,6 +128,20 @@ func (s *ScenarioStore) GetLastRequest(id string) (*CapturedRequest, bool) {
 	defer s.mu.RUnlock()
 	req, ok := s.lastRequests[id]
 	return req, ok
+}
+
+// GetRequestCount returns the number of requests received for a scenario.
+func (s *ScenarioStore) GetRequestCount(id string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.requestCounts[id]
+}
+
+// ResetRequestCount resets the request counter for a scenario to zero.
+func (s *ScenarioStore) ResetRequestCount(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requestCounts[id] = 0
 }
 
 // Delete removes a scenario by ID.

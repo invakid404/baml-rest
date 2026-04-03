@@ -199,10 +199,113 @@ func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {
 	return p
 }
 
+// makeAttemptProviderResolver returns a function that maps a retry attempt
+// number to (provider, clientOverride). For single-provider configs (empty
+// fallbackChain), the provider is fixed and clientOverride is always empty.
+// For fallback chains, the attempt index selects the next child client
+// (wrapping around) and returns its provider from clientProviders.
+func makeAttemptProviderResolver(
+	defaultProvider string,
+	fallbackChain []string,
+	clientProviders map[string]string,
+) func(attempt int) (provider, clientOverride string) {
+	if len(fallbackChain) == 0 {
+		return func(attempt int) (string, string) {
+			return defaultProvider, ""
+		}
+	}
+	return func(attempt int) (string, string) {
+		idx := attempt % len(fallbackChain)
+		child := fallbackChain[idx]
+		provider := clientProviders[child]
+		return provider, child
+	}
+}
+
+// resolveChildProvider returns the provider for a named client, checking
+// runtime client_registry overrides before the introspected defaults. This
+// mirrors ResolveProvider's per-client resolution (lines 104-112) so that
+// runtime overrides that change a child's provider are respected for both
+// extraction format selection and the supported-provider gate.
+func resolveChildProvider(reg *bamlutils.ClientRegistry, clientName string, introspectedProviders map[string]string) string {
+	if reg != nil {
+		for _, client := range reg.Clients {
+			if client != nil && client.Name == clientName && client.Provider != "" {
+				return client.Provider
+			}
+		}
+	}
+	return introspectedProviders[clientName]
+}
+
+// ResolveFallbackChain determines whether a function's client is a fallback
+// strategy client and, if so, returns the ordered child chain and a map of
+// child client names to their providers. Returns nil, nil if the function
+// does not use a fallback chain or if any child's provider is unsupported.
+//
+// Parameters:
+//   - adapter: the request adapter (for runtime client_registry overrides)
+//   - defaultClientName: the function's default client from introspection
+//   - fallbackChains: introspected map of strategy client → child list
+//   - clientProviders: introspected map of client name → provider string
+//   - isProviderSupported: provider support check function (streaming vs call)
+func ResolveFallbackChain(
+	adapter bamlutils.Adapter,
+	defaultClientName string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+) (chain []string, providers map[string]string) {
+	// Determine which client name to look up in fallbackChains.
+	// Runtime primary override takes precedence over the static default.
+	clientName := defaultClientName
+	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil {
+		clientName = *reg.Primary
+	}
+
+	chain, ok := fallbackChains[clientName]
+	if !ok || len(chain) == 0 {
+		return nil, nil
+	}
+
+	// Only support baml-fallback in the BuildRequest path. baml-roundrobin
+	// requires cross-request state to distribute load (each new request
+	// should start at a different child), which the per-request orchestrator
+	// does not have. Without it, round-robin degrades to fallback (always
+	// starting at child 0), which is silently wrong. Leave round-robin on
+	// the legacy path where the BAML runtime handles the rotation.
+	parentProvider := resolveChildProvider(
+		adapter.OriginalClientRegistry(), clientName, clientProviders,
+	)
+	if parentProvider != "baml-fallback" {
+		return nil, nil
+	}
+
+	// Resolve each child's provider, checking runtime client_registry
+	// overrides first (same precedence as ResolveProvider). If any child
+	// is unsupported or has no provider, fall back to the legacy path.
+	var reg *bamlutils.ClientRegistry
+	if adapter != nil {
+		reg = adapter.OriginalClientRegistry()
+	}
+	providers = make(map[string]string, len(chain))
+	for _, child := range chain {
+		p := resolveChildProvider(reg, child, clientProviders)
+		if p == "" || !isProviderSupported(p) {
+			return nil, nil
+		}
+		providers[child] = p
+	}
+
+	return chain, providers
+}
+
 // StreamConfig holds the configuration for a single streaming request.
 type StreamConfig struct {
 	// Provider is the LLM provider name (e.g., "openai", "anthropic").
-	// Used for SSE delta extraction.
+	// Used for SSE delta extraction. For single-provider clients, this
+	// is the only provider used. For fallback chains, this is ignored
+	// in favor of per-attempt provider resolution via ClientProviders.
 	Provider string
 
 	// RetryPolicy is the retry policy for this request. Nil means no retries.
@@ -217,12 +320,24 @@ type StreamConfig struct {
 	// ParseThrottleInterval is the minimum time between ParseStream calls.
 	// Zero means parse on every SSE event (no throttling).
 	ParseThrottleInterval time.Duration
+
+	// FallbackChain is the ordered list of child client names for fallback
+	// strategies. When non-empty, each retry attempt uses the next client
+	// in the chain (wrapping around). When empty, the single Provider is
+	// used for all attempts.
+	FallbackChain []string
+
+	// ClientProviders maps child client names to their provider strings.
+	// Used with FallbackChain to resolve the provider for each attempt.
+	ClientProviders map[string]string
 }
 
 // BuildRequestFunc builds an HTTP request for streaming by calling
 // StreamRequest.Method(ctx, args, opts...) and converting the result
-// to an llmhttp.Request. This is provided by the generated adapter code.
-type BuildRequestFunc func(ctx context.Context) (*llmhttp.Request, error)
+// to an llmhttp.Request. The clientOverride parameter, when non-empty,
+// forces the request to use a specific child client (for fallback chain
+// iteration). This is provided by the generated adapter code.
+type BuildRequestFunc func(ctx context.Context, clientOverride string) (*llmhttp.Request, error)
 
 // ParseStreamFunc parses accumulated raw text into a typed partial.
 // This wraps ParseStream.Method(accumulated, opts...) from the generated code.
@@ -260,8 +375,16 @@ func RunStreamOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
-	if config.Provider == "" || !IsProviderSupported(config.Provider) {
-		return fmt.Errorf("buildrequest: unsupported or empty provider %q", config.Provider)
+	// resolveAttemptProvider returns the provider and client override for a
+	// given retry attempt. For single-provider configs, the provider is fixed
+	// and no client override is needed. For fallback chains, the attempt index
+	// selects the next child client in the chain (wrapping around).
+	resolveAttemptProvider := makeAttemptProviderResolver(config.Provider, config.FallbackChain, config.ClientProviders)
+
+	// Validate that at least the first attempt has a supported provider.
+	firstProvider, _ := resolveAttemptProvider(0)
+	if firstProvider == "" || !IsProviderSupported(firstProvider) {
+		return fmt.Errorf("buildrequest: unsupported or empty provider %q", firstProvider)
 	}
 
 	var heartbeatSent atomic.Bool
@@ -280,7 +403,9 @@ func RunStreamOrchestration(
 
 	// Single-attempt streaming function
 	attemptStream := func(attempt int) (any, error) {
-		req, err := buildRequest(ctx)
+		provider, clientOverride := resolveAttemptProvider(attempt)
+
+		req, err := buildRequest(ctx, clientOverride)
 		if err != nil {
 			return nil, fmt.Errorf("buildrequest: failed to build request: %w", err)
 		}
@@ -298,8 +423,8 @@ func RunStreamOrchestration(
 		var lastParseTime time.Time
 
 		for ev := range resp.Events {
-			// Extract text delta from SSE event
-			delta, extractErr := sse.ExtractDeltaFromText(config.Provider, ev.Data)
+			// Extract text delta from SSE event using this attempt's provider
+			delta, extractErr := sse.ExtractDeltaFromText(provider, ev.Data)
 			if extractErr != nil {
 				// Extraction error — fail the attempt so retry logic can handle it
 				// rather than silently accumulating incomplete text.

@@ -258,7 +258,8 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 			networkName: {BAMLRestContainerName},
 		},
 		Env: map[string]string{
-			"BAML_LOG": "debug",
+			"BAML_LOG":                    "debug",
+			"BAML_REST_USE_BUILD_REQUEST": "true",
 		},
 		HostConfigModifier: func(hc *container.HostConfig) {
 			if hc.Sysctls == nil {
@@ -333,10 +334,10 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		bamlVersion:       opts.BAMLVersion,
 		adapterVersion:    opts.AdapterVersion,
 		keepSource:        opts.KeepSource,
-		debugBuild:        true,               // Enable debug endpoints for testing (/_debug/*)
-		defaultTargetArch: getDockerArch(),    // Use native architecture
-		noCacheMount:      true,               // testcontainers doesn't reliably support BuildKit
-		noCustomBamlLib:   true,               // Integration tests don't use custom BAML lib
+		debugBuild:        true,            // Enable debug endpoints for testing (/_debug/*)
+		defaultTargetArch: getDockerArch(), // Use native architecture
+		noCacheMount:      true,            // testcontainers doesn't reliably support BuildKit
+		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
 		unaryServer:       opts.UnaryServer,
 	}
 
