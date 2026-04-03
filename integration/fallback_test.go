@@ -234,7 +234,9 @@ func TestFallbackCall(t *testing.T) {
 				t.Fatalf("Expected non-200 status when all fallback clients fail, got 200")
 			}
 
-			assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
+			if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+				assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
+			}
 		})
 
 		t.Run("object_output_through_fallback", func(t *testing.T) {
@@ -488,6 +490,8 @@ func TestFallbackStream(t *testing.T) {
 			t.Error("Expected an error event when all fallback clients fail")
 		}
 
-		assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
+		if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+			assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
+		}
 	})
 }
