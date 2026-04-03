@@ -294,10 +294,6 @@ func TestFallbackCall(t *testing.T) {
 
 // ============================================================
 // /call-with-raw endpoint — fallback chain tests
-//
-// Placed before TestFallbackStream so that the all_clients_fail_stream
-// subtest (which exhausts retries and may leave stale in-flight requests)
-// does not run before this test.
 // ============================================================
 
 func TestFallbackCallWithRaw(t *testing.T) {
