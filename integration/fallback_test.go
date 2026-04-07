@@ -258,9 +258,8 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
-				// The BuildRequest orchestrator tries each child once per cycle
-				// (2 children × 1 cycle = 2 hits each). The legacy runtime applies
-				// its own per-child retry policy, doubling the count.
+				// BuildRequest round-robins children: 2 children × 2 cycles = 2 per child.
+				// Legacy runtime applies its own per-child retry, doubling the count.
 				if UseBuildRequest {
 					assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
 				} else {

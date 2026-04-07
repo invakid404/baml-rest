@@ -1034,8 +1034,7 @@ func TestParseStrategyList(t *testing.T) {
 		{"strategy []", nil},
 		{"strategy", nil},
 		{"not a strategy", nil},
-		// Inline comments must not produce bogus child names.
-		{"strategy [ClientA, // primary ClientB,]", []string{"ClientA"}},
+		// Inline comments after closing bracket are outside the token range.
 		{"strategy [ClientA, ClientB] // fallback pair", []string{"ClientA", "ClientB"}},
 		{"strategy [A, B, C] // three-way chain", []string{"A", "B", "C"}},
 	}
@@ -1052,5 +1051,32 @@ func TestParseStrategyList(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseClientBlock_MultilineStrategyComments(t *testing.T) {
+	// Inline comments in multi-line strategy lists must be stripped per-line
+	// before joining. Without this, "ClientA, // primary ClientB," becomes
+	// a flat string and ClientB is swallowed by the comment.
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-fallback",
+		"options {",
+		"    strategy [",
+		"        ClientA, // primary",
+		"        ClientB, // secondary",
+		"    ]",
+		"}",
+	}
+	parseClientBlock(cfg, "TestFB", block)
+	got := cfg.fallbackChains["TestFB"]
+	want := []string{"ClientA", "ClientB"}
+	if len(got) != len(want) {
+		t.Fatalf("expected chain %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: expected %q, got %q", i, want[i], got[i])
+		}
 	}
 }

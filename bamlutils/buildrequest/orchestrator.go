@@ -234,8 +234,9 @@ func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {
 // makeAttemptProviderResolver returns a function that maps a retry attempt
 // number to (provider, clientOverride). For single-provider configs (empty
 // fallbackChain), the provider is fixed and clientOverride is always empty.
-// For fallback chains, the attempt index selects the next child client
-// (wrapping around) and returns its provider from clientProviders.
+// For fallback chains, the attempt index round-robins through children
+// (attempt % len(chain)), matching the BAML runtime's fallback behaviour
+// where each retry cycle tries the next child in the chain.
 func makeAttemptProviderResolver(
 	defaultProvider string,
 	fallbackChain []string,
@@ -316,10 +317,7 @@ func ResolveFallbackChain(
 	// Resolve each child's provider, checking runtime client_registry
 	// overrides first (same precedence as ResolveProvider). If any child
 	// is unsupported or has no provider, fall back to the legacy path.
-	var reg *bamlutils.ClientRegistry
-	if adapter != nil {
-		reg = adapter.OriginalClientRegistry()
-	}
+	reg := adapter.OriginalClientRegistry()
 	providers = make(map[string]string, len(chain))
 	for _, child := range chain {
 		p := resolveChildProvider(reg, child, clientProviders)

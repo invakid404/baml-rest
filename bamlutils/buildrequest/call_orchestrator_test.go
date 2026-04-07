@@ -861,12 +861,10 @@ func TestRunCallOrchestration_NilHTTPClient(t *testing.T) {
 
 func TestRunCallOrchestration_FallbackChain(t *testing.T) {
 	// Simulate a fallback chain: first child (openai-shaped) returns 500,
-	// second child (anthropic-shaped) returns 200. The orchestrator should
-	// retry to the second child and use the correct provider for extraction.
+	// second child (anthropic-shaped) returns 200. The orchestrator round-robins
+	// through children: attempt 0→OpenAI(500), attempt 1→Anthropic(200).
 	var attempts atomic.Int32
 
-	// Server that returns OpenAI-shaped 500 for attempt 1,
-	// Anthropic-shaped 200 for attempt 2.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt := int(attempts.Add(1))
 		if attempt == 1 {
@@ -893,7 +891,6 @@ func TestRunCallOrchestration_FallbackChain(t *testing.T) {
 		},
 	}
 
-	// buildRequest uses the same server but records the clientOverride
 	var overrides []string
 	buildFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 		overrides = append(overrides, clientOverride)
@@ -917,8 +914,7 @@ func TestRunCallOrchestration_FallbackChain(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify client overrides were passed exactly once per attempt and stop
-	// after the successful anthropic retry.
+	// Round-robin: attempt 0 → OpenAI (fail), attempt 1 → Anthropic (success)
 	if want := []string{"OpenAIClient", "AnthropicClient"}; !slices.Equal(overrides, want) {
 		t.Errorf("expected override sequence %v, got %v", want, overrides)
 	}
@@ -1011,8 +1007,8 @@ func TestRunCallOrchestration_FallbackChainWithRaw(t *testing.T) {
 
 func TestRunCallOrchestration_FallbackChainExtractionFailure(t *testing.T) {
 	// First child returns a valid 200 but with a body that the extraction
-	// function rejects. The orchestrator must advance to the second child
-	// instead of stopping after the first 200.
+	// function rejects. Round-robin advances to the second child on the
+	// next attempt: attempt 0→Bad(extraction fail), attempt 1→Good(200).
 	var attempts atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

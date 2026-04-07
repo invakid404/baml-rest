@@ -1553,7 +1553,7 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 			// without a closing "]", we buffer lines until we find the "]".
 			if inStrategyList {
 				strategyBuf.WriteString(" ")
-				strategyBuf.WriteString(strings.TrimSpace(line))
+				strategyBuf.WriteString(strings.TrimSpace(stripInlineComment(line)))
 				if strings.Contains(line, "]") {
 					inStrategyList = false
 					chain := parseStrategyList(strategyBuf.String())
@@ -1658,20 +1658,12 @@ func parseStrategyList(line string) []string {
 		return nil
 	}
 
-	// Strip inline comments from the bracket contents before tokenizing.
-	// A multi-line strategy list like:
-	//   strategy [
-	//       ClientA, // primary
-	//       ClientB,
-	//   ]
-	// accumulates "ClientA, // primary ClientB," in the buffer. Without
-	// stripping, "//", "primary", and "ClientB," become bogus tokens.
-	inner = stripInlineComment(inner)
-
-	// Split by comma or whitespace
+	// Split by comma, whitespace, or newline. Inline comments are stripped
+	// per-line before joining into the buffer (see parseClientBlock), so
+	// by this point no `//` tokens remain in the flattened string.
 	var clients []string
 	for _, part := range strings.FieldsFunc(inner, func(r rune) bool {
-		return r == ',' || r == ' ' || r == '\t'
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
 	}) {
 		name := strings.TrimSpace(part)
 		name = stripBamlQuotes(name)
