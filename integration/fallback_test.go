@@ -251,7 +251,14 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
-				assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
+				// The BuildRequest orchestrator tries each child once per cycle
+				// (2 children × 1 cycle = 2 hits each). The legacy runtime applies
+				// its own per-child retry policy, doubling the count.
+				if UseBuildRequest {
+					assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
+				} else {
+					assertHitCounts(t, map[string]int{"fallback-primary": 4, "fallback-secondary": 4})
+				}
 			}
 		})
 
@@ -514,7 +521,11 @@ func TestFallbackStream(t *testing.T) {
 		}
 
 		if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
-			assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
+			if UseBuildRequest {
+				assertHitCounts(t, map[string]int{"fallback-primary": 2, "fallback-secondary": 2})
+			} else {
+				assertHitCounts(t, map[string]int{"fallback-primary": 4, "fallback-secondary": 4})
+			}
 		}
 	})
 }

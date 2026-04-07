@@ -37,6 +37,10 @@ var BAMLVersion string
 // BAMLSourcePath is the path to a local BAML source repo (set via BAML_SOURCE env var)
 var BAMLSourcePath string
 
+// UseBuildRequest is true when the test container runs the BuildRequest path.
+// Set in TestMain from the BAML_REST_USE_BUILD_REQUEST env var.
+var UseBuildRequest bool
+
 func init() {
 	BAMLSourcePath = os.Getenv("BAML_SOURCE")
 	BAMLVersion = getBAMLVersion()
@@ -134,10 +138,9 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	useBuildRequest := false
 	if v := os.Getenv("BAML_REST_USE_BUILD_REQUEST"); v != "" {
 		var err error
-		useBuildRequest, err = strconv.ParseBool(v)
+		UseBuildRequest, err = strconv.ParseBool(v)
 		if err != nil {
 			println("Invalid BAML_REST_USE_BUILD_REQUEST value:", v, "(expected true/false)")
 			os.Exit(1)
@@ -149,7 +152,7 @@ func TestMain(m *testing.M) {
 		AdapterVersion:  adapterVersion,
 		BAMLSource:      BAMLSourcePath,
 		UnaryServer:     unaryServer,
-		UseBuildRequest: useBuildRequest,
+		UseBuildRequest: UseBuildRequest,
 	})
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
@@ -161,7 +164,7 @@ func TestMain(m *testing.M) {
 	println("  Mock LLM Internal URL:", TestEnv.MockLLMInternal)
 	println("  BAML REST URL:", TestEnv.BAMLRestURL)
 	println("  Unary URL:", TestEnv.BAMLRestUnaryURL)
-	println("  UseBuildRequest:", strconv.FormatBool(useBuildRequest))
+	println("  UseBuildRequest:", strconv.FormatBool(UseBuildRequest))
 
 	// Create clients
 	MockClient = mockllm.NewClient(TestEnv.MockLLMURL)
