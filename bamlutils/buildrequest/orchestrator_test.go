@@ -493,51 +493,6 @@ func TestRunStreamOrchestration_ParseThrottle(t *testing.T) {
 	}
 }
 
-func TestMakeAttemptProviderResolver_SingleProvider(t *testing.T) {
-	resolve := makeAttemptProviderResolver("openai", nil, nil)
-
-	for attempt := 0; attempt < 5; attempt++ {
-		provider, clientOverride := resolve(attempt)
-		if provider != "openai" {
-			t.Errorf("attempt %d: expected provider 'openai', got %q", attempt, provider)
-		}
-		if clientOverride != "" {
-			t.Errorf("attempt %d: expected empty clientOverride, got %q", attempt, clientOverride)
-		}
-	}
-}
-
-func TestMakeAttemptProviderResolver_FallbackChain(t *testing.T) {
-	chain := []string{"ClientA", "ClientB", "ClientC"}
-	providers := map[string]string{
-		"ClientA": "openai",
-		"ClientB": "anthropic",
-		"ClientC": "google-ai",
-	}
-	resolve := makeAttemptProviderResolver("", chain, providers)
-
-	expected := []struct {
-		provider       string
-		clientOverride string
-	}{
-		{"openai", "ClientA"},
-		{"anthropic", "ClientB"},
-		{"google-ai", "ClientC"},
-		{"openai", "ClientA"},    // wraps around
-		{"anthropic", "ClientB"}, // wraps around
-	}
-
-	for i, want := range expected {
-		provider, clientOverride := resolve(i)
-		if provider != want.provider {
-			t.Errorf("attempt %d: expected provider %q, got %q", i, want.provider, provider)
-		}
-		if clientOverride != want.clientOverride {
-			t.Errorf("attempt %d: expected clientOverride %q, got %q", i, want.clientOverride, clientOverride)
-		}
-	}
-}
-
 func TestResolveFallbackChain_AllSupported(t *testing.T) {
 	fallbackChains := map[string][]string{
 		"MyFallback": {"ClientA", "ClientB"},

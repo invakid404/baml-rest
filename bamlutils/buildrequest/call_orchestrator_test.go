@@ -861,8 +861,8 @@ func TestRunCallOrchestration_NilHTTPClient(t *testing.T) {
 
 func TestRunCallOrchestration_FallbackChain(t *testing.T) {
 	// Simulate a fallback chain: first child (openai-shaped) returns 500,
-	// second child (anthropic-shaped) returns 200. The orchestrator round-robins
-	// through children: attempt 0→OpenAI(500), attempt 1→Anthropic(200).
+	// second child (anthropic-shaped) returns 200. The orchestrator walks
+	// the entire chain per retry attempt: OpenAI fails, Anthropic succeeds.
 	var attempts atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -914,7 +914,7 @@ func TestRunCallOrchestration_FallbackChain(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Round-robin: attempt 0 → OpenAI (fail), attempt 1 → Anthropic (success)
+	// Chain walk: OpenAI (fail) → Anthropic (success), done in first attempt
 	if want := []string{"OpenAIClient", "AnthropicClient"}; !slices.Equal(overrides, want) {
 		t.Errorf("expected override sequence %v, got %v", want, overrides)
 	}
@@ -1007,8 +1007,8 @@ func TestRunCallOrchestration_FallbackChainWithRaw(t *testing.T) {
 
 func TestRunCallOrchestration_FallbackChainExtractionFailure(t *testing.T) {
 	// First child returns a valid 200 but with a body that the extraction
-	// function rejects. Round-robin advances to the second child on the
-	// next attempt: attempt 0→Bad(extraction fail), attempt 1→Good(200).
+	// function rejects. The chain walk advances to the second child within
+	// the same retry attempt: Bad(extraction fail) → Good(200 success).
 	var attempts atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1069,36 +1069,5 @@ func TestRunCallOrchestration_FallbackChainExtractionFailure(t *testing.T) {
 	}
 	if got := int(attempts.Load()); got != 2 {
 		t.Errorf("expected exactly 2 attempts (1 extraction failure + 1 success), got %d", got)
-	}
-}
-
-func TestEnsureFallbackRetryPolicy(t *testing.T) {
-	// Nil policy with 3-child chain → synthesize MaxRetries=2
-	p := EnsureFallbackRetryPolicy(nil, 3)
-	if p == nil {
-		t.Fatal("expected non-nil policy for nil input with 3-child chain")
-	}
-	if p.MaxRetries != 2 {
-		t.Errorf("expected MaxRetries=2, got %d", p.MaxRetries)
-	}
-
-	// Existing policy with enough retries → returned as-is
-	existing := &retry.Policy{MaxRetries: 5, Strategy: &retry.ConstantDelay{DelayMs: 100}}
-	p = EnsureFallbackRetryPolicy(existing, 3)
-	if p != existing {
-		t.Error("expected existing policy to be returned as-is when retries are sufficient")
-	}
-
-	// Existing policy with too few retries → bumped
-	small := &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 50}}
-	p = EnsureFallbackRetryPolicy(small, 4)
-	if p.MaxRetries != 3 {
-		t.Errorf("expected MaxRetries=3, got %d", p.MaxRetries)
-	}
-
-	// Single-child chain → no change needed
-	p = EnsureFallbackRetryPolicy(nil, 1)
-	if p != nil {
-		t.Error("expected nil policy for single-child chain")
 	}
 }

@@ -180,38 +180,6 @@ func ResolveRetryPolicy(
 	return nil
 }
 
-// EnsureFallbackRetryPolicy returns a retry policy that guarantees every child
-// in a fallback chain is tried at least once. If the resolved policy already
-// has enough retries it is returned as-is. If it is nil (no retry_policy
-// configured), a minimal policy with MaxRetries = len(chain)-1 and a 0ms
-// constant delay is synthesized so the chain is not defeated.
-//
-// This must be called after ResolveRetryPolicy and ResolveFallbackChain, and
-// only when the chain is non-empty.
-func EnsureFallbackRetryPolicy(resolved *retry.Policy, chainLen int) *retry.Policy {
-	minRetries := chainLen - 1
-	if minRetries < 1 {
-		return resolved
-	}
-	if resolved != nil && resolved.MaxRetries >= minRetries {
-		return resolved
-	}
-	if resolved == nil {
-		// Synthesize a minimal policy so each child is tried once.
-		p := &retry.Policy{
-			MaxRetries: minRetries,
-			Strategy:   &retry.ConstantDelay{DelayMs: 0},
-		}
-		return p
-	}
-	// Policy exists but too few retries — bump MaxRetries.
-	return &retry.Policy{
-		MaxRetries:     minRetries,
-		Strategy:       resolved.Strategy,
-		StrategyConfig: resolved.StrategyConfig,
-	}
-}
-
 // RetryConfigToPolicy converts a bamlutils.RetryConfig (from __baml_options__.retry)
 // into a retry.Policy that the orchestrator can use.
 func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {
@@ -229,30 +197,6 @@ func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {
 	}
 	p.ResolveStrategy()
 	return p
-}
-
-// makeAttemptProviderResolver returns a function that maps a retry attempt
-// number to (provider, clientOverride). For single-provider configs (empty
-// fallbackChain), the provider is fixed and clientOverride is always empty.
-// For fallback chains, the attempt index round-robins through children
-// (attempt % len(chain)), matching the BAML runtime's fallback behaviour
-// where each retry cycle tries the next child in the chain.
-func makeAttemptProviderResolver(
-	defaultProvider string,
-	fallbackChain []string,
-	clientProviders map[string]string,
-) func(attempt int) (provider, clientOverride string) {
-	if len(fallbackChain) == 0 {
-		return func(attempt int) (string, string) {
-			return defaultProvider, ""
-		}
-	}
-	return func(attempt int) (string, string) {
-		idx := attempt % len(fallbackChain)
-		child := fallbackChain[idx]
-		provider := clientProviders[child]
-		return provider, child
-	}
 }
 
 // resolveChildProvider returns the provider for a named client, checking
@@ -405,16 +349,16 @@ func RunStreamOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
-	// resolveAttemptProvider returns the provider and client override for a
-	// given retry attempt. For single-provider configs, the provider is fixed
-	// and no client override is needed. For fallback chains, the attempt index
-	// selects the next child client in the chain (wrapping around).
-	resolveAttemptProvider := makeAttemptProviderResolver(config.Provider, config.FallbackChain, config.ClientProviders)
-
-	// Validate that at least the first attempt has a supported provider.
-	firstProvider, _ := resolveAttemptProvider(0)
-	if firstProvider == "" || !IsProviderSupported(firstProvider) {
-		return fmt.Errorf("buildrequest: unsupported or empty provider %q", firstProvider)
+	// Validate that the first provider is supported.
+	if len(config.FallbackChain) == 0 {
+		if config.Provider == "" || !IsProviderSupported(config.Provider) {
+			return fmt.Errorf("buildrequest: unsupported or empty provider %q", config.Provider)
+		}
+	} else {
+		first := config.ClientProviders[config.FallbackChain[0]]
+		if first == "" || !IsProviderSupported(first) {
+			return fmt.Errorf("buildrequest: unsupported or empty provider %q", first)
+		}
 	}
 
 	var heartbeatSent atomic.Bool
@@ -431,10 +375,8 @@ func RunStreamOrchestration(
 		}
 	}
 
-	// Single-attempt streaming function
-	attemptStream := func(attempt int) (any, error) {
-		provider, clientOverride := resolveAttemptProvider(attempt)
-
+	// tryOneStreamChild runs a single child's streaming attempt.
+	tryOneStreamChild := func(provider, clientOverride string) (any, error) {
 		req, err := buildRequest(ctx, clientOverride)
 		if err != nil {
 			return nil, fmt.Errorf("buildrequest: failed to build request: %w", err)
@@ -534,8 +476,32 @@ func RunStreamOrchestration(
 		return finalResult, nil
 	}
 
+	// attemptFull tries the single provider or the entire fallback chain.
+	// For fallback chains, each retry walks all children in order —
+	// matching the BAML runtime where retries retry the entire strategy.
+	attemptFull := func(_ int) (any, error) {
+		if len(config.FallbackChain) == 0 {
+			return tryOneStreamChild(config.Provider, "")
+		}
+		var lastErr error
+		for _, child := range config.FallbackChain {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+			provider := config.ClientProviders[child]
+			result, err := tryOneStreamChild(provider, child)
+			if err == nil {
+				return result, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
+
 	// Execute with retries
-	_, err := retry.Execute(ctx, config.RetryPolicy, attemptStream, func(attempt int) {
+	_, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, func(attempt int) {
 		// Emit reset signal so downstream discards accumulated partial state
 		r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
 		select {

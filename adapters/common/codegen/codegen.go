@@ -1968,9 +1968,6 @@ func Generate(selfPkg string) {
 					),
 					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
 						resolveRetryPolicy(),
-						jen.Id("retryPolicy").Op("=").Qual(common.BuildRequestPkg, "EnsureFallbackRetryPolicy").Call(
-							jen.Id("retryPolicy"), jen.Len(jen.Id("__chain")),
-						),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
@@ -2025,9 +2022,6 @@ func Generate(selfPkg string) {
 					),
 					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
 						resolveRetryPolicy(),
-						jen.Id("retryPolicy").Op("=").Qual(common.BuildRequestPkg, "EnsureFallbackRetryPolicy").Call(
-							jen.Id("retryPolicy"), jen.Len(jen.Id("__chain")),
-						),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),

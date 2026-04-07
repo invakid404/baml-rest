@@ -91,16 +91,16 @@ func RunCallOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
-	// resolveAttemptProvider returns the provider and client override for a
-	// given retry attempt. For single-provider configs, the provider is fixed
-	// and no client override is needed. For fallback chains, the attempt index
-	// selects the next child client in the chain (wrapping around).
-	resolveAttemptProvider := makeAttemptProviderResolver(config.Provider, config.FallbackChain, config.ClientProviders)
-
-	// Validate that at least the first attempt has a supported provider.
-	firstProvider, _ := resolveAttemptProvider(0)
-	if firstProvider == "" || !IsCallProviderSupported(firstProvider) {
-		return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", firstProvider)
+	// Validate that the first provider is supported.
+	if len(config.FallbackChain) == 0 {
+		if config.Provider == "" || !IsCallProviderSupported(config.Provider) {
+			return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", config.Provider)
+		}
+	} else {
+		first := config.ClientProviders[config.FallbackChain[0]]
+		if first == "" || !IsCallProviderSupported(first) {
+			return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", first)
+		}
 	}
 
 	// sendHeartbeat emits a heartbeat to the pool's hung detector via
@@ -149,21 +149,14 @@ func RunCallOrchestration(
 	}
 
 	// callAttemptResult carries the final parsed value and raw text from
-	// the winning attempt. Extraction and parsing run inside the retry
-	// loop so that failures advance to the next fallback child.
+	// the winning attempt.
 	type callAttemptResult struct {
 		finalResult any
 		raw         string
 	}
 
-	// Each attempt rebuilds the request, executes the HTTP roundtrip,
-	// extracts the response content, and parses the final result.
-	// All four steps are inside the retry loop so that extraction/parse
-	// failures on one provider can fall through to the next child in a
-	// fallback chain.
-	attemptFull := func(attempt int) (any, error) {
-		provider, clientOverride := resolveAttemptProvider(attempt)
-
+	// tryOneChild builds, executes, extracts, and parses a single child.
+	tryOneChild := func(provider, clientOverride string) (*callAttemptResult, error) {
 		req, err := buildRequest(ctx, clientOverride)
 		if err != nil {
 			return nil, fmt.Errorf("buildrequest: failed to build request: %w", err)
@@ -186,14 +179,35 @@ func RunCallOrchestration(
 		return &callAttemptResult{finalResult: finalResult, raw: raw}, nil
 	}
 
+	// attemptFull tries either the single provider or the entire fallback
+	// chain. For fallback chains, each retry attempt walks all children in
+	// order — matching the BAML runtime's semantics where retries retry the
+	// entire strategy after all children fail.
+	attemptFull := func(_ int) (any, error) {
+		if len(config.FallbackChain) == 0 {
+			return tryOneChild(config.Provider, "")
+		}
+		var lastErr error
+		for _, child := range config.FallbackChain {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+			provider := config.ClientProviders[child]
+			result, err := tryOneChild(provider, child)
+			if err == nil {
+				return result, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
+
 	// The onRetry callback emits a heartbeat before the backoff sleep
 	// so the pool's hung detector sees liveness between attempts, then
 	// resets the atomic so the next attempt's onSuccess heartbeat fires.
 	result, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, func(attempt int) {
-		// Emit heartbeat directly (bypassing the atomic guard) to signal
-		// liveness during retry backoff. Without this, repeated fast
-		// 5xx/429 responses followed by a long backoff would leave the
-		// request silent and trip FirstByteTimeout.
 		r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)
 		select {
 		case out <- r:
