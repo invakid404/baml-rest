@@ -1034,6 +1034,10 @@ func TestParseStrategyList(t *testing.T) {
 		{"strategy []", nil},
 		{"strategy", nil},
 		{"not a strategy", nil},
+		// Inline comments must not produce bogus child names.
+		{"strategy [ClientA, // primary ClientB,]", []string{"ClientA"}},
+		{"strategy [ClientA, ClientB] // fallback pair", []string{"ClientA", "ClientB"}},
+		{"strategy [A, B, C] // three-way chain", []string{"A", "B", "C"}},
 	}
 
 	for _, tt := range tests {

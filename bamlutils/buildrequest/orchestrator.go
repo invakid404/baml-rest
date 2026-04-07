@@ -180,6 +180,38 @@ func ResolveRetryPolicy(
 	return nil
 }
 
+// EnsureFallbackRetryPolicy returns a retry policy that guarantees every child
+// in a fallback chain is tried at least once. If the resolved policy already
+// has enough retries it is returned as-is. If it is nil (no retry_policy
+// configured), a minimal policy with MaxRetries = len(chain)-1 and a 0ms
+// constant delay is synthesized so the chain is not defeated.
+//
+// This must be called after ResolveRetryPolicy and ResolveFallbackChain, and
+// only when the chain is non-empty.
+func EnsureFallbackRetryPolicy(resolved *retry.Policy, chainLen int) *retry.Policy {
+	minRetries := chainLen - 1
+	if minRetries < 1 {
+		return resolved
+	}
+	if resolved != nil && resolved.MaxRetries >= minRetries {
+		return resolved
+	}
+	if resolved == nil {
+		// Synthesize a minimal policy so each child is tried once.
+		p := &retry.Policy{
+			MaxRetries: minRetries,
+			Strategy:   &retry.ConstantDelay{DelayMs: 0},
+		}
+		return p
+	}
+	// Policy exists but too few retries — bump MaxRetries.
+	return &retry.Policy{
+		MaxRetries:     minRetries,
+		Strategy:       resolved.Strategy,
+		StrategyConfig: resolved.StrategyConfig,
+	}
+}
+
 // RetryConfigToPolicy converts a bamlutils.RetryConfig (from __baml_options__.retry)
 // into a retry.Policy that the orchestrator can use.
 func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {

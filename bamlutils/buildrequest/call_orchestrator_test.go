@@ -1008,3 +1008,101 @@ func TestRunCallOrchestration_FallbackChainWithRaw(t *testing.T) {
 		t.Fatal("expected a final result from fallback")
 	}
 }
+
+func TestRunCallOrchestration_FallbackChainExtractionFailure(t *testing.T) {
+	// First child returns a valid 200 but with a body that the extraction
+	// function rejects. The orchestrator must advance to the second child
+	// instead of stopping after the first 200.
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := int(attempts.Add(1))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		if attempt == 1 {
+			// Malformed — not valid OpenAI/Anthropic content
+			fmt.Fprint(w, `{"garbage": true}`)
+			return
+		}
+		// Valid Anthropic-shaped response on second attempt
+		fmt.Fprint(w, `{"content":[{"type":"text","text":"recovered"}]}`)
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &CallConfig{
+		Provider:      "",
+		RetryPolicy:   &retry.Policy{MaxRetries: 3, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+		FallbackChain: []string{"BadClient", "GoodClient"},
+		ClientProviders: map[string]string{
+			"BadClient":  "openai",
+			"GoodClient": "anthropic",
+		},
+	}
+
+	buildFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+	}
+
+	err := RunCallOrchestration(
+		context.Background(), out, config, client,
+		buildFn,
+		identityParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hasFinal := false
+	for r := range out {
+		if r.Kind() == bamlutils.StreamResultKindFinal {
+			hasFinal = true
+			if r.Final() != "recovered" {
+				t.Errorf("expected 'recovered', got %v", r.Final())
+			}
+		}
+	}
+	if !hasFinal {
+		t.Fatal("expected final result after extraction failure retry")
+	}
+	if got := int(attempts.Load()); got != 2 {
+		t.Errorf("expected exactly 2 attempts (1 extraction failure + 1 success), got %d", got)
+	}
+}
+
+func TestEnsureFallbackRetryPolicy(t *testing.T) {
+	// Nil policy with 3-child chain → synthesize MaxRetries=2
+	p := EnsureFallbackRetryPolicy(nil, 3)
+	if p == nil {
+		t.Fatal("expected non-nil policy for nil input with 3-child chain")
+	}
+	if p.MaxRetries != 2 {
+		t.Errorf("expected MaxRetries=2, got %d", p.MaxRetries)
+	}
+
+	// Existing policy with enough retries → returned as-is
+	existing := &retry.Policy{MaxRetries: 5, Strategy: &retry.ConstantDelay{DelayMs: 100}}
+	p = EnsureFallbackRetryPolicy(existing, 3)
+	if p != existing {
+		t.Error("expected existing policy to be returned as-is when retries are sufficient")
+	}
+
+	// Existing policy with too few retries → bumped
+	small := &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 50}}
+	p = EnsureFallbackRetryPolicy(small, 4)
+	if p.MaxRetries != 3 {
+		t.Errorf("expected MaxRetries=3, got %d", p.MaxRetries)
+	}
+
+	// Single-child chain → no change needed
+	p = EnsureFallbackRetryPolicy(nil, 1)
+	if p != nil {
+		t.Error("expected nil policy for single-child chain")
+	}
+}

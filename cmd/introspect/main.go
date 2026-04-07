@@ -1658,6 +1658,16 @@ func parseStrategyList(line string) []string {
 		return nil
 	}
 
+	// Strip inline comments from the bracket contents before tokenizing.
+	// A multi-line strategy list like:
+	//   strategy [
+	//       ClientA, // primary
+	//       ClientB,
+	//   ]
+	// accumulates "ClientA, // primary ClientB," in the buffer. Without
+	// stripping, "//", "primary", and "ClientB," become bogus tokens.
+	inner = stripInlineComment(inner)
+
 	// Split by comma or whitespace
 	var clients []string
 	for _, part := range strings.FieldsFunc(inner, func(r rune) bool {
