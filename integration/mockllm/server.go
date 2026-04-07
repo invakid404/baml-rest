@@ -408,6 +408,29 @@ func (c *Client) ClearScenarios(ctx context.Context) error {
 	return nil
 }
 
+// DeleteScenario removes a single scenario by ID.
+// Returns nil if the scenario was deleted or did not exist.
+func (c *Client) DeleteScenario(ctx context.Context, scenarioID string) error {
+	req, err := http.NewRequestWithContext(ctx, "DELETE", fmt.Sprintf("%s/_admin/scenarios/%s", c.baseURL, scenarioID), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Accept both 200 (deleted) and 404 (already absent) as success.
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 // GetLastRequest returns the last request body received for a scenario.
 func (c *Client) GetLastRequest(ctx context.Context, scenarioID string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/_admin/scenarios/%s/last-request", c.baseURL, scenarioID), nil)

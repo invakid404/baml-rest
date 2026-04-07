@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,18 @@ var BAMLSourcePath string
 // UseBuildRequest is true when the test container runs the BuildRequest path.
 // Set in TestMain from the BAML_REST_USE_BUILD_REQUEST env var.
 var UseBuildRequest bool
+
+// parseBoolEnv parses a boolean environment variable using the same accepted
+// literals as the server's UseBuildRequest parser: 1/true/yes/on → true,
+// everything else (including empty) → false.
+func parseBoolEnv(value string) bool {
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 func init() {
 	BAMLSourcePath = os.Getenv("BAML_SOURCE")
@@ -138,14 +151,7 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	if v := os.Getenv("BAML_REST_USE_BUILD_REQUEST"); v != "" {
-		var err error
-		UseBuildRequest, err = strconv.ParseBool(v)
-		if err != nil {
-			println("Invalid BAML_REST_USE_BUILD_REQUEST value:", v, "(expected true/false)")
-			os.Exit(1)
-		}
-	}
+	UseBuildRequest = parseBoolEnv(os.Getenv("BAML_REST_USE_BUILD_REQUEST"))
 	TestEnv, err = testutil.Setup(ctx, testutil.SetupOptions{
 		BAMLSrcPath:     bamlSrcPath,
 		BAMLVersion:     BAMLVersion,

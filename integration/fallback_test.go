@@ -25,14 +25,21 @@ func registerFallbackScenario(t *testing.T, scenario *mockllm.Scenario) {
 	}
 }
 
-// clearFallbackScenarios removes all mock fallback scenarios so each subtest
-// starts from a clean request-count state with no stale tertiary entries.
+// fallbackScenarioIDs lists the scenario IDs used by fallback tests. Deleting
+// only these (instead of calling ClearScenarios) avoids wiping scenarios
+// registered by other integration test files.
+var fallbackScenarioIDs = []string{"fallback-primary", "fallback-secondary", "fallback-tertiary"}
+
+// clearFallbackScenarios removes the known fallback scenarios so each subtest
+// starts from a clean request-count state with no stale entries.
 func clearFallbackScenarios(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := MockClient.ClearScenarios(ctx); err != nil {
-		t.Fatalf("Failed to clear fallback scenarios: %v", err)
+	for _, id := range fallbackScenarioIDs {
+		if err := MockClient.DeleteScenario(ctx, id); err != nil {
+			t.Fatalf("Failed to delete scenario %q: %v", id, err)
+		}
 	}
 }
 
