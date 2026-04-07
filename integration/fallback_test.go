@@ -326,6 +326,9 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
 				t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
 			}
+			if !UseBuildRequest {
+				t.Skip("Skipping: Raw propagation through fallback chains is a BuildRequest-only feature")
+			}
 
 			waitForHealthy(t, 30*time.Second)
 			clearFallbackScenarios(t)
