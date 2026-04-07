@@ -134,12 +134,22 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
+	useBuildRequest := false
+	if v := os.Getenv("BAML_REST_USE_BUILD_REQUEST"); v != "" {
+		var err error
+		useBuildRequest, err = strconv.ParseBool(v)
+		if err != nil {
+			println("Invalid BAML_REST_USE_BUILD_REQUEST value:", v, "(expected true/false)")
+			os.Exit(1)
+		}
+	}
 	TestEnv, err = testutil.Setup(ctx, testutil.SetupOptions{
-		BAMLSrcPath:    bamlSrcPath,
-		BAMLVersion:    BAMLVersion,
-		AdapterVersion: adapterVersion,
-		BAMLSource:     BAMLSourcePath,
-		UnaryServer:    unaryServer,
+		BAMLSrcPath:     bamlSrcPath,
+		BAMLVersion:     BAMLVersion,
+		AdapterVersion:  adapterVersion,
+		BAMLSource:      BAMLSourcePath,
+		UnaryServer:     unaryServer,
+		UseBuildRequest: useBuildRequest,
 	})
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
@@ -151,6 +161,7 @@ func TestMain(m *testing.M) {
 	println("  Mock LLM Internal URL:", TestEnv.MockLLMInternal)
 	println("  BAML REST URL:", TestEnv.BAMLRestURL)
 	println("  Unary URL:", TestEnv.BAMLRestUnaryURL)
+	println("  UseBuildRequest:", strconv.FormatBool(useBuildRequest))
 
 	// Create clients
 	MockClient = mockllm.NewClient(TestEnv.MockLLMURL)
