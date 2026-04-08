@@ -1095,8 +1095,10 @@ type bamlConfig struct {
 	// retryPolicies maps policy name → {max_retries, strategy type, delay params}
 	retryPolicies map[string]parsedRetryPolicy
 	// fallbackChains maps strategy client name → ordered list of child client names.
-	// Populated when a client has provider "baml-fallback" or "baml-roundrobin"
-	// and an options block containing strategy [ClientA, ClientB, ...].
+	// The parser records any client whose options contain strategy
+	// [ClientA, ClientB, ...]; provider filtering (for example restricting the
+	// BuildRequest path to baml-fallback and leaving baml-roundrobin on legacy)
+	// happens later at runtime in ResolveFallbackChain.
 	fallbackChains map[string][]string
 }
 
