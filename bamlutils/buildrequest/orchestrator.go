@@ -296,9 +296,9 @@ type StreamConfig struct {
 	ParseThrottleInterval time.Duration
 
 	// FallbackChain is the ordered list of child client names for fallback
-	// strategies. When non-empty, each retry attempt uses the next client
-	// in the chain (wrapping around). When empty, the single Provider is
-	// used for all attempts.
+	// strategies. When non-empty, each retry attempt walks the entire chain
+	// in order; if any child succeeds, the attempt returns immediately.
+	// When empty, the single Provider is used for all attempts.
 	FallbackChain []string
 
 	// ClientProviders maps child client names to their provider strings.
@@ -484,11 +484,25 @@ func RunStreamOrchestration(
 			return tryOneStreamChild(config.Provider, "")
 		}
 		var lastErr error
-		for _, child := range config.FallbackChain {
+		for i, child := range config.FallbackChain {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			default:
+			}
+			// Emit a reset signal before trying the next child so the
+			// downstream discards any partial/raw state leaked by the
+			// previous child's failed stream. Not needed before the first
+			// child in the chain.
+			if i > 0 && lastErr != nil {
+				r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
+				select {
+				case out <- r:
+				case <-ctx.Done():
+					r.Release()
+					return nil, ctx.Err()
+				}
+				heartbeatSent.Store(false)
 			}
 			provider := config.ClientProviders[child]
 			result, err := tryOneStreamChild(provider, child)

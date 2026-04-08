@@ -28,9 +28,9 @@ type CallConfig struct {
 	NeedsRaw bool
 
 	// FallbackChain is the ordered list of child client names for fallback
-	// strategies. When non-empty, each retry attempt uses the next client
-	// in the chain (wrapping around). When empty, the single Provider is
-	// used for all attempts.
+	// strategies. When non-empty, each retry attempt walks the entire chain
+	// in order; if any child succeeds, the attempt returns immediately.
+	// When empty, the single Provider is used for all attempts.
 	FallbackChain []string
 
 	// ClientProviders maps child client names to their provider strings.

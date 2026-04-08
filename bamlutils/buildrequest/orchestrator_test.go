@@ -667,3 +667,119 @@ func TestResolveFallbackChain_FallbackAllowed(t *testing.T) {
 		t.Errorf("unexpected providers: %v", providers)
 	}
 }
+
+func TestRunStreamOrchestration_FallbackChainResetBetweenChildren(t *testing.T) {
+	// Primary streams partial data ("stale") then abruptly closes the
+	// connection (simulating a mid-stream failure). Secondary streams
+	// "good" data and completes normally. The test verifies that:
+	// 1. A reset signal is emitted between children so downstream
+	//    discards the primary's stale partial state.
+	// 2. The final output contains only the secondary's data.
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := int(attempts.Add(1))
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+
+		if attempt == 1 {
+			// Primary: stream valid chunks that accumulate to "stale",
+			// then complete normally. parseFinal rejects "stale" content,
+			// causing tryOneStreamChild to return an error after having
+			// emitted partial events — exercising the inter-child reset.
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return
+		}
+		// Secondary: normal stream that completes.
+		for _, chunk := range []string{"good", " data"} {
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%s\"}}]}\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "",
+		RetryPolicy:   &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+		NeedsPartials: true,
+		FallbackChain: []string{"PrimaryClient", "SecondaryClient"},
+		ClientProviders: map[string]string{
+			"PrimaryClient":   "openai",
+			"SecondaryClient": "openai",
+		},
+	}
+
+	buildFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+	}
+
+	// parseFinal rejects "stale" content so the primary child fails after
+	// streaming partial events, forcing the orchestrator to advance to
+	// the secondary child.
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		if s == "stale" {
+			return nil, fmt.Errorf("rejected stale content")
+		}
+		return s, nil
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		buildFn,
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		parseFinal,
+		newTestResult,
+	)
+	close(out)
+
+	// Drain results
+	var results []*testResult
+	for r := range out {
+		results = append(results, r.(*testResult))
+	}
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the reset signal — there should be at least one between the
+	// primary's partial and the secondary's partial/final.
+	sawReset := false
+	sawStalePartial := false
+	finalVal := ""
+	for _, r := range results {
+		if r.kind == bamlutils.StreamResultKindStream && r.stream == "stale" {
+			sawStalePartial = true
+		}
+		if r.kind == bamlutils.StreamResultKindStream && r.reset {
+			sawReset = true
+		}
+		if r.kind == bamlutils.StreamResultKindFinal {
+			finalVal, _ = r.final.(string)
+		}
+	}
+
+	if sawStalePartial && !sawReset {
+		t.Error("primary emitted partial data but no reset signal was sent before the secondary child")
+	}
+	if finalVal != "good data" {
+		t.Errorf("expected final='good data', got %q", finalVal)
+	}
+}
