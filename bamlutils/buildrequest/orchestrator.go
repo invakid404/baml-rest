@@ -233,10 +233,12 @@ func ResolveFallbackChain(
 	clientProviders map[string]string,
 	isProviderSupported func(string) bool,
 ) (chain []string, providers map[string]string) {
+	reg := adapter.OriginalClientRegistry()
+
 	// Determine which client name to look up in fallbackChains.
 	// Runtime primary override takes precedence over the static default.
 	clientName := defaultClientName
-	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil {
+	if reg != nil && reg.Primary != nil {
 		clientName = *reg.Primary
 	}
 
@@ -251,9 +253,7 @@ func ResolveFallbackChain(
 	// does not have. Without it, round-robin degrades to fallback (always
 	// starting at child 0), which is silently wrong. Leave round-robin on
 	// the legacy path where the BAML runtime handles the rotation.
-	parentProvider := resolveChildProvider(
-		adapter.OriginalClientRegistry(), clientName, clientProviders,
-	)
+	parentProvider := resolveChildProvider(reg, clientName, clientProviders)
 	if parentProvider != "baml-fallback" {
 		return nil, nil
 	}
@@ -261,7 +261,6 @@ func ResolveFallbackChain(
 	// Resolve each child's provider, checking runtime client_registry
 	// overrides first (same precedence as ResolveProvider). If any child
 	// is unsupported or has no provider, fall back to the legacy path.
-	reg := adapter.OriginalClientRegistry()
 	providers = make(map[string]string, len(chain))
 	for _, child := range chain {
 		p := resolveChildProvider(reg, child, clientProviders)
