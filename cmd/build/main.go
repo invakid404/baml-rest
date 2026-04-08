@@ -31,6 +31,7 @@ import (
 
 	bamlrest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/registry"
@@ -166,6 +167,7 @@ var (
 	debugBuild      bool
 	unaryServer     bool
 	prettyLogs      bool
+	baseURLRewrites []string
 )
 
 func init() {
@@ -201,6 +203,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&unaryServer, "unary-server", false, "Enable the chi-based unary HTTP server for client-disconnect cancellation")
 	rootCmd.Flags().StringVar(&bamlSource, "baml-source", "", "Path to local BAML source repository for building from unreleased versions")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
+	rootCmd.Flags().StringArrayVar(&baseURLRewrites, "base-url-rewrite", nil, "Rewrite base URLs in .baml files (format: from=to, repeatable). Also reads BAML_REST_BASE_URL_REWRITES env var (semicolon-separated)")
 
 	_ = viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
 	_ = viper.BindPFlag("target-image", rootCmd.Flags().Lookup("target-image"))
@@ -448,16 +451,25 @@ var rootCmd = &cobra.Command{
 			customBamlGoLib = bamlSource
 		}
 
+		// Parse URL rewrite rules from flag and env var
+		rewriteRules := parseBaseURLRewriteRules(baseURLRewrites)
+		if len(rewriteRules) > 0 {
+			fmt.Printf("Base URL rewrites:\n")
+			for _, r := range rewriteRules {
+				fmt.Printf("  %s -> %s\n", r.From, r.To)
+			}
+		}
+
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild, unaryServer, bamlSource)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild, unaryServer, bamlSource, rewriteRules)
 		} else {
-			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild, unaryServer, bamlLibraryPath, bamlCliPath)
+			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild, unaryServer, bamlLibraryPath, bamlCliPath, rewriteRules)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, bamlSource string) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, bamlSource string, rewriteRules []urlrewrite.Rule) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	if platform != nil {
@@ -484,12 +496,13 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	var dockerfileOut bytes.Buffer
 
 	dockerfileTemplateArgs := map[string]interface{}{
-		"bamlVersion":    bamlVersion,
-		"adapterVersion": adapterVersion,
-		"keepSource":     keepSource,
-		"debugBuild":     debugBuild,
-		"unaryServer":    unaryServer,
-		"bamlSource":     bamlSource != "",
+		"bamlVersion":     bamlVersion,
+		"adapterVersion":  adapterVersion,
+		"keepSource":      keepSource,
+		"debugBuild":      debugBuild,
+		"unaryServer":     unaryServer,
+		"bamlSource":      bamlSource != "",
+		"baseURLRewrites": formatRewriteRulesForEnv(rewriteRules),
 	}
 	if bamlSource != "" {
 		protocGenGoVersion, err := detectProtocGenGoVersion(bamlSource)
@@ -548,16 +561,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		}
 	}
 
-	err = copyDirToTar(bamlSrcPath, tarWriter, func(path string, _ fs.DirEntry, fileInfo fs.FileInfo) *string {
-		baseName := fileInfo.Name()
-		if !strings.HasSuffix(baseName, bamlFileExt) {
-			return nil
-		}
-
-		result := fmt.Sprintf("baml_src/%s", path)
-		return &result
-	})
-	if err != nil {
+	if err := copyBamlDirToTar(bamlSrcPath, tarWriter, rewriteRules); err != nil {
 		return fmt.Errorf("failed to copy target directory to build context: %w", err)
 	}
 
@@ -799,7 +803,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	return nil
 }
 
-func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, bamlLibraryPath string, bamlCliPath string) error {
+func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, bamlLibraryPath string, bamlCliPath string, rewriteRules []urlrewrite.Rule) error {
 	fmt.Printf("\n=== Native Build Mode ===\n\n")
 
 	// Check prerequisites
@@ -861,16 +865,9 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		}
 	}
 
-	// Copy user's baml_src to build context
+	// Copy user's baml_src to build context (with URL rewrites applied)
 	fmt.Printf("Copying baml_src to build context...\n")
-	if err := copyDirToDisk(bamlSrcPath, buildContextDir, func(path string, _ fs.DirEntry, fileInfo fs.FileInfo) *string {
-		baseName := fileInfo.Name()
-		if !strings.HasSuffix(baseName, bamlFileExt) {
-			return nil
-		}
-		result := filepath.Join(bamlSrcDir, path)
-		return &result
-	}); err != nil {
+	if err := copyBamlDirToDisk(bamlSrcPath, buildContextDir, rewriteRules); err != nil {
 		return fmt.Errorf("failed to copy baml_src to build context: %w", err)
 	}
 
@@ -945,6 +942,9 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	}
 	if bamlCliPath != "" {
 		env = append(env, fmt.Sprintf("BAML_CLI_PATH=%s", bamlCliPath))
+	}
+	if rewriteEnv := formatRewriteRulesForEnv(rewriteRules); rewriteEnv != "" {
+		env = append(env, fmt.Sprintf("BAML_REST_BASE_URL_REWRITES=%s", rewriteEnv))
 	}
 
 	// Execute build.sh
@@ -1551,5 +1551,116 @@ func copyDirToTarExclude(path string, target *tar.Writer, mapper copyFSMapper, e
 		}(file)
 
 		return tw.WriteFile(*name, file, fileInfo.Size(), int64(fileInfo.Mode()))
+	})
+}
+
+// parseBaseURLRewriteRules merges rewrite rules from the --base-url-rewrite
+// flags and the BAML_REST_BASE_URL_REWRITES env var into a single slice.
+func parseBaseURLRewriteRules(flagValues []string) []urlrewrite.Rule {
+	var rules []urlrewrite.Rule
+
+	// Parse from env var first
+	rules = append(rules, urlrewrite.ParseRules(os.Getenv("BAML_REST_BASE_URL_REWRITES"))...)
+
+	// Parse from flags (same format as individual env var entries: "from=to")
+	for _, val := range flagValues {
+		parsed := urlrewrite.ParseRules(val)
+		rules = append(rules, parsed...)
+	}
+
+	return rules
+}
+
+// formatRewriteRulesForEnv formats rewrite rules as a semicolon-separated
+// string suitable for the BAML_REST_BASE_URL_REWRITES env var.
+func formatRewriteRulesForEnv(rules []urlrewrite.Rule) string {
+	if len(rules) == 0 {
+		return ""
+	}
+	parts := make([]string, len(rules))
+	for i, r := range rules {
+		parts[i] = r.From + "=" + r.To
+	}
+	return strings.Join(parts, ";")
+}
+
+// copyBamlDirToDisk copies .baml files from srcPath to targetDir under
+// "baml_src/", applying URL rewrite rules to file contents if any are provided.
+func copyBamlDirToDisk(srcPath string, targetDir string, rules []urlrewrite.Rule) error {
+	return filepath.Walk(srcPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(info.Name(), bamlFileExt) {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(srcPath, path)
+		if err != nil {
+			return fmt.Errorf("failed to get relative path for %s: %w", path, err)
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %w", path, err)
+		}
+
+		// Apply URL rewrite rules
+		if len(rules) > 0 {
+			content = []byte(urlrewrite.Apply(string(content), rules))
+		}
+
+		destPath := filepath.Join(targetDir, bamlSrcDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return fmt.Errorf("failed to create directory for %s: %w", destPath, err)
+		}
+		return os.WriteFile(destPath, content, info.Mode())
+	})
+}
+
+// copyBamlDirToTar copies .baml files from srcPath into the tar writer under
+// "baml_src/", applying URL rewrite rules to file contents if any are provided.
+func copyBamlDirToTar(srcPath string, tw *tar.Writer, rules []urlrewrite.Rule) error {
+	return filepath.Walk(srcPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(info.Name(), bamlFileExt) {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(srcPath, path)
+		if err != nil {
+			return fmt.Errorf("failed to get relative path for %s: %w", path, err)
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %w", path, err)
+		}
+
+		// Apply URL rewrite rules
+		if len(rules) > 0 {
+			content = []byte(urlrewrite.Apply(string(content), rules))
+		}
+
+		header := &tar.Header{
+			Name: fmt.Sprintf("baml_src/%s", relPath),
+			Mode: int64(info.Mode()),
+			Size: int64(len(content)),
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			return fmt.Errorf("failed to write tar header for %s: %w", relPath, err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			return fmt.Errorf("failed to write tar content for %s: %w", relPath, err)
+		}
+		return nil
 	})
 }

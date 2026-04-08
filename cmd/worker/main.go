@@ -17,6 +17,7 @@ import (
 	goplugin "github.com/hashicorp/go-plugin"
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/prometheus/client_golang/prometheus"
@@ -132,6 +133,10 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
 	}
 
 	if o.Options.ClientRegistry != nil {
+		// Apply URL rewrite rules to custom client base_url options
+		if rules := urlrewrite.GlobalRules(); len(rules) > 0 {
+			rewriteClientBaseURLs(o.Options.ClientRegistry, rules)
+		}
 		if err := adapter.SetClientRegistry(o.Options.ClientRegistry); err != nil {
 			return fmt.Errorf("failed to set client registry: %w", err)
 		}
@@ -148,6 +153,30 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
 	}
 
 	return nil
+}
+
+// rewriteClientBaseURLs applies URL rewrite rules to the base_url option
+// of each client in the registry. This allows remapping external URLs
+// (e.g., https://llm.mandel.ai) to internal URLs (e.g., http://litellm:4000)
+// for custom clients passed via __baml_options__.
+func rewriteClientBaseURLs(registry *bamlutils.ClientRegistry, rules []urlrewrite.Rule) {
+	for _, client := range registry.Clients {
+		if client == nil || client.Options == nil {
+			continue
+		}
+		baseURL, ok := client.Options["base_url"]
+		if !ok {
+			continue
+		}
+		urlStr, ok := baseURL.(string)
+		if !ok || urlStr == "" {
+			continue
+		}
+		rewritten := urlrewrite.ApplyToURL(urlStr, rules)
+		if rewritten != urlStr {
+			client.Options["base_url"] = rewritten
+		}
+	}
 }
 
 func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {

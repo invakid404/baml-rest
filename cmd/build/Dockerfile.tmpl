@@ -109,6 +109,9 @@ ENV DEBUG_BUILD="true"
 {{- if .unaryServer }}
 ENV UNARY_SERVER="true"
 {{- end }}
+{{- if .baseURLRewrites }}
+ENV BAML_REST_BASE_URL_REWRITES="{{ .baseURLRewrites }}"
+{{- end }}
 
 # Run build
 {{- if .noCacheMount }}

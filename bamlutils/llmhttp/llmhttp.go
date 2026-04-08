@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils/sseclient"
+	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 )
 
 // Request describes an HTTP request to send to an LLM provider.
@@ -311,9 +312,17 @@ func (e *HTTPError) Error() string {
 }
 
 // buildHTTPRequest converts a Request into a standard *http.Request.
+// If URL rewrite rules are configured (via BAML_REST_BASE_URL_REWRITES),
+// the request URL is rewritten before the HTTP request is created.
 func buildHTTPRequest(ctx context.Context, req *Request) (*http.Request, error) {
 	if req == nil {
 		return nil, fmt.Errorf("llmhttp: nil request")
+	}
+
+	// Apply URL rewrite rules (catch-all for BuildRequest path)
+	url := req.URL
+	if rules := urlrewrite.GlobalRules(); len(rules) > 0 {
+		url = urlrewrite.ApplyToURL(url, rules)
 	}
 
 	var body io.Reader
@@ -321,7 +330,7 @@ func buildHTTPRequest(ctx context.Context, req *Request) (*http.Request, error) 
 		body = strings.NewReader(req.Body)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL, body)
+	httpReq, err := http.NewRequestWithContext(ctx, req.Method, url, body)
 	if err != nil {
 		return nil, err
 	}
