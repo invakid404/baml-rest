@@ -1080,3 +1080,49 @@ func TestParseClientBlock_MultilineStrategyComments(t *testing.T) {
 		}
 	}
 }
+
+func TestParseClientBlock_MultilineStrategyOpeningLineComment(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-fallback",
+		"options {",
+		"    strategy [ // opening comment",
+		"        ClientA,",
+		"        ClientB,",
+		"    ]",
+		"}",
+	}
+	parseClientBlock(cfg, "OpenLineComment", block)
+	got := cfg.fallbackChains["OpenLineComment"]
+	want := []string{"ClientA", "ClientB"}
+	if len(got) != len(want) {
+		t.Fatalf("expected chain %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: expected %q, got %q", i, want[i], got[i])
+		}
+	}
+}
+
+func TestParseClientBlock_OptionsOpeningLineStrategyComment(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-fallback",
+		"options { strategy [ // opening comment",
+		"    ClientA,",
+		"    ClientB,",
+		"] }",
+	}
+	parseClientBlock(cfg, "InlineOptionsOpenLine", block)
+	got := cfg.fallbackChains["InlineOptionsOpenLine"]
+	want := []string{"ClientA", "ClientB"}
+	if len(got) != len(want) {
+		t.Fatalf("expected chain %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: expected %q, got %q", i, want[i], got[i])
+		}
+	}
+}

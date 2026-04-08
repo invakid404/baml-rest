@@ -1576,7 +1576,7 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 			// "strategy [A, B] }" contains both the strategy list and
 			// the closing brace. If we check depth first, the brace
 			// drops depth to 0 and we exit before parsing.
-			trimmed := strings.TrimSpace(line)
+			trimmed := strings.TrimSpace(stripInlineComment(line))
 			if strings.HasPrefix(trimmed, "strategy ") {
 				if strings.Contains(trimmed, "]") {
 					// Single-line: strategy [A, B, C]
@@ -1616,11 +1616,17 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 					if closeIdx := strings.LastIndex(inner, "}"); closeIdx >= 0 {
 						inner = inner[:closeIdx]
 					}
-					inner = strings.TrimSpace(inner)
+					inner = strings.TrimSpace(stripInlineComment(inner))
 					if strings.HasPrefix(inner, "strategy ") {
-						chain := parseStrategyList(inner)
-						if len(chain) > 0 {
-							cfg.fallbackChains[name] = chain
+						if strings.Contains(inner, "]") {
+							chain := parseStrategyList(inner)
+							if len(chain) > 0 {
+								cfg.fallbackChains[name] = chain
+							}
+						} else if strings.Contains(inner, "[") {
+							inStrategyList = true
+							strategyBuf.Reset()
+							strategyBuf.WriteString(inner)
 						}
 					}
 				}
