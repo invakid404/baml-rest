@@ -1552,9 +1552,10 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 			// Handle multi-line strategy accumulation. Once we see "strategy ["
 			// without a closing "]", we buffer lines until we find the "]".
 			if inStrategyList {
+				strippedLine := strings.TrimSpace(stripInlineComment(line))
 				strategyBuf.WriteString(" ")
-				strategyBuf.WriteString(strings.TrimSpace(stripInlineComment(line)))
-				if strings.Contains(line, "]") {
+				strategyBuf.WriteString(strippedLine)
+				if strings.Contains(strippedLine, "]") {
 					inStrategyList = false
 					chain := parseStrategyList(strategyBuf.String())
 					if len(chain) > 0 {
