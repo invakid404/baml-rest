@@ -353,7 +353,7 @@ func TestRunStreamOrchestration_ContextCancellation(t *testing.T) {
 	}
 }
 
-func TestUseBuildRequest(t *testing.T) {
+func TestParseBuildRequestEnv(t *testing.T) {
 	tests := []struct {
 		env      string
 		expected bool
@@ -375,8 +375,8 @@ func TestUseBuildRequest(t *testing.T) {
 			os.Setenv("BAML_REST_USE_BUILD_REQUEST", tt.env)
 			defer os.Unsetenv("BAML_REST_USE_BUILD_REQUEST")
 
-			if got := UseBuildRequest(); got != tt.expected {
-				t.Errorf("UseBuildRequest() with env=%q: got %v, want %v", tt.env, got, tt.expected)
+			if got := parseBuildRequestEnv(); got != tt.expected {
+				t.Errorf("parseBuildRequestEnv() with env=%q: got %v, want %v", tt.env, got, tt.expected)
 			}
 		})
 	}

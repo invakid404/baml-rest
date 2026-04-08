@@ -521,7 +521,12 @@ go run "${ADAPTER_VERSION}/cmd/main.go"
 
 # Build worker binary first (this imports baml and loads the shared library)
 echo "Building worker binary..."
-go build -o cmd/serve/worker cmd/worker/main.go
+WORKER_LDFLAGS=""
+if [ -n "${BAML_REST_BASE_URL_REWRITES:-}" ]; then
+    echo "Baking in base URL rewrites: ${BAML_REST_BASE_URL_REWRITES}"
+    WORKER_LDFLAGS="-X 'github.com/invakid404/baml-rest/bamlutils/urlrewrite.builtinRules=${BAML_REST_BASE_URL_REWRITES}'"
+fi
+go build ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o cmd/serve/worker cmd/worker/main.go
 
 # Generate OpenAPI schema (this also imports baml)
 echo "Generating OpenAPI schema..."

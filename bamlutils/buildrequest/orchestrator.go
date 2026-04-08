@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,10 +23,10 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/sse"
 )
 
-// UseBuildRequest returns true if the BuildRequest/StreamRequest paths are enabled.
-// Controlled by the BAML_REST_USE_BUILD_REQUEST environment variable.
-// When false, the legacy CallStream+OnTick path is used for all providers.
-func UseBuildRequest() bool {
+// parseBuildRequestEnv reads BAML_REST_USE_BUILD_REQUEST and returns its
+// boolean interpretation. Extracted so the test can verify parsing logic
+// independently of the cache.
+func parseBuildRequestEnv() bool {
 	v := os.Getenv("BAML_REST_USE_BUILD_REQUEST")
 	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":
@@ -33,6 +34,25 @@ func UseBuildRequest() bool {
 	default:
 		return false
 	}
+}
+
+// useBuildRequestOnce caches the result of parseBuildRequestEnv. The env var
+// is read once on first call and the result is reused for all subsequent
+// calls. This avoids repeated os.Getenv (which acquires a lock) on every
+// request dispatch — the generated router calls UseBuildRequest() twice per
+// request (once for the call path, once for the stream path).
+var useBuildRequestOnce sync.Once
+var useBuildRequestCached bool
+
+// UseBuildRequest returns true if the BuildRequest/StreamRequest paths are enabled.
+// Controlled by the BAML_REST_USE_BUILD_REQUEST environment variable.
+// When false, the legacy CallStream+OnTick path is used for all providers.
+// The environment variable is read once and cached for the process lifetime.
+func UseBuildRequest() bool {
+	useBuildRequestOnce.Do(func() {
+		useBuildRequestCached = parseBuildRequestEnv()
+	})
+	return useBuildRequestCached
 }
 
 // supportedProviders is the set of providers whose SSE format is handled by
