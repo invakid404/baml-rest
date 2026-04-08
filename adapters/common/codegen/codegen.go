@@ -1907,9 +1907,8 @@ func Generate(selfPkg string) {
 		// Creates the output channel and passes it to the inner implementation.
 		//
 		// When the BuildRequest path is available and the feature flag is set,
-		// it takes priority for all stream modes (it handles raw and partials
-		// natively). Falls back to legacy paths for unsupported providers or
-		// when the feature flag is off.
+		// it takes priority for both call and stream modes. Falls back to the
+		// legacy paths for unsupported providers or when the feature flag is off.
 		routerBody := []jen.Code{
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
 			jen.Var().Id("err").Error(),

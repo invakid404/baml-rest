@@ -204,18 +204,11 @@ func RunCallOrchestration(
 		return nil, lastErr
 	}
 
-	// The onRetry callback emits a heartbeat before the backoff sleep
-	// so the pool's hung detector sees liveness between attempts, then
-	// resets the atomic so the next attempt's onSuccess heartbeat fires.
-	result, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, func(attempt int) {
-		r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)
-		select {
-		case out <- r:
-		default:
-			r.Release()
-		}
-		heartbeatSent.Store(false)
-	})
+	// Non-streaming retry callbacks do not emit heartbeats. In the pool,
+	// any received result marks gotFirstByte=true before heartbeat results
+	// are filtered, so an onRetry heartbeat would disable first-byte hung
+	// detection even though no provider has produced a real 2xx response yet.
+	result, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, nil)
 
 	if err != nil {
 		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, "", err, false))

@@ -660,10 +660,10 @@ func TestRunCallOrchestration_HeartbeatOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestRunCallOrchestration_RetryHeartbeats(t *testing.T) {
-	// Heartbeats are emitted both on retry (to maintain liveness during
-	// backoff) and on success (via the onSuccess callback). With 2 failed
-	// attempts and 1 success: 2 onRetry heartbeats + 1 onSuccess heartbeat.
+func TestRunCallOrchestration_RetryDoesNotEmitRetryHeartbeats(t *testing.T) {
+	// Only a real 2xx response should emit a heartbeat. Failed attempts must
+	// not emit retry heartbeats, otherwise the pool's first-byte detector is
+	// satisfied before any provider response has actually succeeded.
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt := int(attempts.Add(1))
@@ -704,8 +704,7 @@ func TestRunCallOrchestration_RetryHeartbeats(t *testing.T) {
 		results = append(results, r)
 	}
 
-	// Exactly 3 heartbeats: 2 onRetry (before backoff sleep after each
-	// failed attempt) + 1 onSuccess (after 2xx on 3rd attempt).
+	// Exactly 1 heartbeat: onSuccess after the 2xx response on the 3rd attempt.
 	heartbeats := 0
 	hasFinal := false
 	for _, r := range results {
@@ -720,8 +719,8 @@ func TestRunCallOrchestration_RetryHeartbeats(t *testing.T) {
 	if !hasFinal {
 		t.Fatal("expected a final result")
 	}
-	if heartbeats != 3 {
-		t.Errorf("expected exactly 3 heartbeats (2 onRetry + 1 onSuccess), got %d", heartbeats)
+	if heartbeats != 1 {
+		t.Errorf("expected exactly 1 heartbeat (onSuccess only), got %d", heartbeats)
 	}
 }
 

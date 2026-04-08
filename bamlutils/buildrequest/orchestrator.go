@@ -22,7 +22,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/sse"
 )
 
-// UseBuildRequest returns true if the BuildRequest streaming path is enabled.
+// UseBuildRequest returns true if the BuildRequest/StreamRequest paths are enabled.
 // Controlled by the BAML_REST_USE_BUILD_REQUEST environment variable.
 // When false, the legacy CallStream+OnTick path is used for all providers.
 func UseBuildRequest() bool {

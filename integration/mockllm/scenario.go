@@ -13,7 +13,7 @@ type Scenario struct {
 	ID string `json:"id"`
 
 	// Provider determines the response format ("openai", "anthropic", etc.)
-	// Currently only "openai" is supported
+	// used when rendering mock responses.
 	Provider string `json:"provider"`
 
 	// Content is the actual LLM response content to return
