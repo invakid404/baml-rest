@@ -45,7 +45,8 @@ type BamlAdapter struct {
 	// for named-client provider resolution in the BuildRequest router.
 	originalClientRegistry *bamlutils.ClientRegistry
 
-	// httpClient is an optional custom HTTP client for the BuildRequest path.
+	// httpClient is an optional custom HTTP client for the BuildRequest path,
+	// used by both streaming and non-streaming /call orchestration.
 	// When nil, llmhttp.DefaultClient is used.
 	httpClient *llmhttp.Client
 }

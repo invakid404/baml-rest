@@ -10,6 +10,7 @@
 package urlrewrite
 
 import (
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -57,14 +58,63 @@ func Apply(s string, rules []Rule) string {
 	return s
 }
 
-// ApplyToURL rewrites a URL by replacing a matching prefix. Only the first
-// matching rule is applied. Used for runtime URL rewriting of base_url values
-// and outgoing HTTP request URLs.
+func applyURLPrefixRule(rawURL string, rule Rule) string {
+	urlParsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	fromParsed, err := url.Parse(rule.From)
+	if err != nil {
+		return ""
+	}
+	toParsed, err := url.Parse(rule.To)
+	if err != nil {
+		return ""
+	}
+
+	if urlParsed.Scheme != fromParsed.Scheme || urlParsed.Host != fromParsed.Host {
+		return ""
+	}
+
+	basePath := fromParsed.EscapedPath()
+	if basePath == "" {
+		basePath = "/"
+	}
+	urlPath := urlParsed.EscapedPath()
+	if urlPath == "" {
+		urlPath = "/"
+	}
+	if urlPath != basePath && !strings.HasPrefix(urlPath, strings.TrimRight(basePath, "/")+"/") {
+		return ""
+	}
+
+	newURL := *urlParsed
+	newURL.Scheme = toParsed.Scheme
+	newURL.Host = toParsed.Host
+
+	toPath := toParsed.EscapedPath()
+	if toPath == "" {
+		toPath = "/"
+	}
+	if strings.TrimRight(basePath, "/") == "" || basePath == "/" {
+		newURL.Path = strings.TrimRight(toParsed.Path, "/") + urlParsed.Path
+		newURL.RawPath = ""
+	} else {
+		suffix := strings.TrimPrefix(urlPath, basePath)
+		newURL.Path = strings.TrimRight(toParsed.Path, "/") + suffix
+		newURL.RawPath = ""
+	}
+
+	return newURL.String()
+}
+
+// ApplyToURL rewrites a URL by matching scheme/host/path boundaries against a
+// rule's From URL. Only the first matching rule is applied. Used for runtime
+// URL rewriting of base_url values and outgoing HTTP request URLs.
 func ApplyToURL(url string, rules []Rule) string {
 	for _, r := range rules {
-		if strings.HasPrefix(url, r.From) {
-			return r.To + url[len(r.From):]
-			// Only apply first match
+		if rewritten := applyURLPrefixRule(url, r); rewritten != "" {
+			return rewritten
 		}
 	}
 	return url

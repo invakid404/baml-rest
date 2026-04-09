@@ -79,6 +79,7 @@ func TestApplyToURL(t *testing.T) {
 		{"https://llm.mandel.ai", "http://litellm:4000"},
 		{"https://llm.mandel.ai/v1/chat/completions", "http://litellm:4000/v1/chat/completions"},
 		{"https://api.openai.com/v1/chat/completions", "https://api.openai.com/v1/chat/completions"},
+		{"https://llm.mandel.ai.evil/v1/chat/completions", "https://llm.mandel.ai.evil/v1/chat/completions"},
 		{"", ""},
 	}
 
@@ -87,6 +88,71 @@ func TestApplyToURL(t *testing.T) {
 			got := ApplyToURL(tt.url, rules)
 			if got != tt.want {
 				t.Errorf("ApplyToURL(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyToURL_RespectsURLBoundaries(t *testing.T) {
+	rules := []Rule{{From: "https://api.openai.com", To: "http://openai-internal:4000"}}
+
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "exact host matches",
+			url:  "https://api.openai.com/v1/chat/completions",
+			want: "http://openai-internal:4000/v1/chat/completions",
+		},
+		{
+			name: "host collision does not match",
+			url:  "https://api.openai.com.evil/v1/chat/completions",
+			want: "https://api.openai.com.evil/v1/chat/completions",
+		},
+		{
+			name: "path boundary matches descendant path",
+			url:  "https://api.openai.com/v1/chat/completions",
+			want: "http://openai-internal:4000/v1/chat/completions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ApplyToURL(tt.url, rules)
+			if got != tt.want {
+				t.Fatalf("ApplyToURL(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyToURL_RespectsPathBoundary(t *testing.T) {
+	rules := []Rule{{From: "https://api.openai.com/v1", To: "http://openai-internal:4000/v1"}}
+
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "matching descendant path rewrites",
+			url:  "https://api.openai.com/v1/chat/completions",
+			want: "http://openai-internal:4000/v1/chat/completions",
+		},
+		{
+			name: "prefix collision path does not rewrite",
+			url:  "https://api.openai.com/v12/chat/completions",
+			want: "https://api.openai.com/v12/chat/completions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ApplyToURL(tt.url, rules)
+			if got != tt.want {
+				t.Fatalf("ApplyToURL(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
 	}
