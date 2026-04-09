@@ -575,6 +575,86 @@ func TestResolveFallbackChain_RuntimeOverrideChild(t *testing.T) {
 	}
 }
 
+func TestResolveFallbackChain_RuntimeStrategyOverrideReordersChildren(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyFallback",
+					Provider: "baml-fallback",
+					Options: map[string]any{
+						"strategy": []any{"ClientB", "ClientA"},
+					},
+				},
+			},
+		},
+	}
+
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2, got %d", len(chain))
+	}
+	if chain[0] != "ClientB" || chain[1] != "ClientA" {
+		t.Fatalf("expected runtime strategy order [ClientB ClientA], got %v", chain)
+	}
+	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+}
+
+func TestResolveFallbackChain_RuntimeStrategyOverrideWithoutIntrospectedChain(t *testing.T) {
+	fallbackChains := map[string][]string{}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyFallback",
+					Provider: "baml-fallback",
+					Options: map[string]any{
+						"strategy": "strategy [ClientB, ClientA]",
+					},
+				},
+			},
+		},
+	}
+
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected runtime-defined chain length 2, got %d", len(chain))
+	}
+	if chain[0] != "ClientB" || chain[1] != "ClientA" {
+		t.Fatalf("expected runtime strategy order [ClientB ClientA], got %v", chain)
+	}
+	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+}
+
 func TestResolveFallbackChain_RuntimeOverrideUnsupported(t *testing.T) {
 	fallbackChains := map[string][]string{
 		"MyFallback": {"ClientA", "ClientB"},

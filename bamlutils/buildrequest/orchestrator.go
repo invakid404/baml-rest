@@ -1,5 +1,5 @@
-// Package buildrequest provides the runtime orchestrator for the
-// BuildRequest/StreamRequest streaming path. This replaces the
+// Package buildrequest provides the runtime orchestrators for the
+// BuildRequest/StreamRequest call and streaming paths. This replaces the
 // CallStream+OnTick pipeline for providers that support the modular API.
 //
 // The generated adapter code calls RunStreamOrchestration with
@@ -235,6 +235,84 @@ func resolveChildProvider(reg *bamlutils.ClientRegistry, clientName string, intr
 	return introspectedProviders[clientName]
 }
 
+func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlutils.ClientProperty {
+	if reg == nil {
+		return nil
+	}
+	for _, client := range reg.Clients {
+		if client != nil && client.Name == clientName {
+			return client
+		}
+	}
+	return nil
+}
+
+func parseRuntimeStrategyOption(v any) []string {
+	splitStrategy := func(s string) []string {
+		s = strings.TrimSpace(s)
+		if strings.HasPrefix(s, "strategy ") {
+			s = strings.TrimSpace(strings.TrimPrefix(s, "strategy "))
+		}
+		if strings.HasPrefix(s, "[") {
+			s = s[1:]
+		}
+		if closeIdx := strings.LastIndex(s, "]"); closeIdx >= 0 {
+			s = s[:closeIdx]
+		}
+		parts := strings.FieldsFunc(s, func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\t' || r == '\n'
+		})
+		chain := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				chain = append(chain, part)
+			}
+		}
+		return chain
+	}
+
+	switch vv := v.(type) {
+	case string:
+		return splitStrategy(vv)
+	case []string:
+		chain := make([]string, 0, len(vv))
+		for _, item := range vv {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				chain = append(chain, item)
+			}
+		}
+		return chain
+	case []any:
+		chain := make([]string, 0, len(vv))
+		for _, item := range vv {
+			str, ok := item.(string)
+			if !ok {
+				return nil
+			}
+			str = strings.TrimSpace(str)
+			if str != "" {
+				chain = append(chain, str)
+			}
+		}
+		return chain
+	default:
+		return nil
+	}
+}
+
+func resolveFallbackStrategyChain(reg *bamlutils.ClientRegistry, clientName string, introspectedChains map[string][]string) []string {
+	if runtimeClient := findRuntimeClient(reg, clientName); runtimeClient != nil && runtimeClient.Options != nil {
+		if rawStrategy, ok := runtimeClient.Options["strategy"]; ok {
+			if chain := parseRuntimeStrategyOption(rawStrategy); len(chain) > 0 {
+				return chain
+			}
+		}
+	}
+	return introspectedChains[clientName]
+}
+
 // ResolveFallbackChain determines whether a function's client is a fallback
 // strategy client and, if so, returns the ordered child chain and a map of
 // child client names to their providers. Returns nil, nil if the function
@@ -262,11 +340,6 @@ func ResolveFallbackChain(
 		clientName = *reg.Primary
 	}
 
-	chain, ok := fallbackChains[clientName]
-	if !ok || len(chain) == 0 {
-		return nil, nil
-	}
-
 	// Only support baml-fallback in the BuildRequest path. baml-roundrobin
 	// requires cross-request state to distribute load (each new request
 	// should start at a different child), which the per-request orchestrator
@@ -275,6 +348,11 @@ func ResolveFallbackChain(
 	// the legacy path where the BAML runtime handles the rotation.
 	parentProvider := resolveChildProvider(reg, clientName, clientProviders)
 	if parentProvider != "baml-fallback" {
+		return nil, nil
+	}
+
+	chain = resolveFallbackStrategyChain(reg, clientName, fallbackChains)
+	if len(chain) == 0 {
 		return nil, nil
 	}
 

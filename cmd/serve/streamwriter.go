@@ -438,6 +438,12 @@ func consumeStream(
 					drainResults(results)
 					return
 				}
+				// Reset-only events carry no stream payload and should not also
+				// publish a bogus data frame (for example JSON null).
+				if len(result.Data) == 0 && result.Raw == "" {
+					workerplugin.ReleaseStreamResult(result)
+					continue
+				}
 			}
 
 			// Determine raw output for this event

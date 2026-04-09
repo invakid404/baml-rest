@@ -297,6 +297,43 @@ func TestBridgeStreamResultsForwardsStreamResult(t *testing.T) {
 	}
 }
 
+func TestBridgeStreamResultsResetOnlyStreamHasNoPayload(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindStream)
+	fake.reset = true
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged reset-only stream result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.Kind != workerplugin.StreamResultKindStream {
+			t.Fatalf("expected stream result kind, got %v", got.Kind)
+		}
+		if !got.Reset {
+			t.Fatal("expected reset flag to propagate")
+		}
+		if len(got.Data) != 0 {
+			t.Fatalf("expected no payload for reset-only stream result, got %q", string(got.Data))
+		}
+		if got.Raw != "" {
+			t.Fatalf("expected empty raw for reset-only stream result, got %q", got.Raw)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged reset-only stream result")
+	}
+}
+
 func TestBridgeStreamResultsForwardsHeartbeat(t *testing.T) {
 	t.Parallel()
 
