@@ -157,3 +157,14 @@ func TestApplyToURL_RespectsPathBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyToURL_PreservesEscapedSuffixForPrefixedRule(t *testing.T) {
+	rules := []Rule{{From: "https://api.openai.com/v1", To: "http://internal/v1"}}
+
+	got := ApplyToURL("https://api.openai.com/v1/a%20b", rules)
+	want := "http://internal/v1/a%20b"
+
+	if got != want {
+		t.Fatalf("ApplyToURL() = %q, want %q", got, want)
+	}
+}

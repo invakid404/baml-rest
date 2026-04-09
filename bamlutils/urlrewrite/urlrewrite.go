@@ -92,16 +92,21 @@ func applyURLPrefixRule(rawURL string, rule Rule) string {
 	newURL.Scheme = toParsed.Scheme
 	newURL.Host = toParsed.Host
 
-	toPath := toParsed.EscapedPath()
-	if toPath == "" {
-		toPath = "/"
-	}
+	toEscapedPath := toParsed.EscapedPath()
+	joinedPathPrefix := strings.TrimRight(toParsed.Path, "/")
+	joinedRawPathPrefix := strings.TrimRight(toEscapedPath, "/")
+
+	suffixPath := urlParsed.Path
+	suffixRawPath := urlParsed.EscapedPath()
 	if strings.TrimRight(basePath, "/") == "" || basePath == "/" {
-		newURL.Path = strings.TrimRight(toParsed.Path, "/") + urlParsed.Path
-		newURL.RawPath = ""
 	} else {
-		suffix := strings.TrimPrefix(urlPath, basePath)
-		newURL.Path = strings.TrimRight(toParsed.Path, "/") + suffix
+		suffixPath = strings.TrimPrefix(urlParsed.Path, fromParsed.Path)
+		suffixRawPath = strings.TrimPrefix(urlPath, basePath)
+	}
+
+	newURL.Path = joinedPathPrefix + suffixPath
+	newURL.RawPath = joinedRawPathPrefix + suffixRawPath
+	if newURL.RawPath == newURL.Path {
 		newURL.RawPath = ""
 	}
 

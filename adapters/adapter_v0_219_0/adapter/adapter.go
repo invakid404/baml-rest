@@ -148,8 +148,9 @@ func (b *BamlAdapter) NewMediaFromBase64(kind bamlutils.MediaKind, base64 string
 	return b.MediaFactory(kind, nil, &base64, mimeType)
 }
 
-// SetHTTPClient injects a custom HTTP client for the BuildRequest streaming path.
-// When set, the generated router uses this client instead of llmhttp.DefaultClient.
+// SetHTTPClient injects a custom HTTP client for BuildRequest request execution.
+// When set, the generated router uses this client instead of llmhttp.DefaultClient
+// for both streaming and non-streaming paths.
 // Pass nil to revert to the default client.
 func (b *BamlAdapter) SetHTTPClient(c *llmhttp.Client) {
 	b.httpClient = c
