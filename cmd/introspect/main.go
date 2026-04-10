@@ -1575,23 +1575,22 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 				continue
 			}
 
-			// Parse strategy BEFORE updating depth — a line like
-			// "strategy [A, B] }" contains both the strategy list and
-			// the closing brace. If we check depth first, the brace
-			// drops depth to 0 and we exit before parsing.
-			trimmed := strings.TrimSpace(stripInlineComment(line))
-			if strings.HasPrefix(trimmed, "strategy ") {
-				if strings.Contains(trimmed, "]") {
+			// Parse strategy BEFORE updating depth — lines like
+			// "model \"x\" strategy [A, B] }" contain both the strategy list
+			// and the closing brace. If we check depth first, the brace drops
+			// depth to 0 and we exit before parsing.
+			if strategyLine := extractStrategyStatement(line); strategyLine != "" {
+				if strings.Contains(strategyLine, "]") {
 					// Single-line: strategy [A, B, C]
-					chain := parseStrategyList(trimmed)
+					chain := parseStrategyList(strategyLine)
 					if len(chain) > 0 {
 						cfg.fallbackChains[name] = chain
 					}
-				} else if strings.Contains(trimmed, "[") {
+				} else if strings.Contains(strategyLine, "[") {
 					// Multi-line start: strategy [
 					inStrategyList = true
 					strategyBuf.Reset()
-					strategyBuf.WriteString(trimmed)
+					strategyBuf.WriteString(strategyLine)
 				}
 			}
 			stripped := stripInlineComment(stripStringLiterals(line))
@@ -1609,9 +1608,10 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 				inOptions = true
 				stripped := stripInlineComment(stripStringLiterals(line))
 				optionsDepth = strings.Count(stripped, "{") - strings.Count(stripped, "}")
-				// Check if strategy is on the same line as options {
-				// This handles both inline (options { strategy [...] }) and
-				// multi-line blocks where strategy appears on the opening line.
+				// Check if strategy is on the same line as options {. This handles
+				// both inline `options { strategy [...] }` and compact lines where
+				// other options precede strategy, like
+				// `options { model "x" strategy [...] }`.
 				trimmed := strings.TrimSpace(line)
 				openIdx := strings.Index(trimmed, "{")
 				if openIdx >= 0 {
@@ -1619,17 +1619,16 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 					if closeIdx := strings.LastIndex(inner, "}"); closeIdx >= 0 {
 						inner = inner[:closeIdx]
 					}
-					inner = strings.TrimSpace(stripInlineComment(inner))
-					if strings.HasPrefix(inner, "strategy ") {
-						if strings.Contains(inner, "]") {
-							chain := parseStrategyList(inner)
+					if strategyLine := extractStrategyStatement(inner); strategyLine != "" {
+						if strings.Contains(strategyLine, "]") {
+							chain := parseStrategyList(strategyLine)
 							if len(chain) > 0 {
 								cfg.fallbackChains[name] = chain
 							}
-						} else if strings.Contains(inner, "[") {
+						} else if strings.Contains(strategyLine, "[") {
 							inStrategyList = true
 							strategyBuf.Reset()
-							strategyBuf.WriteString(inner)
+							strategyBuf.WriteString(strategyLine)
 						}
 					}
 				}
@@ -1649,6 +1648,16 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 			cfg.clientRetryPolicy[name] = cleanBamlValue(strings.TrimPrefix(line, "retry_policy "))
 		}
 	}
+}
+
+func extractStrategyStatement(line string) string {
+	for _, stmt := range splitInlineStatements(line) {
+		trimmed := strings.TrimSpace(stripInlineComment(stmt))
+		if strings.HasPrefix(trimmed, "strategy ") {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // parseStrategyList extracts client names from a strategy line like

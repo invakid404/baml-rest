@@ -37,7 +37,9 @@ type Scenario struct {
 	// ChunkJitterMs is random jitter added to ChunkDelayMs (0-N ms)
 	ChunkJitterMs int `json:"chunk_jitter_ms"`
 
-	// FailAfter causes the response to fail after N chunks (0 = don't fail)
+	// FailAfter controls when failures trigger (0 = don't fail). For chunked
+	// responses it fails after N chunks, but with FailureMode == "500" and
+	// FailAfter <= 1 the handler returns 500 before writing any chunk/body.
 	FailAfter int `json:"fail_after,omitempty"`
 
 	// FailureMode determines how to fail: "timeout", "500", "disconnect"

@@ -928,6 +928,28 @@ client<llm> InlineFallback {
 	}
 }
 
+func TestParseBamlFile_FallbackChain_InlineStrategyAfterModel(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> InlineFallback {
+    provider baml-fallback
+    options { model "x" strategy [Fast, Slow] }
+}
+`
+	parseBamlFile(cfg, content)
+
+	chain, ok := cfg.fallbackChains["InlineFallback"]
+	if !ok {
+		t.Fatal("expected fallback chain for InlineFallback when strategy is not the first inline option")
+	}
+	if len(chain) != 2 {
+		t.Fatalf("expected 2 children, got %d: %v", len(chain), chain)
+	}
+	if chain[0] != "Fast" || chain[1] != "Slow" {
+		t.Errorf("unexpected chain: %v", chain)
+	}
+}
+
 func TestParseBamlFile_NonFallbackClient_NoChain(t *testing.T) {
 	cfg := newTestBamlConfig()
 	content := `
@@ -1117,6 +1139,25 @@ func TestParseClientBlock_OptionsOpeningLineStrategyComment(t *testing.T) {
 	parseClientBlock(cfg, "InlineOptionsOpenLine", block)
 	got := cfg.fallbackChains["InlineOptionsOpenLine"]
 	want := []string{"ClientA", "ClientB"}
+	if len(got) != len(want) {
+		t.Fatalf("expected chain %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: expected %q, got %q", i, want[i], got[i])
+		}
+	}
+}
+
+func TestParseClientBlock_InlineOptionsStrategyAfterModel(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-fallback",
+		"options { model \"x\" strategy [Fast, Slow] }",
+	}
+	parseClientBlock(cfg, "InlineAfterModel", block)
+	got := cfg.fallbackChains["InlineAfterModel"]
+	want := []string{"Fast", "Slow"}
 	if len(got) != len(want) {
 		t.Fatalf("expected chain %v, got %v", want, got)
 	}
