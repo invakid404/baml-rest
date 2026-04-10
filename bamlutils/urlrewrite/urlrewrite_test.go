@@ -168,3 +168,14 @@ func TestApplyToURL_PreservesEscapedSuffixForPrefixedRule(t *testing.T) {
 		t.Fatalf("ApplyToURL() = %q, want %q", got, want)
 	}
 }
+
+func TestApplyToURL_TrailingSlashInFrom(t *testing.T) {
+	rules := []Rule{{From: "https://api.openai.com/v1/", To: "http://internal/proxy/"}}
+
+	got := ApplyToURL("https://api.openai.com/v1/chat/completions", rules)
+	want := "http://internal/proxy/chat/completions"
+
+	if got != want {
+		t.Fatalf("ApplyToURL() = %q, want %q", got, want)
+	}
+}
