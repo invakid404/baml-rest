@@ -428,7 +428,7 @@ func TestFallbackStream(t *testing.T) {
 		// contact the secondary child even when the primary succeeds. Unary does
 		// not share that behavior, so only assert the exact streaming hit counts
 		// on versions that use the BuildRequest fallback orchestrator.
-		if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+		if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") && UseBuildRequest {
 			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 0})
 		}
 	})

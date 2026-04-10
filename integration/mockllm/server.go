@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -411,7 +412,8 @@ func (c *Client) ClearScenarios(ctx context.Context) error {
 // DeleteScenario removes a single scenario by ID.
 // Returns nil if the scenario was deleted or did not exist.
 func (c *Client) DeleteScenario(ctx context.Context, scenarioID string) error {
-	req, err := http.NewRequestWithContext(ctx, "DELETE", fmt.Sprintf("%s/_admin/scenarios/%s", c.baseURL, scenarioID), nil)
+	escapedID := url.PathEscape(scenarioID)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", fmt.Sprintf("%s/_admin/scenarios/%s", c.baseURL, escapedID), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -433,7 +435,8 @@ func (c *Client) DeleteScenario(ctx context.Context, scenarioID string) error {
 
 // GetLastRequest returns the last request body received for a scenario.
 func (c *Client) GetLastRequest(ctx context.Context, scenarioID string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/_admin/scenarios/%s/last-request", c.baseURL, scenarioID), nil)
+	escapedID := url.PathEscape(scenarioID)
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/_admin/scenarios/%s/last-request", c.baseURL, escapedID), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -458,7 +461,8 @@ func (c *Client) GetLastRequest(ctx context.Context, scenarioID string) ([]byte,
 
 // GetRequestCount returns the number of requests the mock server received for a scenario.
 func (c *Client) GetRequestCount(ctx context.Context, scenarioID string) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/_admin/scenarios/%s/request-count", c.baseURL, scenarioID), nil)
+	escapedID := url.PathEscape(scenarioID)
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/_admin/scenarios/%s/request-count", c.baseURL, escapedID), nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -482,7 +486,8 @@ func (c *Client) GetRequestCount(ctx context.Context, scenarioID string) (int, e
 
 // ResetRequestCount resets the request counter for a scenario to zero.
 func (c *Client) ResetRequestCount(ctx context.Context, scenarioID string) error {
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/_admin/scenarios/%s/reset-count", c.baseURL, scenarioID), nil)
+	escapedID := url.PathEscape(scenarioID)
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/_admin/scenarios/%s/reset-count", c.baseURL, escapedID), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}

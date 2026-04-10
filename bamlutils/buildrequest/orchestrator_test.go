@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -656,6 +657,40 @@ func TestRunStreamOrchestration_ParseThrottle(t *testing.T) {
 	// (At minimum once for the first event, then throttled)
 	if parseCount >= 20 {
 		t.Errorf("expected throttled parse calls (< 20), got %d", parseCount)
+	}
+}
+
+func TestRunStreamOrchestration_ValidatesAllFallbackChildrenUpFront(t *testing.T) {
+	out := make(chan bamlutils.StreamResult, 10)
+
+	err := RunStreamOrchestration(
+		context.Background(), out,
+		&StreamConfig{
+			FallbackChain: []string{"PrimaryClient", "MissingClient"},
+			ClientProviders: map[string]string{
+				"PrimaryClient": "openai",
+			},
+		},
+		nil,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			t.Fatal("buildRequest should not be called when fallback validation fails")
+			return nil, nil
+		},
+		nil,
+		nil,
+		newTestResult,
+	)
+
+	if err == nil {
+		t.Fatal("expected validation error for unsupported or missing fallback child provider")
+	}
+	if want := `for child "MissingClient"`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected error containing %q, got %q", want, err.Error())
+	}
+
+	close(out)
+	for r := range out {
+		t.Fatalf("expected no stream results on upfront validation error, got kind %v", r.Kind())
 	}
 }
 

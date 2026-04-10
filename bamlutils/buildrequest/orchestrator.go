@@ -446,15 +446,18 @@ func RunStreamOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
-	// Validate that the first provider is supported.
+	// Validate the configured provider(s) up front so invalid fallback chains
+	// fail before any stream/reset events are emitted.
 	if len(config.FallbackChain) == 0 {
 		if config.Provider == "" || !IsProviderSupported(config.Provider) {
 			return fmt.Errorf("buildrequest: unsupported or empty provider %q", config.Provider)
 		}
 	} else {
-		first := config.ClientProviders[config.FallbackChain[0]]
-		if first == "" || !IsProviderSupported(first) {
-			return fmt.Errorf("buildrequest: unsupported or empty provider %q", first)
+		for _, child := range config.FallbackChain {
+			provider := config.ClientProviders[child]
+			if provider == "" || !IsProviderSupported(provider) {
+				return fmt.Errorf("buildrequest: unsupported or empty provider %q for child %q", provider, child)
+			}
 		}
 	}
 

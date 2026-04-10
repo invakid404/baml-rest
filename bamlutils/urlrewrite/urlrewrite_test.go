@@ -112,9 +112,9 @@ func TestApplyToURL_RespectsURLBoundaries(t *testing.T) {
 			want: "https://api.openai.com.evil/v1/chat/completions",
 		},
 		{
-			name: "path boundary matches descendant path",
-			url:  "https://api.openai.com/v1/chat/completions",
-			want: "http://openai-internal:4000/v1/chat/completions",
+			name: "exact base URL match rewrites",
+			url:  "https://api.openai.com",
+			want: "http://openai-internal:4000",
 		},
 	}
 
