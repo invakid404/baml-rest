@@ -158,9 +158,8 @@ func extractOpenAIContent(provider string, responseBody string) (string, error) 
 //   - parseable: only "text" blocks (the final answer), suitable for Parse.Method
 //   - raw: "text" + "thinking" blocks, suitable for /call-with-raw's Raw()
 //
-// The streaming path accumulates both text_delta and thinking_delta into
-// the raw stream, so the raw value here matches. But Parse.Method only
-// expects the final answer text, not the reasoning trace.
+// The BuildRequest streaming path uses the same split: raw accumulates both
+// text_delta and thinking_delta, while Parse/ParseStream see only answer text.
 func extractAnthropicContent(provider string, responseBody string) (parseable, raw string, err error) {
 	contentArray := gjson.Get(responseBody, "content")
 

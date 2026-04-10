@@ -203,6 +203,24 @@ func TestIncrementalExtractor_DifferentProviders(t *testing.T) {
 	}
 }
 
+func TestExtractDeltaPartsFromText_AnthropicThinking(t *testing.T) {
+	textDelta, err := ExtractDeltaPartsFromText("anthropic", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Answer"}}`)
+	if err != nil {
+		t.Fatalf("text delta extraction failed: %v", err)
+	}
+	if textDelta.Parseable != "Answer" || textDelta.Raw != "Answer" {
+		t.Fatalf("unexpected text delta: %+v", textDelta)
+	}
+
+	thinkingDelta, err := ExtractDeltaPartsFromText("anthropic", `{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Reasoning"}}`)
+	if err != nil {
+		t.Fatalf("thinking delta extraction failed: %v", err)
+	}
+	if thinkingDelta.Parseable != "" || thinkingDelta.Raw != "Reasoning" {
+		t.Fatalf("unexpected thinking delta: %+v", thinkingDelta)
+	}
+}
+
 func TestGetCurrentContent_OnlyUsesLastCall(t *testing.T) {
 	// GetCurrentContent should also only use the last call
 	data := &StreamingData{

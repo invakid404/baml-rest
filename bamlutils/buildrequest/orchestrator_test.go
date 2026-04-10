@@ -449,6 +449,172 @@ func TestRunStreamOrchestration_Anthropic(t *testing.T) {
 	}
 }
 
+func TestRunStreamOrchestration_AnthropicThinkingUsesAnswerOnlyParsing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Step 1: reason...\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"The answer\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" Step 2: refine...\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" is 42\"}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "anthropic",
+		NeedsPartials: true,
+		NeedsRaw:      false,
+	}
+
+	var parseStreamInputs []string
+	var parseFinalInput string
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) {
+			parseStreamInputs = append(parseStreamInputs, accumulated)
+			return accumulated, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) {
+			parseFinalInput = accumulated
+			return accumulated, nil
+		},
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got, want := parseStreamInputs, []string{"The answer", "The answer is 42"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("parseStream inputs = %v, want %v", got, want)
+	}
+	if parseFinalInput != "The answer is 42" {
+		t.Fatalf("parseFinal input = %q, want %q", parseFinalInput, "The answer is 42")
+	}
+
+	var partials, finals int
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.kind == bamlutils.StreamResultKindStream {
+			partials++
+			if tr.raw != "" {
+				t.Fatalf("expected no raw partial output in non-raw mode, got %q", tr.raw)
+			}
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+			if tr.final != "The answer is 42" {
+				t.Fatalf("final = %v, want %q", tr.final, "The answer is 42")
+			}
+			if tr.raw != "" {
+				t.Fatalf("expected empty final raw in non-raw mode, got %q", tr.raw)
+			}
+		}
+	}
+
+	if partials != 2 {
+		t.Fatalf("expected 2 parsed partials (text deltas only), got %d", partials)
+	}
+	if finals != 1 {
+		t.Fatalf("expected 1 final, got %d", finals)
+	}
+}
+
+func TestRunStreamOrchestration_AnthropicThinkingPreservesRawStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Step 1: reason...\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"The answer\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" Step 2: refine...\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" is 42\"}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "anthropic",
+		NeedsPartials: true,
+		NeedsRaw:      true,
+	}
+
+	var parseStreamInputs []string
+	var parseFinalInput string
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) {
+			parseStreamInputs = append(parseStreamInputs, accumulated)
+			return accumulated, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) {
+			parseFinalInput = accumulated
+			return accumulated, nil
+		},
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got, want := parseStreamInputs, []string{"The answer", "The answer is 42"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("parseStream inputs = %v, want %v", got, want)
+	}
+	if parseFinalInput != "The answer is 42" {
+		t.Fatalf("parseFinal input = %q, want %q", parseFinalInput, "The answer is 42")
+	}
+
+	var partialRaws []string
+	var partialStreams []any
+	var finalResult *testResult
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.kind == bamlutils.StreamResultKindStream {
+			partialRaws = append(partialRaws, tr.raw)
+			partialStreams = append(partialStreams, tr.stream)
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finalResult = tr
+		}
+	}
+
+	if want := []string{"Step 1: reason...", "The answer", " Step 2: refine...", " is 42"}; len(partialRaws) != len(want) || partialRaws[0] != want[0] || partialRaws[1] != want[1] || partialRaws[2] != want[2] || partialRaws[3] != want[3] {
+		t.Fatalf("partial raws = %v, want %v", partialRaws, want)
+	}
+	if partialStreams[0] != nil || partialStreams[2] != nil {
+		t.Fatalf("thinking partials should be raw-only, got streams %v", partialStreams)
+	}
+	if partialStreams[1] != "The answer" || partialStreams[3] != "The answer is 42" {
+		t.Fatalf("text partial streams = %v", partialStreams)
+	}
+	if finalResult == nil {
+		t.Fatal("expected a final result")
+	}
+	if finalResult.final != "The answer is 42" {
+		t.Fatalf("final = %v, want %q", finalResult.final, "The answer is 42")
+	}
+	if finalResult.raw != "Step 1: reason...The answer Step 2: refine... is 42" {
+		t.Fatalf("final raw = %q", finalResult.raw)
+	}
+}
+
 func TestRunStreamOrchestration_ParseThrottle(t *testing.T) {
 	// Generate many small chunks
 	chunks := make([]string, 20)

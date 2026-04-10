@@ -488,22 +488,49 @@ func RunStreamOrchestration(
 		// Send heartbeat on connection success
 		sendHeartbeat()
 
-		var accumulated strings.Builder
+		var parseableAccumulated strings.Builder
+		var rawAccumulated strings.Builder
 		var lastParseTime time.Time
 
+		trySendPartial := func(parsed any, rawDelta string) error {
+			r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawDelta, nil, false)
+			select {
+			case out <- r:
+			case <-ctx.Done():
+				r.Release()
+				return ctx.Err()
+			default:
+				r.Release() // Drop partial/raw delta — buffer full
+			}
+			return nil
+		}
+
 		for ev := range resp.Events {
-			// Extract text delta from SSE event using this attempt's provider
-			delta, extractErr := sse.ExtractDeltaFromText(provider, ev.Data)
+			// Extract parseable/raw delta content from the SSE event using this
+			// attempt's provider. Anthropic thinking deltas contribute only to raw.
+			delta, extractErr := sse.ExtractDeltaPartsFromText(provider, ev.Data)
 			if extractErr != nil {
 				// Extraction error — fail the attempt so retry logic can handle it
 				// rather than silently accumulating incomplete text.
 				return nil, fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
 			}
-			if delta == "" {
+			if delta.Raw == "" {
 				continue
 			}
 
-			accumulated.WriteString(delta)
+			rawAccumulated.WriteString(delta.Raw)
+			if delta.Parseable != "" {
+				parseableAccumulated.WriteString(delta.Parseable)
+			}
+
+			if config.NeedsPartials && delta.Parseable == "" {
+				if config.NeedsRaw {
+					if err := trySendPartial(nil, delta.Raw); err != nil {
+						return nil, err
+					}
+				}
+				continue
+			}
 
 			// Emit partial if needed.
 			// Non-blocking sends for partials/deltas: drop when the output
@@ -520,20 +547,14 @@ func RunStreamOrchestration(
 					// so that repeated failures don't bypass the throttle interval.
 					lastParseTime = time.Now()
 
-					parsed, parseErr := parseStream(ctx, accumulated.String())
+					parsed, parseErr := parseStream(ctx, parseableAccumulated.String())
 					if parseErr == nil && parsed != nil {
 						rawForResult := ""
 						if config.NeedsRaw {
-							rawForResult = delta
+							rawForResult = delta.Raw
 						}
-						r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawForResult, nil, false)
-						select {
-						case out <- r:
-						case <-ctx.Done():
-							r.Release()
-							return nil, ctx.Err()
-						default:
-							r.Release() // Drop partial — buffer full
+						if err := trySendPartial(parsed, rawForResult); err != nil {
+							return nil, err
 						}
 					}
 				}
@@ -550,9 +571,9 @@ func RunStreamOrchestration(
 
 		// Parse the final result — let parseFinal decide whether an empty
 		// completion is valid. The legacy path does not reject empty strings.
-		fullRaw := accumulated.String()
+		fullRaw := rawAccumulated.String()
 
-		finalResult, parseErr := parseFinal(ctx, fullRaw)
+		finalResult, parseErr := parseFinal(ctx, parseableAccumulated.String())
 		if parseErr != nil {
 			return nil, fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)
 		}
