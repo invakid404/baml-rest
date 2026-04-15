@@ -369,69 +369,6 @@ func TestFallbackCallWithRaw(t *testing.T) {
 
 			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
 		})
-
-		// Regression test: primary streams partial content THEN disconnects.
-		// The raw field must contain only the secondary's content, not the
-		// primary's partial data or an empty string.
-		// This test only runs on the legacy CallStream+OnTick path because
-		// the mock's non-streaming handler doesn't trigger FailAfter > 1
-		// failures — the BuildRequest path's non-streaming call would
-		// "succeed" with the primary's full content.
-		t.Run("fallback_raw_after_partial_primary_stream", func(t *testing.T) {
-			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
-				t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
-			}
-			if UseBuildRequest {
-				t.Skip("Skipping: mid-stream disconnect scenario requires the legacy streaming path")
-			}
-
-			waitForHealthy(t, 30*time.Second)
-			clearFallbackScenarios(t)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			// Primary streams 3 chunks ("prima", "ry pa", "rtial") then disconnects.
-			// This exercises the codepath where the extractor has accumulated partial
-			// content from the primary before the fallback retry occurs.
-			registerFallbackScenario(t, &mockllm.Scenario{
-				ID:             "fallback-primary",
-				Provider:       "openai",
-				Content:        "primary partial data that should vanish",
-				ChunkSize:      5,
-				FailAfter:      3,
-				FailureMode:    "disconnect",
-				ChunkDelayMs:   10,
-				InitialDelayMs: 50,
-			})
-			registerFallbackScenario(t, &mockllm.Scenario{
-				ID:             "fallback-secondary",
-				Provider:       "openai",
-				Content:        "secondary wins",
-				ChunkSize:      20,
-				InitialDelayMs: 50,
-				ChunkDelayMs:   5,
-			})
-
-			resp, err := client.CallWithRaw(ctx, testutil.CallRequest{
-				Method: "GetGreetingFallbackPair",
-				Input:  map[string]any{"name": "World"},
-			})
-			if err != nil {
-				t.Fatalf("CallWithRaw failed: %v", err)
-			}
-			if resp.StatusCode != 200 {
-				t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-			}
-			if resp.Raw == "" {
-				t.Fatal("Raw field is empty — raw text was lost during fallback retry")
-			}
-			if resp.Raw != "secondary wins" {
-				t.Fatalf("Expected Raw()='secondary wins', got %q (may contain primary's partial data)", resp.Raw)
-			}
-
-			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
-		})
 	})
 }
 

@@ -1293,20 +1293,6 @@ func Generate(selfPkg string) {
 			jen.Id("lastCall").Op(":=").Id("calls").Index(jen.Id("callCount").Op("-").Lit(1)),
 			jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("lastCall").Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
 			jen.If(jen.Op("!").Id("ok")).Block(jen.Return(jen.Nil())),
-			// Detect fallback client switches that don't change callCount.
-			// The BAML runtime may replace the active call (same callCount,
-			// different client) rather than appending, so the extractor's
-			// built-in callCount-based retry detection won't trigger.
-			// Comparing ClientName across ticks catches this case.
-			jen.If(
-				jen.List(jen.Id("cn"), jen.Id("cnErr")).Op(":=").Id("streamCall").Dot("ClientName").Call(),
-				jen.Id("cnErr").Op("==").Nil().Op("&&").Id("cn").Op("!=").Id("lastClientName"),
-			).Block(
-				jen.If(jen.Id("lastClientName").Op("!=").Lit("")).Block(
-					jen.Id("extractor").Dot("Clear").Call(),
-				),
-				jen.Id("lastClientName").Op("=").Id("cn"),
-			),
 			jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
 			jen.If(jen.Id("provErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
 			// Meta-providers like "baml-fallback" are not handled by
@@ -1505,11 +1491,6 @@ func Generate(selfPkg string) {
 
 		var fullBody []jen.Code
 		fullBody = append(fullBody, makePreamble()...)
-
-		// Track the last-seen client name across processTick calls so we can
-		// detect fallback switches even when callCount doesn't change (the
-		// BAML runtime may replace the call rather than append a new one).
-		fullBody = append(fullBody, jen.Var().Id("lastClientName").String())
 
 		// Delegate to shared full orchestration helper with per-method closures
 		fullBody = append(fullBody,
@@ -3393,10 +3374,6 @@ func generateStreamHelpers(out *jen.File) {
 			// Extractor
 			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
 			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
-			// lastFuncLog stores the most recent FunctionLog seen by onTick so
-			// we can do a final reconciliation pass after all queued ticks drain.
-			// This catches chunks the extractor missed due to tick timing.
-			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
 
 			// doShutdown
 			jen.Id("doShutdown").Op(":=").Func().Params().Block(
@@ -3468,8 +3445,6 @@ func generateStreamHelpers(out *jen.File) {
 									jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
 								),
 							),
-							// Store latest FunctionLog for final reconciliation pass
-							jen.Id("lastFuncLog").Dot("Store").Call(jen.Id("funcLog")),
 							// Enqueue
 							jen.Id("pending").Dot("Add").Call(jen.Lit(1)),
 							jen.If(jen.Id("err").Op(":=").Id("funcLogQueue").Dot("Enqueue").Call(jen.Id("funcLog")), jen.Id("err").Op("!=").Nil()).Block(
@@ -3581,16 +3556,6 @@ func generateStreamHelpers(out *jen.File) {
 								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__errR"))),
 							),
 							jen.Return(jen.Nil()),
-						),
-
-						// Final reconciliation: run processTick one last time with
-						// the most recent FunctionLog to capture any chunks that
-						// arrived after the last queued tick was processed.
-						jen.If(
-							jen.List(jen.Id("fl"), jen.Id("ok")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
-							jen.Id("ok"),
-						).Block(
-							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
 						),
 
 						// Emit final
