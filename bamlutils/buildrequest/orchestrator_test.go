@@ -989,9 +989,9 @@ func TestResolveFallbackChain_FallbackAllowed(t *testing.T) {
 }
 
 func TestRunStreamOrchestration_FallbackChainResetBetweenChildren(t *testing.T) {
-	// Primary streams partial data ("stale") then abruptly closes the
-	// connection (simulating a mid-stream failure). Secondary streams
-	// "good" data and completes normally. The test verifies that:
+	// Primary streams partial data ("stale") and completes normally, but the
+	// child still fails because parseFinal rejects that final content.
+	// Secondary streams "good" data and completes normally. The test verifies that:
 	// 1. A reset signal is emitted between children so downstream
 	//    discards the primary's stale partial state.
 	// 2. The final output contains only the secondary's data.
