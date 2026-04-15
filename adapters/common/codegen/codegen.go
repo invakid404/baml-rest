@@ -1309,18 +1309,40 @@ func Generate(selfPkg string) {
 			),
 			jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
 			jen.If(jen.Id("provErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
-			// Meta-providers like "baml-fallback" are not handled by ExtractDeltaFromText.
-			// Resolve the actual child provider via ClientName + introspected.ClientProvider.
+			// Meta-providers like "baml-fallback" are not handled by
+			// ExtractDeltaFromText. Resolve the actual child provider by
+			// scanning calls for one with a supported provider (handles
+			// runtime client_registry overrides), then fall back to static
+			// introspected.ClientProvider lookup.
 			jen.If(jen.Op("!").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("provider"))).Block(
-				jen.If(
-					jen.List(jen.Id("clientName"), jen.Id("cnErr")).Op(":=").Id("streamCall").Dot("ClientName").Call(),
-					jen.Id("cnErr").Op("==").Nil(),
-				).Block(
+				jen.Id("resolved").Op(":=").Lit(false),
+				// Prefer the runtime-reported provider from a child call.
+				jen.For(jen.Id("i").Op(":=").Id("callCount").Op("-").Lit(1), jen.Id("i").Op(">=").Lit(0).Op("&&").Op("!").Id("resolved"), jen.Id("i").Op("--")).Block(
 					jen.If(
-						jen.List(jen.Id("resolved"), jen.Id("ok")).Op(":=").Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("clientName")),
-						jen.Id("ok"),
+						jen.List(jen.Id("sc"), jen.Id("scOk")).Op(":=").Id("calls").Index(jen.Id("i")).Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
+						jen.Id("scOk"),
 					).Block(
-						jen.Id("provider").Op("=").Id("resolved"),
+						jen.If(
+							jen.List(jen.Id("cp"), jen.Id("cpErr")).Op(":=").Id("sc").Dot("Provider").Call(),
+							jen.Id("cpErr").Op("==").Nil().Op("&&").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("cp")),
+						).Block(
+							jen.Id("provider").Op("=").Id("cp"),
+							jen.Id("resolved").Op("=").Lit(true),
+						),
+					),
+				),
+				// Static fallback: use introspected ClientProvider map.
+				jen.If(jen.Op("!").Id("resolved")).Block(
+					jen.If(
+						jen.List(jen.Id("clientName"), jen.Id("cnErr")).Op(":=").Id("streamCall").Dot("ClientName").Call(),
+						jen.Id("cnErr").Op("==").Nil(),
+					).Block(
+						jen.If(
+							jen.List(jen.Id("sp"), jen.Id("spOk")).Op(":=").Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("clientName")),
+							jen.Id("spOk"),
+						).Block(
+							jen.Id("provider").Op("=").Id("sp"),
+						),
 					),
 				),
 			),
@@ -3371,6 +3393,10 @@ func generateStreamHelpers(out *jen.File) {
 			// Extractor
 			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
 			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
+			// lastFuncLog stores the most recent FunctionLog seen by onTick so
+			// we can do a final reconciliation pass after all queued ticks drain.
+			// This catches chunks the extractor missed due to tick timing.
+			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
 
 			// doShutdown
 			jen.Id("doShutdown").Op(":=").Func().Params().Block(
@@ -3442,6 +3468,8 @@ func generateStreamHelpers(out *jen.File) {
 									jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
 								),
 							),
+							// Store latest FunctionLog for final reconciliation pass
+							jen.Id("lastFuncLog").Dot("Store").Call(jen.Id("funcLog")),
 							// Enqueue
 							jen.Id("pending").Dot("Add").Call(jen.Lit(1)),
 							jen.If(jen.Id("err").Op(":=").Id("funcLogQueue").Dot("Enqueue").Call(jen.Id("funcLog")), jen.Id("err").Op("!=").Nil()).Block(
@@ -3553,6 +3581,16 @@ func generateStreamHelpers(out *jen.File) {
 								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__errR"))),
 							),
 							jen.Return(jen.Nil()),
+						),
+
+						// Final reconciliation: run processTick one last time with
+						// the most recent FunctionLog to capture any chunks that
+						// arrived after the last queued tick was processed.
+						jen.If(
+							jen.List(jen.Id("fl"), jen.Id("ok")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+							jen.Id("ok"),
+						).Block(
+							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
 						),
 
 						// Emit final
