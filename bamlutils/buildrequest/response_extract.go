@@ -158,9 +158,8 @@ func extractOpenAIContent(provider string, responseBody string) (string, error) 
 //   - parseable: only "text" blocks (the final answer), suitable for Parse.Method
 //   - raw: "text" + "thinking" blocks, suitable for /call-with-raw's Raw()
 //
-// The streaming path accumulates both text_delta and thinking_delta into
-// the raw stream, so the raw value here matches. But Parse.Method only
-// expects the final answer text, not the reasoning trace.
+// The BuildRequest streaming path uses the same split: raw accumulates both
+// text_delta and thinking_delta, while Parse/ParseStream see only answer text.
 func extractAnthropicContent(provider string, responseBody string) (parseable, raw string, err error) {
 	contentArray := gjson.Get(responseBody, "content")
 
@@ -254,20 +253,21 @@ func extractGeminiContent(provider string, responseBody string) (string, error) 
 //	  ]
 //	}
 //
-// We find the first output item with type == "message" and concatenate all
-// content entries with type == "output_text". Reasoning items are skipped
-// (they are not part of the model's answer).
+// We concatenate assistant text across all output items with type ==
+// "message". Responses API output ordering/count is model-dependent, so we
+// must not assume the first message item contains the whole answer. Reasoning
+// items are skipped (they are not part of the model's answer).
 func extractOpenAIResponsesContent(provider string, responseBody string) (string, error) {
 	output := gjson.Get(responseBody, "output")
 	if !output.IsArray() {
 		return "", fmt.Errorf("%s: could not extract text content from response (output array not found)", provider)
 	}
 
-	// Validate ALL output elements are objects, then find the first message
-	// item. We must not stop early on the message item because trailing
-	// non-object elements would go unvalidated.
-	var messageItem gjson.Result
+	// Validate ALL output elements are objects, then aggregate all message
+	// items. We must not stop early because trailing output items still need
+	// validation and may contain additional assistant text.
 	var found bool
+	var sb strings.Builder
 	var outputErr error
 	output.ForEach(func(_, item gjson.Result) bool {
 		if !item.IsObject() {
@@ -280,9 +280,46 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 			outputErr = fmt.Errorf("%s: output array element missing required 'type' field", provider)
 			return false
 		}
-		if !found && itemTypeField.String() == "message" {
-			messageItem = item
+		if itemTypeField.String() == "message" {
 			found = true
+			contentArray := item.Get("content")
+			if !contentArray.IsArray() {
+				outputErr = fmt.Errorf("%s: message item has no content array", provider)
+				return false
+			}
+
+			contentArray.ForEach(func(_, entry gjson.Result) bool {
+				if !entry.IsObject() {
+					outputErr = fmt.Errorf("%s: non-object element in message content array (got %s)", provider, entry.Type)
+					return false
+				}
+				entryTypeField := entry.Get("type")
+				if entryTypeField.Type != gjson.String || entryTypeField.String() == "" {
+					outputErr = fmt.Errorf("%s: message content element missing required 'type' field", provider)
+					return false
+				}
+				switch entryTypeField.String() {
+				case "output_text":
+					textField := entry.Get("text")
+					if textField.Type != gjson.String {
+						outputErr = fmt.Errorf("%s: unexpected type for output_text text field (got %s)", provider, textField.Type)
+						return false
+					}
+					sb.WriteString(textField.String())
+				case "refusal":
+					refusalField := entry.Get("refusal")
+					refusalText := "unknown reason"
+					if refusalField.Type == gjson.String && refusalField.String() != "" {
+						refusalText = refusalField.String()
+					}
+					outputErr = fmt.Errorf("%s: model refused request: %s", provider, refusalText)
+					return false
+				}
+				return true
+			})
+			if outputErr != nil {
+				return false
+			}
 		}
 		return true
 	})
@@ -292,50 +329,6 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 	}
 	if !found {
 		return "", fmt.Errorf("%s: no message item found in output array", provider)
-	}
-
-	contentArray := messageItem.Get("content")
-	if !contentArray.IsArray() {
-		return "", fmt.Errorf("%s: message item has no content array", provider)
-	}
-
-	var sb strings.Builder
-	var iterErr error
-	contentArray.ForEach(func(_, entry gjson.Result) bool {
-		// Reject non-object array elements
-		if !entry.IsObject() {
-			iterErr = fmt.Errorf("%s: non-object element in message content array (got %s)", provider, entry.Type)
-			return false
-		}
-		// Require a type discriminator on every content entry
-		entryTypeField := entry.Get("type")
-		if entryTypeField.Type != gjson.String || entryTypeField.String() == "" {
-			iterErr = fmt.Errorf("%s: message content element missing required 'type' field", provider)
-			return false
-		}
-		switch entryTypeField.String() {
-		case "output_text":
-			textField := entry.Get("text")
-			if textField.Type != gjson.String {
-				iterErr = fmt.Errorf("%s: unexpected type for output_text text field (got %s)", provider, textField.Type)
-				return false
-			}
-			sb.WriteString(textField.String())
-		case "refusal":
-			// A refusal part means the model refused — never a valid
-			// completion. Same pattern as Chat Completions refusal handling.
-			refusalField := entry.Get("refusal")
-			refusalText := "unknown reason"
-			if refusalField.Type == gjson.String && refusalField.String() != "" {
-				refusalText = refusalField.String()
-			}
-			iterErr = fmt.Errorf("%s: model refused request: %s", provider, refusalText)
-			return false
-		}
-		return true
-	})
-	if iterErr != nil {
-		return "", iterErr
 	}
 
 	return sb.String(), nil

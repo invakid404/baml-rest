@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -73,7 +74,7 @@ func TestRunStreamOrchestration_Success(t *testing.T) {
 		out,
 		config,
 		client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{
 				URL:    server.URL,
 				Method: "POST",
@@ -153,7 +154,7 @@ func TestRunStreamOrchestration_NoPartials(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		nil, // No parseStream needed
@@ -213,7 +214,7 @@ func TestRunStreamOrchestration_HTTPError(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return nil, nil },
@@ -272,7 +273,7 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -334,7 +335,7 @@ func TestRunStreamOrchestration_ContextCancellation(t *testing.T) {
 
 	RunStreamOrchestration(
 		ctx, out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -420,7 +421,7 @@ func TestRunStreamOrchestration_Anthropic(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
@@ -449,6 +450,172 @@ func TestRunStreamOrchestration_Anthropic(t *testing.T) {
 	}
 }
 
+func TestRunStreamOrchestration_AnthropicThinkingUsesAnswerOnlyParsing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Step 1: reason...\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"The answer\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" Step 2: refine...\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" is 42\"}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "anthropic",
+		NeedsPartials: true,
+		NeedsRaw:      false,
+	}
+
+	var parseStreamInputs []string
+	var parseFinalInput string
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) {
+			parseStreamInputs = append(parseStreamInputs, accumulated)
+			return accumulated, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) {
+			parseFinalInput = accumulated
+			return accumulated, nil
+		},
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got, want := parseStreamInputs, []string{"The answer", "The answer is 42"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("parseStream inputs = %v, want %v", got, want)
+	}
+	if parseFinalInput != "The answer is 42" {
+		t.Fatalf("parseFinal input = %q, want %q", parseFinalInput, "The answer is 42")
+	}
+
+	var partials, finals int
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.kind == bamlutils.StreamResultKindStream {
+			partials++
+			if tr.raw != "" {
+				t.Fatalf("expected no raw partial output in non-raw mode, got %q", tr.raw)
+			}
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+			if tr.final != "The answer is 42" {
+				t.Fatalf("final = %v, want %q", tr.final, "The answer is 42")
+			}
+			if tr.raw != "" {
+				t.Fatalf("expected empty final raw in non-raw mode, got %q", tr.raw)
+			}
+		}
+	}
+
+	if partials != 2 {
+		t.Fatalf("expected 2 parsed partials (text deltas only), got %d", partials)
+	}
+	if finals != 1 {
+		t.Fatalf("expected 1 final, got %d", finals)
+	}
+}
+
+func TestRunStreamOrchestration_AnthropicThinkingPreservesRawStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Step 1: reason...\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"The answer\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" Step 2: refine...\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" is 42\"}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "anthropic",
+		NeedsPartials: true,
+		NeedsRaw:      true,
+	}
+
+	var parseStreamInputs []string
+	var parseFinalInput string
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) {
+			parseStreamInputs = append(parseStreamInputs, accumulated)
+			return accumulated, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) {
+			parseFinalInput = accumulated
+			return accumulated, nil
+		},
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got, want := parseStreamInputs, []string{"The answer", "The answer is 42"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("parseStream inputs = %v, want %v", got, want)
+	}
+	if parseFinalInput != "The answer is 42" {
+		t.Fatalf("parseFinal input = %q, want %q", parseFinalInput, "The answer is 42")
+	}
+
+	var partialRaws []string
+	var partialStreams []any
+	var finalResult *testResult
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.kind == bamlutils.StreamResultKindStream {
+			partialRaws = append(partialRaws, tr.raw)
+			partialStreams = append(partialStreams, tr.stream)
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finalResult = tr
+		}
+	}
+
+	if want := []string{"Step 1: reason...", "The answer", " Step 2: refine...", " is 42"}; len(partialRaws) != len(want) || partialRaws[0] != want[0] || partialRaws[1] != want[1] || partialRaws[2] != want[2] || partialRaws[3] != want[3] {
+		t.Fatalf("partial raws = %v, want %v", partialRaws, want)
+	}
+	if partialStreams[0] != nil || partialStreams[2] != nil {
+		t.Fatalf("thinking partials should be raw-only, got streams %v", partialStreams)
+	}
+	if partialStreams[1] != "The answer" || partialStreams[3] != "The answer is 42" {
+		t.Fatalf("text partial streams = %v", partialStreams)
+	}
+	if finalResult == nil {
+		t.Fatal("expected a final result")
+	}
+	if finalResult.final != "The answer is 42" {
+		t.Fatalf("final = %v, want %q", finalResult.final, "The answer is 42")
+	}
+	if finalResult.raw != "Step 1: reason...The answer Step 2: refine... is 42" {
+		t.Fatalf("final raw = %q", finalResult.raw)
+	}
+}
+
 func TestRunStreamOrchestration_ParseThrottle(t *testing.T) {
 	// Generate many small chunks
 	chunks := make([]string, 20)
@@ -471,7 +638,7 @@ func TestRunStreamOrchestration_ParseThrottle(t *testing.T) {
 
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
-		func(ctx context.Context) (*llmhttp.Request, error) {
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) {
@@ -490,5 +657,449 @@ func TestRunStreamOrchestration_ParseThrottle(t *testing.T) {
 	// (At minimum once for the first event, then throttled)
 	if parseCount >= 20 {
 		t.Errorf("expected throttled parse calls (< 20), got %d", parseCount)
+	}
+}
+
+func TestRunStreamOrchestration_ValidatesAllFallbackChildrenUpFront(t *testing.T) {
+	out := make(chan bamlutils.StreamResult, 10)
+
+	err := RunStreamOrchestration(
+		context.Background(), out,
+		&StreamConfig{
+			FallbackChain: []string{"PrimaryClient", "MissingClient"},
+			ClientProviders: map[string]string{
+				"PrimaryClient": "openai",
+			},
+		},
+		nil,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			t.Fatal("buildRequest should not be called when fallback validation fails")
+			return nil, nil
+		},
+		nil,
+		nil,
+		newTestResult,
+	)
+
+	if err == nil {
+		t.Fatal("expected validation error for unsupported or missing fallback child provider")
+	}
+	if want := `for child "MissingClient"`; !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected error containing %q, got %q", want, err.Error())
+	}
+
+	close(out)
+	for r := range out {
+		t.Fatalf("expected no stream results on upfront validation error, got kind %v", r.Kind())
+	}
+}
+
+func TestResolveFallbackChain_AllSupported(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2, got %d", len(chain))
+	}
+	if providers["ClientA"] != "openai" || providers["ClientB"] != "anthropic" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+}
+
+func TestResolveFallbackChain_UnsupportedChild(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "aws-bedrock", // unsupported
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if chain != nil || providers != nil {
+		t.Errorf("expected nil chain/providers when child has unsupported provider, got chain=%v providers=%v", chain, providers)
+	}
+}
+
+func TestResolveFallbackChain_RuntimeOverrideChild(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	// Introspected: ClientA=openai, ClientB=anthropic
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	// Runtime override changes ClientB from anthropic to google-ai
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "ClientB", Provider: "google-ai"},
+			},
+		},
+	}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" || p == "google-ai" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2, got %d", len(chain))
+	}
+	// ClientB should use the runtime override, not the introspected value
+	if providers["ClientB"] != "google-ai" {
+		t.Errorf("expected ClientB provider 'google-ai' (runtime override), got %q", providers["ClientB"])
+	}
+	if providers["ClientA"] != "openai" {
+		t.Errorf("expected ClientA provider 'openai' (introspected), got %q", providers["ClientA"])
+	}
+}
+
+func TestResolveFallbackChain_RuntimeStrategyOverrideReordersChildren(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyFallback",
+					Provider: "baml-fallback",
+					Options: map[string]any{
+						"strategy": []any{"ClientB", "ClientA"},
+					},
+				},
+			},
+		},
+	}
+
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2, got %d", len(chain))
+	}
+	if chain[0] != "ClientB" || chain[1] != "ClientA" {
+		t.Fatalf("expected runtime strategy order [ClientB ClientA], got %v", chain)
+	}
+	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+}
+
+func TestResolveFallbackChain_RuntimeStrategyOverrideWithoutIntrospectedChain(t *testing.T) {
+	fallbackChains := map[string][]string{}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyFallback",
+					Provider: "baml-fallback",
+					Options: map[string]any{
+						"strategy": "strategy [ClientB, ClientA]",
+					},
+				},
+			},
+		},
+	}
+
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected runtime-defined chain length 2, got %d", len(chain))
+	}
+	if chain[0] != "ClientB" || chain[1] != "ClientA" {
+		t.Fatalf("expected runtime strategy order [ClientB ClientA], got %v", chain)
+	}
+	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+}
+
+func TestResolveFallbackChain_RuntimeQuotedStringStrategyOverride(t *testing.T) {
+	fallbackChains := map[string][]string{}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyFallback",
+					Provider: "baml-fallback",
+					Options: map[string]any{
+						"strategy": `strategy ["ClientB", "ClientA"]`,
+					},
+				},
+			},
+		},
+	}
+
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected runtime-defined chain length 2, got %d", len(chain))
+	}
+	if chain[0] != "ClientB" || chain[1] != "ClientA" {
+		t.Fatalf("expected runtime strategy order [ClientB ClientA], got %v", chain)
+	}
+	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+}
+
+func TestResolveFallbackChain_RuntimeOverrideUnsupported(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	// Runtime override changes ClientB to an unsupported provider
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "ClientB", Provider: "aws-bedrock"},
+			},
+		},
+	}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	// Should fall back to legacy path because runtime override made ClientB unsupported
+	if chain != nil || providers != nil {
+		t.Errorf("expected nil when runtime override makes child unsupported, got chain=%v providers=%v", chain, providers)
+	}
+}
+
+func TestResolveFallbackChain_NotFallback(t *testing.T) {
+	fallbackChains := map[string][]string{}
+	clientProviders := map[string]string{"GPT4": "openai"}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "GPT4", fallbackChains, clientProviders,
+		func(p string) bool { return true },
+	)
+
+	if chain != nil || providers != nil {
+		t.Errorf("expected nil for non-fallback client, got chain=%v providers=%v", chain, providers)
+	}
+}
+
+func TestResolveFallbackChain_RoundRobinGated(t *testing.T) {
+	// baml-roundrobin should NOT use the BuildRequest path because the
+	// orchestrator has no cross-request state to distribute load.
+	fallbackChains := map[string][]string{
+		"MyRoundRobin": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyRoundRobin": "baml-roundrobin",
+		"ClientA":      "openai",
+		"ClientB":      "anthropic",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyRoundRobin", fallbackChains, clientProviders,
+		func(p string) bool { return true },
+	)
+
+	if chain != nil || providers != nil {
+		t.Errorf("expected nil for baml-roundrobin (should use legacy path), got chain=%v providers=%v", chain, providers)
+	}
+}
+
+func TestResolveFallbackChain_FallbackAllowed(t *testing.T) {
+	// baml-fallback SHOULD use the BuildRequest path.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2 for baml-fallback, got %d", len(chain))
+	}
+	if providers["ClientA"] != "openai" || providers["ClientB"] != "anthropic" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+}
+
+func TestRunStreamOrchestration_FallbackChainResetBetweenChildren(t *testing.T) {
+	// Primary streams partial data ("stale") and completes normally, but the
+	// child still fails because parseFinal rejects that final content.
+	// Secondary streams "good" data and completes normally. The test verifies that:
+	// 1. A reset signal is emitted between children so downstream
+	//    discards the primary's stale partial state.
+	// 2. The final output contains only the secondary's data.
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := int(attempts.Add(1))
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+
+		if attempt == 1 {
+			// Primary: stream valid chunks that accumulate to "stale",
+			// then complete normally. parseFinal rejects "stale" content,
+			// causing tryOneStreamChild to return an error after having
+			// emitted partial events — exercising the inter-child reset.
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return
+		}
+		// Secondary: normal stream that completes.
+		for _, chunk := range []string{"good", " data"} {
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"%s\"}}]}\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "",
+		RetryPolicy:   &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+		NeedsPartials: true,
+		FallbackChain: []string{"PrimaryClient", "SecondaryClient"},
+		ClientProviders: map[string]string{
+			"PrimaryClient":   "openai",
+			"SecondaryClient": "openai",
+		},
+	}
+
+	buildFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+	}
+
+	// parseFinal rejects "stale" content so the primary child fails after
+	// streaming partial events, forcing the orchestrator to advance to
+	// the secondary child.
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		if s == "stale" {
+			return nil, fmt.Errorf("rejected stale content")
+		}
+		return s, nil
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		buildFn,
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		parseFinal,
+		newTestResult,
+	)
+	close(out)
+
+	// Drain results
+	var results []*testResult
+	for r := range out {
+		results = append(results, r.(*testResult))
+	}
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the reset signal — there should be at least one between the
+	// primary's partial and the secondary's partial/final.
+	sawReset := false
+	sawStalePartial := false
+	finalVal := ""
+	for _, r := range results {
+		if r.kind == bamlutils.StreamResultKindStream && r.stream == "stale" {
+			sawStalePartial = true
+		}
+		if r.kind == bamlutils.StreamResultKindStream && r.reset {
+			sawReset = true
+		}
+		if r.kind == bamlutils.StreamResultKindFinal {
+			finalVal, _ = r.final.(string)
+		}
+	}
+
+	if sawStalePartial && !sawReset {
+		t.Error("primary emitted partial data but no reset signal was sent before the secondary child")
+	}
+	if finalVal != "good data" {
+		t.Errorf("expected final='good data', got %q", finalVal)
 	}
 }

@@ -15,7 +15,9 @@ import (
 // partial result handling or parse throttling.
 type CallConfig struct {
 	// Provider is the LLM provider name (e.g., "openai", "anthropic").
-	// Used for response content extraction.
+	// Used for response content extraction. For single-provider clients,
+	// this is the only provider used. For fallback chains, this is
+	// ignored in favor of per-attempt provider resolution.
 	Provider string
 
 	// RetryPolicy is the retry policy for this request. Nil means no retries.
@@ -24,12 +26,24 @@ type CallConfig struct {
 	// NeedsRaw is true if the caller wants raw LLM response text
 	// (for /call-with-raw endpoint).
 	NeedsRaw bool
+
+	// FallbackChain is the ordered list of child client names for fallback
+	// strategies. When non-empty, each retry attempt walks the entire chain
+	// in order; if any child succeeds, the attempt returns immediately.
+	// When empty, the single Provider is used for all attempts.
+	FallbackChain []string
+
+	// ClientProviders maps child client names to their provider strings.
+	// Used with FallbackChain to resolve the provider for each attempt.
+	ClientProviders map[string]string
 }
 
 // BuildCallRequestFunc builds an HTTP request for a non-streaming call by
 // calling Request.Method(ctx, args, opts...) and converting the result
-// to an llmhttp.Request. This is provided by the generated adapter code.
-type BuildCallRequestFunc func(ctx context.Context) (*llmhttp.Request, error)
+// to an llmhttp.Request. The clientOverride parameter, when non-empty,
+// forces the request to use a specific child client (for fallback chain
+// iteration). This is provided by the generated adapter code.
+type BuildCallRequestFunc func(ctx context.Context, clientOverride string) (*llmhttp.Request, error)
 
 // ExtractResponseFunc extracts the LLM output text from a non-streaming
 // JSON response body. Returns two strings: parseable (for Parse.Method)
@@ -40,21 +54,24 @@ type ExtractResponseFunc func(provider string, responseBody string) (parseable, 
 
 // RunCallOrchestration executes the non-streaming BuildRequest path.
 //
-// Flow:
-//  1. buildRequest(ctx) → llmhttp.Request (once, before retry)
-//  2. Retry loop (HTTP roundtrip only):
-//     a. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
-//     b. onSuccess callback emits heartbeat after 2xx status, before body read
-//     c. on failure: onRetry emits heartbeat to maintain liveness during backoff
-//  3. After retry succeeds with a response body:
-//     a. extractResponse(provider, body) → parseable + raw text
-//     b. parseFinal(ctx, parseable) → typed result
-//     c. emit StreamResultKindFinal on channel
+// Flow — single retry loop covering HTTP, extraction, and parsing:
+//  1. buildRequest(ctx, clientOverride) → llmhttp.Request
+//  2. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
+//  3. extractResponse(provider, body) → parseable + raw text
+//  4. parseFinal(ctx, parseable) → typed result
+//  5. emit StreamResultKindFinal on channel
 //
-// Extraction and parsing happen OUTSIDE the retry loop because they are
-// deterministic: a malformed 200 response or a parse failure will produce
-// the same error on every attempt. Retrying the LLM call for those would
-// waste quota and latency without any chance of recovery.
+// All four steps run inside the retry loop so that extraction/parse failures
+// in a fallback chain advance to the next child. This matches the streaming
+// orchestrator, where parseFinal failures are retried from inside the attempt
+// function.
+//
+// The request is rebuilt on each attempt because BuildRequest fallback routing
+// may select a different child client/provider per retry. The generated
+// adapter passes the chosen child via clientOverride, and Request may return a
+// different HTTP request on each invocation. baml-roundrobin stays on the
+// legacy path because this per-request orchestrator does not keep cross-request
+// rotation state.
 //
 // The output channel is NOT closed by this function — the caller (generated
 // code) is responsible for closing it.
@@ -74,8 +91,16 @@ func RunCallOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
-	if config.Provider == "" || !IsCallProviderSupported(config.Provider) {
-		return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", config.Provider)
+	// Validate that the first provider is supported.
+	if len(config.FallbackChain) == 0 {
+		if config.Provider == "" || !IsCallProviderSupported(config.Provider) {
+			return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", config.Provider)
+		}
+	} else {
+		first := config.ClientProviders[config.FallbackChain[0]]
+		if first == "" || !IsCallProviderSupported(first) {
+			return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", first)
+		}
 	}
 
 	// sendHeartbeat emits a heartbeat to the pool's hung detector via
@@ -123,69 +148,80 @@ func RunCallOrchestration(
 		}
 	}
 
-	// Build the request once before the retry loop. This is a local
-	// operation (no network call) — if it fails, it's deterministic
-	// and retrying won't help.
-	req, err := buildRequest(ctx)
-	if err != nil {
-		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, "", fmt.Errorf("buildrequest: failed to build request: %w", err), false))
-		return nil
+	// callAttemptResult carries the final parsed value and raw text from
+	// the winning attempt.
+	type callAttemptResult struct {
+		finalResult any
+		raw         string
 	}
 
-	// Retry only the HTTP roundtrip. Extraction and parsing are
-	// deterministic and happen after the retry loop succeeds.
-	attemptHTTP := func(attempt int) (any, error) {
+	// tryOneChild builds, executes, extracts, and parses a single child.
+	tryOneChild := func(provider, clientOverride string) (*callAttemptResult, error) {
+		req, err := buildRequest(ctx, clientOverride)
+		if err != nil {
+			return nil, fmt.Errorf("buildrequest: failed to build request: %w", err)
+		}
 		resp, httpErr := httpClient.Execute(ctx, req, sendHeartbeat)
 		if httpErr != nil {
 			return nil, httpErr
 		}
-		return resp, nil
+
+		parseable, raw, extractErr := extractResponse(provider, resp.Body)
+		if extractErr != nil {
+			return nil, fmt.Errorf("buildrequest: failed to extract response content: %w", extractErr)
+		}
+
+		finalResult, parseErr := parseFinal(ctx, parseable)
+		if parseErr != nil {
+			return nil, fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)
+		}
+
+		return &callAttemptResult{finalResult: finalResult, raw: raw}, nil
 	}
 
-	// The onRetry callback emits a heartbeat before the backoff sleep
-	// so the pool's hung detector sees liveness between attempts, then
-	// resets the atomic so the next attempt's onSuccess heartbeat fires.
-	result, err := retry.Execute(ctx, config.RetryPolicy, attemptHTTP, func(attempt int) {
-		// Emit heartbeat directly (bypassing the atomic guard) to signal
-		// liveness during retry backoff. Without this, repeated fast
-		// 5xx/429 responses followed by a long backoff would leave the
-		// request silent and trip FirstByteTimeout.
-		r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)
-		select {
-		case out <- r:
-		default:
-			r.Release()
+	// attemptFull tries either the single provider or the entire fallback
+	// chain. For fallback chains, each retry attempt walks all children in
+	// order — matching the BAML runtime's semantics where retries retry the
+	// entire strategy after all children fail.
+	attemptFull := func(_ int) (any, error) {
+		if len(config.FallbackChain) == 0 {
+			return tryOneChild(config.Provider, "")
 		}
-		heartbeatSent.Store(false)
-	})
+		var lastErr error
+		for _, child := range config.FallbackChain {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+			provider := config.ClientProviders[child]
+			result, err := tryOneChild(provider, child)
+			if err == nil {
+				return result, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
+
+	// Non-streaming retry callbacks do not emit heartbeats. In the pool,
+	// any received result marks gotFirstByte=true before heartbeat results
+	// are filtered, so an onRetry heartbeat would disable first-byte hung
+	// detection even though no provider has produced a real 2xx response yet.
+	result, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, nil)
 
 	if err != nil {
 		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, "", err, false))
 		return nil
 	}
 
-	// Extraction and parsing run once, outside the retry loop. These are
-	// deterministic: a malformed response or parse failure will produce
-	// the same error every time, so retrying would waste LLM calls.
-	resp := result.(*llmhttp.Response)
-
-	parseable, raw, err := extractResponse(config.Provider, resp.Body)
-	if err != nil {
-		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, "", fmt.Errorf("buildrequest: failed to extract response content: %w", err), false))
-		return nil
-	}
-
-	finalResult, parseErr := parseFinal(ctx, parseable)
-	if parseErr != nil {
-		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, "", fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr), false))
-		return nil
-	}
+	winningResult := result.(*callAttemptResult)
 
 	rawForFinal := ""
 	if config.NeedsRaw {
-		rawForFinal = raw
+		rawForFinal = winningResult.raw
 	}
-	trySend(newResult(bamlutils.StreamResultKindFinal, nil, finalResult, rawForFinal, nil, false))
+	trySend(newResult(bamlutils.StreamResultKindFinal, nil, winningResult.finalResult, rawForFinal, nil, false))
 
 	return nil
 }

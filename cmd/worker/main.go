@@ -255,14 +255,21 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 				pluginResult.Kind = workerplugin.StreamResultKindError
 				pluginResult.Error = result.Error()
 			case bamlutils.StreamResultKindStream:
-				data, err := json.Marshal(result.Stream())
-				if err != nil {
-					pluginResult.Kind = workerplugin.StreamResultKindError
-					pluginResult.Error = fmt.Errorf("failed to marshal stream result: %w", err)
+				pluginResult.Kind = workerplugin.StreamResultKindStream
+				pluginResult.Raw = result.Raw()
+				// Reset-only stream results intentionally carry no payload. If we
+				// marshal nil here, it becomes JSON `null`, which downstream would
+				// publish as a bogus partial frame in addition to the reset event.
+				if !(result.Reset() && result.Stream() == nil) {
+					data, err := json.Marshal(result.Stream())
+					if err != nil {
+						pluginResult.Kind = workerplugin.StreamResultKindError
+						pluginResult.Error = fmt.Errorf("failed to marshal stream result: %w", err)
+					} else {
+						pluginResult.Data = data
+					}
 				} else {
-					pluginResult.Kind = workerplugin.StreamResultKindStream
-					pluginResult.Data = data
-					pluginResult.Raw = result.Raw()
+					pluginResult.Raw = ""
 				}
 			case bamlutils.StreamResultKindFinal:
 				data, err := json.Marshal(result.Final())

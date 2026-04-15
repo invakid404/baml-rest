@@ -1,5 +1,5 @@
-// Package buildrequest provides the runtime orchestrator for the
-// BuildRequest/StreamRequest streaming path. This replaces the
+// Package buildrequest provides the runtime orchestrators for the
+// BuildRequest/StreamRequest call and streaming paths. This replaces the
 // CallStream+OnTick pipeline for providers that support the modular API.
 //
 // The generated adapter code calls RunStreamOrchestration with
@@ -44,7 +44,7 @@ func parseBuildRequestEnv() bool {
 var useBuildRequestOnce sync.Once
 var useBuildRequestCached bool
 
-// UseBuildRequest returns true if the BuildRequest streaming path is enabled.
+// UseBuildRequest returns true if the BuildRequest/StreamRequest paths are enabled.
 // Controlled by the BAML_REST_USE_BUILD_REQUEST environment variable.
 // When false, the legacy CallStream+OnTick path is used for all providers.
 // The environment variable is read once and cached for the process lifetime.
@@ -219,10 +219,174 @@ func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {
 	return p
 }
 
+// resolveChildProvider returns the provider for a named client, checking
+// runtime client_registry overrides before the introspected defaults. This
+// mirrors ResolveProvider's per-client resolution (lines 104-112) so that
+// runtime overrides that change a child's provider are respected for both
+// extraction format selection and the supported-provider gate.
+func resolveChildProvider(reg *bamlutils.ClientRegistry, clientName string, introspectedProviders map[string]string) string {
+	if reg != nil {
+		for _, client := range reg.Clients {
+			if client != nil && client.Name == clientName && client.Provider != "" {
+				return client.Provider
+			}
+		}
+	}
+	return introspectedProviders[clientName]
+}
+
+func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlutils.ClientProperty {
+	if reg == nil {
+		return nil
+	}
+	for _, client := range reg.Clients {
+		if client != nil && client.Name == clientName {
+			return client
+		}
+	}
+	return nil
+}
+
+func parseRuntimeStrategyOption(v any) []string {
+	normalizeStrategyToken := func(token string) string {
+		token = strings.TrimSpace(token)
+		if len(token) >= 2 {
+			if (token[0] == '"' && token[len(token)-1] == '"') || (token[0] == '\'' && token[len(token)-1] == '\'') {
+				token = token[1 : len(token)-1]
+			}
+		}
+		return strings.TrimSpace(token)
+	}
+
+	splitStrategy := func(s string) []string {
+		s = strings.TrimSpace(s)
+		if strings.HasPrefix(s, "strategy ") {
+			s = strings.TrimSpace(strings.TrimPrefix(s, "strategy "))
+		}
+		if strings.HasPrefix(s, "[") {
+			s = s[1:]
+		}
+		if closeIdx := strings.LastIndex(s, "]"); closeIdx >= 0 {
+			s = s[:closeIdx]
+		}
+		parts := strings.FieldsFunc(s, func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\t' || r == '\n'
+		})
+		chain := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = normalizeStrategyToken(part)
+			if part != "" {
+				chain = append(chain, part)
+			}
+		}
+		return chain
+	}
+
+	switch vv := v.(type) {
+	case string:
+		return splitStrategy(vv)
+	case []string:
+		chain := make([]string, 0, len(vv))
+		for _, item := range vv {
+			item = normalizeStrategyToken(item)
+			if item != "" {
+				chain = append(chain, item)
+			}
+		}
+		return chain
+	case []any:
+		chain := make([]string, 0, len(vv))
+		for _, item := range vv {
+			str, ok := item.(string)
+			if !ok {
+				return nil
+			}
+			str = normalizeStrategyToken(str)
+			if str != "" {
+				chain = append(chain, str)
+			}
+		}
+		return chain
+	default:
+		return nil
+	}
+}
+
+func resolveFallbackStrategyChain(reg *bamlutils.ClientRegistry, clientName string, introspectedChains map[string][]string) []string {
+	if runtimeClient := findRuntimeClient(reg, clientName); runtimeClient != nil && runtimeClient.Options != nil {
+		if rawStrategy, ok := runtimeClient.Options["strategy"]; ok {
+			if chain := parseRuntimeStrategyOption(rawStrategy); len(chain) > 0 {
+				return chain
+			}
+		}
+	}
+	return introspectedChains[clientName]
+}
+
+// ResolveFallbackChain determines whether a function's client is a fallback
+// strategy client and, if so, returns the ordered child chain and a map of
+// child client names to their providers. Returns nil, nil if the function
+// does not use a fallback chain or if any child's provider is unsupported.
+//
+// Parameters:
+//   - adapter: the request adapter (for runtime client_registry overrides)
+//   - defaultClientName: the function's default client from introspection
+//   - fallbackChains: introspected map of strategy client → child list
+//   - clientProviders: introspected map of client name → provider string
+//   - isProviderSupported: provider support check function (streaming vs call)
+func ResolveFallbackChain(
+	adapter bamlutils.Adapter,
+	defaultClientName string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+) (chain []string, providers map[string]string) {
+	reg := adapter.OriginalClientRegistry()
+
+	// Determine which client name to look up in fallbackChains.
+	// Runtime primary override takes precedence over the static default.
+	clientName := defaultClientName
+	if reg != nil && reg.Primary != nil {
+		clientName = *reg.Primary
+	}
+
+	// Only support baml-fallback in the BuildRequest path. baml-roundrobin
+	// requires cross-request state to distribute load (each new request
+	// should start at a different child), which the per-request orchestrator
+	// does not have. Without it, round-robin degrades to fallback (always
+	// starting at child 0), which is silently wrong. Leave round-robin on
+	// the legacy path where the BAML runtime handles the rotation.
+	parentProvider := resolveChildProvider(reg, clientName, clientProviders)
+	if parentProvider != "baml-fallback" {
+		return nil, nil
+	}
+
+	chain = resolveFallbackStrategyChain(reg, clientName, fallbackChains)
+	if len(chain) == 0 {
+		return nil, nil
+	}
+
+	// Resolve each child's provider, checking runtime client_registry
+	// overrides first (same precedence as ResolveProvider). If any child
+	// is unsupported or has no provider, fall back to the legacy path.
+	providers = make(map[string]string, len(chain))
+	for _, child := range chain {
+		p := resolveChildProvider(reg, child, clientProviders)
+		if p == "" || !isProviderSupported(p) {
+			return nil, nil
+		}
+		providers[child] = p
+	}
+
+	return chain, providers
+}
+
 // StreamConfig holds the configuration for a single streaming request.
 type StreamConfig struct {
 	// Provider is the LLM provider name (e.g., "openai", "anthropic").
-	// Used for SSE delta extraction.
+	// Used for SSE delta extraction. For single-provider clients, this
+	// is the only provider used. For fallback chains, this is ignored
+	// in favor of per-attempt provider resolution via ClientProviders.
 	Provider string
 
 	// RetryPolicy is the retry policy for this request. Nil means no retries.
@@ -237,12 +401,24 @@ type StreamConfig struct {
 	// ParseThrottleInterval is the minimum time between ParseStream calls.
 	// Zero means parse on every SSE event (no throttling).
 	ParseThrottleInterval time.Duration
+
+	// FallbackChain is the ordered list of child client names for fallback
+	// strategies. When non-empty, each retry attempt walks the entire chain
+	// in order; if any child succeeds, the attempt returns immediately.
+	// When empty, the single Provider is used for all attempts.
+	FallbackChain []string
+
+	// ClientProviders maps child client names to their provider strings.
+	// Used with FallbackChain to resolve the provider for each attempt.
+	ClientProviders map[string]string
 }
 
 // BuildRequestFunc builds an HTTP request for streaming by calling
 // StreamRequest.Method(ctx, args, opts...) and converting the result
-// to an llmhttp.Request. This is provided by the generated adapter code.
-type BuildRequestFunc func(ctx context.Context) (*llmhttp.Request, error)
+// to an llmhttp.Request. The clientOverride parameter, when non-empty,
+// forces the request to use a specific child client (for fallback chain
+// iteration). This is provided by the generated adapter code.
+type BuildRequestFunc func(ctx context.Context, clientOverride string) (*llmhttp.Request, error)
 
 // ParseStreamFunc parses accumulated raw text into a typed partial.
 // This wraps ParseStream.Method(accumulated, opts...) from the generated code.
@@ -280,8 +456,19 @@ func RunStreamOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
-	if config.Provider == "" || !IsProviderSupported(config.Provider) {
-		return fmt.Errorf("buildrequest: unsupported or empty provider %q", config.Provider)
+	// Validate the configured provider(s) up front so invalid fallback chains
+	// fail before any stream/reset events are emitted.
+	if len(config.FallbackChain) == 0 {
+		if config.Provider == "" || !IsProviderSupported(config.Provider) {
+			return fmt.Errorf("buildrequest: unsupported or empty provider %q", config.Provider)
+		}
+	} else {
+		for _, child := range config.FallbackChain {
+			provider := config.ClientProviders[child]
+			if provider == "" || !IsProviderSupported(provider) {
+				return fmt.Errorf("buildrequest: unsupported or empty provider %q for child %q", provider, child)
+			}
+		}
 	}
 
 	var heartbeatSent atomic.Bool
@@ -298,9 +485,9 @@ func RunStreamOrchestration(
 		}
 	}
 
-	// Single-attempt streaming function
-	attemptStream := func(attempt int) (any, error) {
-		req, err := buildRequest(ctx)
+	// tryOneStreamChild runs a single child's streaming attempt.
+	tryOneStreamChild := func(provider, clientOverride string) (any, error) {
+		req, err := buildRequest(ctx, clientOverride)
 		if err != nil {
 			return nil, fmt.Errorf("buildrequest: failed to build request: %w", err)
 		}
@@ -314,22 +501,49 @@ func RunStreamOrchestration(
 		// Send heartbeat on connection success
 		sendHeartbeat()
 
-		var accumulated strings.Builder
+		var parseableAccumulated strings.Builder
+		var rawAccumulated strings.Builder
 		var lastParseTime time.Time
 
+		trySendPartial := func(parsed any, rawDelta string) error {
+			r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawDelta, nil, false)
+			select {
+			case out <- r:
+			case <-ctx.Done():
+				r.Release()
+				return ctx.Err()
+			default:
+				r.Release() // Drop partial/raw delta — buffer full
+			}
+			return nil
+		}
+
 		for ev := range resp.Events {
-			// Extract text delta from SSE event
-			delta, extractErr := sse.ExtractDeltaFromText(config.Provider, ev.Data)
+			// Extract parseable/raw delta content from the SSE event using this
+			// attempt's provider. Anthropic thinking deltas contribute only to raw.
+			delta, extractErr := sse.ExtractDeltaPartsFromText(provider, ev.Data)
 			if extractErr != nil {
 				// Extraction error — fail the attempt so retry logic can handle it
 				// rather than silently accumulating incomplete text.
 				return nil, fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
 			}
-			if delta == "" {
+			if delta.Raw == "" {
 				continue
 			}
 
-			accumulated.WriteString(delta)
+			rawAccumulated.WriteString(delta.Raw)
+			if delta.Parseable != "" {
+				parseableAccumulated.WriteString(delta.Parseable)
+			}
+
+			if config.NeedsPartials && delta.Parseable == "" {
+				if config.NeedsRaw {
+					if err := trySendPartial(nil, delta.Raw); err != nil {
+						return nil, err
+					}
+				}
+				continue
+			}
 
 			// Emit partial if needed.
 			// Non-blocking sends for partials/deltas: drop when the output
@@ -346,20 +560,14 @@ func RunStreamOrchestration(
 					// so that repeated failures don't bypass the throttle interval.
 					lastParseTime = time.Now()
 
-					parsed, parseErr := parseStream(ctx, accumulated.String())
+					parsed, parseErr := parseStream(ctx, parseableAccumulated.String())
 					if parseErr == nil && parsed != nil {
 						rawForResult := ""
 						if config.NeedsRaw {
-							rawForResult = delta
+							rawForResult = delta.Raw
 						}
-						r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawForResult, nil, false)
-						select {
-						case out <- r:
-						case <-ctx.Done():
-							r.Release()
-							return nil, ctx.Err()
-						default:
-							r.Release() // Drop partial — buffer full
+						if err := trySendPartial(parsed, rawForResult); err != nil {
+							return nil, err
 						}
 					}
 				}
@@ -376,9 +584,9 @@ func RunStreamOrchestration(
 
 		// Parse the final result — let parseFinal decide whether an empty
 		// completion is valid. The legacy path does not reject empty strings.
-		fullRaw := accumulated.String()
+		fullRaw := rawAccumulated.String()
 
-		finalResult, parseErr := parseFinal(ctx, fullRaw)
+		finalResult, parseErr := parseFinal(ctx, parseableAccumulated.String())
 		if parseErr != nil {
 			return nil, fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)
 		}
@@ -399,8 +607,46 @@ func RunStreamOrchestration(
 		return finalResult, nil
 	}
 
+	// attemptFull tries the single provider or the entire fallback chain.
+	// For fallback chains, each retry walks all children in order —
+	// matching the BAML runtime where retries retry the entire strategy.
+	attemptFull := func(_ int) (any, error) {
+		if len(config.FallbackChain) == 0 {
+			return tryOneStreamChild(config.Provider, "")
+		}
+		var lastErr error
+		for i, child := range config.FallbackChain {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+			// Emit a reset signal before trying the next child so the
+			// downstream discards any partial/raw state leaked by the
+			// previous child's failed stream. Not needed before the first
+			// child in the chain.
+			if i > 0 && lastErr != nil {
+				r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
+				select {
+				case out <- r:
+				case <-ctx.Done():
+					r.Release()
+					return nil, ctx.Err()
+				}
+				heartbeatSent.Store(false)
+			}
+			provider := config.ClientProviders[child]
+			result, err := tryOneStreamChild(provider, child)
+			if err == nil {
+				return result, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
+
 	// Execute with retries
-	_, err := retry.Execute(ctx, config.RetryPolicy, attemptStream, func(attempt int) {
+	_, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, func(attempt int) {
 		// Emit reset signal so downstream discards accumulated partial state
 		r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
 		select {

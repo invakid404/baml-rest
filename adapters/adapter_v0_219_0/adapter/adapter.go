@@ -45,7 +45,8 @@ type BamlAdapter struct {
 	// for named-client provider resolution in the BuildRequest router.
 	originalClientRegistry *bamlutils.ClientRegistry
 
-	// httpClient is an optional custom HTTP client for the BuildRequest path.
+	// httpClient is an optional custom HTTP client for the BuildRequest path,
+	// used by both streaming and non-streaming /call orchestration.
 	// When nil, llmhttp.DefaultClient is used.
 	httpClient *llmhttp.Client
 }
@@ -147,8 +148,9 @@ func (b *BamlAdapter) NewMediaFromBase64(kind bamlutils.MediaKind, base64 string
 	return b.MediaFactory(kind, nil, &base64, mimeType)
 }
 
-// SetHTTPClient injects a custom HTTP client for the BuildRequest streaming path.
-// When set, the generated router uses this client instead of llmhttp.DefaultClient.
+// SetHTTPClient injects a custom HTTP client for BuildRequest request execution.
+// When set, the generated router uses this client instead of llmhttp.DefaultClient
+// for both streaming and non-streaming paths.
 // Pass nil to revert to the default client.
 func (b *BamlAdapter) SetHTTPClient(c *llmhttp.Client) {
 	b.httpClient = c

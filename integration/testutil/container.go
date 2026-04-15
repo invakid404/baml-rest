@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -99,6 +100,12 @@ type SetupOptions struct {
 
 	// UnaryServer enables the opt-in chi/net-http unary server on port 8081.
 	UnaryServer bool
+
+	// UseBuildRequest enables the BuildRequest/StreamRequest path inside
+	// the container. When false the container uses the legacy
+	// CallStream+OnTick path. This must be forwarded from the host env
+	// so that the CI matrix leg actually toggles the code path under test.
+	UseBuildRequest bool
 }
 
 // Setup creates the test environment with mock LLM server and baml-rest container.
@@ -258,7 +265,8 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 			networkName: {BAMLRestContainerName},
 		},
 		Env: map[string]string{
-			"BAML_LOG": "debug",
+			"BAML_LOG":                    "debug",
+			"BAML_REST_USE_BUILD_REQUEST": strconv.FormatBool(opts.UseBuildRequest),
 		},
 		HostConfigModifier: func(hc *container.HostConfig) {
 			if hc.Sysctls == nil {
@@ -333,10 +341,10 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		bamlVersion:       opts.BAMLVersion,
 		adapterVersion:    opts.AdapterVersion,
 		keepSource:        opts.KeepSource,
-		debugBuild:        true,               // Enable debug endpoints for testing (/_debug/*)
-		defaultTargetArch: getDockerArch(),    // Use native architecture
-		noCacheMount:      true,               // testcontainers doesn't reliably support BuildKit
-		noCustomBamlLib:   true,               // Integration tests don't use custom BAML lib
+		debugBuild:        true,            // Enable debug endpoints for testing (/_debug/*)
+		defaultTargetArch: getDockerArch(), // Use native architecture
+		noCacheMount:      true,            // testcontainers doesn't reliably support BuildKit
+		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
 		unaryServer:       opts.UnaryServer,
 	}
 

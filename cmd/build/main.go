@@ -56,9 +56,13 @@ type tarWriter struct {
 	tw *tar.Writer
 }
 
+func normalizeTarHeaderName(name string) string {
+	return filepath.ToSlash(name)
+}
+
 func (t *tarWriter) WriteFile(name string, data io.Reader, size int64, mode int64) error {
 	header := tar.Header{
-		Name: name,
+		Name: normalizeTarHeaderName(name),
 		Mode: mode,
 		Size: size,
 	}
@@ -1651,7 +1655,7 @@ func copyBamlDirToTar(srcPath string, tw *tar.Writer, rules []urlrewrite.Rule) e
 		}
 
 		header := &tar.Header{
-			Name: fmt.Sprintf("baml_src/%s", relPath),
+			Name: normalizeTarHeaderName(fmt.Sprintf("baml_src/%s", relPath)),
 			Mode: int64(info.Mode()),
 			Size: int64(len(content)),
 		}

@@ -1514,15 +1514,14 @@ func Generate(selfPkg string) {
 
 		if hasBuildRequest {
 
-			// Build the StreamRequest call params. After the context_fix hack,
-			// StreamRequest.Method takes (ctx, args..., opts...). We use the
-			// closure's ctx parameter, not the outer adapter reference.
+			// Build the StreamRequest call params using callOpts (which may
+			// include a WithClient override for fallback chains).
 			var buildRequestCallParams []jen.Code
 			buildRequestCallParams = append(buildRequestCallParams, jen.Id("ctx"))
 			for _, arg := range args {
 				buildRequestCallParams = append(buildRequestCallParams, argCallParam(arg))
 			}
-			buildRequestCallParams = append(buildRequestCallParams, jen.Id("options").Op("..."))
+			buildRequestCallParams = append(buildRequestCallParams, jen.Id("callOpts").Op("..."))
 
 			// The _buildRequest body
 			buildRequestBody := makePreamble()
@@ -1530,13 +1529,23 @@ func Generate(selfPkg string) {
 			// Build the closures for RunStreamOrchestration
 			buildRequestBody = append(buildRequestBody,
 				// buildRequestFn: calls StreamRequest.Method(ctx, args, opts...) -> baml.HTTPRequest -> llmhttp.Request
+				// Accepts clientOverride to support fallback chain iteration via WithClient.
 				jen.Id("buildRequestFn").Op(":=").Func().Params(
 					jen.Id("ctx").Qual("context", "Context"),
+					jen.Id("clientOverride").String(),
 				).Params(
 					jen.Op("*").Qual(common.LLMHTTPPkg, "Request"),
 					jen.Error(),
 				).BlockFunc(func(g *jen.Group) {
-					// Call StreamRequest.Method(adapter, args..., options...)
+					// Build callOpts: clone options and append WithClient if override is set
+					g.Id("callOpts").Op(":=").Id("options")
+					g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+						jen.Id("callOpts").Op("=").Append(
+							jen.Qual("slices", "Clone").Call(jen.Id("options")),
+							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
+						),
+					)
+					// Call StreamRequest.Method(ctx, args..., callOpts...)
 					g.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
 						Qual(common.GeneratedClientPkg, "StreamRequest").Dot(methodName).Call(buildRequestCallParams...)
 					g.If(jen.Id("err").Op("!=").Nil()).Block(
@@ -1651,10 +1660,12 @@ func Generate(selfPkg string) {
 
 				// StreamConfig
 				jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
-					jen.Id("Provider"):      jen.Id("provider"),
-					jen.Id("RetryPolicy"):   jen.Id("retryPolicy"),
-					jen.Id("NeedsPartials"): jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
-					jen.Id("NeedsRaw"):      jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("Provider"):        jen.Id("provider"),
+					jen.Id("RetryPolicy"):     jen.Id("retryPolicy"),
+					jen.Id("NeedsPartials"):   jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
+					jen.Id("NeedsRaw"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("FallbackChain"):   jen.Id("fallbackChain"),
+					jen.Id("ClientProviders"): jen.Id("clientProviders"),
 				}),
 
 				// Run the orchestration in a goroutine with panic recovery, matching
@@ -1709,6 +1720,8 @@ func Generate(selfPkg string) {
 					jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 					jen.Id("provider").String(),
 					jen.Id("retryPolicy").Op("*").Qual(common.RetryPkg, "Policy"),
+					jen.Id("fallbackChain").Index().String(),
+					jen.Id("clientProviders").Map(jen.String()).String(),
 				).
 				Error().
 				Block(buildRequestBody...)
@@ -1725,26 +1738,36 @@ func Generate(selfPkg string) {
 
 		if hasCallBuildRequest {
 
-			// Build the Request call params — same pattern as StreamRequest:
-			// (ctx, args..., opts...)
+			// Build the Request call params using callOpts (which may
+			// include a WithClient override for fallback chains).
 			var callRequestCallParams []jen.Code
 			callRequestCallParams = append(callRequestCallParams, jen.Id("ctx"))
 			for _, arg := range args {
 				callRequestCallParams = append(callRequestCallParams, argCallParam(arg))
 			}
-			callRequestCallParams = append(callRequestCallParams, jen.Id("options").Op("..."))
+			callRequestCallParams = append(callRequestCallParams, jen.Id("callOpts").Op("..."))
 
 			buildCallRequestBody := makePreamble()
 
 			buildCallRequestBody = append(buildCallRequestBody,
 				// buildRequestFn: calls Request.Method(ctx, args, opts...) → baml.HTTPRequest → llmhttp.Request
+				// Accepts clientOverride to support fallback chain iteration via WithClient.
 				jen.Id("buildRequestFn").Op(":=").Func().Params(
 					jen.Id("ctx").Qual("context", "Context"),
+					jen.Id("clientOverride").String(),
 				).Params(
 					jen.Op("*").Qual(common.LLMHTTPPkg, "Request"),
 					jen.Error(),
 				).BlockFunc(func(g *jen.Group) {
-					// Call Request.Method(ctx, args..., options...) — non-streaming
+					// Build callOpts: clone options and append WithClient if override is set
+					g.Id("callOpts").Op(":=").Id("options")
+					g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+						jen.Id("callOpts").Op("=").Append(
+							jen.Qual("slices", "Clone").Call(jen.Id("options")),
+							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
+						),
+					)
+					// Call Request.Method(ctx, args..., callOpts...) — non-streaming
 					g.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
 						Qual(common.GeneratedClientPkg, "Request").Dot(methodName).Call(callRequestCallParams...)
 					g.If(jen.Id("err").Op("!=").Nil()).Block(
@@ -1815,9 +1838,11 @@ func Generate(selfPkg string) {
 
 				// CallConfig
 				jen.Id("callConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "CallConfig").Values(jen.Dict{
-					jen.Id("Provider"):    jen.Id("provider"),
-					jen.Id("RetryPolicy"): jen.Id("retryPolicy"),
-					jen.Id("NeedsRaw"):    jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("Provider"):        jen.Id("provider"),
+					jen.Id("RetryPolicy"):     jen.Id("retryPolicy"),
+					jen.Id("NeedsRaw"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("FallbackChain"):   jen.Id("fallbackChain"),
+					jen.Id("ClientProviders"): jen.Id("clientProviders"),
 				}),
 
 				// Resolve HTTP client
@@ -1870,6 +1895,8 @@ func Generate(selfPkg string) {
 					jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 					jen.Id("provider").String(),
 					jen.Id("retryPolicy").Op("*").Qual(common.RetryPkg, "Policy"),
+					jen.Id("fallbackChain").Index().String(),
+					jen.Id("clientProviders").Map(jen.String()).String(),
 				).
 				Error().
 				Block(buildCallRequestBody...)
@@ -1880,13 +1907,23 @@ func Generate(selfPkg string) {
 		// Creates the output channel and passes it to the inner implementation.
 		//
 		// When the BuildRequest path is available and the feature flag is set,
-		// it takes priority for all stream modes (it handles raw and partials
-		// natively). Falls back to legacy paths for unsupported providers or
-		// when the feature flag is off.
+		// it takes priority for both call and stream modes. Falls back to the
+		// legacy paths for unsupported providers or when the feature flag is off.
 		routerBody := []jen.Code{
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
 			jen.Var().Id("err").Error(),
 			jen.Id("mode").Op(":=").Id("adapter").Dot("StreamMode").Call(),
+		}
+
+		// Helper to generate the common retry policy resolution + dispatch call
+		// for both single-provider and fallback-chain paths.
+		resolveRetryPolicy := func() jen.Code {
+			return jen.Id("retryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
+				jen.Id("adapter"),
+				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+				jen.Qual(common.IntrospectedPkg, "FunctionRetryPolicy").Index(jen.Lit(methodName)),
+				jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
+			)
 		}
 
 		// Non-streaming BuildRequest path for /call and /call-with-raw.
@@ -1901,21 +1938,39 @@ func Generate(selfPkg string) {
 						Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
 						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
 				).Block(
+					// Single-provider path
 					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveProvider").Call(
 						jen.Id("adapter"),
 						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
 						jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
 					),
 					jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsCallProviderSupported").Call(jen.Id("provider"))).Block(
-						jen.Id("retryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
-							jen.Id("adapter"),
-							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-							jen.Qual(common.IntrospectedPkg, "FunctionRetryPolicy").Index(jen.Lit(methodName)),
-							jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
-						),
+						resolveRetryPolicy(),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
+							jen.Nil(), jen.Nil(),
+						),
+						jen.If(jen.Id("err").Op("!=").Nil()).Block(
+							jen.Return(jen.Nil(), jen.Id("err")),
+						),
+						jen.Return(jen.Id("out"), jen.Nil()),
+					),
+					// Fallback chain path: if single-provider check failed, try resolving
+					// a fallback chain (all children must have supported providers).
+					jen.List(jen.Id("__chain"), jen.Id("__cprov")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+						jen.Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
+					),
+					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
+						resolveRetryPolicy(),
+						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
+							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
+							jen.Lit(""), jen.Id("retryPolicy"),
+							jen.Id("__chain"), jen.Id("__cprov"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -1938,21 +1993,38 @@ func Generate(selfPkg string) {
 						Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeStream").
 						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeStreamWithRaw")),
 				).Block(
+					// Single-provider path
 					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveProvider").Call(
 						jen.Id("adapter"),
 						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
 						jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
 					),
 					jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
-						jen.Id("retryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
-							jen.Id("adapter"),
-							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-							jen.Qual(common.IntrospectedPkg, "FunctionRetryPolicy").Index(jen.Lit(methodName)),
-							jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
-						),
+						resolveRetryPolicy(),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
+							jen.Nil(), jen.Nil(),
+						),
+						jen.If(jen.Id("err").Op("!=").Nil()).Block(
+							jen.Return(jen.Nil(), jen.Id("err")),
+						),
+						jen.Return(jen.Id("out"), jen.Nil()),
+					),
+					// Fallback chain path
+					jen.List(jen.Id("__chain"), jen.Id("__cprov")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+						jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
+					),
+					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
+						resolveRetryPolicy(),
+						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
+							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
+							jen.Lit(""), jen.Id("retryPolicy"),
+							jen.Id("__chain"), jen.Id("__cprov"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),

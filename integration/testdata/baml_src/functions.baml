@@ -173,3 +173,26 @@ function ParseJson(input: string) -> JsonContainer {
     prompt #"{{ ctx.output_format }}
     Parse as JSON: {{ input }}"#
 }
+
+// ============================================================
+// Fallback chain test functions
+// ============================================================
+
+// Simple string through two-client fallback
+function GetGreetingFallbackPair(name: string) -> string {
+    client TestFallbackPair
+    prompt #"Say hello to {{ name }}"#
+}
+
+// Simple string through three-client fallback
+function GetGreetingFallbackChain(name: string) -> string {
+    client TestFallbackChain
+    prompt #"Say hello to {{ name }}"#
+}
+
+// Object output through fallback
+function GetSimpleFallback(input: string) -> SimpleOutput {
+    client TestFallbackPair
+    prompt #"{{ ctx.output_format }}
+    Process: {{ input }}"#
+}

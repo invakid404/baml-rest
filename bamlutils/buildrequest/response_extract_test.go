@@ -234,6 +234,41 @@ func TestExtractResponseContent_OpenAIResponsesWithReasoning(t *testing.T) {
 	}
 }
 
+func TestExtractResponseContent_OpenAIResponsesMultipleMessageItems(t *testing.T) {
+	body := `{"output":[
+		{"type":"message","content":[{"type":"output_text","text":"First. "}],"role":"assistant"},
+		{"type":"reasoning","content":[],"summary":[]},
+		{"type":"message","content":[{"type":"output_text","text":"Second."}],"role":"assistant"}
+	]}`
+	text, _, err := ExtractResponseContent("openai-responses", body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "First. Second." {
+		t.Errorf("expected 'First. Second.', got %q", text)
+	}
+}
+
+func TestExtractResponseContent_OpenAIResponsesMultipleMessageItemsMultiPart(t *testing.T) {
+	body := `{"output":[
+		{"type":"message","content":[
+			{"type":"output_text","text":"A"},
+			{"type":"output_text","text":"B"}
+		],"role":"assistant"},
+		{"type":"message","content":[
+			{"type":"output_text","text":"C"},
+			{"type":"output_text","text":"D"}
+		],"role":"assistant"}
+	]}`
+	text, _, err := ExtractResponseContent("openai-responses", body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if text != "ABCD" {
+		t.Errorf("expected 'ABCD', got %q", text)
+	}
+}
+
 func TestExtractResponseContent_OpenAIResponsesNoMessageItem(t *testing.T) {
 	// No message item in output → error
 	body := `{"output":[{"type":"reasoning","content":[],"summary":[]}]}`

@@ -13,7 +13,7 @@ type Scenario struct {
 	ID string `json:"id"`
 
 	// Provider determines the response format ("openai", "anthropic", etc.)
-	// Currently only "openai" is supported
+	// used when rendering mock responses.
 	Provider string `json:"provider"`
 
 	// Content is the actual LLM response content to return
@@ -37,7 +37,9 @@ type Scenario struct {
 	// ChunkJitterMs is random jitter added to ChunkDelayMs (0-N ms)
 	ChunkJitterMs int `json:"chunk_jitter_ms"`
 
-	// FailAfter causes the response to fail after N chunks (0 = don't fail)
+	// FailAfter controls when failures trigger (0 = don't fail). For chunked
+	// responses it fails after N chunks, but with FailureMode == "500" and
+	// FailAfter <= 1 the handler returns 500 before writing any chunk/body.
 	FailAfter int `json:"fail_after,omitempty"`
 
 	// FailureMode determines how to fail: "timeout", "500", "disconnect"
@@ -53,7 +55,7 @@ type CapturedRequest struct {
 type ScenarioStore struct {
 	mu            sync.RWMutex
 	scenarios     map[string]*Scenario
-	requestCounts map[string]int        // tracks request count per scenario ID
+	requestCounts map[string]int              // tracks request count per scenario ID
 	lastRequests  map[string]*CapturedRequest // stores the last request per scenario ID
 }
 
@@ -66,11 +68,14 @@ func NewScenarioStore() *ScenarioStore {
 	}
 }
 
-// Register adds or updates a scenario.
+// Register adds or updates a scenario, resetting the request counter
+// so subsequent requests see a clean state.
 func (s *ScenarioStore) Register(scenario *Scenario) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scenarios[scenario.ID] = scenario
+	s.requestCounts[scenario.ID] = 0
+	delete(s.lastRequests, scenario.ID)
 }
 
 // Get retrieves a scenario by ID.
@@ -125,6 +130,41 @@ func (s *ScenarioStore) GetLastRequest(id string) (*CapturedRequest, bool) {
 	defer s.mu.RUnlock()
 	req, ok := s.lastRequests[id]
 	return req, ok
+}
+
+// GetRequestCount returns the number of requests received for a scenario.
+func (s *ScenarioStore) GetRequestCount(id string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.requestCounts[id]
+}
+
+// GetRequestCountIfExists returns the request count only if the scenario still exists.
+func (s *ScenarioStore) GetRequestCountIfExists(id string) (int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.scenarios[id]; !ok {
+		return 0, false
+	}
+	return s.requestCounts[id], true
+}
+
+// ResetRequestCount resets the request counter for a scenario to zero.
+func (s *ScenarioStore) ResetRequestCount(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requestCounts[id] = 0
+}
+
+// ResetRequestCountIfExists resets the request counter only if the scenario still exists.
+func (s *ScenarioStore) ResetRequestCountIfExists(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.scenarios[id]; !ok {
+		return false
+	}
+	s.requestCounts[id] = 0
+	return true
 }
 
 // Delete removes a scenario by ID.

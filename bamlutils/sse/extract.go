@@ -8,6 +8,14 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// DeltaParts contains the parseable/raw split for a single SSE event.
+// For most providers Parseable == Raw. Anthropic extended-thinking events use
+// Parseable for answer text only and Raw for answer + thinking deltas.
+type DeltaParts struct {
+	Parseable string
+	Raw       string
+}
+
 // SSEChunk represents a single SSE chunk that can provide text or JSON
 type SSEChunk interface {
 	Text() (string, error)
@@ -56,27 +64,25 @@ func ExtractDeltaContent(provider string, chunk SSEChunk) (string, error) {
 	return ExtractDeltaFromText(provider, rawText)
 }
 
-// ExtractDeltaFromText contains the provider-specific delta extraction logic,
-// operating on the raw text string. It takes a provider name and the raw JSON
-// text of a single SSE event, and returns the text delta content.
-//
-// This function is used by both:
-//   - The existing OnTick/IncrementalExtractor path (via ExtractFrom)
-//   - The new BuildRequest streaming path (called directly per SSE event)
-func ExtractDeltaFromText(provider string, rawText string) (string, error) {
+// ExtractDeltaPartsFromText contains the provider-specific delta extraction
+// logic, operating on the raw text string. It returns both the parseable delta
+// (used for Parse/ParseStream) and the raw delta (used for /with-raw output).
+func ExtractDeltaPartsFromText(provider string, rawText string) (DeltaParts, error) {
 	switch provider {
 	// OpenAI-compatible providers (Chat Completions API format)
 	// Path: choices[0].delta.content
 	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter":
-		return gjson.Get(rawText, "choices.0.delta.content").String(), nil
+		delta := gjson.Get(rawText, "choices.0.delta.content").String()
+		return DeltaParts{Parseable: delta, Raw: delta}, nil
 
 	// OpenAI Responses API (different format)
 	// Path: delta (when type == "response.output_text.delta")
 	case "openai-responses":
 		if gjson.Get(rawText, "type").String() == "response.output_text.delta" {
-			return gjson.Get(rawText, "delta").String(), nil
+			delta := gjson.Get(rawText, "delta").String()
+			return DeltaParts{Parseable: delta, Raw: delta}, nil
 		}
-		return "", nil
+		return DeltaParts{}, nil
 
 	// Anthropic
 	// Path: delta.text or delta.thinking (when type == "content_block_delta")
@@ -84,26 +90,48 @@ func ExtractDeltaFromText(provider string, rawText string) (string, error) {
 		if gjson.Get(rawText, "type").String() == "content_block_delta" {
 			switch gjson.Get(rawText, "delta.type").String() {
 			case "text_delta":
-				return gjson.Get(rawText, "delta.text").String(), nil
+				delta := gjson.Get(rawText, "delta.text").String()
+				return DeltaParts{Parseable: delta, Raw: delta}, nil
 			case "thinking_delta":
-				return gjson.Get(rawText, "delta.thinking").String(), nil
+				return DeltaParts{Raw: gjson.Get(rawText, "delta.thinking").String()}, nil
 			}
 		}
-		return "", nil
+		return DeltaParts{}, nil
 
 	// Google (both use same format)
 	// Path: candidates[0].content.parts[0].text
 	case "google-ai", "vertex-ai":
-		return gjson.Get(rawText, "candidates.0.content.parts.0.text").String(), nil
+		delta := gjson.Get(rawText, "candidates.0.content.parts.0.text").String()
+		return DeltaParts{Parseable: delta, Raw: delta}, nil
 
 	// AWS Bedrock (Debug string format)
 	// Path: debug (then parsed via regex)
 	case "aws-bedrock":
-		return extractBedrockFromDebug(gjson.Get(rawText, "debug").String())
+		delta, err := extractBedrockFromDebug(gjson.Get(rawText, "debug").String())
+		if err != nil {
+			return DeltaParts{}, err
+		}
+		return DeltaParts{Parseable: delta, Raw: delta}, nil
 
 	default:
-		return "", fmt.Errorf("unsupported provider: %s", provider)
+		return DeltaParts{}, fmt.Errorf("unsupported provider: %s", provider)
 	}
+}
+
+// ExtractDeltaFromText contains the provider-specific delta extraction logic,
+// operating on the raw text string. It takes a provider name and the raw JSON
+// text of a single SSE event, and returns the raw textual delta content.
+//
+// This function is used by both:
+//   - The existing OnTick/IncrementalExtractor path (via ExtractFrom)
+//   - Callers that want the raw textual contribution of an SSE event without
+//     the parseable/raw split from ExtractDeltaPartsFromText
+func ExtractDeltaFromText(provider string, rawText string) (string, error) {
+	delta, err := ExtractDeltaPartsFromText(provider, rawText)
+	if err != nil {
+		return "", err
+	}
+	return delta.Raw, nil
 }
 
 var bedrockTextRegex = regexp.MustCompile(`Text\("((?:[^"\\]|\\.)*)"\)`)

@@ -7,7 +7,40 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/gofiber/fiber/v3"
+	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/workerplugin"
 )
+
+type recordingPublisher struct {
+	dataFrames  [][]byte
+	finalFrames [][]byte
+	resetCount  int
+	errors      []string
+}
+
+func (p *recordingPublisher) PublishData(data []byte, raw string) error {
+	dup := append([]byte(nil), data...)
+	p.dataFrames = append(p.dataFrames, dup)
+	return nil
+}
+
+func (p *recordingPublisher) PublishFinal(data []byte, raw string) error {
+	dup := append([]byte(nil), data...)
+	p.finalFrames = append(p.finalFrames, dup)
+	return nil
+}
+
+func (p *recordingPublisher) PublishError(errMsg string) error {
+	p.errors = append(p.errors, errMsg)
+	return nil
+}
+
+func (p *recordingPublisher) PublishReset() error {
+	p.resetCount++
+	return nil
+}
+
+func (p *recordingPublisher) Close() {}
 
 func TestEncodeNDJSONEvent(t *testing.T) {
 	event := &NDJSONEvent{
@@ -193,5 +226,34 @@ func TestStreamAcceptNegotiation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConsumeStream_ResetOnlyResultDoesNotPublishDataFrame(t *testing.T) {
+	results := make(chan *workerplugin.StreamResult, 2)
+	results <- &workerplugin.StreamResult{
+		Kind:  workerplugin.StreamResultKindStream,
+		Reset: true,
+	}
+	results <- &workerplugin.StreamResult{
+		Kind: workerplugin.StreamResultKindFinal,
+		Data: []byte(`"ok"`),
+	}
+	close(results)
+
+	publisher := &recordingPublisher{}
+	consumeStream(results, publisher, bamlutils.StreamModeStream, false)
+
+	if publisher.resetCount != 1 {
+		t.Fatalf("expected 1 reset event, got %d", publisher.resetCount)
+	}
+	if len(publisher.dataFrames) != 0 {
+		t.Fatalf("expected no data frames for reset-only stream result, got %d (%q)", len(publisher.dataFrames), publisher.dataFrames[0])
+	}
+	if len(publisher.finalFrames) != 1 {
+		t.Fatalf("expected 1 final frame, got %d", len(publisher.finalFrames))
+	}
+	if string(publisher.finalFrames[0]) != `"ok"` {
+		t.Fatalf("unexpected final frame: %q", publisher.finalFrames[0])
 	}
 }
