@@ -248,6 +248,16 @@ func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlut
 }
 
 func parseRuntimeStrategyOption(v any) []string {
+	normalizeStrategyToken := func(token string) string {
+		token = strings.TrimSpace(token)
+		if len(token) >= 2 {
+			if (token[0] == '"' && token[len(token)-1] == '"') || (token[0] == '\'' && token[len(token)-1] == '\'') {
+				token = token[1 : len(token)-1]
+			}
+		}
+		return strings.TrimSpace(token)
+	}
+
 	splitStrategy := func(s string) []string {
 		s = strings.TrimSpace(s)
 		if strings.HasPrefix(s, "strategy ") {
@@ -264,7 +274,7 @@ func parseRuntimeStrategyOption(v any) []string {
 		})
 		chain := make([]string, 0, len(parts))
 		for _, part := range parts {
-			part = strings.TrimSpace(part)
+			part = normalizeStrategyToken(part)
 			if part != "" {
 				chain = append(chain, part)
 			}
@@ -278,7 +288,7 @@ func parseRuntimeStrategyOption(v any) []string {
 	case []string:
 		chain := make([]string, 0, len(vv))
 		for _, item := range vv {
-			item = strings.TrimSpace(item)
+			item = normalizeStrategyToken(item)
 			if item != "" {
 				chain = append(chain, item)
 			}
@@ -291,7 +301,7 @@ func parseRuntimeStrategyOption(v any) []string {
 			if !ok {
 				return nil
 			}
-			str = strings.TrimSpace(str)
+			str = normalizeStrategyToken(str)
 			if str != "" {
 				chain = append(chain, str)
 			}

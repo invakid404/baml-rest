@@ -139,11 +139,32 @@ func (s *ScenarioStore) GetRequestCount(id string) int {
 	return s.requestCounts[id]
 }
 
+// GetRequestCountIfExists returns the request count only if the scenario still exists.
+func (s *ScenarioStore) GetRequestCountIfExists(id string) (int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.scenarios[id]; !ok {
+		return 0, false
+	}
+	return s.requestCounts[id], true
+}
+
 // ResetRequestCount resets the request counter for a scenario to zero.
 func (s *ScenarioStore) ResetRequestCount(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requestCounts[id] = 0
+}
+
+// ResetRequestCountIfExists resets the request counter only if the scenario still exists.
+func (s *ScenarioStore) ResetRequestCountIfExists(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.scenarios[id]; !ok {
+		return false
+	}
+	s.requestCounts[id] = 0
+	return true
 }
 
 // Delete removes a scenario by ID.

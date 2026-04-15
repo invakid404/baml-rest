@@ -158,10 +158,10 @@ func (s *Server) handleGetRequestCount(c fiber.Ctx) error {
 	if id == "" {
 		return c.Status(fiber.StatusBadRequest).SendString("scenario ID is required")
 	}
-	if _, ok := s.store.Get(id); !ok {
+	count, ok := s.store.GetRequestCountIfExists(id)
+	if !ok {
 		return c.Status(fiber.StatusNotFound).SendString("scenario not found")
 	}
-	count := s.store.GetRequestCount(id)
 	return c.JSON(fiber.Map{"count": count})
 }
 
@@ -170,10 +170,9 @@ func (s *Server) handleResetRequestCount(c fiber.Ctx) error {
 	if id == "" {
 		return c.Status(fiber.StatusBadRequest).SendString("scenario ID is required")
 	}
-	if _, ok := s.store.Get(id); !ok {
+	if !s.store.ResetRequestCountIfExists(id) {
 		return c.Status(fiber.StatusNotFound).SendString("scenario not found")
 	}
-	s.store.ResetRequestCount(id)
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
