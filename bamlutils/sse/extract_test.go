@@ -424,3 +424,21 @@ func TestIncrementalExtractor_ResetOnChunksDecreased(t *testing.T) {
 		t.Errorf("expected delta 'XY' (full rebuild), got %q", result2.Delta)
 	}
 }
+
+func TestIsDeltaProviderSupported(t *testing.T) {
+	// Supported providers must match ExtractDeltaPartsFromText's switch cases.
+	for _, p := range []string{
+		"openai", "openai-generic", "azure-openai", "ollama", "openrouter",
+		"openai-responses", "anthropic", "google-ai", "vertex-ai", "aws-bedrock",
+	} {
+		if !IsDeltaProviderSupported(p) {
+			t.Errorf("expected provider %q to be supported", p)
+		}
+	}
+	// Meta-providers and unknown strings must not be supported.
+	for _, p := range []string{"baml-fallback", "baml-roundrobin", "", "unknown"} {
+		if IsDeltaProviderSupported(p) {
+			t.Errorf("expected provider %q to NOT be supported", p)
+		}
+	}
+}

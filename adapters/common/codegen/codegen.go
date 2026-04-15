@@ -1295,6 +1295,21 @@ func Generate(selfPkg string) {
 			jen.If(jen.Op("!").Id("ok")).Block(jen.Return(jen.Nil())),
 			jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
 			jen.If(jen.Id("provErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
+			// Meta-providers like "baml-fallback" are not handled by ExtractDeltaFromText.
+			// Resolve the actual child provider via ClientName + introspected.ClientProvider.
+			jen.If(jen.Op("!").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("provider"))).Block(
+				jen.If(
+					jen.List(jen.Id("clientName"), jen.Id("cnErr")).Op(":=").Id("streamCall").Dot("ClientName").Call(),
+					jen.Id("cnErr").Op("==").Nil(),
+				).Block(
+					jen.If(
+						jen.List(jen.Id("resolved"), jen.Id("ok")).Op(":=").Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("clientName")),
+						jen.Id("ok"),
+					).Block(
+						jen.Id("provider").Op("=").Id("resolved"),
+					),
+				),
+			),
 			jen.Id("chunks").Op(",").Id("chunksErr").Op(":=").Id("streamCall").Dot("SSEChunks").Call(),
 			jen.If(jen.Id("chunksErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
 			// Extract incrementally (no interface boxing).
@@ -1303,14 +1318,6 @@ func Generate(selfPkg string) {
 			jen.Defer().Id("extractorMu").Dot("Unlock").Call(),
 			jen.Id("extractResult").Op(":=").Qual(common.SSEPkg, "ExtractFrom").Call(
 				jen.Id("extractor"), jen.Id("callCount"), jen.Id("provider"), jen.Id("chunks"),
-			),
-			// Track raw text separately from the extractor so that fallback retries
-			// (which reset the extractor) don't lose the successful attempt's raw.
-			jen.If(jen.Id("extractResult").Dot("Reset")).Block(
-				jen.Id("rawAccumulated").Dot("Reset").Call(),
-				jen.Id("rawAccumulated").Dot("WriteString").Call(jen.Id("extractResult").Dot("Full")),
-			).Else().Block(
-				jen.Id("rawAccumulated").Dot("WriteString").Call(jen.Id("extractResult").Dot("Delta")),
 			),
 			jen.If(jen.Id("skipIntermediateParsing")).Block(jen.Return(jen.Nil())),
 			jen.If(jen.Id("extractResult").Dot("Delta").Op("==").Lit("").Op("&&").Op("!").Id("extractResult").Dot("Reset")).Block(jen.Return(jen.Nil())),
@@ -1488,7 +1495,6 @@ func Generate(selfPkg string) {
 					jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
 					jen.Id("extractor").Op("*").Qual(common.SSEPkg, "IncrementalExtractor"),
 					jen.Id("extractorMu").Op("*").Qual("sync", "Mutex"),
-					jen.Id("rawAccumulated").Op("*").Qual("strings", "Builder"),
 				).Error().Block(processTickBody...),
 				// driveStream
 				jen.Func().Params(
@@ -3308,12 +3314,11 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("newError").Func().Params(jen.Error()).Add(streamResultIface.Clone()),
 			jen.Id("release").Func().Params(streamResultIface.Clone()),
 			// processTick: handle one FunctionLog tick (extract chunks, parse, emit partial).
-			// Receives the shared extractor + mutex + raw accumulator.
+			// Receives the shared extractor + mutex.
 			jen.Id("processTick").Func().Params(
 				jen.Qual(BamlPkg, "FunctionLog"),
 				jen.Op("*").Qual(common.SSEPkg, "IncrementalExtractor"),
 				jen.Op("*").Qual("sync", "Mutex"),
-				jen.Op("*").Qual("strings", "Builder"),
 			).Error(),
 			// driveStream: create the BAML stream and iterate it, returning (finalResult, lastError).
 			jen.Id("driveStream").Func().Params(
@@ -3347,9 +3352,6 @@ func generateStreamHelpers(out *jen.File) {
 			// Extractor
 			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
 			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
-			// Separate raw accumulator — tracks raw text independently from the
-			// extractor so that fallback retry resets don't lose raw content.
-			jen.Var().Id("rawAccumulated").Qual("strings", "Builder"),
 
 			// doShutdown
 			jen.Id("doShutdown").Op(":=").Func().Params().Block(
@@ -3442,7 +3444,7 @@ func generateStreamHelpers(out *jen.File) {
 				jen.If(
 					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
 						jen.Func().Params().Error().Block(
-							jen.Return(jen.Id("processTick").Call(jen.Id("funcLog"), jen.Id("extractor"), jen.Op("&").Id("extractorMu"), jen.Op("&").Id("rawAccumulated"))),
+							jen.Return(jen.Id("processTick").Call(jen.Id("funcLog"), jen.Id("extractor"), jen.Op("&").Id("extractorMu"))),
 						),
 					),
 					jen.Id("err").Op("!=").Nil(),
@@ -3534,10 +3536,9 @@ func generateStreamHelpers(out *jen.File) {
 							jen.Return(jen.Nil()),
 						),
 
-						// Emit final — use rawAccumulated (not extractor.Full()) so that
-						// fallback retry resets don't lose the successful attempt's raw text.
+						// Emit final
 						jen.Id("extractorMu").Dot("Lock").Call(),
-						jen.Id("finalRaw").Op(":=").Id("rawAccumulated").Dot("String").Call(),
+						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
 						jen.Id("extractorMu").Dot("Unlock").Call(),
 						jen.Id("__r").Op(":=").Id("emitFinal").Call(jen.Id("finalResult"), jen.Id("finalRaw")),
 						jen.Select().Block(
