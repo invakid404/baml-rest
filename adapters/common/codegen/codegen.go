@@ -1293,6 +1293,20 @@ func Generate(selfPkg string) {
 			jen.Id("lastCall").Op(":=").Id("calls").Index(jen.Id("callCount").Op("-").Lit(1)),
 			jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("lastCall").Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
 			jen.If(jen.Op("!").Id("ok")).Block(jen.Return(jen.Nil())),
+			// Detect fallback client switches that don't change callCount.
+			// The BAML runtime may replace the active call (same callCount,
+			// different client) rather than appending, so the extractor's
+			// built-in callCount-based retry detection won't trigger.
+			// Comparing ClientName across ticks catches this case.
+			jen.If(
+				jen.List(jen.Id("cn"), jen.Id("cnErr")).Op(":=").Id("streamCall").Dot("ClientName").Call(),
+				jen.Id("cnErr").Op("==").Nil().Op("&&").Id("cn").Op("!=").Id("lastClientName"),
+			).Block(
+				jen.If(jen.Id("lastClientName").Op("!=").Lit("")).Block(
+					jen.Id("extractor").Dot("Clear").Call(),
+				),
+				jen.Id("lastClientName").Op("=").Id("cn"),
+			),
 			jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
 			jen.If(jen.Id("provErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
 			// Meta-providers like "baml-fallback" are not handled by ExtractDeltaFromText.
@@ -1469,6 +1483,11 @@ func Generate(selfPkg string) {
 
 		var fullBody []jen.Code
 		fullBody = append(fullBody, makePreamble()...)
+
+		// Track the last-seen client name across processTick calls so we can
+		// detect fallback switches even when callCount doesn't change (the
+		// BAML runtime may replace the call rather than append a new one).
+		fullBody = append(fullBody, jen.Var().Id("lastClientName").String())
 
 		// Delegate to shared full orchestration helper with per-method closures
 		fullBody = append(fullBody,

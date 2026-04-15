@@ -373,9 +373,16 @@ func TestFallbackCallWithRaw(t *testing.T) {
 		// Regression test: primary streams partial content THEN disconnects.
 		// The raw field must contain only the secondary's content, not the
 		// primary's partial data or an empty string.
+		// This test only runs on the legacy CallStream+OnTick path because
+		// the mock's non-streaming handler doesn't trigger FailAfter > 1
+		// failures — the BuildRequest path's non-streaming call would
+		// "succeed" with the primary's full content.
 		t.Run("fallback_raw_after_partial_primary_stream", func(t *testing.T) {
 			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
 				t.Skip("Skipping: baml-fallback client retry requires BAML >= 0.219.0")
+			}
+			if UseBuildRequest {
+				t.Skip("Skipping: mid-stream disconnect scenario requires the legacy streaming path")
 			}
 
 			waitForHealthy(t, 30*time.Second)
