@@ -3593,17 +3593,32 @@ func generateStreamHelpers(out *jen.File) {
 						// drain picks up any SSE chunks that arrived between the last
 						// onTick firing and the stream ending — a common race on short
 						// responses where the final chunk lands after the last tick.
-						jen.If(
-							jen.List(jen.Id("fl"), jen.Id("flOk")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
-							jen.Id("flOk"),
-						).Block(
+						jen.Id("fl").Op(",").Id("flOk").Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+						jen.If(jen.Id("flOk")).Block(
 							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
 						),
 
-						// Emit final
-						jen.Id("extractorMu").Dot("Lock").Call(),
-						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
-						jen.Id("extractorMu").Dot("Unlock").Call(),
+						// Emit final. Prefer FunctionLog.RawLLMResponse() — it's the
+						// BAML runtime's authoritative raw text for the selected call
+						// and is not subject to onTick timing races. Fall back to the
+						// extractor only if RawLLMResponse is unavailable, errors, or
+						// returns empty (e.g. the FunctionLog handle was invalidated
+						// post-stream, or RawLLMResponse hasn't been populated for
+						// whatever reason).
+						jen.Var().Id("finalRaw").String(),
+						jen.If(jen.Id("flOk")).Block(
+							jen.If(
+								jen.List(jen.Id("authRaw"), jen.Id("rawErr")).Op(":=").Id("fl").Dot("RawLLMResponse").Call(),
+								jen.Id("rawErr").Op("==").Nil().Op("&&").Id("authRaw").Op("!=").Lit(""),
+							).Block(
+								jen.Id("finalRaw").Op("=").Id("authRaw"),
+							),
+						),
+						jen.If(jen.Id("finalRaw").Op("==").Lit("")).Block(
+							jen.Id("extractorMu").Dot("Lock").Call(),
+							jen.Id("finalRaw").Op("=").Id("extractor").Dot("Full").Call(),
+							jen.Id("extractorMu").Dot("Unlock").Call(),
+						),
 						jen.Id("__r").Op(":=").Id("emitFinal").Call(jen.Id("finalResult"), jen.Id("finalRaw")),
 						jen.Select().Block(
 							jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
