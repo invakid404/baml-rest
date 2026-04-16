@@ -8,7 +8,6 @@ require (
 	github.com/containerd/platforms v1.0.0-rc.4
 	github.com/dave/jennifer v1.7.1
 	github.com/docker/buildx v0.33.0
-	github.com/docker/docker v28.5.2+incompatible
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.135.0
 	github.com/go-chi/chi/v5 v5.2.5
