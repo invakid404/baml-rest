@@ -3395,6 +3395,12 @@ func generateStreamHelpers(out *jen.File) {
 			// Extractor
 			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
 			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
+			// lastFuncLog stores the most recent FunctionLog reference seen by
+			// onTick. FunctionLog is a live handle into the BAML runtime, so
+			// re-reading Calls()/SSEChunks() after the stream ends reflects the
+			// final state — useful when the last onTick fires before the last
+			// SSE chunk arrives.
+			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
 
 			// doShutdown
 			jen.Id("doShutdown").Op(":=").Func().Params().Block(
@@ -3466,6 +3472,9 @@ func generateStreamHelpers(out *jen.File) {
 									jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
 								),
 							),
+							// Store latest FunctionLog for the final reconciliation pass
+							// in the stream drain goroutine.
+							jen.Id("lastFuncLog").Dot("Store").Call(jen.Id("funcLog")),
 							// Enqueue
 							jen.Id("pending").Dot("Add").Call(jen.Lit(1)),
 							jen.If(jen.Id("err").Op(":=").Id("funcLogQueue").Dot("Enqueue").Call(jen.Id("funcLog")), jen.Id("err").Op("!=").Nil()).Block(
@@ -3577,6 +3586,18 @@ func generateStreamHelpers(out *jen.File) {
 								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__errR"))),
 							),
 							jen.Return(jen.Nil()),
+						),
+
+						// Final reconciliation: FunctionLog is a live handle into the
+						// BAML runtime. Re-running processTick after all queued ticks
+						// drain picks up any SSE chunks that arrived between the last
+						// onTick firing and the stream ending — a common race on short
+						// responses where the final chunk lands after the last tick.
+						jen.If(
+							jen.List(jen.Id("fl"), jen.Id("flOk")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+							jen.Id("flOk"),
+						).Block(
+							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
 						),
 
 						// Emit final
