@@ -3588,36 +3588,45 @@ func generateStreamHelpers(out *jen.File) {
 							jen.Return(jen.Nil()),
 						),
 
-						// Final reconciliation: FunctionLog is a live handle into the
-						// BAML runtime. Re-running processTick after all queued ticks
-						// drain picks up any SSE chunks that arrived between the last
-						// onTick firing and the stream ending — a common race on short
-						// responses where the final chunk lands after the last tick.
+						// Final reconciliation: FunctionLog is a live handle, but
+						// lastFuncLog's SSEChunks view can be stale relative to the
+						// post-stream state. Re-run processTick once to pick up any
+						// additional chunks that became visible after driveStream
+						// returned. This is best-effort — a length-based cross-check
+						// against RawLLMResponse below catches remaining gaps.
 						jen.Id("fl").Op(",").Id("flOk").Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
 						jen.If(jen.Id("flOk")).Block(
 							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
 						),
 
-						// Emit final. Prefer FunctionLog.RawLLMResponse() — it's the
-						// BAML runtime's authoritative raw text for the selected call
-						// and is not subject to onTick timing races. Fall back to the
-						// extractor only if RawLLMResponse is unavailable, errors, or
-						// returns empty (e.g. the FunctionLog handle was invalidated
-						// post-stream, or RawLLMResponse hasn't been populated for
-						// whatever reason).
-						jen.Var().Id("finalRaw").String(),
+						// Emit final. The /with-raw contract for this codebase is
+						// that raw includes provider-specific raw-only content
+						// (e.g. Anthropic thinking deltas) that parseable excludes.
+						// The extractor accumulates delta.Raw, which preserves that
+						// semantic; FunctionLog.RawLLMResponse() is built from
+						// text_delta only and drops thinking_delta.
+						//
+						// Under normal conditions extractor.Full() is authoritative.
+						// But in rare CI-only races where lastFuncLog's SSEChunks
+						// view is stale (onTick didn't cover the final SSE event),
+						// the extractor can end up truncated or empty while
+						// RawLLMResponse is complete. Prefer whichever is longer:
+						//   - Anthropic with thinking: extractor > RawLLMResponse
+						//     (extractor wins, thinking preserved).
+						//   - Other providers / anthropic w/o thinking: equal, or
+						//     extractor shorter on timing loss (RawLLMResponse
+						//     wins, matches parseable which is the full content
+						//     for those providers anyway).
+						jen.Id("extractorMu").Dot("Lock").Call(),
+						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
+						jen.Id("extractorMu").Dot("Unlock").Call(),
 						jen.If(jen.Id("flOk")).Block(
 							jen.If(
 								jen.List(jen.Id("authRaw"), jen.Id("rawErr")).Op(":=").Id("fl").Dot("RawLLMResponse").Call(),
-								jen.Id("rawErr").Op("==").Nil().Op("&&").Id("authRaw").Op("!=").Lit(""),
+								jen.Id("rawErr").Op("==").Nil().Op("&&").Len(jen.Id("authRaw")).Op(">").Len(jen.Id("finalRaw")),
 							).Block(
 								jen.Id("finalRaw").Op("=").Id("authRaw"),
 							),
-						),
-						jen.If(jen.Id("finalRaw").Op("==").Lit("")).Block(
-							jen.Id("extractorMu").Dot("Lock").Call(),
-							jen.Id("finalRaw").Op("=").Id("extractor").Dot("Full").Call(),
-							jen.Id("extractorMu").Dot("Unlock").Call(),
 						),
 						jen.Id("__r").Op(":=").Id("emitFinal").Call(jen.Id("finalResult"), jen.Id("finalRaw")),
 						jen.Select().Block(
