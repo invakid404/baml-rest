@@ -1296,13 +1296,17 @@ func Generate(selfPkg string) {
 			jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
 			jen.If(jen.Id("provErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
 			// Meta-providers like "baml-fallback" are not handled by
-			// ExtractDeltaFromText. Resolve the actual child provider by
-			// scanning calls for one with a supported provider (handles
-			// runtime client_registry overrides), then fall back to static
-			// introspected.ClientProvider lookup.
+			// ExtractDeltaFromText. Resolve the actual child provider using
+			// the same precedence as BuildRequest's resolveChildProvider:
+			//   1. Scan child calls for a supported runtime-reported provider
+			//   2. Runtime client_registry override for the selected child
+			//   3. Static introspected.ClientProvider map (only if supported)
+			// If none match, leave `provider` unchanged (ExtractDeltaFromText
+			// will fail the unsupported-provider check and skip extraction
+			// rather than using a stale or unsupported value).
 			jen.If(jen.Op("!").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("provider"))).Block(
 				jen.Id("resolved").Op(":=").Lit(false),
-				// Prefer the runtime-reported provider from a child call.
+				// 1. Prefer the runtime-reported provider from a child call.
 				jen.For(jen.Id("i").Op(":=").Id("callCount").Op("-").Lit(1), jen.Id("i").Op(">=").Lit(0).Op("&&").Op("!").Id("resolved"), jen.Id("i").Op("--")).Block(
 					jen.If(
 						jen.List(jen.Id("sc"), jen.Id("scOk")).Op(":=").Id("calls").Index(jen.Id("i")).Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
@@ -1317,17 +1321,34 @@ func Generate(selfPkg string) {
 						),
 					),
 				),
-				// Static fallback: use introspected ClientProvider map.
 				jen.If(jen.Op("!").Id("resolved")).Block(
 					jen.If(
 						jen.List(jen.Id("clientName"), jen.Id("cnErr")).Op(":=").Id("streamCall").Dot("ClientName").Call(),
-						jen.Id("cnErr").Op("==").Nil(),
+						jen.Id("cnErr").Op("==").Nil().Op("&&").Id("clientName").Op("!=").Lit(""),
 					).Block(
+						// 2. Runtime client_registry override for this client name.
 						jen.If(
-							jen.List(jen.Id("sp"), jen.Id("spOk")).Op(":=").Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("clientName")),
-							jen.Id("spOk"),
+							jen.Id("reg").Op(":=").Id("adapter").Dot("OriginalClientRegistry").Call(),
+							jen.Id("reg").Op("!=").Nil(),
 						).Block(
-							jen.Id("provider").Op("=").Id("sp"),
+							jen.For(jen.Id("_").Op(",").Id("rc").Op(":=").Range().Id("reg").Dot("Clients")).Block(
+								jen.If(
+									jen.Id("rc").Op("!=").Nil().Op("&&").Id("rc").Dot("Name").Op("==").Id("clientName").Op("&&").Id("rc").Dot("Provider").Op("!=").Lit("").Op("&&").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("rc").Dot("Provider")),
+								).Block(
+									jen.Id("provider").Op("=").Id("rc").Dot("Provider"),
+									jen.Id("resolved").Op("=").Lit(true),
+									jen.Break(),
+								),
+							),
+						),
+						// 3. Static introspected.ClientProvider (only if supported).
+						jen.If(jen.Op("!").Id("resolved")).Block(
+							jen.If(
+								jen.List(jen.Id("sp"), jen.Id("spOk")).Op(":=").Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("clientName")),
+								jen.Id("spOk").Op("&&").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("sp")),
+							).Block(
+								jen.Id("provider").Op("=").Id("sp"),
+							),
 						),
 					),
 				),
