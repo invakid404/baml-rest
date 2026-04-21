@@ -199,6 +199,9 @@ func TestLoad_UnknownEnvelopeKey(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for unknown envelope key")
 	}
+	if !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected unknown-field error, got %v", err)
+	}
 }
 
 func TestLoad_TrailingData(t *testing.T) {
