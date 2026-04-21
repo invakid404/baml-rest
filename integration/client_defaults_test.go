@@ -184,7 +184,9 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, resp.Error)
 		}
 
-		body, err := MockClient.GetLastRequest(ctx, scenarioID)
+		inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer inspectCancel()
+		body, err := MockClient.GetLastRequest(inspectCtx, scenarioID)
 		if err != nil {
 			t.Fatalf("GetLastRequest failed: %v", err)
 		}
@@ -210,4 +212,3 @@ func registerCacheScenario(t *testing.T, client *mockllm.Client, scenarioID stri
 		t.Fatalf("RegisterScenario: %v", err)
 	}
 }
-
