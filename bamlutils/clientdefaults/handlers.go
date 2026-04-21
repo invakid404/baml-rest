@@ -64,6 +64,16 @@ var allowedRoleMetadataHandler = Handler{
 		}
 		switch typed := v.(type) {
 		case string:
+			// BAML's parser only accepts the literal strings "all" and "none"
+			// for the non-list form (see engine/baml-lib/llm-client/src/
+			// clientspec.rs:461). Reject other strings at startup so a typo
+			// like "cache_control" fails loudly in the worker instead of
+			// silently passing through and exploding at LLM-client
+			// construction time on the first request.
+			if typed != "all" && typed != "none" {
+				return nil, fmt.Errorf(
+					"allowed_role_metadata string must be \"all\" or \"none\", got %q", typed)
+			}
 			return typed, nil
 		case []any:
 			for i, elem := range typed {
@@ -75,7 +85,7 @@ var allowedRoleMetadataHandler = Handler{
 			return typed, nil
 		default:
 			return nil, fmt.Errorf(
-				"allowed_role_metadata must be a string or array of strings, got %T", v)
+				"allowed_role_metadata must be \"all\", \"none\", or an array of strings, got %T", v)
 		}
 	},
 	Apply: func(parsed, _ any, present bool) (any, bool) {

@@ -29,6 +29,12 @@ func TestAllowedRoleMetadataHandler_ParseRejects(t *testing.T) {
 		`{"foo":"bar"}`,
 		`[1,2,3]`,
 		`[null]`,
+		// Arbitrary strings: BAML only accepts "all" / "none" for the
+		// string form, so anything else must fail at startup rather than
+		// survive into BAML and blow up on the first request.
+		`"cache_control"`,
+		`"ALL"`,
+		`""`,
 	}
 	for _, c := range cases {
 		t.Run(c, func(t *testing.T) {
