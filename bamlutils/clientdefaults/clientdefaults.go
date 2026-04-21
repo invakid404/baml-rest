@@ -54,11 +54,11 @@ package clientdefaults
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
 
+	"github.com/goccy/go-json"
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 

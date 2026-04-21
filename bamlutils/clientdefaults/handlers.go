@@ -1,8 +1,9 @@
 package clientdefaults
 
 import (
-	"encoding/json"
 	"fmt"
+
+	"github.com/goccy/go-json"
 )
 
 // Handler describes how one ClientRegistry option key is parsed from the
