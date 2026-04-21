@@ -34,7 +34,9 @@ class Baml_Rest_DynamicOutput {
 }
 
 // Placeholder client - callers MUST provide client_registry.primary
-// For cache_control to work, include allowed_role_metadata in client options
+// For cache_control to work, either include allowed_role_metadata in
+// client_registry.clients[].options, or set it deployment-wide via the
+// BAML_REST_CLIENT_DEFAULTS env var. See the server README.
 client<llm> Baml_Rest_DynamicClient {
   provider "openai"
   options {

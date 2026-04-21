@@ -17,6 +17,8 @@ import (
 	goplugin "github.com/hashicorp/go-plugin"
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
+	"github.com/invakid404/baml-rest/bamlutils/clientdefaults"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -37,6 +39,30 @@ func main() {
 		Output:     os.Stderr,
 		JSONFormat: true,
 	})
+
+	// Load deployment-wide ClientRegistry defaults. A parse failure here is
+	// fatal by design: the worker exits non-zero, go-plugin's handshake
+	// fails, and pool.New surfaces the error to serve's startup. This keeps
+	// misconfiguration loud instead of silently ignoring the env var.
+	//
+	// logger.Error (hclog-structured JSON on stderr) is the only channel
+	// go-plugin preserves; fmt.Fprintln / log.Fatal output would be demoted
+	// to debug or dropped entirely by the plugin host.
+	var err error
+	workerClientDefaults, err = clientdefaults.Load()
+	if err != nil {
+		logger.Error("invalid BAML_REST_CLIENT_DEFAULTS", "err", err.Error())
+		os.Exit(1)
+	}
+	if workerClientDefaults.HasKey("allowed_role_metadata") && buildrequest.UseBuildRequest() {
+		logger.Warn(
+			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata but " +
+				"BAML_REST_USE_BUILD_REQUEST=true; message-level metadata " +
+				"(e.g. cache_control) is dropped by the BuildRequest serializer " +
+				"until the upstream TODOs are resolved: " +
+				"baml_language/crates/sys_llm/src/build_request/openai.rs:100 and " +
+				"baml_language/crates/sys_llm/src/build_request/anthropic.rs:91")
+	}
 
 	// Start RSS monitor to trigger GC when native memory pressure is high.
 	// BAML's native (Rust) memory isn't visible to Go's GC, so we monitor RSS
@@ -116,6 +142,11 @@ func ActiveDrainGoroutines() int64 {
 	return activeDrainGoroutines.Load()
 }
 
+// workerClientDefaults holds deployment-wide ClientRegistry option defaults
+// parsed from BAML_REST_CLIENT_DEFAULTS at worker startup. Always non-nil
+// after main() runs; Apply is a no-op when no options were configured.
+var workerClientDefaults *clientdefaults.Config
+
 // workerImpl implements the workerplugin.Worker interface
 type workerImpl struct {
 	metricsReg *prometheus.Registry
@@ -137,6 +168,10 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
 		if rules := urlrewrite.GlobalRules(); len(rules) > 0 {
 			rewriteClientBaseURLs(o.Options.ClientRegistry, rules)
 		}
+		// Merge deployment-wide defaults *after* URL rewrites (so injected
+		// values aren't accidentally URL-rewritten) and *before*
+		// SetClientRegistry (so BAML sees the merged options).
+		workerClientDefaults.Apply(o.Options.ClientRegistry)
 		if err := adapter.SetClientRegistry(o.Options.ClientRegistry); err != nil {
 			return fmt.Errorf("failed to set client registry: %w", err)
 		}

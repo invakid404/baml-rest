@@ -1,3 +1,35 @@
+## Runtime configuration
+
+baml-rest reads the following environment variables at startup:
+
+- `BAML_REST_USE_BUILD_REQUEST` — toggle the BuildRequest/StreamRequest code
+  path. `1`/`true`/`yes`/`on` enables it; any other value (including empty)
+  falls back to the legacy CallStream+OnTick path.
+- `BAML_REST_BASE_URL_REWRITES` — semicolon-separated URL rewrite rules
+  applied to LLM provider base URLs, both at build time and at runtime.
+  Format: `from1=to1;from2=to2`. See
+  [bamlutils/urlrewrite](bamlutils/urlrewrite/urlrewrite.go) for the full
+  semantics.
+- `BAML_REST_CLIENT_DEFAULTS` — JSON object pinning deployment-wide defaults
+  for BAML `ClientRegistry` option values. Each key in `options` is merged
+  into every caller's `client_registry.clients[].options` map unless the
+  caller already set it. Example:
+
+  ```json
+  {
+    "client_defaults": {
+      "options": {
+        "allowed_role_metadata": ["cache_control"]
+      }
+    }
+  }
+  ```
+
+  v1 recognizes `allowed_role_metadata` only. See
+  [bamlutils/clientdefaults](bamlutils/clientdefaults/clientdefaults.go) for
+  the merge contract, supported opt-outs, and BuildRequest caveat.
+- `BAML_LOG` — BAML internal log level (`debug`, `info`, `warn`, `error`).
+
 ## Known bugs/limitations
 
 ### Upstream
