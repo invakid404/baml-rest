@@ -106,6 +106,12 @@ type SetupOptions struct {
 	// CallStream+OnTick path. This must be forwarded from the host env
 	// so that the CI matrix leg actually toggles the code path under test.
 	UseBuildRequest bool
+
+	// RuntimeEnv adds arbitrary environment variables to the baml-rest
+	// container. Used by tests that need to configure runtime-only features
+	// (e.g. BAML_REST_CLIENT_DEFAULTS) that the shared test env does not set.
+	// Keys collide in favor of RuntimeEnv, so tests can override defaults.
+	RuntimeEnv map[string]string
 }
 
 // Setup creates the test environment with mock LLM server and baml-rest container.
@@ -264,10 +270,7 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 		NetworkAliases: map[string][]string{
 			networkName: {BAMLRestContainerName},
 		},
-		Env: map[string]string{
-			"BAML_LOG":                    "debug",
-			"BAML_REST_USE_BUILD_REQUEST": strconv.FormatBool(opts.UseBuildRequest),
-		},
+		Env: buildContainerEnv(opts),
 		HostConfigModifier: func(hc *container.HostConfig) {
 			if hc.Sysctls == nil {
 				hc.Sysctls = make(map[string]string)
@@ -285,6 +288,20 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 		ContainerRequest: req,
 		Started:          true,
 	})
+}
+
+// buildContainerEnv returns the env map passed to the baml-rest container.
+// Entries in opts.RuntimeEnv take precedence over the shared defaults, so a
+// test can override BAML_LOG or BAML_REST_USE_BUILD_REQUEST if it needs to.
+func buildContainerEnv(opts SetupOptions) map[string]string {
+	env := map[string]string{
+		"BAML_LOG":                    "debug",
+		"BAML_REST_USE_BUILD_REQUEST": strconv.FormatBool(opts.UseBuildRequest),
+	}
+	for k, v := range opts.RuntimeEnv {
+		env[k] = v
+	}
+	return env
 }
 
 // dockerfileTemplateData maps SetupOptions to the template fields used by cmd/build/Dockerfile.tmpl
