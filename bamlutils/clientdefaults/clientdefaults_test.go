@@ -231,14 +231,16 @@ func TestLoad_CloningGuarantee(t *testing.T) {
 	slice0 := client0.Options["allowed_role_metadata"].([]any)
 	slice1 := client1.Options["allowed_role_metadata"].([]any)
 
-	slice0 = append(slice0, "tenant_id")
 	slice0[0] = "hijacked"
+	if len(slice1) != 1 || slice1[0] != "cache_control" {
+		t.Fatalf("client1 aliased client0's slice: %v", slice1)
+	}
+	slice0 = append(slice0, "tenant_id")
 	client0.Options["allowed_role_metadata"] = slice0
 
 	if got := client1.Options["allowed_role_metadata"].([]any); len(got) != 1 || got[0] != "cache_control" {
 		t.Fatalf("client1 aliased client0's slice: %v", got)
 	}
-	_ = slice1
 
 	// A fresh Apply on a third client must still emit the pristine default.
 	client2 := &bamlutils.ClientProperty{Name: "C"}
