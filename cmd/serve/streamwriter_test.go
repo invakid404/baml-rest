@@ -203,7 +203,7 @@ func TestStreamAcceptNegotiation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest(http.MethodPost, "/stream/test", nil)
+			req, _ := http.NewRequest(http.MethodPost, "http://example.com/stream/test", nil)
 			if tt.accept != "" {
 				req.Header.Set("Accept", tt.accept)
 			}
