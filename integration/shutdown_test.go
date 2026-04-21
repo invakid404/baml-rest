@@ -4,10 +4,10 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,9 +61,12 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 		t.Fatalf("Failed to setup dedicated shutdown env: %v", err)
 	}
 	// Container will be stopped by the test; Terminate on cleanup is still
-	// needed to remove the container and network.
+	// needed to remove the container and network. Bound teardown so a
+	// hung cleanup doesn't stall the whole integration leg.
 	defer func() {
-		if err := env.Terminate(context.Background()); err != nil {
+		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer termCancel()
+		if err := env.Terminate(termCtx); err != nil {
 			t.Logf("shutdown env Terminate: %v", err)
 		}
 	}()
@@ -73,8 +76,9 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 	// Build the set of clients we'll exercise concurrently. Fiber is
 	// always tested; chi is added only when the matrix enabled it, so
 	// CI legs match the semantics of forEachUnaryClient elsewhere.
+	fiberClient := testutil.NewBAMLRestClient(env.BAMLRestURL)
 	clients := []namedClient{
-		{Name: "fiber", Client: testutil.NewBAMLRestClient(env.BAMLRestURL)},
+		{Name: "fiber", Client: fiberClient},
 	}
 	if unaryEnabled {
 		clients = append(clients, namedClient{
@@ -85,7 +89,7 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 
 	// Scenario with a long InitialDelayMs so the /call is reliably
 	// in-flight when we send SIGTERM. The delay needs to dwarf any
-	// scheduling jitter between "fire request" and "stop container".
+	// scheduling jitter between "observed in-flight" and "stop container".
 	const inFlightDelay = 3 * time.Second
 	scenario := &mockllm.Scenario{
 		ID:             "shutdown-drain",
@@ -117,11 +121,9 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 	}
 
 	results := make(chan callResult, len(clients))
-	var inFlight atomic.Int32
 	var wg sync.WaitGroup
 	for _, nc := range clients {
 		wg.Add(1)
-		inFlight.Add(1)
 		go func(nc namedClient) {
 			defer wg.Done()
 			resp, err := nc.Client.Call(callCtx, testutil.CallRequest{
@@ -129,19 +131,22 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 				Input:   map[string]any{"description": "shutdown-drain-" + nc.Name},
 				Options: opts,
 			})
-			inFlight.Add(-1)
 			results <- callResult{backend: nc.Name, resp: resp, err: err}
 		}(nc)
 	}
 
-	// Give the requests time to reach the worker and start waiting on the
-	// mock LLM's InitialDelayMs. A short poll with /_debug/in-flight would
-	// be more precise but requires the debug build — a plain sleep is
-	// sufficient for a regression test.
-	time.Sleep(500 * time.Millisecond)
-	if got := inFlight.Load(); int(got) != len(clients) {
-		t.Fatalf("expected %d in-flight calls after 500ms, got %d", len(clients), got)
+	// Gate on a server-observed signal: the pool's in-flight counter
+	// ticks up only once a request has been dispatched to a worker, so
+	// this proves both backends' handlers actually reached the worker
+	// layer (i.e. have live work to drain). Without this, SIGTERM could
+	// race the transport and fire before the regression path is even
+	// exercised.
+	waitCtx, waitCancel := context.WithTimeout(callCtx, 20*time.Second)
+	if err := waitForPoolInFlight(waitCtx, fiberClient, len(clients)); err != nil {
+		waitCancel()
+		t.Fatalf("pool never saw %d in-flight requests: %v", len(clients), err)
 	}
+	waitCancel()
 
 	// Send SIGTERM to PID 1 inside the container (Go binary). Timeout is
 	// large so the graceful shutdown has room to drain even if the
@@ -200,6 +205,31 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 	assertShutdownLogOrdering(t, logs)
 }
 
+// waitForPoolInFlight polls /_debug/in-flight until the pool's in-flight
+// counter across all workers reaches min. Available because the test
+// container is built with debug endpoints (see testutil.Setup).
+func waitForPoolInFlight(ctx context.Context, c *testutil.BAMLRestClient, min int) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		status, err := c.GetInFlightStatus(ctx)
+		if err == nil {
+			total := 0
+			for _, w := range status.Workers {
+				total += w.InFlight
+			}
+			if total >= min {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("deadline waiting for >=%d in-flight: %w", min, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func collectContainerLogs(t *testing.T, c interface {
 	Logs(context.Context) (io.ReadCloser, error)
 }) string {
@@ -245,16 +275,18 @@ func assertShutdownLogOrdering(t *testing.T, logs string) {
 			signalIdx, httpStoppedIdx, drainCompleteIdx)
 	}
 
-	// The regression we're guarding against: the in-flight handler
-	// surfacing context.Canceled from its worker call. A plain substring
-	// match is good enough — the Fiber handler's error log uses these
-	// exact tokens (see cmd/serve/main.go). The chi handler classifies
-	// cancellation as 408 without this log line, which is fine: the
-	// per-result status-code check above catches chi regressions.
+	// The regression we're guarding against: a single zerolog entry that
+	// is a "worker call failed" error whose error field is "context
+	// canceled". Match per-line so unrelated post-signal entries can't
+	// conspire to false-positive. (The chi handler classifies
+	// cancellation as 408 and doesn't emit this log; the per-backend
+	// status-code check above catches chi regressions directly.)
 	shutdownWindow := logs[signalIdx:]
-	if strings.Contains(shutdownWindow, "worker call failed") &&
-		strings.Contains(shutdownWindow, "context canceled") {
-		t.Errorf("in-flight worker call was canceled during shutdown (regression):\n%s",
-			shutdownWindow)
+	for _, line := range strings.Split(shutdownWindow, "\n") {
+		if strings.Contains(line, "worker call failed") &&
+			strings.Contains(line, "context canceled") {
+			t.Errorf("in-flight worker call was canceled during shutdown (regression): %s", line)
+			return
+		}
 	}
 }
