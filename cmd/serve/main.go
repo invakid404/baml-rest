@@ -376,7 +376,11 @@ var serveCmd = &cobra.Command{
 
 			makeCallHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
-					ctx, cancel := context.WithCancel(c.RequestCtx())
+					// Use c.Context() rather than c.RequestCtx(): fasthttp's
+					// RequestCtx.Done() is server-shutdown-scoped (shared s.done
+					// channel), so deriving from it cancels the worker call the
+					// instant Fiber.Shutdown starts — before the pool can drain.
+					ctx, cancel := context.WithCancel(c.Context())
 					defer cancel()
 
 					result, err := workerPool.Call(ctx, methodName, c.Body(), streamMode)
@@ -418,7 +422,7 @@ var serveCmd = &cobra.Command{
 
 			// Parse endpoint - parses raw LLM output using this method's schema
 			app.Post(fmt.Sprintf("/parse/%s", methodName), func(c fiber.Ctx) error {
-				ctx, cancel := context.WithCancel(c.RequestCtx())
+				ctx, cancel := context.WithCancel(c.Context())
 				defer cancel()
 
 				result, err := workerPool.Parse(ctx, methodName, c.Body())
@@ -441,7 +445,7 @@ var serveCmd = &cobra.Command{
 
 			makeDynamicCallHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
-					ctx, cancel := context.WithCancel(c.RequestCtx())
+					ctx, cancel := context.WithCancel(c.Context())
 					defer cancel()
 
 					rawBody := c.Body()
@@ -519,7 +523,7 @@ var serveCmd = &cobra.Command{
 
 			// Dynamic parse endpoint
 			app.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), func(c fiber.Ctx) error {
-				ctx, cancel := context.WithCancel(c.RequestCtx())
+				ctx, cancel := context.WithCancel(c.Context())
 				defer cancel()
 
 				rawBody := c.Body()
