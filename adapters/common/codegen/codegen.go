@@ -1295,6 +1295,64 @@ func Generate(selfPkg string) {
 			jen.If(jen.Op("!").Id("ok")).Block(jen.Return(jen.Nil())),
 			jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
 			jen.If(jen.Id("provErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
+			// Meta-providers like "baml-fallback" are not handled by
+			// ExtractDeltaFromText. Resolve the actual child provider using
+			// the same precedence as BuildRequest's resolveChildProvider:
+			//   1. Scan child calls for a supported runtime-reported provider
+			//   2. Runtime client_registry override for the selected child
+			//   3. Static introspected.ClientProvider map (only if supported)
+			// If none match, leave `provider` unchanged (ExtractDeltaFromText
+			// will fail the unsupported-provider check and skip extraction
+			// rather than using a stale or unsupported value).
+			jen.If(jen.Op("!").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("provider"))).Block(
+				jen.Id("resolved").Op(":=").Lit(false),
+				// 1. Prefer the runtime-reported provider from a child call.
+				jen.For(jen.Id("i").Op(":=").Id("callCount").Op("-").Lit(1), jen.Id("i").Op(">=").Lit(0).Op("&&").Op("!").Id("resolved"), jen.Id("i").Op("--")).Block(
+					jen.If(
+						jen.List(jen.Id("sc"), jen.Id("scOk")).Op(":=").Id("calls").Index(jen.Id("i")).Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
+						jen.Id("scOk"),
+					).Block(
+						jen.If(
+							jen.List(jen.Id("cp"), jen.Id("cpErr")).Op(":=").Id("sc").Dot("Provider").Call(),
+							jen.Id("cpErr").Op("==").Nil().Op("&&").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("cp")),
+						).Block(
+							jen.Id("provider").Op("=").Id("cp"),
+							jen.Id("resolved").Op("=").Lit(true),
+						),
+					),
+				),
+				jen.If(jen.Op("!").Id("resolved")).Block(
+					jen.If(
+						jen.List(jen.Id("clientName"), jen.Id("cnErr")).Op(":=").Id("streamCall").Dot("ClientName").Call(),
+						jen.Id("cnErr").Op("==").Nil().Op("&&").Id("clientName").Op("!=").Lit(""),
+					).Block(
+						// 2. Runtime client_registry override for this client name.
+						jen.If(
+							jen.Id("reg").Op(":=").Id("adapter").Dot("OriginalClientRegistry").Call(),
+							jen.Id("reg").Op("!=").Nil(),
+						).Block(
+							jen.For(jen.Id("_").Op(",").Id("rc").Op(":=").Range().Id("reg").Dot("Clients")).Block(
+								jen.If(
+									jen.Id("rc").Op("!=").Nil().Op("&&").Id("rc").Dot("Name").Op("==").Id("clientName").Op("&&").Id("rc").Dot("Provider").Op("!=").Lit("").Op("&&").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("rc").Dot("Provider")),
+								).Block(
+									jen.Id("provider").Op("=").Id("rc").Dot("Provider"),
+									jen.Id("resolved").Op("=").Lit(true),
+									jen.Break(),
+								),
+							),
+						),
+						// 3. Static introspected.ClientProvider (only if supported).
+						jen.If(jen.Op("!").Id("resolved")).Block(
+							jen.If(
+								jen.List(jen.Id("sp"), jen.Id("spOk")).Op(":=").Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("clientName")),
+								jen.Id("spOk").Op("&&").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("sp")),
+							).Block(
+								jen.Id("provider").Op("=").Id("sp"),
+							),
+						),
+					),
+				),
+			),
 			jen.Id("chunks").Op(",").Id("chunksErr").Op(":=").Id("streamCall").Dot("SSEChunks").Call(),
 			jen.If(jen.Id("chunksErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
 			// Extract incrementally (no interface boxing).
@@ -3337,6 +3395,12 @@ func generateStreamHelpers(out *jen.File) {
 			// Extractor
 			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
 			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
+			// lastFuncLog stores the most recent FunctionLog reference seen by
+			// onTick. FunctionLog is a live handle into the BAML runtime, so
+			// re-reading Calls()/SSEChunks() after the stream ends reflects the
+			// final state — useful when the last onTick fires before the last
+			// SSE chunk arrives.
+			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
 
 			// doShutdown
 			jen.Id("doShutdown").Op(":=").Func().Params().Block(
@@ -3408,6 +3472,9 @@ func generateStreamHelpers(out *jen.File) {
 									jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
 								),
 							),
+							// Store latest FunctionLog for the final reconciliation pass
+							// in the stream drain goroutine.
+							jen.Id("lastFuncLog").Dot("Store").Call(jen.Id("funcLog")),
 							// Enqueue
 							jen.Id("pending").Dot("Add").Call(jen.Lit(1)),
 							jen.If(jen.Id("err").Op(":=").Id("funcLogQueue").Dot("Enqueue").Call(jen.Id("funcLog")), jen.Id("err").Op("!=").Nil()).Block(
@@ -3521,10 +3588,46 @@ func generateStreamHelpers(out *jen.File) {
 							jen.Return(jen.Nil()),
 						),
 
-						// Emit final
+						// Final reconciliation: FunctionLog is a live handle, but
+						// lastFuncLog's SSEChunks view can be stale relative to the
+						// post-stream state. Re-run processTick once to pick up any
+						// additional chunks that became visible after driveStream
+						// returned. This is best-effort — a length-based cross-check
+						// against RawLLMResponse below catches remaining gaps.
+						jen.Id("fl").Op(",").Id("flOk").Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+						jen.If(jen.Id("flOk")).Block(
+							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
+						),
+
+						// Emit final. The /with-raw contract for this codebase is
+						// that raw includes provider-specific raw-only content
+						// (e.g. Anthropic thinking deltas) that parseable excludes.
+						// The extractor accumulates delta.Raw, which preserves that
+						// semantic; FunctionLog.RawLLMResponse() is built from
+						// text_delta only and drops thinking_delta.
+						//
+						// Under normal conditions extractor.Full() is authoritative.
+						// But in rare CI-only races where lastFuncLog's SSEChunks
+						// view is stale (onTick didn't cover the final SSE event),
+						// the extractor can end up truncated or empty while
+						// RawLLMResponse is complete. Prefer whichever is longer:
+						//   - Anthropic with thinking: extractor > RawLLMResponse
+						//     (extractor wins, thinking preserved).
+						//   - Other providers / anthropic w/o thinking: equal, or
+						//     extractor shorter on timing loss (RawLLMResponse
+						//     wins, matches parseable which is the full content
+						//     for those providers anyway).
 						jen.Id("extractorMu").Dot("Lock").Call(),
 						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
 						jen.Id("extractorMu").Dot("Unlock").Call(),
+						jen.If(jen.Id("flOk")).Block(
+							jen.If(
+								jen.List(jen.Id("authRaw"), jen.Id("rawErr")).Op(":=").Id("fl").Dot("RawLLMResponse").Call(),
+								jen.Id("rawErr").Op("==").Nil().Op("&&").Len(jen.Id("authRaw")).Op(">").Len(jen.Id("finalRaw")),
+							).Block(
+								jen.Id("finalRaw").Op("=").Id("authRaw"),
+							),
+						),
 						jen.Id("__r").Op(":=").Id("emitFinal").Call(jen.Id("finalResult"), jen.Id("finalRaw")),
 						jen.Select().Block(
 							jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),

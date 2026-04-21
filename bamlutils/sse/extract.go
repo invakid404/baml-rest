@@ -156,6 +156,33 @@ func extractBedrockFromDebug(debugStr string) (string, error) {
 	return text, nil
 }
 
+// IsDeltaProviderSupported returns true if the given provider string is
+// handled by ExtractDeltaFromText. Callers that resolve providers from
+// FunctionLog calls can use this to detect meta-providers like
+// "baml-fallback" and walk a precedence ladder to resolve the actual child
+// provider. The generated processTick closure uses:
+//  1. Backward scan of funcLog.Calls() for a supported runtime-reported
+//     provider (handles the common fallback case).
+//  2. Runtime OriginalClientRegistry().Clients lookup by ClientName
+//     (handles per-request client_registry provider overrides).
+//  3. Static introspected.ClientProvider[ClientName] — only if it returns
+//     a supported provider.
+//  4. Otherwise the caller should leave the provider unchanged so
+//     ExtractDeltaFromText fails its own unsupported-provider check
+//     rather than using a stale value.
+func IsDeltaProviderSupported(provider string) bool {
+	switch provider {
+	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter",
+		"openai-responses",
+		"anthropic",
+		"google-ai", "vertex-ai",
+		"aws-bedrock":
+		return true
+	default:
+		return false
+	}
+}
+
 // IncrementalExtractor extracts SSE content incrementally, tracking which chunks
 // have already been processed to avoid re-parsing on each tick.
 type IncrementalExtractor struct {

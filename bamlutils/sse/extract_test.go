@@ -1,6 +1,7 @@
 package sse
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -422,5 +423,66 @@ func TestIncrementalExtractor_ResetOnChunksDecreased(t *testing.T) {
 	// Delta should be the full content since we rebuilt
 	if result2.Delta != "XY" {
 		t.Errorf("expected delta 'XY' (full rebuild), got %q", result2.Delta)
+	}
+}
+
+// TestDeltaProviderSupportMatchesExtractor enforces parity between
+// IsDeltaProviderSupported and the provider switch inside
+// ExtractDeltaPartsFromText. If a new provider is added to one without the
+// other — or if an existing provider's format changes incompatibly — this
+// test fails.
+//
+// For each provider reported as supported, we feed a provider-specific
+// valid sample chunk and assert that extraction succeeds with the expected
+// content ("test"). Empty input is too weak because several cases return
+// ("", nil) without error even on unrecognized payloads.
+//
+// For meta-providers and unknown strings, we assert both that
+// IsDeltaProviderSupported returns false AND that ExtractDeltaPartsFromText
+// returns an "unsupported provider" error, so the two agree about which
+// strings are rejected.
+func TestDeltaProviderSupportMatchesExtractor(t *testing.T) {
+	// Provider-specific valid sample chunks. Each must yield Raw == "test"
+	// when passed through ExtractDeltaPartsFromText. aws-bedrock uses its
+	// debug-string format, not a plain JSON chunk.
+	samples := map[string]string{
+		"openai":           `{"choices":[{"delta":{"content":"test"}}]}`,
+		"openai-generic":   `{"choices":[{"delta":{"content":"test"}}]}`,
+		"azure-openai":     `{"choices":[{"delta":{"content":"test"}}]}`,
+		"ollama":           `{"choices":[{"delta":{"content":"test"}}]}`,
+		"openrouter":       `{"choices":[{"delta":{"content":"test"}}]}`,
+		"openai-responses": `{"type":"response.output_text.delta","delta":"test"}`,
+		"anthropic":        `{"type":"content_block_delta","delta":{"type":"text_delta","text":"test"}}`,
+		"google-ai":        `{"candidates":[{"content":{"parts":[{"text":"test"}]}}]}`,
+		"vertex-ai":        `{"candidates":[{"content":{"parts":[{"text":"test"}]}}]}`,
+		"aws-bedrock":      `{"debug":"ContentBlockDelta { delta: Some(Text(\"test\")) }"}`,
+	}
+
+	for provider, chunk := range samples {
+		if !IsDeltaProviderSupported(provider) {
+			t.Errorf("IsDeltaProviderSupported(%q) = false; provider has a sample chunk and must be supported", provider)
+			continue
+		}
+		parts, err := ExtractDeltaPartsFromText(provider, chunk)
+		if err != nil {
+			t.Errorf("ExtractDeltaPartsFromText(%q) returned error: %v", provider, err)
+			continue
+		}
+		if parts.Raw != "test" {
+			t.Errorf("ExtractDeltaPartsFromText(%q).Raw = %q, want %q", provider, parts.Raw, "test")
+		}
+	}
+
+	// Meta-providers and unknown strings must be rejected by BOTH
+	// IsDeltaProviderSupported AND ExtractDeltaPartsFromText.
+	for _, provider := range []string{"baml-fallback", "baml-roundrobin", "", "unknown"} {
+		if IsDeltaProviderSupported(provider) {
+			t.Errorf("IsDeltaProviderSupported(%q) = true, want false", provider)
+		}
+		if _, err := ExtractDeltaPartsFromText(provider, "{}"); err == nil {
+			t.Errorf("ExtractDeltaPartsFromText(%q, \"{}\") returned nil error; expected unsupported provider", provider)
+		} else if !strings.Contains(err.Error(), "unsupported provider") {
+			t.Errorf("ExtractDeltaPartsFromText(%q) error = %v, want to contain %q", provider, err, "unsupported provider")
+		}
 	}
 }
