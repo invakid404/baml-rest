@@ -201,6 +201,24 @@ func TestLoad_UnknownEnvelopeKey(t *testing.T) {
 	}
 }
 
+func TestLoad_TrailingData(t *testing.T) {
+	cases := []string{
+		`{"client_defaults":{"options":{"allowed_role_metadata":["cache_control"]}}} trailing`,
+		`{"client_defaults":{"options":{"allowed_role_metadata":["cache_control"]}}} }`,
+	}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			_, err := loadFromString(t, raw)
+			if err == nil {
+				t.Fatalf("expected error for trailing data")
+			}
+			if !strings.Contains(err.Error(), "unexpected trailing data") {
+				t.Fatalf("expected trailing-data error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestLoad_CloningGuarantee(t *testing.T) {
 	// Two clients with no caller value should receive independent copies of
 	// the default. Mutating one must not affect the other — and must not

@@ -55,6 +55,7 @@ package clientdefaults
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 
@@ -114,7 +115,8 @@ func parse(raw string) (*Config, error) {
 	if err := dec.Decode(&env); err != nil {
 		return nil, fmt.Errorf("%s: %w", EnvVar, err)
 	}
-	if dec.More() {
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("%s: unexpected trailing data", EnvVar)
 	}
 
