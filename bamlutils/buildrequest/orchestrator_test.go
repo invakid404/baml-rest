@@ -933,7 +933,7 @@ func TestResolveFallbackChain_RuntimeStrategyOverrideReordersChildren(t *testing
 		},
 	}
 
-	chain, providers, _ := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
@@ -946,6 +946,9 @@ func TestResolveFallbackChain_RuntimeStrategyOverrideReordersChildren(t *testing
 	}
 	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
 		t.Errorf("unexpected providers: %v", providers)
+	}
+	if len(legacyChildren) != 0 {
+		t.Errorf("expected no legacy children for all-supported chain, got %v", legacyChildren)
 	}
 }
 
@@ -972,7 +975,7 @@ func TestResolveFallbackChain_RuntimeStrategyOverrideWithoutIntrospectedChain(t 
 		},
 	}
 
-	chain, providers, _ := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
@@ -985,6 +988,9 @@ func TestResolveFallbackChain_RuntimeStrategyOverrideWithoutIntrospectedChain(t 
 	}
 	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
 		t.Errorf("unexpected providers: %v", providers)
+	}
+	if len(legacyChildren) != 0 {
+		t.Errorf("expected no legacy children for all-supported chain, got %v", legacyChildren)
 	}
 }
 
@@ -1011,7 +1017,7 @@ func TestResolveFallbackChain_RuntimeQuotedStringStrategyOverride(t *testing.T) 
 		},
 	}
 
-	chain, providers, _ := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
@@ -1024,6 +1030,9 @@ func TestResolveFallbackChain_RuntimeQuotedStringStrategyOverride(t *testing.T) 
 	}
 	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
 		t.Errorf("unexpected providers: %v", providers)
+	}
+	if len(legacyChildren) != 0 {
+		t.Errorf("expected no legacy children for all-supported chain, got %v", legacyChildren)
 	}
 }
 

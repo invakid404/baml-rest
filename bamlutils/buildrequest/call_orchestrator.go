@@ -141,7 +141,11 @@ func RunCallOrchestration(
 			if config.LegacyChildren[child] {
 				// Legacy children are driven via BAML's Stream API, which
 				// tolerates providers BuildRequest doesn't support; we
-				// only require the legacy callback itself.
+				// only require the legacy callback itself. Skipping the
+				// IsCallProviderSupported check is safe because
+				// ResolveFallbackChain rejects chains with any empty
+				// provider (returns nil,nil,nil), so ClientProviders[child]
+				// is guaranteed non-empty by the time we get here.
 				continue
 			}
 			provider := config.ClientProviders[child]
