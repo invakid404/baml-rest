@@ -12,10 +12,11 @@ import (
 )
 
 type recordingPublisher struct {
-	dataFrames  [][]byte
-	finalFrames [][]byte
-	resetCount  int
-	errors      []string
+	dataFrames     [][]byte
+	finalFrames    [][]byte
+	metadataFrames [][]byte
+	resetCount     int
+	errors         []string
 }
 
 func (p *recordingPublisher) PublishData(data []byte, raw string) error {
@@ -37,6 +38,12 @@ func (p *recordingPublisher) PublishError(errMsg string) error {
 
 func (p *recordingPublisher) PublishReset() error {
 	p.resetCount++
+	return nil
+}
+
+func (p *recordingPublisher) PublishMetadata(payload json.RawMessage) error {
+	dup := append([]byte(nil), payload...)
+	p.metadataFrames = append(p.metadataFrames, dup)
 	return nil
 }
 

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/hashicorp/go-plugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -1186,10 +1187,17 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		currentHandle := handle
 		var lastFailed *workerHandle
 		var sentAnyResults bool
+		// currentAttempt is the pool-level attempt number stamped onto every
+		// metadata event before forwarding. The orchestrator inside the worker
+		// always emits Attempt=0; the pool owns this field because only the
+		// pool knows about pool-level retries. Incremented on each retry
+		// boundary (below), so the first attempt stays 0.
+		var currentAttempt int
 
 		for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
 			// For retry attempts, get a new worker (may wait if pool size 1).
 			if attempt > 0 {
+				currentAttempt++
 				var err error
 				currentHandle, err = p.getWorkerForRetry(ctx, lastFailed)
 				if err != nil {
@@ -1284,6 +1292,22 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					continue
 				}
 
+				// Stamp the pool-level attempt number onto metadata events.
+				// The orchestrator always emits Attempt=0 (it does not know
+				// about pool retries); the pool owns this field. Rewrite
+				// unconditionally — first attempt is a no-op at Attempt=0.
+				// Both planned and outcome events from a retried attempt
+				// carry the same value, so clients never see disagreement.
+				if result.Kind == workerplugin.StreamResultKindMetadata && len(result.Data) > 0 {
+					if rewritten, err := rewriteMetadataAttempt(result.Data, currentAttempt); err != nil {
+						currentHandle.logger.Warn().
+							Err(err).
+							Msg("Failed to rewrite metadata attempt; forwarding as-is")
+					} else {
+						result.Data = rewritten
+					}
+				}
+
 				// Check for retryable worker errors mid-stream
 				if result.Kind == workerplugin.StreamResultKindError && ctx.Err() != nil && isCallerCancellationError(result.Error) {
 					workerplugin.ReleaseStreamResult(result)
@@ -1368,6 +1392,23 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 	}()
 
 	return wrappedResults, nil
+}
+
+// rewriteMetadataAttempt JSON-decodes a bamlutils.Metadata payload, overrides
+// the Attempt field with the pool-level attempt number, and re-encodes. This
+// runs for every metadata event the pool forwards so both planned and outcome
+// events of a retried attempt carry the same number.
+func rewriteMetadataAttempt(data []byte, attempt int) ([]byte, error) {
+	var md bamlutils.Metadata
+	if err := json.Unmarshal(data, &md); err != nil {
+		return nil, fmt.Errorf("decode metadata: %w", err)
+	}
+	md.Attempt = attempt
+	encoded, err := json.Marshal(&md)
+	if err != nil {
+		return nil, fmt.Errorf("encode metadata: %w", err)
+	}
+	return encoded, nil
 }
 
 // sendStreamError sends an error result on ch, respecting ctx cancellation.
