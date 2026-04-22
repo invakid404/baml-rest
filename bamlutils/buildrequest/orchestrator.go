@@ -384,8 +384,14 @@ func ResolveFallbackChain(
 	// helper. Children with an empty (unknown) provider are treated as
 	// fatal — we can't route an unknown provider at all, so fall back to
 	// the existing legacy path for the entire chain.
+	//
+	// legacyPositions counts chain entries that land in legacyChildren. It
+	// differs from len(legacyChildren) when the chain lists the same
+	// unsupported client more than once — the set would undercount and
+	// the all-legacy check below would misclassify such a chain as mixed.
 	providers = make(map[string]string, len(chain))
 	legacyChildren = make(map[string]bool)
+	legacyPositions := 0
 	for _, child := range chain {
 		p := resolveChildProvider(reg, child, clientProviders)
 		if p == "" {
@@ -394,16 +400,17 @@ func ResolveFallbackChain(
 		providers[child] = p
 		if !isProviderSupported(p) {
 			legacyChildren[child] = true
+			legacyPositions++
 		}
 	}
 
-	// If every child is legacy, there is nothing for BuildRequest to do —
-	// the entire chain degenerates to legacy, and the caller is better off
-	// routing the request through the existing CallStream+OnTick path
-	// which can handle the chain wholesale (and preserves any
-	// runtime-specific behaviours like round-robin that BAML exposes for
-	// all-legacy strategies).
-	if len(legacyChildren) == len(chain) {
+	// If every chain position is legacy, there is nothing for BuildRequest
+	// to do — the entire chain degenerates to legacy, and the caller is
+	// better off routing the request through the existing
+	// CallStream+OnTick path which can handle the chain wholesale (and
+	// preserves any runtime-specific behaviours like round-robin that
+	// BAML exposes for all-legacy strategies).
+	if legacyPositions == len(chain) {
 		return nil, nil, nil
 	}
 

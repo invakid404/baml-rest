@@ -778,6 +778,32 @@ func TestResolveFallbackChain_AllUnsupported(t *testing.T) {
 	}
 }
 
+func TestResolveFallbackChain_DuplicateLegacyChildren(t *testing.T) {
+	// A chain listing the same unsupported client twice is still "all
+	// legacy" from a routing standpoint — there is no supported child for
+	// BuildRequest to drive, so the resolver must return nil so the whole
+	// chain routes through the legacy path. The previous implementation
+	// compared len(legacyChildren) (a set, 1) against len(chain)
+	// (positions, 2) and incorrectly reported this as a mixed chain.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"BedrockA", "BedrockA"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"BedrockA":   "aws-bedrock",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers, legacyChildren := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if chain != nil || providers != nil || legacyChildren != nil {
+		t.Errorf("expected nil results when every chain position is legacy (duplicates included), got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
+	}
+}
+
 func TestResolveFallbackChain_EmptyProviderFallsBack(t *testing.T) {
 	// A child with a missing provider is fatal — we can't route an unknown
 	// provider through either BuildRequest or legacy reliably, so the
