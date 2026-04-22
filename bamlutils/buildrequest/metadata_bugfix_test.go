@@ -108,6 +108,107 @@ func equalStringSlice(a, b []string) bool {
 	return true
 }
 
+// TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain exercises the
+// CodeRabbit finding about `fallbackChains[...]` lookups in the rebuild path.
+// A runtime `strategy` option on the fallback client replaces the introspected
+// chain; the metadata plan must reflect that override. Today the rebuild
+// reads `fallbackChains[resolution.Client]` / `fallbackChains[defaultClientName]`
+// directly, bypassing resolveFallbackStrategyChain — the authoritative
+// resolver that accounts for runtime strategy overrides.
+func TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain(t *testing.T) {
+	// Runtime registry configures the fallback client with a custom chain,
+	// AND overrides all children to aws-bedrock so the chain falls to
+	// legacy (triggering the rebuild path).
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "Strategy",
+					Provider: "baml-fallback",
+					Options:  map[string]any{"strategy": []string{"OverrideX", "OverrideY"}},
+				},
+				{Name: "OverrideX", Provider: "aws-bedrock"},
+				{Name: "OverrideY", Provider: "aws-bedrock"},
+			},
+		},
+	}
+	chains := map[string][]string{
+		"Strategy": {"IntrospectedA", "IntrospectedB"}, // what introspection sees
+	}
+	providers := map[string]string{
+		"Strategy":      "baml-fallback",
+		"IntrospectedA": "openai",
+		"IntrospectedB": "anthropic",
+	}
+
+	plan := BuildLegacyMetadataPlan(adapter, "Strategy", "baml-fallback", chains, providers, IsProviderSupported, nil)
+
+	wantChain := []string{"OverrideX", "OverrideY"}
+	if !equalStringSlice(plan.Chain, wantChain) {
+		t.Fatalf("chain should reflect runtime strategy override; got %v, want %v", plan.Chain, wantChain)
+	}
+}
+
+// TestResolveFallbackChainWithReason_EmptyPrimaryIgnored exercises
+// CodeRabbit's second finding. A ClientRegistry with Primary pointing to
+// an empty string should be treated as "no primary override" — matching
+// ResolveProviderWithReason's behaviour. Today
+// ResolveFallbackChainWithReason treats Primary: ptr("") as an override,
+// so it looks up an empty client name and reaches the wrong conclusion.
+func TestResolveFallbackChainWithReason_EmptyPrimaryIgnored(t *testing.T) {
+	emptyPrimary := ""
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Primary: &emptyPrimary,
+		},
+	}
+	chains := map[string][]string{
+		"DefaultStrategy": {"Primary", "Backup"},
+	}
+	providers := map[string]string{
+		"DefaultStrategy": "baml-fallback",
+		"Primary":         "openai",
+		"Backup":          "anthropic",
+	}
+
+	chain, _, _, reason := ResolveFallbackChainWithReason(adapter, "DefaultStrategy", chains, providers, IsProviderSupported)
+	if reason != "" {
+		t.Fatalf("empty primary should not block chain resolution; got reason %q", reason)
+	}
+	wantChain := []string{"Primary", "Backup"}
+	if !equalStringSlice(chain, wantChain) {
+		t.Fatalf("empty primary should be treated as no override; got chain %v, want %v", chain, wantChain)
+	}
+}
+
+// TestResolveFallbackChain_EmptyPrimaryIgnored mirrors the above for the
+// non-reason sibling (same bug, same fix surface).
+func TestResolveFallbackChain_EmptyPrimaryIgnored(t *testing.T) {
+	emptyPrimary := ""
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Primary: &emptyPrimary,
+		},
+	}
+	chains := map[string][]string{
+		"DefaultStrategy": {"Primary", "Backup"},
+	}
+	providers := map[string]string{
+		"DefaultStrategy": "baml-fallback",
+		"Primary":         "openai",
+		"Backup":          "anthropic",
+	}
+
+	chain, _, _ := ResolveFallbackChain(adapter, "DefaultStrategy", chains, providers, IsProviderSupported)
+	wantChain := []string{"Primary", "Backup"}
+	if !equalStringSlice(chain, wantChain) {
+		t.Fatalf("empty primary should be treated as no override; got chain %v, want %v", chain, wantChain)
+	}
+}
+
 // TestBuildLegacyMetadataPlan_RuntimeOverrideRespectedInLegacyChain
 // exercises Codex's third finding. When a chain falls to legacy because
 // every child's *runtime* provider is unsupported (introspected providers

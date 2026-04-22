@@ -370,17 +370,19 @@ func BuildLegacyMetadataPlan(
 		// already accounts for primary overrides) — falling through to
 		// defaultClientName only when the override doesn't list a chain.
 		if chain == nil {
-			chain = fallbackChains[resolution.Client]
+			// Go through resolveFallbackStrategyChain, not a direct map
+			// lookup, so a runtime `strategy` option on the fallback
+			// client (via client_registry) is honoured. Falling straight
+			// to fallbackChains[...] silently ignored these overrides,
+			// making the metadata describe the wrong chain whenever a
+			// request used a runtime strategy option.
+			reg := adapter.OriginalClientRegistry()
+			chain = resolveFallbackStrategyChain(reg, resolution.Client, fallbackChains)
 			if chain == nil {
-				chain = fallbackChains[defaultClientName]
+				chain = resolveFallbackStrategyChain(reg, defaultClientName, fallbackChains)
 			}
 			// Resolve each child's provider through the runtime registry
-			// before consulting the static introspected map. The earlier
-			// version pulled directly from clientProviders[child], which
-			// silently ignored runtime overrides — so an override that
-			// flipped a child between supported and unsupported produced
-			// metadata that contradicted reality.
-			reg := adapter.OriginalClientRegistry()
+			// before consulting the static introspected map.
 			providers = make(map[string]string, len(chain))
 			legacy = make(map[string]bool)
 			for _, child := range chain {
@@ -433,8 +435,12 @@ func ResolveFallbackChainWithReason(
 ) (chain []string, providers map[string]string, legacyChildren map[string]bool, reason string) {
 	reg := adapter.OriginalClientRegistry()
 
+	// An empty primary string is not an override — treat it the same as
+	// a nil pointer so this matches ResolveProviderWithReason's behaviour.
+	// Without this guard the empty string looks up an empty client name
+	// in fallbackChains and resolves to nothing.
 	clientName := defaultClientName
-	if reg != nil && reg.Primary != nil {
+	if reg != nil && reg.Primary != nil && *reg.Primary != "" {
 		clientName = *reg.Primary
 	}
 
@@ -716,8 +722,10 @@ func ResolveFallbackChain(
 
 	// Determine which client name to look up in fallbackChains.
 	// Runtime primary override takes precedence over the static default.
+	// An empty primary string is not an override — treat it the same as
+	// a nil pointer (matching ResolveProviderWithReason's behaviour).
 	clientName := defaultClientName
-	if reg != nil && reg.Primary != nil {
+	if reg != nil && reg.Primary != nil && *reg.Primary != "" {
 		clientName = *reg.Primary
 	}
 
