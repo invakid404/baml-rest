@@ -243,6 +243,171 @@ func ResolveProviderWithReason(
 	return res
 }
 
+// BuildSingleProviderPlan constructs planned metadata for a request routed
+// through the BuildRequest path with a single (non-strategy) client. Called
+// by the generated router once the provider has been resolved and the
+// support gate has been cleared, so Path is always "buildrequest".
+func BuildSingleProviderPlan(
+	adapter bamlutils.Adapter,
+	defaultClientName string,
+	provider string,
+	retryPolicy *retry.Policy,
+) *bamlutils.Metadata {
+	clientName := defaultClientName
+	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
+		clientName = *reg.Primary
+	}
+	plan := &bamlutils.Metadata{
+		Path:        "buildrequest",
+		Client:      clientName,
+		Provider:    provider,
+		RetryPolicy: EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+	return plan
+}
+
+// BuildFallbackChainPlan constructs planned metadata for a request routed
+// through the BuildRequest path as a fallback strategy. chain/providers/
+// legacyChildren are the resolved values from ResolveFallbackChain.
+func BuildFallbackChainPlan(
+	adapter bamlutils.Adapter,
+	defaultClientName string,
+	chain []string,
+	providers map[string]string,
+	legacyChildren map[string]bool,
+	retryPolicy *retry.Policy,
+) *bamlutils.Metadata {
+	clientName := defaultClientName
+	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
+		clientName = *reg.Primary
+	}
+	plan := &bamlutils.Metadata{
+		Path:        "buildrequest",
+		Client:      clientName,
+		Strategy:    "baml-fallback",
+		Chain:       append([]string(nil), chain...),
+		RetryPolicy: EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+	if len(legacyChildren) > 0 {
+		names := make([]string, 0, len(legacyChildren))
+		for _, child := range chain {
+			if legacyChildren[child] {
+				names = append(names, child)
+			}
+		}
+		if len(names) > 0 {
+			plan.LegacyChildren = names
+		}
+	}
+	_ = providers // reserved: future outcome metadata may expose per-child details
+	return plan
+}
+
+// BuildLegacyMetadataPlan constructs the planned metadata for a request that
+// will run on the legacy CallStream+OnTick path. Called by the generated
+// per-method legacy helpers (runNoRawOrchestration / runFullOrchestration
+// callers) to populate the `newPlannedMetadata` closure.
+//
+// The plan's Path is always "legacy" (this helper is only invoked on the
+// legacy side). PathReason reflects whichever of the following applied:
+//   - feature-flag off (PathReasonBuildRequestDisabled)
+//   - unsupported or empty provider
+//   - fallback strategy not routable (empty chain, empty child provider,
+//     or all-legacy chain)
+//   - baml-roundrobin (intentionally legacy-only)
+//
+// The plan includes retry policy information when a policy resolves, and
+// chain/legacyChildren information for strategy clients.
+func BuildLegacyMetadataPlan(
+	adapter bamlutils.Adapter,
+	defaultClientName string,
+	introspectedProvider string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+	retryPolicy *retry.Policy,
+) *bamlutils.Metadata {
+	resolution := ResolveProviderWithReason(adapter, defaultClientName, introspectedProvider, isProviderSupported)
+
+	plan := &bamlutils.Metadata{
+		Path:        "legacy",
+		Client:      resolution.Client,
+		Provider:    resolution.Provider,
+		Strategy:    resolution.Strategy,
+		PathReason:  resolution.PathReason,
+		RetryPolicy: EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+
+	// If the resolved client is a fallback strategy, enumerate the chain so
+	// operators see the planned children. The legacy path may or may not
+	// actually run through BAML's fallback logic (roundrobin is different
+	// from fallback), but describing the chain in planned metadata is
+	// always informative.
+	if resolution.Strategy == "baml-fallback" {
+		chain, providers, legacy, reason := ResolveFallbackChainWithReason(
+			adapter, defaultClientName, fallbackChains, clientProviders, isProviderSupported,
+		)
+		// When BuildRequest can drive the chain (reason == ""), the router
+		// should not be routing the request through the legacy helper — but
+		// if we somehow got here anyway, keep the previously-computed
+		// reason rather than erasing it.
+		if reason != "" {
+			plan.PathReason = reason
+		}
+		// chain is nil when BuildRequest rejected the chain; fall back to
+		// the introspected chain so the plan still names the children.
+		if chain == nil {
+			chain = fallbackChains[defaultClientName]
+			// Populate providers/legacy maps for the introspected chain
+			// so the metadata still describes the planned children.
+			if chain == nil {
+				chain = fallbackChains[resolution.Client]
+			}
+			providers = make(map[string]string, len(chain))
+			legacy = make(map[string]bool)
+			for _, child := range chain {
+				p := clientProviders[child]
+				providers[child] = p
+				if p == "" || (isProviderSupported != nil && !isProviderSupported(p)) {
+					legacy[child] = true
+				}
+			}
+		}
+		if len(chain) > 0 {
+			plan.Chain = append([]string(nil), chain...)
+			if len(legacy) > 0 {
+				names := make([]string, 0, len(legacy))
+				for name := range legacy {
+					names = append(names, name)
+				}
+				plan.LegacyChildren = names
+			}
+			_ = providers // providers reserved for future outcome population
+		}
+	}
+
+	// BAML_REST_USE_BUILD_REQUEST being off is never surfaced by the per-
+	// request resolution helpers; encode it here since a legacy-path
+	// execution with a supported single provider otherwise looks empty.
+	if plan.PathReason == "" && !UseBuildRequest() {
+		plan.PathReason = PathReasonBuildRequestDisabled
+	}
+
+	return plan
+}
+
 // ResolveFallbackChainWithReason wraps ResolveFallbackChain and returns a
 // classification alongside the usual (chain, providers, legacyChildren)
 // triple. The reason is empty when BuildRequest can drive the chain

@@ -1289,6 +1289,13 @@ func Generate(selfPkg string) {
 				jen.Func().Params(jen.Id("__r").Qual(common.InterfacesPkg, "StreamResult")).Block(
 					jen.Id("__r").Dot("Release").Call(),
 				),
+				// newPlannedMetadata: constructs a planned metadata result
+				// from the caller-supplied plan. nil when plan is nil,
+				// which disables the emission.
+				jen.Func().Params().Qual(common.InterfacesPkg, "StreamResult").Block(
+					jen.If(jen.Id("plannedMetadata").Op("==").Nil()).Block(jen.Return(jen.Nil())),
+					jen.Return(jen.Id(metadataConstructorName).Call(jen.Id("plannedMetadata"))),
+				),
 				// body - receives onTick, handles stream creation and iteration
 				jen.Func().Params(jen.Id("onTick").Add(onTickType())).Error().Block(noRawGoroutineBody...),
 			)),
@@ -1303,6 +1310,7 @@ func Generate(selfPkg string) {
 				jen.Id("rawInput").Any(),
 				jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 				jen.Id("skipPartials").Bool(),
+				jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			).
 			Error().
 			Block(noRawBody...)
@@ -1561,6 +1569,11 @@ func Generate(selfPkg string) {
 				jen.Func().Params(jen.Id("__r").Qual(common.InterfacesPkg, "StreamResult")).Block(
 					jen.Id("__r").Dot("Release").Call(),
 				),
+				// newPlannedMetadata
+				jen.Func().Params().Qual(common.InterfacesPkg, "StreamResult").Block(
+					jen.If(jen.Id("plannedMetadata").Op("==").Nil()).Block(jen.Return(jen.Nil())),
+					jen.Return(jen.Id(metadataConstructorName).Call(jen.Id("plannedMetadata"))),
+				),
 				// processTick
 				jen.Func().Params(
 					jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
@@ -1585,6 +1598,7 @@ func Generate(selfPkg string) {
 				jen.Id("rawInput").Any(),
 				jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 				jen.Id("skipIntermediateParsing").Bool(),
+				jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			).
 			Error().
 			Block(fullBody...)
@@ -1807,6 +1821,9 @@ func Generate(selfPkg string) {
 				// StreamConfig. LegacyChildren is populated for mixed chains;
 				// LegacyStreamChild is always wired so the orchestrator's
 				// up-front validation passes even when legacyChildren is nil.
+				// MetadataPlan / NewMetadataResult carry the per-request
+				// routing metadata through to the orchestrator's planned +
+				// outcome emissions.
 				jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
 					jen.Id("Provider"):          jen.Id("provider"),
 					jen.Id("RetryPolicy"):       jen.Id("retryPolicy"),
@@ -1816,6 +1833,12 @@ func Generate(selfPkg string) {
 					jen.Id("ClientProviders"):   jen.Id("clientProviders"),
 					jen.Id("LegacyChildren"):    jen.Id("legacyChildren"),
 					jen.Id("LegacyStreamChild"): jen.Id("legacyStreamChildFn"),
+					jen.Id("MetadataPlan"):      jen.Id("plannedMetadata"),
+					jen.Id("NewMetadataResult"): jen.Func().Params(
+						jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+					).Qual(common.InterfacesPkg, "StreamResult").Block(
+						jen.Return(jen.Id(metadataConstructorName).Call(jen.Id("md"))),
+					),
 				}),
 
 				// Run the orchestration in a goroutine with panic recovery, matching
@@ -1873,6 +1896,7 @@ func Generate(selfPkg string) {
 					jen.Id("fallbackChain").Index().String(),
 					jen.Id("clientProviders").Map(jen.String()).String(),
 					jen.Id("legacyChildren").Map(jen.String()).Bool(),
+					jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 				).
 				Error().
 				Block(buildRequestBody...)
@@ -2050,13 +2074,19 @@ func Generate(selfPkg string) {
 				// LegacyCallChild is always wired so validation passes even
 				// when legacyChildren is nil.
 				jen.Id("callConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "CallConfig").Values(jen.Dict{
-					jen.Id("Provider"):        jen.Id("provider"),
-					jen.Id("RetryPolicy"):     jen.Id("retryPolicy"),
-					jen.Id("NeedsRaw"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-					jen.Id("FallbackChain"):   jen.Id("fallbackChain"),
-					jen.Id("ClientProviders"): jen.Id("clientProviders"),
-					jen.Id("LegacyChildren"):  jen.Id("legacyChildren"),
-					jen.Id("LegacyCallChild"): jen.Id("legacyCallChildFn"),
+					jen.Id("Provider"):          jen.Id("provider"),
+					jen.Id("RetryPolicy"):       jen.Id("retryPolicy"),
+					jen.Id("NeedsRaw"):          jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("FallbackChain"):     jen.Id("fallbackChain"),
+					jen.Id("ClientProviders"):   jen.Id("clientProviders"),
+					jen.Id("LegacyChildren"):    jen.Id("legacyChildren"),
+					jen.Id("LegacyCallChild"):   jen.Id("legacyCallChildFn"),
+					jen.Id("MetadataPlan"):      jen.Id("plannedMetadata"),
+					jen.Id("NewMetadataResult"): jen.Func().Params(
+						jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+					).Qual(common.InterfacesPkg, "StreamResult").Block(
+						jen.Return(jen.Id(metadataConstructorName).Call(jen.Id("md"))),
+					),
 				}),
 
 				// Resolve HTTP client
@@ -2112,6 +2142,7 @@ func Generate(selfPkg string) {
 					jen.Id("fallbackChain").Index().String(),
 					jen.Id("clientProviders").Map(jen.String()).String(),
 					jen.Id("legacyChildren").Map(jen.String()).Bool(),
+					jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 				).
 				Error().
 				Block(buildCallRequestBody...)
@@ -2161,11 +2192,18 @@ func Generate(selfPkg string) {
 					),
 					jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsCallProviderSupported").Call(jen.Id("provider"))).Block(
 						resolveRetryPolicy(),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlan").Call(
+							jen.Id("adapter"),
+							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+							jen.Id("provider"),
+							jen.Id("retryPolicy"),
+						),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
 							jen.Nil(), jen.Nil(),
 							jen.Nil(),
+							jen.Id("__planned"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2186,11 +2224,20 @@ func Generate(selfPkg string) {
 					),
 					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
 						resolveRetryPolicy(),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlan").Call(
+							jen.Id("adapter"),
+							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+							jen.Id("__chain"),
+							jen.Id("__cprov"),
+							jen.Id("__legacyChildren"),
+							jen.Id("retryPolicy"),
+						),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
 							jen.Id("__chain"), jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
+							jen.Id("__planned"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2221,11 +2268,18 @@ func Generate(selfPkg string) {
 					),
 					jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
 						resolveRetryPolicy(),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlan").Call(
+							jen.Id("adapter"),
+							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+							jen.Id("provider"),
+							jen.Id("retryPolicy"),
+						),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
 							jen.Nil(), jen.Nil(),
 							jen.Nil(),
+							jen.Id("__planned"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2245,11 +2299,20 @@ func Generate(selfPkg string) {
 					),
 					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
 						resolveRetryPolicy(),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlan").Call(
+							jen.Id("adapter"),
+							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+							jen.Id("__chain"),
+							jen.Id("__cprov"),
+							jen.Id("__legacyChildren"),
+							jen.Id("retryPolicy"),
+						),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
 							jen.Id("__chain"), jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
+							jen.Id("__planned"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2260,25 +2323,49 @@ func Generate(selfPkg string) {
 			)
 		}
 
+		// Compute the planned metadata for the legacy path. BuildLegacyMetadataPlan
+		// classifies the request (PathReason) and includes chain details when the
+		// client is a fallback strategy. The helper also picks a retry policy so
+		// the plan carries RetryMax/RetryPolicy on legacy requests that still
+		// honour them (the policy is used by the legacy BAML runtime, not by
+		// the generator).
 		routerBody = append(routerBody,
-			// Legacy path: dispatch based on StreamMode
 			jen.Comment("Legacy path: CallStream + OnTick (for unsupported providers or when BuildRequest is disabled)"),
+			jen.Id("__legacyRetryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
+				jen.Id("adapter"),
+				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+				jen.Qual(common.IntrospectedPkg, "FunctionRetryPolicy").Index(jen.Lit(methodName)),
+				jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
+			),
+			jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlan").Call(
+				jen.Id("adapter"),
+				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+				jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
+				jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+				// Use the streaming support check for classification. Call
+				// and stream support sets are usually aligned; a mismatch
+				// would only change the reason string — not the routing
+				// outcome (always legacy when we reach this code path).
+				jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
+				jen.Id("__legacyRetryPolicy"),
+			),
 			jen.Switch(jen.Id("mode")).Block(
 				// StreamModeCall: final only, no raw, skip partials
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCall")).Block(
-					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True()),
+					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True(), jen.Id("__plannedLegacy")),
 				),
 				// StreamModeStream: partials + final, no raw
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeStream")).Block(
-					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False()),
+					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False(), jen.Id("__plannedLegacy")),
 				),
 				// StreamModeCallWithRaw: final + raw, skip intermediate parsing
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCallWithRaw")).Block(
-					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True()),
+					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True(), jen.Id("__plannedLegacy")),
 				),
 				// StreamModeStreamWithRaw: partials + final + raw
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeStreamWithRaw")).Block(
-					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False()),
+					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False(), jen.Id("__plannedLegacy")),
 				),
 				// Default case to prevent silent hangs if unknown mode
 				jen.Default().Block(
@@ -3462,6 +3549,12 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("newHeartbeat").Func().Params().Add(streamResultIface.Clone()),
 			jen.Id("newError").Func().Params(jen.Error()).Add(streamResultIface.Clone()),
 			jen.Id("release").Func().Params(streamResultIface.Clone()),
+			// newPlannedMetadata is invoked inside the first-tick branch of
+			// onTick (after the heartbeat send) to emit the planned metadata
+			// event. Pass nil when metadata emission is not desired (tests,
+			// mixed-mode legacy children whose parent orchestrator already
+			// emitted planned metadata for the chain).
+			jen.Id("newPlannedMetadata").Func().Params().Add(streamResultIface.Clone()),
 			jen.Id("body").Func().Params(jen.Add(onTickType())).Error(),
 		).
 		Error().
@@ -3482,6 +3575,21 @@ func generateStreamHelpers(out *jen.File) {
 					jen.Select().Block(
 						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 						jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
+					),
+					// Emit planned metadata as the second frame on first
+					// tick, after the heartbeat. The emission is guarded by
+					// the same CAS branch so it runs exactly once per
+					// orchestrator invocation (subsequent ticks skip).
+					// Non-blocking: release the result if the output buffer
+					// is full, matching the heartbeat's drop-on-full policy.
+					jen.If(jen.Id("newPlannedMetadata").Op("!=").Nil()).Block(
+						jen.Id("__m").Op(":=").Id("newPlannedMetadata").Call(),
+						jen.If(jen.Id("__m").Op("!=").Nil()).Block(
+							jen.Select().Block(
+								jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
+								jen.Default().Block(jen.Id("release").Call(jen.Id("__m"))),
+							),
+						),
 					),
 				),
 				jen.Return(jen.Nil()),
@@ -3523,6 +3631,8 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("newHeartbeat").Func().Params().Add(streamResultIface.Clone()),
 			jen.Id("newError").Func().Params(jen.Error()).Add(streamResultIface.Clone()),
 			jen.Id("release").Func().Params(streamResultIface.Clone()),
+			// newPlannedMetadata: see runNoRawOrchestration for the contract.
+			jen.Id("newPlannedMetadata").Func().Params().Add(streamResultIface.Clone()),
 			// processTick: handle one FunctionLog tick (extract chunks, parse, emit partial).
 			// Receives the shared extractor + mutex.
 			jen.Id("processTick").Func().Params(
@@ -3631,12 +3741,23 @@ func generateStreamHelpers(out *jen.File) {
 								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
 								jen.Default().Block(),
 							),
-							// Heartbeat
+							// Heartbeat + planned metadata (same CAS branch so
+							// metadata is the second frame and fires exactly
+							// once per orchestrator invocation).
 							jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
 								jen.Id("__r").Op(":=").Id("newHeartbeat").Call(),
 								jen.Select().Block(
 									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 									jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
+								),
+								jen.If(jen.Id("newPlannedMetadata").Op("!=").Nil()).Block(
+									jen.Id("__m").Op(":=").Id("newPlannedMetadata").Call(),
+									jen.If(jen.Id("__m").Op("!=").Nil()).Block(
+										jen.Select().Block(
+											jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
+											jen.Default().Block(jen.Id("release").Call(jen.Id("__m"))),
+										),
+									),
 								),
 							),
 							// Store latest FunctionLog for the final reconciliation pass
