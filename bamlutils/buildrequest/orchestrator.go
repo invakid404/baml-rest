@@ -324,9 +324,20 @@ func resolveFallbackStrategyChain(reg *bamlutils.ClientRegistry, clientName stri
 }
 
 // ResolveFallbackChain determines whether a function's client is a fallback
-// strategy client and, if so, returns the ordered child chain and a map of
-// child client names to their providers. Returns nil, nil if the function
-// does not use a fallback chain or if any child's provider is unsupported.
+// strategy client and, if so, returns the ordered child chain, a map of
+// child client names to their resolved providers, and the set of children
+// whose providers are unsupported by BuildRequest (mixed-mode legacy
+// children). Returns nil, nil, nil if the function does not use a fallback
+// chain, if the chain cannot be resolved, or if every child is legacy (in
+// which case the whole chain should route to the existing CallStream+OnTick
+// legacy path).
+//
+// When the chain mixes supported and unsupported children, the returned
+// chain and providers cover every child; legacyChildren lists the names
+// whose providers require the legacy BAML Stream API. providers still
+// contains entries for legacy children (useful for debugging/logging), but
+// callers must consult legacyChildren before assuming BuildRequest can
+// drive that child.
 //
 // Parameters:
 //   - adapter: the request adapter (for runtime client_registry overrides)
@@ -340,7 +351,7 @@ func ResolveFallbackChain(
 	fallbackChains map[string][]string,
 	clientProviders map[string]string,
 	isProviderSupported func(string) bool,
-) (chain []string, providers map[string]string) {
+) (chain []string, providers map[string]string, legacyChildren map[string]bool) {
 	reg := adapter.OriginalClientRegistry()
 
 	// Determine which client name to look up in fallbackChains.
@@ -358,27 +369,45 @@ func ResolveFallbackChain(
 	// the legacy path where the BAML runtime handles the rotation.
 	parentProvider := resolveChildProvider(reg, clientName, clientProviders)
 	if parentProvider != "baml-fallback" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	chain = resolveFallbackStrategyChain(reg, clientName, fallbackChains)
 	if len(chain) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Resolve each child's provider, checking runtime client_registry
-	// overrides first (same precedence as ResolveProvider). If any child
-	// is unsupported or has no provider, fall back to the legacy path.
+	// overrides first (same precedence as ResolveProvider). Children with
+	// unsupported providers are recorded in legacyChildren so the
+	// orchestrator can route them through the shared legacy BAML Stream
+	// helper. Children with an empty (unknown) provider are treated as
+	// fatal — we can't route an unknown provider at all, so fall back to
+	// the existing legacy path for the entire chain.
 	providers = make(map[string]string, len(chain))
+	legacyChildren = make(map[string]bool)
 	for _, child := range chain {
 		p := resolveChildProvider(reg, child, clientProviders)
-		if p == "" || !isProviderSupported(p) {
-			return nil, nil
+		if p == "" {
+			return nil, nil, nil
 		}
 		providers[child] = p
+		if !isProviderSupported(p) {
+			legacyChildren[child] = true
+		}
 	}
 
-	return chain, providers
+	// If every child is legacy, there is nothing for BuildRequest to do —
+	// the entire chain degenerates to legacy, and the caller is better off
+	// routing the request through the existing CallStream+OnTick path
+	// which can handle the chain wholesale (and preserves any
+	// runtime-specific behaviours like round-robin that BAML exposes for
+	// all-legacy strategies).
+	if len(legacyChildren) == len(chain) {
+		return nil, nil, nil
+	}
+
+	return chain, providers, legacyChildren
 }
 
 // StreamConfig holds the configuration for a single streaming request.
@@ -410,8 +439,63 @@ type StreamConfig struct {
 
 	// ClientProviders maps child client names to their provider strings.
 	// Used with FallbackChain to resolve the provider for each attempt.
+	// In mixed-mode chains this map includes both BuildRequest-supported
+	// children and legacy (unsupported-provider) children — it is a pure
+	// lookup table, not a "supported set." Callers must consult
+	// LegacyChildren to decide which path runs a given child.
 	ClientProviders map[string]string
+
+	// LegacyChildren marks the entries in FallbackChain that must be driven
+	// via the legacy BAML Stream API (WithClient + WithOnTick) rather than
+	// the BuildRequest path. Populated by ResolveFallbackChain when the
+	// chain mixes supported and unsupported providers. Children absent
+	// from this map use the BuildRequest path (buildRequest closure).
+	// When non-empty, LegacyStreamChild must be non-nil — the orchestrator
+	// fails up-front validation otherwise.
+	LegacyChildren map[string]bool
+
+	// LegacyStreamChild runs a single child via BAML's Stream API. The
+	// orchestrator invokes it for children marked in LegacyChildren.
+	//
+	// Contract:
+	//   - Invoke BAML's Stream.Method with WithClient(clientOverride) and
+	//     wire a WithOnTick callback that invokes sendHeartbeat on the
+	//     first FunctionLog tick (this matches the BuildRequest path's
+	//     post-HTTP heartbeat liveness semantics — don't pre-emit the
+	//     heartbeat before upstream activity, or the pool's hung detector
+	//     is disabled prematurely).
+	//   - Drain the stream to completion; do NOT emit partials on the
+	//     orchestrator's output channel. The orchestrator is responsible
+	//     for the single final emission.
+	//   - Return (final, raw, err). When needsRaw is false the helper may
+	//     return an empty raw string.
+	//
+	// Retry note: this callback goes through BAML's runtime, so any
+	// client-level retry_policy declared statically in the BAML file will
+	// apply on top of the orchestrator's outer retry.Execute loop. Per-
+	// request __baml_options__.retry is NOT forwarded into BAML because
+	// makeOptionsFromAdapter does not translate it — outer retries handle
+	// per-request retries, so only the inner BAML static retry compounds.
+	//
+	// Raw note: legacy raw comes from BAML's FunctionLog.RawLLMResponse(),
+	// which drops Anthropic-family thinking deltas. For providers that
+	// only ever appear as legacy children (e.g. aws-bedrock) this is
+	// lossless; for runtime overrides that push a thinking-capable
+	// provider onto the legacy path, raw will match RawLLMResponse rather
+	// than the full wire text.
+	LegacyStreamChild LegacyStreamChildFunc
 }
+
+// LegacyStreamChildFunc runs one child of a mixed-mode fallback chain via
+// BAML's Stream API. See StreamConfig.LegacyStreamChild for the full
+// contract.
+type LegacyStreamChildFunc func(
+	ctx context.Context,
+	clientOverride string,
+	provider string,
+	needsRaw bool,
+	sendHeartbeat func(),
+) (finalResult any, raw string, err error)
 
 // BuildRequestFunc builds an HTTP request for streaming by calling
 // StreamRequest.Method(ctx, args, opts...) and converting the result
@@ -463,7 +547,16 @@ func RunStreamOrchestration(
 			return fmt.Errorf("buildrequest: unsupported or empty provider %q", config.Provider)
 		}
 	} else {
+		if len(config.LegacyChildren) > 0 && config.LegacyStreamChild == nil {
+			return fmt.Errorf("buildrequest: LegacyChildren set but LegacyStreamChild is nil")
+		}
 		for _, child := range config.FallbackChain {
+			if config.LegacyChildren[child] {
+				// Legacy children are driven via BAML's Stream API, which
+				// tolerates providers BuildRequest doesn't support; we
+				// only require the legacy callback itself.
+				continue
+			}
 			provider := config.ClientProviders[child]
 			if provider == "" || !IsProviderSupported(provider) {
 				return fmt.Errorf("buildrequest: unsupported or empty provider %q for child %q", provider, child)
@@ -485,16 +578,20 @@ func RunStreamOrchestration(
 		}
 	}
 
-	// tryOneStreamChild runs a single child's streaming attempt.
-	tryOneStreamChild := func(provider, clientOverride string) (any, error) {
+	// tryOneStreamChild runs a single child's streaming attempt against the
+	// BuildRequest path. Returns the parsed final plus the accumulated raw
+	// text; the caller (attemptFull) is responsible for emitting the final
+	// result on the output channel so supported and legacy children share a
+	// single emission path.
+	tryOneStreamChild := func(provider, clientOverride string) (any, string, error) {
 		req, err := buildRequest(ctx, clientOverride)
 		if err != nil {
-			return nil, fmt.Errorf("buildrequest: failed to build request: %w", err)
+			return nil, "", fmt.Errorf("buildrequest: failed to build request: %w", err)
 		}
 
 		resp, err := httpClient.ExecuteStream(ctx, req)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		defer resp.Close()
 
@@ -525,7 +622,7 @@ func RunStreamOrchestration(
 			if extractErr != nil {
 				// Extraction error — fail the attempt so retry logic can handle it
 				// rather than silently accumulating incomplete text.
-				return nil, fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
+				return nil, "", fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
 			}
 			if delta.Raw == "" {
 				continue
@@ -539,7 +636,7 @@ func RunStreamOrchestration(
 			if config.NeedsPartials && delta.Parseable == "" {
 				if config.NeedsRaw {
 					if err := trySendPartial(nil, delta.Raw); err != nil {
-						return nil, err
+						return nil, "", err
 					}
 				}
 				continue
@@ -567,7 +664,7 @@ func RunStreamOrchestration(
 							rawForResult = delta.Raw
 						}
 						if err := trySendPartial(parsed, rawForResult); err != nil {
-							return nil, err
+							return nil, "", err
 						}
 					}
 				}
@@ -579,7 +676,7 @@ func RunStreamOrchestration(
 
 		// Check for stream errors
 		if streamErr := <-resp.Errc; streamErr != nil {
-			return nil, fmt.Errorf("buildrequest: stream error: %w", streamErr)
+			return nil, "", fmt.Errorf("buildrequest: stream error: %w", streamErr)
 		}
 
 		// Parse the final result — let parseFinal decide whether an empty
@@ -588,23 +685,30 @@ func RunStreamOrchestration(
 
 		finalResult, parseErr := parseFinal(ctx, parseableAccumulated.String())
 		if parseErr != nil {
-			return nil, fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)
+			return nil, "", fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)
 		}
 
-		// Emit final result
+		return finalResult, fullRaw, nil
+	}
+
+	// emitFinal sends the single StreamResultKindFinal for the winning
+	// attempt, respecting context cancellation. Centralising the emission
+	// here guarantees exactly one final event regardless of whether the
+	// winning child was BuildRequest-driven or routed through the legacy
+	// helper.
+	emitFinal := func(finalResult any, raw string) error {
 		rawForFinal := ""
 		if config.NeedsRaw {
-			rawForFinal = fullRaw
+			rawForFinal = raw
 		}
 		r := newResult(bamlutils.StreamResultKindFinal, nil, finalResult, rawForFinal, nil, false)
 		select {
 		case out <- r:
+			return nil
 		case <-ctx.Done():
 			r.Release()
-			return nil, ctx.Err()
+			return ctx.Err()
 		}
-
-		return finalResult, nil
 	}
 
 	// attemptFull tries the single provider or the entire fallback chain.
@@ -612,7 +716,14 @@ func RunStreamOrchestration(
 	// matching the BAML runtime where retries retry the entire strategy.
 	attemptFull := func(_ int) (any, error) {
 		if len(config.FallbackChain) == 0 {
-			return tryOneStreamChild(config.Provider, "")
+			finalResult, raw, err := tryOneStreamChild(config.Provider, "")
+			if err != nil {
+				return nil, err
+			}
+			if emitErr := emitFinal(finalResult, raw); emitErr != nil {
+				return nil, emitErr
+			}
+			return finalResult, nil
 		}
 		var lastErr error
 		for i, child := range config.FallbackChain {
@@ -635,10 +746,33 @@ func RunStreamOrchestration(
 				}
 				heartbeatSent.Store(false)
 			}
-			provider := config.ClientProviders[child]
-			result, err := tryOneStreamChild(provider, child)
+			var (
+				finalResult any
+				raw         string
+				err         error
+			)
+			if config.LegacyChildren[child] {
+				// Legacy children run via BAML's Stream API. The callback
+				// owns heartbeat timing (fires sendHeartbeat on the first
+				// FunctionLog tick) so pool hung-detection stays correct.
+				// Partials are never emitted by the callback — it reports
+				// only (final, raw, err).
+				finalResult, raw, err = config.LegacyStreamChild(
+					ctx,
+					child,
+					config.ClientProviders[child],
+					config.NeedsRaw,
+					sendHeartbeat,
+				)
+			} else {
+				provider := config.ClientProviders[child]
+				finalResult, raw, err = tryOneStreamChild(provider, child)
+			}
 			if err == nil {
-				return result, nil
+				if emitErr := emitFinal(finalResult, raw); emitErr != nil {
+					return nil, emitErr
+				}
+				return finalResult, nil
 			}
 			lastErr = err
 		}

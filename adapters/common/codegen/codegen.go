@@ -1716,7 +1716,11 @@ func Generate(selfPkg string) {
 					jen.Return(jen.Id("r")),
 				),
 
-				// StreamConfig
+				// StreamConfig. LegacyChildren / LegacyStreamChild stay nil
+				// in step 1: the router guard upstream routes any chain
+				// with legacy children to the legacy CallStream path, so
+				// this function is only ever invoked with an all-supported
+				// chain. Step 2 will flip the guard and wire the callback.
 				jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
 					jen.Id("Provider"):        jen.Id("provider"),
 					jen.Id("RetryPolicy"):     jen.Id("retryPolicy"),
@@ -1724,6 +1728,7 @@ func Generate(selfPkg string) {
 					jen.Id("NeedsRaw"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
 					jen.Id("FallbackChain"):   jen.Id("fallbackChain"),
 					jen.Id("ClientProviders"): jen.Id("clientProviders"),
+					jen.Id("LegacyChildren"):  jen.Id("legacyChildren"),
 				}),
 
 				// Run the orchestration in a goroutine with panic recovery, matching
@@ -1780,6 +1785,7 @@ func Generate(selfPkg string) {
 					jen.Id("retryPolicy").Op("*").Qual(common.RetryPkg, "Policy"),
 					jen.Id("fallbackChain").Index().String(),
 					jen.Id("clientProviders").Map(jen.String()).String(),
+					jen.Id("legacyChildren").Map(jen.String()).Bool(),
 				).
 				Error().
 				Block(buildRequestBody...)
@@ -1894,13 +1900,16 @@ func Generate(selfPkg string) {
 					jen.Return(jen.Id("r")),
 				),
 
-				// CallConfig
+				// CallConfig. LegacyChildren / LegacyCallChild stay nil in
+				// step 1 — the router guard ensures mixed chains don't reach
+				// this helper. Step 2 wires the callback and removes the guard.
 				jen.Id("callConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "CallConfig").Values(jen.Dict{
 					jen.Id("Provider"):        jen.Id("provider"),
 					jen.Id("RetryPolicy"):     jen.Id("retryPolicy"),
 					jen.Id("NeedsRaw"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
 					jen.Id("FallbackChain"):   jen.Id("fallbackChain"),
 					jen.Id("ClientProviders"): jen.Id("clientProviders"),
+					jen.Id("LegacyChildren"):  jen.Id("legacyChildren"),
 				}),
 
 				// Resolve HTTP client
@@ -1955,6 +1964,7 @@ func Generate(selfPkg string) {
 					jen.Id("retryPolicy").Op("*").Qual(common.RetryPkg, "Policy"),
 					jen.Id("fallbackChain").Index().String(),
 					jen.Id("clientProviders").Map(jen.String()).String(),
+					jen.Id("legacyChildren").Map(jen.String()).Bool(),
 				).
 				Error().
 				Block(buildCallRequestBody...)
@@ -2008,6 +2018,7 @@ func Generate(selfPkg string) {
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
 							jen.Nil(), jen.Nil(),
+							jen.Nil(),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2015,20 +2026,27 @@ func Generate(selfPkg string) {
 						jen.Return(jen.Id("out"), jen.Nil()),
 					),
 					// Fallback chain path: if single-provider check failed, try resolving
-					// a fallback chain (all children must have supported providers).
-					jen.List(jen.Id("__chain"), jen.Id("__cprov")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
+					// a fallback chain. Mixed-mode chains (with any legacy children)
+					// currently route through the legacy CallStream path — the
+					// per-method legacy callback closures land in step 2, so the
+					// BuildRequest path only accepts all-supported chains today.
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
 						jen.Id("adapter"),
 						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 						jen.Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
 					),
-					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
+					jen.If(
+						jen.Len(jen.Id("__chain")).Op(">").Lit(0).
+							Op("&&").Len(jen.Id("__legacyChildren")).Op("==").Lit(0),
+					).Block(
 						resolveRetryPolicy(),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
 							jen.Id("__chain"), jen.Id("__cprov"),
+							jen.Id("__legacyChildren"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2063,26 +2081,35 @@ func Generate(selfPkg string) {
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
 							jen.Nil(), jen.Nil(),
+							jen.Nil(),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
 						),
 						jen.Return(jen.Id("out"), jen.Nil()),
 					),
-					// Fallback chain path
-					jen.List(jen.Id("__chain"), jen.Id("__cprov")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
+					// Fallback chain path. Mixed-mode chains (with any legacy
+					// children) currently route through the legacy path —
+					// the per-method legacy callback closures land in step 2,
+					// so the BuildRequest path only accepts all-supported
+					// chains today.
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
 						jen.Id("adapter"),
 						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 						jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
 					),
-					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
+					jen.If(
+						jen.Len(jen.Id("__chain")).Op(">").Lit(0).
+							Op("&&").Len(jen.Id("__legacyChildren")).Op("==").Lit(0),
+					).Block(
 						resolveRetryPolicy(),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
 							jen.Id("__chain"), jen.Id("__cprov"),
+							jen.Id("__legacyChildren"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
