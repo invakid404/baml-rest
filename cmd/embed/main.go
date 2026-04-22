@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	_ "embed"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -112,7 +114,7 @@ func main() {
 
 		embedTemplate := template.Must(template.New("embed.go").Parse(embedTemplateInput))
 		input := map[string]any{
-			"Package": strings.ReplaceAll(strcase.SnakeCase(filepath.Base(root)), ".", "_"),
+			"Package": detectPackageName(root),
 			"Dirs":    strings.Join(paths, " "),
 			"Imports": imports,
 		}
@@ -126,6 +128,70 @@ func main() {
 			panic(err)
 		}
 	}
+}
+
+// detectPackageName resolves the Go package name for the embed file at root.
+// The previous approach derived it from filepath.Base(root), which broke for
+// any working directory whose basename didn't match the source's package
+// declaration (a checkout under a non-canonical directory name, for
+// example). The package declaration in existing .go files is the canonical
+// source of truth.
+//
+// Resolution order:
+//  1. Parse one of the existing .go files (skipping _test.go and the
+//     output file itself) and use its package name.
+//  2. Fall back to the go.mod module-path basename, snake-cased.
+//  3. Last resort: the directory basename, snake-cased — preserves the
+//     prior behaviour for empty packages so we don't regress.
+func detectPackageName(root string) string {
+	if name := packageFromGoFiles(root); name != "" {
+		return name
+	}
+	if name := packageFromGoMod(root); name != "" {
+		return name
+	}
+	return strings.ReplaceAll(strcase.SnakeCase(filepath.Base(root)), ".", "_")
+}
+
+func packageFromGoFiles(root string) string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() {
+			continue
+		}
+		if !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		if strings.HasSuffix(name, "_test.go") || name == outputName {
+			continue
+		}
+		path := filepath.Join(root, name)
+		f, err := parser.ParseFile(fset, path, nil, parser.PackageClauseOnly)
+		if err != nil {
+			continue
+		}
+		if f.Name != nil && f.Name.Name != "" {
+			return f.Name.Name
+		}
+	}
+	return ""
+}
+
+func packageFromGoMod(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	parsed, err := modfile.Parse("go.mod", data, nil)
+	if err != nil || parsed.Module == nil {
+		return ""
+	}
+	return strings.ReplaceAll(strcase.SnakeCase(filepath.Base(parsed.Module.Mod.Path)), ".", "_")
 }
 
 func buildPathTree(paths []string) map[string][]string {
