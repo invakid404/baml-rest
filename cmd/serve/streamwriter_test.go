@@ -264,3 +264,37 @@ func TestConsumeStream_ResetOnlyResultDoesNotPublishDataFrame(t *testing.T) {
 		t.Fatalf("unexpected final frame: %q", publisher.finalFrames[0])
 	}
 }
+
+func TestConsumeStream_HonorsResetOnMetadata(t *testing.T) {
+	t.Parallel()
+
+	results := make(chan *workerplugin.StreamResult, 3)
+	// First metadata frame absorbs the pool's mid-retry Reset injection.
+	results <- &workerplugin.StreamResult{
+		Kind:  workerplugin.StreamResultKindMetadata,
+		Data:  []byte(`{"phase":"planned","attempt":1,"path":"buildrequest"}`),
+		Reset: true,
+	}
+	results <- &workerplugin.StreamResult{
+		Kind: workerplugin.StreamResultKindStream,
+		Data: []byte(`{"x":1}`),
+	}
+	results <- &workerplugin.StreamResult{
+		Kind: workerplugin.StreamResultKindFinal,
+		Data: []byte(`{"x":2}`),
+	}
+	close(results)
+
+	publisher := &recordingPublisher{}
+	consumeStream(results, publisher, bamlutils.StreamModeStream, false)
+
+	if publisher.resetCount != 1 {
+		t.Fatalf("Reset on Metadata kind should publish exactly 1 reset event; got %d", publisher.resetCount)
+	}
+	if len(publisher.metadataFrames) != 1 {
+		t.Fatalf("expected 1 metadata frame, got %d", len(publisher.metadataFrames))
+	}
+	if len(publisher.finalFrames) != 1 {
+		t.Fatalf("expected 1 final frame, got %d", len(publisher.finalFrames))
+	}
+}

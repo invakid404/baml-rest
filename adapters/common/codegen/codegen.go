@@ -2350,6 +2350,11 @@ func Generate(selfPkg string) {
 				jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
 				jen.Id("__legacyRetryPolicy"),
 			),
+			jen.Qual(common.BuildRequestPkg, "LogLegacyClassification").Call(
+				jen.Id("adapter"),
+				jen.Lit(methodName),
+				jen.Id("__plannedLegacy"),
+			),
 			jen.Switch(jen.Id("mode")).Block(
 				// StreamModeCall: final only, no raw, skip partials
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCall")).Block(
