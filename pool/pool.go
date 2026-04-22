@@ -1137,6 +1137,12 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 		return nil, err
 	}
 
+	// Accumulate metadata events during the drain. Pool retries may emit
+	// multiple planned/outcome events (one pair per attempt); the unary
+	// handler only cares about the last attempt's routing, so keep the
+	// most recent of each phase.
+	var plannedMetadata, outcomeMetadata []byte
+
 	// Consume stream waiting for final result
 	for result := range results {
 		switch result.Kind {
@@ -1146,13 +1152,25 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 			return nil, err
 		case workerplugin.StreamResultKindFinal:
 			callResult := &workerplugin.CallResult{
-				Data: result.Data,
-				Raw:  result.Raw,
+				Data:    result.Data,
+				Raw:     result.Raw,
+				Planned: plannedMetadata,
+				Outcome: outcomeMetadata,
 			}
 			workerplugin.ReleaseStreamResult(result)
 			return callResult, nil
+		case workerplugin.StreamResultKindMetadata:
+			// The pool's forward loop has already rewritten Attempt. We
+			// only need to inspect the Phase to decide which slot the
+			// payload belongs in, then copy the bytes (the underlying
+			// buffer is about to be released back to the pool).
+			if phase := metadataPhase(result.Data); phase == string(bamlutils.MetadataPhaseOutcome) {
+				outcomeMetadata = append(outcomeMetadata[:0], result.Data...)
+			} else {
+				plannedMetadata = append(plannedMetadata[:0], result.Data...)
+			}
 		}
-		// StreamResultKindStream - continue waiting for final
+		// StreamResultKindStream / Metadata / others - continue waiting for final
 		workerplugin.ReleaseStreamResult(result)
 	}
 
@@ -1392,6 +1410,19 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 	}()
 
 	return wrappedResults, nil
+}
+
+// metadataPhase peeks the "phase" field out of a JSON-encoded metadata
+// payload without fully decoding it. Returns "" if the payload is malformed
+// or missing the field — callers treat that as "planned" by default.
+func metadataPhase(data []byte) string {
+	var envelope struct {
+		Phase string `json:"phase"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return ""
+	}
+	return envelope.Phase
 }
 
 // rewriteMetadataAttempt JSON-decodes a bamlutils.Metadata payload, overrides

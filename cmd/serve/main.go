@@ -394,6 +394,7 @@ var serveCmd = &cobra.Command{
 						return writeFiberJSONError(c, "failed to process request", fiber.StatusInternalServerError)
 					}
 
+					setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
 						return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{
@@ -485,6 +486,7 @@ var serveCmd = &cobra.Command{
 						return writeFiberJSONError(c, "failed to process response", fiber.StatusInternalServerError)
 					}
 
+					setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
 						return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{
