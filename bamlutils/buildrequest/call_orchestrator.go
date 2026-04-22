@@ -3,7 +3,9 @@ package buildrequest
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -45,6 +47,15 @@ type CallConfig struct {
 	// via the legacy BAML Stream API rather than the BuildRequest path.
 	// Mirrors StreamConfig.LegacyChildren — see that field for details.
 	LegacyChildren map[string]bool
+
+	// MetadataPlan is the pre-computed planned metadata for this request.
+	// See StreamConfig.MetadataPlan for the contract; the call orchestrator
+	// behaves identically (heartbeat → planned metadata → final → outcome).
+	MetadataPlan *bamlutils.Metadata
+
+	// NewMetadataResult constructs a pooled StreamResult wrapping a metadata
+	// payload. Required when MetadataPlan is non-nil.
+	NewMetadataResult NewMetadataResultFunc
 
 	// LegacyCallChild runs a single child via BAML's Stream API for the
 	// non-streaming call path. The orchestrator invokes it for children
@@ -166,6 +177,28 @@ func RunCallOrchestration(
 	// means the consumer already has buffered results and won't consider
 	// the worker hung.
 	var heartbeatSent atomic.Bool
+
+	// plannedMetadataOnce gates the single planned-metadata emission
+	// (see RunStreamOrchestration for the rationale — heartbeatSent resets
+	// per inner retry, planned metadata must not).
+	var plannedMetadataOnce sync.Once
+	emitPlannedMetadata := func() {
+		if config.MetadataPlan == nil || config.NewMetadataResult == nil {
+			return
+		}
+		plannedMetadataOnce.Do(func() {
+			plan := *config.MetadataPlan
+			plan.Phase = bamlutils.MetadataPhasePlanned
+			plan.Attempt = 0
+			r := config.NewMetadataResult(&plan)
+			select {
+			case out <- r:
+			default:
+				r.Release()
+			}
+		})
+	}
+
 	sendHeartbeat := func() {
 		if heartbeatSent.CompareAndSwap(false, true) {
 			r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)
@@ -175,6 +208,7 @@ func RunCallOrchestration(
 				r.Release()
 			}
 		}
+		emitPlannedMetadata()
 	}
 
 	// trySend attempts to send a StreamResult on the output channel,
@@ -201,11 +235,17 @@ func RunCallOrchestration(
 	}
 
 	// callAttemptResult carries the final parsed value and raw text from
-	// the winning attempt.
+	// the winning attempt, plus the winner's routing identity for outcome
+	// metadata.
 	type callAttemptResult struct {
-		finalResult any
-		raw         string
+		finalResult    any
+		raw            string
+		winnerClient   string
+		winnerProvider string
+		winnerPath     string
 	}
+
+	startTime := time.Now()
 
 	// tryOneChild builds, executes, extracts, and parses a single child.
 	tryOneChild := func(provider, clientOverride string) (*callAttemptResult, error) {
@@ -228,16 +268,33 @@ func RunCallOrchestration(
 			return nil, fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)
 		}
 
-		return &callAttemptResult{finalResult: finalResult, raw: raw}, nil
+		return &callAttemptResult{
+			finalResult:    finalResult,
+			raw:            raw,
+			winnerProvider: provider,
+			winnerPath:     "buildrequest",
+		}, nil
 	}
+
+	// finalAttempt carries the 0-indexed attempt number of the winning call,
+	// captured inside attemptFull because retry.Execute does not expose it
+	// to the caller on success.
+	var finalAttempt int
 
 	// attemptFull tries either the single provider or the entire fallback
 	// chain. For fallback chains, each retry attempt walks all children in
 	// order — matching the BAML runtime's semantics where retries retry the
 	// entire strategy after all children fail.
-	attemptFull := func(_ int) (any, error) {
+	attemptFull := func(attempt int) (any, error) {
 		if len(config.FallbackChain) == 0 {
-			return tryOneChild(config.Provider, "")
+			result, err := tryOneChild(config.Provider, "")
+			if err == nil {
+				finalAttempt = attempt
+				if config.MetadataPlan != nil {
+					result.winnerClient = config.MetadataPlan.Client
+				}
+			}
+			return result, err
 		}
 		var lastErr error
 		for _, child := range config.FallbackChain {
@@ -259,7 +316,14 @@ func RunCallOrchestration(
 					sendHeartbeat,
 				)
 				if err == nil {
-					return &callAttemptResult{finalResult: finalResult, raw: raw}, nil
+					finalAttempt = attempt
+					return &callAttemptResult{
+						finalResult:    finalResult,
+						raw:            raw,
+						winnerClient:   child,
+						winnerProvider: config.ClientProviders[child],
+						winnerPath:     "legacy",
+					}, nil
 				}
 				lastErr = err
 				continue
@@ -267,6 +331,8 @@ func RunCallOrchestration(
 			provider := config.ClientProviders[child]
 			result, err := tryOneChild(provider, child)
 			if err == nil {
+				finalAttempt = attempt
+				result.winnerClient = child
 				return result, nil
 			}
 			lastErr = err
@@ -286,6 +352,32 @@ func RunCallOrchestration(
 	}
 
 	winningResult := result.(*callAttemptResult)
+
+	// Emit outcome metadata before the final result so clients observe the
+	// routing outcome attached to (and ordered before) the terminal payload.
+	if config.MetadataPlan != nil && config.NewMetadataResult != nil {
+		outcome := *config.MetadataPlan
+		outcome.Phase = bamlutils.MetadataPhaseOutcome
+		outcome.Attempt = 0
+		outcome.RetryMax = nil
+		outcome.RetryPolicy = ""
+		outcome.Chain = nil
+		outcome.LegacyChildren = nil
+		outcome.Strategy = ""
+		outcome.Provider = ""
+
+		retryCount := finalAttempt
+		outcome.RetryCount = &retryCount
+		outcome.WinnerClient = winningResult.winnerClient
+		outcome.WinnerProvider = winningResult.winnerProvider
+		outcome.WinnerPath = winningResult.winnerPath
+		dur := time.Since(startTime).Milliseconds()
+		outcome.UpstreamDurMs = &dur
+
+		if !trySend(config.NewMetadataResult(&outcome)) {
+			return nil
+		}
+	}
 
 	rawForFinal := ""
 	if config.NeedsRaw {
