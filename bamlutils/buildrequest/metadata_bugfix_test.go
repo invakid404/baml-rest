@@ -107,3 +107,44 @@ func equalStringSlice(a, b []string) bool {
 	}
 	return true
 }
+
+// TestBuildLegacyMetadataPlan_RuntimeOverrideRespectedInLegacyChain
+// exercises Codex's third finding. When a chain falls to legacy because
+// every child's *runtime* provider is unsupported (introspected providers
+// would have been supported), the metadata plan must still mark each
+// child as legacy. Today the rebuild path consults the static
+// clientProviders map directly instead of going through resolveChildProvider,
+// so it loses sight of the runtime override.
+func TestBuildLegacyMetadataPlan_RuntimeOverrideRespectedInLegacyChain(t *testing.T) {
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			// Override the child's provider to one that's not supported by
+			// BuildRequest. The introspected static map still says openai.
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "Child", Provider: "aws-bedrock"},
+			},
+		},
+	}
+	chains := map[string][]string{
+		"Strategy": {"Child"},
+	}
+	providers := map[string]string{
+		"Strategy": "baml-fallback",
+		"Child":    "openai", // static — but runtime says aws-bedrock
+	}
+
+	plan := BuildLegacyMetadataPlan(adapter, "Strategy", "baml-fallback", chains, providers, IsProviderSupported, nil)
+
+	// PathReason should reflect that the chain is fully legacy under the
+	// runtime override. ResolveFallbackChainWithReason already accounts
+	// for runtime overrides, so this part works today.
+	if plan.PathReason != PathReasonFallbackAllLegacy {
+		t.Fatalf("PathReason: got %q, want %q (runtime override flips child to unsupported)", plan.PathReason, PathReasonFallbackAllLegacy)
+	}
+	// The bug: the rebuild loop used clientProviders["Child"] (= "openai")
+	// directly, missed the runtime override, and left LegacyChildren empty.
+	if len(plan.LegacyChildren) != 1 || plan.LegacyChildren[0] != "Child" {
+		t.Fatalf("BUG: rebuild ignored runtime provider override; LegacyChildren=%v, want [Child]", plan.LegacyChildren)
+	}
+}

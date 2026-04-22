@@ -374,10 +374,17 @@ func BuildLegacyMetadataPlan(
 			if chain == nil {
 				chain = fallbackChains[defaultClientName]
 			}
+			// Resolve each child's provider through the runtime registry
+			// before consulting the static introspected map. The earlier
+			// version pulled directly from clientProviders[child], which
+			// silently ignored runtime overrides — so an override that
+			// flipped a child between supported and unsupported produced
+			// metadata that contradicted reality.
+			reg := adapter.OriginalClientRegistry()
 			providers = make(map[string]string, len(chain))
 			legacy = make(map[string]bool)
 			for _, child := range chain {
-				p := clientProviders[child]
+				p := resolveChildProvider(reg, child, clientProviders)
 				providers[child] = p
 				if p == "" || (isProviderSupported != nil && !isProviderSupported(p)) {
 					legacy[child] = true
