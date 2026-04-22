@@ -3045,12 +3045,14 @@ func TestCallStreamSlowLegacyHeartbeatPreventsHungKill(t *testing.T) {
 	defer p.Close()
 	p.SetFirstByteTimeout(firstByteTimeout)
 
-	workerClosed := make(chan struct{}, 1)
+	// workerClosed is closed (not sent-to) so multiple readers all see the
+	// signal. closeFn is guarded by sync.Once because the pool may call
+	// Close more than once over the worker's lifecycle (hung kill + pool
+	// shutdown), and close(workerClosed) would panic on the second call.
+	workerClosed := make(chan struct{})
+	var closeOnce sync.Once
 	p.workers[0].worker.(*mockWorker).closeFn = func() error {
-		select {
-		case workerClosed <- struct{}{}:
-		default:
-		}
+		closeOnce.Do(func() { close(workerClosed) })
 		return nil
 	}
 
@@ -3061,7 +3063,11 @@ func TestCallStreamSlowLegacyHeartbeatPreventsHungKill(t *testing.T) {
 
 	// Keep probing hung detection on a fine cadence throughout the stream
 	// so any window where gotFirstByte=false overlapping the timeout
-	// elapses would surface as a kill. Stop once the stream closes.
+	// elapses would surface as a kill. stopChecker is closed after the
+	// main loop drains `results`, letting the checker exit cleanly —
+	// previously the checker competed with the main loop on `case
+	// <-results:` and could steal a heartbeat or final.
+	stopChecker := make(chan struct{})
 	checkerDone := make(chan struct{})
 	go func() {
 		defer close(checkerDone)
@@ -3069,7 +3075,7 @@ func TestCallStreamSlowLegacyHeartbeatPreventsHungKill(t *testing.T) {
 		defer tick.Stop()
 		for {
 			select {
-			case <-results:
+			case <-stopChecker:
 				return
 			case <-tick.C:
 				p.checkHungRequests()
@@ -3086,6 +3092,7 @@ func TestCallStreamSlowLegacyHeartbeatPreventsHungKill(t *testing.T) {
 		}
 		workerplugin.ReleaseStreamResult(r)
 	}
+	close(stopChecker)
 	<-checkerDone
 
 	if !gotFinal {
@@ -3130,12 +3137,14 @@ func TestCallStreamSilentLegacyGetsKilled(t *testing.T) {
 	defer p.Close()
 	p.SetFirstByteTimeout(firstByteTimeout)
 
-	workerClosed := make(chan struct{}, 1)
+	// workerClosed is closed (not sent-to) so both the checker goroutine
+	// below and the main assertion see the signal. closeFn is guarded by
+	// sync.Once because the pool can call Close more than once (hung kill
+	// + pool shutdown), and close() on an already-closed channel panics.
+	workerClosed := make(chan struct{})
+	var closeOnce sync.Once
 	p.workers[0].worker.(*mockWorker).closeFn = func() error {
-		select {
-		case workerClosed <- struct{}{}:
-		default:
-		}
+		closeOnce.Do(func() { close(workerClosed) })
 		return nil
 	}
 
@@ -3148,17 +3157,18 @@ func TestCallStreamSilentLegacyGetsKilled(t *testing.T) {
 		t.Fatalf("CallStream setup failed: %v", err)
 	}
 
+	// stopChecker lets the main body stop the ticker cleanly after it has
+	// asserted on workerClosed. The checker never reads from workerClosed
+	// itself; closing stopChecker is the sole exit path.
+	stopChecker := make(chan struct{})
 	checkerDone := make(chan struct{})
 	go func() {
 		defer close(checkerDone)
 		tick := time.NewTicker(5 * time.Millisecond)
 		defer tick.Stop()
-		timeout := time.After(500 * time.Millisecond)
 		for {
 			select {
-			case <-workerClosed:
-				return
-			case <-timeout:
+			case <-stopChecker:
 				return
 			case <-tick.C:
 				p.checkHungRequests()
@@ -3169,12 +3179,15 @@ func TestCallStreamSilentLegacyGetsKilled(t *testing.T) {
 	select {
 	case <-workerClosed:
 	case <-time.After(500 * time.Millisecond):
+		close(stopChecker)
+		<-checkerDone
 		t.Fatal("worker was not killed when legacy callback produced no heartbeat or final")
 	}
+	close(stopChecker)
+	<-checkerDone
 
 	// Drain the stream so the CallStream goroutine finishes — the pool
 	// restarts the hung worker and propagates the error.
 	for range results {
 	}
-	<-checkerDone
 }
