@@ -790,9 +790,11 @@ func Generate(selfPkg string) {
 			isDynamicStream = isDynamicFinal
 		}
 
-		// Output struct holds: kind, raw LLM response, typed parsed values, error.
+		// Output struct holds: kind, raw LLM response, typed parsed values, error,
+		// and optional routing metadata.
 		// streamParsed and finalParsed are typed pointer fields that eliminate the
 		// interface boxing and runtime type assertions of a single `parsed any` field.
+		// metadata is populated only when kind==StreamResultKindMetadata.
 		out.Type().Id(outputStructName).Struct(
 			jen.Id("kind").Qual(common.InterfacesPkg, "StreamResultKind"),
 			jen.Id("raw").String(),
@@ -800,6 +802,7 @@ func Generate(selfPkg string) {
 			jen.Id("finalParsed").Add(finalTypePtr.Clone()),
 			jen.Id("err").Error(),
 			jen.Id("reset").Bool(), // true when client should discard accumulated state (retry occurred)
+			jen.Id("metadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 		)
 
 		// Implement `StreamResult` interface for the output struct
@@ -871,6 +874,16 @@ func Generate(selfPkg string) {
 				jen.Return(selfName.Clone().Dot("reset")),
 			)
 
+		// Metadata() method - returns the routing/retry metadata payload.
+		// Non-nil only when kind==StreamResultKindMetadata.
+		out.Func().
+			Params(selfParam.Clone()).
+			Id("Metadata").Params().
+			Op("*").Qual(common.InterfacesPkg, "Metadata").
+			Block(
+				jen.Return(selfName.Clone().Dot("metadata")),
+			)
+
 		// Generate pool for output struct reuse
 		poolVarName := strcase.LowerCamelCase(fmt.Sprintf("%sPool", outputStructName))
 		out.Var().Id(poolVarName).Op("=").Qual(common.InterfacesPkg, "NewPool").Call(
@@ -913,6 +926,21 @@ func Generate(selfPkg string) {
 				jen.Id("r").Op(":=").Id(getterFuncName).Call(),
 				jen.Id("r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindError"),
 				jen.Id("r").Dot("err").Op("=").Id("err"),
+				jen.Return(jen.Id("r")),
+			)
+
+		// Generate metadata constructor function. Produces a StreamResult whose
+		// Kind()==StreamResultKindMetadata and whose Metadata() returns the
+		// supplied payload. Uses the same pool as the regular result path.
+		metadataConstructorName := strcase.LowerCamelCase(fmt.Sprintf("new%sMetadata", outputStructName))
+		out.Func().
+			Id(metadataConstructorName).
+			Params(jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata")).
+			Op("*").Id(outputStructName).
+			Block(
+				jen.Id("r").Op(":=").Id(getterFuncName).Call(),
+				jen.Id("r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindMetadata"),
+				jen.Id("r").Dot("metadata").Op("=").Id("md"),
 				jen.Return(jen.Id("r")),
 			)
 

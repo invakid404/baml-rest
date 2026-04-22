@@ -19,6 +19,7 @@ type fakeStreamResult struct {
 	err      error
 	raw      string
 	reset    bool
+	metadata *bamlutils.Metadata
 	release  sync.Once
 	released chan struct{}
 }
@@ -36,6 +37,7 @@ func (r *fakeStreamResult) Final() any                       { return r.final }
 func (r *fakeStreamResult) Error() error                     { return r.err }
 func (r *fakeStreamResult) Raw() string                      { return r.raw }
 func (r *fakeStreamResult) Reset() bool                      { return r.reset }
+func (r *fakeStreamResult) Metadata() *bamlutils.Metadata    { return r.metadata }
 func (r *fakeStreamResult) Release() {
 	r.release.Do(func() {
 		close(r.released)

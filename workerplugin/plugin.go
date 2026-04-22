@@ -100,6 +100,7 @@ const (
 	StreamResultKindFinal
 	StreamResultKindError
 	StreamResultKindHeartbeat
+	StreamResultKindMetadata
 )
 
 // GCResult contains memory stats from a GC operation
