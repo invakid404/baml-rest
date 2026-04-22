@@ -29,6 +29,7 @@ import (
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/memlimit"
+	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -198,6 +199,10 @@ var serveCmd = &cobra.Command{
 			output = zerolog.ConsoleWriter{Out: os.Stdout}
 		}
 		logger := zerolog.New(output).With().Timestamp().Logger()
+
+		if introspected.Request == nil {
+			logger.Warn().Msg("BAML < 0.219.0 detected: BuildRequest API is unavailable, all requests will use the CallStream+OnTick path. Upgrade to BAML >= 0.219.0 to enable the BuildRequest code path.")
+		}
 
 		// Configure memory limits
 		totalMem := memLimit
