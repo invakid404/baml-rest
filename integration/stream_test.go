@@ -30,6 +30,10 @@ func TestStreamEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastEvent testutil.StreamEvent
+		var firstSemanticEvent *testutil.StreamEvent
+		var planned, outcome *testutil.StreamMetadata
+		var outcomeBeforeFinal bool
+		finalSeen := false
 
 		for {
 			select {
@@ -38,6 +42,32 @@ func TestStreamEndpoint(t *testing.T) {
 					goto done
 				}
 				eventCount++
+				// Capture the first semantic event (non-heartbeat) for
+				// ordering assertions — heartbeats are filtered in the
+				// NDJSON/SSE parser already, so any event seen here counts.
+				if firstSemanticEvent == nil {
+					ev := event
+					firstSemanticEvent = &ev
+				}
+				if event.IsMetadata() {
+					md, err := event.ParseMetadata()
+					if err != nil {
+						t.Fatalf("Failed to parse metadata event: %v", err)
+					}
+					switch md.Phase {
+					case "planned":
+						planned = md
+					case "outcome":
+						outcome = md
+						if !finalSeen {
+							outcomeBeforeFinal = true
+						}
+					}
+					continue
+				}
+				if event.IsFinal() {
+					finalSeen = true
+				}
 				lastEvent = event
 			case err := <-errs:
 				if err != nil {
@@ -65,6 +95,31 @@ func TestStreamEndpoint(t *testing.T) {
 
 		if person.Name != "John Doe" || person.Age != 30 {
 			t.Errorf("Expected John Doe (30), got %s (%d)", person.Name, person.Age)
+		}
+
+		// Routing metadata: on BuildRequest the first semantic event is
+		// planned metadata, and outcome metadata arrives before final.
+		// Legacy path may emit planned (but no outcome) depending on the
+		// version; assert only on BuildRequest to keep the legacy matrix
+		// stable.
+		if UseBuildRequest {
+			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
+				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
+					if firstSemanticEvent == nil {
+						return "<none>"
+					}
+					return firstSemanticEvent.Event
+				}())
+			}
+			if planned == nil || planned.Phase != "planned" {
+				t.Errorf("expected planned metadata event; got %+v", planned)
+			}
+			if outcome == nil || outcome.Phase != "outcome" {
+				t.Errorf("expected outcome metadata event; got %+v", outcome)
+			}
+			if outcome != nil && !outcomeBeforeFinal {
+				t.Errorf("outcome metadata should arrive before final event")
+			}
 		}
 	})
 
@@ -828,6 +883,10 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastEvent testutil.StreamEvent
+		var firstSemanticEvent *testutil.StreamEvent
+		var planned, outcome *testutil.StreamMetadata
+		var outcomeBeforeFinal bool
+		finalSeen := false
 
 		for {
 			select {
@@ -836,8 +895,31 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 					goto done
 				}
 				eventCount++
-				lastEvent = event
+				if firstSemanticEvent == nil {
+					ev := event
+					firstSemanticEvent = &ev
+				}
 				t.Logf("Event %d: type=%s, data_len=%d", eventCount, event.Event, len(event.Data))
+				if event.IsMetadata() {
+					md, err := event.ParseMetadata()
+					if err != nil {
+						t.Fatalf("Failed to parse metadata event: %v", err)
+					}
+					switch md.Phase {
+					case "planned":
+						planned = md
+					case "outcome":
+						outcome = md
+						if !finalSeen {
+							outcomeBeforeFinal = true
+						}
+					}
+					continue
+				}
+				if event.IsFinal() {
+					finalSeen = true
+				}
+				lastEvent = event
 			case err := <-errs:
 				if err != nil {
 					t.Fatalf("Stream error: %v", err)
@@ -853,7 +935,7 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 			t.Errorf("Expected multiple events, got %d", eventCount)
 		}
 
-		// All events should be data events
+		// Last non-metadata event should be a data event
 		if !lastEvent.IsData() {
 			t.Errorf("Expected data event, got type=%s", lastEvent.Event)
 		}
@@ -869,6 +951,27 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 
 		if person.Name != "John Doe" || person.Age != 30 {
 			t.Errorf("Expected John Doe (30), got %s (%d)", person.Name, person.Age)
+		}
+
+		// NDJSON metadata parity with the SSE path.
+		if UseBuildRequest {
+			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
+				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
+					if firstSemanticEvent == nil {
+						return "<none>"
+					}
+					return firstSemanticEvent.Event
+				}())
+			}
+			if planned == nil || planned.Phase != "planned" {
+				t.Errorf("expected planned metadata event; got %+v", planned)
+			}
+			if outcome == nil || outcome.Phase != "outcome" {
+				t.Errorf("expected outcome metadata event; got %+v", outcome)
+			}
+			if outcome != nil && !outcomeBeforeFinal {
+				t.Errorf("outcome metadata should arrive before final event")
+			}
 		}
 	})
 
@@ -1149,6 +1252,7 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastRaw string
+		var metadataCount int
 
 		for {
 			select {
@@ -1157,6 +1261,13 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 					goto done
 				}
 				eventCount++
+				if event.IsMetadata() {
+					metadataCount++
+					if event.Raw != "" {
+						t.Errorf("metadata event should not carry Raw; got %q", event.Raw)
+					}
+					continue
+				}
 				if event.Raw != "" {
 					lastRaw = event.Raw
 				}
@@ -1178,6 +1289,11 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 		// Final raw should match the complete content
 		if lastRaw != content {
 			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
+		}
+		// BuildRequest should have emitted planned + outcome metadata,
+		// but they didn't touch raw accumulation.
+		if UseBuildRequest && metadataCount < 2 {
+			t.Errorf("expected >=2 metadata events on BuildRequest path, got %d", metadataCount)
 		}
 	})
 
@@ -1530,6 +1646,7 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastRaw string
+		var metadataCount int
 
 		for {
 			select {
@@ -1538,6 +1655,14 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 					goto done
 				}
 				eventCount++
+				if event.IsMetadata() {
+					metadataCount++
+					// Metadata events must have no effect on the raw stream.
+					if event.Raw != "" {
+						t.Errorf("metadata event should not carry Raw; got %q", event.Raw)
+					}
+					continue
+				}
 				if event.Raw != "" {
 					lastRaw = event.Raw
 				}
@@ -1554,6 +1679,11 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 		// Final raw should match the complete content
 		if lastRaw != content {
 			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
+		}
+		// BuildRequest should have emitted planned + outcome metadata,
+		// but they didn't touch raw accumulation.
+		if UseBuildRequest && metadataCount < 2 {
+			t.Errorf("expected >=2 metadata events on BuildRequest path, got %d", metadataCount)
 		}
 	})
 }

@@ -216,6 +216,7 @@ type DynamicEnumValue struct {
 // CallResponse represents a response from /call endpoint.
 type CallResponse struct {
 	StatusCode int
+	Headers    http.Header // Response headers — used for X-BAML-* assertions
 	Body       json.RawMessage
 	Error      string
 }
@@ -223,6 +224,7 @@ type CallResponse struct {
 // CallWithRawResponse represents a response from /call-with-raw endpoint.
 type CallWithRawResponse struct {
 	StatusCode int
+	Headers    http.Header     // Response headers — used for X-BAML-* assertions
 	Data       json.RawMessage `json:"data"`
 	Raw        string          `json:"raw"`
 	Error      string
@@ -243,6 +245,7 @@ func (c *BAMLRestClient) Call(ctx context.Context, req CallRequest) (*CallRespon
 
 	result := &CallResponse{
 		StatusCode: resp.StatusCode,
+		Headers:    resp.Header,
 	}
 
 	if resp.StatusCode >= 400 {
@@ -269,6 +272,7 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 
 	result := &CallWithRawResponse{
 		StatusCode: resp.StatusCode,
+		Headers:    resp.Header,
 	}
 
 	if resp.StatusCode >= 400 {
@@ -315,6 +319,45 @@ func (e *StreamEvent) IsReset() bool {
 // IsError returns true if this is an error event.
 func (e *StreamEvent) IsError() bool {
 	return e.Event == "error"
+}
+
+// IsMetadata returns true if this is a routing-metadata event.
+func (e *StreamEvent) IsMetadata() bool {
+	return e.Event == "metadata"
+}
+
+// StreamMetadata is the shape of a routing-metadata event's data payload.
+// Mirrors bamlutils.Metadata but lives in the testutil package so tests
+// don't have to import the server's bamlutils package.
+type StreamMetadata struct {
+	Phase          string   `json:"phase"`
+	Attempt        int      `json:"attempt"`
+	Path           string   `json:"path"`
+	PathReason     string   `json:"path_reason,omitempty"`
+	Client         string   `json:"client,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
+	Strategy       string   `json:"strategy,omitempty"`
+	Chain          []string `json:"chain,omitempty"`
+	LegacyChildren []string `json:"legacy_children,omitempty"`
+	RetryMax       *int     `json:"retry_max,omitempty"`
+	RetryPolicy    string   `json:"retry_policy,omitempty"`
+	RetryCount     *int     `json:"retry_count,omitempty"`
+	WinnerClient   string   `json:"winner_client,omitempty"`
+	WinnerProvider string   `json:"winner_provider,omitempty"`
+	WinnerPath     string   `json:"winner_path,omitempty"`
+	UpstreamDurMs  *int64   `json:"upstream_duration_ms,omitempty"`
+}
+
+// ParseMetadata decodes a metadata event's data payload.
+func (e *StreamEvent) ParseMetadata() (*StreamMetadata, error) {
+	if !e.IsMetadata() {
+		return nil, fmt.Errorf("event type %q is not a metadata event", e.Event)
+	}
+	var md StreamMetadata
+	if err := json.Unmarshal(e.Data, &md); err != nil {
+		return nil, fmt.Errorf("decode metadata: %w", err)
+	}
+	return &md, nil
 }
 
 // ParseData parses a stream event's data into the target.
@@ -830,6 +873,53 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 	}
 
 	return scanner.Err()
+}
+
+// Header names for per-request routing metadata. Duplicated here (rather
+// than imported from cmd/serve) to keep testutil dependency-free of the
+// server package. Keep these in sync with cmd/serve/headers.go.
+const (
+	HeaderBAMLPath             = "X-Baml-Path"
+	HeaderBAMLPathReason       = "X-Baml-Path-Reason"
+	HeaderBAMLClient           = "X-Baml-Client"
+	HeaderBAMLWinnerClient     = "X-Baml-Winner-Client"
+	HeaderBAMLWinnerProvider   = "X-Baml-Winner-Provider"
+	HeaderBAMLRetryMax         = "X-Baml-Retry-Max"
+	HeaderBAMLRetryCount       = "X-Baml-Retry-Count"
+	HeaderBAMLUpstreamDuration = "X-Baml-Upstream-Duration-Ms"
+)
+
+// AssertHeaderEquals fails the test if the given header is missing or does
+// not match want. Wrapper around t.Errorf so test code can stay declarative.
+func AssertHeaderEquals(t testingT, h http.Header, name, want string) {
+	t.Helper()
+	if got := h.Get(name); got != want {
+		t.Errorf("header %s: got %q, want %q", name, got, want)
+	}
+}
+
+// AssertHeaderPresent fails if the header is missing or empty.
+func AssertHeaderPresent(t testingT, h http.Header, name string) {
+	t.Helper()
+	if h.Get(name) == "" {
+		t.Errorf("header %s: expected to be present, got empty", name)
+	}
+}
+
+// AssertHeaderAbsent fails if the header is present. Use for headers that
+// should only appear on one of the BuildRequest / legacy paths.
+func AssertHeaderAbsent(t testingT, h http.Header, name string) {
+	t.Helper()
+	if got := h.Get(name); got != "" {
+		t.Errorf("header %s: expected absent, got %q", name, got)
+	}
+}
+
+// testingT is the subset of *testing.T used by the helpers. Kept minimal
+// so the helpers work with *testing.T and testing.TB alike.
+type testingT interface {
+	Helper()
+	Errorf(format string, args ...any)
 }
 
 // CreateTestClient creates a client registry that points to the mock LLM server.

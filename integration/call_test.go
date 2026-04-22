@@ -40,6 +40,21 @@ func TestCallEndpoint(t *testing.T) {
 			if result != "Hello, World!" {
 				t.Errorf("Expected 'Hello, World!', got '%s'", result)
 			}
+
+			// Routing metadata headers. Path/Client are always set; outcome
+			// headers (Winner*, Retry-Count, Upstream-Duration) only appear
+			// on the BuildRequest leg because the legacy path does not yet
+			// synthesize an outcome event (absence = unknown, per plan §4f).
+			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLPath)
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestClient")
+			if UseBuildRequest {
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryCount, "0")
+				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+			} else {
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "legacy")
+			}
 		})
 
 		t.Run("simple_object_return", func(t *testing.T) {
@@ -354,6 +369,19 @@ func TestCallWithRawEndpoint(t *testing.T) {
 			// Check raw is present and matches
 			if resp.Raw != content {
 				t.Errorf("Expected raw '%s', got '%s'", content, resp.Raw)
+			}
+
+			// Routing metadata mirrors the /call assertions: /call-with-raw
+			// shares the same header-emission path.
+			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLPath)
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestClient")
+			if UseBuildRequest {
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryCount, "0")
+				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+			} else {
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "legacy")
 			}
 		})
 
