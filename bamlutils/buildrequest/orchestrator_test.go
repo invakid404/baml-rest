@@ -1619,3 +1619,164 @@ func TestRunStreamOrchestration_MixedChain_LegacyRawPropagation(t *testing.T) {
 		}
 	})
 }
+
+// TestRunStreamOrchestration_MixedChain_HTTPBackedEndToEnd is the closest
+// approximation to a "generated-adapter integration test" we can write
+// without adding AWS Bedrock Converse API emulation to the mock LLM (see
+// the PR description for the follow-up needed to exercise a real adapter
+// with a bedrock child). Both children run against real httptest servers:
+//
+//   - Supported child: open an SSE stream from an OpenAI-shaped server;
+//     the orchestrator extracts deltas and parses a final.
+//   - Legacy child: callback mirrors the shape runLegacyChildStream emits
+//     — fires sendHeartbeat on the first upstream byte, drains the body,
+//     and returns (final, raw, err). This exercises the runtime behavior
+//     a real codegen-emitted legacyStreamChildFn would have, including
+//     liveness signalling from a real HTTP round-trip.
+//
+// The test covers the most interesting scenario: supported child fails
+// at parseFinal, the orchestrator emits a reset, dispatches to the
+// legacy callback, and the legacy child's final propagates with its raw
+// text. It checks the observable StreamResult timeline end-to-end.
+func TestRunStreamOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
+	// Supported child (openai SSE) — its body parses into "bad" which the
+	// parseFinal closure rejects, so the orchestrator must advance to the
+	// legacy child.
+	supportedServer := makeOpenAIServer([]string{"bad"})
+	defer supportedServer.Close()
+
+	// Legacy child — plain text body, delayed so the heartbeat timing is
+	// observable. This mirrors how a real BAML aws-bedrock response would
+	// look to runLegacyChildStream: drain the body, extract a raw string,
+	// return a final typed value.
+	const legacyFinal = "legacy-final-text"
+	const legacyRaw = "legacy-raw-payload"
+	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Small delay before body to give the test a visible heartbeat
+		// window; runLegacyChildStream in the real generated code fires
+		// its sendHeartbeat on the first FunctionLog tick, which tracks
+		// upstream byte arrival.
+		time.Sleep(10 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(200)
+		fmt.Fprint(w, legacyRaw)
+	}))
+	defer legacyServer.Close()
+
+	httpClient := llmhttp.NewClient(supportedServer.Client())
+
+	// Legacy callback mirrors runLegacyChildStream: make a real HTTP call
+	// via llmhttp, fire sendHeartbeat on first byte (via the Execute
+	// onSuccess callback), read the body as raw, and synthesize a final.
+	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+		if clientOverride != "LegacyChild" {
+			t.Errorf("legacy callback got clientOverride=%q, want LegacyChild", clientOverride)
+		}
+		req := &llmhttp.Request{URL: legacyServer.URL, Method: "POST", Body: `{}`}
+		resp, err := httpClient.Execute(ctx, req, sendHeartbeat)
+		if err != nil {
+			return nil, "", err
+		}
+		raw := resp.Body
+		if !needsRaw {
+			raw = ""
+		}
+		return legacyFinal, raw, nil
+	}
+
+	out := make(chan bamlutils.StreamResult, 100)
+	config := &StreamConfig{
+		RetryPolicy:   &retry.Policy{MaxRetries: 0},
+		NeedsPartials: true,
+		NeedsRaw:      true,
+		FallbackChain: []string{"SupportedChild", "LegacyChild"},
+		ClientProviders: map[string]string{
+			"SupportedChild": "openai",
+			"LegacyChild":    "aws-bedrock",
+		},
+		LegacyChildren:    map[string]bool{"LegacyChild": true},
+		LegacyStreamChild: legacyStreamChild,
+	}
+
+	// parseFinal rejects the supported child's content, forcing fall-over
+	// to the legacy child. parseStream is lenient so partials flow
+	// normally until the final reject.
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		if s == "bad" {
+			return nil, fmt.Errorf("parse rejected %q", s)
+		}
+		return s, nil
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, httpClient,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: supportedServer.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		parseFinal,
+		newTestResult,
+	)
+	close(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Walk the full SSE-like timeline and verify ordering/contents.
+	// Expected shape:
+	//   [heartbeat, supported partials..., reset, heartbeat, final(legacy)]
+	// — the supported attempt emits partials and a heartbeat on its HTTP
+	// response; the orchestrator then resets before dispatching to the
+	// legacy callback, which fires its own heartbeat on first-byte and
+	// feeds back a final + raw.
+	var (
+		heartbeats int
+		partials   int
+		resets     int
+		finals     int
+		finalVal   any
+		finalRaw   string
+	)
+	for r := range out {
+		tr := r.(*testResult)
+		switch tr.kind {
+		case bamlutils.StreamResultKindHeartbeat:
+			heartbeats++
+		case bamlutils.StreamResultKindStream:
+			if tr.reset {
+				resets++
+			} else {
+				partials++
+			}
+		case bamlutils.StreamResultKindFinal:
+			finals++
+			finalVal = tr.final
+			finalRaw = tr.raw
+		case bamlutils.StreamResultKindError:
+			t.Fatalf("unexpected error result: %v", tr.err)
+		}
+	}
+
+	if heartbeats < 2 {
+		// Supported child emits one on HTTP connect, legacy callback
+		// emits a second after its reset. Fewer than two indicates the
+		// reset failed to clear heartbeatSent, or the legacy callback
+		// never fired sendHeartbeat.
+		t.Errorf("expected at least 2 heartbeats (one per child attempt), got %d", heartbeats)
+	}
+	if partials < 1 {
+		t.Errorf("expected at least 1 partial from the supported child stream, got %d", partials)
+	}
+	if resets != 1 {
+		t.Errorf("expected exactly 1 reset between children, got %d", resets)
+	}
+	if finals != 1 {
+		t.Fatalf("expected exactly 1 final, got %d", finals)
+	}
+	if finalVal != legacyFinal {
+		t.Errorf("expected final=%q from legacy child, got %v", legacyFinal, finalVal)
+	}
+	if finalRaw != legacyRaw {
+		t.Errorf("expected raw=%q from legacy child, got %q", legacyRaw, finalRaw)
+	}
+}

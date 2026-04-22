@@ -1275,3 +1275,103 @@ func TestRunCallOrchestration_MixedChain_LegacyNoCallbackErrors(t *testing.T) {
 		t.Fatalf("expected no results on validation failure, got kind %v", r.Kind())
 	}
 }
+
+// TestRunCallOrchestration_MixedChain_HTTPBackedEndToEnd mirrors the
+// stream-side end-to-end test: both children are backed by real httptest
+// servers and the legacy callback routes through llmhttp.Execute so its
+// sendHeartbeat fires on a real 2xx. Covers the call path's mixed-mode
+// dispatch, reset-less retry semantics (call path has no reset events),
+// and raw propagation from a genuinely HTTP-fetched legacy body.
+func TestRunCallOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
+	supportedServer := makeJSONServer(500, `{"error":"upstream down"}`)
+	defer supportedServer.Close()
+
+	const legacyFinal = "legacy-call-final"
+	const legacyRaw = "legacy-call-raw-payload"
+	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(200)
+		fmt.Fprint(w, legacyRaw)
+	}))
+	defer legacyServer.Close()
+
+	httpClient := llmhttp.NewClient(supportedServer.Client())
+
+	legacyCallChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+		if clientOverride != "LegacyChild" {
+			t.Errorf("legacy callback got clientOverride=%q, want LegacyChild", clientOverride)
+		}
+		req := &llmhttp.Request{URL: legacyServer.URL, Method: "POST", Body: `{}`}
+		resp, err := httpClient.Execute(ctx, req, sendHeartbeat)
+		if err != nil {
+			return nil, "", err
+		}
+		raw := resp.Body
+		if !needsRaw {
+			raw = ""
+		}
+		return legacyFinal, raw, nil
+	}
+
+	out := make(chan bamlutils.StreamResult, 100)
+	config := &CallConfig{
+		RetryPolicy:   &retry.Policy{MaxRetries: 0},
+		NeedsRaw:      true,
+		FallbackChain: []string{"SupportedChild", "LegacyChild"},
+		ClientProviders: map[string]string{
+			"SupportedChild": "openai",
+			"LegacyChild":    "aws-bedrock",
+		},
+		LegacyChildren:  map[string]bool{"LegacyChild": true},
+		LegacyCallChild: legacyCallChild,
+	}
+
+	err := RunCallOrchestration(
+		context.Background(), out, config, httpClient,
+		makeBuildCallRequest(supportedServer.URL),
+		identityParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+	close(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var (
+		heartbeats int
+		finals     int
+		finalVal   any
+		finalRaw   string
+	)
+	for r := range out {
+		switch r.Kind() {
+		case bamlutils.StreamResultKindHeartbeat:
+			heartbeats++
+		case bamlutils.StreamResultKindFinal:
+			finals++
+			finalVal = r.Final()
+			finalRaw = r.Raw()
+		case bamlutils.StreamResultKindError:
+			t.Fatalf("unexpected error result: %v", r.Error())
+		}
+	}
+
+	// The supported child's HTTP call returns 500 before Execute reaches
+	// the sendHeartbeat step, so only the legacy callback contributes a
+	// heartbeat. This documents the call-path's "heartbeat only on 2xx"
+	// semantics end-to-end.
+	if heartbeats != 1 {
+		t.Errorf("expected exactly 1 heartbeat (from legacy child's 2xx), got %d", heartbeats)
+	}
+	if finals != 1 {
+		t.Fatalf("expected exactly 1 final, got %d", finals)
+	}
+	if finalVal != legacyFinal {
+		t.Errorf("expected final=%q, got %v", legacyFinal, finalVal)
+	}
+	if finalRaw != legacyRaw {
+		t.Errorf("expected raw=%q, got %q", legacyRaw, finalRaw)
+	}
+}
