@@ -201,7 +201,7 @@ var serveCmd = &cobra.Command{
 		logger := zerolog.New(output).With().Timestamp().Logger()
 
 		if introspected.Request == nil {
-			logger.Warn().Msg("BAML < 0.219.0 detected: BuildRequest API is unavailable, all requests will use the CallStream+OnTick path. Upgrade to BAML >= 0.219.0 to enable the BuildRequest code path (recommended: 0.220.0).")
+			logger.Warn().Msg("BAML < 0.219.0 detected: BuildRequest API is unavailable, all requests will use the CallStream+OnTick path. Upgrade to BAML >= 0.219.0 to enable the BuildRequest code path.")
 		}
 
 		// Configure memory limits
