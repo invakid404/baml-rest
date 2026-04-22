@@ -326,26 +326,17 @@ func (e *StreamEvent) IsMetadata() bool {
 	return e.Event == "metadata"
 }
 
-// StreamMetadata is the shape of a routing-metadata event's data payload.
-// Mirrors bamlutils.Metadata but lives in the testutil package so tests
-// don't have to import the server's bamlutils package.
+// StreamMetadata is the subset of bamlutils.Metadata fields the integration
+// tests assert on. Kept narrow deliberately — testutil doesn't import the
+// server-side bamlutils package, and a full mirror would drift as unused
+// fields get added. Extend this only when a test needs a new field.
 type StreamMetadata struct {
 	Phase          string   `json:"phase"`
-	Attempt        int      `json:"attempt"`
-	Path           string   `json:"path"`
-	PathReason     string   `json:"path_reason,omitempty"`
 	Client         string   `json:"client,omitempty"`
-	Provider       string   `json:"provider,omitempty"`
-	Strategy       string   `json:"strategy,omitempty"`
 	Chain          []string `json:"chain,omitempty"`
-	LegacyChildren []string `json:"legacy_children,omitempty"`
 	RetryMax       *int     `json:"retry_max,omitempty"`
-	RetryPolicy    string   `json:"retry_policy,omitempty"`
-	RetryCount     *int     `json:"retry_count,omitempty"`
 	WinnerClient   string   `json:"winner_client,omitempty"`
 	WinnerProvider string   `json:"winner_provider,omitempty"`
-	WinnerPath     string   `json:"winner_path,omitempty"`
-	UpstreamDurMs  *int64   `json:"upstream_duration_ms,omitempty"`
 }
 
 // ParseMetadata decodes a metadata event's data payload.
@@ -876,17 +867,19 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 }
 
 // Header names for per-request routing metadata. Duplicated here (rather
-// than imported from cmd/serve) to keep testutil dependency-free of the
-// server package. Keep these in sync with cmd/serve/headers.go.
+// than imported from cmd/serve, which is package main) to keep testutil
+// free of server-package deps. Spelling matches cmd/serve/headers.go
+// byte-for-byte — http.Header.Get canonicalizes on lookup, but keeping
+// the literal spelling identical makes grep-for-header-usage match.
 const (
-	HeaderBAMLPath             = "X-Baml-Path"
-	HeaderBAMLPathReason       = "X-Baml-Path-Reason"
-	HeaderBAMLClient           = "X-Baml-Client"
-	HeaderBAMLWinnerClient     = "X-Baml-Winner-Client"
-	HeaderBAMLWinnerProvider   = "X-Baml-Winner-Provider"
-	HeaderBAMLRetryMax         = "X-Baml-Retry-Max"
-	HeaderBAMLRetryCount       = "X-Baml-Retry-Count"
-	HeaderBAMLUpstreamDuration = "X-Baml-Upstream-Duration-Ms"
+	HeaderBAMLPath             = "X-BAML-Path"
+	HeaderBAMLPathReason       = "X-BAML-Path-Reason"
+	HeaderBAMLClient           = "X-BAML-Client"
+	HeaderBAMLWinnerClient     = "X-BAML-Winner-Client"
+	HeaderBAMLWinnerProvider   = "X-BAML-Winner-Provider"
+	HeaderBAMLRetryMax         = "X-BAML-Retry-Max"
+	HeaderBAMLRetryCount       = "X-BAML-Retry-Count"
+	HeaderBAMLUpstreamDuration = "X-BAML-Upstream-Duration-Ms"
 )
 
 // AssertHeaderEquals fails the test if the given header is missing or does

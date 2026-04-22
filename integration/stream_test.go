@@ -31,9 +31,7 @@ func TestStreamEndpoint(t *testing.T) {
 		var eventCount int
 		var lastEvent testutil.StreamEvent
 		var firstSemanticEvent *testutil.StreamEvent
-		var planned, outcome *testutil.StreamMetadata
-		var outcomeBeforeFinal bool
-		finalSeen := false
+		tracker := newMetadataTracker(t)
 
 		for {
 			select {
@@ -50,23 +48,11 @@ func TestStreamEndpoint(t *testing.T) {
 					firstSemanticEvent = &ev
 				}
 				if event.IsMetadata() {
-					md, err := event.ParseMetadata()
-					if err != nil {
-						t.Fatalf("Failed to parse metadata event: %v", err)
-					}
-					switch md.Phase {
-					case "planned":
-						planned = md
-					case "outcome":
-						outcome = md
-						if !finalSeen {
-							outcomeBeforeFinal = true
-						}
-					}
+					tracker.record(event)
 					continue
 				}
 				if event.IsFinal() {
-					finalSeen = true
+					tracker.markFinal()
 				}
 				lastEvent = event
 			case err := <-errs:
@@ -111,15 +97,7 @@ func TestStreamEndpoint(t *testing.T) {
 					return firstSemanticEvent.Event
 				}())
 			}
-			if planned == nil || planned.Phase != "planned" {
-				t.Errorf("expected planned metadata event; got %+v", planned)
-			}
-			if outcome == nil || outcome.Phase != "outcome" {
-				t.Errorf("expected outcome metadata event; got %+v", outcome)
-			}
-			if outcome != nil && !outcomeBeforeFinal {
-				t.Errorf("outcome metadata should arrive before final event")
-			}
+			tracker.assertBuildRequestInvariants()
 		}
 	})
 
@@ -884,9 +862,7 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 		var eventCount int
 		var lastEvent testutil.StreamEvent
 		var firstSemanticEvent *testutil.StreamEvent
-		var planned, outcome *testutil.StreamMetadata
-		var outcomeBeforeFinal bool
-		finalSeen := false
+		tracker := newMetadataTracker(t)
 
 		for {
 			select {
@@ -901,23 +877,11 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 				}
 				t.Logf("Event %d: type=%s, data_len=%d", eventCount, event.Event, len(event.Data))
 				if event.IsMetadata() {
-					md, err := event.ParseMetadata()
-					if err != nil {
-						t.Fatalf("Failed to parse metadata event: %v", err)
-					}
-					switch md.Phase {
-					case "planned":
-						planned = md
-					case "outcome":
-						outcome = md
-						if !finalSeen {
-							outcomeBeforeFinal = true
-						}
-					}
+					tracker.record(event)
 					continue
 				}
 				if event.IsFinal() {
-					finalSeen = true
+					tracker.markFinal()
 				}
 				lastEvent = event
 			case err := <-errs:
@@ -963,15 +927,7 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 					return firstSemanticEvent.Event
 				}())
 			}
-			if planned == nil || planned.Phase != "planned" {
-				t.Errorf("expected planned metadata event; got %+v", planned)
-			}
-			if outcome == nil || outcome.Phase != "outcome" {
-				t.Errorf("expected outcome metadata event; got %+v", outcome)
-			}
-			if outcome != nil && !outcomeBeforeFinal {
-				t.Errorf("outcome metadata should arrive before final event")
-			}
+			tracker.assertBuildRequestInvariants()
 		}
 	})
 
@@ -1252,7 +1208,7 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastRaw string
-		var metadataCount int
+		tracker := newMetadataTracker(t)
 
 		for {
 			select {
@@ -1262,11 +1218,14 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 				}
 				eventCount++
 				if event.IsMetadata() {
-					metadataCount++
 					if event.Raw != "" {
 						t.Errorf("metadata event should not carry Raw; got %q", event.Raw)
 					}
+					tracker.record(event)
 					continue
+				}
+				if event.IsFinal() {
+					tracker.markFinal()
 				}
 				if event.Raw != "" {
 					lastRaw = event.Raw
@@ -1290,10 +1249,10 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 		if lastRaw != content {
 			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
 		}
-		// BuildRequest should have emitted planned + outcome metadata,
-		// but they didn't touch raw accumulation.
-		if UseBuildRequest && metadataCount < 2 {
-			t.Errorf("expected >=2 metadata events on BuildRequest path, got %d", metadataCount)
+		// BuildRequest must emit exactly one planned + one outcome event,
+		// with the correct ordering.
+		if UseBuildRequest {
+			tracker.assertBuildRequestInvariants()
 		}
 	})
 
@@ -1644,9 +1603,8 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 			Options: opts,
 		})
 
-		var eventCount int
 		var lastRaw string
-		var metadataCount int
+		tracker := newMetadataTracker(t)
 
 		for {
 			select {
@@ -1654,14 +1612,16 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 				if !ok {
 					goto done
 				}
-				eventCount++
 				if event.IsMetadata() {
-					metadataCount++
 					// Metadata events must have no effect on the raw stream.
 					if event.Raw != "" {
 						t.Errorf("metadata event should not carry Raw; got %q", event.Raw)
 					}
+					tracker.record(event)
 					continue
+				}
+				if event.IsFinal() {
+					tracker.markFinal()
 				}
 				if event.Raw != "" {
 					lastRaw = event.Raw
@@ -1680,10 +1640,11 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 		if lastRaw != content {
 			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
 		}
-		// BuildRequest should have emitted planned + outcome metadata,
-		// but they didn't touch raw accumulation.
-		if UseBuildRequest && metadataCount < 2 {
-			t.Errorf("expected >=2 metadata events on BuildRequest path, got %d", metadataCount)
+		// BuildRequest must emit exactly one planned + one outcome event,
+		// with the correct ordering. The raw-accumulation assertion above
+		// already covers the "don't corrupt raw" half of the contract.
+		if UseBuildRequest {
+			tracker.assertBuildRequestInvariants()
 		}
 	})
 }
@@ -2208,4 +2169,80 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 			logLeakedStacks(t, finalResult)
 		}
 	})
+}
+
+// metadataTracker records routing-metadata events during a stream drain
+// and enforces the "exactly one planned, zero-or-one outcome, outcome
+// before final" invariants. Duplicate planned/outcome events fail the
+// test immediately (production code uses sync.Once, so a duplicate means
+// the production guard is broken).
+type metadataTracker struct {
+	t             *testing.T
+	planned       *testutil.StreamMetadata
+	outcome       *testutil.StreamMetadata
+	plannedIdx    int
+	outcomeIdx    int
+	finalIdx      int
+	finalSeen     bool
+	totalMetadata int
+	totalEvents   int
+}
+
+func newMetadataTracker(t *testing.T) *metadataTracker {
+	return &metadataTracker{t: t, plannedIdx: -1, outcomeIdx: -1, finalIdx: -1}
+}
+
+// record assimilates a metadata event. Fails the test on duplicates.
+func (m *metadataTracker) record(event testutil.StreamEvent) {
+	m.t.Helper()
+	m.totalEvents++
+	md, err := event.ParseMetadata()
+	if err != nil {
+		m.t.Fatalf("Failed to parse metadata event: %v", err)
+	}
+	switch md.Phase {
+	case "planned":
+		if m.planned != nil {
+			m.t.Fatalf("duplicate planned metadata: orchestrator must emit exactly one per run (sync.Once). first=%+v second=%+v", m.planned, md)
+		}
+		m.planned = md
+		m.plannedIdx = m.totalEvents
+	case "outcome":
+		if m.outcome != nil {
+			m.t.Fatalf("duplicate outcome metadata: orchestrator emits outcome at most once per run. first=%+v second=%+v", m.outcome, md)
+		}
+		m.outcome = md
+		m.outcomeIdx = m.totalEvents
+	default:
+		m.t.Fatalf("unknown metadata phase %q in event: %+v", md.Phase, md)
+	}
+	m.totalMetadata++
+}
+
+// markFinal records the index of the final event for ordering checks.
+func (m *metadataTracker) markFinal() {
+	m.totalEvents++
+	if !m.finalSeen {
+		m.finalIdx = m.totalEvents
+		m.finalSeen = true
+	}
+}
+
+// assertBuildRequestInvariants checks the BuildRequest-path emission
+// contract: planned present, outcome present, planned before outcome,
+// outcome before final.
+func (m *metadataTracker) assertBuildRequestInvariants() {
+	m.t.Helper()
+	if m.planned == nil {
+		m.t.Errorf("expected planned metadata event on BuildRequest path")
+	}
+	if m.outcome == nil {
+		m.t.Errorf("expected outcome metadata event on BuildRequest path")
+	}
+	if m.planned != nil && m.outcome != nil && m.plannedIdx >= m.outcomeIdx {
+		m.t.Errorf("planned metadata (idx %d) must precede outcome (idx %d)", m.plannedIdx, m.outcomeIdx)
+	}
+	if m.outcome != nil && m.finalSeen && m.outcomeIdx >= m.finalIdx {
+		m.t.Errorf("outcome metadata (idx %d) must precede final (idx %d)", m.outcomeIdx, m.finalIdx)
+	}
 }

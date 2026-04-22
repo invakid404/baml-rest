@@ -178,6 +178,11 @@ func TestFallbackCall(t *testing.T) {
 			if UseBuildRequest {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+			} else {
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			}
 		})
 
@@ -245,6 +250,11 @@ func TestFallbackCall(t *testing.T) {
 			if UseBuildRequest {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackTertiary")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+			} else {
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			}
 		})
 
@@ -397,6 +407,11 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			if UseBuildRequest {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+			} else {
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			}
 		})
 	})
@@ -497,29 +512,15 @@ func TestFallbackStream(t *testing.T) {
 		})
 
 		var finalData json.RawMessage
-		var planned, outcome *testutil.StreamMetadata
-		var outcomeBeforeFinal bool
-		finalSeen := false
+		tracker := newMetadataTracker(t)
 		for ev := range partials {
 			if ev.IsMetadata() {
-				md, err := ev.ParseMetadata()
-				if err != nil {
-					t.Fatalf("Failed to parse metadata event: %v", err)
-				}
-				switch md.Phase {
-				case "planned":
-					planned = md
-				case "outcome":
-					outcome = md
-					if !finalSeen {
-						outcomeBeforeFinal = true
-					}
-				}
+				tracker.record(ev)
 				continue
 			}
 			if ev.IsFinal() {
 				finalData = ev.Data
-				finalSeen = true
+				tracker.markFinal()
 			}
 		}
 		if streamErr := <-errc; streamErr != nil {
@@ -539,31 +540,28 @@ func TestFallbackStream(t *testing.T) {
 		// Streaming routing metadata events. Planned describes the chain,
 		// outcome carries the winner. Only BuildRequest synthesizes outcome
 		// today (§4f); the legacy path may emit planned but no outcome.
-		if planned == nil {
+		if tracker.planned == nil {
 			t.Fatalf("expected planned metadata event")
 		}
-		if planned.Client != "TestFallbackPair" {
-			t.Errorf("planned.Client: got %q, want TestFallbackPair", planned.Client)
+		if tracker.planned.Client != "TestFallbackPair" {
+			t.Errorf("planned.Client: got %q, want TestFallbackPair", tracker.planned.Client)
 		}
-		if planned.RetryMax == nil || *planned.RetryMax != 3 {
-			t.Errorf("planned.RetryMax: got %v, want 3", planned.RetryMax)
+		if tracker.planned.RetryMax == nil || *tracker.planned.RetryMax != 3 {
+			t.Errorf("planned.RetryMax: got %v, want 3", tracker.planned.RetryMax)
 		}
 		wantChain := []string{"FallbackPrimary", "FallbackSecondary"}
 		if UseBuildRequest {
-			if !equalSliceStrings(planned.Chain, wantChain) {
-				t.Errorf("planned.Chain: got %v, want %v", planned.Chain, wantChain)
+			if !equalSliceStrings(tracker.planned.Chain, wantChain) {
+				t.Errorf("planned.Chain: got %v, want %v", tracker.planned.Chain, wantChain)
 			}
-			if outcome == nil {
-				t.Fatalf("expected outcome metadata event on BuildRequest path")
-			}
-			if !outcomeBeforeFinal {
-				t.Errorf("outcome metadata should arrive before final event")
-			}
-			if outcome.WinnerClient != "FallbackSecondary" {
-				t.Errorf("outcome.WinnerClient: got %q, want FallbackSecondary", outcome.WinnerClient)
-			}
-			if outcome.WinnerProvider != "openai" {
-				t.Errorf("outcome.WinnerProvider: got %q, want openai", outcome.WinnerProvider)
+			tracker.assertBuildRequestInvariants()
+			if tracker.outcome != nil {
+				if tracker.outcome.WinnerClient != "FallbackSecondary" {
+					t.Errorf("outcome.WinnerClient: got %q, want FallbackSecondary", tracker.outcome.WinnerClient)
+				}
+				if tracker.outcome.WinnerProvider != "openai" {
+					t.Errorf("outcome.WinnerProvider: got %q, want openai", tracker.outcome.WinnerProvider)
+				}
 			}
 		}
 	})

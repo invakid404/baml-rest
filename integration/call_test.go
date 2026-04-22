@@ -52,8 +52,18 @@ func TestCallEndpoint(t *testing.T) {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryCount, "0")
 				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+				// Single-provider route: no fallback chain, so there is no
+				// "winner client" distinct from the planned Client.
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
 			} else {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "legacy")
+				// Legacy v1 emits no outcome event — all outcome-derived
+				// headers must be absent so callers can distinguish
+				// "unknown" from a concrete value.
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			}
 		})
 
@@ -380,8 +390,13 @@ func TestCallWithRawEndpoint(t *testing.T) {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryCount, "0")
 				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
 			} else {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "legacy")
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			}
 		})
 
