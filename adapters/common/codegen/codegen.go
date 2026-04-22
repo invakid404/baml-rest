@@ -1581,6 +1581,17 @@ func Generate(selfPkg string) {
 			}
 			buildRequestCallParams = append(buildRequestCallParams, jen.Id("callOpts").Op("..."))
 
+			// Call params for the legacy-child Stream.<Method> invocation.
+			// First arg is adapter (its embedded context.Context satisfies
+			// the BAML generated Stream.Method signature); the rest is
+			// method args + opts. Mirrors driveStreamBody at codegen.go:1456.
+			var legacyStreamCallParams []jen.Code
+			legacyStreamCallParams = append(legacyStreamCallParams, jen.Id("adapter"))
+			for _, arg := range args {
+				legacyStreamCallParams = append(legacyStreamCallParams, argCallParam(arg))
+			}
+			legacyStreamCallParams = append(legacyStreamCallParams, jen.Id("opts").Op("..."))
+
 			// The _buildRequest body
 			buildRequestBody := makePreamble()
 
@@ -1716,14 +1727,67 @@ func Generate(selfPkg string) {
 					jen.Return(jen.Id("r")),
 				),
 
-				// StreamConfig
+				// legacyStreamChildFn runs one mixed-mode legacy child via
+				// BAML's Stream API. Delegates the lifecycle (heartbeat
+				// wiring + FunctionLog capture for raw) to the shared
+				// runLegacyChildStream helper; the inner closure supplies
+				// only the per-method Stream.<Method> invocation.
+				jen.Id("legacyStreamChildFn").Op(":=").Func().Params(
+					jen.Id("ctx").Qual("context", "Context"),
+					jen.Id("clientOverride").String(),
+					jen.Id("_").String(),
+					jen.Id("needsRaw").Bool(),
+					jen.Id("sendHeartbeat").Func().Params(),
+				).Params(jen.Any(), jen.String(), jen.Error()).Block(
+					jen.Id("callOpts").Op(":=").Id("options"),
+					jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+						jen.Id("callOpts").Op("=").Append(
+							jen.Qual("slices", "Clone").Call(jen.Id("options")),
+							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
+						),
+					),
+					jen.Return(jen.Id("runLegacyChildStream").Call(
+						jen.Id("ctx"),
+						jen.Id("needsRaw"),
+						jen.Id("sendHeartbeat"),
+						jen.Func().Params(jen.Id("onTick").Add(onTickType())).Params(jen.Any(), jen.Error()).Block(
+							jen.Id("opts").Op(":=").Append(
+								jen.Id("callOpts"),
+								jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
+							),
+							jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
+								Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(legacyStreamCallParams...),
+							jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
+								jen.Return(jen.Nil(), jen.Id("streamErr")),
+							),
+							jen.Var().Id("result").Any(),
+							jen.Var().Id("lastErr").Error(),
+							jen.For(jen.Id("streamVal").Op(":=").Range().Id("stream")).Block(
+								jen.If(jen.Id("streamVal").Dot("IsError")).Block(
+									jen.Id("lastErr").Op("=").Id("streamVal").Dot("Error"),
+									jen.Continue(),
+								),
+								jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
+									jen.Id("result").Op("=").Id("streamVal").Dot("Final").Call(),
+								),
+							),
+							jen.Return(jen.Id("result"), jen.Id("lastErr")),
+						),
+					)),
+				),
+
+				// StreamConfig. LegacyChildren is populated for mixed chains;
+				// LegacyStreamChild is always wired so the orchestrator's
+				// up-front validation passes even when legacyChildren is nil.
 				jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
-					jen.Id("Provider"):        jen.Id("provider"),
-					jen.Id("RetryPolicy"):     jen.Id("retryPolicy"),
-					jen.Id("NeedsPartials"):   jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
-					jen.Id("NeedsRaw"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-					jen.Id("FallbackChain"):   jen.Id("fallbackChain"),
-					jen.Id("ClientProviders"): jen.Id("clientProviders"),
+					jen.Id("Provider"):          jen.Id("provider"),
+					jen.Id("RetryPolicy"):       jen.Id("retryPolicy"),
+					jen.Id("NeedsPartials"):     jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
+					jen.Id("NeedsRaw"):          jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("FallbackChain"):     jen.Id("fallbackChain"),
+					jen.Id("ClientProviders"):   jen.Id("clientProviders"),
+					jen.Id("LegacyChildren"):    jen.Id("legacyChildren"),
+					jen.Id("LegacyStreamChild"): jen.Id("legacyStreamChildFn"),
 				}),
 
 				// Run the orchestration in a goroutine with panic recovery, matching
@@ -1780,6 +1844,7 @@ func Generate(selfPkg string) {
 					jen.Id("retryPolicy").Op("*").Qual(common.RetryPkg, "Policy"),
 					jen.Id("fallbackChain").Index().String(),
 					jen.Id("clientProviders").Map(jen.String()).String(),
+					jen.Id("legacyChildren").Map(jen.String()).Bool(),
 				).
 				Error().
 				Block(buildRequestBody...)
@@ -1804,6 +1869,17 @@ func Generate(selfPkg string) {
 				callRequestCallParams = append(callRequestCallParams, argCallParam(arg))
 			}
 			callRequestCallParams = append(callRequestCallParams, jen.Id("callOpts").Op("..."))
+
+			// Stream.<Method> params for the legacy call-mode child. BAML
+			// exposes streaming as the primitive even for non-streaming use,
+			// so legacy call children reuse runLegacyChildStream just like
+			// streaming children.
+			var legacyCallStreamCallParams []jen.Code
+			legacyCallStreamCallParams = append(legacyCallStreamCallParams, jen.Id("adapter"))
+			for _, arg := range args {
+				legacyCallStreamCallParams = append(legacyCallStreamCallParams, argCallParam(arg))
+			}
+			legacyCallStreamCallParams = append(legacyCallStreamCallParams, jen.Id("opts").Op("..."))
 
 			buildCallRequestBody := makePreamble()
 
@@ -1894,13 +1970,65 @@ func Generate(selfPkg string) {
 					jen.Return(jen.Id("r")),
 				),
 
-				// CallConfig
+				// legacyCallChildFn runs one mixed-mode legacy child for the
+				// non-streaming path. Structurally identical to
+				// legacyStreamChildFn in _buildRequest — see that closure
+				// for the rationale.
+				jen.Id("legacyCallChildFn").Op(":=").Func().Params(
+					jen.Id("ctx").Qual("context", "Context"),
+					jen.Id("clientOverride").String(),
+					jen.Id("_").String(),
+					jen.Id("needsRaw").Bool(),
+					jen.Id("sendHeartbeat").Func().Params(),
+				).Params(jen.Any(), jen.String(), jen.Error()).Block(
+					jen.Id("callOpts").Op(":=").Id("options"),
+					jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+						jen.Id("callOpts").Op("=").Append(
+							jen.Qual("slices", "Clone").Call(jen.Id("options")),
+							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
+						),
+					),
+					jen.Return(jen.Id("runLegacyChildStream").Call(
+						jen.Id("ctx"),
+						jen.Id("needsRaw"),
+						jen.Id("sendHeartbeat"),
+						jen.Func().Params(jen.Id("onTick").Add(onTickType())).Params(jen.Any(), jen.Error()).Block(
+							jen.Id("opts").Op(":=").Append(
+								jen.Id("callOpts"),
+								jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
+							),
+							jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
+								Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(legacyCallStreamCallParams...),
+							jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
+								jen.Return(jen.Nil(), jen.Id("streamErr")),
+							),
+							jen.Var().Id("result").Any(),
+							jen.Var().Id("lastErr").Error(),
+							jen.For(jen.Id("streamVal").Op(":=").Range().Id("stream")).Block(
+								jen.If(jen.Id("streamVal").Dot("IsError")).Block(
+									jen.Id("lastErr").Op("=").Id("streamVal").Dot("Error"),
+									jen.Continue(),
+								),
+								jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
+									jen.Id("result").Op("=").Id("streamVal").Dot("Final").Call(),
+								),
+							),
+							jen.Return(jen.Id("result"), jen.Id("lastErr")),
+						),
+					)),
+				),
+
+				// CallConfig. LegacyChildren is populated for mixed chains;
+				// LegacyCallChild is always wired so validation passes even
+				// when legacyChildren is nil.
 				jen.Id("callConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "CallConfig").Values(jen.Dict{
 					jen.Id("Provider"):        jen.Id("provider"),
 					jen.Id("RetryPolicy"):     jen.Id("retryPolicy"),
 					jen.Id("NeedsRaw"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
 					jen.Id("FallbackChain"):   jen.Id("fallbackChain"),
 					jen.Id("ClientProviders"): jen.Id("clientProviders"),
+					jen.Id("LegacyChildren"):  jen.Id("legacyChildren"),
+					jen.Id("LegacyCallChild"): jen.Id("legacyCallChildFn"),
 				}),
 
 				// Resolve HTTP client
@@ -1955,6 +2083,7 @@ func Generate(selfPkg string) {
 					jen.Id("retryPolicy").Op("*").Qual(common.RetryPkg, "Policy"),
 					jen.Id("fallbackChain").Index().String(),
 					jen.Id("clientProviders").Map(jen.String()).String(),
+					jen.Id("legacyChildren").Map(jen.String()).Bool(),
 				).
 				Error().
 				Block(buildCallRequestBody...)
@@ -2008,15 +2137,19 @@ func Generate(selfPkg string) {
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
 							jen.Nil(), jen.Nil(),
+							jen.Nil(),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
 						),
 						jen.Return(jen.Id("out"), jen.Nil()),
 					),
-					// Fallback chain path: if single-provider check failed, try resolving
-					// a fallback chain (all children must have supported providers).
-					jen.List(jen.Id("__chain"), jen.Id("__cprov")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
+					// Fallback chain path: if single-provider check failed,
+					// try resolving a fallback chain. Mixed chains (with
+					// any legacy children) route through the BuildRequest
+					// path — the orchestrator dispatches legacy children
+					// to the generated legacyCallChildFn.
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
 						jen.Id("adapter"),
 						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
@@ -2029,6 +2162,7 @@ func Generate(selfPkg string) {
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
 							jen.Id("__chain"), jen.Id("__cprov"),
+							jen.Id("__legacyChildren"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2063,14 +2197,18 @@ func Generate(selfPkg string) {
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
 							jen.Nil(), jen.Nil(),
+							jen.Nil(),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
 						),
 						jen.Return(jen.Id("out"), jen.Nil()),
 					),
-					// Fallback chain path
-					jen.List(jen.Id("__chain"), jen.Id("__cprov")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
+					// Fallback chain path. Mixed chains (with any legacy
+					// children) route through the BuildRequest path — the
+					// orchestrator dispatches legacy children to the
+					// generated legacyStreamChildFn.
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
 						jen.Id("adapter"),
 						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
@@ -2083,6 +2221,7 @@ func Generate(selfPkg string) {
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
 							jen.Id("__chain"), jen.Id("__cprov"),
+							jen.Id("__legacyChildren"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -3639,5 +3778,72 @@ func generateStreamHelpers(out *jen.File) {
 			).Call(),
 
 			jen.Return(jen.Nil()),
+		)
+
+	// ──────────────────────────────────────────────────────────────────
+	// runLegacyChildStream — shared helper for mixed-mode fallback
+	// ──────────────────────────────────────────────────────────────────
+	out.Comment("runLegacyChildStream drives a single child of a mixed-mode fallback")
+	out.Comment("chain through BAML's Stream API. The per-method closure supplies")
+	out.Comment("driveStream, which appends the WithOnTick option and invokes")
+	out.Comment("Stream.<Method>. This helper wires the onTick callback that fires")
+	out.Comment("sendHeartbeat on the first FunctionLog tick (matching the")
+	out.Comment("BuildRequest path's post-HTTP liveness semantics) and captures the")
+	out.Comment("last FunctionLog so raw can be read via RawLLMResponse.")
+	out.Func().Id("runLegacyChildStream").
+		Params(
+			jen.Id("ctx").Qual("context", "Context"),
+			jen.Id("needsRaw").Bool(),
+			jen.Id("sendHeartbeat").Func().Params(),
+			jen.Id("driveStream").Func().Params(
+				jen.Add(onTickType()),
+			).Params(jen.Any(), jen.Error()),
+		).
+		Params(jen.Any(), jen.String(), jen.Error()).
+		Block(
+			// Track first-tick state so sendHeartbeat fires exactly once when
+			// BAML reports the first FunctionLog tick (i.e. first observed
+			// upstream activity). The orchestrator owns heartbeat
+			// idempotency; this guard just saves the extra closure call.
+			jen.Var().Id("heartbeatFired").Qual("sync/atomic", "Bool"),
+			// lastFuncLog stores the most recent FunctionLog handle so
+			// RawLLMResponse can be read after driveStream returns.
+			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
+
+			jen.Id("onTick").Op(":=").Func().Params(
+				jen.Id("_").Qual("context", "Context"),
+				jen.Id("_").Qual(BamlPkg, "TickReason"),
+				jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
+			).Qual(BamlPkg, "FunctionSignal").Block(
+				jen.If(jen.Id("heartbeatFired").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+					jen.Id("sendHeartbeat").Call(),
+				),
+				jen.Id("lastFuncLog").Dot("Store").Call(jen.Id("funcLog")),
+				jen.Return(jen.Nil()),
+			),
+
+			jen.List(jen.Id("finalResult"), jen.Id("err")).Op(":=").Id("driveStream").Call(jen.Id("onTick")),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Lit(""), jen.Id("err")),
+			),
+
+			// Raw is only computed when requested; callers that don't need
+			// raw skip the BAML call entirely (it's cheap but pointless).
+			jen.Var().Id("raw").String(),
+			jen.If(jen.Id("needsRaw")).Block(
+				jen.If(
+					jen.List(jen.Id("fl"), jen.Id("ok")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+					jen.Id("ok"),
+				).Block(
+					jen.If(
+						jen.List(jen.Id("r"), jen.Id("rawErr")).Op(":=").Id("fl").Dot("RawLLMResponse").Call(),
+						jen.Id("rawErr").Op("==").Nil(),
+					).Block(
+						jen.Id("raw").Op("=").Id("r"),
+					),
+				),
+			),
+
+			jen.Return(jen.Id("finalResult"), jen.Id("raw"), jen.Nil()),
 		)
 }

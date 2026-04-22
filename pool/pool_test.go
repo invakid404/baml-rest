@@ -2985,3 +2985,209 @@ func TestShutdownZeroValuePool(t *testing.T) {
 		t.Fatalf("Shutdown on zero-value Pool returned error: %v", err)
 	}
 }
+
+// TestCallStreamSlowLegacyHeartbeatPreventsHungKill verifies that a stream
+// which emits a heartbeat before any "real" result — as mixed-mode legacy
+// children do via the orchestrator's sendHeartbeat closure on BAML's first
+// FunctionLog tick — keeps the worker alive even if the overall call takes
+// longer than FirstByteTimeout. This is the positive counterpart to the
+// hung-detection mechanism: anything that looks like upstream activity
+// (heartbeat included) disables hung-kill for the request.
+func TestCallStreamSlowLegacyHeartbeatPreventsHungKill(t *testing.T) {
+	// Heartbeat arrives within FirstByteTimeout (simulating a legacy
+	// child whose first BAML FunctionLog tick lands before the deadline);
+	// the final trails well past the deadline so the hung check has the
+	// opportunity to kill the worker if gotFirstByte isn't being set by
+	// the heartbeat.
+	firstByteTimeout := 40 * time.Millisecond
+	heartbeatDelay := 15 * time.Millisecond
+	finalDelay := 60 * time.Millisecond
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(ctx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 2)
+			go func() {
+				defer close(ch)
+				select {
+				case <-time.After(heartbeatDelay):
+				case <-ctx.Done():
+					return
+				}
+				hb := workerplugin.GetStreamResult()
+				hb.Kind = workerplugin.StreamResultKindHeartbeat
+				select {
+				case ch <- hb:
+				case <-ctx.Done():
+					workerplugin.ReleaseStreamResult(hb)
+					return
+				}
+				select {
+				case <-time.After(finalDelay):
+				case <-ctx.Done():
+					return
+				}
+				final := workerplugin.GetStreamResult()
+				final.Kind = workerplugin.StreamResultKindFinal
+				final.Data = []byte(`"mixed-mode-final"`)
+				select {
+				case ch <- final:
+				case <-ctx.Done():
+					workerplugin.ReleaseStreamResult(final)
+				}
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+	p.SetFirstByteTimeout(firstByteTimeout)
+
+	// workerClosed is closed (not sent-to) so multiple readers all see the
+	// signal. closeFn is guarded by sync.Once because the pool may call
+	// Close more than once over the worker's lifecycle (hung kill + pool
+	// shutdown), and close(workerClosed) would panic on the second call.
+	workerClosed := make(chan struct{})
+	var closeOnce sync.Once
+	p.workers[0].worker.(*mockWorker).closeFn = func() error {
+		closeOnce.Do(func() { close(workerClosed) })
+		return nil
+	}
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Keep probing hung detection on a fine cadence throughout the stream
+	// so any window where gotFirstByte=false overlapping the timeout
+	// elapses would surface as a kill. stopChecker is closed after the
+	// main loop drains `results`, letting the checker exit cleanly —
+	// previously the checker competed with the main loop on `case
+	// <-results:` and could steal a heartbeat or final.
+	stopChecker := make(chan struct{})
+	checkerDone := make(chan struct{})
+	go func() {
+		defer close(checkerDone)
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stopChecker:
+				return
+			case <-tick.C:
+				p.checkHungRequests()
+			}
+		}
+	}()
+
+	var gotFinal bool
+	var gotData string
+	for r := range results {
+		if r.Kind == workerplugin.StreamResultKindFinal {
+			gotFinal = true
+			gotData = string(r.Data)
+		}
+		workerplugin.ReleaseStreamResult(r)
+	}
+	close(stopChecker)
+	<-checkerDone
+
+	if !gotFinal {
+		t.Fatalf("expected a final result, stream terminated without one")
+	}
+	if gotData != `"mixed-mode-final"` {
+		t.Errorf("expected final data %q, got %q", `"mixed-mode-final"`, gotData)
+	}
+
+	select {
+	case <-workerClosed:
+		t.Fatal("worker should not have been killed when heartbeat arrived within FirstByteTimeout")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+// TestCallStreamSilentLegacyGetsKilled is the negative-path counterpart:
+// a legacy callback that neither fires sendHeartbeat nor produces a final
+// should still be killed by hung detection after FirstByteTimeout. This
+// proves the mixed-mode path hasn't broken the pool's liveness guarantee
+// for genuinely hung upstreams.
+func TestCallStreamSilentLegacyGetsKilled(t *testing.T) {
+	firstByteTimeout := 30 * time.Millisecond
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(ctx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			// Worker "hangs" — hold the channel open, send nothing, and
+			// only close on context cancellation so hung-kill cleanly
+			// terminates the goroutine.
+			ch := make(chan *workerplugin.StreamResult)
+			go func() {
+				<-ctx.Done()
+				close(ch)
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+	p.SetFirstByteTimeout(firstByteTimeout)
+
+	// workerClosed is closed (not sent-to) so both the checker goroutine
+	// below and the main assertion see the signal. closeFn is guarded by
+	// sync.Once because the pool can call Close more than once (hung kill
+	// + pool shutdown), and close() on an already-closed channel panics.
+	workerClosed := make(chan struct{})
+	var closeOnce sync.Once
+	p.workers[0].worker.(*mockWorker).closeFn = func() error {
+		closeOnce.Do(func() { close(workerClosed) })
+		return nil
+	}
+
+	// Disable retries so the test observes the first-attempt hung kill
+	// directly without the pool silently retrying on a fresh worker.
+	p.config.MaxRetries = 0
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// stopChecker lets the main body stop the ticker cleanly after it has
+	// asserted on workerClosed. The checker never reads from workerClosed
+	// itself; closing stopChecker is the sole exit path.
+	stopChecker := make(chan struct{})
+	checkerDone := make(chan struct{})
+	go func() {
+		defer close(checkerDone)
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stopChecker:
+				return
+			case <-tick.C:
+				p.checkHungRequests()
+			}
+		}
+	}()
+
+	select {
+	case <-workerClosed:
+	case <-time.After(500 * time.Millisecond):
+		close(stopChecker)
+		<-checkerDone
+		t.Fatal("worker was not killed when legacy callback produced no heartbeat or final")
+	}
+	close(stopChecker)
+	<-checkerDone
+
+	// Drain the stream so the CallStream goroutine finishes — the pool
+	// restarts the hung worker and propagates the error.
+	for range results {
+	}
+}

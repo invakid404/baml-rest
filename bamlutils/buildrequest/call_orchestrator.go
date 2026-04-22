@@ -35,8 +35,41 @@ type CallConfig struct {
 
 	// ClientProviders maps child client names to their provider strings.
 	// Used with FallbackChain to resolve the provider for each attempt.
+	// In mixed-mode chains this map includes both BuildRequest-supported
+	// children and legacy (unsupported-provider) children — it is a pure
+	// lookup table, not a "supported set." Callers must consult
+	// LegacyChildren to decide which path runs a given child.
 	ClientProviders map[string]string
+
+	// LegacyChildren marks the entries in FallbackChain that must be driven
+	// via the legacy BAML Stream API rather than the BuildRequest path.
+	// Mirrors StreamConfig.LegacyChildren — see that field for details.
+	LegacyChildren map[string]bool
+
+	// LegacyCallChild runs a single child via BAML's Stream API for the
+	// non-streaming call path. The orchestrator invokes it for children
+	// marked in LegacyChildren. Contract mirrors
+	// StreamConfig.LegacyStreamChild: callback fires sendHeartbeat on the
+	// first FunctionLog tick (matching the BuildRequest call path's
+	// post-HTTP liveness semantics) and returns (final, raw, err).
+	//
+	// Even though this is the non-streaming path, the BAML runtime exposes
+	// streaming as the primitive, so the legacy helper goes through
+	// Stream.Method + FunctionLog capture identically to the streaming
+	// callback — raw comes from FunctionLog.RawLLMResponse().
+	LegacyCallChild LegacyCallChildFunc
 }
+
+// LegacyCallChildFunc runs one child of a mixed-mode fallback chain via
+// BAML's Stream API for the non-streaming call path. See
+// CallConfig.LegacyCallChild for the full contract.
+type LegacyCallChildFunc func(
+	ctx context.Context,
+	clientOverride string,
+	provider string,
+	needsRaw bool,
+	sendHeartbeat func(),
+) (finalResult any, raw string, err error)
 
 // BuildCallRequestFunc builds an HTTP request for a non-streaming call by
 // calling Request.Method(ctx, args, opts...) and converting the result
@@ -91,15 +124,34 @@ func RunCallOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
-	// Validate that the first provider is supported.
+	// Validate the configured provider(s) up front so invalid fallback
+	// chains fail before any retry attempts are launched. The validation
+	// walks every child — previously only the first child was checked,
+	// which allowed a mixed-shaped chain with a valid first but broken
+	// later child to start retrying before surfacing the error.
 	if len(config.FallbackChain) == 0 {
 		if config.Provider == "" || !IsCallProviderSupported(config.Provider) {
 			return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", config.Provider)
 		}
 	} else {
-		first := config.ClientProviders[config.FallbackChain[0]]
-		if first == "" || !IsCallProviderSupported(first) {
-			return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", first)
+		if len(config.LegacyChildren) > 0 && config.LegacyCallChild == nil {
+			return fmt.Errorf("buildrequest: LegacyChildren set but LegacyCallChild is nil")
+		}
+		for _, child := range config.FallbackChain {
+			if config.LegacyChildren[child] {
+				// Legacy children are driven via BAML's Stream API, which
+				// tolerates providers BuildRequest doesn't support; we
+				// only require the legacy callback itself. Skipping the
+				// IsCallProviderSupported check is safe because
+				// ResolveFallbackChain rejects chains with any empty
+				// provider (returns nil,nil,nil), so ClientProviders[child]
+				// is guaranteed non-empty by the time we get here.
+				continue
+			}
+			provider := config.ClientProviders[child]
+			if provider == "" || !IsCallProviderSupported(provider) {
+				return fmt.Errorf("buildrequest: unsupported or empty provider %q for child %q", provider, child)
+			}
 		}
 	}
 
@@ -193,6 +245,24 @@ func RunCallOrchestration(
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			default:
+			}
+			if config.LegacyChildren[child] {
+				// Legacy children run via BAML's Stream API. The callback
+				// owns heartbeat timing (fires sendHeartbeat on the first
+				// FunctionLog tick) so pool hung-detection stays correct
+				// for slow upstreams that eventually produce bytes.
+				finalResult, raw, err := config.LegacyCallChild(
+					ctx,
+					child,
+					config.ClientProviders[child],
+					config.NeedsRaw,
+					sendHeartbeat,
+				)
+				if err == nil {
+					return &callAttemptResult{finalResult: finalResult, raw: raw}, nil
+				}
+				lastErr = err
+				continue
 			}
 			provider := config.ClientProviders[child]
 			result, err := tryOneChild(provider, child)

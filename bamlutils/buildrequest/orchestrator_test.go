@@ -705,7 +705,7 @@ func TestResolveFallbackChain_AllSupported(t *testing.T) {
 	}
 
 	adapter := &mockAdapter{Context: context.Background()}
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
@@ -716,26 +716,115 @@ func TestResolveFallbackChain_AllSupported(t *testing.T) {
 	if providers["ClientA"] != "openai" || providers["ClientB"] != "anthropic" {
 		t.Errorf("unexpected providers: %v", providers)
 	}
+	if len(legacyChildren) != 0 {
+		t.Errorf("expected empty legacyChildren for all-supported chain, got %v", legacyChildren)
+	}
 }
 
-func TestResolveFallbackChain_UnsupportedChild(t *testing.T) {
+func TestResolveFallbackChain_MixedSupport(t *testing.T) {
+	// Chain [openai, aws-bedrock, anthropic] with only openai + anthropic
+	// supported by BuildRequest. Expect a 3-element chain back with
+	// legacyChildren marking the aws-bedrock child.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB", "ClientC"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "aws-bedrock", // unsupported
+		"ClientC":    "anthropic",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers, legacyChildren := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 3 {
+		t.Fatalf("expected chain length 3 for mixed-mode, got %d", len(chain))
+	}
+	if providers["ClientA"] != "openai" || providers["ClientB"] != "aws-bedrock" || providers["ClientC"] != "anthropic" {
+		t.Errorf("unexpected providers: %v", providers)
+	}
+	if !legacyChildren["ClientB"] {
+		t.Errorf("expected ClientB to be marked legacy, got legacyChildren=%v", legacyChildren)
+	}
+	if legacyChildren["ClientA"] || legacyChildren["ClientC"] {
+		t.Errorf("expected only ClientB to be legacy, got %v", legacyChildren)
+	}
+}
+
+func TestResolveFallbackChain_AllUnsupported(t *testing.T) {
+	// When every child is unsupported, ResolveFallbackChain returns nil so
+	// the caller routes the whole chain through the existing legacy path.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "aws-bedrock",
+		"ClientB":    "aws-bedrock",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers, legacyChildren := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if chain != nil || providers != nil || legacyChildren != nil {
+		t.Errorf("expected nil results when every child is unsupported, got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
+	}
+}
+
+func TestResolveFallbackChain_DuplicateLegacyChildren(t *testing.T) {
+	// A chain listing the same unsupported client twice is still "all
+	// legacy" from a routing standpoint — there is no supported child for
+	// BuildRequest to drive, so the resolver must return nil so the whole
+	// chain routes through the legacy path. The previous implementation
+	// compared len(legacyChildren) (a set, 1) against len(chain)
+	// (positions, 2) and incorrectly reported this as a mixed chain.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"BedrockA", "BedrockA"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"BedrockA":   "aws-bedrock",
+	}
+
+	adapter := &mockAdapter{Context: context.Background()}
+	chain, providers, legacyChildren := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if chain != nil || providers != nil || legacyChildren != nil {
+		t.Errorf("expected nil results when every chain position is legacy (duplicates included), got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
+	}
+}
+
+func TestResolveFallbackChain_EmptyProviderFallsBack(t *testing.T) {
+	// A child with a missing provider is fatal — we can't route an unknown
+	// provider through either BuildRequest or legacy reliably, so the
+	// whole chain should fall back to the legacy path.
 	fallbackChains := map[string][]string{
 		"MyFallback": {"ClientA", "ClientB"},
 	}
 	clientProviders := map[string]string{
 		"MyFallback": "baml-fallback",
 		"ClientA":    "openai",
-		"ClientB":    "aws-bedrock", // unsupported
+		// ClientB intentionally missing
 	}
 
 	adapter := &mockAdapter{Context: context.Background()}
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
 
-	if chain != nil || providers != nil {
-		t.Errorf("expected nil chain/providers when child has unsupported provider, got chain=%v providers=%v", chain, providers)
+	if chain != nil || providers != nil || legacyChildren != nil {
+		t.Errorf("expected nil results when a child's provider is empty, got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
 	}
 }
 
@@ -759,7 +848,7 @@ func TestResolveFallbackChain_RuntimeOverrideChild(t *testing.T) {
 			},
 		},
 	}
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" || p == "google-ai" },
 	)
@@ -773,6 +862,49 @@ func TestResolveFallbackChain_RuntimeOverrideChild(t *testing.T) {
 	}
 	if providers["ClientA"] != "openai" {
 		t.Errorf("expected ClientA provider 'openai' (introspected), got %q", providers["ClientA"])
+	}
+	if len(legacyChildren) != 0 {
+		t.Errorf("expected no legacy children, got %v", legacyChildren)
+	}
+}
+
+func TestResolveFallbackChain_RuntimeOverrideMakesLegacy(t *testing.T) {
+	// All introspected providers are supported; runtime override flips one
+	// child to aws-bedrock, turning this into a mixed-mode chain rather
+	// than falling back entirely to the legacy path.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"ClientA", "ClientB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"ClientA":    "openai",
+		"ClientB":    "anthropic",
+	}
+
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "ClientB", Provider: "aws-bedrock"},
+			},
+		},
+	}
+	chain, providers, legacyChildren := ResolveFallbackChain(
+		adapter, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" || p == "anthropic" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2 for mixed-mode, got %d", len(chain))
+	}
+	if !legacyChildren["ClientB"] {
+		t.Errorf("expected ClientB to be legacy after runtime override, got %v", legacyChildren)
+	}
+	if legacyChildren["ClientA"] {
+		t.Errorf("expected ClientA to remain BuildRequest-driven, got %v", legacyChildren)
+	}
+	if providers["ClientB"] != "aws-bedrock" {
+		t.Errorf("expected ClientB provider 'aws-bedrock' in providers map, got %q", providers["ClientB"])
 	}
 }
 
@@ -801,7 +933,7 @@ func TestResolveFallbackChain_RuntimeStrategyOverrideReordersChildren(t *testing
 		},
 	}
 
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
@@ -814,6 +946,9 @@ func TestResolveFallbackChain_RuntimeStrategyOverrideReordersChildren(t *testing
 	}
 	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
 		t.Errorf("unexpected providers: %v", providers)
+	}
+	if len(legacyChildren) != 0 {
+		t.Errorf("expected no legacy children for all-supported chain, got %v", legacyChildren)
 	}
 }
 
@@ -840,7 +975,7 @@ func TestResolveFallbackChain_RuntimeStrategyOverrideWithoutIntrospectedChain(t 
 		},
 	}
 
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
@@ -853,6 +988,9 @@ func TestResolveFallbackChain_RuntimeStrategyOverrideWithoutIntrospectedChain(t 
 	}
 	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
 		t.Errorf("unexpected providers: %v", providers)
+	}
+	if len(legacyChildren) != 0 {
+		t.Errorf("expected no legacy children for all-supported chain, got %v", legacyChildren)
 	}
 }
 
@@ -879,7 +1017,7 @@ func TestResolveFallbackChain_RuntimeQuotedStringStrategyOverride(t *testing.T) 
 		},
 	}
 
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
@@ -893,9 +1031,14 @@ func TestResolveFallbackChain_RuntimeQuotedStringStrategyOverride(t *testing.T) 
 	if providers["ClientB"] != "anthropic" || providers["ClientA"] != "openai" {
 		t.Errorf("unexpected providers: %v", providers)
 	}
+	if len(legacyChildren) != 0 {
+		t.Errorf("expected no legacy children for all-supported chain, got %v", legacyChildren)
+	}
 }
 
-func TestResolveFallbackChain_RuntimeOverrideUnsupported(t *testing.T) {
+func TestResolveFallbackChain_RuntimeOverrideMakesAllLegacy(t *testing.T) {
+	// Runtime override flips every child to an unsupported provider →
+	// full legacy fallback (nil results), matching the all-unsupported case.
 	fallbackChains := map[string][]string{
 		"MyFallback": {"ClientA", "ClientB"},
 	}
@@ -905,23 +1048,22 @@ func TestResolveFallbackChain_RuntimeOverrideUnsupported(t *testing.T) {
 		"ClientB":    "anthropic",
 	}
 
-	// Runtime override changes ClientB to an unsupported provider
 	adapter := &mockAdapter{
 		Context: context.Background(),
 		originalRegistry: &bamlutils.ClientRegistry{
 			Clients: []*bamlutils.ClientProperty{
+				{Name: "ClientA", Provider: "aws-bedrock"},
 				{Name: "ClientB", Provider: "aws-bedrock"},
 			},
 		},
 	}
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
 
-	// Should fall back to legacy path because runtime override made ClientB unsupported
-	if chain != nil || providers != nil {
-		t.Errorf("expected nil when runtime override makes child unsupported, got chain=%v providers=%v", chain, providers)
+	if chain != nil || providers != nil || legacyChildren != nil {
+		t.Errorf("expected nil when every child is legacy, got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
 	}
 }
 
@@ -930,13 +1072,13 @@ func TestResolveFallbackChain_NotFallback(t *testing.T) {
 	clientProviders := map[string]string{"GPT4": "openai"}
 
 	adapter := &mockAdapter{Context: context.Background()}
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "GPT4", fallbackChains, clientProviders,
 		func(p string) bool { return true },
 	)
 
-	if chain != nil || providers != nil {
-		t.Errorf("expected nil for non-fallback client, got chain=%v providers=%v", chain, providers)
+	if chain != nil || providers != nil || legacyChildren != nil {
+		t.Errorf("expected nil for non-fallback client, got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
 	}
 }
 
@@ -953,13 +1095,13 @@ func TestResolveFallbackChain_RoundRobinGated(t *testing.T) {
 	}
 
 	adapter := &mockAdapter{Context: context.Background()}
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyRoundRobin", fallbackChains, clientProviders,
 		func(p string) bool { return true },
 	)
 
-	if chain != nil || providers != nil {
-		t.Errorf("expected nil for baml-roundrobin (should use legacy path), got chain=%v providers=%v", chain, providers)
+	if chain != nil || providers != nil || legacyChildren != nil {
+		t.Errorf("expected nil for baml-roundrobin (should use legacy path), got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
 	}
 }
 
@@ -975,7 +1117,7 @@ func TestResolveFallbackChain_FallbackAllowed(t *testing.T) {
 	}
 
 	adapter := &mockAdapter{Context: context.Background()}
-	chain, providers := ResolveFallbackChain(
+	chain, providers, legacyChildren := ResolveFallbackChain(
 		adapter, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" || p == "anthropic" },
 	)
@@ -985,6 +1127,9 @@ func TestResolveFallbackChain_FallbackAllowed(t *testing.T) {
 	}
 	if providers["ClientA"] != "openai" || providers["ClientB"] != "anthropic" {
 		t.Errorf("unexpected providers: %v", providers)
+	}
+	if len(legacyChildren) != 0 {
+		t.Errorf("expected no legacy children for all-supported chain, got %v", legacyChildren)
 	}
 }
 
@@ -1101,5 +1246,546 @@ func TestRunStreamOrchestration_FallbackChainResetBetweenChildren(t *testing.T) 
 	}
 	if finalVal != "good data" {
 		t.Errorf("expected final='good data', got %q", finalVal)
+	}
+}
+
+// TestRunStreamOrchestration_MixedChain_LegacySucceedsSecond covers the
+// typical mixed-mode flow: a BuildRequest-driven child fails, then a
+// legacy child wins via the LegacyStreamChild callback. The orchestrator
+// must emit exactly one final (the legacy child's), reset state between
+// children, and not emit any legacy-side partials.
+func TestRunStreamOrchestration_MixedChain_LegacySucceedsSecond(t *testing.T) {
+	// Supported child: streams valid chunks but parseFinal rejects, so the
+	// child fails and the orchestrator advances to the legacy child.
+	server := makeOpenAIServer([]string{"stale"})
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	var legacyCalled atomic.Int32
+	var gotOverride string
+	var gotProvider string
+	var gotNeedsRaw bool
+	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+		legacyCalled.Add(1)
+		gotOverride = clientOverride
+		gotProvider = provider
+		gotNeedsRaw = needsRaw
+		sendHeartbeat()
+		return "legacy ok", "legacy raw", nil
+	}
+
+	config := &StreamConfig{
+		RetryPolicy:   &retry.Policy{MaxRetries: 0},
+		NeedsPartials: true,
+		NeedsRaw:      true,
+		FallbackChain: []string{"SupportedChild", "LegacyChild"},
+		ClientProviders: map[string]string{
+			"SupportedChild": "openai",
+			"LegacyChild":    "aws-bedrock",
+		},
+		LegacyChildren:    map[string]bool{"LegacyChild": true},
+		LegacyStreamChild: legacyStreamChild,
+	}
+
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		return nil, fmt.Errorf("supported child rejected")
+	}
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		parseFinal,
+		newTestResult,
+	)
+	close(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if legacyCalled.Load() != 1 {
+		t.Fatalf("expected legacy callback invoked once, got %d", legacyCalled.Load())
+	}
+	if gotOverride != "LegacyChild" {
+		t.Errorf("expected clientOverride 'LegacyChild', got %q", gotOverride)
+	}
+	if gotProvider != "aws-bedrock" {
+		t.Errorf("expected provider 'aws-bedrock', got %q", gotProvider)
+	}
+	if !gotNeedsRaw {
+		t.Errorf("expected needsRaw=true, got false")
+	}
+
+	var resets, finals int
+	var finalVal any
+	var finalRaw string
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.kind == bamlutils.StreamResultKindStream && tr.reset {
+			resets++
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+			finalVal = tr.final
+			finalRaw = tr.raw
+		}
+	}
+	if resets < 1 {
+		t.Errorf("expected at least one reset signal between children, got %d", resets)
+	}
+	if finals != 1 {
+		t.Fatalf("expected exactly one final, got %d", finals)
+	}
+	if finalVal != "legacy ok" {
+		t.Errorf("expected final='legacy ok', got %v", finalVal)
+	}
+	if finalRaw != "legacy raw" {
+		t.Errorf("expected raw='legacy raw', got %q", finalRaw)
+	}
+}
+
+// TestRunStreamOrchestration_MixedChain_LegacyFirstFails_SupportedWins
+// ensures a legacy-first-fails path lets the supported child take over
+// and that the orchestrator emits partials from the supported child only.
+func TestRunStreamOrchestration_MixedChain_LegacyFirstFails_SupportedWins(t *testing.T) {
+	server := makeOpenAIServer([]string{"good"})
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	var legacyCalled atomic.Int32
+	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+		legacyCalled.Add(1)
+		return nil, "", fmt.Errorf("legacy upstream 500")
+	}
+
+	config := &StreamConfig{
+		RetryPolicy:   &retry.Policy{MaxRetries: 0},
+		NeedsPartials: true,
+		FallbackChain: []string{"LegacyChild", "SupportedChild"},
+		ClientProviders: map[string]string{
+			"LegacyChild":    "aws-bedrock",
+			"SupportedChild": "openai",
+		},
+		LegacyChildren:    map[string]bool{"LegacyChild": true},
+		LegacyStreamChild: legacyStreamChild,
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		newTestResult,
+	)
+	close(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if legacyCalled.Load() != 1 {
+		t.Fatalf("expected legacy callback invoked once, got %d", legacyCalled.Load())
+	}
+
+	var partials, finals int
+	var finalVal any
+	for r := range out {
+		tr := r.(*testResult)
+		switch tr.kind {
+		case bamlutils.StreamResultKindStream:
+			if !tr.reset {
+				partials++
+			}
+		case bamlutils.StreamResultKindFinal:
+			finals++
+			finalVal = tr.final
+		}
+	}
+	if partials < 1 {
+		t.Errorf("expected at least one partial from the supported child, got %d", partials)
+	}
+	if finals != 1 {
+		t.Fatalf("expected exactly one final, got %d", finals)
+	}
+	if finalVal != "good" {
+		t.Errorf("expected final='good' from supported child, got %v", finalVal)
+	}
+}
+
+// TestRunStreamOrchestration_MixedChain_LegacyNoCallbackErrors verifies
+// up-front validation: if LegacyChildren is non-empty but
+// LegacyStreamChild is nil, the orchestrator returns immediately and
+// never calls buildRequest.
+func TestRunStreamOrchestration_MixedChain_LegacyNoCallbackErrors(t *testing.T) {
+	out := make(chan bamlutils.StreamResult, 10)
+	err := RunStreamOrchestration(
+		context.Background(), out,
+		&StreamConfig{
+			FallbackChain: []string{"SupportedChild", "LegacyChild"},
+			ClientProviders: map[string]string{
+				"SupportedChild": "openai",
+				"LegacyChild":    "aws-bedrock",
+			},
+			LegacyChildren: map[string]bool{"LegacyChild": true},
+		},
+		nil,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			t.Fatal("buildRequest must not be called when LegacyStreamChild is missing")
+			return nil, nil
+		},
+		nil, nil,
+		newTestResult,
+	)
+	if err == nil || !strings.Contains(err.Error(), "LegacyStreamChild") {
+		t.Fatalf("expected LegacyStreamChild validation error, got %v", err)
+	}
+	close(out)
+	for r := range out {
+		t.Fatalf("expected no results on validation failure, got kind %v", r.Kind())
+	}
+}
+
+// TestRunStreamOrchestration_MixedChain_LegacyHeartbeat verifies that the
+// orchestrator emits a heartbeat when the legacy callback calls
+// sendHeartbeat, and only emits it once even if the callback calls it
+// multiple times. Also verifies that a legacy callback which never calls
+// sendHeartbeat (simulating a fail-before-first-byte upstream) produces
+// no heartbeat.
+func TestRunStreamOrchestration_MixedChain_LegacyHeartbeat(t *testing.T) {
+	t.Run("callback fires heartbeat", func(t *testing.T) {
+		out := make(chan bamlutils.StreamResult, 100)
+		config := &StreamConfig{
+			FallbackChain: []string{"LegacyChild"},
+			ClientProviders: map[string]string{
+				"LegacyChild": "aws-bedrock",
+			},
+			LegacyChildren: map[string]bool{"LegacyChild": true},
+			LegacyStreamChild: func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+				// Call sendHeartbeat multiple times to verify idempotency.
+				sendHeartbeat()
+				sendHeartbeat()
+				sendHeartbeat()
+				return "ok", "", nil
+			},
+		}
+		err := RunStreamOrchestration(
+			context.Background(), out, config, nil,
+			func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+				t.Fatal("buildRequest must not be called for legacy-only chain")
+				return nil, nil
+			},
+			nil, nil,
+			newTestResult,
+		)
+		close(out)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var heartbeats, finals int
+		for r := range out {
+			switch r.Kind() {
+			case bamlutils.StreamResultKindHeartbeat:
+				heartbeats++
+			case bamlutils.StreamResultKindFinal:
+				finals++
+			}
+		}
+		if heartbeats != 1 {
+			t.Errorf("expected exactly 1 heartbeat (idempotent), got %d", heartbeats)
+		}
+		if finals != 1 {
+			t.Errorf("expected 1 final, got %d", finals)
+		}
+	})
+
+	t.Run("callback never fires heartbeat", func(t *testing.T) {
+		out := make(chan bamlutils.StreamResult, 100)
+		config := &StreamConfig{
+			RetryPolicy:   &retry.Policy{MaxRetries: 0},
+			FallbackChain: []string{"LegacyChild"},
+			ClientProviders: map[string]string{
+				"LegacyChild": "aws-bedrock",
+			},
+			LegacyChildren: map[string]bool{"LegacyChild": true},
+			LegacyStreamChild: func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+				// Simulate failure before any upstream byte — callback
+				// never fires the heartbeat. Pool hung-detection should
+				// still be able to kill this request if it hangs long
+				// enough; here we just assert no heartbeat leaked.
+				return nil, "", fmt.Errorf("upstream 4xx")
+			},
+		}
+		err := RunStreamOrchestration(
+			context.Background(), out, config, nil,
+			func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+				return nil, nil
+			},
+			nil, nil,
+			newTestResult,
+		)
+		close(out)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var heartbeats int
+		for r := range out {
+			if r.Kind() == bamlutils.StreamResultKindHeartbeat {
+				heartbeats++
+			}
+		}
+		if heartbeats != 0 {
+			t.Errorf("expected 0 heartbeats when callback never calls sendHeartbeat, got %d", heartbeats)
+		}
+	})
+}
+
+// TestRunStreamOrchestration_MixedChain_LegacyRawPropagation verifies
+// that the raw string returned from a winning legacy callback is
+// propagated to the final emission only when NeedsRaw is true.
+func TestRunStreamOrchestration_MixedChain_LegacyRawPropagation(t *testing.T) {
+	legacyChildFn := func(raw string) LegacyStreamChildFunc {
+		return func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+			sendHeartbeat()
+			return "final", raw, nil
+		}
+	}
+
+	t.Run("NeedsRaw true", func(t *testing.T) {
+		out := make(chan bamlutils.StreamResult, 100)
+		config := &StreamConfig{
+			NeedsRaw:      true,
+			FallbackChain: []string{"LegacyChild"},
+			ClientProviders: map[string]string{
+				"LegacyChild": "aws-bedrock",
+			},
+			LegacyChildren:    map[string]bool{"LegacyChild": true},
+			LegacyStreamChild: legacyChildFn("legacy raw text"),
+		}
+		err := RunStreamOrchestration(
+			context.Background(), out, config, nil,
+			func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+				return nil, nil
+			},
+			nil, nil,
+			newTestResult,
+		)
+		close(out)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var finalRaw string
+		for r := range out {
+			if r.Kind() == bamlutils.StreamResultKindFinal {
+				finalRaw = r.Raw()
+			}
+		}
+		if finalRaw != "legacy raw text" {
+			t.Errorf("expected raw='legacy raw text', got %q", finalRaw)
+		}
+	})
+
+	t.Run("NeedsRaw false", func(t *testing.T) {
+		out := make(chan bamlutils.StreamResult, 100)
+		config := &StreamConfig{
+			NeedsRaw:      false,
+			FallbackChain: []string{"LegacyChild"},
+			ClientProviders: map[string]string{
+				"LegacyChild": "aws-bedrock",
+			},
+			LegacyChildren:    map[string]bool{"LegacyChild": true},
+			LegacyStreamChild: legacyChildFn("legacy raw text"),
+		}
+		err := RunStreamOrchestration(
+			context.Background(), out, config, nil,
+			func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+				return nil, nil
+			},
+			nil, nil,
+			newTestResult,
+		)
+		close(out)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var finalRaw string
+		for r := range out {
+			if r.Kind() == bamlutils.StreamResultKindFinal {
+				finalRaw = r.Raw()
+			}
+		}
+		if finalRaw != "" {
+			t.Errorf("expected empty raw when NeedsRaw=false, got %q", finalRaw)
+		}
+	})
+}
+
+// TestRunStreamOrchestration_MixedChain_HTTPBackedEndToEnd is the closest
+// approximation to a "generated-adapter integration test" we can write
+// without adding AWS Bedrock Converse API emulation to the mock LLM (see
+// the PR description for the follow-up needed to exercise a real adapter
+// with a bedrock child). Both children run against real httptest servers:
+//
+//   - Supported child: open an SSE stream from an OpenAI-shaped server;
+//     the orchestrator extracts deltas and parses a final.
+//   - Legacy child: callback mirrors the shape runLegacyChildStream emits
+//     — fires sendHeartbeat on the first upstream byte, drains the body,
+//     and returns (final, raw, err). This exercises the runtime behavior
+//     a real codegen-emitted legacyStreamChildFn would have, including
+//     liveness signalling from a real HTTP round-trip.
+//
+// The test covers the most interesting scenario: supported child fails
+// at parseFinal, the orchestrator emits a reset, dispatches to the
+// legacy callback, and the legacy child's final propagates with its raw
+// text. It checks the observable StreamResult timeline end-to-end.
+func TestRunStreamOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
+	// Supported child (openai SSE) — its body parses into "bad" which the
+	// parseFinal closure rejects, so the orchestrator must advance to the
+	// legacy child.
+	supportedServer := makeOpenAIServer([]string{"bad"})
+	defer supportedServer.Close()
+
+	// Legacy child — plain text body, delayed so the heartbeat timing is
+	// observable. This mirrors how a real BAML aws-bedrock response would
+	// look to runLegacyChildStream: drain the body, extract a raw string,
+	// return a final typed value.
+	const legacyFinal = "legacy-final-text"
+	const legacyRaw = "legacy-raw-payload"
+	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Small delay before body to give the test a visible heartbeat
+		// window; runLegacyChildStream in the real generated code fires
+		// its sendHeartbeat on the first FunctionLog tick, which tracks
+		// upstream byte arrival.
+		time.Sleep(10 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(200)
+		fmt.Fprint(w, legacyRaw)
+	}))
+	defer legacyServer.Close()
+
+	httpClient := llmhttp.NewClient(supportedServer.Client())
+
+	// Legacy callback mirrors runLegacyChildStream: make a real HTTP call
+	// via llmhttp, fire sendHeartbeat on first byte (via the Execute
+	// onSuccess callback), read the body as raw, and synthesize a final.
+	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+		if clientOverride != "LegacyChild" {
+			t.Errorf("legacy callback got clientOverride=%q, want LegacyChild", clientOverride)
+		}
+		req := &llmhttp.Request{URL: legacyServer.URL, Method: "POST", Body: `{}`}
+		resp, err := httpClient.Execute(ctx, req, sendHeartbeat)
+		if err != nil {
+			return nil, "", err
+		}
+		raw := resp.Body
+		if !needsRaw {
+			raw = ""
+		}
+		return legacyFinal, raw, nil
+	}
+
+	out := make(chan bamlutils.StreamResult, 100)
+	config := &StreamConfig{
+		RetryPolicy:   &retry.Policy{MaxRetries: 0},
+		NeedsPartials: true,
+		NeedsRaw:      true,
+		FallbackChain: []string{"SupportedChild", "LegacyChild"},
+		ClientProviders: map[string]string{
+			"SupportedChild": "openai",
+			"LegacyChild":    "aws-bedrock",
+		},
+		LegacyChildren:    map[string]bool{"LegacyChild": true},
+		LegacyStreamChild: legacyStreamChild,
+	}
+
+	// parseFinal rejects the supported child's content, forcing fall-over
+	// to the legacy child. parseStream is lenient so partials flow
+	// normally until the final reject.
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		if s == "bad" {
+			return nil, fmt.Errorf("parse rejected %q", s)
+		}
+		return s, nil
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, httpClient,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: supportedServer.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		parseFinal,
+		newTestResult,
+	)
+	close(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Walk the full SSE-like timeline and verify ordering/contents.
+	// Expected shape:
+	//   [heartbeat, supported partials..., reset, heartbeat, final(legacy)]
+	// — the supported attempt emits partials and a heartbeat on its HTTP
+	// response; the orchestrator then resets before dispatching to the
+	// legacy callback, which fires its own heartbeat on first-byte and
+	// feeds back a final + raw.
+	var (
+		heartbeats int
+		partials   int
+		resets     int
+		finals     int
+		finalVal   any
+		finalRaw   string
+	)
+	for r := range out {
+		tr := r.(*testResult)
+		switch tr.kind {
+		case bamlutils.StreamResultKindHeartbeat:
+			heartbeats++
+		case bamlutils.StreamResultKindStream:
+			if tr.reset {
+				resets++
+			} else {
+				partials++
+			}
+		case bamlutils.StreamResultKindFinal:
+			finals++
+			finalVal = tr.final
+			finalRaw = tr.raw
+		case bamlutils.StreamResultKindError:
+			t.Fatalf("unexpected error result: %v", tr.err)
+		}
+	}
+
+	if heartbeats < 2 {
+		// Supported child emits one on HTTP connect, legacy callback
+		// emits a second after its reset. Fewer than two indicates the
+		// reset failed to clear heartbeatSent, or the legacy callback
+		// never fired sendHeartbeat.
+		t.Errorf("expected at least 2 heartbeats (one per child attempt), got %d", heartbeats)
+	}
+	if partials < 1 {
+		t.Errorf("expected at least 1 partial from the supported child stream, got %d", partials)
+	}
+	if resets != 1 {
+		t.Errorf("expected exactly 1 reset between children, got %d", resets)
+	}
+	if finals != 1 {
+		t.Fatalf("expected exactly 1 final, got %d", finals)
+	}
+	if finalVal != legacyFinal {
+		t.Errorf("expected final=%q from legacy child, got %v", legacyFinal, finalVal)
+	}
+	if finalRaw != legacyRaw {
+		t.Errorf("expected raw=%q from legacy child, got %q", legacyRaw, finalRaw)
 	}
 }
