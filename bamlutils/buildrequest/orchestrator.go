@@ -223,10 +223,14 @@ func ResolveProviderWithReason(
 	case "baml-fallback":
 		res.Strategy = "baml-fallback"
 		res.Path = "legacy"
-		// Caller should invoke ResolveFallbackChainWithReason for the
-		// definitive classification; this path reason is the fallback
-		// when the chain helper is not called (e.g. feature gate off).
-		res.PathReason = PathReasonFallbackEmptyChain
+		// PathReason is intentionally left empty here. Callers that care
+		// about the fallback classification (BuildLegacyMetadataPlan,
+		// router) invoke ResolveFallbackChainWithReason for the
+		// definitive reason — empty-chain, empty-child-provider,
+		// all-legacy, or "" (drivable). Pre-seeding a reason here would
+		// shadow the real classification when the request goes legacy
+		// for unrelated reasons (feature gate off, etc.) on a perfectly
+		// valid chain.
 	case "baml-roundrobin":
 		res.Strategy = "baml-roundrobin"
 		res.Path = "legacy"
@@ -359,21 +363,16 @@ func BuildLegacyMetadataPlan(
 		chain, providers, legacy, reason := ResolveFallbackChainWithReason(
 			adapter, defaultClientName, fallbackChains, clientProviders, isProviderSupported,
 		)
-		// When BuildRequest can drive the chain (reason == ""), the router
-		// should not be routing the request through the legacy helper — but
-		// if we somehow got here anyway, keep the previously-computed
-		// reason rather than erasing it.
-		if reason != "" {
-			plan.PathReason = reason
-		}
+		plan.PathReason = reason
 		// chain is nil when BuildRequest rejected the chain; fall back to
 		// the introspected chain so the plan still names the children.
+		// Look up by the runtime-resolved client first (resolution.Client
+		// already accounts for primary overrides) — falling through to
+		// defaultClientName only when the override doesn't list a chain.
 		if chain == nil {
-			chain = fallbackChains[defaultClientName]
-			// Populate providers/legacy maps for the introspected chain
-			// so the metadata still describes the planned children.
+			chain = fallbackChains[resolution.Client]
 			if chain == nil {
-				chain = fallbackChains[resolution.Client]
+				chain = fallbackChains[defaultClientName]
 			}
 			providers = make(map[string]string, len(chain))
 			legacy = make(map[string]bool)
@@ -389,8 +388,10 @@ func BuildLegacyMetadataPlan(
 			plan.Chain = append([]string(nil), chain...)
 			if len(legacy) > 0 {
 				names := make([]string, 0, len(legacy))
-				for name := range legacy {
-					names = append(names, name)
+				for _, child := range chain {
+					if legacy[child] {
+						names = append(names, child)
+					}
 				}
 				plan.LegacyChildren = names
 			}
