@@ -62,6 +62,11 @@ baml-rest reads the following environment variables at startup:
 
 Recommended version: **v0.220.0**
 
+The BuildRequest code path (`BAML_REST_USE_BUILD_REQUEST=true`) requires
+BAML **v0.219.0** or newer. Older BAML versions remain functional via the
+CallStream+OnTick path, but baml-rest logs a warning at startup when no
+BuildRequest API is detected in the generated client.
+
 - **v0.215.0**: Type builder is fully broken and panics the entire application
   when used ([issue](https://github.com/BoundaryML/baml/issues/2862))
 - **≥v0.216.0 <0.218.0**: Various issues in dynamic field handling (e.g.,
