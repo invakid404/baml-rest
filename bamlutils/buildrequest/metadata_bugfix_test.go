@@ -11,20 +11,24 @@ import (
 // setBuildRequestForTest forces UseBuildRequest() to return a fixed value for
 // the duration of the test. The production cache is a sync.Once + bool pair;
 // we replace the Once with a fresh one and pre-fire it so the cached bool is
-// authoritative without re-running parseBuildRequestEnv. Restoration runs in
-// the test cleanup so neighbouring tests are unaffected.
+// authoritative without re-running parseBuildRequestEnv. Cleanup resets the
+// Once to a fresh one (never copies a used Once — sync.Once's contract
+// forbids that) so neighbouring tests re-run parseBuildRequestEnv on first
+// UseBuildRequest() call.
 //
 // Tests that call this helper must NOT use t.Parallel — they share the
 // process-global cache.
 func setBuildRequestForTest(t *testing.T, v bool) {
 	t.Helper()
-	prevOnce := useBuildRequestOnce
 	prevCached := useBuildRequestCached
 	useBuildRequestOnce = sync.Once{}
 	useBuildRequestCached = v
 	useBuildRequestOnce.Do(func() {})
 	t.Cleanup(func() {
-		useBuildRequestOnce = prevOnce
+		// Reset to a fresh Once so the next UseBuildRequest() call
+		// re-reads the env var. Do NOT assign back a copy of a prior
+		// Once — sync.Once must not be copied after first use.
+		useBuildRequestOnce = sync.Once{}
 		useBuildRequestCached = prevCached
 	})
 }
@@ -58,6 +62,28 @@ func TestBuildLegacyMetadataPlan_ValidChainBuildRequestDisabled(t *testing.T) {
 	// The chain should still be enumerated for observability.
 	if got, want := plan.Chain, []string{"Primary", "Backup"}; !equalStringSlice(got, want) {
 		t.Errorf("Chain: got %v, want %v", got, want)
+	}
+	// Provider must NOT be populated on a strategy route — the strategy
+	// name already tells the story, and leaving "baml-fallback" in
+	// Provider would mislead readers of the header / metadata payload.
+	if plan.Provider != "" {
+		t.Errorf("Provider should be empty on a strategy route; got %q", plan.Provider)
+	}
+	if plan.Strategy != "baml-fallback" {
+		t.Errorf("Strategy: got %q, want baml-fallback", plan.Strategy)
+	}
+}
+
+// TestBuildLegacyMetadataPlan_SingleProviderPopulatesProvider locks in the
+// complement: non-strategy routes still carry Provider (headers need it).
+func TestBuildLegacyMetadataPlan_SingleProviderPopulatesProvider(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+	plan := BuildLegacyMetadataPlan(adapter, "MyClient", "aws-bedrock", nil, nil, IsProviderSupported, nil)
+	if plan.Provider != "aws-bedrock" {
+		t.Errorf("Provider: got %q, want aws-bedrock", plan.Provider)
+	}
+	if plan.Strategy != "" {
+		t.Errorf("Strategy: got %q, want empty", plan.Strategy)
 	}
 }
 

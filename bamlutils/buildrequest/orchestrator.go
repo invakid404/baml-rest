@@ -344,10 +344,17 @@ func BuildLegacyMetadataPlan(
 	plan := &bamlutils.Metadata{
 		Path:        "legacy",
 		Client:      resolution.Client,
-		Provider:    resolution.Provider,
 		Strategy:    resolution.Strategy,
 		PathReason:  resolution.PathReason,
 		RetryPolicy: EncodeRetryPolicy(retryPolicy),
+	}
+	// Only populate Provider for non-strategy routes. When Strategy is set
+	// (e.g. "baml-fallback"), resolution.Provider echoes the strategy name,
+	// which would misrepresent it as a real provider in the header /
+	// metadata payload. The strategy name alone tells the story; per-child
+	// provider info lives in Chain / LegacyChildren.
+	if resolution.Strategy == "" {
+		plan.Provider = resolution.Provider
 	}
 	if retryPolicy != nil {
 		m := retryPolicy.MaxRetries
