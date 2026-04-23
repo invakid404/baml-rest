@@ -1,3 +1,5 @@
 reviews:
+  profile: assertive
+  request_changes_workflow: true
   auto_review:
     auto_pause_after_reviewed_commits: 0
