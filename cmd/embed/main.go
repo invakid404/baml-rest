@@ -158,6 +158,13 @@ func packageFromGoFiles(root string) string {
 	if err != nil {
 		return ""
 	}
+	// Count occurrences of each package declaration rather than returning
+	// the first hit. A directory may contain more than one package — e.g.
+	// a sibling `foo_test` package alongside `foo`, or (rarely) an
+	// auxiliary build-tagged package — and the one with the most files is
+	// the one whose name the generated embed.go should use. Ties are
+	// broken alphabetically for determinism.
+	counts := make(map[string]int)
 	fset := token.NewFileSet()
 	for _, entry := range entries {
 		name := entry.Name()
@@ -176,10 +183,21 @@ func packageFromGoFiles(root string) string {
 			continue
 		}
 		if f.Name != nil && f.Name.Name != "" {
-			return f.Name.Name
+			counts[f.Name.Name]++
 		}
 	}
-	return ""
+	if len(counts) == 0 {
+		return ""
+	}
+	var best string
+	var bestCount int
+	for pkg, count := range counts {
+		if count > bestCount || (count == bestCount && pkg < best) {
+			best = pkg
+			bestCount = count
+		}
+	}
+	return best
 }
 
 func packageFromGoMod(root string) string {
