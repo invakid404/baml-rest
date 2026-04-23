@@ -734,6 +734,12 @@ func (d *deadlineCapture) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestExecuteDefaultTimeoutInjected(t *testing.T) {
+	// Force the net/http dispatch path: this test intercepts requests via
+	// an http.RoundTripper, which only observes traffic on the net/http
+	// backend. The fasthttp backend applies DefaultCallTimeout through
+	// DoDeadline instead and is covered separately.
+	t.Setenv(EnvVarClientMode, "nethttp")
+
 	// Verify that Execute() injects DefaultCallTimeout when the caller
 	// provides context.Background() (no deadline). We intercept the
 	// outgoing HTTP request to check the context's deadline directly.
@@ -773,6 +779,11 @@ func TestExecuteDefaultTimeoutInjected(t *testing.T) {
 }
 
 func TestExecuteCallerDeadlinePreserved(t *testing.T) {
+	// Same reasoning as TestExecuteDefaultTimeoutInjected: forced to
+	// net/http so the RoundTripper-based deadline capture works. The
+	// fasthttp path passes the caller's deadline to DoDeadline directly.
+	t.Setenv(EnvVarClientMode, "nethttp")
+
 	// When the caller provides a context with a deadline, Execute() must
 	// NOT override it with DefaultCallTimeout.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
