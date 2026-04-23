@@ -69,7 +69,10 @@ func TestCallEndpoint(t *testing.T) {
 				// RetryCount is outer-orchestrator only; absent on legacy.
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
 				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
-				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
+				// Single happy-path call: len(funcLog.Calls()) == 1, so
+				// BamlCallCount = max(1-1, 0) = 0. A nonzero value here would
+				// mean BAML retried something internally.
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBamlCallCount, "0")
 			}
 		})
 

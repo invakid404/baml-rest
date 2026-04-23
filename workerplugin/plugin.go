@@ -54,10 +54,12 @@ type CallResult struct {
 	Data []byte // JSON-encoded result
 	Raw  string // Raw LLM response
 	// Planned and Outcome carry routing/retry metadata for the request.
-	// Either may be nil: Planned is absent when no metadata plan was wired
-	// (older callers, tests); Outcome is absent on legacy paths that don't
-	// synthesize an outcome event. Both are JSON-encoded bamlutils.Metadata
-	// payloads forwarded verbatim from the worker.
+	// Both BuildRequest and legacy paths now synthesize planned + outcome
+	// events, so the bytes are typically populated for any successful call;
+	// either may still be nil if no metadata plan was wired (e.g. tests
+	// invoking the worker directly without a planner) or if the worker
+	// errored before emitting the relevant event. Both are JSON-encoded
+	// bamlutils.Metadata payloads forwarded verbatim from the worker.
 	Planned []byte
 	Outcome []byte
 }

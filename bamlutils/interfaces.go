@@ -50,8 +50,9 @@ const (
 // responses and as in-stream events on streaming responses).
 //
 // Pointer fields distinguish "unknown" (nil) from "zero" (pointer to 0) so
-// absence can be represented faithfully — critical for legacy v1 which
-// cannot populate outcome fields.
+// absence can be represented faithfully. Some outcome fields are populated
+// only on one path (e.g. RetryCount on BuildRequest, BamlCallCount on
+// legacy) — see per-field doc strings for the contract.
 type Metadata struct {
 	Phase      MetadataPhase `json:"phase"`                 // "planned" or "outcome"
 	Attempt    int           `json:"attempt"`               // pool-level attempt number (0-based). Orchestrator emits 0; pool rewrites.
@@ -67,19 +68,24 @@ type Metadata struct {
 	RetryMax       *int     `json:"retry_max,omitempty"`        // configured max retries
 	RetryPolicy    string   `json:"retry_policy,omitempty"`     // compact encoding (e.g. "exp:200ms:1.5:10s")
 
-	// Outcome fields — populated only on the outcome event
-	RetryCount     *int   `json:"retry_count,omitempty"`           // outer orchestrator retries consumed; nil=unknown. Always nil on legacy (no outer orchestrator).
-	WinnerClient   string `json:"winner_client,omitempty"`         // chain child that succeeded (same as Client for non-chains)
-	WinnerProvider string `json:"winner_provider,omitempty"`       // provider of the winner
-	WinnerPath     string `json:"winner_path,omitempty"`           // "buildrequest" or "legacy" (legacy-child inside mixed chain)
-	UpstreamDurMs  *int64 `json:"upstream_duration_ms,omitempty"`  // upstream wall time in ms
-	// BamlCallCount is the number of *additional* LLM calls BAML made
-	// beyond the first on the legacy path, i.e. max(len(FunctionLog.Calls())-1, 0).
-	// This collapses BAML-internal retries (per-client retry policy) and
+	// Outcome fields — populated only on the outcome event.
+	// RetryCount counts retries consumed by the BuildRequest orchestrator
+	// itself (one per attempt of the fallback strategy). Always nil on the
+	// legacy path: the legacy path runs no outer retry orchestrator — BAML's
+	// runtime owns retry behaviour internally and that count is surfaced via
+	// BamlCallCount instead.
+	RetryCount     *int   `json:"retry_count,omitempty"`
+	WinnerClient   string `json:"winner_client,omitempty"`        // actual client that produced the final result; absent for legacy strategy routes when funcLog.SelectedCall yields no data
+	WinnerProvider string `json:"winner_provider,omitempty"`      // provider of the winner
+	WinnerPath     string `json:"winner_path,omitempty"`          // "buildrequest" or "legacy" (latter for pure legacy or a legacy child inside a mixed chain)
+	UpstreamDurMs  *int64 `json:"upstream_duration_ms,omitempty"` // upstream wall time in ms (orchestrator entry to outcome emission)
+	// BamlCallCount is the number of *additional* LLM calls BAML made beyond
+	// the first, computed as max(len(FunctionLog.Calls())-1, 0). It collapses
+	// BAML-internal retries (per-client retry policy) and BAML-internal
 	// fallback chain walking into one figure — nonzero means BAML did
-	// something beyond a single happy-path call. Always nil on the
-	// BuildRequest path (BuildRequest issues one HTTP per outer attempt;
-	// inner retries are tracked via RetryCount instead).
+	// something beyond a single happy-path call. Populated only on the
+	// legacy path (the BuildRequest path issues one HTTP request per outer
+	// attempt and surfaces its retries via RetryCount).
 	BamlCallCount *int `json:"baml_call_count,omitempty"`
 }
 
