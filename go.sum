@@ -140,10 +140,14 @@ github.com/gofiber/contrib/v3/zerolog v1.0.1 h1:Sr9T4g0Z1DAOoo5X0tAKFd9uNKFu++vw
 github.com/gofiber/contrib/v3/zerolog v1.0.1/go.mod h1:LgfsEgvOp0Yg4ra77kr3Md3UyQ2BjPO6T8LNV/gkCi4=
 github.com/gofiber/contrib/v3/zerolog v1.0.2 h1:pL/UGJN/0H+Un/ZQyhOiP64xqPkz2c9rn8C2N1mlE1k=
 github.com/gofiber/contrib/v3/zerolog v1.0.2/go.mod h1:uLsYWfZdj8AEhA33AlOfCSCc68UaWgJyOcjQNGx0KrY=
+github.com/gofiber/contrib/v3/zerolog v1.0.3 h1:hoaqxQM9WvGs66Ur/hgG6A5lIScZ6JypCtbnZdp+XbA=
+github.com/gofiber/contrib/v3/zerolog v1.0.3/go.mod h1:XYH+v9d8bS5n2cYryggj5XF+HFIfaYz617j5oSGgt2Y=
 github.com/gofiber/fiber/v3 v3.1.0 h1:1p4I820pIa+FGxfwWuQZ5rAyX0WlGZbGT6Hnuxt6hKY=
 github.com/gofiber/fiber/v3 v3.1.0/go.mod h1:n2nYQovvL9z3Too/FGOfgtERjW3GQcAUqgfoezGBZdU=
 github.com/gofiber/schema v1.7.0 h1:yNM+FNRZjyYEli9Ey0AXRBrAY9jTnb+kmGs3lJGPvKg=
 github.com/gofiber/schema v1.7.0/go.mod h1:A/X5Ffyru4p9eBdp99qu+nzviHzQiZ7odLT+TwxWhbk=
+github.com/gofiber/schema v1.7.1 h1:oSJBKdgP8JeIME4TQSAqlNKTU2iBB+2RNmKi8Nsc+TI=
+github.com/gofiber/schema v1.7.1/go.mod h1:A/X5Ffyru4p9eBdp99qu+nzviHzQiZ7odLT+TwxWhbk=
 github.com/gofiber/utils/v2 v2.0.2 h1:ShRRssz0F3AhTlAQcuEj54OEDtWF7+HJDwEi/aa6QLI=
 github.com/gofiber/utils/v2 v2.0.2/go.mod h1:+9Ub4NqQ+IaJoTliq5LfdmOJAA/Hzwf4pXOxOa3RrJ0=
 github.com/gofiber/utils/v2 v2.0.3 h1:qJyfS/t7s7Z4+/zlU1i1pafYNP2+xLupVPgkW8ce1uI=
