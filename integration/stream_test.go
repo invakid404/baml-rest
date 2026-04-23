@@ -39,8 +39,7 @@ func TestStreamEndpoint(t *testing.T) {
 				if !ok {
 					goto done
 				}
-				eventCount++
-				// Capture the first semantic event (non-heartbeat) for
+				// Capture the first semantic event (metadata or data) for
 				// ordering assertions — heartbeats are filtered in the
 				// NDJSON/SSE parser already, so any event seen here counts.
 				if firstSemanticEvent == nil {
@@ -51,6 +50,11 @@ func TestStreamEndpoint(t *testing.T) {
 					tracker.record(event)
 					continue
 				}
+				// Only non-metadata events contribute to eventCount —
+				// the "multiple chunks streamed" assertion below would
+				// otherwise trivially pass on BuildRequest (planned +
+				// outcome alone ≥ 2) even for a single-chunk response.
+				eventCount++
 				if event.IsFinal() {
 					tracker.markFinal()
 				}
@@ -870,16 +874,19 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 				if !ok {
 					goto done
 				}
-				eventCount++
 				if firstSemanticEvent == nil {
 					ev := event
 					firstSemanticEvent = &ev
 				}
-				t.Logf("Event %d: type=%s, data_len=%d", eventCount, event.Event, len(event.Data))
 				if event.IsMetadata() {
+					t.Logf("Metadata event: data_len=%d", len(event.Data))
 					tracker.record(event)
 					continue
 				}
+				// Only non-metadata events contribute to eventCount —
+				// see the SSE counterpart for rationale.
+				eventCount++
+				t.Logf("Event %d: type=%s, data_len=%d", eventCount, event.Event, len(event.Data))
 				if event.IsFinal() {
 					tracker.markFinal()
 				}

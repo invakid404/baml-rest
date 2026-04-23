@@ -776,12 +776,17 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 		data := append([]byte(nil), dataBuffer.Bytes()...)
 		currentEvent.Data = data
 
+		// Detect the stream-with-raw envelope {"data": ..., "raw": ...}
+		// and extract the inner payload. Raw is a *string so "raw":""
+		// (a deliberately empty raw field) is distinguishable from
+		// raw-absent (a plain event that happens to decode as a struct
+		// with a missing field).
 		var rawData struct {
 			Data json.RawMessage `json:"data"`
-			Raw  string          `json:"raw"`
+			Raw  *string         `json:"raw"`
 		}
-		if err := json.Unmarshal(data, &rawData); err == nil && rawData.Raw != "" {
-			currentEvent.Raw = rawData.Raw
+		if err := json.Unmarshal(data, &rawData); err == nil && rawData.Raw != nil {
+			currentEvent.Raw = *rawData.Raw
 			// rawData.Data is already a freshly-allocated copy via
 			// json.RawMessage's UnmarshalJSON, so no extra copy needed.
 			currentEvent.Data = rawData.Data

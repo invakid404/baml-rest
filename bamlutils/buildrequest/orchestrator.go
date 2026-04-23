@@ -262,6 +262,7 @@ func BuildSingleProviderPlan(
 		clientName = *reg.Primary
 	}
 	plan := &bamlutils.Metadata{
+		Phase:       bamlutils.MetadataPhasePlanned,
 		Path:        "buildrequest",
 		Client:      clientName,
 		Provider:    provider,
@@ -290,6 +291,7 @@ func BuildFallbackChainPlan(
 		clientName = *reg.Primary
 	}
 	plan := &bamlutils.Metadata{
+		Phase:       bamlutils.MetadataPhasePlanned,
 		Path:        "buildrequest",
 		Client:      clientName,
 		Strategy:    "baml-fallback",
@@ -342,6 +344,7 @@ func BuildLegacyMetadataPlan(
 	resolution := ResolveProviderWithReason(adapter, defaultClientName, introspectedProvider, isProviderSupported)
 
 	plan := &bamlutils.Metadata{
+		Phase:       bamlutils.MetadataPhasePlanned,
 		Path:        "legacy",
 		Client:      resolution.Client,
 		Strategy:    resolution.Strategy,
