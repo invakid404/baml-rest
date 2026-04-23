@@ -174,14 +174,28 @@ func TestProtocolCache_SingleflightDedupe(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Start barrier: without it, goroutines are spawned sequentially and
+	// the probe path is fast enough (atomic increment + map CoW install)
+	// that goroutine 1 may finish and populate the cache before
+	// goroutine 2 is even scheduled. That would make the test pass on
+	// sequential execution, not on singleflight dedup. Blocking all
+	// spawned goroutines on startCh and closing it once they're all
+	// parked forces a genuine race into resolve().
 	var wg sync.WaitGroup
+	var ready sync.WaitGroup
+	startCh := make(chan struct{})
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
+		ready.Add(1)
 		go func() {
 			defer wg.Done()
+			ready.Done()
+			<-startCh
 			_ = cache.resolve(context.Background(), origin)
 		}()
 	}
+	ready.Wait()
+	close(startCh)
 	wg.Wait()
 
 	if n := probes.Load(); n != 1 {
