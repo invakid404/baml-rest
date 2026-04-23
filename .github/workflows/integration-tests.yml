@@ -29,9 +29,14 @@ jobs:
           # http-client is crossed only with the BuildRequest path — the legacy
           # CallStream path goes through the BAML runtime's own HTTP client,
           # so BAML_REST_HTTP_CLIENT has no effect there and duplicating those
-          # runs would just burn CI minutes.
+          # runs would just burn CI minutes. The "auto" value exercises the
+          # default dispatch path (ALPN probe on HTTPS, fasthttp short-
+          # circuit on plain http); the mockllm used in integration tests
+          # is plain HTTP so "auto" and "fasthttp" end up on the same
+          # backend, but keeping "auto" in the matrix guards against
+          # accidentally breaking the default-mode wiring.
           VERSIONS=$(jq -c '[.pinned[], .latest] | unique' integration/baml_versions.json)
-          echo "matrix={\"baml-version\":$VERSIONS,\"unary-server\":[false,true],\"use-build-request\":[false,true],\"http-client\":[\"nethttp\",\"fasthttp\"],\"exclude\":[{\"use-build-request\":false,\"http-client\":\"fasthttp\"}]}" >> $GITHUB_OUTPUT
+          echo "matrix={\"baml-version\":$VERSIONS,\"unary-server\":[false,true],\"use-build-request\":[false,true],\"http-client\":[\"auto\",\"nethttp\",\"fasthttp\"],\"exclude\":[{\"use-build-request\":false,\"http-client\":\"auto\"},{\"use-build-request\":false,\"http-client\":\"fasthttp\"}]}" >> $GITHUB_OUTPUT
 
   integration-tests:
     needs: get-versions
@@ -68,11 +73,14 @@ jobs:
       matrix:
         unary-server: [false, true]
         use-build-request: [false, true]
-        http-client: [nethttp, fasthttp]
+        http-client: [auto, nethttp, fasthttp]
         exclude:
-          # See the matrix comment on the versioned job — http-client has no
-          # effect on the legacy path, so the fasthttp × !buildrequest cell
-          # would just duplicate the nethttp × !buildrequest cell.
+          # See the matrix comment on the versioned job — http-client has
+          # no effect on the legacy path, so the auto × !buildrequest and
+          # fasthttp × !buildrequest cells would just duplicate the
+          # nethttp × !buildrequest cell.
+          - use-build-request: false
+            http-client: auto
           - use-build-request: false
             http-client: fasthttp
 

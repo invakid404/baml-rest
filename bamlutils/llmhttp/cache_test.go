@@ -19,8 +19,11 @@ func TestParseOrigin(t *testing.T) {
 		{"https://host/path", "https://host:443", false},
 		{"http://host:8080/", "http://host:8080", false},
 		{"https://host:8443/", "https://host:8443", false},
-		{"http://HOST/", "http://HOST:80", false}, // Hostname() preserves case; scheme normalised
+		// Hostnames are case-insensitive per RFC 3986 — the cache key
+		// must lower-case them so "HOST" and "host" share one entry.
+		{"http://HOST/", "http://host:80", false},
 		{"HTTPS://host/", "https://host:443", false},
+		{"http://Mixed.Case.example/", "http://mixed.case.example:80", false},
 		// IPv6 literals must be bracketed in the key so the port delimiter
 		// is unambiguous — `::1:8080` could mean host ::1 port 8080 or
 		// host ::1:8080 with no port.

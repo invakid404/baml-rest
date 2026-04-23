@@ -148,7 +148,10 @@ func (o originURL) addr() string { return net.JoinHostPort(o.hostname, o.port) }
 // in from the scheme default when absent so that requests to e.g.
 // "https://api.openai.com" and "https://api.openai.com:443" share a cache
 // entry — otherwise the cache would fragment and probe the same origin
-// twice. The key uses net.JoinHostPort for IPv6 bracket correctness.
+// twice. Hostname and scheme are lowercased for the same reason: RFC 3986
+// says they are case-insensitive, so "Example.COM" and "example.com" must
+// resolve to the same cache entry (and the same HostClient). The key uses
+// net.JoinHostPort for IPv6 bracket correctness.
 func parseOrigin(rawURL string) (originURL, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -161,7 +164,7 @@ func parseOrigin(rawURL string) (originURL, error) {
 	if scheme != "http" && scheme != "https" {
 		return originURL{}, fmt.Errorf("llmhttp: unsupported scheme %q", u.Scheme)
 	}
-	host := u.Hostname()
+	host := strings.ToLower(u.Hostname())
 	port := u.Port()
 	if port == "" {
 		if scheme == "https" {
@@ -263,13 +266,23 @@ func (c *protocolCache) probe(origin originURL) decision {
 	// proxy entirely by dialing the origin directly. Pinning to net/http
 	// lets http.ProxyFromEnvironment (or the injected transport Proxy
 	// func) route the request correctly.
+	//
+	// A proxyFunc error also routes to net/http: the safe assumption is
+	// "proxy resolution is unreliable right now", and net/http's own
+	// Transport will hit the same error and surface it consistently.
+	// Silently bypassing the proxy when proxyFunc errors would defeat a
+	// configured proxy on the first transient failure.
 	if c.proxyFunc != nil {
 		req := &http.Request{
 			URL:    &url.URL{Scheme: origin.scheme, Host: origin.addr()},
 			Method: "GET",
 			Host:   origin.addr(),
 		}
-		if p, err := c.proxyFunc(req); err == nil && p != nil {
+		p, err := c.proxyFunc(req)
+		if err != nil {
+			return decisionNet
+		}
+		if p != nil {
 			return decisionNet
 		}
 	}
