@@ -1215,6 +1215,7 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastRaw string
+		var firstSemanticEvent *testutil.StreamEvent
 		tracker := newMetadataTracker(t)
 
 		for {
@@ -1224,6 +1225,10 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 					goto done
 				}
 				eventCount++
+				if firstSemanticEvent == nil {
+					ev := event
+					firstSemanticEvent = &ev
+				}
 				if event.IsMetadata() {
 					if event.Raw != "" {
 						t.Errorf("metadata event should not carry Raw; got %q", event.Raw)
@@ -1257,8 +1262,17 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
 		}
 		// BuildRequest must emit exactly one planned + one outcome event,
-		// with the correct ordering.
+		// with the correct ordering, and planned must arrive BEFORE any
+		// raw/data event so clients see routing info first.
 		if ActuallyBuildRequest() {
+			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
+				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
+					if firstSemanticEvent == nil {
+						return "<none>"
+					}
+					return firstSemanticEvent.Event
+				}())
+			}
 			tracker.assertBuildRequestInvariants()
 		}
 	})
@@ -1611,6 +1625,7 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 		})
 
 		var lastRaw string
+		var firstSemanticEvent *testutil.StreamEvent
 		tracker := newMetadataTracker(t)
 
 		for {
@@ -1618,6 +1633,10 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 			case event, ok := <-events:
 				if !ok {
 					goto done
+				}
+				if firstSemanticEvent == nil {
+					ev := event
+					firstSemanticEvent = &ev
 				}
 				if event.IsMetadata() {
 					// Metadata events must have no effect on the raw stream.
@@ -1648,9 +1667,17 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
 		}
 		// BuildRequest must emit exactly one planned + one outcome event,
-		// with the correct ordering. The raw-accumulation assertion above
-		// already covers the "don't corrupt raw" half of the contract.
+		// with the correct ordering, and planned must arrive BEFORE any
+		// raw/data event so clients see routing info first.
 		if ActuallyBuildRequest() {
+			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
+				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
+					if firstSemanticEvent == nil {
+						return "<none>"
+					}
+					return firstSemanticEvent.Event
+				}())
+			}
 			tracker.assertBuildRequestInvariants()
 		}
 	})

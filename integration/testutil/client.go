@@ -362,12 +362,12 @@ const ContentTypeNDJSON = "application/x-ndjson"
 
 // Stream executes a /stream/{method} request and returns a channel of events.
 func (c *BAMLRestClient) Stream(ctx context.Context, req CallRequest) (<-chan StreamEvent, <-chan error) {
-	return c.streamRequest(ctx, fmt.Sprintf("%s/stream/%s", c.baseURL, req.Method), req)
+	return c.streamRequest(ctx, fmt.Sprintf("%s/stream/%s", c.baseURL, req.Method), req, false)
 }
 
 // StreamWithRaw executes a /stream-with-raw/{method} request and returns a channel of events.
 func (c *BAMLRestClient) StreamWithRaw(ctx context.Context, req CallRequest) (<-chan StreamEvent, <-chan error) {
-	return c.streamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/%s", c.baseURL, req.Method), req)
+	return c.streamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/%s", c.baseURL, req.Method), req, true)
 }
 
 // StreamNDJSON executes a /stream/{method} request with NDJSON format and returns a channel of events.
@@ -423,7 +423,7 @@ func (c *BAMLRestClient) streamRequestNDJSON(ctx context.Context, url string, re
 	return events, errs
 }
 
-func (c *BAMLRestClient) streamRequest(ctx context.Context, url string, req CallRequest) (<-chan StreamEvent, <-chan error) {
+func (c *BAMLRestClient) streamRequest(ctx context.Context, url string, req CallRequest, expectRawEnvelope bool) (<-chan StreamEvent, <-chan error) {
 	events := make(chan StreamEvent)
 	errs := make(chan error, 1)
 
@@ -458,7 +458,7 @@ func (c *BAMLRestClient) streamRequest(ctx context.Context, url string, req Call
 			return
 		}
 
-		if err := parseSSE(ctx, resp.Body, events); err != nil {
+		if err := parseSSE(ctx, resp.Body, events, expectRawEnvelope); err != nil {
 			errs <- err
 		}
 	}()
@@ -762,7 +762,7 @@ func buildRequestBody(input map[string]any, opts *BAMLOptions) ([]byte, error) {
 	return json.Marshal(body)
 }
 
-func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error {
+func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expectRawEnvelope bool) error {
 	scanner := bufio.NewScanner(r)
 	var currentEvent StreamEvent
 	var dataBuffer bytes.Buffer
@@ -778,19 +778,22 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 		currentEvent.Data = data
 
 		// Detect the stream-with-raw envelope {"data": ..., "raw": ...}
-		// and extract the inner payload. Raw is a *string so "raw":""
-		// (a deliberately empty raw field) is distinguishable from
-		// raw-absent (a plain event that happens to decode as a struct
-		// with a missing field).
-		var rawData struct {
-			Data json.RawMessage `json:"data"`
-			Raw  *string         `json:"raw"`
-		}
-		if err := json.Unmarshal(data, &rawData); err == nil && rawData.Raw != nil {
-			currentEvent.Raw = *rawData.Raw
-			// rawData.Data is already a freshly-allocated copy via
-			// json.RawMessage's UnmarshalJSON, so no extra copy needed.
-			currentEvent.Data = rawData.Data
+		// and extract the inner payload. Gated on expectRawEnvelope so a
+		// plain /stream response whose BAML output happens to contain a
+		// `raw` field doesn't get silently unwrapped. Raw is a *string
+		// so "raw":"" (a deliberately empty raw field) is distinguishable
+		// from raw-absent.
+		if expectRawEnvelope {
+			var rawData struct {
+				Data json.RawMessage `json:"data"`
+				Raw  *string         `json:"raw"`
+			}
+			if err := json.Unmarshal(data, &rawData); err == nil && rawData.Raw != nil {
+				currentEvent.Raw = *rawData.Raw
+				// rawData.Data is already a freshly-allocated copy via
+				// json.RawMessage's UnmarshalJSON, so no extra copy needed.
+				currentEvent.Data = rawData.Data
+			}
 		}
 
 		events <- currentEvent
@@ -1086,12 +1089,12 @@ func (c *BAMLRestClient) DynamicCallWithRaw(ctx context.Context, req DynamicRequ
 
 // DynamicStream executes a /stream/_dynamic request and returns a channel of events.
 func (c *BAMLRestClient) DynamicStream(ctx context.Context, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
-	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream/_dynamic", c.baseURL), req)
+	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream/_dynamic", c.baseURL), req, false)
 }
 
 // DynamicStreamWithRaw executes a /stream-with-raw/_dynamic request and returns a channel of events.
 func (c *BAMLRestClient) DynamicStreamWithRaw(ctx context.Context, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
-	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/_dynamic", c.baseURL), req)
+	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/_dynamic", c.baseURL), req, true)
 }
 
 // DynamicStreamNDJSON executes a /stream/_dynamic request with NDJSON format.
@@ -1104,7 +1107,7 @@ func (c *BAMLRestClient) DynamicStreamWithRawNDJSON(ctx context.Context, req Dyn
 	return c.dynamicStreamRequestNDJSON(ctx, fmt.Sprintf("%s/stream-with-raw/_dynamic", c.baseURL), req)
 }
 
-func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, req DynamicRequest, expectRawEnvelope bool) (<-chan StreamEvent, <-chan error) {
 	events := make(chan StreamEvent)
 	errs := make(chan error, 1)
 
@@ -1139,7 +1142,7 @@ func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, r
 			return
 		}
 
-		if err := parseSSE(ctx, resp.Body, events); err != nil {
+		if err := parseSSE(ctx, resp.Body, events, expectRawEnvelope); err != nil {
 			errs <- err
 		}
 	}()
