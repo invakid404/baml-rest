@@ -91,29 +91,10 @@ func TestStreamEndpoint(t *testing.T) {
 		// event and outcome before final. Per-path invariants (winner
 		// derivation, RetryCount vs BamlCallCount, etc.) are checked by
 		// the appropriate tracker assertion below.
+		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
 		if ActuallyBuildRequest() {
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertBuildRequestInvariants()
 		} else {
-			// Legacy path now synthesizes outcome metadata too. Heartbeats
-			// are filtered by both NDJSON and SSE parsers, so the first
-			// semantic event the test sees is the planned-metadata event
-			// emitted from onTick — same expectation as BuildRequest.
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertLegacyInvariants()
 		}
 	})
@@ -938,29 +919,10 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 		}
 
 		// NDJSON metadata parity with the SSE path.
+		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
 		if ActuallyBuildRequest() {
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertBuildRequestInvariants()
 		} else {
-			// Legacy path now synthesizes outcome metadata too. Heartbeats
-			// are filtered by both NDJSON and SSE parsers, so the first
-			// semantic event the test sees is the planned-metadata event
-			// emitted from onTick — same expectation as BuildRequest.
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertLegacyInvariants()
 		}
 	})
@@ -1291,29 +1253,10 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 		// BuildRequest must emit exactly one planned + one outcome event,
 		// with the correct ordering, and planned must arrive BEFORE any
 		// raw/data event so clients see routing info first.
+		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
 		if ActuallyBuildRequest() {
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertBuildRequestInvariants()
 		} else {
-			// Legacy path now synthesizes outcome metadata too. Heartbeats
-			// are filtered by both NDJSON and SSE parsers, so the first
-			// semantic event the test sees is the planned-metadata event
-			// emitted from onTick — same expectation as BuildRequest.
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertLegacyInvariants()
 		}
 	})
@@ -1710,29 +1653,10 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 		// BuildRequest must emit exactly one planned + one outcome event,
 		// with the correct ordering, and planned must arrive BEFORE any
 		// raw/data event so clients see routing info first.
+		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
 		if ActuallyBuildRequest() {
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertBuildRequestInvariants()
 		} else {
-			// Legacy path now synthesizes outcome metadata too. Heartbeats
-			// are filtered by both NDJSON and SSE parsers, so the first
-			// semantic event the test sees is the planned-metadata event
-			// emitted from onTick — same expectation as BuildRequest.
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertLegacyInvariants()
 		}
 	})
@@ -2258,6 +2182,23 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 			logLeakedStacks(t, finalResult)
 		}
 	})
+}
+
+// assertFirstSemanticEventIsMetadata fails the test if the first event a
+// stream consumer observed after heartbeat filtering was not the planned
+// metadata event. Both paths emit planned as the first post-heartbeat
+// event (BuildRequest from the orchestrator's sendHeartbeat, legacy from
+// the onTick first-tick CAS), so the check is path-independent.
+func assertFirstSemanticEventIsMetadata(t *testing.T, ev *testutil.StreamEvent) {
+	t.Helper()
+	if ev != nil && ev.IsMetadata() {
+		return
+	}
+	got := "<none>"
+	if ev != nil {
+		got = ev.Event
+	}
+	t.Errorf("first semantic event should be metadata; got event type %q", got)
 }
 
 // metadataTracker records routing-metadata events during a stream drain
