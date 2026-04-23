@@ -18,12 +18,13 @@ import (
 
 // testResult implements bamlutils.StreamResult for testing
 type testResult struct {
-	kind   bamlutils.StreamResultKind
-	stream any
-	final  any
-	raw    string
-	err    error
-	reset  bool
+	kind     bamlutils.StreamResultKind
+	stream   any
+	final    any
+	raw      string
+	err      error
+	reset    bool
+	metadata *bamlutils.Metadata
 }
 
 func (r *testResult) Kind() bamlutils.StreamResultKind { return r.kind }
@@ -32,6 +33,7 @@ func (r *testResult) Final() any                       { return r.final }
 func (r *testResult) Error() error                     { return r.err }
 func (r *testResult) Raw() string                      { return r.raw }
 func (r *testResult) Reset() bool                      { return r.reset }
+func (r *testResult) Metadata() *bamlutils.Metadata    { return r.metadata }
 func (r *testResult) Release()                         {}
 
 func newTestResult(kind bamlutils.StreamResultKind, stream, final any, raw string, err error, reset bool) bamlutils.StreamResult {

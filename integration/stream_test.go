@@ -30,6 +30,8 @@ func TestStreamEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastEvent testutil.StreamEvent
+		var firstSemanticEvent *testutil.StreamEvent
+		tracker := newMetadataTracker(t)
 
 		for {
 			select {
@@ -37,7 +39,25 @@ func TestStreamEndpoint(t *testing.T) {
 				if !ok {
 					goto done
 				}
+				// Capture the first semantic event (metadata or data) for
+				// ordering assertions — heartbeats are filtered in the
+				// NDJSON/SSE parser already, so any event seen here counts.
+				if firstSemanticEvent == nil {
+					ev := event
+					firstSemanticEvent = &ev
+				}
+				if event.IsMetadata() {
+					tracker.record(event)
+					continue
+				}
+				// Only non-metadata events contribute to eventCount —
+				// the "multiple chunks streamed" assertion below would
+				// otherwise trivially pass on BuildRequest (planned +
+				// outcome alone ≥ 2) even for a single-chunk response.
 				eventCount++
+				if event.IsFinal() {
+					tracker.markFinal()
+				}
 				lastEvent = event
 			case err := <-errs:
 				if err != nil {
@@ -65,6 +85,23 @@ func TestStreamEndpoint(t *testing.T) {
 
 		if person.Name != "John Doe" || person.Age != 30 {
 			t.Errorf("Expected John Doe (30), got %s (%d)", person.Name, person.Age)
+		}
+
+		// Routing metadata: on BuildRequest the first semantic event is
+		// planned metadata, and outcome metadata arrives before final.
+		// Legacy path may emit planned (but no outcome) depending on the
+		// version; assert only on BuildRequest to keep the legacy matrix
+		// stable.
+		if ActuallyBuildRequest() {
+			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
+				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
+					if firstSemanticEvent == nil {
+						return "<none>"
+					}
+					return firstSemanticEvent.Event
+				}())
+			}
+			tracker.assertBuildRequestInvariants()
 		}
 	})
 
@@ -828,6 +865,8 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastEvent testutil.StreamEvent
+		var firstSemanticEvent *testutil.StreamEvent
+		tracker := newMetadataTracker(t)
 
 		for {
 			select {
@@ -835,9 +874,23 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 				if !ok {
 					goto done
 				}
+				if firstSemanticEvent == nil {
+					ev := event
+					firstSemanticEvent = &ev
+				}
+				if event.IsMetadata() {
+					t.Logf("Metadata event: data_len=%d", len(event.Data))
+					tracker.record(event)
+					continue
+				}
+				// Only non-metadata events contribute to eventCount —
+				// see the SSE counterpart for rationale.
 				eventCount++
-				lastEvent = event
 				t.Logf("Event %d: type=%s, data_len=%d", eventCount, event.Event, len(event.Data))
+				if event.IsFinal() {
+					tracker.markFinal()
+				}
+				lastEvent = event
 			case err := <-errs:
 				if err != nil {
 					t.Fatalf("Stream error: %v", err)
@@ -853,7 +906,7 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 			t.Errorf("Expected multiple events, got %d", eventCount)
 		}
 
-		// All events should be data events
+		// Last non-metadata event should be a data event
 		if !lastEvent.IsData() {
 			t.Errorf("Expected data event, got type=%s", lastEvent.Event)
 		}
@@ -869,6 +922,19 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 
 		if person.Name != "John Doe" || person.Age != 30 {
 			t.Errorf("Expected John Doe (30), got %s (%d)", person.Name, person.Age)
+		}
+
+		// NDJSON metadata parity with the SSE path.
+		if ActuallyBuildRequest() {
+			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
+				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
+					if firstSemanticEvent == nil {
+						return "<none>"
+					}
+					return firstSemanticEvent.Event
+				}())
+			}
+			tracker.assertBuildRequestInvariants()
 		}
 	})
 
@@ -1149,6 +1215,8 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastRaw string
+		var firstSemanticEvent *testutil.StreamEvent
+		tracker := newMetadataTracker(t)
 
 		for {
 			select {
@@ -1157,6 +1225,20 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 					goto done
 				}
 				eventCount++
+				if firstSemanticEvent == nil {
+					ev := event
+					firstSemanticEvent = &ev
+				}
+				if event.IsMetadata() {
+					if event.Raw != "" {
+						t.Errorf("metadata event should not carry Raw; got %q", event.Raw)
+					}
+					tracker.record(event)
+					continue
+				}
+				if event.IsFinal() {
+					tracker.markFinal()
+				}
 				if event.Raw != "" {
 					lastRaw = event.Raw
 				}
@@ -1178,6 +1260,20 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 		// Final raw should match the complete content
 		if lastRaw != content {
 			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
+		}
+		// BuildRequest must emit exactly one planned + one outcome event,
+		// with the correct ordering, and planned must arrive BEFORE any
+		// raw/data event so clients see routing info first.
+		if ActuallyBuildRequest() {
+			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
+				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
+					if firstSemanticEvent == nil {
+						return "<none>"
+					}
+					return firstSemanticEvent.Event
+				}())
+			}
+			tracker.assertBuildRequestInvariants()
 		}
 	})
 
@@ -1528,8 +1624,9 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 			Options: opts,
 		})
 
-		var eventCount int
 		var lastRaw string
+		var firstSemanticEvent *testutil.StreamEvent
+		tracker := newMetadataTracker(t)
 
 		for {
 			select {
@@ -1537,7 +1634,21 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 				if !ok {
 					goto done
 				}
-				eventCount++
+				if firstSemanticEvent == nil {
+					ev := event
+					firstSemanticEvent = &ev
+				}
+				if event.IsMetadata() {
+					// Metadata events must have no effect on the raw stream.
+					if event.Raw != "" {
+						t.Errorf("metadata event should not carry Raw; got %q", event.Raw)
+					}
+					tracker.record(event)
+					continue
+				}
+				if event.IsFinal() {
+					tracker.markFinal()
+				}
 				if event.Raw != "" {
 					lastRaw = event.Raw
 				}
@@ -1554,6 +1665,20 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 		// Final raw should match the complete content
 		if lastRaw != content {
 			t.Errorf("Expected final raw '%s', got '%s'", content, lastRaw)
+		}
+		// BuildRequest must emit exactly one planned + one outcome event,
+		// with the correct ordering, and planned must arrive BEFORE any
+		// raw/data event so clients see routing info first.
+		if ActuallyBuildRequest() {
+			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
+				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
+					if firstSemanticEvent == nil {
+						return "<none>"
+					}
+					return firstSemanticEvent.Event
+				}())
+			}
+			tracker.assertBuildRequestInvariants()
 		}
 	})
 }
@@ -2078,4 +2203,97 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 			logLeakedStacks(t, finalResult)
 		}
 	})
+}
+
+// metadataTracker records routing-metadata events during a stream drain
+// and enforces the "exactly one planned, zero-or-one outcome, outcome
+// before final" invariants. Duplicate planned/outcome events fail the
+// test immediately (production code uses sync.Once, so a duplicate means
+// the production guard is broken).
+type metadataTracker struct {
+	t             *testing.T
+	planned       *testutil.StreamMetadata
+	outcome       *testutil.StreamMetadata
+	plannedIdx    int
+	outcomeIdx    int
+	finalIdx      int
+	finalSeen     bool
+	totalMetadata int
+	totalEvents   int
+}
+
+func newMetadataTracker(t *testing.T) *metadataTracker {
+	return &metadataTracker{t: t, plannedIdx: -1, outcomeIdx: -1, finalIdx: -1}
+}
+
+// record assimilates a metadata event. Fails the test on duplicates.
+func (m *metadataTracker) record(event testutil.StreamEvent) {
+	m.t.Helper()
+	m.totalEvents++
+	md, err := event.ParseMetadata()
+	if err != nil {
+		m.t.Fatalf("Failed to parse metadata event: %v", err)
+	}
+	switch md.Phase {
+	case "planned":
+		if m.planned != nil {
+			m.t.Fatalf("duplicate planned metadata: orchestrator must emit exactly one per run (sync.Once). first=%+v second=%+v", m.planned, md)
+		}
+		m.planned = md
+		m.plannedIdx = m.totalEvents
+	case "outcome":
+		if m.outcome != nil {
+			m.t.Fatalf("duplicate outcome metadata: orchestrator emits outcome at most once per run. first=%+v second=%+v", m.outcome, md)
+		}
+		m.outcome = md
+		m.outcomeIdx = m.totalEvents
+	default:
+		m.t.Fatalf("unknown metadata phase %q in event: %+v", md.Phase, md)
+	}
+	m.totalMetadata++
+}
+
+// markFinal records the index of the final event for ordering checks.
+func (m *metadataTracker) markFinal() {
+	m.totalEvents++
+	if !m.finalSeen {
+		m.finalIdx = m.totalEvents
+		m.finalSeen = true
+	}
+}
+
+// assertBuildRequestInvariants checks the BuildRequest-path emission
+// contract: planned present, outcome present, planned before outcome,
+// outcome before final. Also light payload sanity so field regressions
+// (e.g. an empty Client or a wrong Path literal) are caught in the
+// generic stream tests instead of only the fallback ones.
+func (m *metadataTracker) assertBuildRequestInvariants() {
+	m.t.Helper()
+	if m.planned == nil {
+		m.t.Errorf("expected planned metadata event on BuildRequest path")
+	}
+	if m.outcome == nil {
+		m.t.Errorf("expected outcome metadata event on BuildRequest path")
+	}
+	if m.planned != nil && m.outcome != nil && m.plannedIdx >= m.outcomeIdx {
+		m.t.Errorf("planned metadata (idx %d) must precede outcome (idx %d)", m.plannedIdx, m.outcomeIdx)
+	}
+	if m.outcome != nil && m.finalSeen && m.outcomeIdx >= m.finalIdx {
+		m.t.Errorf("outcome metadata (idx %d) must precede final (idx %d)", m.outcomeIdx, m.finalIdx)
+	}
+	// Payload sanity: enforce the fields every BuildRequest run should
+	// populate. Specific values (winner client name, chain membership,
+	// retry-max) stay in the fallback test; here we just guard against
+	// empty-string drift.
+	if m.planned != nil {
+		if m.planned.Path != "buildrequest" {
+			m.t.Errorf("planned.Path: got %q, want %q", m.planned.Path, "buildrequest")
+		}
+		if m.planned.Client == "" {
+			m.t.Errorf("planned.Client: expected non-empty on BuildRequest path")
+		}
+	}
+	if m.outcome != nil && m.outcome.WinnerProvider == "" {
+		m.t.Errorf("outcome.WinnerProvider: expected non-empty on BuildRequest path")
+	}
 }

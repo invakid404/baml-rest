@@ -19,6 +19,7 @@ type fakeStreamResult struct {
 	err      error
 	raw      string
 	reset    bool
+	metadata *bamlutils.Metadata
 	release  sync.Once
 	released chan struct{}
 }
@@ -36,6 +37,7 @@ func (r *fakeStreamResult) Final() any                       { return r.final }
 func (r *fakeStreamResult) Error() error                     { return r.err }
 func (r *fakeStreamResult) Raw() string                      { return r.raw }
 func (r *fakeStreamResult) Reset() bool                      { return r.reset }
+func (r *fakeStreamResult) Metadata() *bamlutils.Metadata    { return r.metadata }
 func (r *fakeStreamResult) Release() {
 	r.release.Do(func() {
 		close(r.released)
@@ -364,6 +366,91 @@ func TestBridgeStreamResultsForwardsHeartbeat(t *testing.T) {
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridged heartbeat result")
+	}
+}
+
+func TestBridgeStreamResultsForwardsMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	max := 3
+	dur := int64(42)
+	md := &bamlutils.Metadata{
+		Phase:         bamlutils.MetadataPhaseOutcome,
+		Attempt:       1,
+		Path:          "buildrequest",
+		Client:        "MyClient",
+		WinnerPath:    "buildrequest",
+		RetryMax:      &max,
+		UpstreamDurMs: &dur,
+	}
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindMetadata)
+	fake.metadata = md
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged metadata result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.Kind != workerplugin.StreamResultKindMetadata {
+			t.Fatalf("expected metadata result kind, got %v", got.Kind)
+		}
+		if len(got.Data) == 0 {
+			t.Fatal("expected metadata payload bytes")
+		}
+		// JSON shape check: must contain the phase + winner_path so the
+		// pool's downstream consumers can parse it.
+		payload := string(got.Data)
+		if !strings.Contains(payload, `"phase":"outcome"`) {
+			t.Errorf("payload missing phase=outcome; got %s", payload)
+		}
+		if !strings.Contains(payload, `"winner_path":"buildrequest"`) {
+			t.Errorf("payload missing winner_path; got %s", payload)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged metadata result")
+	}
+}
+
+func TestBridgeStreamResultsErrorsOnNilMetadataPayload(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	// Metadata kind with no payload — this is a producer bug; the bridge
+	// must surface it as an error rather than silently forwarding empty
+	// bytes that would mis-decode at the consumer.
+	fake := newFakeStreamResult(bamlutils.StreamResultKindMetadata)
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged result for metadata with nil payload")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.Kind != workerplugin.StreamResultKindError {
+			t.Fatalf("expected error kind for nil-metadata payload, got %v", got.Kind)
+		}
+		if got.Error == nil {
+			t.Fatal("expected non-nil error for nil-metadata payload")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged result")
 	}
 }
 

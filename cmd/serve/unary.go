@@ -121,6 +121,7 @@ func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.St
 			return
 		}
 
+		setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 		w.Header().Set("Content-Type", "application/json")
 		if streamMode.NeedsRaw() {
 			w.WriteHeader(http.StatusOK)
@@ -200,6 +201,7 @@ func makeChiDynamicCallHandler(p *pool.Pool, streamMode bamlutils.StreamMode) ht
 			return
 		}
 
+		setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 		w.Header().Set("Content-Type", "application/json")
 		if streamMode.NeedsRaw() {
 			w.WriteHeader(http.StatusOK)

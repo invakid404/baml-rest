@@ -16,6 +16,9 @@ type StreamResult interface {
 	Raw() string
 	// Reset returns true if the client should discard accumulated state (retry occurred)
 	Reset() bool
+	// Metadata returns the routing/retry metadata payload. Non-nil only when
+	// Kind()==StreamResultKindMetadata.
+	Metadata() *Metadata
 	// Release returns the StreamResult to a pool for reuse.
 	// After calling Release, the StreamResult should not be accessed.
 	Release()
@@ -28,7 +31,49 @@ const (
 	StreamResultKindFinal
 	StreamResultKindError
 	StreamResultKindHeartbeat
+	StreamResultKindMetadata
 )
+
+// MetadataPhase distinguishes the two kinds of metadata events a request
+// may emit. Planned events carry the routing decision (path, client, chain,
+// retry policy). Outcome events carry the post-flight truth (winner client,
+// actual retry count, upstream duration).
+type MetadataPhase string
+
+const (
+	MetadataPhasePlanned MetadataPhase = "planned"
+	MetadataPhaseOutcome MetadataPhase = "outcome"
+)
+
+// Metadata is the per-request routing/retry metadata payload emitted by the
+// orchestrator(s) and consumed by the serve layer (as HTTP headers on unary
+// responses and as in-stream events on streaming responses).
+//
+// Pointer fields distinguish "unknown" (nil) from "zero" (pointer to 0) so
+// absence can be represented faithfully — critical for legacy v1 which
+// cannot populate outcome fields.
+type Metadata struct {
+	Phase      MetadataPhase `json:"phase"`                 // "planned" or "outcome"
+	Attempt    int           `json:"attempt"`               // pool-level attempt number (0-based). Orchestrator emits 0; pool rewrites.
+	Path       string        `json:"path"`                  // "buildrequest" or "legacy"
+	PathReason string        `json:"path_reason,omitempty"` // legacy classification enum; empty when Path=="buildrequest"
+
+	// Planned fields
+	Client         string   `json:"client,omitempty"`           // resolved runtime client name (strategy or single)
+	Provider       string   `json:"provider,omitempty"`         // provider of resolved single client; empty for strategies
+	Strategy       string   `json:"strategy,omitempty"`         // e.g. "baml-fallback", "baml-roundrobin"
+	Chain          []string `json:"chain,omitempty"`            // child client names for fallback chains
+	LegacyChildren []string `json:"legacy_children,omitempty"`  // child names that must go through legacy dispatch
+	RetryMax       *int     `json:"retry_max,omitempty"`        // configured max retries
+	RetryPolicy    string   `json:"retry_policy,omitempty"`     // compact encoding (e.g. "exp:200ms:1.5:10s")
+
+	// Outcome fields — populated only on the outcome event
+	RetryCount     *int   `json:"retry_count,omitempty"`           // outer orchestrator retries consumed; nil=unknown
+	WinnerClient   string `json:"winner_client,omitempty"`         // chain child that succeeded (same as Client for non-chains)
+	WinnerProvider string `json:"winner_provider,omitempty"`       // provider of the winner
+	WinnerPath     string `json:"winner_path,omitempty"`           // "buildrequest" or "legacy" (legacy-child inside mixed chain)
+	UpstreamDurMs  *int64 `json:"upstream_duration_ms,omitempty"`  // upstream wall time in ms
+}
 
 // StreamMode controls how streaming results are processed and what data is collected.
 type StreamMode int

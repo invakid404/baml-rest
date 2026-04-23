@@ -167,6 +167,23 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
+
+			// Routing metadata: Client is the strategy name (always set).
+			// Retry-Max comes from the retry policy wired on the fallback
+			// client (FallbackRetry: max_retries 3). Winner-Client /
+			// Winner-Provider only appear on BuildRequest, which synthesizes
+			// outcome metadata from the winning child.
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackPair")
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryMax, "3")
+			if ActuallyBuildRequest() {
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+			} else {
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+			}
 		})
 
 		t.Run("three_client_chain_first_two_fail", func(t *testing.T) {
@@ -225,6 +242,20 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1, "fallback-tertiary": 1})
+
+			// Routing metadata: three-client chain reports the strategy
+			// client name and on BuildRequest the tertiary winner.
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackChain")
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryMax, "3")
+			if ActuallyBuildRequest() {
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackTertiary")
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+			} else {
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+			}
 		})
 
 		t.Run("all_clients_fail", func(t *testing.T) {
@@ -368,6 +399,20 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			}
 
 			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
+
+			// Routing metadata: /call-with-raw shares the header-emission path
+			// with /call, so the same fallback assertions apply.
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackPair")
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryMax, "3")
+			if ActuallyBuildRequest() {
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+			} else {
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+			}
 		})
 	})
 }
@@ -467,9 +512,15 @@ func TestFallbackStream(t *testing.T) {
 		})
 
 		var finalData json.RawMessage
+		tracker := newMetadataTracker(t)
 		for ev := range partials {
+			if ev.IsMetadata() {
+				tracker.record(ev)
+				continue
+			}
 			if ev.IsFinal() {
 				finalData = ev.Data
+				tracker.markFinal()
 			}
 		}
 		if streamErr := <-errc; streamErr != nil {
@@ -485,6 +536,34 @@ func TestFallbackStream(t *testing.T) {
 		}
 
 		assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
+
+		// Streaming routing metadata events. Planned describes the chain,
+		// outcome carries the winner. Only BuildRequest synthesizes outcome
+		// today (§4f); the legacy path may emit planned but no outcome.
+		if tracker.planned == nil {
+			t.Fatalf("expected planned metadata event")
+		}
+		if tracker.planned.Client != "TestFallbackPair" {
+			t.Errorf("planned.Client: got %q, want TestFallbackPair", tracker.planned.Client)
+		}
+		if tracker.planned.RetryMax == nil || *tracker.planned.RetryMax != 3 {
+			t.Errorf("planned.RetryMax: got %v, want 3", tracker.planned.RetryMax)
+		}
+		wantChain := []string{"FallbackPrimary", "FallbackSecondary"}
+		if ActuallyBuildRequest() {
+			if !equalSliceStrings(tracker.planned.Chain, wantChain) {
+				t.Errorf("planned.Chain: got %v, want %v", tracker.planned.Chain, wantChain)
+			}
+			tracker.assertBuildRequestInvariants()
+			if tracker.outcome != nil {
+				if tracker.outcome.WinnerClient != "FallbackSecondary" {
+					t.Errorf("outcome.WinnerClient: got %q, want FallbackSecondary", tracker.outcome.WinnerClient)
+				}
+				if tracker.outcome.WinnerProvider != "openai" {
+					t.Errorf("outcome.WinnerProvider: got %q, want openai", tracker.outcome.WinnerProvider)
+				}
+			}
+		}
 	})
 
 	t.Run("all_clients_fail_stream", func(t *testing.T) {
@@ -528,4 +607,18 @@ func TestFallbackStream(t *testing.T) {
 			assertHitCounts(t, map[string]int{"fallback-primary": 4, "fallback-secondary": 4})
 		}
 	})
+}
+
+// equalSliceStrings is a small helper shared by the fallback metadata
+// assertions. Avoids pulling in reflect or slices for the single comparison.
+func equalSliceStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/hashicorp/go-plugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -1136,6 +1137,12 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 		return nil, err
 	}
 
+	// Accumulate metadata events during the drain. Pool retries may emit
+	// multiple planned/outcome events (one pair per attempt); the unary
+	// handler only cares about the last attempt's routing, so keep the
+	// most recent of each phase.
+	var plannedMetadata, outcomeMetadata []byte
+
 	// Consume stream waiting for final result
 	for result := range results {
 		switch result.Kind {
@@ -1145,13 +1152,25 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 			return nil, err
 		case workerplugin.StreamResultKindFinal:
 			callResult := &workerplugin.CallResult{
-				Data: result.Data,
-				Raw:  result.Raw,
+				Data:    result.Data,
+				Raw:     result.Raw,
+				Planned: plannedMetadata,
+				Outcome: outcomeMetadata,
 			}
 			workerplugin.ReleaseStreamResult(result)
 			return callResult, nil
+		case workerplugin.StreamResultKindMetadata:
+			// The pool's forward loop has already rewritten Attempt. We
+			// only need to inspect the Phase to decide which slot the
+			// payload belongs in, then copy the bytes (the underlying
+			// buffer is about to be released back to the pool).
+			if phase := metadataPhase(result.Data); phase == string(bamlutils.MetadataPhaseOutcome) {
+				outcomeMetadata = append(outcomeMetadata[:0], result.Data...)
+			} else {
+				plannedMetadata = append(plannedMetadata[:0], result.Data...)
+			}
 		}
-		// StreamResultKindStream - continue waiting for final
+		// StreamResultKindStream / Metadata / others - continue waiting for final
 		workerplugin.ReleaseStreamResult(result)
 	}
 
@@ -1186,10 +1205,17 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		currentHandle := handle
 		var lastFailed *workerHandle
 		var sentAnyResults bool
+		// currentAttempt is the pool-level attempt number stamped onto every
+		// metadata event before forwarding. The orchestrator inside the worker
+		// always emits Attempt=0; the pool owns this field because only the
+		// pool knows about pool-level retries. Incremented on each retry
+		// boundary (below), so the first attempt stays 0.
+		var currentAttempt int
 
 		for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
 			// For retry attempts, get a new worker (may wait if pool size 1).
 			if attempt > 0 {
+				currentAttempt++
 				var err error
 				currentHandle, err = p.getWorkerForRetry(ctx, lastFailed)
 				if err != nil {
@@ -1284,6 +1310,22 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					continue
 				}
 
+				// Stamp the pool-level attempt number onto metadata events.
+				// The orchestrator always emits Attempt=0 (it does not know
+				// about pool retries); the pool owns this field. Rewrite
+				// unconditionally — first attempt is a no-op at Attempt=0.
+				// Both planned and outcome events from a retried attempt
+				// carry the same value, so clients never see disagreement.
+				if result.Kind == workerplugin.StreamResultKindMetadata && len(result.Data) > 0 {
+					if rewritten, err := rewriteMetadataAttempt(result.Data, currentAttempt); err != nil {
+						currentHandle.logger.Warn().
+							Err(err).
+							Msg("Failed to rewrite metadata attempt; forwarding as-is")
+					} else {
+						result.Data = rewritten
+					}
+				}
+
 				// Check for retryable worker errors mid-stream
 				if result.Kind == workerplugin.StreamResultKindError && ctx.Err() != nil && isCallerCancellationError(result.Error) {
 					workerplugin.ReleaseStreamResult(result)
@@ -1368,6 +1410,36 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 	}()
 
 	return wrappedResults, nil
+}
+
+// metadataPhase peeks the "phase" field out of a JSON-encoded metadata
+// payload without fully decoding it. Returns "" if the payload is malformed
+// or missing the field — callers treat that as "planned" by default.
+func metadataPhase(data []byte) string {
+	var envelope struct {
+		Phase string `json:"phase"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return ""
+	}
+	return envelope.Phase
+}
+
+// rewriteMetadataAttempt JSON-decodes a bamlutils.Metadata payload, overrides
+// the Attempt field with the pool-level attempt number, and re-encodes. This
+// runs for every metadata event the pool forwards so both planned and outcome
+// events of a retried attempt carry the same number.
+func rewriteMetadataAttempt(data []byte, attempt int) ([]byte, error) {
+	var md bamlutils.Metadata
+	if err := json.Unmarshal(data, &md); err != nil {
+		return nil, fmt.Errorf("decode metadata: %w", err)
+	}
+	md.Attempt = attempt
+	encoded, err := json.Marshal(&md)
+	if err != nil {
+		return nil, fmt.Errorf("encode metadata: %w", err)
+	}
+	return encoded, nil
 }
 
 // sendStreamError sends an error result on ch, respecting ctx cancellation.

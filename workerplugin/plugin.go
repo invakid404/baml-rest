@@ -53,6 +53,13 @@ var PluginMap = map[string]plugin.Plugin{
 type CallResult struct {
 	Data []byte // JSON-encoded result
 	Raw  string // Raw LLM response
+	// Planned and Outcome carry routing/retry metadata for the request.
+	// Either may be nil: Planned is absent when no metadata plan was wired
+	// (older callers, tests); Outcome is absent on legacy paths that don't
+	// synthesize an outcome event. Both are JSON-encoded bamlutils.Metadata
+	// payloads forwarded verbatim from the worker.
+	Planned []byte
+	Outcome []byte
 }
 
 // ErrorWithStack wraps an error with an optional stacktrace.
@@ -100,6 +107,7 @@ const (
 	StreamResultKindFinal
 	StreamResultKindError
 	StreamResultKindHeartbeat
+	StreamResultKindMetadata
 )
 
 // GCResult contains memory stats from a GC operation

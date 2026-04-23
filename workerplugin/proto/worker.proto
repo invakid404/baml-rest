@@ -26,9 +26,10 @@ message StreamResult {
     FINAL = 1;
     ERROR = 2;
     HEARTBEAT = 3;  // Signals first byte received from LLM (filtered at pool level)
+    METADATA = 4;   // Routing/retry metadata event; data_json holds bamlutils.Metadata JSON
   }
   Kind kind = 1;
-  bytes data_json = 2;         // JSON-encoded stream/final data
+  bytes data_json = 2;         // JSON-encoded stream/final/metadata data
   string raw = 3;              // Raw LLM response text (populated on FINAL)
   string error = 4;            // Error message (populated on ERROR)
   string stacktrace = 5;       // Stacktrace (populated on ERROR, when available)

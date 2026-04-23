@@ -216,6 +216,7 @@ type DynamicEnumValue struct {
 // CallResponse represents a response from /call endpoint.
 type CallResponse struct {
 	StatusCode int
+	Headers    http.Header // Response headers — used for X-BAML-* assertions
 	Body       json.RawMessage
 	Error      string
 }
@@ -223,6 +224,7 @@ type CallResponse struct {
 // CallWithRawResponse represents a response from /call-with-raw endpoint.
 type CallWithRawResponse struct {
 	StatusCode int
+	Headers    http.Header     // Response headers — used for X-BAML-* assertions
 	Data       json.RawMessage `json:"data"`
 	Raw        string          `json:"raw"`
 	Error      string
@@ -243,6 +245,7 @@ func (c *BAMLRestClient) Call(ctx context.Context, req CallRequest) (*CallRespon
 
 	result := &CallResponse{
 		StatusCode: resp.StatusCode,
+		Headers:    resp.Header,
 	}
 
 	if resp.StatusCode >= 400 {
@@ -269,6 +272,7 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 
 	result := &CallWithRawResponse{
 		StatusCode: resp.StatusCode,
+		Headers:    resp.Header,
 	}
 
 	if resp.StatusCode >= 400 {
@@ -317,6 +321,37 @@ func (e *StreamEvent) IsError() bool {
 	return e.Event == "error"
 }
 
+// IsMetadata returns true if this is a routing-metadata event.
+func (e *StreamEvent) IsMetadata() bool {
+	return e.Event == "metadata"
+}
+
+// StreamMetadata is the subset of bamlutils.Metadata fields the integration
+// tests assert on. Kept narrow deliberately — testutil doesn't import the
+// server-side bamlutils package, and a full mirror would drift as unused
+// fields get added. Extend this only when a test needs a new field.
+type StreamMetadata struct {
+	Phase          string   `json:"phase"`
+	Path           string   `json:"path,omitempty"`
+	Client         string   `json:"client,omitempty"`
+	Chain          []string `json:"chain,omitempty"`
+	RetryMax       *int     `json:"retry_max,omitempty"`
+	WinnerClient   string   `json:"winner_client,omitempty"`
+	WinnerProvider string   `json:"winner_provider,omitempty"`
+}
+
+// ParseMetadata decodes a metadata event's data payload.
+func (e *StreamEvent) ParseMetadata() (*StreamMetadata, error) {
+	if !e.IsMetadata() {
+		return nil, fmt.Errorf("event type %q is not a metadata event", e.Event)
+	}
+	var md StreamMetadata
+	if err := json.Unmarshal(e.Data, &md); err != nil {
+		return nil, fmt.Errorf("decode metadata: %w", err)
+	}
+	return &md, nil
+}
+
 // ParseData parses a stream event's data into the target.
 func (e *StreamEvent) ParseData(target any) error {
 	return json.Unmarshal(e.Data, target)
@@ -327,12 +362,12 @@ const ContentTypeNDJSON = "application/x-ndjson"
 
 // Stream executes a /stream/{method} request and returns a channel of events.
 func (c *BAMLRestClient) Stream(ctx context.Context, req CallRequest) (<-chan StreamEvent, <-chan error) {
-	return c.streamRequest(ctx, fmt.Sprintf("%s/stream/%s", c.baseURL, req.Method), req)
+	return c.streamRequest(ctx, fmt.Sprintf("%s/stream/%s", c.baseURL, req.Method), req, false)
 }
 
 // StreamWithRaw executes a /stream-with-raw/{method} request and returns a channel of events.
 func (c *BAMLRestClient) StreamWithRaw(ctx context.Context, req CallRequest) (<-chan StreamEvent, <-chan error) {
-	return c.streamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/%s", c.baseURL, req.Method), req)
+	return c.streamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/%s", c.baseURL, req.Method), req, true)
 }
 
 // StreamNDJSON executes a /stream/{method} request with NDJSON format and returns a channel of events.
@@ -388,7 +423,7 @@ func (c *BAMLRestClient) streamRequestNDJSON(ctx context.Context, url string, re
 	return events, errs
 }
 
-func (c *BAMLRestClient) streamRequest(ctx context.Context, url string, req CallRequest) (<-chan StreamEvent, <-chan error) {
+func (c *BAMLRestClient) streamRequest(ctx context.Context, url string, req CallRequest, expectRawEnvelope bool) (<-chan StreamEvent, <-chan error) {
 	events := make(chan StreamEvent)
 	errs := make(chan error, 1)
 
@@ -423,7 +458,7 @@ func (c *BAMLRestClient) streamRequest(ctx context.Context, url string, req Call
 			return
 		}
 
-		if err := parseSSE(ctx, resp.Body, events); err != nil {
+		if err := parseSSE(ctx, resp.Body, events, expectRawEnvelope); err != nil {
 			errs <- err
 		}
 	}()
@@ -727,10 +762,44 @@ func buildRequestBody(input map[string]any, opts *BAMLOptions) ([]byte, error) {
 	return json.Marshal(body)
 }
 
-func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error {
+func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expectRawEnvelope bool) error {
 	scanner := bufio.NewScanner(r)
 	var currentEvent StreamEvent
 	var dataBuffer bytes.Buffer
+
+	// flushCurrentEvent copies the buffered bytes into the event and sends
+	// it on the channel. The copy is mandatory: dataBuffer.Bytes() aliases
+	// the buffer's internal slice, so the next Reset()+WriteString would
+	// overwrite a prior event's .Data that a slow receiver hasn't yet
+	// touched. Also extracts the raw envelope for stream-with-raw so both
+	// the blank-line flush and the EOF flush share the same split logic.
+	flush := func() {
+		data := append([]byte(nil), dataBuffer.Bytes()...)
+		currentEvent.Data = data
+
+		// Detect the stream-with-raw envelope {"data": ..., "raw": ...}
+		// and extract the inner payload. Gated on expectRawEnvelope so a
+		// plain /stream response whose BAML output happens to contain a
+		// `raw` field doesn't get silently unwrapped. Raw is a *string
+		// so "raw":"" (a deliberately empty raw field) is distinguishable
+		// from raw-absent.
+		if expectRawEnvelope {
+			var rawData struct {
+				Data json.RawMessage `json:"data"`
+				Raw  *string         `json:"raw"`
+			}
+			if err := json.Unmarshal(data, &rawData); err == nil && rawData.Raw != nil {
+				currentEvent.Raw = *rawData.Raw
+				// rawData.Data is already a freshly-allocated copy via
+				// json.RawMessage's UnmarshalJSON, so no extra copy needed.
+				currentEvent.Data = rawData.Data
+			}
+		}
+
+		events <- currentEvent
+		currentEvent = StreamEvent{}
+		dataBuffer.Reset()
+	}
 
 	for scanner.Scan() {
 		select {
@@ -744,21 +813,7 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 		if line == "" {
 			// Empty line signals end of event
 			if dataBuffer.Len() > 0 {
-				currentEvent.Data = dataBuffer.Bytes()
-
-				// For stream-with-raw, extract the raw field
-				var rawData struct {
-					Data json.RawMessage `json:"data"`
-					Raw  string          `json:"raw"`
-				}
-				if err := json.Unmarshal(currentEvent.Data, &rawData); err == nil && rawData.Raw != "" {
-					currentEvent.Raw = rawData.Raw
-					currentEvent.Data = rawData.Data
-				}
-
-				events <- currentEvent
-				currentEvent = StreamEvent{}
-				dataBuffer.Reset()
+				flush()
 			}
 			continue
 		}
@@ -774,10 +829,11 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 		}
 	}
 
-	// Handle any remaining data
+	// EOF flush: if the stream ends without a trailing blank line, flush
+	// the last event with the same raw/data envelope handling so
+	// stream-with-raw's last frame doesn't drop its Raw field.
 	if dataBuffer.Len() > 0 {
-		currentEvent.Data = dataBuffer.Bytes()
-		events <- currentEvent
+		flush()
 	}
 
 	return scanner.Err()
@@ -830,6 +886,55 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 	}
 
 	return scanner.Err()
+}
+
+// Header names for per-request routing metadata. Duplicated here (rather
+// than imported from cmd/serve, which is package main) to keep testutil
+// free of server-package deps. Spelling matches cmd/serve/headers.go
+// byte-for-byte — http.Header.Get canonicalizes on lookup, but keeping
+// the literal spelling identical makes grep-for-header-usage match.
+const (
+	HeaderBAMLPath             = "X-BAML-Path"
+	HeaderBAMLPathReason       = "X-BAML-Path-Reason"
+	HeaderBAMLClient           = "X-BAML-Client"
+	HeaderBAMLWinnerClient     = "X-BAML-Winner-Client"
+	HeaderBAMLWinnerProvider   = "X-BAML-Winner-Provider"
+	HeaderBAMLRetryMax         = "X-BAML-Retry-Max"
+	HeaderBAMLRetryCount       = "X-BAML-Retry-Count"
+	HeaderBAMLUpstreamDuration = "X-BAML-Upstream-Duration-Ms"
+)
+
+// AssertHeaderEquals fails the test if the given header is missing or does
+// not match want. Wrapper around t.Errorf so test code can stay declarative.
+func AssertHeaderEquals(t testingT, h http.Header, name, want string) {
+	t.Helper()
+	if got := h.Get(name); got != want {
+		t.Errorf("header %s: got %q, want %q", name, got, want)
+	}
+}
+
+// AssertHeaderPresent fails if the header is missing or empty.
+func AssertHeaderPresent(t testingT, h http.Header, name string) {
+	t.Helper()
+	if h.Get(name) == "" {
+		t.Errorf("header %s: expected to be present, got empty", name)
+	}
+}
+
+// AssertHeaderAbsent fails if the header is present. Use for headers that
+// should only appear on one of the BuildRequest / legacy paths.
+func AssertHeaderAbsent(t testingT, h http.Header, name string) {
+	t.Helper()
+	if got := h.Get(name); got != "" {
+		t.Errorf("header %s: expected absent, got %q", name, got)
+	}
+}
+
+// testingT is the subset of *testing.T used by the helpers. Kept minimal
+// so the helpers work with *testing.T and testing.TB alike.
+type testingT interface {
+	Helper()
+	Errorf(format string, args ...any)
 }
 
 // CreateTestClient creates a client registry that points to the mock LLM server.
@@ -984,12 +1089,12 @@ func (c *BAMLRestClient) DynamicCallWithRaw(ctx context.Context, req DynamicRequ
 
 // DynamicStream executes a /stream/_dynamic request and returns a channel of events.
 func (c *BAMLRestClient) DynamicStream(ctx context.Context, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
-	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream/_dynamic", c.baseURL), req)
+	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream/_dynamic", c.baseURL), req, false)
 }
 
 // DynamicStreamWithRaw executes a /stream-with-raw/_dynamic request and returns a channel of events.
 func (c *BAMLRestClient) DynamicStreamWithRaw(ctx context.Context, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
-	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/_dynamic", c.baseURL), req)
+	return c.dynamicStreamRequest(ctx, fmt.Sprintf("%s/stream-with-raw/_dynamic", c.baseURL), req, true)
 }
 
 // DynamicStreamNDJSON executes a /stream/_dynamic request with NDJSON format.
@@ -1002,7 +1107,7 @@ func (c *BAMLRestClient) DynamicStreamWithRawNDJSON(ctx context.Context, req Dyn
 	return c.dynamicStreamRequestNDJSON(ctx, fmt.Sprintf("%s/stream-with-raw/_dynamic", c.baseURL), req)
 }
 
-func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, req DynamicRequest, expectRawEnvelope bool) (<-chan StreamEvent, <-chan error) {
 	events := make(chan StreamEvent)
 	errs := make(chan error, 1)
 
@@ -1037,7 +1142,7 @@ func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, r
 			return
 		}
 
-		if err := parseSSE(ctx, resp.Body, events); err != nil {
+		if err := parseSSE(ctx, resp.Body, events, expectRawEnvelope); err != nil {
 			errs <- err
 		}
 	}()

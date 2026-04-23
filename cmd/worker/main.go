@@ -318,6 +318,22 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 				}
 			case bamlutils.StreamResultKindHeartbeat:
 				pluginResult.Kind = workerplugin.StreamResultKindHeartbeat
+			case bamlutils.StreamResultKindMetadata:
+				md := result.Metadata()
+				if md == nil {
+					// An orchestrator bug — drop the event rather than crashing the stream.
+					pluginResult.Kind = workerplugin.StreamResultKindError
+					pluginResult.Error = fmt.Errorf("metadata result without payload")
+					break
+				}
+				data, err := json.Marshal(md)
+				if err != nil {
+					pluginResult.Kind = workerplugin.StreamResultKindError
+					pluginResult.Error = fmt.Errorf("failed to marshal metadata result: %w", err)
+				} else {
+					pluginResult.Kind = workerplugin.StreamResultKindMetadata
+					pluginResult.Data = data
+				}
 			}
 
 			// Release the adapter's output struct back to its pool

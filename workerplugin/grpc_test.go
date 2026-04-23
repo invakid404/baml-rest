@@ -111,6 +111,80 @@ func (c *testCallStreamClient) Context() context.Context     { return context.Ba
 func (c *testCallStreamClient) SendMsg(any) error            { return nil }
 func (c *testCallStreamClient) RecvMsg(any) error            { return nil }
 
+// TestGRPCRoundTripMetadataKind walks a metadata frame through both server
+// and client halves of the gRPC bridge, verifying the new METADATA enum
+// value is preserved end-to-end (kind cast at server, decoded at client)
+// and the JSON payload survives intact.
+func TestGRPCRoundTripMetadataKind(t *testing.T) {
+	payload := []byte(`{"phase":"planned","attempt":2,"path":"buildrequest","client":"X"}`)
+
+	// Server side: workerImpl emits a metadata StreamResult; GRPCServer.CallStream
+	// must convert it into the right pb.StreamResult kind.
+	worker := &testWorkerImpl{
+		callStream: func(ctx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *StreamResult, error) {
+			ch := make(chan *StreamResult, 2)
+			r := GetStreamResult()
+			r.Kind = StreamResultKindMetadata
+			r.Data = payload
+			ch <- r
+			final := GetStreamResult()
+			final.Kind = StreamResultKindFinal
+			final.Data = []byte(`{"ok":true}`)
+			ch <- final
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	server := &GRPCServer{Impl: worker}
+	stream := &testCallStreamServer{ctx: context.Background()}
+	if err := server.CallStream(&pb.CallRequest{}, stream); err != nil {
+		t.Fatalf("server.CallStream returned error: %v", err)
+	}
+
+	if len(stream.sent) != 2 {
+		t.Fatalf("expected 2 frames sent server-side, got %d", len(stream.sent))
+	}
+	if stream.sent[0].Kind != pb.StreamResult_METADATA {
+		t.Errorf("server sent first frame as %v, want METADATA", stream.sent[0].Kind)
+	}
+	if string(stream.sent[0].DataJson) != string(payload) {
+		t.Errorf("server payload corrupted: got %q, want %q", stream.sent[0].DataJson, payload)
+	}
+
+	// Client side: feed the wire frames back through testCallStreamClient and
+	// verify GRPCClient.CallStream returns matching StreamResultKindMetadata.
+	events := make([]testStreamEvent, 0, len(stream.sent))
+	for _, frame := range stream.sent {
+		events = append(events, testStreamEvent{resp: frame})
+	}
+	client := &GRPCClient{client: &testWorkerClient{stream: &testCallStreamClient{events: events}}}
+	out, err := client.CallStream(context.Background(), "TestMethod", nil, bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("client.CallStream: %v", err)
+	}
+
+	var receivedKinds []StreamResultKind
+	var firstPayload []byte
+	for r := range out {
+		receivedKinds = append(receivedKinds, r.Kind)
+		if r.Kind == StreamResultKindMetadata && firstPayload == nil {
+			firstPayload = append(firstPayload[:0], r.Data...)
+		}
+		ReleaseStreamResult(r)
+	}
+
+	if len(receivedKinds) != 2 {
+		t.Fatalf("expected 2 frames received client-side, got %d", len(receivedKinds))
+	}
+	if receivedKinds[0] != StreamResultKindMetadata {
+		t.Errorf("client received first frame as %d, want StreamResultKindMetadata (%d)", receivedKinds[0], StreamResultKindMetadata)
+	}
+	if string(firstPayload) != string(payload) {
+		t.Errorf("client payload corrupted: got %q, want %q", firstPayload, payload)
+	}
+}
+
 func TestGRPCClientCallStreamEOFHandling(t *testing.T) {
 	tests := []struct {
 		name      string

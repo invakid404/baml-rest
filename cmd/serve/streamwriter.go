@@ -24,11 +24,12 @@ const contentTypeSSE = "text/event-stream"
 type NDJSONEventType string
 
 const (
-	NDJSONEventData  NDJSONEventType = "data"
-	NDJSONEventFinal NDJSONEventType = "final"
-	NDJSONEventReset NDJSONEventType = "reset"
-	NDJSONEventError NDJSONEventType = "error"
-	NDJSONEventPing  NDJSONEventType = "heartbeat"
+	NDJSONEventData     NDJSONEventType = "data"
+	NDJSONEventFinal    NDJSONEventType = "final"
+	NDJSONEventReset    NDJSONEventType = "reset"
+	NDJSONEventError    NDJSONEventType = "error"
+	NDJSONEventPing     NDJSONEventType = "heartbeat"
+	NDJSONEventMetadata NDJSONEventType = "metadata"
 )
 
 // NDJSONEvent represents a single NDJSON streaming event.
@@ -91,15 +92,11 @@ func (p *NDJSONStreamWriterPublisher) startKeepalive(ctx context.Context, interv
 		return
 	}
 
+	// No eager first-write here: the orchestrator now emits a heartbeat as
+	// the first event on every request, which drives fiber's early header
+	// flush. Writing a keepalive frame eagerly would race with that and
+	// could appear before the planned-metadata event.
 	go func() {
-		if ctx.Err() != nil {
-			return
-		}
-
-		if err := p.writeKeepalive(); err != nil {
-			return
-		}
-
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -138,6 +135,10 @@ func (p *NDJSONStreamWriterPublisher) PublishFinal(data []byte, raw string) erro
 
 func (p *NDJSONStreamWriterPublisher) PublishReset() error {
 	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventReset})
+}
+
+func (p *NDJSONStreamWriterPublisher) PublishMetadata(payload json.RawMessage) error {
+	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventMetadata, Data: payload})
 }
 
 func (p *NDJSONStreamWriterPublisher) PublishError(errMsg string) error {
@@ -200,14 +201,18 @@ type StreamPublisher interface {
 	PublishReset() error
 	// PublishError sends an error event.
 	PublishError(errMsg string) error
+	// PublishMetadata sends a routing/retry metadata event.
+	// payload is the JSON-encoded bamlutils.Metadata value.
+	PublishMetadata(payload json.RawMessage) error
 	// Close performs any cleanup needed (e.g., signaling SSE to stop).
 	Close()
 }
 
 const (
-	sseEventFinal = "final"
-	sseEventReset = "reset"
-	sseEventError = "error"
+	sseEventFinal    = "final"
+	sseEventReset    = "reset"
+	sseEventError    = "error"
+	sseEventMetadata = "metadata"
 
 	// fasthttp RequestCtx.Done() is server-shutdown scoped, not client-disconnect scoped.
 	// We force early stream writes and periodic keepalives so disconnects surface
@@ -290,15 +295,11 @@ func (p *SSEStreamWriterPublisher) startKeepalive(ctx context.Context, interval 
 		return
 	}
 
+	// No eager first-write here: the orchestrator now emits a heartbeat as
+	// the first event on every request, which drives fiber's early header
+	// flush. Writing a keepalive comment eagerly would race with that and
+	// could appear before the planned-metadata event.
 	go func() {
-		if ctx.Err() != nil {
-			return
-		}
-
-		if err := p.writeComment("keepalive"); err != nil {
-			return
-		}
-
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -354,6 +355,10 @@ func (p *SSEStreamWriterPublisher) PublishFinal(data []byte, raw string) error {
 
 func (p *SSEStreamWriterPublisher) PublishReset() error {
 	return p.writeEvent(sseEventReset, "{}")
+}
+
+func (p *SSEStreamWriterPublisher) PublishMetadata(payload json.RawMessage) error {
+	return p.writeEvent(sseEventMetadata, unsafeutil.BytesToString(payload))
 }
 
 func (p *SSEStreamWriterPublisher) PublishError(errMsg string) error {
@@ -427,6 +432,27 @@ func consumeStream(
 		case workerplugin.StreamResultKindError:
 			if result.Error != nil {
 				_ = publisher.PublishError(result.Error.Error())
+			}
+
+		case workerplugin.StreamResultKindMetadata:
+			// Metadata may carry the Reset flag if the pool absorbed the
+			// mid-retry reset onto this event (first frame after retry).
+			// Emit the reset *before* the metadata so clients discard
+			// accumulated state first, then see the new routing decision.
+			if result.Reset {
+				accumulatedRaw.Reset()
+				if err := publisher.PublishReset(); err != nil {
+					workerplugin.ReleaseStreamResult(result)
+					drainResults(results)
+					return
+				}
+			}
+			if len(result.Data) > 0 {
+				if err := publisher.PublishMetadata(json.RawMessage(result.Data)); err != nil {
+					workerplugin.ReleaseStreamResult(result)
+					drainResults(results)
+					return
+				}
 			}
 
 		case workerplugin.StreamResultKindStream:
