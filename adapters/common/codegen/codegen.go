@@ -1612,10 +1612,10 @@ func Generate(selfPkg string) {
 		// ====== BUILD REQUEST PATH: methodName_buildRequest ======
 		// This path uses BAML's BuildRequest/StreamRequest API to get the raw HTTP
 		// request, executes it ourselves, and parses SSE events directly.
-		// Only emitted when introspected.StreamRequestMethods contains this method
-		// (BAML >= 0.219.0). For older BAML versions the symbol baml_client.StreamRequest
-		// doesn't exist, so we must not generate code that references it.
-		_, hasBuildRequest := introspected.StreamRequestMethods[methodName]
+		// Only emitted when BAML >= 0.219.0 exposes the StreamRequest singleton —
+		// on older versions the symbol baml_client.StreamRequest doesn't exist,
+		// so we must not generate code that references it.
+		hasBuildRequest := introspected.StreamRequest != nil
 		buildRequestMethodName := strcase.LowerCamelCase(methodName + "_buildRequest")
 
 		if hasBuildRequest {
@@ -1913,8 +1913,8 @@ func Generate(selfPkg string) {
 		// Non-streaming counterpart to _buildRequest. Uses BAML's Request API
 		// (not StreamRequest) to build an HTTP request with "stream": false,
 		// executes it, extracts the LLM text from the JSON response, and parses.
-		// Only emitted when introspected.RequestMethods contains this method.
-		_, hasCallBuildRequest := introspected.RequestMethods[methodName]
+		// Only emitted when BAML >= 0.219.0 exposes the Request singleton.
+		hasCallBuildRequest := introspected.Request != nil
 		buildCallRequestMethodName := strcase.LowerCamelCase(methodName + "_buildCallRequest")
 
 		if hasCallBuildRequest {

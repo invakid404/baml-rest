@@ -39,12 +39,10 @@ var MediaParams = map[string]map[string]bamlutils.MediaKind{}
 
 // Request is nil when BAML version < 0.219.0 (no BuildRequest API)
 var Request any
-var RequestMethods = map[string][]string{}
 var RequestFuncs = map[string]any{}
 
 // StreamRequest is nil when BAML version < 0.219.0 (no BuildRequest API)
 var StreamRequest any
-var StreamRequestMethods = map[string][]string{}
 var StreamRequestFuncs = map[string]any{}
 
 // FunctionClient maps BAML function names to their default client name
