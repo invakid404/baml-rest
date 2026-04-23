@@ -1039,11 +1039,6 @@ func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *par
 		out.Comment("Request is the BAML Request singleton for building non-streaming HTTP requests")
 		out.Var().Id("Request").Op("=").Qual(streamPkg, "Request")
 
-		out.Comment("RequestMethods maps method names to argument names on the Request singleton")
-		out.Var().Id("RequestMethods").Op("=").Map(jen.String()).Index().String().Values(
-			methodsDict(requestMethods)...,
-		)
-
 		out.Comment("RequestFuncs maps Request method names to their function values (for reflection)")
 		entries := make([]jen.Code, 0, len(requestMethods))
 		for _, m := range requestMethods {
@@ -1054,7 +1049,6 @@ func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *par
 	} else {
 		out.Comment("Request is nil when BAML version < 0.219.0 (no BuildRequest API)")
 		out.Var().Id("Request").Any()
-		out.Var().Id("RequestMethods").Op("=").Map(jen.String()).Index().String().Values()
 		out.Var().Id("RequestFuncs").Op("=").Map(jen.String()).Any().Values()
 	}
 
@@ -1063,11 +1057,6 @@ func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *par
 
 		out.Comment("StreamRequest is the BAML StreamRequest singleton for building streaming HTTP requests")
 		out.Var().Id("StreamRequest").Op("=").Qual(streamPkg, "StreamRequest")
-
-		out.Comment("StreamRequestMethods maps method names to argument names on the StreamRequest singleton")
-		out.Var().Id("StreamRequestMethods").Op("=").Map(jen.String()).Index().String().Values(
-			methodsDict(streamRequestMethods)...,
-		)
 
 		out.Comment("StreamRequestFuncs maps StreamRequest method names to their function values (for reflection)")
 		entries := make([]jen.Code, 0, len(streamRequestMethods))
@@ -1079,7 +1068,6 @@ func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *par
 	} else {
 		out.Comment("StreamRequest is nil when BAML version < 0.219.0 (no BuildRequest API)")
 		out.Var().Id("StreamRequest").Any()
-		out.Var().Id("StreamRequestMethods").Op("=").Map(jen.String()).Index().String().Values()
 		out.Var().Id("StreamRequestFuncs").Op("=").Map(jen.String()).Any().Values()
 	}
 }
