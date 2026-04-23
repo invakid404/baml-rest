@@ -87,20 +87,50 @@ const MaxResponseBodyBytes = 16 << 20 // 16 MiB
 // do not need the full MaxResponseBodyBytes allowance.
 const MaxErrorBodyBytes = 4096
 
-// Client wraps an *http.Client for making LLM requests (streaming and
-// non-streaming). Use DefaultClient for a pre-configured client, or create
-// one with NewClient for custom settings.
+// Client dispatches LLM requests between a net/http backend (for HTTP/2
+// upstreams) and a fasthttp backend (for HTTP/1.1 upstreams). Per-origin
+// routing is selected by an ALPN probe on first request and cached for the
+// process lifetime. Use DefaultClient for a pre-configured instance or
+// NewClient for custom settings.
 type Client struct {
 	httpClient *http.Client
+	cache      *protocolCache
 }
 
 // NewClient creates a new LLM HTTP client with the given http.Client.
 // If httpClient is nil, http.DefaultClient is used.
+//
+// The client mode (auto / fasthttp / nethttp) is read from the
+// BAML_REST_HTTP_CLIENT environment variable at construction time. The TLS
+// configuration is inherited from the supplied http.Client's Transport when
+// it is an *http.Transport with TLSClientConfig set, so private CAs and
+// custom verification apply to the ALPN probe and the fasthttp backend as
+// well as the net/http backend.
 func NewClient(httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &Client{httpClient: httpClient}
+	return &Client{
+		httpClient: httpClient,
+		cache:      newProtocolCache(loadClientMode(), tlsConfigFromHTTPClient(httpClient)),
+	}
+}
+
+// tlsConfigFromHTTPClient returns the TLSClientConfig of the supplied
+// http.Client's *http.Transport when available. The returned config is
+// NOT cloned — protocolCache.Clone()s it per probe, and the fasthttp
+// HostClient reads its fields via tls.Config's own internal locking.
+// Returns nil when the Transport is not an *http.Transport or has no TLS
+// config; newProtocolCache treats nil as the default {MinVersion: TLS12}.
+func tlsConfigFromHTTPClient(c *http.Client) *tls.Config {
+	if c == nil || c.Transport == nil {
+		return nil
+	}
+	t, ok := c.Transport.(*http.Transport)
+	if !ok {
+		return nil
+	}
+	return t.TLSClientConfig
 }
 
 // defaultLLMTransport is an HTTP transport tuned for LLM provider traffic.
@@ -151,8 +181,26 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 	if c == nil || c.httpClient == nil {
 		return nil, fmt.Errorf("llmhttp: nil client")
 	}
+	if req == nil {
+		return nil, fmt.Errorf("llmhttp: nil request")
+	}
 
-	httpReq, err := buildHTTPRequest(ctx, req)
+	rewritten := resolveRequestURL(req)
+
+	// Dispatch to fasthttp when the per-origin cache says the host speaks
+	// HTTP/1.1. Cache misses probe (or short-circuit on http://) before
+	// returning; cache hits are a single atomic load.
+	if c.cache != nil {
+		if origin, err := parseOrigin(rewritten); err == nil {
+			if entry := c.cache.resolve(origin); entry != nil && entry.decision == decisionFast && entry.host != nil {
+				return c.executeStreamFast(ctx, req, rewritten, entry.host)
+			}
+		}
+		// If the URL doesn't parse or the cache fails open, fall through to
+		// net/http, which produces a proper error with full context.
+	}
+
+	httpReq, err := buildHTTPRequest(ctx, req, rewritten)
 	if err != nil {
 		return nil, fmt.Errorf("llmhttp: failed to build request: %w", err)
 	}
@@ -235,6 +283,9 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 	if c == nil || c.httpClient == nil {
 		return nil, fmt.Errorf("llmhttp: nil client")
 	}
+	if req == nil {
+		return nil, fmt.Errorf("llmhttp: nil request")
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -242,14 +293,26 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 	// Enforce a deadline on the outbound call if the caller didn't set one.
 	// The HTTP client is shared with ExecuteStream (which must not have a
 	// fixed timeout), so the timeout is applied per-request via context
-	// rather than on the http.Client itself.
+	// rather than on the http.Client itself. The fasthttp backend reads the
+	// same ctx.Deadline() to drive DoDeadline, so this injection covers both
+	// dispatch paths.
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, DefaultCallTimeout)
 		defer cancel()
 	}
 
-	httpReq, err := buildHTTPRequest(ctx, req)
+	rewritten := resolveRequestURL(req)
+
+	if c.cache != nil {
+		if origin, err := parseOrigin(rewritten); err == nil {
+			if entry := c.cache.resolve(origin); entry != nil && entry.decision == decisionFast && entry.host != nil {
+				return c.executeFast(ctx, req, rewritten, entry.host, onSuccess)
+			}
+		}
+	}
+
+	httpReq, err := buildHTTPRequest(ctx, req, rewritten)
 	if err != nil {
 		return nil, fmt.Errorf("llmhttp: failed to build request: %w", err)
 	}
@@ -311,18 +374,26 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("llmhttp: HTTP %d", e.StatusCode)
 }
 
-// buildHTTPRequest converts a Request into a standard *http.Request.
-// If URL rewrite rules are configured (via BAML_REST_BASE_URL_REWRITES),
-// the request URL is rewritten before the HTTP request is created.
-func buildHTTPRequest(ctx context.Context, req *Request) (*http.Request, error) {
+// resolveRequestURL applies URL rewrite rules (BAML_REST_BASE_URL_REWRITES)
+// to the request URL. Exposed as a dedicated helper so the dispatcher can
+// rewrite exactly once and feed the result to both the cache key resolver
+// and whichever backend handles the request.
+func resolveRequestURL(req *Request) string {
+	if req == nil {
+		return ""
+	}
+	if rules := urlrewrite.GlobalRules(); len(rules) > 0 {
+		return urlrewrite.ApplyToURL(req.URL, rules)
+	}
+	return req.URL
+}
+
+// buildHTTPRequest converts a Request into a standard *http.Request using a
+// pre-rewritten URL. The dispatcher applies the rewrite before consulting
+// the protocol cache, so backends receive the final URL unchanged.
+func buildHTTPRequest(ctx context.Context, req *Request, rewrittenURL string) (*http.Request, error) {
 	if req == nil {
 		return nil, fmt.Errorf("llmhttp: nil request")
-	}
-
-	// Apply URL rewrite rules (catch-all for BuildRequest path)
-	url := req.URL
-	if rules := urlrewrite.GlobalRules(); len(rules) > 0 {
-		url = urlrewrite.ApplyToURL(url, rules)
 	}
 
 	var body io.Reader
@@ -330,7 +401,7 @@ func buildHTTPRequest(ctx context.Context, req *Request) (*http.Request, error) 
 		body = strings.NewReader(req.Body)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, req.Method, url, body)
+	httpReq, err := http.NewRequestWithContext(ctx, req.Method, rewrittenURL, body)
 	if err != nil {
 		return nil, err
 	}
