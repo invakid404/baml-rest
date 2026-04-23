@@ -15,7 +15,11 @@ env:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # -race -count=100 across every module has grown past the 10-minute
+    # cap as suites expanded (bamlutils/buildrequest ~4 min,
+    # pool ~4 min on their own). 25 leaves headroom for further growth
+    # without masking a real stuck-test regression.
+    timeout-minutes: 25
 
     steps:
       - name: Checkout Repository
