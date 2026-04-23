@@ -111,9 +111,12 @@ func TestResolveFallbackChainWithReason_MixedDrivable(t *testing.T) {
 
 func TestBuildSingleProviderPlan(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
-	plan := BuildSingleProviderPlan(adapter, "MyClient", "openai", nil)
+	plan := BuildSingleProviderPlan(adapter, "MyClient", "openai", nil, BuildRequestAPIRequest)
 	if plan.Path != "buildrequest" {
 		t.Errorf("path: got %q, want buildrequest", plan.Path)
+	}
+	if plan.BuildRequestAPI != BuildRequestAPIRequest {
+		t.Errorf("BuildRequestAPI: got %q, want %q", plan.BuildRequestAPI, BuildRequestAPIRequest)
 	}
 	if plan.Client != "MyClient" {
 		t.Errorf("client: got %q, want MyClient", plan.Client)
@@ -123,6 +126,27 @@ func TestBuildSingleProviderPlan(t *testing.T) {
 	}
 	if plan.RetryMax != nil {
 		t.Errorf("RetryMax should be nil when policy is nil; got %v", plan.RetryMax)
+	}
+}
+
+func TestBuildSingleProviderPlan_StreamRequestAPI(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+	plan := BuildSingleProviderPlan(adapter, "MyClient", "openai", nil, BuildRequestAPIStreamRequest)
+	if plan.BuildRequestAPI != BuildRequestAPIStreamRequest {
+		t.Errorf("BuildRequestAPI: got %q, want %q", plan.BuildRequestAPI, BuildRequestAPIStreamRequest)
+	}
+}
+
+func TestBuildFallbackChainPlan_APIFieldCarriesThrough(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+	chain := []string{"A", "B"}
+	providers := map[string]string{"A": "openai", "B": "anthropic"}
+	plan := BuildFallbackChainPlan(adapter, "Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest)
+	if plan.BuildRequestAPI != BuildRequestAPIStreamRequest {
+		t.Errorf("BuildRequestAPI: got %q, want %q", plan.BuildRequestAPI, BuildRequestAPIStreamRequest)
+	}
+	if plan.Strategy != "baml-fallback" {
+		t.Errorf("strategy: got %q, want baml-fallback", plan.Strategy)
 	}
 }
 

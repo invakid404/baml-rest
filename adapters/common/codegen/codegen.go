@@ -2203,6 +2203,7 @@ func Generate(selfPkg string) {
 							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
 							jen.Id("provider"),
 							jen.Id("retryPolicy"),
+							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
 						),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
@@ -2237,6 +2238,7 @@ func Generate(selfPkg string) {
 							jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
 							jen.Id("retryPolicy"),
+							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
 						),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
@@ -2255,8 +2257,9 @@ func Generate(selfPkg string) {
 		}
 
 		// Streaming BuildRequest path for /stream and /stream-with-raw.
-		// Explicitly gated to streaming modes so call modes that decline the
-		// non-streaming branch above fall through to the legacy path, not here.
+		// Explicitly gated to streaming modes; a separate bridge block below
+		// handles /call and /call-with-raw via stream accumulation when the
+		// non-streaming Request API declined.
 		if hasBuildRequest {
 			routerBody = append(routerBody,
 				jen.Comment("Try streaming BuildRequest path for /stream and /stream-with-raw"),
@@ -2279,6 +2282,7 @@ func Generate(selfPkg string) {
 							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
 							jen.Id("provider"),
 							jen.Id("retryPolicy"),
+							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
 						),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
@@ -2312,6 +2316,89 @@ func Generate(selfPkg string) {
 							jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
 							jen.Id("retryPolicy"),
+							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+						),
+						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
+							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
+							jen.Lit(""), jen.Id("retryPolicy"),
+							jen.Id("__chain"), jen.Id("__cprov"),
+							jen.Id("__legacyChildren"),
+							jen.Id("__planned"),
+						),
+						jen.If(jen.Id("err").Op("!=").Nil()).Block(
+							jen.Return(jen.Nil(), jen.Id("err")),
+						),
+						jen.Return(jen.Id("out"), jen.Nil()),
+					),
+				),
+			)
+		}
+
+		// Bridge: /call and /call-with-raw that the non-streaming block
+		// declined fall through to the streaming BuildRequest path, which
+		// accumulates SSE deltas into a unary response. Triggered when the
+		// non-streaming Request API is unavailable (introspected.Request==nil
+		// or the call-side support gate rejected the provider/chain) but the
+		// StreamRequest API can drive it. StreamMode is StreamModeCall or
+		// StreamModeCallWithRaw, so NeedsPartials is false inside the
+		// orchestrator and no partials ever reach the output channel — the
+		// pool sees the same shape as the non-streaming call path.
+		if hasBuildRequest {
+			routerBody = append(routerBody,
+				jen.Comment("Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable"),
+				jen.If(
+					jen.Qual(common.BuildRequestPkg, "UseBuildRequest").Call().
+						Op("&&").Qual(common.IntrospectedPkg, "StreamRequest").Op("!=").Nil().
+						Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
+						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
+				).Block(
+					// Single-provider path
+					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveProvider").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
+					),
+					jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
+						resolveRetryPolicy(),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlan").Call(
+							jen.Id("adapter"),
+							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+							jen.Id("provider"),
+							jen.Id("retryPolicy"),
+							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+						),
+						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
+							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
+							jen.Id("provider"), jen.Id("retryPolicy"),
+							jen.Nil(), jen.Nil(),
+							jen.Nil(),
+							jen.Id("__planned"),
+						),
+						jen.If(jen.Id("err").Op("!=").Nil()).Block(
+							jen.Return(jen.Nil(), jen.Id("err")),
+						),
+						jen.Return(jen.Id("out"), jen.Nil()),
+					),
+					// Fallback chain path (bridge). Uses IsProviderSupported
+					// (stream side) because the whole point of the bridge is
+					// to accept chains that IsCallProviderSupported rejected.
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+						jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
+					),
+					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
+						resolveRetryPolicy(),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlan").Call(
+							jen.Id("adapter"),
+							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+							jen.Id("__chain"),
+							jen.Id("__cprov"),
+							jen.Id("__legacyChildren"),
+							jen.Id("retryPolicy"),
+							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
 						),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),

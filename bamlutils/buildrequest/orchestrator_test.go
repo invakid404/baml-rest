@@ -1791,3 +1791,258 @@ func TestRunStreamOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 		t.Errorf("expected raw=%q from legacy child, got %q", legacyRaw, finalRaw)
 	}
 }
+
+// TestRunStreamOrchestration_CallBridge_ShapedLikeUnary simulates the
+// call-mode bridge: NeedsPartials=false, NeedsRaw=true. The orchestrator
+// consumes SSE, never emits a partial, and produces a single final with the
+// accumulated raw. This is the shape pool.Call expects, so the unary handler
+// returns the final as if it came from RunCallOrchestration.
+func TestRunStreamOrchestration_CallBridge_ShapedLikeUnary(t *testing.T) {
+	server := makeOpenAIServer([]string{"Hello", " ", "world"})
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "openai",
+		NeedsPartials: false, // call-mode bridge
+		NeedsRaw:      true,
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		nil, // parseStream unused with NeedsPartials=false
+		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var partials, finals, heartbeats, errors int
+	var finalVal any
+	var finalRaw string
+	for r := range out {
+		tr := r.(*testResult)
+		switch tr.kind {
+		case bamlutils.StreamResultKindStream:
+			partials++
+		case bamlutils.StreamResultKindFinal:
+			finals++
+			finalVal = tr.final
+			finalRaw = tr.raw
+		case bamlutils.StreamResultKindHeartbeat:
+			heartbeats++
+		case bamlutils.StreamResultKindError:
+			errors++
+		}
+	}
+
+	if partials != 0 {
+		t.Errorf("bridge should emit no partials; got %d", partials)
+	}
+	if finals != 1 {
+		t.Fatalf("expected 1 final, got %d", finals)
+	}
+	if errors != 0 {
+		t.Errorf("expected 0 errors, got %d", errors)
+	}
+	if heartbeats != 1 {
+		t.Errorf("expected 1 heartbeat, got %d", heartbeats)
+	}
+	if finalVal != "Hello world" {
+		t.Errorf("expected final='Hello world', got %v", finalVal)
+	}
+	if finalRaw != "Hello world" {
+		t.Errorf("expected raw='Hello world', got %q", finalRaw)
+	}
+}
+
+// TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_Retry verifies
+// that the retry-boundary reset event is suppressed when NeedsPartials=false.
+// Context: call modes (StreamModeCall / StreamModeCallWithRaw) bridged
+// through this orchestrator have no partial audience downstream, so a reset
+// event would falsely flip the pool's gotFirstByte flag before the retry's
+// upstream has produced any byte — disabling hung detection.
+func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_Retry(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 2 {
+			w.WriteHeader(500)
+			fmt.Fprint(w, "internal error")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "openai",
+		NeedsPartials: false, // call-mode bridge
+		NeedsRaw:      true,
+		RetryPolicy: &retry.Policy{
+			MaxRetries: 2,
+			Strategy:   &retry.ConstantDelay{DelayMs: 1},
+		},
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		nil,
+		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts.Load())
+	}
+
+	var resets, finals, heartbeats int
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.reset {
+			resets++
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+		}
+		if tr.kind == bamlutils.StreamResultKindHeartbeat {
+			heartbeats++
+		}
+	}
+
+	if resets != 0 {
+		t.Errorf("expected 0 reset events under NeedsPartials=false; got %d", resets)
+	}
+	if finals != 1 {
+		t.Errorf("expected 1 final, got %d", finals)
+	}
+	// The failing attempt never produces a byte (500 before SSE begins), so
+	// its sendHeartbeat never fires. The retry re-arms heartbeatSent; the
+	// successful attempt then fires one heartbeat on HTTP connect.
+	if heartbeats < 1 {
+		t.Errorf("expected >=1 heartbeat from the successful attempt; got %d", heartbeats)
+	}
+}
+
+// TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain
+// verifies the in-chain reset (between failing children) is also suppressed
+// under NeedsPartials=false. Same rationale as the retry variant.
+func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := int(attempts.Add(1))
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		if attempt == 1 {
+			// Primary: stream content that parseFinal rejects.
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return
+		}
+		// Secondary: stream valid content.
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"good\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "",
+		RetryPolicy:   &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+		NeedsPartials: false, // call-mode bridge
+		FallbackChain: []string{"PrimaryClient", "SecondaryClient"},
+		ClientProviders: map[string]string{
+			"PrimaryClient":   "openai",
+			"SecondaryClient": "openai",
+		},
+	}
+
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		if s == "stale" {
+			return nil, fmt.Errorf("rejected stale content")
+		}
+		return s, nil
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		nil,
+		parseFinal,
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resets, finals, heartbeats int
+	var finalVal any
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.reset {
+			resets++
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+			finalVal = tr.final
+		}
+		if tr.kind == bamlutils.StreamResultKindHeartbeat {
+			heartbeats++
+		}
+	}
+
+	if resets != 0 {
+		t.Errorf("expected 0 reset events under NeedsPartials=false; got %d", resets)
+	}
+	if finals != 1 {
+		t.Errorf("expected 1 final, got %d", finals)
+	}
+	if finalVal != "good" {
+		t.Errorf("expected final=%q, got %v", "good", finalVal)
+	}
+	// Both children emit a heartbeat on HTTP connect; the in-chain reset
+	// must still clear heartbeatSent.
+	if heartbeats < 2 {
+		t.Errorf("expected >=2 heartbeats (one per child), got %d", heartbeats)
+	}
+}

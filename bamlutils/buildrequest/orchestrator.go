@@ -135,6 +135,21 @@ func ResolveProvider(adapter bamlutils.Adapter, defaultClientName string, intros
 	return introspectedProvider
 }
 
+// BuildRequestAPI identifies which BAML API drove a Path=="buildrequest"
+// request. These values populate Metadata.BuildRequestAPI and the
+// X-BAML-Build-Request-API response header.
+const (
+	// BuildRequestAPIRequest means the request used the non-streaming
+	// Request API via RunCallOrchestration (one HTTP call, JSON response).
+	BuildRequestAPIRequest = "request"
+	// BuildRequestAPIStreamRequest means the request used the streaming
+	// StreamRequest API via RunStreamOrchestration. For stream modes this
+	// is the normal path. For call modes this signals the bridge: SSE is
+	// accumulated and returned as a unary response because the non-streaming
+	// Request API was not available for the resolved provider.
+	BuildRequestAPIStreamRequest = "streamrequest"
+)
+
 // PathReason enumerates the classification reasons an orchestrator reports
 // alongside the legacy-path decision. Each value is stable and appears in
 // the X-BAML-Path-Reason response header and in metadata payloads.
@@ -251,22 +266,27 @@ func ResolveProviderWithReason(
 // through the BuildRequest path with a single (non-strategy) client. Called
 // by the generated router once the provider has been resolved and the
 // support gate has been cleared, so Path is always "buildrequest".
+//
+// buildRequestAPI is one of BuildRequestAPIRequest /
+// BuildRequestAPIStreamRequest (see constants above).
 func BuildSingleProviderPlan(
 	adapter bamlutils.Adapter,
 	defaultClientName string,
 	provider string,
 	retryPolicy *retry.Policy,
+	buildRequestAPI string,
 ) *bamlutils.Metadata {
 	clientName := defaultClientName
 	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
 		clientName = *reg.Primary
 	}
 	plan := &bamlutils.Metadata{
-		Phase:       bamlutils.MetadataPhasePlanned,
-		Path:        "buildrequest",
-		Client:      clientName,
-		Provider:    provider,
-		RetryPolicy: EncodeRetryPolicy(retryPolicy),
+		Phase:           bamlutils.MetadataPhasePlanned,
+		Path:            "buildrequest",
+		BuildRequestAPI: buildRequestAPI,
+		Client:          clientName,
+		Provider:        provider,
+		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
 	}
 	if retryPolicy != nil {
 		m := retryPolicy.MaxRetries
@@ -278,6 +298,9 @@ func BuildSingleProviderPlan(
 // BuildFallbackChainPlan constructs planned metadata for a request routed
 // through the BuildRequest path as a fallback strategy. chain/providers/
 // legacyChildren are the resolved values from ResolveFallbackChain.
+//
+// buildRequestAPI is one of BuildRequestAPIRequest /
+// BuildRequestAPIStreamRequest (see constants above).
 func BuildFallbackChainPlan(
 	adapter bamlutils.Adapter,
 	defaultClientName string,
@@ -285,18 +308,20 @@ func BuildFallbackChainPlan(
 	providers map[string]string,
 	legacyChildren map[string]bool,
 	retryPolicy *retry.Policy,
+	buildRequestAPI string,
 ) *bamlutils.Metadata {
 	clientName := defaultClientName
 	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
 		clientName = *reg.Primary
 	}
 	plan := &bamlutils.Metadata{
-		Phase:       bamlutils.MetadataPhasePlanned,
-		Path:        "buildrequest",
-		Client:      clientName,
-		Strategy:    "baml-fallback",
-		Chain:       append([]string(nil), chain...),
-		RetryPolicy: EncodeRetryPolicy(retryPolicy),
+		Phase:           bamlutils.MetadataPhasePlanned,
+		Path:            "buildrequest",
+		BuildRequestAPI: buildRequestAPI,
+		Client:          clientName,
+		Strategy:        "baml-fallback",
+		Chain:           append([]string(nil), chain...),
+		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
 	}
 	if retryPolicy != nil {
 		m := retryPolicy.MaxRetries
@@ -1230,14 +1255,22 @@ func RunStreamOrchestration(
 			// Emit a reset signal before trying the next child so the
 			// downstream discards any partial/raw state leaked by the
 			// previous child's failed stream. Not needed before the first
-			// child in the chain.
+			// child in the chain. Only emitted when partials could have
+			// reached the client — for NeedsPartials=false (call modes
+			// bridged through this orchestrator) there is no partial state
+			// downstream, and the reset would falsely flip the pool's
+			// gotFirstByte flag, disabling hung detection for the next
+			// child. The heartbeat reset still runs so the next child
+			// re-arms first-byte detection via its own heartbeat.
 			if i > 0 && lastErr != nil {
-				r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
-				select {
-				case out <- r:
-				case <-ctx.Done():
-					r.Release()
-					return nil, ctx.Err()
+				if config.NeedsPartials {
+					r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
+					select {
+					case out <- r:
+					case <-ctx.Done():
+						r.Release()
+						return nil, ctx.Err()
+					}
 				}
 				heartbeatSent.Store(false)
 			}
@@ -1283,15 +1316,23 @@ func RunStreamOrchestration(
 
 	// Execute with retries
 	_, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, func(attempt int) {
-		// Emit reset signal so downstream discards accumulated partial state
-		r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
-		select {
-		case out <- r:
-		case <-ctx.Done():
-			r.Release()
+		// Emit reset signal so downstream discards accumulated partial state.
+		// Only emitted when partials could have reached the client. For
+		// NeedsPartials=false (call modes bridged through this orchestrator)
+		// there is no partial state downstream, and the reset event would
+		// falsely flip the pool's gotFirstByte flag before the retry's
+		// upstream has produced a byte — disabling hung detection.
+		if config.NeedsPartials {
+			r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
+			select {
+			case out <- r:
+			case <-ctx.Done():
+				r.Release()
+			}
 		}
 
-		// Reset heartbeat for new attempt
+		// Reset heartbeat for new attempt so first-byte detection re-arms
+		// via the next attempt's heartbeat.
 		heartbeatSent.Store(false)
 	})
 

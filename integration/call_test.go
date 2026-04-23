@@ -51,6 +51,12 @@ func TestCallEndpoint(t *testing.T) {
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestClient")
 			if ActuallyBuildRequest() {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
+				// Non-streaming /call on a BuildRequest-capable provider
+				// uses the Request API (block 1 wins before the stream-bridge
+				// block). The header distinguishes this from a stream-bridged
+				// /call; its presence alone proves the call went through the
+				// BuildRequest layer rather than legacy.
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI, "request")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryCount, "0")
 				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
@@ -61,6 +67,8 @@ func TestCallEndpoint(t *testing.T) {
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "legacy")
+				// Legacy path does not set BuildRequestAPI.
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI)
 				// Single-provider legacy route: WinnerProvider falls back to
 				// the planned Provider via BuildLegacyOutcome's ladder;
 				// WinnerClient is suppressed because it equals planned.Client.
@@ -396,6 +404,9 @@ func TestCallWithRawEndpoint(t *testing.T) {
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestClient")
 			if ActuallyBuildRequest() {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
+				// /call-with-raw on a BuildRequest-capable provider uses the
+				// Request API; the stream-bridge would report "streamrequest".
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI, "request")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryCount, "0")
 				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
@@ -403,6 +414,7 @@ func TestCallWithRawEndpoint(t *testing.T) {
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "legacy")
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI)
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)

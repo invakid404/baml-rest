@@ -2285,6 +2285,11 @@ func (m *metadataTracker) assertBuildRequestInvariants() {
 		if m.planned.Path != "buildrequest" {
 			m.t.Errorf("planned.Path: got %q, want %q", m.planned.Path, "buildrequest")
 		}
+		// /stream and /stream-with-raw always use the StreamRequest API on
+		// the BuildRequest path — the Request API is call-only.
+		if m.planned.BuildRequestAPI != "streamrequest" {
+			m.t.Errorf("planned.BuildRequestAPI: got %q, want %q", m.planned.BuildRequestAPI, "streamrequest")
+		}
 		if m.planned.Client == "" {
 			m.t.Errorf("planned.Client: expected non-empty on BuildRequest path")
 		}
