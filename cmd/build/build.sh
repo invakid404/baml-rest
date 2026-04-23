@@ -526,7 +526,7 @@ if [ -n "${BAML_REST_BASE_URL_REWRITES:-}" ]; then
     echo "Baking in base URL rewrites: ${BAML_REST_BASE_URL_REWRITES}"
     WORKER_LDFLAGS="-X 'github.com/invakid404/baml-rest/bamlutils/urlrewrite.builtinRules=${BAML_REST_BASE_URL_REWRITES}'"
 fi
-go build ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o cmd/serve/worker cmd/worker/main.go
+go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o cmd/serve/worker cmd/worker/main.go
 
 # Generate OpenAPI schema (this also imports baml)
 echo "Generating OpenAPI schema..."
