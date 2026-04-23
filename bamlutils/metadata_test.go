@@ -120,6 +120,9 @@ func TestMetadata_JSONRoundtrip(t *testing.T) {
 			if got.WinnerProvider != tc.md.WinnerProvider {
 				t.Errorf("WinnerProvider: got %q, want %q", got.WinnerProvider, tc.md.WinnerProvider)
 			}
+			if got.WinnerPath != tc.md.WinnerPath {
+				t.Errorf("WinnerPath: got %q, want %q", got.WinnerPath, tc.md.WinnerPath)
+			}
 			// Pointer fields: nil-ness and value both matter.
 			equalPtrInt := func(a, b *int) bool {
 				if a == nil || b == nil {
