@@ -62,6 +62,18 @@ func TestMetadata_JSONRoundtrip(t *testing.T) {
 			},
 		},
 		{
+			name: "legacy outcome with baml call count",
+			md: Metadata{
+				Phase:          MetadataPhaseOutcome,
+				Path:           "legacy",
+				WinnerClient:   "MyClient",
+				WinnerProvider: "openai",
+				WinnerPath:     "legacy",
+				UpstreamDurMs:  &dur,
+				BamlCallCount:  &five,
+			},
+		},
+		{
 			name: "legacy planned with reason",
 			md: Metadata{
 				Phase:      MetadataPhasePlanned,
@@ -108,6 +120,9 @@ func TestMetadata_JSONRoundtrip(t *testing.T) {
 			if got.WinnerProvider != tc.md.WinnerProvider {
 				t.Errorf("WinnerProvider: got %q, want %q", got.WinnerProvider, tc.md.WinnerProvider)
 			}
+			if got.WinnerPath != tc.md.WinnerPath {
+				t.Errorf("WinnerPath: got %q, want %q", got.WinnerPath, tc.md.WinnerPath)
+			}
 			// Pointer fields: nil-ness and value both matter.
 			equalPtrInt := func(a, b *int) bool {
 				if a == nil || b == nil {
@@ -129,6 +144,9 @@ func TestMetadata_JSONRoundtrip(t *testing.T) {
 			}
 			if !equalPtrInt64(got.UpstreamDurMs, tc.md.UpstreamDurMs) {
 				t.Errorf("UpstreamDurMs: got %v, want %v", got.UpstreamDurMs, tc.md.UpstreamDurMs)
+			}
+			if !equalPtrInt(got.BamlCallCount, tc.md.BamlCallCount) {
+				t.Errorf("BamlCallCount: got %v, want %v", got.BamlCallCount, tc.md.BamlCallCount)
 			}
 		})
 	}

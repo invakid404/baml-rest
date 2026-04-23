@@ -1228,6 +1228,10 @@ func Generate(selfPkg string) {
 						}
 						return jen.Null()
 					}(),
+					// Emit outcome metadata before sending Final, so it lands
+					// between the last partial and the terminal payload —
+					// matching the BuildRequest path's contract.
+					jen.Id("beforeFinal").Call(),
 					jen.Select().Block(
 						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
@@ -1289,15 +1293,15 @@ func Generate(selfPkg string) {
 				jen.Func().Params(jen.Id("__r").Qual(common.InterfacesPkg, "StreamResult")).Block(
 					jen.Id("__r").Dot("Release").Call(),
 				),
-				// newPlannedMetadata: constructs a planned metadata result
-				// from the caller-supplied plan. nil when plan is nil,
-				// which disables the emission.
-				jen.Func().Params().Qual(common.InterfacesPkg, "StreamResult").Block(
-					jen.If(jen.Id("plannedMetadata").Op("==").Nil()).Block(jen.Return(jen.Nil())),
-					jen.Return(jen.Id(metadataConstructorName).Call(jen.Id("plannedMetadata"))),
+				// plannedMetadata: passed straight through; orchestrator
+				// builds both planned and outcome events from this seed.
+				jen.Id("plannedMetadata"),
+				// newMetadataResult: pool-wraps a Metadata payload.
+				jen.Func().Params(jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata")).Qual(common.InterfacesPkg, "StreamResult").Block(
+					jen.Return(jen.Id(metadataConstructorName).Call(jen.Id("md"))),
 				),
-				// body - receives onTick, handles stream creation and iteration
-				jen.Func().Params(jen.Id("onTick").Add(onTickType())).Error().Block(noRawGoroutineBody...),
+				// body - receives beforeFinal + onTick, handles stream creation and iteration
+				jen.Func().Params(jen.Id("beforeFinal").Func().Params(), jen.Id("onTick").Add(onTickType())).Error().Block(noRawGoroutineBody...),
 			)),
 		)
 
@@ -1569,10 +1573,12 @@ func Generate(selfPkg string) {
 				jen.Func().Params(jen.Id("__r").Qual(common.InterfacesPkg, "StreamResult")).Block(
 					jen.Id("__r").Dot("Release").Call(),
 				),
-				// newPlannedMetadata
-				jen.Func().Params().Qual(common.InterfacesPkg, "StreamResult").Block(
-					jen.If(jen.Id("plannedMetadata").Op("==").Nil()).Block(jen.Return(jen.Nil())),
-					jen.Return(jen.Id(metadataConstructorName).Call(jen.Id("plannedMetadata"))),
+				// plannedMetadata: passed straight through; orchestrator
+				// builds both planned and outcome events from this seed.
+				jen.Id("plannedMetadata"),
+				// newMetadataResult: pool-wraps a Metadata payload.
+				jen.Func().Params(jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata")).Qual(common.InterfacesPkg, "StreamResult").Block(
+					jen.Return(jen.Id(metadataConstructorName).Call(jen.Id("md"))),
 				),
 				// processTick
 				jen.Func().Params(
@@ -3554,23 +3560,45 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("newHeartbeat").Func().Params().Add(streamResultIface.Clone()),
 			jen.Id("newError").Func().Params(jen.Error()).Add(streamResultIface.Clone()),
 			jen.Id("release").Func().Params(streamResultIface.Clone()),
-			// newPlannedMetadata is invoked inside the first-tick branch of
-			// onTick (after the heartbeat send) to emit the planned metadata
-			// event. Pass nil when metadata emission is not desired (tests,
-			// mixed-mode legacy children whose parent orchestrator already
-			// emitted planned metadata for the chain).
-			jen.Id("newPlannedMetadata").Func().Params().Add(streamResultIface.Clone()),
-			jen.Id("body").Func().Params(jen.Add(onTickType())).Error(),
+			// plannedMetadata: pre-built planned-phase Metadata for this request,
+			// or nil to disable metadata emission entirely (tests, mixed-mode
+			// legacy children whose parent orchestrator already emitted
+			// metadata for the chain). The orchestrator emits a planned event
+			// on the first tick (alongside the heartbeat) and an outcome
+			// event via the body's beforeFinal callback.
+			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+			// newMetadataResult: pool-wraps a Metadata payload as a StreamResult.
+			// Required when plannedMetadata is non-nil.
+			jen.Id("newMetadataResult").Func().Params(jen.Op("*").Qual(common.InterfacesPkg, "Metadata")).Add(streamResultIface.Clone()),
+			// body receives a beforeFinal callback that the body MUST invoke
+			// before sending the final StreamResult, and an onTick callback
+			// that body MUST install on the BAML stream. beforeFinal builds
+			// and emits the outcome metadata event so it lands between the
+			// last partial and the final.
+			jen.Id("body").Func().Params(jen.Func().Params(), jen.Add(onTickType())).Error(),
 		).
 		Error().
 		Block(
+			// startTime anchors the UpstreamDurMs measurement on the outcome
+			// metadata event.
+			jen.Id("startTime").Op(":=").Qual("time", "Now").Call(),
 			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
+			// lastFuncLog stores the most recent FunctionLog reference seen
+			// by onTick. Read by beforeFinal to derive winner identity and
+			// BAML's internal call count for the outcome event. nil if no
+			// onTick fired before the stream completed (rare; degrade
+			// gracefully via BuildLegacyOutcome's planned-fallback ladder).
+			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
 
 			jen.Id("onTick").Op(":=").Func().Params(
 				jen.Id("_").Qual("context", "Context"),
 				jen.Id("_").Qual(BamlPkg, "TickReason"),
-				jen.Id("_").Qual(BamlPkg, "FunctionLog"),
+				jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
 			).Qual(BamlPkg, "FunctionSignal").Block(
+				// Store the latest FunctionLog on every tick (not just the
+				// first) so the outcome event reflects the post-stream
+				// state, not the pre-stream state.
+				jen.Id("lastFuncLog").Dot("Store").Call(jen.Id("funcLog")),
 				jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
 					jen.Select().Block(
 						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
@@ -3587,8 +3615,10 @@ func generateStreamHelpers(out *jen.File) {
 					// orchestrator invocation (subsequent ticks skip).
 					// Non-blocking: release the result if the output buffer
 					// is full, matching the heartbeat's drop-on-full policy.
-					jen.If(jen.Id("newPlannedMetadata").Op("!=").Nil()).Block(
-						jen.Id("__m").Op(":=").Id("newPlannedMetadata").Call(),
+					jen.If(jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").Id("newMetadataResult").Op("!=").Nil()).Block(
+						jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
+						jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
+						jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
 						jen.If(jen.Id("__m").Op("!=").Nil()).Block(
 							jen.Select().Block(
 								jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
@@ -3598,6 +3628,60 @@ func generateStreamHelpers(out *jen.File) {
 					),
 				),
 				jen.Return(jen.Nil()),
+			),
+
+			// beforeFinal builds the outcome metadata event from lastFuncLog
+			// (if any) and emits it. Body MUST call this exactly once,
+			// immediately before sending the final StreamResult, so the
+			// metadata event lands between the last partial and the final.
+			// Safe to call when plannedMetadata is nil — short-circuits.
+			jen.Id("beforeFinal").Op(":=").Func().Params().Block(
+				jen.If(jen.Id("plannedMetadata").Op("==").Nil().Op("||").Id("newMetadataResult").Op("==").Nil()).Block(
+					jen.Return(),
+				),
+				jen.Var().Id("__winnerClient").String(),
+				jen.Var().Id("__winnerProvider").String(),
+				jen.Var().Id("__bamlCallCount").Op("*").Int(),
+				jen.If(
+					jen.List(jen.Id("fl"), jen.Id("flOk")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+					jen.Id("flOk"),
+				).Block(
+					jen.If(
+						jen.List(jen.Id("__sel"), jen.Id("__selErr")).Op(":=").Id("fl").Dot("SelectedCall").Call(),
+						jen.Id("__selErr").Op("==").Nil().Op("&&").Id("__sel").Op("!=").Nil(),
+					).Block(
+						jen.If(
+							jen.List(jen.Id("__cn"), jen.Id("__cnErr")).Op(":=").Id("__sel").Dot("ClientName").Call(),
+							jen.Id("__cnErr").Op("==").Nil(),
+						).Block(jen.Id("__winnerClient").Op("=").Id("__cn")),
+						jen.If(
+							jen.List(jen.Id("__pv"), jen.Id("__pvErr")).Op(":=").Id("__sel").Dot("Provider").Call(),
+							jen.Id("__pvErr").Op("==").Nil(),
+						).Block(jen.Id("__winnerProvider").Op("=").Id("__pv")),
+					),
+					jen.If(
+						jen.List(jen.Id("__calls"), jen.Id("__callsErr")).Op(":=").Id("fl").Dot("Calls").Call(),
+						jen.Id("__callsErr").Op("==").Nil(),
+					).Block(
+						jen.Id("__n").Op(":=").Len(jen.Id("__calls")).Op("-").Lit(1),
+						jen.If(jen.Id("__n").Op("<").Lit(0)).Block(jen.Id("__n").Op("=").Lit(0)),
+						jen.Id("__bamlCallCount").Op("=").Op("&").Id("__n"),
+					),
+				),
+				jen.Id("__outcome").Op(":=").Qual(common.InterfacesPkg, "BuildLegacyOutcome").Call(
+					jen.Id("plannedMetadata"),
+					jen.Qual("time", "Since").Call(jen.Id("startTime")).Dot("Milliseconds").Call(),
+					jen.Id("__winnerClient"),
+					jen.Id("__winnerProvider"),
+					jen.Id("__bamlCallCount"),
+				),
+				jen.If(jen.Id("__outcome").Op("==").Nil()).Block(jen.Return()),
+				jen.Id("__om").Op(":=").Id("newMetadataResult").Call(jen.Id("__outcome")),
+				jen.If(jen.Id("__om").Op("==").Nil()).Block(jen.Return()),
+				jen.Select().Block(
+					jen.Case(jen.Id("out").Op("<-").Id("__om")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__om"))),
+				),
 			),
 
 			jen.Go().Func().Params().Block(
@@ -3613,7 +3697,7 @@ func generateStreamHelpers(out *jen.File) {
 						),
 					),
 					jen.Func().Params().Error().Block(
-						jen.Return(jen.Id("body").Call(jen.Id("onTick"))),
+						jen.Return(jen.Id("body").Call(jen.Id("beforeFinal"), jen.Id("onTick"))),
 					),
 				),
 			).Call(),
@@ -3636,8 +3720,15 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("newHeartbeat").Func().Params().Add(streamResultIface.Clone()),
 			jen.Id("newError").Func().Params(jen.Error()).Add(streamResultIface.Clone()),
 			jen.Id("release").Func().Params(streamResultIface.Clone()),
-			// newPlannedMetadata: see runNoRawOrchestration for the contract.
-			jen.Id("newPlannedMetadata").Func().Params().Add(streamResultIface.Clone()),
+			// plannedMetadata: pre-built planned-phase Metadata for this request,
+			// or nil to disable metadata emission entirely. The orchestrator
+			// emits a planned event on the first tick (alongside the heartbeat)
+			// and an outcome event just before the final result. Both events
+			// are constructed from this seed via newMetadataResult.
+			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+			// newMetadataResult: pool-wraps a Metadata payload as a StreamResult.
+			// Required when plannedMetadata is non-nil.
+			jen.Id("newMetadataResult").Func().Params(jen.Op("*").Qual(common.InterfacesPkg, "Metadata")).Add(streamResultIface.Clone()),
 			// processTick: handle one FunctionLog tick (extract chunks, parse, emit partial).
 			// Receives the shared extractor + mutex.
 			jen.Id("processTick").Func().Params(
@@ -3654,6 +3745,11 @@ func generateStreamHelpers(out *jen.File) {
 		).
 		Error().
 		Block(
+			// startTime anchors the UpstreamDurMs measurement on the outcome
+			// metadata event. Captured at orchestrator entry to match the
+			// BuildRequest path's wall-clock semantics.
+			jen.Id("startTime").Op(":=").Qual("time", "Now").Call(),
+
 			// Queue + context
 			jen.Id("funcLogQueue").Op(":=").Qual(common.GoConcurrentQueuePkg, "NewFIFO").Call(),
 			jen.List(jen.Id("queueCtx"), jen.Id("queueCancel")).Op(":=").Qual("context", "WithCancel").Call(jen.Qual("context", "Background").Call()),
@@ -3755,8 +3851,14 @@ func generateStreamHelpers(out *jen.File) {
 									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 									jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
 								),
-								jen.If(jen.Id("newPlannedMetadata").Op("!=").Nil()).Block(
-									jen.Id("__m").Op(":=").Id("newPlannedMetadata").Call(),
+								jen.If(jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").Id("newMetadataResult").Op("!=").Nil()).Block(
+									// Copy and tag Phase=Planned. Caller-supplied
+									// plannedMetadata may have been built with
+									// Phase already set, but flipping here makes
+									// the contract local and survives reuse.
+									jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
+									jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
+									jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
 									jen.If(jen.Id("__m").Op("!=").Nil()).Block(
 										jen.Select().Block(
 											jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
@@ -3921,6 +4023,60 @@ func generateStreamHelpers(out *jen.File) {
 								jen.Id("finalRaw").Op("=").Id("authRaw"),
 							),
 						),
+
+						// Outcome metadata: build from the winning attempt's
+						// FunctionLog and emit just before the final, so clients
+						// observe the routing outcome attached to (and ordered
+						// before) the terminal payload. Mirrors the BuildRequest
+						// path's contract; no-op when plannedMetadata is nil.
+						jen.If(jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").Id("newMetadataResult").Op("!=").Nil()).Block(
+							jen.Var().Id("__winnerClient").String(),
+							jen.Var().Id("__winnerProvider").String(),
+							jen.Var().Id("__bamlCallCount").Op("*").Int(),
+							jen.If(jen.Id("flOk")).Block(
+								jen.If(
+									jen.List(jen.Id("__sel"), jen.Id("__selErr")).Op(":=").Id("fl").Dot("SelectedCall").Call(),
+									jen.Id("__selErr").Op("==").Nil().Op("&&").Id("__sel").Op("!=").Nil(),
+								).Block(
+									jen.If(
+										jen.List(jen.Id("__cn"), jen.Id("__cnErr")).Op(":=").Id("__sel").Dot("ClientName").Call(),
+										jen.Id("__cnErr").Op("==").Nil(),
+									).Block(jen.Id("__winnerClient").Op("=").Id("__cn")),
+									jen.If(
+										jen.List(jen.Id("__pv"), jen.Id("__pvErr")).Op(":=").Id("__sel").Dot("Provider").Call(),
+										jen.Id("__pvErr").Op("==").Nil(),
+									).Block(jen.Id("__winnerProvider").Op("=").Id("__pv")),
+								),
+								jen.If(
+									jen.List(jen.Id("__calls"), jen.Id("__callsErr")).Op(":=").Id("fl").Dot("Calls").Call(),
+									jen.Id("__callsErr").Op("==").Nil(),
+								).Block(
+									jen.Id("__n").Op(":=").Len(jen.Id("__calls")).Op("-").Lit(1),
+									jen.If(jen.Id("__n").Op("<").Lit(0)).Block(jen.Id("__n").Op("=").Lit(0)),
+									jen.Id("__bamlCallCount").Op("=").Op("&").Id("__n"),
+								),
+							),
+							jen.Id("__outcome").Op(":=").Qual(common.InterfacesPkg, "BuildLegacyOutcome").Call(
+								jen.Id("plannedMetadata"),
+								jen.Qual("time", "Since").Call(jen.Id("startTime")).Dot("Milliseconds").Call(),
+								jen.Id("__winnerClient"),
+								jen.Id("__winnerProvider"),
+								jen.Id("__bamlCallCount"),
+							),
+							jen.If(jen.Id("__outcome").Op("!=").Nil()).Block(
+								jen.Id("__om").Op(":=").Id("newMetadataResult").Call(jen.Id("__outcome")),
+								jen.If(jen.Id("__om").Op("!=").Nil()).Block(
+									jen.Select().Block(
+										jen.Case(jen.Id("out").Op("<-").Id("__om")).Block(),
+										jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+											jen.Id("release").Call(jen.Id("__om")),
+											jen.Return(jen.Nil()),
+										),
+									),
+								),
+							),
+						),
+
 						jen.Id("__r").Op(":=").Id("emitFinal").Call(jen.Id("finalResult"), jen.Id("finalRaw")),
 						jen.Select().Block(
 							jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),

@@ -87,21 +87,15 @@ func TestStreamEndpoint(t *testing.T) {
 			t.Errorf("Expected John Doe (30), got %s (%d)", person.Name, person.Age)
 		}
 
-		// Routing metadata: on BuildRequest the first semantic event is
-		// planned metadata, and outcome metadata arrives before final.
-		// Legacy path may emit planned (but no outcome) depending on the
-		// version; assert only on BuildRequest to keep the legacy matrix
-		// stable.
+		// Routing metadata: both legs emit planned as the first semantic
+		// event and outcome before final. Per-path invariants (winner
+		// derivation, RetryCount vs BamlCallCount, etc.) are checked by
+		// the appropriate tracker assertion below.
+		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
 		if ActuallyBuildRequest() {
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertBuildRequestInvariants()
+		} else {
+			tracker.assertLegacyInvariants()
 		}
 	})
 
@@ -925,16 +919,11 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 		}
 
 		// NDJSON metadata parity with the SSE path.
+		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
 		if ActuallyBuildRequest() {
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertBuildRequestInvariants()
+		} else {
+			tracker.assertLegacyInvariants()
 		}
 	})
 
@@ -1264,16 +1253,11 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 		// BuildRequest must emit exactly one planned + one outcome event,
 		// with the correct ordering, and planned must arrive BEFORE any
 		// raw/data event so clients see routing info first.
+		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
 		if ActuallyBuildRequest() {
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertBuildRequestInvariants()
+		} else {
+			tracker.assertLegacyInvariants()
 		}
 	})
 
@@ -1669,16 +1653,11 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 		// BuildRequest must emit exactly one planned + one outcome event,
 		// with the correct ordering, and planned must arrive BEFORE any
 		// raw/data event so clients see routing info first.
+		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
 		if ActuallyBuildRequest() {
-			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
-				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
-					if firstSemanticEvent == nil {
-						return "<none>"
-					}
-					return firstSemanticEvent.Event
-				}())
-			}
 			tracker.assertBuildRequestInvariants()
+		} else {
+			tracker.assertLegacyInvariants()
 		}
 	})
 }
@@ -2205,6 +2184,23 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 	})
 }
 
+// assertFirstSemanticEventIsMetadata fails the test if the first event a
+// stream consumer observed after heartbeat filtering was not the planned
+// metadata event. Both paths emit planned as the first post-heartbeat
+// event (BuildRequest from the orchestrator's sendHeartbeat, legacy from
+// the onTick first-tick CAS), so the check is path-independent.
+func assertFirstSemanticEventIsMetadata(t *testing.T, ev *testutil.StreamEvent) {
+	t.Helper()
+	if ev != nil && ev.IsMetadata() {
+		return
+	}
+	got := "<none>"
+	if ev != nil {
+		got = ev.Event
+	}
+	t.Errorf("first semantic event should be metadata; got event type %q", got)
+}
+
 // metadataTracker records routing-metadata events during a stream drain
 // and enforces the "exactly one planned, zero-or-one outcome, outcome
 // before final" invariants. Duplicate planned/outcome events fail the
@@ -2295,5 +2291,57 @@ func (m *metadataTracker) assertBuildRequestInvariants() {
 	}
 	if m.outcome != nil && m.outcome.WinnerProvider == "" {
 		m.t.Errorf("outcome.WinnerProvider: expected non-empty on BuildRequest path")
+	}
+}
+
+// assertLegacyInvariants checks the legacy-path emission contract: planned
+// present, outcome present (as of the legacy-outcome change), planned before
+// outcome, outcome before final. Outcome carries WinnerPath="legacy" and
+// UpstreamDurMs; RetryCount stays nil (legacy has no outer retry
+// orchestrator). BamlCallCount derives from FunctionLog.Calls and is
+// expected to be present whenever any onTick fired (the common case).
+func (m *metadataTracker) assertLegacyInvariants() {
+	m.t.Helper()
+	if m.planned == nil {
+		m.t.Errorf("expected planned metadata event on legacy path")
+	}
+	if m.outcome == nil {
+		m.t.Errorf("expected outcome metadata event on legacy path")
+	}
+	if m.planned != nil && m.outcome != nil && m.plannedIdx >= m.outcomeIdx {
+		m.t.Errorf("planned metadata (idx %d) must precede outcome (idx %d)", m.plannedIdx, m.outcomeIdx)
+	}
+	if m.outcome != nil && m.finalSeen && m.outcomeIdx >= m.finalIdx {
+		m.t.Errorf("outcome metadata (idx %d) must precede final (idx %d)", m.outcomeIdx, m.finalIdx)
+	}
+	if m.planned != nil && m.planned.Path != "legacy" {
+		m.t.Errorf("planned.Path: got %q, want %q", m.planned.Path, "legacy")
+	}
+	if m.outcome != nil {
+		if m.outcome.WinnerPath != "legacy" {
+			m.t.Errorf("outcome.WinnerPath: got %q, want %q", m.outcome.WinnerPath, "legacy")
+		}
+		if m.outcome.UpstreamDurMs == nil {
+			m.t.Errorf("outcome.UpstreamDurMs: expected non-nil on legacy outcome")
+		}
+		if m.outcome.RetryCount != nil {
+			m.t.Errorf("outcome.RetryCount: must be nil on legacy (got %v)", *m.outcome.RetryCount)
+		}
+		// WinnerProvider is populated either from funcLog.SelectedCall
+		// (strategy routes) or from the planned Provider fallback
+		// (single-provider routes); both apply here. Strategy routes
+		// without a successful child would fall outside the helper's
+		// happy-path contract.
+		if m.outcome.WinnerProvider == "" {
+			m.t.Errorf("outcome.WinnerProvider: expected non-empty on legacy outcome")
+		}
+		// BamlCallCount is derived from funcLog.Calls(), which the
+		// orchestrator captures on every onTick. Any non-trivial stream
+		// fires onTick at least once, so this is non-nil in the common
+		// case. The graceful-degradation path (no onTick before final)
+		// would leave it nil, but no production stream should hit that.
+		if m.outcome.BamlCallCount == nil {
+			m.t.Errorf("outcome.BamlCallCount: expected non-nil on legacy outcome (onTick should have fired)")
+		}
 	}
 }

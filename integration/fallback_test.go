@@ -170,19 +170,24 @@ func TestFallbackCall(t *testing.T) {
 
 			// Routing metadata: Client is the strategy name (always set).
 			// Retry-Max comes from the retry policy wired on the fallback
-			// client (FallbackRetry: max_retries 3). Winner-Client /
-			// Winner-Provider only appear on BuildRequest, which synthesizes
-			// outcome metadata from the winning child.
+			// client (FallbackRetry: max_retries 3). Both legs now report a
+			// Winner-Client distinct from the strategy: BuildRequest tracks
+			// it via its own chain walk, legacy via funcLog.SelectedCall.
+			// Legacy additionally reports BamlCallCount; RetryCount stays
+			// buildrequest-only (legacy has no outer orchestrator).
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackPair")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryMax, "3")
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			if ActuallyBuildRequest() {
-				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
-				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
-				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
-				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
-				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+				// Two children walked (primary failed, secondary succeeded);
+				// hit-count assertion above pins this at 2 calls total, so
+				// BamlCallCount = max(2-1, 0) = 1.
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBamlCallCount, "1")
 			}
 		})
 
@@ -244,17 +249,22 @@ func TestFallbackCall(t *testing.T) {
 			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1, "fallback-tertiary": 1})
 
 			// Routing metadata: three-client chain reports the strategy
-			// client name and on BuildRequest the tertiary winner.
+			// client name and the tertiary winner on both legs (legacy
+			// derives it from funcLog.SelectedCall, BuildRequest from its
+			// own chain walk).
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackChain")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryMax, "3")
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackTertiary")
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			if ActuallyBuildRequest() {
-				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackTertiary")
-				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
-				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
-				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
-				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+				// Three children walked (primary + secondary failed, tertiary
+				// succeeded); hit-count assertion above pins this at 3 calls
+				// total, so BamlCallCount = max(3-1, 0) = 2.
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBamlCallCount, "2")
 			}
 		})
 
@@ -404,14 +414,17 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			// with /call, so the same fallback assertions apply.
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackPair")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryMax, "3")
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			if ActuallyBuildRequest() {
-				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
-				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
-				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
-				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerProvider)
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
-				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+				// Two children walked (primary failed, secondary succeeded);
+				// hit-count assertion above pins this at 2 calls total, so
+				// BamlCallCount = max(2-1, 0) = 1.
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBamlCallCount, "1")
 			}
 		})
 	})
@@ -538,8 +551,9 @@ func TestFallbackStream(t *testing.T) {
 		assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 1})
 
 		// Streaming routing metadata events. Planned describes the chain,
-		// outcome carries the winner. Only BuildRequest synthesizes outcome
-		// today (§4f); the legacy path may emit planned but no outcome.
+		// outcome carries the winner. Both legs synthesize outcome since
+		// the legacy-outcome change; legacy derives the winner from
+		// funcLog.SelectedCall and additionally exposes BamlCallCount.
 		if tracker.planned == nil {
 			t.Fatalf("expected planned metadata event")
 		}
@@ -561,6 +575,23 @@ func TestFallbackStream(t *testing.T) {
 				}
 				if tracker.outcome.WinnerProvider != "openai" {
 					t.Errorf("outcome.WinnerProvider: got %q, want openai", tracker.outcome.WinnerProvider)
+				}
+			}
+		} else {
+			tracker.assertLegacyInvariants()
+			if tracker.outcome != nil {
+				if tracker.outcome.WinnerClient != "FallbackSecondary" {
+					t.Errorf("legacy outcome.WinnerClient: got %q, want FallbackSecondary", tracker.outcome.WinnerClient)
+				}
+				if tracker.outcome.WinnerProvider != "openai" {
+					t.Errorf("legacy outcome.WinnerProvider: got %q, want openai", tracker.outcome.WinnerProvider)
+				}
+				// Two children walked (primary failed, secondary succeeded);
+				// BamlCallCount = max(2-1, 0) = 1.
+				if tracker.outcome.BamlCallCount == nil {
+					t.Errorf("legacy outcome.BamlCallCount: expected non-nil")
+				} else if *tracker.outcome.BamlCallCount != 1 {
+					t.Errorf("legacy outcome.BamlCallCount: got %d, want 1", *tracker.outcome.BamlCallCount)
 				}
 			}
 		}
