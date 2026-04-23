@@ -7,6 +7,33 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
+func TestParseDisableCallBuildRequestEnv(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"empty", "", false},
+		{"true", "true", true},
+		{"True", "True", true},
+		{"1", "1", true},
+		{"on", "on", true},
+		{"yes", "yes", true},
+		{"false", "false", false},
+		{"0", "0", false},
+		{"off", "off", false},
+		{"garbage", "garbage", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BAML_REST_DISABLE_CALL_BUILD_REQUEST", tc.value)
+			if got := parseDisableCallBuildRequestEnv(); got != tc.want {
+				t.Errorf("value=%q: got %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveProviderWithReason_BuildRequestSupported(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
 	res := ResolveProviderWithReason(adapter, "MyClient", "openai", IsProviderSupported)

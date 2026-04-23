@@ -55,6 +55,43 @@ func UseBuildRequest() bool {
 	return useBuildRequestCached
 }
 
+// parseDisableCallBuildRequestEnv reads BAML_REST_DISABLE_CALL_BUILD_REQUEST
+// and returns its boolean interpretation. Extracted so the test can verify
+// parsing logic independently of the cache.
+func parseDisableCallBuildRequestEnv() bool {
+	v := os.Getenv("BAML_REST_DISABLE_CALL_BUILD_REQUEST")
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// disableCallBuildRequestOnce caches the result of the env lookup so
+// IsCallProviderSupported stays hot. Same rationale as useBuildRequestOnce.
+var disableCallBuildRequestOnce sync.Once
+var disableCallBuildRequestCached bool
+
+// disableCallBuildRequest returns true when BAML_REST_DISABLE_CALL_BUILD_REQUEST
+// is set, forcing the non-streaming Request API off for all providers. The
+// call-mode router block then declines and /call{,-with-raw} fall through to
+// the stream-accumulation bridge (when StreamRequest is available) or legacy.
+//
+// Primary uses:
+//
+//   - Exercising the bridge path in integration tests without relying on an
+//     organic divergence between callSupportedProviders and supportedProviders.
+//   - An operational escape hatch if the non-streaming Request API regresses
+//     for a provider; flipping this forces bridging at a latency cost while a
+//     fix ships.
+func disableCallBuildRequest() bool {
+	disableCallBuildRequestOnce.Do(func() {
+		disableCallBuildRequestCached = parseDisableCallBuildRequestEnv()
+	})
+	return disableCallBuildRequestCached
+}
+
 // supportedProviders is the set of providers whose SSE format is handled by
 // ExtractDeltaFromText. This must match the switch cases in that function
 // exactly — any provider not in this set falls back to the legacy path.
@@ -103,7 +140,14 @@ var callSupportedProviders = map[string]bool{
 // response format is handled by ExtractResponseContent and the provider
 // supports BAML's Request API. Unknown providers fall back to the legacy
 // CallStream+OnTick path.
+//
+// Returns false for every provider when BAML_REST_DISABLE_CALL_BUILD_REQUEST
+// is set, which routes /call{,-with-raw} through the stream-accumulation
+// bridge (or legacy, if StreamRequest is unavailable).
 func IsCallProviderSupported(provider string) bool {
+	if disableCallBuildRequest() {
+		return false
+	}
 	return callSupportedProviders[provider]
 }
 
