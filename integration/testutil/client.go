@@ -332,6 +332,7 @@ func (e *StreamEvent) IsMetadata() bool {
 // fields get added. Extend this only when a test needs a new field.
 type StreamMetadata struct {
 	Phase          string   `json:"phase"`
+	Path           string   `json:"path,omitempty"`
 	Client         string   `json:"client,omitempty"`
 	Chain          []string `json:"chain,omitempty"`
 	RetryMax       *int     `json:"retry_max,omitempty"`

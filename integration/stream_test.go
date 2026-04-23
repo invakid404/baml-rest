@@ -2237,7 +2237,9 @@ func (m *metadataTracker) markFinal() {
 
 // assertBuildRequestInvariants checks the BuildRequest-path emission
 // contract: planned present, outcome present, planned before outcome,
-// outcome before final.
+// outcome before final. Also light payload sanity so field regressions
+// (e.g. an empty Client or a wrong Path literal) are caught in the
+// generic stream tests instead of only the fallback ones.
 func (m *metadataTracker) assertBuildRequestInvariants() {
 	m.t.Helper()
 	if m.planned == nil {
@@ -2251,5 +2253,20 @@ func (m *metadataTracker) assertBuildRequestInvariants() {
 	}
 	if m.outcome != nil && m.finalSeen && m.outcomeIdx >= m.finalIdx {
 		m.t.Errorf("outcome metadata (idx %d) must precede final (idx %d)", m.outcomeIdx, m.finalIdx)
+	}
+	// Payload sanity: enforce the fields every BuildRequest run should
+	// populate. Specific values (winner client name, chain membership,
+	// retry-max) stay in the fallback test; here we just guard against
+	// empty-string drift.
+	if m.planned != nil {
+		if m.planned.Path != "buildrequest" {
+			m.t.Errorf("planned.Path: got %q, want %q", m.planned.Path, "buildrequest")
+		}
+		if m.planned.Client == "" {
+			m.t.Errorf("planned.Client: expected non-empty on BuildRequest path")
+		}
+	}
+	if m.outcome != nil && m.outcome.WinnerProvider == "" {
+		m.t.Errorf("outcome.WinnerProvider: expected non-empty on BuildRequest path")
 	}
 }
