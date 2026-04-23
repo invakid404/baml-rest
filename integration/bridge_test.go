@@ -179,4 +179,65 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryCount, "0")
 		testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 	})
+
+	// Fallback-chain /call under the disable flag: call-side
+	// ResolveFallbackChain sees every child as legacy-under-call and
+	// returns nil (all-legacy short circuit), so the call block declines;
+	// the bridge block re-resolves with IsProviderSupported, accepts the
+	// chain with all children as BuildRequest-driven, and the stream
+	// orchestrator walks the strategy. Covers the new mixed-chain guard's
+	// fall-through composition: call-side refuses → bridge accepts → chain
+	// succeeds end-to-end.
+	t.Run("fallback_chain_call_bridges_to_streamrequest", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Primary returns 500 immediately; secondary succeeds.
+		if err := mockClient.RegisterScenario(ctx, &mockllm.Scenario{
+			ID:          "fallback-primary",
+			Provider:    "openai",
+			Content:     "should not see this",
+			FailAfter:   1,
+			FailureMode: "500",
+		}); err != nil {
+			t.Fatalf("register primary: %v", err)
+		}
+		if err := mockClient.RegisterScenario(ctx, &mockllm.Scenario{
+			ID:             "fallback-secondary",
+			Provider:       "openai",
+			Content:        "Hello from secondary!",
+			ChunkSize:      20,
+			InitialDelayMs: 10,
+			ChunkDelayMs:   5,
+		}); err != nil {
+			t.Fatalf("register secondary: %v", err)
+		}
+
+		resp, err := bamlClient.Call(ctx, testutil.CallRequest{
+			Method: "GetGreetingFallbackPair",
+			Input:  map[string]any{"name": "Bridge"},
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if result != "Hello from secondary!" {
+			t.Errorf("got %q, want %q", result, "Hello from secondary!")
+		}
+
+		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
+		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI, "streamrequest")
+		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackPair")
+		// Secondary won; surface it as winner-client to distinguish from
+		// the strategy name in planned.Client.
+		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
+		testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+	})
 }

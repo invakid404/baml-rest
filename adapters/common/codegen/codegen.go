@@ -2178,6 +2178,22 @@ func Generate(selfPkg string) {
 			)
 		}
 
+		// fallbackChainConsumeCond builds the condition guarding the call-side
+		// fallback block. When a StreamRequest bridge exists downstream, the
+		// call block only consumes chains with no call-legacy children; mixed
+		// chains must fall through so the bridge can re-resolve them with
+		// IsProviderSupported and drive call-legacy-but-stream-supported
+		// children through the streaming path rather than legacyCallChildFn.
+		// Without a bridge, the call block is the only BuildRequest landing
+		// spot and accepts any non-empty chain, matching pre-bridge behaviour.
+		fallbackChainConsumeCond := func(hasBridge bool) jen.Code {
+			nonEmpty := jen.Len(jen.Id("__chain")).Op(">").Lit(0)
+			if !hasBridge {
+				return nonEmpty
+			}
+			return nonEmpty.Op("&&").Len(jen.Id("__legacyChildren")).Op("==").Lit(0)
+		}
+
 		// Non-streaming BuildRequest path for /call and /call-with-raw.
 		// Uses Request (not StreamRequest) to build non-streaming HTTP requests.
 		// Checked before the streaming path since it's more efficient for call modes.
@@ -2218,10 +2234,16 @@ func Generate(selfPkg string) {
 						jen.Return(jen.Id("out"), jen.Nil()),
 					),
 					// Fallback chain path: if single-provider check failed,
-					// try resolving a fallback chain. Mixed chains (with
-					// any legacy children) route through the BuildRequest
-					// path — the orchestrator dispatches legacy children
-					// to the generated legacyCallChildFn.
+					// try resolving a fallback chain. When a bridge block
+					// exists (hasBuildRequest), a mixed chain — one with any
+					// call-legacy children — must fall through so the bridge
+					// re-resolves it with IsProviderSupported; a child that is
+					// call-legacy may still be stream-supported, and the
+					// bridge's StreamRequest path drives such children better
+					// than legacyCallChildFn. This block therefore only takes
+					// chains that are fully call-supported. When no bridge
+					// exists (hasBuildRequest=false) mixed chains stay here,
+					// matching the pre-bridge behaviour.
 					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
 						jen.Id("adapter"),
 						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
@@ -2229,7 +2251,7 @@ func Generate(selfPkg string) {
 						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 						jen.Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
 					),
-					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
+					jen.If(fallbackChainConsumeCond(hasBuildRequest)).Block(
 						resolveRetryPolicy(),
 						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlan").Call(
 							jen.Id("adapter"),
