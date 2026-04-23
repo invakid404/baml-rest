@@ -188,17 +188,31 @@ func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenU
 	// resp.Reset() which clears SetNoDefaultContentType back to false.
 	fResp.Header.SetNoDefaultContentType(true)
 
+	// teardownOnError cleans up all state owned by this stream attempt on
+	// early-exit paths (non-2xx status, bad Content-Type, missing body
+	// stream). Parallels fastStreamReader.Close: releases pooled request/
+	// response, drains the per-request HostClient's idle pool, and
+	// closes the captured socket via the slot. Without the drain +
+	// shutdown calls, each early-return stream leaked an idle conn plus
+	// its fasthttp cleaner goroutine until MaxIdleConnDuration (see
+	// Close() docstring for the rationale).
+	teardownOnError := func() {
+		releaseFastExchange(fReq, fResp)
+		hc.CloseIdleConnections()
+		slot.shutdown()
+	}
+
 	status := fResp.StatusCode()
 	if status < 200 || status >= 300 {
 		body := readFastBodyCappedSlot(ctx, fResp, slot, MaxErrorBodyBytes)
-		releaseFastExchange(fReq, fResp)
+		teardownOnError()
 		return nil, &HTTPError{StatusCode: status, Body: string(body)}
 	}
 
 	ct := strings.ToLower(string(fResp.Header.ContentType()))
 	if !strings.Contains(ct, "text/event-stream") {
 		body := readFastBodyCappedSlot(ctx, fResp, slot, MaxErrorBodyBytes)
-		releaseFastExchange(fReq, fResp)
+		teardownOnError()
 		if ct == "" {
 			return nil, fmt.Errorf("llmhttp: missing Content-Type header (expected text/event-stream): %s", string(body))
 		}
@@ -210,7 +224,7 @@ func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenU
 		// Defensive: without StreamResponseBody on the HostClient the body
 		// would be pre-buffered and BodyStream would be nil. That would be
 		// a configuration bug in this package.
-		releaseFastExchange(fReq, fResp)
+		teardownOnError()
 		return nil, fmt.Errorf("llmhttp: fasthttp response has no body stream (is StreamResponseBody enabled?)")
 	}
 
@@ -238,6 +252,14 @@ func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenU
 // the rewritten URL so the dispatcher can apply URL rewrite exactly once
 // (the net/http path has the same factoring).
 func buildFastRequest(fReq *fasthttp.Request, req *Request, rewrittenURL string) {
+	// HostClient.DisableHeaderNamesNormalizing only affects response
+	// parsing inside fasthttp; request headers are normalised to
+	// canonical case unless we explicitly disable it on the request
+	// header struct. Do that before Set() so the caller's exact casing
+	// reaches the wire — some upstreams key routing / auth off
+	// case-sensitive header names.
+	fReq.Header.DisableNormalizing()
+
 	fReq.SetRequestURI(rewrittenURL)
 	if req.Method != "" {
 		fReq.Header.SetMethod(req.Method)

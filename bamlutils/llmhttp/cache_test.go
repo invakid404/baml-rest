@@ -1,6 +1,7 @@
 package llmhttp
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"sync"
@@ -56,7 +57,7 @@ func TestProtocolCacheMode_HTTPAlwaysFast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := cache.resolve(origin)
+	entry := cache.resolve(context.Background(), origin)
 	if entry.decision != decisionFast {
 		t.Errorf("http:// expected decisionFast, got %d", entry.decision)
 	}
@@ -71,7 +72,7 @@ func TestProtocolCacheMode_OverrideFast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := cache.resolve(origin)
+	entry := cache.resolve(context.Background(), origin)
 	if entry.decision != decisionFast {
 		t.Errorf("modeFast should pin decisionFast, got %d", entry.decision)
 	}
@@ -86,7 +87,7 @@ func TestProtocolCacheMode_OverrideNet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := cache.resolve(origin)
+	entry := cache.resolve(context.Background(), origin)
 	if entry.decision != decisionNet {
 		t.Errorf("modeNet should pin decisionNet, got %d", entry.decision)
 	}
@@ -104,7 +105,7 @@ func TestProtocolCache_ProxyPinsNet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := cache.resolve(origin)
+	entry := cache.resolve(context.Background(), origin)
 	if entry.decision != decisionNet {
 		t.Errorf("proxy-configured origin expected decisionNet, got %d", entry.decision)
 	}
@@ -122,7 +123,7 @@ func TestProtocolCache_ProxyPinsNetForHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := cache.resolve(origin)
+	entry := cache.resolve(context.Background(), origin)
 	if entry.decision != decisionNet {
 		t.Errorf("http:// with proxy expected decisionNet (so ProxyFromEnvironment applies via net/http), got %d", entry.decision)
 	}
@@ -139,7 +140,7 @@ func TestProtocolCache_CacheHitIsLockFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Warm once.
-	_ = cache.resolve(origin)
+	_ = cache.resolve(context.Background(), origin)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
@@ -147,7 +148,7 @@ func TestProtocolCache_CacheHitIsLockFree(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 1000; j++ {
-				_ = cache.resolve(origin)
+				_ = cache.resolve(context.Background(), origin)
 			}
 		}()
 	}
@@ -175,7 +176,7 @@ func TestProtocolCache_SingleflightDedupe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = cache.resolve(origin)
+			_ = cache.resolve(context.Background(), origin)
 		}()
 	}
 	wg.Wait()

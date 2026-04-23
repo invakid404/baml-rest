@@ -102,14 +102,29 @@ type Client struct {
 // If httpClient is nil, http.DefaultClient is used.
 //
 // The client mode (auto / fasthttp / nethttp) is read from the
-// BAML_REST_HTTP_CLIENT environment variable at construction time. TLS
-// configuration and proxy resolution are inherited from the supplied
-// http.Client's Transport when it is an *http.Transport — so private CAs,
-// custom verification, and programmatically configured proxies apply to
-// the ALPN probe and the fasthttp backend as well as the net/http
-// backend. When the Transport has no Proxy set, the cache falls back to
-// http.ProxyFromEnvironment so HTTP_PROXY/HTTPS_PROXY still pin matching
-// origins to net/http.
+// BAML_REST_HTTP_CLIENT environment variable at construction time.
+//
+// # Injected http.Client scope
+//
+// When a request dispatches to the fasthttp backend (either via the
+// auto-mode ALPN probe or the explicit "fasthttp" override), the
+// supplied http.Client is used ONLY to derive:
+//   - TLS configuration (Transport.TLSClientConfig), mirrored into the
+//     probe dialer and the per-origin HostClient so private CAs and
+//     custom verification work on the fasthttp path;
+//   - Proxy resolution (Transport.Proxy), used to pin proxy-destined
+//     origins back to net/http since fasthttp has no
+//     ProxyFromEnvironment equivalent.
+//
+// Other fields of http.Client and http.Transport are intentionally NOT
+// honoured on the fasthttp path — Timeout, CheckRedirect, Jar, custom
+// RoundTripper wrappers, and Transport-level settings like
+// MaxIdleConns, MaxConnsPerHost, or ResponseHeaderTimeout all bypass
+// the fasthttp backend. This is by design: fasthttp is the alternative
+// transport, not a layer underneath net/http. Callers who need a
+// specific http.Client invariant to apply to every request should
+// either wrap llmhttp.Client at a higher layer, or force the net/http
+// path via BAML_REST_HTTP_CLIENT=nethttp.
 func NewClient(httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -210,7 +225,7 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 	// returning; cache hits are a single atomic load.
 	if c.cache != nil {
 		if origin, err := parseOrigin(rewritten); err == nil {
-			if entry := c.cache.resolve(origin); entry != nil && entry.decision == decisionFast && entry.host != nil {
+			if entry := c.cache.resolve(ctx, origin); entry != nil && entry.decision == decisionFast && entry.host != nil {
 				return c.executeStreamFast(ctx, req, rewritten, entry.host)
 			}
 		}
@@ -324,7 +339,7 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 
 	if c.cache != nil {
 		if origin, err := parseOrigin(rewritten); err == nil {
-			if entry := c.cache.resolve(origin); entry != nil && entry.decision == decisionFast && entry.host != nil {
+			if entry := c.cache.resolve(ctx, origin); entry != nil && entry.decision == decisionFast && entry.host != nil {
 				return c.executeFast(ctx, req, rewritten, entry.host, onSuccess)
 			}
 		}

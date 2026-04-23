@@ -1,6 +1,7 @@
 package llmhttp
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -180,12 +181,20 @@ func parseOrigin(rawURL string) (originURL, error) {
 // resolve returns the routing decision for the given origin. On the hot
 // path (entry already cached) it performs a single atomic load. On cold
 // origin, a singleflight-gated probe populates the cache before returning.
-func (c *protocolCache) resolve(origin originURL) *hostEntry {
+//
+// A cancelled ctx unblocks the caller early: the singleflight probe keeps
+// running in the background so other waiters (and any subsequent request
+// to the same origin) get a populated entry, but this caller returns nil
+// so the dispatcher can fall back to net/http and let the request's own
+// cancellation propagate. Returning nil here is the well-defined "we
+// couldn't classify this origin in time" signal — the dispatcher treats
+// it the same as a cache miss that hasn't resolved yet.
+func (c *protocolCache) resolve(ctx context.Context, origin originURL) *hostEntry {
 	if entry := c.lookup(origin.key); entry != nil {
 		return entry
 	}
 
-	v, _, _ := c.sf.Do(origin.key, func() (any, error) {
+	ch := c.sf.DoChan(origin.key, func() (any, error) {
 		// Re-check after joining the flight: another caller may have
 		// installed while we were queued behind the mutex in sf.Do.
 		if entry := c.lookup(origin.key); entry != nil {
@@ -196,7 +205,12 @@ func (c *protocolCache) resolve(origin originURL) *hostEntry {
 		c.install(origin.key, entry)
 		return entry, nil
 	})
-	return v.(*hostEntry)
+	select {
+	case r := <-ch:
+		return r.Val.(*hostEntry)
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 func (c *protocolCache) lookup(key string) *hostEntry {
@@ -229,6 +243,12 @@ func (c *protocolCache) install(key string, entry *hostEntry) {
 // decides. Probe failures default to net/http — safe because net/http
 // handles both h1 and h2, so the request still succeeds; we just lose the
 // fasthttp speedup until the process restarts.
+//
+// The TLS handshake runs with its own short timeout (probeTimeout). It
+// is intentionally not ctx-aware: resolve() runs probe under singleflight
+// and lets a cancelled ctx return early while the probe keeps running in
+// the background to serve other waiters — tying the handshake timeout to
+// the first caller's ctx would abort shared work on that caller's whim.
 func (c *protocolCache) probe(origin originURL) decision {
 	switch c.mode {
 	case modeFast:
@@ -262,14 +282,25 @@ func (c *protocolCache) probe(origin originURL) decision {
 	cfg.ServerName = origin.hostname
 	cfg.NextProtos = []string{"h2", "http/1.1"}
 
-	dialer := *c.probeDialer
-	dialer.Timeout = c.probeTimeout
-	conn, err := tls.DialWithDialer(&dialer, "tcp", origin.addr(), cfg)
+	probeCtx, cancel := context.WithTimeout(context.Background(), c.probeTimeout)
+	defer cancel()
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{
+			Timeout:   c.probeTimeout,
+			KeepAlive: c.probeDialer.KeepAlive,
+		},
+		Config: cfg,
+	}
+	rawConn, err := dialer.DialContext(probeCtx, "tcp", origin.addr())
 	if err != nil {
 		return decisionNet
 	}
-	defer conn.Close()
-	if conn.ConnectionState().NegotiatedProtocol == "h2" {
+	defer rawConn.Close()
+	tlsConn, ok := rawConn.(*tls.Conn)
+	if !ok {
+		return decisionNet
+	}
+	if tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
 		return decisionNet
 	}
 	return decisionFast

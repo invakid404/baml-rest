@@ -133,39 +133,96 @@ func TestFastExecute_OversizedResponse(t *testing.T) {
 }
 
 func TestFastExecute_HeadersForwardedCasePreserved(t *testing.T) {
-	// fasthttp defaults to header-name normalisation; our HostClient
-	// template disables it so header casing matches what the caller sent —
-	// important for providers that treat header names case-sensitively.
-	seen := make(chan http.Header, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen <- r.Header.Clone()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
-		fmt.Fprint(w, `{"ok":true}`)
-	}))
-	defer server.Close()
+	// fasthttp's HostClient normalises header names by default; our
+	// template disables that so header casing matches what the caller
+	// sent — important for providers that treat header names case-
+	// sensitively. net/http's Server canonicalises on parse (every
+	// key becomes Canonical-Header-Key), so an httptest.Server-based
+	// assertion can't observe the actual on-wire casing. Use a raw
+	// net.Listener and parse the request bytes directly.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
 
-	c := withFastClient(t, server.Client())
-	_, err := c.Execute(context.Background(), &Request{
-		URL:    server.URL,
+	rawHeaders := make(chan []string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Read the full request preamble (ends with CRLF CRLF). Cap
+		// the read so a malformed client can't hang the test.
+		buf := make([]byte, 4096)
+		n := 0
+		for n < len(buf) {
+			_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			m, err := conn.Read(buf[n:])
+			n += m
+			if err != nil {
+				break
+			}
+			if idx := strings.Index(string(buf[:n]), "\r\n\r\n"); idx >= 0 {
+				break
+			}
+		}
+		lines := strings.Split(string(buf[:n]), "\r\n")
+		// lines[0] is the request line; lines[1..] are headers until
+		// the empty line. Forward just the header lines.
+		var hdrs []string
+		for _, line := range lines[1:] {
+			if line == "" {
+				break
+			}
+			hdrs = append(hdrs, line)
+		}
+		rawHeaders <- hdrs
+		// Write a minimal response so the client's Execute returns
+		// cleanly rather than with a read error.
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"))
+	}()
+
+	c := withFastClient(t, nil)
+	_, err = c.Execute(context.Background(), &Request{
+		URL:    "http://" + ln.Addr().String(),
 		Method: "POST",
 		Headers: map[string]string{
 			"Authorization": "Bearer test",
 			"x-custom":      "v1",
+			"X-MixedCase":   "v2",
 		},
 		Body: `{}`,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := <-seen
-	if h.Get("Authorization") != "Bearer test" {
-		t.Errorf("Authorization not forwarded: %q", h.Get("Authorization"))
+
+	hdrs := <-rawHeaders
+
+	findHeader := func(name string) (string, bool) {
+		prefix := name + ":"
+		for _, h := range hdrs {
+			if strings.HasPrefix(h, prefix) {
+				return strings.TrimSpace(h[len(prefix):]), true
+			}
+		}
+		return "", false
 	}
-	// Go's http server normalises keys to canonical form on read; the
-	// point here is just that the value round-tripped.
-	if h.Get("X-Custom") != "v1" {
-		t.Errorf("x-custom not forwarded: %q", h.Get("X-Custom"))
+
+	// Canonical-case header should arrive with its original casing.
+	if v, ok := findHeader("Authorization"); !ok || v != "Bearer test" {
+		t.Errorf("Authorization header missing or wrong: got %q present=%v; raw lines: %q", v, ok, hdrs)
+	}
+	// Lowercase header must arrive lowercase on the wire, not
+	// canonicalised to "X-Custom".
+	if v, ok := findHeader("x-custom"); !ok || v != "v1" {
+		t.Errorf("x-custom should preserve lower-case on wire: got %q present=%v; raw lines: %q", v, ok, hdrs)
+	}
+	// MixedCase should also round-trip verbatim.
+	if v, ok := findHeader("X-MixedCase"); !ok || v != "v2" {
+		t.Errorf("X-MixedCase should preserve casing on wire: got %q present=%v; raw lines: %q", v, ok, hdrs)
 	}
 }
 
