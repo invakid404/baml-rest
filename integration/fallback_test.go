@@ -175,7 +175,7 @@ func TestFallbackCall(t *testing.T) {
 			// outcome metadata from the winning child.
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackPair")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryMax, "3")
-			if UseBuildRequest {
+			if ActuallyBuildRequest() {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 			} else {
@@ -247,7 +247,7 @@ func TestFallbackCall(t *testing.T) {
 			// client name and on BuildRequest the tertiary winner.
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackChain")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryMax, "3")
-			if UseBuildRequest {
+			if ActuallyBuildRequest() {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackTertiary")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 			} else {
@@ -404,7 +404,7 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			// with /call, so the same fallback assertions apply.
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackPair")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryMax, "3")
-			if UseBuildRequest {
+			if ActuallyBuildRequest() {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 			} else {
@@ -550,7 +550,7 @@ func TestFallbackStream(t *testing.T) {
 			t.Errorf("planned.RetryMax: got %v, want 3", tracker.planned.RetryMax)
 		}
 		wantChain := []string{"FallbackPrimary", "FallbackSecondary"}
-		if UseBuildRequest {
+		if ActuallyBuildRequest() {
 			if !equalSliceStrings(tracker.planned.Chain, wantChain) {
 				t.Errorf("planned.Chain: got %v, want %v", tracker.planned.Chain, wantChain)
 			}

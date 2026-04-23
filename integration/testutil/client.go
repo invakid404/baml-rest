@@ -766,6 +766,32 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 	var currentEvent StreamEvent
 	var dataBuffer bytes.Buffer
 
+	// flushCurrentEvent copies the buffered bytes into the event and sends
+	// it on the channel. The copy is mandatory: dataBuffer.Bytes() aliases
+	// the buffer's internal slice, so the next Reset()+WriteString would
+	// overwrite a prior event's .Data that a slow receiver hasn't yet
+	// touched. Also extracts the raw envelope for stream-with-raw so both
+	// the blank-line flush and the EOF flush share the same split logic.
+	flush := func() {
+		data := append([]byte(nil), dataBuffer.Bytes()...)
+		currentEvent.Data = data
+
+		var rawData struct {
+			Data json.RawMessage `json:"data"`
+			Raw  string          `json:"raw"`
+		}
+		if err := json.Unmarshal(data, &rawData); err == nil && rawData.Raw != "" {
+			currentEvent.Raw = rawData.Raw
+			// rawData.Data is already a freshly-allocated copy via
+			// json.RawMessage's UnmarshalJSON, so no extra copy needed.
+			currentEvent.Data = rawData.Data
+		}
+
+		events <- currentEvent
+		currentEvent = StreamEvent{}
+		dataBuffer.Reset()
+	}
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -778,29 +804,7 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 		if line == "" {
 			// Empty line signals end of event
 			if dataBuffer.Len() > 0 {
-				// Copy the buffered bytes before handing them to the
-				// channel: dataBuffer.Bytes() returns a slice backed by
-				// the buffer's internal storage, so the next Reset()
-				// plus WriteString would overwrite this event's .Data
-				// from under any consumer that holds onto it. The bug
-				// surfaces visibly when an event is delivered quickly
-				// (receiver hasn't inspected it yet) and the next event
-				// repopulates the buffer — e.g. metadata → partial data.
-				currentEvent.Data = append([]byte(nil), dataBuffer.Bytes()...)
-
-				// For stream-with-raw, extract the raw field
-				var rawData struct {
-					Data json.RawMessage `json:"data"`
-					Raw  string          `json:"raw"`
-				}
-				if err := json.Unmarshal(currentEvent.Data, &rawData); err == nil && rawData.Raw != "" {
-					currentEvent.Raw = rawData.Raw
-					currentEvent.Data = rawData.Data
-				}
-
-				events <- currentEvent
-				currentEvent = StreamEvent{}
-				dataBuffer.Reset()
+				flush()
 			}
 			continue
 		}
@@ -816,10 +820,11 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 		}
 	}
 
-	// Handle any remaining data
+	// EOF flush: if the stream ends without a trailing blank line, flush
+	// the last event with the same raw/data envelope handling so
+	// stream-with-raw's last frame doesn't drop its Raw field.
 	if dataBuffer.Len() > 0 {
-		currentEvent.Data = append([]byte(nil), dataBuffer.Bytes()...)
-		events <- currentEvent
+		flush()
 	}
 
 	return scanner.Err()

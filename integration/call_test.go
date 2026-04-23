@@ -47,7 +47,7 @@ func TestCallEndpoint(t *testing.T) {
 			// synthesize an outcome event (absence = unknown, per plan §4f).
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLPath)
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestClient")
-			if UseBuildRequest {
+			if ActuallyBuildRequest() {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryCount, "0")
@@ -385,7 +385,7 @@ func TestCallWithRawEndpoint(t *testing.T) {
 			// shares the same header-emission path.
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLPath)
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestClient")
-			if UseBuildRequest {
+			if ActuallyBuildRequest() {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRetryCount, "0")

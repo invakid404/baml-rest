@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 	"github.com/testcontainers/testcontainers-go"
@@ -41,6 +42,15 @@ var BAMLSourcePath string
 // UseBuildRequest is true when the test container runs the BuildRequest path.
 // Set in TestMain from the BAML_REST_USE_BUILD_REQUEST env var.
 var UseBuildRequest bool
+
+// ActuallyBuildRequest reports whether a request is genuinely routed through
+// the BuildRequest orchestrator given both the runtime env gate and the BAML
+// runtime version. BuildRequest requires the Request / StreamRequest APIs
+// which only exist from BAML 0.219.0; older runtimes fall through to the
+// legacy path even when BAML_REST_USE_BUILD_REQUEST=true.
+func ActuallyBuildRequest() bool {
+	return UseBuildRequest && bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0")
+}
 
 // parseBoolEnv parses a boolean environment variable using the same accepted
 // literals as the server's UseBuildRequest parser: 1/true/yes/on → true,

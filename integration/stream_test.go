@@ -88,7 +88,7 @@ func TestStreamEndpoint(t *testing.T) {
 		// Legacy path may emit planned (but no outcome) depending on the
 		// version; assert only on BuildRequest to keep the legacy matrix
 		// stable.
-		if UseBuildRequest {
+		if ActuallyBuildRequest() {
 			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
 				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
 					if firstSemanticEvent == nil {
@@ -918,7 +918,7 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 		}
 
 		// NDJSON metadata parity with the SSE path.
-		if UseBuildRequest {
+		if ActuallyBuildRequest() {
 			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
 				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
 					if firstSemanticEvent == nil {
@@ -1251,7 +1251,7 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 		}
 		// BuildRequest must emit exactly one planned + one outcome event,
 		// with the correct ordering.
-		if UseBuildRequest {
+		if ActuallyBuildRequest() {
 			tracker.assertBuildRequestInvariants()
 		}
 	})
@@ -1643,7 +1643,7 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 		// BuildRequest must emit exactly one planned + one outcome event,
 		// with the correct ordering. The raw-accumulation assertion above
 		// already covers the "don't corrupt raw" half of the contract.
-		if UseBuildRequest {
+		if ActuallyBuildRequest() {
 			tracker.assertBuildRequestInvariants()
 		}
 	})
