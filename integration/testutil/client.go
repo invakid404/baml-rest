@@ -778,7 +778,15 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 		if line == "" {
 			// Empty line signals end of event
 			if dataBuffer.Len() > 0 {
-				currentEvent.Data = dataBuffer.Bytes()
+				// Copy the buffered bytes before handing them to the
+				// channel: dataBuffer.Bytes() returns a slice backed by
+				// the buffer's internal storage, so the next Reset()
+				// plus WriteString would overwrite this event's .Data
+				// from under any consumer that holds onto it. The bug
+				// surfaces visibly when an event is delivered quickly
+				// (receiver hasn't inspected it yet) and the next event
+				// repopulates the buffer — e.g. metadata → partial data.
+				currentEvent.Data = append([]byte(nil), dataBuffer.Bytes()...)
 
 				// For stream-with-raw, extract the raw field
 				var rawData struct {
@@ -810,7 +818,7 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent) error
 
 	// Handle any remaining data
 	if dataBuffer.Len() > 0 {
-		currentEvent.Data = dataBuffer.Bytes()
+		currentEvent.Data = append([]byte(nil), dataBuffer.Bytes()...)
 		events <- currentEvent
 	}
 
