@@ -2,6 +2,7 @@ package llmhttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -298,6 +299,43 @@ func TestFastExecute_ConnectionRefused(t *testing.T) {
 	_, err = c.Execute(context.Background(), &Request{URL: "http://" + addr, Method: "POST", Body: `{}`}, nil)
 	if err == nil {
 		t.Fatal("expected connection-refused error")
+	}
+}
+
+// TestFastExecuteStream_TruncatedChunked verifies that a mid-stream
+// connection drop on a chunked response (no "0\r\n\r\n" terminator) is
+// surfaced as io.ErrUnexpectedEOF on the errc channel. fasthttp's chunked
+// reader reports bare EOF for both clean end and dropped conn; the
+// trackedConn + sawCleanEnd fallback translates the dirty case.
+func TestFastExecuteStream_TruncatedChunked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: hello\n\n")
+		flusher.Flush()
+		// http.ErrAbortHandler tells Go's http server to close the conn
+		// without sending the zero-size chunk terminator — simulates a
+		// provider that crashes mid-response.
+		panic(http.ErrAbortHandler)
+	}))
+	defer server.Close()
+
+	c := withFastClient(t, server.Client())
+	resp, err := c.ExecuteStream(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`})
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	defer resp.Close()
+
+	for range resp.Events {
+	}
+	streamErr := <-resp.Errc
+	if streamErr == nil {
+		t.Fatal("expected an error for truncated chunked response, got nil")
+	}
+	if !errors.Is(streamErr, io.ErrUnexpectedEOF) {
+		t.Errorf("expected io.ErrUnexpectedEOF, got %v", streamErr)
 	}
 }
 

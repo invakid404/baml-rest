@@ -3,7 +3,6 @@ package llmhttp
 import (
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +20,11 @@ func TestParseOrigin(t *testing.T) {
 		{"https://host:8443/", "https://host:8443", false},
 		{"http://HOST/", "http://HOST:80", false}, // Hostname() preserves case; scheme normalised
 		{"HTTPS://host/", "https://host:443", false},
+		// IPv6 literals must be bracketed in the key so the port delimiter
+		// is unambiguous — `::1:8080` could mean host ::1 port 8080 or
+		// host ::1:8080 with no port.
+		{"http://[::1]/", "http://[::1]:80", false},
+		{"https://[::1]:8443/", "https://[::1]:8443", false},
 		{"ftp://host/", "", true},
 		{"no-scheme", "", true},
 		{"://bad", "", true},
@@ -47,7 +51,7 @@ func TestProtocolCacheMode_HTTPAlwaysFast(t *testing.T) {
 	// Plain http:// must never probe — the cache decides "fast" immediately.
 	// The fact that the probe TLS dialer points at nothing is sufficient
 	// proof that we didn't attempt one.
-	cache := newProtocolCache(modeAuto, nil)
+	cache := newProtocolCache(modeAuto, nil, nil)
 	origin, err := parseOrigin("http://example.invalid/")
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +66,7 @@ func TestProtocolCacheMode_HTTPAlwaysFast(t *testing.T) {
 }
 
 func TestProtocolCacheMode_OverrideFast(t *testing.T) {
-	cache := newProtocolCache(modeFast, nil)
+	cache := newProtocolCache(modeFast, nil, nil)
 	origin, err := parseOrigin("https://api.openai.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +81,7 @@ func TestProtocolCacheMode_OverrideFast(t *testing.T) {
 }
 
 func TestProtocolCacheMode_OverrideNet(t *testing.T) {
-	cache := newProtocolCache(modeNet, nil)
+	cache := newProtocolCache(modeNet, nil, nil)
 	origin, err := parseOrigin("https://api.openai.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -92,10 +96,10 @@ func TestProtocolCacheMode_OverrideNet(t *testing.T) {
 }
 
 func TestProtocolCache_ProxyPinsNet(t *testing.T) {
-	cache := newProtocolCache(modeAuto, nil)
-	cache.proxyFunc = func(req *http.Request) (*url.URL, error) {
+	proxy := func(req *http.Request) (*url.URL, error) {
 		return &url.URL{Scheme: "http", Host: "proxy.example:3128"}, nil
 	}
+	cache := newProtocolCache(modeAuto, nil, proxy)
 	origin, err := parseOrigin("https://api.openai.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -106,12 +110,30 @@ func TestProtocolCache_ProxyPinsNet(t *testing.T) {
 	}
 }
 
+// TestProtocolCache_ProxyPinsNetForHTTP regression guards the fix for
+// Codex HIGH 3: plain http:// used to short-circuit to fasthttp before
+// the proxy check, which would bypass a configured HTTP proxy entirely.
+func TestProtocolCache_ProxyPinsNetForHTTP(t *testing.T) {
+	proxy := func(req *http.Request) (*url.URL, error) {
+		return &url.URL{Scheme: "http", Host: "proxy.example:3128"}, nil
+	}
+	cache := newProtocolCache(modeAuto, nil, proxy)
+	origin, err := parseOrigin("http://internal.service/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := cache.resolve(origin)
+	if entry.decision != decisionNet {
+		t.Errorf("http:// with proxy expected decisionNet (so ProxyFromEnvironment applies via net/http), got %d", entry.decision)
+	}
+}
+
 func TestProtocolCache_CacheHitIsLockFree(t *testing.T) {
 	// Regression check: resolve() on an already-installed origin must not
 	// go through singleflight or any mutex — hit the atomic map and return.
 	// We approximate this by racing many resolvers and ensuring no data
 	// races trip the race detector. The `go test -race` pass catches it.
-	cache := newProtocolCache(modeFast, nil)
+	cache := newProtocolCache(modeFast, nil, nil)
 	origin, err := parseOrigin("http://host/")
 	if err != nil {
 		t.Fatal(err)
@@ -135,14 +157,14 @@ func TestProtocolCache_CacheHitIsLockFree(t *testing.T) {
 func TestProtocolCache_SingleflightDedupe(t *testing.T) {
 	// Two concurrent first-hits to the same origin must share one probe.
 	// We count probe invocations by stubbing the probe branch via a
-	// cache with a counted proxyFunc + modeAuto on https — proxyFunc is
-	// consulted inside probe(), so counting its calls counts probes.
-	cache := newProtocolCache(modeAuto, nil)
+	// counted proxyFunc + modeAuto on https — proxyFunc is consulted
+	// inside probe(), so counting its calls counts probes.
 	var probes atomic.Int32
-	cache.proxyFunc = func(req *http.Request) (*url.URL, error) {
+	proxy := func(req *http.Request) (*url.URL, error) {
 		probes.Add(1)
 		return &url.URL{Scheme: "http", Host: "proxy:3128"}, nil
 	}
+	cache := newProtocolCache(modeAuto, nil, proxy)
 	origin, err := parseOrigin("https://host/")
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +210,7 @@ func TestLoadClientMode(t *testing.T) {
 // decision always ships with a non-nil HostClient (dispatcher nil-checks
 // it), while a net decision never allocates one.
 func TestBuildEntry_FastCarriesHost(t *testing.T) {
-	cache := newProtocolCache(modeAuto, nil)
+	cache := newProtocolCache(modeAuto, nil, nil)
 	origin, _ := parseOrigin("https://x/")
 
 	fast := cache.buildEntry(origin, decisionFast)
@@ -198,7 +220,7 @@ func TestBuildEntry_FastCarriesHost(t *testing.T) {
 	if !fast.host.IsTLS {
 		t.Error("https origin should produce IsTLS=true HostClient")
 	}
-	if !strings.Contains(fast.host.Addr, ":443") {
+	if fast.host.Addr != "x:443" {
 		t.Errorf("https default port 443 expected in Addr, got %q", fast.host.Addr)
 	}
 

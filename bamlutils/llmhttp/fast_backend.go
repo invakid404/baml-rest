@@ -1,6 +1,7 @@
 package llmhttp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/valyala/fasthttp"
@@ -126,13 +128,44 @@ func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenU
 	fResp := fasthttp.AcquireResponse()
 	buildFastRequest(fReq, req, rewrittenURL)
 
+	// Pre-arm the ctx watcher BEFORE Do so ctx cancel during
+	// connect/TLS/first-byte closes the captured conn as soon as it
+	// arrives in the slot. Without this, a stalled upstream during the
+	// header phase would ignore ctx cancel entirely — a regression vs
+	// net/http which respects ctx across the whole round-trip.
+	preDoCtx, cancelPreDo := context.WithCancel(ctx)
+	defer cancelPreDo()
+	go func() {
+		<-preDoCtx.Done()
+		if ctx.Err() != nil {
+			slot.shutdown()
+		}
+	}()
+
 	// For streaming, we do not set a Do-level deadline: SSE streams can be
 	// long-lived and the caller's ctx is the only bound we want. Any client-
 	// level ReadTimeout on the HostClient is left at 0 for the same reason.
-	if err := hc.Do(fReq, fResp); err != nil {
+	doneCh := make(chan error, 1)
+	go func() {
+		doneCh <- hc.Do(fReq, fResp)
+	}()
+	var doErr error
+	select {
+	case <-ctx.Done():
+		slot.shutdown()
+		<-doneCh
 		fasthttp.ReleaseRequest(fReq)
 		fasthttp.ReleaseResponse(fResp)
-		return nil, fmt.Errorf("llmhttp: request failed: %w", err)
+		return nil, ctx.Err()
+	case doErr = <-doneCh:
+	}
+	// Pre-Do watcher has served its purpose — the post-Do reader wires its
+	// own ctx watcher on the same slot.
+	cancelPreDo()
+	if doErr != nil {
+		fasthttp.ReleaseRequest(fReq)
+		fasthttp.ReleaseResponse(fResp)
+		return nil, fmt.Errorf("llmhttp: request failed: %w", doErr)
 	}
 
 	// fasthttp defaults a missing response Content-Type to
@@ -228,22 +261,31 @@ func fastHeadersToHTTP(h *fasthttp.ResponseHeader) http.Header {
 // dispatcher can close it directly on ctx cancel. Closing at the socket
 // layer unblocks any blocked Read without racing against fasthttp's
 // internal requestStream state — safe under -race unlike CloseWithError.
+//
+// The wrapped conn also tracks whether the last bytes observed on the
+// wire form a valid HTTP/1.1 chunked terminator, which lets the stream
+// reader distinguish a graceful end-of-response from a mid-stream
+// disconnect — fasthttp's chunked parser reports both as io.EOF, so
+// without this we would silently accept truncated SSE responses as
+// successful completions.
 type captureSlot struct {
 	mu   sync.Mutex
 	conn net.Conn
+	wrap *trackedConn
 	dead bool
 }
 
-func (s *captureSlot) store(c net.Conn) {
+func (s *captureSlot) store(wrap *trackedConn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dead {
 		// Shutdown already fired; close the freshly-dialed conn
 		// immediately — the caller abandoned us.
-		_ = c.Close()
+		_ = wrap.Close()
 		return
 	}
-	s.conn = c
+	s.wrap = wrap
+	s.conn = wrap.Conn
 }
 
 // shutdown closes the captured conn (if any) and marks the slot as dead so
@@ -261,10 +303,25 @@ func (s *captureSlot) shutdown() {
 	}
 }
 
+// sawCleanEnd reports whether the captured conn observed a proper HTTP/1.1
+// chunked end-of-message marker before reaching EOF. Returns false when
+// no conn was ever stored (early abort) so callers treat missing-conn as
+// "can't assert cleanliness" rather than silently succeeding.
+func (s *captureSlot) sawCleanEnd() bool {
+	s.mu.Lock()
+	w := s.wrap
+	s.mu.Unlock()
+	if w == nil {
+		return false
+	}
+	return w.sawTerminator()
+}
+
 // newStreamHostClient builds a fasthttp.HostClient configured like the
-// cache's per-origin template but with a custom Dial that captures the
-// underlying net.Conn into slot. Dedicated per-request so we can close the
-// conn on ctx cancel without affecting other streams' pooled state.
+// cache's per-origin template but with a custom Dial that wraps the dialed
+// conn in a trackedConn and stores it in slot. Dedicated per-request so
+// we can close the conn on ctx cancel without affecting other streams'
+// pooled state.
 func newStreamHostClient(tmpl *fasthttp.HostClient, slot *captureSlot) *fasthttp.HostClient {
 	return &fasthttp.HostClient{
 		Name:                          tmpl.Name,
@@ -280,10 +337,76 @@ func newStreamHostClient(tmpl *fasthttp.HostClient, slot *captureSlot) *fasthttp
 			if err != nil {
 				return nil, err
 			}
-			slot.store(c)
-			return c, nil
+			w := &trackedConn{Conn: c}
+			slot.store(w)
+			return w, nil
 		},
 	}
+}
+
+// trackedConn wraps a net.Conn to observe the trailing bytes of the
+// response stream. Specifically it tracks whether the chunked encoding
+// terminator "0\r\n\r\n" was the final five bytes before EOF — the only
+// sequence that denotes a graceful end-of-message for an HTTP/1.1
+// chunked response. Reads that don't end with that sequence indicate a
+// mid-stream disconnect; the stream reader surfaces io.ErrUnexpectedEOF
+// instead of a clean EOF so the orchestrator can treat the response as
+// incomplete rather than a successful (but truncated) completion.
+//
+// Limitation: chunk extensions (e.g. "0;ext=val\r\n\r\n") are NOT
+// recognised. Real LLM providers don't emit them, so a false negative
+// (reporting truncation when the response was actually clean) would
+// require an explicit extension on the zero-size chunk — a scenario we
+// haven't observed in practice. Under-reporting here is safer than
+// over-reporting: a false "clean end" would mask real truncation.
+type trackedConn struct {
+	net.Conn
+	mu     sync.Mutex
+	tail   [5]byte
+	filled int
+	closed atomic.Bool
+}
+
+func (t *trackedConn) Read(p []byte) (int, error) {
+	n, err := t.Conn.Read(p)
+	if n > 0 {
+		t.mu.Lock()
+		t.recordTail(p[:n])
+		t.mu.Unlock()
+	}
+	return n, err
+}
+
+// recordTail keeps the last 5 bytes of the stream. Caller holds t.mu.
+func (t *trackedConn) recordTail(buf []byte) {
+	if len(buf) >= len(t.tail) {
+		copy(t.tail[:], buf[len(buf)-len(t.tail):])
+		t.filled = len(t.tail)
+		return
+	}
+	// buf is shorter than tail — shift left, append at end.
+	shift := len(buf)
+	copy(t.tail[:len(t.tail)-shift], t.tail[shift:])
+	copy(t.tail[len(t.tail)-shift:], buf)
+	if t.filled+shift > len(t.tail) {
+		t.filled = len(t.tail)
+	} else {
+		t.filled += shift
+	}
+}
+
+func (t *trackedConn) sawTerminator() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.filled < len(t.tail) {
+		return false
+	}
+	return bytes.Equal(t.tail[:], []byte{'0', '\r', '\n', '\r', '\n'})
+}
+
+func (t *trackedConn) Close() error {
+	t.closed.Store(true)
+	return t.Conn.Close()
 }
 
 // readFastBodyCappedSlot reads up to limit bytes from the body, respecting
@@ -502,6 +625,13 @@ type fastStreamReader struct {
 	fResp  *fasthttp.Response
 	slot   *captureSlot
 
+	// chunked is true when Transfer-Encoding: chunked was used, i.e. the
+	// response has no Content-Length and the "0\r\n\r\n" terminator is the
+	// only way to distinguish a clean end from a dropped conn. For
+	// Content-Length responses, fasthttp's own byte-count tracking makes
+	// io.EOF a reliable clean-end signal, so we skip the tail check.
+	chunked bool
+
 	// closed signals the watcher goroutine to exit when Close() is invoked
 	// via the consumer path. Distinct from the caller's ctx so a normal
 	// Close doesn't trip the force-close branch.
@@ -510,12 +640,16 @@ type fastStreamReader struct {
 }
 
 func newFastStreamReader(ctx context.Context, fReq *fasthttp.Request, fResp *fasthttp.Response, stream io.Reader, slot *captureSlot) *fastStreamReader {
+	// fasthttp reports ContentLength() == -1 for Transfer-Encoding: chunked.
+	// Anything else (positive length, or -2 identity) is a length-delimited
+	// body whose EOF from fasthttp is authoritative.
 	r := &fastStreamReader{
-		stream: stream,
-		fReq:   fReq,
-		fResp:  fResp,
-		slot:   slot,
-		closed: make(chan struct{}),
+		stream:  stream,
+		fReq:    fReq,
+		fResp:   fResp,
+		slot:    slot,
+		chunked: fResp.Header.ContentLength() == -1,
+		closed:  make(chan struct{}),
 	}
 	// Watcher: on ctx cancel, close the captured conn so the blocked
 	// Read() in the SSE parser unblocks. Watcher exits cleanly when the
@@ -531,7 +665,24 @@ func newFastStreamReader(ctx context.Context, fReq *fasthttp.Request, fResp *fas
 }
 
 func (r *fastStreamReader) Read(p []byte) (int, error) {
-	return r.stream.Read(p)
+	n, err := r.stream.Read(p)
+	if err == io.EOF && r.chunked && !r.slot.sawCleanEnd() {
+		// fasthttp's chunked reader reports io.EOF for both a graceful
+		// end-of-message (0-size chunk followed by empty trailers) AND a
+		// mid-stream connection drop between chunks (parseChunkSize
+		// returning EOF with no hex digits seen). The captured conn's
+		// tail tracker distinguishes them: a proper terminator ends with
+		// "0\r\n\r\n". Without this translation, truncated SSE responses
+		// would surface as clean EOF → sseclient exits without error →
+		// orchestrator emits a Final result with partial content, which
+		// silently corrupts the caller's view of the stream.
+		//
+		// Scoped to chunked responses: a Content-Length-delimited body
+		// has its own byte-count bound enforced by fasthttp, so EOF
+		// there is authoritative.
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, err
 }
 
 func (r *fastStreamReader) Close() error {
@@ -545,6 +696,13 @@ func (r *fastStreamReader) Close() error {
 		_ = r.fResp.CloseBodyStream()
 		fasthttp.ReleaseRequest(r.fReq)
 		fasthttp.ReleaseResponse(r.fResp)
+		// Close the captured conn even on a clean stream end. The
+		// per-request HostClient is thrown away after this call, so any
+		// conn CloseBodyStream returned to its pool would otherwise sit
+		// idle holding an FD until MaxIdleConnDuration expires and the
+		// HostClient is GC'd. slot.shutdown is idempotent with the
+		// ctx-watcher path.
+		r.slot.shutdown()
 	})
 	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -101,18 +102,21 @@ type Client struct {
 // If httpClient is nil, http.DefaultClient is used.
 //
 // The client mode (auto / fasthttp / nethttp) is read from the
-// BAML_REST_HTTP_CLIENT environment variable at construction time. The TLS
-// configuration is inherited from the supplied http.Client's Transport when
-// it is an *http.Transport with TLSClientConfig set, so private CAs and
-// custom verification apply to the ALPN probe and the fasthttp backend as
-// well as the net/http backend.
+// BAML_REST_HTTP_CLIENT environment variable at construction time. TLS
+// configuration and proxy resolution are inherited from the supplied
+// http.Client's Transport when it is an *http.Transport — so private CAs,
+// custom verification, and programmatically configured proxies apply to
+// the ALPN probe and the fasthttp backend as well as the net/http
+// backend. When the Transport has no Proxy set, the cache falls back to
+// http.ProxyFromEnvironment so HTTP_PROXY/HTTPS_PROXY still pin matching
+// origins to net/http.
 func NewClient(httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	return &Client{
 		httpClient: httpClient,
-		cache:      newProtocolCache(loadClientMode(), tlsConfigFromHTTPClient(httpClient)),
+		cache:      newProtocolCache(loadClientMode(), tlsConfigFromHTTPClient(httpClient), proxyFuncFromHTTPClient(httpClient)),
 	}
 }
 
@@ -131,6 +135,20 @@ func tlsConfigFromHTTPClient(c *http.Client) *tls.Config {
 		return nil
 	}
 	return t.TLSClientConfig
+}
+
+// proxyFuncFromHTTPClient returns the Proxy resolver configured on the
+// supplied http.Client's *http.Transport, falling back to
+// http.ProxyFromEnvironment. Exposed so the protocol cache can pin
+// proxy-targeted origins to net/http consistently with whatever the
+// net/http backend itself does.
+func proxyFuncFromHTTPClient(c *http.Client) func(*http.Request) (*url.URL, error) {
+	if c != nil && c.Transport != nil {
+		if t, ok := c.Transport.(*http.Transport); ok && t.Proxy != nil {
+			return t.Proxy
+		}
+	}
+	return http.ProxyFromEnvironment
 }
 
 // defaultLLMTransport is an HTTP transport tuned for LLM provider traffic.
@@ -407,6 +425,14 @@ func buildHTTPRequest(ctx context.Context, req *Request, rewrittenURL string) (*
 	}
 
 	for k, v := range req.Headers {
+		// net/http ignores Request.Header["Host"] on the wire — it sends
+		// Request.Host instead, which defaults to the URL host. Route a
+		// caller-supplied Host header there so both backends (net/http
+		// and fasthttp) agree on the effective virtual host.
+		if strings.EqualFold(k, "Host") {
+			httpReq.Host = v
+			continue
+		}
 		httpReq.Header.Set(k, v)
 	}
 

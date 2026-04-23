@@ -25,9 +25,13 @@ jobs:
         id: set-matrix
         run: |
           # Read the versions file and build matrix combining pinned + latest
-          # Cross with unary-server on/off to test both configurations
+          # Cross with unary-server on/off to test both configurations.
+          # http-client is crossed only with the BuildRequest path — the legacy
+          # CallStream path goes through the BAML runtime's own HTTP client,
+          # so BAML_REST_HTTP_CLIENT has no effect there and duplicating those
+          # runs would just burn CI minutes.
           VERSIONS=$(jq -c '[.pinned[], .latest] | unique' integration/baml_versions.json)
-          echo "matrix={\"baml-version\":$VERSIONS,\"unary-server\":[false,true],\"use-build-request\":[false,true]}" >> $GITHUB_OUTPUT
+          echo "matrix={\"baml-version\":$VERSIONS,\"unary-server\":[false,true],\"use-build-request\":[false,true],\"http-client\":[\"nethttp\",\"fasthttp\"],\"exclude\":[{\"use-build-request\":false,\"http-client\":\"fasthttp\"}]}" >> $GITHUB_OUTPUT
 
   integration-tests:
     needs: get-versions
@@ -46,11 +50,12 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run Integration Tests (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }})
+      - name: Run Integration Tests (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }}, http-client=${{ matrix.http-client }})
         env:
           BAML_VERSION: ${{ matrix.baml-version }}
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
+          BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
         # share state (server config, worker pool) that could cause flakiness if parallel
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
@@ -63,6 +68,13 @@ jobs:
       matrix:
         unary-server: [false, true]
         use-build-request: [false, true]
+        http-client: [nethttp, fasthttp]
+        exclude:
+          # See the matrix comment on the versioned job — http-client has no
+          # effect on the legacy path, so the fasthttp × !buildrequest cell
+          # would just duplicate the nethttp × !buildrequest cell.
+          - use-build-request: false
+            http-client: fasthttp
 
     steps:
       - name: Checkout Repository
@@ -84,9 +96,10 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run Integration Tests (BAML Source, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }})
+      - name: Run Integration Tests (BAML Source, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }}, http-client=${{ matrix.http-client }})
         env:
           BAML_SOURCE: ${{ github.workspace }}/baml-source
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
+          BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...

@@ -101,8 +101,10 @@ type protocolCache struct {
 // is mirrored into both the probe dialer and every per-origin HostClient so
 // that private CAs / custom verification apply consistently across
 // dispatched backends and the probe itself. A nil tlsConf is treated as the
-// default {MinVersion: TLS12}.
-func newProtocolCache(mode clientMode, tlsConf *tls.Config) *protocolCache {
+// default {MinVersion: TLS12}. proxyFunc determines when origins are pinned
+// to net/http for proxy traversal; a nil value disables proxy pinning
+// (tests use this to force the ALPN probe path).
+func newProtocolCache(mode clientMode, tlsConf *tls.Config, proxyFunc func(*http.Request) (*url.URL, error)) *protocolCache {
 	if tlsConf == nil {
 		tlsConf = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
@@ -110,7 +112,7 @@ func newProtocolCache(mode clientMode, tlsConf *tls.Config) *protocolCache {
 		mode:         mode,
 		probeTLS:     tlsConf,
 		probeDialer:  &net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second},
-		proxyFunc:    http.ProxyFromEnvironment,
+		proxyFunc:    proxyFunc,
 		probeTimeout: 2 * time.Second,
 		fastClientTemplate: &fasthttp.HostClient{
 			Name:                          "baml-rest-llmhttp",
@@ -137,14 +139,15 @@ type originURL struct {
 }
 
 // addr returns the "host:port" form that net.Dial and fasthttp.HostClient
-// want. Distinct from key because key carries the scheme prefix.
-func (o originURL) addr() string { return o.hostname + ":" + o.port }
+// want, using net.JoinHostPort so IPv6 literals like "::1" come back as
+// "[::1]:8080" rather than the ambiguous "::1:8080".
+func (o originURL) addr() string { return net.JoinHostPort(o.hostname, o.port) }
 
 // parseOrigin normalises a request URL into a cache key. The port is filled
 // in from the scheme default when absent so that requests to e.g.
 // "https://api.openai.com" and "https://api.openai.com:443" share a cache
 // entry — otherwise the cache would fragment and probe the same origin
-// twice.
+// twice. The key uses net.JoinHostPort for IPv6 bracket correctness.
 func parseOrigin(rawURL string) (originURL, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -167,7 +170,7 @@ func parseOrigin(rawURL string) (originURL, error) {
 		}
 	}
 	return originURL{
-		key:      scheme + "://" + host + ":" + port,
+		key:      scheme + "://" + net.JoinHostPort(host, port),
 		scheme:   scheme,
 		hostname: host,
 		port:     port,
@@ -220,8 +223,9 @@ func (c *protocolCache) install(key string, entry *hostEntry) {
 }
 
 // probe returns the routing decision for origin. Mode overrides short-
-// circuit everything else; http:// always routes to fasthttp; https://
-// behind a configured proxy forces net/http; otherwise an ALPN handshake
+// circuit everything else; a configured proxy forces net/http for both
+// http and https origins (fasthttp has no ProxyFromEnvironment); plain
+// http:// without a proxy routes to fasthttp; otherwise an ALPN handshake
 // decides. Probe failures default to net/http — safe because net/http
 // handles both h1 and h2, so the request still succeeds; we just lose the
 // fasthttp speedup until the process restarts.
@@ -233,10 +237,12 @@ func (c *protocolCache) probe(origin originURL) decision {
 		return decisionNet
 	}
 
-	if origin.scheme == "http" {
-		return decisionFast
-	}
-
+	// Proxy check runs BEFORE the plain-http short-circuit: HTTP proxies
+	// are commonly configured for http:// traffic too (outbound via a
+	// corporate HTTP proxy, for example), and fasthttp would bypass the
+	// proxy entirely by dialing the origin directly. Pinning to net/http
+	// lets http.ProxyFromEnvironment (or the injected transport Proxy
+	// func) route the request correctly.
 	if c.proxyFunc != nil {
 		req := &http.Request{
 			URL:    &url.URL{Scheme: origin.scheme, Host: origin.addr()},
@@ -246,6 +252,10 @@ func (c *protocolCache) probe(origin originURL) decision {
 		if p, err := c.proxyFunc(req); err == nil && p != nil {
 			return decisionNet
 		}
+	}
+
+	if origin.scheme == "http" {
+		return decisionFast
 	}
 
 	cfg := c.probeTLS.Clone()
