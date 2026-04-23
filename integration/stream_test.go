@@ -87,11 +87,10 @@ func TestStreamEndpoint(t *testing.T) {
 			t.Errorf("Expected John Doe (30), got %s (%d)", person.Name, person.Age)
 		}
 
-		// Routing metadata: on BuildRequest the first semantic event is
-		// planned metadata, and outcome metadata arrives before final.
-		// Legacy path may emit planned (but no outcome) depending on the
-		// version; assert only on BuildRequest to keep the legacy matrix
-		// stable.
+		// Routing metadata: both legs emit planned as the first semantic
+		// event and outcome before final. Per-path invariants (winner
+		// derivation, RetryCount vs BamlCallCount, etc.) are checked by
+		// the appropriate tracker assertion below.
 		if ActuallyBuildRequest() {
 			if firstSemanticEvent == nil || !firstSemanticEvent.IsMetadata() {
 				t.Errorf("first semantic event should be metadata; got event type %q", func() string {
