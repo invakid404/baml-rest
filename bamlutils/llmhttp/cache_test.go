@@ -215,7 +215,10 @@ func TestLoadClientMode(t *testing.T) {
 // it), while a net decision never allocates one.
 func TestBuildEntry_FastCarriesHost(t *testing.T) {
 	cache := newProtocolCache(modeAuto, nil, nil)
-	origin, _ := parseOrigin("https://x/")
+	origin, err := parseOrigin("https://x/")
+	if err != nil {
+		t.Fatalf("parseOrigin: %v", err)
+	}
 
 	fast := cache.buildEntry(origin, decisionFast)
 	if fast.host == nil {
