@@ -3,6 +3,7 @@ package llmhttp
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -122,11 +123,21 @@ func (c *Client) executeFast(ctx context.Context, req *Request, rewrittenURL str
 // long-lived and low-rate, so losing per-origin pooling here costs little.
 func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenURL string, tmpl *fasthttp.HostClient) (*StreamResponse, error) {
 	slot := &captureSlot{}
-	hc := newStreamHostClient(tmpl, slot)
+	hc := newStreamHostClient(ctx, tmpl, slot)
 
 	fReq := fasthttp.AcquireRequest()
 	fResp := fasthttp.AcquireResponse()
 	buildFastRequest(fReq, req, rewrittenURL)
+
+	// fasthttp's HostClient.Do enforces c.IsTLS == req.URI().isHTTPS(). Our
+	// stream HostClient runs with IsTLS=false (TLS is handled inside Dial
+	// so trackedConn observes plaintext wire bytes), so the request URI
+	// must also declare http for the check to pass. The on-wire request
+	// line does not carry the scheme; the only observable effect of this
+	// rewrite is that fasthttp is willing to submit the request.
+	if tmpl.IsTLS {
+		fReq.URI().SetScheme("http")
+	}
 
 	// Pre-arm the ctx watcher BEFORE Do so ctx cancel during
 	// connect/TLS/first-byte closes the captured conn as soon as it
@@ -268,24 +279,38 @@ func fastHeadersToHTTP(h *fasthttp.ResponseHeader) http.Header {
 // disconnect — fasthttp's chunked parser reports both as io.EOF, so
 // without this we would silently accept truncated SSE responses as
 // successful completions.
+//
+// closer is updated as the conn stack is built: first the raw TCP conn
+// (registered before TLS handshake, so ctx cancel during handshake
+// closes the underlying socket promptly), then the tls.Conn after
+// HandshakeContext succeeds. Either form, when closed, severs the
+// socket and unblocks every layer above it.
 type captureSlot struct {
-	mu   sync.Mutex
-	conn net.Conn
-	wrap *trackedConn
-	dead bool
+	mu     sync.Mutex
+	closer io.Closer
+	wrap   *trackedConn
+	dead   bool
 }
 
-func (s *captureSlot) store(wrap *trackedConn) {
+func (s *captureSlot) setCloser(c io.Closer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dead {
-		// Shutdown already fired; close the freshly-dialed conn
-		// immediately — the caller abandoned us.
-		_ = wrap.Close()
+		// Shutdown already fired; close whatever was just handed to us.
+		_ = c.Close()
 		return
 	}
-	s.wrap = wrap
-	s.conn = wrap.Conn
+	s.closer = c
+}
+
+func (s *captureSlot) setWrap(w *trackedConn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dead {
+		_ = w.Close()
+		return
+	}
+	s.wrap = w
 }
 
 // shutdown closes the captured conn (if any) and marks the slot as dead so
@@ -297,9 +322,9 @@ func (s *captureSlot) shutdown() {
 		return
 	}
 	s.dead = true
-	if s.conn != nil {
-		_ = s.conn.Close()
-		s.conn = nil
+	if s.closer != nil {
+		_ = s.closer.Close()
+		s.closer = nil
 	}
 }
 
@@ -317,28 +342,76 @@ func (s *captureSlot) sawCleanEnd() bool {
 	return w.sawTerminator()
 }
 
+// streamDialTimeout bounds a single TCP+TLS setup for a streaming request
+// whose ctx has no deadline of its own. High enough to tolerate a slow
+// intercontinental TLS handshake; not so high that a dead route stalls
+// the caller for minutes.
+const streamDialTimeout = 30 * time.Second
+
 // newStreamHostClient builds a fasthttp.HostClient configured like the
-// cache's per-origin template but with a custom Dial that wraps the dialed
-// conn in a trackedConn and stores it in slot. Dedicated per-request so
-// we can close the conn on ctx cancel without affecting other streams'
-// pooled state.
-func newStreamHostClient(tmpl *fasthttp.HostClient, slot *captureSlot) *fasthttp.HostClient {
+// cache's per-origin template but with a custom, ctx-aware Dial that
+//
+//   - respects ctx cancellation during DNS/TCP connect (via
+//     net.Dialer.DialContext) and during TLS handshake (via
+//     tls.Conn.HandshakeContext) — without this, a stalled setup would
+//     ignore ctx cancel until fasthttp's own dial timeout fires;
+//   - handles TLS itself when the template's IsTLS is true, and passes
+//     the TLS-wrapped conn back as a non-TLS result (HostClient.IsTLS is
+//     false on the returned client) so fasthttp doesn't double-wrap. We
+//     do this so trackedConn can observe PLAINTEXT chunked body bytes
+//     — fasthttp's built-in TLS path would leave our tracker looking
+//     at ciphertext, blinding the terminator check.
+//
+// The slot is populated twice: first with the raw TCP conn (pre-
+// handshake, so ctx cancel has something to close immediately) and then
+// with the tls.Conn after the handshake completes. Either closure
+// severs the socket.
+func newStreamHostClient(ctx context.Context, tmpl *fasthttp.HostClient, slot *captureSlot) *fasthttp.HostClient {
 	return &fasthttp.HostClient{
 		Name:                          tmpl.Name,
 		Addr:                          tmpl.Addr,
-		IsTLS:                         tmpl.IsTLS,
-		TLSConfig:                     tmpl.TLSConfig,
+		IsTLS:                         false, // we do TLS ourselves — see doc comment
 		DisableHeaderNamesNormalizing: tmpl.DisableHeaderNamesNormalizing,
 		StreamResponseBody:            tmpl.StreamResponseBody,
 		MaxIdleConnDuration:           tmpl.MaxIdleConnDuration,
 		MaxConns:                      tmpl.MaxConns,
 		Dial: func(addr string) (net.Conn, error) {
-			c, err := fasthttp.Dial(addr)
+			dialer := &net.Dialer{
+				Timeout:   streamDialTimeout,
+				KeepAlive: 30 * time.Second,
+			}
+			rawConn, err := dialer.DialContext(ctx, "tcp", addr)
 			if err != nil {
 				return nil, err
 			}
-			w := &trackedConn{Conn: c}
-			slot.store(w)
+			// Register raw conn early so ctx cancel during handshake
+			// closes the underlying socket even though HandshakeContext
+			// wasn't installed yet.
+			slot.setCloser(rawConn)
+
+			var outer net.Conn = rawConn
+			if tmpl.IsTLS {
+				tlsCfg := tmpl.TLSConfig.Clone()
+				if tlsCfg.ServerName == "" {
+					host, _, splitErr := net.SplitHostPort(addr)
+					if splitErr == nil {
+						tlsCfg.ServerName = host
+					}
+				}
+				tlsConn := tls.Client(rawConn, tlsCfg)
+				if err := tlsConn.HandshakeContext(ctx); err != nil {
+					_ = rawConn.Close()
+					return nil, err
+				}
+				// Closing the tls.Conn closes the raw socket underneath;
+				// updating the slot's closer is strictly for clarity —
+				// the raw closer would also work.
+				slot.setCloser(tlsConn)
+				outer = tlsConn
+			}
+
+			w := &trackedConn{Conn: outer}
+			slot.setWrap(w)
 			return w, nil
 		},
 	}

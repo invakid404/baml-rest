@@ -302,23 +302,28 @@ func TestFastExecute_ConnectionRefused(t *testing.T) {
 	}
 }
 
+// truncatedChunkedHandler drops the conn mid-response without sending
+// the zero-size chunk terminator. Shared between the HTTP and HTTPS
+// truncation tests.
+func truncatedChunkedHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	flusher, _ := w.(http.Flusher)
+	fmt.Fprint(w, "data: hello\n\n")
+	flusher.Flush()
+	// http.ErrAbortHandler tells Go's http server to close the conn
+	// without sending the zero-size chunk terminator — simulates a
+	// provider that crashes mid-response.
+	panic(http.ErrAbortHandler)
+}
+
 // TestFastExecuteStream_TruncatedChunked verifies that a mid-stream
 // connection drop on a chunked response (no "0\r\n\r\n" terminator) is
 // surfaced as io.ErrUnexpectedEOF on the errc channel. fasthttp's chunked
 // reader reports bare EOF for both clean end and dropped conn; the
 // trackedConn + sawCleanEnd fallback translates the dirty case.
 func TestFastExecuteStream_TruncatedChunked(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(200)
-		flusher, _ := w.(http.Flusher)
-		fmt.Fprint(w, "data: hello\n\n")
-		flusher.Flush()
-		// http.ErrAbortHandler tells Go's http server to close the conn
-		// without sending the zero-size chunk terminator — simulates a
-		// provider that crashes mid-response.
-		panic(http.ErrAbortHandler)
-	}))
+	server := httptest.NewServer(http.HandlerFunc(truncatedChunkedHandler))
 	defer server.Close()
 
 	c := withFastClient(t, server.Client())
@@ -336,6 +341,98 @@ func TestFastExecuteStream_TruncatedChunked(t *testing.T) {
 	}
 	if !errors.Is(streamErr, io.ErrUnexpectedEOF) {
 		t.Errorf("expected io.ErrUnexpectedEOF, got %v", streamErr)
+	}
+}
+
+// TestFastExecuteStream_TruncatedChunkedHTTPS covers the same case over
+// TLS. Critical because trackedConn sits above our in-Dial tls.Client
+// wrapper, seeing plaintext bytes — if we left TLS to fasthttp, the
+// tracker would be looking at ciphertext and the terminator check would
+// always report truncation (or, if we skipped the check, silently
+// accept truncated HTTPS responses as success).
+func TestFastExecuteStream_TruncatedChunkedHTTPS(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(truncatedChunkedHandler))
+	defer server.Close()
+
+	c := withFastClient(t, server.Client())
+	resp, err := c.ExecuteStream(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`})
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	defer resp.Close()
+
+	for range resp.Events {
+	}
+	streamErr := <-resp.Errc
+	if streamErr == nil {
+		t.Fatal("expected an error for truncated HTTPS chunked response, got nil")
+	}
+	if !errors.Is(streamErr, io.ErrUnexpectedEOF) {
+		t.Errorf("expected io.ErrUnexpectedEOF, got %v", streamErr)
+	}
+}
+
+// TestFastExecuteStream_CleanCloseHTTPS sanity-checks that a normal
+// HTTPS SSE stream (with proper chunked terminator) is not mis-flagged
+// as truncated. Guards against an over-strict tail check that would
+// reject every HTTPS response.
+func TestFastExecuteStream_CleanCloseHTTPS(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.WriteHeader(200)
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: ok\n\n")
+		flusher.Flush()
+		// Handler returns normally — Go's server sends the 0-chunk
+		// terminator followed by an empty trailer section.
+	}))
+	defer server.Close()
+
+	c := withFastClient(t, server.Client())
+	resp, err := c.ExecuteStream(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`})
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	defer resp.Close()
+
+	var events []sseclient.Event
+	for ev := range resp.Events {
+		events = append(events, ev)
+	}
+	if err := <-resp.Errc; err != nil {
+		t.Fatalf("unexpected stream err: %v", err)
+	}
+	if len(events) != 1 || events[0].Data != "ok" {
+		t.Errorf("unexpected events: %+v", events)
+	}
+}
+
+// TestFastExecuteStream_CancelBeforeDial verifies that ctx cancel
+// during the TCP connect phase (before any socket exists) returns
+// promptly. Uses a TEST-NET-1 address (RFC 5737) that is guaranteed
+// unroutable — DialContext blocks until ctx cancel.
+func TestFastExecuteStream_CancelBeforeDial(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	c := withFastClient(t, nil)
+
+	start := time.Now()
+	_, err := c.ExecuteStream(ctx, &Request{
+		URL:    "http://192.0.2.1:12345", // TEST-NET-1, unroutable
+		Method: "POST",
+		Body:   `{}`,
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error after ctx cancellation")
+	}
+	// 3s is generous — the ctx deadline is 200ms. Without a ctx-aware
+	// dialer this would hang until the OS TCP connect timeout (~60s).
+	if elapsed > 3*time.Second {
+		t.Errorf("cancellation too slow: %v (want <3s)", elapsed)
 	}
 }
 
