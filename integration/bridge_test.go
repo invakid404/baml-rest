@@ -241,3 +241,167 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 		testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 	})
 }
+
+// TestCallBridge_MixedChainFallsThrough exercises the call block's mixed-
+// chain fall-through gate: when ResolveFallbackChain returns a non-empty
+// chain with some call-legacy children, the call block must decline so the
+// bridge can re-resolve with IsProviderSupported and drive those children
+// through StreamRequest rather than legacyCallChildFn.
+//
+// The previous test used BAML_REST_DISABLE_CALL_BUILD_REQUEST to force every
+// provider call-unsupported, which short-circuits ResolveFallbackChain to
+// a nil chain (all-legacy path). That proves the bridge's fallback branch
+// works, but does not exercise the new gate — the gate fires specifically
+// on mixed chains, i.e. chain != nil with legacyChildren non-empty.
+//
+// This test uses the debug-build BAML_REST_CALL_UNSUPPORTED_PROVIDERS hook
+// to mark a single provider (openai-generic) as call-unsupported while
+// leaving it stream-supported. A runtime client_registry override switches
+// FallbackPrimary to openai-generic; FallbackSecondary stays openai. Under
+// that setup:
+//
+//   - Call-side ResolveFallbackChain(..., IsCallProviderSupported) sees
+//     FallbackPrimary as !callOK, FallbackSecondary as callOK → returns a
+//     non-empty mixed chain with legacyChildren={FallbackPrimary:true}.
+//   - The new gate — len(chain) > 0 && len(legacyChildren) == 0 — fails
+//     on the second clause, so the call block declines.
+//   - The bridge block re-resolves with IsProviderSupported (both
+//     providers stream-supported), accepts the chain with no legacy
+//     children, and RunStreamOrchestration walks primary → secondary.
+//
+// Requires the debug build tag (see cmd/build/build.sh), which the
+// integration testcontainer already enables.
+func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
+	if !ActuallyBuildRequest() {
+		t.Skip("bridge requires BuildRequest path; skipping on legacy or pre-0.219 runtimes")
+	}
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer setupCancel()
+
+	adapterVersion, err := testutil.GetAdapterVersionForBAML(BAMLVersion)
+	if err != nil {
+		t.Fatalf("Failed to get adapter version: %v", err)
+	}
+	bamlSrcPath, err := findTestdataPath()
+	if err != nil {
+		t.Fatalf("Failed to find testdata: %v", err)
+	}
+
+	env, err := testutil.Setup(setupCtx, testutil.SetupOptions{
+		BAMLSrcPath:     bamlSrcPath,
+		BAMLVersion:     BAMLVersion,
+		AdapterVersion:  adapterVersion,
+		BAMLSource:      BAMLSourcePath,
+		UseBuildRequest: true,
+		RuntimeEnv: map[string]string{
+			// Mark openai-generic as call-unsupported (but still stream-
+			// supported). Debug-tag only — no effect on release builds.
+			"BAML_REST_CALL_UNSUPPORTED_PROVIDERS": "openai-generic",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to setup dedicated env: %v", err)
+	}
+	defer func() {
+		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer termCancel()
+		if err := env.Terminate(termCtx); err != nil {
+			t.Logf("dedicated env Terminate: %v", err)
+		}
+	}()
+
+	mockClient := mockllm.NewClient(env.MockLLMURL)
+	bamlClient := testutil.NewBAMLRestClient(env.BAMLRestURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Primary always fails (500); secondary succeeds. openai-generic and
+	// openai both use OpenAI wire format, so a single /v1/chat/completions
+	// handler on the mock serves both — the 500 fires before any provider-
+	// specific parsing matters.
+	if err := mockClient.RegisterScenario(ctx, &mockllm.Scenario{
+		ID:          "fallback-primary",
+		Provider:    "openai",
+		Content:     "should not see this",
+		FailAfter:   1,
+		FailureMode: "500",
+	}); err != nil {
+		t.Fatalf("register primary: %v", err)
+	}
+	if err := mockClient.RegisterScenario(ctx, &mockllm.Scenario{
+		ID:             "fallback-secondary",
+		Provider:       "openai",
+		Content:        "Hello from mixed-chain secondary!",
+		ChunkSize:      20,
+		InitialDelayMs: 10,
+		ChunkDelayMs:   5,
+	}); err != nil {
+		t.Fatalf("register secondary: %v", err)
+	}
+
+	// Runtime client_registry: override FallbackPrimary's provider to
+	// openai-generic (call-unsupported under the debug flag, stream-
+	// supported) and keep FallbackSecondary on openai (call-supported).
+	// Both children hit the mock's OpenAI-format endpoint so the failure
+	// path is deterministic.
+	baseURL := env.MockLLMInternal
+	registry := &testutil.ClientRegistry{
+		Primary: "TestFallbackPair",
+		Clients: []*testutil.ClientProperty{
+			{
+				Name:     "FallbackPrimary",
+				Provider: "openai-generic",
+				Options: map[string]any{
+					"model":    "fallback-primary",
+					"base_url": baseURL,
+					"api_key":  "test-key",
+				},
+			},
+			{
+				Name:     "FallbackSecondary",
+				Provider: "openai",
+				Options: map[string]any{
+					"model":    "fallback-secondary",
+					"base_url": baseURL,
+					"api_key":  "test-key",
+				},
+			},
+		},
+	}
+
+	resp, err := bamlClient.Call(ctx, testutil.CallRequest{
+		Method: "GetGreetingFallbackPair",
+		Input:  map[string]any{"name": "Mixed"},
+		Options: &testutil.BAMLOptions{
+			ClientRegistry: registry,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, resp.Error)
+	}
+
+	var result string
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result != "Hello from mixed-chain secondary!" {
+		t.Errorf("got %q, want %q", result, "Hello from mixed-chain secondary!")
+	}
+
+	// The headers prove routing: BuildRequestAPI=streamrequest means the
+	// bridge block served the request, not the legacy path and not the
+	// call block. A value of "request" (call block) or absence of this
+	// header (legacy path) here would mean the mixed-chain gate did not
+	// fire as expected.
+	testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
+	testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI, "streamrequest")
+	testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackPair")
+	testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
+	testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+	testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
+}

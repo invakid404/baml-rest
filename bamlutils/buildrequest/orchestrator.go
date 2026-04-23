@@ -144,11 +144,19 @@ var callSupportedProviders = map[string]bool{
 // Returns false for every provider when BAML_REST_DISABLE_CALL_BUILD_REQUEST
 // is set, which routes /call{,-with-raw} through the stream-accumulation
 // bridge (or legacy, if StreamRequest is unavailable).
+//
+// Debug builds (-tags debug) additionally honour
+// BAML_REST_CALL_UNSUPPORTED_PROVIDERS, a comma-separated list that marks
+// specific providers as call-unsupported while keeping them stream-
+// supported. This exists so integration tests can force the mixed-chain
+// fall-through gate to fire without waiting for callSupportedProviders and
+// supportedProviders to diverge organically. See debugFilterCallSupported
+// in call_support_debug.go / call_support_stub.go.
 func IsCallProviderSupported(provider string) bool {
 	if disableCallBuildRequest() {
 		return false
 	}
-	return callSupportedProviders[provider]
+	return debugFilterCallSupported(provider, callSupportedProviders[provider])
 }
 
 // ResolveProvider determines the provider for a function by checking the
