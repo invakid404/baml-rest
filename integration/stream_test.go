@@ -102,6 +102,11 @@ func TestStreamEndpoint(t *testing.T) {
 				}())
 			}
 			tracker.assertBuildRequestInvariants()
+		} else {
+			// Legacy path also synthesizes outcome metadata since the
+			// legacy-outcome change. The first-semantic-event check stays
+			// buildrequest-only because legacy may emit a heartbeat first.
+			tracker.assertLegacyInvariants()
 		}
 	})
 
@@ -935,6 +940,11 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 				}())
 			}
 			tracker.assertBuildRequestInvariants()
+		} else {
+			// Legacy path also synthesizes outcome metadata since the
+			// legacy-outcome change. The first-semantic-event check stays
+			// buildrequest-only because legacy may emit a heartbeat first.
+			tracker.assertLegacyInvariants()
 		}
 	})
 
@@ -1274,6 +1284,11 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 				}())
 			}
 			tracker.assertBuildRequestInvariants()
+		} else {
+			// Legacy path also synthesizes outcome metadata since the
+			// legacy-outcome change. The first-semantic-event check stays
+			// buildrequest-only because legacy may emit a heartbeat first.
+			tracker.assertLegacyInvariants()
 		}
 	})
 
@@ -1679,6 +1694,11 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 				}())
 			}
 			tracker.assertBuildRequestInvariants()
+		} else {
+			// Legacy path also synthesizes outcome metadata since the
+			// legacy-outcome change. The first-semantic-event check stays
+			// buildrequest-only because legacy may emit a heartbeat first.
+			tracker.assertLegacyInvariants()
 		}
 	})
 }
@@ -2295,5 +2315,41 @@ func (m *metadataTracker) assertBuildRequestInvariants() {
 	}
 	if m.outcome != nil && m.outcome.WinnerProvider == "" {
 		m.t.Errorf("outcome.WinnerProvider: expected non-empty on BuildRequest path")
+	}
+}
+
+// assertLegacyInvariants checks the legacy-path emission contract: planned
+// present, outcome present (as of the legacy-outcome change), planned before
+// outcome, outcome before final. Outcome carries WinnerPath="legacy" and
+// UpstreamDurMs; RetryCount stays nil (legacy has no outer retry
+// orchestrator). BamlCallCount derives from FunctionLog.Calls and is
+// expected to be present whenever any onTick fired (the common case).
+func (m *metadataTracker) assertLegacyInvariants() {
+	m.t.Helper()
+	if m.planned == nil {
+		m.t.Errorf("expected planned metadata event on legacy path")
+	}
+	if m.outcome == nil {
+		m.t.Errorf("expected outcome metadata event on legacy path")
+	}
+	if m.planned != nil && m.outcome != nil && m.plannedIdx >= m.outcomeIdx {
+		m.t.Errorf("planned metadata (idx %d) must precede outcome (idx %d)", m.plannedIdx, m.outcomeIdx)
+	}
+	if m.outcome != nil && m.finalSeen && m.outcomeIdx >= m.finalIdx {
+		m.t.Errorf("outcome metadata (idx %d) must precede final (idx %d)", m.outcomeIdx, m.finalIdx)
+	}
+	if m.planned != nil && m.planned.Path != "legacy" {
+		m.t.Errorf("planned.Path: got %q, want %q", m.planned.Path, "legacy")
+	}
+	if m.outcome != nil {
+		if m.outcome.WinnerPath != "legacy" {
+			m.t.Errorf("outcome.WinnerPath: got %q, want %q", m.outcome.WinnerPath, "legacy")
+		}
+		if m.outcome.UpstreamDurMs == nil {
+			m.t.Errorf("outcome.UpstreamDurMs: expected non-nil on legacy outcome")
+		}
+		if m.outcome.RetryCount != nil {
+			m.t.Errorf("outcome.RetryCount: must be nil on legacy (got %v)", *m.outcome.RetryCount)
+		}
 	}
 }

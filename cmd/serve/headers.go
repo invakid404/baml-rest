@@ -22,6 +22,7 @@ const (
 	HeaderBAMLRetryMax         = "X-BAML-Retry-Max"
 	HeaderBAMLRetryCount       = "X-BAML-Retry-Count"
 	HeaderBAMLUpstreamDuration = "X-BAML-Upstream-Duration-Ms"
+	HeaderBAMLBamlCallCount    = "X-BAML-Baml-Call-Count"
 )
 
 // headerSetter abstracts over net/http.Header.Set and fiber.Ctx.Set so the
@@ -77,6 +78,9 @@ func setBAMLHeaders(setter headerSetter, planned, outcome *bamlutils.Metadata) {
 		}
 		if outcome.UpstreamDurMs != nil {
 			setter(HeaderBAMLUpstreamDuration, strconv.FormatInt(*outcome.UpstreamDurMs, 10))
+		}
+		if outcome.BamlCallCount != nil {
+			setter(HeaderBAMLBamlCallCount, strconv.Itoa(*outcome.BamlCallCount))
 		}
 	}
 }

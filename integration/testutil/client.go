@@ -334,10 +334,15 @@ type StreamMetadata struct {
 	Phase          string   `json:"phase"`
 	Path           string   `json:"path,omitempty"`
 	Client         string   `json:"client,omitempty"`
+	Strategy       string   `json:"strategy,omitempty"`
 	Chain          []string `json:"chain,omitempty"`
 	RetryMax       *int     `json:"retry_max,omitempty"`
+	RetryCount     *int     `json:"retry_count,omitempty"`
 	WinnerClient   string   `json:"winner_client,omitempty"`
 	WinnerProvider string   `json:"winner_provider,omitempty"`
+	WinnerPath     string   `json:"winner_path,omitempty"`
+	UpstreamDurMs  *int64   `json:"upstream_duration_ms,omitempty"`
+	BamlCallCount  *int     `json:"baml_call_count,omitempty"`
 }
 
 // ParseMetadata decodes a metadata event's data payload.
@@ -902,6 +907,7 @@ const (
 	HeaderBAMLRetryMax         = "X-BAML-Retry-Max"
 	HeaderBAMLRetryCount       = "X-BAML-Retry-Count"
 	HeaderBAMLUpstreamDuration = "X-BAML-Upstream-Duration-Ms"
+	HeaderBAMLBamlCallCount    = "X-BAML-Baml-Call-Count"
 )
 
 // AssertHeaderEquals fails the test if the given header is missing or does

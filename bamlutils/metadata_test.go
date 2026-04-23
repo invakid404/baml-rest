@@ -62,6 +62,18 @@ func TestMetadata_JSONRoundtrip(t *testing.T) {
 			},
 		},
 		{
+			name: "legacy outcome with baml call count",
+			md: Metadata{
+				Phase:          MetadataPhaseOutcome,
+				Path:           "legacy",
+				WinnerClient:   "MyClient",
+				WinnerProvider: "openai",
+				WinnerPath:     "legacy",
+				UpstreamDurMs:  &dur,
+				BamlCallCount:  &five,
+			},
+		},
+		{
 			name: "legacy planned with reason",
 			md: Metadata{
 				Phase:      MetadataPhasePlanned,
@@ -129,6 +141,9 @@ func TestMetadata_JSONRoundtrip(t *testing.T) {
 			}
 			if !equalPtrInt64(got.UpstreamDurMs, tc.md.UpstreamDurMs) {
 				t.Errorf("UpstreamDurMs: got %v, want %v", got.UpstreamDurMs, tc.md.UpstreamDurMs)
+			}
+			if !equalPtrInt(got.BamlCallCount, tc.md.BamlCallCount) {
+				t.Errorf("BamlCallCount: got %v, want %v", got.BamlCallCount, tc.md.BamlCallCount)
 			}
 		})
 	}

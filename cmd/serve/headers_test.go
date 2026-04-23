@@ -17,6 +17,7 @@ func TestSetBAMLHeaders_OmitsWhenNil(t *testing.T) {
 		HeaderBAMLPath, HeaderBAMLPathReason, HeaderBAMLClient,
 		HeaderBAMLWinnerClient, HeaderBAMLWinnerProvider,
 		HeaderBAMLRetryMax, HeaderBAMLRetryCount, HeaderBAMLUpstreamDuration,
+		HeaderBAMLBamlCallCount,
 	} {
 		if got := h.Get(name); got != "" {
 			t.Errorf("expected %s to be absent when both metadata args are nil; got %q", name, got)
@@ -46,11 +47,49 @@ func TestSetBAMLHeaders_PlannedOnly(t *testing.T) {
 	if got := h.Get(HeaderBAMLRetryMax); got != "3" {
 		t.Errorf("RetryMax: got %q, want %q", got, "3")
 	}
-	for _, outcomeName := range []string{HeaderBAMLWinnerClient, HeaderBAMLWinnerProvider, HeaderBAMLRetryCount, HeaderBAMLUpstreamDuration} {
+	for _, outcomeName := range []string{HeaderBAMLWinnerClient, HeaderBAMLWinnerProvider, HeaderBAMLRetryCount, HeaderBAMLUpstreamDuration, HeaderBAMLBamlCallCount} {
 		if got := h.Get(outcomeName); got != "" {
 			t.Errorf("%s should be absent when outcome is nil; got %q", outcomeName, got)
 		}
 	}
+}
+
+func TestSetBAMLHeaders_BamlCallCount(t *testing.T) {
+	t.Parallel()
+
+	planned := &bamlutils.Metadata{Phase: bamlutils.MetadataPhasePlanned, Path: "legacy", Client: "MyClient"}
+
+	t.Run("nil omitted", func(t *testing.T) {
+		t.Parallel()
+		h := http.Header{}
+		outcome := &bamlutils.Metadata{Phase: bamlutils.MetadataPhaseOutcome, WinnerPath: "legacy"}
+		setBAMLHeaders(netHTTPHeaderSetter(h), planned, outcome)
+		if got := h.Get(HeaderBAMLBamlCallCount); got != "" {
+			t.Errorf("nil BamlCallCount should be omitted; got %q", got)
+		}
+	})
+
+	t.Run("zero present", func(t *testing.T) {
+		t.Parallel()
+		h := http.Header{}
+		zero := 0
+		outcome := &bamlutils.Metadata{Phase: bamlutils.MetadataPhaseOutcome, WinnerPath: "legacy", BamlCallCount: &zero}
+		setBAMLHeaders(netHTTPHeaderSetter(h), planned, outcome)
+		if got := h.Get(HeaderBAMLBamlCallCount); got != "0" {
+			t.Errorf("BamlCallCount=&0 should emit \"0\" (distinct from absent); got %q", got)
+		}
+	})
+
+	t.Run("nonzero present", func(t *testing.T) {
+		t.Parallel()
+		h := http.Header{}
+		three := 3
+		outcome := &bamlutils.Metadata{Phase: bamlutils.MetadataPhaseOutcome, WinnerPath: "legacy", BamlCallCount: &three}
+		setBAMLHeaders(netHTTPHeaderSetter(h), planned, outcome)
+		if got := h.Get(HeaderBAMLBamlCallCount); got != "3" {
+			t.Errorf("BamlCallCount: got %q, want 3", got)
+		}
+	})
 }
 
 func TestSetBAMLHeaders_OutcomeWinnerSameAsClient(t *testing.T) {

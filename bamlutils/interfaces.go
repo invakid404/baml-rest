@@ -68,11 +68,19 @@ type Metadata struct {
 	RetryPolicy    string   `json:"retry_policy,omitempty"`     // compact encoding (e.g. "exp:200ms:1.5:10s")
 
 	// Outcome fields — populated only on the outcome event
-	RetryCount     *int   `json:"retry_count,omitempty"`           // outer orchestrator retries consumed; nil=unknown
+	RetryCount     *int   `json:"retry_count,omitempty"`           // outer orchestrator retries consumed; nil=unknown. Always nil on legacy (no outer orchestrator).
 	WinnerClient   string `json:"winner_client,omitempty"`         // chain child that succeeded (same as Client for non-chains)
 	WinnerProvider string `json:"winner_provider,omitempty"`       // provider of the winner
 	WinnerPath     string `json:"winner_path,omitempty"`           // "buildrequest" or "legacy" (legacy-child inside mixed chain)
 	UpstreamDurMs  *int64 `json:"upstream_duration_ms,omitempty"`  // upstream wall time in ms
+	// BamlCallCount is the number of *additional* LLM calls BAML made
+	// beyond the first on the legacy path, i.e. max(len(FunctionLog.Calls())-1, 0).
+	// This collapses BAML-internal retries (per-client retry policy) and
+	// fallback chain walking into one figure — nonzero means BAML did
+	// something beyond a single happy-path call. Always nil on the
+	// BuildRequest path (BuildRequest issues one HTTP per outer attempt;
+	// inner retries are tracked via RetryCount instead).
+	BamlCallCount *int `json:"baml_call_count,omitempty"`
 }
 
 // StreamMode controls how streaming results are processed and what data is collected.
