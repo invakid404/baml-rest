@@ -407,7 +407,8 @@ func TestCallWithRawEndpoint(t *testing.T) {
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLWinnerClient)
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
 				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
-				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
+				// Single happy-path call: BamlCallCount = max(1-1, 0) = 0.
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBamlCallCount, "0")
 			}
 		})
 
