@@ -221,7 +221,7 @@ func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenU
 	// stream parser started.
 	headers := fastHeadersToHTTP(&fResp.Header)
 
-	rc := newFastStreamReader(ctx, fReq, fResp, bodyStream, slot)
+	rc := newFastStreamReader(ctx, fReq, fResp, bodyStream, slot, hc)
 
 	events, errc := sseclient.Stream(ctx, rc)
 
@@ -697,6 +697,11 @@ type fastStreamReader struct {
 	fReq   *fasthttp.Request
 	fResp  *fasthttp.Response
 	slot   *captureSlot
+	// hc is the per-request HostClient. Close() drains its idle pool so
+	// a conn that fasthttp returned via ReleaseConn (clean-close path)
+	// doesn't linger behind its cleaner goroutine for MaxIdleConnDuration
+	// after the HostClient itself has no more consumers.
+	hc *fasthttp.HostClient
 
 	// chunked is true when Transfer-Encoding: chunked was used, i.e. the
 	// response has no Content-Length and the "0\r\n\r\n" terminator is the
@@ -712,7 +717,7 @@ type fastStreamReader struct {
 	once   sync.Once
 }
 
-func newFastStreamReader(ctx context.Context, fReq *fasthttp.Request, fResp *fasthttp.Response, stream io.Reader, slot *captureSlot) *fastStreamReader {
+func newFastStreamReader(ctx context.Context, fReq *fasthttp.Request, fResp *fasthttp.Response, stream io.Reader, slot *captureSlot, hc *fasthttp.HostClient) *fastStreamReader {
 	// fasthttp reports ContentLength() == -1 for Transfer-Encoding: chunked.
 	// Anything else (positive length, or -2 identity) is a length-delimited
 	// body whose EOF from fasthttp is authoritative.
@@ -721,6 +726,7 @@ func newFastStreamReader(ctx context.Context, fReq *fasthttp.Request, fResp *fas
 		fReq:    fReq,
 		fResp:   fResp,
 		slot:    slot,
+		hc:      hc,
 		chunked: fResp.Header.ContentLength() == -1,
 		closed:  make(chan struct{}),
 	}
@@ -769,12 +775,20 @@ func (r *fastStreamReader) Close() error {
 		_ = r.fResp.CloseBodyStream()
 		fasthttp.ReleaseRequest(r.fReq)
 		fasthttp.ReleaseResponse(r.fResp)
-		// Close the captured conn even on a clean stream end. The
-		// per-request HostClient is thrown away after this call, so any
-		// conn CloseBodyStream returned to its pool would otherwise sit
-		// idle holding an FD until MaxIdleConnDuration expires and the
-		// HostClient is GC'd. slot.shutdown is idempotent with the
-		// ctx-watcher path.
+		// Drain the per-request HostClient's idle pool. On a clean
+		// stream end CloseBodyStream has just handed fasthttp a
+		// keep-alive conn that no one will ever reuse (the HostClient
+		// has no more consumers), so we'd otherwise pay for a pooled
+		// entry + a cleaner goroutine until MaxIdleConnDuration — at
+		// thousands-of-streams-per-second that's measurable FD and
+		// goroutine pressure. CloseIdleConnections is a no-op when the
+		// pool is already empty (e.g. ctx cancel took the socket-close
+		// path).
+		r.hc.CloseIdleConnections()
+		// Close the captured conn even on a clean stream end. Idempotent
+		// with both the ctx-watcher path and with the line above — the
+		// pool drain closes pooled conns; this closes the one currently
+		// referenced by the slot if it was never pooled.
 		r.slot.shutdown()
 	})
 	return nil

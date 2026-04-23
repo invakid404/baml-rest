@@ -410,8 +410,14 @@ func TestFastExecuteStream_CleanCloseHTTPS(t *testing.T) {
 
 // TestFastExecuteStream_CancelBeforeDial verifies that ctx cancel
 // during the TCP connect phase (before any socket exists) returns
-// promptly. Uses a TEST-NET-1 address (RFC 5737) that is guaranteed
+// promptly. Uses a TEST-NET-1 address (RFC 5737) that is nominally
 // unroutable — DialContext blocks until ctx cancel.
+//
+// Note: some systems return ENETUNREACH immediately for TEST-NET-1
+// addresses, in which case this test exits promptly without actually
+// exercising the ctx-cancel path. That's still within the passing
+// bound; TestFastExecuteStream_CancelDuringFirstByte covers the
+// pre-response hang case deterministically via a local listener.
 func TestFastExecuteStream_CancelBeforeDial(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -420,7 +426,7 @@ func TestFastExecuteStream_CancelBeforeDial(t *testing.T) {
 
 	start := time.Now()
 	_, err := c.ExecuteStream(ctx, &Request{
-		URL:    "http://192.0.2.1:12345", // TEST-NET-1, unroutable
+		URL:    "http://192.0.2.1:12345", // TEST-NET-1, nominally unroutable
 		Method: "POST",
 		Body:   `{}`,
 	})
@@ -433,6 +439,59 @@ func TestFastExecuteStream_CancelBeforeDial(t *testing.T) {
 	// dialer this would hang until the OS TCP connect timeout (~60s).
 	if elapsed > 3*time.Second {
 		t.Errorf("cancellation too slow: %v (want <3s)", elapsed)
+	}
+}
+
+// TestFastExecuteStream_CancelDuringFirstByte guarantees the
+// ctx-cancel path is exercised regardless of OS routing: a local
+// listener accepts the TCP connect but never writes a response, so
+// fasthttp's first read on the conn blocks until the ctx watcher
+// closes the socket via the captureSlot.
+func TestFastExecuteStream_CancelDuringFirstByte(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+	}()
+	defer func() {
+		select {
+		case conn := <-accepted:
+			conn.Close()
+		default:
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	c := withFastClient(t, nil)
+
+	start := time.Now()
+	_, err = c.ExecuteStream(ctx, &Request{
+		URL:    "http://" + ln.Addr().String(),
+		Method: "POST",
+		Body:   `{}`,
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error after ctx cancellation")
+	}
+	// Connect succeeds instantly (local loopback), so the entire wait
+	// is on the response-read phase. Without slot-based close on ctx
+	// cancel the Read would hang for the HostClient's ReadTimeout (0
+	// by design) — i.e. forever.
+	if elapsed > 3*time.Second {
+		t.Errorf("cancellation during first-byte read too slow: %v (want <3s)", elapsed)
 	}
 }
 
