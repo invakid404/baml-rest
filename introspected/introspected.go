@@ -69,8 +69,12 @@ var ClientRetryPolicy = map[string]string{}
 // FallbackChains maps strategy client names to their ordered list of child client names
 var FallbackChains = map[string][]string{}
 
-// RoundRobinStart maps baml-roundrobin client names to their configured start index
-var RoundRobinStart = map[string]int{}
+// RoundRobinStart maps baml-roundrobin client names to their configured
+// start index. Nil by default so cmd/serve's nil-check on SharedStateSeeds
+// skips provisioning the host-side SharedState broker socket; the
+// generator replaces this stub with an initialised map only when the
+// .baml source defines at least one baml-roundrobin client.
+var RoundRobinStart map[string]int
 
 // RoundRobinCoordinator holds the per-process, per-client round-robin
 // counters used by the BuildRequest path. Generated introspection emits
