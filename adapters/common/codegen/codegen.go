@@ -2271,23 +2271,51 @@ func generate(opts Options) {
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
 			jen.Var().Id("err").Error(),
 			jen.Id("mode").Op(":=").Id("adapter").Dot("StreamMode").Call(),
-			// Resolve the effective client: apply the runtime primary override
-			// and unwrap any baml-roundrobin wrappers. __effective is the leaf
-			// client the request should dispatch to; __rrInfo describes the
-			// outermost RR decision (nil when no RR unwrap happened).
-			jen.List(jen.Id("__effective"), jen.Id("__rrInfo"), jen.Id("__rrErr")).Op(":=").
-				Qual(common.BuildRequestPkg, "ResolveEffectiveClient").Call(
-				jen.Id("adapter"),
-				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-				jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-				jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
-			),
-			jen.If(jen.Id("__rrErr").Op("!=").Nil()).Block(
-				jen.Return(jen.Nil(), jen.Id("__rrErr")),
-			),
-			jen.Id("__reg").Op(":=").Id("adapter").Dot("OriginalClientRegistry").Call(),
 		}
+		if supportsWithClient {
+			// Full RR resolution: apply the runtime primary override,
+			// unwrap baml-roundrobin wrappers, and advance the coordinator
+			// (or the worker-installed RemoteAdvancer) for the leaf
+			// selection. __effective is the resolved leaf; __rrInfo
+			// describes the outermost RR decision (nil when no RR unwrap
+			// happened). Requires WithClient so the legacy dispatcher can
+			// pass the chosen leaf to BAML's runtime — on older adapters
+			// that lack WithClient we skip this path entirely and let
+			// BAML's own strategy rotation handle RR.
+			routerBody = append(routerBody,
+				jen.List(jen.Id("__effective"), jen.Id("__rrInfo"), jen.Id("__rrErr")).Op(":=").
+					Qual(common.BuildRequestPkg, "ResolveEffectiveClient").Call(
+					jen.Id("adapter"),
+					jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+					jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+				),
+				jen.If(jen.Id("__rrErr").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("__rrErr")),
+				),
+			)
+		} else {
+			// Legacy-only adapters: skip RR unwrap + coordinator advance.
+			// The counter slot would otherwise be wasted on a decision
+			// the legacy dispatcher can't honor (no WithClient means we
+			// can't pass the chosen leaf to BAML), and the rrInfo would
+			// be misleading — it would report OUR selection while BAML's
+			// runtime picks a different child via its own rotation. Use
+			// the primary-override-only helper and leave __rrInfo nil so
+			// metadata stays silent about RR, letting BAML's internal
+			// routing speak for itself via outcome metadata.
+			routerBody = append(routerBody,
+				jen.Id("__effective").Op(":=").Qual(common.BuildRequestPkg, "ResolvePrimaryClient").Call(
+					jen.Id("adapter"),
+					jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+				),
+				jen.Var().Id("__rrInfo").Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
+			)
+		}
+		routerBody = append(routerBody,
+			jen.Id("__reg").Op(":=").Id("adapter").Dot("OriginalClientRegistry").Call(),
+		)
 
 		// Helper to generate the common retry policy resolution + dispatch call
 		// for both single-provider and fallback-chain paths.

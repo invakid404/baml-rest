@@ -311,6 +311,27 @@ func ResolveEffectiveClient(
 	return res.Selected, res.Info, nil
 }
 
+// ResolvePrimaryClient returns the request's effective client name after
+// applying the runtime client_registry primary override, without doing
+// any baml-roundrobin unwrap. Used by adapter versions that cannot honor
+// a resolved leaf child at dispatch time (BAML < 0.219.0 has no
+// WithClient CallOption, so the generated router passes the declared
+// strategy client name to BAML and lets BAML's own runtime rotate).
+//
+// Advancing our coordinator on those adapters would report a selection
+// in the metadata headers that doesn't match BAML's actual rotation, so
+// the generator skips the Resolve call entirely and uses this helper.
+// Returns empty string if defaultClientName is empty and no primary
+// override is set — callers should treat that the same as they treat
+// an empty FunctionClient entry.
+func ResolvePrimaryClient(adapter bamlutils.Adapter, defaultClientName string) string {
+	clientName := defaultClientName
+	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
+		clientName = *reg.Primary
+	}
+	return clientName
+}
+
 // ResolveProviderWithReason is ResolveProvider with the routing decision
 // classified for observability. Does not consider fallback chains — use
 // ResolveFallbackChainWithReason first when the resolved provider might be

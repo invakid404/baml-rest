@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -225,6 +226,12 @@ func TestRoundRobinCallWithRaw(t *testing.T) {
 
 			const runs = 2
 			seenRaws := map[string]bool{}
+			seenSelected := map[string]bool{}
+			seenIndices := map[string]bool{}
+			wantChildren := map[string]bool{
+				"FallbackPrimary":   true,
+				"FallbackSecondary": true,
+			}
 			for i := 0; i < runs; i++ {
 				resp, err := client.CallWithRaw(ctx, testutil.CallRequest{
 					Method: "GetGreetingRoundRobinPair",
@@ -238,9 +245,38 @@ func TestRoundRobinCallWithRaw(t *testing.T) {
 				}
 				seenRaws[resp.Raw] = true
 
-				// Every request through an RR strategy has RR metadata.
+				// Full RR metadata: match what the /call test asserts so
+				// we catch regressions where one endpoint drops part of
+				// the planned metadata the other still surfaces.
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRoundRobinName, "TestRoundRobinPair")
 				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLRoundRobinSelected)
+				testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLRoundRobinIndex)
+
+				selected := resp.Headers.Get(testutil.HeaderBAMLRoundRobinSelected)
+				if !wantChildren[selected] {
+					t.Errorf("CallWithRaw %d: Selected=%q is not in the configured children (FallbackPrimary, FallbackSecondary)", i, selected)
+				}
+				seenSelected[selected] = true
+
+				indexStr := resp.Headers.Get(testutil.HeaderBAMLRoundRobinIndex)
+				idx, err := strconv.Atoi(indexStr)
+				if err != nil {
+					t.Errorf("CallWithRaw %d: Index header %q not an integer: %v", i, indexStr, err)
+				} else if idx < 0 || idx >= 2 {
+					t.Errorf("CallWithRaw %d: Index %d out of range [0, 2)", i, idx)
+				}
+				seenIndices[indexStr] = true
+			}
+
+			// Consecutive requests on a 2-child RR must rotate, so both
+			// Selected values and both Index values must appear across
+			// the runs. This is the same consistency invariant the
+			// streaming tests check via RoundRobinInfo.
+			if len(seenSelected) != 2 {
+				t.Errorf("expected both children to be selected across %d runs, got selected set %v", runs, seenSelected)
+			}
+			if len(seenIndices) != 2 {
+				t.Errorf("expected both indices to appear across %d runs, got index set %v", runs, seenIndices)
 			}
 
 			// Two consecutive runs must hit two distinct children, so two
