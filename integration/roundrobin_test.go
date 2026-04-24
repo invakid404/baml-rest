@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,6 +118,32 @@ func skipIfNoBuildRequest(t *testing.T) {
 	if !ActuallyBuildRequest() {
 		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
 	}
+}
+
+// clientForContent maps a mock-LLM response payload back to the
+// configured RR child that served it. registerAllGreetingScenarios and
+// the streaming scenarios embed the scenario id (which equals the BAML
+// client's `model` option) in their Content, so any raw / final
+// response carries a stable marker. The test uses this to cross-check
+// that the planned-metadata Selected field names the same child that
+// actually handled the dispatch — without this check, a bug where
+// metadata reported one child while BAML routed to another would pass
+// every other assertion (header present, index in range, balanced hit
+// counts) because hit counts alone can't bind identity to a specific
+// request.
+//
+// Returns "" when the payload doesn't contain any known scenario id;
+// callers should t.Errorf in that case rather than silently pass.
+func clientForContent(payload string) string {
+	switch {
+	case strings.Contains(payload, "fallback-primary"):
+		return "FallbackPrimary"
+	case strings.Contains(payload, "fallback-secondary"):
+		return "FallbackSecondary"
+	case strings.Contains(payload, "fallback-tertiary"):
+		return "FallbackTertiary"
+	}
+	return ""
 }
 
 // ============================================================
@@ -262,6 +289,22 @@ func TestRoundRobinCallWithRaw(t *testing.T) {
 					t.Errorf("CallWithRaw %d: Index %d out of range [0, 2)", i, idx)
 				}
 				seenIndices[indexStr] = true
+
+				// Identity cross-check: the raw payload carries the
+				// scenario id of whichever child actually served this
+				// request. Assert the header's Selected names that
+				// same child. A metadata/dispatch desync — header
+				// reports FallbackPrimary while BAML routed to
+				// FallbackSecondary — would fail here, while the
+				// per-child hit counts in assertBalanced below would
+				// still pass if the overall distribution happened to
+				// balance out.
+				actualChild := clientForContent(resp.Raw)
+				if actualChild == "" {
+					t.Errorf("CallWithRaw %d: raw %q doesn't identify a known child", i, resp.Raw)
+				} else if actualChild != selected {
+					t.Errorf("CallWithRaw %d: raw was served by %q but Selected header says %q", i, actualChild, selected)
+				}
 			}
 
 			// Consecutive requests on a 2-child RR must rotate, so both
@@ -365,6 +408,18 @@ func TestRoundRobinStream(t *testing.T) {
 			} else if wantChildren[idx] != tracker.planned.RoundRobin.Selected {
 				t.Errorf("Stream %d: Selected=%q does not match Children[%d]=%q", i, tracker.planned.RoundRobin.Selected, idx, wantChildren[idx])
 			}
+
+			// Identity cross-check: the mock's streamed content contains
+			// the scenario id, so the unmarshalled final string names
+			// the child that actually served this stream. Assert the
+			// planned-metadata Selected matches — a desync between what
+			// we report and what BAML routed to would fail here.
+			actualChild := clientForContent(result)
+			if actualChild == "" {
+				t.Errorf("Stream %d: final %q doesn't identify a known child", i, result)
+			} else if actualChild != tracker.planned.RoundRobin.Selected {
+				t.Errorf("Stream %d: final was served by %q but RoundRobin.Selected says %q", i, actualChild, tracker.planned.RoundRobin.Selected)
+			}
 		}
 
 		if len(seenFinals) != 2 {
@@ -449,6 +504,19 @@ func TestRoundRobinStreamWithRaw(t *testing.T) {
 				t.Errorf("StreamWithRaw %d: RoundRobin.Index %d out of range", i, idx)
 			} else if wantChildren[idx] != tracker.planned.RoundRobin.Selected {
 				t.Errorf("StreamWithRaw %d: Selected=%q does not match Children[%d]=%q", i, tracker.planned.RoundRobin.Selected, idx, wantChildren[idx])
+			}
+
+			// Identity cross-check: the final raw payload embeds the
+			// scenario id of whichever child actually served this
+			// stream. Assert planned-metadata Selected matches — a
+			// dispatch/metadata desync would fail here while the
+			// distinct-payloads and balanced-hit-count checks above
+			// would still pass.
+			actualChild := clientForContent(finalRaw)
+			if actualChild == "" {
+				t.Errorf("StreamWithRaw %d: finalRaw %q doesn't identify a known child", i, finalRaw)
+			} else if actualChild != tracker.planned.RoundRobin.Selected {
+				t.Errorf("StreamWithRaw %d: raw was served by %q but RoundRobin.Selected says %q", i, actualChild, tracker.planned.RoundRobin.Selected)
 			}
 		}
 
