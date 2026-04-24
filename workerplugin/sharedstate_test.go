@@ -1,6 +1,7 @@
 package workerplugin
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -293,11 +294,12 @@ func TestSharedStateStore_ActiveScopeSurvivesPastCreationTTL(t *testing.T) {
 	// touch bumps the scope and the sweep leaves it alone as long as
 	// the pool is still probing.
 	//
-	// Driven with explicit virtual timestamps on touchScope + sweepOnce
-	// rather than real sleeps, so the assertion is deterministic. The
-	// virtual clock advances by 9*TTL over ten iterations — any single
-	// idle window longer than TTL would evict — but each touch refreshes
-	// lastAccessed just before the sweep, so the scope stays alive.
+	// Driven with explicit virtual timestamps on registerAndLoadIdem +
+	// sweepOnce rather than real sleeps, so the assertion is
+	// deterministic. The virtual clock advances by 9*TTL over ten
+	// iterations — any single idle window longer than TTL would evict
+	// — but each touch refreshes lastAccessed just before the sweep,
+	// so the scope stays alive.
 	const ttl = time.Hour
 	store := newSharedStateStoreWithTTL(nil, ttl)
 	defer store.Close()
@@ -313,7 +315,11 @@ func TestSharedStateStore_ActiveScopeSurvivesPastCreationTTL(t *testing.T) {
 		// semantics, after i=2 iterations the createdAt would be far
 		// behind the sweep cutoff and the scope would evict.
 		virtualNow = virtualNow.Add(ttl * 9 / 10)
-		store.touchScope("k", "long-running", virtualNow)
+		// Refresh the scope with an explicit timestamp. Calling
+		// registerAndLoadIdem is equivalent to a FetchAdd for this
+		// key/opID minus the counter advance; it's what exercises the
+		// lastAccessed bump the sweeper cares about.
+		store.registerAndLoadIdem("k", "long-running", virtualNow)
 		// Sweep one nanosecond after the touch: cutoff =
 		// virtualNow - TTL + 1ns; lastAccessed = virtualNow; fresh.
 		store.sweepOnce(virtualNow.Add(time.Nanosecond))
@@ -324,5 +330,89 @@ func TestSharedStateStore_ActiveScopeSurvivesPastCreationTTL(t *testing.T) {
 	// counter (returning 1, not 0).
 	if got := store.FetchAdd("k", 1, "long-running"); got != 0 {
 		t.Fatalf("post loop: got %d, want 0 — scope was evicted despite fresh touches", got)
+	}
+}
+
+func TestSharedStateStore_FetchAddDoesNotOrphanUnderConcurrentDropScope(t *testing.T) {
+	// Regression for the cold-review finding on the DropScope /
+	// FetchAdd race. The previous revision ran touchScope and
+	// loadOrStoreIdem as separate calls, so a DropScope firing between
+	// them could delete the scope and iterate its (key-set-of-one)
+	// without finding any idem entry to clean up — the caller would
+	// then resume, create the entry, and leave it orphaned. The
+	// sweeper only ranges s.scopes, so the orphan was unreclaimable.
+	//
+	// Post-fix, scope attach and idem creation happen under the same
+	// scope mutex inside registerAndLoadIdem. This test drives the
+	// exact interleaving and asserts the structural invariant that
+	// matters: every live idem entry has a live scope entry, regardless
+	// of which side won the race.
+	store := newSharedStateStoreWithTTL(nil, time.Hour)
+	defer store.Close()
+
+	const iterations = 2000
+	for i := 0; i < iterations; i++ {
+		opID := fmt.Sprintf("op-%d", i)
+
+		// Launch FetchAdd and DropScope concurrently. The goal is
+		// maximal overlap on the scope-attach / drop decision, which
+		// is what the old split-call version was vulnerable to.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		start := make(chan struct{})
+		go func() {
+			defer wg.Done()
+			<-start
+			store.FetchAdd("k", 1, opID)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			store.DropScope(opID)
+		}()
+		close(start)
+		wg.Wait()
+
+		// Invariant check: if s.idem still holds the entry, s.scopes
+		// must still hold its scope. An orphan (idem present, scope
+		// missing) is the exact condition the old ordering could
+		// produce.
+		if _, idemOK := store.idem.Load(idemKey("k", opID)); idemOK {
+			if _, scopeOK := store.scopes.Load(opID); !scopeOK {
+				t.Fatalf("op-%d: idem entry exists but scope was dropped — orphan leak", i)
+			}
+		}
+	}
+}
+
+func TestSharedStateStore_FetchAddAfterDropScopeRestartsCleanly(t *testing.T) {
+	// Direct interleaving test: a FetchAdd observing its scope marked
+	// deleted mid-call must restart against a fresh scope so the
+	// returned entry is attached to a live scope. The deleted flag
+	// retry loop inside registerAndLoadIdem guarantees this.
+	store := newSharedStateStoreWithTTL(nil, time.Hour)
+	defer store.Close()
+
+	// Prime: create a scope then drop it.
+	store.FetchAdd("k", 1, "op")
+	released := store.DropScope("op")
+	if released != 1 {
+		t.Fatalf("DropScope released=%d, want 1", released)
+	}
+
+	// A subsequent FetchAdd with the same op_id must:
+	//   - find no surviving scope (LoadOrStore creates a fresh one),
+	//   - find no surviving idem entry (creates a fresh one),
+	//   - advance the counter (because it's a cache miss).
+	got := store.FetchAdd("k", 1, "op")
+	if got != 1 {
+		t.Fatalf("got previous=%d, want 1 (post-drop FetchAdd must advance against a fresh scope+entry)", got)
+	}
+	// And the idem/scope must now be paired again.
+	if _, idemOK := store.idem.Load(idemKey("k", "op")); !idemOK {
+		t.Fatal("post-drop FetchAdd did not leave an idem entry")
+	}
+	if _, scopeOK := store.scopes.Load("op"); !scopeOK {
+		t.Fatal("post-drop FetchAdd did not leave a scope entry")
 	}
 }

@@ -131,9 +131,14 @@ type ExtractResponseFunc func(provider string, responseBody string, includeThink
 // The request is rebuilt on each attempt because BuildRequest fallback routing
 // may select a different child client/provider per retry. The generated
 // adapter passes the chosen child via clientOverride, and Request may return a
-// different HTTP request on each invocation. baml-roundrobin stays on the
-// legacy path because this per-request orchestrator does not keep cross-request
-// rotation state.
+// different HTTP request on each invocation.
+//
+// Top-level baml-roundrobin is resolved upstream by ResolveEffectiveClient
+// (backed by SharedStateStore for cross-worker centralisation on modern
+// adapters with SupportsWithClient); this orchestrator then dispatches to
+// the resolved leaf like any other single-provider client. Older adapters
+// without SupportsWithClient, and baml-roundrobin nested inside a fallback
+// chain, still fall through to BAML's per-worker runtime rotation.
 //
 // The output channel is NOT closed by this function — the caller (generated
 // code) is responsible for closing it.

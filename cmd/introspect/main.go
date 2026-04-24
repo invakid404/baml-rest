@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1989,6 +1990,36 @@ func generateBamlConfigVars(out *jen.File) {
 			entries = append(entries, jen.Lit(clientName).Op(":").Lit(cfg.clientRetryPolicy[clientName]))
 		}
 		out.Var().Id("ClientRetryPolicy").Op("=").Map(jen.String()).String().Values(entries...)
+	}
+
+	// Scan for fallback -> round-robin composition at introspect time
+	// and emit a one-time build-log warning per (fallback, rr-child)
+	// pair. This PR intentionally defers centralised unwrapping of RR
+	// children inside fallback chains (cold-review finding 2, broad
+	// variant). Nested RR still runs correctly under BAML's per-worker
+	// runtime rotation; the warning just flags the composition so
+	// operators don't mistake pool-wide RR for nested-RR-works-too.
+	// Keys are sorted so the build-log output is stable across runs.
+	{
+		parents := make([]string, 0, len(cfg.fallbackChains))
+		for parent := range cfg.fallbackChains {
+			parents = append(parents, parent)
+		}
+		sort.Strings(parents)
+		for _, parent := range parents {
+			if cfg.clientProvider[parent] != "baml-fallback" {
+				continue
+			}
+			for _, child := range cfg.fallbackChains[parent] {
+				if cfg.clientProvider[child] != "baml-roundrobin" {
+					continue
+				}
+				log.Printf("baml-rest introspect: fallback client %q has baml-roundrobin child %q; "+
+					"nested round-robin rotates per-worker via BAML's runtime (cross-worker "+
+					"centralisation is only applied to top-level round-robin clients)",
+					parent, child)
+			}
+		}
 	}
 
 	// FallbackChains: maps strategy client names (baml-fallback, baml-roundrobin)

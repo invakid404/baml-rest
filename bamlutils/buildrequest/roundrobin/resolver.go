@@ -2,9 +2,9 @@ package roundrobin
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/strategyparse"
 )
 
 // CanonicalProvider is the spelling emitted in metadata and headers
@@ -200,68 +200,13 @@ func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlut
 	return nil
 }
 
-// parseRuntimeStrategyOption mirrors buildrequest.parseRuntimeStrategyOption.
-// The shape accommodates three legal input forms: a bracket-delimited string
-// ("strategy [A, B]"), a native string slice, and a heterogeneous []any
-// (from JSON unmarshalling).
+// parseRuntimeStrategyOption delegates to the shared parser at
+// bamlutils/strategyparse. The fallback and round-robin resolvers used
+// to keep private copies of this logic that diverged on quote handling;
+// sharing the helper keeps both strategies consistent. Quoted tokens
+// (`"ClientA"`) are stripped to bare names so runtime client_registry
+// overrides with a bracketed-string shape match the introspected client
+// names.
 func parseRuntimeStrategyOption(v any) []string {
-	// BAML's runtime parser preserves surrounding quotes on client names in
-	// the runtime ClientRegistry representation — they are part of the name,
-	// not stripped. Mirror that exactly; trimming them here produced names
-	// that didn't match introspected entries and silently collapsed the
-	// chain to a no-op.
-	normalizeToken := func(token string) string {
-		return strings.TrimSpace(token)
-	}
-	splitStrategy := func(s string) []string {
-		s = strings.TrimSpace(s)
-		if strings.HasPrefix(s, "strategy ") {
-			s = strings.TrimSpace(strings.TrimPrefix(s, "strategy "))
-		}
-		if strings.HasPrefix(s, "[") {
-			s = s[1:]
-		}
-		if closeIdx := strings.LastIndex(s, "]"); closeIdx >= 0 {
-			s = s[:closeIdx]
-		}
-		parts := strings.FieldsFunc(s, func(r rune) bool {
-			return r == ',' || r == ' ' || r == '\t' || r == '\n'
-		})
-		out := make([]string, 0, len(parts))
-		for _, part := range parts {
-			part = normalizeToken(part)
-			if part != "" {
-				out = append(out, part)
-			}
-		}
-		return out
-	}
-	switch vv := v.(type) {
-	case string:
-		return splitStrategy(vv)
-	case []string:
-		out := make([]string, 0, len(vv))
-		for _, item := range vv {
-			item = normalizeToken(item)
-			if item != "" {
-				out = append(out, item)
-			}
-		}
-		return out
-	case []any:
-		out := make([]string, 0, len(vv))
-		for _, item := range vv {
-			str, ok := item.(string)
-			if !ok {
-				return nil
-			}
-			str = normalizeToken(str)
-			if str != "" {
-				out = append(out, str)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
+	return strategyparse.ParseStrategyOption(v)
 }

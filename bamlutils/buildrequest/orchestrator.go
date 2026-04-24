@@ -22,6 +22,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/retry"
 	"github.com/invakid404/baml-rest/bamlutils/sse"
+	"github.com/invakid404/baml-rest/bamlutils/strategyparse"
 )
 
 // parseBuildRequestEnv reads BAML_REST_USE_BUILD_REQUEST and returns its
@@ -228,10 +229,27 @@ const (
 	// unsupported provider, so the whole chain runs on legacy. Deliberate
 	// configuration — no operator alert.
 	PathReasonFallbackAllLegacy = "fallback-all-legacy"
-	// PathReasonRoundRobin: the resolved strategy is baml-roundrobin, which
-	// is intentionally legacy-only because BuildRequest lacks cross-request
-	// state. Deliberate configuration — no operator alert.
+	// PathReasonRoundRobin: the resolved strategy is baml-roundrobin and
+	// the request reached the legacy metadata-plan builder unresolved.
+	// In modern adapters (BAML >= 0.219.0 with SupportsWithClient) top-
+	// level RR is unwrapped by ResolveEffectiveClient before dispatch
+	// and does NOT land here; this reason only fires on older adapters
+	// that have no WithClient option, or as a defensive path when RR
+	// resolution failed (cycle / empty chain). The string value is
+	// preserved for backwards-compatibility with any metric parsers.
 	PathReasonRoundRobin = "roundrobin-legacy-only"
+	// PathReasonFallbackRoundRobinChildLegacy: the fallback chain
+	// contains a baml-roundrobin child. Top-level RR is centralised
+	// across workers via the SharedState broker socket, but nested RR
+	// inside a fallback chain is intentionally NOT unwrapped by the
+	// BuildRequest resolver — that would require the broad
+	// "preselect one RR leaf at each fallback position" design (PR
+	// #192 cold-review finding 2, deferred). Such chains still work,
+	// but the RR child is handed to BAML's runtime on each worker,
+	// which means its rotation is per-worker, not centralised.
+	// Surfaced here so operators can spot the composition and know
+	// not to expect fleet-wide rotation for the nested client.
+	PathReasonFallbackRoundRobinChildLegacy = "fallback-roundrobin-child-legacy"
 	// PathReasonBuildRequestDisabled: BAML_REST_USE_BUILD_REQUEST is off.
 	// Deliberate configuration — no operator alert.
 	PathReasonBuildRequestDisabled = "buildrequest-disabled"
@@ -274,6 +292,24 @@ type ProviderResolution struct {
 // the package-level advancer set at generated-adapter init — either the
 // in-process Coordinator (standalone) or a per-request RemoteAdvancer
 // installed by the worker on the host's SharedState socket.
+//
+// RR rotation cadence — intentional divergence from BAML upstream.
+// ResolveEffectiveClient advances the RR counter exactly once per REST
+// request at router entry. BAML's runtime advances once per outbound
+// LLM call under RR scope (see baml-runtime orchestrator/mod.rs:232
+// and :294), which means a leaf's retry_policy bleeds into rotation
+// distribution — three retries on a single REST request burn three
+// persistent counter slots. We treat rotation and per-child retry as
+// orthogonal: a child's transient failures should not reduce its share
+// of the rotation, and operators reading X-BAML-RoundRobin-Index get
+// a deterministic 1:1 cadence with request count. The divergence is
+// observable (next-request child selection differs from BAML under
+// sustained retry activity) but is intentional for this PR's
+// load-distribution semantic, not an accidental omission. A follow-up
+// could thread per-attempt advancement through the retry loop if
+// operators actually need BAML-parity rotation under failure — that
+// requires redesigning the advancer call site to fire per-attempt
+// rather than once at router entry.
 func ResolveEffectiveClient(
 	adapter bamlutils.Adapter,
 	defaultClientName string,
@@ -551,7 +587,12 @@ func BuildFallbackChainPlanForClient(
 //   - unsupported or empty provider
 //   - fallback strategy not routable (empty chain, empty child provider,
 //     or all-legacy chain)
-//   - baml-roundrobin (intentionally legacy-only)
+//   - fallback chain contains a baml-roundrobin child whose rotation is
+//     left to BAML's per-worker runtime (PathReasonFallbackRoundRobinChildLegacy)
+//   - an unresolved baml-roundrobin top-level client — fires only on
+//     older adapters without SupportsWithClient, or defensively if RR
+//     resolution reached this builder without being unwrapped upstream
+//     (PathReasonRoundRobin)
 //
 // The plan includes retry policy information when a policy resolves, and
 // chain/legacyChildren information for strategy clients.
@@ -804,6 +845,7 @@ func ResolveFallbackChainForClientWithReason(
 	chainProviders := make(map[string]string, len(resolvedChain))
 	chainLegacy := make(map[string]bool)
 	legacyPositions := 0
+	hasRoundRobinChild := false
 	for _, child := range resolvedChain {
 		p := ResolveClientProvider(reg, child, clientProviders)
 		if p == "" {
@@ -818,10 +860,29 @@ func ResolveFallbackChainForClientWithReason(
 			chainLegacy[child] = true
 			legacyPositions++
 		}
+		// Detect any RR-provider child. Note: roundrobin.IsRoundRobinProvider
+		// folds all three spellings (baml-roundrobin / baml-round-robin /
+		// round-robin) onto the same classification so runtime registry
+		// overrides using any form are caught.
+		if roundrobin.IsRoundRobinProvider(p) {
+			hasRoundRobinChild = true
+		}
 	}
 
 	if legacyPositions == len(resolvedChain) {
 		return nil, nil, nil, PathReasonFallbackAllLegacy
+	}
+
+	// Informational reason for mixed-mode chains that contain an RR
+	// child. The chain still runs: non-RR children take the BuildRequest
+	// path, and the RR child is handled by BAML's runtime on each worker
+	// (per-worker rotation, not centralised). Surface the composition in
+	// metadata so operators can distinguish it from a single-level RR,
+	// which IS centralised via the SharedState broker. Centralised
+	// unwrapping of RR children inside fallback chains is deferred — see
+	// PR #192 cold-review finding 2.
+	if hasRoundRobinChild {
+		return resolvedChain, chainProviders, chainLegacy, PathReasonFallbackRoundRobinChildLegacy
 	}
 
 	return resolvedChain, chainProviders, chainLegacy, ""
@@ -962,69 +1023,13 @@ func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlut
 	return nil
 }
 
+// parseRuntimeStrategyOption delegates to the shared parser at
+// bamlutils/strategyparse. Fallback and round-robin historically kept
+// local copies of this logic that diverged on quote handling, which
+// broke RR runtime overrides under bracketed-string shapes; the shared
+// helper keeps both strategies consistent.
 func parseRuntimeStrategyOption(v any) []string {
-	normalizeStrategyToken := func(token string) string {
-		token = strings.TrimSpace(token)
-		if len(token) >= 2 {
-			if (token[0] == '"' && token[len(token)-1] == '"') || (token[0] == '\'' && token[len(token)-1] == '\'') {
-				token = token[1 : len(token)-1]
-			}
-		}
-		return strings.TrimSpace(token)
-	}
-
-	splitStrategy := func(s string) []string {
-		s = strings.TrimSpace(s)
-		if strings.HasPrefix(s, "strategy ") {
-			s = strings.TrimSpace(strings.TrimPrefix(s, "strategy "))
-		}
-		if strings.HasPrefix(s, "[") {
-			s = s[1:]
-		}
-		if closeIdx := strings.LastIndex(s, "]"); closeIdx >= 0 {
-			s = s[:closeIdx]
-		}
-		parts := strings.FieldsFunc(s, func(r rune) bool {
-			return r == ',' || r == ' ' || r == '\t' || r == '\n'
-		})
-		chain := make([]string, 0, len(parts))
-		for _, part := range parts {
-			part = normalizeStrategyToken(part)
-			if part != "" {
-				chain = append(chain, part)
-			}
-		}
-		return chain
-	}
-
-	switch vv := v.(type) {
-	case string:
-		return splitStrategy(vv)
-	case []string:
-		chain := make([]string, 0, len(vv))
-		for _, item := range vv {
-			item = normalizeStrategyToken(item)
-			if item != "" {
-				chain = append(chain, item)
-			}
-		}
-		return chain
-	case []any:
-		chain := make([]string, 0, len(vv))
-		for _, item := range vv {
-			str, ok := item.(string)
-			if !ok {
-				return nil
-			}
-			str = normalizeStrategyToken(str)
-			if str != "" {
-				chain = append(chain, str)
-			}
-		}
-		return chain
-	default:
-		return nil
-	}
+	return strategyparse.ParseStrategyOption(v)
 }
 
 func resolveFallbackStrategyChain(reg *bamlutils.ClientRegistry, clientName string, introspectedChains map[string][]string) []string {

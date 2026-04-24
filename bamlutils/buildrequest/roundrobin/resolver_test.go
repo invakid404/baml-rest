@@ -221,6 +221,52 @@ func TestResolve_RuntimeStrategyOverride(t *testing.T) {
 	}
 }
 
+func TestResolve_RuntimeStrategyOverride_QuotedString(t *testing.T) {
+	// Regression for the round-robin cold-review finding on parser
+	// unification: a runtime client_registry strategy override passed
+	// as a bracketed string ("strategy [\"A\", \"B\"]") must strip the
+	// surrounding quotes before matching introspected client names.
+	// Previously the RR resolver kept its own parser that preserved
+	// quotes, silently collapsing the chain to unknown-named clients;
+	// both strategies now share bamlutils/strategyparse.
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{
+				Name:    "MyRR",
+				Options: map[string]any{"strategy": `strategy ["ClientC", "ClientD"]`},
+			},
+		},
+	}
+	in := ResolveInput{
+		ClientName: "MyRR",
+		Registry:   reg,
+		ClientProviders: map[string]string{
+			"MyRR":    "baml-roundrobin",
+			"ClientC": "openai",
+			"ClientD": "anthropic",
+		},
+		FallbackChains: map[string][]string{"MyRR": {"A", "B"}},
+		Advancer:       NewCoordinator(),
+	}
+	res, err := Resolve(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Info == nil {
+		t.Fatalf("expected Info")
+	}
+	if got := res.Info.Children; !sliceEqual(got, []string{"ClientC", "ClientD"}) {
+		t.Fatalf("children: want [ClientC ClientD] (quotes stripped), got %v", got)
+	}
+	// Selected must be one of the unquoted child names, not a quoted
+	// variant. Before the parser unification the resolver would
+	// select `"ClientC"` (with quotes) which doesn't match any
+	// introspected provider.
+	if res.Selected != "ClientC" && res.Selected != "ClientD" {
+		t.Fatalf("selected %q is not an unquoted configured child", res.Selected)
+	}
+}
+
 func TestResolve_DynamicRRClient_DoesNotTouchCoordinator(t *testing.T) {
 	// Runtime-registered client with RR provider. Counter state must not
 	// persist across two Resolve calls — this matches BAML's fresh-Arc

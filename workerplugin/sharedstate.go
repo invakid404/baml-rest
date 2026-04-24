@@ -156,23 +156,7 @@ func (s *SharedStateStore) FetchAdd(key string, delta uint64, opID string) uint6
 		counter := s.counterFor(key)
 		return counter.Add(delta) - delta
 	}
-	// Touch the scope BEFORE loading the idem entry. The order is load-
-	// bearing: the sweeper uses scope.lastAccessedNano to decide whether
-	// to evict a scope and its idem entries. If touch happened after
-	// loadOrStoreIdem, a sweep running between the two could observe the
-	// scope as stale, delete the scope, and delete the idem entry we were
-	// about to read — leaving the current call with a dangling cached
-	// value and every subsequent call for the same op_id re-advancing
-	// the counter against the now-missing cache. Storing the fresh
-	// timestamp first is what prevents that: sweep's atomic re-check
-	// under the mutex sees the updated lastAccessed and bails out.
-	//
-	// Touch covers both paths — first-touch (registers the key) and cache
-	// hit (just bumps lastAccessed). Bumping on every hit is what keeps
-	// long-running requests safe from the TTL sweeper: as long as the
-	// pool keeps probing, the scope stays fresh.
-	s.touchScope(key, opID, time.Now())
-	entry := s.loadOrStoreIdem(key, opID)
+	entry := s.registerAndLoadIdem(key, opID, time.Now())
 	entry.once.Do(func() {
 		counter := s.counterFor(key)
 		// Assignment is inside Do so concurrent readers blocked on the
@@ -183,33 +167,33 @@ func (s *SharedStateStore) FetchAdd(key string, delta uint64, opID string) uint6
 	return entry.previous
 }
 
-// loadOrStoreIdem returns the canonical idempotency entry for (key,
-// opID), creating it on first touch. Concurrent callers for the same
-// pair all receive the same *idemEntry; exactly one of them will win
-// the once.Do race inside FetchAdd.
-func (s *SharedStateStore) loadOrStoreIdem(key, opID string) *idemEntry {
-	k := idemKey(key, opID)
-	if v, ok := s.idem.Load(k); ok {
-		return v.(*idemEntry)
-	}
-	fresh := &idemEntry{}
-	actual, _ := s.idem.LoadOrStore(k, fresh)
-	return actual.(*idemEntry)
-}
-
-// touchScope registers (key, opID) under opID's scope (if not already
-// present) and bumps the scope's lastAccessed timestamp. Called on every
-// FetchAdd, both on cache-miss (first-touch key) and cache-hit (retry
-// observing an earlier cached previous). Bumping on every call is what
-// keeps long-running requests safe from the TTL sweeper — as long as
-// the pool keeps probing, the scope stays fresh.
+// registerAndLoadIdem atomically (with respect to DropScope and sweepOnce)
+// registers the (key, opID) pair under its scope and returns the canonical
+// idempotency entry. Scope attachment and idem map creation happen under
+// the same scope mutex, which closes the orphan race the previous
+// split-call version had.
 //
-// The loop handles the sweep-deleted race: if we acquire the mutex on
-// a scope that sweeper or DropScope has already marked for deletion,
-// restart with a fresh Load. By then sweeper's s.scopes.Delete has
-// committed (it's under the same mutex), so the Load misses and
-// LoadOrStore creates a brand-new scope.
-func (s *SharedStateStore) touchScope(key, opID string, now time.Time) {
+// Earlier revisions ran `touchScope` and `loadOrStoreIdem` as separate
+// calls. A concurrent DropScope firing between them could delete the
+// scope + iterate its keys (finding no idem entry because the caller
+// hadn't created one yet), then the caller would resume and create the
+// idem entry after DropScope had already committed. That entry was
+// orphaned: the sweeper only ranges s.scopes, so it could never reclaim
+// it. Comments in the prior revision claimed the race was closed by the
+// `deleted` flag, but the flag only covered the in-touchScope window,
+// not the post-touch-pre-create window.
+//
+// The fix is structural: do both steps while holding sc.mu. A DropScope
+// racing with this helper either (a) wins — we see deleted=true after
+// acquiring mu and restart against a fresh scope, creating the entry
+// against the new scope; or (b) loses — we create the entry and register
+// the key, and DropScope's subsequent sc.mu.Lock sees our entry in its
+// iteration and deletes it cleanly. No orphan in either ordering.
+//
+// Long-running-request survival: lastAccessedNano is bumped on every
+// call, so the sweeper never evicts a scope that's actively being
+// probed by pool retries.
+func (s *SharedStateStore) registerAndLoadIdem(key, opID string, now time.Time) *idemEntry {
 	for {
 		var sc *scope
 		if v, ok := s.scopes.Load(opID); ok {
@@ -229,8 +213,8 @@ func (s *SharedStateStore) touchScope(key, opID string, now time.Time) {
 		if sc.deleted.Load() {
 			sc.mu.Unlock()
 			// Brief scheduler hint; avoids a tight spin if the sweeper
-			// is slow to publish the Delete. A Gosched is sufficient —
-			// the sweeper holds a bounded critical section.
+			// or DropScope is slow to publish the deletion. A Gosched
+			// is sufficient — both sites hold a bounded critical section.
 			runtime.Gosched()
 			continue
 		}
@@ -238,8 +222,21 @@ func (s *SharedStateStore) touchScope(key, opID string, now time.Time) {
 			sc.keys = make(map[string]struct{})
 		}
 		sc.keys[key] = struct{}{}
+		// Create or load the idem entry UNDER the same scope mutex so
+		// a racing DropScope's key iteration either finds our entry
+		// and deletes it, or commits its deletion before we ever saw
+		// the scope as live (in which case we restarted above).
+		k := idemKey(key, opID)
+		var entry *idemEntry
+		if v, ok := s.idem.Load(k); ok {
+			entry = v.(*idemEntry)
+		} else {
+			fresh := &idemEntry{}
+			actual, _ := s.idem.LoadOrStore(k, fresh)
+			entry = actual.(*idemEntry)
+		}
 		sc.mu.Unlock()
-		return
+		return entry
 	}
 }
 
@@ -247,11 +244,23 @@ func (s *SharedStateStore) touchScope(key, opID string, now time.Time) {
 // the number of entries released (useful for tests and metrics). Calling
 // DropScope with an unknown opID is a no-op.
 //
-// The deleted flag is set under the mutex so a concurrent touchScope
-// that captured this scope's pointer before the LoadAndDelete sees it
-// after acquiring mu and restarts the loop with a fresh Load. That
-// prevents the "FetchAdd adds a key to a scope that has just been
-// removed from s.scopes" window.
+// Lock-ordering contract with registerAndLoadIdem:
+//
+//   - DropScope LoadAndDeletes the scope from s.scopes, then takes the
+//     scope mutex, marks deleted=true, and walks sc.keys to delete the
+//     matching idem entries under the same lock.
+//   - registerAndLoadIdem does scope attach + idem map creation under
+//     that same mutex. If it holds mu before DropScope, DropScope's
+//     key iteration sees the idem entry we just created and cleans it
+//     up. If DropScope holds mu first, registerAndLoadIdem observes
+//     deleted=true and restarts with a fresh scope.
+//
+// Either ordering leaves the invariant `s.idem[k,op] exists implies
+// s.scopes[op] exists` intact. A previous revision split scope attach
+// and idem creation across two calls; DropScope could land between
+// them and leave an orphan idem entry that the sweeper (which only
+// ranges s.scopes) could never reclaim. The fuse into
+// registerAndLoadIdem closes that window.
 func (s *SharedStateStore) DropScope(opID string) int {
 	if opID == "" {
 		return 0

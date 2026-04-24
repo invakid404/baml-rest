@@ -1176,9 +1176,15 @@ func TestResolveFallbackChain_NotFallback(t *testing.T) {
 	}
 }
 
-func TestResolveFallbackChain_RoundRobinGated(t *testing.T) {
-	// baml-roundrobin should NOT use the BuildRequest path because the
-	// orchestrator has no cross-request state to distribute load.
+func TestResolveFallbackChain_RoundRobinChildSkipped(t *testing.T) {
+	// ResolveFallbackChain only classifies baml-fallback parents. A
+	// baml-roundrobin parent returns nil,nil,nil — not because RR is
+	// "legacy-only" globally (top-level RR is resolved upstream by
+	// ResolveEffectiveClient for modern adapters with SupportsWithClient),
+	// but because this helper is the fallback-chain classifier. RR is
+	// handled either by the upstream resolver (modern) or by BAML's
+	// runtime under the legacy path (older adapters / nested RR children
+	// inside a fallback chain).
 	fallbackChains := map[string][]string{
 		"MyRoundRobin": {"ClientA", "ClientB"},
 	}
@@ -1195,7 +1201,76 @@ func TestResolveFallbackChain_RoundRobinGated(t *testing.T) {
 	)
 
 	if chain != nil || providers != nil || legacyChildren != nil {
-		t.Errorf("expected nil for baml-roundrobin (should use legacy path), got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
+		t.Errorf("expected nil for baml-roundrobin parent (classified elsewhere), got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
+	}
+}
+
+func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
+	// Cold-review finding 2 (narrow fix): a fallback chain with a
+	// baml-roundrobin child still runs, but the PathReason surfaces the
+	// composition so operators can distinguish centralised top-level RR
+	// from per-worker nested RR. The RR child lands on the legacy child
+	// list (IsProviderSupported returns false for baml-roundrobin), and
+	// BAML's runtime handles its rotation on each worker independently.
+	// Centralised unwrapping of RR children inside fallback chains is
+	// deferred — see cold-review rebuttal / broad fix.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"OpenAIClient", "InnerRR"},
+		"InnerRR":    {"GoogleA", "GoogleB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback":   "baml-fallback",
+		"OpenAIClient": "openai",
+		"InnerRR":      "baml-roundrobin",
+		"GoogleA":      "google-ai",
+		"GoogleB":      "google-ai",
+	}
+
+	chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+		nil, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool {
+			return p == "openai" || p == "google-ai" || p == "anthropic"
+		},
+	)
+
+	if chain == nil {
+		t.Fatalf("expected chain to resolve (RR child is mixed-legacy, not abort), got nil with reason=%q", reason)
+	}
+	if reason != PathReasonFallbackRoundRobinChildLegacy {
+		t.Fatalf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+	}
+	if !legacy["InnerRR"] {
+		t.Errorf("InnerRR must be marked legacy (BAML runtime handles RR rotation per-worker), legacyChildren=%v", legacy)
+	}
+	if legacy["OpenAIClient"] {
+		t.Errorf("OpenAIClient is a supported provider — must not be on legacy list, legacyChildren=%v", legacy)
+	}
+	if providers["InnerRR"] != "baml-roundrobin" {
+		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin", providers["InnerRR"])
+	}
+}
+
+func TestResolveFallbackChain_FallbackWithRRChild_HyphenatedSpelling(t *testing.T) {
+	// Same as above but with the "baml-round-robin" spelling (BAML
+	// upstream) to confirm the alias classifier folds all three RR
+	// spellings (baml-roundrobin / baml-round-robin / round-robin)
+	// before deciding whether the child contributes the new
+	// PathReason.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"A", "InnerRR"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"A":          "openai",
+		"InnerRR":    "baml-round-robin",
+	}
+
+	_, _, _, reason := ResolveFallbackChainForClientWithReason(
+		nil, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+	if reason != PathReasonFallbackRoundRobinChildLegacy {
+		t.Fatalf("reason with alias spelling: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
 	}
 }
 
