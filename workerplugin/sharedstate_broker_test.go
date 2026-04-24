@@ -62,13 +62,16 @@ func TestSharedState_BrokerHandshakeAndFetchAdd(t *testing.T) {
 	// server.Serve + AttachSharedState; the worker-side handler then
 	// dials back via broker.DialWithOptions and hands us the client
 	// via the SetAttachSharedStateHandler callback above.
-	client, server := goplugin.TestPluginGRPCConn(t, false, map[string]goplugin.Plugin{
+	client, _ := goplugin.TestPluginGRPCConn(t, false, map[string]goplugin.Plugin{
 		"worker": workerPlugin,
 	})
-	defer func() {
-		_ = client.Close()
-		server.Stop()
-	}()
+	// client.Close() triggers go-plugin's controller Shutdown RPC,
+	// which calls GRPCServer.Stop() on the server side for us. Calling
+	// server.Stop() explicitly in cleanup races that internal Stop —
+	// both paths read/write the same unexported server-state fields
+	// concurrently and fail under `go test -race -count=100`. Let the
+	// harness own the server lifecycle; client close is enough.
+	defer func() { _ = client.Close() }()
 
 	if _, err := client.Dispense("worker"); err != nil {
 		t.Fatalf("Dispense: %v", err)
