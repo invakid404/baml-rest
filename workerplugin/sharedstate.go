@@ -62,18 +62,29 @@ type SharedStateStore struct {
 // field is zero; after, sync.Once provides the happens-before edge for
 // the read on the slow path.
 type idemEntry struct {
-	once      sync.Once
-	previous  uint64
-	createdAt time.Time
+	once     sync.Once
+	previous uint64
 }
 
 // scope holds the set of idempotency keys owned by one operation_id.
 // DropScope walks this set instead of the whole idem map — O(keys touched
 // by this request) rather than O(all cached entries in the process).
+//
+// lastAccessedNano is updated on every FetchAdd under the scope, including
+// cache hits. The TTL sweeper evicts by lastAccessed rather than by a
+// fixed creation time so a long-running request (legitimate retries
+// spanning more than TTL) keeps its cached rotation index alive as long
+// as the pool is still probing it. A createdAt-only policy would evict
+// live entries mid-retry, causing the next replay to advance the counter
+// a second time — exactly the race the cache exists to prevent.
+//
+// atomic.Int64 avoids the per-call mutex cost of stashing a time.Time.
+// UnixNano is monotonic-enough for the "age > cutoff" comparisons here;
+// the sweep cadence is minutes, not nanoseconds.
 type scope struct {
-	mu        sync.Mutex
-	keys      map[string]struct{}
-	createdAt time.Time
+	mu               sync.Mutex
+	keys             map[string]struct{}
+	lastAccessedNano atomic.Int64
 }
 
 // defaultIdemTTL is the default time-to-live for idempotency entries
@@ -138,9 +149,13 @@ func (s *SharedStateStore) FetchAdd(key string, delta uint64, opID string) uint6
 		// same Once observe this write under the happens-before edge
 		// that Once establishes.
 		entry.previous = counter.Add(delta) - delta
-		entry.createdAt = time.Now()
-		s.attachToScope(key, opID)
 	})
+	// Touch the scope on every call — misses (first-touch, registers the
+	// key) and hits (pool retries, just bumps lastAccessed). Keeping this
+	// outside the once.Do block is what distinguishes this from the old
+	// createdAt behaviour: each retry extends the TTL, so a long-running
+	// request can't be swept mid-flight.
+	s.touchScope(key, opID, time.Now())
 	return entry.previous
 }
 
@@ -158,19 +173,22 @@ func (s *SharedStateStore) loadOrStoreIdem(key, opID string) *idemEntry {
 	return actual.(*idemEntry)
 }
 
-// attachToScope registers (key, opID) under opID's scope so DropScope
-// can find every entry belonging to a request without walking the whole
-// idem map. Called only on the once.Do winner path; losers already
-// observe a registered scope through their blocking Do.
-func (s *SharedStateStore) attachToScope(key, opID string) {
+// touchScope registers (key, opID) under opID's scope (if not already
+// present) and bumps the scope's lastAccessed timestamp. Called on every
+// FetchAdd, both on cache-miss (first-touch key) and cache-hit (retry
+// observing an earlier cached previous). Bumping on every call is what
+// keeps long-running requests safe from the TTL sweeper — as long as
+// the pool keeps probing, the scope stays fresh.
+func (s *SharedStateStore) touchScope(key, opID string, now time.Time) {
 	var sc *scope
 	if v, ok := s.scopes.Load(opID); ok {
 		sc = v.(*scope)
 	} else {
-		fresh := &scope{keys: make(map[string]struct{}), createdAt: time.Now()}
+		fresh := &scope{keys: make(map[string]struct{})}
 		actual, _ := s.scopes.LoadOrStore(opID, fresh)
 		sc = actual.(*scope)
 	}
+	sc.lastAccessedNano.Store(now.UnixNano())
 	sc.mu.Lock()
 	if sc.keys == nil {
 		sc.keys = make(map[string]struct{})
@@ -246,22 +264,27 @@ func (s *SharedStateStore) sweeper() {
 }
 
 func (s *SharedStateStore) sweepOnce(now time.Time) {
-	cutoff := now.Add(-s.ttl)
+	cutoffNano := now.Add(-s.ttl).UnixNano()
 	s.scopes.Range(func(k, v any) bool {
 		sc := v.(*scope)
-		sc.mu.Lock()
-		expired := sc.createdAt.Before(cutoff)
-		var keys []string
-		if expired {
-			keys = make([]string, 0, len(sc.keys))
-			for kk := range sc.keys {
-				keys = append(keys, kk)
-			}
-		}
-		sc.mu.Unlock()
-		if !expired {
+		// lastAccessedNano is read atomically — no lock needed for the
+		// age check itself. Only fall through to the mutex-protected
+		// eviction path when the scope looks stale.
+		if sc.lastAccessedNano.Load() >= cutoffNano {
 			return true
 		}
+		sc.mu.Lock()
+		// Re-check under the lock: a touchScope racing with us may have
+		// bumped lastAccessed after the atomic read above.
+		if sc.lastAccessedNano.Load() >= cutoffNano {
+			sc.mu.Unlock()
+			return true
+		}
+		keys := make([]string, 0, len(sc.keys))
+		for kk := range sc.keys {
+			keys = append(keys, kk)
+		}
+		sc.mu.Unlock()
 		opID := k.(string)
 		s.scopes.Delete(opID)
 		for _, kk := range keys {

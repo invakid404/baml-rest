@@ -230,6 +230,14 @@ type brokerDialResult struct {
 }
 
 func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker, c *grpc.ClientConn) (interface{}, error) {
+	// go-plugin does not contract ctx as non-nil across all call paths;
+	// older consumers invoke GRPCClient with a nil context during
+	// handshake, which would panic the later WithTimeout call. A nil ctx
+	// has no deadline or cancellation to propagate — Background is the
+	// correct replacement.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	primaryClient := pb.NewWorkerClient(c)
 	primary := &GRPCClient{client: primaryClient}
 

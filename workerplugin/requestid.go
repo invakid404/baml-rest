@@ -20,6 +20,13 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	if id == "" {
 		return ctx
 	}
+	// context.WithValue(nil, ...) panics; tests and standalone harnesses
+	// sometimes pass a bare nil ctx. Background is the neutral parent —
+	// no deadline, no values, no cancellation — which is exactly what a
+	// nil-ctx caller was signalling.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return context.WithValue(ctx, requestIDKey{}, id)
 }
 

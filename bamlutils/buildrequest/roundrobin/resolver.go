@@ -205,13 +205,12 @@ func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlut
 // ("strategy [A, B]"), a native string slice, and a heterogeneous []any
 // (from JSON unmarshalling).
 func parseRuntimeStrategyOption(v any) []string {
+	// BAML's runtime parser preserves surrounding quotes on client names in
+	// the runtime ClientRegistry representation — they are part of the name,
+	// not stripped. Mirror that exactly; trimming them here produced names
+	// that didn't match introspected entries and silently collapsed the
+	// chain to a no-op.
 	normalizeToken := func(token string) string {
-		token = strings.TrimSpace(token)
-		if len(token) >= 2 {
-			if (token[0] == '"' && token[len(token)-1] == '"') || (token[0] == '\'' && token[len(token)-1] == '\'') {
-				token = token[1 : len(token)-1]
-			}
-		}
 		return strings.TrimSpace(token)
 	}
 	splitStrategy := func(s string) []string {

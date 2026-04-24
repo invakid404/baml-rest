@@ -774,7 +774,11 @@ func ResolveFallbackChainForClientWithReason(
 			return nil, nil, nil, PathReasonFallbackEmptyChildProvider
 		}
 		chainProviders[child] = p
-		if !isProviderSupported(p) {
+		// A nil support check means the caller couldn't determine support,
+		// not "nothing is supported" — treat every child as drivable in
+		// that case rather than panicking on the nil-func call or
+		// misclassifying the whole chain as legacy.
+		if isProviderSupported != nil && !isProviderSupported(p) {
 			chainLegacy[child] = true
 			legacyPositions++
 		}
@@ -1083,7 +1087,10 @@ func ResolveFallbackChainForClient(
 			return nil, nil, nil
 		}
 		providers[child] = p
-		if !isProviderSupported(p) {
+		// Nil support check means "caller didn't supply a filter"; defer
+		// the decision to the caller rather than treating every provider
+		// as unsupported (which would collapse the chain to all-legacy).
+		if isProviderSupported != nil && !isProviderSupported(p) {
 			legacyChildren[child] = true
 			legacyPositions++
 		}
