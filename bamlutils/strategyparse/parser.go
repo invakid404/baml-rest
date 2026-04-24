@@ -24,8 +24,13 @@ import (
 //   - A native []string of pre-parsed client names.
 //   - A []any of strings (typical of a JSON round-trip through map[string]any).
 //
-// Returns nil for unrecognised shapes or empty lists so callers can
-// distinguish "no override" from "override with empty chain".
+// Returns nil for unrecognised shapes AND for empty lists, matching
+// BAML upstream's ensure_strategy check in
+// baml-lib/llm-client/src/clients/helpers.rs (which rejects empty
+// arrays with "strategy must not be empty"). Callers gate on
+// len(chain) > 0 to decide "use the override" vs "fall back to the
+// introspected chain"; returning nil for empty lists means an empty
+// runtime override never clobbers the introspected chain.
 //
 // Tokens are trimmed of surrounding whitespace and surrounding matched
 // quote pairs. The quote stripping is load-bearing: BAML's runtime
@@ -40,7 +45,7 @@ import (
 func ParseStrategyOption(v any) []string {
 	switch vv := v.(type) {
 	case string:
-		return parseBracketedString(vv)
+		return nilIfEmpty(parseBracketedString(vv))
 	case []string:
 		out := make([]string, 0, len(vv))
 		for _, item := range vv {
@@ -48,7 +53,7 @@ func ParseStrategyOption(v any) []string {
 				out = append(out, s)
 			}
 		}
-		return out
+		return nilIfEmpty(out)
 	case []any:
 		out := make([]string, 0, len(vv))
 		for _, item := range vv {
@@ -64,10 +69,25 @@ func ParseStrategyOption(v any) []string {
 				out = append(out, s)
 			}
 		}
-		return out
+		return nilIfEmpty(out)
 	default:
 		return nil
 	}
+}
+
+// nilIfEmpty collapses a zero-length slice down to nil so callers that
+// gate on `len(chain) > 0` treat "parser accepted the shape but found
+// no usable tokens" and "parser rejected the shape outright"
+// identically. BAML upstream rejects empty strategy arrays
+// (ensure_strategy fails with "strategy must not be empty") and we
+// match that by treating empty lists as non-overrides — the caller
+// falls back to the introspected chain rather than clobbering it with
+// an empty override.
+func nilIfEmpty(out []string) []string {
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // parseBracketedString splits "strategy [A, B, C]" / "[A, B, C]" shapes
@@ -92,9 +112,11 @@ func parseBracketedString(s string) []string {
 	s = strings.TrimPrefix(s, "strategy ")
 	s = strings.TrimSpace(s)
 	// Require an explicit bracketed list after trim + optional
-	// `strategy ` prefix stripping. len(s) >= 2 plus the prefix /
-	// suffix check covers "[]" (empty list, legal) through to a
-	// full bracketed list; anything else is rejected.
+	// `strategy ` prefix stripping. "[]" parses here but yields no
+	// tokens, so ParseStrategyOption's nilIfEmpty wrapper collapses
+	// it to nil — matching BAML upstream's ensure_strategy rejection
+	// of empty arrays. Anything that isn't bracket-delimited is
+	// rejected outright.
 	if len(s) < 2 || s[0] != '[' || s[len(s)-1] != ']' {
 		return nil
 	}

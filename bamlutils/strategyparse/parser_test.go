@@ -40,11 +40,6 @@ func TestParseStrategyOption_BracketedString_StripsQuotes(t *testing.T) {
 			input: `["A", 'B', C]`,
 			want:  []string{"A", "B", "C"},
 		},
-		{
-			name:  "empty brackets",
-			input: `[]`,
-			want:  []string{},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -114,6 +109,13 @@ func TestParseStrategyOption_BracketedString_RequiresBrackets(t *testing.T) {
 		{"strategy prefix only", "strategy "},
 		{"token adjacent to brackets on wrong side", "ClientA ["},
 		{"bracket in middle only", "Client[A]"},
+		// Empty strategy arrays: BAML upstream's ensure_strategy
+		// errors with "strategy must not be empty" — mirror that by
+		// treating empty arrays as non-overrides rather than
+		// accepted-but-empty chains.
+		{"empty brackets", "[]"},
+		{"empty brackets with prefix", "strategy []"},
+		{"whitespace-only brackets", "[  ]"},
 	}
 	for _, tt := range rejects {
 		t.Run("reject/"+tt.name, func(t *testing.T) {
@@ -134,16 +136,43 @@ func TestParseStrategyOption_BracketedString_RequiresBrackets(t *testing.T) {
 		{"brackets only", "[ClientA]", []string{"ClientA"}},
 		{"multi-element with commas", "[A, B, C]", []string{"A", "B", "C"}},
 		{"whitespace around brackets", "  strategy [A, B]  ", []string{"A", "B"}},
-		{"empty list still accepted", "[]", nil},
 	}
 	for _, tt := range accepts {
 		t.Run("accept/"+tt.name, func(t *testing.T) {
 			got := ParseStrategyOption(tt.input)
-			switch {
-			case len(got) == 0 && len(tt.want) == 0:
-				// empty-list shape — both sides empty, OK.
-			case !reflect.DeepEqual(got, tt.want):
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("ParseStrategyOption(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseStrategyOption_EmptyListsCollapseToNil is the regression
+// for the CodeRabbit follow-up on finding B. BAML upstream's
+// ensure_strategy rejects empty strategy arrays ("strategy must not
+// be empty" in baml-lib/llm-client/src/clients/helpers.rs:790-797);
+// the parser now mirrors that by returning nil for every shape that
+// ends up with zero tokens. Callers gate on len(chain) > 0 to pick
+// between "use the override" and "fall back to the introspected
+// chain", so an empty runtime override no longer silently clobbers a
+// well-configured introspected chain.
+func TestParseStrategyOption_EmptyListsCollapseToNil(t *testing.T) {
+	cases := []struct {
+		name  string
+		input any
+	}{
+		{"empty []string", []string{}},
+		{"empty []any", []any{}},
+		{"string with empty brackets", "[]"},
+		{"string with whitespace brackets", "[  ]"},
+		{"string with prefix + empty brackets", "strategy []"},
+		{"[]string of only blanks", []string{"", "  ", "\t"}},
+		{"[]any of only blanks", []any{"", "  "}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseStrategyOption(tt.input); got != nil {
+				t.Fatalf("ParseStrategyOption(%v) = %v, want nil (empty overrides must not clobber the introspected chain)", tt.input, got)
 			}
 		})
 	}
