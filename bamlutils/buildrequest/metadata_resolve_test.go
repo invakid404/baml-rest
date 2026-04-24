@@ -168,12 +168,102 @@ func TestBuildFallbackChainPlan_APIFieldCarriesThrough(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
 	chain := []string{"A", "B"}
 	providers := map[string]string{"A": "openai", "B": "anthropic"}
-	plan := BuildFallbackChainPlan(adapter, "Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest)
+	plan := BuildFallbackChainPlan(adapter, "Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest, "")
 	if plan.BuildRequestAPI != BuildRequestAPIStreamRequest {
 		t.Errorf("BuildRequestAPI: got %q, want %q", plan.BuildRequestAPI, BuildRequestAPIStreamRequest)
 	}
 	if plan.Strategy != "baml-fallback" {
 		t.Errorf("strategy: got %q, want baml-fallback", plan.Strategy)
+	}
+	if plan.PathReason != "" {
+		t.Errorf("pathReason: got %q, want empty (no reason passed)", plan.PathReason)
+	}
+}
+
+// TestBuildFallbackChainPlan_RRChildPathReasonPlumbed is the
+// metadata-level regression for CodeRabbit finding A. The F2 resolver
+// reason (PathReasonFallbackRoundRobinChildLegacy, emitted by
+// ResolveFallbackChainForClientWithReason when a baml-roundrobin child
+// appears in the chain) previously never reached the emitted plan:
+// the BuildFallbackChainPlan builders had no PathReason parameter and
+// the codegen sites called the non-reason resolver. This test bolts
+// the classification to the plan: plug the reason value in, assert it
+// ends up on plan.PathReason. A refactor that drops the arg or stops
+// threading it in codegen fails here.
+func TestBuildFallbackChainPlan_RRChildPathReasonPlumbed(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+	chain := []string{"OpenAIClient", "InnerRR"}
+	providers := map[string]string{
+		"OpenAIClient": "openai",
+		"InnerRR":      "baml-roundrobin",
+	}
+	legacy := map[string]bool{"InnerRR": true}
+
+	t.Run("canonical spelling via adapter-based plan builder", func(t *testing.T) {
+		plan := BuildFallbackChainPlan(adapter, "MyFallback", chain, providers, legacy, nil, BuildRequestAPIStreamRequest,
+			PathReasonFallbackRoundRobinChildLegacy)
+		if plan.PathReason != PathReasonFallbackRoundRobinChildLegacy {
+			t.Fatalf("PathReason: got %q, want %q", plan.PathReason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+		if plan.Strategy != "baml-fallback" {
+			t.Errorf("strategy: got %q, want baml-fallback", plan.Strategy)
+		}
+		if len(plan.LegacyChildren) != 1 || plan.LegacyChildren[0] != "InnerRR" {
+			t.Errorf("LegacyChildren: got %v, want [InnerRR]", plan.LegacyChildren)
+		}
+	})
+
+	t.Run("client-name plan builder", func(t *testing.T) {
+		plan := BuildFallbackChainPlanForClient("MyFallback", chain, providers, legacy, nil, BuildRequestAPIRequest,
+			PathReasonFallbackRoundRobinChildLegacy)
+		if plan.PathReason != PathReasonFallbackRoundRobinChildLegacy {
+			t.Fatalf("PathReason: got %q, want %q", plan.PathReason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+	})
+}
+
+// TestBuildFallbackChainPlan_ReasonPlumbsFromResolver simulates the
+// codegen call sequence: the `WithReason` resolver produces the reason,
+// which codegen threads into the plan builder. This test exercises
+// both halves together for the hyphenated BAML-upstream spelling
+// (baml-round-robin) and the canonical one, so a regression in either
+// the resolver's alias folding or the plumbing surfaces here.
+func TestBuildFallbackChainPlan_ReasonPlumbsFromResolver(t *testing.T) {
+	tests := []struct {
+		name       string
+		rrProvider string
+	}{
+		{name: "canonical spelling", rrProvider: "baml-roundrobin"},
+		{name: "hyphenated upstream spelling", rrProvider: "baml-round-robin"},
+		{name: "shorthand", rrProvider: "round-robin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fallbackChains := map[string][]string{
+				"MyFallback": {"OpenAIClient", "InnerRR"},
+			}
+			clientProviders := map[string]string{
+				"MyFallback":   "baml-fallback",
+				"OpenAIClient": "openai",
+				"InnerRR":      tt.rrProvider,
+			}
+
+			chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+				nil, "MyFallback", fallbackChains, clientProviders,
+				func(p string) bool { return p == "openai" },
+			)
+			if chain == nil {
+				t.Fatalf("expected chain to resolve, got nil with reason=%q", reason)
+			}
+			if reason != PathReasonFallbackRoundRobinChildLegacy {
+				t.Fatalf("resolver reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+			}
+
+			plan := BuildFallbackChainPlanForClient("MyFallback", chain, providers, legacy, nil, BuildRequestAPIStreamRequest, reason)
+			if plan.PathReason != PathReasonFallbackRoundRobinChildLegacy {
+				t.Fatalf("plan.PathReason: got %q, want %q — resolver reason did not reach emitted metadata", plan.PathReason, PathReasonFallbackRoundRobinChildLegacy)
+			}
+		})
 	}
 }
 

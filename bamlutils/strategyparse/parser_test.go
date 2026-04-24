@@ -89,3 +89,62 @@ func TestParseStrategyOption_UnknownShape(t *testing.T) {
 		t.Fatalf("expected nil for nil input, got %v", got)
 	}
 }
+
+// TestParseStrategyOption_BracketedString_RequiresBrackets is the
+// regression for CodeRabbit finding B. BAML upstream's ensure_array
+// rejects non-list strategy values; we mirror that by refusing any
+// string form that isn't explicitly bracketed. A previous revision
+// happily accepted bare tokens — a client_registry entry with
+// options.strategy = "ClientA" would silently collapse the strategy
+// to a one-element chain instead of falling back to the introspected
+// configuration.
+func TestParseStrategyOption_BracketedString_RequiresBrackets(t *testing.T) {
+	// Each of these should produce nil (parser rejection), causing the
+	// caller to fall back to the introspected chain.
+	rejects := []struct {
+		name  string
+		input string
+	}{
+		{"bare token", "ClientA"},
+		{"bare token with strategy prefix", "strategy ClientA"},
+		{"missing closing bracket", "strategy [ClientA"},
+		{"missing opening bracket", "strategy ClientA]"},
+		{"empty string", ""},
+		{"whitespace only", "   "},
+		{"strategy prefix only", "strategy "},
+		{"token adjacent to brackets on wrong side", "ClientA ["},
+		{"bracket in middle only", "Client[A]"},
+	}
+	for _, tt := range rejects {
+		t.Run("reject/"+tt.name, func(t *testing.T) {
+			if got := ParseStrategyOption(tt.input); got != nil {
+				t.Fatalf("ParseStrategyOption(%q) = %v, want nil (non-list input must be rejected)", tt.input, got)
+			}
+		})
+	}
+
+	// Valid bracketed forms must still be accepted, including the
+	// pre-existing shapes the parser already handled.
+	accepts := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{"strategy prefix + brackets", "strategy [ClientA]", []string{"ClientA"}},
+		{"brackets only", "[ClientA]", []string{"ClientA"}},
+		{"multi-element with commas", "[A, B, C]", []string{"A", "B", "C"}},
+		{"whitespace around brackets", "  strategy [A, B]  ", []string{"A", "B"}},
+		{"empty list still accepted", "[]", nil},
+	}
+	for _, tt := range accepts {
+		t.Run("accept/"+tt.name, func(t *testing.T) {
+			got := ParseStrategyOption(tt.input)
+			switch {
+			case len(got) == 0 && len(tt.want) == 0:
+				// empty-list shape — both sides empty, OK.
+			case !reflect.DeepEqual(got, tt.want):
+				t.Fatalf("ParseStrategyOption(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}

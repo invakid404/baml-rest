@@ -504,6 +504,7 @@ func BuildFallbackChainPlan(
 	legacyChildren map[string]bool,
 	retryPolicy *retry.Policy,
 	buildRequestAPI string,
+	pathReason string,
 ) *bamlutils.Metadata {
 	clientName := defaultClientName
 	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
@@ -515,6 +516,7 @@ func BuildFallbackChainPlan(
 		BuildRequestAPI: buildRequestAPI,
 		Client:          clientName,
 		Strategy:        "baml-fallback",
+		PathReason:      pathReason,
 		Chain:           append([]string(nil), chain...),
 		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
 	}
@@ -540,6 +542,15 @@ func BuildFallbackChainPlan(
 // BuildFallbackChainPlanForClient is the primary-override-free sibling of
 // BuildFallbackChainPlan. Use after ResolveEffectiveClient has already
 // produced the effective client name.
+//
+// pathReason carries the informational classification from the
+// `WithReason` resolver — most commonly either empty (fully supported
+// chain, no notes) or PathReasonFallbackRoundRobinChildLegacy (chain
+// contains a baml-roundrobin child whose rotation is left to BAML's
+// runtime on each worker; see cold-review finding A). Callers should
+// pass the reason produced by ResolveFallbackChainForClientWithReason
+// so metadata consumers see the composition rather than the generic
+// "buildrequest fallback" shape.
 func BuildFallbackChainPlanForClient(
 	clientName string,
 	chain []string,
@@ -547,6 +558,7 @@ func BuildFallbackChainPlanForClient(
 	legacyChildren map[string]bool,
 	retryPolicy *retry.Policy,
 	buildRequestAPI string,
+	pathReason string,
 ) *bamlutils.Metadata {
 	plan := &bamlutils.Metadata{
 		Phase:           bamlutils.MetadataPhasePlanned,
@@ -554,6 +566,7 @@ func BuildFallbackChainPlanForClient(
 		BuildRequestAPI: buildRequestAPI,
 		Client:          clientName,
 		Strategy:        "baml-fallback",
+		PathReason:      pathReason,
 		Chain:           append([]string(nil), chain...),
 		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
 	}

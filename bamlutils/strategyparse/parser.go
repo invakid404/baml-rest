@@ -71,19 +71,34 @@ func ParseStrategyOption(v any) []string {
 }
 
 // parseBracketedString splits "strategy [A, B, C]" / "[A, B, C]" shapes
-// into individual client-name tokens. Any leading "strategy " prefix and
-// any surrounding brackets are discarded; the inner content is then
-// split on comma / whitespace / newline and each token normalised.
+// into individual client-name tokens. Any leading "strategy " prefix is
+// discarded and the inner content is then split on comma / whitespace /
+// newline and each token normalised.
+//
+// BAML upstream rejects non-list strategy values — see
+// baml-lib/llm-client/src/clients/helpers.rs ensure_array, which errors
+// with "strategy must be an array. Got: <type>" on anything that isn't
+// a vector/list. We mirror that contract by returning nil for any
+// string that isn't explicitly bracketed after optional prefix
+// stripping: bare tokens like "ClientA", prefix-only "strategy
+// ClientA", or half-bracketed "strategy [ClientA" all return nil so
+// callers fall back to the introspected chain instead of silently
+// collapsing the strategy to a one-element override. The previous
+// implementation accepted all of those shapes; that behaviour diverged
+// from BAML upstream and silently changed client resolution on
+// malformed runtime registry input.
 func parseBracketedString(s string) []string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "strategy ")
 	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "[") {
-		s = s[1:]
+	// Require an explicit bracketed list after trim + optional
+	// `strategy ` prefix stripping. len(s) >= 2 plus the prefix /
+	// suffix check covers "[]" (empty list, legal) through to a
+	// full bracketed list; anything else is rejected.
+	if len(s) < 2 || s[0] != '[' || s[len(s)-1] != ']' {
+		return nil
 	}
-	if closeIdx := strings.LastIndex(s, "]"); closeIdx >= 0 {
-		s = s[:closeIdx]
-	}
+	s = s[1 : len(s)-1]
 	parts := strings.FieldsFunc(s, func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t' || r == '\n'
 	})

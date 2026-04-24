@@ -2415,7 +2415,7 @@ func generate(opts Options) {
 					// chains that are fully call-supported. When no bridge
 					// exists (hasBuildRequest=false) mixed chains stay here,
 					// matching the pre-bridge behaviour.
-					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClient").Call(
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren"), jen.Id("__fbReason")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClientWithReason").Call(
 						jen.Id("__reg"),
 						jen.Id("__effective"),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
@@ -2431,6 +2431,7 @@ func generate(opts Options) {
 							jen.Id("__legacyChildren"),
 							jen.Id("retryPolicy"),
 							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
+							jen.Id("__fbReason"),
 						),
 						jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
@@ -2495,7 +2496,7 @@ func generate(opts Options) {
 					// children) route through the BuildRequest path — the
 					// orchestrator dispatches legacy children to the
 					// generated legacyStreamChildFn.
-					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClient").Call(
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren"), jen.Id("__fbReason")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClientWithReason").Call(
 						jen.Id("__reg"),
 						jen.Id("__effective"),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
@@ -2511,6 +2512,7 @@ func generate(opts Options) {
 							jen.Id("__legacyChildren"),
 							jen.Id("retryPolicy"),
 							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+							jen.Id("__fbReason"),
 						),
 						jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
@@ -2579,7 +2581,7 @@ func generate(opts Options) {
 					// Fallback chain path (bridge). Uses IsProviderSupported
 					// (stream side) because the whole point of the bridge is
 					// to accept chains that IsCallProviderSupported rejected.
-					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClient").Call(
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren"), jen.Id("__fbReason")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClientWithReason").Call(
 						jen.Id("__reg"),
 						jen.Id("__effective"),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
@@ -2595,6 +2597,7 @@ func generate(opts Options) {
 							jen.Id("__legacyChildren"),
 							jen.Id("retryPolicy"),
 							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+							jen.Id("__fbReason"),
 						),
 						jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
