@@ -2622,48 +2622,60 @@ func generate(opts Options) {
 		// the generator).
 		routerBody = append(routerBody,
 			jen.Comment("Legacy path: CallStream + OnTick (for unsupported providers or when BuildRequest is disabled)"),
+			// Retry policy and client identity for the legacy dispatch
+			// derive from __effective, not FunctionClient[methodName].
+			// __effective already accounts for both the RR unwrap and
+			// any client_registry primary override, so this keys both
+			// the retry policy and the WithClient/plan on the client
+			// that will actually handle the request.
+			//
+			// Without this, a request with `primary` set to a client
+			// whose retry_policy is only statically declared (not
+			// redeclared in the runtime registry) would fall through to
+			// ResolveRetryPolicy's step-4 default — which looked up
+			// FunctionRetryPolicy[methodName] and therefore returned the
+			// FUNCTION's declared client's policy, not the primary-
+			// overridden client's. Same bug, in principle, as CR-11 on
+			// the BuildRequest path; the legacy branch was missed.
 			jen.Id("__legacyRetryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
 				jen.Id("adapter"),
-				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-				jen.Qual(common.IntrospectedPkg, "FunctionRetryPolicy").Index(jen.Lit(methodName)),
+				jen.Id("__effective"),
+				jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
 				jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
 			),
-			// When the router unwrapped a round-robin strategy, the
-			// effective client is the selected leaf — build legacy
-			// metadata for that leaf (so PathReason/Strategy reflect
-			// what actually dispatches) and also pass it as a
-			// WithClient override so the BAML runtime targets the
-			// same leaf. Otherwise fall back to the primary-override
-			// resolution baked into BuildLegacyMetadataPlan.
-			jen.Var().Id("__plannedLegacy").Op("*").Qual(common.InterfacesPkg, "Metadata"),
-			jen.Var().Id("__legacyClientOverride").String(),
-			jen.If(jen.Id("__rrInfo").Op("!=").Nil()).Block(
-				jen.Id("__plannedLegacy").Op("=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
-					jen.Id("__reg"),
-					jen.Id("__effective"),
-					jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
-					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-					jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
-					jen.Id("__legacyRetryPolicy"),
-				),
-				jen.Id("__plannedLegacy").Dot("RoundRobin").Op("=").Id("__rrInfo"),
-				jen.Id("__legacyClientOverride").Op("=").Id("__effective"),
-			).Else().Block(
-				jen.Id("__plannedLegacy").Op("=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlan").Call(
-					jen.Id("adapter"),
-					jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-					jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
-					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-					// Use the streaming support check for classification. Call
-					// and stream support sets are usually aligned; a mismatch
-					// would only change the reason string — not the routing
-					// outcome (always legacy when we reach this code path).
-					jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
-					jen.Id("__legacyRetryPolicy"),
-				),
+			// Build the legacy metadata plan keyed on __effective in
+			// every case — RR, primary override, or neither. Previously
+			// the non-RR branch called BuildLegacyMetadataPlan with
+			// FunctionClient[methodName], which re-resolved primary
+			// internally but wouldn't propagate the resolved identity
+			// back out as __legacyClientOverride, so the subsequent
+			// WithClient append (on BAML 0.219+) targeted BAML with an
+			// empty override even when primary was set. Passing
+			// __effective unconditionally collapses the branching and
+			// fixes both paths. __rrInfo is copied in afterwards; it's
+			// nil on the non-RR and legacy-only-adapter paths.
+			jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
+				jen.Id("__reg"),
+				jen.Id("__effective"),
+				jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
+				jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+				// Streaming support check here; call/stream sets are
+				// usually aligned and a mismatch only changes the
+				// reason string, not the routing outcome (always legacy
+				// when we reach this code path).
+				jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
+				jen.Id("__legacyRetryPolicy"),
 			),
+			jen.Id("__plannedLegacy").Dot("RoundRobin").Op("=").Id("__rrInfo"),
+			// __legacyClientOverride is always __effective: on 0.219+
+			// the legacy dispatcher uses it to append WithClient so
+			// BAML's runtime targets the same leaf the plan reports;
+			// on pre-0.219 adapters the helper is accepted as a
+			// function parameter but never read (WithClient emission
+			// is gated on supportsWithClient), so passing a non-empty
+			// value is harmless.
+			jen.Id("__legacyClientOverride").Op(":=").Id("__effective"),
 			jen.Qual(common.BuildRequestPkg, "LogLegacyClassification").Call(
 				jen.Id("adapter"),
 				jen.Lit(methodName),

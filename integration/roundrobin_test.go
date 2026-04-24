@@ -105,21 +105,26 @@ func assertBalanced(t *testing.T, ids []string, total int) {
 	}
 }
 
+// skipIfNoBuildRequest skips the calling test when the container is
+// running the legacy dispatch path. The centralised round-robin wiring
+// (SharedState, RemoteAdvancer, pool-level request_id) only matters on
+// the BuildRequest path; the legacy path delegates rotation to BAML's
+// runtime and doesn't guarantee the planned-metadata headers or per-
+// child hit counts these tests assert. Hoisted out of the per-test
+// inline Skip so the four RR tests stay DRY.
+func skipIfNoBuildRequest(t *testing.T) {
+	t.Helper()
+	if !ActuallyBuildRequest() {
+		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
+	}
+}
+
 // ============================================================
 // /call endpoint — round-robin tests
 // ============================================================
 
 func TestRoundRobinCall(t *testing.T) {
-	if !ActuallyBuildRequest() {
-		// The centralised round-robin wiring (SharedState, RemoteAdvancer,
-		// the pool's request_id plumbing) only matters on the BuildRequest
-		// path. The legacy path delegates RR to BAML's runtime, which has
-		// its own rotation and is observable only via outcome metadata —
-		// these tests assert planned-metadata headers and per-child hit
-		// counts that the legacy path doesn't guarantee. Skip on legacy
-		// runs rather than flake.
-		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
-	}
+	skipIfNoBuildRequest(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		t.Run("two_client_rotation", func(t *testing.T) {
 			waitForHealthy(t, 30*time.Second)
@@ -205,16 +210,7 @@ func TestRoundRobinCall(t *testing.T) {
 // ============================================================
 
 func TestRoundRobinCallWithRaw(t *testing.T) {
-	if !ActuallyBuildRequest() {
-		// The centralised round-robin wiring (SharedState, RemoteAdvancer,
-		// the pool's request_id plumbing) only matters on the BuildRequest
-		// path. The legacy path delegates RR to BAML's runtime, which has
-		// its own rotation and is observable only via outcome metadata —
-		// these tests assert planned-metadata headers and per-child hit
-		// counts that the legacy path doesn't guarantee. Skip on legacy
-		// runs rather than flake.
-		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
-	}
+	skipIfNoBuildRequest(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		t.Run("raw_propagates_with_rotation", func(t *testing.T) {
 			waitForHealthy(t, 30*time.Second)
@@ -298,16 +294,7 @@ func TestRoundRobinCallWithRaw(t *testing.T) {
 // ============================================================
 
 func TestRoundRobinStream(t *testing.T) {
-	if !ActuallyBuildRequest() {
-		// The centralised round-robin wiring (SharedState, RemoteAdvancer,
-		// the pool's request_id plumbing) only matters on the BuildRequest
-		// path. The legacy path delegates RR to BAML's runtime, which has
-		// its own rotation and is observable only via outcome metadata —
-		// these tests assert planned-metadata headers and per-child hit
-		// counts that the legacy path doesn't guarantee. Skip on legacy
-		// runs rather than flake.
-		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
-	}
+	skipIfNoBuildRequest(t)
 
 	t.Run("rotates_across_streams", func(t *testing.T) {
 		waitForHealthy(t, 30*time.Second)
@@ -393,16 +380,7 @@ func TestRoundRobinStream(t *testing.T) {
 // ============================================================
 
 func TestRoundRobinStreamWithRaw(t *testing.T) {
-	if !ActuallyBuildRequest() {
-		// The centralised round-robin wiring (SharedState, RemoteAdvancer,
-		// the pool's request_id plumbing) only matters on the BuildRequest
-		// path. The legacy path delegates RR to BAML's runtime, which has
-		// its own rotation and is observable only via outcome metadata —
-		// these tests assert planned-metadata headers and per-child hit
-		// counts that the legacy path doesn't guarantee. Skip on legacy
-		// runs rather than flake.
-		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
-	}
+	skipIfNoBuildRequest(t)
 
 	t.Run("raw_propagates_across_streams", func(t *testing.T) {
 		waitForHealthy(t, 30*time.Second)
