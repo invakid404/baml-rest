@@ -2,6 +2,7 @@ package workerplugin
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -183,6 +184,58 @@ func TestSharedStateStore_TTLSweepReclaimsIdemEntries(t *testing.T) {
 	if got := store.FetchAdd("k", 1, "orphan"); got != 1 {
 		t.Fatalf("post-TTL replay: got %d, want 1 (sweep did not reclaim orphan entry)", got)
 	}
+}
+
+func TestSharedStateStore_CacheHoldsUnderConcurrentSweepPressure(t *testing.T) {
+	// Regression for CR-10: before the fix, FetchAdd touched the scope
+	// AFTER loading the idem entry. A sweep firing between those two
+	// steps could delete the scope and its idem entries out from under
+	// the in-flight call — the caller still got its cached value (the
+	// entry pointer was held), but the next FetchAdd for the same op_id
+	// would miss the now-empty cache and re-advance the counter,
+	// violating the idempotency contract.
+	//
+	// The fix touches the scope first, so sweep's atomic re-check under
+	// mutex always sees a fresh lastAccessedNano while any caller is in
+	// flight. This test drives continuous FetchAdd calls for a single
+	// (key, op_id) under a TTL short enough that the sweeper wakes on
+	// every iteration, and asserts every caller observes the same
+	// previous value. Under the old order this test flakes reliably
+	// under -race; after the fix it's stable.
+	const ttl = 10 * time.Millisecond
+	store := newSharedStateStoreWithTTL(nil, ttl)
+	defer store.Close()
+
+	first := store.FetchAdd("k", 1, "racy-op")
+	if first != 0 {
+		t.Fatalf("first: got %d, want 0", first)
+	}
+
+	// Fan out: N concurrent workers, each calling FetchAdd in a loop for
+	// ~10 TTLs. The cache must hold every time — any divergent value
+	// means sweep-and-reload slipped in.
+	const concurrency = 8
+	deadline := time.Now().Add(10 * ttl)
+	var wg sync.WaitGroup
+	var fail atomic.Bool
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(deadline) {
+				got := store.FetchAdd("k", 1, "racy-op")
+				if got != first {
+					// Atomic so the first observed failure wins; the
+					// t.Errorf below reports the concrete values once.
+					if fail.CompareAndSwap(false, true) {
+						t.Errorf("FetchAdd: got %d, want %d (cache evicted mid-flight)", got, first)
+					}
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestSharedStateStore_ActiveScopeSurvivesPastCreationTTL(t *testing.T) {

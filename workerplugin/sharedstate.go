@@ -142,6 +142,22 @@ func (s *SharedStateStore) FetchAdd(key string, delta uint64, opID string) uint6
 		counter := s.counterFor(key)
 		return counter.Add(delta) - delta
 	}
+	// Touch the scope BEFORE loading the idem entry. The order is load-
+	// bearing: the sweeper uses scope.lastAccessedNano to decide whether
+	// to evict a scope and its idem entries. If touch happened after
+	// loadOrStoreIdem, a sweep running between the two could observe the
+	// scope as stale, delete the scope, and delete the idem entry we were
+	// about to read — leaving the current call with a dangling cached
+	// value and every subsequent call for the same op_id re-advancing
+	// the counter against the now-missing cache. Storing the fresh
+	// timestamp first is what prevents that: sweep's atomic re-check
+	// under the mutex sees the updated lastAccessed and bails out.
+	//
+	// Touch covers both paths — first-touch (registers the key) and cache
+	// hit (just bumps lastAccessed). Bumping on every hit is what keeps
+	// long-running requests safe from the TTL sweeper: as long as the
+	// pool keeps probing, the scope stays fresh.
+	s.touchScope(key, opID, time.Now())
 	entry := s.loadOrStoreIdem(key, opID)
 	entry.once.Do(func() {
 		counter := s.counterFor(key)
@@ -150,12 +166,6 @@ func (s *SharedStateStore) FetchAdd(key string, delta uint64, opID string) uint6
 		// that Once establishes.
 		entry.previous = counter.Add(delta) - delta
 	})
-	// Touch the scope on every call — misses (first-touch, registers the
-	// key) and hits (pool retries, just bumps lastAccessed). Keeping this
-	// outside the once.Do block is what distinguishes this from the old
-	// createdAt behaviour: each retry extends the TTL, so a long-running
-	// request can't be swept mid-flight.
-	s.touchScope(key, opID, time.Now())
 	return entry.previous
 }
 
