@@ -96,6 +96,29 @@ type Metadata struct {
 	// legacy path (the BuildRequest path issues one HTTP request per outer
 	// attempt and surfaces its retries via RetryCount).
 	BamlCallCount *int `json:"baml_call_count,omitempty"`
+
+	// RoundRobin describes the round-robin decision for this request. Non-nil
+	// when the resolved client is a baml-roundrobin strategy (at any level of
+	// nesting); nil otherwise. The populated Info reflects the OUTERMOST RR
+	// decision — inner RR strategies still advance their own counters but are
+	// not reported separately.
+	RoundRobin *RoundRobinInfo `json:"round_robin,omitempty"`
+}
+
+// RoundRobinInfo captures the outcome of resolving a baml-roundrobin strategy
+// client for a single request. It carries both the configured chain and the
+// child that was picked, so consumers can verify the distribution without
+// replaying the decision themselves.
+type RoundRobinInfo struct {
+	// Name is the client name of the round-robin strategy itself.
+	Name string `json:"name"`
+	// Children is the ordered list of candidate children considered for
+	// this request, after any client_registry strategy override was applied.
+	Children []string `json:"children"`
+	// Index is the 0-based position in Children that was selected.
+	Index int `json:"index"`
+	// Selected is Children[Index] — the child dispatched to.
+	Selected string `json:"selected"`
 }
 
 // StreamMode controls how streaming results are processed and what data is collected.

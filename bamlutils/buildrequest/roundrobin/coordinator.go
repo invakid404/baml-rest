@@ -1,0 +1,87 @@
+// Package roundrobin implements the cross-request state needed to drive
+// BAML's baml-roundrobin strategy from the BuildRequest path. Round-robin
+// requires each new request to pick a different starting child — without
+// persistent per-client counters it would degrade to fallback (always
+// starting at child 0), which is silently wrong.
+//
+// Two counter lifecycles coexist:
+//
+//   - Static clients (defined in .baml source) share a long-lived counter
+//     keyed by client name, held in the Coordinator. The counter starts at
+//     a uniformly-random offset so a fleet of fresh processes does not
+//     lockstep on child 0.
+//   - Dynamic clients (introduced purely via client_registry overrides)
+//     intentionally do NOT share state across requests. BAML upstream
+//     rebuilds a fresh Arc<LLMProvider> per request-scoped context, so the
+//     initial index re-randomises each call. AdvanceDynamic mirrors that
+//     by returning a fresh random index without touching the Coordinator.
+package roundrobin
+
+import (
+	"math/rand/v2"
+	"sync"
+	"sync/atomic"
+)
+
+// Coordinator owns long-lived per-client counters used by round-robin
+// strategy resolution. Exactly one Coordinator is created per generated
+// adapter package and shared across every request. The zero value is NOT
+// ready — callers must use NewCoordinator.
+type Coordinator struct {
+	counters sync.Map // map[string]*atomic.Uint64
+}
+
+// NewCoordinator returns a Coordinator with no counters seeded. Counters
+// are created lazily on first Advance for each client name.
+func NewCoordinator() *Coordinator {
+	return &Coordinator{}
+}
+
+// Advance returns the next child index for a static round-robin client,
+// incrementing the underlying atomic counter. The first call for a given
+// client seeds the counter at a random offset (via math/rand/v2, which is
+// goroutine-safe and needs no explicit seeding on Go 1.22+), matching
+// BAML upstream's fastrand::usize(..len) behaviour for the initial index.
+//
+// childCount must be > 0; a non-positive value is treated as 1 and returns
+// 0 so callers that skip validation still get deterministic output.
+func (c *Coordinator) Advance(clientName string, childCount int) int {
+	if childCount <= 0 {
+		return 0
+	}
+	counter := c.counterFor(clientName)
+	// Add returns the post-increment value; subtract one so the returned
+	// index matches BAML upstream semantics (fetch_add returns the OLD
+	// value, then the modulo is applied).
+	next := counter.Add(1) - 1
+	return int(next % uint64(childCount))
+}
+
+// counterFor returns the atomic counter for a client, creating and
+// randomising it on first call. LoadOrStore guarantees only one atomic
+// survives even under concurrent creation — the loser is discarded.
+func (c *Coordinator) counterFor(clientName string) *atomic.Uint64 {
+	if v, ok := c.counters.Load(clientName); ok {
+		return v.(*atomic.Uint64)
+	}
+	fresh := &atomic.Uint64{}
+	// Seed in a modest range so overflow is not a practical concern even
+	// at sustained high request rates. Upper bits left unused on purpose.
+	fresh.Store(uint64(rand.Uint32()))
+	actual, _ := c.counters.LoadOrStore(clientName, fresh)
+	return actual.(*atomic.Uint64)
+}
+
+// AdvanceDynamic returns the child index for a dynamic (per-request) round-
+// robin client. No state is retained: each call picks a uniformly-random
+// child. This matches BAML's behaviour for client_registry overrides —
+// a fresh Arc<LLMProvider> per context means a fresh atomic counter that
+// lives only for the duration of one request.
+//
+// childCount must be > 0; non-positive values return 0.
+func AdvanceDynamic(childCount int) int {
+	if childCount <= 0 {
+		return 0
+	}
+	return rand.IntN(childCount)
+}
