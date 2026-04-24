@@ -4,6 +4,7 @@ package introspected
 
 import (
 	bamlutils "github.com/invakid404/baml-rest/bamlutils"
+	roundrobin "github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
 	retry "github.com/invakid404/baml-rest/bamlutils/retry"
 )
 
@@ -62,6 +63,12 @@ var FunctionRetryPolicy = map[string]string{}
 
 // FallbackChains maps strategy client names to their ordered list of child client names
 var FallbackChains = map[string][]string{}
+
+// RoundRobinCoordinator holds the per-process, per-client round-robin
+// counters used by the BuildRequest path. Generated introspection emits
+// a freshly-constructed Coordinator here so static baml-roundrobin
+// clients keep contiguous counters across requests.
+var RoundRobinCoordinator = roundrobin.NewCoordinator()
 
 // TypeBuilder type
 type TypeBuilder struct{}

@@ -1630,12 +1630,25 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 			continue
 		}
 		if strings.HasPrefix(line, "provider ") {
-			cfg.clientProvider[name] = cleanBamlValue(strings.TrimPrefix(line, "provider "))
+			cfg.clientProvider[name] = canonicaliseProvider(cleanBamlValue(strings.TrimPrefix(line, "provider ")))
 		}
 		if strings.HasPrefix(line, "retry_policy ") {
 			cfg.clientRetryPolicy[name] = cleanBamlValue(strings.TrimPrefix(line, "retry_policy "))
 		}
 	}
+}
+
+// canonicaliseProvider folds the three recognised round-robin spellings
+// ("baml-roundrobin", "baml-round-robin", "round-robin") onto the canonical
+// "baml-roundrobin" form so downstream maps — ClientProvider, router
+// classification, metadata — only ever see one spelling for the strategy.
+// Any other provider string is returned unchanged.
+func canonicaliseProvider(provider string) string {
+	switch provider {
+	case "baml-roundrobin", "baml-round-robin", "round-robin":
+		return "baml-roundrobin"
+	}
+	return provider
 }
 
 func extractStrategyStatement(line string) string {
@@ -1926,4 +1939,12 @@ func generateBamlConfigVars(out *jen.File) {
 		}
 		out.Var().Id("FallbackChains").Op("=").Map(jen.String()).Index().String().Values(entries...)
 	}
+
+	// RoundRobinCoordinator: one persistent coordinator per generated
+	// adapter package. The BuildRequest path routes static round-robin
+	// selection through it so counters live for the process lifetime
+	// instead of resetting per request. Dynamic RR clients (registered
+	// purely through client_registry overrides) bypass this coordinator.
+	out.Comment("RoundRobinCoordinator holds per-client round-robin counters shared across requests")
+	out.Var().Id("RoundRobinCoordinator").Op("=").Qual("github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin", "NewCoordinator").Call()
 }

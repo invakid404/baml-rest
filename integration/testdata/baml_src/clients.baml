@@ -66,3 +66,27 @@ client<llm> TestFallbackPair {
         strategy [FallbackPrimary, FallbackSecondary]
     }
 }
+
+// ============================================================
+// Round-robin test clients
+//
+// Reuse the Fallback* child clients above (each points at a
+// distinct mock scenario ID via its model field) so tests can
+// count per-child hits to verify the rotation works across
+// requests. The strategy clients below are the round-robin
+// wrappers tests invoke.
+// ============================================================
+
+client<llm> TestRoundRobinPair {
+    provider baml-roundrobin
+    options {
+        strategy [FallbackPrimary, FallbackSecondary]
+    }
+}
+
+client<llm> TestRoundRobinChain {
+    provider baml-roundrobin
+    options {
+        strategy [FallbackPrimary, FallbackSecondary, FallbackTertiary]
+    }
+}

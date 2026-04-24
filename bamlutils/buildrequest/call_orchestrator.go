@@ -43,6 +43,12 @@ type CallConfig struct {
 	// When empty, the single Provider is used for all attempts.
 	FallbackChain []string
 
+	// ClientOverride mirrors StreamConfig.ClientOverride — the
+	// clientOverride value forwarded to buildRequest on single-provider
+	// attempts, used by the round-robin path to target the RR-selected
+	// leaf instead of the function's default client.
+	ClientOverride string
+
 	// ClientProviders maps child client names to their provider strings.
 	// Used with FallbackChain to resolve the provider for each attempt.
 	// In mixed-mode chains this map includes both BuildRequest-supported
@@ -299,7 +305,7 @@ func RunCallOrchestration(
 	// entire strategy after all children fail.
 	attemptFull := func(attempt int) (any, error) {
 		if len(config.FallbackChain) == 0 {
-			result, err := tryOneChild(config.Provider, "")
+			result, err := tryOneChild(config.Provider, config.ClientOverride)
 			if err == nil {
 				finalAttempt = attempt
 				if config.MetadataPlan != nil {

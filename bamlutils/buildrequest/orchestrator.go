@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/retry"
 	"github.com/invakid404/baml-rest/bamlutils/sse"
@@ -256,6 +257,48 @@ type ProviderResolution struct {
 	PathReason string
 }
 
+// ResolveEffectiveClient unwraps any baml-roundrobin wrappers around the
+// function's default client (after applying the runtime primary override)
+// and returns the leaf client name that the orchestrator should treat as
+// the effective request target. When the leaf is itself a fallback client
+// the chain resolution happens downstream — this function only strips
+// round-robin layers.
+//
+// rrInfo describes the outermost round-robin decision (name, children,
+// index, selected child). It is nil when no round-robin unwrap occurred.
+// Callers should copy rrInfo into the request metadata so operators can
+// observe which child was selected.
+//
+// coord may be nil, in which case static round-robin resolution degrades
+// to per-request random selection. Production callers are expected to
+// pass the package-level coordinator created at generated-adapter init.
+func ResolveEffectiveClient(
+	adapter bamlutils.Adapter,
+	defaultClientName string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	coord *roundrobin.Coordinator,
+) (effective string, rrInfo *bamlutils.RoundRobinInfo, err error) {
+	reg := adapter.OriginalClientRegistry()
+
+	clientName := defaultClientName
+	if reg != nil && reg.Primary != nil && *reg.Primary != "" {
+		clientName = *reg.Primary
+	}
+
+	res, err := roundrobin.Resolve(roundrobin.ResolveInput{
+		ClientName:      clientName,
+		Registry:        reg,
+		FallbackChains:  fallbackChains,
+		ClientProviders: clientProviders,
+		Coordinator:     coord,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return res.Selected, res.Info, nil
+}
+
 // ResolveProviderWithReason is ResolveProvider with the routing decision
 // classified for observability. Does not consider fallback chains — use
 // ResolveFallbackChainWithReason first when the resolved provider might be
@@ -347,6 +390,31 @@ func BuildSingleProviderPlan(
 	return plan
 }
 
+// BuildSingleProviderPlanForClient is the primary-override-free sibling of
+// BuildSingleProviderPlan. Use after ResolveEffectiveClient has already
+// produced the effective client name (post-primary and post-RR unwrap) —
+// clientName is recorded verbatim as plan.Client.
+func BuildSingleProviderPlanForClient(
+	clientName string,
+	provider string,
+	retryPolicy *retry.Policy,
+	buildRequestAPI string,
+) *bamlutils.Metadata {
+	plan := &bamlutils.Metadata{
+		Phase:           bamlutils.MetadataPhasePlanned,
+		Path:            "buildrequest",
+		BuildRequestAPI: buildRequestAPI,
+		Client:          clientName,
+		Provider:        provider,
+		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+	return plan
+}
+
 // BuildFallbackChainPlan constructs planned metadata for a request routed
 // through the BuildRequest path as a fallback strategy. chain/providers/
 // legacyChildren are the resolved values from ResolveFallbackChain.
@@ -391,6 +459,45 @@ func BuildFallbackChainPlan(
 		}
 	}
 	_ = providers // reserved: future outcome metadata may expose per-child details
+	return plan
+}
+
+// BuildFallbackChainPlanForClient is the primary-override-free sibling of
+// BuildFallbackChainPlan. Use after ResolveEffectiveClient has already
+// produced the effective client name.
+func BuildFallbackChainPlanForClient(
+	clientName string,
+	chain []string,
+	providers map[string]string,
+	legacyChildren map[string]bool,
+	retryPolicy *retry.Policy,
+	buildRequestAPI string,
+) *bamlutils.Metadata {
+	plan := &bamlutils.Metadata{
+		Phase:           bamlutils.MetadataPhasePlanned,
+		Path:            "buildrequest",
+		BuildRequestAPI: buildRequestAPI,
+		Client:          clientName,
+		Strategy:        "baml-fallback",
+		Chain:           append([]string(nil), chain...),
+		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+	if len(legacyChildren) > 0 {
+		names := make([]string, 0, len(legacyChildren))
+		for _, child := range chain {
+			if legacyChildren[child] {
+				names = append(names, child)
+			}
+		}
+		if len(names) > 0 {
+			plan.LegacyChildren = names
+		}
+	}
+	_ = providers
 	return plan
 }
 
@@ -473,7 +580,7 @@ func BuildLegacyMetadataPlan(
 			providers = make(map[string]string, len(chain))
 			legacy = make(map[string]bool)
 			for _, child := range chain {
-				p := resolveChildProvider(reg, child, clientProviders)
+				p := ResolveClientProvider(reg, child, clientProviders)
 				providers[child] = p
 				if p == "" || (isProviderSupported != nil && !isProviderSupported(p)) {
 					legacy[child] = true
@@ -498,6 +605,95 @@ func BuildLegacyMetadataPlan(
 	// BAML_REST_USE_BUILD_REQUEST being off is never surfaced by the per-
 	// request resolution helpers; encode it here since a legacy-path
 	// execution with a supported single provider otherwise looks empty.
+	if plan.PathReason == "" && !UseBuildRequest() {
+		plan.PathReason = PathReasonBuildRequestDisabled
+	}
+
+	return plan
+}
+
+// BuildLegacyMetadataPlanForClient is the primary-override-free sibling of
+// BuildLegacyMetadataPlan. The caller is expected to have already resolved
+// the effective client name (e.g. after applying the primary override and
+// any round-robin unwrap). No further primary lookup happens here — the
+// supplied clientName is treated as authoritative.
+//
+// Provider resolution for the effective client falls back from the runtime
+// registry to introspectedProvider when neither the registry override nor
+// the static introspected map names one.
+func BuildLegacyMetadataPlanForClient(
+	reg *bamlutils.ClientRegistry,
+	clientName string,
+	introspectedProvider string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+	retryPolicy *retry.Policy,
+) *bamlutils.Metadata {
+	provider := ResolveClientProvider(reg, clientName, clientProviders)
+	if provider == "" {
+		provider = introspectedProvider
+	}
+
+	plan := &bamlutils.Metadata{
+		Phase:       bamlutils.MetadataPhasePlanned,
+		Path:        "legacy",
+		Client:      clientName,
+		RetryPolicy: EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+
+	switch provider {
+	case "":
+		plan.PathReason = PathReasonEmptyProvider
+	case "baml-fallback":
+		plan.Strategy = "baml-fallback"
+		chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+			reg, clientName, fallbackChains, clientProviders, isProviderSupported,
+		)
+		plan.PathReason = reason
+		if chain == nil {
+			chain = resolveFallbackStrategyChain(reg, clientName, fallbackChains)
+			providers = make(map[string]string, len(chain))
+			legacy = make(map[string]bool)
+			for _, child := range chain {
+				p := ResolveClientProvider(reg, child, clientProviders)
+				providers[child] = p
+				if p == "" || (isProviderSupported != nil && !isProviderSupported(p)) {
+					legacy[child] = true
+				}
+			}
+		}
+		if len(chain) > 0 {
+			plan.Chain = append([]string(nil), chain...)
+			if len(legacy) > 0 {
+				names := make([]string, 0, len(legacy))
+				for _, child := range chain {
+					if legacy[child] {
+						names = append(names, child)
+					}
+				}
+				plan.LegacyChildren = names
+			}
+			_ = providers
+		}
+	case "baml-roundrobin":
+		// Should not normally reach here — RoundRobin is resolved upstream
+		// before the legacy plan is built. Record it defensively in case
+		// the RR resolver returned an error (cycle / empty chain) and the
+		// caller fell through with the unresolved client name.
+		plan.Strategy = "baml-roundrobin"
+		plan.PathReason = PathReasonRoundRobin
+	default:
+		plan.Provider = provider
+		if isProviderSupported != nil && !isProviderSupported(provider) {
+			plan.PathReason = PathReasonUnsupportedProvider
+		}
+	}
+
 	if plan.PathReason == "" && !UseBuildRequest() {
 		plan.PathReason = PathReasonBuildRequestDisabled
 	}
@@ -531,7 +727,21 @@ func ResolveFallbackChainWithReason(
 		clientName = *reg.Primary
 	}
 
-	parentProvider := resolveChildProvider(reg, clientName, clientProviders)
+	return ResolveFallbackChainForClientWithReason(reg, clientName, fallbackChains, clientProviders, isProviderSupported)
+}
+
+// ResolveFallbackChainForClientWithReason is the primary-override-free sibling
+// of ResolveFallbackChainWithReason. Callers that have already resolved the
+// effective client name (e.g. after external round-robin unwrap) pass that
+// name directly; no further primary lookup or RR unwrap happens inside.
+func ResolveFallbackChainForClientWithReason(
+	reg *bamlutils.ClientRegistry,
+	clientName string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+) (chain []string, providers map[string]string, legacyChildren map[string]bool, reason string) {
+	parentProvider := ResolveClientProvider(reg, clientName, clientProviders)
 	if parentProvider != "baml-fallback" {
 		// Not a fallback client — caller decides the path from the
 		// top-level ResolveProviderWithReason classification instead.
@@ -547,7 +757,7 @@ func ResolveFallbackChainWithReason(
 	chainLegacy := make(map[string]bool)
 	legacyPositions := 0
 	for _, child := range resolvedChain {
-		p := resolveChildProvider(reg, child, clientProviders)
+		p := ResolveClientProvider(reg, child, clientProviders)
 		if p == "" {
 			return nil, nil, nil, PathReasonFallbackEmptyChildProvider
 		}
@@ -672,12 +882,12 @@ func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {
 	return p
 }
 
-// resolveChildProvider returns the provider for a named client, checking
+// ResolveClientProvider returns the provider for a named client, checking
 // runtime client_registry overrides before the introspected defaults. This
 // mirrors ResolveProvider's per-client resolution (lines 104-112) so that
 // runtime overrides that change a child's provider are respected for both
 // extraction format selection and the supported-provider gate.
-func resolveChildProvider(reg *bamlutils.ClientRegistry, clientName string, introspectedProviders map[string]string) string {
+func ResolveClientProvider(reg *bamlutils.ClientRegistry, clientName string, introspectedProviders map[string]string) string {
 	if reg != nil {
 		for _, client := range reg.Clients {
 			if client != nil && client.Name == clientName && client.Provider != "" {
@@ -816,13 +1026,21 @@ func ResolveFallbackChain(
 		clientName = *reg.Primary
 	}
 
-	// Only support baml-fallback in the BuildRequest path. baml-roundrobin
-	// requires cross-request state to distribute load (each new request
-	// should start at a different child), which the per-request orchestrator
-	// does not have. Without it, round-robin degrades to fallback (always
-	// starting at child 0), which is silently wrong. Leave round-robin on
-	// the legacy path where the BAML runtime handles the rotation.
-	parentProvider := resolveChildProvider(reg, clientName, clientProviders)
+	return ResolveFallbackChainForClient(reg, clientName, fallbackChains, clientProviders, isProviderSupported)
+}
+
+// ResolveFallbackChainForClient is the primary-override-free sibling of
+// ResolveFallbackChain. Use this after an external resolver has already
+// determined the effective client name (e.g. round-robin unwrap) — it
+// skips primary-override resolution and treats clientName as authoritative.
+func ResolveFallbackChainForClient(
+	reg *bamlutils.ClientRegistry,
+	clientName string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+) (chain []string, providers map[string]string, legacyChildren map[string]bool) {
+	parentProvider := ResolveClientProvider(reg, clientName, clientProviders)
 	if parentProvider != "baml-fallback" {
 		return nil, nil, nil
 	}
@@ -848,7 +1066,7 @@ func ResolveFallbackChain(
 	legacyChildren = make(map[string]bool)
 	legacyPositions := 0
 	for _, child := range chain {
-		p := resolveChildProvider(reg, child, clientProviders)
+		p := ResolveClientProvider(reg, child, clientProviders)
 		if p == "" {
 			return nil, nil, nil
 		}
@@ -860,11 +1078,7 @@ func ResolveFallbackChain(
 	}
 
 	// If every chain position is legacy, there is nothing for BuildRequest
-	// to do — the entire chain degenerates to legacy, and the caller is
-	// better off routing the request through the existing
-	// CallStream+OnTick path which can handle the chain wholesale (and
-	// preserves any runtime-specific behaviours like round-robin that
-	// BAML exposes for all-legacy strategies).
+	// to do — the entire chain degenerates to legacy.
 	if legacyPositions == len(chain) {
 		return nil, nil, nil
 	}
@@ -906,6 +1120,14 @@ type StreamConfig struct {
 	// in order; if any child succeeds, the attempt returns immediately.
 	// When empty, the single Provider is used for all attempts.
 	FallbackChain []string
+
+	// ClientOverride, when non-empty, is passed as the clientOverride
+	// argument to buildRequest for single-provider attempts (FallbackChain
+	// empty). Used by the round-robin path to direct BAML to build the
+	// request for the RR-selected leaf client rather than the function's
+	// default. Ignored for fallback-chain attempts — those iterate child
+	// names and pass each as the per-attempt override.
+	ClientOverride string
 
 	// ClientProviders maps child client names to their provider strings.
 	// Used with FallbackChain to resolve the provider for each attempt.
@@ -1296,7 +1518,7 @@ func RunStreamOrchestration(
 	// matching the BAML runtime where retries retry the entire strategy.
 	attemptFull := func(attempt int) (any, error) {
 		if len(config.FallbackChain) == 0 {
-			finalResult, raw, err := tryOneStreamChild(config.Provider, "")
+			finalResult, raw, err := tryOneStreamChild(config.Provider, config.ClientOverride)
 			if err != nil {
 				return nil, err
 			}

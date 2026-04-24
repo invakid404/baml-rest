@@ -196,3 +196,26 @@ function GetSimpleFallback(input: string) -> SimpleOutput {
     prompt #"{{ ctx.output_format }}
     Process: {{ input }}"#
 }
+
+// ============================================================
+// Round-robin test functions
+// ============================================================
+
+// Simple string through two-client round-robin
+function GetGreetingRoundRobinPair(name: string) -> string {
+    client TestRoundRobinPair
+    prompt #"Say hello to {{ name }}"#
+}
+
+// Simple string through three-client round-robin
+function GetGreetingRoundRobinChain(name: string) -> string {
+    client TestRoundRobinChain
+    prompt #"Say hello to {{ name }}"#
+}
+
+// Object output through round-robin (exercises call-with-raw / stream-with-raw)
+function GetSimpleRoundRobin(input: string) -> SimpleOutput {
+    client TestRoundRobinPair
+    prompt #"{{ ctx.output_format }}
+    Process: {{ input }}"#
+}
