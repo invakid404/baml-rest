@@ -261,6 +261,152 @@ func TestResolve_DynamicRRClient_DoesNotTouchCoordinator(t *testing.T) {
 	}
 }
 
+func TestResolve_StrategyOnlyOverride_IsDynamic(t *testing.T) {
+	// Static RR provider from .baml source, but registry overrides the
+	// strategy list. Advancing the static counter in this state would
+	// rotate through children the operator never configured, so the
+	// resolver must switch to the fresh-per-request path and leave the
+	// coordinator untouched.
+	coord := NewCoordinator()
+	makeInput := func() ResolveInput {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:    "MyRR", // no Provider override — same RR provider
+					Options: map[string]any{"strategy": []any{"C", "D"}},
+				},
+			},
+		}
+		return ResolveInput{
+			ClientName: "MyRR",
+			Registry:   reg,
+			ClientProviders: map[string]string{
+				"MyRR": "baml-roundrobin",
+				"C":    "openai",
+				"D":    "anthropic",
+			},
+			FallbackChains: map[string][]string{"MyRR": {"A", "B"}},
+			Coordinator:    coord,
+		}
+	}
+	for i := 0; i < 25; i++ {
+		res, err := Resolve(makeInput())
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		// Selection must always come from the override chain, never the
+		// introspected one.
+		switch res.Selected {
+		case "C", "D":
+		default:
+			t.Fatalf("selected %q not in override chain [C D]", res.Selected)
+		}
+	}
+	count := 0
+	coord.counters.Range(func(_, _ any) bool { count++; return true })
+	if count != 0 {
+		t.Fatalf("strategy-only override leaked into coordinator: %d entries", count)
+	}
+}
+
+func TestResolve_RegistryPresenceWithoutOverride_IsDynamic(t *testing.T) {
+	// A registry entry with no strategy and no provider override still
+	// counts as dynamic — BAML upstream rebuilds the Arc whenever the
+	// registry touches a client. We mirror that by bypassing the
+	// coordinator on any registry hit.
+	coord := NewCoordinator()
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "MyRR"}, // presence only
+		},
+	}
+	in := ResolveInput{
+		ClientName: "MyRR",
+		Registry:   reg,
+		ClientProviders: map[string]string{
+			"MyRR": "baml-roundrobin",
+			"A":    "openai",
+			"B":    "anthropic",
+		},
+		FallbackChains: map[string][]string{"MyRR": {"A", "B"}},
+		Coordinator:    coord,
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := Resolve(in); err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+	}
+	count := 0
+	coord.counters.Range(func(_, _ any) bool { count++; return true })
+	if count != 0 {
+		t.Fatalf("registry-present RR leaked into coordinator: %d entries", count)
+	}
+}
+
+func TestResolve_RRChildIsFallback_StopsAtFallback(t *testing.T) {
+	// Outer RR whose children include a baml-fallback client. The fallback
+	// is not a RR provider, so resolution must stop at the selected child
+	// and leave chain resolution to the downstream fallback handler.
+	in := ResolveInput{
+		ClientName: "OuterRR",
+		ClientProviders: map[string]string{
+			"OuterRR": "baml-roundrobin",
+			"Fb":      "baml-fallback",
+			"Plain":   "openai",
+			"A":       "openai",
+			"B":       "anthropic",
+		},
+		FallbackChains: map[string][]string{
+			"OuterRR": {"Fb", "Plain"},
+			"Fb":      {"A", "B"},
+		},
+		Coordinator: NewCoordinator(),
+	}
+	for i := 0; i < 20; i++ {
+		res, err := Resolve(in)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if res.Info == nil || res.Info.Name != "OuterRR" {
+			t.Fatalf("Info.Name: want OuterRR, got %+v", res.Info)
+		}
+		// Resolver must not unwrap the fallback — Selected is either "Fb"
+		// or "Plain", never "A" or "B".
+		switch res.Selected {
+		case "Fb", "Plain":
+		default:
+			t.Fatalf("selected: got %q, want Fb or Plain (fallback unwrap leaked)", res.Selected)
+		}
+	}
+}
+
+func TestResolve_RespectsCoordinatorStartSeed(t *testing.T) {
+	// End-to-end: when the coordinator was constructed with a start for
+	// this RR client, the first resolution must pick the start index.
+	coord := NewCoordinatorWithStarts(map[string]int{"MyRR": 2})
+	in := ResolveInput{
+		ClientName: "MyRR",
+		ClientProviders: map[string]string{
+			"MyRR": "baml-roundrobin",
+			"A":    "openai",
+			"B":    "anthropic",
+			"C":    "google-ai",
+		},
+		FallbackChains: map[string][]string{"MyRR": {"A", "B", "C"}},
+		Coordinator:    coord,
+	}
+	res, err := Resolve(in)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if res.Info == nil {
+		t.Fatalf("expected Info")
+	}
+	if res.Info.Index != 2 || res.Info.Selected != "C" {
+		t.Fatalf("first pick: got index=%d selected=%q, want index=2 selected=C", res.Info.Index, res.Info.Selected)
+	}
+}
+
 func TestIsRoundRobinProvider_AcceptsSpellings(t *testing.T) {
 	cases := map[string]bool{
 		"baml-roundrobin":  true,

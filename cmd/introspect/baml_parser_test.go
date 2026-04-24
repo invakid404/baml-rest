@@ -14,6 +14,7 @@ func newTestBamlConfig() *bamlConfig {
 		functionClient:    make(map[string]string),
 		retryPolicies:     make(map[string]parsedRetryPolicy),
 		fallbackChains:    make(map[string][]string),
+		roundRobinStart:   make(map[string]int),
 	}
 }
 
@@ -1211,5 +1212,66 @@ func TestParseClientBlock_OptionsOpeningLineStrategyCommentWithClosingBracket(t 
 		if got[i] != want[i] {
 			t.Errorf("index %d: expected %q, got %q", i, want[i], got[i])
 		}
+	}
+}
+
+func TestParseClientBlock_RoundRobinStart_MultilineOptions(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-roundrobin",
+		"options {",
+		"    strategy [ClientA, ClientB]",
+		"    start 1",
+		"}",
+	}
+	parseClientBlock(cfg, "RR", block)
+	if got, ok := cfg.roundRobinStart["RR"]; !ok || got != 1 {
+		t.Fatalf("roundRobinStart[RR]: got (%d, %v), want (1, true)", got, ok)
+	}
+}
+
+func TestParseClientBlock_RoundRobinStart_InlineOptions(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-roundrobin",
+		"options { strategy [A, B] start 2 }",
+	}
+	parseClientBlock(cfg, "RR", block)
+	if got, ok := cfg.roundRobinStart["RR"]; !ok || got != 2 {
+		t.Fatalf("roundRobinStart[RR]: got (%d, %v), want (2, true)", got, ok)
+	}
+}
+
+func TestParseClientBlock_RoundRobinStart_Absent(t *testing.T) {
+	// A RR client without `start N` must not leave a stale entry in the
+	// map — absence is the signal the coordinator uses to fall back to
+	// a random seed.
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-roundrobin",
+		"options {",
+		"    strategy [A, B]",
+		"}",
+	}
+	parseClientBlock(cfg, "RR", block)
+	if _, ok := cfg.roundRobinStart["RR"]; ok {
+		t.Fatalf("expected no start entry for RR, got one")
+	}
+}
+
+func TestParseClientBlock_RoundRobinStart_InvalidIgnored(t *testing.T) {
+	// A malformed start value (non-integer) is silently ignored — codegen
+	// must not panic; the coordinator simply picks a random seed.
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-roundrobin",
+		"options {",
+		"    strategy [A, B]",
+		"    start oops",
+		"}",
+	}
+	parseClientBlock(cfg, "RR", block)
+	if _, ok := cfg.roundRobinStart["RR"]; ok {
+		t.Fatalf("malformed start should be ignored, got entry")
 	}
 }

@@ -129,22 +129,20 @@ func selectIndex(c *Coordinator, reg *bamlutils.ClientRegistry, clientName strin
 	return c.Advance(clientName, childCount)
 }
 
-// isDynamicRRClient reports whether a named client's RR identity comes
-// from a runtime client_registry override (provider set to a RR spelling).
-// A static RR client whose options.strategy was overridden at runtime is
-// still "static" for counter lifecycle — the counter is keyed by client
-// name, so the existing counter continues to drive the new chain.
+// isDynamicRRClient reports whether a named client's RR identity is
+// controlled by runtime client_registry state, in which case the
+// coordinator's long-lived counter must not drive selection.
+//
+// Any registry entry keyed by clientName counts as dynamic — not just a
+// provider override. A strategy-only override (registry supplies
+// options.strategy but keeps the static provider) swaps the child list
+// out from under the counter; advancing the static counter in that
+// state would rotate through a child set the operator never configured.
+// BAML upstream rebuilds a fresh Arc<LLMProvider> per request-scoped
+// context whenever the registry touches a client, so fresh-random
+// selection is the behaviour to mirror.
 func isDynamicRRClient(reg *bamlutils.ClientRegistry, clientName string) bool {
-	if reg == nil {
-		return false
-	}
-	for _, c := range reg.Clients {
-		if c == nil || c.Name != clientName {
-			continue
-		}
-		return IsRoundRobinProvider(c.Provider)
-	}
-	return false
+	return findRuntimeClient(reg, clientName) != nil
 }
 
 // resolveClientProvider returns the provider for a named client, checking

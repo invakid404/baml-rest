@@ -26,15 +26,47 @@ import (
 // Coordinator owns long-lived per-client counters used by round-robin
 // strategy resolution. Exactly one Coordinator is created per generated
 // adapter package and shared across every request. The zero value is NOT
-// ready — callers must use NewCoordinator.
+// ready — callers must use NewCoordinator or NewCoordinatorWithStarts.
 type Coordinator struct {
 	counters sync.Map // map[string]*atomic.Uint64
+	// starts is an immutable map of per-client seed values captured at
+	// construction time. A client whose name appears here bypasses the
+	// fastrand seed and uses the configured value instead, matching the
+	// BAML `start N` option on a baml-roundrobin client. Clients not in
+	// this map keep the random-seed behaviour.
+	starts map[string]uint64
 }
 
-// NewCoordinator returns a Coordinator with no counters seeded. Counters
-// are created lazily on first Advance for each client name.
+// NewCoordinator returns a Coordinator with no configured per-client
+// seeds. Counters are created lazily on first Advance for each client
+// name and start at a random offset. Equivalent to
+// NewCoordinatorWithStarts(nil); kept for call sites (primarily tests)
+// that do not care about the start option.
 func NewCoordinator() *Coordinator {
-	return &Coordinator{}
+	return NewCoordinatorWithStarts(nil)
+}
+
+// NewCoordinatorWithStarts returns a Coordinator that honours the
+// BAML-level `start` option for the listed clients. Clients in starts
+// skip the fastrand seed and start the rotation at the configured
+// index; clients absent from the map retain the random-start behaviour.
+// Negative seeds are clamped to zero — BAML's rotation index is unsigned.
+//
+// The map is copied; callers may mutate the input afterwards without
+// affecting the coordinator.
+func NewCoordinatorWithStarts(starts map[string]int) *Coordinator {
+	c := &Coordinator{}
+	if len(starts) == 0 {
+		return c
+	}
+	c.starts = make(map[string]uint64, len(starts))
+	for name, v := range starts {
+		if v < 0 {
+			v = 0
+		}
+		c.starts[name] = uint64(v)
+	}
+	return c
 }
 
 // Advance returns the next child index for a static round-robin client,
@@ -57,17 +89,24 @@ func (c *Coordinator) Advance(clientName string, childCount int) int {
 	return int(next % uint64(childCount))
 }
 
-// counterFor returns the atomic counter for a client, creating and
-// randomising it on first call. LoadOrStore guarantees only one atomic
-// survives even under concurrent creation — the loser is discarded.
+// counterFor returns the atomic counter for a client, creating it on
+// first call. A configured start seeds the counter deterministically;
+// otherwise a random offset avoids lockstep across a fresh fleet.
+// LoadOrStore guarantees only one atomic survives even under concurrent
+// creation — the loser is discarded.
 func (c *Coordinator) counterFor(clientName string) *atomic.Uint64 {
 	if v, ok := c.counters.Load(clientName); ok {
 		return v.(*atomic.Uint64)
 	}
 	fresh := &atomic.Uint64{}
-	// Seed in a modest range so overflow is not a practical concern even
-	// at sustained high request rates. Upper bits left unused on purpose.
-	fresh.Store(uint64(rand.Uint32()))
+	if seed, ok := c.starts[clientName]; ok {
+		fresh.Store(seed)
+	} else {
+		// Seed in a modest range so overflow is not a practical concern
+		// even at sustained high request rates. Upper bits left unused on
+		// purpose.
+		fresh.Store(uint64(rand.Uint32()))
+	}
 	actual, _ := c.counters.LoadOrStore(clientName, fresh)
 	return actual.(*atomic.Uint64)
 }

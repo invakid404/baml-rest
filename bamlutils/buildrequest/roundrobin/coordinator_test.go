@@ -100,3 +100,69 @@ func TestAdvanceDynamic_ZeroReturnsZero(t *testing.T) {
 		t.Fatalf("expected 0, got %d", got)
 	}
 }
+
+func TestNewCoordinatorWithStarts_SeedsConfiguredClients(t *testing.T) {
+	// A configured start of 2 with childCount=3 must produce the sequence
+	// 2, 0, 1, 2, 0, 1, ... — fetch_add semantics return the pre-increment
+	// value modulo childCount.
+	c := NewCoordinatorWithStarts(map[string]int{"Seeded": 2})
+	wantSeq := []int{2, 0, 1, 2, 0, 1}
+	for i, want := range wantSeq {
+		if got := c.Advance("Seeded", 3); got != want {
+			t.Fatalf("step %d: got %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestNewCoordinatorWithStarts_NegativeStartClampedToZero(t *testing.T) {
+	c := NewCoordinatorWithStarts(map[string]int{"Neg": -7})
+	// Clamped to 0 — first Advance returns 0.
+	if got := c.Advance("Neg", 4); got != 0 {
+		t.Fatalf("first: got %d, want 0 (clamped from -7)", got)
+	}
+	if got := c.Advance("Neg", 4); got != 1 {
+		t.Fatalf("second: got %d, want 1", got)
+	}
+}
+
+func TestNewCoordinatorWithStarts_UnlistedClientsStayRandom(t *testing.T) {
+	// A seed configured for "Other" must NOT influence "Unlisted". We can't
+	// observe the random seed directly, but we can confirm that Unlisted's
+	// first index is not forced to Other's seed value.
+	c := NewCoordinatorWithStarts(map[string]int{"Other": 3})
+	// Drive "Other" to confirm its seed is honoured first.
+	if got := c.Advance("Other", 4); got != 3 {
+		t.Fatalf("Other first: got %d, want 3", got)
+	}
+	// Unlisted takes a random seed; any legal index is acceptable. Asserting
+	// only the bound confirms independence — the deterministic path would
+	// have leaked Other's 3 here if the implementation shared state.
+	got := c.Advance("Unlisted", 4)
+	if got < 0 || got >= 4 {
+		t.Fatalf("Unlisted: out of range: %d", got)
+	}
+}
+
+func TestNewCoordinatorWithStarts_NilMapBehavesLikeNoStarts(t *testing.T) {
+	c := NewCoordinatorWithStarts(nil)
+	// Round-trip: nil map just degrades to the random-seed behaviour of
+	// NewCoordinator. Consecutive calls must still be contiguous (mod n).
+	first := c.Advance("X", 5)
+	if first < 0 || first >= 5 {
+		t.Fatalf("first: out of range: %d", first)
+	}
+	if got := c.Advance("X", 5); got != (first+1)%5 {
+		t.Fatalf("second: got %d, want %d", got, (first+1)%5)
+	}
+}
+
+func TestNewCoordinatorWithStarts_CopiesInputMap(t *testing.T) {
+	// Mutating the caller's map after construction must not affect the
+	// coordinator — the starts are captured at construction time.
+	starts := map[string]int{"A": 1}
+	c := NewCoordinatorWithStarts(starts)
+	starts["A"] = 999 // caller mutates after handoff
+	if got := c.Advance("A", 3); got != 1 {
+		t.Fatalf("got %d, want 1 (coordinator must not see post-construction mutations)", got)
+	}
+}

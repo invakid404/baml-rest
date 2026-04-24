@@ -1088,6 +1088,13 @@ type bamlConfig struct {
 	// BuildRequest path to baml-fallback and leaving baml-roundrobin on legacy)
 	// happens later at runtime in ResolveFallbackChain.
 	fallbackChains map[string][]string
+	// roundRobinStart maps baml-roundrobin client name → configured `start`
+	// option value. Only populated for clients that set `start N` inside
+	// their options block; absent entries leave the coordinator free to
+	// pick a random seed. Provider filtering happens at runtime — the
+	// parser records the value for any client whose options contain
+	// `start N`, regardless of provider.
+	roundRobinStart map[string]int
 }
 
 type parsedRetryPolicy struct {
@@ -1109,6 +1116,7 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 		functionClient:    make(map[string]string),
 		retryPolicies:     make(map[string]parsedRetryPolicy),
 		fallbackChains:    make(map[string][]string),
+		roundRobinStart:   make(map[string]int),
 	}
 
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -1342,6 +1350,7 @@ var bamlConfigKeys = []string{
 	"options ",
 	"client ",
 	"prompt ",
+	"start ",
 	"type ",
 }
 
@@ -1581,6 +1590,9 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 					strategyBuf.WriteString(strategyLine)
 				}
 			}
+			if startVal, ok := extractRoundRobinStart(line); ok {
+				cfg.roundRobinStart[name] = startVal
+			}
 			stripped := stripInlineComment(stripStringLiterals(line))
 			optionsDepth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
 			if optionsDepth <= 0 {
@@ -1618,6 +1630,9 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 							strategyBuf.Reset()
 							strategyBuf.WriteString(strategyLine)
 						}
+					}
+					if startVal, ok := extractRoundRobinStart(inner); ok {
+						cfg.roundRobinStart[name] = startVal
 					}
 				}
 				if optionsDepth <= 0 {
@@ -1659,6 +1674,31 @@ func extractStrategyStatement(line string) string {
 		}
 	}
 	return ""
+}
+
+// extractRoundRobinStart scans a line (or split inline segment) for a
+// `start N` statement from a baml-roundrobin client's options block and
+// returns the parsed integer. Returns ok=false when no such statement
+// exists or the value is not a valid integer — malformed input is
+// silently ignored so that a bad `start` value falls back to the random
+// seed rather than erroring out codegen.
+func extractRoundRobinStart(line string) (int, bool) {
+	for _, stmt := range splitInlineStatements(line) {
+		trimmed := strings.TrimSpace(stripInlineComment(stmt))
+		if !strings.HasPrefix(trimmed, "start ") {
+			continue
+		}
+		raw := cleanBamlValue(strings.TrimPrefix(trimmed, "start "))
+		if raw == "" {
+			continue
+		}
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			continue
+		}
+		return v, true
+	}
+	return 0, false
 }
 
 // parseStrategyList extracts client names from a strategy line like
@@ -1940,11 +1980,30 @@ func generateBamlConfigVars(out *jen.File) {
 		out.Var().Id("FallbackChains").Op("=").Map(jen.String()).Index().String().Values(entries...)
 	}
 
+	// RoundRobinStart captures the `start` option from each baml-roundrobin
+	// client's options block. Only clients that explicitly set `start N`
+	// appear here; others rely on the coordinator's random seed. The map
+	// is passed to the coordinator constructor so static RR rotations
+	// begin deterministically when the operator asks for it.
+	out.Comment("RoundRobinStart maps baml-roundrobin client names to their configured start index")
+	{
+		entries := make([]jen.Code, 0, len(cfg.roundRobinStart))
+		keys := make([]string, 0, len(cfg.roundRobinStart))
+		for k := range cfg.roundRobinStart {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, clientName := range keys {
+			entries = append(entries, jen.Lit(clientName).Op(":").Lit(cfg.roundRobinStart[clientName]))
+		}
+		out.Var().Id("RoundRobinStart").Op("=").Map(jen.String()).Int().Values(entries...)
+	}
+
 	// RoundRobinCoordinator: one persistent coordinator per generated
 	// adapter package. The BuildRequest path routes static round-robin
 	// selection through it so counters live for the process lifetime
 	// instead of resetting per request. Dynamic RR clients (registered
 	// purely through client_registry overrides) bypass this coordinator.
 	out.Comment("RoundRobinCoordinator holds per-client round-robin counters shared across requests")
-	out.Var().Id("RoundRobinCoordinator").Op("=").Qual("github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin", "NewCoordinator").Call()
+	out.Var().Id("RoundRobinCoordinator").Op("=").Qual("github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin", "NewCoordinatorWithStarts").Call(jen.Id("RoundRobinStart"))
 }
