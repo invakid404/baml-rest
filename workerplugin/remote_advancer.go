@@ -27,6 +27,24 @@ import (
 type RemoteAdvancer struct {
 	client      pb.SharedStateClient
 	operationID string
+	// parent is the request-scoped context used as the parent for every
+	// FetchAdd RPC. Stored rather than threaded through Advance because
+	// bamlutils.RoundRobinAdvancer.Advance is ctx-less — the interface
+	// is shared with the in-process Coordinator (which never blocks) and
+	// with the generated dispatch code, and adding ctx would ripple
+	// through every call site for the sake of this one remote case. A
+	// per-request advancer that remembers its request ctx is the local
+	// fix.
+	//
+	// Propagating request cancellation matters because without it the
+	// FetchAdd keeps running for up to `timeout` after the caller has
+	// gone away — wasted work on a hot request path, and the counter
+	// still advances on the host even though nobody is going to observe
+	// the result. The P1-1 idempotency cache makes this benign for
+	// correctness (a retry with the same op_id would see the cached
+	// value), but the parent-ctx link is the right way to stop doing
+	// the work in the first place.
+	parent context.Context
 	// timeout bounds each FetchAdd call. The call is a single unary RPC
 	// over an in-process broker socket, so the practical cost is a
 	// microsecond; the timeout is a liveness guard, not latency shaping.
@@ -39,10 +57,20 @@ type RemoteAdvancer struct {
 // no idempotency caching on the host (every call advances), which is
 // safe but re-advances on pool retries; prefer passing the request id
 // whenever one is available.
-func NewRemoteAdvancer(client pb.SharedStateClient, operationID string) *RemoteAdvancer {
+//
+// parent is the request-scoped context. FetchAdd inherits cancellation
+// from it, so if the caller disconnects the RPC is aborted rather than
+// held open for the full timeout. Passing nil falls back to
+// context.Background — acceptable for test harnesses but not production,
+// where losing cancellation means one wasted RPC per cancelled request.
+func NewRemoteAdvancer(parent context.Context, client pb.SharedStateClient, operationID string) *RemoteAdvancer {
+	if parent == nil {
+		parent = context.Background()
+	}
 	return &RemoteAdvancer{
 		client:      client,
 		operationID: operationID,
+		parent:      parent,
 		timeout:     5 * time.Second,
 	}
 }
@@ -65,7 +93,11 @@ func (r *RemoteAdvancer) Advance(clientName string, childCount int) (int, error)
 		// the misconfiguration is visible.
 		return 0, fmt.Errorf("round-robin remote advancer has no SharedState client")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+	parent := r.parent
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, r.timeout)
 	defer cancel()
 	resp, err := r.client.FetchAdd(ctx, &pb.FetchAddRequest{
 		Key:         clientName,

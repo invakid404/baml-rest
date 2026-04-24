@@ -141,7 +141,7 @@ func roundRobinAdvancerFor(ctx context.Context) bamlutils.RoundRobinAdvancer {
 	if clientPtr == nil {
 		return nil
 	}
-	return workerplugin.NewRemoteAdvancer(*clientPtr, workerplugin.RequestIDFromContext(ctx))
+	return workerplugin.NewRemoteAdvancer(ctx, *clientPtr, workerplugin.RequestIDFromContext(ctx))
 }
 
 // defaultDrainLeakThreshold is how long a drain goroutine waits before logging
