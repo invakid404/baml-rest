@@ -18,7 +18,6 @@ import (
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
-	"github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
 	"github.com/invakid404/baml-rest/bamlutils/clientdefaults"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/memlimit"
@@ -142,7 +141,7 @@ func roundRobinAdvancerFor(ctx context.Context) bamlutils.RoundRobinAdvancer {
 	if clientPtr == nil {
 		return nil
 	}
-	return roundrobin.NewRemoteAdvancer(*clientPtr, workerplugin.RequestIDFromContext(ctx))
+	return workerplugin.NewRemoteAdvancer(*clientPtr, workerplugin.RequestIDFromContext(ctx))
 }
 
 // defaultDrainLeakThreshold is how long a drain goroutine waits before logging

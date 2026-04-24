@@ -27,9 +27,13 @@ import (
 // entirely; every call advances.
 //
 // DropScope(requestID) must be invoked when a request finishes so the
-// idempotency entries keyed on that request_id are released. A 60s TTL
-// sweeper runs in the background as a safety net for callers that fail
-// to drop explicitly (e.g. the pool process crashing mid-request).
+// idempotency entries keyed on that request_id are released. A long TTL
+// sweep runs in the background purely as a safety net for operation_ids
+// that never receive a DropScope call (host crashes, goroutine panics
+// before the defer registers, etc.). The TTL is intentionally longer
+// than any expected request lifetime — it must never sweep a live
+// request's entry out from under the pool retry loop, since that would
+// re-advance the counter on the retry.
 type SharedStateStore struct {
 	initialValue func(key string) uint64
 
@@ -39,15 +43,26 @@ type SharedStateStore struct {
 
 	ttl time.Duration
 
-	stopCh chan struct{}
+	stopCh  chan struct{}
 	stopped atomic.Bool
 }
 
 // idemEntry caches a single FetchAdd response for a (key, op_id) pair.
-// createdAt drives the TTL sweeper so orphaned entries (the owning
-// request never called DropScope) are reclaimed without per-call
-// bookkeeping.
+//
+// The sync.Once is load-bearing: it makes FetchAdd atomic under concurrent
+// retries for the same (key, op_id). Two overlapping pool attempts both
+// LoadOrStore the same entry; the winner of once.Do advances the counter
+// and records previous, the loser blocks inside once.Do until the winner
+// finishes and then reads the stored previous value. Without this guard
+// both retries could observe a cache miss, both would Add on the counter,
+// and the later storeIdem would overwrite the earlier — the rotation
+// would skip a child.
+//
+// previous must be read only after once.Do has returned. Before that the
+// field is zero; after, sync.Once provides the happens-before edge for
+// the read on the slow path.
 type idemEntry struct {
+	once      sync.Once
 	previous  uint64
 	createdAt time.Time
 }
@@ -61,6 +76,19 @@ type scope struct {
 	createdAt time.Time
 }
 
+// defaultIdemTTL is the default time-to-live for idempotency entries
+// whose DropScope never fires (crash / panic safety net). It must be
+// larger than any in-flight request can plausibly take — otherwise the
+// sweep would evict a live request's cached rotation index before the
+// pool finished retrying, causing a second counter advance.
+//
+// Pool FirstByteTimeout is 120s by default, requests can hold for longer
+// with retries, and nothing about this value is latency-sensitive — the
+// sweep is pure memory hygiene for orphans. 15 minutes is well clear of
+// any realistic request lifetime without letting orphans accumulate
+// indefinitely.
+const defaultIdemTTL = 15 * time.Minute
+
 // NewSharedStateStore returns a store whose counters are initialised by
 // the caller-supplied callback on first touch. Pass nil to default new
 // counters to 0; production callers should wire this to the introspected
@@ -68,7 +96,7 @@ type scope struct {
 // and unseeded keys get a random offset (preserving the fresh-fleet
 // behaviour of the legacy in-process Coordinator).
 func NewSharedStateStore(initialValue func(key string) uint64) *SharedStateStore {
-	return newSharedStateStoreWithTTL(initialValue, 60*time.Second)
+	return newSharedStateStoreWithTTL(initialValue, defaultIdemTTL)
 }
 
 func newSharedStateStoreWithTTL(initialValue func(key string) uint64, ttl time.Duration) *SharedStateStore {
@@ -94,19 +122,61 @@ func (s *SharedStateStore) Close() {
 // FetchAdd atomically adds delta to the counter named by key, returning
 // the pre-increment value. When opID is non-empty the (key, opID) result
 // is cached: subsequent calls with the same pair return the cached value
-// without advancing the counter.
+// without advancing the counter. Concurrent calls for the same (key,
+// opID) collapse onto a single counter advance — see idemEntry for the
+// once.Do mechanics.
 func (s *SharedStateStore) FetchAdd(key string, delta uint64, opID string) uint64 {
-	if opID != "" {
-		if prev, ok := s.loadIdem(key, opID); ok {
-			return prev
-		}
+	if opID == "" {
+		// No idempotency requested — single atomic advance, no cache.
+		counter := s.counterFor(key)
+		return counter.Add(delta) - delta
 	}
-	counter := s.counterFor(key)
-	prev := counter.Add(delta) - delta
-	if opID != "" {
-		s.storeIdem(key, opID, prev)
+	entry := s.loadOrStoreIdem(key, opID)
+	entry.once.Do(func() {
+		counter := s.counterFor(key)
+		// Assignment is inside Do so concurrent readers blocked on the
+		// same Once observe this write under the happens-before edge
+		// that Once establishes.
+		entry.previous = counter.Add(delta) - delta
+		entry.createdAt = time.Now()
+		s.attachToScope(key, opID)
+	})
+	return entry.previous
+}
+
+// loadOrStoreIdem returns the canonical idempotency entry for (key,
+// opID), creating it on first touch. Concurrent callers for the same
+// pair all receive the same *idemEntry; exactly one of them will win
+// the once.Do race inside FetchAdd.
+func (s *SharedStateStore) loadOrStoreIdem(key, opID string) *idemEntry {
+	k := idemKey(key, opID)
+	if v, ok := s.idem.Load(k); ok {
+		return v.(*idemEntry)
 	}
-	return prev
+	fresh := &idemEntry{}
+	actual, _ := s.idem.LoadOrStore(k, fresh)
+	return actual.(*idemEntry)
+}
+
+// attachToScope registers (key, opID) under opID's scope so DropScope
+// can find every entry belonging to a request without walking the whole
+// idem map. Called only on the once.Do winner path; losers already
+// observe a registered scope through their blocking Do.
+func (s *SharedStateStore) attachToScope(key, opID string) {
+	var sc *scope
+	if v, ok := s.scopes.Load(opID); ok {
+		sc = v.(*scope)
+	} else {
+		fresh := &scope{keys: make(map[string]struct{}), createdAt: time.Now()}
+		actual, _ := s.scopes.LoadOrStore(opID, fresh)
+		sc = actual.(*scope)
+	}
+	sc.mu.Lock()
+	if sc.keys == nil {
+		sc.keys = make(map[string]struct{})
+	}
+	sc.keys[key] = struct{}{}
+	sc.mu.Unlock()
 }
 
 // DropScope releases every idempotency entry recorded for opID. Returns
@@ -141,36 +211,6 @@ func (s *SharedStateStore) counterFor(key string) *atomic.Uint64 {
 	return actual.(*atomic.Uint64)
 }
 
-func (s *SharedStateStore) loadIdem(key, opID string) (uint64, bool) {
-	v, ok := s.idem.Load(idemKey(key, opID))
-	if !ok {
-		return 0, false
-	}
-	return v.(*idemEntry).previous, true
-}
-
-func (s *SharedStateStore) storeIdem(key, opID string, previous uint64) {
-	entry := &idemEntry{previous: previous, createdAt: time.Now()}
-	s.idem.Store(idemKey(key, opID), entry)
-
-	// Track the key under its scope so DropScope can find it without a full
-	// idem-map walk. LoadOrStore handles the first-touch race.
-	var sc *scope
-	if v, ok := s.scopes.Load(opID); ok {
-		sc = v.(*scope)
-	} else {
-		fresh := &scope{keys: make(map[string]struct{}), createdAt: time.Now()}
-		actual, _ := s.scopes.LoadOrStore(opID, fresh)
-		sc = actual.(*scope)
-	}
-	sc.mu.Lock()
-	if sc.keys == nil {
-		sc.keys = make(map[string]struct{})
-	}
-	sc.keys[key] = struct{}{}
-	sc.mu.Unlock()
-}
-
 // idemKey composes the two-level key with a byte that cannot appear in
 // either half (BAML client names are identifiers; request_ids are UUIDs
 // or fiber request-ids — both ASCII-only).
@@ -186,7 +226,14 @@ func (s *SharedStateStore) sweeper() {
 	if s.ttl <= 0 {
 		return
 	}
-	t := time.NewTicker(s.ttl)
+	// Sweep at half the TTL so a crashed entry is reclaimed within [TTL,
+	// 1.5*TTL). Ticker cadence smaller than TTL means we don't scan the
+	// map more often than necessary while still bounding orphan latency.
+	interval := s.ttl / 2
+	if interval <= 0 {
+		interval = s.ttl
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {

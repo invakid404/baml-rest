@@ -3,7 +3,7 @@ module github.com/invakid404/baml-rest/adapters/adapter_v0_215_0
 go 1.26.1
 
 require (
-	github.com/boundaryml/baml v0.219.0
+	github.com/boundaryml/baml v0.215.0
 	github.com/invakid404/baml-rest/adapters/common v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000
@@ -24,7 +24,6 @@ require (
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
 replace (

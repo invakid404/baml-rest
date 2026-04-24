@@ -518,9 +518,18 @@ type Logger interface {
 //
 // Implementations must return a value in [0, childCount). childCount
 // must be > 0; a zero or negative value is treated as 1 by the
-// existing implementations and returns 0.
+// existing implementations and returns (0, nil).
+//
+// The error return is load-bearing for the remote-advancer case: when
+// a pool-managed worker has been attached to a host SharedState socket
+// but the round-trip fails (transport error, host crash, etc.), the
+// caller must fail the request rather than silently fall back to a
+// local random pick. A silent fallback would collapse the pool-wide
+// rotation back to per-worker draws exactly when central coordination
+// is supposed to kick in — the failure mode the shared-state wiring
+// exists to eliminate. In-process implementations always return nil.
 type RoundRobinAdvancer interface {
-	Advance(clientName string, childCount int) int
+	Advance(clientName string, childCount int) (int, error)
 }
 
 type Adapter interface {

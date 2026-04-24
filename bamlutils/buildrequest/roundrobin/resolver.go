@@ -103,7 +103,10 @@ func Resolve(in ResolveInput) (*Result, error) {
 			return nil, fmt.Errorf("roundrobin: client %q has no children", current)
 		}
 
-		idx := selectIndex(in.Advancer, in.Registry, current, len(chain))
+		idx, err := selectIndex(in.Advancer, in.Registry, current, len(chain))
+		if err != nil {
+			return nil, fmt.Errorf("roundrobin: select child for %q: %w", current, err)
+		}
 		selected := chain[idx]
 
 		if outerInfo == nil {
@@ -123,12 +126,17 @@ func Resolve(in ResolveInput) (*Result, error) {
 // a fresh random selection matching BAML's fresh-Arc-per-context semantics.
 // Static clients delegate to the supplied Advancer — either an in-process
 // Coordinator or a RemoteAdvancer talking to the host SharedState service.
-func selectIndex(a Advancer, reg *bamlutils.ClientRegistry, clientName string, childCount int) int {
+//
+// The Advancer error is surfaced verbatim. For the in-process path it
+// never fires; for the remote path it's a transport failure that must
+// fail the request, because silently falling back to AdvanceDynamic
+// would defeat the whole point of centralised rotation.
+func selectIndex(a Advancer, reg *bamlutils.ClientRegistry, clientName string, childCount int) (int, error) {
 	if isDynamicRRClient(reg, clientName) {
-		return AdvanceDynamic(childCount)
+		return AdvanceDynamic(childCount), nil
 	}
 	if a == nil {
-		return AdvanceDynamic(childCount)
+		return AdvanceDynamic(childCount), nil
 	}
 	return a.Advance(clientName, childCount)
 }

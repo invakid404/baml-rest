@@ -76,17 +76,19 @@ func NewCoordinatorWithStarts(starts map[string]int) *Coordinator {
 // BAML upstream's fastrand::usize(..len) behaviour for the initial index.
 //
 // childCount must be > 0; a non-positive value is treated as 1 and returns
-// 0 so callers that skip validation still get deterministic output.
-func (c *Coordinator) Advance(clientName string, childCount int) int {
+// (0, nil) so callers that skip validation still get deterministic output.
+// The error return exists to satisfy the Advancer interface shape shared
+// with the remote implementation; the in-process path never fails.
+func (c *Coordinator) Advance(clientName string, childCount int) (int, error) {
 	if childCount <= 0 {
-		return 0
+		return 0, nil
 	}
 	counter := c.counterFor(clientName)
 	// Add returns the post-increment value; subtract one so the returned
 	// index matches BAML upstream semantics (fetch_add returns the OLD
 	// value, then the modulo is applied).
 	next := counter.Add(1) - 1
-	return int(next % uint64(childCount))
+	return int(next % uint64(childCount)), nil
 }
 
 // counterFor returns the atomic counter for a client, creating it on

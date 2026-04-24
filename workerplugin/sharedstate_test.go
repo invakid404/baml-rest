@@ -116,6 +116,47 @@ func TestSharedStateStore_ConcurrentFetchAddAdvancesExactlyOncePerCall(t *testin
 	}
 }
 
+func TestSharedStateStore_ConcurrentReplaysAdvanceCounterOnce(t *testing.T) {
+	// Simulates the pool-retry race: N goroutines call FetchAdd with the
+	// same (key, op-id) concurrently. The sync.Once guard in idemEntry
+	// must collapse all of them onto a single counter advance, and every
+	// caller must observe the same previous value. Without the guard the
+	// old read-then-add-then-store sequence would let multiple advances
+	// through, rotating the counter past what the request expected.
+	store := newSharedStateStoreWithTTL(nil, 0)
+	defer store.Close()
+
+	const concurrency = 100
+	results := make([]uint64, concurrency)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // release all goroutines simultaneously to maximise overlap
+			results[i] = store.FetchAdd("k", 1, "req-race")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	// Every caller must see the same previous value (0 — first advance
+	// on an unseeded key). A different result for any goroutine means
+	// multiple advances leaked through.
+	for i, got := range results {
+		if got != 0 {
+			t.Fatalf("goroutine %d got previous=%d, want 0 (concurrent replay advanced counter twice)", i, got)
+		}
+	}
+
+	// A fresh op-id must see exactly previous=1 — the counter advanced
+	// once (by the winner of the race), not N times.
+	if got := store.FetchAdd("k", 1, "next"); got != 1 {
+		t.Fatalf("post-race: got %d, want 1 (counter advanced %d times under concurrency)", got, got)
+	}
+}
+
 func TestSharedStateStore_TTLSweepReclaimsIdemEntries(t *testing.T) {
 	store := newSharedStateStoreWithTTL(nil, 50*time.Millisecond)
 	defer store.Close()
