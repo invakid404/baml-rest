@@ -930,28 +930,50 @@ func TestRunCallOrchestration_NilHTTPClient(t *testing.T) {
 		}
 	}
 
+	// RunCallOrchestration's contract: non-nil err ONLY for upfront
+	// validation failures (unsupported provider, invalid chain,
+	// LegacyChildren misconfig — see call_orchestrator.go:151/155/170).
+	// Transport/retry/build/parse failures all surface as
+	// StreamResultKindError on the channel; the function returns nil
+	// in those cases. The four-arm switch below encodes that contract:
+	//
+	//   1. hasFinal + no stream errors        — genuine success.
+	//   2. hasFinal + stream errors           — impossible per contract;
+	//      "final AND error" means a producer-side bug.
+	//   3. err != nil                         — validation failure; this
+	//      is a real regression since the config here is valid.
+	//   4. stream errors only                 — legitimate transient
+	//      transport failure (DefaultClient pool race under CI
+	//      `-count=100`); log and accept.
+	//   5. no final, no err, no stream errors — orchestrator short-
+	//      circuited without producing output; real regression.
 	switch {
 	case hasFinal:
-		// Happy path — assert the content actually came from the
-		// server, not from a stubbed default somewhere.
+		if len(streamErrs) > 0 {
+			// Contract violation: successful final plus error
+			// result on the same call. Worth failing loudly because
+			// it's a producer-side bug, not a transient flake.
+			t.Errorf("received final AND stream errors on the same call: final=%v stream_errs=%v", final, streamErrs)
+		}
+		if err != nil {
+			t.Errorf("received final but orchestrator also returned validation err=%v", err)
+		}
 		if final != "from default client" {
 			t.Errorf("expected 'from default client', got %v", final)
 		}
-		if err != nil {
-			t.Errorf("received final but orchestrator also returned err=%v", err)
-		}
 	case err != nil:
-		// Transport failure surfaced via return. The nil-client
-		// fallback wiring worked (we got to the point of issuing a
-		// request); this is acceptable under CI pool-race conditions.
-		// Log so flakes stay diagnosable without failing the test.
-		t.Logf("nil-client fallback: acceptable transport failure (returned error): %v", err)
+		// Validation failure path. The test configures a supported
+		// provider with no fallback chain, so the upfront validation
+		// should always accept it. A non-nil err here is a real bug
+		// in the validation code itself.
+		t.Fatalf("nil-client fallback: orchestrator returned a validation error on a valid config: %v", err)
 	case len(streamErrs) > 0:
-		// Transport failure surfaced via the stream. Same rationale.
-		t.Logf("nil-client fallback: acceptable transport failure (stream errors): %v", streamErrs)
+		// Transport failure surfaced via the stream — acceptable under
+		// CI pool-race conditions. Log so flakes stay diagnosable.
+		t.Logf("nil-client fallback: acceptable transient transport failure: %v", streamErrs)
 	default:
-		// Neither final nor error — this is a real regression. The
-		// orchestrator completed without producing a result.
+		// Neither final nor any error signal — orchestrator produced
+		// no output, which is a regression.
 		t.Fatal("nil-client fallback: no final, no return error, no stream error — orchestrator produced no output")
 	}
 }
