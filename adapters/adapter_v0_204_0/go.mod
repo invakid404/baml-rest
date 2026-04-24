@@ -20,7 +20,6 @@ require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/dave/jennifer v1.7.1 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
-	github.com/invakid404/baml-rest/workerplugin v0.0.0-20260424072130-743af0ba0424 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/stoewer/go-strcase v1.3.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
