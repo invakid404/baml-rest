@@ -331,18 +331,19 @@ func (e *StreamEvent) IsMetadata() bool {
 // server-side bamlutils package, and a full mirror would drift as unused
 // fields get added. Extend this only when a test needs a new field.
 type StreamMetadata struct {
-	Phase          string   `json:"phase"`
-	Path           string   `json:"path,omitempty"`
-	Client         string   `json:"client,omitempty"`
-	Strategy       string   `json:"strategy,omitempty"`
-	Chain          []string `json:"chain,omitempty"`
-	RetryMax       *int     `json:"retry_max,omitempty"`
-	RetryCount     *int     `json:"retry_count,omitempty"`
-	WinnerClient   string   `json:"winner_client,omitempty"`
-	WinnerProvider string   `json:"winner_provider,omitempty"`
-	WinnerPath     string   `json:"winner_path,omitempty"`
-	UpstreamDurMs  *int64   `json:"upstream_duration_ms,omitempty"`
-	BamlCallCount  *int     `json:"baml_call_count,omitempty"`
+	Phase           string   `json:"phase"`
+	Path            string   `json:"path,omitempty"`
+	BuildRequestAPI string   `json:"build_request_api,omitempty"`
+	Client          string   `json:"client,omitempty"`
+	Strategy        string   `json:"strategy,omitempty"`
+	Chain           []string `json:"chain,omitempty"`
+	RetryMax        *int     `json:"retry_max,omitempty"`
+	RetryCount      *int     `json:"retry_count,omitempty"`
+	WinnerClient    string   `json:"winner_client,omitempty"`
+	WinnerProvider  string   `json:"winner_provider,omitempty"`
+	WinnerPath      string   `json:"winner_path,omitempty"`
+	UpstreamDurMs   *int64   `json:"upstream_duration_ms,omitempty"`
+	BamlCallCount   *int     `json:"baml_call_count,omitempty"`
 }
 
 // ParseMetadata decodes a metadata event's data payload.
@@ -901,6 +902,7 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 const (
 	HeaderBAMLPath             = "X-BAML-Path"
 	HeaderBAMLPathReason       = "X-BAML-Path-Reason"
+	HeaderBAMLBuildRequestAPI  = "X-BAML-Build-Request-API"
 	HeaderBAMLClient           = "X-BAML-Client"
 	HeaderBAMLWinnerClient     = "X-BAML-Winner-Client"
 	HeaderBAMLWinnerProvider   = "X-BAML-Winner-Provider"

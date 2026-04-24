@@ -16,6 +16,7 @@ import (
 const (
 	HeaderBAMLPath             = "X-BAML-Path"
 	HeaderBAMLPathReason       = "X-BAML-Path-Reason"
+	HeaderBAMLBuildRequestAPI  = "X-BAML-Build-Request-API"
 	HeaderBAMLClient           = "X-BAML-Client"
 	HeaderBAMLWinnerClient     = "X-BAML-Winner-Client"
 	HeaderBAMLWinnerProvider   = "X-BAML-Winner-Provider"
@@ -51,6 +52,9 @@ func setBAMLHeaders(setter headerSetter, planned, outcome *bamlutils.Metadata) {
 		}
 		if planned.PathReason != "" {
 			setter(HeaderBAMLPathReason, planned.PathReason)
+		}
+		if planned.BuildRequestAPI != "" {
+			setter(HeaderBAMLBuildRequestAPI, planned.BuildRequestAPI)
 		}
 		if v := sanitizeTokenHeader(planned.Client); v != "" {
 			setter(HeaderBAMLClient, v)

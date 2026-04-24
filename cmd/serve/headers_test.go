@@ -14,7 +14,7 @@ func TestSetBAMLHeaders_OmitsWhenNil(t *testing.T) {
 	setBAMLHeaders(netHTTPHeaderSetter(h), nil, nil)
 
 	for _, name := range []string{
-		HeaderBAMLPath, HeaderBAMLPathReason, HeaderBAMLClient,
+		HeaderBAMLPath, HeaderBAMLPathReason, HeaderBAMLBuildRequestAPI, HeaderBAMLClient,
 		HeaderBAMLWinnerClient, HeaderBAMLWinnerProvider,
 		HeaderBAMLRetryMax, HeaderBAMLRetryCount, HeaderBAMLUpstreamDuration,
 		HeaderBAMLBamlCallCount,
@@ -133,6 +133,50 @@ func TestSetBAMLHeaders_OutcomeWinnerDiffers(t *testing.T) {
 	if got := h.Get(HeaderBAMLWinnerClient); got != "Backup" {
 		t.Errorf("WinnerClient: got %q, want %q", got, "Backup")
 	}
+}
+
+func TestSetBAMLHeaders_BuildRequestAPI(t *testing.T) {
+	t.Parallel()
+
+	t.Run("absent when empty", func(t *testing.T) {
+		t.Parallel()
+		h := http.Header{}
+		planned := &bamlutils.Metadata{Phase: bamlutils.MetadataPhasePlanned, Path: "buildrequest", Client: "MyClient"}
+		setBAMLHeaders(netHTTPHeaderSetter(h), planned, nil)
+		if got := h.Get(HeaderBAMLBuildRequestAPI); got != "" {
+			t.Errorf("header should be absent when BuildRequestAPI is empty; got %q", got)
+		}
+	})
+
+	t.Run("request", func(t *testing.T) {
+		t.Parallel()
+		h := http.Header{}
+		planned := &bamlutils.Metadata{
+			Phase:           bamlutils.MetadataPhasePlanned,
+			Path:            "buildrequest",
+			BuildRequestAPI: "request",
+			Client:          "MyClient",
+		}
+		setBAMLHeaders(netHTTPHeaderSetter(h), planned, nil)
+		if got := h.Get(HeaderBAMLBuildRequestAPI); got != "request" {
+			t.Errorf("header: got %q, want request", got)
+		}
+	})
+
+	t.Run("streamrequest", func(t *testing.T) {
+		t.Parallel()
+		h := http.Header{}
+		planned := &bamlutils.Metadata{
+			Phase:           bamlutils.MetadataPhasePlanned,
+			Path:            "buildrequest",
+			BuildRequestAPI: "streamrequest",
+			Client:          "MyClient",
+		}
+		setBAMLHeaders(netHTTPHeaderSetter(h), planned, nil)
+		if got := h.Get(HeaderBAMLBuildRequestAPI); got != "streamrequest" {
+			t.Errorf("header: got %q, want streamrequest", got)
+		}
+	})
 }
 
 func TestSetBAMLHeaders_DropsControlChars(t *testing.T) {

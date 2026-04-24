@@ -7,6 +7,33 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
+func TestParseDisableCallBuildRequestEnv(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"empty", "", false},
+		{"true", "true", true},
+		{"True", "True", true},
+		{"1", "1", true},
+		{"on", "on", true},
+		{"yes", "yes", true},
+		{"false", "false", false},
+		{"0", "0", false},
+		{"off", "off", false},
+		{"garbage", "garbage", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BAML_REST_DISABLE_CALL_BUILD_REQUEST", tc.value)
+			if got := parseDisableCallBuildRequestEnv(); got != tc.want {
+				t.Errorf("value=%q: got %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveProviderWithReason_BuildRequestSupported(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
 	res := ResolveProviderWithReason(adapter, "MyClient", "openai", IsProviderSupported)
@@ -111,9 +138,12 @@ func TestResolveFallbackChainWithReason_MixedDrivable(t *testing.T) {
 
 func TestBuildSingleProviderPlan(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
-	plan := BuildSingleProviderPlan(adapter, "MyClient", "openai", nil)
+	plan := BuildSingleProviderPlan(adapter, "MyClient", "openai", nil, BuildRequestAPIRequest)
 	if plan.Path != "buildrequest" {
 		t.Errorf("path: got %q, want buildrequest", plan.Path)
+	}
+	if plan.BuildRequestAPI != BuildRequestAPIRequest {
+		t.Errorf("BuildRequestAPI: got %q, want %q", plan.BuildRequestAPI, BuildRequestAPIRequest)
 	}
 	if plan.Client != "MyClient" {
 		t.Errorf("client: got %q, want MyClient", plan.Client)
@@ -123,6 +153,27 @@ func TestBuildSingleProviderPlan(t *testing.T) {
 	}
 	if plan.RetryMax != nil {
 		t.Errorf("RetryMax should be nil when policy is nil; got %v", plan.RetryMax)
+	}
+}
+
+func TestBuildSingleProviderPlan_StreamRequestAPI(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+	plan := BuildSingleProviderPlan(adapter, "MyClient", "openai", nil, BuildRequestAPIStreamRequest)
+	if plan.BuildRequestAPI != BuildRequestAPIStreamRequest {
+		t.Errorf("BuildRequestAPI: got %q, want %q", plan.BuildRequestAPI, BuildRequestAPIStreamRequest)
+	}
+}
+
+func TestBuildFallbackChainPlan_APIFieldCarriesThrough(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+	chain := []string{"A", "B"}
+	providers := map[string]string{"A": "openai", "B": "anthropic"}
+	plan := BuildFallbackChainPlan(adapter, "Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest)
+	if plan.BuildRequestAPI != BuildRequestAPIStreamRequest {
+		t.Errorf("BuildRequestAPI: got %q, want %q", plan.BuildRequestAPI, BuildRequestAPIStreamRequest)
+	}
+	if plan.Strategy != "baml-fallback" {
+		t.Errorf("strategy: got %q, want baml-fallback", plan.Strategy)
 	}
 }
 

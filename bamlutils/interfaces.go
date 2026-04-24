@@ -59,6 +59,15 @@ type Metadata struct {
 	Path       string        `json:"path"`                  // "buildrequest" or "legacy"
 	PathReason string        `json:"path_reason,omitempty"` // legacy classification enum; empty when Path=="buildrequest"
 
+	// BuildRequestAPI identifies which BAML API drove a Path=="buildrequest"
+	// request. "request" means the non-streaming Request API (unary HTTP,
+	// RunCallOrchestration). "streamrequest" means the streaming StreamRequest
+	// API (SSE accumulation, RunStreamOrchestration); for call modes this
+	// indicates the bridge from /call{,-with-raw} through stream accumulation,
+	// used when the non-streaming API is unavailable for the resolved
+	// provider. Empty on the legacy path.
+	BuildRequestAPI string `json:"build_request_api,omitempty"`
+
 	// Planned fields
 	Client         string   `json:"client,omitempty"`           // resolved runtime client name (strategy or single)
 	Provider       string   `json:"provider,omitempty"`         // provider of resolved single client; empty for strategies
