@@ -450,11 +450,27 @@ func TestRoundRobinStreamWithRaw(t *testing.T) {
 			}
 			seenRaws[finalRaw] = true
 
+			// Full RR metadata consistency check — mirrors the /stream
+			// test. Without the full comparison a regression that drops
+			// Children, skews Index, or desyncs Selected from Children
+			// on the raw path alone would slip through.
 			if tracker.planned == nil || tracker.planned.RoundRobin == nil {
 				t.Fatalf("StreamWithRaw %d: planned metadata missing RoundRobin info: %+v", i, tracker.planned)
 			}
 			if tracker.planned.RoundRobin.Name != "TestRoundRobinPair" {
 				t.Errorf("StreamWithRaw %d: RoundRobin.Name = %q, want TestRoundRobinPair", i, tracker.planned.RoundRobin.Name)
+			}
+			if got := tracker.planned.RoundRobin.Selected; got == "" {
+				t.Errorf("StreamWithRaw %d: RoundRobin.Selected is empty", i)
+			}
+			wantChildren := []string{"FallbackPrimary", "FallbackSecondary"}
+			if !equalSliceStrings(tracker.planned.RoundRobin.Children, wantChildren) {
+				t.Errorf("StreamWithRaw %d: RoundRobin.Children = %v, want %v", i, tracker.planned.RoundRobin.Children, wantChildren)
+			}
+			if idx := tracker.planned.RoundRobin.Index; idx < 0 || idx >= len(wantChildren) {
+				t.Errorf("StreamWithRaw %d: RoundRobin.Index %d out of range", i, idx)
+			} else if wantChildren[idx] != tracker.planned.RoundRobin.Selected {
+				t.Errorf("StreamWithRaw %d: Selected=%q does not match Children[%d]=%q", i, tracker.planned.RoundRobin.Selected, idx, wantChildren[idx])
 			}
 		}
 

@@ -1226,13 +1226,21 @@ func generate(opts Options) {
 			// Build streamOpts: base options + WithOnTick heartbeat; append
 			// WithClient(clientOverride) when the router passed a resolved leaf
 			// client (e.g. baml-roundrobin selected a specific child).
+			//
+			// The WithClient append clones streamOpts first, matching the
+			// driveStream pattern. Without the clone, streamOpts shares its
+			// backing array with `options` (the first append may or may not
+			// have reallocated, depending on capacity), and appending
+			// WithClient could mutate the caller's slice — stomping the
+			// options list for any sibling request that held the same
+			// backing array.
 			jen.Id("streamOpts").Op(":=").Append(
 				jen.Id("options"),
 				jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
 			),
 			withClientOverrideBlock(
 				jen.Id("streamOpts").Op("=").Append(
-					jen.Id("streamOpts"),
+					jen.Qual("slices", "Clone").Call(jen.Id("streamOpts")),
 					jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
 				),
 			),
