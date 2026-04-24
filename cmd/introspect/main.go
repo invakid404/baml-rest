@@ -2037,9 +2037,20 @@ func generateBamlConfigVars(out *jen.File) {
 	if !hasRoundRobinClients {
 		out.Var().Id("RoundRobinStart").Map(jen.String()).Int()
 	} else {
+		// Filter to baml-roundrobin clients only. cfg.roundRobinStart
+		// is populated by the `start N` option extractor, which the
+		// parser runs on every options block — nothing in the parser
+		// is RR-specific, so a non-RR client that happens to declare
+		// `start N` (a provider-specific option or a typo) would end
+		// up here and get fed to the Coordinator's per-client seed
+		// map as if it were an RR rotation seed. Dropping non-RR
+		// entries at emission time keeps the generated map honest.
 		entries := make([]jen.Code, 0, len(cfg.roundRobinStart))
 		keys := make([]string, 0, len(cfg.roundRobinStart))
 		for k := range cfg.roundRobinStart {
+			if cfg.clientProvider[k] != "baml-roundrobin" {
+				continue
+			}
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)

@@ -510,8 +510,13 @@ func TestRoundRobinStreamWithRaw(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		const runs = 2
+		// runs=4 covers at least one wrap-around on a 2-child RR —
+		// indices must step 0,1,0,1 or 1,0,1,0. runs=2 was too short
+		// to catch a counter stuck at its initial offset. Matches
+		// what /stream already asserts after CR-26.
+		const runs = 4
 		seenRaws := map[string]bool{}
+		prevIndex := -1
 		for i := 0; i < runs; i++ {
 			partials, errc := BAMLClient.StreamWithRaw(ctx, testutil.CallRequest{
 				Method: "GetGreetingRoundRobinPair",
@@ -574,6 +579,20 @@ func TestRoundRobinStreamWithRaw(t *testing.T) {
 			} else if actualChild != tracker.planned.RoundRobin.Selected {
 				t.Errorf("StreamWithRaw %d: raw was served by %q but RoundRobin.Selected says %q", i, actualChild, tracker.planned.RoundRobin.Selected)
 			}
+
+			// Modulo progression: each raw stream must advance the
+			// counter by exactly one. Matches the /stream test's
+			// CR-26 check — a stuck or double-advanced counter would
+			// manifest as a skipped or repeated index here even when
+			// the distinct-payloads assertion below still passed.
+			if prevIndex >= 0 {
+				wantIdx := (prevIndex + 1) % len(tracker.planned.RoundRobin.Children)
+				if tracker.planned.RoundRobin.Index != wantIdx {
+					t.Errorf("StreamWithRaw %d: expected Index=%d (prev=%d, step=+1 mod %d), got %d",
+						i, wantIdx, prevIndex, len(tracker.planned.RoundRobin.Children), tracker.planned.RoundRobin.Index)
+				}
+			}
+			prevIndex = tracker.planned.RoundRobin.Index
 		}
 
 		if len(seenRaws) != 2 {
