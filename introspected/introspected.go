@@ -61,6 +61,11 @@ var RetryPolicies = map[string]*retry.Policy{}
 // FunctionRetryPolicy maps BAML function names to their retry policy name
 var FunctionRetryPolicy = map[string]string{}
 
+// ClientRetryPolicy maps BAML client names to their declared retry policy name.
+// Used by the BuildRequest router (keyed on the effective client after any
+// baml-roundrobin unwrap) instead of FunctionRetryPolicy.
+var ClientRetryPolicy = map[string]string{}
+
 // FallbackChains maps strategy client names to their ordered list of child client names
 var FallbackChains = map[string][]string{}
 

@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,6 +41,11 @@ func main() {
 		Output:     os.Stderr,
 		JSONFormat: true,
 	})
+	// Expose the logger to package-level helpers (roundRobinAdvancerFor)
+	// that need to surface handshake-level diagnostics. Set before Serve
+	// starts dispatching RPCs so the first request's helper call sees a
+	// non-nil value.
+	workerLogger = logger
 
 	// Load deployment-wide ClientRegistry defaults. A parse failure here is
 	// fatal by design: the worker exits non-zero, go-plugin's handshake
@@ -131,6 +137,20 @@ func main() {
 // the in-process coordinator".
 var sharedStateClient atomic.Pointer[pb.SharedStateClient]
 
+// workerLogger is the hclog logger set in main() and read from the
+// per-request helpers that need to log outside the workerImpl receiver
+// (e.g. roundRobinAdvancerFor). Set exactly once before goplugin.Serve
+// starts dispatching RPCs.
+var workerLogger hclog.Logger
+
+// noSharedStateWarnOnce ensures the "no shared state attached" warning
+// fires exactly once per process lifetime. Pool-managed workers always
+// attach during handshake; a nil client here means either a handshake
+// regression or a standalone test harness running the worker without
+// shared state. The one-shot warn surfaces the first case to operators
+// without spamming the log on every request.
+var noSharedStateWarnOnce sync.Once
+
 // roundRobinAdvancerFor returns the Advancer the generated dispatch path
 // should use for this request. When a shared-state client is attached it
 // builds a request-scoped RemoteAdvancer keyed on the inbound request_id;
@@ -139,6 +159,18 @@ var sharedStateClient atomic.Pointer[pb.SharedStateClient]
 func roundRobinAdvancerFor(ctx context.Context) bamlutils.RoundRobinAdvancer {
 	clientPtr := sharedStateClient.Load()
 	if clientPtr == nil {
+		noSharedStateWarnOnce.Do(func() {
+			if workerLogger != nil {
+				workerLogger.Warn(
+					"round-robin falling back to in-process coordinator; " +
+						"host did not complete AttachSharedState handshake. " +
+						"Pool-managed workers should always attach — this " +
+						"usually indicates a broken handshake or a standalone " +
+						"test harness. baml-roundrobin rotations will be " +
+						"per-worker instead of pool-wide for the rest of " +
+						"this process's lifetime.")
+			}
+		})
 		return nil
 	}
 	return workerplugin.NewRemoteAdvancer(ctx, *clientPtr, workerplugin.RequestIDFromContext(ctx))

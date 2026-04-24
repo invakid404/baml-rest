@@ -627,7 +627,56 @@ func emitBAMLHTTPRequestConversion(g *jen.Group) {
 
 // Generate generates the adapter.go file for the given adapter package.
 // selfPkg should be the full package path, e.g. "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0"
+// Options configures code generation per adapter. Each adapter's
+// cmd/main.go populates this with its BAML-version-specific feature
+// flags before invoking Generate.
+type Options struct {
+	// SelfPkg is the adapter module's import path, e.g.
+	// "github.com/invakid404/baml-rest/adapters/adapter_v0_219_0".
+	SelfPkg string
+	// SupportsWithClient reports whether the bundled BAML runtime
+	// exposes the `WithClient(clientName)` CallOption. Added in BAML
+	// 0.219.0; older runtimes (v0.204, v0.215) lack the symbol and
+	// emitting a reference to it produces an "undefined: WithClient"
+	// compile error. When false, the generated router skips the
+	// per-call client override and the legacy path relies on BAML's
+	// own strategy rotation for baml-roundrobin chains.
+	SupportsWithClient bool
+}
+
+// Generate is the legacy entry point kept for backward compatibility
+// with existing adapter cmd/main.go callers that pass only the self
+// package. It assumes the full modern feature set, matching BAML
+// 0.219+ behaviour. Callers on older BAML runtimes should use
+// GenerateWithOptions with SupportsWithClient=false.
 func Generate(selfPkg string) {
+	GenerateWithOptions(Options{SelfPkg: selfPkg, SupportsWithClient: true})
+}
+
+// GenerateWithOptions runs code generation with per-adapter feature
+// flags. See Options for the available knobs.
+func GenerateWithOptions(opts Options) {
+	generate(opts)
+}
+
+func generate(opts Options) {
+	selfPkg := opts.SelfPkg
+	supportsWithClient := opts.SupportsWithClient
+
+	// withClientOverrideBlock wraps a `clientOverride != ""` guard around
+	// WithClient(clientOverride) appends. When the target BAML runtime
+	// lacks the WithClient CallOption (< 0.219.0), the whole block is
+	// elided — emitting jen.Empty() instead of a reference that would
+	// produce "undefined: WithClient" at adapter compile time. In that
+	// mode the legacy dispatcher's per-attempt client override becomes
+	// a no-op; baml-roundrobin strategy clients fall back to BAML's
+	// internal rotation, which is the pre-47e3203 behaviour.
+	withClientOverrideBlock := func(body ...jen.Code) jen.Code {
+		if !supportsWithClient {
+			return jen.Empty()
+		}
+		return jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(body...)
+	}
 	selfAdapterPkg := selfPkg + "/adapter"
 	selfUtilsPkg := selfPkg + "/utils"
 
@@ -1181,7 +1230,7 @@ func Generate(selfPkg string) {
 				jen.Id("options"),
 				jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
 			),
-			jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+			withClientOverrideBlock(
 				jen.Id("streamOpts").Op("=").Append(
 					jen.Id("streamOpts"),
 					jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
@@ -1542,7 +1591,7 @@ func Generate(selfPkg string) {
 		// Build the driveStream closure: creates the BAML stream, iterates, returns (finalResult, lastError).
 		driveStreamBody := []jen.Code{
 			jen.Id("driveOpts").Op(":=").Id("opts"),
-			jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+			withClientOverrideBlock(
 				jen.Id("driveOpts").Op("=").Append(
 					jen.Qual("slices", "Clone").Call(jen.Id("opts")),
 					jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
@@ -1703,12 +1752,14 @@ func Generate(selfPkg string) {
 				).BlockFunc(func(g *jen.Group) {
 					// Build callOpts: clone options and append WithClient if override is set
 					g.Id("callOpts").Op(":=").Id("options")
-					g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
-						jen.Id("callOpts").Op("=").Append(
-							jen.Qual("slices", "Clone").Call(jen.Id("options")),
-							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-						),
-					)
+					if supportsWithClient {
+						g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+							jen.Id("callOpts").Op("=").Append(
+								jen.Qual("slices", "Clone").Call(jen.Id("options")),
+								jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
+							),
+						)
+					}
 					// Call StreamRequest.Method(ctx, args..., callOpts...)
 					g.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
 						Qual(common.GeneratedClientPkg, "StreamRequest").Dot(methodName).Call(buildRequestCallParams...)
@@ -1835,7 +1886,7 @@ func Generate(selfPkg string) {
 					jen.Id("sendHeartbeat").Func().Params(),
 				).Params(jen.Any(), jen.String(), jen.Error()).Block(
 					jen.Id("callOpts").Op(":=").Id("options"),
-					jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+					withClientOverrideBlock(
 						jen.Id("callOpts").Op("=").Append(
 							jen.Qual("slices", "Clone").Call(jen.Id("options")),
 							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
@@ -2003,12 +2054,14 @@ func Generate(selfPkg string) {
 				).BlockFunc(func(g *jen.Group) {
 					// Build callOpts: clone options and append WithClient if override is set
 					g.Id("callOpts").Op(":=").Id("options")
-					g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
-						jen.Id("callOpts").Op("=").Append(
-							jen.Qual("slices", "Clone").Call(jen.Id("options")),
-							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-						),
-					)
+					if supportsWithClient {
+						g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+							jen.Id("callOpts").Op("=").Append(
+								jen.Qual("slices", "Clone").Call(jen.Id("options")),
+								jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
+							),
+						)
+					}
 					// Call Request.Method(ctx, args..., callOpts...) — non-streaming
 					g.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
 						Qual(common.GeneratedClientPkg, "Request").Dot(methodName).Call(callRequestCallParams...)
@@ -2090,7 +2143,7 @@ func Generate(selfPkg string) {
 					jen.Id("sendHeartbeat").Func().Params(),
 				).Params(jen.Any(), jen.String(), jen.Error()).Block(
 					jen.Id("callOpts").Op(":=").Id("options"),
-					jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
+					withClientOverrideBlock(
 						jen.Id("callOpts").Op("=").Append(
 							jen.Qual("slices", "Clone").Call(jen.Id("options")),
 							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
@@ -2238,11 +2291,19 @@ func Generate(selfPkg string) {
 
 		// Helper to generate the common retry policy resolution + dispatch call
 		// for both single-provider and fallback-chain paths.
+		//
+		// Keyed on __effective (the post-RR leaf) rather than
+		// FunctionClient[methodName] (the function's declared default
+		// client, which may be an RR wrapper). For non-RR functions the
+		// two are identical; for RR, we must use the child that will
+		// actually handle the request, otherwise the retry policy would
+		// come from the wrapper — retry config isn't inherited from
+		// strategy wrappers in BAML semantics.
 		resolveRetryPolicy := func() jen.Code {
 			return jen.Id("retryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
 				jen.Id("adapter"),
-				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-				jen.Qual(common.IntrospectedPkg, "FunctionRetryPolicy").Index(jen.Lit(methodName)),
+				jen.Id("__effective"),
+				jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
 				jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
 			)
 		}

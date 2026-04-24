@@ -1959,6 +1959,28 @@ func generateBamlConfigVars(out *jen.File) {
 	}
 	out.Var().Id("FunctionRetryPolicy").Op("=").Map(jen.String()).String().Values(frpEntries...)
 
+	// ClientRetryPolicy: the per-client retry policy name declared in
+	// each client's options block. The BuildRequest router uses this,
+	// keyed on the *effective* client (after any baml-roundrobin unwrap),
+	// rather than FunctionRetryPolicy — which is fixed to the function's
+	// declared default client. For a function whose default client is
+	// an RR wrapper, FunctionRetryPolicy returns the wrapper's policy,
+	// not the child that actually handles the request; ClientRetryPolicy
+	// lets the router pick up the correct child-level policy.
+	out.Comment("ClientRetryPolicy maps BAML client names to their declared retry policy name")
+	{
+		entries := make([]jen.Code, 0, len(cfg.clientRetryPolicy))
+		keys := make([]string, 0, len(cfg.clientRetryPolicy))
+		for k := range cfg.clientRetryPolicy {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, clientName := range keys {
+			entries = append(entries, jen.Lit(clientName).Op(":").Lit(cfg.clientRetryPolicy[clientName]))
+		}
+		out.Var().Id("ClientRetryPolicy").Op("=").Map(jen.String()).String().Values(entries...)
+	}
+
 	// FallbackChains: maps strategy client names (baml-fallback, baml-roundrobin)
 	// to their ordered list of child client names from the strategy option.
 	out.Comment("FallbackChains maps strategy client names to their ordered list of child client names")
@@ -1985,8 +2007,26 @@ func generateBamlConfigVars(out *jen.File) {
 	// appear here; others rely on the coordinator's random seed. The map
 	// is passed to the coordinator constructor so static RR rotations
 	// begin deterministically when the operator asks for it.
+	//
+	// When the .baml source defines no baml-roundrobin clients at all,
+	// RoundRobinStart is emitted as a plain nil declaration rather than
+	// an empty map literal. cmd/serve uses the nil-ness to decide
+	// whether to stand up the host-side SharedState gRPC server — an
+	// installation with no RR clients pays no setup cost for the
+	// reverse-broker channel that would otherwise be unused.
+	hasRoundRobinClients := false
+	for _, provider := range cfg.clientProvider {
+		if provider == "baml-roundrobin" {
+			hasRoundRobinClients = true
+			break
+		}
+	}
 	out.Comment("RoundRobinStart maps baml-roundrobin client names to their configured start index")
-	{
+	out.Comment("Nil when the source defines no baml-roundrobin clients; cmd/serve uses that as the gate")
+	out.Comment("for provisioning the host-side SharedState server.")
+	if !hasRoundRobinClients {
+		out.Var().Id("RoundRobinStart").Map(jen.String()).Int()
+	} else {
 		entries := make([]jen.Code, 0, len(cfg.roundRobinStart))
 		keys := make([]string, 0, len(cfg.roundRobinStart))
 		for k := range cfg.roundRobinStart {

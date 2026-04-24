@@ -1,6 +1,7 @@
 package workerplugin
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -168,41 +169,39 @@ func TestSharedStateStore_ConcurrentReplaysAdvanceCounterOnce(t *testing.T) {
 }
 
 func TestSharedStateStore_TTLSweepReclaimsIdemEntries(t *testing.T) {
-	store := newSharedStateStoreWithTTL(nil, 50*time.Millisecond)
+	// TTL set long enough that the background ticker won't fire during
+	// the test; we drive sweepOnce manually so the assertion is
+	// deterministic rather than relying on wall-clock sleeps. An
+	// arbitrarily-advanced "now" simulates the scope sitting idle past
+	// its TTL.
+	const ttl = time.Hour
+	store := newSharedStateStoreWithTTL(nil, ttl)
 	defer store.Close()
 
 	store.FetchAdd("k", 1, "orphan")
 
-	// Wait past the TTL for the background sweep to run. The ticker fires
-	// at TTL/2, so 4x TTL reliably covers at least one sweep while the
-	// scope sits idle.
-	time.Sleep(200 * time.Millisecond)
+	// Advance the sweep clock past TTL. The orphan scope's lastAccessed
+	// is "now"; cutoff becomes now + 2*TTL - TTL = now + TTL, which is
+	// strictly after lastAccessed, so the scope evicts.
+	store.sweepOnce(time.Now().Add(2 * ttl))
 
-	// Post-TTL, a replay with the same op-id must advance — the cached
-	// entry has been reclaimed. (Before the sweep ran, a replay would
-	// return 0; after, it returns the current counter value, 1.)
+	// Post-sweep, a replay with the same op-id must advance — the cached
+	// entry has been reclaimed. Before the sweep ran, a replay would
+	// return 0; after, it returns the current counter value, 1.
 	if got := store.FetchAdd("k", 1, "orphan"); got != 1 {
 		t.Fatalf("post-TTL replay: got %d, want 1 (sweep did not reclaim orphan entry)", got)
 	}
 }
 
 func TestSharedStateStore_CacheHoldsUnderConcurrentSweepPressure(t *testing.T) {
-	// Regression for CR-10: before the fix, FetchAdd touched the scope
-	// AFTER loading the idem entry. A sweep firing between those two
-	// steps could delete the scope and its idem entries out from under
-	// the in-flight call — the caller still got its cached value (the
-	// entry pointer was held), but the next FetchAdd for the same op_id
-	// would miss the now-empty cache and re-advance the counter,
-	// violating the idempotency contract.
-	//
-	// The fix touches the scope first, so sweep's atomic re-check under
-	// mutex always sees a fresh lastAccessedNano while any caller is in
-	// flight. This test drives continuous FetchAdd calls for a single
-	// (key, op_id) under a TTL short enough that the sweeper wakes on
-	// every iteration, and asserts every caller observes the same
-	// previous value. Under the old order this test flakes reliably
-	// under -race; after the fix it's stable.
-	const ttl = 10 * time.Millisecond
+	// Regression for CR-10/CR-15: concurrent FetchAdd callers racing
+	// against a sweep goroutine must never observe a torn state where
+	// the cache is present for one caller but gone for the next. The
+	// sweep runs with a real-time cutoff so it never actually evicts
+	// (lastAccessed updates win the recheck every time) — the point
+	// here is to exercise the Load → touchScope → mu.Lock → deleted-
+	// flag path under -race detection, not to test eviction itself.
+	const ttl = time.Hour
 	store := newSharedStateStoreWithTTL(nil, ttl)
 	defer store.Close()
 
@@ -211,24 +210,36 @@ func TestSharedStateStore_CacheHoldsUnderConcurrentSweepPressure(t *testing.T) {
 		t.Fatalf("first: got %d, want 0", first)
 	}
 
-	// Fan out: N concurrent workers, each calling FetchAdd in a loop for
-	// ~10 TTLs. The cache must hold every time — any divergent value
-	// means sweep-and-reload slipped in.
+	stop := make(chan struct{})
+	var sweeperDone sync.WaitGroup
+	sweeperDone.Add(1)
+	go func() {
+		defer sweeperDone.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				// Real-time sweep clock: cutoff = real_now - TTL;
+				// every fresh touch keeps the scope above cutoff.
+				store.sweepOnce(time.Now())
+			}
+		}
+	}()
+
 	const concurrency = 8
-	deadline := time.Now().Add(10 * ttl)
+	const iterations = 2000
 	var wg sync.WaitGroup
 	var fail atomic.Bool
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for time.Now().Before(deadline) {
+			for j := 0; j < iterations; j++ {
 				got := store.FetchAdd("k", 1, "racy-op")
 				if got != first {
-					// Atomic so the first observed failure wins; the
-					// t.Errorf below reports the concrete values once.
 					if fail.CompareAndSwap(false, true) {
-						t.Errorf("FetchAdd: got %d, want %d (cache evicted mid-flight)", got, first)
+						t.Errorf("FetchAdd: got %d, want %d (cache torn under sweep pressure)", got, first)
 					}
 					return
 				}
@@ -236,6 +247,41 @@ func TestSharedStateStore_CacheHoldsUnderConcurrentSweepPressure(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	close(stop)
+	sweeperDone.Wait()
+}
+
+func TestSharedStateStore_ConcurrentSweepEvictionIsIdempotent(t *testing.T) {
+	// CR-15 regression: the deleted flag and mu-guarded deletion must
+	// ensure that a touchScope racing with a concurrent evicting sweep
+	// either (a) refreshes the scope before sweep commits, keeping it
+	// alive, or (b) sees deleted=true, restarts with a fresh Load, and
+	// registers under a brand-new scope. It must never leak a key into
+	// the scope sync.Map orphan (the scope that was removed from
+	// s.scopes but still holds the mutex briefly).
+	//
+	// Asserts post-state: after many iterations of "FetchAdd, then
+	// force-evict via sweepOnce with a future clock", the next
+	// FetchAdd always advances (because the cache was truly evicted),
+	// and the counter matches the number of distinct op_ids used.
+	const ttl = time.Hour
+	store := newSharedStateStoreWithTTL(nil, ttl)
+	defer store.Close()
+
+	const iterations = 200
+	for i := 0; i < iterations; i++ {
+		opID := "ep-" + strconv.Itoa(i)
+		store.FetchAdd("k", 1, opID)
+		// Force-evict by advancing the sweep clock past TTL.
+		store.sweepOnce(time.Now().Add(2 * ttl))
+	}
+
+	// After N force-evictions, the counter should have advanced
+	// exactly N times (one per op_id). A fresh op_id observes
+	// previous=iterations.
+	if got := store.FetchAdd("k", 1, "final"); got != iterations {
+		t.Fatalf("final: got %d, want %d (sweep dropped or duplicated advances)", got, iterations)
+	}
 }
 
 func TestSharedStateStore_ActiveScopeSurvivesPastCreationTTL(t *testing.T) {
@@ -244,9 +290,15 @@ func TestSharedStateStore_ActiveScopeSurvivesPastCreationTTL(t *testing.T) {
 	// past the TTL would have its cached rotation index reclaimed mid-
 	// flight, and the next retry would advance the counter a second time
 	// (losing the request's RR slot). With lastAccessed tracking, every
-	// FetchAdd bumps the scope and the sweep leaves it alone as long as
+	// touch bumps the scope and the sweep leaves it alone as long as
 	// the pool is still probing.
-	const ttl = 60 * time.Millisecond
+	//
+	// Driven with explicit virtual timestamps on touchScope + sweepOnce
+	// rather than real sleeps, so the assertion is deterministic. The
+	// virtual clock advances by 9*TTL over ten iterations — any single
+	// idle window longer than TTL would evict — but each touch refreshes
+	// lastAccessed just before the sweep, so the scope stays alive.
+	const ttl = time.Hour
 	store := newSharedStateStoreWithTTL(nil, ttl)
 	defer store.Close()
 
@@ -255,17 +307,22 @@ func TestSharedStateStore_ActiveScopeSurvivesPastCreationTTL(t *testing.T) {
 		t.Fatalf("first: got %d, want 0", first)
 	}
 
-	// Keep the scope alive past one TTL's worth of wall time by probing
-	// it at a sub-TTL cadence — simulates a pool retry loop re-asking
-	// for the same rotation index.
-	for i := 0; i < 5; i++ {
-		time.Sleep(ttl / 3)
-		if got := store.FetchAdd("k", 1, "long-running"); got != 0 {
-			t.Fatalf("iteration %d: got %d, want 0 — cache was swept out from under the live request", i, got)
-		}
+	virtualNow := time.Now()
+	for i := 0; i < 10; i++ {
+		// Advance virtual time by 90% of TTL. Under old createdAt
+		// semantics, after i=2 iterations the createdAt would be far
+		// behind the sweep cutoff and the scope would evict.
+		virtualNow = virtualNow.Add(ttl * 9 / 10)
+		store.touchScope("k", "long-running", virtualNow)
+		// Sweep one nanosecond after the touch: cutoff =
+		// virtualNow - TTL + 1ns; lastAccessed = virtualNow; fresh.
+		store.sweepOnce(virtualNow.Add(time.Nanosecond))
 	}
-	// Total elapsed time here is ~5 * ttl/3 ≈ 1.67 * ttl, i.e. clearly
-	// past the old createdAt-based eviction cutoff. If the sweep still
-	// evicted by createdAt the assertion inside the loop would have
-	// fired on at least one iteration.
+
+	// If any iteration evicted the scope, the idem entry would be gone
+	// and the next FetchAdd would miss the cache and advance the
+	// counter (returning 1, not 0).
+	if got := store.FetchAdd("k", 1, "long-running"); got != 0 {
+		t.Fatalf("post loop: got %d, want 0 — scope was evicted despite fresh touches", got)
+	}
 }

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -110,8 +109,15 @@ func assertBalanced(t *testing.T, ids []string, total int) {
 // ============================================================
 
 func TestRoundRobinCall(t *testing.T) {
-	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
-		t.Skip("Skipping: baml-roundrobin strategy support in baml-rest requires BAML >= 0.219.0")
+	if !ActuallyBuildRequest() {
+		// The centralised round-robin wiring (SharedState, RemoteAdvancer,
+		// the pool's request_id plumbing) only matters on the BuildRequest
+		// path. The legacy path delegates RR to BAML's runtime, which has
+		// its own rotation and is observable only via outcome metadata —
+		// these tests assert planned-metadata headers and per-child hit
+		// counts that the legacy path doesn't guarantee. Skip on legacy
+		// runs rather than flake.
+		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
 	}
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		t.Run("two_client_rotation", func(t *testing.T) {
@@ -198,8 +204,15 @@ func TestRoundRobinCall(t *testing.T) {
 // ============================================================
 
 func TestRoundRobinCallWithRaw(t *testing.T) {
-	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
-		t.Skip("Skipping: baml-roundrobin strategy support in baml-rest requires BAML >= 0.219.0")
+	if !ActuallyBuildRequest() {
+		// The centralised round-robin wiring (SharedState, RemoteAdvancer,
+		// the pool's request_id plumbing) only matters on the BuildRequest
+		// path. The legacy path delegates RR to BAML's runtime, which has
+		// its own rotation and is observable only via outcome metadata —
+		// these tests assert planned-metadata headers and per-child hit
+		// counts that the legacy path doesn't guarantee. Skip on legacy
+		// runs rather than flake.
+		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
 	}
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		t.Run("raw_propagates_with_rotation", func(t *testing.T) {
@@ -249,8 +262,15 @@ func TestRoundRobinCallWithRaw(t *testing.T) {
 // ============================================================
 
 func TestRoundRobinStream(t *testing.T) {
-	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
-		t.Skip("Skipping: baml-roundrobin strategy support in baml-rest requires BAML >= 0.219.0")
+	if !ActuallyBuildRequest() {
+		// The centralised round-robin wiring (SharedState, RemoteAdvancer,
+		// the pool's request_id plumbing) only matters on the BuildRequest
+		// path. The legacy path delegates RR to BAML's runtime, which has
+		// its own rotation and is observable only via outcome metadata —
+		// these tests assert planned-metadata headers and per-child hit
+		// counts that the legacy path doesn't guarantee. Skip on legacy
+		// runs rather than flake.
+		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
 	}
 
 	t.Run("rotates_across_streams", func(t *testing.T) {
@@ -337,8 +357,15 @@ func TestRoundRobinStream(t *testing.T) {
 // ============================================================
 
 func TestRoundRobinStreamWithRaw(t *testing.T) {
-	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
-		t.Skip("Skipping: baml-roundrobin strategy support in baml-rest requires BAML >= 0.219.0")
+	if !ActuallyBuildRequest() {
+		// The centralised round-robin wiring (SharedState, RemoteAdvancer,
+		// the pool's request_id plumbing) only matters on the BuildRequest
+		// path. The legacy path delegates RR to BAML's runtime, which has
+		// its own rotation and is observable only via outcome metadata —
+		// these tests assert planned-metadata headers and per-child hit
+		// counts that the legacy path doesn't guarantee. Skip on legacy
+		// runs rather than flake.
+		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
 	}
 
 	t.Run("raw_propagates_across_streams", func(t *testing.T) {

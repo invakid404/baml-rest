@@ -2,6 +2,7 @@ package workerplugin
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -78,13 +79,26 @@ type idemEntry struct {
 // live entries mid-retry, causing the next replay to advance the counter
 // a second time — exactly the race the cache exists to prevent.
 //
-// atomic.Int64 avoids the per-call mutex cost of stashing a time.Time.
+// deleted is set (under mu) the moment the sweeper or DropScope commits
+// to removing this scope. It plugs a race where a touchScope holder had
+// already loaded the scope pointer and stored a fresh lastAccessed but
+// was then blocked on the mutex while sweep proceeded past its atomic
+// recheck. Post-mutex, touchScope sees deleted=true and restarts with a
+// fresh LoadOrStore; this forces a fresh scope from s.scopes rather than
+// mutating the orphan the sweeper is about to discard. Without the flag,
+// a window existed where touchScope could add keys to a scope that had
+// already been removed from s.scopes, leaving the idem entry dangling
+// and causing the next FetchAdd for the same op_id to re-advance the
+// counter.
+//
+// atomic.Int64/Bool avoid per-call mutex cost for the hot-path fields.
 // UnixNano is monotonic-enough for the "age > cutoff" comparisons here;
 // the sweep cadence is minutes, not nanoseconds.
 type scope struct {
 	mu               sync.Mutex
 	keys             map[string]struct{}
 	lastAccessedNano atomic.Int64
+	deleted          atomic.Bool
 }
 
 // defaultIdemTTL is the default time-to-live for idempotency entries
@@ -189,27 +203,55 @@ func (s *SharedStateStore) loadOrStoreIdem(key, opID string) *idemEntry {
 // observing an earlier cached previous). Bumping on every call is what
 // keeps long-running requests safe from the TTL sweeper — as long as
 // the pool keeps probing, the scope stays fresh.
+//
+// The loop handles the sweep-deleted race: if we acquire the mutex on
+// a scope that sweeper or DropScope has already marked for deletion,
+// restart with a fresh Load. By then sweeper's s.scopes.Delete has
+// committed (it's under the same mutex), so the Load misses and
+// LoadOrStore creates a brand-new scope.
 func (s *SharedStateStore) touchScope(key, opID string, now time.Time) {
-	var sc *scope
-	if v, ok := s.scopes.Load(opID); ok {
-		sc = v.(*scope)
-	} else {
-		fresh := &scope{keys: make(map[string]struct{})}
-		actual, _ := s.scopes.LoadOrStore(opID, fresh)
-		sc = actual.(*scope)
+	for {
+		var sc *scope
+		if v, ok := s.scopes.Load(opID); ok {
+			sc = v.(*scope)
+		} else {
+			fresh := &scope{keys: make(map[string]struct{})}
+			actual, _ := s.scopes.LoadOrStore(opID, fresh)
+			sc = actual.(*scope)
+		}
+		// Store before Lock so a sweeper that has not yet acquired the
+		// mutex sees the fresh timestamp in its DCL recheck and bails
+		// out. A sweeper that has already passed its recheck will
+		// proceed to delete under the mutex; we then see deleted=true
+		// once we acquire it and restart the loop.
+		sc.lastAccessedNano.Store(now.UnixNano())
+		sc.mu.Lock()
+		if sc.deleted.Load() {
+			sc.mu.Unlock()
+			// Brief scheduler hint; avoids a tight spin if the sweeper
+			// is slow to publish the Delete. A Gosched is sufficient —
+			// the sweeper holds a bounded critical section.
+			runtime.Gosched()
+			continue
+		}
+		if sc.keys == nil {
+			sc.keys = make(map[string]struct{})
+		}
+		sc.keys[key] = struct{}{}
+		sc.mu.Unlock()
+		return
 	}
-	sc.lastAccessedNano.Store(now.UnixNano())
-	sc.mu.Lock()
-	if sc.keys == nil {
-		sc.keys = make(map[string]struct{})
-	}
-	sc.keys[key] = struct{}{}
-	sc.mu.Unlock()
 }
 
 // DropScope releases every idempotency entry recorded for opID. Returns
 // the number of entries released (useful for tests and metrics). Calling
 // DropScope with an unknown opID is a no-op.
+//
+// The deleted flag is set under the mutex so a concurrent touchScope
+// that captured this scope's pointer before the LoadAndDelete sees it
+// after acquiring mu and restarts the loop with a fresh Load. That
+// prevents the "FetchAdd adds a key to a scope that has just been
+// removed from s.scopes" window.
 func (s *SharedStateStore) DropScope(opID string) int {
 	if opID == "" {
 		return 0
@@ -220,6 +262,7 @@ func (s *SharedStateStore) DropScope(opID string) int {
 	}
 	sc := v.(*scope)
 	sc.mu.Lock()
+	sc.deleted.Store(true)
 	released := len(sc.keys)
 	for k := range sc.keys {
 		s.idem.Delete(idemKey(k, opID))
@@ -273,33 +316,49 @@ func (s *SharedStateStore) sweeper() {
 	}
 }
 
+// sweepOnce performs one eviction pass for scopes idle past the TTL.
+// Exported to the package for tests that want a deterministic sweep
+// rather than relying on the background ticker.
+//
+// The deletions — s.scopes.Delete, marking deleted=true, and clearing
+// the idem entries — all happen under the scope mutex. Holding the
+// mutex across the full commit is what closes the race where a
+// concurrent touchScope, having already captured the scope pointer,
+// would otherwise store a fresh lastAccessed and add a new key to a
+// scope that's about to be removed from s.scopes. With the mutex held,
+// any such touchScope blocks, acquires the mutex after sweep unlocks,
+// sees deleted=true, and retries with a fresh LoadOrStore.
 func (s *SharedStateStore) sweepOnce(now time.Time) {
 	cutoffNano := now.Add(-s.ttl).UnixNano()
 	s.scopes.Range(func(k, v any) bool {
 		sc := v.(*scope)
-		// lastAccessedNano is read atomically — no lock needed for the
-		// age check itself. Only fall through to the mutex-protected
-		// eviction path when the scope looks stale.
+		// Cheap pre-check: atomic read avoids the mutex for the common
+		// "not stale" case. Scopes that look fresh here are skipped
+		// without any lock contention.
 		if sc.lastAccessedNano.Load() >= cutoffNano {
 			return true
 		}
 		sc.mu.Lock()
-		// Re-check under the lock: a touchScope racing with us may have
-		// bumped lastAccessed after the atomic read above.
+		// Recheck under the lock. A touchScope whose atomic Store
+		// landed between the pre-check above and here will make this
+		// check pass, and we bail without evicting.
 		if sc.lastAccessedNano.Load() >= cutoffNano {
 			sc.mu.Unlock()
 			return true
 		}
-		keys := make([]string, 0, len(sc.keys))
-		for kk := range sc.keys {
-			keys = append(keys, kk)
-		}
-		sc.mu.Unlock()
 		opID := k.(string)
+		// Mark and remove atomically with respect to touchScope. A
+		// concurrent touchScope either ran entirely before this mark
+		// (and kept the scope alive via the recheck above) or runs
+		// entirely after and observes deleted=true on its post-Lock
+		// check, restarting with a fresh scope.
+		sc.deleted.Store(true)
 		s.scopes.Delete(opID)
-		for _, kk := range keys {
+		for kk := range sc.keys {
 			s.idem.Delete(idemKey(kk, opID))
 		}
+		sc.keys = nil
+		sc.mu.Unlock()
 		return true
 	})
 }
