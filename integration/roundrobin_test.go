@@ -213,7 +213,17 @@ func TestRoundRobinCall(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
+			// Children is the RR chain as declared in .baml; the
+			// planned-metadata Index is a position in this list. Keeping
+			// the expected order here lets us bind Selected ↔ Index
+			// per-call and assert consecutive indices step by exactly
+			// (prev+1) % len(children). aggregateBalanced alone would
+			// pass even if two requests served the same child in a row
+			// as long as the totals still balanced out.
+			children := []string{"FallbackPrimary", "FallbackSecondary", "FallbackTertiary"}
+
 			const runs = 6
+			prevIndex := -1
 			for i := 0; i < runs; i++ {
 				resp, err := client.Call(ctx, testutil.CallRequest{
 					Method: "GetGreetingRoundRobinChain",
@@ -225,6 +235,31 @@ func TestRoundRobinCall(t *testing.T) {
 				if resp.StatusCode != 200 {
 					t.Fatalf("Call %d: expected 200, got %d: %s", i, resp.StatusCode, resp.Error)
 				}
+
+				selected := resp.Headers.Get(testutil.HeaderBAMLRoundRobinSelected)
+				indexStr := resp.Headers.Get(testutil.HeaderBAMLRoundRobinIndex)
+				idx, convErr := strconv.Atoi(indexStr)
+				if convErr != nil {
+					t.Fatalf("Call %d: Index header %q not an integer: %v", i, indexStr, convErr)
+				}
+				if idx < 0 || idx >= len(children) {
+					t.Fatalf("Call %d: Index %d out of range [0, %d)", i, idx, len(children))
+				}
+				if children[idx] != selected {
+					t.Errorf("Call %d: Selected=%q but children[%d]=%q", i, selected, idx, children[idx])
+				}
+				// Modulo progression: each request must advance the
+				// counter by exactly one. A stuck counter or a sweep
+				// re-advance would manifest as a skipped or repeated
+				// index here.
+				if prevIndex >= 0 {
+					wantIdx := (prevIndex + 1) % len(children)
+					if idx != wantIdx {
+						t.Errorf("Call %d: expected Index=%d (prev=%d, step=+1 mod %d), got %d",
+							i, wantIdx, prevIndex, len(children), idx)
+					}
+				}
+				prevIndex = idx
 			}
 
 			assertBalanced(t, []string{"fallback-primary", "fallback-secondary", "fallback-tertiary"}, runs)
@@ -356,8 +391,14 @@ func TestRoundRobinStream(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		const runs = 2
+		// runs=4 covers at least one wrap-around on a 2-child RR:
+		// indices must step 0,1,0,1 or 1,0,1,0. runs=2 was too short
+		// to catch a counter stuck at its initial offset — the two
+		// observed indices could be adjacent by chance without the
+		// counter ever completing a cycle.
+		const runs = 4
 		seenFinals := map[string]bool{}
+		prevIndex := -1
 		for i := 0; i < runs; i++ {
 			partials, errc := BAMLClient.Stream(ctx, testutil.CallRequest{
 				Method: "GetGreetingRoundRobinPair",
@@ -420,6 +461,21 @@ func TestRoundRobinStream(t *testing.T) {
 			} else if actualChild != tracker.planned.RoundRobin.Selected {
 				t.Errorf("Stream %d: final was served by %q but RoundRobin.Selected says %q", i, actualChild, tracker.planned.RoundRobin.Selected)
 			}
+
+			// Modulo progression: each stream must advance the counter
+			// by exactly one. A stuck counter or a sweep-induced re-
+			// advance would show up as a skipped or repeated index.
+			// Validated against the observed Children list from the
+			// first iteration's metadata, which equality-check above
+			// already asserts matches the expected order.
+			if prevIndex >= 0 {
+				wantIdx := (prevIndex + 1) % len(tracker.planned.RoundRobin.Children)
+				if tracker.planned.RoundRobin.Index != wantIdx {
+					t.Errorf("Stream %d: expected Index=%d (prev=%d, step=+1 mod %d), got %d",
+						i, wantIdx, prevIndex, len(tracker.planned.RoundRobin.Children), tracker.planned.RoundRobin.Index)
+				}
+			}
+			prevIndex = tracker.planned.RoundRobin.Index
 		}
 
 		if len(seenFinals) != 2 {

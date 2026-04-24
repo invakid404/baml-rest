@@ -1590,8 +1590,18 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 					strategyBuf.WriteString(strategyLine)
 				}
 			}
-			if startVal, ok := extractRoundRobinStart(line); ok {
-				cfg.roundRobinStart[name] = startVal
+			// Only pick up `start N` from the top-level options block
+			// (depth == 1). Nested sub-blocks — hypothetical
+			// `options { nested { start 5 } }` — would otherwise leak
+			// into roundRobinStart[name] and override the client-level
+			// seed with a value that wasn't meant for it. optionsDepth
+			// reflects the depth going INTO this line; the brace-delta
+			// update happens after, so the gate here sees the right
+			// level for the current line's content.
+			if optionsDepth == 1 {
+				if startVal, ok := extractRoundRobinStart(line); ok {
+					cfg.roundRobinStart[name] = startVal
+				}
 			}
 			stripped := stripInlineComment(stripStringLiterals(line))
 			optionsDepth += strings.Count(stripped, "{") - strings.Count(stripped, "}")

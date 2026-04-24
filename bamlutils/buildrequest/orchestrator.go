@@ -348,6 +348,12 @@ func ResolveProviderWithReason(
 	isProviderSupported func(string) bool,
 ) ProviderResolution {
 	provider := ResolveProvider(adapter, defaultClientName, introspectedProvider)
+	// Normalise so the three round-robin spellings
+	// (baml-roundrobin / baml-round-robin / round-robin) all classify
+	// consistently below. Without this, a runtime registry entry that
+	// used an alias would slip past the "baml-roundrobin" case and get
+	// treated as an arbitrary single-provider string.
+	provider = roundrobin.NormalizeProvider(provider)
 
 	// Determine the effective client name after primary override. This is
 	// what the metadata Client field should report, even when the provider
@@ -667,6 +673,15 @@ func BuildLegacyMetadataPlanForClient(
 	if provider == "" {
 		provider = introspectedProvider
 	}
+	// Normalise the three accepted round-robin spellings ("baml-round-
+	// robin", "round-robin", "baml-roundrobin") onto the canonical
+	// "baml-roundrobin" form before the classification switch. Without
+	// this, a runtime client_registry entry that used BAML's
+	// hyphenated spelling would fall through to the default branch and
+	// get classified as an unsupported single-provider instead of an
+	// RR strategy. The resolver's own IsRoundRobinProvider already
+	// folds the aliases; this mirrors that for the metadata path.
+	provider = roundrobin.NormalizeProvider(provider)
 
 	plan := &bamlutils.Metadata{
 		Phase:       bamlutils.MetadataPhasePlanned,
