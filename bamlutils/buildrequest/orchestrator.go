@@ -269,15 +269,17 @@ type ProviderResolution struct {
 // Callers should copy rrInfo into the request metadata so operators can
 // observe which child was selected.
 //
-// coord may be nil, in which case static round-robin resolution degrades
-// to per-request random selection. Production callers are expected to
-// pass the package-level coordinator created at generated-adapter init.
+// advancer may be nil, in which case static round-robin resolution degrades
+// to per-request random selection. Production callers are expected to pass
+// the package-level advancer set at generated-adapter init — either the
+// in-process Coordinator (standalone) or a per-request RemoteAdvancer
+// installed by the worker on the host's SharedState socket.
 func ResolveEffectiveClient(
 	adapter bamlutils.Adapter,
 	defaultClientName string,
 	fallbackChains map[string][]string,
 	clientProviders map[string]string,
-	coord *roundrobin.Coordinator,
+	advancer roundrobin.Advancer,
 ) (effective string, rrInfo *bamlutils.RoundRobinInfo, err error) {
 	reg := adapter.OriginalClientRegistry()
 
@@ -286,12 +288,22 @@ func ResolveEffectiveClient(
 		clientName = *reg.Primary
 	}
 
+	// A per-request Advancer installed on the adapter (typically a
+	// RemoteAdvancer talking to the host SharedState socket) takes
+	// precedence over the package-level coordinator. This is how pool-
+	// managed workers observe a single rotation across the fleet —
+	// without it, each worker would rotate off its own coordinator and
+	// round-robin would collapse into independent per-worker draws.
+	if reqAdvancer := adapter.RoundRobinAdvancer(); reqAdvancer != nil {
+		advancer = reqAdvancer
+	}
+
 	res, err := roundrobin.Resolve(roundrobin.ResolveInput{
 		ClientName:      clientName,
 		Registry:        reg,
 		FallbackChains:  fallbackChains,
 		ClientProviders: clientProviders,
-		Coordinator:     coord,
+		Advancer:        advancer,
 	})
 	if err != nil {
 		return "", nil, err

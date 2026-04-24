@@ -244,13 +244,7 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 	}
 
 	exposedPorts := []string{BAMLRestInternalPort}
-	// Pool-size=1 keeps the RoundRobinCoordinator singleton deterministic for
-	// integration tests. Each worker process owns its own counter; with the
-	// default pool size (4) every request may land on a different worker, so
-	// small-sample RR tests see independent random seeds instead of a single
-	// rotating counter. One worker is enough for functional coverage — stress
-	// tests that care about throughput don't assert per-worker distribution.
-	cmd := []string{"--sse-keepalive-interval=100ms", "--pool-size=1"}
+	cmd := []string{"--sse-keepalive-interval=100ms"}
 	waitStrategy := wait.ForHTTP("/openapi.json").WithPort(BAMLRestInternalPort).WithStartupTimeout(180 * time.Second)
 
 	var waitFor wait.Strategy = waitStrategy

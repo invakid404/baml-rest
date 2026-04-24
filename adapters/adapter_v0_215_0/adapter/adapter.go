@@ -49,6 +49,10 @@ type BamlAdapter struct {
 
 	// originalClientRegistry stores the original request ClientRegistry.
 	originalClientRegistry *bamlutils.ClientRegistry
+
+	// rrAdvancer is the per-request round-robin Advancer installed by the
+	// worker; nil falls back to the introspected Coordinator.
+	rrAdvancer bamlutils.RoundRobinAdvancer
 }
 
 func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
@@ -132,6 +136,14 @@ func (b *BamlAdapter) NewMediaFromBase64(kind bamlutils.MediaKind, base64 string
 
 func (b *BamlAdapter) HTTPClient() *llmhttp.Client {
 	return nil
+}
+
+func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
+	b.rrAdvancer = advancer
+}
+
+func (b *BamlAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer {
+	return b.rrAdvancer
 }
 
 var _ bamlutils.Adapter = (*BamlAdapter)(nil)

@@ -18,10 +18,12 @@ import (
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
 	"github.com/invakid404/baml-rest/bamlutils/clientdefaults"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/workerplugin"
+	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"google.golang.org/grpc"
@@ -96,10 +98,21 @@ func main() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 
+	workerPlugin := &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg, logger: logger}}
+	// Install the AttachSharedState callback *before* handing the plugin to
+	// go-plugin. The host calls AttachSharedState once during handshake; if
+	// no handler is installed the RPC succeeds silently and the worker's
+	// round-robin resolution degrades to the in-process Coordinator (the
+	// baseline pre-shared-state behaviour).
+	workerPlugin.SetAttachSharedStateHandler(func(_ context.Context, client pb.SharedStateClient) error {
+		sharedStateClient.Store(&client)
+		return nil
+	})
+
 	goplugin.Serve(&goplugin.ServeConfig{
 		HandshakeConfig: workerplugin.Handshake,
 		Plugins: map[string]goplugin.Plugin{
-			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg, logger: logger}},
+			"worker": workerPlugin,
 		},
 		GRPCServer: func(opts []grpc.ServerOption) *grpc.Server {
 			opts = append(opts, workerplugin.GRPCServerOptions()...)
@@ -107,6 +120,29 @@ func main() {
 		},
 		Logger: logger,
 	})
+}
+
+// sharedStateClient is the process-scoped handle the host installs via
+// AttachSharedState. Workers read it per-request to build a RemoteAdvancer
+// that delegates round-robin counter updates to the host's SharedStateStore.
+//
+// atomic.Pointer keeps the common read path lock-free: the host writes
+// once at handshake, every request reads. A nil pointer (unset / attach
+// never happened) is legal — callers treat it as "no shared state, use
+// the in-process coordinator".
+var sharedStateClient atomic.Pointer[pb.SharedStateClient]
+
+// roundRobinAdvancerFor returns the Advancer the generated dispatch path
+// should use for this request. When a shared-state client is attached it
+// builds a request-scoped RemoteAdvancer keyed on the inbound request_id;
+// otherwise it returns nil so orchestrator.ResolveEffectiveClient falls
+// back to the package-level Coordinator compiled into introspected.
+func roundRobinAdvancerFor(ctx context.Context) bamlutils.RoundRobinAdvancer {
+	clientPtr := sharedStateClient.Load()
+	if clientPtr == nil {
+		return nil
+	}
+	return roundrobin.NewRemoteAdvancer(*clientPtr, workerplugin.RequestIDFromContext(ctx))
 }
 
 // defaultDrainLeakThreshold is how long a drain goroutine waits before logging
@@ -244,6 +280,11 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 	adapter := baml_rest.MakeAdapter(ctx)
 	adapter.SetLogger(w.logger)
 	adapter.SetStreamMode(streamMode)
+	// Install a per-request round-robin Advancer that delegates to the
+	// host-side SharedState store. Safe to call unconditionally: returns
+	// nil when no shared-state client is attached, and the adapter treats
+	// nil as "fall back to the introspected default Coordinator".
+	adapter.SetRoundRobinAdvancer(roundRobinAdvancerFor(ctx))
 	if err := options.apply(adapter); err != nil {
 		return nil, fmt.Errorf("failed to apply options: %w", err)
 	}

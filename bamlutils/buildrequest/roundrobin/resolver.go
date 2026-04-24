@@ -54,9 +54,12 @@ type ResolveInput struct {
 	// ClientProviders is the introspected map of client name to provider
 	// string. The resolver uses it to detect RR strategies.
 	ClientProviders map[string]string
-	// Coordinator is the static-client counter registry (may be nil, in
-	// which case every static RR resolution degrades to AdvanceDynamic).
-	Coordinator *Coordinator
+	// Advancer drives static-client counter selection. Pass a *Coordinator
+	// for in-process rotation (standalone / tests) or a *RemoteAdvancer
+	// for pool-hosted workers talking to the host SharedState service.
+	// May be nil, in which case every static RR resolution degrades to
+	// AdvanceDynamic.
+	Advancer Advancer
 }
 
 // Result is the outcome of unwrapping round-robin strategies.
@@ -100,7 +103,7 @@ func Resolve(in ResolveInput) (*Result, error) {
 			return nil, fmt.Errorf("roundrobin: client %q has no children", current)
 		}
 
-		idx := selectIndex(in.Coordinator, in.Registry, current, len(chain))
+		idx := selectIndex(in.Advancer, in.Registry, current, len(chain))
 		selected := chain[idx]
 
 		if outerInfo == nil {
@@ -118,15 +121,16 @@ func Resolve(in ResolveInput) (*Result, error) {
 // selectIndex picks the child index for a RR resolution. Dynamic clients
 // (whose RR identity is declared purely via runtime client_registry) get
 // a fresh random selection matching BAML's fresh-Arc-per-context semantics.
-// Static clients share a persistent counter via the Coordinator.
-func selectIndex(c *Coordinator, reg *bamlutils.ClientRegistry, clientName string, childCount int) int {
+// Static clients delegate to the supplied Advancer — either an in-process
+// Coordinator or a RemoteAdvancer talking to the host SharedState service.
+func selectIndex(a Advancer, reg *bamlutils.ClientRegistry, clientName string, childCount int) int {
 	if isDynamicRRClient(reg, clientName) {
 		return AdvanceDynamic(childCount)
 	}
-	if c == nil {
+	if a == nil {
 		return AdvanceDynamic(childCount)
 	}
-	return c.Advance(clientName, childCount)
+	return a.Advance(clientName, childCount)
 }
 
 // isDynamicRRClient reports whether a named client's RR identity is

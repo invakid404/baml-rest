@@ -509,6 +509,20 @@ type Logger interface {
 	Error(msg string, args ...interface{})
 }
 
+// RoundRobinAdvancer returns the next child index for a static baml-
+// roundrobin client. Declared here (rather than in the roundrobin
+// subpackage) so Adapter can expose a RoundRobinAdvancer accessor
+// without a dependency on buildrequest/roundrobin, which would be a
+// cycle. The roundrobin package re-exports this as `Advancer` via a
+// type alias for call sites that prefer that spelling.
+//
+// Implementations must return a value in [0, childCount). childCount
+// must be > 0; a zero or negative value is treated as 1 by the
+// existing implementations and returns 0.
+type RoundRobinAdvancer interface {
+	Advance(clientName string, childCount int) int
+}
+
 type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
@@ -552,6 +566,15 @@ type Adapter interface {
 	// or nil to use llmhttp.DefaultClient. This allows injecting a custom
 	// HTTP client (e.g., for testing or proxy support).
 	HTTPClient() *llmhttp.Client
+	// SetRoundRobinAdvancer installs the per-request Advancer used by the
+	// BuildRequest path to resolve baml-roundrobin strategy clients. Pool-
+	// managed workers set this to a RemoteAdvancer that talks to the host
+	// SharedState service; standalone workers leave it unset and fall back
+	// to the package-level Coordinator compiled into introspected.
+	SetRoundRobinAdvancer(advancer RoundRobinAdvancer)
+	// RoundRobinAdvancer returns the per-request Advancer, or nil if none
+	// was installed. Callers treat nil as "use the introspected default".
+	RoundRobinAdvancer() RoundRobinAdvancer
 }
 
 // BamlOptions contains optional configuration for BAML method calls

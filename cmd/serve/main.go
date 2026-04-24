@@ -281,6 +281,14 @@ var serveCmd = &cobra.Command{
 		poolConfig.PrettyLogs = prettyLogs
 		poolConfig.WorkerPath = workerPath
 		poolConfig.WorkerMemLimit = workerMemLimit
+		// Host the shared-state round-robin counters. Passing a non-nil
+		// seeds map enables the reverse broker channel between host and
+		// each worker — without it every worker rotates off an in-process
+		// coordinator and baml-roundrobin degrades to independent per-
+		// worker draws at PoolSize > 1. The map is consulted for BAML
+		// `start N` values; unseeded clients get a random offset on first
+		// touch, matching the legacy single-process Coordinator behaviour.
+		poolConfig.SharedStateSeeds = introspected.RoundRobinStart
 
 		workerPool, err := pool.New(poolConfig)
 		if err != nil {

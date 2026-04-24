@@ -2,6 +2,7 @@ package workerplugin
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"runtime"
 	"time"
@@ -161,6 +162,32 @@ type WorkerPlugin struct {
 	plugin.Plugin
 	// Impl is the concrete implementation, used by the server side
 	Impl Worker
+	// SharedStateImpl hosts a pb.SharedStateServer on the plugin broker
+	// so workers can dial back for cross-request round-robin counters.
+	// Nil in standalone/test setups — the worker then keeps its in-process
+	// Coordinator. Production is pool-managed and injects a store-backed
+	// server via pool.Config.SharedStateSeeds.
+	SharedStateImpl pb.SharedStateServer
+	// SharedStateAttachTimeout bounds the initial AttachSharedState RPC
+	// from the host to the worker. Zero uses a 10s default.
+	SharedStateAttachTimeout time.Duration
+	// AttachSharedState is set by the worker side in GRPCServer and
+	// invoked on AttachSharedState requests. Keeps the plumbing in the
+	// plugin package rather than spreading gRPC details into cmd/worker.
+	onAttachSharedState func(ctx context.Context, client pb.SharedStateClient) error
+}
+
+// SetAttachSharedStateHandler installs the worker-side callback invoked
+// when the host dials AttachSharedState. The callback receives a
+// pb.SharedStateClient already connected to the host broker socket;
+// the worker is expected to hold onto it for the lifetime of the process.
+//
+// This stays on WorkerPlugin (rather than hanging off the Worker
+// interface) because the Worker interface is pure per-request RPC; the
+// shared-state client is a process-level handle the worker gets once,
+// at plugin-handshake time.
+func (p *WorkerPlugin) SetAttachSharedStateHandler(fn func(ctx context.Context, client pb.SharedStateClient) error) {
+	p.onAttachSharedState = fn
 }
 
 const (
@@ -172,7 +199,11 @@ const (
 )
 
 func (p *WorkerPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {
-	impl := &GRPCServer{Impl: p.Impl}
+	impl := &GRPCServer{
+		Impl:     p.Impl,
+		broker:   broker,
+		onAttach: p.onAttachSharedState,
+	}
 	pb.RegisterWorkerServer(s, impl)
 
 	// Start extra gRPC servers via the broker for multi-connection support.
@@ -199,7 +230,50 @@ type brokerDialResult struct {
 }
 
 func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker, c *grpc.ClientConn) (interface{}, error) {
-	primary := &GRPCClient{client: pb.NewWorkerClient(c)}
+	primaryClient := pb.NewWorkerClient(c)
+	primary := &GRPCClient{client: primaryClient}
+
+	// Stand up the reverse shared-state server before returning, so the
+	// worker side can dial back as soon as AttachSharedState arrives.
+	// If SharedStateImpl is nil the host isn't hosting a store (e.g.
+	// standalone harness) and we skip the reverse channel entirely; the
+	// worker falls back to its in-process Coordinator.
+	if p.SharedStateImpl != nil {
+		// broker.Accept publishes the id over the handshake stream
+		// synchronously before returning a listener, so the worker's
+		// subsequent Dial is guaranteed to find the id ready. No retry
+		// loop needed.
+		listener, err := broker.Accept(SharedStateBrokerID)
+		if err != nil {
+			return nil, fmt.Errorf("host: accept shared-state broker id=%d: %w", SharedStateBrokerID, err)
+		}
+		srv := grpc.NewServer(GRPCServerOptions()...)
+		pb.RegisterSharedStateServer(srv, p.SharedStateImpl)
+		go func() {
+			// Serve returns when listener is closed (plugin teardown).
+			// Errors here aren't actionable — log and drop.
+			if err := srv.Serve(listener); err != nil {
+				log.Printf("[WARN] shared-state server: %v", err)
+			}
+		}()
+
+		attachCtx := ctx
+		if p.SharedStateAttachTimeout > 0 {
+			var cancel context.CancelFunc
+			attachCtx, cancel = context.WithTimeout(ctx, p.SharedStateAttachTimeout)
+			defer cancel()
+		} else {
+			var cancel context.CancelFunc
+			attachCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+		}
+		if _, err := primaryClient.AttachSharedState(attachCtx, &pb.AttachSharedStateRequest{
+			BrokerId: SharedStateBrokerID,
+		}); err != nil {
+			srv.Stop()
+			return nil, fmt.Errorf("host: AttachSharedState failed: %w", err)
+		}
+	}
 
 	allWorkers := []Worker{primary}
 	var conns []*grpc.ClientConn

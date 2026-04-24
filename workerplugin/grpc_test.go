@@ -85,6 +85,10 @@ func (c *testWorkerClient) GetGoroutines(context.Context, *pb.GetGoroutinesReque
 	panic("unexpected GetGoroutines call")
 }
 
+func (c *testWorkerClient) AttachSharedState(context.Context, *pb.AttachSharedStateRequest, ...grpc.CallOption) (*pb.Empty, error) {
+	panic("unexpected AttachSharedState call")
+}
+
 type testStreamEvent struct {
 	resp *pb.StreamResult
 	err  error

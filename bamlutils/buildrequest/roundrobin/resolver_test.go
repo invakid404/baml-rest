@@ -10,7 +10,7 @@ func TestResolve_NonRRClient_ReturnsAsIs(t *testing.T) {
 	in := ResolveInput{
 		ClientName:      "PlainClient",
 		ClientProviders: map[string]string{"PlainClient": "openai"},
-		Coordinator:     NewCoordinator(),
+		Advancer:         NewCoordinator(),
 	}
 	res, err := Resolve(in)
 	if err != nil {
@@ -31,7 +31,7 @@ func TestResolve_FallbackClient_ReturnsAsIs(t *testing.T) {
 		ClientName:      "MyFallback",
 		ClientProviders: map[string]string{"MyFallback": "baml-fallback"},
 		FallbackChains:  map[string][]string{"MyFallback": {"A", "B"}},
-		Coordinator:     NewCoordinator(),
+		Advancer:         NewCoordinator(),
 	}
 	res, err := Resolve(in)
 	if err != nil {
@@ -55,7 +55,7 @@ func TestResolve_RRClient_PicksFromChain(t *testing.T) {
 			"C":    "google-ai",
 		},
 		FallbackChains: map[string][]string{"MyRR": {"A", "B", "C"}},
-		Coordinator:    NewCoordinator(),
+		Advancer:        NewCoordinator(),
 	}
 	res, err := Resolve(in)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestResolve_AlternateSpellings(t *testing.T) {
 				ClientName:      "MyRR",
 				ClientProviders: map[string]string{"MyRR": spelling, "A": "openai", "B": "anthropic"},
 				FallbackChains:  map[string][]string{"MyRR": {"A", "B"}},
-				Coordinator:     NewCoordinator(),
+				Advancer:         NewCoordinator(),
 			}
 			res, err := Resolve(in)
 			if err != nil {
@@ -123,7 +123,7 @@ func TestResolve_NestedRR_ReportsOutermost(t *testing.T) {
 			"Outer":   {"InnerRR", "Plain"},
 			"InnerRR": {"X", "Y"},
 		},
-		Coordinator: NewCoordinator(),
+		Advancer:     NewCoordinator(),
 	}
 	res, err := Resolve(in)
 	if err != nil {
@@ -156,7 +156,7 @@ func TestResolve_CycleDetected(t *testing.T) {
 			"A": {"B"},
 			"B": {"A"},
 		},
-		Coordinator: NewCoordinator(),
+		Advancer:     NewCoordinator(),
 	}
 	_, err := Resolve(in)
 	if err == nil {
@@ -169,7 +169,7 @@ func TestResolve_EmptyChainErrors(t *testing.T) {
 		ClientName:      "RRNoKids",
 		ClientProviders: map[string]string{"RRNoKids": "baml-roundrobin"},
 		FallbackChains:  map[string][]string{},
-		Coordinator:     NewCoordinator(),
+		Advancer:         NewCoordinator(),
 	}
 	_, err := Resolve(in)
 	if err == nil {
@@ -207,7 +207,7 @@ func TestResolve_RuntimeStrategyOverride(t *testing.T) {
 			"D":    "anthropic",
 		},
 		FallbackChains: map[string][]string{"MyRR": {"A", "B"}}, // should be ignored
-		Coordinator:    NewCoordinator(),
+		Advancer:        NewCoordinator(),
 	}
 	res, err := Resolve(in)
 	if err != nil {
@@ -241,7 +241,7 @@ func TestResolve_DynamicRRClient_DoesNotTouchCoordinator(t *testing.T) {
 			Registry:        reg,
 			ClientProviders: map[string]string{"A": "openai", "B": "anthropic", "C": "google-ai"},
 			FallbackChains:  map[string][]string{},
-			Coordinator:     coord,
+			Advancer:         coord,
 		}
 	}
 	// Drive many resolutions; distribution should be effectively random.
@@ -286,7 +286,7 @@ func TestResolve_StrategyOnlyOverride_IsDynamic(t *testing.T) {
 				"D":    "anthropic",
 			},
 			FallbackChains: map[string][]string{"MyRR": {"A", "B"}},
-			Coordinator:    coord,
+			Advancer:        coord,
 		}
 	}
 	for i := 0; i < 25; i++ {
@@ -329,7 +329,7 @@ func TestResolve_RegistryPresenceWithoutOverride_IsDynamic(t *testing.T) {
 			"B":    "anthropic",
 		},
 		FallbackChains: map[string][]string{"MyRR": {"A", "B"}},
-		Coordinator:    coord,
+		Advancer:        coord,
 	}
 	for i := 0; i < 10; i++ {
 		if _, err := Resolve(in); err != nil {
@@ -360,7 +360,7 @@ func TestResolve_RRChildIsFallback_StopsAtFallback(t *testing.T) {
 			"OuterRR": {"Fb", "Plain"},
 			"Fb":      {"A", "B"},
 		},
-		Coordinator: NewCoordinator(),
+		Advancer:     NewCoordinator(),
 	}
 	for i := 0; i < 20; i++ {
 		res, err := Resolve(in)
@@ -393,7 +393,7 @@ func TestResolve_RespectsCoordinatorStartSeed(t *testing.T) {
 			"C":    "google-ai",
 		},
 		FallbackChains: map[string][]string{"MyRR": {"A", "B", "C"}},
-		Coordinator:    coord,
+		Advancer:        coord,
 	}
 	res, err := Resolve(in)
 	if err != nil {

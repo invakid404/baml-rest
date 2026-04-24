@@ -56,6 +56,12 @@ type BamlAdapter struct {
 	// used by both streaming and non-streaming /call orchestration.
 	// When nil, llmhttp.DefaultClient is used.
 	httpClient *llmhttp.Client
+
+	// rrAdvancer is the per-request round-robin Advancer installed by the
+	// worker. Nil when the caller (standalone test, legacy harness)
+	// doesn't plumb a shared-state client through — in that case
+	// roundrobin.Resolve falls back to the introspected Coordinator.
+	rrAdvancer bamlutils.RoundRobinAdvancer
 }
 
 func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
@@ -173,6 +179,14 @@ func (b *BamlAdapter) SetHTTPClient(c *llmhttp.Client) {
 
 func (b *BamlAdapter) HTTPClient() *llmhttp.Client {
 	return b.httpClient
+}
+
+func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
+	b.rrAdvancer = advancer
+}
+
+func (b *BamlAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer {
+	return b.rrAdvancer
 }
 
 var _ bamlutils.Adapter = (*BamlAdapter)(nil)

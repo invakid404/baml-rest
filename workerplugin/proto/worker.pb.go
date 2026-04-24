@@ -131,10 +131,16 @@ func (StreamResult_Kind) EnumDescriptor() ([]byte, []int) {
 
 // Request to call a BAML method
 type CallRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MethodName    string                 `protobuf:"bytes,1,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
-	InputJson     []byte                 `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`                                  // JSON-encoded input struct (includes __baml_options__ if present)
-	StreamMode    StreamMode             `protobuf:"varint,3,opt,name=stream_mode,json=streamMode,proto3,enum=workerplugin.StreamMode" json:"stream_mode,omitempty"` // Controls partial forwarding and raw collection
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	MethodName string                 `protobuf:"bytes,1,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
+	InputJson  []byte                 `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`                                  // JSON-encoded input struct (includes __baml_options__ if present)
+	StreamMode StreamMode             `protobuf:"varint,3,opt,name=stream_mode,json=streamMode,proto3,enum=workerplugin.StreamMode" json:"stream_mode,omitempty"` // Controls partial forwarding and raw collection
+	// Stable per-request identifier. Used by the worker as the operation_id
+	// when calling the host's SharedState.FetchAdd, so retries of the same
+	// request observe the same counter value and don't advance the rotation
+	// a second time. Empty means the worker should not attempt idempotency
+	// caching (legacy callers / tests without a generated request id).
+	RequestId     string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -188,6 +194,13 @@ func (x *CallRequest) GetStreamMode() StreamMode {
 		return x.StreamMode
 	}
 	return StreamMode_STREAM_MODE_CALL
+}
+
+func (x *CallRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
 }
 
 // Streaming result
@@ -684,18 +697,178 @@ func (x *GetGoroutinesResponse) GetMatchedStacks() []string {
 	return nil
 }
 
+// Request sent by the host (serve process) to tell a worker where to dial
+// back for shared-state RPCs. The broker_id identifies an already-listening
+// listener on the host side (go-plugin GRPCBroker).
+type AttachSharedStateRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BrokerId      uint32                 `protobuf:"varint,1,opt,name=broker_id,json=brokerId,proto3" json:"broker_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AttachSharedStateRequest) Reset() {
+	*x = AttachSharedStateRequest{}
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AttachSharedStateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AttachSharedStateRequest) ProtoMessage() {}
+
+func (x *AttachSharedStateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AttachSharedStateRequest.ProtoReflect.Descriptor instead.
+func (*AttachSharedStateRequest) Descriptor() ([]byte, []int) {
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *AttachSharedStateRequest) GetBrokerId() uint32 {
+	if x != nil {
+		return x.BrokerId
+	}
+	return 0
+}
+
+// Request to atomically add delta to a named counter and return the pre-
+// increment value. The counter space is flat; keys are chosen by the caller
+// (the worker) and the host stores whatever bytes it receives.
+//
+// If operation_id is non-empty, the host caches (key, operation_id) ->
+// previous and returns the cached value on retries without advancing the
+// counter. Empty operation_id disables caching: every call advances.
+type FetchAddRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Delta         uint64                 `protobuf:"varint,2,opt,name=delta,proto3" json:"delta,omitempty"`
+	OperationId   string                 `protobuf:"bytes,3,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FetchAddRequest) Reset() {
+	*x = FetchAddRequest{}
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FetchAddRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FetchAddRequest) ProtoMessage() {}
+
+func (x *FetchAddRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FetchAddRequest.ProtoReflect.Descriptor instead.
+func (*FetchAddRequest) Descriptor() ([]byte, []int) {
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *FetchAddRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *FetchAddRequest) GetDelta() uint64 {
+	if x != nil {
+		return x.Delta
+	}
+	return 0
+}
+
+func (x *FetchAddRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+type FetchAddResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Previous      uint64                 `protobuf:"varint,1,opt,name=previous,proto3" json:"previous,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FetchAddResponse) Reset() {
+	*x = FetchAddResponse{}
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FetchAddResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FetchAddResponse) ProtoMessage() {}
+
+func (x *FetchAddResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_workerplugin_proto_worker_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FetchAddResponse.ProtoReflect.Descriptor instead.
+func (*FetchAddResponse) Descriptor() ([]byte, []int) {
+	return file_workerplugin_proto_worker_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *FetchAddResponse) GetPrevious() uint64 {
+	if x != nil {
+		return x.Previous
+	}
+	return 0
+}
+
 var File_workerplugin_proto_worker_proto protoreflect.FileDescriptor
 
 const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x1fworkerplugin/proto/worker.proto\x12\fworkerplugin\"\x88\x01\n" +
+	"\x1fworkerplugin/proto/worker.proto\x12\fworkerplugin\"\xa7\x01\n" +
 	"\vCallRequest\x12\x1f\n" +
 	"\vmethod_name\x18\x01 \x01(\tR\n" +
 	"methodName\x12\x1d\n" +
 	"\n" +
 	"input_json\x18\x02 \x01(\fR\tinputJson\x129\n" +
 	"\vstream_mode\x18\x03 \x01(\x0e2\x18.workerplugin.StreamModeR\n" +
-	"streamMode\"\x85\x02\n" +
+	"streamMode\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x04 \x01(\tR\trequestId\"\x85\x02\n" +
 	"\fStreamResult\x123\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1f.workerplugin.StreamResult.KindR\x04kind\x12\x1b\n" +
 	"\tdata_json\x18\x02 \x01(\fR\bdataJson\x12\x10\n" +
@@ -740,13 +913,21 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"totalCount\x12\x1f\n" +
 	"\vmatch_count\x18\x02 \x01(\x05R\n" +
 	"matchCount\x12%\n" +
-	"\x0ematched_stacks\x18\x03 \x03(\tR\rmatchedStacks*z\n" +
+	"\x0ematched_stacks\x18\x03 \x03(\tR\rmatchedStacks\"7\n" +
+	"\x18AttachSharedStateRequest\x12\x1b\n" +
+	"\tbroker_id\x18\x01 \x01(\rR\bbrokerId\"\\\n" +
+	"\x0fFetchAddRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05delta\x18\x02 \x01(\x04R\x05delta\x12!\n" +
+	"\foperation_id\x18\x03 \x01(\tR\voperationId\".\n" +
+	"\x10FetchAddResponse\x12\x1a\n" +
+	"\bprevious\x18\x01 \x01(\x04R\bprevious*z\n" +
 	"\n" +
 	"StreamMode\x12\x14\n" +
 	"\x10STREAM_MODE_CALL\x10\x00\x12\x16\n" +
 	"\x12STREAM_MODE_STREAM\x10\x01\x12\x1d\n" +
 	"\x19STREAM_MODE_CALL_WITH_RAW\x10\x02\x12\x1f\n" +
-	"\x1bSTREAM_MODE_STREAM_WITH_RAW\x10\x032\xa6\x03\n" +
+	"\x1bSTREAM_MODE_STREAM_WITH_RAW\x10\x032\xf8\x03\n" +
 	"\x06Worker\x12E\n" +
 	"\n" +
 	"CallStream\x12\x19.workerplugin.CallRequest\x1a\x1a.workerplugin.StreamResult0\x01\x12;\n" +
@@ -755,7 +936,10 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"GetMetrics\x12\x13.workerplugin.Empty\x1a\x1d.workerplugin.MetricsResponse\x12:\n" +
 	"\tTriggerGC\x12\x13.workerplugin.Empty\x1a\x18.workerplugin.GCResponse\x12@\n" +
 	"\x05Parse\x12\x1a.workerplugin.ParseRequest\x1a\x1b.workerplugin.ParseResponse\x12X\n" +
-	"\rGetGoroutines\x12\".workerplugin.GetGoroutinesRequest\x1a#.workerplugin.GetGoroutinesResponseB.Z,github.com/invakid404/baml-rest/workerpluginb\x06proto3"
+	"\rGetGoroutines\x12\".workerplugin.GetGoroutinesRequest\x1a#.workerplugin.GetGoroutinesResponse\x12P\n" +
+	"\x11AttachSharedState\x12&.workerplugin.AttachSharedStateRequest\x1a\x13.workerplugin.Empty2X\n" +
+	"\vSharedState\x12I\n" +
+	"\bFetchAdd\x12\x1d.workerplugin.FetchAddRequest\x1a\x1e.workerplugin.FetchAddResponseB.Z,github.com/invakid404/baml-rest/workerpluginb\x06proto3"
 
 var (
 	file_workerplugin_proto_worker_proto_rawDescOnce sync.Once
@@ -770,20 +954,23 @@ func file_workerplugin_proto_worker_proto_rawDescGZIP() []byte {
 }
 
 var file_workerplugin_proto_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_workerplugin_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_workerplugin_proto_worker_proto_goTypes = []any{
-	(StreamMode)(0),               // 0: workerplugin.StreamMode
-	(StreamResult_Kind)(0),        // 1: workerplugin.StreamResult.Kind
-	(*CallRequest)(nil),           // 2: workerplugin.CallRequest
-	(*StreamResult)(nil),          // 3: workerplugin.StreamResult
-	(*Empty)(nil),                 // 4: workerplugin.Empty
-	(*HealthResponse)(nil),        // 5: workerplugin.HealthResponse
-	(*MetricsResponse)(nil),       // 6: workerplugin.MetricsResponse
-	(*GCResponse)(nil),            // 7: workerplugin.GCResponse
-	(*ParseRequest)(nil),          // 8: workerplugin.ParseRequest
-	(*ParseResponse)(nil),         // 9: workerplugin.ParseResponse
-	(*GetGoroutinesRequest)(nil),  // 10: workerplugin.GetGoroutinesRequest
-	(*GetGoroutinesResponse)(nil), // 11: workerplugin.GetGoroutinesResponse
+	(StreamMode)(0),                  // 0: workerplugin.StreamMode
+	(StreamResult_Kind)(0),           // 1: workerplugin.StreamResult.Kind
+	(*CallRequest)(nil),              // 2: workerplugin.CallRequest
+	(*StreamResult)(nil),             // 3: workerplugin.StreamResult
+	(*Empty)(nil),                    // 4: workerplugin.Empty
+	(*HealthResponse)(nil),           // 5: workerplugin.HealthResponse
+	(*MetricsResponse)(nil),          // 6: workerplugin.MetricsResponse
+	(*GCResponse)(nil),               // 7: workerplugin.GCResponse
+	(*ParseRequest)(nil),             // 8: workerplugin.ParseRequest
+	(*ParseResponse)(nil),            // 9: workerplugin.ParseResponse
+	(*GetGoroutinesRequest)(nil),     // 10: workerplugin.GetGoroutinesRequest
+	(*GetGoroutinesResponse)(nil),    // 11: workerplugin.GetGoroutinesResponse
+	(*AttachSharedStateRequest)(nil), // 12: workerplugin.AttachSharedStateRequest
+	(*FetchAddRequest)(nil),          // 13: workerplugin.FetchAddRequest
+	(*FetchAddResponse)(nil),         // 14: workerplugin.FetchAddResponse
 }
 var file_workerplugin_proto_worker_proto_depIdxs = []int32{
 	0,  // 0: workerplugin.CallRequest.stream_mode:type_name -> workerplugin.StreamMode
@@ -794,14 +981,18 @@ var file_workerplugin_proto_worker_proto_depIdxs = []int32{
 	4,  // 5: workerplugin.Worker.TriggerGC:input_type -> workerplugin.Empty
 	8,  // 6: workerplugin.Worker.Parse:input_type -> workerplugin.ParseRequest
 	10, // 7: workerplugin.Worker.GetGoroutines:input_type -> workerplugin.GetGoroutinesRequest
-	3,  // 8: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
-	5,  // 9: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
-	6,  // 10: workerplugin.Worker.GetMetrics:output_type -> workerplugin.MetricsResponse
-	7,  // 11: workerplugin.Worker.TriggerGC:output_type -> workerplugin.GCResponse
-	9,  // 12: workerplugin.Worker.Parse:output_type -> workerplugin.ParseResponse
-	11, // 13: workerplugin.Worker.GetGoroutines:output_type -> workerplugin.GetGoroutinesResponse
-	8,  // [8:14] is the sub-list for method output_type
-	2,  // [2:8] is the sub-list for method input_type
+	12, // 8: workerplugin.Worker.AttachSharedState:input_type -> workerplugin.AttachSharedStateRequest
+	13, // 9: workerplugin.SharedState.FetchAdd:input_type -> workerplugin.FetchAddRequest
+	3,  // 10: workerplugin.Worker.CallStream:output_type -> workerplugin.StreamResult
+	5,  // 11: workerplugin.Worker.Health:output_type -> workerplugin.HealthResponse
+	6,  // 12: workerplugin.Worker.GetMetrics:output_type -> workerplugin.MetricsResponse
+	7,  // 13: workerplugin.Worker.TriggerGC:output_type -> workerplugin.GCResponse
+	9,  // 14: workerplugin.Worker.Parse:output_type -> workerplugin.ParseResponse
+	11, // 15: workerplugin.Worker.GetGoroutines:output_type -> workerplugin.GetGoroutinesResponse
+	4,  // 16: workerplugin.Worker.AttachSharedState:output_type -> workerplugin.Empty
+	14, // 17: workerplugin.SharedState.FetchAdd:output_type -> workerplugin.FetchAddResponse
+	10, // [10:18] is the sub-list for method output_type
+	2,  // [2:10] is the sub-list for method input_type
 	2,  // [2:2] is the sub-list for extension type_name
 	2,  // [2:2] is the sub-list for extension extendee
 	0,  // [0:2] is the sub-list for field type_name
@@ -818,9 +1009,9 @@ func file_workerplugin_proto_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workerplugin_proto_worker_proto_rawDesc), len(file_workerplugin_proto_worker_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   10,
+			NumMessages:   13,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
 		GoTypes:           file_workerplugin_proto_worker_proto_goTypes,
 		DependencyIndexes: file_workerplugin_proto_worker_proto_depIdxs,

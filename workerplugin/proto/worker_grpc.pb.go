@@ -19,12 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Worker_CallStream_FullMethodName    = "/workerplugin.Worker/CallStream"
-	Worker_Health_FullMethodName        = "/workerplugin.Worker/Health"
-	Worker_GetMetrics_FullMethodName    = "/workerplugin.Worker/GetMetrics"
-	Worker_TriggerGC_FullMethodName     = "/workerplugin.Worker/TriggerGC"
-	Worker_Parse_FullMethodName         = "/workerplugin.Worker/Parse"
-	Worker_GetGoroutines_FullMethodName = "/workerplugin.Worker/GetGoroutines"
+	Worker_CallStream_FullMethodName        = "/workerplugin.Worker/CallStream"
+	Worker_Health_FullMethodName            = "/workerplugin.Worker/Health"
+	Worker_GetMetrics_FullMethodName        = "/workerplugin.Worker/GetMetrics"
+	Worker_TriggerGC_FullMethodName         = "/workerplugin.Worker/TriggerGC"
+	Worker_Parse_FullMethodName             = "/workerplugin.Worker/Parse"
+	Worker_GetGoroutines_FullMethodName     = "/workerplugin.Worker/GetGoroutines"
+	Worker_AttachSharedState_FullMethodName = "/workerplugin.Worker/AttachSharedState"
 )
 
 // WorkerClient is the client API for Worker service.
@@ -46,6 +47,10 @@ type WorkerClient interface {
 	Parse(ctx context.Context, in *ParseRequest, opts ...grpc.CallOption) (*ParseResponse, error)
 	// Get goroutine pprof data from worker process
 	GetGoroutines(ctx context.Context, in *GetGoroutinesRequest, opts ...grpc.CallOption) (*GetGoroutinesResponse, error)
+	// Hand the worker the broker id of a host-side SharedState server.
+	// The worker dials back via the plugin GRPCBroker and uses the returned
+	// connection for FetchAdd calls for the remainder of its lifetime.
+	AttachSharedState(ctx context.Context, in *AttachSharedStateRequest, opts ...grpc.CallOption) (*Empty, error)
 }
 
 type workerClient struct {
@@ -125,6 +130,16 @@ func (c *workerClient) GetGoroutines(ctx context.Context, in *GetGoroutinesReque
 	return out, nil
 }
 
+func (c *workerClient) AttachSharedState(ctx context.Context, in *AttachSharedStateRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, Worker_AttachSharedState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorkerServer is the server API for Worker service.
 // All implementations must embed UnimplementedWorkerServer
 // for forward compatibility.
@@ -144,6 +159,10 @@ type WorkerServer interface {
 	Parse(context.Context, *ParseRequest) (*ParseResponse, error)
 	// Get goroutine pprof data from worker process
 	GetGoroutines(context.Context, *GetGoroutinesRequest) (*GetGoroutinesResponse, error)
+	// Hand the worker the broker id of a host-side SharedState server.
+	// The worker dials back via the plugin GRPCBroker and uses the returned
+	// connection for FetchAdd calls for the remainder of its lifetime.
+	AttachSharedState(context.Context, *AttachSharedStateRequest) (*Empty, error)
 	mustEmbedUnimplementedWorkerServer()
 }
 
@@ -171,6 +190,9 @@ func (UnimplementedWorkerServer) Parse(context.Context, *ParseRequest) (*ParseRe
 }
 func (UnimplementedWorkerServer) GetGoroutines(context.Context, *GetGoroutinesRequest) (*GetGoroutinesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetGoroutines not implemented")
+}
+func (UnimplementedWorkerServer) AttachSharedState(context.Context, *AttachSharedStateRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method AttachSharedState not implemented")
 }
 func (UnimplementedWorkerServer) mustEmbedUnimplementedWorkerServer() {}
 func (UnimplementedWorkerServer) testEmbeddedByValue()                {}
@@ -294,6 +316,24 @@ func _Worker_GetGoroutines_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Worker_AttachSharedState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AttachSharedStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServer).AttachSharedState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Worker_AttachSharedState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServer).AttachSharedState(ctx, req.(*AttachSharedStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Worker_ServiceDesc is the grpc.ServiceDesc for Worker service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -321,6 +361,10 @@ var Worker_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetGoroutines",
 			Handler:    _Worker_GetGoroutines_Handler,
 		},
+		{
+			MethodName: "AttachSharedState",
+			Handler:    _Worker_AttachSharedState_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -329,5 +373,121 @@ var Worker_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
+	Metadata: "workerplugin/proto/worker.proto",
+}
+
+const (
+	SharedState_FetchAdd_FullMethodName = "/workerplugin.SharedState/FetchAdd"
+)
+
+// SharedStateClient is the client API for SharedState service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// Host-side shared state service. Runs in the serve process on a broker
+// socket; workers dial it after AttachSharedState. Intentionally dumb:
+// a flat keyspace of atomic counters. The host stores no round-robin
+// knowledge — worker code picks keys and applies its own modulus.
+type SharedStateClient interface {
+	// Atomically add delta to the counter named by key and return the
+	// pre-increment value. See FetchAddRequest for idempotency semantics.
+	FetchAdd(ctx context.Context, in *FetchAddRequest, opts ...grpc.CallOption) (*FetchAddResponse, error)
+}
+
+type sharedStateClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewSharedStateClient(cc grpc.ClientConnInterface) SharedStateClient {
+	return &sharedStateClient{cc}
+}
+
+func (c *sharedStateClient) FetchAdd(ctx context.Context, in *FetchAddRequest, opts ...grpc.CallOption) (*FetchAddResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FetchAddResponse)
+	err := c.cc.Invoke(ctx, SharedState_FetchAdd_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SharedStateServer is the server API for SharedState service.
+// All implementations must embed UnimplementedSharedStateServer
+// for forward compatibility.
+//
+// Host-side shared state service. Runs in the serve process on a broker
+// socket; workers dial it after AttachSharedState. Intentionally dumb:
+// a flat keyspace of atomic counters. The host stores no round-robin
+// knowledge — worker code picks keys and applies its own modulus.
+type SharedStateServer interface {
+	// Atomically add delta to the counter named by key and return the
+	// pre-increment value. See FetchAddRequest for idempotency semantics.
+	FetchAdd(context.Context, *FetchAddRequest) (*FetchAddResponse, error)
+	mustEmbedUnimplementedSharedStateServer()
+}
+
+// UnimplementedSharedStateServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedSharedStateServer struct{}
+
+func (UnimplementedSharedStateServer) FetchAdd(context.Context, *FetchAddRequest) (*FetchAddResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FetchAdd not implemented")
+}
+func (UnimplementedSharedStateServer) mustEmbedUnimplementedSharedStateServer() {}
+func (UnimplementedSharedStateServer) testEmbeddedByValue()                     {}
+
+// UnsafeSharedStateServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to SharedStateServer will
+// result in compilation errors.
+type UnsafeSharedStateServer interface {
+	mustEmbedUnimplementedSharedStateServer()
+}
+
+func RegisterSharedStateServer(s grpc.ServiceRegistrar, srv SharedStateServer) {
+	// If the following call panics, it indicates UnimplementedSharedStateServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&SharedState_ServiceDesc, srv)
+}
+
+func _SharedState_FetchAdd_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FetchAddRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SharedStateServer).FetchAdd(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SharedState_FetchAdd_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SharedStateServer).FetchAdd(ctx, req.(*FetchAddRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// SharedState_ServiceDesc is the grpc.ServiceDesc for SharedState service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var SharedState_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "workerplugin.SharedState",
+	HandlerType: (*SharedStateServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "FetchAdd",
+			Handler:    _SharedState_FetchAdd_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "workerplugin/proto/worker.proto",
 }

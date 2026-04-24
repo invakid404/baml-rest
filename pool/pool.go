@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/google/uuid"
 	"github.com/hashicorp/go-plugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -114,6 +116,17 @@ type Config struct {
 	WorkerMemLimit int64
 	// WorkerStartTimeout bounds worker startup and restart handshake work (0 = no timeout)
 	WorkerStartTimeout time.Duration
+	// SharedStateSeeds seeds per-key initial values for the host-side
+	// SharedState counters. Populate from introspected.RoundRobinStart so
+	// baml-roundrobin clients that declared a `start N` option honour it.
+	// Keys not in the map start at a uniformly-random offset — same fresh-
+	// fleet behaviour as the legacy in-process Coordinator.
+	//
+	// Leaving this nil disables the reverse shared-state channel: workers
+	// never receive AttachSharedState and fall back to their in-process
+	// coordinators. Intended for tests and single-worker configurations
+	// where per-worker counters are acceptable.
+	SharedStateSeeds map[string]int
 }
 
 // DefaultConfig returns a default configuration
@@ -192,6 +205,13 @@ type Pool struct {
 	shutdownCancel     context.CancelFunc                  // cancels shutdownCtx
 	newWorker          func(id int) (*workerHandle, error) // override for testing; nil in production
 	beforeRestartStart func()
+
+	// sharedStateStore hosts the per-key atomic counters that drive
+	// cross-worker round-robin rotation. Nil when SharedStateSeeds was
+	// not configured (test harness / single-worker setups). When non-nil,
+	// every worker handshake dials back via AttachSharedState and
+	// subsequent RR decisions ride through it.
+	sharedStateStore *workerplugin.SharedStateStore
 }
 
 type workerHandle struct {
@@ -299,6 +319,30 @@ func New(config *Config) (*Pool, error) {
 		shutdownCancel: shutdownCancel,
 	}
 
+	// Build the shared-state store when seeds were configured. Workers
+	// dial back to the host-side server registered inside WorkerPlugin
+	// during GRPCClient handshake; see startWorker below for the
+	// per-worker wiring.
+	if config.SharedStateSeeds != nil {
+		// Snapshot the caller's map so post-construction mutations can't
+		// rewrite seeds mid-flight.
+		seeds := make(map[string]uint64, len(config.SharedStateSeeds))
+		for k, v := range config.SharedStateSeeds {
+			if v < 0 {
+				v = 0
+			}
+			seeds[k] = uint64(v)
+		}
+		p.sharedStateStore = workerplugin.NewSharedStateStore(func(key string) uint64 {
+			if seed, ok := seeds[key]; ok {
+				return seed
+			}
+			// Unseeded keys get a random offset so a fresh fleet does
+			// not lockstep on child 0. Matches roundrobin.counterFor.
+			return uint64(rand.Uint32())
+		})
+	}
+
 	// Initialize worker restart counter labels
 	workerRestarts.WithLabelValues(string(RestartReasonHung)).Add(0)
 	workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Add(0)
@@ -321,6 +365,19 @@ func New(config *Config) (*Pool, error) {
 	}
 
 	return p, nil
+}
+
+// pluginMap returns the go-plugin dispenser map for this pool. A fresh
+// WorkerPlugin is constructed per call so each worker connection carries
+// a plugin instance whose SharedStateImpl points at this pool's store —
+// tests that spin up multiple pools in the same process would otherwise
+// share the package-level workerplugin.PluginMap and bleed state.
+func (p *Pool) pluginMap() map[string]plugin.Plugin {
+	wp := &workerplugin.WorkerPlugin{}
+	if p.sharedStateStore != nil {
+		wp.SharedStateImpl = workerplugin.NewSharedStateServer(p.sharedStateStore)
+	}
+	return map[string]plugin.Plugin{"worker": wp}
 }
 
 var errWorkerStartAborted = fmt.Errorf("worker startup aborted")
@@ -365,7 +422,7 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: workerplugin.Handshake,
-		Plugins:         workerplugin.PluginMap,
+		Plugins:         p.pluginMap(),
 		Cmd:             cmd,
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
@@ -1197,10 +1254,26 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		return nil, err
 	}
 
+	// Generate a stable request id and thread it through every attempt.
+	// The worker forwards it as CallRequest.request_id, which the host's
+	// SharedState store uses as the idempotency key for FetchAdd. Pool
+	// retries must see the same id so the rotation index is resolved once
+	// per request — otherwise each retry would advance the counter a
+	// second time and the RR ordering would skip a child.
+	requestID := uuid.NewString()
+	ctx = workerplugin.WithRequestID(ctx, requestID)
+
 	wrappedResults := make(chan *workerplugin.StreamResult)
 
 	go func() {
 		defer close(wrappedResults)
+		// Release any FetchAdd idempotency entries recorded under this
+		// request id once the retry loop finishes (success, error, or
+		// caller cancellation — doesn't matter). A TTL sweep on the host
+		// side is the backstop for crashes that skip this defer.
+		if p.sharedStateStore != nil {
+			defer p.sharedStateStore.DropScope(requestID)
+		}
 
 		currentHandle := handle
 		var lastFailed *workerHandle
@@ -1710,6 +1783,9 @@ func (p *Pool) Close() error {
 
 	p.restartWG.Wait()
 	p.wg.Wait()
+	if p.sharedStateStore != nil {
+		p.sharedStateStore.Close()
+	}
 	p.logger.Info().Msg("Worker pool closed")
 	return nil
 }

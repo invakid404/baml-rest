@@ -39,6 +39,8 @@ func (m *mockAdapter) HTTPClient() *llmhttp.Client              { return nil }
 func (m *mockAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
 	return m.originalRegistry
 }
+func (m *mockAdapter) SetRoundRobinAdvancer(_ bamlutils.RoundRobinAdvancer) {}
+func (m *mockAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer     { return nil }
 
 // ============================================================================
 // ResolveProvider tests
