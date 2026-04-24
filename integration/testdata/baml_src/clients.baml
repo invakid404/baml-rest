@@ -78,14 +78,14 @@ client<llm> TestFallbackPair {
 // ============================================================
 
 client<llm> TestRoundRobinPair {
-    provider baml-roundrobin
+    provider round-robin
     options {
         strategy [FallbackPrimary, FallbackSecondary]
     }
 }
 
 client<llm> TestRoundRobinChain {
-    provider baml-roundrobin
+    provider round-robin
     options {
         strategy [FallbackPrimary, FallbackSecondary, FallbackTertiary]
     }
