@@ -2,6 +2,7 @@ package bamlutils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -171,6 +172,68 @@ type ClientProperty struct {
 	Provider    string         `json:"provider"`
 	RetryPolicy *string        `json:"retry_policy"`
 	Options     map[string]any `json:"options,omitempty"`
+
+	// ProviderSet records whether the runtime client_registry JSON
+	// supplied a `provider` key. The struct-tag-driven decoder collapses
+	// "key absent" and "key present with empty string" into the zero
+	// value, hiding requests that explicitly clear the provider — a
+	// shape BAML upstream rejects in ClientProvider::from_str
+	// (clientspec.rs:119-144). Custom UnmarshalJSON below populates
+	// this so the resolvers can route present-empty overrides to legacy
+	// (where BAML emits its native invalid-provider error) instead of
+	// silently using the introspected fallback.
+	//
+	// Test fixtures using struct literals do not invoke UnmarshalJSON;
+	// IsProviderPresent treats Provider != "" as implicit presence so
+	// existing fixtures keep working without explicit ProviderSet
+	// wiring. To simulate "present-empty" in a struct literal, set
+	// {Provider: "", ProviderSet: true}. See PR #192 cold-review-2
+	// verdict-8 follow-up.
+	ProviderSet bool `json:"-"`
+}
+
+// IsProviderPresent reports whether the runtime client_registry entry
+// supplied a `provider` value the resolver should honour. Returns true
+// when either Provider is non-empty (struct-literal convenience for
+// tests) or ProviderSet is true (JSON-decoded entry that explicitly
+// included the `provider` key, even if its value is empty).
+//
+// Three states the callers care about:
+//
+//   - !IsProviderPresent(): provider key absent — fall back to the
+//     introspected provider (preserves strategy-only and presence-only
+//     registry overrides).
+//   - IsProviderPresent() && Provider != "": valid override — normalize
+//     and use.
+//   - IsProviderPresent() && Provider == "": invalid override — caller
+//     routes to legacy with PathReasonInvalidProviderOverride so BAML
+//     emits its native invalid-provider error.
+func (c *ClientProperty) IsProviderPresent() bool {
+	if c == nil {
+		return false
+	}
+	return c.Provider != "" || c.ProviderSet
+}
+
+// UnmarshalJSON populates ProviderSet from the raw input so callers
+// can distinguish "provider key absent" from "provider key present
+// with empty string". The struct-tag decoder collapses both into the
+// zero value, but BAML upstream rejects empty provider strings, so
+// the request resolver needs to route present-empty overrides to
+// legacy rather than silently using the introspected provider.
+func (c *ClientProperty) UnmarshalJSON(data []byte) error {
+	type alias ClientProperty // avoid recursion
+	aux := alias{}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*c = ClientProperty(aux)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	_, c.ProviderSet = raw["provider"]
+	return nil
 }
 
 type TypeBuilder struct {

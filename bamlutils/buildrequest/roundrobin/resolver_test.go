@@ -564,6 +564,49 @@ func TestResolve_AbsentStrategyOverride_DoesNotTriggerSentinel(t *testing.T) {
 	}
 }
 
+// TestResolve_PresentEmptyProviderSkipsRRUnwrap covers PR #192
+// cold-review-2 verdict-8 for the round-robin resolver. A registry
+// entry with explicit "provider":"" must not be treated as RR — the
+// resolver returns the un-unwrapped client name as the leaf so the
+// dispatcher's BuildRequest gate fails and the request falls through
+// to legacy, where BAML's runtime emits its native invalid-provider
+// error. Without presence tracking the resolver previously fell
+// through to the introspected RR provider and silently advanced the
+// counter on a malformed override.
+func TestResolve_PresentEmptyProviderSkipsRRUnwrap(t *testing.T) {
+	coord := NewCoordinator()
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "MyRR", Provider: "", ProviderSet: true},
+		},
+	}
+	res, err := Resolve(ResolveInput{
+		ClientName: "MyRR",
+		Registry:   reg,
+		ClientProviders: map[string]string{
+			"MyRR": "baml-roundrobin",
+			"A":    "openai",
+			"B":    "anthropic",
+		},
+		FallbackChains: map[string][]string{"MyRR": {"A", "B"}},
+		Advancer:        coord,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Selected != "MyRR" {
+		t.Fatalf("selected: got %q, want MyRR (RR unwrap must be skipped on present-empty provider)", res.Selected)
+	}
+	if res.Info != nil {
+		t.Errorf("Info: got %+v, want nil (no RR decision occurred)", res.Info)
+	}
+	count := 0
+	coord.counters.Range(func(_, _ any) bool { count++; return true })
+	if count != 0 {
+		t.Errorf("present-empty leaked into coordinator: %d entries", count)
+	}
+}
+
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

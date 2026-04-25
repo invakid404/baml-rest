@@ -1,9 +1,113 @@
 package bamlutils
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+// TestClientProperty_ProviderPresenceFromJSON pins the JSON-decoded
+// provider-presence semantics introduced for PR #192 cold-review-2
+// verdict-8. The struct-tag-driven decoder collapses absent and
+// present-empty into the same zero value; the custom UnmarshalJSON
+// distinguishes them via ProviderSet so resolvers can route an
+// explicit "provider":"" override to legacy where BAML emits its
+// native invalid-provider error, rather than silently using the
+// introspected fallback.
+func TestClientProperty_ProviderPresenceFromJSON(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		wantPresent bool
+		wantValue   string
+	}{
+		{
+			name:        "provider key absent",
+			raw:         `{"name":"MyClient"}`,
+			wantPresent: false,
+			wantValue:   "",
+		},
+		{
+			name:        "provider key present non-empty",
+			raw:         `{"name":"MyClient","provider":"openai"}`,
+			wantPresent: true,
+			wantValue:   "openai",
+		},
+		{
+			name:        "provider key present empty",
+			raw:         `{"name":"MyClient","provider":""}`,
+			wantPresent: true,
+			wantValue:   "",
+		},
+		{
+			name:        "provider key present alongside options",
+			raw:         `{"name":"MyClient","provider":"","options":{"strategy":["A"]}}`,
+			wantPresent: true,
+			wantValue:   "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var c ClientProperty
+			if err := json.Unmarshal([]byte(tc.raw), &c); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if c.Provider != tc.wantValue {
+				t.Errorf("Provider: got %q, want %q", c.Provider, tc.wantValue)
+			}
+			if got := c.IsProviderPresent(); got != tc.wantPresent {
+				t.Errorf("IsProviderPresent(): got %v, want %v", got, tc.wantPresent)
+			}
+		})
+	}
+}
+
+// TestClientProperty_ProviderPresenceFromStructLiteral guarantees that
+// existing struct-literal test fixtures keep working without explicit
+// ProviderSet wiring: a non-empty Provider value implies presence.
+// Setting Provider:"" without ProviderSet means absent (the test-
+// fixture default). To simulate present-empty in a struct literal,
+// callers explicitly set ProviderSet:true.
+func TestClientProperty_ProviderPresenceFromStructLiteral(t *testing.T) {
+	cases := []struct {
+		name        string
+		client      ClientProperty
+		wantPresent bool
+	}{
+		{
+			name:        "non-empty Provider implies presence",
+			client:      ClientProperty{Name: "MyClient", Provider: "openai"},
+			wantPresent: true,
+		},
+		{
+			name:        "empty Provider without ProviderSet is absent",
+			client:      ClientProperty{Name: "MyClient"},
+			wantPresent: false,
+		},
+		{
+			name:        "explicit ProviderSet:true with empty Provider is present",
+			client:      ClientProperty{Name: "MyClient", ProviderSet: true},
+			wantPresent: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.client.IsProviderPresent(); got != tc.wantPresent {
+				t.Errorf("IsProviderPresent(): got %v, want %v", got, tc.wantPresent)
+			}
+		})
+	}
+}
+
+// TestClientProperty_NilSafe ensures the helper is nil-safe — resolver
+// paths sometimes hold a *ClientProperty that may not yet have been
+// resolved; treat nil as "no presence".
+func TestClientProperty_NilSafe(t *testing.T) {
+	var c *ClientProperty
+	if c.IsProviderPresent() {
+		t.Errorf("nil receiver: IsProviderPresent() = true, want false")
+	}
+}
 
 func TestDynamicTypes_Validate(t *testing.T) {
 	tests := []struct {

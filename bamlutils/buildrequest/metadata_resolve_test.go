@@ -867,6 +867,211 @@ func TestBuildLegacyMetadataPlan_RuntimeClientWithChainStillEmitsChain(t *testin
 	}
 }
 
+// TestResolveProviderWithReason_PresentEmptyProvider covers PR #192
+// cold-review-2 verdict-8: a runtime client_registry entry that
+// explicitly sends "provider":"" must surface
+// PathReasonInvalidProviderOverride and route to legacy. BAML
+// upstream's ClientProvider::from_str rejects empty provider strings
+// (clientspec.rs:119-144); previously baml-rest silently fell through
+// to the introspected provider, hiding the malformed override from
+// BAML and from operators reading X-BAML-Path-Reason.
+func TestResolveProviderWithReason_PresentEmptyProvider(t *testing.T) {
+	t.Run("named-client override", func(t *testing.T) {
+		adapter := &mockAdapter{
+			Context: context.Background(),
+			originalRegistry: &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "MyClient", Provider: "", ProviderSet: true},
+				},
+			},
+		}
+		res := ResolveProviderWithReason(adapter, "MyClient", "openai", IsProviderSupported)
+		if res.Path != "legacy" {
+			t.Errorf("path: got %q, want legacy", res.Path)
+		}
+		if res.PathReason != PathReasonInvalidProviderOverride {
+			t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidProviderOverride)
+		}
+	})
+	t.Run("primary override", func(t *testing.T) {
+		primary := "MyPrimary"
+		adapter := &mockAdapter{
+			Context: context.Background(),
+			originalRegistry: &bamlutils.ClientRegistry{
+				Primary: &primary,
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "MyPrimary", Provider: "", ProviderSet: true},
+				},
+			},
+		}
+		res := ResolveProviderWithReason(adapter, "MyClient", "openai", IsProviderSupported)
+		if res.PathReason != PathReasonInvalidProviderOverride {
+			t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidProviderOverride)
+		}
+	})
+}
+
+// TestResolveProviderWithReason_AbsentProviderKeepsIntrospected is the
+// inverse-regression guard. A registry entry that omits the provider
+// key (strategy-only override, presence-only dynamic entry) must keep
+// using the introspected provider — preserving the existing flows
+// that drive RR strategy-only and presence-only behaviour. Without
+// this guard the verdict-8 fix could regress
+// TestResolve_StrategyOnlyOverride_IsDynamic and
+// TestResolve_RegistryPresenceWithoutOverride_IsDynamic in the RR
+// package by routing absent-provider entries to legacy alongside
+// present-empty entries.
+func TestResolveProviderWithReason_AbsentProviderKeepsIntrospected(t *testing.T) {
+	cases := []struct {
+		name     string
+		client   *bamlutils.ClientProperty
+		wantPath string
+	}{
+		{
+			name:     "presence-only entry",
+			client:   &bamlutils.ClientProperty{Name: "MyClient"},
+			wantPath: "buildrequest",
+		},
+		{
+			name: "strategy-only override",
+			client: &bamlutils.ClientProperty{
+				Name:    "MyClient",
+				Options: map[string]any{"strategy": []any{"A", "B"}},
+			},
+			wantPath: "buildrequest",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Clients: []*bamlutils.ClientProperty{tc.client},
+				},
+			}
+			res := ResolveProviderWithReason(adapter, "MyClient", "openai", IsProviderSupported)
+			if res.Path != tc.wantPath {
+				t.Errorf("path: got %q, want %q", res.Path, tc.wantPath)
+			}
+			if res.Provider != "openai" {
+				t.Errorf("provider: got %q, want openai (introspected fallback)", res.Provider)
+			}
+		})
+	}
+}
+
+// TestResolveClientProvider_PresentEmptyReturnsEmpty pins the resolver
+// helper behaviour the codegen-side BuildRequest gate depends on. A
+// present-empty override must surface as "" so IsProviderSupported
+// returns false and the dispatcher falls through to legacy. An absent
+// override must continue to fall through to the introspected provider
+// so strategy-only and presence-only flows keep working.
+func TestResolveClientProvider_PresentEmptyReturnsEmpty(t *testing.T) {
+	intro := map[string]string{"MyClient": "openai"}
+
+	t.Run("present-empty surfaces as empty", func(t *testing.T) {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "MyClient", Provider: "", ProviderSet: true},
+			},
+		}
+		got := ResolveClientProvider(reg, "MyClient", intro)
+		if got != "" {
+			t.Errorf("present-empty: got %q, want empty (introspected must NOT leak in)", got)
+		}
+	})
+
+	t.Run("absent provider falls through to introspected", func(t *testing.T) {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "MyClient"}, // no provider, no ProviderSet
+			},
+		}
+		got := ResolveClientProvider(reg, "MyClient", intro)
+		if got != "openai" {
+			t.Errorf("absent: got %q, want openai (introspected fallback)", got)
+		}
+	})
+
+	t.Run("present non-empty wins", func(t *testing.T) {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "MyClient", Provider: "anthropic"},
+			},
+		}
+		got := ResolveClientProvider(reg, "MyClient", intro)
+		if got != "anthropic" {
+			t.Errorf("present non-empty: got %q, want anthropic", got)
+		}
+	})
+
+	t.Run("no registry entry falls through to introspected", func(t *testing.T) {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "OtherClient", Provider: "anthropic"},
+			},
+		}
+		got := ResolveClientProvider(reg, "MyClient", intro)
+		if got != "openai" {
+			t.Errorf("no entry: got %q, want openai", got)
+		}
+	})
+}
+
+// TestBuildLegacyMetadataPlanForClient_PresentEmptyProvider covers the
+// codegen-side metadata seam. The generated dispatcher reaches
+// BuildLegacyMetadataPlanForClient when the BuildRequest gate failed,
+// which for a present-empty override happens because
+// ResolveClientProvider now returns "" instead of falling through to
+// the introspected provider. The emitted plan must report
+// PathReasonInvalidProviderOverride so operators reading
+// X-BAML-Path-Reason see the actual cause.
+func TestBuildLegacyMetadataPlanForClient_PresentEmptyProvider(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "MyClient", Provider: "", ProviderSet: true},
+		},
+	}
+	plan := BuildLegacyMetadataPlanForClient(
+		reg,
+		"MyClient",
+		"openai",
+		nil,
+		map[string]string{"MyClient": "openai"},
+		IsProviderSupported,
+		nil,
+	)
+	if plan.Path != "legacy" {
+		t.Errorf("path: got %q, want legacy", plan.Path)
+	}
+	if plan.PathReason != PathReasonInvalidProviderOverride {
+		t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonInvalidProviderOverride)
+	}
+	if plan.Provider != "" {
+		t.Errorf("provider: got %q, want empty (introspected must not leak in)", plan.Provider)
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_AbsentProviderKeepsEmptyProviderReason
+// is the inverse-regression guard. A client with no provider configured
+// anywhere must continue to report PathReasonEmptyProvider, not the
+// new PathReasonInvalidProviderOverride. This test is the boundary
+// between the two reasons.
+func TestBuildLegacyMetadataPlanForClient_AbsentProviderKeepsEmptyProviderReason(t *testing.T) {
+	plan := BuildLegacyMetadataPlanForClient(
+		nil,
+		"MyClient",
+		"",
+		nil,
+		nil,
+		IsProviderSupported,
+		nil,
+	)
+	if plan.PathReason != PathReasonEmptyProvider {
+		t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonEmptyProvider)
+	}
+}
+
 func TestEncodeRetryPolicy_Formats(t *testing.T) {
 	cases := []struct {
 		name string

@@ -165,24 +165,57 @@ func IsCallProviderSupported(provider string) bool {
 // ResolveProvider determines the provider for a function by checking the
 // runtime ClientRegistry override first, then falling back to the static
 // introspected default. The resolution order is:
-//  1. adapter.ClientRegistryProvider() — primary client's provider
-//  2. Named client override: if the function's default client name appears
-//     in client_registry.clients, use that client's provider
-//  3. Static introspected default (passed as fallback)
+//
+//  1. adapter.ClientRegistryProvider() — primary client's provider as
+//     pre-resolved by the adapter. Used only when non-empty; an empty
+//     return falls through to direct registry inspection so a present-
+//     empty primary can be distinguished from an absent primary
+//     (the adapter cache collapses both into "").
+//  2. Direct registry lookup of the primary client's clients[] entry,
+//     presence-aware. Surfaces present-empty as "" so the caller can
+//     route to legacy with PathReasonInvalidProviderOverride.
+//  3. Named client override: if the function's default client name
+//     appears in client_registry.clients with a present provider, use
+//     it (also presence-aware).
+//  4. Static introspected default (passed as fallback). Reached when
+//     no override is present anywhere — preserves strategy-only and
+//     presence-only registry overrides that intentionally don't carry
+//     a provider.
+//
+// Presence semantics matter because BAML upstream's
+// ClientProvider::from_str rejects empty provider strings
+// (clientspec.rs:119-144); we mirror that by NOT falling through to
+// the introspected provider when the registry sent an explicit
+// "provider":"". See PR #192 cold-review-2 verdict-8 follow-up.
 func ResolveProvider(adapter bamlutils.Adapter, defaultClientName string, introspectedProvider string) string {
-	// Check primary client override first
+	// Primary's provider via the adapter abstraction. Non-empty
+	// short-circuit retained so adapter implementations that pre-
+	// resolve the primary string keep working. An empty return
+	// falls through to direct registry inspection — the adapter cache
+	// collapses absent/present-empty into "" and we need the
+	// distinction.
 	if p := adapter.ClientRegistryProvider(); p != "" {
 		return p
 	}
 
-	// Check if the function's default client was overridden by name
-	if reg := adapter.OriginalClientRegistry(); reg != nil && defaultClientName != "" {
-		for _, client := range reg.Clients {
-			if client == nil {
-				continue
+	reg := adapter.OriginalClientRegistry()
+	if reg != nil {
+		// Primary client override (presence-aware): catches the
+		// present-empty case that the adapter cache hides.
+		if reg.Primary != nil && *reg.Primary != "" {
+			for _, client := range reg.Clients {
+				if client != nil && client.Name == *reg.Primary && client.IsProviderPresent() {
+					return client.Provider
+				}
 			}
-			if client.Name == defaultClientName {
-				return client.Provider
+		}
+
+		// Named client override on the function's default client.
+		if defaultClientName != "" {
+			for _, client := range reg.Clients {
+				if client != nil && client.Name == defaultClientName && client.IsProviderPresent() {
+					return client.Provider
+				}
 			}
 		}
 	}
@@ -265,6 +298,18 @@ const (
 	// error rather than silently using the introspected chain. See
 	// PR #192 cold-review-2 finding 1.
 	PathReasonInvalidStrategyOverride = "invalid-strategy-override"
+	// PathReasonInvalidProviderOverride: a runtime client_registry entry
+	// explicitly supplied an empty `provider` value (`"provider": ""`).
+	// BAML upstream's ClientProvider::from_str rejects empty provider
+	// strings (clientspec.rs:119-144); we mirror that by routing the
+	// request to legacy rather than silently using the introspected
+	// fallback, so BAML emits its native invalid-provider error to the
+	// caller. Distinct from PathReasonEmptyProvider (which fires when
+	// no provider is configured anywhere) so operators reading the
+	// header can tell "operator typo'd a registry entry" apart from
+	// "client has no provider declared". See PR #192 cold-review-2
+	// verdict-8 follow-up.
+	PathReasonInvalidProviderOverride = "invalid-provider-override"
 )
 
 // ProviderResolution describes the outcome of resolving a request's routing
@@ -439,7 +484,20 @@ func ResolveProviderWithReason(
 	switch provider {
 	case "":
 		res.Path = "legacy"
-		res.PathReason = PathReasonEmptyProvider
+		// Distinguish "no provider configured anywhere" from "registry
+		// supplied an explicit empty provider string". Both surface as
+		// "" out of ResolveProvider, but the latter is a malformed
+		// runtime override that BAML's ClientProvider::from_str
+		// rejects (clientspec.rs:119-144); operators reading
+		// X-BAML-Path-Reason should see the actual cause. The check
+		// covers both the primary and the function's default client
+		// since either could carry a present-empty provider key.
+		if hasInvalidProviderOverride(reg, clientName) ||
+			(reg != nil && reg.Primary != nil && *reg.Primary != "" && hasInvalidProviderOverride(reg, *reg.Primary)) {
+			res.PathReason = PathReasonInvalidProviderOverride
+		} else {
+			res.PathReason = PathReasonEmptyProvider
+		}
 	case "baml-fallback":
 		res.Strategy = "baml-fallback"
 		res.Path = "legacy"
@@ -770,7 +828,15 @@ func BuildLegacyMetadataPlanForClient(
 	retryPolicy *retry.Policy,
 ) *bamlutils.Metadata {
 	provider := ResolveClientProvider(reg, clientName, clientProviders)
-	if provider == "" {
+	// ResolveClientProvider returns "" both for "no provider configured"
+	// and "present-empty override". In the absent case we want the
+	// introspected provider as a metadata fallback so the plan still
+	// names something. In the present-empty case we keep "" so the
+	// classification below records PathReasonInvalidProviderOverride
+	// — substituting the introspected provider here would mask the
+	// invalid override on metadata. See PR #192 cold-review-2
+	// verdict-8 follow-up.
+	if provider == "" && !hasInvalidProviderOverride(reg, clientName) {
 		provider = introspectedProvider
 	}
 	// Fold strategy aliases (RR + fallback) onto canonical spellings so
@@ -797,7 +863,11 @@ func BuildLegacyMetadataPlanForClient(
 
 	switch provider {
 	case "":
-		plan.PathReason = PathReasonEmptyProvider
+		if hasInvalidProviderOverride(reg, clientName) {
+			plan.PathReason = PathReasonInvalidProviderOverride
+		} else {
+			plan.PathReason = PathReasonEmptyProvider
+		}
 	case "baml-fallback":
 		plan.Strategy = "baml-fallback"
 		chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
@@ -1133,17 +1203,35 @@ func normalizeStrategyProvider(provider string) string {
 
 // ResolveClientProvider returns the provider for a named client, checking
 // runtime client_registry overrides before the introspected defaults. This
-// mirrors ResolveProvider's per-client resolution (lines 104-112) so that
-// runtime overrides that change a child's provider are respected for both
+// mirrors ResolveProvider's per-client resolution so that runtime
+// overrides that change a child's provider are respected for both
 // extraction format selection and the supported-provider gate.
 //
 // The returned provider is normalised through normalizeStrategyProvider
 // so callers see one canonical spelling per strategy regardless of
 // which alias the .baml source or runtime registry used.
+//
+// Presence semantics (PR #192 cold-review-2 verdict-8 follow-up):
+//
+//   - registry entry absent or has no provider key: fall back to the
+//     introspected provider, preserving strategy-only and presence-
+//     only overrides (a common shape in tests and in production
+//     dynamic-RR flows).
+//   - registry entry present with a non-empty provider: normalize and
+//     use the override.
+//   - registry entry present with an empty provider: return "" so the
+//     caller's IsProviderSupported gate fails and the request falls
+//     through to legacy. BAML upstream rejects empty provider strings
+//     (clientspec.rs:119-144); routing to legacy lets BAML emit its
+//     native invalid-provider error rather than us silently using the
+//     introspected fallback.
 func ResolveClientProvider(reg *bamlutils.ClientRegistry, clientName string, introspectedProviders map[string]string) string {
 	if reg != nil {
 		for _, client := range reg.Clients {
-			if client != nil && client.Name == clientName && client.Provider != "" {
+			if client != nil && client.Name == clientName && client.IsProviderPresent() {
+				if client.Provider == "" {
+					return ""
+				}
 				return normalizeStrategyProvider(client.Provider)
 			}
 		}
@@ -1170,6 +1258,35 @@ func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlut
 // helper keeps both strategies consistent.
 func parseRuntimeStrategyOption(v any) []string {
 	return strategyparse.ParseStrategyOption(v)
+}
+
+// hasInvalidProviderOverride reports whether the runtime registry has
+// an entry for clientName whose `provider` key was supplied with the
+// empty string. BAML upstream's ClientProvider::from_str rejects empty
+// provider strings (clientspec.rs:119-144); ResolveProvider already
+// surfaces the empty value verbatim (rather than falling through to
+// the introspected provider) so the codegen gate routes the request
+// to legacy. This helper lets the metadata classifier distinguish
+// "operator sent provider:''" from "no provider configured anywhere"
+// — emitting PathReasonInvalidProviderOverride versus
+// PathReasonEmptyProvider respectively. See PR #192 cold-review-2
+// verdict-8 follow-up.
+//
+// Returns false when the registry is absent, the entry is missing, or
+// the entry simply omits the `provider` key (a strategy-only or
+// presence-only override that should keep using the introspected
+// provider).
+func hasInvalidProviderOverride(reg *bamlutils.ClientRegistry, clientName string) bool {
+	if reg == nil || clientName == "" {
+		return false
+	}
+	for _, c := range reg.Clients {
+		if c == nil || c.Name != clientName {
+			continue
+		}
+		return c.IsProviderPresent() && c.Provider == ""
+	}
+	return false
 }
 
 // inspectStrategyOverride examines the runtime client_registry entry for

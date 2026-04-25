@@ -185,12 +185,23 @@ func isDynamicRRClient(reg *bamlutils.ClientRegistry, clientName string) bool {
 
 // resolveClientProvider returns the provider for a named client, checking
 // runtime client_registry overrides before the introspected defaults. This
-// mirrors buildrequest.resolveChildProvider but lives here to keep the
+// mirrors buildrequest.ResolveClientProvider but lives here to keep the
 // roundrobin package a leaf (no dependency on buildrequest).
+//
+// Presence semantics: an absent provider key falls through to the
+// introspected provider (preserves strategy-only and presence-only
+// overrides — see TestResolve_StrategyOnlyOverride_IsDynamic and
+// TestResolve_RegistryPresenceWithoutOverride_IsDynamic). A
+// present-empty provider key surfaces as "" so Resolve sees a non-RR
+// classification, returns the un-unwrapped client as the leaf, and the
+// dispatcher's BuildRequest gate fails — routing the request to legacy
+// where BAML emits its native invalid-provider error rather than the
+// resolver silently advancing the RR counter on the introspected
+// provider. See PR #192 cold-review-2 verdict-8 follow-up.
 func resolveClientProvider(reg *bamlutils.ClientRegistry, clientName string, introspected map[string]string) string {
 	if reg != nil {
 		for _, c := range reg.Clients {
-			if c != nil && c.Name == clientName && c.Provider != "" {
+			if c != nil && c.Name == clientName && c.IsProviderPresent() {
 				return c.Provider
 			}
 		}
