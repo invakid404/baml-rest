@@ -743,6 +743,130 @@ func TestBuildLegacyMetadataPlanForClient_FallbackInvalidOverride(t *testing.T) 
 	}
 }
 
+// TestBuildLegacyMetadataPlan_RuntimeClientWithoutChainDoesNotLeakDefaultChain
+// is the regression for PR #192 cold-review-2 finding C. When a
+// primary override points the request at a fallback client whose
+// chain cannot be resolved (invalid strategy override or empty
+// introspected chain), the rebuild block in BuildLegacyMetadataPlan
+// previously fell through to `defaultClientName`'s introspected
+// chain. That emitted metadata with `Client=<runtime client>` but
+// `Chain=<default client's chain>` — a mismatch that misled operators
+// reading X-BAML-Path-Reason / metadata payloads when debugging a
+// runtime override.
+//
+// The fix removes the defaultClientName fallback. The plan now leaves
+// Chain empty when the runtime-resolved client has no chain, matching
+// the contract operators actually expect (Client and Chain must
+// describe the same client).
+func TestBuildLegacyMetadataPlan_RuntimeClientWithoutChainDoesNotLeakDefaultChain(t *testing.T) {
+	cases := []struct {
+		name           string
+		overrideClient *bamlutils.ClientProperty
+	}{
+		{
+			name: "invalid strategy override on runtime client",
+			overrideClient: &bamlutils.ClientProperty{
+				Name:     "OverrideStrategy",
+				Provider: "baml-fallback",
+				Options:  map[string]any{"strategy": "[]"},
+			},
+		},
+		{
+			name: "runtime client with no chain in introspected map",
+			overrideClient: &bamlutils.ClientProperty{
+				Name:     "OverrideStrategy",
+				Provider: "baml-fallback",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := "OverrideStrategy"
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Primary: &primary,
+					Clients: []*bamlutils.ClientProperty{tc.overrideClient},
+				},
+			}
+			// DefaultStrategy has a chain in the introspected map;
+			// OverrideStrategy does not (or has an invalid override).
+			// The previous behaviour leaked DefaultA/DefaultB into the
+			// emitted plan even though the request resolved to
+			// OverrideStrategy.
+			fallbackChains := map[string][]string{
+				"DefaultStrategy": {"DefaultA", "DefaultB"},
+			}
+			providers := map[string]string{
+				"DefaultStrategy":  "baml-fallback",
+				"OverrideStrategy": "baml-fallback",
+				"DefaultA":         "openai",
+				"DefaultB":         "anthropic",
+			}
+			plan := BuildLegacyMetadataPlan(
+				adapter,
+				"DefaultStrategy",
+				"baml-fallback",
+				fallbackChains,
+				providers,
+				IsProviderSupported,
+				nil,
+			)
+			if plan.Client != "OverrideStrategy" {
+				t.Errorf("client: got %q, want OverrideStrategy", plan.Client)
+			}
+			if len(plan.Chain) != 0 {
+				t.Errorf("chain: got %v, want empty (default client's chain must not leak when runtime client has none)", plan.Chain)
+			}
+			if len(plan.LegacyChildren) != 0 {
+				t.Errorf("legacyChildren: got %v, want empty (must not be populated from leaked chain)", plan.LegacyChildren)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlan_RuntimeClientWithChainStillEmitsChain is
+// the inverse-regression guard for finding C. When the runtime client
+// DOES have a resolvable chain, the plan must still describe it —
+// dropping the defaultClientName fallback must not regress the common
+// "primary override points at a different valid fallback client" case.
+func TestBuildLegacyMetadataPlan_RuntimeClientWithChainStillEmitsChain(t *testing.T) {
+	primary := "OverrideStrategy"
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Primary: &primary,
+		},
+	}
+	fallbackChains := map[string][]string{
+		"DefaultStrategy":  {"DefaultA", "DefaultB"},
+		"OverrideStrategy": {"OverrideA", "OverrideB"},
+	}
+	providers := map[string]string{
+		"DefaultStrategy":  "baml-fallback",
+		"OverrideStrategy": "baml-fallback",
+		"DefaultA":         "openai",
+		"DefaultB":         "anthropic",
+		"OverrideA":        "openai",
+		"OverrideB":        "anthropic",
+	}
+	plan := BuildLegacyMetadataPlan(
+		adapter,
+		"DefaultStrategy",
+		"baml-fallback",
+		fallbackChains,
+		providers,
+		IsProviderSupported,
+		nil,
+	)
+	if plan.Client != "OverrideStrategy" {
+		t.Errorf("client: got %q, want OverrideStrategy", plan.Client)
+	}
+	if len(plan.Chain) != 2 || plan.Chain[0] != "OverrideA" || plan.Chain[1] != "OverrideB" {
+		t.Errorf("chain: got %v, want [OverrideA OverrideB]", plan.Chain)
+	}
+}
+
 func TestEncodeRetryPolicy_Formats(t *testing.T) {
 	cases := []struct {
 		name string

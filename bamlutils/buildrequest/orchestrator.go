@@ -693,23 +693,27 @@ func BuildLegacyMetadataPlan(
 			adapter, defaultClientName, fallbackChains, clientProviders, isProviderSupported,
 		)
 		plan.PathReason = reason
-		// chain is nil when BuildRequest rejected the chain; fall back to
-		// the introspected chain so the plan still names the children.
-		// Look up by the runtime-resolved client first (resolution.Client
-		// already accounts for primary overrides) — falling through to
-		// defaultClientName only when the override doesn't list a chain.
+		// chain is nil when BuildRequest rejected the chain; rebuild
+		// from the runtime-resolved client (resolution.Client already
+		// accounts for primary overrides) so the plan still names the
+		// children. Use resolveFallbackStrategyChain rather than a
+		// direct map lookup so a runtime `strategy` override on the
+		// fallback client is honoured — without this, metadata would
+		// describe the wrong chain whenever a request used a runtime
+		// strategy option.
+		//
+		// Critically, key only on resolution.Client. A previous revision
+		// fell through to `defaultClientName`'s chain when the runtime
+		// client had no resolvable chain (cold-review-2 finding C):
+		// that emitted metadata with `Client=<runtime>`,
+		// `Chain=<defaultClient's chain>` — a mismatch that misled
+		// operators when a primary override pointed at a fallback
+		// client with an invalid strategy override or empty chain. We
+		// now leave plan.Chain empty in that case so the metadata
+		// reflects what actually happens at runtime.
 		if chain == nil {
-			// Go through resolveFallbackStrategyChain, not a direct map
-			// lookup, so a runtime `strategy` option on the fallback
-			// client (via client_registry) is honoured. Falling straight
-			// to fallbackChains[...] silently ignored these overrides,
-			// making the metadata describe the wrong chain whenever a
-			// request used a runtime strategy option.
 			reg := adapter.OriginalClientRegistry()
 			chain = resolveFallbackStrategyChain(reg, resolution.Client, fallbackChains)
-			if chain == nil {
-				chain = resolveFallbackStrategyChain(reg, defaultClientName, fallbackChains)
-			}
 			// Resolve each child's provider through the runtime registry
 			// before consulting the static introspected map.
 			providers = make(map[string]string, len(chain))
@@ -858,14 +862,34 @@ func BuildLegacyMetadataPlanForClient(
 	return plan
 }
 
-// ResolveFallbackChainWithReason wraps ResolveFallbackChain and returns a
-// classification alongside the usual (chain, providers, legacyChildren)
-// triple. The reason is empty when BuildRequest can drive the chain
-// (partially or fully); otherwise it is one of the PathReason* constants
-// describing why the chain degrades to legacy.
+// ResolveFallbackChainWithReason wraps ResolveFallbackChain and returns
+// a classification alongside the usual (chain, providers, legacyChildren)
+// triple.
 //
-// When reason is non-empty the chain/providers/legacyChildren returns are
-// all nil, matching ResolveFallbackChain's contract.
+// `chain == nil` is the hard-failure signal: BuildRequest cannot drive
+// the request and the caller must fall through to legacy. `chain != nil`
+// means BuildRequest can drive the chain (potentially with mixed-mode
+// children).
+//
+// `reason` is *both* a hard-failure code and an informational tag,
+// distinguished by the chain:
+//
+//   - chain == nil, reason == "": the client is not a fallback strategy
+//     (caller's top-level classification handles the path).
+//   - chain == nil, reason != "": hard failure context — one of
+//     PathReasonInvalidStrategyOverride, PathReasonFallbackEmptyChain,
+//     PathReasonFallbackEmptyChildProvider, PathReasonFallbackAllLegacy.
+//   - chain != nil, reason == "": fully drivable chain.
+//   - chain != nil, reason == PathReasonFallbackRoundRobinChildLegacy:
+//     drivable chain that contains a baml-roundrobin child whose
+//     rotation is left to BAML's per-worker runtime. Informational
+//     metadata, not a failure — callers use the chain normally.
+//
+// Callers gate on `len(chain) > 0` for the hard routing decision and
+// pass `reason` straight through to metadata. See PR #192 cold-review-2
+// finding B for the contract clarification — pre-clarification the doc
+// claimed any non-empty reason came with nil chain, which contradicts
+// the RR-child case below.
 func ResolveFallbackChainWithReason(
 	adapter bamlutils.Adapter,
 	defaultClientName string,
@@ -887,10 +911,17 @@ func ResolveFallbackChainWithReason(
 	return ResolveFallbackChainForClientWithReason(reg, clientName, fallbackChains, clientProviders, isProviderSupported)
 }
 
-// ResolveFallbackChainForClientWithReason is the primary-override-free sibling
-// of ResolveFallbackChainWithReason. Callers that have already resolved the
-// effective client name (e.g. after external round-robin unwrap) pass that
-// name directly; no further primary lookup or RR unwrap happens inside.
+// ResolveFallbackChainForClientWithReason is the primary-override-free
+// sibling of ResolveFallbackChainWithReason. Callers that have already
+// resolved the effective client name (e.g. after external round-robin
+// unwrap) pass that name directly; no further primary lookup or RR
+// unwrap happens inside.
+//
+// Return contract matches the sibling. `chain == nil` is the hard-
+// failure signal; `chain != nil` is drivable. `reason` is hard-failure
+// context when `chain == nil` and informational metadata
+// (PathReasonFallbackRoundRobinChildLegacy) when `chain != nil`.
+// Callers gate on `len(chain) > 0` for routing.
 func ResolveFallbackChainForClientWithReason(
 	reg *bamlutils.ClientRegistry,
 	clientName string,
