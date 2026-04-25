@@ -1,11 +1,27 @@
 package roundrobin
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/strategyparse"
 )
+
+// ErrInvalidStrategyOverride signals that the runtime client_registry
+// supplied a `strategy` value that ParseStrategyOption could not
+// interpret as a non-empty bracketed list (bare token, half-bracketed,
+// empty array, heterogeneous []any with non-string elements, etc.).
+//
+// BAML upstream's ensure_strategy rejects these inputs in
+// baml-lib/llm-client/src/clients/helpers.rs:790-829 with
+// "strategy must be an array" / "strategy must not be empty". Resolve
+// returns this sentinel so callers (ResolveEffectiveClient) can skip
+// the RR unwrap and let the request fall through to the legacy path,
+// where BAML's runtime emits the canonical error rather than us
+// silently using the introspected chain. See PR #192 cold-review-2
+// finding 1.
+var ErrInvalidStrategyOverride = errors.New("roundrobin: runtime strategy override is invalid or empty")
 
 // CanonicalProvider is the spelling emitted in metadata and headers
 // regardless of which input form the .baml source or runtime override
@@ -98,6 +114,16 @@ func Resolve(in ResolveInput) (*Result, error) {
 			return &Result{Selected: current, Info: outerInfo}, nil
 		}
 
+		// Detect a present-but-unparseable runtime strategy override
+		// before chain resolution. Surfacing ErrInvalidStrategyOverride
+		// lets ResolveEffectiveClient bail out of the RR unwrap and
+		// hand the un-unwrapped client name to the dispatcher, which
+		// falls through to legacy where BAML's runtime emits the
+		// canonical ensure_strategy error.
+		if _, present, valid := inspectStrategyOverride(in.Registry, current); present && !valid {
+			return nil, ErrInvalidStrategyOverride
+		}
+
 		chain := resolveStrategyChain(in.Registry, current, in.FallbackChains)
 		if len(chain) == 0 {
 			return nil, fmt.Errorf("roundrobin: client %q has no children", current)
@@ -172,18 +198,53 @@ func resolveClientProvider(reg *bamlutils.ClientRegistry, clientName string, int
 	return introspected[clientName]
 }
 
+// inspectStrategyOverride examines the runtime client_registry entry for
+// a strategy client. Three outcomes:
+//
+//   - present=false, valid=true: no `strategy` key in the runtime options
+//     (or no runtime entry at all). Caller falls back to the introspected
+//     chain.
+//   - present=true, valid=true: the override parsed to a non-empty chain.
+//     Caller honours the returned slice.
+//   - present=true, valid=false: the override is present but unparseable
+//     (bare token, half-bracketed, empty array, heterogeneous []any with
+//     non-string elements, etc.). Resolve returns ErrInvalidStrategyOverride
+//     for this case so ResolveEffectiveClient routes the request to
+//     legacy and BAML emits the canonical ensure_strategy error.
+//
+// Mirrors bamlutils/buildrequest.inspectStrategyOverride — duplicated to
+// avoid pulling buildrequest into the roundrobin package's import graph.
+func inspectStrategyOverride(reg *bamlutils.ClientRegistry, clientName string) (chain []string, present bool, valid bool) {
+	rc := findRuntimeClient(reg, clientName)
+	if rc == nil || rc.Options == nil {
+		return nil, false, true
+	}
+	raw, ok := rc.Options["strategy"]
+	if !ok {
+		return nil, false, true
+	}
+	parsed := parseRuntimeStrategyOption(raw)
+	if len(parsed) == 0 {
+		return nil, true, false
+	}
+	return parsed, true, true
+}
+
 // resolveStrategyChain returns the ordered child list for a strategy
 // client, honouring any runtime client_registry override of the strategy
 // option before falling back to the introspected chain. Mirrors
 // buildrequest.resolveFallbackStrategyChain — duplicated to avoid pulling
 // buildrequest into the roundrobin package's import graph.
+//
+// Callers must invoke inspectStrategyOverride first when they need to
+// distinguish "absent override" from "present-but-invalid override";
+// this helper collapses both into "use introspected chain", matching
+// the existing pre-PR-192-cold-review-2 behaviour for callers that
+// don't want the strict validation.
 func resolveStrategyChain(reg *bamlutils.ClientRegistry, clientName string, introspectedChains map[string][]string) []string {
-	if rc := findRuntimeClient(reg, clientName); rc != nil && rc.Options != nil {
-		if raw, ok := rc.Options["strategy"]; ok {
-			if chain := parseRuntimeStrategyOption(raw); len(chain) > 0 {
-				return chain
-			}
-		}
+	chain, present, valid := inspectStrategyOverride(reg, clientName)
+	if present && valid {
+		return chain
 	}
 	return introspectedChains[clientName]
 }

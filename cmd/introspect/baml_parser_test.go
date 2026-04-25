@@ -1275,3 +1275,51 @@ func TestParseClientBlock_RoundRobinStart_InvalidIgnored(t *testing.T) {
 		t.Fatalf("malformed start should be ignored, got entry")
 	}
 }
+
+// TestCanonicaliseProvider_FoldsAliases verifies the introspector
+// folds BAML's strategy aliases — both round-robin and fallback —
+// onto canonical baml-rest spellings. PR #192 cold-review-2 finding 2:
+// the BAML CLI init template uses `provider fallback`, so config
+// files written from the docs hit the bare alias path. Without the
+// fold the runtime classifier would treat such clients as unsupported
+// single-providers.
+func TestCanonicaliseProvider_FoldsAliases(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"baml-roundrobin", "baml-roundrobin"},
+		{"baml-round-robin", "baml-roundrobin"},
+		{"round-robin", "baml-roundrobin"},
+		{"baml-fallback", "baml-fallback"},
+		{"fallback", "baml-fallback"},
+		{"openai", "openai"},
+		{"anthropic", "anthropic"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := canonicaliseProvider(tc.in); got != tc.want {
+				t.Errorf("canonicaliseProvider(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseClientBlock_BareFallbackAliasNormalised verifies that the
+// `provider fallback` spelling — the form BAML's CLI init template
+// emits — lands in the introspected ClientProvider map as the
+// canonical "baml-fallback" string. Cold-review-2 finding 2.
+func TestParseClientBlock_BareFallbackAliasNormalised(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider fallback",
+		"options {",
+		"    strategy [A, B]",
+		"}",
+	}
+	parseClientBlock(cfg, "MyFallback", block)
+	if got := cfg.clientProvider["MyFallback"]; got != "baml-fallback" {
+		t.Errorf("clientProvider[MyFallback]: got %q, want baml-fallback", got)
+	}
+}

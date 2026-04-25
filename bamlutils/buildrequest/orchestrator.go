@@ -10,6 +10,7 @@ package buildrequest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -253,6 +254,17 @@ const (
 	// PathReasonBuildRequestDisabled: BAML_REST_USE_BUILD_REQUEST is off.
 	// Deliberate configuration — no operator alert.
 	PathReasonBuildRequestDisabled = "buildrequest-disabled"
+	// PathReasonInvalidStrategyOverride: a runtime client_registry entry
+	// supplied an `options.strategy` value that ParseStrategyOption could
+	// not interpret as a non-empty bracketed list — bare tokens, mismatched
+	// brackets, empty arrays, heterogeneous []any with non-string elements,
+	// etc. BAML upstream rejects these inputs in ensure_strategy
+	// (baml-lib/llm-client/src/clients/helpers.rs:790-829) with
+	// "strategy must be an array" or "strategy must not be empty"; we
+	// route the request to legacy so BAML's runtime emits the canonical
+	// error rather than silently using the introspected chain. See
+	// PR #192 cold-review-2 finding 1.
+	PathReasonInvalidStrategyOverride = "invalid-strategy-override"
 )
 
 // ProviderResolution describes the outcome of resolving a request's routing
@@ -342,6 +354,17 @@ func ResolveEffectiveClient(
 		Advancer:        advancer,
 	})
 	if err != nil {
+		// An invalid runtime strategy override is not a hard failure —
+		// the dispatcher should fall through to legacy so BAML's
+		// runtime emits the canonical ensure_strategy error. Returning
+		// the un-unwrapped client name lets the codegen-side support
+		// gate fail (the outer client is a strategy provider, which
+		// isn't in supportedProviders) and route to legacy, where
+		// ResolveProviderWithReason surfaces
+		// PathReasonInvalidStrategyOverride for observability.
+		if errors.Is(err, roundrobin.ErrInvalidStrategyOverride) {
+			return clientName, nil, nil
+		}
 		return "", nil, err
 	}
 	return res.Selected, res.Info, nil
@@ -384,12 +407,13 @@ func ResolveProviderWithReason(
 	isProviderSupported func(string) bool,
 ) ProviderResolution {
 	provider := ResolveProvider(adapter, defaultClientName, introspectedProvider)
-	// Normalise so the three round-robin spellings
-	// (baml-roundrobin / baml-round-robin / round-robin) all classify
-	// consistently below. Without this, a runtime registry entry that
-	// used an alias would slip past the "baml-roundrobin" case and get
-	// treated as an arbitrary single-provider string.
-	provider = roundrobin.NormalizeProvider(provider)
+	// Fold strategy aliases (RR + fallback) onto canonical spellings so
+	// the classification switch below sees one form per strategy. A
+	// runtime registry entry using the bare "fallback" or "round-robin"
+	// alias would otherwise slip past the "baml-fallback" /
+	// "baml-roundrobin" arms and get treated as an unsupported single-
+	// provider string. See PR #192 cold-review-2 finding 2.
+	provider = normalizeStrategyProvider(provider)
 
 	// Determine the effective client name after primary override. This is
 	// what the metadata Client field should report, even when the provider
@@ -401,6 +425,17 @@ func ResolveProviderWithReason(
 
 	res := ProviderResolution{Client: clientName, Provider: provider}
 
+	// Both strategy arms below check for an invalid runtime
+	// `options.strategy` override and surface PathReasonInvalidStrategyOverride
+	// so the legacy plan distinguishes "operator typo" from a valid
+	// strategy that legitimately routes legacy. Without this, a malformed
+	// override would surface as PathReasonRoundRobin or empty (fallback)
+	// on the legacy plan, hiding the actual classification from
+	// operators reading metadata. The codegen-side gate is unchanged —
+	// the request still falls through to legacy because BuildRequest
+	// can't drive a strategy client whose chain we refuse to resolve.
+	reg := adapter.OriginalClientRegistry()
+
 	switch provider {
 	case "":
 		res.Path = "legacy"
@@ -408,18 +443,25 @@ func ResolveProviderWithReason(
 	case "baml-fallback":
 		res.Strategy = "baml-fallback"
 		res.Path = "legacy"
-		// PathReason is intentionally left empty here. Callers that care
-		// about the fallback classification (BuildLegacyMetadataPlan,
-		// router) invoke ResolveFallbackChainWithReason for the
-		// definitive reason — empty-chain, empty-child-provider,
-		// all-legacy, or "" (drivable). Pre-seeding a reason here would
-		// shadow the real classification when the request goes legacy
-		// for unrelated reasons (feature gate off, etc.) on a perfectly
-		// valid chain.
+		if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
+			res.PathReason = PathReasonInvalidStrategyOverride
+		}
+		// Otherwise PathReason is intentionally left empty here.
+		// Callers that care about the fallback classification
+		// (BuildLegacyMetadataPlan, router) invoke
+		// ResolveFallbackChainWithReason for the definitive reason —
+		// empty-chain, empty-child-provider, all-legacy, or ""
+		// (drivable). Pre-seeding a reason here would shadow the real
+		// classification when the request goes legacy for unrelated
+		// reasons (feature gate off, etc.) on a perfectly valid chain.
 	case "baml-roundrobin":
 		res.Strategy = "baml-roundrobin"
 		res.Path = "legacy"
-		res.PathReason = PathReasonRoundRobin
+		if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
+			res.PathReason = PathReasonInvalidStrategyOverride
+		} else {
+			res.PathReason = PathReasonRoundRobin
+		}
 	default:
 		if isProviderSupported != nil && isProviderSupported(provider) {
 			res.Path = "buildrequest"
@@ -727,15 +769,16 @@ func BuildLegacyMetadataPlanForClient(
 	if provider == "" {
 		provider = introspectedProvider
 	}
-	// Normalise the three accepted round-robin spellings ("baml-round-
-	// robin", "round-robin", "baml-roundrobin") onto the canonical
-	// "baml-roundrobin" form before the classification switch. Without
-	// this, a runtime client_registry entry that used BAML's
-	// hyphenated spelling would fall through to the default branch and
-	// get classified as an unsupported single-provider instead of an
-	// RR strategy. The resolver's own IsRoundRobinProvider already
-	// folds the aliases; this mirrors that for the metadata path.
-	provider = roundrobin.NormalizeProvider(provider)
+	// Fold strategy aliases (RR + fallback) onto canonical spellings so
+	// the classification switch below sees one form per strategy. A
+	// runtime client_registry entry that used BAML's hyphenated RR form
+	// or the bare "fallback" alias would otherwise fall through to the
+	// default branch and get classified as an unsupported single-
+	// provider. The resolver's own IsRoundRobinProvider and
+	// canonicaliseProvider in cmd/introspect already fold these aliases;
+	// this mirrors that for the metadata path. See PR #192 cold-review-2
+	// finding 2.
+	provider = normalizeStrategyProvider(provider)
 
 	plan := &bamlutils.Metadata{
 		Phase:       bamlutils.MetadataPhasePlanned,
@@ -848,6 +891,16 @@ func ResolveFallbackChainForClientWithReason(
 		// Not a fallback client — caller decides the path from the
 		// top-level ResolveProviderWithReason classification instead.
 		return nil, nil, nil, ""
+	}
+
+	// Detect a present-but-unparseable runtime strategy override before
+	// chain resolution. Returning PathReasonInvalidStrategyOverride here
+	// causes the codegen-side `len(chain) > 0` gate to fall through to
+	// legacy, where BAML's runtime emits the canonical
+	// ensure_strategy error rather than us silently using the
+	// introspected chain.
+	if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
+		return nil, nil, nil, PathReasonInvalidStrategyOverride
 	}
 
 	resolvedChain := resolveFallbackStrategyChain(reg, clientName, fallbackChains)
@@ -1008,20 +1061,51 @@ func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {
 	return p
 }
 
+// normalizeStrategyProvider folds the BAML strategy aliases that
+// clientspec.rs accepts onto the canonical baml-rest spellings used in
+// the classification switches downstream. Both round-robin and
+// fallback have a "with-prefix" and "without-prefix" form upstream:
+//
+//   - "round-robin" / "baml-round-robin" / "baml-roundrobin"
+//     → "baml-roundrobin"
+//   - "fallback" / "baml-fallback" → "baml-fallback"
+//
+// Without this normalisation, a runtime client_registry entry that
+// used the bare "fallback" alias (the form the BAML CLI init template
+// uses) would slip past the "baml-fallback" arm in
+// ResolveProviderWithReason and fall to legacy via
+// PathReasonUnsupportedProvider — losing chain plan, mixed-mode child
+// handling, and RR-child plumbing. See PR #192 cold-review-2 finding 2.
+//
+// roundrobin.NormalizeProvider already covers the RR aliases; we keep
+// this one-call helper to apply both classes at every classification
+// seam without each call site duplicating the alias check.
+func normalizeStrategyProvider(provider string) string {
+	provider = roundrobin.NormalizeProvider(provider)
+	if provider == "fallback" {
+		return "baml-fallback"
+	}
+	return provider
+}
+
 // ResolveClientProvider returns the provider for a named client, checking
 // runtime client_registry overrides before the introspected defaults. This
 // mirrors ResolveProvider's per-client resolution (lines 104-112) so that
 // runtime overrides that change a child's provider are respected for both
 // extraction format selection and the supported-provider gate.
+//
+// The returned provider is normalised through normalizeStrategyProvider
+// so callers see one canonical spelling per strategy regardless of
+// which alias the .baml source or runtime registry used.
 func ResolveClientProvider(reg *bamlutils.ClientRegistry, clientName string, introspectedProviders map[string]string) string {
 	if reg != nil {
 		for _, client := range reg.Clients {
 			if client != nil && client.Name == clientName && client.Provider != "" {
-				return client.Provider
+				return normalizeStrategyProvider(client.Provider)
 			}
 		}
 	}
-	return introspectedProviders[clientName]
+	return normalizeStrategyProvider(introspectedProviders[clientName])
 }
 
 func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlutils.ClientProperty {
@@ -1045,13 +1129,45 @@ func parseRuntimeStrategyOption(v any) []string {
 	return strategyparse.ParseStrategyOption(v)
 }
 
+// inspectStrategyOverride examines the runtime client_registry entry for
+// a strategy client. Three outcomes:
+//
+//   - present=false, valid=true: no `strategy` key in the runtime options
+//     (or no runtime entry at all). Caller falls back to the introspected
+//     chain.
+//   - present=true, valid=true: the override parsed to a non-empty chain.
+//     Caller honours the returned slice.
+//   - present=true, valid=false: the override is present but unparseable
+//     (bare token, half-bracketed, empty array, heterogeneous []any with
+//     non-string elements, etc.). BAML upstream's ensure_strategy
+//     rejects these, so callers route the request to legacy where BAML's
+//     runtime emits "strategy must be an array" / "strategy must not
+//     be empty". A previous revision silently used the introspected
+//     chain for these inputs, masking operator typos and diverging from
+//     upstream — see PR #192 cold-review-2 finding 1.
+func inspectStrategyOverride(reg *bamlutils.ClientRegistry, clientName string) (chain []string, present bool, valid bool) {
+	rc := findRuntimeClient(reg, clientName)
+	if rc == nil || rc.Options == nil {
+		return nil, false, true
+	}
+	raw, ok := rc.Options["strategy"]
+	if !ok {
+		return nil, false, true
+	}
+	parsed := parseRuntimeStrategyOption(raw)
+	if len(parsed) == 0 {
+		return nil, true, false
+	}
+	return parsed, true, true
+}
+
 func resolveFallbackStrategyChain(reg *bamlutils.ClientRegistry, clientName string, introspectedChains map[string][]string) []string {
-	if runtimeClient := findRuntimeClient(reg, clientName); runtimeClient != nil && runtimeClient.Options != nil {
-		if rawStrategy, ok := runtimeClient.Options["strategy"]; ok {
-			if chain := parseRuntimeStrategyOption(rawStrategy); len(chain) > 0 {
-				return chain
-			}
-		}
+	chain, present, valid := inspectStrategyOverride(reg, clientName)
+	if present && !valid {
+		return nil
+	}
+	if chain != nil {
+		return chain
 	}
 	return introspectedChains[clientName]
 }

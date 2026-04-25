@@ -326,6 +326,16 @@ func New(config *Config) (*Pool, error) {
 	if config.SharedStateSeeds != nil {
 		// Snapshot the caller's map so post-construction mutations can't
 		// rewrite seeds mid-flight.
+		//
+		// Negative `start` values are clamped to zero. Upstream BAML
+		// computes `(start as usize) % strategy.len()` — sign-extension
+		// + bitcast, so -1i32 becomes 0xFFFFFFFFFFFFFFFF on 64-bit and
+		// the modulo result depends on the chain length rather than
+		// expressing a deliberate "wrap to last child" semantic. We
+		// intentionally diverge by clamping to a safe deterministic
+		// value rather than mirroring the cast artifact; matches the
+		// in-process Coordinator's NewCoordinatorWithStarts contract.
+		// See PR #192 cold-review-2 finding 3.
 		seeds := make(map[string]uint64, len(config.SharedStateSeeds))
 		for k, v := range config.SharedStateSeeds {
 			if v < 0 {

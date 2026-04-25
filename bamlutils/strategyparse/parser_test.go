@@ -151,11 +151,21 @@ func TestParseStrategyOption_BracketedString_RequiresBrackets(t *testing.T) {
 // for the CodeRabbit follow-up on finding B. BAML upstream's
 // ensure_strategy rejects empty strategy arrays ("strategy must not
 // be empty" in baml-lib/llm-client/src/clients/helpers.rs:790-797);
-// the parser now mirrors that by returning nil for every shape that
-// ends up with zero tokens. Callers gate on len(chain) > 0 to pick
-// between "use the override" and "fall back to the introspected
-// chain", so an empty runtime override no longer silently clobbers a
-// well-configured introspected chain.
+// the parser mirrors that by returning nil for every shape that ends
+// up with zero tokens.
+//
+// Caller contract (PR #192 cold-review-2 finding 1): the parser's
+// nil/empty signal is the input to a *three-state* decision in the
+// orchestrator's inspectStrategyOverride helper. Callers distinguish
+//
+//   - absent (no `strategy` key in Options): use introspected chain.
+//   - valid (parser returned a non-empty chain): honour the override.
+//   - present-but-invalid (key present, parser returned nil/empty):
+//     route the request to legacy with PathReasonInvalidStrategyOverride
+//     so BAML upstream's runtime emits the canonical
+//     "strategy must be an array" / "strategy must not be empty"
+//     error. A previous revision silently used the introspected chain
+//     here, masking operator typos and diverging from BAML upstream.
 func TestParseStrategyOption_EmptyListsCollapseToNil(t *testing.T) {
 	cases := []struct {
 		name  string

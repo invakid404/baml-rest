@@ -1664,15 +1664,30 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 	}
 }
 
-// canonicaliseProvider folds the three recognised round-robin spellings
-// ("baml-roundrobin", "baml-round-robin", "round-robin") onto the canonical
-// "baml-roundrobin" form so downstream maps — ClientProvider, router
-// classification, metadata — only ever see one spelling for the strategy.
-// Any other provider string is returned unchanged.
+// canonicaliseProvider folds the round-robin and fallback strategy
+// aliases that BAML upstream accepts onto the canonical baml-rest
+// spellings so downstream maps — ClientProvider, router
+// classification, metadata — only ever see one spelling per strategy:
+//
+//   - "baml-roundrobin" / "baml-round-robin" / "round-robin"
+//     → "baml-roundrobin"
+//   - "fallback" / "baml-fallback" → "baml-fallback"
+//
+// BAML upstream's clientspec.rs:139-142 accepts both forms for each
+// strategy. The "fallback" alias is the spelling the BAML CLI init
+// template emits (baml_cli_init.baml:118), so operators following the
+// docs hit it routinely. Without this normalisation the BuildRequest
+// classification would treat "fallback" as a single-provider client,
+// fall to legacy via PathReasonUnsupportedProvider, and lose every
+// BuildRequest-only capability for that client (chain plan, mixed-mode
+// child handling, RR-child plumbing). See PR #192 cold-review-2
+// finding 2.
 func canonicaliseProvider(provider string) string {
 	switch provider {
 	case "baml-roundrobin", "baml-round-robin", "round-robin":
 		return "baml-roundrobin"
+	case "baml-fallback", "fallback":
+		return "baml-fallback"
 	}
 	return provider
 }

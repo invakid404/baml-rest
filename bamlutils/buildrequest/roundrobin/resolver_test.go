@@ -1,6 +1,7 @@
 package roundrobin
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -481,6 +482,85 @@ func TestNormalizeProvider_CanonicalisesSpellings(t *testing.T) {
 		if got := NormalizeProvider(in); got != want {
 			t.Errorf("NormalizeProvider(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestResolve_InvalidStrategyOverride_ReturnsSentinel covers PR #192
+// cold-review-2 finding 1 for the round-robin path. A runtime
+// client_registry entry whose `options.strategy` value cannot be
+// parsed as a non-empty bracketed list must surface as
+// ErrInvalidStrategyOverride so ResolveEffectiveClient skips the RR
+// unwrap and lets the request fall through to legacy, where BAML's
+// runtime emits the canonical ensure_strategy error rather than us
+// silently using the introspected chain.
+func TestResolve_InvalidStrategyOverride_ReturnsSentinel(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  any
+	}{
+		{"empty []string", []string{}},
+		{"empty []any", []any{}},
+		{"empty bracket string", "[]"},
+		{"prefix + empty brackets", "strategy []"},
+		{"half-bracketed string", "strategy [A"},
+		{"bare token string", "ClientA"},
+		{"heterogeneous []any", []any{"A", 42}},
+		{"only-blank []string", []string{"", "  "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyRR",
+						Provider: "baml-roundrobin",
+						Options:  map[string]any{"strategy": tc.raw},
+					},
+				},
+			}
+			res, err := Resolve(ResolveInput{
+				ClientName:      "MyRR",
+				Registry:        reg,
+				ClientProviders: map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+				FallbackChains:  map[string][]string{"MyRR": {"A", "B"}},
+				Advancer:        NewCoordinator(),
+			})
+			if !errors.Is(err, ErrInvalidStrategyOverride) {
+				t.Fatalf("expected ErrInvalidStrategyOverride; got err=%v res=%+v", err, res)
+			}
+			if res != nil {
+				t.Errorf("expected nil result alongside sentinel; got %+v", res)
+			}
+		})
+	}
+}
+
+// TestResolve_AbsentStrategyOverride_DoesNotTriggerSentinel guards
+// against the inverse regression: an RR registry entry that lacks the
+// `strategy` key must continue to fall back to the introspected chain
+// rather than tripping ErrInvalidStrategyOverride.
+func TestResolve_AbsentStrategyOverride_DoesNotTriggerSentinel(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{
+				Name:     "MyRR",
+				Provider: "baml-roundrobin",
+				Options:  map[string]any{"temperature": 0.7},
+			},
+		},
+	}
+	res, err := Resolve(ResolveInput{
+		ClientName:      "MyRR",
+		Registry:        reg,
+		ClientProviders: map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+		FallbackChains:  map[string][]string{"MyRR": {"A", "B"}},
+		Advancer:        NewCoordinator(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res == nil || res.Selected == "" {
+		t.Fatalf("expected resolved leaf, got %+v", res)
 	}
 }
 

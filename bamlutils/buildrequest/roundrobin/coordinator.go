@@ -50,7 +50,18 @@ func NewCoordinator() *Coordinator {
 // BAML-level `start` option for the listed clients. Clients in starts
 // skip the fastrand seed and start the rotation at the configured
 // index; clients absent from the map retain the random-start behaviour.
-// Negative seeds are clamped to zero — BAML's rotation index is unsigned.
+//
+// baml-rest clamps negative `start` values to zero. Upstream BAML
+// computes `(start as usize) % strategy.len()`
+// (engine/baml-runtime/src/internal/llm_client/strategy/roundrobin.rs:64-65),
+// which is sign-extension + bitcast: -1i32 on 64-bit becomes
+// 0xFFFFFFFFFFFFFFFF, then modulo strategy.len() yields a value that
+// depends on the chain length (1 for len=2, 0 for len=3, …). That's a
+// quirk of the unsigned cast, not a deliberate "wrap to last child"
+// semantic — no operator types `start -1` expecting predictable
+// behaviour. We intentionally diverge by clamping to a safe
+// deterministic value rather than mirroring the cast artifact. See
+// PR #192 cold-review-2 finding 3.
 //
 // The map is copied; callers may mutate the input afterwards without
 // affecting the coordinator.
