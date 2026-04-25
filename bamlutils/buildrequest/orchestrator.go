@@ -826,12 +826,24 @@ func BuildLegacyMetadataPlanForClient(
 			_ = providers
 		}
 	case "baml-roundrobin":
-		// Should not normally reach here — RoundRobin is resolved upstream
-		// before the legacy plan is built. Record it defensively in case
-		// the RR resolver returned an error (cycle / empty chain) and the
-		// caller fell through with the unresolved client name.
+		// RoundRobin is normally resolved upstream before the legacy
+		// plan is built. We reach here in two cases:
+		//   - The RR resolver returned an error (cycle / empty chain)
+		//     and the caller fell through with the unresolved client
+		//     name.
+		//   - ResolveEffectiveClient short-circuited an invalid runtime
+		//     strategy override by returning the un-unwrapped client
+		//     (cold-review-2 finding 1). In that case the routing is
+		//     correct (legacy) but the *emitted metadata* needs to
+		//     reflect WHY — operators reading the X-BAML-Path-Reason
+		//     header should see the invalid-override classification,
+		//     not the generic RR-legacy reason.
 		plan.Strategy = "baml-roundrobin"
-		plan.PathReason = PathReasonRoundRobin
+		if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
+			plan.PathReason = PathReasonInvalidStrategyOverride
+		} else {
+			plan.PathReason = PathReasonRoundRobin
+		}
 	default:
 		plan.Provider = provider
 		if isProviderSupported != nil && !isProviderSupported(provider) {

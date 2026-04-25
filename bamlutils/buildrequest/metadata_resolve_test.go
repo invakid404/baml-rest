@@ -607,6 +607,142 @@ func TestNormalizeStrategyProvider_FoldsAliases(t *testing.T) {
 	}
 }
 
+// TestBuildLegacyMetadataPlanForClient_RRInvalidOverride covers the
+// codegen-side metadata seam (codegen.go:2631-2643) for PR #192
+// cold-review-2 finding 1. The generated dispatcher reaches the
+// legacy branch with __effective == the un-unwrapped RR client when
+// ResolveEffectiveClient short-circuited an invalid strategy override
+// (see ResolveEffectiveClient at orchestrator.go:344-365 and the
+// translation of ErrInvalidStrategyOverride). The plan emitted there
+// must surface PathReasonInvalidStrategyOverride so operators
+// reading X-BAML-Path-Reason see the actual classification — without
+// this, the request is correctly routed but the metadata reports the
+// generic PathReasonRoundRobin "roundrobin-legacy-only" reason and
+// hides the operator typo.
+//
+// Codex sign-off-5 explicitly called out the missing helper-level
+// regression for this seam: ResolveProviderWithReason is correctly
+// patched, but the generated legacy dispatch uses
+// BuildLegacyMetadataPlanForClient which has its own RR arm.
+func TestBuildLegacyMetadataPlanForClient_RRInvalidOverride(t *testing.T) {
+	for _, tc := range invalidStrategyOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyRR",
+						Provider: "baml-roundrobin",
+						Options:  map[string]any{"strategy": tc.raw},
+					},
+				},
+			}
+			plan := BuildLegacyMetadataPlanForClient(
+				reg,
+				"MyRR",
+				"baml-roundrobin",
+				map[string][]string{"MyRR": {"A", "B"}},
+				map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+				IsProviderSupported,
+				nil,
+			)
+			if plan.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", plan.Path)
+			}
+			if plan.Strategy != "baml-roundrobin" {
+				t.Errorf("strategy: got %q, want baml-roundrobin", plan.Strategy)
+			}
+			if plan.PathReason != PathReasonInvalidStrategyOverride {
+				t.Errorf("reason: got %q, want %q (legacy plan must surface invalid-override over the RR-legacy default)", plan.PathReason, PathReasonInvalidStrategyOverride)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_RRAbsentOverrideKeepsRoundRobinReason
+// is the inverse-regression guard. A registry entry without a
+// strategy key (or no registry at all) must continue to surface
+// PathReasonRoundRobin — the invalid-override detection must not
+// regress the standard RR-legacy classification. Mirrors the
+// ResolveProviderWithReason guard one layer up.
+func TestBuildLegacyMetadataPlanForClient_RRAbsentOverrideKeepsRoundRobinReason(t *testing.T) {
+	cases := []struct {
+		name string
+		reg  *bamlutils.ClientRegistry
+	}{
+		{name: "no registry", reg: nil},
+		{
+			name: "registry without entry",
+			reg: &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "Other", Provider: "openai"},
+				},
+			},
+		},
+		{
+			name: "registry entry with no strategy key",
+			reg: &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "MyRR", Options: map[string]any{"temperature": 0.5}},
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := BuildLegacyMetadataPlanForClient(
+				tc.reg,
+				"MyRR",
+				"baml-roundrobin",
+				map[string][]string{"MyRR": {"A", "B"}},
+				map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+				IsProviderSupported,
+				nil,
+			)
+			if plan.PathReason != PathReasonRoundRobin {
+				t.Errorf("reason: got %q, want %q (absent override must yield RR-legacy reason)", plan.PathReason, PathReasonRoundRobin)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_FallbackInvalidOverride covers
+// the same emitted-metadata seam for fallback strategies. The fallback
+// arm delegates to ResolveFallbackChainForClientWithReason which
+// already returns PathReasonInvalidStrategyOverride; this regression
+// test pins that contract end-to-end through the legacy plan builder
+// so a future refactor can't accidentally drop the reason on the
+// floor (e.g. by overwriting plan.PathReason after the chain returns).
+func TestBuildLegacyMetadataPlanForClient_FallbackInvalidOverride(t *testing.T) {
+	for _, tc := range invalidStrategyOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyFallback",
+						Provider: "baml-fallback",
+						Options:  map[string]any{"strategy": tc.raw},
+					},
+				},
+			}
+			plan := BuildLegacyMetadataPlanForClient(
+				reg,
+				"MyFallback",
+				"baml-fallback",
+				map[string][]string{"MyFallback": {"A", "B"}},
+				map[string]string{"MyFallback": "baml-fallback", "A": "openai", "B": "anthropic"},
+				IsProviderSupported,
+				nil,
+			)
+			if plan.Strategy != "baml-fallback" {
+				t.Errorf("strategy: got %q, want baml-fallback", plan.Strategy)
+			}
+			if plan.PathReason != PathReasonInvalidStrategyOverride {
+				t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonInvalidStrategyOverride)
+			}
+		})
+	}
+}
+
 func TestEncodeRetryPolicy_Formats(t *testing.T) {
 	cases := []struct {
 		name string
