@@ -489,13 +489,32 @@ func ResolveProviderWithReason(
 		// "" out of ResolveProvider, but the latter is a malformed
 		// runtime override that BAML's ClientProvider::from_str
 		// rejects (clientspec.rs:119-144); operators reading
-		// X-BAML-Path-Reason should see the actual cause. The check
-		// covers both the primary and the function's default client
-		// since either could carry a present-empty provider key.
-		if hasInvalidProviderOverride(reg, clientName) ||
-			(reg != nil && reg.Primary != nil && *reg.Primary != "" && hasInvalidProviderOverride(reg, *reg.Primary)) {
+		// X-BAML-Path-Reason should see the actual cause.
+		//
+		// The check covers all three lookup keys ResolveProvider
+		// consults so a present-empty entry on any of them surfaces
+		// the right reason:
+		//
+		//   - clientName (= primary when set, else defaultClientName):
+		//     the client metadata reports.
+		//   - reg.Primary: the primary override itself, in case the
+		//     primary cache hid a present-empty provider.
+		//   - defaultClientName: the function's declared default,
+		//     which ResolveProvider falls through to when the primary
+		//     entry has no provider key. CodeRabbit verdict-9 caught
+		//     this gap: with primary set and no primary `clients[]`
+		//     entry, ResolveProvider returns "" from the default
+		//     lookup but the classifier had no checkpoint for it,
+		//     reporting PathReasonEmptyProvider instead of the
+		//     malformed-override reason.
+		switch {
+		case hasInvalidProviderOverride(reg, clientName):
 			res.PathReason = PathReasonInvalidProviderOverride
-		} else {
+		case reg != nil && reg.Primary != nil && *reg.Primary != "" && hasInvalidProviderOverride(reg, *reg.Primary):
+			res.PathReason = PathReasonInvalidProviderOverride
+		case hasInvalidProviderOverride(reg, defaultClientName):
+			res.PathReason = PathReasonInvalidProviderOverride
+		default:
 			res.PathReason = PathReasonEmptyProvider
 		}
 	case "baml-fallback":

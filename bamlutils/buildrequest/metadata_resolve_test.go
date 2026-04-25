@@ -911,6 +911,86 @@ func TestResolveProviderWithReason_PresentEmptyProvider(t *testing.T) {
 	})
 }
 
+// TestResolveProviderWithReason_PrimarySetDefaultClientPresentEmpty
+// covers PR #192 cold-review-2 verdict-9: when reg.Primary is set but
+// has no `clients[]` entry (or the entry omits the provider key) and
+// the function's defaultClientName entry carries an explicit
+// "provider":"", ResolveProvider falls through to the default-client
+// lookup and returns "". The classifier must recognise this as the
+// invalid-override case rather than reporting PathReasonEmptyProvider.
+//
+// Repro shape from the verdict: with primary="PrimaryClient" (no
+// primary entry) and clients["DefaultClient"] = present-empty,
+// ResolveProviderWithReason previously reported PathReasonEmptyProvider
+// because both checkpoints reduced to the primary key
+// ("PrimaryClient", which has no entry). The new defaultClientName
+// checkpoint catches it.
+func TestResolveProviderWithReason_PrimarySetDefaultClientPresentEmpty(t *testing.T) {
+	cases := []struct {
+		name    string
+		clients []*bamlutils.ClientProperty
+	}{
+		{
+			name: "no primary entry at all",
+			clients: []*bamlutils.ClientProperty{
+				{Name: "DefaultClient", Provider: "", ProviderSet: true},
+			},
+		},
+		{
+			name: "primary entry with provider omitted",
+			clients: []*bamlutils.ClientProperty{
+				{Name: "PrimaryClient"}, // presence-only, no provider key
+				{Name: "DefaultClient", Provider: "", ProviderSet: true},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := "PrimaryClient"
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Primary: &primary,
+					Clients: tc.clients,
+				},
+			}
+			res := ResolveProviderWithReason(adapter, "DefaultClient", "openai", IsProviderSupported)
+			if res.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", res.Path)
+			}
+			if res.PathReason != PathReasonInvalidProviderOverride {
+				t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidProviderOverride)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlan_PrimarySetDefaultClientPresentEmpty pins
+// the same fix end-to-end through BuildLegacyMetadataPlan, which is
+// the helper the verdict identified as the affected exported API
+// (BuildLegacyMetadataPlanForClient is the codegen-side path and
+// receives the resolved client name directly, so it doesn't have the
+// primary-vs-default ambiguity). Belt-and-suspenders coverage.
+func TestBuildLegacyMetadataPlan_PrimarySetDefaultClientPresentEmpty(t *testing.T) {
+	primary := "PrimaryClient"
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Primary: &primary,
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "DefaultClient", Provider: "", ProviderSet: true},
+			},
+		},
+	}
+	plan := BuildLegacyMetadataPlan(adapter, "DefaultClient", "openai", nil, nil, IsProviderSupported, nil)
+	if plan.Path != "legacy" {
+		t.Errorf("path: got %q, want legacy", plan.Path)
+	}
+	if plan.PathReason != PathReasonInvalidProviderOverride {
+		t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonInvalidProviderOverride)
+	}
+}
+
 // TestResolveProviderWithReason_AbsentProviderKeepsIntrospected is the
 // inverse-regression guard. A registry entry that omits the provider
 // key (strategy-only override, presence-only dynamic entry) must keep
