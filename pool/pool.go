@@ -1823,8 +1823,8 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 // (pool.go:1306). These goroutines are not registered with `p.wg` —
 // the design assumes Close is called when the caller wants every
 // worker subprocess killed *now*, not a graceful drain. Use
-// GracefulShutdown for a drain that waits for in-flight requests to
-// finish, then calls Close.
+// Shutdown(ctx) for a drain that waits for in-flight requests to
+// finish (or the context to expire), then calls Close.
 //
 // Race-safety with concurrent CallStream goroutines:
 // SharedStateStore methods (FetchAdd, DropScope, etc.) remain safe to

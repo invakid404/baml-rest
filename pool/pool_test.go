@@ -3606,22 +3606,62 @@ func TestCallStreamRealContentTriggersResetOnRetry(t *testing.T) {
 		t.Fatalf("CallStream setup failed: %v", err)
 	}
 
-	var sawReset bool
-	var sawFinal bool
+	// Order-aware verification (CodeRabbit verdict-23 finding F2):
+	// the previous "any Reset=true survives" check would pass even if
+	// a regression set Reset on the retry's planned metadata frame
+	// instead of the first non-metadata frame. The production rule is
+	// stricter — Reset must skip planned metadata and land on the
+	// next real result (pool/pool.go:1469-1484). The state machine
+	// observes:
+	//
+	//   1) the pre-retry partial (real content forwarded, sets
+	//      sawPreRetryStream and the retry-needs-reset condition);
+	//   2) zero or more metadata frames from the retry (planned), all
+	//      of which MUST have Reset=false;
+	//   3) the next non-metadata frame (Final in this fixture), which
+	//      MUST carry Reset=true.
+	var sawPreRetryStream, sawFinal, awaitingResetTarget bool
 	for r := range results {
-		if r.Reset {
-			sawReset = true
-		}
-		if r.Kind == workerplugin.StreamResultKindFinal {
+		switch {
+		case r.Kind == workerplugin.StreamResultKindMetadata:
+			if r.Reset {
+				t.Errorf("planned-metadata frame must never carry Reset=true; got Reset on metadata payload %q", string(r.Data))
+			}
+		case r.Kind == workerplugin.StreamResultKindStream:
+			// First stream partial is the pre-retry one — record so
+			// the retry's first non-metadata frame is the next one we
+			// observe.
+			if !sawPreRetryStream {
+				sawPreRetryStream = true
+				if r.Reset {
+					t.Error("pre-retry stream partial must not carry Reset=true; Reset is for the post-retry recovery frame")
+				}
+				awaitingResetTarget = true
+			} else if awaitingResetTarget {
+				if !r.Reset {
+					t.Error("first post-retry non-metadata frame must carry Reset=true to discard accumulated streamwriter state")
+				}
+				awaitingResetTarget = false
+			}
+		case r.Kind == workerplugin.StreamResultKindFinal:
 			sawFinal = true
+			if awaitingResetTarget {
+				if !r.Reset {
+					t.Error("first post-retry non-metadata frame must carry Reset=true (final-after-retry path)")
+				}
+				awaitingResetTarget = false
+			}
 		}
 		workerplugin.ReleaseStreamResult(r)
 	}
 
+	if !sawPreRetryStream {
+		t.Fatal("expected a pre-retry stream partial; the test fixture forwards real content before the unavailable error")
+	}
 	if !sawFinal {
 		t.Fatal("expected a Final result after retry")
 	}
-	if !sawReset {
-		t.Error("Reset must be injected when real partial content was forwarded pre-retry")
+	if awaitingResetTarget {
+		t.Fatal("post-retry recovery frame never arrived; Reset injection point was missed")
 	}
 }

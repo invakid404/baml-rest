@@ -1561,6 +1561,20 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 					if len(chain) > 0 {
 						cfg.fallbackChains[name] = chain
 					}
+					// Post-`]` suffix may carry a `start N` declaration
+					// (and the closing `}` of the options block). The
+					// extractRoundRobinStart trim handles trailing
+					// `}`/`]` so a tail like ` start 1 }` parses
+					// correctly. Mirrors the inline `options { ...
+					// strategy [...] start 1 }` path. CodeRabbit
+					// verdict-23 finding F1.
+					if optionsDepth == 1 {
+						if closeIdx := strings.LastIndex(strippedLine, "]"); closeIdx >= 0 {
+							if startVal, ok := extractRoundRobinStart(strippedLine[closeIdx+1:]); ok {
+								cfg.roundRobinStart[name] = startVal
+							}
+						}
+					}
 				}
 				// Still need to update depth — the "]" line might also close options
 				stripped := stripInlineComment(stripStringLiterals(line))
@@ -1724,6 +1738,15 @@ func extractRoundRobinStart(line string) (int, bool) {
 			continue
 		}
 		raw := cleanBamlValue(strings.TrimPrefix(trimmed, "start "))
+		// Strip trailing block / list closers and whitespace before
+		// ParseInt: BAML's grammar
+		// (engine/baml-lib/ast/src/parser/datamodel.pest:172-180)
+		// allows config-map entries to be followed directly by the
+		// closing `}`, e.g. `options { strategy [...] start 1 }` on
+		// the final line of a multiline options block. Without this
+		// trim, ParseInt sees "1 }" and silently drops a valid
+		// declaration. CodeRabbit verdict-23 finding F1.
+		raw = strings.TrimRight(raw, " \t}]")
 		if raw == "" {
 			continue
 		}

@@ -1276,6 +1276,53 @@ func TestParseClientBlock_RoundRobinStart_InvalidIgnored(t *testing.T) {
 	}
 }
 
+// TestParseClientBlock_RoundRobinStart_TrailingCloseBrace pins
+// CodeRabbit verdict-23 finding F1: BAML's grammar allows a
+// config-map entry to be followed directly by the closing `}` of the
+// options block (datamodel.pest:172-180), so a multiline options
+// block can legally end with `start 1 }` on the same line.
+// Pre-fix, ParseInt saw "1 }" verbatim and silently dropped a valid
+// declaration. Post-fix, the trailing close-brace and whitespace are
+// trimmed before parsing.
+func TestParseClientBlock_RoundRobinStart_TrailingCloseBrace(t *testing.T) {
+	t.Run("start on its own line ending with close-brace", func(t *testing.T) {
+		cfg := newTestBamlConfig()
+		block := []string{
+			"provider baml-roundrobin",
+			"options {",
+			"    strategy [A, B]",
+			"    start 1 }",
+		}
+		parseClientBlock(cfg, "RR", block)
+		if got, ok := cfg.roundRobinStart["RR"]; !ok || got != 1 {
+			t.Fatalf("roundRobinStart[RR]: got (%d, %v), want (1, true) — `start N }` final-line shape must parse", got, ok)
+		}
+	})
+
+	t.Run("start on closing-bracket line after multiline strategy", func(t *testing.T) {
+		// `] start 1 }` appears on the line that closes a multiline
+		// strategy list. Both the strategy and the start must be
+		// captured.
+		cfg := newTestBamlConfig()
+		block := []string{
+			"provider baml-roundrobin",
+			"options {",
+			"    strategy [",
+			"        A,",
+			"        B,",
+			"    ] start 1 }",
+		}
+		parseClientBlock(cfg, "RR", block)
+		if got, ok := cfg.roundRobinStart["RR"]; !ok || got != 1 {
+			t.Fatalf("roundRobinStart[RR]: got (%d, %v), want (1, true) — `] start N }` post-list-close suffix must parse", got, ok)
+		}
+		chain := cfg.fallbackChains["RR"]
+		if len(chain) != 2 || chain[0] != "A" || chain[1] != "B" {
+			t.Fatalf("fallbackChains[RR]: got %v, want [A B] — multiline strategy must still parse alongside the post-`]` start", chain)
+		}
+	})
+}
+
 // TestParseClientBlock_RoundRobinStart_OutOfI32Ignored pins CodeRabbit
 // verdict-21 finding 7: extractRoundRobinStart now parses with bit
 // width 32 so values that fit in a Go int on a 64-bit platform but not

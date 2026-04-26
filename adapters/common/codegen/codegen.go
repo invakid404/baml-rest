@@ -2704,23 +2704,41 @@ func generate(opts Options) {
 			// been gated on IsProviderSupported, so the stream
 			// predicate is the correct one. Stream modes always use
 			// the stream predicate.
+			// CodeRabbit verdict-23 finding F4: the verdict-21 finding
+			// 3 fix only checked the compile-time hasBuildRequest
+			// flag. But every BuildRequest landing block is also
+			// gated at runtime on UseBuildRequest() (codegen.go:2403,
+			// 2495, 2581). When BuildRequest is compiled in but the
+			// runtime gate returns false, /call and /call-with-raw
+			// skip both the non-streaming Request path AND the stream
+			// bridge, falling directly to final legacy. In that path
+			// no stream-bridge re-resolution happened, so the
+			// metadata predicate must be the call-side
+			// IsCallProviderSupported — the same shape verdict-21
+			// finding 3 already pinned for the no-hasBuildRequest
+			// branch.
+			//
+			// Emit a runtime gate inside the hasBuildRequest=true
+			// arm: default to IsProviderSupported (correct when the
+			// stream bridge actually ran), and override to
+			// IsCallProviderSupported only when mode is a call mode
+			// AND UseBuildRequest() returned false. The
+			// no-hasBuildRequest arm keeps its original
+			// compile-time-only override since there is no stream
+			// bridge to re-resolve in any case.
+			jen.Id("__legacyPredicate").Op(":=").Qual(common.BuildRequestPkg, "IsProviderSupported"),
 			func() jen.Code {
+				callModeCond := jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
+					Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")
 				if hasBuildRequest {
-					return jen.Id("__legacyPredicate").Op(":=").Qual(common.BuildRequestPkg, "IsProviderSupported")
+					return jen.If(
+						jen.Parens(callModeCond).
+							Op("&&").Op("!").Qual(common.BuildRequestPkg, "UseBuildRequest").Call(),
+					).Block(
+						jen.Id("__legacyPredicate").Op("=").Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
+					)
 				}
-				return jen.Id("__legacyPredicate").Op(":=").Qual(common.BuildRequestPkg, "IsProviderSupported")
-			}(),
-			func() jen.Code {
-				if hasBuildRequest {
-					// Stream bridge present — the predicate above is
-					// already the right one. Emit a no-op so the
-					// generated code stays linear.
-					return jen.Null()
-				}
-				return jen.If(
-					jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
-						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw"),
-				).Block(
+				return jen.If(callModeCond).Block(
 					jen.Id("__legacyPredicate").Op("=").Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
 				)
 			}(),
