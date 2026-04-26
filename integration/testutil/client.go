@@ -968,6 +968,29 @@ func CreateTestClient(mockLLMURL string, scenarioID string) *ClientRegistry {
 	}
 }
 
+// CreateAnthropicTestClient creates a client registry that points to the mock
+// LLM server using the Anthropic provider. The mock server's "/v1/messages"
+// route handles Anthropic-shaped requests; BAML's Anthropic client appends
+// "/v1/messages" to base_url so mockLLMURL should be the bare scheme://host
+// (e.g. "http://mockllm:8080"), without a "/v1" suffix.
+func CreateAnthropicTestClient(mockLLMURL string, scenarioID string) *ClientRegistry {
+	return &ClientRegistry{
+		Primary: "TestClient",
+		Clients: []*ClientProperty{
+			{
+				Name:     "TestClient",
+				Provider: "anthropic",
+				Options: map[string]any{
+					"model":      scenarioID,
+					"base_url":   mockLLMURL,
+					"api_key":    "test-key",
+					"max_tokens": 1024,
+				},
+			},
+		},
+	}
+}
+
 // DynamicContentPart represents a single part within a multi-part message content.
 type DynamicContentPart struct {
 	Type  string      `json:"type"`

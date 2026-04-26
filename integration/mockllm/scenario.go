@@ -19,6 +19,16 @@ type Scenario struct {
 	// Content is the actual LLM response content to return
 	Content string `json:"content"`
 
+	// Thinking is provider-specific reasoning/thinking content emitted as
+	// a separate content block (Anthropic) ahead of Content. Empty by
+	// default, in which case the response carries only Content. Currently
+	// honoured by AnthropicProvider:
+	//   - non-streaming: emits a "thinking" block before the "text" block
+	//   - streaming: emits content_block_start/delta/stop for thinking at
+	//     content_block index 0, then the text block at index 1
+	// Other providers ignore this field.
+	Thinking string `json:"thinking,omitempty"`
+
 	// ChunkSize is the number of characters per SSE chunk (0 = single non-streaming response)
 	ChunkSize int `json:"chunk_size"`
 

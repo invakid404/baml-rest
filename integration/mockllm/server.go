@@ -51,6 +51,11 @@ func NewServer(addr string) *Server {
 	app.Post("/v1/chat/completions", s.handleChatCompletions)
 	app.Post("/chat/completions", s.handleChatCompletions)
 
+	// Anthropic Messages API endpoint. The Anthropic provider in BAML appends
+	// "/v1/messages" to the configured base_url, so client base_url should be
+	// the bare scheme://host of the mock server (e.g. http://mockllm:8080).
+	app.Post("/v1/messages", s.handleAnthropicMessages)
+
 	s.app = app
 
 	return s
@@ -224,15 +229,44 @@ func (s *Server) handleChatCompletions(c fiber.Ctx) error {
 
 	s.log("chat completions request: model=%s, stream=%v", req.Model, req.Stream)
 
+	return s.dispatchScenario(c, body, req.Model, req.Stream)
+}
+
+// anthropicMessagesRequest is the minimal Anthropic Messages API request
+// shape needed for scenario routing. We only use Model (for scenario lookup)
+// and Stream; everything else is consumed by the response shape provided by
+// AnthropicProvider so we don't deserialize it here.
+type anthropicMessagesRequest struct {
+	Model  string `json:"model"`
+	Stream bool   `json:"stream"`
+}
+
+func (s *Server) handleAnthropicMessages(c fiber.Ctx) error {
+	body := append([]byte(nil), c.Body()...)
+
+	var req anthropicMessagesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
+	}
+
+	s.log("anthropic messages request: model=%s, stream=%v", req.Model, req.Stream)
+
+	return s.dispatchScenario(c, body, req.Model, req.Stream)
+}
+
+// dispatchScenario is the shared scenario lookup + provider dispatch path
+// used by both the OpenAI and Anthropic endpoints. The endpoint-specific
+// handlers stay narrow (just request decoding) and delegate the rest here.
+func (s *Server) dispatchScenario(c fiber.Ctx, body []byte, model string, stream bool) error {
 	// Look up scenario by model name and get effective delay for this request
-	scenario, effectiveDelay, ok := s.store.GetAndAdvance(req.Model)
+	scenario, effectiveDelay, ok := s.store.GetAndAdvance(model)
 	if !ok {
-		s.log("scenario not found for model: %s", req.Model)
-		return c.Status(fiber.StatusNotFound).SendString(fmt.Sprintf("no scenario registered for model: %s", req.Model))
+		s.log("scenario not found for model: %s", model)
+		return c.Status(fiber.StatusNotFound).SendString(fmt.Sprintf("no scenario registered for model: %s", model))
 	}
 
 	// Capture request body for test inspection
-	s.store.CaptureRequest(req.Model, body)
+	s.store.CaptureRequest(model, body)
 
 	s.log("effective initial delay for this request: %dms", effectiveDelay)
 
@@ -262,7 +296,7 @@ func (s *Server) handleChatCompletions(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).SendString("Internal Server Error")
 	}
 
-	if req.Stream {
+	if stream {
 		return s.handleStreamingResponse(c, scenario, provider, effectiveDelay)
 	}
 
@@ -337,7 +371,18 @@ func (s *Server) handleNonStreamingResponse(c fiber.Ctx, scenario *Scenario, pro
 		}
 	}
 
-	data, err := provider.FormatNonStreaming(scenario.Content)
+	// Anthropic with scenario.Thinking emits a leading thinking content block
+	// before the text block. The base Provider interface stays text-only; the
+	// thinking-aware shape is reached through the concrete Anthropic type.
+	var (
+		data []byte
+		err  error
+	)
+	if anthropic, ok := provider.(*AnthropicProvider); ok && scenario.Thinking != "" {
+		data, err = anthropic.FormatNonStreamingWithThinking(scenario.Content, scenario.Thinking)
+	} else {
+		data, err = provider.FormatNonStreaming(scenario.Content)
+	}
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString(fmt.Sprintf("failed to format response: %v", err))
 	}
