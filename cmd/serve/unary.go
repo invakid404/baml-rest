@@ -18,6 +18,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/internal/httplogger"
 	"github.com/invakid404/baml-rest/pool"
+	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/rs/zerolog"
 )
 
@@ -25,6 +26,15 @@ const defaultUnaryPort = 8081
 
 func init() {
 	serveCmd.Flags().IntVar(&unaryPort, "unary-port", defaultUnaryPort, "Port for the unary server (0 = disabled). Serves /call/*, /call-with-raw/*, /parse/* on a net/http server with reliable client-disconnect cancellation")
+}
+
+// unaryCaller is the subset of *pool.Pool the unary chi handlers depend
+// on. Declared as an interface so tests can construct mocks without
+// spinning up a real worker pool. *pool.Pool satisfies it via Pool.Call
+// (signature matches by structural typing). Production routing in
+// newUnaryRouter passes the pool directly.
+type unaryCaller interface {
+	Call(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (*workerplugin.CallResult, error)
 }
 
 // newUnaryServer creates the chi-based unary HTTP server if unaryPort > 0.
@@ -165,7 +175,7 @@ func makeChiParseHandler(p *pool.Pool, methodName string) http.HandlerFunc {
 	}
 }
 
-func makeChiDynamicCallHandler(p *pool.Pool, streamMode bamlutils.StreamMode) http.HandlerFunc {
+func makeChiDynamicCallHandler(p unaryCaller, streamMode bamlutils.StreamMode) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
@@ -194,6 +204,14 @@ func makeChiDynamicCallHandler(p *pool.Pool, streamMode bamlutils.StreamMode) ht
 		}
 
 		result, err := p.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
+		// Surface routing observability headers even on the error path
+		// — Pool.Call preserves accumulated planned/outcome metadata in
+		// the result for error tails. Mirrors the static chi handler
+		// above and the fiber dynamic handler in cmd/serve/main.go.
+		// See PR #192 verdict-18 follow-up.
+		if result != nil {
+			setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
+		}
 		if err != nil {
 			writeChiWorkerError(w, r, err, "failed to process request")
 			return
@@ -205,8 +223,6 @@ func makeChiDynamicCallHandler(p *pool.Pool, streamMode bamlutils.StreamMode) ht
 			writeChiJSONError(w, r, "failed to process response", http.StatusInternalServerError)
 			return
 		}
-
-		setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 		w.Header().Set("Content-Type", "application/json")
 		if streamMode.NeedsRaw() {
 			w.WriteHeader(http.StatusOK)
