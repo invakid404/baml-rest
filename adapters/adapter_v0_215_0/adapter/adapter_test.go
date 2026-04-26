@@ -32,10 +32,10 @@ func TestSetClientRegistry_NilRegistryClearsState(t *testing.T) {
 	if got := a.ClientRegistryProvider(); got != "openai" {
 		t.Fatalf("seed: ClientRegistryProvider got %q, want openai", got)
 	}
-	if names := a.UpstreamClientNames(); len(names) != 1 {
+	if names := upstreamClientNamesSnapshot(a); len(names) != 1 {
 		t.Fatalf("seed: UpstreamClientNames len = %d, want 1", len(names))
 	}
-	if names := a.LegacyUpstreamClientNames(); len(names) != 1 {
+	if names := legacyUpstreamClientNamesSnapshot(a); len(names) != 1 {
 		t.Fatalf("seed: LegacyUpstreamClientNames len = %d, want 1", len(names))
 	}
 
@@ -54,10 +54,10 @@ func TestSetClientRegistry_NilRegistryClearsState(t *testing.T) {
 	if got := a.ClientRegistryProvider(); got != "" {
 		t.Errorf("ClientRegistryProvider(): got %q, want empty (stale value not cleared)", got)
 	}
-	if names := a.UpstreamClientNames(); len(names) != 0 {
+	if names := upstreamClientNamesSnapshot(a); len(names) != 0 {
 		t.Errorf("UpstreamClientNames(): got %v, want empty (stale list leaked across nil reset)", names)
 	}
-	if names := a.LegacyUpstreamClientNames(); len(names) != 0 {
+	if names := legacyUpstreamClientNamesSnapshot(a); len(names) != 0 {
 		t.Errorf("LegacyUpstreamClientNames(): got %v, want empty (stale legacy list leaked across nil reset)", names)
 	}
 }
@@ -83,7 +83,7 @@ func TestSetClientRegistry_SkipsNilClientEntries(t *testing.T) {
 	if err := a.SetClientRegistry(reg); err != nil {
 		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
 	}
-	got := a.UpstreamClientNames()
+	got := upstreamClientNamesSnapshot(a)
 	if len(got) != 1 || got[0] != "RealClient" {
 		t.Errorf("UpstreamClientNames(): got %v, want [RealClient] (nil entries must be skipped)", got)
 	}
@@ -261,10 +261,10 @@ func TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly(t *testing.T)
 			if err := a.SetClientRegistry(reg); err != nil {
 				t.Fatalf("SetClientRegistry: unexpected error: %v", err)
 			}
-			if names := a.UpstreamClientNames(); len(names) != 0 {
+			if names := upstreamClientNamesSnapshot(a); len(names) != 0 {
 				t.Errorf("UpstreamClientNames(): got %v, want empty (BuildRequest view must drop explicit strategy parent)", names)
 			}
-			legacyNames := a.LegacyUpstreamClientNames()
+			legacyNames := legacyUpstreamClientNamesSnapshot(a)
 			if len(legacyNames) != 1 || legacyNames[0] != tc.client.Name {
 				t.Errorf("LegacyUpstreamClientNames(): got %v, want [%s] (legacy view must preserve explicit strategy parent)", legacyNames, tc.client.Name)
 			}
@@ -290,10 +290,10 @@ func TestSetClientRegistryDropsInertPresenceOnlyParentInBothBamlViews(t *testing
 	if err := a.SetClientRegistry(reg); err != nil {
 		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
 	}
-	if names := a.UpstreamClientNames(); len(names) != 0 {
+	if names := upstreamClientNamesSnapshot(a); len(names) != 0 {
 		t.Errorf("UpstreamClientNames(): got %v, want empty (inert presence-only parent must be dropped)", names)
 	}
-	if names := a.LegacyUpstreamClientNames(); len(names) != 0 {
+	if names := legacyUpstreamClientNamesSnapshot(a); len(names) != 0 {
 		t.Errorf("LegacyUpstreamClientNames(): got %v, want empty (inert presence-only parent must be dropped from legacy view too)", names)
 	}
 }

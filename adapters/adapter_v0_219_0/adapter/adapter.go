@@ -110,21 +110,6 @@ type BamlAdapter struct {
 	legacyUpstreamClientNames []string
 }
 
-// UpstreamClientNames returns the names AddLlmClient was called for
-// on the BuildRequest-safe registry during the most recent
-// SetClientRegistry call. Test-only observability — see the
-// upstreamClientNames field doc; do not consume from production code.
-func (b *BamlAdapter) UpstreamClientNames() []string {
-	return append([]string(nil), b.upstreamClientNames...)
-}
-
-// LegacyUpstreamClientNames returns the names AddLlmClient was called
-// for on the legacy registry view. Test-only observability companion
-// to UpstreamClientNames; see cold-review-4 + Option C.
-func (b *BamlAdapter) LegacyUpstreamClientNames() []string {
-	return append([]string(nil), b.legacyUpstreamClientNames...)
-}
-
 func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
 	b.retryConfig = config
 }
