@@ -137,6 +137,11 @@ type CallRequest struct {
 type BAMLOptions struct {
 	ClientRegistry *ClientRegistry `json:"client_registry,omitempty"`
 	TypeBuilder    *TypeBuilder    `json:"type_builder,omitempty"`
+	// IncludeThinkingInRaw mirrors bamlutils.BamlOptions.IncludeThinkingInRaw.
+	// Default false matches BAML's RawLLMResponse() text-only contract; set
+	// true to opt the request into surfacing provider-specific reasoning
+	// content (e.g. Anthropic thinking blocks) in /with-raw's `raw` field.
+	IncludeThinkingInRaw bool `json:"include_thinking_in_raw,omitempty"`
 }
 
 // ClientRegistry allows overriding client configuration.
