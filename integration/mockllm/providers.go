@@ -195,9 +195,17 @@ func (p *AnthropicProvider) ContentType(streaming bool) string {
 // Anthropic streaming response. Used by streamAnthropicWithThinking which
 // decouples the message prologue from FormatChunk so a thinking content
 // block can be emitted before the text content block.
+//
+// The "usage" object is required by AnthropicMessageResponse in BAML's
+// types.rs (input_tokens and output_tokens are non-optional u64 fields);
+// omitting it causes MessageChunk::deserialize to fail on pre-0.218 BAML
+// runtimes where stream.rs enforces a "stream ended cleanly" check. On
+// 0.218+ a missing usage just produces a single LLMFailure event in the
+// middle of the stream, which is harmless because subsequent text-block
+// events still drive the accumulator forward.
 func (p *AnthropicProvider) AnthropicMessageStart() string {
 	return `event: message_start` + "\n" +
-		`data: {"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","content":[],"model":"test-model"}}` + "\n\n"
+		`data: {"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","content":[],"model":"test-model","usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n"
 }
 
 // AnthropicBlockStart emits a content_block_start event for the given block
@@ -249,8 +257,15 @@ func (p *AnthropicProvider) AnthropicBlockStop(blockIndex int) string {
 // that closes an Anthropic streaming response. Equivalent to the existing
 // FormatDone() output but exposed as a named primitive so the
 // thinking-aware stream path can reuse it.
+//
+// AnthropicUsage requires both input_tokens and output_tokens (non-optional
+// u64); omitting input_tokens makes MessageDelta deserialization fail on
+// pre-0.218 BAML runtimes, which prevents baml_is_complete from being set
+// to true and causes stream.rs to report a "Stream ended prematurely"
+// timeout. The same shape is used in FormatDone for symmetry across the
+// thinking-aware and non-thinking streaming paths.
 func (p *AnthropicProvider) AnthropicMessageStop() string {
-	return "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n" +
+	return "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":10}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 }
 
