@@ -1216,7 +1216,22 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 		case workerplugin.StreamResultKindError:
 			err := workerplugin.NewErrorWithStack(result.Error, result.Stacktrace)
 			workerplugin.ReleaseStreamResult(result)
-			return nil, err
+			// Return a CallResult carrying any accumulated metadata
+			// alongside the error so the unary handler can still set
+			// X-BAML-Path / X-BAML-Path-Reason / X-BAML-Client headers
+			// for observability. Data/Raw stay empty — the caller's
+			// `if err != nil` branch should not read them. The streaming
+			// path already forwards metadata frames eagerly to the
+			// client; this preserves the same observability for the
+			// unary path on the error tail.
+			//
+			// Callers that previously assumed `err != nil → result == nil`
+			// continue to work: nil-checking the error first remains
+			// the correct pattern; what changes is that handlers that
+			// want to surface routing metadata on error can read it from
+			// the now-non-nil result before returning. See PR #192
+			// verdict-15 follow-up.
+			return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), err
 		case workerplugin.StreamResultKindFinal:
 			callResult := &workerplugin.CallResult{
 				Data:    result.Data,
@@ -1244,10 +1259,23 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 	// Stream closed without a final result. If the context was cancelled
 	// (client disconnect, deadline exceeded), surface that so callers can
 	// distinguish cancellation from unexpected stream termination.
+	// Preserve accumulated metadata on these tails too — same rationale as
+	// the explicit-Error case above.
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), ctx.Err()
 	}
-	return nil, fmt.Errorf("no final result received")
+	return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), fmt.Errorf("no final result received")
+}
+
+// metadataOnlyCallResult wraps accumulated planned/outcome metadata into a
+// CallResult so the unary handlers can surface routing observability on
+// error tails. Returns nil if both byte slices are empty so callers can
+// still distinguish "metadata available" from "nothing to report".
+func metadataOnlyCallResult(planned, outcome []byte) *workerplugin.CallResult {
+	if len(planned) == 0 && len(outcome) == 0 {
+		return nil
+	}
+	return &workerplugin.CallResult{Planned: planned, Outcome: outcome}
 }
 
 // CallStream executes a BAML method and streams results.
@@ -1442,7 +1470,15 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// stream writer emits a reset event immediately before this data.
 				// This ties reset signaling to the first real result that makes it
 				// to the client (instead of a standalone synthetic message).
-				if needsReset && !injectedReset {
+				//
+				// Planned metadata is excluded for the same reason it's excluded
+				// from first-byte liveness: post-verdict-15 it emits upfront
+				// from the orchestrator before any HTTP work, so it does not
+				// represent forwarded content the client needs to discard.
+				// Reset must land on the first real result (heartbeat / stream /
+				// final / outcome metadata) so the streamwriter only resets
+				// state when there's actually state to reset.
+				if needsReset && !injectedReset && !isPlannedMetadata {
 					result.Reset = true
 					injectedReset = true
 					currentHandle.logger.Info().Msg("Injected reset marker for mid-stream retry")
@@ -1456,7 +1492,13 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// Forward the result to the client
 				select {
 				case wrappedResults <- result:
-					sentAnyResults = true
+					// Planned metadata is excluded from sentAnyResults so a
+					// pre-first-byte retry doesn't trigger reset injection —
+					// nothing meaningful was forwarded to the client yet.
+					// Symmetric with the first-byte gate above.
+					if !isPlannedMetadata {
+						sentAnyResults = true
+					}
 				case <-ctx.Done():
 					workerplugin.ReleaseStreamResult(result)
 					p.drainResultsAndCheckRestart(results, currentHandle)

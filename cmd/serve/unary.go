@@ -116,12 +116,17 @@ func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.St
 		}
 
 		result, err := p.Call(ctx, methodName, body, streamMode)
+		// Surface routing observability headers even on the error path
+		// (Pool.Call preserves accumulated planned/outcome metadata in
+		// the result for error tails). See cmd/serve/main.go for the
+		// full rationale.
+		if result != nil {
+			setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
+		}
 		if err != nil {
 			writeChiWorkerError(w, r, err, "failed to process request")
 			return
 		}
-
-		setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 		w.Header().Set("Content-Type", "application/json")
 		if streamMode.NeedsRaw() {
 			w.WriteHeader(http.StatusOK)

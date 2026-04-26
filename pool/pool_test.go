@@ -3394,3 +3394,227 @@ func TestCallStreamOutcomeMetadataPreventsHungKill(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 }
+
+// TestCallStreamPlannedMetadataDoesNotTriggerResetOnRetry verifies the
+// post-verdict-15 invariant that planned metadata, emitted upfront from
+// the orchestrator before any HTTP work, does not count as "forwarded
+// content the client must discard on retry". The pool's reset-injection
+// path was previously gated on sentAnyResults flipping for any
+// successful forward; with planned-first emission, that meant a
+// pre-first-byte retry would inject Reset onto the next attempt's
+// planned metadata even though no real content had reached the client.
+// Integration tests TestWorkerDeathMidStream/* depend on this guard.
+func TestCallStreamPlannedMetadataDoesNotTriggerResetOnRetry(t *testing.T) {
+	plannedPayload, err := json.Marshal(&bamlutils.Metadata{
+		Phase:      bamlutils.MetadataPhasePlanned,
+		Path:       "legacy",
+		PathReason: "invalid-round-robin-start-override",
+		Client:     "TestClient",
+	})
+	if err != nil {
+		t.Fatalf("marshal planned metadata: %v", err)
+	}
+
+	var callCount atomic.Int32
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(ctx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			n := callCount.Add(1)
+			ch := make(chan *workerplugin.StreamResult, 2)
+			if n == 1 {
+				// First attempt: emit planned, then die without
+				// producing any real content. Mirrors a worker
+				// that crashed (or was hung-killed) after the
+				// orchestrator's upfront planned emit but before
+				// BAML's first FunctionLog tick.
+				go func() {
+					defer close(ch)
+					md := workerplugin.GetStreamResult()
+					md.Kind = workerplugin.StreamResultKindMetadata
+					md.Data = append(md.Data[:0], plannedPayload...)
+					select {
+					case ch <- md:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(md)
+					}
+					// Simulate worker death by returning a
+					// retryable RPC error.
+					errR := workerplugin.GetStreamResult()
+					errR.Kind = workerplugin.StreamResultKindError
+					errR.Error = unavailableErr()
+					select {
+					case ch <- errR:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(errR)
+					}
+				}()
+			} else {
+				// Retry: emit planned + clean Final. Reset must
+				// NOT be injected — first attempt only forwarded
+				// planned metadata, which has no client-visible
+				// state to reset.
+				go func() {
+					defer close(ch)
+					md := workerplugin.GetStreamResult()
+					md.Kind = workerplugin.StreamResultKindMetadata
+					md.Data = append(md.Data[:0], plannedPayload...)
+					select {
+					case ch <- md:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(md)
+						return
+					}
+					final := workerplugin.GetStreamResult()
+					final.Kind = workerplugin.StreamResultKindFinal
+					final.Data = []byte(`"done"`)
+					select {
+					case ch <- final:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(final)
+					}
+				}()
+			}
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	var sawReset bool
+	var sawFinal bool
+	for r := range results {
+		if r.Reset {
+			sawReset = true
+		}
+		if r.Kind == workerplugin.StreamResultKindFinal {
+			sawFinal = true
+		}
+		workerplugin.ReleaseStreamResult(r)
+	}
+
+	if !sawFinal {
+		t.Fatal("expected a Final result after retry")
+	}
+	if sawReset {
+		t.Error("Reset must NOT be injected when only planned metadata was forwarded pre-retry")
+	}
+}
+
+// TestCallStreamRealContentTriggersResetOnRetry is the inverse-regression
+// guard. When real content (a stream partial) was forwarded before the
+// worker died, the retry MUST inject Reset on the next forwarded result
+// so the streamwriter discards accumulated state. Without this
+// distinction, a fix that blanket-skipped Reset on metadata frames
+// would also break the legitimate mid-stream-retry case.
+func TestCallStreamRealContentTriggersResetOnRetry(t *testing.T) {
+	plannedPayload, err := json.Marshal(&bamlutils.Metadata{
+		Phase:  bamlutils.MetadataPhasePlanned,
+		Path:   "buildrequest",
+		Client: "TestClient",
+	})
+	if err != nil {
+		t.Fatalf("marshal planned metadata: %v", err)
+	}
+
+	var callCount atomic.Int32
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(ctx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			n := callCount.Add(1)
+			ch := make(chan *workerplugin.StreamResult, 4)
+			if n == 1 {
+				// First attempt: planned + real partial content,
+				// then die. Real content went to the client →
+				// retry must inject Reset.
+				go func() {
+					defer close(ch)
+					md := workerplugin.GetStreamResult()
+					md.Kind = workerplugin.StreamResultKindMetadata
+					md.Data = append(md.Data[:0], plannedPayload...)
+					select {
+					case ch <- md:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(md)
+						return
+					}
+					partial := workerplugin.GetStreamResult()
+					partial.Kind = workerplugin.StreamResultKindStream
+					partial.Data = []byte(`"part"`)
+					select {
+					case ch <- partial:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(partial)
+						return
+					}
+					errR := workerplugin.GetStreamResult()
+					errR.Kind = workerplugin.StreamResultKindError
+					errR.Error = unavailableErr()
+					select {
+					case ch <- errR:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(errR)
+					}
+				}()
+			} else {
+				// Retry: planned + Final. The first non-planned
+				// forwarded result must carry Reset=true.
+				go func() {
+					defer close(ch)
+					md := workerplugin.GetStreamResult()
+					md.Kind = workerplugin.StreamResultKindMetadata
+					md.Data = append(md.Data[:0], plannedPayload...)
+					select {
+					case ch <- md:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(md)
+						return
+					}
+					final := workerplugin.GetStreamResult()
+					final.Kind = workerplugin.StreamResultKindFinal
+					final.Data = []byte(`"done"`)
+					select {
+					case ch <- final:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(final)
+					}
+				}()
+			}
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	var sawReset bool
+	var sawFinal bool
+	for r := range results {
+		if r.Reset {
+			sawReset = true
+		}
+		if r.Kind == workerplugin.StreamResultKindFinal {
+			sawFinal = true
+		}
+		workerplugin.ReleaseStreamResult(r)
+	}
+
+	if !sawFinal {
+		t.Fatal("expected a Final result after retry")
+	}
+	if !sawReset {
+		t.Error("Reset must be injected when real partial content was forwarded pre-retry")
+	}
+}
