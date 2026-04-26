@@ -18,16 +18,18 @@ import (
 // non-streaming completions.
 //
 // Returns two strings:
-//   - parseable: the text that should be passed to Parse.Method(). For most
-//     providers this is the full text content. For Anthropic with extended
-//     thinking, this excludes thinking blocks (only text blocks).
-//   - raw: the full text including thinking/reasoning content, used for
-//     /call-with-raw's Raw() field. For providers without thinking support,
-//     raw == parseable.
+//   - parseable: the text that should be passed to Parse.Method(). For
+//     all providers this is text-only — reasoning/thinking content is
+//     never accumulated into parseable so the BAML parser cannot be
+//     influenced by reasoning text.
+//   - raw: the text used for /call-with-raw's Raw() field. By default
+//     equals parseable (matches BAML's RawLLMResponse() text-only
+//     contract). When includeThinking is true, raw additionally carries
+//     provider-specific reasoning content (Anthropic thinking blocks).
 //
 // Returns an error for unsupported providers, empty bodies, invalid JSON,
 // and when a non-empty response body does not contain the expected structure.
-func ExtractResponseContent(provider string, responseBody string) (parseable, raw string, err error) {
+func ExtractResponseContent(provider string, responseBody string, includeThinking bool) (parseable, raw string, err error) {
 	// An LLM provider should never return a valid 200 with an empty body.
 	if strings.TrimSpace(responseBody) == "" {
 		return "", "", fmt.Errorf("provider %s: empty response body", provider)
@@ -46,7 +48,7 @@ func ExtractResponseContent(provider string, responseBody string) (parseable, ra
 		return text, text, extractErr
 
 	case "anthropic":
-		return extractAnthropicContent(provider, responseBody)
+		return extractAnthropicContent(provider, responseBody, includeThinking)
 
 	case "openai-responses":
 		text, extractErr := extractOpenAIResponsesContent(provider, responseBody)
@@ -155,12 +157,17 @@ func extractOpenAIContent(provider string, responseBody string) (string, error) 
 // non-streaming response.
 //
 // Returns two strings:
-//   - parseable: only "text" blocks (the final answer), suitable for Parse.Method
-//   - raw: "text" + "thinking" blocks, suitable for /call-with-raw's Raw()
+//   - parseable: only "text" blocks (the final answer), suitable for
+//     Parse.Method. Thinking blocks are never accumulated here — by
+//     construction — so the BAML parser cannot be influenced by
+//     reasoning text regardless of the includeThinking flag.
+//   - raw: "text" blocks always; "thinking" blocks only when
+//     includeThinking is true (the per-request opt-in for surfacing
+//     reasoning content via /call-with-raw's Raw()).
 //
-// The BuildRequest streaming path uses the same split: raw accumulates both
-// text_delta and thinking_delta, while Parse/ParseStream see only answer text.
-func extractAnthropicContent(provider string, responseBody string) (parseable, raw string, err error) {
+// The default (includeThinking=false) matches BAML's RawLLMResponse()
+// text-only contract.
+func extractAnthropicContent(provider string, responseBody string, includeThinking bool) (parseable, raw string, err error) {
 	contentArray := gjson.Get(responseBody, "content")
 
 	if contentArray.IsArray() {
@@ -194,8 +201,11 @@ func extractAnthropicContent(provider string, responseBody string) (parseable, r
 					iterErr = fmt.Errorf("%s: unexpected type for thinking block (got %s)", provider, thinkField.Type)
 					return false
 				}
-				// Thinking goes to raw only, not parseable
-				rawSB.WriteString(thinkField.String())
+				// Thinking goes to raw only when the caller has opted in;
+				// parseable never receives thinking content.
+				if includeThinking {
+					rawSB.WriteString(thinkField.String())
+				}
 			}
 			return true
 		})

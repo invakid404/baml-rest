@@ -137,6 +137,11 @@ type CallRequest struct {
 type BAMLOptions struct {
 	ClientRegistry *ClientRegistry `json:"client_registry,omitempty"`
 	TypeBuilder    *TypeBuilder    `json:"type_builder,omitempty"`
+	// IncludeThinkingInRaw mirrors bamlutils.BamlOptions.IncludeThinkingInRaw.
+	// Default false matches BAML's RawLLMResponse() text-only contract; set
+	// true to opt the request into surfacing provider-specific reasoning
+	// content (e.g. Anthropic thinking blocks) in /with-raw's `raw` field.
+	IncludeThinkingInRaw bool `json:"include_thinking_in_raw,omitempty"`
 }
 
 // ClientRegistry allows overriding client configuration.
@@ -957,6 +962,29 @@ func CreateTestClient(mockLLMURL string, scenarioID string) *ClientRegistry {
 					"model":    scenarioID,
 					"base_url": mockLLMURL,
 					"api_key":  "test-key",
+				},
+			},
+		},
+	}
+}
+
+// CreateAnthropicTestClient creates a client registry that points to the mock
+// LLM server using the Anthropic provider. The mock server's "/v1/messages"
+// route handles Anthropic-shaped requests; BAML's Anthropic client appends
+// "/v1/messages" to base_url so mockLLMURL should be the bare scheme://host
+// (e.g. "http://mockllm:8080"), without a "/v1" suffix.
+func CreateAnthropicTestClient(mockLLMURL string, scenarioID string) *ClientRegistry {
+	return &ClientRegistry{
+		Primary: "TestClient",
+		Clients: []*ClientProperty{
+			{
+				Name:     "TestClient",
+				Provider: "anthropic",
+				Options: map[string]any{
+					"model":      scenarioID,
+					"base_url":   mockLLMURL,
+					"api_key":    "test-key",
+					"max_tokens": 1024,
 				},
 			},
 		},

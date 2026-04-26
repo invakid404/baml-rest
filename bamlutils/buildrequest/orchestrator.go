@@ -889,6 +889,14 @@ type StreamConfig struct {
 	// NeedsRaw is true if the caller wants raw LLM response text.
 	NeedsRaw bool
 
+	// IncludeThinkingInRaw is the per-request opt-in for surfacing
+	// provider-specific reasoning/thinking content in raw. When true,
+	// the streaming extractor accumulates Anthropic thinking_delta
+	// events into raw alongside text deltas. When false (default),
+	// raw matches BAML's RawLLMResponse() text-only semantics. The
+	// flag never affects the parseable text passed to ParseStream.
+	IncludeThinkingInRaw bool
+
 	// ParseThrottleInterval is the minimum time between ParseStream calls.
 	// Zero means parse on every SSE event (no throttling).
 	ParseThrottleInterval time.Duration
@@ -955,11 +963,15 @@ type StreamConfig struct {
 	// per-request retries, so only the inner BAML static retry compounds.
 	//
 	// Raw note: legacy raw comes from BAML's FunctionLog.RawLLMResponse(),
-	// which drops Anthropic-family thinking deltas. For providers that
-	// only ever appear as legacy children (e.g. aws-bedrock) this is
-	// lossless; for runtime overrides that push a thinking-capable
-	// provider onto the legacy path, raw will match RawLLMResponse rather
-	// than the full wire text.
+	// which is text-only across providers (BAML's runtime drops Anthropic-
+	// thinking_delta and equivalents). Under the default
+	// IncludeThinkingInRaw=false this exactly matches the BuildRequest
+	// path's behavior. Under IncludeThinkingInRaw=true, this niche path's
+	// raw stays text-only — the flag has no effect here because BAML's
+	// runtime never surfaces thinking content for this codepath to
+	// accumulate. Documented as a known limitation in the
+	// include-thinking-in-raw tracking issue; revisit only if reported in
+	// a real workflow.
 	LegacyStreamChild LegacyStreamChildFunc
 }
 
@@ -1134,8 +1146,11 @@ func RunStreamOrchestration(
 
 		for ev := range resp.Events {
 			// Extract parseable/raw delta content from the SSE event using this
-			// attempt's provider. Anthropic thinking deltas contribute only to raw.
-			delta, extractErr := sse.ExtractDeltaPartsFromText(provider, ev.Data)
+			// attempt's provider. When IncludeThinkingInRaw is true, Anthropic
+			// thinking_delta events contribute to Raw only; Parseable always
+			// excludes thinking so the BAML parser cannot be influenced by
+			// reasoning text regardless of the flag.
+			delta, extractErr := sse.ExtractDeltaPartsFromText(provider, ev.Data, config.IncludeThinkingInRaw)
 			if extractErr != nil {
 				// Extraction error — fail the attempt so retry logic can handle it
 				// rather than silently accumulating incomplete text.

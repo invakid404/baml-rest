@@ -1403,11 +1403,38 @@ func Generate(selfPkg string) {
 				jen.Id("extractor"), jen.Id("callCount"), jen.Id("provider"), jen.Id("chunks"),
 			),
 			jen.If(jen.Id("skipIntermediateParsing")).Block(jen.Return(jen.Nil())),
-			jen.If(jen.Id("extractResult").Dot("Delta").Op("==").Lit("").Op("&&").Op("!").Id("extractResult").Dot("Reset")).Block(jen.Return(jen.Nil())),
-			jen.Id("raw").Op(":=").Id("extractResult").Dot("Full"),
-			jen.Id("rawDelta").Op(":=").Id("extractResult").Dot("Delta"),
-			// Short-circuit: empty delta/raw → emit reset-only result
-			jen.If(jen.Id("rawDelta").Op("==").Lit("").Op("||").Id("raw").Op("==").Lit("")).Block(
+			// Skip if absolutely nothing new arrived this tick (no delta on
+			// either buffer) and no reset occurred.
+			jen.If(
+				jen.Id("extractResult").Dot("ParseableDelta").Op("==").Lit("").
+					Op("&&").Id("extractResult").Dot("RawDelta").Op("==").Lit("").
+					Op("&&").Op("!").Id("extractResult").Dot("Reset"),
+			).Block(jen.Return(jen.Nil())),
+			// parseable is the cumulative text-only buffer fed to ParseStream.
+			// Reasoning content (e.g. Anthropic thinking_delta under
+			// IncludeThinkingInRaw=true) is excluded by construction in
+			// IncrementalExtractor, so the BAML parser sees only the textual
+			// response stream regardless of the opt-in flag.
+			jen.Id("parseable").Op(":=").Id("extractResult").Dot("ParseableFull"),
+			jen.Id("parseableDelta").Op(":=").Id("extractResult").Dot("ParseableDelta"),
+			// rawDelta is the per-tick wire-output content. Mirrors
+			// parseableDelta when the opt-in is off; additionally carries
+			// thinking_delta content under opt-in.
+			jen.Id("rawDelta").Op(":=").Id("extractResult").Dot("RawDelta"),
+			// Raw-only / reset-only path. Triggered when:
+			//   - No parseable content has accumulated yet (e.g., the only
+			//     events seen so far are thinking_delta under opt-in).
+			//   - No new parseable content this tick (e.g., a thinking-only
+			//     event under opt-in advanced raw but not parseable).
+			//   - A reset boundary occurred but parseable is empty.
+			//
+			// In all three cases we cannot meaningfully call ParseStream, but
+			// we still emit a partial so the wire's raw buffer accumulates and
+			// any reset boundary reaches the client.
+			jen.If(
+				jen.Id("parseable").Op("==").Lit("").
+					Op("||").Id("parseableDelta").Op("==").Lit(""),
+			).Block(
 				jen.Select().Block(
 					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
 					jen.Default().Block(),
@@ -1432,10 +1459,10 @@ func Generate(selfPkg string) {
 				),
 				jen.Return(jen.Nil()),
 			),
-			// Call ParseStream
+			// Call ParseStream on the cumulative parseable buffer.
 			jen.List(jen.Id("parsed"), jen.Id("parseErr")).Op(":=").
 				Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
-				jen.Id("adapter"), jen.Id("raw"), jen.Id("options").Op("..."),
+				jen.Id("adapter"), jen.Id("parseable"), jen.Id("options").Op("..."),
 			),
 			jen.If(jen.Id("parseErr").Op("==").Nil()).Block(
 				jen.Select().Block(
@@ -1831,15 +1858,16 @@ func Generate(selfPkg string) {
 				// routing metadata through to the orchestrator's planned +
 				// outcome emissions.
 				jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
-					jen.Id("Provider"):          jen.Id("provider"),
-					jen.Id("RetryPolicy"):       jen.Id("retryPolicy"),
-					jen.Id("NeedsPartials"):     jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
-					jen.Id("NeedsRaw"):          jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-					jen.Id("FallbackChain"):     jen.Id("fallbackChain"),
-					jen.Id("ClientProviders"):   jen.Id("clientProviders"),
-					jen.Id("LegacyChildren"):    jen.Id("legacyChildren"),
-					jen.Id("LegacyStreamChild"): jen.Id("legacyStreamChildFn"),
-					jen.Id("MetadataPlan"):      jen.Id("plannedMetadata"),
+					jen.Id("Provider"):             jen.Id("provider"),
+					jen.Id("RetryPolicy"):          jen.Id("retryPolicy"),
+					jen.Id("NeedsPartials"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
+					jen.Id("NeedsRaw"):             jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("IncludeThinkingInRaw"): jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
+					jen.Id("FallbackChain"):        jen.Id("fallbackChain"),
+					jen.Id("ClientProviders"):      jen.Id("clientProviders"),
+					jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
+					jen.Id("LegacyStreamChild"):    jen.Id("legacyStreamChildFn"),
+					jen.Id("MetadataPlan"):         jen.Id("plannedMetadata"),
 					jen.Id("NewMetadataResult"): jen.Func().Params(
 						jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 					).Qual(common.InterfacesPkg, "StreamResult").Block(
@@ -2080,14 +2108,15 @@ func Generate(selfPkg string) {
 				// LegacyCallChild is always wired so validation passes even
 				// when legacyChildren is nil.
 				jen.Id("callConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "CallConfig").Values(jen.Dict{
-					jen.Id("Provider"):          jen.Id("provider"),
-					jen.Id("RetryPolicy"):       jen.Id("retryPolicy"),
-					jen.Id("NeedsRaw"):          jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-					jen.Id("FallbackChain"):     jen.Id("fallbackChain"),
-					jen.Id("ClientProviders"):   jen.Id("clientProviders"),
-					jen.Id("LegacyChildren"):    jen.Id("legacyChildren"),
-					jen.Id("LegacyCallChild"):   jen.Id("legacyCallChildFn"),
-					jen.Id("MetadataPlan"):      jen.Id("plannedMetadata"),
+					jen.Id("Provider"):             jen.Id("provider"),
+					jen.Id("RetryPolicy"):          jen.Id("retryPolicy"),
+					jen.Id("NeedsRaw"):             jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("IncludeThinkingInRaw"): jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
+					jen.Id("FallbackChain"):        jen.Id("fallbackChain"),
+					jen.Id("ClientProviders"):      jen.Id("clientProviders"),
+					jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
+					jen.Id("LegacyCallChild"):      jen.Id("legacyCallChildFn"),
+					jen.Id("MetadataPlan"):         jen.Id("plannedMetadata"),
 					jen.Id("NewMetadataResult"): jen.Func().Params(
 						jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 					).Qual(common.InterfacesPkg, "StreamResult").Block(
@@ -3879,8 +3908,17 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
 			jen.Var().Id("fatalErr").Error(),
 
-			// Extractor
-			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
+			// Extractor. The boolean argument captures the per-request
+			// IncludeThinkingInRaw opt-in: when true, Anthropic
+			// thinking_delta events are accumulated into the extractor's
+			// raw buffer alongside text deltas; when false (default), the
+			// extractor matches BAML's RawLLMResponse() text-only
+			// semantics. Parseable text seen by Parse/ParseStream is never
+			// affected by this flag — the extractor only feeds the raw
+			// channel.
+			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(
+				jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
+			),
 			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
 			// lastFuncLog stores the most recent FunctionLog reference seen by
 			// onTick. FunctionLog is a live handle into the BAML runtime, so
@@ -4103,33 +4141,58 @@ func generateStreamHelpers(out *jen.File) {
 							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
 						),
 
-						// Emit final. The /with-raw contract for this codebase is
-						// that raw includes provider-specific raw-only content
-						// (e.g. Anthropic thinking deltas) that parseable excludes.
-						// The extractor accumulates delta.Raw, which preserves that
-						// semantic; FunctionLog.RawLLMResponse() is built from
-						// text_delta only and drops thinking_delta.
+						// Emit final. Reconciling extractor.RawFull() with
+						// RawLLMResponse() handles two distinct concerns:
 						//
-						// Under normal conditions extractor.Full() is authoritative.
-						// But in rare CI-only races where lastFuncLog's SSEChunks
-						// view is stale (onTick didn't cover the final SSE event),
-						// the extractor can end up truncated or empty while
-						// RawLLMResponse is complete. Prefer whichever is longer:
-						//   - Anthropic with thinking: extractor > RawLLMResponse
-						//     (extractor wins, thinking preserved).
-						//   - Other providers / anthropic w/o thinking: equal, or
-						//     extractor shorter on timing loss (RawLLMResponse
-						//     wins, matches parseable which is the full content
-						//     for those providers anyway).
+						//   - Stale-SSE-view race (always-on): in rare CI-only
+						//     races where lastFuncLog's SSEChunks view is stale
+						//     (onTick didn't cover the final SSE event), the
+						//     extractor can end up truncated or empty while
+						//     RawLLMResponse is complete. We splice in only the
+						//     missing text suffix from RawLLMResponse so any
+						//     late text the extractor missed is recovered.
+						//
+						//   - IncludeThinkingInRaw opt-in (per-request): when
+						//     enabled, the extractor accumulates Anthropic
+						//     thinking_delta into raw while BAML's runtime never
+						//     surfaces thinking. The splice approach preserves
+						//     thinking content (which lives only in
+						//     extractor.RawFull) alongside any recovered text.
+						//
+						// Reconciliation logic:
+						//   1. If RawLLMResponse extends extractor.ParseableFull
+						//      as a prefix and is longer, splice in the missing
+						//      text suffix. This is the common case under both
+						//      stale-race and happy-path-with-opt-in.
+						//   2. Else if RawLLMResponse is longer than
+						//      extractor.RawFull (the prefix invariant is
+						//      violated — should not happen under Anthropic's
+						//      thinking-then-text ordering, but defend anyway),
+						//      defer to RawLLMResponse for correctness. This
+						//      loses thinking under opt-in but ensures the
+						//      authoritative text wins.
+						//   3. Else keep extractor.RawFull (happy path:
+						//      extractor's view is at least as complete).
 						jen.Id("extractorMu").Dot("Lock").Call(),
-						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
+						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("RawFull").Call(),
+						jen.Id("parseableFull").Op(":=").Id("extractor").Dot("ParseableFull").Call(),
 						jen.Id("extractorMu").Dot("Unlock").Call(),
 						jen.If(jen.Id("flOk")).Block(
 							jen.If(
 								jen.List(jen.Id("authRaw"), jen.Id("rawErr")).Op(":=").Id("fl").Dot("RawLLMResponse").Call(),
-								jen.Id("rawErr").Op("==").Nil().Op("&&").Len(jen.Id("authRaw")).Op(">").Len(jen.Id("finalRaw")),
+								jen.Id("rawErr").Op("==").Nil(),
 							).Block(
-								jen.Id("finalRaw").Op("=").Id("authRaw"),
+								jen.If(
+									jen.Len(jen.Id("authRaw")).Op(">").Len(jen.Id("parseableFull")).
+										Op("&&").
+										Qual("strings", "HasPrefix").Call(jen.Id("authRaw"), jen.Id("parseableFull")),
+								).Block(
+									jen.Id("finalRaw").Op("=").Id("finalRaw").Op("+").Id("authRaw").Index(jen.Len(jen.Id("parseableFull")), jen.Empty()),
+								).Else().If(
+									jen.Len(jen.Id("authRaw")).Op(">").Len(jen.Id("finalRaw")),
+								).Block(
+									jen.Id("finalRaw").Op("=").Id("authRaw"),
+								),
 							),
 						),
 

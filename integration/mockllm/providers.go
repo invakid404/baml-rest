@@ -112,8 +112,10 @@ func (p *AnthropicProvider) FormatChunk(content string, index int) string {
 		// First chunk: send message_start + content_block_start + first delta.
 		// The prologue is emitted unconditionally even when content is empty —
 		// the delta simply carries an empty "text" field in that case.
+		// usage is required by AnthropicMessageResponse on every BAML version;
+		// see the comment on AnthropicMessageStart for the per-version impact.
 		start := `event: message_start` + "\n" +
-			`data: {"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","content":[],"model":"test-model"}}` + "\n\n"
+			`data: {"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","content":[],"model":"test-model","usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n"
 		blockStart := `event: content_block_start` + "\n" +
 			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n"
 		delta := map[string]any{
@@ -143,27 +145,47 @@ func (p *AnthropicProvider) FormatFinalChunk(index int) string {
 	return "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
 }
 
+// FormatDone matches the usage shape on AnthropicMessageStop: AnthropicUsage
+// requires both input_tokens and output_tokens (non-optional u64), so omitting
+// either makes message_delta deserialization fail on pre-0.218 BAML runtimes
+// and surfaces as a "Stream ended prematurely" timeout. See AnthropicMessageStop
+// for the full per-version analysis.
 func (p *AnthropicProvider) FormatDone() string {
-	return "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n" +
+	return "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":10}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 }
 
 func (p *AnthropicProvider) FormatNonStreaming(content string) ([]byte, error) {
+	return p.FormatNonStreamingWithThinking(content, "")
+}
+
+// FormatNonStreamingWithThinking emits the Anthropic non-streaming response
+// shape with an optional leading "thinking" content block before the "text"
+// block. When thinking is empty, the response is identical to
+// FormatNonStreaming(content).
+func (p *AnthropicProvider) FormatNonStreamingWithThinking(content, thinking string) ([]byte, error) {
+	contentBlocks := make([]map[string]any, 0, 2)
+	if thinking != "" {
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type":     "thinking",
+			"thinking": thinking,
+		})
+	}
+	contentBlocks = append(contentBlocks, map[string]any{
+		"type": "text",
+		"text": content,
+	})
+
 	response := map[string]any{
-		"id":    "msg-test",
-		"type":  "message",
-		"role":  "assistant",
-		"model": "test-model",
-		"content": []map[string]any{
-			{
-				"type": "text",
-				"text": content,
-			},
-		},
+		"id":          "msg-test",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       "test-model",
+		"content":     contentBlocks,
 		"stop_reason": "end_turn",
 		"usage": map[string]any{
 			"input_tokens":  10,
-			"output_tokens": len(content) / 4,
+			"output_tokens": (len(content) + len(thinking)) / 4,
 		},
 	}
 	return json.Marshal(response)
@@ -174,6 +196,84 @@ func (p *AnthropicProvider) ContentType(streaming bool) string {
 		return "text/event-stream"
 	}
 	return "application/json"
+}
+
+// AnthropicMessageStart returns the message_start SSE event that opens an
+// Anthropic streaming response. Used by streamAnthropicWithThinking which
+// decouples the message prologue from FormatChunk so a thinking content
+// block can be emitted before the text content block.
+//
+// The "usage" object is required by AnthropicMessageResponse in BAML's
+// types.rs (input_tokens and output_tokens are non-optional u64 fields);
+// omitting it causes MessageChunk::deserialize to fail on pre-0.218 BAML
+// runtimes where stream.rs enforces a "stream ended cleanly" check. On
+// 0.218+ a missing usage just produces a single LLMFailure event in the
+// middle of the stream, which is harmless because subsequent text-block
+// events still drive the accumulator forward.
+func (p *AnthropicProvider) AnthropicMessageStart() string {
+	return `event: message_start` + "\n" +
+		`data: {"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","content":[],"model":"test-model","usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n"
+}
+
+// AnthropicBlockStart emits a content_block_start event for the given block
+// type and content_block index. blockType is "text" or "thinking".
+func (p *AnthropicProvider) AnthropicBlockStart(blockType string, blockIndex int) string {
+	var emptyField string
+	switch blockType {
+	case "thinking":
+		emptyField = `"thinking":""`
+	default:
+		emptyField = `"text":""`
+	}
+	return fmt.Sprintf(
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":%q,%s}}\n\n",
+		blockIndex, blockType, emptyField,
+	)
+}
+
+// AnthropicBlockDelta emits a content_block_delta event for the given delta
+// type and content_block index. deltaType is "text_delta" or "thinking_delta",
+// content is the delta payload (placed in the .text or .thinking field
+// respectively).
+func (p *AnthropicProvider) AnthropicBlockDelta(deltaType, content string, blockIndex int) string {
+	var deltaPayload map[string]any
+	switch deltaType {
+	case "thinking_delta":
+		deltaPayload = map[string]any{"type": "thinking_delta", "thinking": content}
+	default:
+		deltaPayload = map[string]any{"type": "text_delta", "text": content}
+	}
+	event := map[string]any{
+		"type":  "content_block_delta",
+		"index": blockIndex,
+		"delta": deltaPayload,
+	}
+	data, _ := json.Marshal(event)
+	return fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", data)
+}
+
+// AnthropicBlockStop emits a content_block_stop event for the given index.
+func (p *AnthropicProvider) AnthropicBlockStop(blockIndex int) string {
+	return fmt.Sprintf(
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n",
+		blockIndex,
+	)
+}
+
+// AnthropicMessageStop returns the message_delta + message_stop terminator
+// that closes an Anthropic streaming response. Equivalent to the existing
+// FormatDone() output but exposed as a named primitive so the
+// thinking-aware stream path can reuse it.
+//
+// AnthropicUsage requires both input_tokens and output_tokens (non-optional
+// u64); omitting input_tokens makes MessageDelta deserialization fail on
+// pre-0.218 BAML runtimes, which prevents baml_is_complete from being set
+// to true and causes stream.rs to report a "Stream ended prematurely"
+// timeout. The same shape is used in FormatDone for symmetry across the
+// thinking-aware and non-thinking streaming paths.
+func (p *AnthropicProvider) AnthropicMessageStop() string {
+	return "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":10}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 }
 
 // GoogleAIProvider implements the Google AI (Gemini) streaming format.

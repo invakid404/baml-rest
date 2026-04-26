@@ -728,7 +728,7 @@ func TestProvider_WhitelistMatchesExtractor(t *testing.T) {
 		"vertex-ai":        `{"candidates":[{"content":{"parts":[{"text":"test"}]}}]}`,
 	}
 	for provider, chunk := range sampleChunks {
-		delta, err := sse.ExtractDeltaFromText(provider, chunk)
+		delta, err := sse.ExtractDeltaFromText(provider, chunk, false)
 		if err != nil {
 			t.Errorf("ExtractDeltaFromText(%q) returned error: %v", provider, err)
 		}
