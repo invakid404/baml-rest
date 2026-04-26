@@ -150,6 +150,65 @@ func TestTranslateUpstreamProvider(t *testing.T) {
 	}
 }
 
+// TestIsResolvedStrategyParent covers PR #192 cold-review-3
+// signoff-10 F1. baml-rest-resolved RR / fallback strategy parent
+// entries must be classifiable from either the operator-supplied
+// provider or the introspected fallback, across all four RR
+// spellings and both fallback spellings. Non-strategy entries must
+// never classify here, regardless of presence state.
+func TestIsResolvedStrategyParent(t *testing.T) {
+	introspected := map[string]string{
+		"StaticRR":       "baml-roundrobin",
+		"StaticRRDash":   "baml-round-robin",
+		"StaticRRBare":   "round-robin",
+		"StaticFb":       "baml-fallback",
+		"StaticFbBare":   "fallback",
+		"StaticOpenAI":   "openai",
+	}
+	cases := []struct {
+		name   string
+		client *ClientProperty
+		want   bool
+	}{
+		// Presence-only — classified via introspected map.
+		{"presence-only RR (canonical introspected)", &ClientProperty{Name: "StaticRR"}, true},
+		{"presence-only RR (hyphenated introspected)", &ClientProperty{Name: "StaticRRDash"}, true},
+		{"presence-only RR (bare introspected)", &ClientProperty{Name: "StaticRRBare"}, true},
+		{"presence-only fallback (canonical)", &ClientProperty{Name: "StaticFb"}, true},
+		{"presence-only fallback (bare)", &ClientProperty{Name: "StaticFbBare"}, true},
+		{"presence-only openai (not strategy)", &ClientProperty{Name: "StaticOpenAI"}, false},
+		// Explicit provider — classified directly, ignoring introspected.
+		{"explicit baml-roundrobin", &ClientProperty{Name: "AnyName", Provider: "baml-roundrobin"}, true},
+		{"explicit baml-round-robin", &ClientProperty{Name: "AnyName", Provider: "baml-round-robin"}, true},
+		{"explicit round-robin", &ClientProperty{Name: "AnyName", Provider: "round-robin"}, true},
+		{"explicit baml-fallback", &ClientProperty{Name: "AnyName", Provider: "baml-fallback"}, true},
+		{"explicit fallback", &ClientProperty{Name: "AnyName", Provider: "fallback"}, true},
+		{"explicit openai", &ClientProperty{Name: "AnyName", Provider: "openai"}, false},
+		// Present-empty (operator typo'd) — classified as not-strategy
+		// because the empty string isn't an RR/fallback spelling and
+		// presence overrides the introspected lookup.
+		{"present-empty on RR-introspected name (operator override wins)", &ClientProperty{Name: "StaticRR", ProviderSet: true}, false},
+		// Unknown name with omitted provider — no introspected entry
+		// → empty string → not strategy.
+		{"unknown name with omitted provider", &ClientProperty{Name: "Unknown"}, false},
+		// Nil safety.
+		{"nil client", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsResolvedStrategyParent(tc.client, introspected); got != tc.want {
+				t.Errorf("IsResolvedStrategyParent: got %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nil introspected map with omitted provider", func(t *testing.T) {
+		if IsResolvedStrategyParent(&ClientProperty{Name: "StaticRR"}, nil) {
+			t.Errorf("nil introspected map: presence-only entry should classify as not-strategy")
+		}
+	})
+}
+
 // TestUpstreamClientRegistryProvider pins the four shapes the helper
 // must honour at the BAML CFFI seam — see PR #192 cold-review-3
 // finding 1. Materialise omitted-provider entries from the introspected

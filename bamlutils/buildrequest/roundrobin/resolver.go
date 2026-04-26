@@ -1,7 +1,6 @@
 package roundrobin
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -226,16 +225,26 @@ func InspectStartOverride(opts map[string]any) (start int, present bool, valid b
 //     unparseable. Caller surfaces ErrInvalidStartOverride so
 //     ResolveEffectiveClient routes the request to legacy.
 //
-// Accepted shapes mirror BAML upstream's ensure_int contract:
-// signed/unsigned integer types that fit in Go int, finite float64
-// values whose fractional part is zero, and json.Number values that
-// parse as int64. Strings (including numeric strings like "1"),
-// fractional floats, booleans, slices, and maps are rejected — BAML's
-// own decoder rejects the same shapes.
+// Accepted shapes match BAML upstream's ensure_int contract more
+// tightly than the previous draft. Upstream returns an i32 and parses
+// numeric values via parse::<i32>() (helpers.rs:168-180, :917-930), so
+// values outside [math.MinInt32, math.MaxInt32] cannot survive
+// upstream parsing even when they fit in a Go int.
 //
-// uint64 above math.MaxInt is rejected to avoid signed overflow on
-// 32-bit platforms; a five-quintillion start index is operator error,
-// not a configuration to honour.
+// Accept signed integers (int, int8, int16, int32, int64) only when
+// the value fits in int32 range. Accept finite whole float64 values
+// in the same range.
+//
+// Reject all unsigned integer types: BAML's Go encoder
+// (engine/language_client_go/baml_go/serde/encode.go:141-153) has no
+// uint branch, so a uint* value would never make it through the CFFI
+// path even if our parser accepted it. Reject json.Number for the
+// same reason — encode.go:134-139 emits it as a string, which BAML's
+// decoder rejects for an i32 option.
+//
+// Reject strings (including numeric strings like "1"), fractional
+// floats, booleans, slices, and maps — BAML's decoder rejects the
+// same shapes. See PR #192 cold-review-3 signoff-10 finding F3.
 func inspectStartOverride(opts map[string]any) (start int, present bool, valid bool) {
 	if opts == nil {
 		return 0, false, true
@@ -244,38 +253,20 @@ func inspectStartOverride(opts map[string]any) (start int, present bool, valid b
 	if !ok {
 		return 0, false, true
 	}
+
+	// Project signed-integer kinds onto int64, then clamp to int32 range.
+	var asInt64 int64
 	switch v := raw.(type) {
 	case int:
-		return v, true, true
+		asInt64 = int64(v)
 	case int8:
-		return int(v), true, true
+		asInt64 = int64(v)
 	case int16:
-		return int(v), true, true
+		asInt64 = int64(v)
 	case int32:
-		return int(v), true, true
+		asInt64 = int64(v)
 	case int64:
-		if v > math.MaxInt || v < math.MinInt {
-			return 0, true, false
-		}
-		return int(v), true, true
-	case uint8:
-		return int(v), true, true
-	case uint16:
-		return int(v), true, true
-	case uint32:
-		// On 32-bit platforms uint32 can exceed MaxInt; gate on the
-		// architecture's int range explicitly to keep the helper safe
-		// in 32-bit builds. Removed once Go's MaxInt makes this a
-		// no-op on the build target.
-		if uint64(v) > uint64(math.MaxInt) {
-			return 0, true, false
-		}
-		return int(v), true, true
-	case uint64:
-		if v > uint64(math.MaxInt) {
-			return 0, true, false
-		}
-		return int(v), true, true
+		asInt64 = v
 	case float64:
 		if math.IsNaN(v) || math.IsInf(v, 0) {
 			return 0, true, false
@@ -283,21 +274,18 @@ func inspectStartOverride(opts map[string]any) (start int, present bool, valid b
 		if math.Trunc(v) != v {
 			return 0, true, false
 		}
-		if v > float64(math.MaxInt) || v < float64(math.MinInt) {
+		if v < float64(math.MinInt32) || v > float64(math.MaxInt32) {
 			return 0, true, false
 		}
-		return int(v), true, true
-	case json.Number:
-		n, err := v.Int64()
-		if err != nil {
-			return 0, true, false
-		}
-		if n > math.MaxInt || n < math.MinInt {
-			return 0, true, false
-		}
-		return int(n), true, true
+		return int(int32(v)), true, true
+	default:
+		// uint*, json.Number, string, bool, slice, map, nil, etc.
+		return 0, true, false
 	}
-	return 0, true, false
+	if asInt64 < math.MinInt32 || asInt64 > math.MaxInt32 {
+		return 0, true, false
+	}
+	return int(asInt64), true, true
 }
 
 // normalizeStartIndex projects a parsed start value into [0, childCount).

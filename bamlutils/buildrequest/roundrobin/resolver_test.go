@@ -1,6 +1,7 @@
 package roundrobin
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"testing"
@@ -614,6 +615,12 @@ func TestResolve_PresentEmptyProviderSkipsRRUnwrap(t *testing.T) {
 // AdvanceDynamic fallback. Behaviour mirrors BAML upstream's
 // resolve_strategy in roundrobin.rs:64-65, which does
 // `(start as usize) % strategy.len()` for fresh request-scoped RR.
+//
+// Accepted shapes match BAML's i32 ensure_int (helpers.rs:168-180,
+// :917-930): signed integer kinds + finite whole float64 within
+// [MinInt32, MaxInt32]. unsigned types and json.Number are rejected
+// (covered by TestResolve_InvalidStartOverride_ReturnsSentinel) — they
+// don't survive BAML's Go encoder. See cold-review-3 signoff-10 F3.
 func TestResolve_DynamicStartOverride(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -627,8 +634,9 @@ func TestResolve_DynamicStartOverride(t *testing.T) {
 		{"start=2 picks third", 2, []string{"A", "B", "C"}, 2, "C"},
 		{"start beyond length wraps", 5, []string{"A", "B"}, 1, "B"},
 		{"negative start clamps to zero", -1, []string{"A", "B"}, 0, "A"},
-		{"int64 honoured", int64(1), []string{"A", "B"}, 1, "B"},
-		{"uint32 honoured", uint32(1), []string{"A", "B"}, 1, "B"},
+		{"int64 within int32 honoured", int64(1), []string{"A", "B"}, 1, "B"},
+		{"int32 max-1 honoured", int32(math.MaxInt32 - 1), []string{"A", "B"}, 0, "A"}, // (2^31-2) % 2 == 0
+		{"int8 honoured", int8(1), []string{"A", "B"}, 1, "B"},
 		{"float64 with no fraction honoured", float64(1), []string{"A", "B"}, 1, "B"},
 	}
 	for _, tc := range cases {
@@ -753,16 +761,17 @@ func TestResolve_DynamicStartOverride_StrategyOnlyChain(t *testing.T) {
 }
 
 // TestResolve_InvalidStartOverride_ReturnsSentinel covers the
-// invalid-shape arm of finding 3. Strings (including numeric
-// strings), fractional floats, booleans, slices, and oversized
-// unsigned ints must all surface ErrInvalidStartOverride so
-// ResolveEffectiveClient routes the request to legacy where BAML
-// emits its canonical integer-options error.
+// invalid-shape arm of finding 3, tightened in signoff-10 to match
+// BAML's i32 contract: values outside [MinInt32, MaxInt32] are
+// rejected, and unsigned types + json.Number are rejected outright
+// because they cannot survive BAML's Go-side CFFI encoder (no uint
+// branch; json.Number encoded as string).
 func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  any
 	}{
+		// Wrong types
 		{"numeric string", "1"},
 		{"empty string", ""},
 		{"fractional float", 1.5},
@@ -774,7 +783,23 @@ func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
 		{"slice", []any{1, 2}},
 		{"map", map[string]any{"x": 1}},
 		{"nil", nil},
+		// Unsigned integer types — rejected outright per signoff-10
+		// since BAML's Go encoder lacks a uint branch.
+		{"uint8", uint8(1)},
+		{"uint16", uint16(1)},
+		{"uint32", uint32(1)},
+		{"uint64", uint64(1)},
 		{"oversized uint64", uint64(math.MaxUint64)},
+		// json.Number — rejected outright; BAML encodes it as a
+		// string which the upstream decoder rejects for an i32 option.
+		{"json.Number string-form", json.Number("5")},
+		{"json.Number invalid", json.Number("abc")},
+		// Out-of-int32-range values — accepted before signoff-10 but
+		// would never survive BAML's parse::<i32>().
+		{"int64 above MaxInt32", int64(math.MaxInt32) + 1},
+		{"int64 below MinInt32", int64(math.MinInt32) - 1},
+		{"float64 above MaxInt32", float64(math.MaxInt32) + 1},
+		{"float64 below MinInt32", float64(math.MinInt32) - 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -848,9 +873,11 @@ func TestResolve_AbsentStartOverride_RandomSelection(t *testing.T) {
 
 // TestInspectStartOverride_AcceptedShapes pins the integer-shape
 // contract independently of selectIndex so future refactors keep the
-// same accept/reject set. This is the helper the orchestrator-level
-// metadata classifier also calls via the exported
-// InspectStartOverride.
+// same accept/reject set. Tightened in signoff-10 to match BAML's i32
+// ensure_int (helpers.rs:168-180): only signed types within
+// [MinInt32, MaxInt32] and finite whole float64 in the same range
+// are accepted. Unsigned types and json.Number are rejected because
+// they cannot survive BAML's Go-side CFFI encoder.
 func TestInspectStartOverride_AcceptedShapes(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -860,20 +887,35 @@ func TestInspectStartOverride_AcceptedShapes(t *testing.T) {
 		wantStart   int
 	}{
 		{"absent (no start key)", nil, false, true, 0},
+		// Accepted: signed ints + finite whole float64 in i32 range.
 		{"int", int(5), true, true, 5},
 		{"int8", int8(5), true, true, 5},
 		{"int16", int16(5), true, true, 5},
 		{"int32", int32(5), true, true, 5},
-		{"int64", int64(5), true, true, 5},
-		{"uint8", uint8(5), true, true, 5},
-		{"uint16", uint16(5), true, true, 5},
-		{"uint32 small", uint32(5), true, true, 5},
-		{"uint64 small", uint64(5), true, true, 5},
+		{"int64 in range", int64(5), true, true, 5},
+		{"int32 max", int32(math.MaxInt32), true, true, math.MaxInt32},
+		{"int32 min", int32(math.MinInt32), true, true, math.MinInt32},
 		{"float64 zero-fraction", float64(5), true, true, 5},
 		{"negative int", int(-3), true, true, -3},
-		{"oversized uint64", uint64(math.MaxUint64), true, false, 0},
+		// Rejected: out-of-i32-range.
+		{"int64 MaxInt32+1", int64(math.MaxInt32) + 1, true, false, 0},
+		{"int64 MinInt32-1", int64(math.MinInt32) - 1, true, false, 0},
+		{"float64 MaxInt32+1", float64(math.MaxInt32) + 1, true, false, 0},
+		{"float64 MinInt32-1", float64(math.MinInt32) - 1, true, false, 0},
+		// Rejected: unsigned types — no upstream encoder branch.
+		{"uint8", uint8(5), true, false, 0},
+		{"uint16", uint16(5), true, false, 0},
+		{"uint32", uint32(5), true, false, 0},
+		{"uint64 small", uint64(5), true, false, 0},
+		{"uint32 above MaxInt32", uint32(math.MaxInt32) + 1, true, false, 0},
+		{"uint64 max", uint64(math.MaxUint64), true, false, 0},
+		// Rejected: json.Number — encoded as string upstream.
+		{"json.Number valid", json.Number("5"), true, false, 0},
+		{"json.Number invalid", json.Number("abc"), true, false, 0},
+		// Rejected: wrong types.
 		{"fractional float", 1.5, true, false, 0},
 		{"NaN", math.NaN(), true, false, 0},
+		{"+Inf", math.Inf(1), true, false, 0},
 		{"numeric string", "5", true, false, 0},
 		{"bool", true, true, false, 0},
 		{"slice", []any{1}, true, false, 0},

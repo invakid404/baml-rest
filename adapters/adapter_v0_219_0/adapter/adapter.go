@@ -75,6 +75,23 @@ type BamlAdapter struct {
 	// even resolves WithClient(leaf). See PR #192 cold-review-3
 	// finding 1.
 	IntrospectedClientProvider map[string]string
+
+	// upstreamClientNames records the order of names passed to
+	// AddLlmClient on the BAML-bound registry. Test-only observability
+	// — used by SetClientRegistry tests to assert that baml-rest-
+	// resolved strategy parent entries get dropped (cold-review-3
+	// signoff-10 F1) while still being preserved in
+	// OriginalClientRegistry. Production code must not depend on
+	// this slice; reach for the BAML-bound registry directly.
+	upstreamClientNames []string
+}
+
+// UpstreamClientNames returns the names AddLlmClient was called for
+// on the BAML-bound registry during the most recent SetClientRegistry
+// call. Test-only observability — see the upstreamClientNames field
+// doc; do not consume from production code.
+func (b *BamlAdapter) UpstreamClientNames() []string {
+	return append([]string(nil), b.upstreamClientNames...)
 }
 
 func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
@@ -104,22 +121,34 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	b.originalClientRegistry = clientRegistry
 	b.clientRegistryProvider = "" // Clear before scanning to avoid stale values
 	b.ClientRegistry = baml.NewClientRegistry()
+	b.upstreamClientNames = b.upstreamClientNames[:0]
 
 	for _, client := range clientRegistry.Clients {
 		if client == nil {
 			continue
 		}
+		// Drop baml-rest-resolved strategy parent entries (RR /
+		// fallback) entirely. The resolver dispatches with
+		// WithClient(leaf) so BAML never executes the parent;
+		// forwarding it would either fail upstream parsing
+		// (presence-only entry has no options.strategy; strategy-
+		// only with a bracketed-string violates ensure_strategy's
+		// array contract) or be redundant. The original entry stays
+		// in OriginalClientRegistry so baml-rest's resolver and
+		// metadata classifier still see it. See PR #192 cold-
+		// review-3 signoff-10 finding F1.
+		if bamlutils.IsResolvedStrategyParent(client, b.IntrospectedClientProvider) {
+			continue
+		}
 		// Materialise the provider for the BAML-bound registry copy:
-		// omitted-provider entries (strategy-only / presence-only RR
-		// overrides) get their provider filled from the introspected
-		// map; canonical "baml-roundrobin" gets translated to the
-		// upstream-accepted "baml-round-robin". The original
-		// ClientProperty stays untouched so the resolver and metadata
-		// classifier still see operator input verbatim. See PR #192
-		// cold-review-3 findings 1 and 2.
+		// omitted-provider entries get their provider filled from the
+		// introspected map; canonical "baml-roundrobin" gets
+		// translated to the upstream-accepted "baml-round-robin".
+		// See PR #192 cold-review-3 findings 1 and 2.
 		upstreamProvider := bamlutils.UpstreamClientRegistryProvider(client, b.IntrospectedClientProvider)
 		// BAML 0.219.0+ properly handles nested maps, no WrapMapValues needed
 		b.ClientRegistry.AddLlmClient(client.Name, upstreamProvider, client.Options)
+		b.upstreamClientNames = append(b.upstreamClientNames, client.Name)
 	}
 
 	if clientRegistry.Primary != nil {

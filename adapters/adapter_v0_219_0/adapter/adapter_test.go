@@ -7,73 +7,172 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
-// TestSetClientRegistry_MaterialisesOmittedProvider covers PR #192
-// cold-review-3 finding 1 at the adapter seam. A runtime registry
-// entry that omits the `provider` key (strategy-only or presence-only
-// override) must have its provider materialised from the introspected
-// map BEFORE AddLlmClient forwards it to BAML's CFFI; otherwise the
-// upstream ClientProvider::from_str rejects "" and the request fails
-// before WithClient(leaf) resolves anything.
+// TestSetClientRegistry_DropsResolvedStrategyParents covers PR #192
+// cold-review-3 signoff-10 F1. baml-rest-resolved RR / fallback
+// strategy parent entries must not be forwarded into BAML's upstream
+// registry — BAML rejects partial RR shapes at parse time
+// (round_robin.rs:73-83 requires options.strategy; ensure_strategy at
+// helpers.rs:790-829 requires it as an array, not a bracketed
+// string), and the resolver dispatches with WithClient(leaf) so the
+// parent has no role in BAML's runtime anyway.
 //
-// The test asserts the cache materialisation on the primary side
-// (clientRegistryProvider) — this is the only field the adapter
-// surfaces externally, and it's wired to the same materialise helper.
-// The internal baml.ClientRegistry's per-entry providers are not
-// observable from outside the baml package; we cover those via the
-// helper-level tests in bamlutils/interfaces_test.go.
+// Coverage matrix:
+//   - presence-only RR parent (omitted provider, no options)
+//   - strategy-only RR parent (omitted provider, with strategy)
+//   - explicit-provider RR parent (operator-typed canonical or alias)
+//   - explicit fallback parent
 //
-// Original-registry preservation: we also verify
-// OriginalClientRegistry returns the operator's exact input so the
-// resolver and metadata classifier still see verbatim presence.
-func TestSetClientRegistry_MaterialisesOmittedProvider(t *testing.T) {
+// The original registry stays untouched in every case — baml-rest's
+// resolver and metadata classifier read it verbatim from
+// OriginalClientRegistry.
+func TestSetClientRegistry_DropsResolvedStrategyParents(t *testing.T) {
+	cases := []struct {
+		name   string
+		client *bamlutils.ClientProperty
+	}{
+		{
+			name:   "presence-only RR parent (introspected provider drives classification)",
+			client: &bamlutils.ClientProperty{Name: "MyRR"},
+		},
+		{
+			name: "strategy-only RR parent (introspected provider, runtime chain)",
+			client: &bamlutils.ClientProperty{
+				Name:    "MyRR",
+				Options: map[string]any{"strategy": []any{"A", "B"}},
+			},
+		},
+		{
+			name: "explicit baml-roundrobin (canonical baml-rest spelling)",
+			client: &bamlutils.ClientProperty{
+				Name:     "MyRR",
+				Provider: "baml-roundrobin",
+				Options:  map[string]any{"strategy": []any{"A", "B"}},
+			},
+		},
+		{
+			name: "explicit round-robin (BAML upstream spelling)",
+			client: &bamlutils.ClientProperty{
+				Name:     "MyRR",
+				Provider: "round-robin",
+				Options:  map[string]any{"strategy": []any{"A", "B"}},
+			},
+		},
+		{
+			name: "explicit baml-fallback parent",
+			client: &bamlutils.ClientProperty{
+				Name:     "MyFb",
+				Provider: "baml-fallback",
+				Options:  map[string]any{"strategy": []any{"A", "B"}},
+			},
+		},
+		{
+			name: "explicit fallback alias",
+			client: &bamlutils.ClientProperty{
+				Name:     "MyFb",
+				Provider: "fallback",
+				Options:  map[string]any{"strategy": []any{"A", "B"}},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &BamlAdapter{
+				Context: context.Background(),
+				IntrospectedClientProvider: map[string]string{
+					"MyRR": "baml-roundrobin",
+					"MyFb": "baml-fallback",
+				},
+			}
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{tc.client},
+			}
+			if err := a.SetClientRegistry(reg); err != nil {
+				t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+			}
+			// BAML-bound: parent must be absent.
+			if got := a.UpstreamClientNames(); len(got) != 0 {
+				t.Errorf("UpstreamClientNames(): got %v, want empty (strategy parent must be dropped)", got)
+			}
+			// Original: parent must be intact, byte-for-byte.
+			origClients := a.OriginalClientRegistry().Clients
+			if len(origClients) != 1 || origClients[0] != tc.client {
+				t.Errorf("OriginalClientRegistry mutated: got %+v, want %+v", origClients, []*bamlutils.ClientProperty{tc.client})
+			}
+		})
+	}
+}
+
+// TestSetClientRegistry_PresenceOnlyRRRoundTrip is the
+// presence-only round-trip test the cold-review-3 signoff-10 fix
+// promises: original registry has the entry, BAML-bound registry
+// drops it, and (in the integration test below) the resulting BAML
+// call succeeds because BAML never sees the partial parent.
+func TestSetClientRegistry_PresenceOnlyRRRoundTrip(t *testing.T) {
 	primary := "MyRR"
 	reg := &bamlutils.ClientRegistry{
 		Primary: &primary,
 		Clients: []*bamlutils.ClientProperty{
-			{
-				Name:    "MyRR",
-				Options: map[string]any{"strategy": []any{"A", "B"}},
-				// Provider deliberately omitted — strategy-only override.
-			},
+			{Name: "MyRR"}, // presence-only RR parent
 		},
 	}
 	a := &BamlAdapter{
 		Context: context.Background(),
 		IntrospectedClientProvider: map[string]string{
 			"MyRR": "baml-roundrobin",
+			"A":    "openai",
+			"B":    "openai",
 		},
 	}
-
 	if err := a.SetClientRegistry(reg); err != nil {
 		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
 	}
-
-	// Cache materialisation: the primary's provider must be the
-	// upstream-translated form of the introspected provider, not the
-	// operator's empty string. Without this, ResolveProvider's
-	// shortcut would return "" and the metadata classifier's
-	// downstream presence check would have to redundantly re-resolve
-	// against the original registry.
-	if got := a.ClientRegistryProvider(); got != "baml-round-robin" {
-		t.Errorf("ClientRegistryProvider(): got %q, want baml-round-robin (introspected baml-roundrobin → upstream-translated)", got)
-	}
-
-	// Original-registry preservation: the resolver and metadata
-	// classifier read this view; if SetClientRegistry mutated it,
-	// every test that checks IsProviderPresent or the operator's raw
-	// strategy options would silently regress.
+	// Original preserved verbatim.
 	got := a.OriginalClientRegistry()
-	if got != reg {
-		t.Errorf("OriginalClientRegistry(): expected pointer-equal preservation, got different *ClientRegistry")
+	if got != reg || len(got.Clients) != 1 || got.Clients[0].Name != "MyRR" {
+		t.Errorf("OriginalClientRegistry not preserved; got %+v", got)
 	}
-	if len(got.Clients) != 1 {
-		t.Fatalf("OriginalClientRegistry().Clients: len = %d, want 1", len(got.Clients))
+	// BAML-bound: parent dropped.
+	if names := a.UpstreamClientNames(); len(names) != 0 {
+		t.Errorf("UpstreamClientNames(): got %v, want empty for presence-only RR", names)
 	}
-	if got.Clients[0].Provider != "" {
-		t.Errorf("operator's omitted Provider was mutated to %q", got.Clients[0].Provider)
+	// Cache for primary still reflects the materialised+translated
+	// provider so ResolveProvider's shortcut returns the correct
+	// classification value. (The primary itself isn't in BAML's
+	// registry, but BuildRequest dispatches with WithClient(leaf)
+	// after resolution, so BAML doesn't need the parent there.)
+	if got := a.ClientRegistryProvider(); got != "baml-round-robin" {
+		t.Errorf("ClientRegistryProvider(): got %q, want baml-round-robin", got)
 	}
-	if got.Clients[0].IsProviderPresent() {
-		t.Errorf("operator's omitted ProviderSet was mutated to true")
+}
+
+// TestSetClientRegistry_NonStrategyEntriesForwarded is the inverse
+// regression guard. Non-strategy entries (concrete providers, leaf
+// clients) must continue to reach BAML's registry — only the strategy
+// parents get dropped.
+func TestSetClientRegistry_NonStrategyEntriesForwarded(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "ClientA", Provider: "openai"},
+			{Name: "ClientB", Provider: "anthropic"},
+			{Name: "MyRR", Provider: "baml-roundrobin", Options: map[string]any{"strategy": []any{"ClientA", "ClientB"}}},
+		},
+	}
+	a := &BamlAdapter{
+		Context:                    context.Background(),
+		IntrospectedClientProvider: map[string]string{},
+	}
+	if err := a.SetClientRegistry(reg); err != nil {
+		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+	}
+	got := a.UpstreamClientNames()
+	want := []string{"ClientA", "ClientB"}
+	if len(got) != len(want) {
+		t.Fatalf("UpstreamClientNames(): got %v, want %v", got, want)
+	}
+	for i, n := range want {
+		if got[i] != n {
+			t.Errorf("UpstreamClientNames()[%d]: got %q, want %q (strategy parent must be dropped, leaves preserved)", i, got[i], n)
+		}
 	}
 }
 

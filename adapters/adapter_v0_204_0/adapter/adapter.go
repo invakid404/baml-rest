@@ -61,6 +61,19 @@ type BamlAdapter struct {
 	// (strategy-only / presence-only overrides). See PR #192
 	// cold-review-3 finding 1.
 	IntrospectedClientProvider map[string]string
+
+	// upstreamClientNames records the order of names passed to
+	// AddLlmClient. Test-only observability for the cold-review-3
+	// signoff-10 F1 fix that drops strategy parents from the
+	// BAML-bound registry.
+	upstreamClientNames []string
+}
+
+// UpstreamClientNames returns the names AddLlmClient was called for
+// on the BAML-bound registry during the most recent SetClientRegistry
+// call. Test-only observability.
+func (b *BamlAdapter) UpstreamClientNames() []string {
+	return append([]string(nil), b.upstreamClientNames...)
 }
 
 func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
@@ -82,14 +95,22 @@ func (b *BamlAdapter) IncludeThinkingInRaw() bool {
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
 	b.originalClientRegistry = clientRegistry
 	b.ClientRegistry = baml.NewClientRegistry()
+	b.upstreamClientNames = b.upstreamClientNames[:0]
 
 	for _, client := range clientRegistry.Clients {
+		// Drop baml-rest-resolved strategy parent entries; same
+		// rationale as the v0.219 adapter — BAML rejects partial RR
+		// shapes at parse time. See cold-review-3 signoff-10 F1.
+		if bamlutils.IsResolvedStrategyParent(client, b.IntrospectedClientProvider) {
+			continue
+		}
 		// Materialise provider for the BAML-bound copy; the original
 		// ClientProperty stays untouched so the resolver and metadata
 		// classifier still see operator input verbatim. See PR #192
 		// cold-review-3 findings 1 and 2.
 		upstreamProvider := bamlutils.UpstreamClientRegistryProvider(client, b.IntrospectedClientProvider)
 		b.ClientRegistry.AddLlmClient(client.Name, upstreamProvider, WrapMapValues(client.Options))
+		b.upstreamClientNames = append(b.upstreamClientNames, client.Name)
 	}
 
 	if clientRegistry.Primary != nil {

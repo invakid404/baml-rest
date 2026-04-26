@@ -264,6 +264,57 @@ func TranslateUpstreamProvider(provider string) string {
 	return provider
 }
 
+// IsResolvedStrategyParent reports whether a runtime client_registry
+// entry is a baml-rest-resolved RR or fallback strategy parent. These
+// entries must not be forwarded into BAML's upstream client registry —
+// see PR #192 cold-review-3 signoff-10 finding F1:
+//
+//   - Modern adapters (SupportsWithClient=true) resolve strategy
+//     parents to a leaf via ResolveEffectiveClient and dispatch with
+//     WithClient(leaf). BAML never executes the parent, so forwarding
+//     it serves no purpose.
+//   - The parent often carries a shape BAML's parser rejects:
+//     presence-only `{Name:"MyRR"}` has no `options.strategy`
+//     (round_robin.rs:73-83 requires it); strategy-only with a
+//     bracketed-string (`options.strategy: "[\"A\",\"B\"]"`) is
+//     baml-rest-specific and BAML's ensure_strategy demands an array
+//     (helpers.rs:790-829).
+//   - The original registry stays untouched so baml-rest's resolver
+//     and metadata classifier (and F3's options.start parser) read
+//     the parent verbatim from OriginalClientRegistry.
+//
+// Spelling: classification uses the operator-supplied provider when
+// IsProviderPresent (covering the `provider:"round-robin"` /
+// `provider:"baml-roundrobin"` / `provider:"baml-round-robin"` cases),
+// or the introspected provider for omitted-provider entries (covering
+// strategy-only and presence-only overrides on a static RR client).
+// All four RR spellings and both fallback spellings classify here.
+func IsResolvedStrategyParent(client *ClientProperty, introspectedProviders map[string]string) bool {
+	if client == nil {
+		return false
+	}
+	var provider string
+	if client.IsProviderPresent() {
+		provider = client.Provider
+	} else if introspectedProviders != nil {
+		provider = introspectedProviders[client.Name]
+	}
+	return isStrategyProviderName(provider)
+}
+
+// isStrategyProviderName reports whether p is one of the BAML strategy
+// provider spellings (RR or fallback). Inlined here rather than
+// imported from bamlutils/buildrequest/roundrobin to avoid a package
+// cycle (roundrobin already imports bamlutils).
+func isStrategyProviderName(p string) bool {
+	switch p {
+	case "round-robin", "baml-round-robin", "baml-roundrobin",
+		"fallback", "baml-fallback":
+		return true
+	}
+	return false
+}
+
 // UpstreamClientRegistryProvider returns the provider string suitable
 // for forwarding to BAML's upstream baml.ClientRegistry.AddLlmClient.
 // It resolves the three presence states ClientProperty can be in and
