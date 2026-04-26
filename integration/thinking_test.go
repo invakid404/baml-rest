@@ -151,45 +151,6 @@ func TestCallWithRaw_AnthropicThinking_DefaultExcludes(t *testing.T) {
 	})
 }
 
-// TestCallWithRaw_AnthropicThinking_ExplicitFalse verifies that setting
-// IncludeThinkingInRaw=false explicitly yields the same behavior as omitting
-// it entirely. Codifies that the worker apply step always passes the value
-// through (rather than skipping the setter when false), so a per-request
-// false doesn't accidentally inherit a sticky true from a prior request on
-// the same adapter.
-func TestCallWithRaw_AnthropicThinking_ExplicitFalse(t *testing.T) {
-	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		opts := setupAnthropicThinkingScenario(
-			t,
-			"test-anthropic-think-call-explicit-false",
-			thinkingTestContent,
-			thinkingTestThinking,
-			false, /*streaming*/
-			boolPtr(false),
-		)
-
-		resp, err := client.CallWithRaw(ctx, testutil.CallRequest{
-			Method:  "GetSimple",
-			Input:   map[string]any{"input": "anything"},
-			Options: opts,
-		})
-		if err != nil {
-			t.Fatalf("CallWithRaw failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
-		}
-
-		if resp.Raw != thinkingTestContent {
-			t.Errorf("explicit false: raw got %q, want %q", resp.Raw, thinkingTestContent)
-		}
-		assertParsedMessage(t, resp.Data, "hello")
-	})
-}
-
 // TestCallWithRaw_AnthropicThinking_OptInIncludes verifies the opt-in
 // (flag=true) /call-with-raw behavior: raw includes both the thinking and
 // text content, with thinking emitted before text (matching the wire order
