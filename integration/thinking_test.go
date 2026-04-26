@@ -26,6 +26,7 @@ package integration
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -528,15 +529,17 @@ func TestStreamWithRaw_AnthropicThinking_ParseableInvariant_PerEvent(t *testing.
 }
 
 // containsAny returns true if s contains any of the given substrings. Tiny
-// helper to keep the leak-detection assertions readable.
+// helper to keep the leak-detection assertions readable. Empty subs are
+// skipped (rather than matching every string per strings.Contains' semantics)
+// so callers can pass conditionally-empty markers without changing the test's
+// outcome.
 func containsAny(s string, subs ...string) bool {
 	for _, sub := range subs {
-		if len(sub) > 0 && len(s) >= len(sub) {
-			for i := 0; i+len(sub) <= len(s); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
+		if sub == "" {
+			continue
+		}
+		if strings.Contains(s, sub) {
+			return true
 		}
 	}
 	return false
