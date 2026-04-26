@@ -115,6 +115,7 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 		b.ClientRegistry = nil
 		b.clientRegistryProvider = ""
 		b.originalClientRegistry = nil
+		b.upstreamClientNames = b.upstreamClientNames[:0]
 		return nil
 	}
 

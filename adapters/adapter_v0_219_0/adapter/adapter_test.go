@@ -275,8 +275,22 @@ func TestSetClientRegistry_ExplicitProviderPassesThrough(t *testing.T) {
 // TestSetClientRegistry_NilRegistryClearsState mirrors the existing
 // nil-input behaviour and is here so future refactors of the
 // materialise helper can't accidentally panic on the nil-input path.
+// Also pins upstreamClientNames clearing so a stale list from a
+// previous registry call cannot survive across a nil reset.
 func TestSetClientRegistry_NilRegistryClearsState(t *testing.T) {
 	a := &BamlAdapter{Context: context.Background()}
+	// Seed upstreamClientNames so we can verify the nil branch
+	// clears it. Without this seed an unconditional check would
+	// pass trivially.
+	if err := a.SetClientRegistry(&bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{{Name: "Seed", Provider: "openai"}},
+	}); err != nil {
+		t.Fatalf("seed call: unexpected error: %v", err)
+	}
+	if names := a.UpstreamClientNames(); len(names) != 1 {
+		t.Fatalf("seed: UpstreamClientNames len = %d, want 1", len(names))
+	}
+
 	if err := a.SetClientRegistry(nil); err != nil {
 		t.Fatalf("SetClientRegistry(nil): unexpected error: %v", err)
 	}
@@ -288,5 +302,68 @@ func TestSetClientRegistry_NilRegistryClearsState(t *testing.T) {
 	}
 	if got := a.ClientRegistryProvider(); got != "" {
 		t.Errorf("ClientRegistryProvider(): got %q, want empty", got)
+	}
+	if names := a.UpstreamClientNames(); len(names) != 0 {
+		t.Errorf("UpstreamClientNames(): got %v, want empty (stale list leaked across nil reset)", names)
+	}
+}
+
+// TestSetClientRegistry_SkipsNilClientEntries verifies the nil-client
+// skip in both loops. JSON-shaped `clients: [null]` is allowed by the
+// *ClientProperty slice and must not panic — verdict-11 finding 4
+// (already correct on v0.219; pinned here for cross-version parity).
+func TestSetClientRegistry_SkipsNilClientEntries(t *testing.T) {
+	primary := "RealClient"
+	reg := &bamlutils.ClientRegistry{
+		Primary: &primary,
+		Clients: []*bamlutils.ClientProperty{
+			nil,
+			{Name: "RealClient", Provider: "openai"},
+			nil,
+		},
+	}
+	a := &BamlAdapter{
+		Context:                    context.Background(),
+		IntrospectedClientProvider: map[string]string{},
+	}
+	if err := a.SetClientRegistry(reg); err != nil {
+		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+	}
+	got := a.UpstreamClientNames()
+	if len(got) != 1 || got[0] != "RealClient" {
+		t.Errorf("UpstreamClientNames(): got %v, want [RealClient]", got)
+	}
+	if got := a.ClientRegistryProvider(); got != "openai" {
+		t.Errorf("ClientRegistryProvider(): got %q, want openai", got)
+	}
+}
+
+// TestSetClientRegistry_ClearsStaleProviderCache pins the cache-
+// clearing behaviour at the top of SetClientRegistry. A second call
+// without a matching primary must clear the prior provider — without
+// the explicit reset stale state would survive across requests on a
+// reused adapter (verdict-11 finding 4 stale-cache half).
+func TestSetClientRegistry_ClearsStaleProviderCache(t *testing.T) {
+	a := &BamlAdapter{
+		Context:                    context.Background(),
+		IntrospectedClientProvider: map[string]string{},
+	}
+	primary := "FirstClient"
+	if err := a.SetClientRegistry(&bamlutils.ClientRegistry{
+		Primary: &primary,
+		Clients: []*bamlutils.ClientProperty{{Name: "FirstClient", Provider: "openai"}},
+	}); err != nil {
+		t.Fatalf("first call: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "openai" {
+		t.Fatalf("first call: ClientRegistryProvider got %q, want openai", got)
+	}
+	if err := a.SetClientRegistry(&bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{{Name: "OtherClient", Provider: "anthropic"}},
+	}); err != nil {
+		t.Fatalf("second call: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "" {
+		t.Errorf("second call: ClientRegistryProvider got %q, want empty (stale cache leaked)", got)
 	}
 }

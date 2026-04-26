@@ -935,6 +935,110 @@ func TestInspectStartOverride_AcceptedShapes(t *testing.T) {
 	}
 }
 
+// TestInspectStrategyOverride_DirectShapes pins the contract for the
+// exported helper so the orchestrator-level metadata classifier and
+// the resolver-level RR sentinel both stay aligned. Previously each
+// side kept a private copy that risked drifting on quote handling,
+// empty-list semantics, or bracketed-string parsing — verdict-11
+// finding 1 unified them on this implementation.
+func TestInspectStrategyOverride_DirectShapes(t *testing.T) {
+	cases := []struct {
+		name        string
+		client      *bamlutils.ClientProperty
+		wantPresent bool
+		wantValid   bool
+		wantChain   []string
+	}{
+		{
+			name:        "no registry entry → absent",
+			client:      nil,
+			wantPresent: false,
+			wantValid:   true,
+		},
+		{
+			name:        "entry with no options → absent",
+			client:      &bamlutils.ClientProperty{Name: "MyRR", Provider: "baml-roundrobin"},
+			wantPresent: false,
+			wantValid:   true,
+		},
+		{
+			name: "entry with options but no strategy key → absent",
+			client: &bamlutils.ClientProperty{
+				Name:     "MyRR",
+				Provider: "baml-roundrobin",
+				Options:  map[string]any{"temperature": 0.7},
+			},
+			wantPresent: false,
+			wantValid:   true,
+		},
+		{
+			name: "valid []any chain",
+			client: &bamlutils.ClientProperty{
+				Name:    "MyRR",
+				Options: map[string]any{"strategy": []any{"A", "B"}},
+			},
+			wantPresent: true,
+			wantValid:   true,
+			wantChain:   []string{"A", "B"},
+		},
+		{
+			name: "valid bracketed string with quoted tokens",
+			client: &bamlutils.ClientProperty{
+				Name:    "MyRR",
+				Options: map[string]any{"strategy": `["ClientC","ClientD"]`},
+			},
+			wantPresent: true,
+			wantValid:   true,
+			wantChain:   []string{"ClientC", "ClientD"},
+		},
+		{
+			name: "empty array → present-but-invalid",
+			client: &bamlutils.ClientProperty{
+				Name:    "MyRR",
+				Options: map[string]any{"strategy": []any{}},
+			},
+			wantPresent: true,
+			wantValid:   false,
+		},
+		{
+			name: "bare token string → present-but-invalid",
+			client: &bamlutils.ClientProperty{
+				Name:    "MyRR",
+				Options: map[string]any{"strategy": "ClientA"},
+			},
+			wantPresent: true,
+			wantValid:   false,
+		},
+		{
+			name: "half-bracketed string → present-but-invalid",
+			client: &bamlutils.ClientProperty{
+				Name:    "MyRR",
+				Options: map[string]any{"strategy": "[A"},
+			},
+			wantPresent: true,
+			wantValid:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var reg *bamlutils.ClientRegistry
+			if tc.client != nil {
+				reg = &bamlutils.ClientRegistry{
+					Clients: []*bamlutils.ClientProperty{tc.client},
+				}
+			}
+			chain, present, valid := InspectStrategyOverride(reg, "MyRR")
+			if present != tc.wantPresent || valid != tc.wantValid {
+				t.Errorf("got (present=%v valid=%v); want (present=%v valid=%v)",
+					present, valid, tc.wantPresent, tc.wantValid)
+			}
+			if !sliceEqual(chain, tc.wantChain) {
+				t.Errorf("chain: got %v, want %v", chain, tc.wantChain)
+			}
+		})
+	}
+}
+
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

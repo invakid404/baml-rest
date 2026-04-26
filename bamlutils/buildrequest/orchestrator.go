@@ -23,7 +23,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/retry"
 	"github.com/invakid404/baml-rest/bamlutils/sse"
-	"github.com/invakid404/baml-rest/bamlutils/strategyparse"
 )
 
 // parseBuildRequestEnv reads BAML_REST_USE_BUILD_REQUEST and returns its
@@ -536,7 +535,7 @@ func ResolveProviderWithReason(
 	case "baml-fallback":
 		res.Strategy = "baml-fallback"
 		res.Path = "legacy"
-		if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
+		if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
 			res.PathReason = PathReasonInvalidStrategyOverride
 		}
 		// Otherwise PathReason is intentionally left empty here.
@@ -556,7 +555,7 @@ func ResolveProviderWithReason(
 		// operators reading X-BAML-Path-Reason can distinguish them.
 		// Strategy is checked first since `strategy` is the primary RR
 		// option and BAML upstream parses it before `start`.
-		if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
+		if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
 			res.PathReason = PathReasonInvalidStrategyOverride
 		} else if hasInvalidStartOverride(reg, clientName) {
 			res.PathReason = PathReasonInvalidRoundRobinStartOverride
@@ -960,7 +959,7 @@ func BuildLegacyMetadataPlanForClient(
 		//     treatment as the strategy case but a distinct reason so
 		//     operators can tell which option was malformed.
 		plan.Strategy = "baml-roundrobin"
-		if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
+		if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
 			plan.PathReason = PathReasonInvalidStrategyOverride
 		} else if hasInvalidStartOverride(reg, clientName) {
 			plan.PathReason = PathReasonInvalidRoundRobinStartOverride
@@ -1061,7 +1060,7 @@ func ResolveFallbackChainForClientWithReason(
 	// legacy, where BAML's runtime emits the canonical
 	// ensure_strategy error rather than us silently using the
 	// introspected chain.
-	if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
+	if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
 		return nil, nil, nil, PathReasonInvalidStrategyOverride
 	}
 
@@ -1300,15 +1299,6 @@ func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlut
 	return nil
 }
 
-// parseRuntimeStrategyOption delegates to the shared parser at
-// bamlutils/strategyparse. Fallback and round-robin historically kept
-// local copies of this logic that diverged on quote handling, which
-// broke RR runtime overrides under bracketed-string shapes; the shared
-// helper keeps both strategies consistent.
-func parseRuntimeStrategyOption(v any) []string {
-	return strategyparse.ParseStrategyOption(v)
-}
-
 // hasInvalidProviderOverride reports whether the runtime registry has
 // an entry for clientName whose `provider` key was supplied with the
 // empty string. BAML upstream's ClientProvider::from_str rejects empty
@@ -1359,40 +1349,8 @@ func hasInvalidStartOverride(reg *bamlutils.ClientRegistry, clientName string) b
 	return present && !valid
 }
 
-// inspectStrategyOverride examines the runtime client_registry entry for
-// a strategy client. Three outcomes:
-//
-//   - present=false, valid=true: no `strategy` key in the runtime options
-//     (or no runtime entry at all). Caller falls back to the introspected
-//     chain.
-//   - present=true, valid=true: the override parsed to a non-empty chain.
-//     Caller honours the returned slice.
-//   - present=true, valid=false: the override is present but unparseable
-//     (bare token, half-bracketed, empty array, heterogeneous []any with
-//     non-string elements, etc.). BAML upstream's ensure_strategy
-//     rejects these, so callers route the request to legacy where BAML's
-//     runtime emits "strategy must be an array" / "strategy must not
-//     be empty". A previous revision silently used the introspected
-//     chain for these inputs, masking operator typos and diverging from
-//     upstream — see PR #192 cold-review-2 finding 1.
-func inspectStrategyOverride(reg *bamlutils.ClientRegistry, clientName string) (chain []string, present bool, valid bool) {
-	rc := findRuntimeClient(reg, clientName)
-	if rc == nil || rc.Options == nil {
-		return nil, false, true
-	}
-	raw, ok := rc.Options["strategy"]
-	if !ok {
-		return nil, false, true
-	}
-	parsed := parseRuntimeStrategyOption(raw)
-	if len(parsed) == 0 {
-		return nil, true, false
-	}
-	return parsed, true, true
-}
-
 func resolveFallbackStrategyChain(reg *bamlutils.ClientRegistry, clientName string, introspectedChains map[string][]string) []string {
-	chain, present, valid := inspectStrategyOverride(reg, clientName)
+	chain, present, valid := roundrobin.InspectStrategyOverride(reg, clientName)
 	if present && !valid {
 		return nil
 	}

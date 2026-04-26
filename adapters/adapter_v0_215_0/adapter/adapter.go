@@ -93,11 +93,25 @@ func (b *BamlAdapter) IncludeThinkingInRaw() bool {
 }
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
+	// Nil-registry / nil-client / stale-cache guards mirroring the
+	// v0.219 adapter pattern (verdict-11 findings 3 + 4).
+	if clientRegistry == nil {
+		b.ClientRegistry = nil
+		b.clientRegistryProvider = ""
+		b.originalClientRegistry = nil
+		b.upstreamClientNames = b.upstreamClientNames[:0]
+		return nil
+	}
+
 	b.originalClientRegistry = clientRegistry
+	b.clientRegistryProvider = "" // Clear before scanning to avoid stale values
 	b.ClientRegistry = baml.NewClientRegistry()
 	b.upstreamClientNames = b.upstreamClientNames[:0]
 
 	for _, client := range clientRegistry.Clients {
+		if client == nil {
+			continue
+		}
 		// Drop baml-rest-resolved strategy parent entries; same
 		// rationale as the v0.219 adapter — BAML rejects partial RR
 		// shapes at parse time. See cold-review-3 signoff-10 F1.
@@ -117,6 +131,9 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	if clientRegistry.Primary != nil {
 		b.ClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
 		for _, client := range clientRegistry.Clients {
+			if client == nil {
+				continue
+			}
 			if client.Name == *clientRegistry.Primary {
 				b.clientRegistryProvider = bamlutils.UpstreamClientRegistryProvider(client, b.IntrospectedClientProvider)
 				break
