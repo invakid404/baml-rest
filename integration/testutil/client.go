@@ -1011,7 +1011,7 @@ func CreateAnthropicTestClient(mockLLMURL string, scenarioID string) *ClientRegi
 		Clients: []*ClientProperty{
 			{
 				Name:     "TestClient",
-				Provider: "anthropic",
+				Provider: StringPtr("anthropic"),
 				Options: map[string]any{
 					"model":      scenarioID,
 					"base_url":   mockLLMURL,
