@@ -409,10 +409,20 @@ func TestWorkerDeathMidStream(t *testing.T) {
 					sawErrorEvent = true
 				}
 
-				// After receiving the first event (first byte), kill the worker
-				if len(receivedEvents) == 1 && !killedWorker {
+				// Kill the worker after the first non-metadata event so
+				// the kill lands AFTER an actual upstream byte. Planned
+				// metadata is emitted upfront from the orchestrator
+				// before BAML's HTTP work starts (see PR #192 verdict-15)
+				// — it's the routing decision, not upstream progress.
+				// Pool's reset-injection logic correctly excludes
+				// planned metadata from sentAnyResults, so killing
+				// after the planned frame would land in pre-first-byte
+				// territory and the retry would (correctly) not inject
+				// Reset. The "after first byte" semantic this test
+				// asserts is "after a real upstream byte".
+				if event.Event != "metadata" && !killedWorker {
 					eventsBeforeKill = len(receivedEvents)
-					t.Log("First event received, killing worker...")
+					t.Log("First non-metadata event received, killing worker...")
 					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
 					result, err := BAMLClient.KillWorker(killCtx)
 					killCancel()
@@ -1500,10 +1510,16 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 					sawErrorEvent = true
 				}
 
-				// After receiving the first event (first byte), kill the worker
-				if len(receivedEvents) == 1 && !killedWorker {
+				// Kill after the first non-metadata event — see the SSE
+				// counterpart above for the rationale (planned metadata
+				// is emitted before BAML's HTTP work starts and does
+				// not represent upstream first-byte; a kill landing
+				// during the planned-only window correctly falls into
+				// pre-first-byte handling, which suppresses Reset on
+				// retry).
+				if !event.IsMetadata() && !killedWorker {
 					eventsBeforeKill = len(receivedEvents)
-					t.Log("First event received, killing worker...")
+					t.Log("First non-metadata event received, killing worker...")
 					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
 					result, err := BAMLClient.KillWorker(killCtx)
 					killCancel()
@@ -2139,6 +2155,13 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 		defer cancelTimer.Stop()
 
 		var receivedEvents int
+		// dataEventsBeforeCancel counts only non-metadata frames, since
+		// planned metadata is now emitted upfront from the orchestrator
+		// (PR #192 verdict-15) — before any HTTP work to the upstream
+		// provider. The test's intent is "no real upstream content
+		// reached the client before cancellation"; planned metadata
+		// arriving immediately is consistent with that intent.
+		var dataEventsBeforeCancel int
 		var streamErr error
 
 		for {
@@ -2148,6 +2171,9 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 					goto done
 				}
 				receivedEvents++
+				if !event.IsMetadata() {
+					dataEventsBeforeCancel++
+				}
 				t.Logf("Received NDJSON event: type=%s", event.Event)
 			case err := <-errs:
 				if err != nil {
@@ -2162,11 +2188,11 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 
 		elapsed := time.Since(startTime)
 		t.Logf("NDJSON request completed in %v", elapsed)
-		t.Logf("NDJSON events received: %d", receivedEvents)
+		t.Logf("NDJSON events received: %d (data-only: %d)", receivedEvents, dataEventsBeforeCancel)
 		t.Logf("NDJSON stream error: %v", streamErr)
 
-		if receivedEvents != 0 {
-			t.Errorf("Expected zero NDJSON events before cancellation, got %d", receivedEvents)
+		if dataEventsBeforeCancel != 0 {
+			t.Errorf("Expected zero NDJSON data events before cancellation, got %d (received %d total events)", dataEventsBeforeCancel, receivedEvents)
 		}
 
 		// Should complete quickly (cancelled at ~500ms, not waiting 10s)
