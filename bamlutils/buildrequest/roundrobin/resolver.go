@@ -25,19 +25,30 @@ import (
 var ErrInvalidStrategyOverride = errors.New("roundrobin: runtime strategy override is invalid or empty")
 
 // ErrInvalidStartOverride signals that the runtime client_registry
-// supplied an `options.start` value that inspectStartOverride could
-// not interpret as a representable Go int — strings (including
-// numeric strings like "1"), fractional floats, booleans, slices,
-// maps, or unsigned integers larger than math.MaxInt.
+// supplied an `options.start` value outside the i32 contract that
+// BAML's upstream ensure_int enforces. The signoff-10 tightening
+// pinned this contract to:
 //
-// BAML upstream's ensure_int rejects these inputs in
-// baml-lib/llm-client/src/clients/helpers.rs (start is parsed via
-// `properties.ensure_int("start", false)` in round_robin.rs:75) with
-// "start must be an integer". Resolve returns this sentinel so callers
-// (ResolveEffectiveClient) can skip the RR unwrap and let the request
-// fall through to legacy, where BAML's runtime emits the canonical
-// error rather than us silently randomising. See PR #192 cold-review-3
-// finding 3.
+//   - Accepted: signed integer kinds (int, int8, int16, int32, int64)
+//     within [math.MinInt32, math.MaxInt32]; finite whole float64
+//     values within that same range.
+//   - Rejected: all unsigned integer kinds (uint, uint8, uint16,
+//     uint32, uint64 — BAML's Go encoder has no unsigned branch),
+//     json.Number (encoded as string upstream, which the decoder
+//     rejects for an integer option), strings (including numeric
+//     strings like "1"), fractional or non-finite floats (NaN, ±Inf,
+//     1.5, etc.), booleans, slices, maps, nil, and out-of-int32
+//     signed/float values.
+//
+// BAML upstream's ensure_int parses via parse::<i32>()
+// (baml-lib/llm-client/src/clients/helpers.rs:168-180, :917-930);
+// round-robin invokes it via `properties.ensure_int("start", false)`
+// in round_robin.rs:75. Resolve returns this sentinel so callers
+// (ResolveEffectiveClient) can skip the RR unwrap and treat the
+// request as having an invalid runtime `options.start`, falling
+// through to legacy where BAML's runtime emits the canonical error
+// rather than us silently randomising. See PR #192 cold-review-3
+// finding 3 / signoff-10 tightening / verdict-13 finding 4.
 var ErrInvalidStartOverride = errors.New("roundrobin: runtime start override is invalid")
 
 // CanonicalProvider is the spelling emitted in metadata and headers

@@ -130,14 +130,25 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 
 	if clientRegistry.Primary != nil {
 		b.ClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
+		foundPrimary := false
 		for _, client := range clientRegistry.Clients {
 			if client == nil {
 				continue
 			}
 			if client.Name == *clientRegistry.Primary {
 				b.clientRegistryProvider = bamlutils.UpstreamClientRegistryProvider(client, b.IntrospectedClientProvider)
+				foundPrimary = true
 				break
 			}
+		}
+		// Synthesize from the introspected map when primary names a
+		// static client without a runtime entry — see v0.219 adapter
+		// for rationale. Verdict-13 findings 1, 2, 5.
+		if !foundPrimary {
+			b.clientRegistryProvider = bamlutils.UpstreamClientRegistryProvider(
+				&bamlutils.ClientProperty{Name: *clientRegistry.Primary},
+				b.IntrospectedClientProvider,
+			)
 		}
 	}
 

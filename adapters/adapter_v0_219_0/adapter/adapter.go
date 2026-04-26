@@ -154,6 +154,7 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 
 	if clientRegistry.Primary != nil {
 		b.ClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
+		foundPrimary := false
 		for _, client := range clientRegistry.Clients {
 			if client == nil {
 				continue
@@ -165,8 +166,26 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 				// materialisation for omitted-provider primaries and
 				// hide the introspected fallback from the shortcut.
 				b.clientRegistryProvider = bamlutils.UpstreamClientRegistryProvider(client, b.IntrospectedClientProvider)
+				foundPrimary = true
 				break
 			}
+		}
+		// Primary names a static client with no matching runtime
+		// entry — operator selected an existing introspected client by
+		// name without redefining it in clients[]. Synthesize an empty
+		// ClientProperty so UpstreamClientRegistryProvider falls
+		// through to the introspected map; without this the
+		// ResolveProvider adapter shortcut returns "" and downstream
+		// helpers report the function default instead of the primary's
+		// actual static provider. The foundPrimary flag (rather than
+		// "cache is empty") gates synthesis so a matching present-
+		// empty entry that intentionally produced "" is not clobbered.
+		// See PR #192 verdict-13 findings 1, 2, 5.
+		if !foundPrimary {
+			b.clientRegistryProvider = bamlutils.UpstreamClientRegistryProvider(
+				&bamlutils.ClientProperty{Name: *clientRegistry.Primary},
+				b.IntrospectedClientProvider,
+			)
 		}
 	}
 

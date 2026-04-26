@@ -114,3 +114,85 @@ func TestSetClientRegistry_ClearsStaleProviderCache(t *testing.T) {
 		t.Errorf("second call: ClientRegistryProvider got %q, want empty (stale cache from first call leaked)", got)
 	}
 }
+
+// TestSetClientRegistry_StaticPrimary_PopulatesProviderFromIntrospected
+// covers verdict-13 findings 1, 2, 5: a runtime registry that names a
+// static primary by name without redefining it in clients[] (a normal
+// operator-facing way to switch to an existing introspected client)
+// must populate the cache from the introspected map, not leave it ""
+// where ResolveProvider's adapter shortcut would short-circuit to the
+// function default.
+func TestSetClientRegistry_StaticPrimary_PopulatesProviderFromIntrospected(t *testing.T) {
+	primary := "StaticOpenAI"
+	reg := &bamlutils.ClientRegistry{
+		Primary: &primary,
+		Clients: []*bamlutils.ClientProperty{}, // empty — pure static-primary selection
+	}
+	a := &BamlAdapter{
+		Context: context.Background(),
+		IntrospectedClientProvider: map[string]string{
+			"StaticOpenAI": "openai",
+		},
+	}
+	if err := a.SetClientRegistry(reg); err != nil {
+		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "openai" {
+		t.Errorf("ClientRegistryProvider(): got %q, want openai (synthesized from introspected map for unrebound primary)", got)
+	}
+}
+
+// TestSetClientRegistry_PresentEmptyMatchingPrimary_StaysEmpty pins
+// the foundPrimary-flag invariant from verdict-13: a matching primary
+// entry that intentionally produces "" (operator typo'd provider:"")
+// must NOT be overwritten by introspected materialisation. Without
+// the explicit foundPrimary gate, a "cache is empty" trigger would
+// clobber this case.
+func TestSetClientRegistry_PresentEmptyMatchingPrimary_StaysEmpty(t *testing.T) {
+	primary := "X"
+	reg := &bamlutils.ClientRegistry{
+		Primary: &primary,
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "X", Provider: "", ProviderSet: true},
+		},
+	}
+	a := &BamlAdapter{
+		Context: context.Background(),
+		IntrospectedClientProvider: map[string]string{
+			"X": "openai", // would have been materialised on the synthesis path
+		},
+	}
+	if err := a.SetClientRegistry(reg); err != nil {
+		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "" {
+		t.Errorf("ClientRegistryProvider(): got %q, want empty (present-empty primary must not be synthesized over)", got)
+	}
+}
+
+// TestSetClientRegistry_PresentNonEmptyMatchingPrimary_UsesOverride
+// is the inverse-regression guard: a matching primary entry with a
+// concrete provider must populate the cache from that override, not
+// from the introspected map. Without this guard, a future refactor
+// of the foundPrimary logic could swap precedence by accident.
+func TestSetClientRegistry_PresentNonEmptyMatchingPrimary_UsesOverride(t *testing.T) {
+	primary := "X"
+	reg := &bamlutils.ClientRegistry{
+		Primary: &primary,
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "X", Provider: "openai"},
+		},
+	}
+	a := &BamlAdapter{
+		Context: context.Background(),
+		IntrospectedClientProvider: map[string]string{
+			"X": "anthropic", // override must win over introspected
+		},
+	}
+	if err := a.SetClientRegistry(reg); err != nil {
+		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "openai" {
+		t.Errorf("ClientRegistryProvider(): got %q, want openai (operator override must win over introspected)", got)
+	}
+}
