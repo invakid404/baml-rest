@@ -4148,30 +4148,51 @@ func generateStreamHelpers(out *jen.File) {
 						//     races where lastFuncLog's SSEChunks view is stale
 						//     (onTick didn't cover the final SSE event), the
 						//     extractor can end up truncated or empty while
-						//     RawLLMResponse is complete. RawLLMResponse wins.
+						//     RawLLMResponse is complete. We splice in only the
+						//     missing text suffix from RawLLMResponse so any
+						//     late text the extractor missed is recovered.
 						//
 						//   - IncludeThinkingInRaw opt-in (per-request): when
 						//     enabled, the extractor accumulates Anthropic
 						//     thinking_delta into raw while BAML's runtime never
-						//     surfaces thinking. The extractor's view is then
-						//     longer; extractor wins so opted-in clients see the
-						//     reasoning content.
+						//     surfaces thinking. The splice approach preserves
+						//     thinking content (which lives only in
+						//     extractor.RawFull) alongside any recovered text.
 						//
-						// Picking the longer of the two satisfies both goals:
-						// the extractor wins under flag=true (thinking content
-						// preserved) and RawLLMResponse wins under stale-SSE
-						// races (truncation absorbed). Under happy-path
-						// flag=false, both are equal text-only and the choice
-						// is immaterial.
+						// Reconciliation logic:
+						//   1. If RawLLMResponse extends extractor.ParseableFull
+						//      as a prefix and is longer, splice in the missing
+						//      text suffix. This is the common case under both
+						//      stale-race and happy-path-with-opt-in.
+						//   2. Else if RawLLMResponse is longer than
+						//      extractor.RawFull (the prefix invariant is
+						//      violated — should not happen under Anthropic's
+						//      thinking-then-text ordering, but defend anyway),
+						//      defer to RawLLMResponse for correctness. This
+						//      loses thinking under opt-in but ensures the
+						//      authoritative text wins.
+						//   3. Else keep extractor.RawFull (happy path:
+						//      extractor's view is at least as complete).
 						jen.Id("extractorMu").Dot("Lock").Call(),
 						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("RawFull").Call(),
+						jen.Id("parseableFull").Op(":=").Id("extractor").Dot("ParseableFull").Call(),
 						jen.Id("extractorMu").Dot("Unlock").Call(),
 						jen.If(jen.Id("flOk")).Block(
 							jen.If(
 								jen.List(jen.Id("authRaw"), jen.Id("rawErr")).Op(":=").Id("fl").Dot("RawLLMResponse").Call(),
-								jen.Id("rawErr").Op("==").Nil().Op("&&").Len(jen.Id("authRaw")).Op(">").Len(jen.Id("finalRaw")),
+								jen.Id("rawErr").Op("==").Nil(),
 							).Block(
-								jen.Id("finalRaw").Op("=").Id("authRaw"),
+								jen.If(
+									jen.Len(jen.Id("authRaw")).Op(">").Len(jen.Id("parseableFull")).
+										Op("&&").
+										Qual("strings", "HasPrefix").Call(jen.Id("authRaw"), jen.Id("parseableFull")),
+								).Block(
+									jen.Id("finalRaw").Op("=").Id("finalRaw").Op("+").Id("authRaw").Index(jen.Len(jen.Id("parseableFull")), jen.Empty()),
+								).Else().If(
+									jen.Len(jen.Id("authRaw")).Op(">").Len(jen.Id("finalRaw")),
+								).Block(
+									jen.Id("finalRaw").Op("=").Id("authRaw"),
+								),
 							),
 						),
 

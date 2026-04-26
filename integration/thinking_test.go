@@ -340,7 +340,15 @@ func runStreamWithRaw(t *testing.T, ctx context.Context, opts *testutil.BAMLOpti
 			if len(event.Data) > 0 && string(event.Data) != "null" {
 				result.dataEvents = append(result.dataEvents, event.Data)
 			}
-		case err := <-errs:
+		case err, ok := <-errs:
+			if !ok {
+				// errs closed by the streaming goroutine; nil out the
+				// channel so this select arm blocks forever and we
+				// continue draining events without spinning. The events
+				// arm's !ok check below is what terminates the loop.
+				errs = nil
+				continue
+			}
 			if err != nil {
 				t.Fatalf("Stream error: %v", err)
 			}
