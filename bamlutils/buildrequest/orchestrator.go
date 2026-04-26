@@ -1525,8 +1525,10 @@ type StreamConfig struct {
 
 	// MetadataPlan is the pre-computed planned metadata for this request.
 	// When non-nil, the orchestrator emits a single planned metadata event
-	// right after the first heartbeat fires (so clients observe liveness
-	// before routing decisions) and, on success, an outcome metadata event
+	// upfront — before any HTTP work — so the routing decision is observable
+	// even when the upstream provider never produces a 2xx (e.g., immediate
+	// validation failure or hung connection). Heartbeat fires later on
+	// upstream 2xx, and the outcome metadata event is emitted on success
 	// right before the final result. Nil disables metadata emission.
 	//
 	// The orchestrator populates the outcome event's winner fields (winner

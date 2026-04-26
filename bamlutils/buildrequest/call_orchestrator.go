@@ -64,7 +64,9 @@ type CallConfig struct {
 
 	// MetadataPlan is the pre-computed planned metadata for this request.
 	// See StreamConfig.MetadataPlan for the contract; the call orchestrator
-	// behaves identically (heartbeat → planned metadata → final → outcome).
+	// behaves identically — planned metadata is emitted upfront from the
+	// orchestrator before any HTTP work, then heartbeat fires on upstream
+	// 2xx, and outcome metadata is emitted on success right before final.
 	MetadataPlan *bamlutils.Metadata
 
 	// NewMetadataResult constructs a pooled StreamResult wrapping a metadata

@@ -1384,8 +1384,19 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					}
 				}
 
-				// Mark first byte received (disables hung detection for this request)
-				req.gotFirstByte.Store(true)
+				// Mark first byte received (disables hung detection for this
+				// request) for events that genuinely indicate progress —
+				// heartbeat, stream content, final, error, and outcome
+				// metadata. SKIP planned metadata: post-verdict-15 it emits
+				// upfront from the orchestrator before any HTTP work, so a
+				// worker that emits planned and then stalls in upstream
+				// HTTP would otherwise disable FirstByteTimeout while never
+				// actually progressing. See PR #192 verdict-15 follow-up.
+				isPlannedMetadata := result.Kind == workerplugin.StreamResultKindMetadata &&
+					metadataPhase(result.Data) != string(bamlutils.MetadataPhaseOutcome)
+				if !isPlannedMetadata {
+					req.gotFirstByte.Store(true)
+				}
 
 				// Filter heartbeat - only for first-byte tracking
 				if result.Kind == workerplugin.StreamResultKindHeartbeat {
