@@ -1152,6 +1152,206 @@ func TestBuildLegacyMetadataPlanForClient_AbsentProviderKeepsEmptyProviderReason
 	}
 }
 
+// invalidStartOverrides enumerates the runtime client_registry shapes
+// that inspectStartOverride refuses (per BAML upstream's ensure_int
+// contract). Reused across the resolver-level (already in
+// resolver_test.go) and the orchestrator-level metadata tests below
+// so both classifications stay in lockstep on which inputs are
+// considered "present-but-invalid".
+//
+// Cold-review-3 finding 3: each of these must surface as
+// PathReasonInvalidRoundRobinStartOverride from the metadata
+// classifier — the resolver-side counterpart returns
+// ErrInvalidStartOverride.
+func invalidStartOverrides() []struct {
+	name string
+	raw  any
+} {
+	return []struct {
+		name string
+		raw  any
+	}{
+		{"numeric string", "1"},
+		{"empty string", ""},
+		{"fractional float", 1.5},
+		{"boolean true", true},
+		{"slice", []any{1, 2}},
+		{"map", map[string]any{"x": 1}},
+	}
+}
+
+// TestResolveProviderWithReason_RoundRobinInvalidStartOverride covers
+// PR #192 cold-review-3 finding 3 for the metadata classifier. A
+// runtime client_registry entry on a baml-roundrobin client whose
+// `options.start` value is not parseable as an integer must surface
+// PathReasonInvalidRoundRobinStartOverride so operators reading
+// X-BAML-Path-Reason can distinguish a malformed start option from a
+// malformed strategy option (PathReasonInvalidStrategyOverride) or
+// the generic RR-legacy reason.
+func TestResolveProviderWithReason_RoundRobinInvalidStartOverride(t *testing.T) {
+	for _, tc := range invalidStartOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Clients: []*bamlutils.ClientProperty{
+						{
+							Name:     "MyRR",
+							Provider: "baml-roundrobin",
+							Options:  map[string]any{"start": tc.raw},
+						},
+					},
+				},
+			}
+			res := ResolveProviderWithReason(adapter, "MyRR", "baml-roundrobin", IsProviderSupported)
+			if res.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", res.Path)
+			}
+			if res.PathReason != PathReasonInvalidRoundRobinStartOverride {
+				t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidRoundRobinStartOverride)
+			}
+			if res.Strategy != "baml-roundrobin" {
+				t.Errorf("strategy: got %q, want baml-roundrobin", res.Strategy)
+			}
+		})
+	}
+}
+
+// TestResolveProviderWithReason_RoundRobinInvalidStrategyTakesPrecedence
+// pins the priority when BOTH `strategy` and `start` are malformed:
+// strategy is checked first since BAML upstream parses it before
+// start. Without this guard a future refactor could silently emit
+// PathReasonInvalidRoundRobinStartOverride for a request whose
+// underlying break is the strategy chain.
+func TestResolveProviderWithReason_RoundRobinInvalidStrategyTakesPrecedence(t *testing.T) {
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyRR",
+					Provider: "baml-roundrobin",
+					Options: map[string]any{
+						"strategy": "ClientA",  // bare token — invalid
+						"start":    "not an int", // also invalid
+					},
+				},
+			},
+		},
+	}
+	res := ResolveProviderWithReason(adapter, "MyRR", "baml-roundrobin", IsProviderSupported)
+	if res.PathReason != PathReasonInvalidStrategyOverride {
+		t.Errorf("reason: got %q, want %q (strategy takes precedence over start)", res.PathReason, PathReasonInvalidStrategyOverride)
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_RRInvalidStartOverride covers
+// the codegen-side metadata seam for finding 3. The generated
+// dispatcher reaches BuildLegacyMetadataPlanForClient after
+// ResolveEffectiveClient short-circuited an invalid start override by
+// returning the un-unwrapped client name; the emitted plan must
+// report PathReasonInvalidRoundRobinStartOverride.
+func TestBuildLegacyMetadataPlanForClient_RRInvalidStartOverride(t *testing.T) {
+	for _, tc := range invalidStartOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyRR",
+						Provider: "baml-roundrobin",
+						Options:  map[string]any{"start": tc.raw},
+					},
+				},
+			}
+			plan := BuildLegacyMetadataPlanForClient(
+				reg,
+				"MyRR",
+				"baml-roundrobin",
+				map[string][]string{"MyRR": {"A", "B"}},
+				map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+				IsProviderSupported,
+				nil,
+			)
+			if plan.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", plan.Path)
+			}
+			if plan.PathReason != PathReasonInvalidRoundRobinStartOverride {
+				t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonInvalidRoundRobinStartOverride)
+			}
+			if plan.Strategy != "baml-roundrobin" {
+				t.Errorf("strategy: got %q, want baml-roundrobin", plan.Strategy)
+			}
+		})
+	}
+}
+
+// TestResolveEffectiveClient_InvalidStartTranslatesToLegacy verifies
+// that ResolveEffectiveClient mirrors its existing
+// ErrInvalidStrategyOverride handling for ErrInvalidStartOverride —
+// both sentinels translate to "return the un-unwrapped client name
+// with no error", letting the codegen support gate fail and the
+// request fall to legacy where BAML emits the canonical options
+// error. See PR #192 cold-review-3 finding 3.
+func TestResolveEffectiveClient_InvalidStartTranslatesToLegacy(t *testing.T) {
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyRR",
+					Provider: "baml-roundrobin",
+					Options:  map[string]any{"start": "not an int"},
+				},
+			},
+		},
+	}
+	effective, rrInfo, err := ResolveEffectiveClient(
+		adapter,
+		"MyRR",
+		map[string][]string{"MyRR": {"A", "B"}},
+		map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+		nil, // advancer not consulted for invalid-start case
+	)
+	if err != nil {
+		t.Fatalf("expected nil error (sentinel translated to legacy fallthrough), got %v", err)
+	}
+	if effective != "MyRR" {
+		t.Errorf("effective: got %q, want MyRR (un-unwrapped strategy name)", effective)
+	}
+	if rrInfo != nil {
+		t.Errorf("rrInfo: got %+v, want nil (no RR decision occurred)", rrInfo)
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_RRValidStartKeepsRoundRobinReason
+// is the inverse-regression guard for finding 3. A valid integer
+// `start` must not trip the new path reason — RR clients with valid
+// runtime configuration that reach the legacy plan (older adapters,
+// resolver errors) should still surface PathReasonRoundRobin.
+func TestBuildLegacyMetadataPlanForClient_RRValidStartKeepsRoundRobinReason(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{
+				Name:     "MyRR",
+				Provider: "baml-roundrobin",
+				Options:  map[string]any{"start": 1},
+			},
+		},
+	}
+	plan := BuildLegacyMetadataPlanForClient(
+		reg,
+		"MyRR",
+		"baml-roundrobin",
+		map[string][]string{"MyRR": {"A", "B"}},
+		map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+		IsProviderSupported,
+		nil,
+	)
+	if plan.PathReason != PathReasonRoundRobin {
+		t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonRoundRobin)
+	}
+}
+
 func TestEncodeRetryPolicy_Formats(t *testing.T) {
 	cases := []struct {
 		name string

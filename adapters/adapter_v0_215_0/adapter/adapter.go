@@ -53,6 +53,14 @@ type BamlAdapter struct {
 	// rrAdvancer is the per-request round-robin Advancer installed by the
 	// worker; nil falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
+
+	// IntrospectedClientProvider is the build-time map of static
+	// .baml client name → provider string. Set by the generated
+	// MakeAdapter so SetClientRegistry can materialise providers
+	// for runtime registry entries that omit the `provider` key
+	// (strategy-only / presence-only overrides). See PR #192
+	// cold-review-3 finding 1.
+	IntrospectedClientProvider map[string]string
 }
 
 func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
@@ -76,15 +84,20 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	b.ClientRegistry = baml.NewClientRegistry()
 
 	for _, client := range clientRegistry.Clients {
+		// Materialise provider for the BAML-bound copy; the original
+		// ClientProperty stays untouched so the resolver and metadata
+		// classifier still see operator input verbatim. See PR #192
+		// cold-review-3 findings 1 and 2.
+		upstreamProvider := bamlutils.UpstreamClientRegistryProvider(client, b.IntrospectedClientProvider)
 		// BAML 0.215.0+ properly handles nested maps, no WrapMapValues needed
-		b.ClientRegistry.AddLlmClient(client.Name, client.Provider, client.Options)
+		b.ClientRegistry.AddLlmClient(client.Name, upstreamProvider, client.Options)
 	}
 
 	if clientRegistry.Primary != nil {
 		b.ClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
 		for _, client := range clientRegistry.Clients {
 			if client.Name == *clientRegistry.Primary {
-				b.clientRegistryProvider = client.Provider
+				b.clientRegistryProvider = bamlutils.UpstreamClientRegistryProvider(client, b.IntrospectedClientProvider)
 				break
 			}
 		}

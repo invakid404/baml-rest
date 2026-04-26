@@ -2895,6 +2895,15 @@ func generate(opts Options) {
 		)
 
 	// Generate `MakeAdapter`
+	//
+	// IntrospectedClientProvider plumbs the build-time client→provider
+	// map into the adapter so SetClientRegistry can materialise
+	// providers for omitted-provider runtime registry entries
+	// (strategy-only / presence-only RR overrides). Without this seam
+	// the adapter would forward `provider: ""` into BAML's CFFI, which
+	// rejects in ClientProvider::from_str (clientspec.rs:119-144) and
+	// kills the request before WithClient(leaf) resolves anything.
+	// See PR #192 cold-review-3 finding 1.
 	out.Func().Id("MakeAdapter").
 		Params(jen.Id("ctx").Qual("context", "Context")).
 		Qual(common.InterfacesPkg, "Adapter").
@@ -2911,7 +2920,8 @@ func generate(opts Options) {
 							Block(
 								jen.Return(jen.Id("createTypeBuilder").Call(jen.Id("config"))),
 							),
-						jen.Id("MediaFactory"): jen.Id("createMedia"),
+						jen.Id("MediaFactory"):               jen.Id("createMedia"),
+						jen.Id("IntrospectedClientProvider"): jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 					}),
 			),
 		)

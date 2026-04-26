@@ -1,8 +1,10 @@
 package roundrobin
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/strategyparse"
@@ -22,6 +24,22 @@ import (
 // silently using the introspected chain. See PR #192 cold-review-2
 // finding 1.
 var ErrInvalidStrategyOverride = errors.New("roundrobin: runtime strategy override is invalid or empty")
+
+// ErrInvalidStartOverride signals that the runtime client_registry
+// supplied an `options.start` value that inspectStartOverride could
+// not interpret as a representable Go int — strings (including
+// numeric strings like "1"), fractional floats, booleans, slices,
+// maps, or unsigned integers larger than math.MaxInt.
+//
+// BAML upstream's ensure_int rejects these inputs in
+// baml-lib/llm-client/src/clients/helpers.rs (start is parsed via
+// `properties.ensure_int("start", false)` in round_robin.rs:75) with
+// "start must be an integer". Resolve returns this sentinel so callers
+// (ResolveEffectiveClient) can skip the RR unwrap and let the request
+// fall through to legacy, where BAML's runtime emits the canonical
+// error rather than us silently randomising. See PR #192 cold-review-3
+// finding 3.
+var ErrInvalidStartOverride = errors.New("roundrobin: runtime start override is invalid")
 
 // CanonicalProvider is the spelling emitted in metadata and headers
 // regardless of which input form the .baml source or runtime override
@@ -149,9 +167,19 @@ func Resolve(in ResolveInput) (*Result, error) {
 
 // selectIndex picks the child index for a RR resolution. Dynamic clients
 // (whose RR identity is declared purely via runtime client_registry) get
-// a fresh random selection matching BAML's fresh-Arc-per-context semantics.
-// Static clients delegate to the supplied Advancer — either an in-process
-// Coordinator or a RemoteAdvancer talking to the host SharedState service.
+// a fresh selection matching BAML's fresh-Arc-per-context semantics:
+// when `options.start` is supplied, the selection is deterministic at
+// `start % childCount` (with negatives clamped to zero, matching the
+// static-side decision in NewCoordinatorWithStarts); otherwise it is
+// uniformly random. Static clients delegate to the supplied Advancer —
+// either an in-process Coordinator or a RemoteAdvancer talking to the
+// host SharedState service.
+//
+// Returning ErrInvalidStartOverride is reserved for present-but-
+// unparseable runtime `options.start` values (strings, fractional
+// floats, etc.). Callers (ResolveEffectiveClient) translate the
+// sentinel into a legacy fallthrough so BAML emits its canonical
+// integer-options error.
 //
 // The Advancer error is surfaced verbatim. For the in-process path it
 // never fires; for the remote path it's a transport failure that must
@@ -159,12 +187,131 @@ func Resolve(in ResolveInput) (*Result, error) {
 // would defeat the whole point of centralised rotation.
 func selectIndex(a Advancer, reg *bamlutils.ClientRegistry, clientName string, childCount int) (int, error) {
 	if isDynamicRRClient(reg, clientName) {
+		rc := findRuntimeClient(reg, clientName)
+		start, present, valid := inspectStartOverride(rc.Options)
+		if present && !valid {
+			return 0, ErrInvalidStartOverride
+		}
+		if present {
+			return normalizeStartIndex(start, childCount), nil
+		}
 		return AdvanceDynamic(childCount), nil
 	}
 	if a == nil {
 		return AdvanceDynamic(childCount), nil
 	}
 	return a.Advance(clientName, childCount)
+}
+
+// InspectStartOverride is the exported variant of inspectStartOverride,
+// shared with the orchestrator-level metadata classifier that needs the
+// same three-state classification when emitting
+// PathReasonInvalidRoundRobinStartOverride. Both call sites must agree
+// on what counts as a valid integer shape so the routing decision and
+// the metadata it produces stay in sync. See PR #192 cold-review-3
+// finding 3.
+func InspectStartOverride(opts map[string]any) (start int, present bool, valid bool) {
+	return inspectStartOverride(opts)
+}
+
+// inspectStartOverride examines a runtime client_registry entry's
+// options map for a `start` key. Three outcomes:
+//
+//   - present=false, valid=true: no `start` key (or no options at
+//     all). Caller falls back to random / coordinator selection.
+//   - present=true, valid=true: the override parsed to a representable
+//     Go int. Caller uses normalizeStartIndex to project into
+//     [0, childCount).
+//   - present=true, valid=false: the override is present but
+//     unparseable. Caller surfaces ErrInvalidStartOverride so
+//     ResolveEffectiveClient routes the request to legacy.
+//
+// Accepted shapes mirror BAML upstream's ensure_int contract:
+// signed/unsigned integer types that fit in Go int, finite float64
+// values whose fractional part is zero, and json.Number values that
+// parse as int64. Strings (including numeric strings like "1"),
+// fractional floats, booleans, slices, and maps are rejected — BAML's
+// own decoder rejects the same shapes.
+//
+// uint64 above math.MaxInt is rejected to avoid signed overflow on
+// 32-bit platforms; a five-quintillion start index is operator error,
+// not a configuration to honour.
+func inspectStartOverride(opts map[string]any) (start int, present bool, valid bool) {
+	if opts == nil {
+		return 0, false, true
+	}
+	raw, ok := opts["start"]
+	if !ok {
+		return 0, false, true
+	}
+	switch v := raw.(type) {
+	case int:
+		return v, true, true
+	case int8:
+		return int(v), true, true
+	case int16:
+		return int(v), true, true
+	case int32:
+		return int(v), true, true
+	case int64:
+		if v > math.MaxInt || v < math.MinInt {
+			return 0, true, false
+		}
+		return int(v), true, true
+	case uint8:
+		return int(v), true, true
+	case uint16:
+		return int(v), true, true
+	case uint32:
+		// On 32-bit platforms uint32 can exceed MaxInt; gate on the
+		// architecture's int range explicitly to keep the helper safe
+		// in 32-bit builds. Removed once Go's MaxInt makes this a
+		// no-op on the build target.
+		if uint64(v) > uint64(math.MaxInt) {
+			return 0, true, false
+		}
+		return int(v), true, true
+	case uint64:
+		if v > uint64(math.MaxInt) {
+			return 0, true, false
+		}
+		return int(v), true, true
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, true, false
+		}
+		if math.Trunc(v) != v {
+			return 0, true, false
+		}
+		if v > float64(math.MaxInt) || v < float64(math.MinInt) {
+			return 0, true, false
+		}
+		return int(v), true, true
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, true, false
+		}
+		if n > math.MaxInt || n < math.MinInt {
+			return 0, true, false
+		}
+		return int(n), true, true
+	}
+	return 0, true, false
+}
+
+// normalizeStartIndex projects a parsed start value into [0, childCount).
+// Negatives clamp to zero, matching NewCoordinatorWithStarts's existing
+// static-side decision (coordinator.go:54-65). Non-negative values are
+// taken modulo childCount so a start beyond the chain wraps cleanly.
+//
+// childCount must be > 0; selectIndex guarantees this because Resolve
+// rejects empty chains before invoking selectIndex.
+func normalizeStartIndex(start, childCount int) int {
+	if start < 0 {
+		return 0
+	}
+	return start % childCount
 }
 
 // isDynamicRRClient reports whether a named client's RR identity is

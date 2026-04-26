@@ -2,6 +2,7 @@ package roundrobin
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -604,6 +605,291 @@ func TestResolve_PresentEmptyProviderSkipsRRUnwrap(t *testing.T) {
 	coord.counters.Range(func(_, _ any) bool { count++; return true })
 	if count != 0 {
 		t.Errorf("present-empty leaked into coordinator: %d entries", count)
+	}
+}
+
+// TestResolve_DynamicStartOverride covers PR #192 cold-review-3
+// finding 3. A registry-touched RR client must use `options.start` as
+// the deterministic initial child index instead of the random
+// AdvanceDynamic fallback. Behaviour mirrors BAML upstream's
+// resolve_strategy in roundrobin.rs:64-65, which does
+// `(start as usize) % strategy.len()` for fresh request-scoped RR.
+func TestResolve_DynamicStartOverride(t *testing.T) {
+	cases := []struct {
+		name      string
+		start     any
+		chain     []string
+		wantIndex int
+		wantLeaf  string
+	}{
+		{"start=0 picks first", 0, []string{"A", "B", "C"}, 0, "A"},
+		{"start=1 picks second", 1, []string{"A", "B", "C"}, 1, "B"},
+		{"start=2 picks third", 2, []string{"A", "B", "C"}, 2, "C"},
+		{"start beyond length wraps", 5, []string{"A", "B"}, 1, "B"},
+		{"negative start clamps to zero", -1, []string{"A", "B"}, 0, "A"},
+		{"int64 honoured", int64(1), []string{"A", "B"}, 1, "B"},
+		{"uint32 honoured", uint32(1), []string{"A", "B"}, 1, "B"},
+		{"float64 with no fraction honoured", float64(1), []string{"A", "B"}, 1, "B"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			coord := NewCoordinator()
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyRR",
+						Provider: "baml-roundrobin",
+						Options:  map[string]any{"start": tc.start},
+					},
+				},
+			}
+			providers := map[string]string{"MyRR": "baml-roundrobin"}
+			for _, c := range tc.chain {
+				providers[c] = "openai"
+			}
+			res, err := Resolve(ResolveInput{
+				ClientName:      "MyRR",
+				Registry:        reg,
+				ClientProviders: providers,
+				FallbackChains:  map[string][]string{"MyRR": tc.chain},
+				Advancer:        coord,
+			})
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if res.Info == nil {
+				t.Fatalf("expected Info, got nil")
+			}
+			if res.Info.Index != tc.wantIndex {
+				t.Errorf("Info.Index: got %d, want %d", res.Info.Index, tc.wantIndex)
+			}
+			if res.Selected != tc.wantLeaf {
+				t.Errorf("Selected: got %q, want %q", res.Selected, tc.wantLeaf)
+			}
+			// Dynamic RR with start must NOT touch the static
+			// coordinator — it's a fresh-per-request value.
+			count := 0
+			coord.counters.Range(func(_, _ any) bool { count++; return true })
+			if count != 0 {
+				t.Errorf("dynamic start leaked into coordinator: %d entries", count)
+			}
+		})
+	}
+}
+
+// TestResolve_DynamicStartOverride_DeterministicAcrossRequests pins
+// the per-request semantics: with `start: N`, every fresh request
+// picks the same first child. Mirrors BAML's "fresh Arc per context"
+// where current_index is reset to start each request.
+func TestResolve_DynamicStartOverride_DeterministicAcrossRequests(t *testing.T) {
+	makeInput := func() ResolveInput {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyRR",
+					Provider: "baml-roundrobin",
+					Options:  map[string]any{"start": 1},
+				},
+			},
+		}
+		return ResolveInput{
+			ClientName: "MyRR",
+			Registry:   reg,
+			ClientProviders: map[string]string{
+				"MyRR": "baml-roundrobin",
+				"A":    "openai",
+				"B":    "anthropic",
+				"C":    "google-ai",
+			},
+			FallbackChains: map[string][]string{"MyRR": {"A", "B", "C"}},
+			Advancer:       NewCoordinator(),
+		}
+	}
+	for i := 0; i < 20; i++ {
+		res, err := Resolve(makeInput())
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if res.Selected != "B" {
+			t.Fatalf("iteration %d: Selected = %q, want B (deterministic per-request start)", i, res.Selected)
+		}
+	}
+}
+
+// TestResolve_DynamicStartOverride_StrategyOnlyChain pins the
+// composition with strategy-only overrides: a registry entry that
+// supplies BOTH `strategy` and `start` must select from the override
+// chain, not the introspected one.
+func TestResolve_DynamicStartOverride_StrategyOnlyChain(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{
+				Name: "MyRR",
+				Options: map[string]any{
+					"strategy": []any{"X", "Y", "Z"},
+					"start":    2,
+				},
+			},
+		},
+	}
+	res, err := Resolve(ResolveInput{
+		ClientName: "MyRR",
+		Registry:   reg,
+		ClientProviders: map[string]string{
+			"MyRR": "baml-roundrobin",
+			"X":    "openai",
+			"Y":    "anthropic",
+			"Z":    "google-ai",
+		},
+		FallbackChains: map[string][]string{"MyRR": {"A", "B", "C"}}, // ignored
+		Advancer:       NewCoordinator(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Selected != "Z" {
+		t.Errorf("Selected: got %q, want Z (start=2 in override chain [X Y Z])", res.Selected)
+	}
+}
+
+// TestResolve_InvalidStartOverride_ReturnsSentinel covers the
+// invalid-shape arm of finding 3. Strings (including numeric
+// strings), fractional floats, booleans, slices, and oversized
+// unsigned ints must all surface ErrInvalidStartOverride so
+// ResolveEffectiveClient routes the request to legacy where BAML
+// emits its canonical integer-options error.
+func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  any
+	}{
+		{"numeric string", "1"},
+		{"empty string", ""},
+		{"fractional float", 1.5},
+		{"NaN", math.NaN()},
+		{"+Inf", math.Inf(1)},
+		{"-Inf", math.Inf(-1)},
+		{"boolean true", true},
+		{"boolean false", false},
+		{"slice", []any{1, 2}},
+		{"map", map[string]any{"x": 1}},
+		{"nil", nil},
+		{"oversized uint64", uint64(math.MaxUint64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyRR",
+						Provider: "baml-roundrobin",
+						Options:  map[string]any{"start": tc.raw},
+					},
+				},
+			}
+			res, err := Resolve(ResolveInput{
+				ClientName: "MyRR",
+				Registry:   reg,
+				ClientProviders: map[string]string{
+					"MyRR": "baml-roundrobin",
+					"A":    "openai",
+					"B":    "anthropic",
+				},
+				FallbackChains: map[string][]string{"MyRR": {"A", "B"}},
+				Advancer:       NewCoordinator(),
+			})
+			if !errors.Is(err, ErrInvalidStartOverride) {
+				t.Fatalf("expected ErrInvalidStartOverride; got err=%v res=%+v", err, res)
+			}
+		})
+	}
+}
+
+// TestResolve_AbsentStartOverride_RandomSelection guards against the
+// inverse regression: an RR registry entry that omits `start` must
+// keep the existing AdvanceDynamic random fallback. Without this
+// guard the F3 plumbing could leak a determinism into the absent
+// case.
+func TestResolve_AbsentStartOverride_RandomSelection(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{
+				Name:     "MyRR",
+				Provider: "baml-roundrobin",
+				Options:  map[string]any{"strategy": []any{"A", "B", "C", "D"}},
+			},
+		},
+	}
+	in := ResolveInput{
+		ClientName: "MyRR",
+		Registry:   reg,
+		ClientProviders: map[string]string{
+			"MyRR": "baml-roundrobin",
+			"A":    "openai", "B": "openai", "C": "openai", "D": "openai",
+		},
+		FallbackChains: map[string][]string{},
+		Advancer:       NewCoordinator(),
+	}
+	// Run many iterations and verify that more than one distinct child
+	// is observed. With deterministic start we'd see only one; with
+	// AdvanceDynamic random we expect multiple.
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		res, err := Resolve(in)
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		seen[res.Selected] = true
+	}
+	if len(seen) < 2 {
+		t.Errorf("expected random distribution across multiple children, only saw: %v", seen)
+	}
+}
+
+// TestInspectStartOverride_AcceptedShapes pins the integer-shape
+// contract independently of selectIndex so future refactors keep the
+// same accept/reject set. This is the helper the orchestrator-level
+// metadata classifier also calls via the exported
+// InspectStartOverride.
+func TestInspectStartOverride_AcceptedShapes(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         any
+		wantPresent bool
+		wantValid   bool
+		wantStart   int
+	}{
+		{"absent (no start key)", nil, false, true, 0},
+		{"int", int(5), true, true, 5},
+		{"int8", int8(5), true, true, 5},
+		{"int16", int16(5), true, true, 5},
+		{"int32", int32(5), true, true, 5},
+		{"int64", int64(5), true, true, 5},
+		{"uint8", uint8(5), true, true, 5},
+		{"uint16", uint16(5), true, true, 5},
+		{"uint32 small", uint32(5), true, true, 5},
+		{"uint64 small", uint64(5), true, true, 5},
+		{"float64 zero-fraction", float64(5), true, true, 5},
+		{"negative int", int(-3), true, true, -3},
+		{"oversized uint64", uint64(math.MaxUint64), true, false, 0},
+		{"fractional float", 1.5, true, false, 0},
+		{"NaN", math.NaN(), true, false, 0},
+		{"numeric string", "5", true, false, 0},
+		{"bool", true, true, false, 0},
+		{"slice", []any{1}, true, false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts map[string]any
+			if tc.name != "absent (no start key)" {
+				opts = map[string]any{"start": tc.raw}
+			}
+			start, present, valid := InspectStartOverride(opts)
+			if present != tc.wantPresent || valid != tc.wantValid || start != tc.wantStart {
+				t.Errorf("got (start=%d present=%v valid=%v); want (start=%d present=%v valid=%v)",
+					start, present, valid, tc.wantStart, tc.wantPresent, tc.wantValid)
+			}
+		})
 	}
 }
 

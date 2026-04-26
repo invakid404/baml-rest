@@ -310,6 +310,19 @@ const (
 	// "client has no provider declared". See PR #192 cold-review-2
 	// verdict-8 follow-up.
 	PathReasonInvalidProviderOverride = "invalid-provider-override"
+	// PathReasonInvalidRoundRobinStartOverride: a runtime
+	// client_registry entry on a baml-roundrobin client supplied an
+	// `options.start` value that inspectStartOverride could not
+	// interpret as a representable Go int — strings (including
+	// numeric strings like "1"), fractional floats, booleans, slices,
+	// maps, etc. BAML upstream parses RR `start` via
+	// PropertyHandler.ensure_int (round_robin.rs:75); we route to
+	// legacy so BAML emits the canonical integer-options error rather
+	// than us silently randomising. Distinct from
+	// PathReasonInvalidStrategyOverride so operators can tell the
+	// failing option apart in the X-BAML-Path-Reason header. See PR
+	// #192 cold-review-3 finding 3.
+	PathReasonInvalidRoundRobinStartOverride = "invalid-round-robin-start-override"
 )
 
 // ProviderResolution describes the outcome of resolving a request's routing
@@ -399,15 +412,18 @@ func ResolveEffectiveClient(
 		Advancer:        advancer,
 	})
 	if err != nil {
-		// An invalid runtime strategy override is not a hard failure —
-		// the dispatcher should fall through to legacy so BAML's
-		// runtime emits the canonical ensure_strategy error. Returning
-		// the un-unwrapped client name lets the codegen-side support
-		// gate fail (the outer client is a strategy provider, which
-		// isn't in supportedProviders) and route to legacy, where
-		// ResolveProviderWithReason surfaces
-		// PathReasonInvalidStrategyOverride for observability.
-		if errors.Is(err, roundrobin.ErrInvalidStrategyOverride) {
+		// Invalid runtime overrides on `options.strategy` or
+		// `options.start` are not hard failures — the dispatcher should
+		// fall through to legacy so BAML's runtime emits the canonical
+		// ensure_strategy / ensure_int error. Returning the un-unwrapped
+		// client name lets the codegen-side support gate fail (the
+		// outer client is a strategy provider, which isn't in
+		// supportedProviders) and route to legacy, where
+		// ResolveProviderWithReason / BuildLegacyMetadataPlanForClient
+		// surface PathReasonInvalidStrategyOverride or
+		// PathReasonInvalidRoundRobinStartOverride for observability.
+		if errors.Is(err, roundrobin.ErrInvalidStrategyOverride) ||
+			errors.Is(err, roundrobin.ErrInvalidStartOverride) {
 			return clientName, nil, nil
 		}
 		return "", nil, err
@@ -534,8 +550,16 @@ func ResolveProviderWithReason(
 	case "baml-roundrobin":
 		res.Strategy = "baml-roundrobin"
 		res.Path = "legacy"
+		// Strategy / start invalidity both route to legacy via the same
+		// ErrInvalid* sentinel translation in ResolveEffectiveClient;
+		// the metadata reason just records WHICH option failed so
+		// operators reading X-BAML-Path-Reason can distinguish them.
+		// Strategy is checked first since `strategy` is the primary RR
+		// option and BAML upstream parses it before `start`.
 		if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
 			res.PathReason = PathReasonInvalidStrategyOverride
+		} else if hasInvalidStartOverride(reg, clientName) {
+			res.PathReason = PathReasonInvalidRoundRobinStartOverride
 		} else {
 			res.PathReason = PathReasonRoundRobin
 		}
@@ -920,7 +944,7 @@ func BuildLegacyMetadataPlanForClient(
 		}
 	case "baml-roundrobin":
 		// RoundRobin is normally resolved upstream before the legacy
-		// plan is built. We reach here in two cases:
+		// plan is built. We reach here in three cases:
 		//   - The RR resolver returned an error (cycle / empty chain)
 		//     and the caller fell through with the unresolved client
 		//     name.
@@ -931,9 +955,15 @@ func BuildLegacyMetadataPlanForClient(
 		//     reflect WHY — operators reading the X-BAML-Path-Reason
 		//     header should see the invalid-override classification,
 		//     not the generic RR-legacy reason.
+		//   - ResolveEffectiveClient short-circuited an invalid runtime
+		//     `options.start` override (cold-review-3 finding 3). Same
+		//     treatment as the strategy case but a distinct reason so
+		//     operators can tell which option was malformed.
 		plan.Strategy = "baml-roundrobin"
 		if _, present, valid := inspectStrategyOverride(reg, clientName); present && !valid {
 			plan.PathReason = PathReasonInvalidStrategyOverride
+		} else if hasInvalidStartOverride(reg, clientName) {
+			plan.PathReason = PathReasonInvalidRoundRobinStartOverride
 		} else {
 			plan.PathReason = PathReasonRoundRobin
 		}
@@ -1306,6 +1336,27 @@ func hasInvalidProviderOverride(reg *bamlutils.ClientRegistry, clientName string
 		return c.IsProviderPresent() && c.Provider == ""
 	}
 	return false
+}
+
+// hasInvalidStartOverride reports whether the runtime registry has an
+// entry for clientName whose `options.start` value is present but
+// unparseable as an integer. Mirrors hasInvalidProviderOverride for
+// the `start` option so the metadata classifier can surface
+// PathReasonInvalidRoundRobinStartOverride distinctly from the
+// generic invalid-strategy / RR-legacy reasons. See PR #192
+// cold-review-3 finding 3.
+//
+// Returns false when the registry is absent, the entry is missing,
+// the entry has no options, the `start` key is absent, or the value
+// parses successfully — in all of which the metadata classifier
+// should keep its existing reason.
+func hasInvalidStartOverride(reg *bamlutils.ClientRegistry, clientName string) bool {
+	rc := findRuntimeClient(reg, clientName)
+	if rc == nil {
+		return false
+	}
+	_, present, valid := roundrobin.InspectStartOverride(rc.Options)
+	return present && !valid
 }
 
 // inspectStrategyOverride examines the runtime client_registry entry for

@@ -236,6 +236,78 @@ func (c *ClientProperty) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// TranslateUpstreamProvider converts baml-rest's canonical provider
+// spelling into a form BAML upstream's ClientProvider::from_str
+// accepts (clientspec.rs:119-144). Specifically, baml-rest treats
+// "baml-roundrobin" as canonical for metadata/headers, but BAML
+// upstream only accepts "baml-round-robin" (with the inner hyphen)
+// and "round-robin" — sending "baml-roundrobin" verbatim into the
+// upstream ClientRegistry triggers a CFFI-time decode failure.
+//
+// The translation is intentionally narrow: only "baml-roundrobin"
+// is rewritten. "baml-round-robin", "round-robin", "fallback",
+// "baml-fallback", and every concrete provider all pass through
+// unchanged — they are already accepted upstream verbatim. Operator
+// spellings that arrive on a registry entry's Provider field are
+// preserved when valid; the helper exists solely to avoid translating
+// our own canonical naming into a CFFI rejection.
+//
+// This is the BAML-bound spelling. baml-rest's classification layer
+// continues to fold all RR aliases onto "baml-roundrobin" via
+// roundrobin.NormalizeProvider for metadata/header consistency; only
+// the upstream registry seam invokes this translation. See PR #192
+// cold-review-3 finding 2.
+func TranslateUpstreamProvider(provider string) string {
+	if provider == "baml-roundrobin" {
+		return "baml-round-robin"
+	}
+	return provider
+}
+
+// UpstreamClientRegistryProvider returns the provider string suitable
+// for forwarding to BAML's upstream baml.ClientRegistry.AddLlmClient.
+// It resolves the three presence states ClientProperty can be in and
+// applies the CFFI-bound spelling translation:
+//
+//   - client.IsProviderPresent() == true: pass client.Provider through
+//     TranslateUpstreamProvider. Includes the present-empty case
+//     (Provider == "" && ProviderSet); we forward "" so BAML emits
+//     its canonical invalid-provider error rather than us masking the
+//     operator's typo with an introspected fallback.
+//   - client.IsProviderPresent() == false AND introspectedProviders
+//     names this client: substitute the introspected provider after
+//     translation. This makes strategy-only and presence-only runtime
+//     registry entries valid at the BAML CFFI seam — these shapes are
+//     the headline addition of PR #192 and would otherwise fail end-
+//     to-end when WithClientRegistry forwards them to upstream.
+//   - client.IsProviderPresent() == false AND no introspected entry:
+//     return "". The operator referred to a name we know nothing about;
+//     letting CFFI emit its native error is clearer than synthesising
+//     one here, and matches the legacy handling of unknown-name runtime
+//     overrides.
+//
+// The helper does not mutate the input ClientProperty. Callers that
+// need the original presence-aware view (the resolver, the metadata
+// classifier, F3's options.start parser) continue to read from the
+// adapter's OriginalClientRegistry, which preserves the operator's
+// exact input verbatim.
+//
+// See PR #192 cold-review-3 finding 1.
+func UpstreamClientRegistryProvider(client *ClientProperty, introspectedProviders map[string]string) string {
+	if client == nil {
+		return ""
+	}
+	if client.IsProviderPresent() {
+		return TranslateUpstreamProvider(client.Provider)
+	}
+	if introspectedProviders != nil {
+		if p := introspectedProviders[client.Name]; p != "" {
+			return TranslateUpstreamProvider(p)
+		}
+	}
+	return ""
+}
+
 type TypeBuilder struct {
 	BamlSnippets []string      `json:"baml_snippets,omitempty"`
 	DynamicTypes *DynamicTypes `json:"dynamic_types,omitempty"`

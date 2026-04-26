@@ -62,6 +62,19 @@ type BamlAdapter struct {
 	// doesn't plumb a shared-state client through — in that case
 	// roundrobin.Resolve falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
+
+	// IntrospectedClientProvider is the build-time map of static
+	// .baml client name → provider string. The generated MakeAdapter
+	// initialises this from introspected.ClientProvider so
+	// SetClientRegistry can materialise providers for runtime
+	// registry entries that omit the `provider` key (strategy-only /
+	// presence-only RR overrides). Without this materialisation the
+	// upstream baml.ClientRegistry forwards `provider: ""` into
+	// CFFI, which rejects in ClientProvider::from_str
+	// (clientspec.rs:119-144) and kills the request before BAML
+	// even resolves WithClient(leaf). See PR #192 cold-review-3
+	// finding 1.
+	IntrospectedClientProvider map[string]string
 }
 
 func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
@@ -96,8 +109,17 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 		if client == nil {
 			continue
 		}
+		// Materialise the provider for the BAML-bound registry copy:
+		// omitted-provider entries (strategy-only / presence-only RR
+		// overrides) get their provider filled from the introspected
+		// map; canonical "baml-roundrobin" gets translated to the
+		// upstream-accepted "baml-round-robin". The original
+		// ClientProperty stays untouched so the resolver and metadata
+		// classifier still see operator input verbatim. See PR #192
+		// cold-review-3 findings 1 and 2.
+		upstreamProvider := bamlutils.UpstreamClientRegistryProvider(client, b.IntrospectedClientProvider)
 		// BAML 0.219.0+ properly handles nested maps, no WrapMapValues needed
-		b.ClientRegistry.AddLlmClient(client.Name, client.Provider, client.Options)
+		b.ClientRegistry.AddLlmClient(client.Name, upstreamProvider, client.Options)
 	}
 
 	if clientRegistry.Primary != nil {
@@ -107,7 +129,12 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 				continue
 			}
 			if client.Name == *clientRegistry.Primary {
-				b.clientRegistryProvider = client.Provider
+				// Cache the materialised provider for the primary so
+				// ResolveProvider's adapter shortcut returns the value
+				// BAML actually sees. Plain client.Provider would skip
+				// materialisation for omitted-provider primaries and
+				// hide the introspected fallback from the shortcut.
+				b.clientRegistryProvider = bamlutils.UpstreamClientRegistryProvider(client, b.IntrospectedClientProvider)
 				break
 			}
 		}
