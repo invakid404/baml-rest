@@ -234,6 +234,16 @@ func RunCallOrchestration(
 		emitPlannedMetadata()
 	}
 
+	// Emit planned metadata upfront so the routing decision is observable
+	// even when the BuildRequest path returns an error before any HTTP
+	// response (e.g., immediate validation failure, unsupported provider
+	// caught later in the chain). Mirrors the legacy-path orchestrators
+	// (runNoRawOrchestration / runFullOrchestration) which emit upfront in
+	// their stream goroutine for the same reason. The plannedMetadataOnce
+	// gate guarantees idempotency; subsequent sendHeartbeat calls are
+	// no-ops on the planned side. See PR #192 verdict-15 follow-up.
+	emitPlannedMetadata()
+
 	// trySend attempts to send a StreamResult on the output channel,
 	// prioritizing cancellation. Uses the priority-select idiom: check
 	// ctx.Done() first with a non-blocking select, then fall through to

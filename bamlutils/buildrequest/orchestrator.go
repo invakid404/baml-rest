@@ -1689,11 +1689,11 @@ func RunStreamOrchestration(
 		})
 	}
 
-	// Send initial heartbeat for hung detection, then emit planned metadata.
-	// Metadata is always *after* the heartbeat so that (a) the pool's
-	// first-byte tracking sees the heartbeat as liveness and (b) the pool's
-	// mid-retry reset injection lands on metadata only when a retry is
-	// actually in progress (consumeStream honors Reset on Metadata kind).
+	// sendHeartbeat fires when the upstream provider returns 2xx and
+	// also nudges the planned-metadata emit (a no-op after the upfront
+	// emit below — the plannedMetadataOnce gate guarantees idempotency).
+	// Heartbeat itself remains gated on heartbeatSent so it fires once
+	// per orchestrator (pool retries get a fresh orchestrator instance).
 	sendHeartbeat := func() {
 		if heartbeatSent.CompareAndSwap(false, true) {
 			r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)
@@ -1705,6 +1705,16 @@ func RunStreamOrchestration(
 		}
 		emitPlannedMetadata()
 	}
+
+	// Emit planned metadata upfront so the routing decision is observable
+	// even when the BuildRequest path returns an error before any HTTP
+	// response (e.g., immediate validation failure, unsupported provider
+	// caught later in the chain). Mirrors the legacy-path orchestrators
+	// (runNoRawOrchestration / runFullOrchestration) which emit upfront in
+	// their stream goroutine for the same reason. The plannedMetadataOnce
+	// gate guarantees idempotency; subsequent sendHeartbeat calls are
+	// no-ops on the planned side. See PR #192 verdict-15 follow-up.
+	emitPlannedMetadata()
 
 	// tryOneStreamChild runs a single child's streaming attempt against the
 	// BuildRequest path. Returns the parsed final plus the accumulated raw

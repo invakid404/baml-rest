@@ -43,11 +43,17 @@ func collectMetadata(t *testing.T, ch <-chan bamlutils.StreamResult) (planned, o
 	return planned, outcome, allKinds
 }
 
-// TestRunStreamOrchestration_EmitsPlannedAfterHeartbeat verifies the
-// ordering invariant from §4a: heartbeat is the first event, planned
-// metadata is the second. This guarantees the pool's first-byte tracking
-// and reset injection logic continues to work.
-func TestRunStreamOrchestration_EmitsPlannedAfterHeartbeat(t *testing.T) {
+// TestRunStreamOrchestration_EmitsPlannedFirstThenHeartbeat verifies the
+// post-verdict-15 ordering: planned metadata is emitted upfront from
+// the orchestrator (before any HTTP work), and the heartbeat fires
+// later when the upstream provider returns 2xx. The original design
+// emitted heartbeat first and gated planned on the heartbeat CAS,
+// which lost the planned event for requests that completed without
+// firing the onSuccess heartbeat (legacy path with WithClient
+// targeting a strategy parent that resolves through static IR).
+// Pool's first-byte tracking treats any first event as liveness, so
+// planned-first does not break hung detection.
+func TestRunStreamOrchestration_EmitsPlannedFirstThenHeartbeat(t *testing.T) {
 	server := makeOpenAIServer([]string{"hi"})
 	defer server.Close()
 
@@ -93,15 +99,16 @@ func TestRunStreamOrchestration_EmitsPlannedAfterHeartbeat(t *testing.T) {
 		t.Fatalf("expected outcome metadata to be emitted")
 	}
 
-	// Heartbeat must be first; planned metadata second.
+	// Planned metadata is emitted upfront (first event); heartbeat fires
+	// later from sendHeartbeat when the provider returns 2xx.
 	if len(kinds) < 2 {
-		t.Fatalf("expected at least heartbeat + planned events; got %d", len(kinds))
+		t.Fatalf("expected at least planned + heartbeat events; got %d", len(kinds))
 	}
-	if kinds[0] != bamlutils.StreamResultKindHeartbeat {
-		t.Errorf("first event should be heartbeat; got kind %d", kinds[0])
+	if kinds[0] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("first event should be planned metadata; got kind %d", kinds[0])
 	}
-	if kinds[1] != bamlutils.StreamResultKindMetadata {
-		t.Errorf("second event should be metadata (planned); got kind %d", kinds[1])
+	if kinds[1] != bamlutils.StreamResultKindHeartbeat {
+		t.Errorf("second event should be heartbeat; got kind %d", kinds[1])
 	}
 
 	// Phase invariants.
@@ -164,15 +171,17 @@ func TestRunCallOrchestration_EmitsPlannedAndOutcome(t *testing.T) {
 		t.Fatalf("expected outcome metadata to be emitted")
 	}
 
-	// Heartbeat (from sendHeartbeat onSuccess) must precede planned metadata.
+	// Planned metadata is emitted upfront (first event); heartbeat fires
+	// later from sendHeartbeat when the provider returns 2xx. See the
+	// streaming orchestrator's ordering test for rationale.
 	if len(kinds) < 2 {
 		t.Fatalf("expected at least 2 events; got %d", len(kinds))
 	}
-	if kinds[0] != bamlutils.StreamResultKindHeartbeat {
-		t.Errorf("first event should be heartbeat; got kind %d", kinds[0])
+	if kinds[0] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("first event should be planned metadata; got kind %d", kinds[0])
 	}
-	if kinds[1] != bamlutils.StreamResultKindMetadata {
-		t.Errorf("second event should be metadata (planned); got kind %d", kinds[1])
+	if kinds[1] != bamlutils.StreamResultKindHeartbeat {
+		t.Errorf("second event should be heartbeat; got kind %d", kinds[1])
 	}
 
 	if outcome.WinnerProvider != "openai" {
