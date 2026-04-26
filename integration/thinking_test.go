@@ -416,9 +416,14 @@ func TestStreamWithRaw_AnthropicThinking_DefaultExcludes(t *testing.T) {
 //     (text + thinking under opt-in) buffers. ParseStream is fed the
 //     parseable buffer, so early thinking-only ticks emit a raw-only
 //     partial without parsed Data. The thinking content reaches the wire
-//     incrementally as those raw-only partials, and is also reconciled at
-//     the final via max(extractor.RawFull(), RawLLMResponse()) at
-//     adapters/common/codegen/codegen.go:4144-4168.
+//     incrementally as those raw-only partials. At end-of-stream a
+//     suffix-splice reconciliation at
+//     adapters/common/codegen/codegen.go:4144-4197 compares
+//     extractor.ParseableFull (text-only the extractor saw) against
+//     fl.RawLLMResponse() (BAML's authoritative text-only): if the
+//     latter extends the former as a prefix, the missing text suffix
+//     is appended to extractor.RawFull, recovering any text lost to a
+//     stale-SSE-view race while preserving accumulated thinking.
 //
 // Both paths converge to the same final cumulative raw, which is what the
 // /with-raw contract guarantees. The test asserts that, plus a uniqueness
