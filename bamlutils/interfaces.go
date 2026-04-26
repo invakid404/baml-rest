@@ -302,6 +302,54 @@ func IsResolvedStrategyParent(client *ClientProperty, introspectedProviders map[
 	return isStrategyProviderName(provider)
 }
 
+// ShouldDropStrategyParentForTopLevelLegacy reports whether a runtime
+// client_registry entry should be hidden from the *top-level legacy*
+// BAML registry view. Used in tandem with IsResolvedStrategyParent
+// (which gates the broader BuildRequest-bound view); see PR #192
+// cold-review-4 + Option C.
+//
+// The two views split because BAML's to_clients (client_registry/mod.rs:
+// 109) eagerly parses every runtime client per request, so a parent
+// shape BAML rejects fails the entire request — not just the dispatch
+// of that parent. The BuildRequest-bound view drops every resolved
+// strategy parent (baml-rest dispatches WithClient(leaf), so BAML
+// never needs the parent), shielding leaf calls from unrelated parent
+// shapes. The legacy view must keep parents BAML *can* execute (so
+// runtime fallback overrides actually take effect) and parents BAML
+// would *reject canonically* (so invalid-strategy / invalid-start
+// overrides surface upstream's error rather than silently using static
+// config). The only entries we strip from legacy are inert presence-
+// only static parents — `{Name:"TestRR"}` with no provider/strategy/
+// start — which would re-trigger the original missing-strategy CFFI
+// failure if forwarded.
+//
+// Returns true (drop) only when:
+//   - the entry classifies as a resolved strategy parent, and
+//   - it has no operator-supplied Provider, and
+//   - its Options carry neither `strategy` nor `start`.
+//
+// Otherwise returns false (keep). An explicit `provider`, `strategy`,
+// or `start` on the entry is the operator's signal that they intend
+// to drive (or alter) the parent at runtime; forwarding it lets BAML
+// honour the override or emit its canonical validation error.
+func ShouldDropStrategyParentForTopLevelLegacy(client *ClientProperty, introspectedProviders map[string]string) bool {
+	if !IsResolvedStrategyParent(client, introspectedProviders) {
+		return false
+	}
+	if client.IsProviderPresent() {
+		return false
+	}
+	if client.Options != nil {
+		if _, ok := client.Options["strategy"]; ok {
+			return false
+		}
+		if _, ok := client.Options["start"]; ok {
+			return false
+		}
+	}
+	return true
+}
+
 // isStrategyProviderName reports whether p is one of the BAML strategy
 // provider spellings (RR or fallback). Inlined here rather than
 // imported from bamlutils/buildrequest/roundrobin to avoid a package

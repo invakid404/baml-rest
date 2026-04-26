@@ -997,9 +997,21 @@ func generate(opts Options) {
 
 		// Helper: common preamble for both implementations
 		// Inner methods return only error, so early returns just return the error
-		makePreamble := func() []jen.Code {
+		//
+		// optionsHelperName selects which generated registry-options
+		// helper feeds the dispatch site. The default
+		// makeOptionsFromAdapter pulls the BuildRequest-safe registry
+		// view (drops every baml-rest-resolved strategy parent), used
+		// by BuildRequest dispatch and by mixed-mode bridge legacy-
+		// child callbacks (both target leaves, not parents).
+		// makeLegacyOptionsFromAdapter pulls the legacy view (preserves
+		// explicit parent overrides) and is used by the top-level
+		// final-legacy fallthrough so BAML can honour runtime
+		// strategy-parent overrides or emit canonical errors. See PR
+		// #192 cold-review-4 + Option C.
+		makePreambleWith := func(optionsHelperName string) []jen.Code {
 			preamble := []jen.Code{
-				jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id("makeOptionsFromAdapter").Call(jen.Id("adapter")),
+				jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id(optionsHelperName).Call(jen.Id("adapter")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Id("err")),
 				),
@@ -1188,6 +1200,18 @@ func generate(opts Options) {
 			return preamble
 		}
 
+		// Convenience wrappers that pin the registry view at each
+		// dispatch site. BuildRequest landing sites (the buildRequest
+		// / buildCallRequest paths) get makePreamble; the top-level
+		// legacy fallthrough impls (_noRaw / _full) get
+		// makeLegacyPreamble. See PR #192 cold-review-4 + Option C.
+		makePreamble := func() []jen.Code {
+			return makePreambleWith("makeOptionsFromAdapter")
+		}
+		makeLegacyPreamble := func() []jen.Code {
+			return makePreambleWith("makeLegacyOptionsFromAdapter")
+		}
+
 		// Build a set of struct media param names for quick lookup
 		structMediaParamSet := make(map[string]bool, len(structMediaParams))
 		for _, smp := range structMediaParams {
@@ -1339,7 +1363,12 @@ func generate(opts Options) {
 			jen.Return(jen.Nil()),
 		}
 
-		noRawBody := makePreamble()
+		// _noRaw is the top-level legacy streaming impl invoked from
+		// the BuildRequest fallthrough branch (see __legacyClientOverride
+		// dispatch sites below). Use the legacy registry view so
+		// runtime strategy-parent overrides are visible to BAML — see
+		// PR #192 cold-review-4 + Option C.
+		noRawBody := makeLegacyPreamble()
 
 		// Delegate to shared orchestration helper - supplies per-method closures
 		noRawBody = append(noRawBody,
@@ -1653,8 +1682,12 @@ func generate(opts Options) {
 			jen.Return(jen.Id("__r")),
 		}
 
+		// _full is the top-level legacy streaming impl with full raw
+		// collection, also invoked from the BuildRequest fallthrough.
+		// Same legacy-view rationale as _noRaw — see PR #192
+		// cold-review-4 + Option C.
 		var fullBody []jen.Code
-		fullBody = append(fullBody, makePreamble()...)
+		fullBody = append(fullBody, makeLegacyPreamble()...)
 
 		// Delegate to shared full orchestration helper with per-method closures
 		fullBody = append(fullBody,
@@ -2971,7 +3004,11 @@ func generate(opts Options) {
 			jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("unsupported media kind: %v"), jen.Id("kind"))),
 		)
 
-	// Generate `makeOptionsFromAdapter`
+	// Generate `makeOptionsFromAdapter` — pulls the BuildRequest-safe
+	// registry view (drops every baml-rest-resolved strategy parent).
+	// Used by BuildRequest dispatch and mixed-mode bridge legacy-child
+	// callbacks (both target leaves, not parents). See PR #192
+	// cold-review-4 + Option C.
 	out.Func().Id("makeOptionsFromAdapter").
 		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
 		Params(
@@ -2992,6 +3029,40 @@ func generate(opts Options) {
 				jen.Id("result").Op("=").Append(jen.Id("result"),
 					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
 						Call(jen.Id("adapter").Dot("ClientRegistry"))),
+			),
+			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
+				jen.Id("result").Op("=").Append(jen.Id("result"),
+					jen.Qual(common.GeneratedClientPkg, "WithTypeBuilder").
+						Call(jen.Id("adapter").Dot("TypeBuilder"))),
+			),
+			jen.Return(jen.Id("result"), jen.Nil()),
+		)
+
+	// Generate `makeLegacyOptionsFromAdapter` — pulls the legacy
+	// registry view (preserves explicit strategy-parent overrides).
+	// Used by the top-level legacy fallthrough (_noRaw / _full impls
+	// invoked via __legacyClientOverride) so BAML can honour runtime
+	// strategy-parent overrides or emit canonical errors. See PR #192
+	// cold-review-4 + Option C.
+	out.Func().Id("makeLegacyOptionsFromAdapter").
+		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
+		Params(
+			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Error(),
+		).
+		Block(
+			jen.List(jen.Id("adapter"), jen.Id("ok")).Op(":=").Id("adapterIn").Assert(jen.Op("*").Qual(selfAdapterPkg, "BamlAdapter")),
+			jen.If(jen.Op("!").Id("ok")).Block(
+				jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
+					jen.Lit("invalid adapter type: expected *BamlAdapter, got %T"),
+					jen.Id("adapterIn"),
+				)),
+			),
+			jen.Id("result").Op(":=").Make(jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"), jen.Lit(0), jen.Lit(3)),
+			jen.If(jen.Id("adapter").Dot("LegacyClientRegistry").Op("!=").Nil()).Block(
+				jen.Id("result").Op("=").Append(jen.Id("result"),
+					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
+						Call(jen.Id("adapter").Dot("LegacyClientRegistry"))),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),

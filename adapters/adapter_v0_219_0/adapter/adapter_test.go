@@ -275,12 +275,13 @@ func TestSetClientRegistry_ExplicitProviderPassesThrough(t *testing.T) {
 // TestSetClientRegistry_NilRegistryClearsState mirrors the existing
 // nil-input behaviour and is here so future refactors of the
 // materialise helper can't accidentally panic on the nil-input path.
-// Also pins upstreamClientNames clearing so a stale list from a
-// previous registry call cannot survive across a nil reset.
+// Also pins upstreamClientNames clearing on BOTH views so a stale
+// list from a previous registry call cannot survive across a nil
+// reset (cold-review-4 + Option C).
 func TestSetClientRegistry_NilRegistryClearsState(t *testing.T) {
 	a := &BamlAdapter{Context: context.Background()}
-	// Seed upstreamClientNames so we can verify the nil branch
-	// clears it. Without this seed an unconditional check would
+	// Seed both upstream lists so we can verify the nil branch
+	// clears them. Without seed an unconditional check would
 	// pass trivially.
 	if err := a.SetClientRegistry(&bamlutils.ClientRegistry{
 		Clients: []*bamlutils.ClientProperty{{Name: "Seed", Provider: "openai"}},
@@ -290,12 +291,18 @@ func TestSetClientRegistry_NilRegistryClearsState(t *testing.T) {
 	if names := a.UpstreamClientNames(); len(names) != 1 {
 		t.Fatalf("seed: UpstreamClientNames len = %d, want 1", len(names))
 	}
+	if names := a.LegacyUpstreamClientNames(); len(names) != 1 {
+		t.Fatalf("seed: LegacyUpstreamClientNames len = %d, want 1", len(names))
+	}
 
 	if err := a.SetClientRegistry(nil); err != nil {
 		t.Fatalf("SetClientRegistry(nil): unexpected error: %v", err)
 	}
 	if a.ClientRegistry != nil {
 		t.Errorf("ClientRegistry: got %v, want nil", a.ClientRegistry)
+	}
+	if a.LegacyClientRegistry != nil {
+		t.Errorf("LegacyClientRegistry: got %v, want nil", a.LegacyClientRegistry)
 	}
 	if a.OriginalClientRegistry() != nil {
 		t.Errorf("OriginalClientRegistry(): got %v, want nil", a.OriginalClientRegistry())
@@ -305,6 +312,9 @@ func TestSetClientRegistry_NilRegistryClearsState(t *testing.T) {
 	}
 	if names := a.UpstreamClientNames(); len(names) != 0 {
 		t.Errorf("UpstreamClientNames(): got %v, want empty (stale list leaked across nil reset)", names)
+	}
+	if names := a.LegacyUpstreamClientNames(); len(names) != 0 {
+		t.Errorf("LegacyUpstreamClientNames(): got %v, want empty (stale legacy list leaked across nil reset)", names)
 	}
 }
 
@@ -447,5 +457,176 @@ func TestSetClientRegistry_PresentNonEmptyMatchingPrimary_UsesOverride(t *testin
 	}
 	if got := a.ClientRegistryProvider(); got != "openai" {
 		t.Errorf("ClientRegistryProvider(): got %q, want openai (operator override must win over introspected)", got)
+	}
+}
+
+// TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly is the
+// load-bearing assertion for PR #192 cold-review-4 + Option C: an
+// explicit runtime strategy-parent override is hidden from the
+// BuildRequest-safe registry view (so leaf calls aren't poisoned by
+// to_clients eagerly parsing every entry) but kept in the legacy
+// view (so BAML can honour the override on legacy fallthrough).
+func TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly(t *testing.T) {
+	cases := []struct {
+		name   string
+		client *bamlutils.ClientProperty
+	}{
+		{
+			name: "explicit baml-fallback parent with valid array strategy",
+			client: &bamlutils.ClientProperty{
+				Name:     "TestFallbackPair",
+				Provider: "baml-fallback",
+				Options:  map[string]any{"strategy": []any{"RuntimePrimary", "RuntimeSecondary"}},
+			},
+		},
+		{
+			name: "explicit baml-roundrobin parent with valid array strategy",
+			client: &bamlutils.ClientProperty{
+				Name:     "MyRR",
+				Provider: "baml-roundrobin",
+				Options:  map[string]any{"strategy": []any{"A", "B"}, "start": 1},
+			},
+		},
+		{
+			name: "RR parent with invalid string start (BAML must see it to emit canonical error)",
+			client: &bamlutils.ClientProperty{
+				Name:     "MyRR",
+				Provider: "baml-roundrobin",
+				Options:  map[string]any{"strategy": []any{"A", "B"}, "start": "not-an-int"},
+			},
+		},
+		{
+			name: "strategy-only RR override on a static parent (introspected provider drives classification)",
+			client: &bamlutils.ClientProperty{
+				Name:    "StaticRR",
+				Options: map[string]any{"strategy": []any{"A", "B"}},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &BamlAdapter{
+				Context: context.Background(),
+				IntrospectedClientProvider: map[string]string{
+					"StaticRR":         "baml-roundrobin",
+					"TestFallbackPair": "baml-fallback",
+				},
+			}
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{tc.client},
+			}
+			if err := a.SetClientRegistry(reg); err != nil {
+				t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+			}
+			// BuildRequest view: parent dropped (cold-review-3 F1
+			// invariant preserved — to_clients is shielded from
+			// rejected shapes when leaf calls drive dispatch).
+			if names := a.UpstreamClientNames(); len(names) != 0 {
+				t.Errorf("UpstreamClientNames(): got %v, want empty (BuildRequest view must drop explicit strategy parent)", names)
+			}
+			// Legacy view: parent kept (Option C — BAML executes
+			// the override or emits canonical error on legacy
+			// fallthrough).
+			legacyNames := a.LegacyUpstreamClientNames()
+			if len(legacyNames) != 1 || legacyNames[0] != tc.client.Name {
+				t.Errorf("LegacyUpstreamClientNames(): got %v, want [%s] (legacy view must preserve explicit strategy parent)", legacyNames, tc.client.Name)
+			}
+		})
+	}
+}
+
+// TestSetClientRegistryDropsInertPresenceOnlyParentInBothBamlViews
+// pins the no-op invariant for inert presence-only static parents.
+// `{Name: "TestFallbackPair"}` with no provider/strategy/start
+// carries no operator intent — it's just naming a static client by
+// name. Forwarding it to either BAML view would fail to_clients on
+// missing required `strategy`. Both views must drop it; the static
+// .baml config takes effect verbatim.
+func TestSetClientRegistryDropsInertPresenceOnlyParentInBothBamlViews(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "TestFallbackPair"}, // presence-only static parent
+		},
+	}
+	a := &BamlAdapter{
+		Context: context.Background(),
+		IntrospectedClientProvider: map[string]string{
+			"TestFallbackPair": "baml-fallback",
+		},
+	}
+	if err := a.SetClientRegistry(reg); err != nil {
+		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+	}
+	if names := a.UpstreamClientNames(); len(names) != 0 {
+		t.Errorf("UpstreamClientNames(): got %v, want empty (inert presence-only parent must be dropped)", names)
+	}
+	if names := a.LegacyUpstreamClientNames(); len(names) != 0 {
+		t.Errorf("LegacyUpstreamClientNames(): got %v, want empty (inert presence-only parent must be dropped from legacy view too)", names)
+	}
+}
+
+// TestSetClientRegistry_DualViewPrimaryCacheUnderInertParent pins the
+// fix for CodeRabbit verdict-21 findings 1+2 generalised across views.
+// When the operator names a primary that exists only as an inert
+// presence-only static parent (dropped from BOTH views), the primary
+// cache must NOT observe a provider that no view exposes. Instead it
+// falls through to introspected synthesis so the
+// ResolveProvider adapter shortcut returns the static-config provider
+// rather than "" or a wrong override.
+func TestSetClientRegistry_DualViewPrimaryCacheUnderInertParent(t *testing.T) {
+	primary := "TestFallbackPair"
+	reg := &bamlutils.ClientRegistry{
+		Primary: &primary,
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "TestFallbackPair"}, // inert presence-only — dropped from both views
+		},
+	}
+	a := &BamlAdapter{
+		Context: context.Background(),
+		IntrospectedClientProvider: map[string]string{
+			"TestFallbackPair": "baml-fallback",
+		},
+	}
+	if err := a.SetClientRegistry(reg); err != nil {
+		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+	}
+	// Primary cache: must reflect the introspected provider (not
+	// caching from the dropped runtime entry), translated to the
+	// upstream-accepted spelling.
+	if got := a.ClientRegistryProvider(); got != "baml-fallback" {
+		t.Errorf("ClientRegistryProvider(): got %q, want baml-fallback (introspected synthesis under dropped primary)", got)
+	}
+}
+
+// TestSetClientRegistry_DualViewPrimaryCacheUnderExplicitParent is
+// the companion guard: an explicit runtime strategy-parent override
+// stays in the legacy view, so the primary cache should observe its
+// provider (not the introspected default). Without this, an operator
+// switching to a runtime baml-fallback override on an existing static
+// RR client would see ResolveProvider report the static RR provider
+// instead of the runtime fallback.
+func TestSetClientRegistry_DualViewPrimaryCacheUnderExplicitParent(t *testing.T) {
+	primary := "MyParent"
+	reg := &bamlutils.ClientRegistry{
+		Primary: &primary,
+		Clients: []*bamlutils.ClientProperty{
+			{
+				Name:     "MyParent",
+				Provider: "baml-fallback",
+				Options:  map[string]any{"strategy": []any{"A", "B"}},
+			},
+		},
+	}
+	a := &BamlAdapter{
+		Context: context.Background(),
+		IntrospectedClientProvider: map[string]string{
+			"MyParent": "baml-roundrobin", // operator switched type at runtime
+		},
+	}
+	if err := a.SetClientRegistry(reg); err != nil {
+		t.Fatalf("SetClientRegistry: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "baml-fallback" {
+		t.Errorf("ClientRegistryProvider(): got %q, want baml-fallback (operator runtime override must win over introspected)", got)
 	}
 }
