@@ -1831,15 +1831,16 @@ func Generate(selfPkg string) {
 				// routing metadata through to the orchestrator's planned +
 				// outcome emissions.
 				jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
-					jen.Id("Provider"):          jen.Id("provider"),
-					jen.Id("RetryPolicy"):       jen.Id("retryPolicy"),
-					jen.Id("NeedsPartials"):     jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
-					jen.Id("NeedsRaw"):          jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-					jen.Id("FallbackChain"):     jen.Id("fallbackChain"),
-					jen.Id("ClientProviders"):   jen.Id("clientProviders"),
-					jen.Id("LegacyChildren"):    jen.Id("legacyChildren"),
-					jen.Id("LegacyStreamChild"): jen.Id("legacyStreamChildFn"),
-					jen.Id("MetadataPlan"):      jen.Id("plannedMetadata"),
+					jen.Id("Provider"):             jen.Id("provider"),
+					jen.Id("RetryPolicy"):          jen.Id("retryPolicy"),
+					jen.Id("NeedsPartials"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
+					jen.Id("NeedsRaw"):             jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("IncludeThinkingInRaw"): jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
+					jen.Id("FallbackChain"):        jen.Id("fallbackChain"),
+					jen.Id("ClientProviders"):      jen.Id("clientProviders"),
+					jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
+					jen.Id("LegacyStreamChild"):    jen.Id("legacyStreamChildFn"),
+					jen.Id("MetadataPlan"):         jen.Id("plannedMetadata"),
 					jen.Id("NewMetadataResult"): jen.Func().Params(
 						jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 					).Qual(common.InterfacesPkg, "StreamResult").Block(
@@ -2080,14 +2081,15 @@ func Generate(selfPkg string) {
 				// LegacyCallChild is always wired so validation passes even
 				// when legacyChildren is nil.
 				jen.Id("callConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "CallConfig").Values(jen.Dict{
-					jen.Id("Provider"):          jen.Id("provider"),
-					jen.Id("RetryPolicy"):       jen.Id("retryPolicy"),
-					jen.Id("NeedsRaw"):          jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-					jen.Id("FallbackChain"):     jen.Id("fallbackChain"),
-					jen.Id("ClientProviders"):   jen.Id("clientProviders"),
-					jen.Id("LegacyChildren"):    jen.Id("legacyChildren"),
-					jen.Id("LegacyCallChild"):   jen.Id("legacyCallChildFn"),
-					jen.Id("MetadataPlan"):      jen.Id("plannedMetadata"),
+					jen.Id("Provider"):             jen.Id("provider"),
+					jen.Id("RetryPolicy"):          jen.Id("retryPolicy"),
+					jen.Id("NeedsRaw"):             jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+					jen.Id("IncludeThinkingInRaw"): jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
+					jen.Id("FallbackChain"):        jen.Id("fallbackChain"),
+					jen.Id("ClientProviders"):      jen.Id("clientProviders"),
+					jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
+					jen.Id("LegacyCallChild"):      jen.Id("legacyCallChildFn"),
+					jen.Id("MetadataPlan"):         jen.Id("plannedMetadata"),
 					jen.Id("NewMetadataResult"): jen.Func().Params(
 						jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 					).Qual(common.InterfacesPkg, "StreamResult").Block(
@@ -3879,8 +3881,17 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
 			jen.Var().Id("fatalErr").Error(),
 
-			// Extractor
-			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(),
+			// Extractor. The boolean argument captures the per-request
+			// IncludeThinkingInRaw opt-in: when true, Anthropic
+			// thinking_delta events are accumulated into the extractor's
+			// raw buffer alongside text deltas; when false (default), the
+			// extractor matches BAML's RawLLMResponse() text-only
+			// semantics. Parseable text seen by Parse/ParseStream is never
+			// affected by this flag — the extractor only feeds the raw
+			// channel.
+			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(
+				jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
+			),
 			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
 			// lastFuncLog stores the most recent FunctionLog reference seen by
 			// onTick. FunctionLog is a live handle into the BAML runtime, so
@@ -4103,24 +4114,28 @@ func generateStreamHelpers(out *jen.File) {
 							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
 						),
 
-						// Emit final. The /with-raw contract for this codebase is
-						// that raw includes provider-specific raw-only content
-						// (e.g. Anthropic thinking deltas) that parseable excludes.
-						// The extractor accumulates delta.Raw, which preserves that
-						// semantic; FunctionLog.RawLLMResponse() is built from
-						// text_delta only and drops thinking_delta.
+						// Emit final. Reconciling extractor.Full() with
+						// RawLLMResponse() handles two distinct concerns:
 						//
-						// Under normal conditions extractor.Full() is authoritative.
-						// But in rare CI-only races where lastFuncLog's SSEChunks
-						// view is stale (onTick didn't cover the final SSE event),
-						// the extractor can end up truncated or empty while
-						// RawLLMResponse is complete. Prefer whichever is longer:
-						//   - Anthropic with thinking: extractor > RawLLMResponse
-						//     (extractor wins, thinking preserved).
-						//   - Other providers / anthropic w/o thinking: equal, or
-						//     extractor shorter on timing loss (RawLLMResponse
-						//     wins, matches parseable which is the full content
-						//     for those providers anyway).
+						//   - Stale-SSE-view race (always-on): in rare CI-only
+						//     races where lastFuncLog's SSEChunks view is stale
+						//     (onTick didn't cover the final SSE event), the
+						//     extractor can end up truncated or empty while
+						//     RawLLMResponse is complete. RawLLMResponse wins.
+						//
+						//   - IncludeThinkingInRaw opt-in (per-request): when
+						//     enabled, the extractor accumulates Anthropic
+						//     thinking_delta into raw while BAML's runtime never
+						//     surfaces thinking. The extractor's view is then
+						//     longer; extractor wins so opted-in clients see the
+						//     reasoning content.
+						//
+						// Picking the longer of the two satisfies both goals:
+						// the extractor wins under flag=true (thinking content
+						// preserved) and RawLLMResponse wins under stale-SSE
+						// races (truncation absorbed). Under happy-path
+						// flag=false, both are equal text-only and the choice
+						// is immaterial.
 						jen.Id("extractorMu").Dot("Lock").Call(),
 						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
 						jen.Id("extractorMu").Dot("Unlock").Call(),

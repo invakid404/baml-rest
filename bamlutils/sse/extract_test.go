@@ -14,7 +14,7 @@ func (m mockChunk) Text() (string, error) { return m.text, nil }
 func (m mockChunk) JSON() (any, error)    { return nil, nil }
 
 func TestIncrementalExtractor_HappyPath(t *testing.T) {
-	extractor := NewIncrementalExtractor()
+	extractor := NewIncrementalExtractor(false)
 
 	// First tick: 2 chunks
 	chunks1 := []SSEChunk{
@@ -65,7 +65,7 @@ func TestIncrementalExtractor_HappyPath(t *testing.T) {
 }
 
 func TestIncrementalExtractor_ResetOnRetry(t *testing.T) {
-	extractor := NewIncrementalExtractor()
+	extractor := NewIncrementalExtractor(false)
 
 	// First tick: 1 call with content
 	chunks1 := []SSEChunk{
@@ -114,7 +114,7 @@ func TestIncrementalExtractor_ResetOnRetry(t *testing.T) {
 }
 
 func TestIncrementalExtractor_Full(t *testing.T) {
-	extractor := NewIncrementalExtractor()
+	extractor := NewIncrementalExtractor(false)
 
 	// Before any extraction
 	if got := extractor.Full(); got != "" {
@@ -133,7 +133,7 @@ func TestIncrementalExtractor_Full(t *testing.T) {
 }
 
 func TestIncrementalExtractor_ResetWithEmptyDelta(t *testing.T) {
-	extractor := NewIncrementalExtractor()
+	extractor := NewIncrementalExtractor(false)
 
 	// First tick: 1 call with content
 	chunks1 := []SSEChunk{
@@ -178,7 +178,7 @@ func TestIncrementalExtractor_ResetWithEmptyDelta(t *testing.T) {
 }
 
 func TestIncrementalExtractor_DifferentProviders(t *testing.T) {
-	extractor := NewIncrementalExtractor()
+	extractor := NewIncrementalExtractor(false)
 
 	// First call with OpenAI
 	chunks1 := []SSEChunk{
@@ -204,8 +204,12 @@ func TestIncrementalExtractor_DifferentProviders(t *testing.T) {
 	}
 }
 
-func TestExtractDeltaPartsFromText_AnthropicThinking(t *testing.T) {
-	textDelta, err := ExtractDeltaPartsFromText("anthropic", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Answer"}}`)
+// TestExtractDeltaPartsFromText_AnthropicThinking_Default verifies that with
+// includeThinking=false (the default, BAML-aligned behavior), Anthropic
+// thinking_delta events contribute nothing to either Parseable or Raw, while
+// text_delta events behave normally.
+func TestExtractDeltaPartsFromText_AnthropicThinking_Default(t *testing.T) {
+	textDelta, err := ExtractDeltaPartsFromText("anthropic", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Answer"}}`, false)
 	if err != nil {
 		t.Fatalf("text delta extraction failed: %v", err)
 	}
@@ -213,12 +217,59 @@ func TestExtractDeltaPartsFromText_AnthropicThinking(t *testing.T) {
 		t.Fatalf("unexpected text delta: %+v", textDelta)
 	}
 
-	thinkingDelta, err := ExtractDeltaPartsFromText("anthropic", `{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Reasoning"}}`)
+	thinkingDelta, err := ExtractDeltaPartsFromText("anthropic", `{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Reasoning"}}`, false)
+	if err != nil {
+		t.Fatalf("thinking delta extraction failed: %v", err)
+	}
+	if thinkingDelta.Parseable != "" || thinkingDelta.Raw != "" {
+		t.Fatalf("expected thinking delta to be dropped under default flag, got: %+v", thinkingDelta)
+	}
+}
+
+// TestExtractDeltaPartsFromText_AnthropicThinking_OptIn verifies that with
+// includeThinking=true, Anthropic thinking_delta events accumulate into Raw
+// while Parseable stays empty (so the BAML parser is never fed thinking
+// content). text_delta behavior is unchanged.
+func TestExtractDeltaPartsFromText_AnthropicThinking_OptIn(t *testing.T) {
+	textDelta, err := ExtractDeltaPartsFromText("anthropic", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Answer"}}`, true)
+	if err != nil {
+		t.Fatalf("text delta extraction failed: %v", err)
+	}
+	if textDelta.Parseable != "Answer" || textDelta.Raw != "Answer" {
+		t.Fatalf("unexpected text delta: %+v", textDelta)
+	}
+
+	thinkingDelta, err := ExtractDeltaPartsFromText("anthropic", `{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Reasoning"}}`, true)
 	if err != nil {
 		t.Fatalf("thinking delta extraction failed: %v", err)
 	}
 	if thinkingDelta.Parseable != "" || thinkingDelta.Raw != "Reasoning" {
-		t.Fatalf("unexpected thinking delta: %+v", thinkingDelta)
+		t.Fatalf("unexpected thinking delta under opt-in: %+v", thinkingDelta)
+	}
+}
+
+// TestExtractDeltaPartsFromText_AnthropicThinking_ParseableInvariant codifies
+// the structural guarantee that Parseable never includes thinking content,
+// regardless of the includeThinking flag value. Any future refactor that
+// breaks this invariant will fail this test.
+func TestExtractDeltaPartsFromText_AnthropicThinking_ParseableInvariant(t *testing.T) {
+	chunks := []string{
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"Answer"}}`,
+		`{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Reasoning"}}`,
+	}
+	for _, chunk := range chunks {
+		off, err := ExtractDeltaPartsFromText("anthropic", chunk, false)
+		if err != nil {
+			t.Fatalf("flag=false extraction failed: %v", err)
+		}
+		on, err := ExtractDeltaPartsFromText("anthropic", chunk, true)
+		if err != nil {
+			t.Fatalf("flag=true extraction failed: %v", err)
+		}
+		if off.Parseable != on.Parseable {
+			t.Errorf("Parseable diverged across flag values for chunk %q: off=%q on=%q",
+				chunk, off.Parseable, on.Parseable)
+		}
 	}
 }
 
@@ -241,7 +292,7 @@ func TestGetCurrentContent_OnlyUsesLastCall(t *testing.T) {
 		},
 	}
 
-	content, err := GetCurrentContent(data)
+	content, err := GetCurrentContent(data, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -251,7 +302,7 @@ func TestGetCurrentContent_OnlyUsesLastCall(t *testing.T) {
 }
 
 func TestIncrementalExtractor_ZeroCallCount(t *testing.T) {
-	extractor := NewIncrementalExtractor()
+	extractor := NewIncrementalExtractor(false)
 
 	// callCount=0 should return empty result
 	result := extractor.Extract(0, "openai", nil)
@@ -273,8 +324,8 @@ func TestExtractFrom_MatchesExtract(t *testing.T) {
 	// Run the same sequence through both Extract (interface slice) and
 	// ExtractFrom (concrete slice) and verify identical results.
 
-	ext1 := NewIncrementalExtractor()
-	ext2 := NewIncrementalExtractor()
+	ext1 := NewIncrementalExtractor(false)
+	ext2 := NewIncrementalExtractor(false)
 
 	ifaceChunks := []SSEChunk{
 		mockChunk{`{"choices":[{"delta":{"content":"Hello"}}]}`},
@@ -317,7 +368,7 @@ func TestExtractFrom_MatchesExtract(t *testing.T) {
 }
 
 func TestExtractFrom_RetryReset(t *testing.T) {
-	ext := NewIncrementalExtractor()
+	ext := NewIncrementalExtractor(false)
 
 	chunks1 := []concreteChunk{
 		{`{"choices":[{"delta":{"content":"First"}}]}`},
@@ -341,7 +392,7 @@ func TestExtractFrom_RetryReset(t *testing.T) {
 }
 
 func TestExtractFrom_ZeroCallCount(t *testing.T) {
-	ext := NewIncrementalExtractor()
+	ext := NewIncrementalExtractor(false)
 
 	result := ExtractFrom(ext, 0, "openai", []concreteChunk(nil))
 	if result.Delta != "" || result.Full != "" || result.Reset {
@@ -350,7 +401,7 @@ func TestExtractFrom_ZeroCallCount(t *testing.T) {
 }
 
 func TestIncrementalExtractor_Clear(t *testing.T) {
-	ext := NewIncrementalExtractor()
+	ext := NewIncrementalExtractor(false)
 
 	// Populate state with two ticks
 	chunks := []SSEChunk{
@@ -389,7 +440,7 @@ func TestIncrementalExtractor_Clear(t *testing.T) {
 }
 
 func TestIncrementalExtractor_ResetOnChunksDecreased(t *testing.T) {
-	extractor := NewIncrementalExtractor()
+	extractor := NewIncrementalExtractor(false)
 
 	// First tick: 3 chunks
 	chunks1 := []SSEChunk{
@@ -463,7 +514,7 @@ func TestDeltaProviderSupportMatchesExtractor(t *testing.T) {
 			t.Errorf("IsDeltaProviderSupported(%q) = false; provider has a sample chunk and must be supported", provider)
 			continue
 		}
-		parts, err := ExtractDeltaPartsFromText(provider, chunk)
+		parts, err := ExtractDeltaPartsFromText(provider, chunk, false)
 		if err != nil {
 			t.Errorf("ExtractDeltaPartsFromText(%q) returned error: %v", provider, err)
 			continue
@@ -479,7 +530,7 @@ func TestDeltaProviderSupportMatchesExtractor(t *testing.T) {
 		if IsDeltaProviderSupported(provider) {
 			t.Errorf("IsDeltaProviderSupported(%q) = true, want false", provider)
 		}
-		if _, err := ExtractDeltaPartsFromText(provider, "{}"); err == nil {
+		if _, err := ExtractDeltaPartsFromText(provider, "{}", false); err == nil {
 			t.Errorf("ExtractDeltaPartsFromText(%q, \"{}\") returned nil error; expected unsupported provider", provider)
 		} else if !strings.Contains(err.Error(), "unsupported provider") {
 			t.Errorf("ExtractDeltaPartsFromText(%q) error = %v, want to contain %q", provider, err, "unsupported provider")

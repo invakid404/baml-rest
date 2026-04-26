@@ -40,7 +40,7 @@ func BenchmarkGeneratedChunkInterfaceCopyAndExtract(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		extractor := NewIncrementalExtractor()
+		extractor := NewIncrementalExtractor(false)
 		sseChunks := make([]SSEChunk, len(chunks))
 		for j, chunk := range chunks {
 			sseChunks[j] = chunk
@@ -60,7 +60,7 @@ func BenchmarkExtractPreboxedChunks(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		extractor := NewIncrementalExtractor()
+		extractor := NewIncrementalExtractor(false)
 		benchExtractResultSink = extractor.Extract(1, "openai", sseChunks)
 	}
 }
@@ -74,7 +74,7 @@ func BenchmarkExtractFromConcreteChunks(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		extractor := NewIncrementalExtractor()
+		extractor := NewIncrementalExtractor(false)
 		benchExtractResultSink = ExtractFrom(extractor, 1, "openai", chunks)
 	}
 }
@@ -91,7 +91,7 @@ func BenchmarkExtractFromSteadyState(b *testing.B) {
 	allChunks := makeBenchChunks(totalChunks)
 
 	// Pre-warm: advance the extractor to a mid-stream position.
-	extractor := NewIncrementalExtractor()
+	extractor := NewIncrementalExtractor(false)
 	for end := chunksPerTick; end <= warmupChunks; end += chunksPerTick {
 		ExtractFrom(extractor, 1, "openai", allChunks[:end])
 	}
@@ -105,7 +105,7 @@ func BenchmarkExtractFromSteadyState(b *testing.B) {
 		if next > totalChunks {
 			// Wrap around: reset extractor and re-warm so we stay in steady state
 			b.StopTimer()
-			extractor = NewIncrementalExtractor()
+			extractor = NewIncrementalExtractor(false)
 			for end := chunksPerTick; end <= warmupChunks; end += chunksPerTick {
 				ExtractFrom(extractor, 1, "openai", allChunks[:end])
 			}

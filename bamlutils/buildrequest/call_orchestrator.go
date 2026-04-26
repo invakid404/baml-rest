@@ -29,6 +29,14 @@ type CallConfig struct {
 	// (for /call-with-raw endpoint).
 	NeedsRaw bool
 
+	// IncludeThinkingInRaw is the per-request opt-in for surfacing
+	// provider-specific reasoning/thinking content in raw. When true,
+	// the response extractor accumulates Anthropic thinking blocks
+	// into raw alongside text blocks. When false (default), raw
+	// matches BAML's RawLLMResponse() text-only semantics. The flag
+	// never affects the parseable text passed to Parse.
+	IncludeThinkingInRaw bool
+
 	// FallbackChain is the ordered list of child client names for fallback
 	// strategies. When non-empty, each retry attempt walks the entire chain
 	// in order; if any child succeeds, the attempt returns immediately.
@@ -91,17 +99,21 @@ type BuildCallRequestFunc func(ctx context.Context, clientOverride string) (*llm
 
 // ExtractResponseFunc extracts the LLM output text from a non-streaming
 // JSON response body. Returns two strings: parseable (for Parse.Method)
-// and raw (for /call-with-raw's Raw()). For most providers these are
-// identical; for Anthropic with extended thinking, raw includes thinking
-// blocks while parseable does not.
-type ExtractResponseFunc func(provider string, responseBody string) (parseable, raw string, err error)
+// and raw (for /call-with-raw's Raw()).
+//
+// Parseable is always text-only — reasoning/thinking content is never
+// accumulated into it, so the BAML parser cannot be influenced by
+// reasoning text. Raw matches parseable by default; when includeThinking
+// is true the function may additionally surface provider-specific
+// reasoning (e.g. Anthropic thinking blocks) in raw for telemetry.
+type ExtractResponseFunc func(provider string, responseBody string, includeThinking bool) (parseable, raw string, err error)
 
 // RunCallOrchestration executes the non-streaming BuildRequest path.
 //
 // Flow — single retry loop covering HTTP, extraction, and parsing:
 //  1. buildRequest(ctx, clientOverride) → llmhttp.Request
 //  2. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
-//  3. extractResponse(provider, body) → parseable + raw text
+//  3. extractResponse(provider, body, includeThinking) → parseable + raw text
 //  4. parseFinal(ctx, parseable) → typed result
 //  5. emit StreamResultKindFinal on channel
 //
@@ -258,7 +270,7 @@ func RunCallOrchestration(
 			return nil, httpErr
 		}
 
-		parseable, raw, extractErr := extractResponse(provider, resp.Body)
+		parseable, raw, extractErr := extractResponse(provider, resp.Body, config.IncludeThinkingInRaw)
 		if extractErr != nil {
 			return nil, fmt.Errorf("buildrequest: failed to extract response content: %w", extractErr)
 		}

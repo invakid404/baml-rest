@@ -526,11 +526,9 @@ func TestRunCallOrchestration_Anthropic(t *testing.T) {
 	}
 }
 
-func TestRunCallOrchestration_AnthropicThinkingSplit(t *testing.T) {
-	// End-to-end test proving the parseable/raw split is wired correctly
-	// through RunCallOrchestration. The mock server returns a response with
-	// both thinking and text blocks. parseFinal should receive ONLY the
-	// text content, while Raw() should contain thinking + text.
+func TestRunCallOrchestration_AnthropicThinkingSplit_Default(t *testing.T) {
+	// Default (IncludeThinkingInRaw=false, BAML-aligned): both parseable and
+	// raw exclude thinking. parseFinal receives text only; Raw() returns text.
 	body := `{"content":[{"type":"thinking","thinking":"Step 1: reason..."},{"type":"text","text":"The answer is 42"}],"stop_reason":"end_turn"}`
 	server := makeJSONServer(200, body)
 	defer server.Close()
@@ -539,11 +537,11 @@ func TestRunCallOrchestration_AnthropicThinkingSplit(t *testing.T) {
 	out := make(chan bamlutils.StreamResult, 100)
 
 	config := &CallConfig{
-		Provider: "anthropic",
-		NeedsRaw: true,
+		Provider:             "anthropic",
+		NeedsRaw:             true,
+		IncludeThinkingInRaw: false,
 	}
 
-	// Track what parseFinal actually received
 	var parseFinalInput string
 	captureParseFinal := func(_ context.Context, text string) (any, error) {
 		parseFinalInput = text
@@ -563,12 +561,73 @@ func TestRunCallOrchestration_AnthropicThinkingSplit(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify parseFinal received only the text content (no thinking)
 	if parseFinalInput != "The answer is 42" {
 		t.Errorf("parseFinal received %q, expected only 'The answer is 42' (no thinking)", parseFinalInput)
 	}
 
-	// Verify the final result's Raw() contains both thinking + text
+	var results []bamlutils.StreamResult
+	for r := range out {
+		results = append(results, r)
+	}
+
+	hasFinal := false
+	for _, r := range results {
+		if r.Kind() == bamlutils.StreamResultKindFinal {
+			hasFinal = true
+			expectedRaw := "The answer is 42"
+			if r.Raw() != expectedRaw {
+				t.Errorf("Raw() = %q, expected %q (thinking should be dropped under default flag)", r.Raw(), expectedRaw)
+			}
+			if r.Final() != "The answer is 42" {
+				t.Errorf("Final() = %v, expected 'The answer is 42'", r.Final())
+			}
+		}
+	}
+	if !hasFinal {
+		t.Fatal("no final result found")
+	}
+}
+
+func TestRunCallOrchestration_AnthropicThinkingSplit_OptIn(t *testing.T) {
+	// Opt-in (IncludeThinkingInRaw=true): parseable still excludes thinking
+	// (the BAML parser must never see it), Raw() includes thinking + text.
+	body := `{"content":[{"type":"thinking","thinking":"Step 1: reason..."},{"type":"text","text":"The answer is 42"}],"stop_reason":"end_turn"}`
+	server := makeJSONServer(200, body)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &CallConfig{
+		Provider:             "anthropic",
+		NeedsRaw:             true,
+		IncludeThinkingInRaw: true,
+	}
+
+	var parseFinalInput string
+	captureParseFinal := func(_ context.Context, text string) (any, error) {
+		parseFinalInput = text
+		return text, nil
+	}
+
+	err := RunCallOrchestration(
+		context.Background(), out, config, client,
+		makeBuildCallRequest(server.URL),
+		captureParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Parseable invariant: parseFinal must see text-only regardless of flag.
+	if parseFinalInput != "The answer is 42" {
+		t.Errorf("parseFinal received %q, expected only 'The answer is 42' (parseable invariant)", parseFinalInput)
+	}
+
 	var results []bamlutils.StreamResult
 	for r := range out {
 		results = append(results, r)

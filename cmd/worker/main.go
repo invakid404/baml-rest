@@ -187,6 +187,11 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
 		adapter.SetRetryConfig(o.Options.Retry)
 	}
 
+	// Always pass IncludeThinkingInRaw through (even when false) so the
+	// adapter reflects an explicit per-request choice. Default value
+	// matches BAML's RawLLMResponse() text-only contract.
+	adapter.SetIncludeThinkingInRaw(o.Options.IncludeThinkingInRaw)
+
 	return nil
 }
 

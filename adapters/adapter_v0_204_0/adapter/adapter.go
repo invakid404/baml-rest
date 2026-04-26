@@ -36,6 +36,13 @@ type BamlAdapter struct {
 	// retryConfig holds per-request retry overrides from __baml_options__.retry.
 	retryConfig *bamlutils.RetryConfig
 
+	// includeThinkingInRaw is the per-request opt-in for surfacing
+	// provider-specific reasoning/thinking content in /with-raw's raw
+	// field. Mirrors __baml_options__.include_thinking_in_raw and is
+	// honored by the SSE/non-streaming extractors. Never affects the
+	// parseable text passed to Parse/ParseStream.
+	includeThinkingInRaw bool
+
 	// clientRegistryProvider is the provider of the primary client from
 	// the runtime ClientRegistry override. Empty if no override.
 	clientRegistryProvider string
@@ -50,6 +57,14 @@ func (b *BamlAdapter) SetRetryConfig(config *bamlutils.RetryConfig) {
 
 func (b *BamlAdapter) RetryConfig() *bamlutils.RetryConfig {
 	return b.retryConfig
+}
+
+func (b *BamlAdapter) SetIncludeThinkingInRaw(includeThinking bool) {
+	b.includeThinkingInRaw = includeThinking
+}
+
+func (b *BamlAdapter) IncludeThinkingInRaw() bool {
+	return b.includeThinkingInRaw
 }
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {

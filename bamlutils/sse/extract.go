@@ -9,8 +9,12 @@ import (
 )
 
 // DeltaParts contains the parseable/raw split for a single SSE event.
-// For most providers Parseable == Raw. Anthropic extended-thinking events use
-// Parseable for answer text only and Raw for answer + thinking deltas.
+// Parseable is always text-only — reasoning/thinking content never enters
+// it, so the BAML parser cannot be influenced by reasoning text. Raw
+// matches Parseable for providers without a reasoning surface; for
+// Anthropic, raw additionally carries thinking_delta content when the
+// caller opts in via IncludeThinkingInRaw on the IncrementalExtractor or
+// the includeThinking parameter on ExtractDeltaPartsFromText.
 type DeltaParts struct {
 	Parseable string
 	Raw       string
@@ -36,7 +40,12 @@ type StreamingData struct {
 // GetCurrentContent returns the accumulated content so far from streaming
 // by extracting deltas from SSE chunks of the last call only.
 // Earlier calls are ignored since they represent failed retry attempts.
-func GetCurrentContent(data *StreamingData) (string, error) {
+//
+// includeThinking is the per-request opt-in flag for surfacing provider-
+// specific reasoning content. False (default) yields BAML-aligned text-only
+// content; true additionally accumulates Anthropic thinking_delta into the
+// returned string.
+func GetCurrentContent(data *StreamingData, includeThinking bool) (string, error) {
 	if len(data.Calls) == 0 {
 		return "", nil
 	}
@@ -46,7 +55,7 @@ func GetCurrentContent(data *StreamingData) (string, error) {
 
 	var sb strings.Builder
 	for _, chunk := range call.Chunks {
-		delta, err := ExtractDeltaContent(call.Provider, chunk)
+		delta, err := ExtractDeltaContent(call.Provider, chunk, includeThinking)
 		if err == nil && delta != "" {
 			sb.WriteString(delta)
 		}
@@ -56,18 +65,26 @@ func GetCurrentContent(data *StreamingData) (string, error) {
 }
 
 // ExtractDeltaContent extracts the text delta from an SSE chunk based on provider.
-func ExtractDeltaContent(provider string, chunk SSEChunk) (string, error) {
+// See ExtractDeltaPartsFromText for the includeThinking semantics.
+func ExtractDeltaContent(provider string, chunk SSEChunk, includeThinking bool) (string, error) {
 	rawText, err := chunk.Text()
 	if err != nil {
 		return "", fmt.Errorf("failed to get chunk text: %w", err)
 	}
-	return ExtractDeltaFromText(provider, rawText)
+	return ExtractDeltaFromText(provider, rawText, includeThinking)
 }
 
 // ExtractDeltaPartsFromText contains the provider-specific delta extraction
 // logic, operating on the raw text string. It returns both the parseable delta
 // (used for Parse/ParseStream) and the raw delta (used for /with-raw output).
-func ExtractDeltaPartsFromText(provider string, rawText string) (DeltaParts, error) {
+//
+// includeThinking is the per-request opt-in flag for surfacing provider-
+// specific reasoning content in Raw. When false (default), Parseable == Raw
+// and Anthropic thinking_delta events are dropped — matching BAML's
+// RawLLMResponse() text-only contract. When true, Anthropic thinking_delta
+// events contribute to Raw only; Parseable is unaffected by construction so
+// the BAML parser cannot be influenced by reasoning text.
+func ExtractDeltaPartsFromText(provider string, rawText string, includeThinking bool) (DeltaParts, error) {
 	switch provider {
 	// OpenAI-compatible providers (Chat Completions API format)
 	// Path: choices[0].delta.content
@@ -85,7 +102,10 @@ func ExtractDeltaPartsFromText(provider string, rawText string) (DeltaParts, err
 		return DeltaParts{}, nil
 
 	// Anthropic
-	// Path: delta.text or delta.thinking (when type == "content_block_delta")
+	// Path: delta.text (text_delta) or delta.thinking (thinking_delta)
+	// when type == "content_block_delta". Thinking deltas contribute to
+	// Raw only when includeThinking is true; Parseable always excludes
+	// thinking so the BAML parser sees text-only input.
 	case "anthropic":
 		if gjson.Get(rawText, "type").String() == "content_block_delta" {
 			switch gjson.Get(rawText, "delta.type").String() {
@@ -93,6 +113,9 @@ func ExtractDeltaPartsFromText(provider string, rawText string) (DeltaParts, err
 				delta := gjson.Get(rawText, "delta.text").String()
 				return DeltaParts{Parseable: delta, Raw: delta}, nil
 			case "thinking_delta":
+				if !includeThinking {
+					return DeltaParts{}, nil
+				}
 				return DeltaParts{Raw: gjson.Get(rawText, "delta.thinking").String()}, nil
 			}
 		}
@@ -122,12 +145,15 @@ func ExtractDeltaPartsFromText(provider string, rawText string) (DeltaParts, err
 // operating on the raw text string. It takes a provider name and the raw JSON
 // text of a single SSE event, and returns the raw textual delta content.
 //
+// includeThinking is the per-request opt-in flag for surfacing provider-
+// specific reasoning content. See ExtractDeltaPartsFromText for semantics.
+//
 // This function is used by both:
 //   - The existing OnTick/IncrementalExtractor path (via ExtractFrom)
 //   - Callers that want the raw textual contribution of an SSE event without
 //     the parseable/raw split from ExtractDeltaPartsFromText
-func ExtractDeltaFromText(provider string, rawText string) (string, error) {
-	delta, err := ExtractDeltaPartsFromText(provider, rawText)
+func ExtractDeltaFromText(provider string, rawText string, includeThinking bool) (string, error) {
+	delta, err := ExtractDeltaPartsFromText(provider, rawText, includeThinking)
 	if err != nil {
 		return "", err
 	}
@@ -185,6 +211,10 @@ func IsDeltaProviderSupported(provider string) bool {
 
 // IncrementalExtractor extracts SSE content incrementally, tracking which chunks
 // have already been processed to avoid re-parsing on each tick.
+//
+// includeThinkingInRaw is captured at construction time and applied uniformly
+// to every chunk processed by this extractor; see ExtractDeltaPartsFromText
+// for the per-provider semantics.
 type IncrementalExtractor struct {
 	// callCount tracks the number of calls seen (to detect retries)
 	callCount int
@@ -192,11 +222,19 @@ type IncrementalExtractor struct {
 	cursor int
 	// accumulated content from processed chunks
 	accumulated strings.Builder
+	// includeThinkingInRaw mirrors the per-request opt-in for surfacing
+	// provider-specific reasoning content. False (default) yields BAML-
+	// aligned text-only output; true additionally accumulates Anthropic
+	// thinking_delta into the running buffer.
+	includeThinkingInRaw bool
 }
 
-// NewIncrementalExtractor creates a new incremental extractor.
-func NewIncrementalExtractor() *IncrementalExtractor {
-	return &IncrementalExtractor{}
+// NewIncrementalExtractor creates a new incremental extractor. Pass
+// includeThinking=true to opt the extractor into accumulating Anthropic
+// thinking_delta content alongside text deltas; pass false (default) for
+// BAML-aligned text-only output.
+func NewIncrementalExtractor(includeThinking bool) *IncrementalExtractor {
+	return &IncrementalExtractor{includeThinkingInRaw: includeThinking}
 }
 
 // ExtractResult contains the result of an incremental extraction.
@@ -261,7 +299,7 @@ func ExtractFrom[T SSEChunk](e *IncrementalExtractor, callCount int, provider st
 			if err != nil {
 				continue
 			}
-			delta, err := ExtractDeltaFromText(provider, rawText)
+			delta, err := ExtractDeltaFromText(provider, rawText, e.includeThinkingInRaw)
 			if err == nil && delta != "" {
 				e.accumulated.WriteString(delta)
 			}
@@ -282,7 +320,7 @@ func ExtractFrom[T SSEChunk](e *IncrementalExtractor, callCount int, provider st
 		if err != nil {
 			continue
 		}
-		delta, err := ExtractDeltaFromText(provider, rawText)
+		delta, err := ExtractDeltaFromText(provider, rawText, e.includeThinkingInRaw)
 		if err == nil && delta != "" {
 			deltaBuf.WriteString(delta)
 			e.accumulated.WriteString(delta)
