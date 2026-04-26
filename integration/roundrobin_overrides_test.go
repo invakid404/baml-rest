@@ -87,11 +87,21 @@ func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// Drive multiple calls so we observe both children in the
-		// override chain — proves the resolver walked the override,
-		// not the introspected (primary + secondary) chain.
+		// Drive multiple calls. The stable invariant under the
+		// strategy-only override is "every pick is in the override
+		// chain AND none is the introspected primary" — NOT "both
+		// override children appear at least once". Dynamic RR with
+		// no options.start uses AdvanceDynamic
+		// (rand.IntN(childCount), no retained state per
+		// coordinator.go:127-139), so requiring both children would
+		// flake at ~12.5% per subtest for 4 runs over 2 children.
+		// Per-pick membership is the F1-relevant assertion. Cold-
+		// review-3 verdict-15 finding.
 		const runs = 4
-		seenSelected := map[string]bool{}
+		overrideChildren := map[string]bool{
+			"FallbackSecondary": true,
+			"FallbackTertiary":  true,
+		}
 		for i := 0; i < runs; i++ {
 			resp, err := client.Call(ctx, testutil.CallRequest{
 				Method: "GetGreetingRoundRobinPair",
@@ -116,18 +126,35 @@ func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 				t.Fatalf("Call %d: expected 200, got %d: %s", i, resp.StatusCode, resp.Error)
 			}
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
-			seenSelected[resp.Headers.Get(testutil.HeaderBAMLRoundRobinSelected)] = true
+			selected := resp.Headers.Get(testutil.HeaderBAMLRoundRobinSelected)
+			if !overrideChildren[selected] {
+				t.Fatalf("Call %d: Selected=%q not in override chain [FallbackSecondary FallbackTertiary] (override not honoured or empty header)", i, selected)
+			}
 		}
-		// FallbackPrimary (introspected chain's first child) must
-		// never be picked — runtime override replaced the chain.
-		if seenSelected["FallbackPrimary"] {
-			t.Errorf("override chain not honoured: FallbackPrimary appeared but is not in [FallbackSecondary FallbackTertiary]")
+		// Defense in depth: confirm the introspected primary received
+		// zero requests and the override children together absorbed
+		// every call. The per-pick membership check above already
+		// guarantees this from header observation; cross-checking the
+		// mockllm hit counts catches a hypothetical regression where
+		// the resolver reports the override child in metadata but
+		// dispatches elsewhere on the wire.
+		countCtx, countCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer countCancel()
+		if got, err := MockClient.GetRequestCount(countCtx, "fallback-primary"); err != nil {
+			t.Fatalf("GetRequestCount(fallback-primary): %v", err)
+		} else if got != 0 {
+			t.Errorf("fallback-primary received %d requests, want 0 (override chain excluded it)", got)
 		}
-		// Both override children must be observed across runs (the
-		// counter is dynamic per-request, so over 4 runs we expect
-		// each at least once with high probability).
-		if !seenSelected["FallbackSecondary"] || !seenSelected["FallbackTertiary"] {
-			t.Errorf("expected to observe both override children; got %v", seenSelected)
+		secondary, err := MockClient.GetRequestCount(countCtx, "fallback-secondary")
+		if err != nil {
+			t.Fatalf("GetRequestCount(fallback-secondary): %v", err)
+		}
+		tertiary, err := MockClient.GetRequestCount(countCtx, "fallback-tertiary")
+		if err != nil {
+			t.Fatalf("GetRequestCount(fallback-tertiary): %v", err)
+		}
+		if secondary+tertiary != runs {
+			t.Errorf("override children received %d total requests (secondary=%d tertiary=%d), want %d", secondary+tertiary, secondary, tertiary, runs)
 		}
 	})
 }
