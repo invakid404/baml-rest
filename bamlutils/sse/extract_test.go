@@ -23,11 +23,17 @@ func TestIncrementalExtractor_HappyPath(t *testing.T) {
 	}
 
 	result1 := extractor.Extract(1, "openai", chunks1)
-	if result1.Delta != "Hello world" {
-		t.Errorf("expected delta 'Hello world', got %q", result1.Delta)
+	if result1.RawDelta != "Hello world" {
+		t.Errorf("expected raw delta 'Hello world', got %q", result1.RawDelta)
 	}
-	if result1.Full != "Hello world" {
-		t.Errorf("expected full 'Hello world', got %q", result1.Full)
+	if result1.RawFull != "Hello world" {
+		t.Errorf("expected raw full 'Hello world', got %q", result1.RawFull)
+	}
+	if result1.ParseableDelta != "Hello world" {
+		t.Errorf("expected parseable delta 'Hello world', got %q", result1.ParseableDelta)
+	}
+	if result1.ParseableFull != "Hello world" {
+		t.Errorf("expected parseable full 'Hello world', got %q", result1.ParseableFull)
 	}
 	if result1.Reset {
 		t.Error("expected Reset=false for first extraction (nothing to reset)")
@@ -41,11 +47,11 @@ func TestIncrementalExtractor_HappyPath(t *testing.T) {
 	}
 
 	result2 := extractor.Extract(1, "openai", chunks2)
-	if result2.Delta != "!" {
-		t.Errorf("expected delta '!', got %q", result2.Delta)
+	if result2.RawDelta != "!" {
+		t.Errorf("expected raw delta '!', got %q", result2.RawDelta)
 	}
-	if result2.Full != "Hello world!" {
-		t.Errorf("expected full 'Hello world!', got %q", result2.Full)
+	if result2.RawFull != "Hello world!" {
+		t.Errorf("expected raw full 'Hello world!', got %q", result2.RawFull)
 	}
 	if result2.Reset {
 		t.Error("expected Reset=false for incremental extraction")
@@ -53,11 +59,11 @@ func TestIncrementalExtractor_HappyPath(t *testing.T) {
 
 	// Third tick: no new chunks
 	result3 := extractor.Extract(1, "openai", chunks2)
-	if result3.Delta != "" {
-		t.Errorf("expected empty delta, got %q", result3.Delta)
+	if result3.RawDelta != "" {
+		t.Errorf("expected empty raw delta, got %q", result3.RawDelta)
 	}
-	if result3.Full != "Hello world!" {
-		t.Errorf("expected full 'Hello world!', got %q", result3.Full)
+	if result3.RawFull != "Hello world!" {
+		t.Errorf("expected raw full 'Hello world!', got %q", result3.RawFull)
 	}
 	if result3.Reset {
 		t.Error("expected Reset=false when no new chunks")
@@ -76,8 +82,8 @@ func TestIncrementalExtractor_ResetOnRetry(t *testing.T) {
 	if result1.Reset {
 		t.Error("expected Reset=false for first extraction")
 	}
-	if result1.Full != "First attempt partial" {
-		t.Errorf("expected full 'First attempt partial', got %q", result1.Full)
+	if result1.RawFull != "First attempt partial" {
+		t.Errorf("expected raw full 'First attempt partial', got %q", result1.RawFull)
 	}
 
 	// Second tick: call count increased (retry) - pass NEW call's chunks
@@ -91,8 +97,8 @@ func TestIncrementalExtractor_ResetOnRetry(t *testing.T) {
 		t.Error("expected Reset=true when retry occurred (call count changed)")
 	}
 	// Should only contain content from the retry call
-	if result2.Full != "Retry success" {
-		t.Errorf("expected full 'Retry success', got %q", result2.Full)
+	if result2.RawFull != "Retry success" {
+		t.Errorf("expected raw full 'Retry success', got %q", result2.RawFull)
 	}
 
 	// Third tick: more chunks on retry call - incremental, no reset
@@ -105,30 +111,36 @@ func TestIncrementalExtractor_ResetOnRetry(t *testing.T) {
 	if result3.Reset {
 		t.Error("expected Reset=false for incremental extraction after retry")
 	}
-	if result3.Delta != "!" {
-		t.Errorf("expected delta '!', got %q", result3.Delta)
+	if result3.RawDelta != "!" {
+		t.Errorf("expected raw delta '!', got %q", result3.RawDelta)
 	}
-	if result3.Full != "Retry success!" {
-		t.Errorf("expected full 'Retry success!', got %q", result3.Full)
+	if result3.RawFull != "Retry success!" {
+		t.Errorf("expected raw full 'Retry success!', got %q", result3.RawFull)
 	}
 }
 
-func TestIncrementalExtractor_Full(t *testing.T) {
+func TestIncrementalExtractor_RawAndParseableFull(t *testing.T) {
 	extractor := NewIncrementalExtractor(false)
 
-	// Before any extraction
-	if got := extractor.Full(); got != "" {
-		t.Errorf("expected empty Full() before extraction, got %q", got)
+	// Before any extraction both accessors are empty.
+	if got := extractor.RawFull(); got != "" {
+		t.Errorf("expected empty RawFull() before extraction, got %q", got)
+	}
+	if got := extractor.ParseableFull(); got != "" {
+		t.Errorf("expected empty ParseableFull() before extraction, got %q", got)
 	}
 
-	// After extraction
+	// After extraction (text-only provider) both accessors return identical content.
 	chunks := []SSEChunk{
 		mockChunk{`{"choices":[{"delta":{"content":"test"}}]}`},
 	}
 
 	extractor.Extract(1, "openai", chunks)
-	if got := extractor.Full(); got != "test" {
-		t.Errorf("expected Full() 'test', got %q", got)
+	if got := extractor.RawFull(); got != "test" {
+		t.Errorf("expected RawFull() 'test', got %q", got)
+	}
+	if got := extractor.ParseableFull(); got != "test" {
+		t.Errorf("expected ParseableFull() 'test', got %q", got)
 	}
 }
 
@@ -141,8 +153,8 @@ func TestIncrementalExtractor_ResetWithEmptyDelta(t *testing.T) {
 	}
 
 	result1 := extractor.Extract(1, "openai", chunks1)
-	if result1.Full != "Hello" {
-		t.Errorf("expected full 'Hello', got %q", result1.Full)
+	if result1.RawFull != "Hello" {
+		t.Errorf("expected raw full 'Hello', got %q", result1.RawFull)
 	}
 
 	// Second tick: retry occurred (callCount=2) but new call has 0 chunks yet
@@ -153,11 +165,11 @@ func TestIncrementalExtractor_ResetWithEmptyDelta(t *testing.T) {
 	if !result2.Reset {
 		t.Error("expected Reset=true when retry occurred, even with empty delta")
 	}
-	if result2.Delta != "" {
-		t.Errorf("expected empty delta, got %q", result2.Delta)
+	if result2.RawDelta != "" {
+		t.Errorf("expected empty raw delta, got %q", result2.RawDelta)
 	}
-	if result2.Full != "" {
-		t.Errorf("expected empty full (new call has no content yet), got %q", result2.Full)
+	if result2.RawFull != "" {
+		t.Errorf("expected empty raw full (new call has no content yet), got %q", result2.RawFull)
 	}
 
 	// Third tick: new call gets content - Reset should now be false
@@ -169,11 +181,11 @@ func TestIncrementalExtractor_ResetWithEmptyDelta(t *testing.T) {
 	if result3.Reset {
 		t.Error("expected Reset=false for incremental update after retry")
 	}
-	if result3.Delta != "World" {
-		t.Errorf("expected delta 'World', got %q", result3.Delta)
+	if result3.RawDelta != "World" {
+		t.Errorf("expected raw delta 'World', got %q", result3.RawDelta)
 	}
-	if result3.Full != "World" {
-		t.Errorf("expected full 'World', got %q", result3.Full)
+	if result3.RawFull != "World" {
+		t.Errorf("expected raw full 'World', got %q", result3.RawFull)
 	}
 }
 
@@ -186,8 +198,8 @@ func TestIncrementalExtractor_DifferentProviders(t *testing.T) {
 	}
 
 	result1 := extractor.Extract(1, "openai", chunks1)
-	if result1.Full != "OpenAI" {
-		t.Errorf("expected full 'OpenAI', got %q", result1.Full)
+	if result1.RawFull != "OpenAI" {
+		t.Errorf("expected raw full 'OpenAI', got %q", result1.RawFull)
 	}
 
 	// Retry with Anthropic (different provider)
@@ -199,8 +211,8 @@ func TestIncrementalExtractor_DifferentProviders(t *testing.T) {
 	if !result2.Reset {
 		t.Error("expected Reset=true on retry")
 	}
-	if result2.Full != "Anthropic" {
-		t.Errorf("expected full 'Anthropic', got %q", result2.Full)
+	if result2.RawFull != "Anthropic" {
+		t.Errorf("expected raw full 'Anthropic', got %q", result2.RawFull)
 	}
 }
 
@@ -273,6 +285,52 @@ func TestExtractDeltaPartsFromText_AnthropicThinking_ParseableInvariant(t *testi
 	}
 }
 
+// TestIncrementalExtractor_AnthropicThinking_ParseableInvariant exercises the
+// extractor end-to-end with a thinking-then-text Anthropic stream and asserts
+// the structural guarantee at the buffer level: regardless of the
+// IncludeThinkingInRaw flag, the parseable buffer is text-only. Under opt-in
+// the raw buffer additionally carries thinking content; under default both
+// buffers are equal.
+//
+// This test is the architectural counterpart to the per-event parseable
+// invariant test above — it verifies the guarantee survives accumulation,
+// which is what the legacy stream path relies on when feeding ParseStream.
+func TestIncrementalExtractor_AnthropicThinking_ParseableInvariant(t *testing.T) {
+	chunks := []SSEChunk{
+		mockChunk{`{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Let me reason..."}}`},
+		mockChunk{`{"type":"content_block_delta","delta":{"type":"text_delta","text":"The answer "}}`},
+		mockChunk{`{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":" still thinking"}}`},
+		mockChunk{`{"type":"content_block_delta","delta":{"type":"text_delta","text":"is 42"}}`},
+	}
+
+	// Default flag: both buffers carry text only.
+	extOff := NewIncrementalExtractor(false)
+	rOff := extOff.Extract(1, "anthropic", chunks)
+	if rOff.ParseableFull != "The answer is 42" {
+		t.Errorf("default: ParseableFull = %q, want %q", rOff.ParseableFull, "The answer is 42")
+	}
+	if rOff.RawFull != "The answer is 42" {
+		t.Errorf("default: RawFull = %q, want %q (text-only)", rOff.RawFull, "The answer is 42")
+	}
+
+	// Opt-in: parseable still text-only, raw carries thinking + text.
+	extOn := NewIncrementalExtractor(true)
+	rOn := extOn.Extract(1, "anthropic", chunks)
+	if rOn.ParseableFull != "The answer is 42" {
+		t.Errorf("opt-in: ParseableFull = %q, want %q (parseable invariant violated!)", rOn.ParseableFull, "The answer is 42")
+	}
+	expectedRaw := "Let me reason...The answer  still thinkingis 42"
+	if rOn.RawFull != expectedRaw {
+		t.Errorf("opt-in: RawFull = %q, want %q", rOn.RawFull, expectedRaw)
+	}
+
+	// Cross-flag invariant: parseable is byte-identical regardless of flag.
+	if rOff.ParseableFull != rOn.ParseableFull {
+		t.Errorf("Parseable diverged across flag values: off=%q on=%q",
+			rOff.ParseableFull, rOn.ParseableFull)
+	}
+}
+
 func TestGetCurrentContent_OnlyUsesLastCall(t *testing.T) {
 	// GetCurrentContent should also only use the last call
 	data := &StreamingData{
@@ -306,7 +364,7 @@ func TestIncrementalExtractor_ZeroCallCount(t *testing.T) {
 
 	// callCount=0 should return empty result
 	result := extractor.Extract(0, "openai", nil)
-	if result.Delta != "" || result.Full != "" || result.Reset {
+	if result.RawDelta != "" || result.RawFull != "" || result.ParseableDelta != "" || result.ParseableFull != "" || result.Reset {
 		t.Error("expected empty result for callCount=0")
 	}
 }
@@ -339,11 +397,11 @@ func TestExtractFrom_MatchesExtract(t *testing.T) {
 	r1 := ext1.Extract(1, "openai", ifaceChunks)
 	r2 := ExtractFrom(ext2, 1, "openai", concreteChunks)
 
-	if r1.Delta != r2.Delta {
-		t.Errorf("Delta mismatch: Extract=%q, ExtractFrom=%q", r1.Delta, r2.Delta)
+	if r1.RawDelta != r2.RawDelta {
+		t.Errorf("RawDelta mismatch: Extract=%q, ExtractFrom=%q", r1.RawDelta, r2.RawDelta)
 	}
-	if r1.Full != r2.Full {
-		t.Errorf("Full mismatch: Extract=%q, ExtractFrom=%q", r1.Full, r2.Full)
+	if r1.RawFull != r2.RawFull {
+		t.Errorf("RawFull mismatch: Extract=%q, ExtractFrom=%q", r1.RawFull, r2.RawFull)
 	}
 	if r1.Reset != r2.Reset {
 		t.Errorf("Reset mismatch: Extract=%v, ExtractFrom=%v", r1.Reset, r2.Reset)
@@ -356,11 +414,11 @@ func TestExtractFrom_MatchesExtract(t *testing.T) {
 	r1 = ext1.Extract(1, "openai", ifaceChunks)
 	r2 = ExtractFrom(ext2, 1, "openai", concreteChunks)
 
-	if r1.Delta != r2.Delta {
-		t.Errorf("Delta mismatch (tick 2): Extract=%q, ExtractFrom=%q", r1.Delta, r2.Delta)
+	if r1.RawDelta != r2.RawDelta {
+		t.Errorf("RawDelta mismatch (tick 2): Extract=%q, ExtractFrom=%q", r1.RawDelta, r2.RawDelta)
 	}
-	if r1.Full != r2.Full {
-		t.Errorf("Full mismatch (tick 2): Extract=%q, ExtractFrom=%q", r1.Full, r2.Full)
+	if r1.RawFull != r2.RawFull {
+		t.Errorf("RawFull mismatch (tick 2): Extract=%q, ExtractFrom=%q", r1.RawFull, r2.RawFull)
 	}
 	if r1.Reset != r2.Reset {
 		t.Errorf("Reset mismatch (tick 2): Extract=%v, ExtractFrom=%v", r1.Reset, r2.Reset)
@@ -386,8 +444,8 @@ func TestExtractFrom_RetryReset(t *testing.T) {
 	if !r2.Reset {
 		t.Error("expected Reset=true on retry")
 	}
-	if r2.Full != "Retry" {
-		t.Errorf("expected Full 'Retry', got %q", r2.Full)
+	if r2.RawFull != "Retry" {
+		t.Errorf("expected RawFull 'Retry', got %q", r2.RawFull)
 	}
 }
 
@@ -395,7 +453,7 @@ func TestExtractFrom_ZeroCallCount(t *testing.T) {
 	ext := NewIncrementalExtractor(false)
 
 	result := ExtractFrom(ext, 0, "openai", []concreteChunk(nil))
-	if result.Delta != "" || result.Full != "" || result.Reset {
+	if result.RawDelta != "" || result.RawFull != "" || result.ParseableDelta != "" || result.ParseableFull != "" || result.Reset {
 		t.Error("expected empty result for callCount=0")
 	}
 }
@@ -409,18 +467,24 @@ func TestIncrementalExtractor_Clear(t *testing.T) {
 		mockChunk{`{"choices":[{"delta":{"content":" world"}}]}`},
 	}
 	r := ext.Extract(1, "openai", chunks)
-	if r.Full != "Hello world" {
-		t.Fatalf("setup: expected 'Hello world', got %q", r.Full)
+	if r.RawFull != "Hello world" {
+		t.Fatalf("setup: expected 'Hello world', got %q", r.RawFull)
 	}
-	if ext.Full() != "Hello world" {
-		t.Fatalf("setup: Full() should return accumulated content")
+	if ext.RawFull() != "Hello world" {
+		t.Fatalf("setup: RawFull() should return accumulated content")
+	}
+	if ext.ParseableFull() != "Hello world" {
+		t.Fatalf("setup: ParseableFull() should return accumulated content")
 	}
 
 	// Clear resets all internal state
 	ext.Clear()
 
-	if ext.Full() != "" {
-		t.Errorf("after Clear: Full() should be empty, got %q", ext.Full())
+	if ext.RawFull() != "" {
+		t.Errorf("after Clear: RawFull() should be empty, got %q", ext.RawFull())
+	}
+	if ext.ParseableFull() != "" {
+		t.Errorf("after Clear: ParseableFull() should be empty, got %q", ext.ParseableFull())
 	}
 
 	// Next extraction should behave like a first extraction (Reset == false)
@@ -431,11 +495,11 @@ func TestIncrementalExtractor_Clear(t *testing.T) {
 	if r2.Reset {
 		t.Error("after Clear: first extraction should have Reset=false")
 	}
-	if r2.Full != "New" {
-		t.Errorf("after Clear: expected Full='New', got %q", r2.Full)
+	if r2.RawFull != "New" {
+		t.Errorf("after Clear: expected RawFull='New', got %q", r2.RawFull)
 	}
-	if r2.Delta != "New" {
-		t.Errorf("after Clear: expected Delta='New', got %q", r2.Delta)
+	if r2.RawDelta != "New" {
+		t.Errorf("after Clear: expected RawDelta='New', got %q", r2.RawDelta)
 	}
 }
 
@@ -450,8 +514,8 @@ func TestIncrementalExtractor_ResetOnChunksDecreased(t *testing.T) {
 	}
 
 	result1 := extractor.Extract(1, "openai", chunks1)
-	if result1.Full != "ABC" {
-		t.Errorf("expected full 'ABC', got %q", result1.Full)
+	if result1.RawFull != "ABC" {
+		t.Errorf("expected raw full 'ABC', got %q", result1.RawFull)
 	}
 	if result1.Reset {
 		t.Error("expected Reset=false for first extraction")
@@ -468,12 +532,12 @@ func TestIncrementalExtractor_ResetOnChunksDecreased(t *testing.T) {
 	if !result2.Reset {
 		t.Error("expected Reset=true when chunks decreased (client state is invalid)")
 	}
-	if result2.Full != "XY" {
-		t.Errorf("expected full 'XY', got %q", result2.Full)
+	if result2.RawFull != "XY" {
+		t.Errorf("expected raw full 'XY', got %q", result2.RawFull)
 	}
 	// Delta should be the full content since we rebuilt
-	if result2.Delta != "XY" {
-		t.Errorf("expected delta 'XY' (full rebuild), got %q", result2.Delta)
+	if result2.RawDelta != "XY" {
+		t.Errorf("expected raw delta 'XY' (full rebuild), got %q", result2.RawDelta)
 	}
 }
 

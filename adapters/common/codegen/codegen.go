@@ -1403,11 +1403,38 @@ func Generate(selfPkg string) {
 				jen.Id("extractor"), jen.Id("callCount"), jen.Id("provider"), jen.Id("chunks"),
 			),
 			jen.If(jen.Id("skipIntermediateParsing")).Block(jen.Return(jen.Nil())),
-			jen.If(jen.Id("extractResult").Dot("Delta").Op("==").Lit("").Op("&&").Op("!").Id("extractResult").Dot("Reset")).Block(jen.Return(jen.Nil())),
-			jen.Id("raw").Op(":=").Id("extractResult").Dot("Full"),
-			jen.Id("rawDelta").Op(":=").Id("extractResult").Dot("Delta"),
-			// Short-circuit: empty delta/raw → emit reset-only result
-			jen.If(jen.Id("rawDelta").Op("==").Lit("").Op("||").Id("raw").Op("==").Lit("")).Block(
+			// Skip if absolutely nothing new arrived this tick (no delta on
+			// either buffer) and no reset occurred.
+			jen.If(
+				jen.Id("extractResult").Dot("ParseableDelta").Op("==").Lit("").
+					Op("&&").Id("extractResult").Dot("RawDelta").Op("==").Lit("").
+					Op("&&").Op("!").Id("extractResult").Dot("Reset"),
+			).Block(jen.Return(jen.Nil())),
+			// parseable is the cumulative text-only buffer fed to ParseStream.
+			// Reasoning content (e.g. Anthropic thinking_delta under
+			// IncludeThinkingInRaw=true) is excluded by construction in
+			// IncrementalExtractor, so the BAML parser sees only the textual
+			// response stream regardless of the opt-in flag.
+			jen.Id("parseable").Op(":=").Id("extractResult").Dot("ParseableFull"),
+			jen.Id("parseableDelta").Op(":=").Id("extractResult").Dot("ParseableDelta"),
+			// rawDelta is the per-tick wire-output content. Mirrors
+			// parseableDelta when the opt-in is off; additionally carries
+			// thinking_delta content under opt-in.
+			jen.Id("rawDelta").Op(":=").Id("extractResult").Dot("RawDelta"),
+			// Raw-only / reset-only path. Triggered when:
+			//   - No parseable content has accumulated yet (e.g., the only
+			//     events seen so far are thinking_delta under opt-in).
+			//   - No new parseable content this tick (e.g., a thinking-only
+			//     event under opt-in advanced raw but not parseable).
+			//   - A reset boundary occurred but parseable is empty.
+			//
+			// In all three cases we cannot meaningfully call ParseStream, but
+			// we still emit a partial so the wire's raw buffer accumulates and
+			// any reset boundary reaches the client.
+			jen.If(
+				jen.Id("parseable").Op("==").Lit("").
+					Op("||").Id("parseableDelta").Op("==").Lit(""),
+			).Block(
 				jen.Select().Block(
 					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
 					jen.Default().Block(),
@@ -1432,10 +1459,10 @@ func Generate(selfPkg string) {
 				),
 				jen.Return(jen.Nil()),
 			),
-			// Call ParseStream
+			// Call ParseStream on the cumulative parseable buffer.
 			jen.List(jen.Id("parsed"), jen.Id("parseErr")).Op(":=").
 				Qual(common.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(
-				jen.Id("adapter"), jen.Id("raw"), jen.Id("options").Op("..."),
+				jen.Id("adapter"), jen.Id("parseable"), jen.Id("options").Op("..."),
 			),
 			jen.If(jen.Id("parseErr").Op("==").Nil()).Block(
 				jen.Select().Block(
@@ -4114,7 +4141,7 @@ func generateStreamHelpers(out *jen.File) {
 							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
 						),
 
-						// Emit final. Reconciling extractor.Full() with
+						// Emit final. Reconciling extractor.RawFull() with
 						// RawLLMResponse() handles two distinct concerns:
 						//
 						//   - Stale-SSE-view race (always-on): in rare CI-only
@@ -4137,7 +4164,7 @@ func generateStreamHelpers(out *jen.File) {
 						// flag=false, both are equal text-only and the choice
 						// is immaterial.
 						jen.Id("extractorMu").Dot("Lock").Call(),
-						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("Full").Call(),
+						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("RawFull").Call(),
 						jen.Id("extractorMu").Dot("Unlock").Call(),
 						jen.If(jen.Id("flOk")).Block(
 							jen.If(

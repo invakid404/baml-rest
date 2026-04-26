@@ -301,9 +301,10 @@ func TestCallWithRaw_AnthropicThinking_ParseableInvariant(t *testing.T) {
 // used by both the default and opt-in stream tests to share the same event
 // loop while keeping per-test assertions narrow.
 type streamWithRawResult struct {
-	lastRaw      string         // last non-empty Raw observed; cumulative by orchestrator design
+	lastRaw      string                // last non-empty Raw observed; cumulative by orchestrator design
 	finalEvent   *testutil.StreamEvent // the "final" event (if seen), carries fully validated Data
-	rawSnapshots []string       // every non-empty Raw observed, in order
+	rawSnapshots []string              // every non-empty Raw observed, in order
+	dataEvents   []json.RawMessage     // every Data observed (intermediate + final), in order
 }
 
 // runStreamWithRaw drives a /stream-with-raw call to completion, returning
@@ -334,6 +335,9 @@ func runStreamWithRaw(t *testing.T, ctx context.Context, opts *testutil.BAMLOpti
 			if event.Raw != "" {
 				result.lastRaw = event.Raw
 				result.rawSnapshots = append(result.rawSnapshots, event.Raw)
+			}
+			if len(event.Data) > 0 && string(event.Data) != "null" {
+				result.dataEvents = append(result.dataEvents, event.Data)
 			}
 		case err := <-errs:
 			if err != nil {
@@ -398,12 +402,14 @@ func TestStreamWithRaw_AnthropicThinking_DefaultExcludes(t *testing.T) {
 //   - BuildRequest emits per-event raw deltas as the orchestrator parses
 //     each SSE frame, so intermediate snapshots can be a strict prefix of
 //     thinking text before any text deltas arrive.
-//   - Legacy uses the IncrementalExtractor + ParseStream loop. Early
-//     thinking-only ticks are accumulated by the extractor but ParseStream
-//     fails on the not-yet-JSON content and no partial is emitted; the
-//     thinking content surfaces in the final event via the codegen's
-//     max(extractor.Full(), RawLLMResponse()) reconciliation at
-//     adapters/common/codegen/codegen.go:4124-4138.
+//   - Legacy uses the IncrementalExtractor + ParseStream loop. The
+//     extractor maintains separate parseable (text-only) and raw
+//     (text + thinking under opt-in) buffers. ParseStream is fed the
+//     parseable buffer, so early thinking-only ticks emit a raw-only
+//     partial without parsed Data. The thinking content reaches the wire
+//     incrementally as those raw-only partials, and is also reconciled at
+//     the final via max(extractor.RawFull(), RawLLMResponse()) at
+//     adapters/common/codegen/codegen.go:4144-4168.
 //
 // Both paths converge to the same final cumulative raw, which is what the
 // /with-raw contract guarantees. The test asserts that, plus a uniqueness
@@ -450,6 +456,74 @@ func TestStreamWithRaw_AnthropicThinking_OptInIncludes(t *testing.T) {
 		// Parseable invariant — even when raw includes thinking, the parsed
 		// data must reflect text only.
 		assertParsedMessage(t, result.finalEvent.Data, "hello")
+	}
+}
+
+// TestStreamWithRaw_AnthropicThinking_ParseableInvariant_PerEvent codifies the
+// strongest version of the parseable invariant: under opt-in
+// (IncludeThinkingInRaw=true), thinking content reaches the wire's raw
+// buffer, BUT no per-event Data value (intermediate or final) ever reflects
+// thinking-derived JSON.
+//
+// This is the regression test for the legacy-path bug: prior to the
+// IncrementalExtractor parseable/raw split, the legacy code fed
+// extractor.Full() (which under opt-in contained text + thinking) directly
+// to ParseStream. The thinking text used here contains a complete
+// `{"message": "answer"}` JSON object — if it were fed to the parser, an
+// intermediate Data event would unmarshal to message="answer" instead of
+// "hello". The test exercises the BAML parser end-to-end against thinking
+// content that would unambiguously corrupt parsing, so any regression
+// reintroducing the leak fails loudly.
+//
+// The assertion runs over every Data event the stream emits, not just the
+// final, because the failure mode primarily manifests in intermediate
+// partials.
+func TestStreamWithRaw_AnthropicThinking_ParseableInvariant_PerEvent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	opts := setupAnthropicThinkingScenario(
+		t,
+		"test-anthropic-think-stream-parseable-invariant",
+		thinkingTestContent,
+		thinkingTestThinking,
+		true,
+		boolPtr(true),
+	)
+
+	result := runStreamWithRaw(t, ctx, opts)
+
+	if len(result.dataEvents) == 0 {
+		t.Fatal("opt-in stream parseable invariant: no Data events observed; cannot verify per-event invariant")
+	}
+
+	for i, data := range result.dataEvents {
+		var parsed struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			// Intermediate partials may not be fully-formed; the parser
+			// emits whatever shape it can. A partial that doesn't have a
+			// message field at all is fine — that's not a leak. Skip.
+			continue
+		}
+		if parsed.Message == "answer" {
+			t.Errorf("opt-in stream Data event %d leaked thinking-derived value: parsed message %q (raw data: %s)", i, parsed.Message, string(data))
+		}
+	}
+
+	// Confirm raw still carries thinking (i.e. the flag actually had an
+	// effect; otherwise the per-event invariant above is a tautology).
+	const thinkingOnlyMarker = "answer"
+	sawThinkingMarker := false
+	for _, snap := range result.rawSnapshots {
+		if containsAny(snap, thinkingOnlyMarker) {
+			sawThinkingMarker = true
+			break
+		}
+	}
+	if !sawThinkingMarker {
+		t.Fatalf("opt-in stream parseable invariant: expected raw to contain %q somewhere; got snapshots: %v (sanity check failed — flag not honored)", thinkingOnlyMarker, result.rawSnapshots)
 	}
 }
 

@@ -212,43 +212,86 @@ func IsDeltaProviderSupported(provider string) bool {
 // IncrementalExtractor extracts SSE content incrementally, tracking which chunks
 // have already been processed to avoid re-parsing on each tick.
 //
-// includeThinkingInRaw is captured at construction time and applied uniformly
-// to every chunk processed by this extractor; see ExtractDeltaPartsFromText
-// for the per-provider semantics.
+// Two buffers are maintained side-by-side so the parseable invariant holds
+// uniformly across all consumers:
+//
+//   - parseable accumulates text-only deltas (from DeltaParts.Parseable).
+//     This is what BAML's parser sees via ParseStream — reasoning/thinking
+//     content never enters this buffer regardless of includeThinkingInRaw,
+//     so a malformed JSON-ish thinking fragment cannot influence parsing.
+//   - raw accumulates wire-output deltas (from DeltaParts.Raw). When
+//     includeThinkingInRaw is true, this additionally carries Anthropic
+//     thinking_delta content; otherwise it equals the parseable buffer
+//     byte-for-byte.
+//
+// Under the default flag-off configuration the two buffers always hold
+// identical content. Under opt-in they diverge whenever a non-text content
+// surface (e.g., thinking_delta) is observed: parseable stays text-only,
+// raw absorbs the additional content.
 type IncrementalExtractor struct {
 	// callCount tracks the number of calls seen (to detect retries)
 	callCount int
 	// cursor tracks chunks processed in the current (last) call
 	cursor int
-	// accumulated content from processed chunks
-	accumulated strings.Builder
+	// parseable accumulates text-only deltas; fed to ParseStream so the
+	// BAML parser cannot be influenced by reasoning content even under
+	// IncludeThinkingInRaw=true.
+	parseable strings.Builder
+	// raw accumulates the wire-output deltas; mirrors parseable when
+	// includeThinkingInRaw is false, and additionally carries provider-
+	// specific reasoning content when true.
+	raw strings.Builder
 	// includeThinkingInRaw mirrors the per-request opt-in for surfacing
 	// provider-specific reasoning content. False (default) yields BAML-
-	// aligned text-only output; true additionally accumulates Anthropic
-	// thinking_delta into the running buffer.
+	// aligned text-only output across both buffers; true additionally
+	// accumulates Anthropic thinking_delta into raw only.
 	includeThinkingInRaw bool
 }
 
 // NewIncrementalExtractor creates a new incremental extractor. Pass
 // includeThinking=true to opt the extractor into accumulating Anthropic
-// thinking_delta content alongside text deltas; pass false (default) for
-// BAML-aligned text-only output.
+// thinking_delta content alongside text deltas in the raw buffer; pass
+// false (default) for BAML-aligned text-only output across both the
+// parseable and raw buffers. The parseable buffer is text-only regardless
+// of this flag — the gate only affects the raw buffer.
 func NewIncrementalExtractor(includeThinking bool) *IncrementalExtractor {
 	return &IncrementalExtractor{includeThinkingInRaw: includeThinking}
 }
 
-// ExtractResult contains the result of an incremental extraction.
+// ExtractResult contains the result of an incremental extraction. Two
+// parallel pairs of (Delta, Full) values are returned, one for each
+// internal buffer:
+//
+//   - ParseableDelta / ParseableFull: text-only content. Use these to feed
+//     ParseStream so reasoning/thinking content cannot influence the
+//     BAML parser.
+//   - RawDelta / RawFull: wire-output content. Mirrors the parseable
+//     values under default (flag-off) configuration; additionally carries
+//     reasoning content when IncludeThinkingInRaw is enabled.
+//
+// Reset signals that the consumer should discard accumulated state — this
+// is set when a retry rebuild has occurred (chunks decreased or callCount
+// changed).
 type ExtractResult struct {
-	// Delta is the new content extracted from this tick (empty if no new content)
-	Delta string
-	// Full is the complete accumulated content
-	Full string
-	// Reset is true if the client should discard accumulated state (retry occurred).
-	// This is NOT set on first extraction - only when a retry causes a rebuild.
+	// ParseableDelta is the new parseable (text-only) content this tick.
+	ParseableDelta string
+	// ParseableFull is the cumulative parseable (text-only) content.
+	ParseableFull string
+	// RawDelta is the new raw content this tick (text + thinking when
+	// IncludeThinkingInRaw=true; same as ParseableDelta otherwise).
+	RawDelta string
+	// RawFull is the cumulative raw content (text + thinking when
+	// IncludeThinkingInRaw=true; same as ParseableFull otherwise).
+	RawFull string
+	// Reset is true if the client should discard accumulated state (retry
+	// occurred). This is NOT set on first extraction — only when a retry
+	// causes a rebuild.
 	Reset bool
 }
 
-// Extract processes new SSE chunks incrementally, returning only the delta.
+// Extract processes new SSE chunks incrementally, returning the parseable
+// and raw deltas plus their cumulative buffers.
+//
 // Parameters:
 //   - callCount: total number of calls in the FunctionLog (used to detect retries)
 //   - provider: the LLM provider for the current (last) call
@@ -268,7 +311,8 @@ func (e *IncrementalExtractor) Extract(callCount int, provider string, chunks []
 func (e *IncrementalExtractor) Clear() {
 	e.callCount = 0
 	e.cursor = 0
-	e.accumulated.Reset()
+	e.parseable.Reset()
+	e.raw.Reset()
 }
 
 // ExtractFrom is like Extract but accepts a concrete slice type via generics,
@@ -277,7 +321,8 @@ func (e *IncrementalExtractor) Clear() {
 // without first copying it into []SSEChunk.
 //
 // Internally it calls chunk.Text() on the concrete type and passes the raw
-// string to extractDeltaFromText, so no per-element interface boxing occurs.
+// string to ExtractDeltaPartsFromText so the parseable/raw split is preserved
+// per-event, then accumulates each part into its own buffer on the extractor.
 func ExtractFrom[T SSEChunk](e *IncrementalExtractor, callCount int, provider string, chunks []T) ExtractResult {
 	if callCount == 0 {
 		return ExtractResult{}
@@ -292,50 +337,79 @@ func ExtractFrom[T SSEChunk](e *IncrementalExtractor, callCount int, provider st
 	if needsRebuild {
 		e.callCount = callCount
 		e.cursor = 0
-		e.accumulated.Reset()
+		e.parseable.Reset()
+		e.raw.Reset()
 
 		for _, chunk := range chunks {
 			rawText, err := chunk.Text()
 			if err != nil {
 				continue
 			}
-			delta, err := ExtractDeltaFromText(provider, rawText, e.includeThinkingInRaw)
-			if err == nil && delta != "" {
-				e.accumulated.WriteString(delta)
+			parts, err := ExtractDeltaPartsFromText(provider, rawText, e.includeThinkingInRaw)
+			if err != nil {
+				continue
+			}
+			if parts.Parseable != "" {
+				e.parseable.WriteString(parts.Parseable)
+			}
+			if parts.Raw != "" {
+				e.raw.WriteString(parts.Raw)
 			}
 		}
 		e.cursor = len(chunks)
 
 		return ExtractResult{
-			Delta: e.accumulated.String(),
-			Full:  e.accumulated.String(),
-			Reset: isRetry || chunksDecreased,
+			ParseableDelta: e.parseable.String(),
+			ParseableFull:  e.parseable.String(),
+			RawDelta:       e.raw.String(),
+			RawFull:        e.raw.String(),
+			Reset:          isRetry || chunksDecreased,
 		}
 	}
 
 	// Incremental: only process new chunks
-	var deltaBuf strings.Builder
+	var parseableDeltaBuf strings.Builder
+	var rawDeltaBuf strings.Builder
 	for i := e.cursor; i < len(chunks); i++ {
 		rawText, err := chunks[i].Text()
 		if err != nil {
 			continue
 		}
-		delta, err := ExtractDeltaFromText(provider, rawText, e.includeThinkingInRaw)
-		if err == nil && delta != "" {
-			deltaBuf.WriteString(delta)
-			e.accumulated.WriteString(delta)
+		parts, err := ExtractDeltaPartsFromText(provider, rawText, e.includeThinkingInRaw)
+		if err != nil {
+			continue
+		}
+		if parts.Parseable != "" {
+			parseableDeltaBuf.WriteString(parts.Parseable)
+			e.parseable.WriteString(parts.Parseable)
+		}
+		if parts.Raw != "" {
+			rawDeltaBuf.WriteString(parts.Raw)
+			e.raw.WriteString(parts.Raw)
 		}
 	}
 	e.cursor = len(chunks)
 
 	return ExtractResult{
-		Delta: deltaBuf.String(),
-		Full:  e.accumulated.String(),
-		Reset: false,
+		ParseableDelta: parseableDeltaBuf.String(),
+		ParseableFull:  e.parseable.String(),
+		RawDelta:       rawDeltaBuf.String(),
+		RawFull:        e.raw.String(),
+		Reset:          false,
 	}
 }
 
-// Full returns the complete accumulated content without processing new data.
-func (e *IncrementalExtractor) Full() string {
-	return e.accumulated.String()
+// RawFull returns the complete accumulated raw content without processing
+// new data. Under IncludeThinkingInRaw=true this includes thinking_delta
+// content for Anthropic; otherwise it matches ParseableFull byte-for-byte.
+func (e *IncrementalExtractor) RawFull() string {
+	return e.raw.String()
+}
+
+// ParseableFull returns the complete accumulated parseable (text-only)
+// content without processing new data. Use this to feed ParseStream — the
+// returned content never includes reasoning/thinking text regardless of
+// the IncludeThinkingInRaw flag.
+func (e *IncrementalExtractor) ParseableFull() string {
+	return e.parseable.String()
 }
