@@ -79,10 +79,13 @@ func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		waitForHealthy(t, 30*time.Second)
 		clearRoundRobinScenarios(t)
-		// Override chain only includes secondary + tertiary so we can
-		// assert the override chain is honoured rather than the
-		// introspected pair (primary + secondary).
-		registerAllGreetingScenarios(t, []string{"fallback-secondary", "fallback-tertiary"})
+		// Register all three scenarios so the post-loop hit-count
+		// assertions can query fallback-primary (introspected chain's
+		// first child) without the mockllm returning 404 for an
+		// unregistered ID. The override below replaces the chain with
+		// [secondary, tertiary] — the primary entry exists only so we
+		// can assert it received zero requests.
+		registerAllGreetingScenarios(t, []string{"fallback-primary", "fallback-secondary", "fallback-tertiary"})
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

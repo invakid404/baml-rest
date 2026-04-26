@@ -3916,12 +3916,48 @@ func generateStreamHelpers(out *jen.File) {
 			// metadata event.
 			jen.Id("startTime").Op(":=").Qual("time", "Now").Call(),
 			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
+			// plannedSent gates the planned-metadata emission so the same
+			// payload doesn't go out twice. We emit it upfront (before
+			// body() runs the BAML stream) rather than inside onTick
+			// because planned metadata describes the routing decision
+			// already made — it must not depend on BAML's state-change
+			// callbacks firing. For requests where BAML completes
+			// synchronously (e.g., legacy path with WithClient naming
+			// a strategy parent that resolves through static IR), no
+			// onTick fires and the prior gating-on-heartbeatSent
+			// design lost the planned event. See PR #192 verdict-15
+			// follow-up: TestRoundRobinOverrides_InvalidStartRoutesToLegacy
+			// returned 200 with empty X-BAML-Path / X-BAML-Path-Reason
+			// for exactly this reason.
+			jen.Var().Id("plannedSent").Qual("sync/atomic", "Bool"),
 			// lastFuncLog stores the most recent FunctionLog reference seen
 			// by onTick. Read by beforeFinal to derive winner identity and
 			// BAML's internal call count for the outcome event. nil if no
 			// onTick fired before the stream completed (rare; degrade
 			// gracefully via BuildLegacyOutcome's planned-fallback ladder).
 			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
+
+			// emitPlanned sends the planned-metadata event to out exactly
+			// once per orchestrator invocation. Called upfront from the
+			// goroutine below (so emission is guaranteed) and as a
+			// fallback path from inside body for callers that build the
+			// goroutine themselves. plannedSent CAS guarantees idempotency.
+			jen.Id("emitPlanned").Op(":=").Func().Params().Block(
+				jen.If(jen.Id("plannedMetadata").Op("==").Nil().Op("||").Id("newMetadataResult").Op("==").Nil()).Block(jen.Return()),
+				jen.If(jen.Op("!").Id("plannedSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(jen.Return()),
+				jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
+				jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
+				jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
+				jen.If(jen.Id("__m").Op("==").Nil()).Block(jen.Return()),
+				// Non-blocking emit: release on full / shutdown so a
+				// busy or torn-down channel cannot wedge this path.
+				// Matches the heartbeat's drop-on-full policy.
+				jen.Select().Block(
+					jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__m"))),
+					jen.Default().Block(jen.Id("release").Call(jen.Id("__m"))),
+				),
+			),
 
 			jen.Id("onTick").Op(":=").Func().Params(
 				jen.Id("_").Qual("context", "Context"),
@@ -3941,23 +3977,6 @@ func generateStreamHelpers(out *jen.File) {
 					jen.Select().Block(
 						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 						jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
-					),
-					// Emit planned metadata as the second frame on first
-					// tick, after the heartbeat. The emission is guarded by
-					// the same CAS branch so it runs exactly once per
-					// orchestrator invocation (subsequent ticks skip).
-					// Non-blocking: release the result if the output buffer
-					// is full, matching the heartbeat's drop-on-full policy.
-					jen.If(jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").Id("newMetadataResult").Op("!=").Nil()).Block(
-						jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
-						jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
-						jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
-						jen.If(jen.Id("__m").Op("!=").Nil()).Block(
-							jen.Select().Block(
-								jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
-								jen.Default().Block(jen.Id("release").Call(jen.Id("__m"))),
-							),
-						),
 					),
 				),
 				jen.Return(jen.Nil()),
@@ -4019,6 +4038,12 @@ func generateStreamHelpers(out *jen.File) {
 
 			jen.Go().Func().Params().Block(
 				jen.Defer().Close(jen.Id("out")),
+				// Emit planned metadata upfront. Decoupled from onTick
+				// so the routing decision is observable even when BAML
+				// completes without firing onTick (legacy path with
+				// WithClient targeting a strategy parent that resolves
+				// through static IR).
+				jen.Id("emitPlanned").Call(),
 				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 					jen.Func().Params(jen.Id("err").Error()).Block(
 						jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("err")),
@@ -4100,8 +4125,32 @@ func generateStreamHelpers(out *jen.File) {
 			// the watcher goroutine to exit without waiting for adapter cancellation.
 			jen.Id("watcherDone").Op(":=").Make(jen.Chan().Struct()),
 			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
+			// plannedSent gates the planned-metadata emission (decoupled
+			// from heartbeatSent so we can emit upfront without firing
+			// the heartbeat early). Same rationale as runNoRawOrchestration:
+			// planned metadata describes the routing decision already
+			// made and must not depend on BAML's onTick firing. See
+			// PR #192 verdict-15 follow-up.
+			jen.Var().Id("plannedSent").Qual("sync/atomic", "Bool"),
 			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
 			jen.Var().Id("fatalErr").Error(),
+
+			// emitPlanned is called once per orchestrator invocation,
+			// upfront in the stream goroutine. plannedSent CAS guarantees
+			// idempotency.
+			jen.Id("emitPlanned").Op(":=").Func().Params().Block(
+				jen.If(jen.Id("plannedMetadata").Op("==").Nil().Op("||").Id("newMetadataResult").Op("==").Nil()).Block(jen.Return()),
+				jen.If(jen.Op("!").Id("plannedSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(jen.Return()),
+				jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
+				jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
+				jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
+				jen.If(jen.Id("__m").Op("==").Nil()).Block(jen.Return()),
+				jen.Select().Block(
+					jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__m"))),
+					jen.Default().Block(jen.Id("release").Call(jen.Id("__m"))),
+				),
+			),
 
 			// Extractor. The boolean argument captures the per-request
 			// IncludeThinkingInRaw opt-in: when true, Anthropic
@@ -4184,29 +4233,15 @@ func generateStreamHelpers(out *jen.File) {
 								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
 								jen.Default().Block(),
 							),
-							// Heartbeat + planned metadata (same CAS branch so
-							// metadata is the second frame and fires exactly
-							// once per orchestrator invocation).
+							// Heartbeat: signals the pool's hung detector that
+							// upstream returned 2xx. Planned metadata emission
+							// is now decoupled and fires upfront from the
+							// stream goroutine — see emitPlanned above.
 							jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
 								jen.Id("__r").Op(":=").Id("newHeartbeat").Call(),
 								jen.Select().Block(
 									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 									jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
-								),
-								jen.If(jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").Id("newMetadataResult").Op("!=").Nil()).Block(
-									// Copy and tag Phase=Planned. Caller-supplied
-									// plannedMetadata may have been built with
-									// Phase already set, but flipping here makes
-									// the contract local and survives reuse.
-									jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
-									jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
-									jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
-									jen.If(jen.Id("__m").Op("!=").Nil()).Block(
-										jen.Select().Block(
-											jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
-											jen.Default().Block(jen.Id("release").Call(jen.Id("__m"))),
-										),
-									),
 								),
 							),
 							// Store latest FunctionLog for the final reconciliation pass
@@ -4288,6 +4323,10 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Go().Func().Params().Block(
 				jen.Defer().Close(jen.Id("out")),
 				jen.Defer().Close(jen.Id("watcherDone")),
+				// Emit planned metadata upfront. Decoupled from onTick so
+				// the routing decision is observable even when BAML
+				// completes synchronously without firing onTick.
+				jen.Id("emitPlanned").Call(),
 				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 					jen.Func().Params(jen.Id("err").Error()).Block(
 						jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
