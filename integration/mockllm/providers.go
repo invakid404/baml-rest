@@ -112,8 +112,10 @@ func (p *AnthropicProvider) FormatChunk(content string, index int) string {
 		// First chunk: send message_start + content_block_start + first delta.
 		// The prologue is emitted unconditionally even when content is empty —
 		// the delta simply carries an empty "text" field in that case.
+		// usage is required by AnthropicMessageResponse on every BAML version;
+		// see the comment on AnthropicMessageStart for the per-version impact.
 		start := `event: message_start` + "\n" +
-			`data: {"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","content":[],"model":"test-model"}}` + "\n\n"
+			`data: {"type":"message_start","message":{"id":"msg-test","type":"message","role":"assistant","content":[],"model":"test-model","usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n"
 		blockStart := `event: content_block_start` + "\n" +
 			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n"
 		delta := map[string]any{
@@ -143,8 +145,13 @@ func (p *AnthropicProvider) FormatFinalChunk(index int) string {
 	return "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
 }
 
+// FormatDone matches the usage shape on AnthropicMessageStop: AnthropicUsage
+// requires both input_tokens and output_tokens (non-optional u64), so omitting
+// either makes message_delta deserialization fail on pre-0.218 BAML runtimes
+// and surfaces as a "Stream ended prematurely" timeout. See AnthropicMessageStop
+// for the full per-version analysis.
 func (p *AnthropicProvider) FormatDone() string {
-	return "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n" +
+	return "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":10}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 }
 
