@@ -3188,8 +3188,12 @@ func TestCallStreamSilentLegacyGetsKilled(t *testing.T) {
 	<-checkerDone
 
 	// Drain the stream so the CallStream goroutine finishes — the pool
-	// restarts the hung worker and propagates the error.
-	for range results {
+	// restarts the hung worker and propagates the error. Each result
+	// must be released back to the pool (CodeRabbit verdict-21 finding
+	// 9): pool/pool.go:1487-1493 transfers ownership to the consumer
+	// on send, so a blind drain leaks pooled StreamResult objects.
+	for r := range results {
+		workerplugin.ReleaseStreamResult(r)
 	}
 }
 
@@ -3286,7 +3290,10 @@ func TestCallStreamPlannedMetadataDoesNotDisableHungDetection(t *testing.T) {
 	close(stopChecker)
 	<-checkerDone
 
-	for range results {
+	// Drain + release pooled results — see drain at pool_test.go:3192
+	// for rationale (CodeRabbit verdict-21 finding 9).
+	for r := range results {
+		workerplugin.ReleaseStreamResult(r)
 	}
 }
 

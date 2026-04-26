@@ -2,6 +2,7 @@ package buildrequest
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -1177,6 +1178,15 @@ func invalidStartOverrides() []struct {
 		{"boolean true", true},
 		{"slice", []any{1, 2}},
 		{"map", map[string]any{"x": 1}},
+		// CodeRabbit verdict-21 finding 11: align this metadata-side
+		// table with the resolver-side rejection matrix
+		// (resolver_test.go:912-920) — unsigned ints and json.Number
+		// must surface the same canonical
+		// PathReasonInvalidRoundRobinStartOverride classification, not
+		// silently fall back through.
+		{"uint", uint(1)},
+		{"json.Number numeric", json.Number("5")},
+		{"json.Number malformed", json.Number("abc")},
 	}
 }
 

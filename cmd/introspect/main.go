@@ -1705,9 +1705,18 @@ func extractStrategyStatement(line string) string {
 // extractRoundRobinStart scans a line (or split inline segment) for a
 // `start N` statement from a baml-roundrobin client's options block and
 // returns the parsed integer. Returns ok=false when no such statement
-// exists or the value is not a valid integer — malformed input is
-// silently ignored so that a bad `start` value falls back to the random
-// seed rather than erroring out codegen.
+// exists or the value is not a valid i32 — malformed or out-of-range
+// input is silently ignored so that a bad `start` value falls back to
+// the random seed rather than erroring out codegen.
+//
+// CodeRabbit verdict-21 finding 7: parses with bit width 32 so values
+// outside [math.MinInt32, math.MaxInt32] are rejected here too. The
+// runtime override path (resolver.inspectStartOverride) already
+// rejects out-of-i32 ints to mirror BAML's `ensure_int` parse::<i32>()
+// contract; aligning the introspected parser keeps both code paths in
+// agreement and avoids a 64-bit-platform-only divergence where a
+// statically-declared start value would survive codegen and then be
+// silently wrapped by BAML's `start as usize` cast.
 func extractRoundRobinStart(line string) (int, bool) {
 	for _, stmt := range splitInlineStatements(line) {
 		trimmed := strings.TrimSpace(stripInlineComment(stmt))
@@ -1718,11 +1727,11 @@ func extractRoundRobinStart(line string) (int, bool) {
 		if raw == "" {
 			continue
 		}
-		v, err := strconv.Atoi(raw)
+		v, err := strconv.ParseInt(raw, 10, 32)
 		if err != nil {
 			continue
 		}
-		return v, true
+		return int(v), true
 	}
 	return 0, false
 }

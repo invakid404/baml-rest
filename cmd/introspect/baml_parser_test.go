@@ -1276,6 +1276,39 @@ func TestParseClientBlock_RoundRobinStart_InvalidIgnored(t *testing.T) {
 	}
 }
 
+// TestParseClientBlock_RoundRobinStart_OutOfI32Ignored pins CodeRabbit
+// verdict-21 finding 7: extractRoundRobinStart now parses with bit
+// width 32 so values that fit in a Go int on a 64-bit platform but not
+// in BAML's i32 contract are rejected by the introspector — same
+// behaviour as the runtime override path's inspectStartOverride. Pre-
+// fix `strconv.Atoi` accepted these on 64-bit hosts and codegen would
+// emit them; BAML's `start as usize` cast then wrapped them silently.
+func TestParseClientBlock_RoundRobinStart_OutOfI32Ignored(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"one above MaxInt32", "2147483648"},
+		{"one below MinInt32", "-2147483649"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newTestBamlConfig()
+			block := []string{
+				"provider baml-roundrobin",
+				"options {",
+				"    strategy [A, B]",
+				"    start " + tc.raw,
+				"}",
+			}
+			parseClientBlock(cfg, "RR", block)
+			if v, ok := cfg.roundRobinStart["RR"]; ok {
+				t.Fatalf("out-of-i32 start %q should be ignored, got entry %d", tc.raw, v)
+			}
+		})
+	}
+}
+
 // TestCanonicaliseProvider_FoldsAliases verifies the introspector
 // folds BAML's strategy aliases — both round-robin and fallback —
 // onto canonical baml-rest spellings. PR #192 cold-review-2 finding 2:

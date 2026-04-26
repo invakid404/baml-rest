@@ -2690,17 +2690,47 @@ func generate(opts Options) {
 			// __effective unconditionally collapses the branching and
 			// fixes both paths. __rrInfo is copied in afterwards; it's
 			// nil on the non-RR and legacy-only-adapter paths.
+			// Mode-aware predicate selection (CodeRabbit verdict-21
+			// finding 3): the legacy metadata plan classifies the
+			// request's provider against either the stream support
+			// table or the call support table. For call modes that
+			// reach final legacy *without* a stream bridge having
+			// re-resolved them (hasBuildRequest=false) the metadata
+			// reason should reflect the call-side classification —
+			// otherwise BAML_REST_DISABLE_CALL_BUILD_REQUEST or the
+			// debug BAML_REST_CALL_UNSUPPORTED_PROVIDERS flag can
+			// produce a too-optimistic PathReason. When a stream
+			// bridge exists every call-mode fallthrough has already
+			// been gated on IsProviderSupported, so the stream
+			// predicate is the correct one. Stream modes always use
+			// the stream predicate.
+			func() jen.Code {
+				if hasBuildRequest {
+					return jen.Id("__legacyPredicate").Op(":=").Qual(common.BuildRequestPkg, "IsProviderSupported")
+				}
+				return jen.Id("__legacyPredicate").Op(":=").Qual(common.BuildRequestPkg, "IsProviderSupported")
+			}(),
+			func() jen.Code {
+				if hasBuildRequest {
+					// Stream bridge present — the predicate above is
+					// already the right one. Emit a no-op so the
+					// generated code stays linear.
+					return jen.Null()
+				}
+				return jen.If(
+					jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
+						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw"),
+				).Block(
+					jen.Id("__legacyPredicate").Op("=").Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
+				)
+			}(),
 			jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
 				jen.Id("__reg"),
 				jen.Id("__effective"),
 				jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
 				jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-				// Streaming support check here; call/stream sets are
-				// usually aligned and a mismatch only changes the
-				// reason string, not the routing outcome (always legacy
-				// when we reach this code path).
-				jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
+				jen.Id("__legacyPredicate"),
 				jen.Id("__legacyRetryPolicy"),
 			),
 			jen.Id("__plannedLegacy").Dot("RoundRobin").Op("=").Id("__rrInfo"),

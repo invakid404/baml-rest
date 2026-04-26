@@ -1803,7 +1803,37 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	return p.Close()
 }
 
-// Close immediately shuts down the pool and kills all workers
+// Close immediately shuts down the pool and kills all workers.
+//
+// Contract (CodeRabbit verdict-21 finding 10):
+//
+//   - Cancels the pool-level shutdown context so in-progress health
+//     RPCs abort instead of blocking for their full timeout.
+//   - Closes the drain channel so callers stop waiting on it.
+//   - Snapshots and kills every worker plugin handle (worker
+//     subprocesses).
+//   - Waits on `restartWG` (so any in-flight restart goroutine has
+//     returned) and `p.wg` (which currently tracks only the health
+//     checker goroutine — see pool.go:373/555).
+//   - Closes the SharedStateStore, which only stops the background
+//     sweeper goroutine; remaining map operations stay safe after
+//     Close (workerplugin/sharedstate.go:140).
+//
+// What Close does **not** wait for: in-flight CallStream goroutines
+// (pool.go:1306). These goroutines are not registered with `p.wg` —
+// the design assumes Close is called when the caller wants every
+// worker subprocess killed *now*, not a graceful drain. Use
+// GracefulShutdown for a drain that waits for in-flight requests to
+// finish, then calls Close.
+//
+// Race-safety with concurrent CallStream goroutines:
+// SharedStateStore methods (FetchAdd, DropScope, etc.) remain safe to
+// invoke after Close — Close only closes the sweeper's stopCh; the
+// underlying maps are not invalidated. So a CallStream goroutine
+// that defers DropScope(requestID) is fine even if Close has
+// returned by the time the defer fires. If a future change adds
+// state that *would* be unsafe to access post-Close, this contract
+// will need to change to track CallStream goroutines explicitly.
 func (p *Pool) Close() error {
 	if p == nil {
 		return nil

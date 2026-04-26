@@ -143,20 +143,31 @@ func TestNewCoordinatorWithStarts_NegativeStartClampedToZero(t *testing.T) {
 }
 
 func TestNewCoordinatorWithStarts_UnlistedClientsStayRandom(t *testing.T) {
-	// A seed configured for "Other" must NOT influence "Unlisted". We can't
-	// observe the random seed directly, but we can confirm that Unlisted's
-	// first index is not forced to Other's seed value.
+	// A seed configured for "Other" must NOT influence "Unlisted". With
+	// the injected random source we can assert the precise value an
+	// unlisted client observes — pre-CodeRabbit-verdict-21-finding-5
+	// the test only checked the index range, which a broken
+	// implementation that reused starts["Other"] for every client
+	// would still satisfy for childCount=4. Inject a known seed so the
+	// next-index calculation pins the unlisted client's value
+	// independently of "Other"'s configured seed.
 	c := NewCoordinatorWithStarts(map[string]int{"Other": 3})
+	// Pin the random seed to a value that is NOT 3 modulo 4 — choose
+	// 17 so 17 % 4 = 1, distinct from "Other"'s configured 3.
+	c.SetRandSeedForTest(func() uint32 { return 17 })
 	// Drive "Other" to confirm its seed is honoured first.
 	if got := advance(t, c, "Other", 4); got != 3 {
 		t.Fatalf("Other first: got %d, want 3", got)
 	}
-	// Unlisted takes a random seed; any legal index is acceptable. Asserting
-	// only the bound confirms independence — the deterministic path would
-	// have leaked Other's 3 here if the implementation shared state.
-	got := advance(t, c, "Unlisted", 4)
-	if got < 0 || got >= 4 {
-		t.Fatalf("Unlisted: out of range: %d", got)
+	// Unlisted should observe the injected random seed (17), giving
+	// 17 % 4 == 1 on the first Advance.
+	if got := advance(t, c, "Unlisted", 4); got != 1 {
+		t.Fatalf("Unlisted first: got %d, want 1 (17 %% 4 — injected random seed must override the listed-client default)", got)
+	}
+	// And the unlisted client must keep advancing from the seed rather
+	// than the listed-client's value — second call yields (17+1)%4 = 2.
+	if got := advance(t, c, "Unlisted", 4); got != 2 {
+		t.Fatalf("Unlisted second: got %d, want 2", got)
 	}
 }
 

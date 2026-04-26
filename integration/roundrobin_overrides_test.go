@@ -255,8 +255,20 @@ func TestRoundRobinOverrides_DeterministicStart(t *testing.T) {
 			if selected != "FallbackSecondary" {
 				t.Errorf("Call %d: Selected=%q, want FallbackSecondary (start=1 must be deterministic)", i, selected)
 			}
+			// Fail loudly on missing/malformed RR-Index header rather
+			// than swallowing the parse error and silently using the
+			// zero-value, which would have caused the wrong-index
+			// regression to surface only in the rare case where the
+			// expected index happened to be 0. See CodeRabbit
+			// verdict-21 finding 8.
 			indexStr := resp.Headers.Get(testutil.HeaderBAMLRoundRobinIndex)
-			idx, _ := strconv.Atoi(indexStr)
+			if indexStr == "" {
+				t.Fatalf("Call %d: %s header absent (deterministic start should always emit it)", i, testutil.HeaderBAMLRoundRobinIndex)
+			}
+			idx, err := strconv.Atoi(indexStr)
+			if err != nil {
+				t.Fatalf("Call %d: %s header %q failed to parse as int: %v", i, testutil.HeaderBAMLRoundRobinIndex, indexStr, err)
+			}
 			if idx != 1 {
 				t.Errorf("Call %d: Index=%d, want 1", i, idx)
 			}

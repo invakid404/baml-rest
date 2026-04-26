@@ -784,7 +784,13 @@ func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
 		{"map", map[string]any{"x": 1}},
 		{"nil", nil},
 		// Unsigned integer types — rejected outright per signoff-10
-		// since BAML's Go encoder lacks a uint branch.
+		// since BAML's Go encoder lacks a uint branch. CodeRabbit
+		// verdict-21 finding 6: plain `uint` was missing from the
+		// matrix; included here to pin that the platform-sized
+		// unsigned kind also falls into the default rejection branch
+		// rather than silently accepting via an unintended type
+		// switch case.
+		{"uint", uint(1)},
 		{"uint8", uint8(1)},
 		{"uint16", uint16(1)},
 		{"uint32", uint32(1)},
@@ -903,6 +909,9 @@ func TestInspectStartOverride_AcceptedShapes(t *testing.T) {
 		{"float64 MaxInt32+1", float64(math.MaxInt32) + 1, true, false, 0},
 		{"float64 MinInt32-1", float64(math.MinInt32) - 1, true, false, 0},
 		// Rejected: unsigned types — no upstream encoder branch.
+		// CodeRabbit verdict-21 finding 6: include plain `uint` so the
+		// platform-sized kind is also pinned to rejection.
+		{"uint", uint(5), true, false, 0},
 		{"uint8", uint8(5), true, false, 0},
 		{"uint16", uint16(5), true, false, 0},
 		{"uint32", uint32(5), true, false, 0},

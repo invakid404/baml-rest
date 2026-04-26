@@ -35,6 +35,14 @@ type Coordinator struct {
 	// BAML `start N` option on a baml-roundrobin client. Clients not in
 	// this map keep the random-seed behaviour.
 	starts map[string]uint64
+	// randSeed produces the initial counter value for a client absent
+	// from `starts`. Production callers leave this nil, in which case
+	// rand.Uint32 from math/rand/v2 supplies the seed (the historical
+	// behaviour). Tests use SetRandSeedForTest to inject a
+	// deterministic source so they can assert that an unlisted client
+	// observes the random seed rather than the configured seed for
+	// some other listed client. See CodeRabbit verdict-21 finding 5.
+	randSeed func() uint32
 }
 
 // NewCoordinator returns a Coordinator with no configured per-client
@@ -117,8 +125,14 @@ func (c *Coordinator) counterFor(clientName string) *atomic.Uint64 {
 	} else {
 		// Seed in a modest range so overflow is not a practical concern
 		// even at sustained high request rates. Upper bits left unused on
-		// purpose.
-		fresh.Store(uint64(rand.Uint32()))
+		// purpose. The injected randSeed seam (test-only; nil in
+		// production) lets the unlisted-clients-stay-random regression
+		// test assert independence from the configured-starts map.
+		seedFn := c.randSeed
+		if seedFn == nil {
+			seedFn = rand.Uint32
+		}
+		fresh.Store(uint64(seedFn()))
 	}
 	actual, _ := c.counters.LoadOrStore(clientName, fresh)
 	return actual.(*atomic.Uint64)
