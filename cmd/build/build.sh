@@ -519,6 +519,19 @@ goimports -w .
 echo "Running adapter (${ADAPTER_VERSION})..."
 go run "${ADAPTER_VERSION}/cmd/main.go"
 
+# Run adapter unit tests against the pinned BAML version. Reaching this
+# point means the adapter source is final: hacks have been applied, the
+# BAML dependency is pinned, the workspace is synced, and the adapter
+# generator has run. Tests run here exercise the exact code that
+# compiles into the worker binary on the next step. Running from the
+# adapter module directory (rather than the workspace root) ensures the
+# tests resolve against the version-pinned BAML in that module's go.mod
+# — running from the root would pick up the wrong version for older
+# adapters. ./... covers both adapter/ and utils/ packages within the
+# adapter module.
+echo "Running adapter unit tests (${ADAPTER_VERSION})..."
+(cd "${ADAPTER_VERSION}" && go test -race -count=1 ./...)
+
 # Build worker binary first (this imports baml and loads the shared library)
 echo "Building worker binary..."
 WORKER_LDFLAGS=""
