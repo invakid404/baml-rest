@@ -282,6 +282,14 @@ type streamWithRawResult struct {
 
 // runStreamWithRaw drives a /stream-with-raw call to completion, returning
 // the accumulated raw snapshots and the final event for caller assertions.
+//
+// The helper enforces that a terminal SSE event (event.IsFinal() == true)
+// was observed before the events channel closed. A missing final is
+// treated as a test failure rather than a silently-truncated stream,
+// since all current callers' assertions assume the stream ran to
+// completion. Without this check, a regression that caused the pipeline
+// to drop the final event would silently skip downstream parseable
+// invariant assertions that gate on result.finalEvent != nil.
 func runStreamWithRaw(t *testing.T, ctx context.Context, opts *testutil.BAMLOptions) streamWithRawResult {
 	t.Helper()
 
@@ -296,6 +304,9 @@ func runStreamWithRaw(t *testing.T, ctx context.Context, opts *testutil.BAMLOpti
 		select {
 		case event, ok := <-events:
 			if !ok {
+				if result.finalEvent == nil {
+					t.Fatalf("stream closed without a terminal SSE event (IsFinal()==true never observed); raw snapshots: %d, data events: %d", len(result.rawSnapshots), len(result.dataEvents))
+				}
 				return result
 			}
 			if event.IsMetadata() {
@@ -367,9 +378,9 @@ func TestStreamWithRaw_AnthropicThinking_DefaultExcludes(t *testing.T) {
 		}
 	}
 
-	if result.finalEvent != nil {
-		assertParsedMessage(t, result.finalEvent.Data, "hello")
-	}
+	// runStreamWithRaw guarantees finalEvent is non-nil (fails the test
+	// otherwise), so this is unconditional.
+	assertParsedMessage(t, result.finalEvent.Data, "hello")
 }
 
 // TestStreamWithRaw_AnthropicThinking_OptInIncludes verifies the opt-in
@@ -438,11 +449,10 @@ func TestStreamWithRaw_AnthropicThinking_OptInIncludes(t *testing.T) {
 		t.Errorf("opt-in stream: expected raw to contain %q somewhere; got snapshots: %v", thinkingOnlyMarker, result.rawSnapshots)
 	}
 
-	if result.finalEvent != nil {
-		// Parseable invariant — even when raw includes thinking, the parsed
-		// data must reflect text only.
-		assertParsedMessage(t, result.finalEvent.Data, "hello")
-	}
+	// Parseable invariant — even when raw includes thinking, the parsed
+	// data must reflect text only. runStreamWithRaw guarantees finalEvent
+	// is non-nil.
+	assertParsedMessage(t, result.finalEvent.Data, "hello")
 }
 
 // TestStreamWithRaw_AnthropicThinking_ParseableInvariant_PerEvent codifies the
