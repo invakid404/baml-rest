@@ -27,6 +27,20 @@ func (f *fakeUnaryCaller) Call(_ context.Context, _ string, _ []byte, _ bamlutil
 	return f.result, f.err
 }
 
+// countingHeadersEmitter wraps the production emitter and records
+// how many times it was called. The wrapped emitter still runs (so
+// real headers land on the ResponseWriter for the value-equality
+// assertions) — only the count is the test-only surface.
+type countingHeadersEmitter struct {
+	calls    int
+	delegate chiHeadersEmitter
+}
+
+func (c *countingHeadersEmitter) emit(w http.ResponseWriter, planned, outcome []byte) {
+	c.calls++
+	c.delegate(w, planned, outcome)
+}
+
 // minimalDynamicInputJSON returns a JSON-encoded DynamicInput that
 // passes Validate() — required so the chi dynamic handler reaches the
 // underlying p.Call and exercises the result/err handling we care
@@ -94,13 +108,17 @@ func TestMakeChiDynamicCallHandler_EmitsHeadersOnError(t *testing.T) {
 		err: errors.New("simulated worker failure"),
 	}
 
-	handler := makeChiDynamicCallHandler(caller, bamlutils.StreamModeCall)
+	emitter := &countingHeadersEmitter{delegate: defaultChiHeadersEmitter}
+	handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, emitter.emit)
 	req := httptest.NewRequest(http.MethodPost, "/call/dynamic", bytes.NewReader(minimalDynamicInputJSON(t)))
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 
 	if rec.Code < 400 {
 		t.Errorf("status code: got %d, want >= 400 (handler must surface the worker error)", rec.Code)
+	}
+	if emitter.calls != 1 {
+		t.Errorf("headers emitter calls: got %d, want 1 (must fire exactly once even on error tail)", emitter.calls)
 	}
 	if got := rec.Header().Get(HeaderBAMLPath); got != "legacy" {
 		t.Errorf("X-BAML-Path: got %q, want legacy", got)
@@ -138,7 +156,8 @@ func TestMakeChiDynamicCallHandler_EmitsHeadersOnSuccess(t *testing.T) {
 		},
 	}
 
-	handler := makeChiDynamicCallHandler(caller, bamlutils.StreamModeCall)
+	emitter := &countingHeadersEmitter{delegate: defaultChiHeadersEmitter}
+	handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, emitter.emit)
 	req := httptest.NewRequest(http.MethodPost, "/call/dynamic", bytes.NewReader(minimalDynamicInputJSON(t)))
 	rec := httptest.NewRecorder()
 	handler(rec, req)
@@ -146,16 +165,17 @@ func TestMakeChiDynamicCallHandler_EmitsHeadersOnSuccess(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("status code: got %d, want 200", rec.Code)
 	}
+	// Headers must fire exactly once on success. The previous test
+	// used Header().Values() to count, but http.Header.Set silently
+	// overwrites — so two Set calls with the same value produced the
+	// same Values() output as one, making the assertion vacuous.
+	// Counting via the injected emitter is the actual exactly-once
+	// guard. See PR #192 verdict-19 follow-up.
+	if emitter.calls != 1 {
+		t.Errorf("headers emitter calls: got %d, want 1", emitter.calls)
+	}
 	if got := rec.Header().Get(HeaderBAMLPath); got != "buildrequest" {
 		t.Errorf("X-BAML-Path: got %q, want buildrequest", got)
-	}
-	// Header is set exactly once even though the success path used to
-	// call setBAMLHeaders below the FlattenDynamicOutput call. The
-	// verdict-18 patch moved the call upfront and removed the trailing
-	// duplicate; pin that here so the duplicate doesn't sneak back via
-	// http.Header.Set's silent overwrite (which would mask a regression).
-	if vals := rec.Header().Values(HeaderBAMLPath); len(vals) != 1 {
-		t.Errorf("X-BAML-Path emitted %d times, want exactly 1: %v", len(vals), vals)
 	}
 }
 
@@ -169,13 +189,17 @@ func TestMakeChiDynamicCallHandler_NoMetadataNoHeaders(t *testing.T) {
 		err:    errors.New("setup failure"),
 	}
 
-	handler := makeChiDynamicCallHandler(caller, bamlutils.StreamModeCall)
+	emitter := &countingHeadersEmitter{delegate: defaultChiHeadersEmitter}
+	handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, emitter.emit)
 	req := httptest.NewRequest(http.MethodPost, "/call/dynamic", bytes.NewReader(minimalDynamicInputJSON(t)))
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 
 	if rec.Code < 400 {
 		t.Errorf("status code: got %d, want >= 400", rec.Code)
+	}
+	if emitter.calls != 0 {
+		t.Errorf("headers emitter calls: got %d, want 0 (must not fire when result is nil)", emitter.calls)
 	}
 	if got := rec.Header().Get(HeaderBAMLPath); got != "" {
 		t.Errorf("X-BAML-Path: got %q, want empty when result is nil", got)

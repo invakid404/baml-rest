@@ -37,6 +37,25 @@ type unaryCaller interface {
 	Call(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (*workerplugin.CallResult, error)
 }
 
+// chiHeadersEmitter is the function-typed seam the chi dynamic call
+// handler uses to publish BAML observability headers from a CallResult's
+// planned/outcome JSON. Extracted so tests can substitute a counting
+// wrapper and verify call frequency (e.g., exactly once on success,
+// once on error tail, zero when no result was produced) — assertions
+// the previous Header().Values()-based test could not actually make,
+// because http.Header.Set silently overwrites on repeat calls. See
+// PR #192 verdict-19 follow-up.
+type chiHeadersEmitter func(w http.ResponseWriter, planned, outcome []byte)
+
+// defaultChiHeadersEmitter is the production header emitter: decodes
+// the JSON-encoded planned/outcome payloads and forwards them to
+// setBAMLHeaders via netHTTPHeaderSetter. Tests inject their own
+// emitter into makeChiDynamicCallHandler instead of swapping this var
+// (avoids the global-mutation race that makes parallel tests unsafe).
+func defaultChiHeadersEmitter(w http.ResponseWriter, planned, outcome []byte) {
+	setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(planned), decodeMetadataJSON(outcome))
+}
+
 // newUnaryServer creates the chi-based unary HTTP server if unaryPort > 0.
 // Returns nil when the unary server is disabled.
 func newUnaryServer(logger zerolog.Logger, workerPool *pool.Pool, methodNames []string, hasDynamicMethod bool) *http.Server {
@@ -176,6 +195,14 @@ func makeChiParseHandler(p *pool.Pool, methodName string) http.HandlerFunc {
 }
 
 func makeChiDynamicCallHandler(p unaryCaller, streamMode bamlutils.StreamMode) http.HandlerFunc {
+	return makeChiDynamicCallHandlerWithEmitter(p, streamMode, defaultChiHeadersEmitter)
+}
+
+// makeChiDynamicCallHandlerWithEmitter is the test-injectable form of
+// makeChiDynamicCallHandler. Production callers go through the
+// default-emitter wrapper above; tests pass a counting wrapper so they
+// can assert how many times the headers seam was invoked.
+func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.StreamMode, emit chiHeadersEmitter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
@@ -210,7 +237,7 @@ func makeChiDynamicCallHandler(p unaryCaller, streamMode bamlutils.StreamMode) h
 		// above and the fiber dynamic handler in cmd/serve/main.go.
 		// See PR #192 verdict-18 follow-up.
 		if result != nil {
-			setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
+			emit(w, result.Planned, result.Outcome)
 		}
 		if err != nil {
 			writeChiWorkerError(w, r, err, "failed to process request")
