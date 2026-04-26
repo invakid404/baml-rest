@@ -9,14 +9,20 @@ package integration
 // StreamConfig/CallConfig → extractors → HTTP envelope — that the unit
 // tests below the orchestrator boundary can't cover end-to-end.
 //
-// Each public scenario is exercised in three flag states:
+// Each public scenario is exercised in two flag states:
 //
 //   - "default" (omitted from the request body) — expected: thinking absent
 //     from raw, matching upstream BAML's RawLLMResponse() text-only contract.
-//   - "explicit_false" — expected: identical to default. Codifies that
-//     setting the field to false must not differ from omitting it.
 //   - "opt_in" (true) — expected: thinking text included in raw, parseable
 //     unchanged.
+//
+// Note on a third state: BamlOptions.IncludeThinkingInRaw is a plain
+// `bool` with `json:"include_thinking_in_raw,omitempty"` on both the
+// testutil and bamlutils sides, so an explicit `false` serializes
+// identically to "field omitted" (Go's omitempty drops zero values).
+// On the worker side, a missing field decodes to the same zero value,
+// so "explicit false" and "default" are not integration-observable as
+// distinct cases — they're treated as the same scenario.
 //
 // A dedicated parseable-invariant test runs the same input through both the
 // default and opt-in flag values and asserts the parsed Data is byte-identical
@@ -93,8 +99,13 @@ func setupAnthropicThinkingScenario(t *testing.T, scenarioID, content, thinking 
 	return opts
 }
 
-// boolPtr returns a pointer to v. Used to disambiguate a missing flag (nil)
-// from an explicitly-set flag (&true / &false) when constructing BamlOptions.
+// boolPtr returns a pointer to v. Used by setupAnthropicThinkingScenario
+// so callers can pass nil to skip the assignment entirely or pass a
+// pointer to opt in. In practice the only meaningful non-nil value is
+// boolPtr(true): boolPtr(false) is observationally equivalent to nil at
+// the JSON wire (omitempty drops false) and at the worker (a missing
+// field decodes to the zero value), so all current callers use either
+// nil or boolPtr(true).
 func boolPtr(v bool) *bool { return &v }
 
 // assertParsedMessage decodes resp.Data and asserts the parsed message matches
