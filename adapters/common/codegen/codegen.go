@@ -3896,9 +3896,11 @@ func generateStreamHelpers(out *jen.File) {
 			// plannedMetadata: pre-built planned-phase Metadata for this request,
 			// or nil to disable metadata emission entirely (tests, mixed-mode
 			// legacy children whose parent orchestrator already emitted
-			// metadata for the chain). The orchestrator emits a planned event
-			// on the first tick (alongside the heartbeat) and an outcome
-			// event via the body's beforeFinal callback.
+			// metadata for the chain). The orchestrator emits the planned
+			// event upfront from the stream goroutine — before BAML's stream
+			// starts — so routing observability does not depend on BAML
+			// firing onTick. The outcome event is emitted later via the
+			// body's beforeFinal callback.
 			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			// newMetadataResult: pool-wraps a Metadata payload as a StreamResult.
 			// Required when plannedMetadata is non-nil.
@@ -3939,9 +3941,9 @@ func generateStreamHelpers(out *jen.File) {
 
 			// emitPlanned sends the planned-metadata event to out exactly
 			// once per orchestrator invocation. Called upfront from the
-			// goroutine below (so emission is guaranteed) and as a
-			// fallback path from inside body for callers that build the
-			// goroutine themselves. plannedSent CAS guarantees idempotency.
+			// stream goroutine below, before body() runs BAML's stream,
+			// so emission is guaranteed regardless of whether BAML fires
+			// onTick. plannedSent CAS guarantees idempotency.
 			jen.Id("emitPlanned").Op(":=").Func().Params().Block(
 				jen.If(jen.Id("plannedMetadata").Op("==").Nil().Op("||").Id("newMetadataResult").Op("==").Nil()).Block(jen.Return()),
 				jen.If(jen.Op("!").Id("plannedSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(jen.Return()),
@@ -4080,9 +4082,11 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("release").Func().Params(streamResultIface.Clone()),
 			// plannedMetadata: pre-built planned-phase Metadata for this request,
 			// or nil to disable metadata emission entirely. The orchestrator
-			// emits a planned event on the first tick (alongside the heartbeat)
-			// and an outcome event just before the final result. Both events
-			// are constructed from this seed via newMetadataResult.
+			// emits the planned event upfront from the stream-drain goroutine
+			// — before driveStream starts BAML's stream — so routing
+			// observability does not depend on BAML firing onTick. The
+			// outcome event is emitted just before the final result. Both
+			// events are constructed from this seed via newMetadataResult.
 			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			// newMetadataResult: pool-wraps a Metadata payload as a StreamResult.
 			// Required when plannedMetadata is non-nil.
