@@ -151,11 +151,29 @@ type ClientRegistry struct {
 }
 
 // ClientProperty defines a client configuration.
+//
+// Provider is a *string so test cases can faithfully express the
+// three presence states the server distinguishes: nil (key omitted),
+// pointer-to-empty (key present, value ""), pointer-to-non-empty
+// (key present with a real value). The plain-string Provider that
+// preceded this could not represent the omitted state — encoding/json
+// emitted `"provider":""` even when the test struct left it
+// zero-valued — and that turned every presence-only RR override into
+// a present-empty entry on the server, defeating the cold-review-3
+// signoff-10 strategy-parent drop. See PR #192 verdict-13 follow-up.
 type ClientProperty struct {
 	Name        string         `json:"name"`
-	Provider    string         `json:"provider"`
+	Provider    *string        `json:"provider,omitempty"`
 	RetryPolicy *string        `json:"retry_policy,omitempty"`
 	Options     map[string]any `json:"options,omitempty"`
+}
+
+// StringPtr returns a pointer to s. Test convenience for the
+// pointer-typed fields on ClientProperty / ClientRegistry; lets test
+// fixtures express `Provider: testutil.StringPtr("openai")` without
+// each caller declaring its own helper or local variable.
+func StringPtr(s string) *string {
+	return &s
 }
 
 // TypeBuilder allows injecting dynamic types.
@@ -971,7 +989,7 @@ func CreateTestClient(mockLLMURL string, scenarioID string) *ClientRegistry {
 		Clients: []*ClientProperty{
 			{
 				Name:     "TestClient",
-				Provider: "openai",
+				Provider: StringPtr("openai"),
 				Options: map[string]any{
 					"model":    scenarioID,
 					"base_url": mockLLMURL,

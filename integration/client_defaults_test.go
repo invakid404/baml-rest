@@ -86,7 +86,7 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 			Clients: []*testutil.ClientProperty{
 				{
 					Name:     "TestClient",
-					Provider: "openai-generic",
+					Provider: testutil.StringPtr("openai-generic"),
 					Options: map[string]any{
 						"model":    scenarioID,
 						"base_url": env.MockLLMInternal,
@@ -150,7 +150,7 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 			Clients: []*testutil.ClientProperty{
 				{
 					Name:     "TestClient",
-					Provider: "openai-generic",
+					Provider: testutil.StringPtr("openai-generic"),
 					Options: map[string]any{
 						"model":    scenarioID,
 						"base_url": TestEnv.MockLLMInternal,

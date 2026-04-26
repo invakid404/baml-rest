@@ -160,7 +160,7 @@ func TestRoundRobinOverrides_CanonicalSpellingTranslation(t *testing.T) {
 					Clients: []*testutil.ClientProperty{
 						{
 							Name:     "TestRoundRobinPair",
-							Provider: "baml-roundrobin", // canonical baml-rest spelling
+							Provider: testutil.StringPtr("baml-roundrobin"), // canonical baml-rest spelling
 							Options: map[string]any{
 								"strategy": []any{"FallbackPrimary", "FallbackSecondary"},
 							},
