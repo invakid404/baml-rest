@@ -185,7 +185,21 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 		}
 	}
 
-	if clientRegistry.Primary != nil {
+	// Empty-primary guard (CodeRabbit verdict-31 finding F1): treat
+	// `Primary != nil && *Primary == ""` the same as `Primary == nil`.
+	// BAML's Go ClientRegistry stores the empty string verbatim and
+	// the Rust runtime then fails on PromptRenderer's lookup ("client
+	// not found: '"). Most baml-rest helpers already treat empty
+	// primary as no-op; the adapter was the outlier. Forwarding ""
+	// to BAML would also break operator API contracts that allow
+	// `"primary": ""` to mean "no override" — the field is a *string
+	// and dynamic validation only checks pointer presence
+	// (bamlutils/dynamic.go:332-334).
+	//
+	// Cache-clearing above (b.clientRegistryProvider = "") still runs
+	// because a non-nil registry — empty primary or not — must reset
+	// stale provider state from the previous call.
+	if clientRegistry.Primary != nil && *clientRegistry.Primary != "" {
 		// Set Primary on both views. The operator-supplied primary
 		// stays meaningful in either path — BuildRequest reads through
 		// adapter shortcuts; legacy passes the registry to BAML which

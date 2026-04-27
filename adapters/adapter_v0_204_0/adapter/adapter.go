@@ -134,7 +134,13 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 		}
 	}
 
-	if clientRegistry.Primary != nil {
+	// Empty-primary guard (CodeRabbit verdict-31 finding F1): treat
+	// `Primary != nil && *Primary == ""` the same as `Primary == nil`.
+	// See v0.219 adapter for the full rationale — BAML's runtime
+	// stores "" verbatim and PromptRenderer fails on the empty-name
+	// lookup. Cache-clearing earlier in SetClientRegistry still runs
+	// because a non-nil registry must reset stale provider state.
+	if clientRegistry.Primary != nil && *clientRegistry.Primary != "" {
 		b.ClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
 		b.LegacyClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
 		// Primary cache: skip runtime entries that BOTH views drop

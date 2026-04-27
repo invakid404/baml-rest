@@ -630,3 +630,57 @@ func TestSetClientRegistry_DualViewPrimaryCacheUnderExplicitParent(t *testing.T)
 		t.Errorf("ClientRegistryProvider(): got %q, want baml-fallback (operator runtime override must win over introspected)", got)
 	}
 }
+
+// TestSetClientRegistry_PresentEmptyPrimaryIsNoOp pins CodeRabbit
+// verdict-31 finding F1: a runtime client_registry payload that
+// supplies `"primary": ""` (Primary != nil but *Primary == "") must
+// NOT propagate the empty string to BAML's registry. BAML stores ""
+// verbatim and PromptRenderer fails on the resulting empty-name
+// lookup. Most baml-rest helpers already treat empty primary as a
+// no-op; the adapter was the outlier.
+//
+// The test runs SetClientRegistry twice: first with a real primary
+// (cache populated, primary forwarded), then with present-empty
+// primary on the same adapter. The second call must clear the cache
+// (no stale provider leakage) AND must not invoke SetPrimaryClient
+// or synthesize an empty-named ClientProperty.
+func TestSetClientRegistry_PresentEmptyPrimaryIsNoOp(t *testing.T) {
+	a := &BamlAdapter{
+		Context: context.Background(),
+		IntrospectedClientProvider: map[string]string{
+			"GoodClient": "openai",
+		},
+	}
+
+	// Step 1: prime the cache via a normal primary so we can verify
+	// it gets cleared by the present-empty call.
+	primed := "GoodClient"
+	if err := a.SetClientRegistry(&bamlutils.ClientRegistry{
+		Primary: &primed,
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "GoodClient", Provider: "openai"},
+		},
+	}); err != nil {
+		t.Fatalf("priming SetClientRegistry: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "openai" {
+		t.Fatalf("priming setup wrong: ClientRegistryProvider() = %q, want openai", got)
+	}
+
+	// Step 2: present-empty primary. Must clear cache, no synthesis,
+	// no SetPrimaryClient propagation.
+	empty := ""
+	if err := a.SetClientRegistry(&bamlutils.ClientRegistry{
+		Primary: &empty,
+		Clients: nil,
+	}); err != nil {
+		t.Fatalf("present-empty primary SetClientRegistry: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "" {
+		t.Errorf("present-empty primary leaked stale provider: ClientRegistryProvider() = %q, want \"\"", got)
+	}
+	// Sanity: original is preserved verbatim (caller's contract).
+	if orig := a.OriginalClientRegistry(); orig == nil || orig.Primary == nil || *orig.Primary != "" {
+		t.Errorf("OriginalClientRegistry should preserve the present-empty primary verbatim; got %+v", orig)
+	}
+}

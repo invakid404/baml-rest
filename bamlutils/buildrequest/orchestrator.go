@@ -1150,12 +1150,18 @@ func ResolveRetryPolicy(
 
 	// 2. Client-level retry_policy from runtime client_registry.
 	if reg := adapter.OriginalClientRegistry(); reg != nil {
-		// When primary is set, only check the primary client's retry_policy.
-		// Do NOT fall through to the default client — the primary client
-		// is the one actually being used for streaming, so inheriting a
-		// different client's retry policy would be incorrect. If the primary
-		// has no retry_policy, skip straight to the introspected default.
-		if reg.Primary != nil {
+		// When primary is set (and non-empty), only check the primary
+		// client's retry_policy. Do NOT fall through to the default
+		// client — the primary client is the one actually being used
+		// for streaming, so inheriting a different client's retry
+		// policy would be incorrect. If the primary has no
+		// retry_policy, skip straight to the introspected default.
+		// CodeRabbit verdict-31 finding F1: treat present-empty
+		// primary the same as nil here (matching the adapter
+		// SetClientRegistry guard) so the function's default client
+		// retry policy is consulted rather than skipped on a no-op
+		// `"primary": ""` payload.
+		if reg.Primary != nil && *reg.Primary != "" {
 			for _, client := range reg.Clients {
 				if client == nil {
 					continue

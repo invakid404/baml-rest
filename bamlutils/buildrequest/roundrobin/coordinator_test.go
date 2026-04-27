@@ -129,9 +129,17 @@ func TestAdvanceDynamic_WithinBounds(t *testing.T) {
 	}
 }
 
-func TestAdvanceDynamic_ZeroReturnsZero(t *testing.T) {
-	if got := AdvanceDynamic(0); got != 0 {
-		t.Fatalf("expected 0, got %d", got)
+// TestAdvanceDynamic_NonPositiveReturnsZero pins the documented
+// non-positive contract (coordinator.go:147-152): childCount of 0,
+// negative, or any value <= 0 must yield 0 without panicking. The
+// previous test only covered 0; CodeRabbit verdict-31 finding F2
+// expanded this so an off-by-one regression that only handled the
+// zero case (or, conversely, only the negative case) would surface.
+func TestAdvanceDynamic_NonPositiveReturnsZero(t *testing.T) {
+	for _, k := range []int{0, -1, -100} {
+		if got := AdvanceDynamic(k); got != 0 {
+			t.Errorf("AdvanceDynamic(%d) = %d, want 0", k, got)
+		}
 	}
 }
 

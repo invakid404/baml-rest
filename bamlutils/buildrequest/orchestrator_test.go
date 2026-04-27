@@ -245,17 +245,39 @@ func TestRunStreamOrchestration_HTTPError(t *testing.T) {
 }
 
 func TestRunStreamOrchestration_WithRetry(t *testing.T) {
+	// Models a partial response that streamed content before failing
+	// validation mid-stream — the realistic scenario the retry-boundary
+	// reset marker is for. Each failing attempt emits one valid SSE
+	// delta (so trySendPartial fires and sawStreamFrame=true) with
+	// content "stale"; parseFinal rejects "stale" and the attempt
+	// errors out. The third attempt streams "ok" which parseFinal
+	// accepts.
+	//
+	// Pre-verdict-30 F5 the test used a 500 before any byte and
+	// asserted resets fired regardless of whether anything streamed —
+	// that contradicted the new gating where reset markers only fire
+	// when there's actual partial state for the next window to clear.
+	// Reshaping the server makes the test correctly model "two failing
+	// windows that DID emit partials, retried; reset must fire each
+	// time" rather than papering over the no-byte case.
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)
-		if n < 3 {
-			w.WriteHeader(500)
-			fmt.Fprint(w, "internal error")
-			return
-		}
+		flusher, _ := w.(http.Flusher)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
+		if n < 3 {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
@@ -273,13 +295,20 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 		},
 	}
 
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		if s == "stale" {
+			return nil, fmt.Errorf("rejected stale content")
+		}
+		return s, nil
+	}
+
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
 		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
-		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
+		parseFinal,
 		newTestResult,
 	)
 	close(out)
@@ -292,7 +321,9 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 		t.Errorf("expected 3 attempts, got %d", attempts.Load())
 	}
 
-	// Should have reset signals from retries
+	// Should have reset signals from retries — each failing attempt
+	// queued a partial frame before erroring out, so sawStreamFrame
+	// was true when the retry callback fired.
 	var resets, finals int
 	for r := range out {
 		tr := r.(*testResult)
@@ -305,7 +336,7 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 	}
 
 	if resets < 2 {
-		t.Errorf("expected at least 2 reset signals (for 2 retries), got %d", resets)
+		t.Errorf("expected at least 2 reset signals (for 2 retries that streamed before failing), got %d", resets)
 	}
 	if finals != 1 {
 		t.Errorf("expected 1 final, got %d", finals)

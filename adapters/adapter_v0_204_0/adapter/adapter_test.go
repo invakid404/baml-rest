@@ -355,3 +355,42 @@ func TestSetClientRegistry_DualViewPrimaryCacheUnderExplicitParent(t *testing.T)
 		t.Errorf("ClientRegistryProvider(): got %q, want baml-fallback (operator runtime override must win over introspected)", got)
 	}
 }
+
+// TestSetClientRegistry_PresentEmptyPrimaryIsNoOp mirrors the v0.219
+// regression test for CodeRabbit verdict-31 finding F1. See the
+// v0.219 sibling for the full rationale; same shape applies here.
+func TestSetClientRegistry_PresentEmptyPrimaryIsNoOp(t *testing.T) {
+	a := &BamlAdapter{
+		Context: context.Background(),
+		IntrospectedClientProvider: map[string]string{
+			"GoodClient": "openai",
+		},
+	}
+
+	primed := "GoodClient"
+	if err := a.SetClientRegistry(&bamlutils.ClientRegistry{
+		Primary: &primed,
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "GoodClient", Provider: "openai"},
+		},
+	}); err != nil {
+		t.Fatalf("priming SetClientRegistry: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "openai" {
+		t.Fatalf("priming setup wrong: ClientRegistryProvider() = %q, want openai", got)
+	}
+
+	empty := ""
+	if err := a.SetClientRegistry(&bamlutils.ClientRegistry{
+		Primary: &empty,
+		Clients: nil,
+	}); err != nil {
+		t.Fatalf("present-empty primary SetClientRegistry: unexpected error: %v", err)
+	}
+	if got := a.ClientRegistryProvider(); got != "" {
+		t.Errorf("present-empty primary leaked stale provider: ClientRegistryProvider() = %q, want \"\"", got)
+	}
+	if orig := a.OriginalClientRegistry(); orig == nil || orig.Primary == nil || *orig.Primary != "" {
+		t.Errorf("OriginalClientRegistry should preserve the present-empty primary verbatim; got %+v", orig)
+	}
+}
