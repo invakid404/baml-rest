@@ -80,16 +80,19 @@ type idemEntry struct {
 // a second time — exactly the race the cache exists to prevent.
 //
 // deleted is set (under mu) the moment the sweeper or DropScope commits
-// to removing this scope. It plugs a race where a touchScope holder had
-// already loaded the scope pointer and stored a fresh lastAccessed but
-// was then blocked on the mutex while sweep proceeded past its atomic
-// recheck. Post-mutex, touchScope sees deleted=true and restarts with a
-// fresh LoadOrStore; this forces a fresh scope from s.scopes rather than
-// mutating the orphan the sweeper is about to discard. Without the flag,
-// a window existed where touchScope could add keys to a scope that had
-// already been removed from s.scopes, leaving the idem entry dangling
-// and causing the next FetchAdd for the same op_id to re-advance the
-// counter.
+// to removing this scope. It plugs a race where a registerAndLoadIdem
+// caller had already loaded the scope pointer and stored a fresh
+// lastAccessed but was then blocked on the mutex while sweep proceeded
+// past its atomic recheck. Post-mutex, registerAndLoadIdem sees
+// deleted=true and restarts with a fresh LoadOrStore; this forces a
+// fresh scope from s.scopes rather than mutating the orphan the sweeper
+// is about to discard. Without the flag, a window existed where the
+// caller could add keys + idem entries to a scope that had already been
+// removed from s.scopes, leaving the idem entry dangling and causing
+// the next FetchAdd for the same op_id to re-advance the counter.
+// The full lock protocol — attach scope, recheck deleted, register key,
+// create or load idem under the same sc.mu — is documented at
+// registerAndLoadIdem (~line 170).
 //
 // atomic.Int64/Bool avoid per-call mutex cost for the hot-path fields.
 // UnixNano is monotonic-enough for the "age > cutoff" comparisons here;
@@ -332,11 +335,15 @@ func (s *SharedStateStore) sweeper() {
 // The deletions — s.scopes.Delete, marking deleted=true, and clearing
 // the idem entries — all happen under the scope mutex. Holding the
 // mutex across the full commit is what closes the race where a
-// concurrent touchScope, having already captured the scope pointer,
-// would otherwise store a fresh lastAccessed and add a new key to a
-// scope that's about to be removed from s.scopes. With the mutex held,
-// any such touchScope blocks, acquires the mutex after sweep unlocks,
-// sees deleted=true, and retries with a fresh LoadOrStore.
+// concurrent registerAndLoadIdem, having already captured the scope
+// pointer, would otherwise store a fresh lastAccessed and add a new
+// key + idem entry to a scope that's about to be removed from s.scopes.
+// With the mutex held, any such call blocks, acquires the mutex after
+// sweep unlocks, sees deleted=true on its post-Lock check (~line 247
+// in registerAndLoadIdem), and retries with a fresh LoadOrStore.
+// The current end-to-end lock protocol — store lastAccessedNano, lock
+// sc.mu, check deleted, register key, create/load idem under that
+// same lock — is documented at registerAndLoadIdem (~line 170).
 func (s *SharedStateStore) sweepOnce(now time.Time) {
 	cutoffNano := now.Add(-s.ttl).UnixNano()
 	s.scopes.Range(func(k, v any) bool {
@@ -348,19 +355,20 @@ func (s *SharedStateStore) sweepOnce(now time.Time) {
 			return true
 		}
 		sc.mu.Lock()
-		// Recheck under the lock. A touchScope whose atomic Store
-		// landed between the pre-check above and here will make this
-		// check pass, and we bail without evicting.
+		// Recheck under the lock. A registerAndLoadIdem caller whose
+		// atomic Store on lastAccessedNano landed between the pre-check
+		// above and here will make this check pass, and we bail without
+		// evicting.
 		if sc.lastAccessedNano.Load() >= cutoffNano {
 			sc.mu.Unlock()
 			return true
 		}
 		opID := k.(string)
-		// Mark and remove atomically with respect to touchScope. A
-		// concurrent touchScope either ran entirely before this mark
-		// (and kept the scope alive via the recheck above) or runs
-		// entirely after and observes deleted=true on its post-Lock
-		// check, restarting with a fresh scope.
+		// Mark and remove atomically with respect to registerAndLoadIdem.
+		// A concurrent caller either ran entirely before this mark (and
+		// kept the scope alive via the recheck above) or runs entirely
+		// after and observes deleted=true on its post-Lock check,
+		// restarting with a fresh scope.
 		sc.deleted.Store(true)
 		s.scopes.Delete(opID)
 		for kk := range sc.keys {

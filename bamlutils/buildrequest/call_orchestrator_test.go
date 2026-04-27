@@ -441,7 +441,7 @@ func TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testi
 	}
 
 	close(out)
-	planned, outcome, kinds := collectMetadata(t, out)
+	planned, outcome, kinds, _ := collectMetadata(t, out)
 	if planned == nil {
 		t.Fatalf("expected one planned metadata result before validation error; got kinds=%v", kinds)
 	}

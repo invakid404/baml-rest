@@ -109,6 +109,15 @@ func TestParseStrategyOption_BracketedString_RequiresBrackets(t *testing.T) {
 		{"strategy prefix only", "strategy "},
 		{"token adjacent to brackets on wrong side", "ClientA ["},
 		{"bracket in middle only", "Client[A]"},
+		// CodeRabbit verdict-30 finding F8: previously the parser
+		// only checked first/last byte for brackets, so trailing
+		// junk after a complete bracketed list, an inner closing
+		// bracket, or doubled brackets were silently accepted and
+		// produced bogus tokens. Reject all three shapes.
+		{"trailing junk after closing bracket", "strategy [A] junk ]"},
+		{"two adjacent bracketed lists", "[A] [B]"},
+		{"doubled opening + closing brackets", "[[A]]"},
+		{"trailing junk no terminating bracket", "[A] junk"},
 		// Empty strategy arrays: BAML upstream's ensure_strategy
 		// errors with "strategy must not be empty" — mirror that by
 		// treating empty arrays as non-overrides rather than

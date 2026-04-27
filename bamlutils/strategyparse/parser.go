@@ -120,6 +120,21 @@ func parseBracketedString(s string) []string {
 	if len(s) < 2 || s[0] != '[' || s[len(s)-1] != ']' {
 		return nil
 	}
+	// Reject malformed forms that the first/last byte check would
+	// otherwise accept (CodeRabbit verdict-30 finding F8): a closing
+	// bracket anywhere before the final byte means the input has
+	// trailing junk after a complete bracketed list (e.g.
+	// "[A] junk ]" or "[A] [B]"), and an extra opening bracket after
+	// the first one means the input is doubly-bracketed (e.g.
+	// "[[A]]"). Both are silently parsed as bogus tokens by the
+	// permissive scan below — better to reject them outright so the
+	// caller falls through to the introspected chain.
+	if strings.IndexByte(s[1:len(s)-1], ']') >= 0 {
+		return nil
+	}
+	if strings.IndexByte(s[1:], '[') >= 0 {
+		return nil
+	}
 	s = s[1 : len(s)-1]
 	parts := strings.FieldsFunc(s, func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t' || r == '\n'

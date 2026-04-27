@@ -87,15 +87,32 @@ func TestAdvance_ConcurrentUsageDoesNotSkipOrDuplicate(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	// Every child should be hit roughly n/childCount times. For n=1000 and
-	// childCount=7, each count should be 142 or 143. The looser bound below
-	// just confirms nothing got silently dropped (total == n) and every
-	// child received at least one hit (no starvation).
+	// Bucket-bounds invariant (CodeRabbit verdict-30 finding F6): with
+	// the deterministic primed first call plus n-1 concurrent advances
+	// over childCount children, every bucket must hold either floor(n/k)
+	// or ceil(n/k) hits — atomic increments preserve total ordering on
+	// the counter regardless of goroutine interleaving, so the modular
+	// distribution is exact, not "roughly". For n=1000 and k=7 that's
+	// 142 or 143.
+	//
+	// The previous looser assertion (total==n + cnt>0) accepted any
+	// distribution that touched every bucket and preserved total —
+	// including badly-skewed ones a broken modulo / ordering bug
+	// could produce. The strict bounds catch that; total stays as a
+	// safety net for "counter lost updates" regressions.
 	total := 0
+	floor := n / childCount
+	ceil := floor
+	if n%childCount != 0 {
+		ceil = floor + 1
+	}
 	for i, cnt := range counts {
 		total += cnt
 		if cnt == 0 {
 			t.Errorf("child %d never picked", i)
+		}
+		if cnt != floor && cnt != ceil {
+			t.Errorf("child %d: count %d not in {%d, %d} (per-bucket invariant for n=%d, childCount=%d)", i, cnt, floor, ceil, n, childCount)
 		}
 	}
 	if total != n {

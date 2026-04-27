@@ -15,7 +15,7 @@ func newTestMetadataResult(md *bamlutils.Metadata) bamlutils.StreamResult {
 	return &testResult{kind: bamlutils.StreamResultKindMetadata, metadata: md}
 }
 
-func collectMetadata(t *testing.T, ch <-chan bamlutils.StreamResult) (planned, outcome *bamlutils.Metadata, allKinds []bamlutils.StreamResultKind) {
+func collectMetadata(t *testing.T, ch <-chan bamlutils.StreamResult) (planned, outcome *bamlutils.Metadata, allKinds []bamlutils.StreamResultKind, metadataPhases []bamlutils.MetadataPhase) {
 	t.Helper()
 	for r := range ch {
 		allKinds = append(allKinds, r.Kind())
@@ -24,6 +24,14 @@ func collectMetadata(t *testing.T, ch <-chan bamlutils.StreamResult) (planned, o
 			if md == nil {
 				t.Fatalf("metadata kind without payload")
 			}
+			// metadataPhases preserves the in-channel ORDER of the
+			// metadata events so callers can assert "planned came
+			// first". Without this the prior phase-bucketed return
+			// (planned, outcome) hid event order — a regression that
+			// emitted outcome before planned could still satisfy
+			// `kinds[0] == Metadata` and `planned != nil`. CodeRabbit
+			// verdict-30 finding F3.
+			metadataPhases = append(metadataPhases, md.Phase)
 			switch md.Phase {
 			case bamlutils.MetadataPhasePlanned:
 				if planned != nil {
@@ -40,7 +48,7 @@ func collectMetadata(t *testing.T, ch <-chan bamlutils.StreamResult) (planned, o
 			}
 		}
 	}
-	return planned, outcome, allKinds
+	return planned, outcome, allKinds, metadataPhases
 }
 
 // TestRunStreamOrchestration_EmitsPlannedFirstThenHeartbeat verifies the
@@ -91,7 +99,7 @@ func TestRunStreamOrchestration_EmitsPlannedFirstThenHeartbeat(t *testing.T) {
 	}
 	close(out)
 
-	planned, outcome, kinds := collectMetadata(t, out)
+	planned, outcome, kinds, metadataPhases := collectMetadata(t, out)
 	if planned == nil {
 		t.Fatalf("expected planned metadata to be emitted")
 	}
@@ -109,6 +117,13 @@ func TestRunStreamOrchestration_EmitsPlannedFirstThenHeartbeat(t *testing.T) {
 	}
 	if kinds[1] != bamlutils.StreamResultKindHeartbeat {
 		t.Errorf("second event should be heartbeat; got kind %d", kinds[1])
+	}
+	// CR verdict-30 F3: pin that the FIRST metadata payload was
+	// MetadataPhasePlanned, not just "some metadata kind first". A
+	// regression that swapped planned/outcome emission order would
+	// still satisfy `kinds[0] == Metadata` but flunk this check.
+	if len(metadataPhases) == 0 || metadataPhases[0] != bamlutils.MetadataPhasePlanned {
+		t.Errorf("first metadata phase should be planned; got %v", metadataPhases)
 	}
 
 	// Phase invariants.
@@ -163,7 +178,7 @@ func TestRunCallOrchestration_EmitsPlannedAndOutcome(t *testing.T) {
 	}
 	close(out)
 
-	planned, outcome, kinds := collectMetadata(t, out)
+	planned, outcome, kinds, metadataPhases := collectMetadata(t, out)
 	if planned == nil {
 		t.Fatalf("expected planned metadata to be emitted")
 	}
@@ -182,6 +197,10 @@ func TestRunCallOrchestration_EmitsPlannedAndOutcome(t *testing.T) {
 	}
 	if kinds[1] != bamlutils.StreamResultKindHeartbeat {
 		t.Errorf("second event should be heartbeat; got kind %d", kinds[1])
+	}
+	// CR verdict-30 F3: see streaming counterpart for rationale.
+	if len(metadataPhases) == 0 || metadataPhases[0] != bamlutils.MetadataPhasePlanned {
+		t.Errorf("first metadata phase should be planned; got %v", metadataPhases)
 	}
 
 	if outcome.WinnerProvider != "openai" {

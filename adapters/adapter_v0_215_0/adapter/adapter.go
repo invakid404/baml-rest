@@ -135,10 +135,17 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	if clientRegistry.Primary != nil {
 		b.ClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
 		b.LegacyClientRegistry.SetPrimaryClient(*clientRegistry.Primary)
-		// Primary cache must skip entries dropped from BOTH views so
-		// the cache never observes a provider BAML's BuildRequest-bound
-		// view doesn't have. See v0.219 adapter for the full rationale
-		// (CodeRabbit verdict-21 findings 1+2 generalised across views).
+		// Primary cache: skip runtime entries that BOTH views drop
+		// (predicate `droppedFromBuildRequest && droppedFromLegacy`).
+		// Cache from the first matching entry that survived in at
+		// least ONE view — a runtime entry kept by the legacy view
+		// but dropped from the BuildRequest-safe view is still a
+		// valid provider source for the cache. If both views dropped
+		// the entry (inert presence-only static parent), keep
+		// scanning so the !foundPrimary fallback can synthesize from
+		// the introspected map. Mirrors v0.219 adapter:201-210
+		// (CodeRabbit verdict-21 findings 1+2; comment alignment per
+		// verdict-30 finding F2).
 		foundPrimary := false
 		for _, client := range clientRegistry.Clients {
 			if client == nil {

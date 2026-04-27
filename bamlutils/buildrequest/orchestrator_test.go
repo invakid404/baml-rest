@@ -837,7 +837,7 @@ func TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError(t *tes
 	}
 
 	close(out)
-	planned, outcome, kinds := collectMetadata(t, out)
+	planned, outcome, kinds, _ := collectMetadata(t, out)
 	if planned == nil {
 		t.Fatalf("expected one planned metadata result before validation error; got kinds=%v", kinds)
 	}
@@ -1345,12 +1345,21 @@ func TestResolveFallbackChain_FallbackWithRRChild_AliasSpellings(t *testing.T) {
 				"InnerRR":    tc.provider,
 			}
 
-			_, _, _, reason := ResolveFallbackChainForClientWithReason(
+			_, providers, _, reason := ResolveFallbackChainForClientWithReason(
 				nil, "MyFallback", fallbackChains, clientProviders,
 				func(p string) bool { return p == "openai" },
 			)
 			if reason != PathReasonFallbackRoundRobinChildLegacy {
 				t.Fatalf("reason with alias %q: got %q, want %q", tc.provider, reason, PathReasonFallbackRoundRobinChildLegacy)
+			}
+			// CR verdict-30 F4: providers map must surface the canonical
+			// "baml-roundrobin" spelling regardless of which alias the
+			// caller's clientProviders used. ResolveClientProvider
+			// applies normalizeStrategyProvider, but a regression that
+			// dropped the normalisation on one path could still yield
+			// the right reason while leaking the alias here.
+			if got := providers["InnerRR"]; got != "baml-roundrobin" {
+				t.Errorf("providers[InnerRR] with alias %q: got %q, want baml-roundrobin (canonical)", tc.provider, got)
 			}
 		})
 	}
@@ -2293,5 +2302,163 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain(t *t
 	// must still clear heartbeatSent.
 	if heartbeats < 2 {
 		t.Errorf("expected >=2 heartbeats (one per child), got %d", heartbeats)
+	}
+}
+
+// TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain pins
+// CodeRabbit verdict-30 finding F5: the in-chain reset marker must NOT
+// fire when the previous child failed BEFORE successfully queuing any
+// StreamResultKindStream frame to the client. NeedsPartials=true is
+// the regression class — pre-fix, every NeedsPartials handoff emitted
+// a reset regardless of upstream activity, and the pool's first-byte
+// detector treated that reset (a Stream-kind result) as progress for
+// the next child even when the prior window produced zero bytes.
+//
+// The test uses a primary that returns 500 before any SSE byte (so
+// trySendPartial never runs and sawStreamFrame stays false) and a
+// secondary that succeeds. Without the F5 gate, the channel would
+// carry a phantom reset between the two children; with the gate it
+// must not.
+func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := int(attempts.Add(1))
+		if attempt == 1 {
+			// Primary: 500 before any SSE byte. tryOneStreamChild
+			// fails out via httpClient.ExecuteStream's status check;
+			// trySendPartial never runs.
+			w.WriteHeader(500)
+			fmt.Fprint(w, "internal error")
+			return
+		}
+		// Secondary: clean SSE response with one delta.
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"good\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "",
+		RetryPolicy:   &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+		NeedsPartials: true, // partials wired up — reset only suppressed by the F5 gate
+		FallbackChain: []string{"PrimaryClient", "SecondaryClient"},
+		ClientProviders: map[string]string{
+			"PrimaryClient":   "openai",
+			"SecondaryClient": "openai",
+		},
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resets, finals int
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.reset {
+			resets++
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+		}
+	}
+	if resets != 0 {
+		t.Errorf("F5 regression: expected 0 reset events when prior child queued no stream frames; got %d", resets)
+	}
+	if finals != 1 {
+		t.Errorf("expected 1 final from secondary, got %d", finals)
+	}
+}
+
+// TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry is the
+// retry-callback sibling of the fallback-chain F5 test. Same shape:
+// first attempt fails before any stream frame, retry succeeds; the
+// retry-boundary reset must be suppressed.
+func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 2 {
+			w.WriteHeader(500)
+			fmt.Fprint(w, "internal error")
+			return
+		}
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "openai",
+		NeedsPartials: true,
+		NeedsRaw:      false,
+		RetryPolicy: &retry.Policy{
+			MaxRetries: 2,
+			Strategy:   &retry.ConstantDelay{DelayMs: 1},
+		},
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts.Load())
+	}
+
+	var resets int
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.reset {
+			resets++
+		}
+	}
+	if resets != 0 {
+		t.Errorf("F5 regression: expected 0 reset events when prior attempt queued no stream frames; got %d", resets)
 	}
 }

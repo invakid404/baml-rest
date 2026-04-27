@@ -1649,6 +1649,29 @@ func RunStreamOrchestration(
 
 	var heartbeatSent atomic.Bool
 
+	// sawStreamFrame tracks whether the current child/attempt window
+	// actually queued a non-reset StreamResultKindStream frame to
+	// `out`. Set inside tryOneStreamChild's trySendPartial only on the
+	// successful-send branch — drop-on-buffer-full and ctx.Done paths
+	// must NOT count, because the client never received those frames
+	// and there is no partial state to discard.
+	//
+	// Reset markers (StreamResultKindStream with reset=true) emitted
+	// at fallback-child handoff and retry callbacks are gated on this
+	// flag (CodeRabbit verdict-30 finding F5): a reset marker before
+	// any actual partial frame produces a false first-byte signal in
+	// the pool's hung detector (pool/pool.go:1415-1427 treats any
+	// non-planned-metadata kind as progress), letting a stream that
+	// hadn't yet produced upstream bytes look alive. Gating on
+	// sawStreamFrame ensures the reset only fires when there's
+	// genuine downstream state the next window needs to clear.
+	//
+	// heartbeatSent's reset behavior is independent of this flag.
+	// Resetting heartbeatSent across windows still correctly re-arms
+	// per-attempt liveness via the next window's organic heartbeat;
+	// only the reset *marker* is harmful.
+	var sawStreamFrame atomic.Bool
+
 	// plannedMetadataOnce gates the single planned-metadata emission. It is
 	// strictly once-per-orchestrator-invocation: the sync.Once is never
 	// reset within RunStreamOrchestration. This is deliberately stronger
@@ -1781,6 +1804,11 @@ func RunStreamOrchestration(
 			r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawDelta, nil, false)
 			select {
 			case out <- r:
+				// Mark only on successful send: ctx.Done and the
+				// drop-on-buffer-full branches did not actually
+				// deliver a frame to the client, so the reset-marker
+				// gate (verdict-30 F5) must stay armed.
+				sawStreamFrame.Store(true)
 			case <-ctx.Done():
 				r.Release()
 				return ctx.Err()
@@ -1968,15 +1996,27 @@ func RunStreamOrchestration(
 			// Emit a reset signal before trying the next child so the
 			// downstream discards any partial/raw state leaked by the
 			// previous child's failed stream. Not needed before the first
-			// child in the chain. Only emitted when partials could have
-			// reached the client — for NeedsPartials=false (call modes
-			// bridged through this orchestrator) there is no partial state
-			// downstream, and the reset would falsely flip the pool's
-			// gotFirstByte flag, disabling hung detection for the next
-			// child. The heartbeat reset still runs so the next child
-			// re-arms first-byte detection via its own heartbeat.
+			// child in the chain. Gated on TWO conditions:
+			//
+			//   - config.NeedsPartials: for NeedsPartials=false (call
+			//     modes bridged through this orchestrator) there is no
+			//     partial state downstream, and the reset would falsely
+			//     flip the pool's gotFirstByte flag, disabling hung
+			//     detection for the next child.
+			//   - sawStreamFrame: the previous child window must have
+			//     actually queued a non-reset stream frame for there to
+			//     be partial state worth clearing. CodeRabbit verdict-30
+			//     finding F5 — without this gate, a child that fails
+			//     before producing any bytes still emitted a reset, and
+			//     the pool treated that reset (a StreamResultKindStream)
+			//     as first-byte progress for the next child, papering
+			//     over a genuine no-byte hang.
+			//
+			// The heartbeat reset is independent of the reset marker:
+			// it still runs on every handoff so the next child re-arms
+			// first-byte detection via its own organic heartbeat.
 			if i > 0 && lastErr != nil {
-				if config.NeedsPartials {
+				if config.NeedsPartials && sawStreamFrame.Load() {
 					r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
 					select {
 					case out <- r:
@@ -1985,6 +2025,12 @@ func RunStreamOrchestration(
 						return nil, ctx.Err()
 					}
 				}
+				// Clear sawStreamFrame for the next child's window
+				// regardless of whether we emitted a reset — the next
+				// child starts fresh and any frames it queues (or
+				// fails to queue) are what the next handoff/retry
+				// boundary will see.
+				sawStreamFrame.Store(false)
 				heartbeatSent.Store(false)
 			}
 			var (
@@ -2029,13 +2075,19 @@ func RunStreamOrchestration(
 
 	// Execute with retries
 	_, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, func(attempt int) {
-		// Emit reset signal so downstream discards accumulated partial state.
-		// Only emitted when partials could have reached the client. For
-		// NeedsPartials=false (call modes bridged through this orchestrator)
-		// there is no partial state downstream, and the reset event would
-		// falsely flip the pool's gotFirstByte flag before the retry's
-		// upstream has produced a byte — disabling hung detection.
-		if config.NeedsPartials {
+		// Emit reset signal so downstream discards accumulated partial
+		// state. Same TWO-condition gate as the fallback handoff
+		// above (CodeRabbit verdict-30 finding F5):
+		//
+		//   - config.NeedsPartials: NeedsPartials=false has no
+		//     partial state downstream and the reset would flip the
+		//     pool's gotFirstByte flag before the next attempt's
+		//     upstream produces a byte.
+		//   - sawStreamFrame: the just-failed attempt's last child
+		//     window must have actually queued a frame to the
+		//     client; otherwise the reset is a phantom that the pool
+		//     would mistake for first-byte progress.
+		if config.NeedsPartials && sawStreamFrame.Load() {
 			r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
 			select {
 			case out <- r:
@@ -2043,6 +2095,12 @@ func RunStreamOrchestration(
 				r.Release()
 			}
 		}
+
+		// Clear sawStreamFrame for the next attempt's window. Same
+		// rationale as the fallback handoff: the next attempt starts
+		// fresh, and the subsequent handoff/retry boundary should
+		// see only what THAT attempt managed to queue.
+		sawStreamFrame.Store(false)
 
 		// Reset heartbeat for new attempt so first-byte detection re-arms
 		// via the next attempt's heartbeat.
