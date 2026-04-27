@@ -2339,18 +2339,6 @@ func generate(opts Options) {
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
 			jen.Var().Id("err").Error(),
 			jen.Id("mode").Op(":=").Id("adapter").Dot("StreamMode").Call(),
-			// Cache UseBuildRequest() once per request so every gate
-			// downstream sees the same value. Cold-review-5 F1: prior
-			// to this, ResolveEffectiveClient ran unconditionally for
-			// supportsWithClient adapters and the BR landing blocks
-			// re-read the env var, which (a) made the flag-off path
-			// keep advancing the RR coordinator and pinning BAML to
-			// the leaf via WithClient, defeating its kill-switch
-			// contract, and (b) created split-decision risk if the
-			// cached value ever drifted within a request. Reading
-			// once at router entry and threading the same boolean
-			// into every gate fixes both.
-			jen.Id("__useBuildRequest").Op(":=").Qual(common.BuildRequestPkg, "UseBuildRequest").Call(),
 		}
 		// Always seed __effective from ResolvePrimaryClient and leave
 		// __rrInfo nil. This is the legacy-equivalent shape: primary
@@ -2368,6 +2356,30 @@ func generate(opts Options) {
 			jen.Var().Id("__rrInfo").Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
 		)
 		if supportsWithClient {
+			// Cache UseBuildRequest() once per request so every gate
+			// downstream sees the same value. Cold-review-5 F1: prior
+			// to this, ResolveEffectiveClient ran unconditionally for
+			// supportsWithClient adapters and the BR landing blocks
+			// re-read the env var, which (a) made the flag-off path
+			// keep advancing the RR coordinator and pinning BAML to
+			// the leaf via WithClient, defeating its kill-switch
+			// contract, and (b) created split-decision risk if the
+			// cached value ever drifted within a request.
+			//
+			// Scoped under `if supportsWithClient` because every
+			// __useBuildRequest reference downstream — the upgrade
+			// gate just below, the BR landing-block gates, and the
+			// legacy predicate gate — is itself only emitted when
+			// supportsWithClient is true (those gates check
+			// hasCallBuildRequest / hasBuildRequest, which the
+			// invariant at codegen.go:699 ties to supportsWithClient
+			// via panic). Hoisting the declaration to router entry
+			// would emit "declared and not used" on v0.204 / v0.215
+			// adapters where every consumer is filtered out.
+			routerBody = append(routerBody,
+				jen.Id("__useBuildRequest").Op(":=").Qual(common.BuildRequestPkg, "UseBuildRequest").Call(),
+			)
+
 			// Full RR resolution upgrade: apply the runtime primary
 			// override, unwrap baml-roundrobin wrappers, and advance
 			// the coordinator (or the worker-installed RemoteAdvancer)
