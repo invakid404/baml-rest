@@ -335,8 +335,17 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 		}
 	}
 
-	if resets < 2 {
-		t.Errorf("expected at least 2 reset signals (for 2 retries that streamed before failing), got %d", resets)
+	// CodeRabbit verdict-32 finding F2: strict equality, not lower-
+	// bound. This is a single-provider retry scenario with exactly 3
+	// attempts (n<3 fails, n==3 succeeds), so exactly 2 retry
+	// boundaries fire. A duplicate-emission regression — reset fired
+	// from both the retry callback and another path, or state not
+	// cleared between boundaries — would slip past `resets >= 2` but
+	// fail strict equality. Aligns with the integration sibling
+	// (orchestrator_integration_test.go:440-448) which already
+	// asserts exactly 2.
+	if resets != 2 {
+		t.Errorf("expected 2 reset signals (one per retry boundary), got %d", resets)
 	}
 	if finals != 1 {
 		t.Errorf("expected 1 final, got %d", finals)
@@ -2482,14 +2491,24 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry(t *testing.T) {
 		t.Fatalf("expected 2 attempts, got %d", attempts.Load())
 	}
 
-	var resets int
+	var resets, finals int
 	for r := range out {
 		tr := r.(*testResult)
 		if tr.reset {
 			resets++
 		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+		}
 	}
 	if resets != 0 {
 		t.Errorf("F5 regression: expected 0 reset events when prior attempt queued no stream frames; got %d", resets)
+	}
+	// CodeRabbit verdict-32 finding F1: also pin success delivery so a
+	// future regression that suppresses resets AND drops the final
+	// can't pass this test by only satisfying the reset-count check.
+	// Mirrors the fallback-chain sibling at lines 2409-2424.
+	if finals != 1 {
+		t.Errorf("expected 1 final from successful retry, got %d", finals)
 	}
 }
