@@ -4,7 +4,12 @@ baml-rest reads the following environment variables at startup:
 
 - `BAML_REST_USE_BUILD_REQUEST` — toggle the BuildRequest/StreamRequest code
   path. `1`/`true`/`yes`/`on` enables it; any other value (including empty)
-  falls back to the legacy CallStream+OnTick path.
+  falls back to the legacy CallStream+OnTick path. This is a full rollback:
+  on BAML 0.219+ adapters, baml-rest's centralised round-robin (resolver,
+  in-process coordinator, and worker SharedState broker / RemoteAdvancer)
+  is also disengaged, and BAML's own runtime handles strategy rotation
+  per-worker. Use this flag as an incident-response kill switch when
+  anything in the new request path regresses.
 - `BAML_REST_BASE_URL_REWRITES` — semicolon-separated URL rewrite rules
   applied to LLM provider base URLs, both at build time and at runtime.
   Format: `from1=to1;from2=to2`. See

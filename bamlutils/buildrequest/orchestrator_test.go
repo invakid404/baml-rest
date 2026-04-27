@@ -783,8 +783,72 @@ func TestRunStreamOrchestration_ValidatesAllFallbackChildrenUpFront(t *testing.T
 	}
 
 	close(out)
+	// With no MetadataPlan / NewMetadataResult on the config the
+	// upfront planned-metadata emit is a no-op (CodeRabbit verdict-28
+	// finding 8 only changes ordering, not the nil-config short-
+	// circuit). So this branch still pins "no stream output on
+	// validation error when metadata isn't wired up". The metadata-
+	// wired-up case is covered by
+	// TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError
+	// below.
 	for r := range out {
 		t.Fatalf("expected no stream results on upfront validation error, got kind %v", r.Kind())
+	}
+}
+
+// TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError
+// pins the post-verdict-28 contract (CodeRabbit finding 8): when the
+// orchestrator config supplies MetadataPlan + NewMetadataResult, the
+// planned-metadata event MUST be emitted before any validation return.
+// Pre-fix the emit sat after validation, which silently dropped the
+// only observable signal on exactly the failure modes operators most
+// need to diagnose (unsupported provider, malformed fallback chain).
+func TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testing.T) {
+	out := make(chan bamlutils.StreamResult, 10)
+
+	plan := &bamlutils.Metadata{
+		Path:       "buildrequest",
+		Client:     "PrimaryClient",
+		PathReason: "",
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out,
+		&StreamConfig{
+			FallbackChain: []string{"PrimaryClient", "MissingClient"},
+			ClientProviders: map[string]string{
+				"PrimaryClient": "openai",
+			},
+			MetadataPlan:      plan,
+			NewMetadataResult: newTestMetadataResult,
+		},
+		nil,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			t.Fatal("buildRequest should not be called when fallback validation fails")
+			return nil, nil
+		},
+		nil,
+		nil,
+		newTestResult,
+	)
+
+	if err == nil {
+		t.Fatal("expected validation error for unsupported or missing fallback child provider")
+	}
+
+	close(out)
+	planned, outcome, kinds := collectMetadata(t, out)
+	if planned == nil {
+		t.Fatalf("expected one planned metadata result before validation error; got kinds=%v", kinds)
+	}
+	if outcome != nil {
+		t.Errorf("expected no outcome metadata on validation-error path, got %+v", outcome)
+	}
+	if planned.Phase != bamlutils.MetadataPhasePlanned {
+		t.Errorf("planned phase: got %q, want planned", planned.Phase)
+	}
+	if planned.Client != "PrimaryClient" {
+		t.Errorf("planned client: got %q, want PrimaryClient", planned.Client)
 	}
 }
 

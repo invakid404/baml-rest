@@ -404,6 +404,58 @@ func TestRunCallOrchestration_EmptyProvider(t *testing.T) {
 	}
 }
 
+// TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError
+// pins the post-verdict-28 contract (CodeRabbit finding 8) on the call
+// orchestrator: when MetadataPlan + NewMetadataResult are wired up, the
+// planned-metadata event MUST be emitted before any validation return.
+// Mirrors the stream orchestrator's regression test; both orchestrators
+// previously emitted after validation, masking the only observable
+// signal on unsupported-provider / malformed-fallback failures.
+func TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testing.T) {
+	out := make(chan bamlutils.StreamResult, 10)
+
+	plan := &bamlutils.Metadata{
+		Path:   "buildrequest",
+		Client: "MyClient",
+	}
+
+	config := &CallConfig{
+		Provider:          "aws-bedrock",
+		MetadataPlan:      plan,
+		NewMetadataResult: newTestMetadataResult,
+	}
+
+	err := RunCallOrchestration(
+		context.Background(), out, config, nil,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			t.Fatal("buildRequest should not be called when validation fails")
+			return nil, nil
+		},
+		identityParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+
+	if err == nil {
+		t.Fatal("expected validation error for unsupported provider")
+	}
+
+	close(out)
+	planned, outcome, kinds := collectMetadata(t, out)
+	if planned == nil {
+		t.Fatalf("expected one planned metadata result before validation error; got kinds=%v", kinds)
+	}
+	if outcome != nil {
+		t.Errorf("expected no outcome metadata on validation-error path, got %+v", outcome)
+	}
+	if planned.Phase != bamlutils.MetadataPhasePlanned {
+		t.Errorf("planned phase: got %q, want planned", planned.Phase)
+	}
+	if planned.Client != "MyClient" {
+		t.Errorf("planned client: got %q, want MyClient", planned.Client)
+	}
+}
+
 func TestRunCallOrchestration_BuildRequestError(t *testing.T) {
 	out := make(chan bamlutils.StreamResult, 100)
 	config := &CallConfig{
@@ -1505,6 +1557,63 @@ func TestRunCallOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRunCallOrchestration_SingleProviderClientOverride locks in the
+// CallConfig.ClientOverride → buildRequest propagation on the single-
+// provider branch (CodeRabbit verdict-28 finding 7). The fallback-chain
+// branch's override propagation is covered by the mixed-chain tests
+// above, but the FallbackChain==nil arm — which is the path the
+// generated router takes for top-level baml-roundrobin once
+// ResolveEffectiveClient has unwrapped to a leaf — had no direct
+// assertion. A regression where this arm dropped or rewrote
+// ClientOverride would silently break per-attempt WithClient targeting
+// on the BuildRequest path.
+func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
+	server := makeJSONServer(200, `{"choices":[{"message":{"content":"ok"}}]}`)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	const wantOverride = "LeafClient"
+
+	var capturedOverride string
+	var captureCount atomic.Int32
+	buildRequest := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		captureCount.Add(1)
+		capturedOverride = clientOverride
+		return &llmhttp.Request{
+			URL:    server.URL,
+			Method: "POST",
+			Body:   `{"model":"gpt-4","stream":false}`,
+		}, nil
+	}
+
+	config := &CallConfig{
+		Provider:       "openai",
+		ClientOverride: wantOverride,
+		NeedsRaw:       false,
+	}
+
+	err := RunCallOrchestration(
+		context.Background(), out, config, client,
+		buildRequest,
+		identityParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := captureCount.Load(); got != 1 {
+		t.Fatalf("buildRequest call count: got %d, want 1", got)
+	}
+	if capturedOverride != wantOverride {
+		t.Errorf("captured clientOverride: got %q, want %q", capturedOverride, wantOverride)
+	}
+}
+
 // isNilDefaultClientTransportFlake reports whether err looks like the
 // documented stale-keepalive transport class TestRunCallOrchestration_
 // NilHTTPClient tolerates under CI's `-race -count=100` rotation. The
@@ -1513,13 +1622,19 @@ func TestRunCallOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 // the test logged every StreamResultKindError as "transport flake",
 // which would have hidden parse / extract / request-construction
 // regressions behind the label.
+//
+// Comparison is case-insensitive (CodeRabbit verdict-28 finding 2):
+// net/http and net/url wrap errors with assorted casing — "EOF" vs
+// "eof" depending on the wrap layer, "connection reset by peer" vs
+// "Connection reset" depending on the OS. Lowercasing both sides
+// dodges that surface without weakening the substring match.
 func isNilDefaultClientTransportFlake(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
+	msg := strings.ToLower(err.Error())
 	for _, needle := range []string{
-		"EOF",
+		"eof",
 		"connection refused",
 		"broken pipe",
 		"connection reset",

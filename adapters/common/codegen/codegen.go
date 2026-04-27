@@ -2339,46 +2339,61 @@ func generate(opts Options) {
 			jen.Id("out").Op(":=").Make(jen.Chan().Add(streamResultInterface.Clone()), jen.Lit(100)),
 			jen.Var().Id("err").Error(),
 			jen.Id("mode").Op(":=").Id("adapter").Dot("StreamMode").Call(),
+			// Cache UseBuildRequest() once per request so every gate
+			// downstream sees the same value. Cold-review-5 F1: prior
+			// to this, ResolveEffectiveClient ran unconditionally for
+			// supportsWithClient adapters and the BR landing blocks
+			// re-read the env var, which (a) made the flag-off path
+			// keep advancing the RR coordinator and pinning BAML to
+			// the leaf via WithClient, defeating its kill-switch
+			// contract, and (b) created split-decision risk if the
+			// cached value ever drifted within a request. Reading
+			// once at router entry and threading the same boolean
+			// into every gate fixes both.
+			jen.Id("__useBuildRequest").Op(":=").Qual(common.BuildRequestPkg, "UseBuildRequest").Call(),
 		}
+		// Always seed __effective from ResolvePrimaryClient and leave
+		// __rrInfo nil. This is the legacy-equivalent shape: primary
+		// override applied, no RR unwrap, no coordinator advance, no
+		// RR metadata. supportsWithClient adapters with the flag on
+		// upgrade these via ResolveEffectiveClient below; everyone
+		// else (older adapters, or modern adapters with the flag off)
+		// keeps this baseline so BAML's own strategy rotation owns RR.
+		// Cold-review-5 F1.
+		routerBody = append(routerBody,
+			jen.Id("__effective").Op(":=").Qual(common.BuildRequestPkg, "ResolvePrimaryClient").Call(
+				jen.Id("adapter"),
+				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+			),
+			jen.Var().Id("__rrInfo").Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
+		)
 		if supportsWithClient {
-			// Full RR resolution: apply the runtime primary override,
-			// unwrap baml-roundrobin wrappers, and advance the coordinator
-			// (or the worker-installed RemoteAdvancer) for the leaf
-			// selection. __effective is the resolved leaf; __rrInfo
-			// describes the outermost RR decision (nil when no RR unwrap
-			// happened). Requires WithClient so the legacy dispatcher can
-			// pass the chosen leaf to BAML's runtime — on older adapters
-			// that lack WithClient we skip this path entirely and let
-			// BAML's own strategy rotation handle RR.
+			// Full RR resolution upgrade: apply the runtime primary
+			// override, unwrap baml-roundrobin wrappers, and advance
+			// the coordinator (or the worker-installed RemoteAdvancer)
+			// for the leaf selection. Gated on __useBuildRequest so
+			// that flipping BAML_REST_USE_BUILD_REQUEST off truly
+			// reverts to the legacy CallStream+OnTick semantics —
+			// including BAML's per-worker runtime RR rotation. Without
+			// the runtime gate, the coordinator advances and __rrInfo
+			// gets populated even when the operator has explicitly
+			// disabled the new code path. Cold-review-5 F1.
 			routerBody = append(routerBody,
-				jen.List(jen.Id("__effective"), jen.Id("__rrInfo"), jen.Id("__rrErr")).Op(":=").
-					Qual(common.BuildRequestPkg, "ResolveEffectiveClient").Call(
-					jen.Id("adapter"),
-					jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-					jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+				jen.If(jen.Id("__useBuildRequest")).Block(
+					jen.List(jen.Id("__rrEffective"), jen.Id("__rrInfoUpgrade"), jen.Id("__rrErr")).Op(":=").
+						Qual(common.BuildRequestPkg, "ResolveEffectiveClient").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+						jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+					),
+					jen.If(jen.Id("__rrErr").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Id("__rrErr")),
+					),
+					jen.Id("__effective").Op("=").Id("__rrEffective"),
+					jen.Id("__rrInfo").Op("=").Id("__rrInfoUpgrade"),
 				),
-				jen.If(jen.Id("__rrErr").Op("!=").Nil()).Block(
-					jen.Return(jen.Nil(), jen.Id("__rrErr")),
-				),
-			)
-		} else {
-			// Legacy-only adapters: skip RR unwrap + coordinator advance.
-			// The counter slot would otherwise be wasted on a decision
-			// the legacy dispatcher can't honor (no WithClient means we
-			// can't pass the chosen leaf to BAML), and the rrInfo would
-			// be misleading — it would report OUR selection while BAML's
-			// runtime picks a different child via its own rotation. Use
-			// the primary-override-only helper and leave __rrInfo nil so
-			// metadata stays silent about RR, letting BAML's internal
-			// routing speak for itself via outcome metadata.
-			routerBody = append(routerBody,
-				jen.Id("__effective").Op(":=").Qual(common.BuildRequestPkg, "ResolvePrimaryClient").Call(
-					jen.Id("adapter"),
-					jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-				),
-				jen.Var().Id("__rrInfo").Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
 			)
 		}
 		routerBody = append(routerBody,
@@ -2427,7 +2442,7 @@ func generate(opts Options) {
 			routerBody = append(routerBody,
 				jen.Comment("Try non-streaming BuildRequest path for /call and /call-with-raw"),
 				jen.If(
-					jen.Qual(common.BuildRequestPkg, "UseBuildRequest").Call().
+					jen.Id("__useBuildRequest").
 						Op("&&").Qual(common.IntrospectedPkg, "Request").Op("!=").Nil().
 						Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
 						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
@@ -2519,7 +2534,7 @@ func generate(opts Options) {
 			routerBody = append(routerBody,
 				jen.Comment("Try streaming BuildRequest path for /stream and /stream-with-raw"),
 				jen.If(
-					jen.Qual(common.BuildRequestPkg, "UseBuildRequest").Call().
+					jen.Id("__useBuildRequest").
 						Op("&&").Qual(common.IntrospectedPkg, "StreamRequest").Op("!=").Nil().
 						Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeStream").
 						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeStreamWithRaw")),
@@ -2605,7 +2620,7 @@ func generate(opts Options) {
 			routerBody = append(routerBody,
 				jen.Comment("Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable"),
 				jen.If(
-					jen.Qual(common.BuildRequestPkg, "UseBuildRequest").Call().
+					jen.Id("__useBuildRequest").
 						Op("&&").Qual(common.IntrospectedPkg, "StreamRequest").Op("!=").Nil().
 						Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
 						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
@@ -2760,7 +2775,7 @@ func generate(opts Options) {
 				if hasBuildRequest {
 					return jen.If(
 						jen.Parens(callModeCond).
-							Op("&&").Op("!").Qual(common.BuildRequestPkg, "UseBuildRequest").Call(),
+							Op("&&").Op("!").Id("__useBuildRequest"),
 					).Block(
 						jen.Id("__legacyPredicate").Op("=").Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
 					)
@@ -2772,7 +2787,7 @@ func generate(opts Options) {
 			jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
 				jen.Id("__reg"),
 				jen.Id("__effective"),
-				jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
+				jen.Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("__effective")),
 				jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 				jen.Id("__legacyPredicate"),

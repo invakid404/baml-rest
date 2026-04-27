@@ -160,37 +160,6 @@ func RunCallOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
-	// Validate the configured provider(s) up front so invalid fallback
-	// chains fail before any retry attempts are launched. The validation
-	// walks every child — previously only the first child was checked,
-	// which allowed a mixed-shaped chain with a valid first but broken
-	// later child to start retrying before surfacing the error.
-	if len(config.FallbackChain) == 0 {
-		if config.Provider == "" || !IsCallProviderSupported(config.Provider) {
-			return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", config.Provider)
-		}
-	} else {
-		if len(config.LegacyChildren) > 0 && config.LegacyCallChild == nil {
-			return fmt.Errorf("buildrequest: LegacyChildren set but LegacyCallChild is nil")
-		}
-		for _, child := range config.FallbackChain {
-			if config.LegacyChildren[child] {
-				// Legacy children are driven via BAML's Stream API, which
-				// tolerates providers BuildRequest doesn't support; we
-				// only require the legacy callback itself. Skipping the
-				// IsCallProviderSupported check is safe because
-				// ResolveFallbackChain rejects chains with any empty
-				// provider (returns nil,nil,nil), so ClientProviders[child]
-				// is guaranteed non-empty by the time we get here.
-				continue
-			}
-			provider := config.ClientProviders[child]
-			if provider == "" || !IsCallProviderSupported(provider) {
-				return fmt.Errorf("buildrequest: unsupported or empty provider %q for child %q", provider, child)
-			}
-		}
-	}
-
 	// sendHeartbeat emits a heartbeat to the pool's hung detector via
 	// Execute()'s onSuccess callback. It fires after the provider returns
 	// a 2xx status but before the body is read, so the pool sees liveness
@@ -224,6 +193,45 @@ func RunCallOrchestration(
 		})
 	}
 
+	// Emit planned metadata BEFORE validation so the routing decision is
+	// observable on every path, including immediate validation failures
+	// (CodeRabbit verdict-28 finding 8). See RunStreamOrchestration for
+	// the parallel change and rationale — both orchestrators previously
+	// emitted after validation, masking exactly the failure modes the
+	// upfront-emit comment claimed coverage for.
+	emitPlannedMetadata()
+
+	// Validate the configured provider(s) up front so invalid fallback
+	// chains fail before any retry attempts are launched. The validation
+	// walks every child — previously only the first child was checked,
+	// which allowed a mixed-shaped chain with a valid first but broken
+	// later child to start retrying before surfacing the error.
+	if len(config.FallbackChain) == 0 {
+		if config.Provider == "" || !IsCallProviderSupported(config.Provider) {
+			return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", config.Provider)
+		}
+	} else {
+		if len(config.LegacyChildren) > 0 && config.LegacyCallChild == nil {
+			return fmt.Errorf("buildrequest: LegacyChildren set but LegacyCallChild is nil")
+		}
+		for _, child := range config.FallbackChain {
+			if config.LegacyChildren[child] {
+				// Legacy children are driven via BAML's Stream API, which
+				// tolerates providers BuildRequest doesn't support; we
+				// only require the legacy callback itself. Skipping the
+				// IsCallProviderSupported check is safe because
+				// ResolveFallbackChain rejects chains with any empty
+				// provider (returns nil,nil,nil), so ClientProviders[child]
+				// is guaranteed non-empty by the time we get here.
+				continue
+			}
+			provider := config.ClientProviders[child]
+			if provider == "" || !IsCallProviderSupported(provider) {
+				return fmt.Errorf("buildrequest: unsupported or empty provider %q for child %q", provider, child)
+			}
+		}
+	}
+
 	sendHeartbeat := func() {
 		if heartbeatSent.CompareAndSwap(false, true) {
 			r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)
@@ -235,16 +243,6 @@ func RunCallOrchestration(
 		}
 		emitPlannedMetadata()
 	}
-
-	// Emit planned metadata upfront so the routing decision is observable
-	// even when the BuildRequest path returns an error before any HTTP
-	// response (e.g., immediate validation failure, unsupported provider
-	// caught later in the chain). Mirrors the legacy-path orchestrators
-	// (runNoRawOrchestration / runFullOrchestration) which emit upfront in
-	// their stream goroutine for the same reason. The plannedMetadataOnce
-	// gate guarantees idempotency; subsequent sendHeartbeat calls are
-	// no-ops on the planned side. See PR #192 verdict-15 follow-up.
-	emitPlannedMetadata()
 
 	// trySend attempts to send a StreamResult on the output channel,
 	// prioritizing cancellation. Uses the priority-select idiom: check

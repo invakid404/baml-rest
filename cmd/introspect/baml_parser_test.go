@@ -1423,3 +1423,29 @@ func TestParseClientBlock_BareFallbackAliasNormalised(t *testing.T) {
 		t.Errorf("fallbackChains[MyFallback]: got %v, want [A B] — chain must be captured under the bare alias too", chain)
 	}
 }
+
+// TestParseClientBlock_BareRoundRobinAliasNormalised is the round-robin
+// sibling of the fallback test above (CodeRabbit verdict-28 finding 4).
+// `provider round-robin` is the bare alias BAML accepts alongside the
+// canonical `baml-roundrobin` form; canonicaliseProvider folds it at the
+// raw-token layer, but the parse-block-level test pins the end-to-end
+// shape — provider canonicalised AND the strategy chain captured under
+// the alias — so a regression that broke either half would surface here
+// rather than slipping through on the existing canonicaliser-only test.
+func TestParseClientBlock_BareRoundRobinAliasNormalised(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider round-robin",
+		"options {",
+		"    strategy [A, B]",
+		"}",
+	}
+	parseClientBlock(cfg, "MyRR", block)
+	if got := cfg.clientProvider["MyRR"]; got != "baml-roundrobin" {
+		t.Errorf("clientProvider[MyRR]: got %q, want baml-roundrobin", got)
+	}
+	chain := cfg.fallbackChains["MyRR"]
+	if len(chain) != 2 || chain[0] != "A" || chain[1] != "B" {
+		t.Errorf("fallbackChains[MyRR]: got %v, want [A B] — chain must be captured under the bare alias too", chain)
+	}
+}

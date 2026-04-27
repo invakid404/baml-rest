@@ -529,8 +529,16 @@ go run "${ADAPTER_VERSION}/cmd/main.go"
 # — running from the root would pick up the wrong version for older
 # adapters. ./... covers both adapter/ and utils/ packages within the
 # adapter module.
+#
+# GOWORK=off is load-bearing (CodeRabbit verdict-28 finding 3): even when
+# cd'd into the adapter module, the workspace's go.work pulls every
+# adapter into MVS resolution and `go test` picks the highest BAML
+# version across all members — e.g. from adapter_v0_204_0, `go list -m`
+# would resolve to v0.219.0 because v0.219's adapter is also in the
+# workspace. Disabling workspace mode forces resolution against the
+# adapter's own go.mod, which is the version we actually want to test.
 echo "Running adapter unit tests (${ADAPTER_VERSION})..."
-(cd "${ADAPTER_VERSION}" && go test -race -count=1 ./...)
+(cd "${ADAPTER_VERSION}" && GOWORK=off go test -race -count=1 ./...)
 
 # Build worker binary first (this imports baml and loads the shared library)
 echo "Building worker binary..."

@@ -41,14 +41,25 @@ func parseBuildRequestEnv() bool {
 // useBuildRequestOnce caches the result of parseBuildRequestEnv. The env var
 // is read once on first call and the result is reused for all subsequent
 // calls. This avoids repeated os.Getenv (which acquires a lock) on every
-// request dispatch — the generated router calls UseBuildRequest() twice per
-// request (once for the call path, once for the stream path).
+// request dispatch — the generated router reads the cached value once at
+// router entry and threads it into every gate (BuildRequest landing,
+// legacy predicate, and the supportsWithClient ResolveEffectiveClient
+// upgrade) so the same boolean drives every decision in a request.
 var useBuildRequestOnce sync.Once
 var useBuildRequestCached bool
 
 // UseBuildRequest returns true if the BuildRequest/StreamRequest paths are enabled.
 // Controlled by the BAML_REST_USE_BUILD_REQUEST environment variable.
-// When false, the legacy CallStream+OnTick path is used for all providers.
+//
+// When false, the flag is a full rollback to the legacy CallStream+OnTick
+// path: the BuildRequest transport is skipped, baml-rest's RR resolver
+// and coordinator are NOT engaged on supportsWithClient adapters, and
+// BAML's own runtime owns strategy rotation per-worker. This is the
+// kill-switch contract — flipping the flag off should remove every new
+// failure surface this PR added (RemoteAdvancer, SharedState broker,
+// in-process coordinator) from the request path so operators can revert
+// to pre-PR-192 semantics during incident response. Cold-review-5 F1.
+//
 // The environment variable is read once and cached for the process lifetime.
 func UseBuildRequest() bool {
 	useBuildRequestOnce.Do(func() {
@@ -1636,6 +1647,44 @@ func RunStreamOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
+	var heartbeatSent atomic.Bool
+
+	// plannedMetadataOnce gates the single planned-metadata emission. It is
+	// deliberately separate from heartbeatSent — heartbeatSent resets on
+	// each inner retry (so retried attempts re-arm first-byte hung
+	// detection), but the planned metadata describes the whole orchestrator
+	// run and must fire exactly once. Pool-level retries produce a fresh
+	// orchestrator invocation with a fresh Once, so each pool attempt gets
+	// its own planned emission (pool rewrites the Attempt field).
+	var plannedMetadataOnce sync.Once
+	emitPlannedMetadata := func() {
+		if config.MetadataPlan == nil || config.NewMetadataResult == nil {
+			return
+		}
+		plannedMetadataOnce.Do(func() {
+			plan := *config.MetadataPlan
+			plan.Phase = bamlutils.MetadataPhasePlanned
+			plan.Attempt = 0
+			r := config.NewMetadataResult(&plan)
+			select {
+			case out <- r:
+			default:
+				r.Release()
+			}
+		})
+	}
+
+	// Emit planned metadata BEFORE validation so the routing decision is
+	// observable on every path, including immediate validation failures
+	// (CodeRabbit verdict-28 finding 8). Previously the emit happened
+	// after validation, which meant unsupported-provider / nil-callback
+	// returns produced no observable planned metadata at all — the same
+	// failure modes the upfront-emit comment claimed coverage for. Order
+	// is now: emit planned → validate → return (with metadata already
+	// out) on error, or proceed on success. The plannedMetadataOnce
+	// gate keeps the contract idempotent for sendHeartbeat below.
+	emitPlannedMetadata()
+
 	// Validate the configured provider(s) up front so invalid fallback chains
 	// fail before any stream/reset events are emitted.
 	if len(config.FallbackChain) == 0 {
@@ -1664,36 +1713,9 @@ func RunStreamOrchestration(
 		}
 	}
 
-	var heartbeatSent atomic.Bool
-
-	// plannedMetadataOnce gates the single planned-metadata emission. It is
-	// deliberately separate from heartbeatSent — heartbeatSent resets on
-	// each inner retry (so retried attempts re-arm first-byte hung
-	// detection), but the planned metadata describes the whole orchestrator
-	// run and must fire exactly once. Pool-level retries produce a fresh
-	// orchestrator invocation with a fresh Once, so each pool attempt gets
-	// its own planned emission (pool rewrites the Attempt field).
-	var plannedMetadataOnce sync.Once
-	emitPlannedMetadata := func() {
-		if config.MetadataPlan == nil || config.NewMetadataResult == nil {
-			return
-		}
-		plannedMetadataOnce.Do(func() {
-			plan := *config.MetadataPlan
-			plan.Phase = bamlutils.MetadataPhasePlanned
-			plan.Attempt = 0
-			r := config.NewMetadataResult(&plan)
-			select {
-			case out <- r:
-			default:
-				r.Release()
-			}
-		})
-	}
-
 	// sendHeartbeat fires when the upstream provider returns 2xx and
 	// also nudges the planned-metadata emit (a no-op after the upfront
-	// emit below — the plannedMetadataOnce gate guarantees idempotency).
+	// emit above — the plannedMetadataOnce gate guarantees idempotency).
 	// Heartbeat itself remains gated on heartbeatSent so it fires once
 	// per orchestrator (pool retries get a fresh orchestrator instance).
 	sendHeartbeat := func() {
@@ -1707,16 +1729,6 @@ func RunStreamOrchestration(
 		}
 		emitPlannedMetadata()
 	}
-
-	// Emit planned metadata upfront so the routing decision is observable
-	// even when the BuildRequest path returns an error before any HTTP
-	// response (e.g., immediate validation failure, unsupported provider
-	// caught later in the chain). Mirrors the legacy-path orchestrators
-	// (runNoRawOrchestration / runFullOrchestration) which emit upfront in
-	// their stream goroutine for the same reason. The plannedMetadataOnce
-	// gate guarantees idempotency; subsequent sendHeartbeat calls are
-	// no-ops on the planned side. See PR #192 verdict-15 follow-up.
-	emitPlannedMetadata()
 
 	// tryOneStreamChild runs a single child's streaming attempt against the
 	// BuildRequest path. Returns the parsed final plus the accumulated raw

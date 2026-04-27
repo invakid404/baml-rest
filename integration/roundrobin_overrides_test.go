@@ -572,3 +572,58 @@ func TestLegacyModeSupportsDynamicFallbackPrimary(t *testing.T) {
 	})
 }
 
+// TestLegacyMode_RR_NoCentralization is the load-bearing
+// regression test for cold-review-5 F1: with
+// BAML_REST_USE_BUILD_REQUEST=false on a 0.219+ adapter, the flag
+// must be a full kill switch — baml-rest's centralised RR (resolver,
+// in-process coordinator, RemoteAdvancer) must NOT engage, and
+// BAML's per-worker runtime rotation owns the strategy. The
+// observable contract: the request still succeeds, but the
+// X-BAML-RoundRobin-* headers are absent because no baml-rest RR
+// resolution happened. Pre-fix, ResolveEffectiveClient ran
+// unconditionally for supportsWithClient adapters, so __rrInfo got
+// populated even with the flag off and the headers leaked through;
+// post-fix the gate is `supportsWithClient && __useBuildRequest`.
+//
+// Skipped on the BuildRequest-mode CI leg — this tests the
+// flag-off semantics specifically.
+func TestLegacyMode_RR_NoCentralization(t *testing.T) {
+	if ActuallyBuildRequest() {
+		t.Skip("legacy-mode regression test; relies on TestEnv being UseBuildRequest=false")
+	}
+	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
+		waitForHealthy(t, 30*time.Second)
+		clearRoundRobinScenarios(t)
+		registerAllGreetingScenarios(t, []string{"fallback-primary", "fallback-secondary"})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		resp, err := client.Call(ctx, testutil.CallRequest{
+			Method: "GetGreetingRoundRobinPair",
+			Input:  map[string]any{"name": "World"},
+		})
+		if err != nil {
+			t.Fatalf("Call failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("expected 200 (BAML's per-worker RR should still serve the request); got %d body=%s err=%s", resp.StatusCode, string(resp.Body), resp.Error)
+		}
+		// The smoking-gun assertion: when the flag is off, baml-rest
+		// must NOT have populated __rrInfo, so the X-BAML-RoundRobin-*
+		// header set is absent. BAML's runtime rotation on each
+		// worker handled the request, but its rotation is per-worker
+		// and not surfaced through baml-rest's planned metadata.
+		for _, name := range []string{
+			testutil.HeaderBAMLRoundRobinName,
+			testutil.HeaderBAMLRoundRobinSelected,
+			testutil.HeaderBAMLRoundRobinIndex,
+		} {
+			if got := resp.Headers.Get(name); got != "" {
+				t.Errorf("flag-off path leaked %s=%q — baml-rest RR engaged when it should be reverted to BAML runtime (cold-review-5 F1 regression)", name, got)
+			}
+		}
+		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "legacy")
+	})
+}
+

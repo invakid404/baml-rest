@@ -3304,9 +3304,16 @@ func TestCallStreamPlannedMetadataDoesNotDisableHungDetection(t *testing.T) {
 // first-byte gate, a fix that simply skipped all metadata would also
 // disable liveness for a request that completed successfully — wrong.
 func TestCallStreamOutcomeMetadataPreventsHungKill(t *testing.T) {
-	firstByteTimeout := 30 * time.Millisecond
-	outcomeDelay := 10 * time.Millisecond
-	finalDelay := 80 * time.Millisecond
+	// CodeRabbit verdict-28 finding 5: bumped from 30/10/80ms to give
+	// race / CI scheduling slack. The checker fires every 5ms, and the
+	// arithmetic the test relies on — outcomeDelay < firstByteTimeout
+	// < outcomeDelay+finalDelay — held with the old margins on a quiet
+	// dev box but eroded under -race -count=N with concurrent timer
+	// pressure. The new constants keep the same intent (outcome arrives
+	// before the timeout, final after) with order-of-magnitude headroom.
+	firstByteTimeout := 100 * time.Millisecond
+	outcomeDelay := 30 * time.Millisecond
+	finalDelay := 200 * time.Millisecond
 
 	outcomePayload, err := json.Marshal(&bamlutils.Metadata{
 		Phase:          bamlutils.MetadataPhaseOutcome,
