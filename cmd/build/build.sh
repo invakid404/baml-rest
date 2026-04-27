@@ -537,8 +537,17 @@ go run "${ADAPTER_VERSION}/cmd/main.go"
 # would resolve to v0.219.0 because v0.219's adapter is also in the
 # workspace. Disabling workspace mode forces resolution against the
 # adapter's own go.mod, which is the version we actually want to test.
+#
+# `go mod download` runs first under GOWORK=off so the adapter's own
+# go.sum gets hydrated for whatever BAML pseudo-version the build
+# step pinned (signoff-30 blocker): adapter go.sum files are checked
+# in for the canonical pinned version, but the build script can
+# upgrade to a fresh pseudo-version mid-build, which then trips
+# `missing go.sum entry for go.mod file` on the test command.
+# Hydrating only the resolved versions is narrower than `go mod tidy`
+# and safe in this throwaway build directory.
 echo "Running adapter unit tests (${ADAPTER_VERSION})..."
-(cd "${ADAPTER_VERSION}" && GOWORK=off go test -race -count=1 ./...)
+(cd "${ADAPTER_VERSION}" && GOWORK=off go mod download && GOWORK=off go test -race -count=1 ./...)
 
 # Build worker binary first (this imports baml and loads the shared library)
 echo "Building worker binary..."
