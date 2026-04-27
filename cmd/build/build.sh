@@ -546,8 +546,41 @@ go run "${ADAPTER_VERSION}/cmd/main.go"
 # `missing go.sum entry for go.mod file` on the test command.
 # Hydrating only the resolved versions is narrower than `go mod tidy`
 # and safe in this throwaway build directory.
+#
+# We also need to teach the adapter module how to resolve the
+# generated baml_client module (signoff-31 blocker): introspected.go
+# (re-generated upstream by `go run cmd/introspect/main.go`) imports
+# `github.com/invakid404/baml-rest/baml_client`, which lives at
+# ./baml_client in the build tree. Under workspace mode the
+# `go work use ./baml_client` line at line 325 above made that
+# resolvable from every workspace member; under GOWORK=off the
+# adapter module sees only its own go.mod, which has no
+# require/replace for baml_client (it's a checkout-time-only
+# module). The two `go mod edit` calls below add the missing
+# require + relative replace so the test compile resolves it.
+#
+# When CUSTOM_BAML_GO_LIB is set, the workspace also has a replace
+# for `github.com/boundaryml/baml` pointing at a local checkout
+# (line 473). We mirror that into the adapter module too so the
+# adapter test compiles against the same patched BAML the worker
+# binary will link — without this, GOWORK=off would resolve the
+# adapter's pinned BAML version from the proxy and the tests
+# would diverge from what production runs.
+#
+# All of these `go mod edit` calls land in the throwaway
+# BUILD_WORK copy of the adapter (cp -r at line 308 above), so
+# they don't pollute the source tree's go.mod.
 echo "Running adapter unit tests (${ADAPTER_VERSION})..."
-(cd "${ADAPTER_VERSION}" && GOWORK=off go mod download && GOWORK=off go test -race -count=1 ./...)
+(
+    cd "${ADAPTER_VERSION}"
+    GOWORK=off go mod edit -require "github.com/invakid404/baml-rest/baml_client@v0.0.0"
+    GOWORK=off go mod edit -replace "github.com/invakid404/baml-rest/baml_client=../../baml_client"
+    if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
+        GOWORK=off go mod edit -replace "github.com/boundaryml/baml=${CUSTOM_BAML_GO_LIB}"
+    fi
+    GOWORK=off go mod download
+    GOWORK=off go test -race -count=1 ./...
+)
 
 # Build worker binary first (this imports baml and loads the shared library)
 echo "Building worker binary..."
