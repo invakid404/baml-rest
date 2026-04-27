@@ -46,6 +46,9 @@ var RequestFuncs = map[string]any{}
 var StreamRequest any
 var StreamRequestFuncs = map[string]any{}
 
+// SupportsWithClient is true when baml_client exposes WithClient(string) (BAML v0.219.0+)
+var SupportsWithClient = false
+
 // FunctionClient maps BAML function names to their default client name
 var FunctionClient = map[string]string{}
 

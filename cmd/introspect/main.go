@@ -85,8 +85,9 @@ func generateStub() {
 	// MediaParams stub
 	generateMediaParams(out, nil)
 
-	// BuildRequest/StreamRequest stubs (nil = not available)
-	generateBuildRequestVars(out, nil, nil, "")
+	// BuildRequest/StreamRequest stubs (nil = not available);
+	// SupportsWithClient defaults to false in stub mode.
+	generateBuildRequestVars(out, nil, nil, "", false)
 
 	// .baml config stubs (empty maps)
 	generateBamlConfigVars(out)
@@ -113,6 +114,16 @@ func generateFull() {
 		// BuildRequest API (BAML v0.219.0+)
 		requestFile       *parsedFile
 		streamRequestFile *parsedFile
+
+		// supportsWithClient reports whether the generated baml_client
+		// exposes the top-level WithClient(clientName) CallOption.
+		// Added in BAML v0.219.0; older runtimes lack the symbol.
+		// Detected via the same AST walk that finds Request /
+		// StreamRequest, and emitted as introspected.SupportsWithClient
+		// so the codegen.Generate(selfPkg) wrapper can pick the right
+		// Options without a hardcoded compile-time decision. See
+		// CodeRabbit verdict-27.
+		supportsWithClient bool
 	)
 
 	err := filepath.WalkDir("baml_client", func(path string, dirEntry os.DirEntry, err error) error {
@@ -162,6 +173,17 @@ func generateFull() {
 		if streamRequestFile == nil {
 			if streamRequestVar := file.Scope.Lookup("StreamRequest"); streamRequestVar != nil && streamRequestVar.Kind == ast.Var {
 				streamRequestFile = &parsedFile{file: file, path: path}
+			}
+		}
+
+		// Look for the top-level WithClient(client string) CallOption
+		// (runtime.go, BAML v0.219.0+). Detected as a free function
+		// declaration; the receiver-less top-level form is what the
+		// generator emits in WithClient appends. CodeRabbit
+		// verdict-27.
+		if !supportsWithClient {
+			if withClientObj := file.Scope.Lookup("WithClient"); withClientObj != nil && withClientObj.Kind == ast.Fun {
+				supportsWithClient = true
 			}
 		}
 
@@ -306,7 +328,7 @@ func generateFull() {
 	)
 
 	// --- BuildRequest/StreamRequest API (BAML v0.219.0+) ---
-	generateBuildRequestVars(out, requestFile, streamRequestFile, streamPkg)
+	generateBuildRequestVars(out, requestFile, streamRequestFile, streamPkg, supportsWithClient)
 
 	// --- .baml introspection data for provider detection and retry ---
 	generateBamlConfigVars(out)
@@ -1029,7 +1051,11 @@ func extractBuildRequestMethods(f *parsedFile, receiverName string) []map[string
 // generateBuildRequestVars generates the Request/StreamRequest variables and
 // their method/func maps. If requestFile or streamRequestFile is nil, generates
 // nil/empty stubs (for BAML versions < 0.219.0).
-func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *parsedFile, streamPkg string) {
+//
+// supportsWithClient feeds introspected.SupportsWithClient, used by the
+// codegen.Generate(selfPkg) wrapper to pick the right Options without
+// hardcoding a compile-time decision. CodeRabbit verdict-27.
+func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *parsedFile, streamPkg string, supportsWithClient bool) {
 	retryPkg := "github.com/invakid404/baml-rest/bamlutils/retry"
 	// Force the import so the stub compiles even when the maps are empty
 	out.Anon(retryPkg)
@@ -1071,6 +1097,14 @@ func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *par
 		out.Var().Id("StreamRequest").Any()
 		out.Var().Id("StreamRequestFuncs").Op("=").Map(jen.String()).Any().Values()
 	}
+
+	// SupportsWithClient — true when baml_client exposes the top-level
+	// WithClient(string) CallOption (BAML v0.219.0+). Read by
+	// codegen.Generate(selfPkg) so legacy callers without an explicit
+	// Options struct get the right behaviour for the bundled BAML
+	// runtime. CodeRabbit verdict-27.
+	out.Comment("SupportsWithClient is true when baml_client exposes WithClient(string) (BAML v0.219.0+)")
+	out.Var().Id("SupportsWithClient").Op("=").Lit(supportsWithClient)
 }
 
 // bamlConfig holds parsed .baml configuration data.

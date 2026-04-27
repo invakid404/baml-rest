@@ -646,13 +646,27 @@ type Options struct {
 // package. selfPkg should be the full package path, e.g.
 // "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0".
 //
-// This is the legacy entry point kept for backward compatibility
-// with existing adapter cmd/main.go callers that pass only the self
-// package. It assumes the full modern feature set, matching BAML
-// 0.219+ behaviour. Callers on older BAML runtimes should use
-// GenerateWithOptions with SupportsWithClient=false.
+// Auto-detects WithClient support from introspected.SupportsWithClient
+// (CodeRabbit verdict-27): the introspect step already AST-walks
+// baml_client/*.go and emits the symbol presence flag, so this
+// wrapper now picks the right Options without a hardcoded compile-
+// time decision. Pre-verdict-27 the wrapper unconditionally set
+// SupportsWithClient=true, which silently emitted
+// baml_client.WithClient(clientOverride) calls against pre-0.219
+// runtimes that lack the symbol — surfacing only as an
+// "undefined: WithClient" adapter compile error rather than a
+// generator-time diagnostic.
+//
+// Deprecated: third-party adapter generators should prefer
+// GenerateWithOptions for explicit control over per-adapter feature
+// flags. This wrapper is kept for backward compatibility; the
+// shipped adapters (v0.204, v0.215, v0.219) call GenerateWithOptions
+// directly and are unaffected.
 func Generate(selfPkg string) {
-	GenerateWithOptions(Options{SelfPkg: selfPkg, SupportsWithClient: true})
+	GenerateWithOptions(Options{
+		SelfPkg:            selfPkg,
+		SupportsWithClient: introspected.SupportsWithClient,
+	})
 }
 
 // GenerateWithOptions runs code generation with per-adapter feature
