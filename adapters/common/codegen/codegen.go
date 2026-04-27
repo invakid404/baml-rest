@@ -700,6 +700,30 @@ func generate(opts Options) {
 		}
 		return jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(body...)
 	}
+
+	// withClientCloneAndAppend emits the clone-and-append-WithClient
+	// idiom that runs at every dispatch site where a per-attempt
+	// client override may have been resolved (BuildRequest leaf
+	// dispatch, mixed-mode bridge legacy children, top-level legacy
+	// fallthrough). The clone is load-bearing: the base options slice
+	// is shared with sibling requests via a backing array that may or
+	// may not have been reallocated by the upstream Append, and
+	// appending WithClient without cloning would mutate that shared
+	// state. CodeRabbit verdict-26 finding F1 — six call sites
+	// previously inlined this pattern with subtly different
+	// destination/source spellings; collapsing into one helper makes
+	// the invariant explicit and removes an opportunity for the
+	// clone to drift between sites. dst is the variable being
+	// reassigned, src is the slice to clone (often, but not always,
+	// the same name).
+	withClientCloneAndAppend := func(dst, src string) jen.Code {
+		return withClientOverrideBlock(
+			jen.Id(dst).Op("=").Append(
+				jen.Qual("slices", "Clone").Call(jen.Id(src)),
+				jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
+			),
+		)
+	}
 	selfAdapterPkg := selfPkg + "/adapter"
 	selfUtilsPkg := selfPkg + "/utils"
 
@@ -1285,12 +1309,7 @@ func generate(opts Options) {
 				jen.Id("options"),
 				jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
 			),
-			withClientOverrideBlock(
-				jen.Id("streamOpts").Op("=").Append(
-					jen.Qual("slices", "Clone").Call(jen.Id("streamOpts")),
-					jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-				),
-			),
+			withClientCloneAndAppend("streamOpts", "streamOpts"),
 			// Call Stream WITH OnTick for heartbeat tracking, but still use native streaming for data
 			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
 				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(noRawStreamCallParams...),
@@ -1651,12 +1670,7 @@ func generate(opts Options) {
 		// Build the driveStream closure: creates the BAML stream, iterates, returns (finalResult, lastError).
 		driveStreamBody := []jen.Code{
 			jen.Id("driveOpts").Op(":=").Id("opts"),
-			withClientOverrideBlock(
-				jen.Id("driveOpts").Op("=").Append(
-					jen.Qual("slices", "Clone").Call(jen.Id("opts")),
-					jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-				),
-			),
+			withClientCloneAndAppend("driveOpts", "opts"),
 			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
 				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(driveStreamCallParams...),
 			jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
@@ -1816,14 +1830,7 @@ func generate(opts Options) {
 				).BlockFunc(func(g *jen.Group) {
 					// Build callOpts: clone options and append WithClient if override is set
 					g.Id("callOpts").Op(":=").Id("options")
-					if supportsWithClient {
-						g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
-							jen.Id("callOpts").Op("=").Append(
-								jen.Qual("slices", "Clone").Call(jen.Id("options")),
-								jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-							),
-						)
-					}
+					g.Add(withClientCloneAndAppend("callOpts", "options"))
 					// Call StreamRequest.Method(ctx, args..., callOpts...)
 					g.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
 						Qual(common.GeneratedClientPkg, "StreamRequest").Dot(methodName).Call(buildRequestCallParams...)
@@ -1950,12 +1957,7 @@ func generate(opts Options) {
 					jen.Id("sendHeartbeat").Func().Params(),
 				).Params(jen.Any(), jen.String(), jen.Error()).Block(
 					jen.Id("callOpts").Op(":=").Id("options"),
-					withClientOverrideBlock(
-						jen.Id("callOpts").Op("=").Append(
-							jen.Qual("slices", "Clone").Call(jen.Id("options")),
-							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-						),
-					),
+					withClientCloneAndAppend("callOpts", "options"),
 					jen.Return(jen.Id("runLegacyChildStream").Call(
 						jen.Id("ctx"),
 						jen.Id("needsRaw"),
@@ -2118,14 +2120,7 @@ func generate(opts Options) {
 				).BlockFunc(func(g *jen.Group) {
 					// Build callOpts: clone options and append WithClient if override is set
 					g.Id("callOpts").Op(":=").Id("options")
-					if supportsWithClient {
-						g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
-							jen.Id("callOpts").Op("=").Append(
-								jen.Qual("slices", "Clone").Call(jen.Id("options")),
-								jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-							),
-						)
-					}
+					g.Add(withClientCloneAndAppend("callOpts", "options"))
 					// Call Request.Method(ctx, args..., callOpts...) — non-streaming
 					g.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
 						Qual(common.GeneratedClientPkg, "Request").Dot(methodName).Call(callRequestCallParams...)
@@ -2207,12 +2202,7 @@ func generate(opts Options) {
 					jen.Id("sendHeartbeat").Func().Params(),
 				).Params(jen.Any(), jen.String(), jen.Error()).Block(
 					jen.Id("callOpts").Op(":=").Id("options"),
-					withClientOverrideBlock(
-						jen.Id("callOpts").Op("=").Append(
-							jen.Qual("slices", "Clone").Call(jen.Id("options")),
-							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-						),
-					),
+					withClientCloneAndAppend("callOpts", "options"),
 					jen.Return(jen.Id("runLegacyChildStream").Call(
 						jen.Id("ctx"),
 						jen.Id("needsRaw"),
@@ -3075,13 +3065,27 @@ func generate(opts Options) {
 			jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("unsupported media kind: %v"), jen.Id("kind"))),
 		)
 
-	// Generate `makeOptionsFromAdapter` — pulls the BuildRequest-safe
-	// registry view (drops every baml-rest-resolved strategy parent).
-	// Used by BuildRequest dispatch and mixed-mode bridge legacy-child
-	// callbacks (both target leaves, not parents). See PR #192
-	// cold-review-4 + Option C.
-	out.Func().Id("makeOptionsFromAdapter").
-		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
+	// makeOptionsFromAdapter and makeLegacyOptionsFromAdapter share
+	// every step except which registry field they read. CodeRabbit
+	// verdict-26 finding F2: emit a single
+	// makeOptionsFromAdapterInternal that owns the type assertion +
+	// slice build + WithClientRegistry-and-TypeBuilder appends, then
+	// emit two thin wrappers that select the registry view via a
+	// boolean. Trades two duplicate generated functions for three
+	// smaller ones; the assertion happens once per call instead of
+	// once per emitted function.
+
+	// Generate `makeOptionsFromAdapterInternal` — shared body.
+	// `legacy` selects the registry view: false → ClientRegistry
+	// (BuildRequest-safe, drops every baml-rest-resolved strategy
+	// parent); true → LegacyClientRegistry (preserves explicit
+	// strategy-parent overrides). See PR #192 cold-review-4 +
+	// Option C for the dual-view rationale.
+	out.Func().Id("makeOptionsFromAdapterInternal").
+		Params(
+			jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("legacy").Bool(),
+		).
 		Params(
 			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
 			jen.Error(),
@@ -3094,12 +3098,20 @@ func generate(opts Options) {
 					jen.Id("adapterIn"),
 				)),
 			),
+			// Select the registry view at runtime so the same body
+			// covers both wrappers. The two fields have identical
+			// types, so the conditional collapses to a simple
+			// pointer pick.
+			jen.Id("registry").Op(":=").Id("adapter").Dot("ClientRegistry"),
+			jen.If(jen.Id("legacy")).Block(
+				jen.Id("registry").Op("=").Id("adapter").Dot("LegacyClientRegistry"),
+			),
 			// Pre-size with capacity 3: room for ClientRegistry + TypeBuilder + WithOnTick
 			jen.Id("result").Op(":=").Make(jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"), jen.Lit(0), jen.Lit(3)),
-			jen.If(jen.Id("adapter").Dot("ClientRegistry").Op("!=").Nil()).Block(
+			jen.If(jen.Id("registry").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),
 					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
-						Call(jen.Id("adapter").Dot("ClientRegistry"))),
+						Call(jen.Id("registry"))),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),
@@ -3109,12 +3121,23 @@ func generate(opts Options) {
 			jen.Return(jen.Id("result"), jen.Nil()),
 		)
 
-	// Generate `makeLegacyOptionsFromAdapter` — pulls the legacy
-	// registry view (preserves explicit strategy-parent overrides).
+	// Generate `makeOptionsFromAdapter` — BuildRequest-safe wrapper.
+	// Used by BuildRequest dispatch and mixed-mode bridge legacy-
+	// child callbacks (both target leaves, not parents).
+	out.Func().Id("makeOptionsFromAdapter").
+		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
+		Params(
+			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Error(),
+		).
+		Block(
+			jen.Return(jen.Id("makeOptionsFromAdapterInternal").Call(jen.Id("adapterIn"), jen.False())),
+		)
+
+	// Generate `makeLegacyOptionsFromAdapter` — legacy wrapper.
 	// Used by the top-level legacy fallthrough (_noRaw / _full impls
 	// invoked via __legacyClientOverride) so BAML can honour runtime
-	// strategy-parent overrides or emit canonical errors. See PR #192
-	// cold-review-4 + Option C.
+	// strategy-parent overrides or emit canonical errors.
 	out.Func().Id("makeLegacyOptionsFromAdapter").
 		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
 		Params(
@@ -3122,25 +3145,7 @@ func generate(opts Options) {
 			jen.Error(),
 		).
 		Block(
-			jen.List(jen.Id("adapter"), jen.Id("ok")).Op(":=").Id("adapterIn").Assert(jen.Op("*").Qual(selfAdapterPkg, "BamlAdapter")),
-			jen.If(jen.Op("!").Id("ok")).Block(
-				jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(
-					jen.Lit("invalid adapter type: expected *BamlAdapter, got %T"),
-					jen.Id("adapterIn"),
-				)),
-			),
-			jen.Id("result").Op(":=").Make(jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"), jen.Lit(0), jen.Lit(3)),
-			jen.If(jen.Id("adapter").Dot("LegacyClientRegistry").Op("!=").Nil()).Block(
-				jen.Id("result").Op("=").Append(jen.Id("result"),
-					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
-						Call(jen.Id("adapter").Dot("LegacyClientRegistry"))),
-			),
-			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
-				jen.Id("result").Op("=").Append(jen.Id("result"),
-					jen.Qual(common.GeneratedClientPkg, "WithTypeBuilder").
-						Call(jen.Id("adapter").Dot("TypeBuilder"))),
-			),
-			jen.Return(jen.Id("result"), jen.Nil()),
+			jen.Return(jen.Id("makeOptionsFromAdapterInternal").Call(jen.Id("adapterIn"), jen.True())),
 		)
 
 	// Generate `InitBamlRuntime` - wrapper for baml_client.InitRuntime()
