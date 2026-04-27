@@ -625,11 +625,9 @@ func emitBAMLHTTPRequestConversion(g *jen.Group) {
 	}), jen.Nil())
 }
 
-// Generate generates the adapter.go file for the given adapter package.
-// selfPkg should be the full package path, e.g. "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0"
 // Options configures code generation per adapter. Each adapter's
 // cmd/main.go populates this with its BAML-version-specific feature
-// flags before invoking Generate.
+// flags before invoking GenerateWithOptions.
 type Options struct {
 	// SelfPkg is the adapter module's import path, e.g.
 	// "github.com/invakid404/baml-rest/adapters/adapter_v0_219_0".
@@ -644,7 +642,11 @@ type Options struct {
 	SupportsWithClient bool
 }
 
-// Generate is the legacy entry point kept for backward compatibility
+// Generate generates the adapter.go file for the given adapter
+// package. selfPkg should be the full package path, e.g.
+// "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0".
+//
+// This is the legacy entry point kept for backward compatibility
 // with existing adapter cmd/main.go callers that pass only the self
 // package. It assumes the full modern feature set, matching BAML
 // 0.219+ behaviour. Callers on older BAML runtimes should use
@@ -662,6 +664,27 @@ func GenerateWithOptions(opts Options) {
 func generate(opts Options) {
 	selfPkg := opts.SelfPkg
 	supportsWithClient := opts.SupportsWithClient
+
+	// Fail-fast invariant (CodeRabbit verdict-24 finding F2):
+	// BuildRequest emission requires the target BAML runtime to expose
+	// WithClient — without it the generated router cannot honor the
+	// per-attempt clientOverride that fallback / round-robin / dynamic-
+	// primary semantics depend on. The introspected Request /
+	// StreamRequest singletons are the BR API presence signal; if
+	// they exist while SupportsWithClient is false, codegen would emit
+	// BuildRequest paths that compile but silently dispatch to the
+	// wrong client (planned metadata reports the resolved leaf, BAML
+	// builds the HTTP request for the static default).
+	//
+	// In the shipped matrix this is unreachable: v0.204/v0.215 expose
+	// neither Request/StreamRequest nor WithClient, and v0.219 sets
+	// SupportsWithClient=true. The guard catches custom BAML Go
+	// libraries, future partial API shapes, and direct
+	// GenerateWithOptions misuse — all paths where the configuration
+	// can drift out of sync without anyone noticing until production.
+	if !supportsWithClient && (introspected.Request != nil || introspected.StreamRequest != nil) {
+		panic("codegen: SupportsWithClient=false is incompatible with introspected Request/StreamRequest — BuildRequest emission needs WithClient to honor per-attempt client overrides; see PR #192 cold-review verdict-24 finding F2")
+	}
 
 	// withClientOverrideBlock wraps a `clientOverride != ""` guard around
 	// WithClient(clientOverride) appends. When the target BAML runtime
