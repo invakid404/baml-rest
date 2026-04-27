@@ -246,6 +246,17 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 	// If SharedStateImpl is nil the host isn't hosting a store (e.g.
 	// standalone harness) and we skip the reverse channel entirely; the
 	// worker falls back to its in-process Coordinator.
+	//
+	// cleanupSharedState stops the reverse server AND closes its
+	// listener on every error path between Accept and the successful
+	// return. CodeRabbit verdict-25 finding F8: previously
+	// AttachSharedState failure called srv.Stop() but left the
+	// listener open, and the post-attach context-cancelled extra-
+	// connection path (below) returned without cleaning up either.
+	// Both leaked the reverse server and listener for the lifetime
+	// of the host process. Successful return intentionally keeps the
+	// reverse server alive — go-plugin teardown closes the listener.
+	cleanupSharedState := func() {}
 	if p.SharedStateImpl != nil {
 		// broker.Accept publishes the id over the handshake stream
 		// synchronously before returning a listener, so the worker's
@@ -257,6 +268,10 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 		}
 		srv := grpc.NewServer(GRPCServerOptions()...)
 		pb.RegisterSharedStateServer(srv, p.SharedStateImpl)
+		cleanupSharedState = func() {
+			srv.Stop()
+			_ = listener.Close()
+		}
 		go func() {
 			// Serve returns when listener is closed (plugin teardown).
 			// Errors here aren't actionable — log and drop.
@@ -278,7 +293,7 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 		if _, err := primaryClient.AttachSharedState(attachCtx, &pb.AttachSharedStateRequest{
 			BrokerId: SharedStateBrokerID,
 		}); err != nil {
-			srv.Stop()
+			cleanupSharedState()
 			return nil, fmt.Errorf("host: AttachSharedState failed: %w", err)
 		}
 	}
@@ -307,10 +322,13 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 		if r.err != nil {
 			if ctx != nil && ctx.Err() != nil {
 				// Context cancelled — clean up any connections we already
-				// collected before returning.
+				// collected AND tear down the reverse shared-state
+				// server before returning. CodeRabbit verdict-25
+				// finding F8.
 				for _, c := range conns {
 					c.Close()
 				}
+				cleanupSharedState()
 				return nil, ctx.Err()
 			}
 			log.Printf("[WARN] failed to dial extra gRPC connection %d after %d attempts: %v", r.id, extraGRPCDialRetries+1, r.err)

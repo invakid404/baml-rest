@@ -249,6 +249,16 @@ func TestSetBAMLHeaders_RoundRobin(t *testing.T) {
 		if got := h.Get(HeaderBAMLRoundRobinName); got != "" {
 			t.Errorf("RoundRobinName should be dropped on control chars; got %q", got)
 		}
+		// Selected is sanitised independently of Name — a clean
+		// Selected must survive even when the sibling Name is
+		// dropped. CodeRabbit verdict-25 finding F5: the previous
+		// shape of this subtest only asserted the Name drop and
+		// Index emission, which would have passed if a regression
+		// dropped Selected too (the clean-name subtest above wouldn't
+		// catch that since it never dirties Name).
+		if got := h.Get(HeaderBAMLRoundRobinSelected); got != "Good" {
+			t.Errorf("RoundRobinSelected should still emit when Name is dropped; got %q", got)
+		}
 		// Index is a number — always safe to emit.
 		if got := h.Get(HeaderBAMLRoundRobinIndex); got != "1" {
 			t.Errorf("RoundRobinIndex should still emit when Name is dropped; got %q", got)

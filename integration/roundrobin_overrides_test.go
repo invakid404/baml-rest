@@ -87,9 +87,6 @@ func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 		// can assert it received zero requests.
 		registerAllGreetingScenarios(t, []string{"fallback-primary", "fallback-secondary", "fallback-tertiary"})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		// Drive multiple calls. The stable invariant under the
 		// strategy-only override is "every pick is in the override
 		// chain AND none is the introspected primary" — NOT "both
@@ -100,12 +97,20 @@ func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 		// flake at ~12.5% per subtest for 4 runs over 2 children.
 		// Per-pick membership is the F1-relevant assertion. Cold-
 		// review-3 verdict-15 finding.
+		//
+		// Per-iteration context (CodeRabbit verdict-25 finding F6):
+		// the loop previously shared a single 30s deadline across
+		// every call, so a slow first call would consume budget that
+		// later calls inherit and a deadline-induced failure could
+		// look like an application regression. Fresh deadline per
+		// iteration isolates that.
 		const runs = 4
 		overrideChildren := map[string]bool{
 			"FallbackSecondary": true,
 			"FallbackTertiary":  true,
 		}
 		for i := 0; i < runs; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			resp, err := client.Call(ctx, testutil.CallRequest{
 				Method: "GetGreetingRoundRobinPair",
 				Input:  map[string]any{"name": "World"},
@@ -122,6 +127,7 @@ func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 					},
 				},
 			})
+			cancel()
 			if err != nil {
 				t.Fatalf("Call %d failed: %v", i, err)
 			}
@@ -221,13 +227,14 @@ func TestRoundRobinOverrides_DeterministicStart(t *testing.T) {
 		clearRoundRobinScenarios(t)
 		registerAllGreetingScenarios(t, []string{"fallback-primary", "fallback-secondary", "fallback-tertiary"})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		// Multiple requests, each with start:1, all must select
 		// FallbackSecondary (index 1 in the override chain).
+		// Per-iteration context (CodeRabbit verdict-25 finding F6):
+		// see TestRoundRobinOverrides_StrategyOnlyParent above for
+		// the rationale.
 		const runs = 5
 		for i := 0; i < runs; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			resp, err := client.Call(ctx, testutil.CallRequest{
 				Method: "GetGreetingRoundRobinChain",
 				Input:  map[string]any{"name": "World"},
@@ -245,6 +252,7 @@ func TestRoundRobinOverrides_DeterministicStart(t *testing.T) {
 					},
 				},
 			})
+			cancel()
 			if err != nil {
 				t.Fatalf("Call %d failed: %v", i, err)
 			}

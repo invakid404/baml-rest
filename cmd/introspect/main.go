@@ -1530,6 +1530,23 @@ func cleanBamlValue(s string) string {
 }
 
 func parseClientBlock(cfg *bamlConfig, name string, block []string) {
+	// Clear stale per-client state derived from the block before
+	// processing so a re-parse of the same client name doesn't
+	// inherit values absent from the new block. extractRoundRobinStart
+	// only writes on success — without this delete, a previously-
+	// parsed `start N` would persist if the new block omits it,
+	// silently keeping a deterministic seed where the random-seed
+	// behaviour is documented (CodeRabbit verdict-25 finding F3).
+	// fallbackChains, clientProvider, and clientRetryPolicy are
+	// written unconditionally below for blocks that declare them, so
+	// they're not subject to the same stale-survives bug — but we
+	// still reset them here defensively in case future block-level
+	// statements become conditional too.
+	delete(cfg.roundRobinStart, name)
+	delete(cfg.fallbackChains, name)
+	delete(cfg.clientProvider, name)
+	delete(cfg.clientRetryPolicy, name)
+
 	nestedDepth := 0
 	inOptions := false
 	optionsDepth := 0

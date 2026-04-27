@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/go-plugin"
 	"github.com/invakid404/baml-rest/bamlutils"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 	"google.golang.org/grpc"
@@ -403,5 +404,47 @@ func TestGRPCServerCallStreamDoesNotOverrideTerminalCancellation(t *testing.T) {
 	}
 	if stream.sent[0].Kind != pb.StreamResult_FINAL {
 		t.Fatalf("sent result kind = %v, want FINAL", stream.sent[0].Kind)
+	}
+}
+
+// TestAttachSharedState_NilHandlerFailsFast pins CodeRabbit verdict-25
+// finding F7. Pre-fix, GRPCServer.AttachSharedState returned success
+// when onAttach was nil, so the host believed shared state was
+// attached when in fact the worker stored no SharedStateClient. Post-
+// fix, the RPC fails immediately so the misconfiguration surfaces
+// before pool-wide round-robin silently collapses to per-worker
+// coordinators.
+//
+// We construct a GRPCServer with a non-nil broker pointer (to bypass
+// the broker-nil guard) and nil onAttach. The broker is never dialed
+// — the onAttach guard fires first.
+func TestAttachSharedState_NilHandlerFailsFast(t *testing.T) {
+	server := &GRPCServer{
+		Impl:     &testWorkerImpl{},
+		broker:   &plugin.GRPCBroker{},
+		onAttach: nil,
+	}
+	_, err := server.AttachSharedState(context.Background(), &pb.AttachSharedStateRequest{BrokerId: 1})
+	if err == nil {
+		t.Fatal("expected error from AttachSharedState with nil handler; got nil (misconfiguration would silently leave shared state unattached)")
+	}
+	if !strings.Contains(err.Error(), "shared-state attach handler not installed") {
+		t.Errorf("error %q does not mention the missing-handler condition", err)
+	}
+}
+
+// TestAttachSharedState_NilBrokerFailsFast guards the existing nil-
+// broker check is still load-bearing after the verdict-25 F7 fix.
+func TestAttachSharedState_NilBrokerFailsFast(t *testing.T) {
+	server := &GRPCServer{
+		Impl:   &testWorkerImpl{},
+		broker: nil,
+	}
+	_, err := server.AttachSharedState(context.Background(), &pb.AttachSharedStateRequest{BrokerId: 1})
+	if err == nil {
+		t.Fatal("expected error from AttachSharedState with nil broker; got nil")
+	}
+	if !strings.Contains(err.Error(), "broker not available") {
+		t.Errorf("error %q does not mention the missing-broker condition", err)
 	}
 }

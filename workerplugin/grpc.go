@@ -75,11 +75,21 @@ func (s *GRPCServer) AttachSharedState(ctx context.Context, req *pb.AttachShared
 		return nil, fmt.Errorf("worker: broker not available for shared-state dial-back")
 	}
 	if s.onAttach == nil {
-		// No handler installed — return success so standalone worker
-		// binaries (launched without a pool, e.g. tests) can accept the
-		// RPC without side effects. Production workers always install
-		// a handler; its absence here means a misconfigured test harness.
-		return &pb.Empty{}, nil
+		// No handler installed — fail fast (CodeRabbit verdict-25
+		// finding F7). The host calls this RPC only when it has
+		// SharedStateImpl set on its WorkerPlugin (plugin.go:244-249);
+		// reaching here without a handler means the worker side
+		// neglected to install one before plugin.Serve. Returning
+		// success would be misleading: the host believes shared
+		// state is attached, but the worker never stores a
+		// SharedStateClient, so pool-wide round-robin silently
+		// collapses to per-worker coordinators.
+		//
+		// Standalone / test harnesses without shared state should
+		// avoid invoking this RPC at all by leaving WorkerPlugin.
+		// SharedStateImpl nil on the host side, not by accepting a
+		// no-op attach here.
+		return nil, fmt.Errorf("worker: shared-state attach handler not installed")
 	}
 	conn, err := s.broker.DialWithOptions(req.GetBrokerId(), GRPCDialOptions()...)
 	if err != nil {

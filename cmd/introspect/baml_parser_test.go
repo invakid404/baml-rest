@@ -1245,8 +1245,11 @@ func TestParseClientBlock_RoundRobinStart_InlineOptions(t *testing.T) {
 func TestParseClientBlock_RoundRobinStart_Absent(t *testing.T) {
 	// A RR client without `start N` must not leave a stale entry in the
 	// map — absence is the signal the coordinator uses to fall back to
-	// a random seed.
+	// a random seed. Preseed a stale entry so the test fails if
+	// parseClientBlock inherits prior state instead of resetting
+	// (CodeRabbit verdict-25 finding F3).
 	cfg := newTestBamlConfig()
+	cfg.roundRobinStart["RR"] = 99
 	block := []string{
 		"provider baml-roundrobin",
 		"options {",
@@ -1254,15 +1257,17 @@ func TestParseClientBlock_RoundRobinStart_Absent(t *testing.T) {
 		"}",
 	}
 	parseClientBlock(cfg, "RR", block)
-	if _, ok := cfg.roundRobinStart["RR"]; ok {
-		t.Fatalf("expected no start entry for RR, got one")
+	if v, ok := cfg.roundRobinStart["RR"]; ok {
+		t.Fatalf("expected stale start to be cleared for RR, got %d", v)
 	}
 }
 
 func TestParseClientBlock_RoundRobinStart_InvalidIgnored(t *testing.T) {
 	// A malformed start value (non-integer) is silently ignored — codegen
-	// must not panic; the coordinator simply picks a random seed.
+	// must not panic; the coordinator simply picks a random seed. Same
+	// preseed-and-cleared shape as the Absent test (verdict-25 F3).
 	cfg := newTestBamlConfig()
+	cfg.roundRobinStart["RR"] = 99
 	block := []string{
 		"provider baml-roundrobin",
 		"options {",
@@ -1271,8 +1276,8 @@ func TestParseClientBlock_RoundRobinStart_InvalidIgnored(t *testing.T) {
 		"}",
 	}
 	parseClientBlock(cfg, "RR", block)
-	if _, ok := cfg.roundRobinStart["RR"]; ok {
-		t.Fatalf("malformed start should be ignored, got entry")
+	if v, ok := cfg.roundRobinStart["RR"]; ok {
+		t.Fatalf("malformed start should clear stale entry, got %d", v)
 	}
 }
 
@@ -1340,7 +1345,11 @@ func TestParseClientBlock_RoundRobinStart_OutOfI32Ignored(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Preseed-and-cleared: out-of-i32 must be ignored AND
+			// must clear any stale entry from a prior parse
+			// (CodeRabbit verdict-25 finding F3).
 			cfg := newTestBamlConfig()
+			cfg.roundRobinStart["RR"] = 99
 			block := []string{
 				"provider baml-roundrobin",
 				"options {",
@@ -1350,7 +1359,7 @@ func TestParseClientBlock_RoundRobinStart_OutOfI32Ignored(t *testing.T) {
 			}
 			parseClientBlock(cfg, "RR", block)
 			if v, ok := cfg.roundRobinStart["RR"]; ok {
-				t.Fatalf("out-of-i32 start %q should be ignored, got entry %d", tc.raw, v)
+				t.Fatalf("out-of-i32 start %q should clear stale entry, got %d", tc.raw, v)
 			}
 		})
 	}
@@ -1390,6 +1399,13 @@ func TestCanonicaliseProvider_FoldsAliases(t *testing.T) {
 // `provider fallback` spelling — the form BAML's CLI init template
 // emits — lands in the introspected ClientProvider map as the
 // canonical "baml-fallback" string. Cold-review-2 finding 2.
+//
+// Also asserts the fallback chain is captured under the bare alias
+// (CodeRabbit verdict-25 finding F4): the runtime classifier and
+// chain resolution both depend on cfg.fallbackChains[name] being
+// populated regardless of provider spelling, and a regression that
+// silently returned an empty chain for the bare alias would still
+// pass the provider-only assertion.
 func TestParseClientBlock_BareFallbackAliasNormalised(t *testing.T) {
 	cfg := newTestBamlConfig()
 	block := []string{
@@ -1401,5 +1417,9 @@ func TestParseClientBlock_BareFallbackAliasNormalised(t *testing.T) {
 	parseClientBlock(cfg, "MyFallback", block)
 	if got := cfg.clientProvider["MyFallback"]; got != "baml-fallback" {
 		t.Errorf("clientProvider[MyFallback]: got %q, want baml-fallback", got)
+	}
+	chain := cfg.fallbackChains["MyFallback"]
+	if len(chain) != 2 || chain[0] != "A" || chain[1] != "B" {
+		t.Errorf("fallbackChains[MyFallback]: got %v, want [A B] — chain must be captured under the bare alias too", chain)
 	}
 }

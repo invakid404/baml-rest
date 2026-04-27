@@ -968,9 +968,18 @@ func TestRunCallOrchestration_NilHTTPClient(t *testing.T) {
 		// in the validation code itself.
 		t.Fatalf("nil-client fallback: orchestrator returned a validation error on a valid config: %v", err)
 	case len(streamErrs) > 0:
-		// Transport failure surfaced via the stream — acceptable under
-		// CI pool-race conditions. Log so flakes stay diagnosable.
-		t.Logf("nil-client fallback: acceptable transient transport failure: %v", streamErrs)
+		// Transport failure surfaced via the stream. The previous
+		// "any error is acceptable" arm would have hidden parse /
+		// extract / request-construction regressions behind the
+		// transport-flake label. Whitelist only the documented
+		// stale-keepalive class — every other shape is a real bug
+		// (CodeRabbit verdict-25 finding F2).
+		for i, e := range streamErrs {
+			if !isNilDefaultClientTransportFlake(e) {
+				t.Fatalf("nil-client fallback: stream error %d is not a recognised transport flake (parse/extract/request-construction regression?): %v", i, e)
+			}
+		}
+		t.Logf("nil-client fallback: acceptable transient transport failure(s): %v", streamErrs)
 	default:
 		// Neither final nor any error signal — orchestrator produced
 		// no output, which is a regression.
@@ -1494,4 +1503,31 @@ func TestRunCallOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 	if finalRaw != legacyRaw {
 		t.Errorf("expected raw=%q, got %q", legacyRaw, finalRaw)
 	}
+}
+
+// isNilDefaultClientTransportFlake reports whether err looks like the
+// documented stale-keepalive transport class TestRunCallOrchestration_
+// NilHTTPClient tolerates under CI's `-race -count=100` rotation. The
+// check is substring-based on err.Error() — the test result type does
+// not carry stack traces. CodeRabbit verdict-25 finding F2: previously
+// the test logged every StreamResultKindError as "transport flake",
+// which would have hidden parse / extract / request-construction
+// regressions behind the label.
+func isNilDefaultClientTransportFlake(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, needle := range []string{
+		"EOF",
+		"connection refused",
+		"broken pipe",
+		"connection reset",
+		"use of closed network connection",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }

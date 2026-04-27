@@ -683,7 +683,7 @@ func generate(opts Options) {
 	// GenerateWithOptions misuse — all paths where the configuration
 	// can drift out of sync without anyone noticing until production.
 	if !supportsWithClient && (introspected.Request != nil || introspected.StreamRequest != nil) {
-		panic("codegen: SupportsWithClient=false is incompatible with introspected Request/StreamRequest — BuildRequest emission needs WithClient to honor per-attempt client overrides; see PR #192 cold-review verdict-24 finding F2")
+		panic("codegen: SupportsWithClient=false is incompatible with introspected Request/StreamRequest; BuildRequest emission requires WithClient to honor per-attempt client overrides")
 	}
 
 	// withClientOverrideBlock wraps a `clientOverride != ""` guard around
