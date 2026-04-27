@@ -1650,12 +1650,18 @@ func RunStreamOrchestration(
 	var heartbeatSent atomic.Bool
 
 	// plannedMetadataOnce gates the single planned-metadata emission. It is
-	// deliberately separate from heartbeatSent — heartbeatSent resets on
-	// each inner retry (so retried attempts re-arm first-byte hung
-	// detection), but the planned metadata describes the whole orchestrator
-	// run and must fire exactly once. Pool-level retries produce a fresh
-	// orchestrator invocation with a fresh Once, so each pool attempt gets
-	// its own planned emission (pool rewrites the Attempt field).
+	// strictly once-per-orchestrator-invocation: the sync.Once is never
+	// reset within RunStreamOrchestration. This is deliberately stronger
+	// than heartbeatSent's contract (CodeRabbit verdict-29 finding 2):
+	// heartbeatSent IS reset on fallback-child handoff (~line 1955) and
+	// retry callbacks (~line 2008) so the next child/retry can re-arm
+	// pool first-byte detection, but the planned metadata describes the
+	// whole orchestrator run and must fire exactly once regardless of
+	// how many children/retries that run consumes.
+	//
+	// Pool-level retries produce a fresh orchestrator invocation with a
+	// fresh Once, so each pool attempt gets its own planned emission
+	// (pool rewrites the Attempt field).
 	var plannedMetadataOnce sync.Once
 	emitPlannedMetadata := func() {
 		if config.MetadataPlan == nil || config.NewMetadataResult == nil {
@@ -1716,8 +1722,25 @@ func RunStreamOrchestration(
 	// sendHeartbeat fires when the upstream provider returns 2xx and
 	// also nudges the planned-metadata emit (a no-op after the upfront
 	// emit above — the plannedMetadataOnce gate guarantees idempotency).
-	// Heartbeat itself remains gated on heartbeatSent so it fires once
-	// per orchestrator (pool retries get a fresh orchestrator instance).
+	//
+	// Heartbeat is gated on heartbeatSent — idempotent until that flag
+	// is reset. The flag IS reset deliberately at two seams within a
+	// single orchestrator invocation, allowing one heartbeat per
+	// upstream attempt/child window rather than once per whole
+	// orchestrator (CodeRabbit verdict-29 finding 2):
+	//
+	//   - fallback-child handoff after a failed prior child (see the
+	//     reset around line 1955): the next child must be able to
+	//     emit a fresh heartbeat so the pool's first-byte hung
+	//     detection re-arms for that attempt.
+	//   - retry callback before the next retry attempt (see the reset
+	//     around line 2008): same liveness-rearm rationale, applied
+	//     to retry windows on the BuildRequest path.
+	//
+	// Pool-level retries also create a fresh orchestrator invocation
+	// (and a fresh heartbeatSent), so the pool sees one heartbeat per
+	// pool-attempt × inner-attempt × child window rather than once per
+	// outer pool attempt.
 	sendHeartbeat := func() {
 		if heartbeatSent.CompareAndSwap(false, true) {
 			r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)

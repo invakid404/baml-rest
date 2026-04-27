@@ -1314,27 +1314,45 @@ func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
 	}
 }
 
-func TestResolveFallbackChain_FallbackWithRRChild_HyphenatedSpelling(t *testing.T) {
-	// Same as above but with the "baml-round-robin" spelling (BAML
-	// upstream) to confirm the alias classifier folds all three RR
-	// spellings (baml-roundrobin / baml-round-robin / round-robin)
-	// before deciding whether the child contributes the new
-	// PathReason.
-	fallbackChains := map[string][]string{
-		"MyFallback": {"A", "InnerRR"},
+func TestResolveFallbackChain_FallbackWithRRChild_AliasSpellings(t *testing.T) {
+	// Resolver-level coverage for the non-canonical RR spellings the
+	// alias classifier must fold before deciding whether the child
+	// contributes PathReasonFallbackRoundRobinChildLegacy. The
+	// canonical "baml-roundrobin" form is exercised by
+	// TestResolveFallbackChain_FallbackWithRRChild above; this table
+	// pins the two alias forms (BAML upstream's hyphenated
+	// "baml-round-robin" and the bare "round-robin" shorthand).
+	// CodeRabbit verdict-29 finding 1: the prior single-spelling test
+	// only covered "baml-round-robin", leaving the bare alias's
+	// resolver path silent. (Metadata-plan-level coverage of all
+	// three spellings already exists in
+	// TestBuildFallbackChainPlan_ReasonPlumbsFromResolver.)
+	cases := []struct {
+		name     string
+		provider string
+	}{
+		{name: "baml-round-robin", provider: "baml-round-robin"},
+		{name: "round-robin", provider: "round-robin"},
 	}
-	clientProviders := map[string]string{
-		"MyFallback": "baml-fallback",
-		"A":          "openai",
-		"InnerRR":    "baml-round-robin",
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fallbackChains := map[string][]string{
+				"MyFallback": {"A", "InnerRR"},
+			}
+			clientProviders := map[string]string{
+				"MyFallback": "baml-fallback",
+				"A":          "openai",
+				"InnerRR":    tc.provider,
+			}
 
-	_, _, _, reason := ResolveFallbackChainForClientWithReason(
-		nil, "MyFallback", fallbackChains, clientProviders,
-		func(p string) bool { return p == "openai" },
-	)
-	if reason != PathReasonFallbackRoundRobinChildLegacy {
-		t.Fatalf("reason with alias spelling: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+			_, _, _, reason := ResolveFallbackChainForClientWithReason(
+				nil, "MyFallback", fallbackChains, clientProviders,
+				func(p string) bool { return p == "openai" },
+			)
+			if reason != PathReasonFallbackRoundRobinChildLegacy {
+				t.Fatalf("reason with alias %q: got %q, want %q", tc.provider, reason, PathReasonFallbackRoundRobinChildLegacy)
+			}
+		})
 	}
 }
 
