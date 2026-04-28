@@ -725,6 +725,151 @@ func TestDynamicEndpoint(t *testing.T) {
 	})
 }
 
+// TestDynamicEndpointRecursiveSchema reproduces a crash where /call/_dynamic
+// segfaults when output_schema contains a self-referential class (a class with
+// a list-of-self property). The same recursion shape works fine as a static
+// BAML function (see TestRecursiveTypes), so the bug is specific to the
+// dynamic schema path.
+func TestDynamicEndpointRecursiveSchema(t *testing.T) {
+	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+		t.Skip("Skipping: dynamic endpoints require BAML >= 0.215.0")
+	}
+	if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+	}
+
+	t.Run("self_referential_class_parse", func(t *testing.T) {
+		// /parse/_dynamic exercises schema construction without prompt rendering,
+		// so the same recursive shape going through this path narrows the original
+		// segfault to the output_format renderer (which only runs on the call/stream
+		// path) rather than the TypeBuilder.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		resp, err := BAMLClient.DynamicParse(ctx, testutil.DynamicParseRequest{
+			Raw: `{"items": [{"name": "PO-123", "children": [{"name": "ALU-789", "children": []}]}]}`,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Classes: map[string]*testutil.DynamicClass{
+					"Item": {
+						Properties: map[string]*testutil.DynamicProperty{
+							"name": {Type: "string"},
+							"children": {
+								Type:  "list",
+								Items: &testutil.DynamicTypeSpec{Ref: "Item"},
+							},
+						},
+					},
+				},
+				Properties: map[string]*testutil.DynamicProperty{
+					"items": {
+						Type:  "list",
+						Items: &testutil.DynamicTypeSpec{Ref: "Item"},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicParse failed: %v", err)
+		}
+		t.Logf("Parse status: %d", resp.StatusCode)
+		if resp.Error != "" {
+			t.Logf("Parse error: %s", resp.Error)
+		}
+		if resp.Data != nil {
+			t.Logf("Parse data: %s", string(resp.Data))
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Parse expected 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+	})
+
+	t.Run("self_referential_class", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Mock LLM returns a valid recursive Item structure
+		content := `{"items": [{"name": "PO-123", "children": [{"name": "ALU-789", "children": []}]}]}`
+		opts := setupNonStreamingScenario(t, "test-dynamic-recursive", content)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{
+					Role: "user",
+					Content: []testutil.DynamicContentPart{
+						{Type: "text", Text: strPtr("PO-123 has material ALU-789")},
+						{Type: "output_format"},
+					},
+				},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Classes: map[string]*testutil.DynamicClass{
+					"Item": {
+						Properties: map[string]*testutil.DynamicProperty{
+							"name": {Type: "string"},
+							"children": {
+								Type:  "list",
+								Items: &testutil.DynamicTypeSpec{Ref: "Item"},
+							},
+						},
+					},
+				},
+				Properties: map[string]*testutil.DynamicProperty{
+					"items": {
+						Type:  "list",
+						Items: &testutil.DynamicTypeSpec{Ref: "Item"},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+
+		t.Logf("Response status: %d", resp.StatusCode)
+		if resp.Error != "" {
+			t.Logf("Response error: %s", resp.Error)
+		}
+		if resp.Body != nil {
+			t.Logf("Response body: %s", string(resp.Body))
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		items, ok := result["items"].([]any)
+		if !ok {
+			t.Fatalf("Expected items to be an array, got %T", result["items"])
+		}
+		if len(items) != 1 {
+			t.Fatalf("Expected 1 top-level item, got %d", len(items))
+		}
+
+		item, ok := items[0].(map[string]any)
+		if !ok {
+			t.Fatalf("Expected item to be an object, got %T", items[0])
+		}
+		if item["name"] != "PO-123" {
+			t.Errorf("Expected item.name 'PO-123', got %v", item["name"])
+		}
+
+		children, ok := item["children"].([]any)
+		if !ok || len(children) != 1 {
+			t.Fatalf("Expected 1 child, got %v", item["children"])
+		}
+		child, _ := children[0].(map[string]any)
+		if child["name"] != "ALU-789" {
+			t.Errorf("Expected child.name 'ALU-789', got %v", child["name"])
+		}
+	})
+}
+
 // TestDynamicEndpointMultiPartContent tests multi-part content support in dynamic endpoints.
 func TestDynamicEndpointMultiPartContent(t *testing.T) {
 	// Dynamic endpoints require BAML >= 0.215.0
