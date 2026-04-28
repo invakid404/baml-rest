@@ -1652,11 +1652,29 @@ func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 // content-shape regressions that must NOT be classified as transport
 // flakes. The current list pins to symptoms produced specifically by
 // HTTP/transport teardown paths.
+//
+// Wrapped-EOF predicate (CodeRabbit verdict-37): the bare "eof"
+// substring would have caught net/http's keepalive-EOF flakes, but
+// at the cost of also matching unwrapped "unexpected EOF" parser
+// errors. The compromise is a prefix+suffix match keyed on this
+// codebase's actual wrapper format. llmhttp wraps every transport
+// error with `llmhttp: request failed: %w` (bamlutils/llmhttp/llmhttp.go),
+// and net/http surfaces stale-keepalive teardown either as a bare
+// `Post "<url>": EOF` or a `... net/http: Transport failed to read
+// from server: EOF` — both terminate with `: EOF` on the wrapped
+// message. Prefix + suffix together accept those two known shapes
+// while rejecting unwrapped `unexpected EOF` and `llmhttp: failed
+// to read response body: unexpected EOF` (different wrapper) without
+// needing a literal `"http:"` substring (which doesn't surface in
+// this codebase).
 func isNilDefaultClientTransportFlake(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	if strings.HasPrefix(msg, "llmhttp: request failed: ") && strings.HasSuffix(msg, ": eof") {
+		return true
+	}
 	for _, needle := range []string{
 		"stale keepalive",
 		"stale-keepalive",
@@ -1674,12 +1692,15 @@ func isNilDefaultClientTransportFlake(err error) bool {
 }
 
 // TestIsNilDefaultClientTransportFlake_NeedleList pins the
-// transport-class needle list (CodeRabbit verdict-34 finding F7).
-// The bare "eof" substring used to match application/parser failures
-// like "unexpected EOF"; the current list excludes that and only
-// matches concrete transport-teardown symptoms.
+// transport-class needle list (CodeRabbit verdict-34 finding F7) and
+// the wrapped-EOF predicate (verdict-37). The bare "eof" substring
+// used to match application/parser failures like "unexpected EOF";
+// the current shape uses concrete-substring needles for direct
+// transport-teardown symptoms plus a prefix+suffix predicate for
+// llmhttp's wrapped EOF.
 func TestIsNilDefaultClientTransportFlake_NeedleList(t *testing.T) {
 	transport := []string{
+		// Existing concrete transport-class substrings.
 		"net/http: stale keepalive",
 		"stale-keepalive detected",
 		"http2: server sent GOAWAY",
@@ -1688,6 +1709,13 @@ func TestIsNilDefaultClientTransportFlake_NeedleList(t *testing.T) {
 		"write: broken pipe",
 		"use of closed network connection",
 		"USE OF CLOSED NETWORK CONNECTION", // case-insensitivity
+		// Verdict-37 wrapped-EOF accept cases — the two real
+		// surfaceable shapes from net/http stale-keepalive teardown
+		// after llmhttp wraps with "llmhttp: request failed: %w".
+		`llmhttp: request failed: Post "http://127.0.0.1:1234": EOF`,
+		`llmhttp: request failed: Post "http://127.0.0.1:1234": net/http: Transport failed to read from server: EOF`,
+		// Lower-case variant confirms the case-insensitive match.
+		`llmhttp: request failed: post "http://127.0.0.1:1234": eof`,
 	}
 	for _, msg := range transport {
 		if !isNilDefaultClientTransportFlake(fmt.Errorf("%s", msg)) {
@@ -1701,6 +1729,11 @@ func TestIsNilDefaultClientTransportFlake_NeedleList(t *testing.T) {
 		"buildrequest: failed to parse final result: unexpected end of JSON input",
 		"buildrequest: delta extraction failed: bad provider response",
 		"context deadline exceeded",
+		// Verdict-37 reject cases — these prove the prefix+suffix
+		// predicate doesn't paper over genuine content-shape
+		// failures even when the prefix matches.
+		"llmhttp: request failed: unexpected EOF",            // same prefix, suffix is "unexpected eof" not ": eof"
+		"llmhttp: failed to read response body: unexpected EOF", // different prefix
 		"",
 	}
 	for _, msg := range notTransport {
