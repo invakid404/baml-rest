@@ -441,7 +441,7 @@ func TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testi
 	}
 
 	close(out)
-	planned, outcome, kinds, _ := collectMetadata(t, out)
+	planned, outcome, kinds, metadataPhases := collectMetadata(t, out)
 	if planned == nil {
 		t.Fatalf("expected one planned metadata result before validation error; got kinds=%v", kinds)
 	}
@@ -453,6 +453,22 @@ func TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testi
 	}
 	if planned.Client != "MyClient" {
 		t.Errorf("planned client: got %q, want MyClient", planned.Client)
+	}
+	// CodeRabbit verdict-36 finding F1: pin "exactly one frame, and
+	// it's the planned metadata". Mirrors the stream orchestrator's
+	// verdict-34 F2 tightening (orchestrator_test.go:881-910). The
+	// previous assertions allowed any number of trailing frames after
+	// the planned event so long as outcome stayed nil — a regression
+	// that emitted spurious reset/error/data frames after a synchronous
+	// validation return would slip through.
+	if len(kinds) != 1 {
+		t.Errorf("expected exactly 1 emitted frame on validation-error path, got %d (kinds=%v)", len(kinds), kinds)
+	}
+	if len(kinds) >= 1 && kinds[0] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("expected sole frame to be metadata; got kind=%v", kinds[0])
+	}
+	if len(metadataPhases) != 1 || metadataPhases[0] != bamlutils.MetadataPhasePlanned {
+		t.Errorf("expected exactly one planned metadata phase; got %v", metadataPhases)
 	}
 }
 

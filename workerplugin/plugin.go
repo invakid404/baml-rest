@@ -292,16 +292,16 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 			log.Printf("[WARN] shared-state server: %v", err)
 		}()
 
-		attachCtx := ctx
-		if p.SharedStateAttachTimeout > 0 {
-			var cancel context.CancelFunc
-			attachCtx, cancel = context.WithTimeout(ctx, p.SharedStateAttachTimeout)
-			defer cancel()
-		} else {
-			var cancel context.CancelFunc
-			attachCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
+		// Resolve the attach timeout once: caller-supplied value if
+		// positive, otherwise the 10s default. Both arms previously
+		// wired the same parent ctx + cancel + defer pattern;
+		// CodeRabbit verdict-36 finding F3 collapsed them.
+		attachTimeout := p.SharedStateAttachTimeout
+		if attachTimeout <= 0 {
+			attachTimeout = 10 * time.Second
 		}
+		attachCtx, cancel := context.WithTimeout(ctx, attachTimeout)
+		defer cancel()
 		if _, err := primaryClient.AttachSharedState(attachCtx, &pb.AttachSharedStateRequest{
 			BrokerId: SharedStateBrokerID,
 		}); err != nil {
