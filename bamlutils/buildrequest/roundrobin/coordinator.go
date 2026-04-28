@@ -25,8 +25,14 @@ import (
 
 // Coordinator owns long-lived per-client counters used by round-robin
 // strategy resolution. Exactly one Coordinator is created per generated
-// adapter package and shared across every request. The zero value is NOT
-// ready — callers must use NewCoordinator or NewCoordinatorWithStarts.
+// adapter package and shared across every request.
+//
+// The zero value is usable: it behaves like NewCoordinator() /
+// NewCoordinatorWithStarts(nil), giving every client a random first-call
+// seed and never honouring a configured `start` (because the starts map
+// is nil). Constructors are only required when a configured `starts`
+// map needs to be installed; callers that don't care about per-client
+// seeds can use the zero value directly.
 type Coordinator struct {
 	counters sync.Map // map[string]*atomic.Uint64
 	// starts is an immutable map of per-client seed values captured at
@@ -94,10 +100,11 @@ func NewCoordinatorWithStarts(starts map[string]int) *Coordinator {
 // goroutine-safe and needs no explicit seeding on Go 1.22+), matching
 // BAML upstream's fastrand::usize(..len) behaviour for the initial index.
 //
-// childCount must be > 0; a non-positive value is treated as 1 and returns
-// (0, nil) so callers that skip validation still get deterministic output.
-// The error return exists to satisfy the Advancer interface shape shared
-// with the remote implementation; the in-process path never fails.
+// childCount must be > 0; a non-positive value returns (0, nil) without
+// touching state (no counter created, no atomic increment), so callers
+// that skip validation still get deterministic output. The error return
+// exists to satisfy the Advancer interface shape shared with the remote
+// implementation; the in-process path never fails.
 func (c *Coordinator) Advance(clientName string, childCount int) (int, error) {
 	if childCount <= 0 {
 		return 0, nil

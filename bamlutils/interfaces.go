@@ -751,8 +751,8 @@ type Logger interface {
 // type alias for call sites that prefer that spelling.
 //
 // Implementations must return a value in [0, childCount). childCount
-// must be > 0; a zero or negative value is treated as 1 by the
-// existing implementations and returns (0, nil).
+// must be > 0; a zero or negative value returns (0, nil) without
+// touching state in the existing implementations.
 //
 // The error return is load-bearing for the remote-advancer case: when
 // a pool-managed worker has been attached to a host SharedState socket

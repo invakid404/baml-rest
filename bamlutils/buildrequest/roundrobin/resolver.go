@@ -161,6 +161,19 @@ func Resolve(in ResolveInput) (*Result, error) {
 		if err != nil {
 			return nil, fmt.Errorf("roundrobin: select child for %q: %w", current, err)
 		}
+		// Defensive interface-edge guard (CodeRabbit verdict-33 finding
+		// F3): every shipped Advancer (Coordinator, RemoteAdvancer,
+		// AdvanceDynamic, normalizeStartIndex) is documented and
+		// verified to return [0, childCount), but Advancer is an
+		// interface and a buggy custom/future implementation could
+		// return -1 or len(chain). Without this guard the next line's
+		// chain[idx] would panic; returning a normal resolver error
+		// instead keeps the caller's contract (RR routes to legacy on
+		// any resolver error) consistent with every other failure
+		// mode in this package.
+		if idx < 0 || idx >= len(chain) {
+			return nil, fmt.Errorf("roundrobin: selected child index %d out of range [0,%d) for %q", idx, len(chain), current)
+		}
 		selected := chain[idx]
 
 		if outerInfo == nil {

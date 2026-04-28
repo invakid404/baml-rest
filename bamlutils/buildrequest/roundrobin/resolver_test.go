@@ -1048,6 +1048,66 @@ func TestInspectStrategyOverride_DirectShapes(t *testing.T) {
 	}
 }
 
+// outOfRangeAdvancer is a stub Advancer that returns whatever index
+// it was constructed with, regardless of childCount. Used to exercise
+// the resolver's defensive bounds check on indices outside [0, n)
+// (CodeRabbit verdict-33 finding F3): every shipped advancer respects
+// the contract, but a buggy custom implementation could panic the
+// resolver via `chain[idx]` without the guard.
+type outOfRangeAdvancer struct {
+	idx int
+}
+
+func (a outOfRangeAdvancer) Advance(_ string, _ int) (int, error) {
+	return a.idx, nil
+}
+
+func TestResolve_AdvancerOutOfRangeReturnsErrorNotPanic(t *testing.T) {
+	cases := []struct {
+		name string
+		idx  int
+	}{
+		{name: "negative index", idx: -1},
+		{name: "index equals childCount", idx: 2},
+		{name: "index greatly above childCount", idx: 999},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := ResolveInput{
+				ClientName: "MyRR",
+				ClientProviders: map[string]string{
+					"MyRR": "baml-roundrobin",
+					"A":    "openai",
+					"B":    "anthropic",
+				},
+				FallbackChains: map[string][]string{"MyRR": {"A", "B"}},
+				Advancer:       outOfRangeAdvancer{idx: tc.idx},
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("Resolve panicked on out-of-range advancer index %d: %v", tc.idx, r)
+				}
+			}()
+			res, err := Resolve(in)
+			if err == nil {
+				t.Fatalf("expected resolver error for advancer idx=%d, got selected=%q", tc.idx, res.Selected)
+			}
+			if msg := err.Error(); !contains(msg, "out of range") {
+				t.Errorf("error message should mention 'out of range'; got %q", msg)
+			}
+		})
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

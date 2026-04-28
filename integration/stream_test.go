@@ -2155,19 +2155,18 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 		defer cancelTimer.Stop()
 
 		var receivedEvents int
-		// nonMetadataEventsBeforeCancel counts every frame that is NOT
-		// planned/outcome metadata — data, final, reset, error,
-		// anything else. Planned metadata is emitted upfront from the
+		// nonPlannedEventsBeforeCancel counts every frame that is NOT
+		// planned metadata — data, final, reset, error, AND outcome
+		// metadata. Planned metadata is emitted upfront from the
 		// orchestrator (PR #192 verdict-15), before any HTTP work to
 		// the upstream provider, so a planned frame arriving before
 		// our cancel timer fires is expected and not a test failure.
-		// Every other frame represents either real upstream content
-		// or a control signal (reset/error) that wasn't supposed to
-		// land in this pre-first-byte cancellation window — keeping
-		// the predicate stricter than `IsData()` catches a regression
-		// where, for instance, a spurious reset slips through a
-		// cancellation path. See PR #192 verdict-20.
-		var nonMetadataEventsBeforeCancel int
+		// Outcome metadata is terminal/outcome state and must NOT
+		// appear in this pre-first-byte cancellation window — the
+		// pre-fix predicate `!IsMetadata()` skipped both phases and
+		// hid a regression where outcome leaked through. CodeRabbit
+		// verdict-33 finding F4 narrowed the skip to planned only.
+		var nonPlannedEventsBeforeCancel int
 		var streamErr error
 
 		for {
@@ -2177,8 +2176,8 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 					goto done
 				}
 				receivedEvents++
-				if !event.IsMetadata() {
-					nonMetadataEventsBeforeCancel++
+				if !event.IsPlannedMetadata() {
+					nonPlannedEventsBeforeCancel++
 				}
 				t.Logf("Received NDJSON event: type=%s", event.Event)
 			case err := <-errs:
@@ -2194,11 +2193,11 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 
 		elapsed := time.Since(startTime)
 		t.Logf("NDJSON request completed in %v", elapsed)
-		t.Logf("NDJSON events received: %d (non-metadata: %d)", receivedEvents, nonMetadataEventsBeforeCancel)
+		t.Logf("NDJSON events received: %d (non-planned: %d)", receivedEvents, nonPlannedEventsBeforeCancel)
 		t.Logf("NDJSON stream error: %v", streamErr)
 
-		if nonMetadataEventsBeforeCancel != 0 {
-			t.Errorf("Expected zero non-metadata NDJSON events before cancellation, got %d (received %d total events; planned metadata is allowed since it emits upfront before any upstream work)", nonMetadataEventsBeforeCancel, receivedEvents)
+		if nonPlannedEventsBeforeCancel != 0 {
+			t.Errorf("Expected zero non-planned NDJSON events before cancellation, got %d (received %d total events; only PLANNED metadata is allowed since it emits upfront before any upstream work — outcome metadata, data, reset, error must not appear in a pre-first-byte cancellation window)", nonPlannedEventsBeforeCancel, receivedEvents)
 		}
 
 		// Should complete quickly (cancelled at ~500ms, not waiting 10s)

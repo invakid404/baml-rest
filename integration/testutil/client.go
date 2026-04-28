@@ -344,9 +344,28 @@ func (e *StreamEvent) IsError() bool {
 	return e.Event == "error"
 }
 
-// IsMetadata returns true if this is a routing-metadata event.
+// IsMetadata returns true if this is a routing-metadata event of any
+// phase (planned or outcome).
 func (e *StreamEvent) IsMetadata() bool {
 	return e.Event == "metadata"
+}
+
+// IsPlannedMetadata returns true only when this is a metadata event
+// whose Phase is "planned". The pre-first-byte cancellation tests
+// (CodeRabbit verdict-33 finding F4) need to skip the upfront planned
+// emission while still flagging stray outcome metadata that should not
+// arrive before any upstream byte. A nil/parse-failed payload is
+// treated as not-planned so a malformed metadata event surfaces as a
+// failure rather than being silently ignored.
+func (e *StreamEvent) IsPlannedMetadata() bool {
+	if !e.IsMetadata() {
+		return false
+	}
+	md, err := e.ParseMetadata()
+	if err != nil || md == nil {
+		return false
+	}
+	return md.Phase == "planned"
 }
 
 // StreamMetadata is the subset of bamlutils.Metadata fields the integration
