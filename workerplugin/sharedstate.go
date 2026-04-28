@@ -403,7 +403,18 @@ type sharedStateServer struct {
 
 // NewSharedStateServer returns a pb.SharedStateServer backed by store.
 // Exported so plugin.go can register it on the broker socket.
+//
+// Panics on nil store: a nil store is a programming error (the host
+// would always pass NewSharedStateStore's result here), and FetchAdd
+// would otherwise nil-deref on the first incoming RPC. Constructor
+// panic surfaces the misconfiguration at bind time rather than during
+// a request roundtrip, and avoids changing the (error, server)
+// signature operator code already depends on. CodeRabbit verdict-39
+// finding F7.
 func NewSharedStateServer(store *SharedStateStore) pb.SharedStateServer {
+	if store == nil {
+		panic("workerplugin: NewSharedStateServer called with nil SharedStateStore")
+	}
 	return &sharedStateServer{store: store}
 }
 

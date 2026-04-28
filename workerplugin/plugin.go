@@ -198,6 +198,16 @@ const (
 	extraGRPCDialRetries = 2
 	// Linear backoff base between retries.
 	extraGRPCDialRetryBackoff = 100 * time.Millisecond
+	// Per-attempt budget for a single broker.DialWithOptions call.
+	// go-plugin's GRPCBroker.DialWithOptions takes no context and its
+	// non-muxer dialer ignores any context-based cancellation
+	// (verified at /Users/inva/go/pkg/mod/github.com/hashicorp/go-plugin@v1.7.0/grpc_broker.go),
+	// so without a wall-clock bound a stuck dial would pin the
+	// caller's results-channel goroutine indefinitely. 5s is well
+	// above a healthy local-broker dial (<10ms) but below the pool
+	// init wall the parent ctx already enforces. CodeRabbit
+	// verdict-39 finding F10.
+	extraGRPCDialAttemptTimeout = 5 * time.Second
 )
 
 func (p *WorkerPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {
@@ -379,7 +389,7 @@ func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id 
 
 	var lastErr error
 	for attempt := 0; attempt <= extraGRPCDialRetries; attempt++ {
-		conn, err := broker.DialWithOptions(id, GRPCDialOptions()...)
+		conn, err := dialBrokerOnce(ctx, broker, id)
 		if err == nil {
 			return conn, nil
 		}
@@ -401,6 +411,55 @@ func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id 
 	}
 
 	return nil, lastErr
+}
+
+// dialBrokerOnce wraps a single broker.DialWithOptions call with a
+// per-attempt timeout (extraGRPCDialAttemptTimeout) and parent-ctx
+// cancellation. CodeRabbit verdict-39 finding F10: go-plugin's
+// GRPCBroker.DialWithOptions has no context parameter and its
+// non-muxer dialer ignores any context-based cancellation, so a stuck
+// dial cannot be aborted by passing a child context. The helper
+// goroutine pattern below lets us bound the wait without changing
+// go-plugin's API: we kick off the dial on a background goroutine and
+// race it against the per-attempt context. If the context fires
+// first, a separate drain goroutine closes any conn the dial
+// eventually produces so we don't leak FDs.
+//
+// dialBrokerConnWithRetry's outer caller writes exactly one
+// brokerDialResult to the `results` channel for each connection ID
+// (see plugin.go ~line 327), and the cancellation drain at
+// plugin.go:340 depends on receiving exactly one result per pending
+// dial. dialBrokerOnce ALWAYS returns either (conn, nil) or
+// (nil, err) — never blocks indefinitely — preserving that invariant.
+func dialBrokerOnce(parent context.Context, broker *plugin.GRPCBroker, id uint32) (*grpc.ClientConn, error) {
+	ctx, cancel := context.WithTimeout(parent, extraGRPCDialAttemptTimeout)
+	defer cancel()
+
+	type result struct {
+		conn *grpc.ClientConn
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		conn, err := broker.DialWithOptions(id, GRPCDialOptions()...)
+		done <- result{conn: conn, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		return r.conn, r.err
+	case <-ctx.Done():
+		// Drain the dial goroutine on a separate goroutine so a late
+		// success doesn't leak the conn. The buffered channel keeps
+		// the dial goroutine from blocking on send.
+		go func() {
+			late := <-done
+			if late.err == nil && late.conn != nil {
+				late.conn.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	}
 }
 
 // GRPCDialOptions returns gRPC dial options shared by all connections

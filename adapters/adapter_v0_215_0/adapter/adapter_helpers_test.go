@@ -24,15 +24,12 @@ func legacyUpstreamClientNamesSnapshot(b *BamlAdapter) []string {
 	return append([]string(nil), b.legacyUpstreamClientNames...)
 }
 
-// legacyClientEntrySnapshot reads the (provider, options) tuple BAML
-// stored under name in the LegacyClientRegistry's internal map.
-// CodeRabbit verdict-38 finding F1 — see the v0.204 adapter helper
-// for the full rationale (BAML's clients map is unexported, so the
-// helper uses reflection + unsafe.Pointer to peek). v0.215 forwards
-// options unwrapped (no WrapMapValues), so callers can compare
-// directly to tc.client.Options.
-func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, options map[string]any, ok bool) {
-	reg := b.LegacyClientRegistry
+// clientEntrySnapshot reads the (provider, options) tuple BAML stored
+// under name in the supplied ClientRegistry's internal map. CodeRabbit
+// verdict-38 F1 + verdict-39 F1-F3 — see the v0.204 adapter helper
+// for the full rationale and the kind/type guards that protect
+// against BAML registry shape drift.
+func clientEntrySnapshot(reg *baml.ClientRegistry, name string) (provider string, options map[string]any, ok bool) {
 	if reg == nil {
 		return "", nil, false
 	}
@@ -41,9 +38,15 @@ func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, op
 	if !clientsField.IsValid() || clientsField.Kind() != reflect.Map {
 		return "", nil, false
 	}
+	if clientsField.Type().Key().Kind() != reflect.String {
+		return "", nil, false
+	}
 	clientsField = reflect.NewAt(clientsField.Type(), unsafe.Pointer(clientsField.UnsafeAddr())).Elem()
 	entry := clientsField.MapIndex(reflect.ValueOf(name))
 	if !entry.IsValid() {
+		return "", nil, false
+	}
+	if entry.Kind() != reflect.Struct {
 		return "", nil, false
 	}
 	addr := reflect.New(entry.Type()).Elem()
@@ -51,6 +54,12 @@ func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, op
 	providerField := addr.FieldByName("provider")
 	optionsField := addr.FieldByName("options")
 	if !providerField.IsValid() || !optionsField.IsValid() {
+		return "", nil, false
+	}
+	if providerField.Kind() != reflect.String {
+		return "", nil, false
+	}
+	if optionsField.Kind() != reflect.Map || optionsField.Type().Key().Kind() != reflect.String {
 		return "", nil, false
 	}
 	providerField = reflect.NewAt(providerField.Type(), unsafe.Pointer(providerField.UnsafeAddr())).Elem()
@@ -67,4 +76,10 @@ func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, op
 	return provider, options, true
 }
 
-var _ = baml.NewClientRegistry
+func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, options map[string]any, ok bool) {
+	return clientEntrySnapshot(b.LegacyClientRegistry, name)
+}
+
+func buildRequestClientEntrySnapshot(b *BamlAdapter, name string) (provider string, options map[string]any, ok bool) {
+	return clientEntrySnapshot(b.ClientRegistry, name)
+}

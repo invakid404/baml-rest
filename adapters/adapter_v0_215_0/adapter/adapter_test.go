@@ -178,6 +178,17 @@ func TestSetClientRegistry_PresentEmptyMatchingPrimary_StaysEmpty(t *testing.T) 
 	if got := a.ClientRegistryProvider(); got != "" {
 		t.Errorf("ClientRegistryProvider(): got %q, want empty (present-empty primary must not be synthesized over)", got)
 	}
+	// CodeRabbit verdict-39 finding F4: also pin that the entry
+	// itself made it into BAML's BuildRequest-safe registry view
+	// with the empty provider preserved verbatim. See v0.219 sibling
+	// for full rationale.
+	provider, _, ok := buildRequestClientEntrySnapshot(a, "X")
+	if !ok {
+		t.Fatalf("BuildRequest registry should retain the present-empty entry; got missing")
+	}
+	if provider != "" {
+		t.Errorf("BuildRequest registry provider for X: got %q, want \"\" (present-empty must not be materialised at the registry seam either)", provider)
+	}
 }
 
 // TestSetClientRegistry_PresentNonEmptyMatchingPrimary_UsesOverride

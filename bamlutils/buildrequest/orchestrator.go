@@ -1209,7 +1209,10 @@ func ResolveRetryPolicy(
 		}
 	}
 
-	// 4. Static introspected default
+	// 3. Static introspected default (verdict-39 finding F8: step number
+	// realigned to the 3-step docblock above; pre-fix the inline
+	// comment said "4." after verdict-38's docblock collapsed the
+	// runtime steps from two into one).
 	if introspectedPolicyName != "" {
 		return introspectedPolicies[introspectedPolicyName]
 	}

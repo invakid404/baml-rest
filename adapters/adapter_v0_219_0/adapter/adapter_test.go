@@ -241,6 +241,20 @@ func TestSetClientRegistry_PresentEmptyProviderStaysEmpty(t *testing.T) {
 	if got := a.ClientRegistryProvider(); got != "" {
 		t.Errorf("ClientRegistryProvider(): got %q, want empty (present-empty must not be materialised)", got)
 	}
+	// CodeRabbit verdict-39 finding F4: also pin that the entry
+	// itself made it into BAML's BuildRequest-safe registry view with
+	// the empty provider preserved verbatim. The cache check above
+	// only proves the adapter shortcut returns "", not that BAML
+	// actually received the entry. A regression that silently
+	// dropped present-empty entries from the registry while leaving
+	// the cache empty would slip past the cache assertion alone.
+	provider, _, ok := buildRequestClientEntrySnapshot(a, "MyClient")
+	if !ok {
+		t.Fatalf("BuildRequest registry should retain the present-empty entry; got missing")
+	}
+	if provider != "" {
+		t.Errorf("BuildRequest registry provider for MyClient: got %q, want \"\" (present-empty must not be materialised at the registry seam either)", provider)
+	}
 }
 
 // TestSetClientRegistry_ExplicitProviderPassesThrough is the

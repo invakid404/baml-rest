@@ -2207,6 +2207,20 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 				if err != nil {
 					streamErr = err
 					t.Logf("Received NDJSON error: %v", err)
+					// CodeRabbit verdict-39 finding F9: a transport
+					// error before reqCancel() fires is exactly the
+					// kind of pre-first-byte signal this test is
+					// supposed to catch — silently logging it (as
+					// pre-fix) would have hidden a regression where
+					// the upstream connection broke before any byte
+					// landed. Post-cancel errors are expected
+					// teardown noise and stay logged-only via the
+					// cancelFired gate, mirroring the events branch.
+					select {
+					case <-cancelFired:
+					default:
+						nonPlannedEventsBeforeCancel++
+					}
 				}
 			case <-parentCtx.Done():
 				t.Fatal("Parent context cancelled unexpectedly")

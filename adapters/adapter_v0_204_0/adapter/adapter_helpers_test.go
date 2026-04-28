@@ -24,10 +24,10 @@ func legacyUpstreamClientNamesSnapshot(b *BamlAdapter) []string {
 	return append([]string(nil), b.legacyUpstreamClientNames...)
 }
 
-// legacyClientEntrySnapshot reads the (provider, options) tuple BAML
-// stored under name in the LegacyClientRegistry's internal map.
-// CodeRabbit verdict-38 finding F1 wanted assertions on what we
-// actually forwarded to BAML, but BAML's ClientRegistry exposes only
+// clientEntrySnapshot reads the (provider, options) tuple BAML stored
+// under name in the supplied ClientRegistry's internal map. CodeRabbit
+// verdict-38 finding F1 wanted assertions on what we actually
+// forwarded to BAML, but BAML's ClientRegistry exposes only
 // AddLlmClient / SetPrimaryClient — `clients` is unexported. This
 // helper uses reflection + unsafe.Pointer to peek at the field shape
 // pinned in language_client_go's rawobjects_client_registry.go
@@ -35,24 +35,32 @@ func legacyUpstreamClientNamesSnapshot(b *BamlAdapter) []string {
 // clientProperty has `provider string` and `options map[string]any`).
 //
 // Returns ok=false when the registry is nil, the key is absent, or
-// the BAML registry shape changes. Adapter-version-pinned tests run
-// against pinned BAML versions, so the shape is stable for each
-// adapter package; a future BAML rev that renames fields would surface
-// here as ok=false (the test would fail loudly rather than silently
-// pass).
-func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, options map[string]any, ok bool) {
-	reg := b.LegacyClientRegistry
+// the BAML registry shape drifts (verdict-39 findings F1-F3 hardened
+// the shape checks: every reflect.Value is verified for kind/type
+// before unsafe.Pointer access, so a future BAML rev that renamed a
+// field or changed `clients` to a non-string-keyed map surfaces
+// loudly as ok=false rather than panicking on UnsafeAddr against an
+// unexpected type).
+func clientEntrySnapshot(reg *baml.ClientRegistry, name string) (provider string, options map[string]any, ok bool) {
 	if reg == nil {
 		return "", nil, false
 	}
 	regVal := reflect.ValueOf(reg).Elem()
 	clientsField := regVal.FieldByName("clients")
+	// Verdict-39 F1-F3 guards: confirm the field exists, is a map,
+	// and has string keys before any reflection trickery.
 	if !clientsField.IsValid() || clientsField.Kind() != reflect.Map {
+		return "", nil, false
+	}
+	if clientsField.Type().Key().Kind() != reflect.String {
 		return "", nil, false
 	}
 	clientsField = reflect.NewAt(clientsField.Type(), unsafe.Pointer(clientsField.UnsafeAddr())).Elem()
 	entry := clientsField.MapIndex(reflect.ValueOf(name))
 	if !entry.IsValid() {
+		return "", nil, false
+	}
+	if entry.Kind() != reflect.Struct {
 		return "", nil, false
 	}
 	// Map values are returned as unaddressable Values (the map's
@@ -64,6 +72,12 @@ func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, op
 	providerField := addr.FieldByName("provider")
 	optionsField := addr.FieldByName("options")
 	if !providerField.IsValid() || !optionsField.IsValid() {
+		return "", nil, false
+	}
+	if providerField.Kind() != reflect.String {
+		return "", nil, false
+	}
+	if optionsField.Kind() != reflect.Map || optionsField.Type().Key().Kind() != reflect.String {
 		return "", nil, false
 	}
 	providerField = reflect.NewAt(providerField.Type(), unsafe.Pointer(providerField.UnsafeAddr())).Elem()
@@ -80,4 +94,16 @@ func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, op
 	return provider, options, true
 }
 
-var _ = baml.NewClientRegistry // pin baml import for the BamlAdapter type used in reflection
+// legacyClientEntrySnapshot is the legacy-view wrapper around
+// clientEntrySnapshot.
+func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, options map[string]any, ok bool) {
+	return clientEntrySnapshot(b.LegacyClientRegistry, name)
+}
+
+// buildRequestClientEntrySnapshot is the BuildRequest-safe-view
+// wrapper around clientEntrySnapshot. Used by verdict-39 finding F4
+// to assert the materialised registry preserves operator-supplied
+// entries even when Primary is present-empty.
+func buildRequestClientEntrySnapshot(b *BamlAdapter, name string) (provider string, options map[string]any, ok bool) {
+	return clientEntrySnapshot(b.ClientRegistry, name)
+}

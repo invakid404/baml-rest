@@ -154,6 +154,31 @@ func Resolve(in ResolveInput) (*Result, error) {
 
 		chain := resolveStrategyChain(in.Registry, current, in.FallbackChains)
 		if len(chain) == 0 {
+			// CodeRabbit verdict-39 finding F11: when the runtime
+			// override is what made `current` an RR client (operator
+			// supplied `provider="baml-roundrobin"` via the
+			// client_registry) AND the override did NOT include a
+			// `strategy` array, BAML upstream rejects the shape with a
+			// canonical ensure_strategy / "missing options.strategy"
+			// error. Surfacing ErrInvalidStrategyOverride here lets
+			// ResolveEffectiveClient route the request to legacy where
+			// BAML emits that canonical error, matching the
+			// invalid-strategy-array branch at line 151. Without this
+			// detection the resolver returns the generic "has no
+			// children" error which propagates as an opaque request
+			// failure — operators reading X-BAML-Path-Reason would
+			// see neither the canonical BAML message nor the
+			// invalid-strategy-override path-reason.
+			//
+			// The detection mirrors ResolveEffectiveClient's recognition
+			// condition: a runtime registry entry exists for `current`
+			// AND has its Provider field explicitly set
+			// (IsProviderPresent). InspectStrategyOverride above already
+			// handled present-but-invalid; this branch covers the
+			// strategy-key-absent case for runtime-declared RR.
+			if rc := findRuntimeClient(in.Registry, current); rc != nil && rc.IsProviderPresent() {
+				return nil, ErrInvalidStrategyOverride
+			}
 			return nil, fmt.Errorf("roundrobin: client %q has no children", current)
 		}
 

@@ -3291,9 +3291,22 @@ func TestCallStreamPlannedMetadataDoesNotDisableHungDetection(t *testing.T) {
 	<-checkerDone
 
 	// Drain + release pooled results — see drain at pool_test.go:3192
-	// for rationale (CodeRabbit verdict-21 finding 9).
+	// for rationale (CodeRabbit verdict-21 finding 9). CodeRabbit
+	// verdict-39 finding F5: also pin that the planned-metadata frame
+	// the test injected actually reached the consumer. Without this,
+	// a regression that swallowed the planned frame upstream (and
+	// thereby bypassed whatever path the test means to exercise)
+	// could still pass the workerClosed timing check by coincidence.
+	var seenPlanned bool
 	for r := range results {
+		if r.Kind == workerplugin.StreamResultKindMetadata &&
+			metadataPhase(r.Data) == string(bamlutils.MetadataPhasePlanned) {
+			seenPlanned = true
+		}
 		workerplugin.ReleaseStreamResult(r)
+	}
+	if !seenPlanned {
+		t.Error("expected planned metadata frame to reach the consumer; none observed (the test's premise is invalid if the frame was lost upstream)")
 	}
 }
 

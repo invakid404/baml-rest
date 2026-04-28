@@ -1116,6 +1116,74 @@ func contains(s, sub string) bool {
 	return false
 }
 
+// TestResolve_RuntimeRRWithoutStrategy_ReturnsInvalidStrategySentinel
+// pins CodeRabbit verdict-39 finding F11. When the runtime
+// client_registry declares an RR provider (`provider:"baml-roundrobin"`)
+// but does NOT supply `options.strategy`, the resolver previously
+// returned the generic "has no children" error. That bypassed the
+// ErrInvalid* sentinel routing — ResolveEffectiveClient only converts
+// ErrInvalidStrategyOverride / ErrInvalidStartOverride to legacy
+// fallthrough, so operators saw an opaque request error instead of
+// the canonical BAML ensure_strategy message they get for the
+// invalid-strategy-array case at line 151.
+//
+// The detection mirrors ResolveEffectiveClient's recognition
+// condition: registry entry exists for the client AND has its
+// Provider field explicitly set (IsProviderPresent). InspectStrategy
+// Override already covered present-but-unparseable; this case is
+// "provider declared, strategy absent".
+func TestResolve_RuntimeRRWithoutStrategy_ReturnsInvalidStrategySentinel(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{
+				Name:        "MyRR",
+				Provider:    "baml-roundrobin", // operator declared RR via runtime override
+				ProviderSet: true,
+				// No options.strategy, no introspected chain → empty chain.
+			},
+		},
+	}
+	res, err := Resolve(ResolveInput{
+		ClientName:      "MyRR",
+		Registry:        reg,
+		ClientProviders: map[string]string{}, // no static entry; provider comes solely from runtime
+		FallbackChains:  map[string][]string{},
+		Advancer:        NewCoordinator(),
+	})
+	if !errors.Is(err, ErrInvalidStrategyOverride) {
+		t.Fatalf("expected ErrInvalidStrategyOverride; got err=%v res=%+v", err, res)
+	}
+	if res != nil {
+		t.Errorf("expected nil result alongside sentinel; got %+v", res)
+	}
+}
+
+// TestResolve_StaticRREmptyChain_KeepsGenericError pins the inverse:
+// when the RR provider was declared in the .baml source (introspected
+// map) and somehow has no chain — a configuration error in static
+// config rather than in a runtime override — the generic
+// "has no children" error is still appropriate. Without this guard
+// the F11 branch could over-broaden and convert static-config
+// failures into legacy-fallthrough territory.
+func TestResolve_StaticRRWithoutStrategy_KeepsGenericError(t *testing.T) {
+	res, err := Resolve(ResolveInput{
+		ClientName:      "StaticRR",
+		Registry:        nil, // no runtime override
+		ClientProviders: map[string]string{"StaticRR": "baml-roundrobin"},
+		FallbackChains:  map[string][]string{}, // no introspected chain
+		Advancer:        NewCoordinator(),
+	})
+	if errors.Is(err, ErrInvalidStrategyOverride) {
+		t.Fatalf("static-config RR with no chain should NOT use the runtime sentinel; got ErrInvalidStrategyOverride")
+	}
+	if err == nil {
+		t.Fatalf("expected non-nil error for empty chain; got res=%+v", res)
+	}
+	if res != nil {
+		t.Errorf("expected nil result on error; got %+v", res)
+	}
+}
+
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
