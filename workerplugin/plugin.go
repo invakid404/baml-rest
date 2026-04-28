@@ -434,9 +434,19 @@ func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id 
 // dial cannot be aborted by passing a child context. The helper
 // goroutine pattern below lets us bound the wait without changing
 // go-plugin's API: we kick off the dial on a background goroutine and
-// race it against the per-attempt context. If the context fires
-// first, a separate drain goroutine closes any conn the dial
-// eventually produces so we don't leak FDs.
+// race it against the per-attempt context.
+//
+// Goroutine-collapse design (CodeRabbit verdict-42): the dial
+// goroutine itself owns late-success cleanup via a select on
+// done <- res vs ctx.Done(). The `done` channel is UNBUFFERED — load-
+// bearing for correctness. With a buffered channel, the inner send
+// would always succeed (cap=1 is always ready for the first send),
+// even after the outer select returned on ctx.Done(); the result
+// would orphan in the channel and the conn would leak. The
+// unbuffered channel pairs send with receive: if the outer takes
+// the ctx.Done branch first, the inner's select observes the same
+// ctx already cancelled and falls through to the cleanup arm —
+// closing any successfully-dialled-but-late conn.
 //
 // dialBrokerConnWithRetry's outer caller writes exactly one
 // brokerDialResult to the `results` channel for each connection ID
@@ -452,25 +462,25 @@ func dialBrokerOnce(parent context.Context, broker *plugin.GRPCBroker, id uint32
 		conn *grpc.ClientConn
 		err  error
 	}
-	done := make(chan result, 1)
+	done := make(chan result) // unbuffered — see doc comment above for the cleanup-correctness reason
 	go func() {
 		conn, err := broker.DialWithOptions(id, GRPCDialOptions()...)
-		done <- result{conn: conn, err: err}
+		res := result{conn: conn, err: err}
+		select {
+		case done <- res:
+		case <-ctx.Done():
+			// Outer already returned on ctx.Done. Close any conn the
+			// dial produced so we don't leak the FD on the late path.
+			if err == nil && conn != nil {
+				conn.Close()
+			}
+		}
 	}()
 
 	select {
 	case r := <-done:
 		return r.conn, r.err
 	case <-ctx.Done():
-		// Drain the dial goroutine on a separate goroutine so a late
-		// success doesn't leak the conn. The buffered channel keeps
-		// the dial goroutine from blocking on send.
-		go func() {
-			late := <-done
-			if late.err == nil && late.conn != nil {
-				late.conn.Close()
-			}
-		}()
 		return nil, ctx.Err()
 	}
 }
