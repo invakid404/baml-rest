@@ -335,26 +335,30 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 	for range ExtraGRPCConns {
 		r := <-results
 		received++
-		if r.err != nil {
-			if ctx != nil && ctx.Err() != nil {
-				// Context cancelled — clean up any connections we
-				// already collected AND tear down the reverse
-				// shared-state server before returning. Drain the
-				// remaining in-flight dials too, closing any
-				// late-arriving successful conn so we don't leak the
-				// FD on a goroutine that lost the cancellation race.
-				for j := received; j < ExtraGRPCConns; j++ {
-					late := <-results
-					if late.err == nil {
-						late.conn.Close()
-					}
-				}
-				for _, c := range conns {
-					c.Close()
-				}
-				cleanupSharedState()
-				return nil, ctx.Err()
+		// Honor cancellation regardless of whether this result is a
+		// success or an error. dialBrokerOnce can lose the success/
+		// cancel race and return (conn, nil) just as the parent ctx
+		// fires — without this check, the late conn would be appended
+		// to `conns` and leaked. Drain the remaining in-flight dials
+		// too, closing any late-arriving successful conn so we don't
+		// leak the FD on a goroutine that lost the cancellation race.
+		if ctx != nil && ctx.Err() != nil {
+			if r.err == nil && r.conn != nil {
+				r.conn.Close()
 			}
+			for j := received; j < ExtraGRPCConns; j++ {
+				late := <-results
+				if late.err == nil && late.conn != nil {
+					late.conn.Close()
+				}
+			}
+			for _, c := range conns {
+				c.Close()
+			}
+			cleanupSharedState()
+			return nil, ctx.Err()
+		}
+		if r.err != nil {
 			log.Printf("[WARN] failed to dial extra gRPC connection %d after %d attempts: %v", r.id, extraGRPCDialRetries+1, r.err)
 			continue
 		}
