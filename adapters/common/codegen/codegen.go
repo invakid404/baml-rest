@@ -686,7 +686,13 @@ func generate(opts Options) {
 	// GenerateWithOptions misuse — all paths where the configuration
 	// can drift out of sync without anyone noticing until production.
 	if !supportsWithClient && (introspected.Request != nil || introspected.StreamRequest != nil) {
-		panic("codegen: SupportsWithClient=false is incompatible with introspected Request/StreamRequest; BuildRequest emission requires WithClient to honor per-attempt client overrides")
+		// Include the per-singleton presence flags so the panic
+		// uniquely identifies which API surface is missing —
+		// CodeRabbit verdict-38 finding F2: a downstream test that
+		// substring-matched on "Request" couldn't distinguish a
+		// Request-only-set case from a StreamRequest-only-set one.
+		panic(fmt.Sprintf("codegen: SupportsWithClient=false is incompatible with introspected Request/StreamRequest (Request=%v, StreamRequest=%v); BuildRequest emission requires WithClient to honor per-attempt client overrides",
+			introspected.Request != nil, introspected.StreamRequest != nil))
 	}
 
 	// withClientOverrideBlock wraps a `clientOverride != ""` guard around

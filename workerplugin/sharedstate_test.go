@@ -377,7 +377,7 @@ func TestSharedStateStore_FetchAddDoesNotOrphanUnderConcurrentDropScope(t *testi
 		// must still hold its scope. An orphan (idem present, scope
 		// missing) is the exact condition the old ordering could
 		// produce.
-		if _, idemOK := store.idem.Load(idemKey("k", opID)); idemOK {
+		if _, idemOK := store.idem.Load(makeIdemKey("k", opID)); idemOK {
 			if _, scopeOK := store.scopes.Load(opID); !scopeOK {
 				t.Fatalf("op-%d: idem entry exists but scope was dropped — orphan leak", i)
 			}
@@ -409,10 +409,51 @@ func TestSharedStateStore_FetchAddAfterDropScopeRestartsCleanly(t *testing.T) {
 		t.Fatalf("got previous=%d, want 1 (post-drop FetchAdd must advance against a fresh scope+entry)", got)
 	}
 	// And the idem/scope must now be paired again.
-	if _, idemOK := store.idem.Load(idemKey("k", "op")); !idemOK {
+	if _, idemOK := store.idem.Load(makeIdemKey("k", "op")); !idemOK {
 		t.Fatal("post-drop FetchAdd did not leave an idem entry")
 	}
 	if _, scopeOK := store.scopes.Load("op"); !scopeOK {
 		t.Fatal("post-drop FetchAdd did not leave a scope entry")
+	}
+}
+
+// TestSharedStateStore_NULBytesInKeyDoNotCollide pins CodeRabbit
+// verdict-38 finding F6: the previous map key was built via
+// fmt.Sprint-style concatenation with a NUL separator
+// (`key + "\x00" + opID`), which collapses two distinct caller inputs
+// onto the same string when either half contains a NUL — both
+// `("a\x00b", "c")` and `("a", "b\x00c")` produced the same key
+// "a\x00b\x00c". Two distinct (key, opID) pairs would then share an
+// idempotency entry, silently returning a stale rotation index for
+// the loser. The structured idemMapKey type makes that collision
+// impossible regardless of payload bytes.
+func TestSharedStateStore_NULBytesInKeyDoNotCollide(t *testing.T) {
+	store := newSharedStateStoreWithTTL(nil, time.Hour)
+	defer store.Close()
+
+	// Two distinct (key, opID) pairs that the prior NUL-concatenated
+	// key would have aliased onto a single entry.
+	prevA := store.FetchAdd("a\x00b", 1, "c")
+	prevB := store.FetchAdd("a", 1, "b\x00c")
+
+	// Both must observe a cache miss (previous == 0) — they advance
+	// independent counters because they're distinct keys. Pre-fix,
+	// the second call would have hit the first call's cached idem
+	// entry and returned 0 from a stale snapshot, OR the second
+	// call's counter would have been mistakenly tied to the first's.
+	if prevA != 0 {
+		t.Errorf("first FetchAdd should observe miss; got previous=%d", prevA)
+	}
+	if prevB != 0 {
+		t.Errorf("second FetchAdd should observe miss; got previous=%d (NUL-byte collision regression?)", prevB)
+	}
+
+	// Idempotency: reissuing the same (key, opID) returns the
+	// cached previous, separately for each pair.
+	if got := store.FetchAdd("a\x00b", 1, "c"); got != 0 {
+		t.Errorf("retry of (a\\x00b, c): got previous=%d, want 0 (cache hit)", got)
+	}
+	if got := store.FetchAdd("a", 1, "b\x00c"); got != 0 {
+		t.Errorf("retry of (a, b\\x00c): got previous=%d, want 0 (cache hit)", got)
 	}
 }

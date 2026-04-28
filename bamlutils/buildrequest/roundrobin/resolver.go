@@ -162,15 +162,25 @@ func Resolve(in ResolveInput) (*Result, error) {
 			return nil, fmt.Errorf("roundrobin: select child for %q: %w", current, err)
 		}
 		// Defensive interface-edge guard (CodeRabbit verdict-33 finding
-		// F3): every shipped Advancer (Coordinator, RemoteAdvancer,
-		// AdvanceDynamic, normalizeStartIndex) is documented and
-		// verified to return [0, childCount), but Advancer is an
-		// interface and a buggy custom/future implementation could
-		// return -1 or len(chain). Without this guard the next line's
-		// chain[idx] would panic; returning a normal resolver error
-		// instead keeps the caller's contract (RR routes to legacy on
-		// any resolver error) consistent with every other failure
-		// mode in this package.
+		// F3, comment refined per verdict-38 finding F4): every shipped
+		// Advancer (Coordinator, RemoteAdvancer, AdvanceDynamic,
+		// normalizeStartIndex) is documented and verified to return
+		// [0, childCount), but Advancer is an interface and a buggy
+		// custom/future implementation could return -1 or len(chain).
+		// Without this guard the next line's chain[idx] would panic;
+		// returning an error instead lets the caller surface the
+		// failure cleanly.
+		//
+		// Routing: only the two ErrInvalid* sentinels
+		// (ErrInvalidStrategyOverride, ErrInvalidStartOverride) drive
+		// the legacy fallthrough — ResolveEffectiveClient maps those
+		// to a no-op return so the codegen-side support gate routes
+		// the request to legacy. All OTHER non-sentinel resolver
+		// errors, including this defensive out-of-range, propagate as
+		// request errors via ResolveEffectiveClient's `return "", nil,
+		// err`. That's the right outcome for a buggy Advancer: the
+		// request fails fast rather than hiding a custom-implementation
+		// regression behind silent legacy routing.
 		if idx < 0 || idx >= len(chain) {
 			return nil, fmt.Errorf("roundrobin: selected child index %d out of range [0,%d) for %q", idx, len(chain), current)
 		}

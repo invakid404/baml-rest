@@ -832,6 +832,14 @@ func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
 			if !errors.Is(err, ErrInvalidStartOverride) {
 				t.Fatalf("expected ErrInvalidStartOverride; got err=%v res=%+v", err, res)
 			}
+			// Sentinel-error contract pin (CodeRabbit verdict-38
+			// finding F3): mirror the InvalidStrategyOverride sibling
+			// at resolver_test.go:533-535 — the sentinel must arrive
+			// alongside a nil result so callers can rely on either-or
+			// semantics rather than checking both fields.
+			if res != nil {
+				t.Errorf("expected nil result alongside sentinel; got %+v", res)
+			}
 		})
 	}
 }

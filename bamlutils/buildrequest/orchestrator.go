@@ -1126,14 +1126,34 @@ func ResolveFallbackChainForClientWithReason(
 	return resolvedChain, chainProviders, chainLegacy, ""
 }
 
-// ResolveRetryPolicy determines the retry policy for a function. Resolution
-// order mirrors ResolveProvider so the same runtime client drives both
-// provider selection and retry behaviour:
-//  1. Per-request override from adapter.RetryConfig() (__baml_options__.retry)
-//  2. Primary client's retry_policy from runtime client_registry
-//  3. Named-client retry_policy for the function's default client in
-//     client_registry.clients
-//  4. Static introspected default from FunctionRetryPolicy → RetryPolicies
+// ResolveRetryPolicy determines the retry policy for a function.
+// Resolution order, in priority:
+//
+//  1. Per-request override from adapter.RetryConfig()
+//     (__baml_options__.retry).
+//  2. Runtime client_registry retry_policy lookup, scoped by primary:
+//     - When `reg.Primary` is non-nil and non-empty, ONLY consider the
+//       primary client's RetryPolicy (look up `reg.Clients` for the entry
+//       whose Name == *reg.Primary; if that entry has a non-nil
+//       RetryPolicy, dereference it via introspectedPolicies and return).
+//       The function-default runtime client (defaultClientName) is NOT
+//       consulted — the primary is the one actually being used for
+//       streaming, so inheriting a different client's retry config would
+//       cross wires. If the primary entry is missing or has no
+//       RetryPolicy, fall through to step 3.
+//     - When primary is nil or "", consult the function-default runtime
+//       client: scan reg.Clients for the entry whose Name ==
+//       defaultClientName; if found and its RetryPolicy is non-nil,
+//       dereference via introspectedPolicies and return.
+//  3. Static introspected default: introspectedPolicies[introspectedPolicyName]
+//     where introspectedPolicyName comes from FunctionRetryPolicy[method].
+//
+// CodeRabbit verdict-38 finding F7: the previous docblock listed
+// "named-client retry_policy for the function's default client" as a
+// step that always ran, which contradicts the primary-set branch's
+// deliberate refusal to consult the function default (see step 2's
+// first arm above). The correction makes the docblock match
+// orchestrator.go's actual flow.
 //
 // introspectedPolicyName is the policy name from FunctionRetryPolicy[method].
 // introspectedPolicies is the full RetryPolicies map from introspection.

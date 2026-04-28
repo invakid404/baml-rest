@@ -1628,6 +1628,30 @@ func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 	if capturedOverride != wantOverride {
 		t.Errorf("captured clientOverride: got %q, want %q", capturedOverride, wantOverride)
 	}
+	// CodeRabbit verdict-38 finding F10: drain the output channel and
+	// pin the terminal-result contract. Without this, a regression
+	// that forwarded the override correctly but lost the success path
+	// (or raised StreamResultKindError after the request) would still
+	// pass on the err/captureCount/captured assertions alone.
+	var (
+		finalCount int
+		finalVal   any
+	)
+	for r := range out {
+		switch r.Kind() {
+		case bamlutils.StreamResultKindError:
+			t.Errorf("unexpected error result: %v", r.Error())
+		case bamlutils.StreamResultKindFinal:
+			finalCount++
+			finalVal = r.Final()
+		}
+	}
+	if finalCount != 1 {
+		t.Errorf("expected exactly 1 Final result, got %d", finalCount)
+	}
+	if finalVal != "ok" {
+		t.Errorf("Final payload: got %v, want %q", finalVal, "ok")
+	}
 }
 
 // isNilDefaultClientTransportFlake reports whether err looks like the

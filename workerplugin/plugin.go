@@ -329,14 +329,25 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 	}
 
 	var connected int
+	var received uint32
 	for range ExtraGRPCConns {
 		r := <-results
+		received++
 		if r.err != nil {
 			if ctx != nil && ctx.Err() != nil {
-				// Context cancelled — clean up any connections we already
-				// collected AND tear down the reverse shared-state
-				// server before returning. CodeRabbit verdict-25
-				// finding F8.
+				// Context cancelled — clean up any connections we
+				// already collected AND tear down the reverse
+				// shared-state server before returning. CodeRabbit
+				// verdict-25 finding F8 + verdict-38 finding F9: drain
+				// the remaining in-flight dials too, closing any
+				// late-arriving successful conn so we don't leak the
+				// FD on a goroutine that lost the cancellation race.
+				for j := received; j < ExtraGRPCConns; j++ {
+					late := <-results
+					if late.err == nil {
+						late.conn.Close()
+					}
+				}
 				for _, c := range conns {
 					c.Close()
 				}

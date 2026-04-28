@@ -3396,11 +3396,37 @@ func TestCallStreamOutcomeMetadataPreventsHungKill(t *testing.T) {
 		}
 	}()
 
-	for r := range results {
-		workerplugin.ReleaseStreamResult(r)
-	}
+	// Wrap the drain in requireCompleteWithin so a regression that
+	// stalls the results channel surfaces as a timeout failure rather
+	// than a hung test (CodeRabbit verdict-38 finding F5). 2s is well
+	// above the test's intended 230ms timeline (outcome at 30ms,
+	// final at 230ms) but small enough to keep CI snappy. Capture the
+	// last Kind value (not the pointer) so the post-drain assertion
+	// can pin that the channel closed on a terminal frame; reading
+	// the pooled struct after Release would race with the next
+	// pool.Get caller.
+	var (
+		lastKind workerplugin.StreamResultKind
+		sawAny   bool
+	)
+	requireCompleteWithin(t, 2*time.Second, func() {
+		for r := range results {
+			lastKind = r.Kind
+			sawAny = true
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
 	close(stopChecker)
 	<-checkerDone
+
+	if !sawAny {
+		t.Fatal("results channel closed without delivering any frame")
+	}
+	// The success terminal in this test is StreamResultKindFinal;
+	// an Error tail would imply the success path collapsed.
+	if lastKind != workerplugin.StreamResultKindFinal {
+		t.Errorf("expected last frame to be Final; got kind=%v", lastKind)
+	}
 
 	select {
 	case <-workerClosed:

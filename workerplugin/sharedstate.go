@@ -39,7 +39,7 @@ type SharedStateStore struct {
 	initialValue func(key string) uint64
 
 	counters sync.Map // map[string]*atomic.Uint64
-	idem     sync.Map // map[string]*idemEntry — key is fmt.Sprint(key, "\x00", opID)
+	idem     sync.Map // map[idemMapKey]*idemEntry — see makeIdemKey
 	scopes   sync.Map // map[string]*scope — key is operation_id (aka request_id)
 
 	ttl time.Duration
@@ -229,7 +229,7 @@ func (s *SharedStateStore) registerAndLoadIdem(key, opID string, now time.Time) 
 		// a racing DropScope's key iteration either finds our entry
 		// and deletes it, or commits its deletion before we ever saw
 		// the scope as live (in which case we restarted above).
-		k := idemKey(key, opID)
+		k := makeIdemKey(key, opID)
 		var entry *idemEntry
 		if v, ok := s.idem.Load(k); ok {
 			entry = v.(*idemEntry)
@@ -277,7 +277,7 @@ func (s *SharedStateStore) DropScope(opID string) int {
 	sc.deleted.Store(true)
 	released := len(sc.keys)
 	for k := range sc.keys {
-		s.idem.Delete(idemKey(k, opID))
+		s.idem.Delete(makeIdemKey(k, opID))
 	}
 	sc.keys = nil
 	sc.mu.Unlock()
@@ -294,11 +294,24 @@ func (s *SharedStateStore) counterFor(key string) *atomic.Uint64 {
 	return actual.(*atomic.Uint64)
 }
 
-// idemKey composes the two-level key with a byte that cannot appear in
-// either half (BAML client names are identifiers; request_ids are UUIDs
-// or fiber request-ids — both ASCII-only).
-func idemKey(key, opID string) string {
-	return key + "\x00" + opID
+// idemMapKey is the structured (key, opID) tuple used to address the
+// per-(client, request) idempotency entry on s.idem. CodeRabbit
+// verdict-38 finding F6: the previous shape concatenated the two halves
+// with a NUL byte (`key + "\x00" + opID`), which collapses two distinct
+// inputs onto the same string when either half contains a NUL.
+// FetchAdd / DropScope accept arbitrary caller-supplied strings, so a
+// caller passing `("a\x00b", "c")` and another passing `("a", "b\x00c")`
+// would have collided and shared an idempotency entry — silently
+// returning a stale rotation index for one of them. A struct with two
+// string fields is comparable (sync.Map keys must be comparable) and
+// has no separator-encoding to confuse.
+type idemMapKey struct {
+	Key  string
+	OpID string
+}
+
+func makeIdemKey(key, opID string) idemMapKey {
+	return idemMapKey{Key: key, OpID: opID}
 }
 
 // sweeper reclaims idempotency entries that exceeded the TTL. The pool
@@ -372,7 +385,7 @@ func (s *SharedStateStore) sweepOnce(now time.Time) {
 		sc.deleted.Store(true)
 		s.scopes.Delete(opID)
 		for kk := range sc.keys {
-			s.idem.Delete(idemKey(kk, opID))
+			s.idem.Delete(makeIdemKey(kk, opID))
 		}
 		sc.keys = nil
 		sc.mu.Unlock()

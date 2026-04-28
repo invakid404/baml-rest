@@ -2148,24 +2148,38 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 			Options: opts,
 		})
 
-		// Cancel after a short delay (before first byte would arrive)
+		// Cancel after a short delay (before first byte would arrive).
+		// cancelFired is closed inside the timer callback so the event
+		// loop below can distinguish "before cancel" frames (which the
+		// test assertion gates on) from post-cancel teardown frames
+		// that legitimately drain after reqCancel(). CodeRabbit
+		// verdict-38 finding F8: pre-fix the counter ran for the
+		// entire loop lifetime, so any event the server flushed in the
+		// cancel-then-teardown window would have inflated the count
+		// past the "no pre-cancel work" invariant the test claims to
+		// pin.
+		cancelFired := make(chan struct{})
 		cancelTimer := time.AfterFunc(500*time.Millisecond, func() {
 			reqCancel()
+			close(cancelFired)
 		})
 		defer cancelTimer.Stop()
 
 		var receivedEvents int
 		// nonPlannedEventsBeforeCancel counts every frame that is NOT
 		// planned metadata — data, final, reset, error, AND outcome
-		// metadata. Planned metadata is emitted upfront from the
-		// orchestrator (PR #192 verdict-15), before any HTTP work to
-		// the upstream provider, so a planned frame arriving before
-		// our cancel timer fires is expected and not a test failure.
-		// Outcome metadata is terminal/outcome state and must NOT
-		// appear in this pre-first-byte cancellation window — the
-		// pre-fix predicate `!IsMetadata()` skipped both phases and
-		// hid a regression where outcome leaked through. CodeRabbit
-		// verdict-33 finding F4 narrowed the skip to planned only.
+		// metadata — observed BEFORE the cancelFired signal. Planned
+		// metadata is emitted upfront from the orchestrator (PR #192
+		// verdict-15), before any HTTP work to the upstream provider,
+		// so a planned frame arriving in this window is expected and
+		// not a test failure. Outcome metadata is terminal/outcome
+		// state and must NOT appear in this pre-first-byte
+		// cancellation window — the pre-fix predicate `!IsMetadata()`
+		// skipped both phases and hid a regression where outcome
+		// leaked through. CodeRabbit verdict-33 finding F4 narrowed
+		// the skip to planned only; verdict-38 F8 added the cancel
+		// gate so post-cancel teardown frames don't inflate the
+		// counter.
 		var nonPlannedEventsBeforeCancel int
 		var streamErr error
 
@@ -2176,8 +2190,17 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 					goto done
 				}
 				receivedEvents++
-				if !event.IsPlannedMetadata() {
-					nonPlannedEventsBeforeCancel++
+				// Only fail-flag events that arrived BEFORE cancel
+				// fired. After cancel, the server / pool can
+				// legitimately drain teardown frames; those are not
+				// what this test is pinning.
+				select {
+				case <-cancelFired:
+					// Post-cancel; ignore for counter purposes.
+				default:
+					if !event.IsPlannedMetadata() {
+						nonPlannedEventsBeforeCancel++
+					}
 				}
 				t.Logf("Received NDJSON event: type=%s", event.Event)
 			case err := <-errs:

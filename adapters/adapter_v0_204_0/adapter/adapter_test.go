@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -272,6 +273,47 @@ func TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly(t *testing.T)
 			legacyNames := legacyUpstreamClientNamesSnapshot(a)
 			if len(legacyNames) != 1 || legacyNames[0] != tc.client.Name {
 				t.Errorf("LegacyUpstreamClientNames(): got %v, want [%s] (legacy view must preserve explicit strategy parent)", legacyNames, tc.client.Name)
+			}
+
+			// CodeRabbit verdict-38 finding F1: the previous test only
+			// proved the parent's NAME survived in the legacy view. A
+			// regression that forwarded the entry but stripped or
+			// rewrote provider/options — exactly the "BAML must see
+			// it to emit canonical error" contract for the
+			// invalid-start case below — would still pass on the name
+			// check alone. Inspect the actual provider+options BAML
+			// received via the legacyClientEntrySnapshot helper.
+			provider, options, ok := legacyClientEntrySnapshot(a, tc.client.Name)
+			if !ok {
+				t.Fatalf("legacyClientEntrySnapshot: entry %q missing from BAML's legacy registry", tc.client.Name)
+			}
+			// Provider materialisation: an explicit provider on the
+			// runtime client passes through; provider-empty entries
+			// (strategy-only RR overrides on a static parent) fall
+			// back to the introspected provider, which is what
+			// UpstreamClientRegistryProvider does. So the assertion
+			// uses the same helper to compute the expectation.
+			wantProvider := bamlutils.UpstreamClientRegistryProvider(tc.client, a.IntrospectedClientProvider)
+			if provider != wantProvider {
+				t.Errorf("legacy provider for %q: got %q, want %q", tc.client.Name, provider, wantProvider)
+			}
+			// Options: the v0.204 adapter recursively wraps each
+			// option value through WrapMapValues before forwarding to
+			// BAML's CFFI (dynamic_value.go:195). To compare apples
+			// to apples, run the same wrap on the input and compare
+			// structurally with reflect.DeepEqual. This proves the
+			// forwarded payload matches the operator-specified value
+			// modulo the v0.204-internal wrapping.
+			wantOptions := WrapMapValues(tc.client.Options)
+			if want, ok := wantOptions["strategy"]; ok {
+				if !reflect.DeepEqual(options["strategy"], want) {
+					t.Errorf("legacy options[strategy] for %q: got %v, want %v", tc.client.Name, options["strategy"], want)
+				}
+			}
+			if want, ok := wantOptions["start"]; ok {
+				if !reflect.DeepEqual(options["start"], want) {
+					t.Errorf("legacy options[start] for %q: got %v, want %v", tc.client.Name, options["start"], want)
+				}
 			}
 		})
 	}

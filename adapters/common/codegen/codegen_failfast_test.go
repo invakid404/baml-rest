@@ -25,14 +25,24 @@ func TestGenerate_FailsFastOnUnsupportedWithClientWithBuildRequest(t *testing.T)
 	cases := []struct {
 		name string
 		set  func()
+		// wantSubstr is a per-case token unique to the singleton state
+		// the case sets up (CodeRabbit verdict-38 finding F2). The
+		// previous test substring-matched on "Request", which appears
+		// in every panic message regardless of which singleton was
+		// set — masking a wrong-singleton panic. The post-fix panic
+		// includes "Request=true/false, StreamRequest=true/false";
+		// each case asserts the exact pair its setup produced.
+		wantSubstr string
 	}{
 		{
-			name: "introspected.Request non-nil (call BuildRequest)",
-			set:  func() { introspected.Request = struct{}{} },
+			name:       "introspected.Request non-nil (call BuildRequest)",
+			set:        func() { introspected.Request = struct{}{} },
+			wantSubstr: "Request=true, StreamRequest=false",
 		},
 		{
-			name: "introspected.StreamRequest non-nil (stream BuildRequest)",
-			set:  func() { introspected.StreamRequest = struct{}{} },
+			name:       "introspected.StreamRequest non-nil (stream BuildRequest)",
+			set:        func() { introspected.StreamRequest = struct{}{} },
+			wantSubstr: "Request=false, StreamRequest=true",
 		},
 		{
 			name: "both non-nil",
@@ -40,6 +50,7 @@ func TestGenerate_FailsFastOnUnsupportedWithClientWithBuildRequest(t *testing.T)
 				introspected.Request = struct{}{}
 				introspected.StreamRequest = struct{}{}
 			},
+			wantSubstr: "Request=true, StreamRequest=true",
 		},
 	}
 
@@ -67,14 +78,13 @@ func TestGenerate_FailsFastOnUnsupportedWithClientWithBuildRequest(t *testing.T)
 				if !ok {
 					t.Fatalf("expected string panic value, got %T: %v", r, r)
 				}
-				// Message must mention SupportsWithClient and the BR
-				// API so future readers can trace the failure to its
-				// configuration root cause.
+				// Message must mention SupportsWithClient and the
+				// case-specific singleton state.
 				if !strings.Contains(msg, "SupportsWithClient") {
 					t.Errorf("panic message missing SupportsWithClient: %q", msg)
 				}
-				if !strings.Contains(msg, "Request") {
-					t.Errorf("panic message missing Request reference: %q", msg)
+				if !strings.Contains(msg, tc.wantSubstr) {
+					t.Errorf("panic message missing case-specific singleton state %q: %q", tc.wantSubstr, msg)
 				}
 			}()
 

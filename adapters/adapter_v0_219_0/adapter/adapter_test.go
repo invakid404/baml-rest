@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -530,6 +531,28 @@ func TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly(t *testing.T)
 			legacyNames := legacyUpstreamClientNamesSnapshot(a)
 			if len(legacyNames) != 1 || legacyNames[0] != tc.client.Name {
 				t.Errorf("LegacyUpstreamClientNames(): got %v, want [%s] (legacy view must preserve explicit strategy parent)", legacyNames, tc.client.Name)
+			}
+
+			// CodeRabbit verdict-38 finding F1: pin provider+options
+			// passed to BAML, not just the name. v0.219 forwards
+			// options unwrapped, so direct DeepEqual works.
+			provider, options, ok := legacyClientEntrySnapshot(a, tc.client.Name)
+			if !ok {
+				t.Fatalf("legacyClientEntrySnapshot: entry %q missing from BAML's legacy registry", tc.client.Name)
+			}
+			wantProvider := bamlutils.UpstreamClientRegistryProvider(tc.client, a.IntrospectedClientProvider)
+			if provider != wantProvider {
+				t.Errorf("legacy provider for %q: got %q, want %q", tc.client.Name, provider, wantProvider)
+			}
+			if want, ok := tc.client.Options["strategy"]; ok {
+				if !reflect.DeepEqual(options["strategy"], want) {
+					t.Errorf("legacy options[strategy] for %q: got %v, want %v", tc.client.Name, options["strategy"], want)
+				}
+			}
+			if want, ok := tc.client.Options["start"]; ok {
+				if !reflect.DeepEqual(options["start"], want) {
+					t.Errorf("legacy options[start] for %q: got %v, want %v", tc.client.Name, options["start"], want)
+				}
 			}
 		})
 	}
