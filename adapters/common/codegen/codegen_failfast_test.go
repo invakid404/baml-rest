@@ -28,10 +28,10 @@ func TestGenerate_FailsFastOnUnsupportedWithClientWithBuildRequest(t *testing.T)
 		// wantSubstr is a per-case token unique to the singleton state
 		// the case sets up. A substring match on "Request" alone
 		// would appear in every panic message regardless of which
-		// singleton was
-		// set — masking a wrong-singleton panic. The post-fix panic
-		// includes "Request=true/false, StreamRequest=true/false";
-		// each case asserts the exact pair its setup produced.
+		// singleton was set — masking a wrong-singleton panic. The
+		// panic message includes "Request=true/false,
+		// StreamRequest=true/false"; each case asserts the exact pair
+		// its setup produced.
 		wantSubstr string
 	}{
 		{

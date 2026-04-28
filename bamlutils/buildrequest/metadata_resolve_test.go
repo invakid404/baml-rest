@@ -821,10 +821,11 @@ func TestBuildLegacyMetadataPlan_RuntimeClientWithoutChainDoesNotLeakDefaultChai
 }
 
 // TestBuildLegacyMetadataPlan_RuntimeClientWithChainStillEmitsChain is
-// the inverse-regression guard for finding C. When the runtime client
-// DOES have a resolvable chain, the plan must still describe it —
-// dropping the defaultClientName fallback must not regress the common
-// "primary override points at a different valid fallback client" case.
+// the inverse-regression guard for runtime clients with their own
+// resolvable chain. When the runtime client DOES have a resolvable
+// chain, the plan must still describe it — dropping the
+// defaultClientName fallback must not regress the common "primary
+// override points at a different valid fallback client" case.
 func TestBuildLegacyMetadataPlan_RuntimeClientWithChainStillEmitsChain(t *testing.T) {
 	primary := "OverrideStrategy"
 	adapter := &mockAdapter{

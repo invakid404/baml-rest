@@ -43,9 +43,10 @@ func TestRoundRobinOverrides_PresenceOnlyParent(t *testing.T) {
 			Options: &testutil.BAMLOptions{
 				ClientRegistry: &testutil.ClientRegistry{
 					// presence-only entry — no provider, no options.
-					// The adapter would have forwarded provider:"" pre-fix,
-					// or post-materialise a parent BAML rejects for
-					// missing options.strategy. Drop closes both holes.
+					// Without dropping the parent, the adapter would
+					// forward provider:"" or materialise a parent BAML
+					// rejects for missing options.strategy. The drop
+					// closes both holes.
 					Clients: []*testutil.ClientProperty{
 						{Name: "TestRoundRobinPair"},
 					},
@@ -66,13 +67,11 @@ func TestRoundRobinOverrides_PresenceOnlyParent(t *testing.T) {
 	})
 }
 
-// TestRoundRobinOverrides_StrategyOnlyParent covers F1's strategy-
-// only shape: runtime registry supplies options.strategy as an array
-// but no provider. Pre-fix the adapter materialised provider then
-// forwarded the parent — BAML would still execute the parent
-// registry-side, but now its options.strategy is honoured by
-// baml-rest's resolver. Drop ensures BAML never has to deal with the
-// parent shape.
+// TestRoundRobinOverrides_StrategyOnlyParent pins the strategy-only
+// runtime override shape: runtime registry supplies options.strategy
+// as an array but no provider. The adapter must drop the parent so
+// BAML never parses the parent shape, while baml-rest's resolver
+// honors options.strategy.
 func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 	skipIfNoBuildRequest(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
@@ -207,15 +206,15 @@ func TestRoundRobinOverrides_CanonicalSpellingRecognized(t *testing.T) {
 			t.Fatalf("Call failed: %v", err)
 		}
 		if resp.StatusCode != 200 {
-			t.Fatalf("expected 200 (BAML would reject 'baml-roundrobin' pre-fix); got %d: %s", resp.StatusCode, resp.Error)
+			t.Fatalf("expected canonical spelling recognition without BAML rejecting 'baml-roundrobin'; got %d: %s", resp.StatusCode, resp.Error)
 		}
 		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
 		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRoundRobinName, "TestRoundRobinPair")
 	})
 }
 
-// TestRoundRobinOverrides_DeterministicStart covers F3 (deterministic
-// start): runtime options.start makes the dynamic RR resolution
+// TestRoundRobinOverrides_DeterministicStart pins deterministic
+// start: runtime options.start makes the dynamic RR resolution
 // deterministic at index 0/1/2. We use the three-child chain
 // (TestRoundRobinChain) and pin start=1 → FallbackSecondary.
 func TestRoundRobinOverrides_DeterministicStart(t *testing.T) {
@@ -563,10 +562,9 @@ func TestLegacyModeSupportsDynamicFallbackPrimary(t *testing.T) {
 // BAML's per-worker runtime rotation owns the strategy. The
 // observable contract: the request still succeeds, but the
 // X-BAML-RoundRobin-* headers are absent because no baml-rest RR
-// resolution happened. Pre-fix, ResolveEffectiveClient ran
-// unconditionally for supportsWithClient adapters, so __rrInfo got
-// populated even with the flag off and the headers leaked through;
-// post-fix the gate is `supportsWithClient && __useBuildRequest`.
+// resolution happened. ResolveEffectiveClient is gated on
+// `supportsWithClient && __useBuildRequest`, so with the flag off
+// __rrInfo never gets populated and no RR headers leak.
 //
 // Skipped on the BuildRequest-mode CI leg — this tests the
 // flag-off semantics specifically.

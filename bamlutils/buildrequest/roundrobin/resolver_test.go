@@ -845,8 +845,8 @@ func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
 // TestResolve_AbsentStartOverride_RandomSelection guards against the
 // inverse regression: an RR registry entry that omits `start` must
 // keep the existing AdvanceDynamic random fallback. Without this
-// guard the F3 plumbing could leak a determinism into the absent
-// case.
+// guard the deterministic-start plumbing could leak a determinism
+// into the absent case.
 func TestResolve_AbsentStartOverride_RandomSelection(t *testing.T) {
 	reg := &bamlutils.ClientRegistry{
 		Clients: []*bamlutils.ClientProperty{
@@ -1159,8 +1159,8 @@ func TestResolve_RuntimeRRWithoutStrategy_ReturnsInvalidStrategySentinel(t *test
 // map) and somehow has no chain — a configuration error in static
 // config rather than in a runtime override — the generic
 // "has no children" error is still appropriate. Without this guard
-// the F11 branch could over-broaden and convert static-config
-// failures into legacy-fallthrough territory.
+// the runtime-RR-without-strategy branch could over-broaden and
+// convert static-config failures into legacy-fallthrough territory.
 func TestResolve_StaticRRWithoutStrategy_KeepsGenericError(t *testing.T) {
 	res, err := Resolve(ResolveInput{
 		ClientName:      "StaticRR",

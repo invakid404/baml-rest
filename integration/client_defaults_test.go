@@ -135,9 +135,10 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 	})
 
 	t.Run("negative_no_default_drops_cache_control", func(t *testing.T) {
-		// Shared TestEnv has no BAML_REST_CLIENT_DEFAULTS, so this reproduces
-		// the pre-fix behavior: BAML defaults allowed_role_metadata to None
-		// and silently strips cache_control before serialization.
+		// Shared TestEnv has no BAML_REST_CLIENT_DEFAULTS, so this
+		// reproduces BAML's default behavior: allowed_role_metadata
+		// defaults to None and cache_control is silently stripped
+		// before serialization.
 		scenarioID := "test-client-defaults-negative"
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

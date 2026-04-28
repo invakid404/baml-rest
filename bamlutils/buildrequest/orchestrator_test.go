@@ -2404,7 +2404,7 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testin
 	config := &StreamConfig{
 		Provider:      "",
 		RetryPolicy:   &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 1}},
-		NeedsPartials: true, // partials wired up — reset only suppressed by the F5 gate
+		NeedsPartials: true, // partials wired up — reset only suppressed by the sawStreamFrame gate
 		FallbackChain: []string{"PrimaryClient", "SecondaryClient"},
 		ClientProviders: map[string]string{
 			"PrimaryClient":   "openai",
@@ -2469,9 +2469,9 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testin
 }
 
 // TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry is the
-// retry-callback sibling of the fallback-chain F5 test. Same shape:
-// first attempt fails before any stream frame, retry succeeds; the
-// retry-boundary reset must be suppressed.
+// retry-callback sibling of the fallback-chain no-stream-frame test.
+// Same shape: first attempt fails before any stream frame, retry
+// succeeds; the retry-boundary reset must be suppressed.
 func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
