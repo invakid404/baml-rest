@@ -389,6 +389,19 @@ func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id 
 
 	var lastErr error
 	for attempt := 0; attempt <= extraGRPCDialRetries; attempt++ {
+		// CodeRabbit verdict-40 finding F4: short-circuit before
+		// dialBrokerOnce when the parent ctx is already cancelled.
+		// dialBrokerOnce itself selects on ctx.Done so this isn't a
+		// correctness bug for the result channel — but spawning a
+		// goroutine + drain path for a doomed dial is wasted work,
+		// and avoids transiently holding broker resources during
+		// teardown. The outer caller's "exactly one brokerDialResult
+		// per pending dial" contract (see plugin.go ~line 327 and
+		// the verdict-38 F9 cancellation drain) is preserved: this
+		// branch returns once with the cancel error.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		conn, err := dialBrokerOnce(ctx, broker, id)
 		if err == nil {
 			return conn, nil

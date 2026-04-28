@@ -446,4 +446,19 @@ func TestSetClientRegistry_PresentEmptyPrimaryIsNoOp(t *testing.T) {
 	if orig := a.OriginalClientRegistry(); orig == nil || orig.Primary == nil || *orig.Primary != "" {
 		t.Errorf("OriginalClientRegistry should preserve the present-empty primary verbatim; got %+v", orig)
 	}
+	// CodeRabbit verdict-40 finding F1: the present-empty primary
+	// must also leave both BAML registry views empty. The priming
+	// call had populated upstreamClientNames with "GoodClient"; the
+	// follow-up call with no clients must reset both name slices to
+	// length 0. Length checks (not nil-vs-empty) — the
+	// implementation reuses the slice via `[:0]`, so the slice is
+	// non-nil but empty post-reset. A regression that re-wrote the
+	// priming entry into one of the views (or failed to clear) would
+	// surface here.
+	if got := upstreamClientNamesSnapshot(a); len(got) != 0 {
+		t.Errorf("upstreamClientNamesSnapshot after present-empty primary: got %v, want empty", got)
+	}
+	if got := legacyUpstreamClientNamesSnapshot(a); len(got) != 0 {
+		t.Errorf("legacyUpstreamClientNamesSnapshot after present-empty primary: got %v, want empty", got)
+	}
 }

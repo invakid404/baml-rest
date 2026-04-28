@@ -896,51 +896,58 @@ func TestInspectStartOverride_AcceptedShapes(t *testing.T) {
 	cases := []struct {
 		name        string
 		raw         any
+		// hasStart distinguishes "absent (no start key)" from
+		// "present-with-some-value" (CodeRabbit verdict-40 finding F3).
+		// The previous version compared tc.name to a magic string,
+		// which broke if the case was renamed and confused the
+		// per-case intent. Explicit boolean is clearer and avoids
+		// the brittle display-name dependency.
+		hasStart    bool
 		wantPresent bool
 		wantValid   bool
 		wantStart   int
 	}{
-		{"absent (no start key)", nil, false, true, 0},
+		{"absent (no start key)", nil, false, false, true, 0},
 		// Accepted: signed ints + finite whole float64 in i32 range.
-		{"int", int(5), true, true, 5},
-		{"int8", int8(5), true, true, 5},
-		{"int16", int16(5), true, true, 5},
-		{"int32", int32(5), true, true, 5},
-		{"int64 in range", int64(5), true, true, 5},
-		{"int32 max", int32(math.MaxInt32), true, true, math.MaxInt32},
-		{"int32 min", int32(math.MinInt32), true, true, math.MinInt32},
-		{"float64 zero-fraction", float64(5), true, true, 5},
-		{"negative int", int(-3), true, true, -3},
+		{"int", int(5), true, true, true, 5},
+		{"int8", int8(5), true, true, true, 5},
+		{"int16", int16(5), true, true, true, 5},
+		{"int32", int32(5), true, true, true, 5},
+		{"int64 in range", int64(5), true, true, true, 5},
+		{"int32 max", int32(math.MaxInt32), true, true, true, math.MaxInt32},
+		{"int32 min", int32(math.MinInt32), true, true, true, math.MinInt32},
+		{"float64 zero-fraction", float64(5), true, true, true, 5},
+		{"negative int", int(-3), true, true, true, -3},
 		// Rejected: out-of-i32-range.
-		{"int64 MaxInt32+1", int64(math.MaxInt32) + 1, true, false, 0},
-		{"int64 MinInt32-1", int64(math.MinInt32) - 1, true, false, 0},
-		{"float64 MaxInt32+1", float64(math.MaxInt32) + 1, true, false, 0},
-		{"float64 MinInt32-1", float64(math.MinInt32) - 1, true, false, 0},
+		{"int64 MaxInt32+1", int64(math.MaxInt32) + 1, true, true, false, 0},
+		{"int64 MinInt32-1", int64(math.MinInt32) - 1, true, true, false, 0},
+		{"float64 MaxInt32+1", float64(math.MaxInt32) + 1, true, true, false, 0},
+		{"float64 MinInt32-1", float64(math.MinInt32) - 1, true, true, false, 0},
 		// Rejected: unsigned types — no upstream encoder branch.
 		// CodeRabbit verdict-21 finding 6: include plain `uint` so the
 		// platform-sized kind is also pinned to rejection.
-		{"uint", uint(5), true, false, 0},
-		{"uint8", uint8(5), true, false, 0},
-		{"uint16", uint16(5), true, false, 0},
-		{"uint32", uint32(5), true, false, 0},
-		{"uint64 small", uint64(5), true, false, 0},
-		{"uint32 above MaxInt32", uint32(math.MaxInt32) + 1, true, false, 0},
-		{"uint64 max", uint64(math.MaxUint64), true, false, 0},
+		{"uint", uint(5), true, true, false, 0},
+		{"uint8", uint8(5), true, true, false, 0},
+		{"uint16", uint16(5), true, true, false, 0},
+		{"uint32", uint32(5), true, true, false, 0},
+		{"uint64 small", uint64(5), true, true, false, 0},
+		{"uint32 above MaxInt32", uint32(math.MaxInt32) + 1, true, true, false, 0},
+		{"uint64 max", uint64(math.MaxUint64), true, true, false, 0},
 		// Rejected: json.Number — encoded as string upstream.
-		{"json.Number valid", json.Number("5"), true, false, 0},
-		{"json.Number invalid", json.Number("abc"), true, false, 0},
+		{"json.Number valid", json.Number("5"), true, true, false, 0},
+		{"json.Number invalid", json.Number("abc"), true, true, false, 0},
 		// Rejected: wrong types.
-		{"fractional float", 1.5, true, false, 0},
-		{"NaN", math.NaN(), true, false, 0},
-		{"+Inf", math.Inf(1), true, false, 0},
-		{"numeric string", "5", true, false, 0},
-		{"bool", true, true, false, 0},
-		{"slice", []any{1}, true, false, 0},
+		{"fractional float", 1.5, true, true, false, 0},
+		{"NaN", math.NaN(), true, true, false, 0},
+		{"+Inf", math.Inf(1), true, true, false, 0},
+		{"numeric string", "5", true, true, false, 0},
+		{"bool", true, true, true, false, 0},
+		{"slice", []any{1}, true, true, false, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var opts map[string]any
-			if tc.name != "absent (no start key)" {
+			if tc.hasStart {
 				opts = map[string]any{"start": tc.raw}
 			}
 			start, present, valid := InspectStartOverride(opts)

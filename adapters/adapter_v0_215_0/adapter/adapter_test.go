@@ -422,4 +422,13 @@ func TestSetClientRegistry_PresentEmptyPrimaryIsNoOp(t *testing.T) {
 	if orig := a.OriginalClientRegistry(); orig == nil || orig.Primary == nil || *orig.Primary != "" {
 		t.Errorf("OriginalClientRegistry should preserve the present-empty primary verbatim; got %+v", orig)
 	}
+	// CodeRabbit verdict-40 finding F2: see v0.204 sibling for
+	// rationale. Length checks because the implementation reuses
+	// slices via `[:0]`.
+	if got := upstreamClientNamesSnapshot(a); len(got) != 0 {
+		t.Errorf("upstreamClientNamesSnapshot after present-empty primary: got %v, want empty", got)
+	}
+	if got := legacyUpstreamClientNamesSnapshot(a); len(got) != 0 {
+		t.Errorf("legacyUpstreamClientNamesSnapshot after present-empty primary: got %v, want empty", got)
+	}
 }
