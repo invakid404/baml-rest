@@ -171,8 +171,7 @@ type WorkerPlugin struct {
 	// server via pool.Config.SharedStateSeeds.
 	SharedStateImpl pb.SharedStateServer
 	// SharedStateAttachTimeout bounds the initial AttachSharedState RPC
-	// from the host to the worker. Non-positive (<= 0) uses the 10s
-	// default — see the resolution at the call site (verdict-36 F3).
+	// from the host to the worker. Non-positive (<= 0) uses the 10s default.
 	SharedStateAttachTimeout time.Duration
 	// AttachSharedState is set by the worker side in GRPCServer and
 	// invoked on AttachSharedState requests. Keeps the plumbing in the
