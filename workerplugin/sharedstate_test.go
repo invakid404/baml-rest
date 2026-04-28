@@ -421,39 +421,95 @@ func TestSharedStateStore_FetchAddAfterDropScopeRestartsCleanly(t *testing.T) {
 // verdict-38 finding F6: the previous map key was built via
 // fmt.Sprint-style concatenation with a NUL separator
 // (`key + "\x00" + opID`), which collapses two distinct caller inputs
-// onto the same string when either half contains a NUL — both
-// `("a\x00b", "c")` and `("a", "b\x00c")` produced the same key
-// "a\x00b\x00c". Two distinct (key, opID) pairs would then share an
-// idempotency entry, silently returning a stale rotation index for
-// the loser. The structured idemMapKey type makes that collision
+// onto the same string when either half contains a NUL. The
+// structured idemMapKey{Key, OpID} type makes that collision
 // impossible regardless of payload bytes.
+//
+// Choice of test pairs (verdict-38 follow-up): the v0 of this test
+// used `("a\x00b","c")` vs `("a","b\x00c")` and only checked that
+// both calls returned 0 — but BOTH the old (collision-prone) code AND
+// the new (struct-key) code happen to return 0 for that scenario,
+// because counters are keyed on `key` alone and both keys start fresh
+// at 0. The test passed even when collision was active.
+//
+// The discriminating shape relies on the observation that the OLD
+// scheme aliased ("foo", "bar\x00baz") and ("foo\x00bar", "baz") onto
+// the same map slot (both join to "foo\x00bar\x00baz"). Under the old
+// code, the second FetchAdd would hit the first's cached idemEntry
+// and short-circuit via sync.Once.Do — meaning the SECOND pair's
+// COUNTER (keyed on "foo\x00bar") would never advance. We probe that
+// counter via a third FetchAdd under a fresh op_id; if it's still at
+// 0, the second pair was aliased.
 func TestSharedStateStore_NULBytesInKeyDoNotCollide(t *testing.T) {
-	store := newSharedStateStoreWithTTL(nil, time.Hour)
-	defer store.Close()
+	t.Run("counter advancement proves distinct entries", func(t *testing.T) {
+		store := newSharedStateStoreWithTTL(nil, time.Hour)
+		defer store.Close()
 
-	// Two distinct (key, opID) pairs that the prior NUL-concatenated
-	// key would have aliased onto a single entry.
-	prevA := store.FetchAdd("a\x00b", 1, "c")
-	prevB := store.FetchAdd("a", 1, "b\x00c")
+		// Pair A: key="foo", opID="bar\x00baz".
+		// Pair B: key="foo\x00bar", opID="baz".
+		// Old-scheme joined string for both: "foo\x00bar\x00baz".
+		// Pair A advances counter "foo" 0→1, returns previous=0.
+		if got := store.FetchAdd("foo", 1, "bar\x00baz"); got != 0 {
+			t.Fatalf("pair A first call: got previous=%d, want 0", got)
+		}
 
-	// Both must observe a cache miss (previous == 0) — they advance
-	// independent counters because they're distinct keys. Pre-fix,
-	// the second call would have hit the first call's cached idem
-	// entry and returned 0 from a stale snapshot, OR the second
-	// call's counter would have been mistakenly tied to the first's.
-	if prevA != 0 {
-		t.Errorf("first FetchAdd should observe miss; got previous=%d", prevA)
-	}
-	if prevB != 0 {
-		t.Errorf("second FetchAdd should observe miss; got previous=%d (NUL-byte collision regression?)", prevB)
-	}
+		// Pair B should be a cache miss under the new scheme: distinct
+		// idemMapKey, distinct counter "foo\x00bar". Returns previous=0
+		// from advancing that counter 0→1. Under the old scheme it
+		// would hit pair A's cache and return 0 WITHOUT advancing
+		// "foo\x00bar". Both return 0, so the FetchAdd return is not
+		// itself the discriminator — see the next call.
+		if got := store.FetchAdd("foo\x00bar", 1, "baz"); got != 0 {
+			t.Fatalf("pair B first call: got previous=%d, want 0", got)
+		}
 
-	// Idempotency: reissuing the same (key, opID) returns the
-	// cached previous, separately for each pair.
-	if got := store.FetchAdd("a\x00b", 1, "c"); got != 0 {
-		t.Errorf("retry of (a\\x00b, c): got previous=%d, want 0 (cache hit)", got)
-	}
-	if got := store.FetchAdd("a", 1, "b\x00c"); got != 0 {
-		t.Errorf("retry of (a, b\\x00c): got previous=%d, want 0 (cache hit)", got)
-	}
+		// Discriminator: a fresh op_id under pair B's key
+		// ("foo\x00bar"). If pair B genuinely advanced its counter
+		// (new code), this advances it again — counter "foo\x00bar"
+		// goes 1→2, previous=1. If pair B was aliased onto pair A's
+		// idemEntry under the old NUL-concat scheme, the
+		// "foo\x00bar" counter is still 0 because Once.Do
+		// short-circuited the counter.Add — this call would advance
+		// 0→1, previous=0.
+		got := store.FetchAdd("foo\x00bar", 1, "fresh-op")
+		if got != 1 {
+			t.Errorf("discriminator FetchAdd on key %q: got previous=%d, want 1 — pair B was aliased onto pair A's entry under the NUL-concat scheme", "foo\\x00bar", got)
+		}
+	})
+
+	t.Run("DropScope on one pair does not affect the other", func(t *testing.T) {
+		store := newSharedStateStoreWithTTL(nil, time.Hour)
+		defer store.Close()
+
+		// Same colliding pair shape, fresh store. Each pair lives in
+		// its own scope (scopes are keyed on opID alone), so dropping
+		// one must not touch the other's idem entry.
+		store.FetchAdd("foo", 1, "bar\x00baz")  // pair A, scope "bar\x00baz"
+		store.FetchAdd("foo\x00bar", 1, "baz")  // pair B, scope "baz"
+
+		// Drop pair A's scope. Walks sc.keys = {"foo"} and removes
+		// idem[{Key:"foo", OpID:"bar\x00baz"}] only. Pair B's
+		// idem[{Key:"foo\x00bar", OpID:"baz"}] must remain.
+		if released := store.DropScope("bar\x00baz"); released != 1 {
+			t.Fatalf("DropScope released=%d, want 1 (pair A's single key)", released)
+		}
+
+		// Pair B's idempotency must survive: re-issuing it returns
+		// the SAME cached previous it returned before (0). Under a
+		// regression where DropScope walked the old NUL-concat
+		// alias, pair B's entry would also have been deleted —
+		// re-issuing would observe a cache miss, advance the counter
+		// 1→2, and return previous=1.
+		if got := store.FetchAdd("foo\x00bar", 1, "baz"); got != 0 {
+			t.Errorf("pair B post-DropScope-A: got previous=%d, want 0 (cache hit) — DropScope leaked across the collision boundary", got)
+		}
+
+		// And pair A is genuinely gone: re-issuing observes a fresh
+		// scope + fresh idem entry, advances counter "foo" again.
+		// Counter "foo" was at 1 from pair A's first call; this
+		// advances to 2. previous=1.
+		if got := store.FetchAdd("foo", 1, "bar\x00baz"); got != 1 {
+			t.Errorf("pair A post-drop re-issue: got previous=%d, want 1 (counter %q kept its value across the drop, idem entry was fresh)", got, "foo")
+		}
+	})
 }
