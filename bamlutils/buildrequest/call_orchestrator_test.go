@@ -405,12 +405,12 @@ func TestRunCallOrchestration_EmptyProvider(t *testing.T) {
 }
 
 // TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError
-// pins the post-verdict-28 contract (CodeRabbit finding 8) on the call
-// orchestrator: when MetadataPlan + NewMetadataResult are wired up, the
-// planned-metadata event MUST be emitted before any validation return.
-// Mirrors the stream orchestrator's regression test; both orchestrators
-// previously emitted after validation, masking the only observable
-// signal on unsupported-provider / malformed-fallback failures.
+// pins the call-orchestrator contract: when MetadataPlan +
+// NewMetadataResult are wired up, the planned-metadata event MUST
+// be emitted before any validation return. Mirrors the stream
+// orchestrator's regression test; emitting after validation would
+// drop the only observable signal on unsupported-provider /
+// malformed-fallback failures.
 func TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testing.T) {
 	out := make(chan bamlutils.StreamResult, 10)
 
@@ -454,13 +454,12 @@ func TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testi
 	if planned.Client != "MyClient" {
 		t.Errorf("planned client: got %q, want MyClient", planned.Client)
 	}
-	// CodeRabbit verdict-36 finding F1: pin "exactly one frame, and
-	// it's the planned metadata". Mirrors the stream orchestrator's
-	// verdict-34 F2 tightening (orchestrator_test.go:881-910). The
-	// previous assertions allowed any number of trailing frames after
-	// the planned event so long as outcome stayed nil — a regression
-	// that emitted spurious reset/error/data frames after a synchronous
-	// validation return would slip through.
+	// Pin "exactly one frame, and it's the planned metadata".
+	// Mirrors the stream orchestrator's tightening at
+	// orchestrator_test.go:881-910. Allowing any number of trailing
+	// frames after the planned event would let a regression that
+	// emitted spurious reset/error/data frames after a synchronous
+	// validation return slip through.
 	if len(kinds) != 1 {
 		t.Errorf("expected exactly 1 emitted frame on validation-error path, got %d (kinds=%v)", len(kinds), kinds)
 	}
@@ -1040,8 +1039,7 @@ func TestRunCallOrchestration_NilHTTPClient(t *testing.T) {
 		// "any error is acceptable" arm would have hidden parse /
 		// extract / request-construction regressions behind the
 		// transport-flake label. Whitelist only the documented
-		// stale-keepalive class — every other shape is a real bug
-		// (CodeRabbit verdict-25 finding F2).
+		// stale-keepalive class — every other shape is a real bug.
 		for i, e := range streamErrs {
 			if !isNilDefaultClientTransportFlake(e) {
 				t.Fatalf("nil-client fallback: stream error %d is not a recognised transport flake (parse/extract/request-construction regression?): %v", i, e)
@@ -1574,15 +1572,14 @@ func TestRunCallOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 }
 
 // TestRunCallOrchestration_SingleProviderClientOverride locks in the
-// CallConfig.ClientOverride → buildRequest propagation on the single-
-// provider branch (CodeRabbit verdict-28 finding 7). The fallback-chain
-// branch's override propagation is covered by the mixed-chain tests
-// above, but the FallbackChain==nil arm — which is the path the
-// generated router takes for top-level baml-roundrobin once
-// ResolveEffectiveClient has unwrapped to a leaf — had no direct
-// assertion. A regression where this arm dropped or rewrote
-// ClientOverride would silently break per-attempt WithClient targeting
-// on the BuildRequest path.
+// CallConfig.ClientOverride → buildRequest propagation on the
+// single-provider branch. The fallback-chain branch's override
+// propagation is covered by the mixed-chain tests above; this pins
+// the FallbackChain==nil arm — the path the generated router takes
+// for top-level baml-roundrobin once ResolveEffectiveClient has
+// unwrapped to a leaf. A regression where this arm dropped or
+// rewrote ClientOverride would silently break per-attempt WithClient
+// targeting on the BuildRequest path.
 func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 	server := makeJSONServer(200, `{"choices":[{"message":{"content":"ok"}}]}`)
 	defer server.Close()
@@ -1628,11 +1625,11 @@ func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 	if capturedOverride != wantOverride {
 		t.Errorf("captured clientOverride: got %q, want %q", capturedOverride, wantOverride)
 	}
-	// CodeRabbit verdict-38 finding F10: drain the output channel and
-	// pin the terminal-result contract. Without this, a regression
-	// that forwarded the override correctly but lost the success path
-	// (or raised StreamResultKindError after the request) would still
-	// pass on the err/captureCount/captured assertions alone.
+	// Drain the output channel and pin the terminal-result contract.
+	// Without this, a regression that forwarded the override
+	// correctly but lost the success path (or raised
+	// StreamResultKindError after the request) would still pass on
+	// the err/captureCount/captured assertions alone.
 	var (
 		finalCount int
 		finalVal   any
@@ -1658,39 +1655,33 @@ func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 // documented stale-keepalive transport class TestRunCallOrchestration_
 // NilHTTPClient tolerates under CI's `-race -count=100` rotation. The
 // check is substring-based on err.Error() — the test result type does
-// not carry stack traces. CodeRabbit verdict-25 finding F2: previously
-// the test logged every StreamResultKindError as "transport flake",
-// which would have hidden parse / extract / request-construction
-// regressions behind the label.
+// not carry stack traces. Treating every StreamResultKindError as a
+// transport flake would hide parse / extract / request-construction
+// regressions behind the label, so the whitelist is narrow.
 //
-// Comparison is case-insensitive (CodeRabbit verdict-28 finding 2):
-// net/http and net/url wrap errors with assorted casing — "EOF" vs
-// "eof" depending on the wrap layer, "connection reset by peer" vs
-// "Connection reset" depending on the OS. Lowercasing both sides
-// dodges that surface without weakening the substring match.
+// Comparison is case-insensitive: net/http and net/url wrap errors
+// with assorted casing — "EOF" vs "eof" depending on the wrap layer,
+// "connection reset by peer" vs "Connection reset" depending on the
+// OS. Lowercasing both sides dodges that surface without weakening
+// the substring match.
 //
-// Needles are concrete transport-class messages only (CodeRabbit
-// verdict-34 finding F7). The earlier list included a bare "eof"
-// substring that also matched application/parser failures like
-// "unexpected EOF" or "EOF while parsing JSON" — those are genuine
+// Needles are concrete transport-class messages only — a bare "eof"
+// substring would also match application/parser failures like
+// "unexpected EOF" or "EOF while parsing JSON" (genuine
 // content-shape regressions that must NOT be classified as transport
-// flakes. The current list pins to symptoms produced specifically by
+// flakes). The list pins to symptoms produced specifically by
 // HTTP/transport teardown paths.
 //
-// Wrapped-EOF predicate (CodeRabbit verdict-37): the bare "eof"
-// substring would have caught net/http's keepalive-EOF flakes, but
-// at the cost of also matching unwrapped "unexpected EOF" parser
-// errors. The compromise is a prefix+suffix match keyed on this
-// codebase's actual wrapper format. llmhttp wraps every transport
-// error with `llmhttp: request failed: %w` (bamlutils/llmhttp/llmhttp.go),
-// and net/http surfaces stale-keepalive teardown either as a bare
-// `Post "<url>": EOF` or a `... net/http: Transport failed to read
-// from server: EOF` — both terminate with `: EOF` on the wrapped
-// message. Prefix + suffix together accept those two known shapes
-// while rejecting unwrapped `unexpected EOF` and `llmhttp: failed
-// to read response body: unexpected EOF` (different wrapper) without
-// needing a literal `"http:"` substring (which doesn't surface in
-// this codebase).
+// The wrapped-EOF predicate at the top of the function catches
+// net/http's keepalive-EOF flakes after llmhttp wraps every
+// transport error with `llmhttp: request failed: %w`
+// (bamlutils/llmhttp/llmhttp.go). net/http surfaces stale-keepalive
+// teardown either as a bare `Post "<url>": EOF` or a `... net/http:
+// Transport failed to read from server: EOF` — both terminate with
+// `: EOF` on the wrapped message. Prefix + suffix together accept
+// those two known shapes while rejecting unwrapped `unexpected EOF`
+// and `llmhttp: failed to read response body: unexpected EOF`
+// (different wrapper).
 func isNilDefaultClientTransportFlake(err error) bool {
 	if err == nil {
 		return false
@@ -1716,12 +1707,11 @@ func isNilDefaultClientTransportFlake(err error) bool {
 }
 
 // TestIsNilDefaultClientTransportFlake_NeedleList pins the
-// transport-class needle list (CodeRabbit verdict-34 finding F7) and
-// the wrapped-EOF predicate (verdict-37). The bare "eof" substring
-// used to match application/parser failures like "unexpected EOF";
-// the current shape uses concrete-substring needles for direct
-// transport-teardown symptoms plus a prefix+suffix predicate for
-// llmhttp's wrapped EOF.
+// transport-class needle list and the wrapped-EOF predicate. A bare
+// "eof" substring would match application/parser failures like
+// "unexpected EOF"; the current shape uses concrete-substring
+// needles for direct transport-teardown symptoms plus a prefix+
+// suffix predicate for llmhttp's wrapped EOF.
 func TestIsNilDefaultClientTransportFlake_NeedleList(t *testing.T) {
 	transport := []string{
 		// Existing concrete transport-class substrings.

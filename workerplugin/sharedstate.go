@@ -295,16 +295,12 @@ func (s *SharedStateStore) counterFor(key string) *atomic.Uint64 {
 }
 
 // idemMapKey is the structured (key, opID) tuple used to address the
-// per-(client, request) idempotency entry on s.idem. CodeRabbit
-// verdict-38 finding F6: the previous shape concatenated the two halves
-// with a NUL byte (`key + "\x00" + opID`), which collapses two distinct
-// inputs onto the same string when either half contains a NUL.
-// FetchAdd / DropScope accept arbitrary caller-supplied strings, so a
-// caller passing `("a\x00b", "c")` and another passing `("a", "b\x00c")`
-// would have collided and shared an idempotency entry — silently
-// returning a stale rotation index for one of them. A struct with two
-// string fields is comparable (sync.Map keys must be comparable) and
-// has no separator-encoding to confuse.
+// per-(client, request) idempotency entry on s.idem. FetchAdd /
+// DropScope accept arbitrary caller-supplied strings, so the address
+// must not collapse distinct inputs: a struct with two string fields
+// is comparable (sync.Map keys must be comparable) and has no
+// separator encoding, so `("a\x00b", "c")` and `("a", "b\x00c")`
+// resolve to distinct entries.
 type idemMapKey struct {
 	Key  string
 	OpID string
@@ -408,9 +404,7 @@ type sharedStateServer struct {
 // would always pass NewSharedStateStore's result here), and FetchAdd
 // would otherwise nil-deref on the first incoming RPC. Constructor
 // panic surfaces the misconfiguration at bind time rather than during
-// a request roundtrip, and avoids changing the (error, server)
-// signature operator code already depends on. CodeRabbit verdict-39
-// finding F7.
+// a request roundtrip.
 func NewSharedStateServer(store *SharedStateStore) pb.SharedStateServer {
 	if store == nil {
 		panic("workerplugin: NewSharedStateServer called with nil SharedStateStore")

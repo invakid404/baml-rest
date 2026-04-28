@@ -42,7 +42,7 @@ type BamlAdapter struct {
 	// fallthrough (the runNoRaw/runFullOrchestration call sites) uses
 	// this view so BAML can either honour a runtime override or emit
 	// its canonical ensure_strategy / ensure_int / unsupported-property
-	// error. See PR #192 cold-review-4 + Option C.
+	// error.
 	LegacyClientRegistry *baml.ClientRegistry
 	TypeBuilder          *introspected.TypeBuilder
 
@@ -90,23 +90,21 @@ type BamlAdapter struct {
 	// upstream baml.ClientRegistry forwards `provider: ""` into
 	// CFFI, which rejects in ClientProvider::from_str
 	// (clientspec.rs:119-144) and kills the request before BAML
-	// even resolves WithClient(leaf). See PR #192 cold-review-3
-	// finding 1.
+	// even resolves WithClient(leaf).
 	IntrospectedClientProvider map[string]string
 
 	// upstreamClientNames records the order of names passed to
 	// AddLlmClient on the BuildRequest-safe registry. Test-only
 	// observability — used by SetClientRegistry tests to assert that
-	// baml-rest-resolved strategy parent entries get dropped
-	// (cold-review-3 signoff-10 F1) while still being preserved in
-	// OriginalClientRegistry. Production code must not depend on
-	// this slice; reach for the BAML-bound registry directly.
+	// baml-rest-resolved strategy parent entries get dropped while
+	// still being preserved in OriginalClientRegistry. Production
+	// code must not depend on this slice; reach for the BAML-bound
+	// registry directly.
 	upstreamClientNames []string
 
 	// legacyUpstreamClientNames is the same observability for the
-	// legacy registry view (cold-review-4 + Option C). Keeps a
-	// separate slice so dual-view tests can verify which entries
-	// reached each view.
+	// legacy registry view. Keeps a separate slice so dual-view
+	// tests can verify which entries reached each view.
 	legacyUpstreamClientNames []string
 }
 
@@ -163,8 +161,8 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	//     for invalid ones.
 	//
 	// Both views materialise the provider via UpstreamClientRegistry-
-	// Provider (PR #192 cold-review-3 findings 1 and 2): omitted-
-	// provider entries get their provider filled from the introspected
+	// Provider: omitted-provider entries get their provider filled
+	// from the introspected
 	// map; canonical "baml-roundrobin" gets translated to the upstream-
 	// accepted "baml-round-robin". The original ClientProperty stays
 	// in OriginalClientRegistry untouched so baml-rest's resolver and
@@ -185,8 +183,8 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 		}
 	}
 
-	// Empty-primary guard (CodeRabbit verdict-31 finding F1): treat
-	// `Primary != nil && *Primary == ""` the same as `Primary == nil`.
+	// Empty-primary guard: treat `Primary != nil && *Primary == ""`
+	// the same as `Primary == nil`.
 	// BAML's Go ClientRegistry stores the empty string verbatim and
 	// the Rust runtime then fails on PromptRenderer's lookup ("client
 	// not found: '"). Most baml-rest helpers already treat empty
@@ -213,15 +211,13 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 		// introspected fallback from the shortcut.
 		//
 		// Primary cache: skip runtime entries that BOTH views drop.
-		// Pre-cold-review-4, the cache scan walked every original
-		// runtime client without applying the same drop predicate, so
-		// it could observe a provider from an entry BAML's BuildRequest-
-		// bound view doesn't have (CodeRabbit verdict-21 finding 1+2).
-		// With dual views the rule becomes: cache from the first
-		// matching entry that survived in *at least one* view; if both
-		// views dropped the entry (inert presence-only static parent),
-		// keep scanning so a forwarded sibling (or static synthesis)
-		// can supply the provider.
+		// Without applying the same drop predicate the cache scan
+		// could observe a provider from an entry BAML's BuildRequest-
+		// bound view doesn't have. With dual views the rule is: cache
+		// from the first matching entry that survived in *at least
+		// one* view; if both views dropped the entry (inert
+		// presence-only static parent), keep scanning so a forwarded
+		// sibling (or static synthesis) can supply the provider.
 		foundPrimary := false
 		for _, client := range clientRegistry.Clients {
 			if client == nil {
@@ -253,8 +249,7 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 		// function default instead of the primary's actual static
 		// provider. The foundPrimary flag (rather than "cache is
 		// empty") gates synthesis so a matching present-empty entry
-		// that intentionally produced "" is not clobbered. See PR #192
-		// verdict-13 findings 1, 2, 5.
+		// that intentionally produced "" is not clobbered.
 		if !foundPrimary {
 			b.clientRegistryProvider = bamlutils.UpstreamClientRegistryProvider(
 				&bamlutils.ClientProperty{Name: *clientRegistry.Primary},

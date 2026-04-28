@@ -668,9 +668,9 @@ func generate(opts Options) {
 	selfPkg := opts.SelfPkg
 	supportsWithClient := opts.SupportsWithClient
 
-	// Fail-fast invariant (CodeRabbit verdict-24 finding F2):
-	// BuildRequest emission requires the target BAML runtime to expose
-	// WithClient — without it the generated router cannot honor the
+	// Fail-fast invariant: BuildRequest emission requires the target
+	// BAML runtime to expose WithClient — without it the generated
+	// router cannot honor the
 	// per-attempt clientOverride that fallback / round-robin / dynamic-
 	// primary semantics depend on. The introspected Request /
 	// StreamRequest singletons are the BR API presence signal; if
@@ -687,9 +687,8 @@ func generate(opts Options) {
 	// can drift out of sync without anyone noticing until production.
 	if !supportsWithClient && (introspected.Request != nil || introspected.StreamRequest != nil) {
 		// Include the per-singleton presence flags so the panic
-		// uniquely identifies which API surface is missing —
-		// CodeRabbit verdict-38 finding F2: a downstream test that
-		// substring-matched on "Request" couldn't distinguish a
+		// uniquely identifies which API surface is missing — a
+		// substring match on "Request" alone can't distinguish a
 		// Request-only-set case from a StreamRequest-only-set one.
 		panic(fmt.Sprintf("codegen: SupportsWithClient=false is incompatible with introspected Request/StreamRequest (Request=%v, StreamRequest=%v); BuildRequest emission requires WithClient to honor per-attempt client overrides",
 			introspected.Request != nil, introspected.StreamRequest != nil))
@@ -718,9 +717,9 @@ func generate(opts Options) {
 	// is shared with sibling requests via a backing array that may or
 	// may not have been reallocated by the upstream Append, and
 	// appending WithClient without cloning would mutate that shared
-	// state. CodeRabbit verdict-26 finding F1 — six call sites
-	// previously inlined this pattern with subtly different
-	// destination/source spellings; collapsing into one helper makes
+	// state. Six call sites previously inlined this pattern with
+	// subtly different destination/source spellings; collapsing into
+	// one helper makes
 	// the invariant explicit and removes an opportunity for the
 	// clone to drift between sites. dst is the variable being
 	// reassigned, src is the slice to clone (often, but not always,
@@ -1063,8 +1062,7 @@ func generate(opts Options) {
 		// makeLegacyOptionsFromAdapter pulls the legacy view (preserves
 		// explicit parent overrides) and is used by the top-level
 		// final-legacy fallthrough so BAML can honour runtime
-		// strategy-parent overrides or emit canonical errors. See PR
-		// #192 cold-review-4 + Option C.
+		// strategy-parent overrides or emit canonical errors.
 		makePreambleWith := func(optionsHelperName string) []jen.Code {
 			preamble := []jen.Code{
 				jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id(optionsHelperName).Call(jen.Id("adapter")),
@@ -1260,7 +1258,7 @@ func generate(opts Options) {
 		// dispatch site. BuildRequest landing sites (the buildRequest
 		// / buildCallRequest paths) get makePreamble; the top-level
 		// legacy fallthrough impls (_noRaw / _full) get
-		// makeLegacyPreamble. See PR #192 cold-review-4 + Option C.
+		// makeLegacyPreamble.
 		makePreamble := func() []jen.Code {
 			return makePreambleWith("makeOptionsFromAdapter")
 		}
@@ -1417,8 +1415,7 @@ func generate(opts Options) {
 		// _noRaw is the top-level legacy streaming impl invoked from
 		// the BuildRequest fallthrough branch (see __legacyClientOverride
 		// dispatch sites below). Use the legacy registry view so
-		// runtime strategy-parent overrides are visible to BAML — see
-		// PR #192 cold-review-4 + Option C.
+		// runtime strategy-parent overrides are visible to BAML.
 		noRawBody := makeLegacyPreamble()
 
 		// Delegate to shared orchestration helper - supplies per-method closures
@@ -1730,8 +1727,7 @@ func generate(opts Options) {
 
 		// _full is the top-level legacy streaming impl with full raw
 		// collection, also invoked from the BuildRequest fallthrough.
-		// Same legacy-view rationale as _noRaw — see PR #192
-		// cold-review-4 + Option C.
+		// Same legacy-view rationale as _noRaw.
 		var fullBody []jen.Code
 		fullBody = append(fullBody, makeLegacyPreamble()...)
 
@@ -2739,33 +2735,29 @@ func generate(opts Options) {
 			// __effective unconditionally collapses the branching and
 			// fixes both paths. __rrInfo is copied in afterwards; it's
 			// nil on the non-RR and legacy-only-adapter paths.
-			// Mode-aware predicate selection (CodeRabbit verdict-21
-			// finding 3): the legacy metadata plan classifies the
-			// request's provider against either the stream support
-			// table or the call support table. For call modes that
-			// reach final legacy *without* a stream bridge having
-			// re-resolved them (hasBuildRequest=false) the metadata
-			// reason should reflect the call-side classification —
-			// otherwise BAML_REST_DISABLE_CALL_BUILD_REQUEST or the
-			// debug BAML_REST_CALL_UNSUPPORTED_PROVIDERS flag can
-			// produce a too-optimistic PathReason. When a stream
-			// bridge exists every call-mode fallthrough has already
-			// been gated on IsProviderSupported, so the stream
-			// predicate is the correct one. Stream modes always use
-			// the stream predicate.
-			// CodeRabbit verdict-23 finding F4: the verdict-21 finding
-			// 3 fix only checked the compile-time hasBuildRequest
-			// flag. But every BuildRequest landing block is also
-			// gated at runtime on UseBuildRequest() (codegen.go:2403,
-			// 2495, 2581). When BuildRequest is compiled in but the
-			// runtime gate returns false, /call and /call-with-raw
-			// skip both the non-streaming Request path AND the stream
-			// bridge, falling directly to final legacy. In that path
-			// no stream-bridge re-resolution happened, so the
-			// metadata predicate must be the call-side
-			// IsCallProviderSupported — the same shape verdict-21
-			// finding 3 already pinned for the no-hasBuildRequest
-			// branch.
+			// Mode-aware predicate selection: the legacy metadata
+			// plan classifies the request's provider against either
+			// the stream support table or the call support table. For
+			// call modes that reach final legacy *without* a stream
+			// bridge having re-resolved them (hasBuildRequest=false)
+			// the metadata reason should reflect the call-side
+			// classification — otherwise
+			// BAML_REST_DISABLE_CALL_BUILD_REQUEST or the debug
+			// BAML_REST_CALL_UNSUPPORTED_PROVIDERS flag can produce a
+			// too-optimistic PathReason. When a stream bridge exists
+			// every call-mode fallthrough has already been gated on
+			// IsProviderSupported, so the stream predicate is the
+			// correct one. Stream modes always use the stream
+			// predicate.
+			//
+			// Every BuildRequest landing block is also gated at
+			// runtime on UseBuildRequest() (codegen.go:2403, 2495,
+			// 2581). When BuildRequest is compiled in but the runtime
+			// gate returns false, /call and /call-with-raw skip both
+			// the non-streaming Request path AND the stream bridge,
+			// falling directly to final legacy. In that path no
+			// stream-bridge re-resolution happened, so the metadata
+			// predicate must be the call-side IsCallProviderSupported.
 			//
 			// Emit a runtime gate inside the hasBuildRequest=true
 			// arm: default to IsProviderSupported (correct when the
@@ -3033,7 +3025,6 @@ func generate(opts Options) {
 	// the adapter would forward `provider: ""` into BAML's CFFI, which
 	// rejects in ClientProvider::from_str (clientspec.rs:119-144) and
 	// kills the request before WithClient(leaf) resolves anything.
-	// See PR #192 cold-review-3 finding 1.
 	out.Func().Id("MakeAdapter").
 		Params(jen.Id("ctx").Qual("context", "Context")).
 		Qual(common.InterfacesPkg, "Adapter").
@@ -3102,8 +3093,7 @@ func generate(opts Options) {
 		)
 
 	// makeOptionsFromAdapter and makeLegacyOptionsFromAdapter share
-	// every step except which registry field they read. CodeRabbit
-	// verdict-26 finding F2: emit a single
+	// every step except which registry field they read. Emit a single
 	// makeOptionsFromAdapterInternal that owns the type assertion +
 	// slice build + WithClientRegistry-and-TypeBuilder appends, then
 	// emit two thin wrappers that select the registry view via a
@@ -3115,8 +3105,7 @@ func generate(opts Options) {
 	// `legacy` selects the registry view: false → ClientRegistry
 	// (BuildRequest-safe, drops every baml-rest-resolved strategy
 	// parent); true → LegacyClientRegistry (preserves explicit
-	// strategy-parent overrides). See PR #192 cold-review-4 +
-	// Option C for the dual-view rationale.
+	// strategy-parent overrides).
 	out.Func().Id("makeOptionsFromAdapterInternal").
 		Params(
 			jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter"),
@@ -4067,8 +4056,8 @@ func generateStreamHelpers(out *jen.File) {
 	// runNoRawOrchestration and runFullOrchestration for emitting
 	// planned-metadata upfront from the stream goroutine: the
 	// `plannedSent atomic.Bool` declaration and the `emitPlanned`
-	// closure body. CodeRabbit verdict-35 finding F1 — the two
-	// orchestrators previously duplicated both verbatim.
+	// closure body. Centralised here so the two orchestrators don't
+	// duplicate the closure verbatim.
 	//
 	// The helper deliberately does NOT cover `lastFuncLog`: that
 	// declaration sits at different positions in each orchestrator
@@ -4138,19 +4127,17 @@ func generateStreamHelpers(out *jen.File) {
 			// metadata event.
 			jen.Id("startTime").Op(":=").Qual("time", "Now").Call(),
 			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
-			// plannedSent gates the planned-metadata emission so the same
-			// payload doesn't go out twice. We emit it upfront (before
-			// body() runs the BAML stream) rather than inside onTick
-			// because planned metadata describes the routing decision
-			// already made — it must not depend on BAML's state-change
-			// callbacks firing. For requests where BAML completes
-			// synchronously (e.g., legacy path with WithClient naming
-			// a strategy parent that resolves through static IR), no
-			// onTick fires and the prior gating-on-heartbeatSent
-			// design lost the planned event. See PR #192 verdict-15
-			// follow-up: TestRoundRobinOverrides_InvalidStartRoutesToLegacy
-			// returned 200 with empty X-BAML-Path / X-BAML-Path-Reason
-			// for exactly this reason.
+			// plannedSent gates the planned-metadata emission so the
+			// same payload doesn't go out twice. Emit it upfront
+			// (before body() runs the BAML stream) rather than inside
+			// onTick because planned metadata describes the routing
+			// decision already made — it must not depend on BAML's
+			// state-change callbacks firing. For requests where BAML
+			// completes synchronously (e.g., legacy path with
+			// WithClient naming a strategy parent that resolves
+			// through static IR), no onTick fires; gating planned
+			// emission on heartbeatSent would lose the event in that
+			// case.
 			plannedSentDeclA,
 			// lastFuncLog stores the most recent FunctionLog reference seen
 			// by onTick. Read by beforeFinal to derive winner identity and
@@ -4159,13 +4146,13 @@ func generateStreamHelpers(out *jen.File) {
 			// gracefully via BuildLegacyOutcome's planned-fallback ladder).
 			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
 
-			// emitPlanned sends the planned-metadata event to out exactly
-			// once per orchestrator invocation. Called upfront from the
-			// stream goroutine below, before body() runs BAML's stream,
-			// so emission is guaranteed regardless of whether BAML fires
-			// onTick. plannedSent CAS guarantees idempotency. Body shared
-			// with runFullOrchestration via emitPlannedPieces (verdict-35
-			// finding F1).
+			// emitPlanned sends the planned-metadata event to out
+			// exactly once per orchestrator invocation. Called
+			// upfront from the stream goroutine below, before body()
+			// runs BAML's stream, so emission is guaranteed
+			// regardless of whether BAML fires onTick. plannedSent
+			// CAS guarantees idempotency. Body shared with
+			// runFullOrchestration via emitPlannedPieces.
 			emitPlannedDeclA,
 
 			jen.Id("onTick").Op(":=").Func().Params(
@@ -4341,16 +4328,15 @@ func generateStreamHelpers(out *jen.File) {
 			// from heartbeatSent so we can emit upfront without firing
 			// the heartbeat early). Same rationale as runNoRawOrchestration:
 			// planned metadata describes the routing decision already
-			// made and must not depend on BAML's onTick firing. See
-			// PR #192 verdict-15 follow-up.
+			// made and must not depend on BAML's onTick firing.
 			plannedSentDeclB,
 			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
 			jen.Var().Id("fatalErr").Error(),
 
 			// emitPlanned is called once per orchestrator invocation,
-			// upfront in the stream goroutine. plannedSent CAS guarantees
-			// idempotency. Body shared with runNoRawOrchestration via
-			// emitPlannedPieces (verdict-35 finding F1).
+			// upfront in the stream goroutine. plannedSent CAS
+			// guarantees idempotency. Body shared with
+			// runNoRawOrchestration via emitPlannedPieces.
 			emitPlannedDeclB,
 
 			// Extractor. The boolean argument captures the per-request

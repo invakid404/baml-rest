@@ -407,13 +407,12 @@ func TestGRPCServerCallStreamDoesNotOverrideTerminalCancellation(t *testing.T) {
 	}
 }
 
-// TestAttachSharedState_NilHandlerFailsFast pins CodeRabbit verdict-25
-// finding F7. Pre-fix, GRPCServer.AttachSharedState returned success
-// when onAttach was nil, so the host believed shared state was
-// attached when in fact the worker stored no SharedStateClient. Post-
-// fix, the RPC fails immediately so the misconfiguration surfaces
-// before pool-wide round-robin silently collapses to per-worker
-// coordinators.
+// TestAttachSharedState_NilHandlerFailsFast pins fail-fast on a nil
+// onAttach. Returning success when onAttach is nil would let the
+// host believe shared state was attached when in fact the worker
+// stored no SharedStateClient. Failing the RPC immediately surfaces
+// the misconfiguration before pool-wide round-robin silently
+// collapses to per-worker coordinators.
 //
 // We construct a GRPCServer with a non-nil broker pointer (to bypass
 // the broker-nil guard) and nil onAttach. The broker is never dialed
@@ -433,8 +432,8 @@ func TestAttachSharedState_NilHandlerFailsFast(t *testing.T) {
 	}
 }
 
-// TestAttachSharedState_NilBrokerFailsFast guards the existing nil-
-// broker check is still load-bearing after the verdict-25 F7 fix.
+// TestAttachSharedState_NilBrokerFailsFast guards that the nil-
+// broker check is still load-bearing alongside the nil-handler one.
 func TestAttachSharedState_NilBrokerFailsFast(t *testing.T) {
 	server := &GRPCServer{
 		Impl:   &testWorkerImpl{},

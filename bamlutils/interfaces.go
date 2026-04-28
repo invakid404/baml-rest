@@ -187,8 +187,7 @@ type ClientProperty struct {
 	// IsProviderPresent treats Provider != "" as implicit presence so
 	// existing fixtures keep working without explicit ProviderSet
 	// wiring. To simulate "present-empty" in a struct literal, set
-	// {Provider: "", ProviderSet: true}. See PR #192 cold-review-2
-	// verdict-8 follow-up.
+	// {Provider: "", ProviderSet: true}.
 	ProviderSet bool `json:"-"`
 }
 
@@ -255,8 +254,7 @@ func (c *ClientProperty) UnmarshalJSON(data []byte) error {
 // This is the BAML-bound spelling. baml-rest's classification layer
 // continues to fold all RR aliases onto "baml-roundrobin" via
 // roundrobin.NormalizeProvider for metadata/header consistency; only
-// the upstream registry seam invokes this translation. See PR #192
-// cold-review-3 finding 2.
+// the upstream registry seam invokes this translation.
 func TranslateUpstreamProvider(provider string) string {
 	if provider == "baml-roundrobin" {
 		return "baml-round-robin"
@@ -266,8 +264,7 @@ func TranslateUpstreamProvider(provider string) string {
 
 // IsResolvedStrategyParent reports whether a runtime client_registry
 // entry is a baml-rest-resolved RR or fallback strategy parent. These
-// entries must not be forwarded into BAML's upstream client registry —
-// see PR #192 cold-review-3 signoff-10 finding F1:
+// entries must not be forwarded into BAML's upstream client registry:
 //
 //   - Modern adapters (SupportsWithClient=true) resolve strategy
 //     parents to a leaf via ResolveEffectiveClient and dispatch with
@@ -305,8 +302,7 @@ func IsResolvedStrategyParent(client *ClientProperty, introspectedProviders map[
 // ShouldDropStrategyParentForTopLevelLegacy reports whether a runtime
 // client_registry entry should be hidden from the *top-level legacy*
 // BAML registry view. Used in tandem with IsResolvedStrategyParent
-// (which gates the broader BuildRequest-bound view); see PR #192
-// cold-review-4 + Option C.
+// (which gates the broader BuildRequest-bound view).
 //
 // The two views split because BAML's to_clients (client_registry/mod.rs:
 // 109) eagerly parses every runtime client per request, so a parent
@@ -376,9 +372,9 @@ func isStrategyProviderName(p string) bool {
 //   - client.IsProviderPresent() == false AND introspectedProviders
 //     names this client: substitute the introspected provider after
 //     translation. This makes strategy-only and presence-only runtime
-//     registry entries valid at the BAML CFFI seam — these shapes are
-//     the headline addition of PR #192 and would otherwise fail end-
-//     to-end when WithClientRegistry forwards them to upstream.
+//     registry entries valid at the BAML CFFI seam — without the
+//     materialisation, WithClientRegistry would forward them to
+//     upstream and fail end-to-end.
 //   - client.IsProviderPresent() == false AND no introspected entry:
 //     return "". The operator referred to a name we know nothing about;
 //     letting CFFI emit its native error is clearer than synthesising
@@ -391,7 +387,6 @@ func isStrategyProviderName(p string) bool {
 // adapter's OriginalClientRegistry, which preserves the operator's
 // exact input verbatim.
 //
-// See PR #192 cold-review-3 finding 1.
 func UpstreamClientRegistryProvider(client *ClientProperty, introspectedProviders map[string]string) string {
 	if client == nil {
 		return ""

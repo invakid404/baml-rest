@@ -11,23 +11,22 @@ import (
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
 
-// Integration tests for the runtime client_registry override flows
-// targeted by PR #192 cold-review-3 findings F1, F2, F3. These cross
-// the resolver-only / adapter-only seams covered by Go unit tests
-// and exercise the BAML CFFI boundary that previous reviews flagged
-// as the discipline that catches this class of bug.
+// Integration tests for the runtime client_registry override flows.
+// These cross the resolver-only / adapter-only seams covered by Go
+// unit tests and exercise the BAML CFFI boundary as the discipline
+// that catches this class of bug.
 //
 // Each test sends a request through the BuildRequest path with a
 // runtime client_registry override and asserts that BAML accepts the
 // shape (no CFFI rejection), the resolver's chosen leaf actually
 // served the request, and the path/metadata headers match.
 
-// TestRoundRobinOverrides_PresenceOnlyParent covers F1 (cold-review-3
-// signoff-10): a runtime registry entry that names a static RR client
-// with no provider and no options must work end-to-end. The adapter
-// drops the strategy parent from BAML's registry (BAML would reject
-// it for missing options.strategy); the resolver still treats it as
-// a dynamic RR entry and picks a child from the introspected chain.
+// TestRoundRobinOverrides_PresenceOnlyParent pins that a runtime
+// registry entry naming a static RR client with no provider and no
+// options must work end-to-end. The adapter drops the strategy parent
+// from BAML's registry (BAML would reject it for missing
+// options.strategy); the resolver still treats it as a dynamic RR
+// entry and picks a child from the introspected chain.
 func TestRoundRobinOverrides_PresenceOnlyParent(t *testing.T) {
 	skipIfNoBuildRequest(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
@@ -91,17 +90,14 @@ func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 		// strategy-only override is "every pick is in the override
 		// chain AND none is the introspected primary" — NOT "both
 		// override children appear at least once". Dynamic RR with
-		// no options.start uses AdvanceDynamic
-		// (rand.IntN(childCount), no retained state per
-		// coordinator.go:127-139), so requiring both children would
-		// flake at ~12.5% per subtest for 4 runs over 2 children.
-		// Per-pick membership is the F1-relevant assertion. Cold-
-		// review-3 verdict-15 finding.
+		// no options.start uses AdvanceDynamic (rand.IntN(childCount),
+		// no retained state), so requiring both children would flake
+		// at ~12.5% per subtest for 4 runs over 2 children. Per-pick
+		// membership is the relevant assertion.
 		//
-		// Per-iteration context (CodeRabbit verdict-25 finding F6):
-		// the loop previously shared a single 30s deadline across
-		// every call, so a slow first call would consume budget that
-		// later calls inherit and a deadline-induced failure could
+		// Per-iteration context: a single shared deadline across
+		// every call would let a slow first call consume budget
+		// later calls inherit, so a deadline-induced failure could
 		// look like an application regression. Fresh deadline per
 		// iteration isolates that.
 		const runs = 4
@@ -168,22 +164,18 @@ func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 	})
 }
 
-// TestRoundRobinOverrides_CanonicalSpellingRecognized verifies the
+// TestRoundRobinOverrides_CanonicalSpellingRecognized pins
 // BuildRequest-path recognition of the canonical "baml-roundrobin"
 // spelling: an operator-supplied parent provider in the canonical
 // form must drive baml-rest's resolver (parent dropped, leaf
 // dispatched, RR headers populated) without any upstream BAML error.
 //
-// CodeRabbit verdict-34 finding F4: this test does NOT prove the
-// upstream-translation seam — the BuildRequest-safe registry view
-// drops the strategy parent before BAML parses anything, so BAML
-// never sees "baml-roundrobin" via this path. The
-// TranslateUpstreamProvider seam (which folds aliases for the
-// LEGACY-bound registry) is covered by adapter-level unit tests at
-// adapters/adapter_v0_219_0/adapter/adapter_test.go:181-205 and the
-// translation-table tests at bamlutils/interfaces_test.go:119-147,
-// :222-294. Renamed accordingly so the test name matches what it
-// actually pins.
+// This test does NOT prove the upstream-translation seam — the
+// BuildRequest-safe registry view drops the strategy parent before
+// BAML parses anything, so BAML never sees "baml-roundrobin" via this
+// path. The TranslateUpstreamProvider seam (which folds aliases for
+// the LEGACY-bound registry) is covered by adapter-level unit tests
+// and translation-table tests in bamlutils.
 func TestRoundRobinOverrides_CanonicalSpellingRecognized(t *testing.T) {
 	skipIfNoBuildRequest(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
@@ -234,10 +226,10 @@ func TestRoundRobinOverrides_DeterministicStart(t *testing.T) {
 		registerAllGreetingScenarios(t, []string{"fallback-primary", "fallback-secondary", "fallback-tertiary"})
 
 		// Multiple requests, each with start:1, all must select
-		// FallbackSecondary (index 1 in the override chain).
-		// Per-iteration context (CodeRabbit verdict-25 finding F6):
-		// see TestRoundRobinOverrides_StrategyOnlyParent above for
-		// the rationale.
+		// FallbackSecondary (index 1 in the override chain). Fresh
+		// per-iteration deadline; see
+		// TestRoundRobinOverrides_StrategyOnlyParent above for the
+		// rationale.
 		const runs = 5
 		for i := 0; i < runs; i++ {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -268,8 +260,7 @@ func TestRoundRobinOverrides_DeterministicStart(t *testing.T) {
 			// Pin the routing path before checking the deterministic
 			// selection — a regression that fell back to legacy could
 			// still emit headers but the start=1 contract is a
-			// BuildRequest-path-only guarantee. CodeRabbit verdict-34
-			// finding F3.
+			// BuildRequest-path-only guarantee.
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
 			selected := resp.Headers.Get(testutil.HeaderBAMLRoundRobinSelected)
 			if selected != "FallbackSecondary" {
@@ -277,10 +268,8 @@ func TestRoundRobinOverrides_DeterministicStart(t *testing.T) {
 			}
 			// Fail loudly on missing/malformed RR-Index header rather
 			// than swallowing the parse error and silently using the
-			// zero-value, which would have caused the wrong-index
-			// regression to surface only in the rare case where the
-			// expected index happened to be 0. See CodeRabbit
-			// verdict-21 finding 8.
+			// zero-value, which would surface a wrong-index regression
+			// only when the expected index happened to be 0.
 			indexStr := resp.Headers.Get(testutil.HeaderBAMLRoundRobinIndex)
 			if indexStr == "" {
 				t.Fatalf("Call %d: %s header absent (deterministic start should always emit it)", i, testutil.HeaderBAMLRoundRobinIndex)
@@ -296,19 +285,17 @@ func TestRoundRobinOverrides_DeterministicStart(t *testing.T) {
 	})
 }
 
-// TestRoundRobinOverrides_InvalidStartRoutesToLegacy covers F3
-// (invalid start): runtime options.start as a string fails BAML's
-// i32 ensure_int contract. Resolver returns ErrInvalidStartOverride;
-// dispatcher falls through to legacy with
+// TestRoundRobinOverrides_InvalidStartRoutesToLegacy pins that a
+// runtime options.start as a string fails BAML's i32 ensure_int
+// contract: resolver returns ErrInvalidStartOverride; dispatcher
+// falls through to legacy with
 // PathReasonInvalidRoundRobinStartOverride so operators can spot the
 // malformed input via X-BAML-Path-Reason.
 //
-// Header-only assertion (path + path-reason). The body-level invariant
-// (BAML emits its canonical ensure_int error rather than silently
-// using static config) is asserted by
-// TestInvalidRuntimeRoundRobinStartReturnsLegacyError below — added in
-// PR #192 cold-review-4 + Option C, where the legacy registry view now
-// preserves explicit `start` overrides so BAML actually sees them.
+// Header-only assertion (path + path-reason). The body-level
+// invariant (BAML emits its canonical ensure_int error rather than
+// silently using static config) is asserted by
+// TestInvalidRuntimeRoundRobinStartReturnsLegacyError below.
 func TestRoundRobinOverrides_InvalidStartRoutesToLegacy(t *testing.T) {
 	skipIfNoBuildRequest(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
@@ -347,27 +334,18 @@ func TestRoundRobinOverrides_InvalidStartRoutesToLegacy(t *testing.T) {
 }
 
 // TestInvalidRuntimeRoundRobinStartReturnsLegacyError is the body-
-// level companion to TestRoundRobinOverrides_InvalidStartRoutesToLegacy
-// added in PR #192 cold-review-4 + Option C.
+// level companion to TestRoundRobinOverrides_InvalidStartRoutesToLegacy.
 //
-// Pre-Option-C (`feat/roundrobin-buildrequest` cold-review-3), every
-// baml-rest-resolved strategy parent was dropped from BAML's runtime
-// registry — including invalid-shape parents. Result: the BR router
-// fell through to legacy with X-BAML-Path-Reason:
-// invalid-round-robin-start-override but BAML silently used the
-// static `.baml` definition (which has no start override) and
-// returned 200. Headers said one thing, body said another.
-//
-// With Option C the legacy registry view preserves explicit `start`
-// overrides on RR parents, so BAML's `ensure_int` rejects the
-// non-integer value and surfaces its canonical error. The non-200
-// status is the load-bearing assertion: pre-Option-C every variant
-// of this request returned 200 because BAML silently fell through
-// to static config. The serve layer wraps the underlying BAML
-// message with a generic "failed to process request" error response
-// (cmd/serve/main.go:414, cmd/serve/unary.go:156), so we don't pin
-// the upstream wording in the body — the path-reason header is the
-// observability surface.
+// The legacy registry view preserves explicit `start` overrides on
+// RR parents, so BAML's `ensure_int` rejects a non-integer value and
+// surfaces its canonical error. The non-200 status is the load-
+// bearing assertion: a registry view that dropped invalid-shape
+// parents would let BAML silently fall through to static config
+// (which has no start override) and return 200, with headers saying
+// one thing and body another. The serve layer wraps the underlying
+// BAML message with a generic "failed to process request" error
+// response, so we don't pin the upstream wording in the body — the
+// path-reason header is the observability surface.
 func TestInvalidRuntimeRoundRobinStartReturnsLegacyError(t *testing.T) {
 	skipIfNoBuildRequest(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
@@ -410,20 +388,14 @@ func TestInvalidRuntimeRoundRobinStartReturnsLegacyError(t *testing.T) {
 	})
 }
 
-// TestLegacyModeHonorsRuntimeFallbackStrategyOverride is the load-
-// bearing legacy-mode regression test for PR #192 cold-review-4 +
-// Option C. Pre-fix, when the request fell through to legacy
-// (UseBuildRequest=false, or BR-unsupported children), the
-// BuildRequest-safe registry view dropped the operator's
-// fallback-parent override. BAML executed the static `.baml` chain
-// and silently ignored the runtime override.
-//
-// With Option C, the legacy view preserves explicit fallback parent
-// overrides. BAML executes the runtime chain and the static children
-// are NEVER hit. We swap the parent's strategy to point at a fully-
-// dynamic child (RuntimePrimary, defined here in the registry only)
-// pointing at the tertiary mock scenario, so a hit on tertiary
-// proves the runtime override was honoured end-to-end.
+// TestLegacyModeHonorsRuntimeFallbackStrategyOverride pins that when
+// a request falls through to legacy (UseBuildRequest=false, or BR-
+// unsupported children), the legacy registry view preserves explicit
+// fallback-parent overrides. BAML must execute the runtime chain and
+// the static children are NEVER hit. We swap the parent's strategy
+// to point at a fully-dynamic child (RuntimePrimary, defined here in
+// the registry only) pointing at the tertiary mock scenario, so a
+// hit on tertiary proves the runtime override was honoured end-to-end.
 //
 // Skipped on the BuildRequest-mode CI leg because this test
 // specifically exercises legacy dispatch — it relies on the existing
@@ -502,10 +474,10 @@ func TestLegacyModeHonorsRuntimeFallbackStrategyOverride(t *testing.T) {
 			t.Fatalf("GetRequestCount fallback-tertiary: %v", err)
 		}
 		if primaryHits != 0 {
-			t.Errorf("static primary received %d hits; runtime fallback override was dropped (Option C regression)", primaryHits)
+			t.Errorf("static primary received %d hits; runtime fallback override was dropped", primaryHits)
 		}
 		if secondaryHits != 0 {
-			t.Errorf("static secondary received %d hits; runtime fallback override was dropped (Option C regression)", secondaryHits)
+			t.Errorf("static secondary received %d hits; runtime fallback override was dropped", secondaryHits)
 		}
 		if tertiaryHits == 0 {
 			t.Errorf("RuntimePrimary→tertiary received 0 hits; runtime override never dispatched")
@@ -584,10 +556,9 @@ func TestLegacyModeSupportsDynamicFallbackPrimary(t *testing.T) {
 	})
 }
 
-// TestLegacyMode_RR_NoCentralization is the load-bearing
-// regression test for cold-review-5 F1: with
+// TestLegacyMode_RR_NoCentralization pins that with
 // BAML_REST_USE_BUILD_REQUEST=false on a 0.219+ adapter, the flag
-// must be a full kill switch — baml-rest's centralised RR (resolver,
+// is a full kill switch — baml-rest's centralised RR (resolver,
 // in-process coordinator, RemoteAdvancer) must NOT engage, and
 // BAML's per-worker runtime rotation owns the strategy. The
 // observable contract: the request still succeeds, but the
@@ -632,7 +603,7 @@ func TestLegacyMode_RR_NoCentralization(t *testing.T) {
 			testutil.HeaderBAMLRoundRobinIndex,
 		} {
 			if got := resp.Headers.Get(name); got != "" {
-				t.Errorf("flag-off path leaked %s=%q — baml-rest RR engaged when it should be reverted to BAML runtime (cold-review-5 F1 regression)", name, got)
+				t.Errorf("flag-off path leaked %s=%q — baml-rest RR engaged when it should be reverted to BAML runtime", name, got)
 			}
 		}
 		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "legacy")

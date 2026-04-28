@@ -7,8 +7,8 @@ import (
 )
 
 // TestClientProperty_ProviderPresenceFromJSON pins the JSON-decoded
-// provider-presence semantics introduced for PR #192 cold-review-2
-// verdict-8. The struct-tag-driven decoder collapses absent and
+// provider-presence semantics. The struct-tag-driven decoder
+// collapses absent and
 // present-empty into the same zero value; the custom UnmarshalJSON
 // distinguishes them via ProviderSet so resolvers can route an
 // explicit "provider":"" override to legacy where BAML emits its
@@ -109,8 +109,9 @@ func TestClientProperty_NilSafe(t *testing.T) {
 	}
 }
 
-// TestTranslateUpstreamProvider covers PR #192 cold-review-3 finding 2.
-// baml-rest's canonical "baml-roundrobin" spelling is rejected by BAML
+// TestTranslateUpstreamProvider pins the upstream-registry seam
+// translation. baml-rest's canonical "baml-roundrobin" spelling is
+// rejected by BAML
 // upstream's ClientProvider::from_str (clientspec.rs:119-144); the
 // translation helper rewrites it to "baml-round-robin" only at the
 // upstream registry seam. All other strings — including the operator-
@@ -150,8 +151,8 @@ func TestTranslateUpstreamProvider(t *testing.T) {
 	}
 }
 
-// TestIsResolvedStrategyParent covers PR #192 cold-review-3
-// signoff-10 F1. baml-rest-resolved RR / fallback strategy parent
+// TestIsResolvedStrategyParent pins the strategy-parent
+// classification: baml-rest-resolved RR / fallback strategy parent
 // entries must be classifiable from either the operator-supplied
 // provider or the introspected fallback, across all four RR
 // spellings and both fallback spellings. Non-strategy entries must
@@ -210,8 +211,8 @@ func TestIsResolvedStrategyParent(t *testing.T) {
 }
 
 // TestUpstreamClientRegistryProvider pins the four shapes the helper
-// must honour at the BAML CFFI seam — see PR #192 cold-review-3
-// finding 1. Materialise omitted-provider entries from the introspected
+// must honour at the BAML CFFI seam: materialise omitted-provider
+// entries from the introspected
 // map so strategy-only / presence-only RR overrides actually reach
 // upstream as valid registry entries; preserve explicit present-empty
 // entries so BAML emits its canonical invalid-provider error;

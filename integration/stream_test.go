@@ -412,14 +412,14 @@ func TestWorkerDeathMidStream(t *testing.T) {
 				// Kill the worker after the first non-metadata event so
 				// the kill lands AFTER an actual upstream byte. Planned
 				// metadata is emitted upfront from the orchestrator
-				// before BAML's HTTP work starts (see PR #192 verdict-15)
-				// — it's the routing decision, not upstream progress.
-				// Pool's reset-injection logic correctly excludes
-				// planned metadata from sentAnyResults, so killing
-				// after the planned frame would land in pre-first-byte
-				// territory and the retry would (correctly) not inject
-				// Reset. The "after first byte" semantic this test
-				// asserts is "after a real upstream byte".
+				// before BAML's HTTP work starts — it's the routing
+				// decision, not upstream progress. Pool's reset-
+				// injection logic excludes planned metadata from
+				// sentAnyResults, so killing after the planned frame
+				// would land in pre-first-byte territory and the retry
+				// would (correctly) not inject Reset. The "after first
+				// byte" semantic this test asserts is "after a real
+				// upstream byte".
 				if event.Event != "metadata" && !killedWorker {
 					eventsBeforeKill = len(receivedEvents)
 					t.Log("First non-metadata event received, killing worker...")
@@ -2152,12 +2152,10 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 		// cancelFired is closed inside the timer callback so the event
 		// loop below can distinguish "before cancel" frames (which the
 		// test assertion gates on) from post-cancel teardown frames
-		// that legitimately drain after reqCancel(). CodeRabbit
-		// verdict-38 finding F8: pre-fix the counter ran for the
-		// entire loop lifetime, so any event the server flushed in the
-		// cancel-then-teardown window would have inflated the count
-		// past the "no pre-cancel work" invariant the test claims to
-		// pin.
+		// that legitimately drain after reqCancel(). Without this
+		// gate, any event the server flushed in the cancel-then-
+		// teardown window would inflate the count past the "no pre-
+		// cancel work" invariant the test claims to pin.
 		cancelFired := make(chan struct{})
 		cancelTimer := time.AfterFunc(500*time.Millisecond, func() {
 			reqCancel()
@@ -2169,17 +2167,13 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 		// nonPlannedEventsBeforeCancel counts every frame that is NOT
 		// planned metadata — data, final, reset, error, AND outcome
 		// metadata — observed BEFORE the cancelFired signal. Planned
-		// metadata is emitted upfront from the orchestrator (PR #192
-		// verdict-15), before any HTTP work to the upstream provider,
-		// so a planned frame arriving in this window is expected and
-		// not a test failure. Outcome metadata is terminal/outcome
-		// state and must NOT appear in this pre-first-byte
-		// cancellation window — the pre-fix predicate `!IsMetadata()`
-		// skipped both phases and hid a regression where outcome
-		// leaked through. CodeRabbit verdict-33 finding F4 narrowed
-		// the skip to planned only; verdict-38 F8 added the cancel
-		// gate so post-cancel teardown frames don't inflate the
-		// counter.
+		// metadata emits upfront from the orchestrator before any
+		// HTTP work to the upstream provider, so a planned frame
+		// arriving in this window is expected and not a test failure.
+		// Outcome metadata is terminal state and must NOT appear in
+		// this pre-first-byte cancellation window — a `!IsMetadata()`
+		// predicate would skip both phases and hide a regression where
+		// outcome leaked through.
 		var nonPlannedEventsBeforeCancel int
 		var streamErr error
 
@@ -2207,15 +2201,14 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 				if err != nil {
 					streamErr = err
 					t.Logf("Received NDJSON error: %v", err)
-					// CodeRabbit verdict-39 finding F9: a transport
-					// error before reqCancel() fires is exactly the
-					// kind of pre-first-byte signal this test is
-					// supposed to catch — silently logging it (as
-					// pre-fix) would have hidden a regression where
-					// the upstream connection broke before any byte
-					// landed. Post-cancel errors are expected
-					// teardown noise and stay logged-only via the
-					// cancelFired gate, mirroring the events branch.
+					// A transport error before reqCancel() fires is
+					// exactly the kind of pre-first-byte signal this
+					// test is supposed to catch — silently logging it
+					// would hide a regression where the upstream
+					// connection broke before any byte landed. Post-
+					// cancel errors are expected teardown noise and
+					// stay logged-only via the cancelFired gate,
+					// mirroring the events branch.
 					select {
 					case <-cancelFired:
 					default:

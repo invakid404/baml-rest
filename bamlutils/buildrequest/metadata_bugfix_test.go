@@ -134,13 +134,14 @@ func equalStringSlice(a, b []string) bool {
 	return true
 }
 
-// TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain exercises the
-// CodeRabbit finding about `fallbackChains[...]` lookups in the rebuild path.
-// A runtime `strategy` option on the fallback client replaces the introspected
-// chain; the metadata plan must reflect that override. Today the rebuild
-// reads `fallbackChains[resolution.Client]` / `fallbackChains[defaultClientName]`
-// directly, bypassing resolveFallbackStrategyChain — the authoritative
-// resolver that accounts for runtime strategy overrides.
+// TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain pins the
+// rebuild path's runtime-strategy handling. A runtime `strategy`
+// option on the fallback client replaces the introspected chain;
+// the metadata plan must reflect that override. The rebuild reads
+// `fallbackChains[resolution.Client]` /
+// `fallbackChains[defaultClientName]` directly, bypassing
+// resolveFallbackStrategyChain — the authoritative resolver that
+// accounts for runtime strategy overrides.
 func TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain(t *testing.T) {
 	// Runtime registry configures the fallback client with a custom chain,
 	// AND overrides all children to aws-bedrock so the chain falls to
@@ -176,12 +177,12 @@ func TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain(t *testing.T) {
 	}
 }
 
-// TestResolveFallbackChainWithReason_EmptyPrimaryIgnored exercises
-// CodeRabbit's second finding. A ClientRegistry with Primary pointing to
-// an empty string should be treated as "no primary override" — matching
-// ResolveProviderWithReason's behaviour. Today
-// ResolveFallbackChainWithReason treats Primary: ptr("") as an override,
-// so it looks up an empty client name and reaches the wrong conclusion.
+// TestResolveFallbackChainWithReason_EmptyPrimaryIgnored pins the
+// empty-primary contract: a ClientRegistry with Primary pointing to
+// an empty string must be treated as "no primary override", matching
+// ResolveProviderWithReason. Treating Primary: ptr("") as an
+// override would look up an empty client name and reach the wrong
+// conclusion.
 func TestResolveFallbackChainWithReason_EmptyPrimaryIgnored(t *testing.T) {
 	emptyPrimary := ""
 	adapter := &mockAdapter{

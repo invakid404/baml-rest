@@ -121,8 +121,7 @@ func generateFull() {
 		// Detected via the same AST walk that finds Request /
 		// StreamRequest, and emitted as introspected.SupportsWithClient
 		// so the codegen.Generate(selfPkg) wrapper can pick the right
-		// Options without a hardcoded compile-time decision. See
-		// CodeRabbit verdict-27.
+		// Options without a hardcoded compile-time decision.
 		supportsWithClient bool
 	)
 
@@ -179,8 +178,7 @@ func generateFull() {
 		// Look for the top-level WithClient(client string) CallOption
 		// (runtime.go, BAML v0.219.0+). Detected as a free function
 		// declaration; the receiver-less top-level form is what the
-		// generator emits in WithClient appends. CodeRabbit
-		// verdict-27.
+		// generator emits in WithClient appends.
 		if !supportsWithClient {
 			if withClientObj := file.Scope.Lookup("WithClient"); withClientObj != nil && withClientObj.Kind == ast.Fun {
 				supportsWithClient = true
@@ -1054,7 +1052,7 @@ func extractBuildRequestMethods(f *parsedFile, receiverName string) []map[string
 //
 // supportsWithClient feeds introspected.SupportsWithClient, used by the
 // codegen.Generate(selfPkg) wrapper to pick the right Options without
-// hardcoding a compile-time decision. CodeRabbit verdict-27.
+// hardcoding a compile-time decision.
 func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *parsedFile, streamPkg string, supportsWithClient bool) {
 	retryPkg := "github.com/invakid404/baml-rest/bamlutils/retry"
 	// Force the import so the stub compiles even when the maps are empty
@@ -1102,7 +1100,7 @@ func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *par
 	// WithClient(string) CallOption (BAML v0.219.0+). Read by
 	// codegen.Generate(selfPkg) so legacy callers without an explicit
 	// Options struct get the right behaviour for the bundled BAML
-	// runtime. CodeRabbit verdict-27.
+	// runtime.
 	out.Comment("SupportsWithClient is true when baml_client exposes WithClient(string) (BAML v0.219.0+)")
 	out.Var().Id("SupportsWithClient").Op("=").Lit(supportsWithClient)
 }
@@ -1570,7 +1568,7 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 	// only writes on success — without this delete, a previously-
 	// parsed `start N` would persist if the new block omits it,
 	// silently keeping a deterministic seed where the random-seed
-	// behaviour is documented (CodeRabbit verdict-25 finding F3).
+	// behaviour is documented.
 	// fallbackChains, clientProvider, and clientRetryPolicy are
 	// written unconditionally below for blocks that declare them, so
 	// they're not subject to the same stale-survives bug — but we
@@ -1617,8 +1615,7 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 					// extractRoundRobinStart trim handles trailing
 					// `}`/`]` so a tail like ` start 1 }` parses
 					// correctly. Mirrors the inline `options { ...
-					// strategy [...] start 1 }` path. CodeRabbit
-					// verdict-23 finding F1.
+					// strategy [...] start 1 }` path.
 					if optionsDepth == 1 {
 						if closeIdx := strings.LastIndex(strippedLine, "]"); closeIdx >= 0 {
 							if startVal, ok := extractRoundRobinStart(strippedLine[closeIdx+1:]); ok {
@@ -1745,8 +1742,7 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 // classification would treat "fallback" as a single-provider client,
 // fall to legacy via PathReasonUnsupportedProvider, and lose every
 // BuildRequest-only capability for that client (chain plan, mixed-mode
-// child handling, RR-child plumbing). See PR #192 cold-review-2
-// finding 2.
+// child handling, RR-child plumbing).
 func canonicaliseProvider(provider string) string {
 	switch provider {
 	case "baml-roundrobin", "baml-round-robin", "round-robin":
@@ -1774,7 +1770,7 @@ func extractStrategyStatement(line string) string {
 // input is silently ignored so that a bad `start` value falls back to
 // the random seed rather than erroring out codegen.
 //
-// CodeRabbit verdict-21 finding 7: parses with bit width 32 so values
+// Parses with bit width 32 so values
 // outside [math.MinInt32, math.MaxInt32] are rejected here too. The
 // runtime override path (resolver.inspectStartOverride) already
 // rejects out-of-i32 ints to mirror BAML's `ensure_int` parse::<i32>()
@@ -1796,7 +1792,7 @@ func extractRoundRobinStart(line string) (int, bool) {
 		// closing `}`, e.g. `options { strategy [...] start 1 }` on
 		// the final line of a multiline options block. Without this
 		// trim, ParseInt sees "1 }" and silently drops a valid
-		// declaration. CodeRabbit verdict-23 finding F1.
+		// declaration.
 		raw = strings.TrimRight(raw, " \t}]")
 		if raw == "" {
 			continue
@@ -2093,8 +2089,8 @@ func generateBamlConfigVars(out *jen.File) {
 	// Scan for fallback -> round-robin composition at introspect time
 	// and emit a one-time build-log warning per (fallback, rr-child)
 	// pair. This PR intentionally defers centralised unwrapping of RR
-	// children inside fallback chains (cold-review finding 2, broad
-	// variant). Nested RR still runs correctly under BAML's per-worker
+	// children inside fallback chains. Nested RR still runs
+	// correctly under BAML's per-worker
 	// runtime rotation; the warning just flags the composition so
 	// operators don't mistake pool-wide RR for nested-RR-works-too.
 	// Keys are sorted so the build-log output is stable across runs.

@@ -255,13 +255,11 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 	// errors out. The third attempt streams "ok" which parseFinal
 	// accepts.
 	//
-	// Pre-verdict-30 F5 the test used a 500 before any byte and
-	// asserted resets fired regardless of whether anything streamed —
-	// that contradicted the new gating where reset markers only fire
-	// when there's actual partial state for the next window to clear.
-	// Reshaping the server makes the test correctly model "two failing
+	// The server-emits-stale-then-ok shape models "two failing
 	// windows that DID emit partials, retried; reset must fire each
-	// time" rather than papering over the no-byte case.
+	// time" — reset markers only fire when there's actual partial
+	// state for the next window to clear, so the test must produce
+	// real partials before failing rather than a 500-before-any-byte.
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)
@@ -337,15 +335,15 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 		}
 	}
 
-	// CodeRabbit verdict-32 finding F2: strict equality, not lower-
-	// bound. This is a single-provider retry scenario with exactly 3
-	// attempts (n<3 fails, n==3 succeeds), so exactly 2 retry
-	// boundaries fire. A duplicate-emission regression — reset fired
-	// from both the retry callback and another path, or state not
-	// cleared between boundaries — would slip past `resets >= 2` but
-	// fail strict equality. Aligns with the integration sibling
-	// (orchestrator_integration_test.go:440-448) which already
-	// asserts exactly 2.
+	// Strict equality, not lower-bound. This is a single-provider
+	// retry scenario with exactly 3 attempts (n<3 fails, n==3
+	// succeeds), so exactly 2 retry boundaries fire. A
+	// duplicate-emission regression — reset fired from both the
+	// retry callback and another path, or state not cleared between
+	// boundaries — would slip past `resets >= 2` but fail strict
+	// equality. Aligns with the integration sibling
+	// (orchestrator_integration_test.go:440-448) which also asserts
+	// exactly 2.
 	if resets != 2 {
 		t.Errorf("expected 2 reset signals (one per retry boundary), got %d", resets)
 	}
@@ -826,9 +824,8 @@ func TestRunStreamOrchestration_ValidatesAllFallbackChildrenUpFront(t *testing.T
 
 	close(out)
 	// With no MetadataPlan / NewMetadataResult on the config the
-	// upfront planned-metadata emit is a no-op (CodeRabbit verdict-28
-	// finding 8 only changes ordering, not the nil-config short-
-	// circuit). So this branch still pins "no stream output on
+	// upfront planned-metadata emit is a no-op (the nil-config
+	// short-circuit). So this branch pins "no stream output on
 	// validation error when metadata isn't wired up". The metadata-
 	// wired-up case is covered by
 	// TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError
@@ -839,12 +836,11 @@ func TestRunStreamOrchestration_ValidatesAllFallbackChildrenUpFront(t *testing.T
 }
 
 // TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError
-// pins the post-verdict-28 contract (CodeRabbit finding 8): when the
-// orchestrator config supplies MetadataPlan + NewMetadataResult, the
-// planned-metadata event MUST be emitted before any validation return.
-// Pre-fix the emit sat after validation, which silently dropped the
-// only observable signal on exactly the failure modes operators most
-// need to diagnose (unsupported provider, malformed fallback chain).
+// pins that when the orchestrator config supplies MetadataPlan +
+// NewMetadataResult, the planned-metadata event MUST be emitted
+// before any validation return. Otherwise the only observable signal
+// on exactly the failure modes operators most need to diagnose
+// (unsupported provider, malformed fallback chain) gets dropped.
 func TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testing.T) {
 	out := make(chan bamlutils.StreamResult, 10)
 
@@ -892,14 +888,13 @@ func TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError(t *tes
 	if planned.Client != "PrimaryClient" {
 		t.Errorf("planned client: got %q, want PrimaryClient", planned.Client)
 	}
-	// CodeRabbit verdict-34 finding F2: pin "exactly one frame, and
-	// it's the planned metadata". The previous assertions allowed any
-	// number of trailing frames after the planned event so long as
-	// outcome stayed nil — a regression that emitted spurious
-	// reset/error/data frames after a synchronous validation return
-	// (e.g. a reordering bug that lost the early-return) would slip
-	// through. Strict frame count + kind + phase checks pin the full
-	// validation-error contract.
+	// Pin "exactly one frame, and it's the planned metadata".
+	// Allowing any number of trailing frames after the planned event
+	// (so long as outcome stayed nil) would let a regression that
+	// emitted spurious reset/error/data frames after a synchronous
+	// validation return (e.g. a reordering bug that lost the
+	// early-return) slip through. Strict frame count + kind + phase
+	// checks pin the full validation-error contract.
 	if len(kinds) != 1 {
 		t.Errorf("expected exactly 1 emitted frame on validation-error path, got %d (kinds=%v)", len(kinds), kinds)
 	}
@@ -1329,14 +1324,14 @@ func TestResolveFallbackChain_RoundRobinChildSkipped(t *testing.T) {
 }
 
 func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
-	// Cold-review finding 2 (narrow fix): a fallback chain with a
-	// baml-roundrobin child still runs, but the PathReason surfaces the
-	// composition so operators can distinguish centralised top-level RR
-	// from per-worker nested RR. The RR child lands on the legacy child
-	// list (IsProviderSupported returns false for baml-roundrobin), and
-	// BAML's runtime handles its rotation on each worker independently.
-	// Centralised unwrapping of RR children inside fallback chains is
-	// deferred — see cold-review rebuttal / broad fix.
+	// A fallback chain with a baml-roundrobin child still runs, but
+	// the PathReason surfaces the composition so operators can
+	// distinguish centralised top-level RR from per-worker nested
+	// RR. The RR child lands on the legacy child list
+	// (IsProviderSupported returns false for baml-roundrobin), and
+	// BAML's runtime handles its rotation on each worker
+	// independently. Centralised unwrapping of RR children inside
+	// fallback chains is deferred.
 	fallbackChains := map[string][]string{
 		"MyFallback": {"OpenAIClient", "InnerRR"},
 		"InnerRR":    {"GoogleA", "GoogleB"},
@@ -1381,10 +1376,8 @@ func TestResolveFallbackChain_FallbackWithRRChild_AliasSpellings(t *testing.T) {
 	// TestResolveFallbackChain_FallbackWithRRChild above; this table
 	// pins the two alias forms (BAML upstream's hyphenated
 	// "baml-round-robin" and the bare "round-robin" shorthand).
-	// CodeRabbit verdict-29 finding 1: the prior single-spelling test
-	// only covered "baml-round-robin", leaving the bare alias's
-	// resolver path silent. (Metadata-plan-level coverage of all
-	// three spellings already exists in
+	// Both alias spellings must hit the resolver's RR-child path.
+	// (Metadata-plan-level coverage of all three spellings exists in
 	// TestBuildFallbackChainPlan_ReasonPlumbsFromResolver.)
 	cases := []struct {
 		name     string
@@ -1411,12 +1404,12 @@ func TestResolveFallbackChain_FallbackWithRRChild_AliasSpellings(t *testing.T) {
 			if reason != PathReasonFallbackRoundRobinChildLegacy {
 				t.Fatalf("reason with alias %q: got %q, want %q", tc.provider, reason, PathReasonFallbackRoundRobinChildLegacy)
 			}
-			// CR verdict-30 F4: providers map must surface the canonical
-			// "baml-roundrobin" spelling regardless of which alias the
-			// caller's clientProviders used. ResolveClientProvider
-			// applies normalizeStrategyProvider, but a regression that
-			// dropped the normalisation on one path could still yield
-			// the right reason while leaking the alias here.
+			// providers map must surface the canonical "baml-roundrobin"
+			// spelling regardless of which alias the caller's
+			// clientProviders used. ResolveClientProvider applies
+			// normalizeStrategyProvider, but a regression that dropped
+			// the normalisation on one path could still yield the
+			// right reason while leaking the alias here.
 			if got := providers["InnerRR"]; got != "baml-roundrobin" {
 				t.Errorf("providers[InnerRR] with alias %q: got %q, want baml-roundrobin (canonical)", tc.provider, got)
 			}
@@ -2365,19 +2358,19 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain(t *t
 }
 
 // TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain pins
-// CodeRabbit verdict-30 finding F5: the in-chain reset marker must NOT
-// fire when the previous child failed BEFORE successfully queuing any
+// the in-chain reset marker contract: it must NOT fire when the
+// previous child failed BEFORE successfully queuing any
 // StreamResultKindStream frame to the client. NeedsPartials=true is
-// the regression class — pre-fix, every NeedsPartials handoff emitted
-// a reset regardless of upstream activity, and the pool's first-byte
-// detector treated that reset (a Stream-kind result) as progress for
-// the next child even when the prior window produced zero bytes.
+// the regression class — without the sawStreamFrame gate, every
+// NeedsPartials handoff would emit a reset regardless of upstream
+// activity, and the pool's first-byte detector would treat that
+// reset (a Stream-kind result) as progress for the next child even
+// when the prior window produced zero bytes.
 //
 // The test uses a primary that returns 500 before any SSE byte (so
 // trySendPartial never runs and sawStreamFrame stays false) and a
-// secondary that succeeds. Without the F5 gate, the channel would
-// carry a phantom reset between the two children; with the gate it
-// must not.
+// secondary that succeeds. The channel must not carry a phantom
+// reset between the two children.
 func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2420,12 +2413,12 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testin
 	}
 
 	// Capture the clientOverride sequence so we can assert the
-	// fallback-handoff actually targeted SecondaryClient on the second
-	// attempt rather than re-running PrimaryClient (CodeRabbit
-	// verdict-34 finding F1). The HTTP server keys solely off request
-	// count, and buildRequest ignores the override, so a regression
-	// that retried the primary on the second attempt would still
-	// satisfy the resets/finals assertions below.
+	// fallback-handoff actually targeted SecondaryClient on the
+	// second attempt rather than re-running PrimaryClient. The HTTP
+	// server keys solely off request count, and buildRequest ignores
+	// the override, so a regression that retried the primary on the
+	// second attempt would still satisfy the resets/finals
+	// assertions below.
 	var (
 		overrideMu  sync.Mutex
 		overrideSeq []string
@@ -2468,7 +2461,7 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testin
 		}
 	}
 	if resets != 0 {
-		t.Errorf("F5 regression: expected 0 reset events when prior child queued no stream frames; got %d", resets)
+		t.Errorf("expected 0 reset events when prior child queued no stream frames; got %d", resets)
 	}
 	if finals != 1 {
 		t.Errorf("expected 1 final from secondary, got %d", finals)
@@ -2544,12 +2537,12 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry(t *testing.T) {
 		}
 	}
 	if resets != 0 {
-		t.Errorf("F5 regression: expected 0 reset events when prior attempt queued no stream frames; got %d", resets)
+		t.Errorf("expected 0 reset events when prior attempt queued no stream frames; got %d", resets)
 	}
-	// CodeRabbit verdict-32 finding F1: also pin success delivery so a
-	// future regression that suppresses resets AND drops the final
-	// can't pass this test by only satisfying the reset-count check.
-	// Mirrors the fallback-chain sibling at lines 2409-2424.
+	// Also pin success delivery so a regression that suppresses
+	// resets AND drops the final can't pass this test by only
+	// satisfying the reset-count check. Mirrors the fallback-chain
+	// sibling above.
 	if finals != 1 {
 		t.Errorf("expected 1 final from successful retry, got %d", finals)
 	}

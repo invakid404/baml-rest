@@ -75,8 +75,8 @@ func (s *GRPCServer) AttachSharedState(ctx context.Context, req *pb.AttachShared
 		return nil, fmt.Errorf("worker: broker not available for shared-state dial-back")
 	}
 	if s.onAttach == nil {
-		// No handler installed — fail fast (CodeRabbit verdict-25
-		// finding F7). The host calls this RPC only when it has
+		// No handler installed — fail fast. The host calls this RPC
+		// only when it has
 		// SharedStateImpl set on its WorkerPlugin (plugin.go:244-249);
 		// reaching here without a handler means the worker side
 		// neglected to install one before plugin.Serve. Returning

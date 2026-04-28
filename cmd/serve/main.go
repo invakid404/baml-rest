@@ -405,7 +405,6 @@ var serveCmd = &cobra.Command{
 					// orchestrator emitted planned metadata. Pre-fix the
 					// 500 path returned with no headers, which made
 					// invalid-runtime-options diagnoses invisible.
-					// See PR #192 verdict-15 follow-up.
 					if result != nil {
 						setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 					}

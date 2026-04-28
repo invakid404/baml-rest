@@ -363,11 +363,11 @@ func TestEmptyCompletion_LetParseFinalDecide(t *testing.T) {
 // ============================================================================
 
 func TestRetry_SuccessAfterFailures(t *testing.T) {
-	// See TestRunStreamOrchestration_WithRetry for the verdict-30 F5
-	// reshape rationale: the test now models partial-then-fail
-	// attempts (one SSE delta queued via trySendPartial, then
-	// parseFinal rejection) so sawStreamFrame is true when the retry
-	// callback fires and the reset marker is genuinely needed.
+	// See TestRunStreamOrchestration_WithRetry for the test shape
+	// rationale: this test models partial-then-fail attempts (one
+	// SSE delta queued via trySendPartial, then parseFinal rejection)
+	// so sawStreamFrame is true when the retry callback fires and
+	// the reset marker is genuinely needed.
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)

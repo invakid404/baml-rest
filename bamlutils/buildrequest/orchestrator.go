@@ -196,7 +196,7 @@ func IsCallProviderSupported(provider string) bool {
 // ClientProvider::from_str rejects empty provider strings
 // (clientspec.rs:119-144); we mirror that by NOT falling through to
 // the introspected provider when the registry sent an explicit
-// "provider":"". See PR #192 cold-review-2 verdict-8 follow-up.
+// "provider":"".
 func ResolveProvider(adapter bamlutils.Adapter, defaultClientName string, introspectedProvider string) string {
 	// Primary's provider via the adapter abstraction. Non-empty
 	// short-circuit retained so adapter implementations that pre-
@@ -286,13 +286,13 @@ const (
 	// contains a baml-roundrobin child. Top-level RR is centralised
 	// across workers via the SharedState broker socket, but nested RR
 	// inside a fallback chain is intentionally NOT unwrapped by the
-	// BuildRequest resolver — that would require the broad
-	// "preselect one RR leaf at each fallback position" design (PR
-	// #192 cold-review finding 2, deferred). Such chains still work,
-	// but the RR child is handed to BAML's runtime on each worker,
-	// which means its rotation is per-worker, not centralised.
-	// Surfaced here so operators can spot the composition and know
-	// not to expect fleet-wide rotation for the nested client.
+	// BuildRequest resolver — that would require a "preselect one RR
+	// leaf at each fallback position" design that's deferred. Such
+	// chains still work, but the RR child is handed to BAML's
+	// runtime on each worker, which means its rotation is per-worker,
+	// not centralised. Surfaced here so operators can spot the
+	// composition and know not to expect fleet-wide rotation for the
+	// nested client.
 	PathReasonFallbackRoundRobinChildLegacy = "fallback-roundrobin-child-legacy"
 	// PathReasonBuildRequestDisabled: BAML_REST_USE_BUILD_REQUEST is off.
 	// Deliberate configuration — no operator alert.
@@ -305,8 +305,7 @@ const (
 	// (baml-lib/llm-client/src/clients/helpers.rs:790-829) with
 	// "strategy must be an array" or "strategy must not be empty"; we
 	// route the request to legacy so BAML's runtime emits the canonical
-	// error rather than silently using the introspected chain. See
-	// PR #192 cold-review-2 finding 1.
+	// error rather than silently using the introspected chain.
 	PathReasonInvalidStrategyOverride = "invalid-strategy-override"
 	// PathReasonInvalidProviderOverride: a runtime client_registry entry
 	// explicitly supplied an empty `provider` value (`"provider": ""`).
@@ -317,8 +316,7 @@ const (
 	// caller. Distinct from PathReasonEmptyProvider (which fires when
 	// no provider is configured anywhere) so operators reading the
 	// header can tell "operator typo'd a registry entry" apart from
-	// "client has no provider declared". See PR #192 cold-review-2
-	// verdict-8 follow-up.
+	// "client has no provider declared".
 	PathReasonInvalidProviderOverride = "invalid-provider-override"
 	// PathReasonInvalidRoundRobinStartOverride: a runtime
 	// client_registry entry on a baml-roundrobin client supplied an
@@ -330,8 +328,7 @@ const (
 	// legacy so BAML emits the canonical integer-options error rather
 	// than us silently randomising. Distinct from
 	// PathReasonInvalidStrategyOverride so operators can tell the
-	// failing option apart in the X-BAML-Path-Reason header. See PR
-	// #192 cold-review-3 finding 3.
+	// failing option apart in the X-BAML-Path-Reason header.
 	PathReasonInvalidRoundRobinStartOverride = "invalid-round-robin-start-override"
 )
 
@@ -483,7 +480,7 @@ func ResolveProviderWithReason(
 	// runtime registry entry using the bare "fallback" or "round-robin"
 	// alias would otherwise slip past the "baml-fallback" /
 	// "baml-roundrobin" arms and get treated as an unsupported single-
-	// provider string. See PR #192 cold-review-2 finding 2.
+	// provider string.
 	provider = normalizeStrategyProvider(provider)
 
 	// Determine the effective client name after primary override. This is
@@ -527,12 +524,12 @@ func ResolveProviderWithReason(
 		//     primary cache hid a present-empty provider.
 		//   - defaultClientName: the function's declared default,
 		//     which ResolveProvider falls through to when the primary
-		//     entry has no provider key. CodeRabbit verdict-9 caught
-		//     this gap: with primary set and no primary `clients[]`
-		//     entry, ResolveProvider returns "" from the default
-		//     lookup but the classifier had no checkpoint for it,
-		//     reporting PathReasonEmptyProvider instead of the
-		//     malformed-override reason.
+		//     entry has no provider key. With primary set and no
+		//     primary `clients[]` entry, ResolveProvider returns ""
+		//     from the default lookup; the classifier needs a
+		//     checkpoint for it so it reports the
+		//     malformed-override reason rather than the generic
+		//     empty-provider reason.
 		switch {
 		case hasInvalidProviderOverride(reg, clientName):
 			res.PathReason = PathReasonInvalidProviderOverride
@@ -700,10 +697,10 @@ func BuildFallbackChainPlan(
 // `WithReason` resolver — most commonly either empty (fully supported
 // chain, no notes) or PathReasonFallbackRoundRobinChildLegacy (chain
 // contains a baml-roundrobin child whose rotation is left to BAML's
-// runtime on each worker; see cold-review finding A). Callers should
-// pass the reason produced by ResolveFallbackChainForClientWithReason
-// so metadata consumers see the composition rather than the generic
-// "buildrequest fallback" shape.
+// runtime on each worker). Callers should pass the reason produced
+// by ResolveFallbackChainForClientWithReason so metadata consumers
+// see the composition rather than the generic "buildrequest
+// fallback" shape.
 func BuildFallbackChainPlanForClient(
 	clientName string,
 	chain []string,
@@ -813,15 +810,14 @@ func BuildLegacyMetadataPlan(
 		// describe the wrong chain whenever a request used a runtime
 		// strategy option.
 		//
-		// Critically, key only on resolution.Client. A previous revision
-		// fell through to `defaultClientName`'s chain when the runtime
-		// client had no resolvable chain (cold-review-2 finding C):
-		// that emitted metadata with `Client=<runtime>`,
-		// `Chain=<defaultClient's chain>` — a mismatch that misled
-		// operators when a primary override pointed at a fallback
-		// client with an invalid strategy override or empty chain. We
-		// now leave plan.Chain empty in that case so the metadata
-		// reflects what actually happens at runtime.
+		// Critically, key only on resolution.Client. Falling through
+		// to `defaultClientName`'s chain when the runtime client has
+		// no resolvable chain emits metadata with `Client=<runtime>`,
+		// `Chain=<defaultClient's chain>` — a mismatch that misleads
+		// operators when a primary override points at a fallback
+		// client with an invalid strategy override or empty chain.
+		// Leaving plan.Chain empty in that case keeps the metadata
+		// honest about what happens at runtime.
 		if chain == nil {
 			reg := adapter.OriginalClientRegistry()
 			chain = resolveFallbackStrategyChain(reg, resolution.Client, fallbackChains)
@@ -887,8 +883,7 @@ func BuildLegacyMetadataPlanForClient(
 	// names something. In the present-empty case we keep "" so the
 	// classification below records PathReasonInvalidProviderOverride
 	// — substituting the introspected provider here would mask the
-	// invalid override on metadata. See PR #192 cold-review-2
-	// verdict-8 follow-up.
+	// invalid override on metadata.
 	if provider == "" && !hasInvalidProviderOverride(reg, clientName) {
 		provider = introspectedProvider
 	}
@@ -899,8 +894,7 @@ func BuildLegacyMetadataPlanForClient(
 	// default branch and get classified as an unsupported single-
 	// provider. The resolver's own IsRoundRobinProvider and
 	// canonicaliseProvider in cmd/introspect already fold these aliases;
-	// this mirrors that for the metadata path. See PR #192 cold-review-2
-	// finding 2.
+	// this mirrors that for the metadata path.
 	provider = normalizeStrategyProvider(provider)
 
 	plan := &bamlutils.Metadata{
@@ -959,16 +953,16 @@ func BuildLegacyMetadataPlanForClient(
 		//     and the caller fell through with the unresolved client
 		//     name.
 		//   - ResolveEffectiveClient short-circuited an invalid runtime
-		//     strategy override by returning the un-unwrapped client
-		//     (cold-review-2 finding 1). In that case the routing is
-		//     correct (legacy) but the *emitted metadata* needs to
-		//     reflect WHY — operators reading the X-BAML-Path-Reason
-		//     header should see the invalid-override classification,
-		//     not the generic RR-legacy reason.
+		//     strategy override by returning the un-unwrapped client.
+		//     The routing is correct (legacy) but the *emitted
+		//     metadata* needs to reflect WHY — operators reading the
+		//     X-BAML-Path-Reason header should see the invalid-
+		//     override classification, not the generic RR-legacy
+		//     reason.
 		//   - ResolveEffectiveClient short-circuited an invalid runtime
-		//     `options.start` override (cold-review-3 finding 3). Same
-		//     treatment as the strategy case but a distinct reason so
-		//     operators can tell which option was malformed.
+		//     `options.start` override. Same treatment as the strategy
+		//     case but a distinct reason so operators can tell which
+		//     option was malformed.
 		plan.Strategy = "baml-roundrobin"
 		if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
 			plan.PathReason = PathReasonInvalidStrategyOverride
@@ -1015,10 +1009,7 @@ func BuildLegacyMetadataPlanForClient(
 //     metadata, not a failure — callers use the chain normally.
 //
 // Callers gate on `len(chain) > 0` for the hard routing decision and
-// pass `reason` straight through to metadata. See PR #192 cold-review-2
-// finding B for the contract clarification — pre-clarification the doc
-// claimed any non-empty reason came with nil chain, which contradicts
-// the RR-child case below.
+// pass `reason` straight through to metadata.
 func ResolveFallbackChainWithReason(
 	adapter bamlutils.Adapter,
 	defaultClientName string,
@@ -1117,8 +1108,7 @@ func ResolveFallbackChainForClientWithReason(
 	// (per-worker rotation, not centralised). Surface the composition in
 	// metadata so operators can distinguish it from a single-level RR,
 	// which IS centralised via the SharedState broker. Centralised
-	// unwrapping of RR children inside fallback chains is deferred — see
-	// PR #192 cold-review finding 2.
+	// unwrapping of RR children inside fallback chains is deferred.
 	if hasRoundRobinChild {
 		return resolvedChain, chainProviders, chainLegacy, PathReasonFallbackRoundRobinChildLegacy
 	}
@@ -1148,13 +1138,6 @@ func ResolveFallbackChainForClientWithReason(
 //  3. Static introspected default: introspectedPolicies[introspectedPolicyName]
 //     where introspectedPolicyName comes from FunctionRetryPolicy[method].
 //
-// CodeRabbit verdict-38 finding F7: the previous docblock listed
-// "named-client retry_policy for the function's default client" as a
-// step that always ran, which contradicts the primary-set branch's
-// deliberate refusal to consult the function default (see step 2's
-// first arm above). The correction makes the docblock match
-// orchestrator.go's actual flow.
-//
 // introspectedPolicyName is the policy name from FunctionRetryPolicy[method].
 // introspectedPolicies is the full RetryPolicies map from introspection.
 func ResolveRetryPolicy(
@@ -1176,11 +1159,10 @@ func ResolveRetryPolicy(
 		// for streaming, so inheriting a different client's retry
 		// policy would be incorrect. If the primary has no
 		// retry_policy, skip straight to the introspected default.
-		// CodeRabbit verdict-31 finding F1: treat present-empty
-		// primary the same as nil here (matching the adapter
-		// SetClientRegistry guard) so the function's default client
-		// retry policy is consulted rather than skipped on a no-op
-		// `"primary": ""` payload.
+		// Present-empty primary (`"primary": ""`) is treated the same
+		// as nil here (matching the adapter SetClientRegistry guard)
+		// so the function's default client retry policy is consulted
+		// rather than skipped on a no-op payload.
 		if reg.Primary != nil && *reg.Primary != "" {
 			for _, client := range reg.Clients {
 				if client == nil {
@@ -1209,10 +1191,7 @@ func ResolveRetryPolicy(
 		}
 	}
 
-	// 3. Static introspected default (verdict-39 finding F8: step number
-	// realigned to the 3-step docblock above; pre-fix the inline
-	// comment said "4." after verdict-38's docblock collapsed the
-	// runtime steps from two into one).
+	// 3. Static introspected default.
 	if introspectedPolicyName != "" {
 		return introspectedPolicies[introspectedPolicyName]
 	}
@@ -1276,7 +1255,7 @@ func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {
 // uses) would slip past the "baml-fallback" arm in
 // ResolveProviderWithReason and fall to legacy via
 // PathReasonUnsupportedProvider — losing chain plan, mixed-mode child
-// handling, and RR-child plumbing. See PR #192 cold-review-2 finding 2.
+// handling, and RR-child plumbing.
 //
 // roundrobin.NormalizeProvider already covers the RR aliases; we keep
 // this one-call helper to apply both classes at every classification
@@ -1299,7 +1278,7 @@ func normalizeStrategyProvider(provider string) string {
 // so callers see one canonical spelling per strategy regardless of
 // which alias the .baml source or runtime registry used.
 //
-// Presence semantics (PR #192 cold-review-2 verdict-8 follow-up):
+// Presence semantics:
 //
 //   - registry entry absent or has no provider key: fall back to the
 //     introspected provider, preserving strategy-only and presence-
@@ -1348,8 +1327,7 @@ func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlut
 // to legacy. This helper lets the metadata classifier distinguish
 // "operator sent provider:''" from "no provider configured anywhere"
 // — emitting PathReasonInvalidProviderOverride versus
-// PathReasonEmptyProvider respectively. See PR #192 cold-review-2
-// verdict-8 follow-up.
+// PathReasonEmptyProvider respectively.
 //
 // Returns false when the registry is absent, the entry is missing, or
 // the entry simply omits the `provider` key (a strategy-only or
@@ -1373,8 +1351,7 @@ func hasInvalidProviderOverride(reg *bamlutils.ClientRegistry, clientName string
 // unparseable as an integer. Mirrors hasInvalidProviderOverride for
 // the `start` option so the metadata classifier can surface
 // PathReasonInvalidRoundRobinStartOverride distinctly from the
-// generic invalid-strategy / RR-legacy reasons. See PR #192
-// cold-review-3 finding 3.
+// generic invalid-strategy / RR-legacy reasons.
 //
 // Returns false when the registry is absent, the entry is missing,
 // the entry has no options, the `start` key is absent, or the value
@@ -1687,13 +1664,13 @@ func RunStreamOrchestration(
 	//
 	// Reset markers (StreamResultKindStream with reset=true) emitted
 	// at fallback-child handoff and retry callbacks are gated on this
-	// flag (CodeRabbit verdict-30 finding F5): a reset marker before
-	// any actual partial frame produces a false first-byte signal in
-	// the pool's hung detector (pool/pool.go:1415-1427 treats any
-	// non-planned-metadata kind as progress), letting a stream that
-	// hadn't yet produced upstream bytes look alive. Gating on
-	// sawStreamFrame ensures the reset only fires when there's
-	// genuine downstream state the next window needs to clear.
+	// flag: a reset marker before any actual partial frame produces a
+	// false first-byte signal in the pool's hung detector
+	// (pool/pool.go:1415-1427 treats any non-planned-metadata kind as
+	// progress), letting a stream that hadn't yet produced upstream
+	// bytes look alive. Gating on sawStreamFrame ensures the reset
+	// only fires when there's genuine downstream state the next
+	// window needs to clear.
 	//
 	// heartbeatSent's reset behavior is independent of this flag.
 	// Resetting heartbeatSent across windows still correctly re-arms
@@ -1704,12 +1681,12 @@ func RunStreamOrchestration(
 	// plannedMetadataOnce gates the single planned-metadata emission. It is
 	// strictly once-per-orchestrator-invocation: the sync.Once is never
 	// reset within RunStreamOrchestration. This is deliberately stronger
-	// than heartbeatSent's contract (CodeRabbit verdict-29 finding 2):
-	// heartbeatSent IS reset on fallback-child handoff (~line 1955) and
-	// retry callbacks (~line 2008) so the next child/retry can re-arm
-	// pool first-byte detection, but the planned metadata describes the
-	// whole orchestrator run and must fire exactly once regardless of
-	// how many children/retries that run consumes.
+	// than heartbeatSent's contract: heartbeatSent IS reset on fallback-
+	// child handoff (~line 1955) and retry callbacks (~line 2008) so the
+	// next child/retry can re-arm pool first-byte detection, but the
+	// planned metadata describes the whole orchestrator run and must fire
+	// exactly once regardless of how many children/retries that run
+	// consumes.
 	//
 	// Pool-level retries produce a fresh orchestrator invocation with a
 	// fresh Once, so each pool attempt gets its own planned emission
@@ -1732,15 +1709,12 @@ func RunStreamOrchestration(
 		})
 	}
 
-	// Emit planned metadata BEFORE validation so the routing decision is
-	// observable on every path, including immediate validation failures
-	// (CodeRabbit verdict-28 finding 8). Previously the emit happened
-	// after validation, which meant unsupported-provider / nil-callback
-	// returns produced no observable planned metadata at all — the same
-	// failure modes the upfront-emit comment claimed coverage for. Order
-	// is now: emit planned → validate → return (with metadata already
-	// out) on error, or proceed on success. The plannedMetadataOnce
-	// gate keeps the contract idempotent for sendHeartbeat below.
+	// Emit planned metadata BEFORE validation so the routing decision
+	// is observable on every path, including immediate validation
+	// failures. Order: emit planned → validate → return (with metadata
+	// already out) on error, or proceed on success. The
+	// plannedMetadataOnce gate keeps the contract idempotent for
+	// sendHeartbeat below.
 	emitPlannedMetadata()
 
 	// Validate the configured provider(s) up front so invalid fallback chains
@@ -1779,7 +1753,7 @@ func RunStreamOrchestration(
 	// is reset. The flag IS reset deliberately at two seams within a
 	// single orchestrator invocation, allowing one heartbeat per
 	// upstream attempt/child window rather than once per whole
-	// orchestrator (CodeRabbit verdict-29 finding 2):
+	// orchestrator:
 	//
 	//   - fallback-child handoff after a failed prior child (see the
 	//     reset around line 1955): the next child must be able to
@@ -1836,7 +1810,7 @@ func RunStreamOrchestration(
 				// Mark only on successful send: ctx.Done and the
 				// drop-on-buffer-full branches did not actually
 				// deliver a frame to the client, so the reset-marker
-				// gate (verdict-30 F5) must stay armed.
+				// gate must stay armed.
 				sawStreamFrame.Store(true)
 			case <-ctx.Done():
 				r.Release()
@@ -2034,12 +2008,12 @@ func RunStreamOrchestration(
 			//     detection for the next child.
 			//   - sawStreamFrame: the previous child window must have
 			//     actually queued a non-reset stream frame for there to
-			//     be partial state worth clearing. CodeRabbit verdict-30
-			//     finding F5 — without this gate, a child that fails
-			//     before producing any bytes still emitted a reset, and
-			//     the pool treated that reset (a StreamResultKindStream)
-			//     as first-byte progress for the next child, papering
-			//     over a genuine no-byte hang.
+			//     be partial state worth clearing. Without this gate, a
+			//     child that fails before producing any bytes would
+			//     still emit a reset, and the pool would treat that
+			//     reset (a StreamResultKindStream) as first-byte
+			//     progress for the next child — papering over a genuine
+			//     no-byte hang.
 			//
 			// The heartbeat reset is independent of the reset marker:
 			// it still runs on every handoff so the next child re-arms
@@ -2106,7 +2080,7 @@ func RunStreamOrchestration(
 	_, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, func(attempt int) {
 		// Emit reset signal so downstream discards accumulated partial
 		// state. Same TWO-condition gate as the fallback handoff
-		// above (CodeRabbit verdict-30 finding F5):
+		// above:
 		//
 		//   - config.NeedsPartials: NeedsPartials=false has no
 		//     partial state downstream and the reset would flip the

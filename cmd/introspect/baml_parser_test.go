@@ -1246,8 +1246,7 @@ func TestParseClientBlock_RoundRobinStart_Absent(t *testing.T) {
 	// A RR client without `start N` must not leave a stale entry in the
 	// map — absence is the signal the coordinator uses to fall back to
 	// a random seed. Preseed a stale entry so the test fails if
-	// parseClientBlock inherits prior state instead of resetting
-	// (CodeRabbit verdict-25 finding F3).
+	// parseClientBlock inherits prior state instead of resetting.
 	cfg := newTestBamlConfig()
 	cfg.roundRobinStart["RR"] = 99
 	block := []string{
@@ -1265,7 +1264,7 @@ func TestParseClientBlock_RoundRobinStart_Absent(t *testing.T) {
 func TestParseClientBlock_RoundRobinStart_InvalidIgnored(t *testing.T) {
 	// A malformed start value (non-integer) is silently ignored — codegen
 	// must not panic; the coordinator simply picks a random seed. Same
-	// preseed-and-cleared shape as the Absent test (verdict-25 F3).
+	// preseed-and-cleared shape as the Absent test.
 	cfg := newTestBamlConfig()
 	cfg.roundRobinStart["RR"] = 99
 	block := []string{
@@ -1282,7 +1281,7 @@ func TestParseClientBlock_RoundRobinStart_InvalidIgnored(t *testing.T) {
 }
 
 // TestParseClientBlock_RoundRobinStart_TrailingCloseBrace pins
-// CodeRabbit verdict-23 finding F1: BAML's grammar allows a
+// trailing-close-brace handling: BAML's grammar allows a
 // config-map entry to be followed directly by the closing `}` of the
 // options block (datamodel.pest:172-180), so a multiline options
 // block can legally end with `start 1 }` on the same line.
@@ -1328,8 +1327,8 @@ func TestParseClientBlock_RoundRobinStart_TrailingCloseBrace(t *testing.T) {
 	})
 }
 
-// TestParseClientBlock_RoundRobinStart_OutOfI32Ignored pins CodeRabbit
-// verdict-21 finding 7: extractRoundRobinStart now parses with bit
+// TestParseClientBlock_RoundRobinStart_OutOfI32Ignored pins the i32
+// contract: extractRoundRobinStart parses with bit
 // width 32 so values that fit in a Go int on a 64-bit platform but not
 // in BAML's i32 contract are rejected by the introspector — same
 // behaviour as the runtime override path's inspectStartOverride. Pre-
@@ -1346,8 +1345,7 @@ func TestParseClientBlock_RoundRobinStart_OutOfI32Ignored(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Preseed-and-cleared: out-of-i32 must be ignored AND
-			// must clear any stale entry from a prior parse
-			// (CodeRabbit verdict-25 finding F3).
+			// must clear any stale entry from a prior parse.
 			cfg := newTestBamlConfig()
 			cfg.roundRobinStart["RR"] = 99
 			block := []string{
@@ -1367,8 +1365,8 @@ func TestParseClientBlock_RoundRobinStart_OutOfI32Ignored(t *testing.T) {
 
 // TestCanonicaliseProvider_FoldsAliases verifies the introspector
 // folds BAML's strategy aliases — both round-robin and fallback —
-// onto canonical baml-rest spellings. PR #192 cold-review-2 finding 2:
-// the BAML CLI init template uses `provider fallback`, so config
+// onto canonical baml-rest spellings. The BAML CLI init template
+// uses `provider fallback`, so config
 // files written from the docs hit the bare alias path. Without the
 // fold the runtime classifier would treat such clients as unsupported
 // single-providers.
@@ -1400,8 +1398,8 @@ func TestCanonicaliseProvider_FoldsAliases(t *testing.T) {
 // emits — lands in the introspected ClientProvider map as the
 // canonical "baml-fallback" string. Cold-review-2 finding 2.
 //
-// Also asserts the fallback chain is captured under the bare alias
-// (CodeRabbit verdict-25 finding F4): the runtime classifier and
+// Also asserts the fallback chain is captured under the bare alias:
+// the runtime classifier and
 // chain resolution both depend on cfg.fallbackChains[name] being
 // populated regardless of provider spelling, and a regression that
 // silently returned an empty chain for the bare alias would still
@@ -1425,7 +1423,7 @@ func TestParseClientBlock_BareFallbackAliasNormalised(t *testing.T) {
 }
 
 // TestParseClientBlock_BareRoundRobinAliasNormalised is the round-robin
-// sibling of the fallback test above (CodeRabbit verdict-28 finding 4).
+// sibling of the fallback test above.
 // `provider round-robin` is the bare alias BAML accepts alongside the
 // canonical `baml-roundrobin` form; canonicaliseProvider folds it at the
 // raw-token layer, but the parse-block-level test pins the end-to-end

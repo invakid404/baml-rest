@@ -9,15 +9,13 @@ import (
 
 // TestDetectsWithClientFunction pins the AST-walk detection that
 // generateFull uses to populate introspected.SupportsWithClient.
-// CodeRabbit verdict-27: previously codegen.Generate(selfPkg) hard-
-// coded SupportsWithClient=true regardless of the bundled BAML
-// runtime, silently emitting WithClient(clientOverride) against
-// pre-0.219 baml_client packages that lacked the symbol. The
-// detection now lives in the same AST walk that finds Request /
-// StreamRequest; this test pins that file.Scope.Lookup("WithClient")
-// returns a *ast.Object with Kind==ast.Fun for runtime.go shapes
-// matching BAML v0.219.0+, and nil for runtime.go shapes from older
-// runtimes.
+// Hardcoding SupportsWithClient=true would silently emit
+// WithClient(clientOverride) against pre-0.219 baml_client packages
+// that lack the symbol; the detection lives in the same AST walk
+// that finds Request / StreamRequest. This test pins that
+// file.Scope.Lookup("WithClient") returns a *ast.Object with
+// Kind==ast.Fun for runtime.go shapes matching BAML v0.219.0+, and
+// nil for runtime.go shapes from older runtimes.
 func TestDetectsWithClientFunction(t *testing.T) {
 	cases := []struct {
 		name string

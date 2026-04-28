@@ -10,10 +10,9 @@ import (
 // upstreamClientNamesSnapshot returns a defensive copy of the names
 // AddLlmClient was called for on the BuildRequest-safe registry view
 // during the most recent SetClientRegistry call. Same-package test-
-// only helper — production code must not consume this state. See
-// CodeRabbit verdict-22 finding A; previously these were exported
-// methods on *BamlAdapter, which expanded the production API surface
-// for test-only observability.
+// only helper — production code must not consume this state.
+// Exposing this as an exported method on *BamlAdapter would expand
+// the production API surface for test-only observability.
 func upstreamClientNamesSnapshot(b *BamlAdapter) []string {
 	return append([]string(nil), b.upstreamClientNames...)
 }
@@ -25,30 +24,28 @@ func legacyUpstreamClientNamesSnapshot(b *BamlAdapter) []string {
 }
 
 // clientEntrySnapshot reads the (provider, options) tuple BAML stored
-// under name in the supplied ClientRegistry's internal map. CodeRabbit
-// verdict-38 finding F1 wanted assertions on what we actually
-// forwarded to BAML, but BAML's ClientRegistry exposes only
-// AddLlmClient / SetPrimaryClient — `clients` is unexported. This
-// helper uses reflection + unsafe.Pointer to peek at the field shape
-// pinned in language_client_go's rawobjects_client_registry.go
+// under name in the supplied ClientRegistry's internal map. BAML's
+// ClientRegistry exposes only AddLlmClient / SetPrimaryClient —
+// `clients` is unexported. This helper uses reflection +
+// unsafe.Pointer to peek at the field shape pinned in
+// language_client_go's rawobjects_client_registry.go
 // (`clients clientRegistryMap = map[string]clientProperty`, where
 // clientProperty has `provider string` and `options map[string]any`).
 //
 // Returns ok=false when the registry is nil, the key is absent, or
-// the BAML registry shape drifts (verdict-39 findings F1-F3 hardened
-// the shape checks: every reflect.Value is verified for kind/type
-// before unsafe.Pointer access, so a future BAML rev that renamed a
-// field or changed `clients` to a non-string-keyed map surfaces
-// loudly as ok=false rather than panicking on UnsafeAddr against an
-// unexpected type).
+// the BAML registry shape drifts. Every reflect.Value is verified
+// for kind/type before unsafe.Pointer access, so a future BAML rev
+// that renamed a field or changed `clients` to a non-string-keyed
+// map surfaces loudly as ok=false rather than panicking on
+// UnsafeAddr against an unexpected type.
 func clientEntrySnapshot(reg *baml.ClientRegistry, name string) (provider string, options map[string]any, ok bool) {
 	if reg == nil {
 		return "", nil, false
 	}
 	regVal := reflect.ValueOf(reg).Elem()
 	clientsField := regVal.FieldByName("clients")
-	// Verdict-39 F1-F3 guards: confirm the field exists, is a map,
-	// and has string keys before any reflection trickery.
+	// Shape guards: confirm the field exists, is a map, and has
+	// string keys before any reflection trickery.
 	if !clientsField.IsValid() || clientsField.Kind() != reflect.Map {
 		return "", nil, false
 	}
@@ -101,9 +98,9 @@ func legacyClientEntrySnapshot(b *BamlAdapter, name string) (provider string, op
 }
 
 // buildRequestClientEntrySnapshot is the BuildRequest-safe-view
-// wrapper around clientEntrySnapshot. Used by verdict-39 finding F4
-// to assert the materialised registry preserves operator-supplied
-// entries even when Primary is present-empty.
+// wrapper around clientEntrySnapshot. Lets tests assert the
+// materialised registry preserves operator-supplied entries even
+// when Primary is present-empty.
 func buildRequestClientEntrySnapshot(b *BamlAdapter, name string) (provider string, options map[string]any, ok bool) {
 	return clientEntrySnapshot(b.ClientRegistry, name)
 }

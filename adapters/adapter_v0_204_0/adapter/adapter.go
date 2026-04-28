@@ -28,8 +28,7 @@ type BamlAdapter struct {
 	// baml-rest-resolved strategy parent). LegacyClientRegistry is
 	// the top-level legacy view (keeps explicit parent overrides,
 	// drops only inert presence-only static parents). See the v0.219
-	// adapter doc for the dual-view rationale and PR #192
-	// cold-review-4 + Option C.
+	// adapter doc for the dual-view rationale.
 	ClientRegistry       *baml.ClientRegistry
 	LegacyClientRegistry *baml.ClientRegistry
 	TypeBuilder          *introspected.TypeBuilder
@@ -65,15 +64,13 @@ type BamlAdapter struct {
 	// .baml client name → provider string. Set by the generated
 	// MakeAdapter so SetClientRegistry can materialise providers
 	// for runtime registry entries that omit the `provider` key
-	// (strategy-only / presence-only overrides). See PR #192
-	// cold-review-3 finding 1.
+	// (strategy-only / presence-only overrides).
 	IntrospectedClientProvider map[string]string
 
 	// upstreamClientNames / legacyUpstreamClientNames record the order
 	// of names passed to AddLlmClient on the BuildRequest-safe and
 	// legacy registry views respectively. Test-only observability for
-	// the dual-view fix (cold-review-4 + Option C) on top of the
-	// cold-review-3 signoff-10 F1 drop.
+	// the dual-view forwarding rules and the strategy-parent drop.
 	upstreamClientNames       []string
 	legacyUpstreamClientNames []string
 }
@@ -96,7 +93,7 @@ func (b *BamlAdapter) IncludeThinkingInRaw() bool {
 
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
 	// Nil-registry / nil-client / stale-cache guards mirroring the
-	// v0.219 adapter pattern (verdict-11 findings 3 + 4).
+	// v0.219 adapter pattern.
 	if clientRegistry == nil {
 		b.ClientRegistry = nil
 		b.LegacyClientRegistry = nil
@@ -115,9 +112,8 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 	b.legacyUpstreamClientNames = b.legacyUpstreamClientNames[:0]
 
 	// Materialise two BAML-bound registry views — see v0.219 adapter
-	// for the dual-view rationale (PR #192 cold-review-4 + Option C).
-	// v0.204 wraps map values for the older CFFI shape, applied to both
-	// views.
+	// for the dual-view rationale. v0.204 wraps map values for the
+	// older CFFI shape, applied to both views.
 	for _, client := range clientRegistry.Clients {
 		if client == nil {
 			continue
@@ -134,8 +130,8 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 		}
 	}
 
-	// Empty-primary guard (CodeRabbit verdict-31 finding F1): treat
-	// `Primary != nil && *Primary == ""` the same as `Primary == nil`.
+	// Empty-primary guard: treat `Primary != nil && *Primary == ""`
+	// the same as `Primary == nil`.
 	// See v0.219 adapter for the full rationale — BAML's runtime
 	// stores "" verbatim and PromptRenderer fails on the empty-name
 	// lookup. Cache-clearing earlier in SetClientRegistry still runs
@@ -151,9 +147,7 @@ func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry
 		// valid provider source for the cache. If both views dropped
 		// the entry (inert presence-only static parent), keep
 		// scanning so the !foundPrimary fallback can synthesize from
-		// the introspected map. Mirrors v0.219 adapter:201-210
-		// (CodeRabbit verdict-21 findings 1+2; comment alignment per
-		// verdict-30 finding F1).
+		// the introspected map. Mirrors v0.219 adapter:201-210.
 		foundPrimary := false
 		for _, client := range clientRegistry.Clients {
 			if client == nil {

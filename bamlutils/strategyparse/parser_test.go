@@ -6,10 +6,9 @@ import (
 )
 
 func TestParseStrategyOption_BracketedString_StripsQuotes(t *testing.T) {
-	// Verifies the regression fix for CodeRabbit round-robin cold review,
-	// finding 4: a runtime-registered strategy override passed as a raw
-	// string ("strategy [\"A\", \"B\"]") must parse down to unquoted
-	// names so downstream resolution matches introspected client keys.
+	// A runtime-registered strategy override passed as a raw string
+	// ("strategy [\"A\", \"B\"]") must parse down to unquoted names
+	// so downstream resolution matches introspected client keys.
 	tests := []struct {
 		name  string
 		input string
@@ -85,14 +84,13 @@ func TestParseStrategyOption_UnknownShape(t *testing.T) {
 	}
 }
 
-// TestParseStrategyOption_BracketedString_RequiresBrackets is the
-// regression for CodeRabbit finding B. BAML upstream's ensure_array
-// rejects non-list strategy values; we mirror that by refusing any
-// string form that isn't explicitly bracketed. A previous revision
-// happily accepted bare tokens — a client_registry entry with
-// options.strategy = "ClientA" would silently collapse the strategy
-// to a one-element chain instead of falling back to the introspected
-// configuration.
+// TestParseStrategyOption_BracketedString_RequiresBrackets pins
+// strict-bracket enforcement. BAML upstream's ensure_array rejects
+// non-list strategy values; we mirror that by refusing any string
+// form that isn't explicitly bracketed. Accepting bare tokens would
+// silently collapse a client_registry entry with
+// options.strategy = "ClientA" to a one-element chain instead of
+// falling back to the introspected configuration.
 func TestParseStrategyOption_BracketedString_RequiresBrackets(t *testing.T) {
 	// Each of these should produce nil (parser rejection), causing the
 	// caller to fall back to the introspected chain.
@@ -109,11 +107,8 @@ func TestParseStrategyOption_BracketedString_RequiresBrackets(t *testing.T) {
 		{"strategy prefix only", "strategy "},
 		{"token adjacent to brackets on wrong side", "ClientA ["},
 		{"bracket in middle only", "Client[A]"},
-		// CodeRabbit verdict-30 finding F8: previously the parser
-		// only checked first/last byte for brackets, so trailing
-		// junk after a complete bracketed list, an inner closing
-		// bracket, or doubled brackets were silently accepted and
-		// produced bogus tokens. Reject all three shapes.
+		// Reject malformed shapes that pure first/last-byte checks
+		// would silently accept and parse as bogus tokens.
 		{"trailing junk after closing bracket", "strategy [A] junk ]"},
 		{"two adjacent bracketed lists", "[A] [B]"},
 		{"doubled opening + closing brackets", "[[A]]"},
@@ -156,15 +151,15 @@ func TestParseStrategyOption_BracketedString_RequiresBrackets(t *testing.T) {
 	}
 }
 
-// TestParseStrategyOption_EmptyListsCollapseToNil is the regression
-// for the CodeRabbit follow-up on finding B. BAML upstream's
-// ensure_strategy rejects empty strategy arrays ("strategy must not
+// TestParseStrategyOption_EmptyListsCollapseToNil pins the
+// empty-list rejection contract. BAML upstream's ensure_strategy
+// rejects empty strategy arrays ("strategy must not
 // be empty" in baml-lib/llm-client/src/clients/helpers.rs:790-797);
 // the parser mirrors that by returning nil for every shape that ends
 // up with zero tokens.
 //
-// Caller contract (PR #192 cold-review-2 finding 1): the parser's
-// nil/empty signal is the input to a *three-state* decision in the
+// Caller contract: the parser's nil/empty signal is the input to a
+// *three-state* decision in the
 // orchestrator's inspectStrategyOverride helper. Callers distinguish
 //
 //   - absent (no `strategy` key in Options): use introspected chain.

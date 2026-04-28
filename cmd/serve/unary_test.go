@@ -76,12 +76,12 @@ func minimalDynamicInputJSON(t *testing.T) []byte {
 	return body
 }
 
-// TestMakeChiDynamicCallHandler_EmitsHeadersOnError covers PR #192
-// verdict-18: makeChiDynamicCallHandler previously discarded
-// accumulated planned/outcome metadata when Pool.Call returned an
-// error, leaving X-BAML-Path / X-BAML-Path-Reason absent on 500
-// responses for runtime-options diagnoses. The handler now sets
-// headers from result.Planned/Outcome before checking err.
+// TestMakeChiDynamicCallHandler_EmitsHeadersOnError pins that
+// makeChiDynamicCallHandler does NOT discard accumulated
+// planned/outcome metadata when Pool.Call returns an error; X-BAML-
+// Path / X-BAML-Path-Reason must be present on 500 responses so
+// runtime-options diagnoses are visible. The handler sets headers
+// from result.Planned/Outcome before checking err.
 func TestMakeChiDynamicCallHandler_EmitsHeadersOnError(t *testing.T) {
 	planned, err := json.Marshal(&bamlutils.Metadata{
 		Phase:      bamlutils.MetadataPhasePlanned,
@@ -170,7 +170,7 @@ func TestMakeChiDynamicCallHandler_EmitsHeadersOnSuccess(t *testing.T) {
 	// overwrites — so two Set calls with the same value produced the
 	// same Values() output as one, making the assertion vacuous.
 	// Counting via the injected emitter is the actual exactly-once
-	// guard. See PR #192 verdict-19 follow-up.
+	// guard.
 	if emitter.calls != 1 {
 		t.Errorf("headers emitter calls: got %d, want 1", emitter.calls)
 	}

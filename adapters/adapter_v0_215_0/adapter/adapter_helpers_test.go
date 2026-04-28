@@ -11,9 +11,8 @@ import (
 // AddLlmClient was called for on the BuildRequest-safe registry view
 // during the most recent SetClientRegistry call. Same-package test-
 // only helper — production code must not consume this state. See
-// CodeRabbit verdict-22 finding B; previously these were exported
-// methods on *BamlAdapter, which expanded the production API surface
-// for test-only observability.
+// Exposing this as an exported method on *BamlAdapter would expand
+// the production API surface for test-only observability.
 func upstreamClientNamesSnapshot(b *BamlAdapter) []string {
 	return append([]string(nil), b.upstreamClientNames...)
 }
@@ -25,10 +24,9 @@ func legacyUpstreamClientNamesSnapshot(b *BamlAdapter) []string {
 }
 
 // clientEntrySnapshot reads the (provider, options) tuple BAML stored
-// under name in the supplied ClientRegistry's internal map. CodeRabbit
-// verdict-38 F1 + verdict-39 F1-F3 — see the v0.204 adapter helper
-// for the full rationale and the kind/type guards that protect
-// against BAML registry shape drift.
+// under name in the supplied ClientRegistry's internal map — see the
+// v0.204 adapter helper for the full rationale and the kind/type
+// guards that protect against BAML registry shape drift.
 func clientEntrySnapshot(reg *baml.ClientRegistry, name string) (provider string, options map[string]any, ok bool) {
 	if reg == nil {
 		return "", nil, false

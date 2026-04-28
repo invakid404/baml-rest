@@ -20,14 +20,12 @@ import (
 // returns this sentinel so callers (ResolveEffectiveClient) can skip
 // the RR unwrap and let the request fall through to the legacy path,
 // where BAML's runtime emits the canonical error rather than us
-// silently using the introspected chain. See PR #192 cold-review-2
-// finding 1.
+// silently using the introspected chain.
 var ErrInvalidStrategyOverride = errors.New("roundrobin: runtime strategy override is invalid or empty")
 
 // ErrInvalidStartOverride signals that the runtime client_registry
 // supplied an `options.start` value outside the i32 contract that
-// BAML's upstream ensure_int enforces. The signoff-10 tightening
-// pinned this contract to:
+// BAML's upstream ensure_int enforces. The contract:
 //
 //   - Accepted: signed integer kinds (int, int8, int16, int32, int64)
 //     within [math.MinInt32, math.MaxInt32]; finite whole float64
@@ -47,8 +45,7 @@ var ErrInvalidStrategyOverride = errors.New("roundrobin: runtime strategy overri
 // (ResolveEffectiveClient) can skip the RR unwrap and treat the
 // request as having an invalid runtime `options.start`, falling
 // through to legacy where BAML's runtime emits the canonical error
-// rather than us silently randomising. See PR #192 cold-review-3
-// finding 3 / signoff-10 tightening / verdict-13 finding 4.
+// rather than us silently randomising.
 var ErrInvalidStartOverride = errors.New("roundrobin: runtime start override is invalid")
 
 // CanonicalProvider is the spelling emitted in metadata and headers
@@ -154,16 +151,16 @@ func Resolve(in ResolveInput) (*Result, error) {
 
 		chain := resolveStrategyChain(in.Registry, current, in.FallbackChains)
 		if len(chain) == 0 {
-			// CodeRabbit verdict-39 finding F11: when the runtime
-			// override is what made `current` an RR client (operator
-			// supplied `provider="baml-roundrobin"` via the
-			// client_registry) AND the override did NOT include a
-			// `strategy` array, BAML upstream rejects the shape with a
-			// canonical ensure_strategy / "missing options.strategy"
-			// error. Surfacing ErrInvalidStrategyOverride here lets
-			// ResolveEffectiveClient route the request to legacy where
-			// BAML emits that canonical error, matching the
-			// invalid-strategy-array branch at line 151. Without this
+			// When the runtime override is what made `current` an RR
+			// client (operator supplied `provider="baml-roundrobin"`
+			// via the client_registry) AND the override did NOT
+			// include a `strategy` array, BAML upstream rejects the
+			// shape with a canonical ensure_strategy / "missing
+			// options.strategy" error. Surfacing
+			// ErrInvalidStrategyOverride here lets
+			// ResolveEffectiveClient route the request to legacy
+			// where BAML emits that canonical error, matching the
+			// invalid-strategy-array branch above. Without this
 			// detection the resolver returns the generic "has no
 			// children" error which propagates as an opaque request
 			// failure — operators reading X-BAML-Path-Reason would
@@ -186,9 +183,8 @@ func Resolve(in ResolveInput) (*Result, error) {
 		if err != nil {
 			return nil, fmt.Errorf("roundrobin: select child for %q: %w", current, err)
 		}
-		// Defensive interface-edge guard (CodeRabbit verdict-33 finding
-		// F3, comment refined per verdict-38 finding F4): every shipped
-		// Advancer (Coordinator, RemoteAdvancer, AdvanceDynamic,
+		// Defensive interface-edge guard: every shipped Advancer
+		// (Coordinator, RemoteAdvancer, AdvanceDynamic,
 		// normalizeStartIndex) is documented and verified to return
 		// [0, childCount), but Advancer is an interface and a buggy
 		// custom/future implementation could return -1 or len(chain).
@@ -266,8 +262,7 @@ func selectIndex(a Advancer, reg *bamlutils.ClientRegistry, clientName string, c
 // same three-state classification when emitting
 // PathReasonInvalidRoundRobinStartOverride. Both call sites must agree
 // on what counts as a valid integer shape so the routing decision and
-// the metadata it produces stay in sync. See PR #192 cold-review-3
-// finding 3.
+// the metadata it produces stay in sync.
 func InspectStartOverride(opts map[string]any) (start int, present bool, valid bool) {
 	return inspectStartOverride(opts)
 }
@@ -303,7 +298,7 @@ func InspectStartOverride(opts map[string]any) (start int, present bool, valid b
 //
 // Reject strings (including numeric strings like "1"), fractional
 // floats, booleans, slices, and maps — BAML's decoder rejects the
-// same shapes. See PR #192 cold-review-3 signoff-10 finding F3.
+// same shapes.
 func inspectStartOverride(opts map[string]any) (start int, present bool, valid bool) {
 	if opts == nil {
 		return 0, false, true
@@ -391,7 +386,7 @@ func isDynamicRRClient(reg *bamlutils.ClientRegistry, clientName string) bool {
 // dispatcher's BuildRequest gate fails — routing the request to legacy
 // where BAML emits its native invalid-provider error rather than the
 // resolver silently advancing the RR counter on the introspected
-// provider. See PR #192 cold-review-2 verdict-8 follow-up.
+// provider.
 func resolveClientProvider(reg *bamlutils.ClientRegistry, clientName string, introspected map[string]string) string {
 	if reg != nil {
 		for _, c := range reg.Clients {
@@ -421,7 +416,7 @@ func resolveClientProvider(reg *bamlutils.ClientRegistry, clientName string, int
 // orchestrator-level metadata classifier (fallback / RR path-reason
 // emission). Previously each side kept a private copy that risked
 // drifting on quote handling, empty-list semantics, or bracketed-
-// string parsing — see PR #192 verdict-11 finding 1.
+// string parsing.
 func InspectStrategyOverride(reg *bamlutils.ClientRegistry, clientName string) (chain []string, present bool, valid bool) {
 	rc := findRuntimeClient(reg, clientName)
 	if rc == nil || rc.Options == nil {
@@ -446,9 +441,8 @@ func InspectStrategyOverride(reg *bamlutils.ClientRegistry, clientName string) (
 //
 // Callers must invoke InspectStrategyOverride first when they need to
 // distinguish "absent override" from "present-but-invalid override";
-// this helper collapses both into "use introspected chain", matching
-// the existing pre-PR-192-cold-review-2 behaviour for callers that
-// don't want the strict validation.
+// this helper collapses both into "use introspected chain" for
+// callers that don't want the strict validation.
 func resolveStrategyChain(reg *bamlutils.ClientRegistry, clientName string, introspectedChains map[string][]string) []string {
 	chain, present, valid := InspectStrategyOverride(reg, clientName)
 	if present && valid {

@@ -251,11 +251,10 @@ func TestSetBAMLHeaders_RoundRobin(t *testing.T) {
 		}
 		// Selected is sanitised independently of Name — a clean
 		// Selected must survive even when the sibling Name is
-		// dropped. CodeRabbit verdict-25 finding F5: the previous
-		// shape of this subtest only asserted the Name drop and
-		// Index emission, which would have passed if a regression
-		// dropped Selected too (the clean-name subtest above wouldn't
-		// catch that since it never dirties Name).
+		// dropped. Asserting only the Name drop and Index emission
+		// would let a regression that dropped Selected slip through
+		// (the clean-name subtest above wouldn't catch it since it
+		// never dirties Name).
 		if got := h.Get(HeaderBAMLRoundRobinSelected); got != "Good" {
 			t.Errorf("RoundRobinSelected should still emit when Name is dropped; got %q", got)
 		}

@@ -334,19 +334,15 @@ func TestSharedStateStore_ActiveScopeSurvivesPastCreationTTL(t *testing.T) {
 }
 
 func TestSharedStateStore_FetchAddDoesNotOrphanUnderConcurrentDropScope(t *testing.T) {
-	// Regression for the cold-review finding on the DropScope /
-	// FetchAdd race. The previous revision ran touchScope and
-	// loadOrStoreIdem as separate calls, so a DropScope firing between
-	// them could delete the scope and iterate its (key-set-of-one)
-	// without finding any idem entry to clean up — the caller would
-	// then resume, create the entry, and leave it orphaned. The
-	// sweeper only ranges s.scopes, so the orphan was unreclaimable.
-	//
-	// Post-fix, scope attach and idem creation happen under the same
-	// scope mutex inside registerAndLoadIdem. This test drives the
-	// exact interleaving and asserts the structural invariant that
-	// matters: every live idem entry has a live scope entry, regardless
-	// of which side won the race.
+	// Scope attach and idem creation must happen under the same scope
+	// mutex inside registerAndLoadIdem; otherwise a DropScope firing
+	// between a separate touchScope and loadOrStoreIdem could delete
+	// the scope and iterate its (key-set-of-one) before the idem entry
+	// existed, then the caller would resume and create the entry
+	// orphaned. The sweeper only ranges s.scopes, so the orphan would
+	// be unreclaimable. This test drives the exact interleaving and
+	// asserts the structural invariant: every live idem entry has a
+	// live scope entry, regardless of which side won the race.
 	store := newSharedStateStoreWithTTL(nil, time.Hour)
 	defer store.Close()
 
@@ -417,29 +413,18 @@ func TestSharedStateStore_FetchAddAfterDropScopeRestartsCleanly(t *testing.T) {
 	}
 }
 
-// TestSharedStateStore_NULBytesInKeyDoNotCollide pins CodeRabbit
-// verdict-38 finding F6: the previous map key was built via
-// fmt.Sprint-style concatenation with a NUL separator
-// (`key + "\x00" + opID`), which collapses two distinct caller inputs
-// onto the same string when either half contains a NUL. The
-// structured idemMapKey{Key, OpID} type makes that collision
-// impossible regardless of payload bytes.
+// TestSharedStateStore_NULBytesInKeyDoNotCollide pins that the
+// structured idemMapKey{Key, OpID} addresses entries without
+// separator-encoding ambiguity: a NUL byte inside either half cannot
+// collapse two distinct caller inputs onto the same map slot.
 //
-// Choice of test pairs (verdict-38 follow-up): the v0 of this test
-// used `("a\x00b","c")` vs `("a","b\x00c")` and only checked that
-// both calls returned 0 — but BOTH the old (collision-prone) code AND
-// the new (struct-key) code happen to return 0 for that scenario,
-// because counters are keyed on `key` alone and both keys start fresh
-// at 0. The test passed even when collision was active.
-//
-// The discriminating shape relies on the observation that the OLD
-// scheme aliased ("foo", "bar\x00baz") and ("foo\x00bar", "baz") onto
-// the same map slot (both join to "foo\x00bar\x00baz"). Under the old
-// code, the second FetchAdd would hit the first's cached idemEntry
-// and short-circuit via sync.Once.Do — meaning the SECOND pair's
-// COUNTER (keyed on "foo\x00bar") would never advance. We probe that
-// counter via a third FetchAdd under a fresh op_id; if it's still at
-// 0, the second pair was aliased.
+// The discriminating pair is ("foo", "bar\x00baz") vs
+// ("foo\x00bar", "baz"). A naive NUL-joined string key would alias
+// both onto "foo\x00bar\x00baz" — under such a scheme, the second
+// FetchAdd would hit the first's cached idemEntry and short-circuit
+// via sync.Once.Do, leaving the second pair's COUNTER (keyed on
+// "foo\x00bar") at 0. A third FetchAdd under a fresh op_id probes
+// that counter; if it's still at 0, the second pair was aliased.
 func TestSharedStateStore_NULBytesInKeyDoNotCollide(t *testing.T) {
 	t.Run("counter advancement proves distinct entries", func(t *testing.T) {
 		store := newSharedStateStoreWithTTL(nil, time.Hour)

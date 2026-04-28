@@ -155,12 +155,11 @@ type ClientRegistry struct {
 // Provider is a *string so test cases can faithfully express the
 // three presence states the server distinguishes: nil (key omitted),
 // pointer-to-empty (key present, value ""), pointer-to-non-empty
-// (key present with a real value). The plain-string Provider that
-// preceded this could not represent the omitted state — encoding/json
-// emitted `"provider":""` even when the test struct left it
-// zero-valued — and that turned every presence-only RR override into
-// a present-empty entry on the server, defeating the cold-review-3
-// signoff-10 strategy-parent drop. See PR #192 verdict-13 follow-up.
+// (key present with a real value). A plain-string Provider could not
+// represent the omitted state — encoding/json would emit
+// `"provider":""` even when the test struct left it zero-valued —
+// turning every presence-only RR override into a present-empty entry
+// on the server and defeating the strategy-parent drop.
 type ClientProperty struct {
 	Name        string         `json:"name"`
 	Provider    *string        `json:"provider,omitempty"`
@@ -351,12 +350,12 @@ func (e *StreamEvent) IsMetadata() bool {
 }
 
 // IsPlannedMetadata returns true only when this is a metadata event
-// whose Phase is "planned". The pre-first-byte cancellation tests
-// (CodeRabbit verdict-33 finding F4) need to skip the upfront planned
-// emission while still flagging stray outcome metadata that should not
-// arrive before any upstream byte. A nil/parse-failed payload is
-// treated as not-planned so a malformed metadata event surfaces as a
-// failure rather than being silently ignored.
+// whose Phase is "planned". Pre-first-byte cancellation tests need to
+// skip the upfront planned emission while still flagging stray outcome
+// metadata that should not arrive before any upstream byte. A
+// nil/parse-failed payload is treated as not-planned so a malformed
+// metadata event surfaces as a failure rather than being silently
+// ignored.
 func (e *StreamEvent) IsPlannedMetadata() bool {
 	if !e.IsMetadata() {
 		return false

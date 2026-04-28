@@ -181,15 +181,12 @@ func TestBuildFallbackChainPlan_APIFieldCarriesThrough(t *testing.T) {
 	}
 }
 
-// TestBuildFallbackChainPlan_RRChildPathReasonPlumbed is the
-// metadata-level regression for CodeRabbit finding A. The F2 resolver
-// reason (PathReasonFallbackRoundRobinChildLegacy, emitted by
-// ResolveFallbackChainForClientWithReason when a baml-roundrobin child
-// appears in the chain) previously never reached the emitted plan:
-// the BuildFallbackChainPlan builders had no PathReason parameter and
-// the codegen sites called the non-reason resolver. This test bolts
-// the classification to the plan: plug the reason value in, assert it
-// ends up on plan.PathReason. A refactor that drops the arg or stops
+// TestBuildFallbackChainPlan_RRChildPathReasonPlumbed pins that the
+// resolver reason (PathReasonFallbackRoundRobinChildLegacy, emitted
+// by ResolveFallbackChainForClientWithReason when a baml-roundrobin
+// child appears in the chain) reaches the emitted plan. Plug the
+// reason value into BuildFallbackChainPlan and assert it surfaces on
+// plan.PathReason. A refactor that drops the arg or stops
 // threading it in codegen fails here.
 func TestBuildFallbackChainPlan_RRChildPathReasonPlumbed(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
@@ -489,14 +486,14 @@ func TestResolveFallbackChainForClientWithReason_ValidOverrideHonoured(t *testin
 	}
 }
 
-// TestResolveProviderWithReason_BareFallbackAlias covers PR #192
-// cold-review-2 finding 2: BAML upstream's clientspec.rs:139-140
-// accepts both "fallback" and "baml-fallback" as the fallback strategy
-// provider, and the BAML CLI init template emits the bare "fallback"
-// form. Without alias normalisation a `provider fallback` client would
-// fall through to the default switch arm and get classified as an
-// unsupported single-provider, losing every BuildRequest-only
-// capability for that client.
+// TestResolveProviderWithReason_BareFallbackAlias verifies that
+// BAML upstream's clientspec.rs:139-140 alias contract is honoured:
+// both "fallback" and "baml-fallback" are accepted as the fallback
+// strategy provider, and the BAML CLI init template emits the bare
+// "fallback" form. Without alias normalisation a `provider fallback`
+// client would fall through to the default switch arm and get
+// classified as an unsupported single-provider, losing every
+// BuildRequest-only capability for that client.
 //
 // The static introspector also folds the alias (canonicaliseProvider in
 // cmd/introspect/main.go), but we test runtime classification here
@@ -609,22 +606,21 @@ func TestNormalizeStrategyProvider_FoldsAliases(t *testing.T) {
 }
 
 // TestBuildLegacyMetadataPlanForClient_RRInvalidOverride covers the
-// codegen-side metadata seam (codegen.go:2631-2643) for PR #192
-// cold-review-2 finding 1. The generated dispatcher reaches the
-// legacy branch with __effective == the un-unwrapped RR client when
-// ResolveEffectiveClient short-circuited an invalid strategy override
-// (see ResolveEffectiveClient at orchestrator.go:344-365 and the
-// translation of ErrInvalidStrategyOverride). The plan emitted there
-// must surface PathReasonInvalidStrategyOverride so operators
-// reading X-BAML-Path-Reason see the actual classification — without
-// this, the request is correctly routed but the metadata reports the
+// codegen-side metadata seam (codegen.go:2631-2643): the generated
+// dispatcher reaches the legacy branch with __effective == the
+// un-unwrapped RR client when ResolveEffectiveClient short-circuited
+// an invalid strategy override (see ResolveEffectiveClient at
+// orchestrator.go:344-365 and the translation of
+// ErrInvalidStrategyOverride). The plan emitted there must surface
+// PathReasonInvalidStrategyOverride so operators reading
+// X-BAML-Path-Reason see the actual classification — without this,
+// the request is correctly routed but the metadata reports the
 // generic PathReasonRoundRobin "roundrobin-legacy-only" reason and
 // hides the operator typo.
 //
-// Codex sign-off-5 explicitly called out the missing helper-level
-// regression for this seam: ResolveProviderWithReason is correctly
-// patched, but the generated legacy dispatch uses
-// BuildLegacyMetadataPlanForClient which has its own RR arm.
+// ResolveProviderWithReason is exercised separately; this test pins
+// the helper-level seam BuildLegacyMetadataPlanForClient, which has
+// its own RR arm.
 func TestBuildLegacyMetadataPlanForClient_RRInvalidOverride(t *testing.T) {
 	for _, tc := range invalidStrategyOverrides() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -745,20 +741,18 @@ func TestBuildLegacyMetadataPlanForClient_FallbackInvalidOverride(t *testing.T) 
 }
 
 // TestBuildLegacyMetadataPlan_RuntimeClientWithoutChainDoesNotLeakDefaultChain
-// is the regression for PR #192 cold-review-2 finding C. When a
-// primary override points the request at a fallback client whose
-// chain cannot be resolved (invalid strategy override or empty
-// introspected chain), the rebuild block in BuildLegacyMetadataPlan
-// previously fell through to `defaultClientName`'s introspected
-// chain. That emitted metadata with `Client=<runtime client>` but
-// `Chain=<default client's chain>` — a mismatch that misled operators
-// reading X-BAML-Path-Reason / metadata payloads when debugging a
-// runtime override.
+// pins the metadata contract: when a primary override points the
+// request at a fallback client whose chain cannot be resolved
+// (invalid strategy override or empty introspected chain), the
+// rebuild block in BuildLegacyMetadataPlan must NOT fall through to
+// `defaultClientName`'s introspected chain. Doing so would emit
+// metadata with `Client=<runtime client>` but
+// `Chain=<default client's chain>` — a mismatch that misleads
+// operators reading X-BAML-Path-Reason / metadata payloads when
+// debugging a runtime override.
 //
-// The fix removes the defaultClientName fallback. The plan now leaves
-// Chain empty when the runtime-resolved client has no chain, matching
-// the contract operators actually expect (Client and Chain must
-// describe the same client).
+// The plan leaves Chain empty when the runtime-resolved client has
+// no chain, so Client and Chain always describe the same client.
 func TestBuildLegacyMetadataPlan_RuntimeClientWithoutChainDoesNotLeakDefaultChain(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -868,14 +862,13 @@ func TestBuildLegacyMetadataPlan_RuntimeClientWithChainStillEmitsChain(t *testin
 	}
 }
 
-// TestResolveProviderWithReason_PresentEmptyProvider covers PR #192
-// cold-review-2 verdict-8: a runtime client_registry entry that
-// explicitly sends "provider":"" must surface
-// PathReasonInvalidProviderOverride and route to legacy. BAML
-// upstream's ClientProvider::from_str rejects empty provider strings
-// (clientspec.rs:119-144); previously baml-rest silently fell through
-// to the introspected provider, hiding the malformed override from
-// BAML and from operators reading X-BAML-Path-Reason.
+// TestResolveProviderWithReason_PresentEmptyProvider pins that a
+// runtime client_registry entry which explicitly sends
+// "provider":"" must surface PathReasonInvalidProviderOverride and
+// route to legacy. BAML upstream's ClientProvider::from_str rejects
+// empty provider strings (clientspec.rs:119-144); silently falling
+// through to the introspected provider would hide the malformed
+// override from BAML and from operators reading X-BAML-Path-Reason.
 func TestResolveProviderWithReason_PresentEmptyProvider(t *testing.T) {
 	t.Run("named-client override", func(t *testing.T) {
 		adapter := &mockAdapter{
@@ -913,19 +906,15 @@ func TestResolveProviderWithReason_PresentEmptyProvider(t *testing.T) {
 }
 
 // TestResolveProviderWithReason_PrimarySetDefaultClientPresentEmpty
-// covers PR #192 cold-review-2 verdict-9: when reg.Primary is set but
-// has no `clients[]` entry (or the entry omits the provider key) and
-// the function's defaultClientName entry carries an explicit
-// "provider":"", ResolveProvider falls through to the default-client
-// lookup and returns "". The classifier must recognise this as the
-// invalid-override case rather than reporting PathReasonEmptyProvider.
-//
-// Repro shape from the verdict: with primary="PrimaryClient" (no
-// primary entry) and clients["DefaultClient"] = present-empty,
-// ResolveProviderWithReason previously reported PathReasonEmptyProvider
-// because both checkpoints reduced to the primary key
-// ("PrimaryClient", which has no entry). The new defaultClientName
-// checkpoint catches it.
+// pins the classifier's defaultClientName checkpoint: when
+// reg.Primary is set but has no `clients[]` entry (or the entry
+// omits the provider key) and the function's defaultClientName entry
+// carries an explicit "provider":"", ResolveProvider falls through
+// to the default-client lookup and returns "". The classifier must
+// recognise this as the invalid-override case rather than reporting
+// PathReasonEmptyProvider — without the defaultClientName checkpoint
+// both other checkpoints reduce to the primary key, which has no
+// entry.
 func TestResolveProviderWithReason_PrimarySetDefaultClientPresentEmpty(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -992,13 +981,13 @@ func TestBuildLegacyMetadataPlan_PrimarySetDefaultClientPresentEmpty(t *testing.
 	}
 }
 
-// TestResolveProviderWithReason_AbsentProviderKeepsIntrospected is the
-// inverse-regression guard. A registry entry that omits the provider
-// key (strategy-only override, presence-only dynamic entry) must keep
-// using the introspected provider — preserving the existing flows
-// that drive RR strategy-only and presence-only behaviour. Without
-// this guard the verdict-8 fix could regress
-// TestResolve_StrategyOnlyOverride_IsDynamic and
+// TestResolveProviderWithReason_AbsentProviderKeepsIntrospected is
+// the inverse-regression guard. A registry entry that omits the
+// provider key (strategy-only override, presence-only dynamic entry)
+// must keep using the introspected provider — preserving the
+// existing flows that drive RR strategy-only and presence-only
+// behaviour. Without this guard the present-empty handling could
+// regress TestResolve_StrategyOnlyOverride_IsDynamic and
 // TestResolve_RegistryPresenceWithoutOverride_IsDynamic in the RR
 // package by routing absent-provider entries to legacy alongside
 // present-empty entries.
@@ -1178,22 +1167,21 @@ func invalidStartOverrides() []struct {
 		{"boolean true", true},
 		{"slice", []any{1, 2}},
 		{"map", map[string]any{"x": 1}},
-		// CodeRabbit verdict-21 finding 11: align this metadata-side
-		// table with the resolver-side rejection matrix
-		// (resolver_test.go:912-920) — unsigned ints and json.Number
-		// must surface the same canonical
-		// PathReasonInvalidRoundRobinStartOverride classification, not
-		// silently fall back through.
+		// Align this metadata-side table with the resolver-side
+		// rejection matrix (resolver_test.go:912-920) — unsigned
+		// ints and json.Number must surface the same canonical
+		// PathReasonInvalidRoundRobinStartOverride classification,
+		// not silently fall back through.
 		{"uint", uint(1)},
 		{"json.Number numeric", json.Number("5")},
 		{"json.Number malformed", json.Number("abc")},
 	}
 }
 
-// TestResolveProviderWithReason_RoundRobinInvalidStartOverride covers
-// PR #192 cold-review-3 finding 3 for the metadata classifier. A
+// TestResolveProviderWithReason_RoundRobinInvalidStartOverride pins
+// the metadata classifier contract for invalid `options.start`. A
 // runtime client_registry entry on a baml-roundrobin client whose
-// `options.start` value is not parseable as an integer must surface
+// start value is not parseable as an integer must surface
 // PathReasonInvalidRoundRobinStartOverride so operators reading
 // X-BAML-Path-Reason can distinguish a malformed start option from a
 // malformed strategy option (PathReasonInvalidStrategyOverride) or
@@ -1301,7 +1289,7 @@ func TestBuildLegacyMetadataPlanForClient_RRInvalidStartOverride(t *testing.T) {
 // both sentinels translate to "return the un-unwrapped client name
 // with no error", letting the codegen support gate fail and the
 // request fall to legacy where BAML emits the canonical options
-// error. See PR #192 cold-review-3 finding 3.
+// error.
 func TestResolveEffectiveClient_InvalidStartTranslatesToLegacy(t *testing.T) {
 	adapter := &mockAdapter{
 		Context: context.Background(),

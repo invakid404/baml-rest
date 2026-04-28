@@ -43,8 +43,7 @@ type unaryCaller interface {
 // wrapper and verify call frequency (e.g., exactly once on success,
 // once on error tail, zero when no result was produced) — assertions
 // the previous Header().Values()-based test could not actually make,
-// because http.Header.Set silently overwrites on repeat calls. See
-// PR #192 verdict-19 follow-up.
+// because http.Header.Set silently overwrites on repeat calls.
 type chiHeadersEmitter func(w http.ResponseWriter, planned, outcome []byte)
 
 // defaultChiHeadersEmitter is the production header emitter: decodes
@@ -235,7 +234,6 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 		// — Pool.Call preserves accumulated planned/outcome metadata in
 		// the result for error tails. Mirrors the static chi handler
 		// above and the fiber dynamic handler in cmd/serve/main.go.
-		// See PR #192 verdict-18 follow-up.
 		if result != nil {
 			emit(w, result.Planned, result.Outcome)
 		}

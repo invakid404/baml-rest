@@ -8,10 +8,10 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
-// TestSetClientRegistry_DropsResolvedStrategyParents covers PR #192
-// cold-review-3 signoff-10 F1. baml-rest-resolved RR / fallback
-// strategy parent entries must not be forwarded into BAML's upstream
-// registry — BAML rejects partial RR shapes at parse time
+// TestSetClientRegistry_DropsResolvedStrategyParents pins that
+// baml-rest-resolved RR / fallback strategy parent entries must not
+// be forwarded into BAML's upstream registry — BAML rejects partial
+// RR shapes at parse time
 // (round_robin.rs:73-83 requires options.strategy; ensure_strategy at
 // helpers.rs:790-829 requires it as an array, not a bracketed
 // string), and the resolver dispatches with WithClient(leaf) so the
@@ -103,9 +103,8 @@ func TestSetClientRegistry_DropsResolvedStrategyParents(t *testing.T) {
 	}
 }
 
-// TestSetClientRegistry_PresenceOnlyRRRoundTrip is the
-// presence-only round-trip test the cold-review-3 signoff-10 fix
-// promises: original registry has the entry, BAML-bound registry
+// TestSetClientRegistry_PresenceOnlyRRRoundTrip is the presence-only
+// round-trip: original registry has the entry, BAML-bound registry
 // drops it, and (in the integration test below) the resulting BAML
 // call succeeds because BAML never sees the partial parent.
 func TestSetClientRegistry_PresenceOnlyRRRoundTrip(t *testing.T) {
@@ -135,10 +134,9 @@ func TestSetClientRegistry_PresenceOnlyRRRoundTrip(t *testing.T) {
 	// BAML-bound: parent dropped from BOTH views. Presence-only RR
 	// is inert (no provider, no options.strategy), so neither the
 	// BuildRequest-safe view nor the legacy view should forward it
-	// — BAML would reject the bare entry on either side. CodeRabbit
-	// verdict-41 finding F1: the legacy-view check was missing; a
-	// regression that left the parent in the legacy registry would
-	// have slipped past the BuildRequest-only assertion.
+	// — BAML would reject the bare entry on either side. A regression
+	// that left the parent in the legacy registry would slip past a
+	// BuildRequest-only assertion, so check both views explicitly.
 	if names := upstreamClientNamesSnapshot(a); len(names) != 0 {
 		t.Errorf("UpstreamClientNames(): got %v, want empty for presence-only RR", names)
 	}
@@ -224,12 +222,12 @@ func TestSetClientRegistry_TranslatesCanonicalRoundRobinSpelling(t *testing.T) {
 }
 
 // TestSetClientRegistry_PresentEmptyProviderStaysEmpty covers the
-// boundary between cold-review-2 verdict-8 (present-empty routes to
-// legacy with PathReasonInvalidProviderOverride) and cold-review-3
-// finding 1 (omitted-provider gets materialised from the introspected
-// map). Present-empty is not the same as omitted: the operator
-// explicitly cleared the provider, so we must NOT materialise — let
-// BAML's CFFI emit its canonical "Invalid client provider:" error.
+// boundary between two adjacent cases: present-empty routes to
+// legacy with PathReasonInvalidProviderOverride, while
+// omitted-provider gets materialised from the introspected map.
+// Present-empty is not the same as omitted — the operator explicitly
+// cleared the provider, so we must NOT materialise; let BAML's CFFI
+// emit its canonical "Invalid client provider:" error.
 func TestSetClientRegistry_PresentEmptyProviderStaysEmpty(t *testing.T) {
 	primary := "MyClient"
 	reg := &bamlutils.ClientRegistry{
@@ -250,12 +248,12 @@ func TestSetClientRegistry_PresentEmptyProviderStaysEmpty(t *testing.T) {
 	if got := a.ClientRegistryProvider(); got != "" {
 		t.Errorf("ClientRegistryProvider(): got %q, want empty (present-empty must not be materialised)", got)
 	}
-	// CodeRabbit verdict-39 finding F4: also pin that the entry
-	// itself made it into BAML's BuildRequest-safe registry view with
-	// the empty provider preserved verbatim. The cache check above
-	// only proves the adapter shortcut returns "", not that BAML
-	// actually received the entry. A regression that silently
-	// dropped present-empty entries from the registry while leaving
+	// Also pin that the entry itself made it into BAML's
+	// BuildRequest-safe registry view with the empty provider
+	// preserved verbatim. The cache check above only proves the
+	// adapter shortcut returns "", not that BAML actually received
+	// the entry. A regression that silently dropped present-empty
+	// entries from the registry while leaving
 	// the cache empty would slip past the cache assertion alone.
 	provider, _, ok := buildRequestClientEntrySnapshot(a, "MyClient")
 	if !ok {
@@ -301,7 +299,7 @@ func TestSetClientRegistry_ExplicitProviderPassesThrough(t *testing.T) {
 // materialise helper can't accidentally panic on the nil-input path.
 // Also pins upstreamClientNames clearing on BOTH views so a stale
 // list from a previous registry call cannot survive across a nil
-// reset (cold-review-4 + Option C).
+// reset.
 func TestSetClientRegistry_NilRegistryClearsState(t *testing.T) {
 	a := &BamlAdapter{Context: context.Background()}
 	// Seed both upstream lists so we can verify the nil branch
@@ -344,8 +342,7 @@ func TestSetClientRegistry_NilRegistryClearsState(t *testing.T) {
 
 // TestSetClientRegistry_SkipsNilClientEntries verifies the nil-client
 // skip in both loops. JSON-shaped `clients: [null]` is allowed by the
-// *ClientProperty slice and must not panic — verdict-11 finding 4
-// (already correct on v0.219; pinned here for cross-version parity).
+// *ClientProperty slice and must not panic.
 func TestSetClientRegistry_SkipsNilClientEntries(t *testing.T) {
 	primary := "RealClient"
 	reg := &bamlutils.ClientRegistry{
@@ -376,7 +373,7 @@ func TestSetClientRegistry_SkipsNilClientEntries(t *testing.T) {
 // clearing behaviour at the top of SetClientRegistry. A second call
 // without a matching primary must clear the prior provider — without
 // the explicit reset stale state would survive across requests on a
-// reused adapter (verdict-11 finding 4 stale-cache half).
+// reused adapter.
 func TestSetClientRegistry_ClearsStaleProviderCache(t *testing.T) {
 	a := &BamlAdapter{
 		Context:                    context.Background(),
@@ -403,11 +400,11 @@ func TestSetClientRegistry_ClearsStaleProviderCache(t *testing.T) {
 }
 
 // TestSetClientRegistry_StaticPrimary_PopulatesProviderFromIntrospected
-// covers verdict-13 findings 1, 2, 5: a runtime registry that names a
-// static primary by name without redefining it in clients[] (a normal
-// operator-facing way to switch to an existing introspected client)
-// must populate the cache from the introspected map, not leave it ""
-// where ResolveProvider's adapter shortcut would short-circuit to the
+// covers the case where a runtime registry names a static primary by
+// name without redefining it in clients[] (a normal operator-facing
+// way to switch to an existing introspected client): the cache must
+// populate from the introspected map, not leave it "" where
+// ResolveProvider's adapter shortcut would short-circuit to the
 // function default.
 func TestSetClientRegistry_StaticPrimary_PopulatesProviderFromIntrospected(t *testing.T) {
 	primary := "StaticOpenAI"
@@ -430,10 +427,10 @@ func TestSetClientRegistry_StaticPrimary_PopulatesProviderFromIntrospected(t *te
 }
 
 // TestSetClientRegistry_PresentEmptyMatchingPrimary_StaysEmpty pins
-// the foundPrimary-flag invariant from verdict-13: a matching primary
-// entry that intentionally produces "" (operator typo'd provider:"")
-// must NOT be overwritten by introspected materialisation. Without
-// the explicit foundPrimary gate, a "cache is empty" trigger would
+// the foundPrimary-flag invariant: a matching primary entry that
+// intentionally produces "" (operator typo'd provider:"") must NOT
+// be overwritten by introspected materialisation. Without the
+// explicit foundPrimary gate, a "cache is empty" trigger would
 // clobber this case.
 func TestSetClientRegistry_PresentEmptyMatchingPrimary_StaysEmpty(t *testing.T) {
 	primary := "X"
@@ -485,7 +482,7 @@ func TestSetClientRegistry_PresentNonEmptyMatchingPrimary_UsesOverride(t *testin
 }
 
 // TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly is the
-// load-bearing assertion for PR #192 cold-review-4 + Option C: an
+// load-bearing assertion for the dual-view registry split: an
 // explicit runtime strategy-parent override is hidden from the
 // BuildRequest-safe registry view (so leaf calls aren't poisoned by
 // to_clients eagerly parsing every entry) but kept in the legacy
@@ -542,23 +539,22 @@ func TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly(t *testing.T)
 			if err := a.SetClientRegistry(reg); err != nil {
 				t.Fatalf("SetClientRegistry: unexpected error: %v", err)
 			}
-			// BuildRequest view: parent dropped (cold-review-3 F1
-			// invariant preserved — to_clients is shielded from
-			// rejected shapes when leaf calls drive dispatch).
+			// BuildRequest view: parent dropped — to_clients is
+			// shielded from rejected shapes when leaf calls drive
+			// dispatch.
 			if names := upstreamClientNamesSnapshot(a); len(names) != 0 {
 				t.Errorf("UpstreamClientNames(): got %v, want empty (BuildRequest view must drop explicit strategy parent)", names)
 			}
-			// Legacy view: parent kept (Option C — BAML executes
-			// the override or emits canonical error on legacy
-			// fallthrough).
+			// Legacy view: parent kept — BAML executes the override
+			// or emits canonical error on legacy fallthrough.
 			legacyNames := legacyUpstreamClientNamesSnapshot(a)
 			if len(legacyNames) != 1 || legacyNames[0] != tc.client.Name {
 				t.Errorf("LegacyUpstreamClientNames(): got %v, want [%s] (legacy view must preserve explicit strategy parent)", legacyNames, tc.client.Name)
 			}
 
-			// CodeRabbit verdict-38 finding F1: pin provider+options
-			// passed to BAML, not just the name. v0.219 forwards
-			// options unwrapped, so direct DeepEqual works.
+			// Pin (provider, options) passed to BAML, not just the
+			// name. v0.219 forwards options unwrapped, so direct
+			// DeepEqual works.
 			provider, options, ok := legacyClientEntrySnapshot(a, tc.client.Name)
 			if !ok {
 				t.Fatalf("legacyClientEntrySnapshot: entry %q missing from BAML's legacy registry", tc.client.Name)
@@ -612,7 +608,7 @@ func TestSetClientRegistryDropsInertPresenceOnlyParentInBothBamlViews(t *testing
 }
 
 // TestSetClientRegistry_DualViewPrimaryCacheUnderInertParent pins the
-// fix for CodeRabbit verdict-21 findings 1+2 generalised across views.
+// primary-cache rule across both registry views.
 // When the operator names a primary that exists only as an inert
 // presence-only static parent (dropped from BOTH views), the primary
 // cache must NOT observe a provider that no view exposes. Instead it
@@ -677,13 +673,12 @@ func TestSetClientRegistry_DualViewPrimaryCacheUnderExplicitParent(t *testing.T)
 	}
 }
 
-// TestSetClientRegistry_PresentEmptyPrimaryIsNoOp pins CodeRabbit
-// verdict-31 finding F1: a runtime client_registry payload that
-// supplies `"primary": ""` (Primary != nil but *Primary == "") must
-// NOT propagate the empty string to BAML's registry. BAML stores ""
-// verbatim and PromptRenderer fails on the resulting empty-name
-// lookup. Most baml-rest helpers already treat empty primary as a
-// no-op; the adapter was the outlier.
+// TestSetClientRegistry_PresentEmptyPrimaryIsNoOp pins that a runtime
+// client_registry payload with `"primary": ""` (Primary != nil but
+// *Primary == "") must NOT propagate the empty string to BAML's
+// registry. BAML stores "" verbatim and PromptRenderer fails on the
+// resulting empty-name lookup. Most baml-rest helpers already treat
+// empty primary as a no-op; the adapter must too.
 //
 // The test runs SetClientRegistry twice: first with a real primary
 // (cache populated, primary forwarded), then with present-empty
@@ -729,9 +724,8 @@ func TestSetClientRegistry_PresentEmptyPrimaryIsNoOp(t *testing.T) {
 	if orig := a.OriginalClientRegistry(); orig == nil || orig.Primary == nil || *orig.Primary != "" {
 		t.Errorf("OriginalClientRegistry should preserve the present-empty primary verbatim; got %+v", orig)
 	}
-	// CodeRabbit verdict-40 finding F5: see v0.204 sibling for
-	// rationale. Length checks because the implementation reuses
-	// slices via `[:0]`.
+	// See v0.204 sibling for rationale. Length checks because the
+	// implementation reuses slices via `[:0]`.
 	if got := upstreamClientNamesSnapshot(a); len(got) != 0 {
 		t.Errorf("upstreamClientNamesSnapshot after present-empty primary: got %v, want empty", got)
 	}

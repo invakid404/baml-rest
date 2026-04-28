@@ -5,7 +5,7 @@ package roundrobin
 // rand.Uint32 from math/rand/v2; tests inject a deterministic value
 // here so they can assert that a client absent from the configured
 // `starts` map observes this seed rather than leaking the seed of a
-// listed sibling. See CodeRabbit verdict-21 finding 5.
+// listed sibling.
 func (c *Coordinator) SetRandSeedForTest(fn func() uint32) {
 	c.randSeed = fn
 }

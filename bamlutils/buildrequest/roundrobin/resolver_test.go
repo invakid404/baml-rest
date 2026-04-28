@@ -226,13 +226,13 @@ func TestResolve_RuntimeStrategyOverride(t *testing.T) {
 }
 
 func TestResolve_RuntimeStrategyOverride_QuotedString(t *testing.T) {
-	// Regression for the round-robin cold-review finding on parser
-	// unification: a runtime client_registry strategy override passed
-	// as a bracketed string ("strategy [\"A\", \"B\"]") must strip the
-	// surrounding quotes before matching introspected client names.
-	// Previously the RR resolver kept its own parser that preserved
-	// quotes, silently collapsing the chain to unknown-named clients;
-	// both strategies now share bamlutils/strategyparse.
+	// Pins shared-parser quote handling: a runtime client_registry
+	// strategy override passed as a bracketed string
+	// ("strategy [\"A\", \"B\"]") must strip the surrounding quotes
+	// before matching introspected client names. Both fallback and
+	// round-robin strategies share bamlutils/strategyparse so
+	// neither path can silently collapse the chain to
+	// unknown-named clients by preserving quotes.
 	reg := &bamlutils.ClientRegistry{
 		Clients: []*bamlutils.ClientProperty{
 			{
@@ -488,8 +488,8 @@ func TestNormalizeProvider_CanonicalisesSpellings(t *testing.T) {
 	}
 }
 
-// TestResolve_InvalidStrategyOverride_ReturnsSentinel covers PR #192
-// cold-review-2 finding 1 for the round-robin path. A runtime
+// TestResolve_InvalidStrategyOverride_ReturnsSentinel pins the
+// round-robin path's invalid-strategy-override contract. A runtime
 // client_registry entry whose `options.strategy` value cannot be
 // parsed as a non-empty bracketed list must surface as
 // ErrInvalidStrategyOverride so ResolveEffectiveClient skips the RR
@@ -567,8 +567,8 @@ func TestResolve_AbsentStrategyOverride_DoesNotTriggerSentinel(t *testing.T) {
 	}
 }
 
-// TestResolve_PresentEmptyProviderSkipsRRUnwrap covers PR #192
-// cold-review-2 verdict-8 for the round-robin resolver. A registry
+// TestResolve_PresentEmptyProviderSkipsRRUnwrap pins the
+// present-empty-provider contract for the RR resolver. A registry
 // entry with explicit "provider":"" must not be treated as RR — the
 // resolver returns the un-unwrapped client name as the leaf so the
 // dispatcher's BuildRequest gate fails and the request falls through
@@ -610,8 +610,8 @@ func TestResolve_PresentEmptyProviderSkipsRRUnwrap(t *testing.T) {
 	}
 }
 
-// TestResolve_DynamicStartOverride covers PR #192 cold-review-3
-// finding 3. A registry-touched RR client must use `options.start` as
+// TestResolve_DynamicStartOverride pins the deterministic-start
+// contract: a registry-touched RR client must use `options.start` as
 // the deterministic initial child index instead of the random
 // AdvanceDynamic fallback. Behaviour mirrors BAML upstream's
 // resolve_strategy in roundrobin.rs:64-65, which does
@@ -619,9 +619,9 @@ func TestResolve_PresentEmptyProviderSkipsRRUnwrap(t *testing.T) {
 //
 // Accepted shapes match BAML's i32 ensure_int (helpers.rs:168-180,
 // :917-930): signed integer kinds + finite whole float64 within
-// [MinInt32, MaxInt32]. unsigned types and json.Number are rejected
-// (covered by TestResolve_InvalidStartOverride_ReturnsSentinel) — they
-// don't survive BAML's Go encoder. See cold-review-3 signoff-10 F3.
+// [MinInt32, MaxInt32]. Unsigned types and json.Number are rejected
+// (covered by TestResolve_InvalidStartOverride_ReturnsSentinel) —
+// they don't survive BAML's Go encoder.
 func TestResolve_DynamicStartOverride(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -761,12 +761,12 @@ func TestResolve_DynamicStartOverride_StrategyOnlyChain(t *testing.T) {
 	}
 }
 
-// TestResolve_InvalidStartOverride_ReturnsSentinel covers the
-// invalid-shape arm of finding 3, tightened in signoff-10 to match
-// BAML's i32 contract: values outside [MinInt32, MaxInt32] are
-// rejected, and unsigned types + json.Number are rejected outright
-// because they cannot survive BAML's Go-side CFFI encoder (no uint
-// branch; json.Number encoded as string).
+// TestResolve_InvalidStartOverride_ReturnsSentinel pins the
+// invalid-shape contract for `options.start`. Values outside
+// [MinInt32, MaxInt32] are rejected (matching BAML's i32 contract),
+// and unsigned types + json.Number are rejected outright because
+// they cannot survive BAML's Go-side CFFI encoder (no uint branch;
+// json.Number encoded as string).
 func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
 	cases := []struct {
 		name string
@@ -784,13 +784,11 @@ func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
 		{"slice", []any{1, 2}},
 		{"map", map[string]any{"x": 1}},
 		{"nil", nil},
-		// Unsigned integer types — rejected outright per signoff-10
-		// since BAML's Go encoder lacks a uint branch. CodeRabbit
-		// verdict-21 finding 6: plain `uint` was missing from the
-		// matrix; included here to pin that the platform-sized
-		// unsigned kind also falls into the default rejection branch
-		// rather than silently accepting via an unintended type
-		// switch case.
+		// Unsigned integer types — rejected outright since BAML's Go
+		// encoder lacks a uint branch. Plain `uint` is included so
+		// the platform-sized unsigned kind also falls into the
+		// default rejection branch rather than silently accepting
+		// via an unintended type switch case.
 		{"uint", uint(1)},
 		{"uint8", uint8(1)},
 		{"uint16", uint16(1)},
@@ -801,8 +799,8 @@ func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
 		// string which the upstream decoder rejects for an i32 option.
 		{"json.Number string-form", json.Number("5")},
 		{"json.Number invalid", json.Number("abc")},
-		// Out-of-int32-range values — accepted before signoff-10 but
-		// would never survive BAML's parse::<i32>().
+		// Out-of-int32-range values — would never survive BAML's
+		// parse::<i32>() and so must be rejected at this layer.
 		{"int64 above MaxInt32", int64(math.MaxInt32) + 1},
 		{"int64 below MinInt32", int64(math.MinInt32) - 1},
 		{"float64 above MaxInt32", float64(math.MaxInt32) + 1},
@@ -833,11 +831,10 @@ func TestResolve_InvalidStartOverride_ReturnsSentinel(t *testing.T) {
 			if !errors.Is(err, ErrInvalidStartOverride) {
 				t.Fatalf("expected ErrInvalidStartOverride; got err=%v res=%+v", err, res)
 			}
-			// Sentinel-error contract pin (CodeRabbit verdict-38
-			// finding F3): mirror the InvalidStrategyOverride sibling
-			// at resolver_test.go:533-535 — the sentinel must arrive
-			// alongside a nil result so callers can rely on either-or
-			// semantics rather than checking both fields.
+			// Sentinel-error contract: mirror the
+			// InvalidStrategyOverride sibling — the sentinel must
+			// arrive alongside a nil result so callers can rely on
+			// either-or semantics rather than checking both fields.
 			if res != nil {
 				t.Errorf("expected nil result alongside sentinel; got %+v", res)
 			}
@@ -887,9 +884,9 @@ func TestResolve_AbsentStartOverride_RandomSelection(t *testing.T) {
 }
 
 // TestInspectStartOverride_AcceptedShapes pins the integer-shape
-// contract independently of selectIndex so future refactors keep the
-// same accept/reject set. Tightened in signoff-10 to match BAML's i32
-// ensure_int (helpers.rs:168-180): only signed types within
+// contract independently of selectIndex so future refactors keep
+// the same accept/reject set. Matches BAML's i32 ensure_int
+// (helpers.rs:168-180): only signed types within
 // [MinInt32, MaxInt32] and finite whole float64 in the same range
 // are accepted. Unsigned types and json.Number are rejected because
 // they cannot survive BAML's Go-side CFFI encoder.
@@ -898,10 +895,10 @@ func TestInspectStartOverride_AcceptedShapes(t *testing.T) {
 		name        string
 		raw         any
 		// hasStart distinguishes "absent (no start key)" from
-		// "present-with-some-value" (CodeRabbit verdict-40 finding F3).
-		// The previous version compared tc.name to a magic string,
-		// which broke if the case was renamed and confused the
-		// per-case intent. Explicit boolean is clearer and avoids
+		// "present-with-some-value". Comparing tc.name to a magic
+		// string would break if the case was renamed and would
+		// confuse the per-case intent. Explicit boolean is clearer
+		// and avoids
 		// the brittle display-name dependency.
 		hasStart    bool
 		wantPresent bool
@@ -925,8 +922,8 @@ func TestInspectStartOverride_AcceptedShapes(t *testing.T) {
 		{"float64 MaxInt32+1", float64(math.MaxInt32) + 1, true, true, false, 0},
 		{"float64 MinInt32-1", float64(math.MinInt32) - 1, true, true, false, 0},
 		// Rejected: unsigned types — no upstream encoder branch.
-		// CodeRabbit verdict-21 finding 6: include plain `uint` so the
-		// platform-sized kind is also pinned to rejection.
+		// Include plain `uint` so the platform-sized kind is also
+		// pinned to rejection.
 		{"uint", uint(5), true, true, false, 0},
 		{"uint8", uint8(5), true, true, false, 0},
 		{"uint16", uint16(5), true, true, false, 0},
@@ -962,10 +959,9 @@ func TestInspectStartOverride_AcceptedShapes(t *testing.T) {
 
 // TestInspectStrategyOverride_DirectShapes pins the contract for the
 // exported helper so the orchestrator-level metadata classifier and
-// the resolver-level RR sentinel both stay aligned. Previously each
-// side kept a private copy that risked drifting on quote handling,
-// empty-list semantics, or bracketed-string parsing — verdict-11
-// finding 1 unified them on this implementation.
+// the resolver-level RR sentinel both stay aligned. Both sides
+// share bamlutils/strategyparse so neither drifts on quote handling,
+// empty-list semantics, or bracketed-string parsing.
 func TestInspectStrategyOverride_DirectShapes(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -1065,11 +1061,11 @@ func TestInspectStrategyOverride_DirectShapes(t *testing.T) {
 }
 
 // outOfRangeAdvancer is a stub Advancer that returns whatever index
-// it was constructed with, regardless of childCount. Used to exercise
-// the resolver's defensive bounds check on indices outside [0, n)
-// (CodeRabbit verdict-33 finding F3): every shipped advancer respects
-// the contract, but a buggy custom implementation could panic the
-// resolver via `chain[idx]` without the guard.
+// it was constructed with, regardless of childCount. Used to
+// exercise the resolver's defensive bounds check on indices outside
+// [0, n): every shipped advancer respects the contract, but a buggy
+// custom implementation could panic the resolver via `chain[idx]`
+// without the guard.
 type outOfRangeAdvancer struct {
 	idx int
 }
@@ -1116,15 +1112,16 @@ func TestResolve_AdvancerOutOfRangeReturnsErrorNotPanic(t *testing.T) {
 }
 
 // TestResolve_RuntimeRRWithoutStrategy_ReturnsInvalidStrategySentinel
-// pins CodeRabbit verdict-39 finding F11. When the runtime
+// pins the runtime-RR-without-strategy contract. When the runtime
 // client_registry declares an RR provider (`provider:"baml-roundrobin"`)
-// but does NOT supply `options.strategy`, the resolver previously
-// returned the generic "has no children" error. That bypassed the
-// ErrInvalid* sentinel routing — ResolveEffectiveClient only converts
-// ErrInvalidStrategyOverride / ErrInvalidStartOverride to legacy
-// fallthrough, so operators saw an opaque request error instead of
-// the canonical BAML ensure_strategy message they get for the
-// invalid-strategy-array case at line 151.
+// but does NOT supply `options.strategy`, the resolver must surface
+// ErrInvalidStrategyOverride. Returning the generic "has no
+// children" error would bypass the ErrInvalid* sentinel routing —
+// ResolveEffectiveClient only converts ErrInvalidStrategyOverride /
+// ErrInvalidStartOverride to legacy fallthrough, so operators would
+// see an opaque request error instead of the canonical BAML
+// ensure_strategy message they get for the invalid-strategy-array
+// case.
 //
 // The detection mirrors ResolveEffectiveClient's recognition
 // condition: registry entry exists for the client AND has its

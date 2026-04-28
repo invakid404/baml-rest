@@ -1,10 +1,9 @@
 // Package strategyparse extracts the shared token/list parsing logic used
-// by both the fallback and round-robin strategy resolvers. The parsers
-// were historically duplicated in bamlutils/buildrequest/orchestrator.go
-// and bamlutils/buildrequest/roundrobin/resolver.go with subtle
-// divergences (quote stripping in one, not the other) that caused a
-// real bug under runtime client_registry overrides — see PR #192
-// CodeRabbit round-robin cold review, finding 4.
+// by both the fallback and round-robin strategy resolvers. Both
+// callers (bamlutils/buildrequest/orchestrator.go and
+// bamlutils/buildrequest/roundrobin/resolver.go) share this single
+// implementation so they can never diverge on quote handling,
+// empty-list semantics, or bracketed-string parsing.
 //
 // Placing the parser at bamlutils/strategyparse keeps it importable by
 // both the root fallback package (bamlutils/buildrequest) and the leaf
@@ -121,8 +120,8 @@ func parseBracketedString(s string) []string {
 		return nil
 	}
 	// Reject malformed forms that the first/last byte check would
-	// otherwise accept (CodeRabbit verdict-30 finding F8): a closing
-	// bracket anywhere before the final byte means the input has
+	// otherwise accept: a closing bracket anywhere before the final
+	// byte means the input has
 	// trailing junk after a complete bracketed list (e.g.
 	// "[A] junk ]" or "[A] [B]"), and an extra opening bracket after
 	// the first one means the input is doubly-bracketed (e.g.

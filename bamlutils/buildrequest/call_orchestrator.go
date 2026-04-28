@@ -193,12 +193,10 @@ func RunCallOrchestration(
 		})
 	}
 
-	// Emit planned metadata BEFORE validation so the routing decision is
-	// observable on every path, including immediate validation failures
-	// (CodeRabbit verdict-28 finding 8). See RunStreamOrchestration for
-	// the parallel change and rationale — both orchestrators previously
-	// emitted after validation, masking exactly the failure modes the
-	// upfront-emit comment claimed coverage for.
+	// Emit planned metadata BEFORE validation so the routing decision
+	// is observable on every path, including immediate validation
+	// failures. See RunStreamOrchestration for the parallel
+	// arrangement.
 	emitPlannedMetadata()
 
 	// Validate the configured provider(s) up front so invalid fallback

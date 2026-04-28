@@ -47,7 +47,7 @@ type Coordinator struct {
 	// behaviour). Tests use SetRandSeedForTest to inject a
 	// deterministic source so they can assert that an unlisted client
 	// observes the random seed rather than the configured seed for
-	// some other listed client. See CodeRabbit verdict-21 finding 5.
+	// some other listed client.
 	randSeed func() uint32
 }
 
@@ -74,8 +74,7 @@ func NewCoordinator() *Coordinator {
 // quirk of the unsigned cast, not a deliberate "wrap to last child"
 // semantic — no operator types `start -1` expecting predictable
 // behaviour. We intentionally diverge by clamping to a safe
-// deterministic value rather than mirroring the cast artifact. See
-// PR #192 cold-review-2 finding 3.
+// deterministic value rather than mirroring the cast artifact.
 //
 // The map is copied; callers may mutate the input afterwards without
 // affecting the coordinator.

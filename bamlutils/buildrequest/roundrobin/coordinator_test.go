@@ -87,16 +87,16 @@ func TestAdvance_ConcurrentUsageDoesNotSkipOrDuplicate(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	// Bucket-bounds invariant (CodeRabbit verdict-30 finding F6): with
-	// the deterministic primed first call plus n-1 concurrent advances
-	// over childCount children, every bucket must hold either floor(n/k)
-	// or ceil(n/k) hits — atomic increments preserve total ordering on
-	// the counter regardless of goroutine interleaving, so the modular
-	// distribution is exact, not "roughly". For n=1000 and k=7 that's
-	// 142 or 143.
+	// Bucket-bounds invariant: with the deterministic primed first
+	// call plus n-1 concurrent advances over childCount children,
+	// every bucket must hold either floor(n/k) or ceil(n/k) hits —
+	// atomic increments preserve total ordering on the counter
+	// regardless of goroutine interleaving, so the modular
+	// distribution is exact, not "roughly". For n=1000 and k=7
+	// that's 142 or 143.
 	//
-	// The previous looser assertion (total==n + cnt>0) accepted any
-	// distribution that touched every bucket and preserved total —
+	// A looser assertion (total==n + cnt>0) accepts any distribution
+	// that touches every bucket and preserves total —
 	// including badly-skewed ones a broken modulo / ordering bug
 	// could produce. The strict bounds catch that; total stays as a
 	// safety net for "counter lost updates" regressions.
@@ -132,9 +132,8 @@ func TestAdvanceDynamic_WithinBounds(t *testing.T) {
 // TestAdvanceDynamic_NonPositiveReturnsZero pins the documented
 // non-positive contract (coordinator.go:147-152): childCount of 0,
 // negative, or any value <= 0 must yield 0 without panicking. The
-// previous test only covered 0; CodeRabbit verdict-31 finding F2
-// expanded this so an off-by-one regression that only handled the
-// zero case (or, conversely, only the negative case) would surface.
+// table covers both zero and negative inputs so an off-by-one
+// regression that only handles one of the two would surface.
 func TestAdvanceDynamic_NonPositiveReturnsZero(t *testing.T) {
 	for _, k := range []int{0, -1, -100} {
 		if got := AdvanceDynamic(k); got != 0 {
@@ -168,14 +167,13 @@ func TestNewCoordinatorWithStarts_NegativeStartClampedToZero(t *testing.T) {
 }
 
 func TestNewCoordinatorWithStarts_UnlistedClientsStayRandom(t *testing.T) {
-	// A seed configured for "Other" must NOT influence "Unlisted". With
-	// the injected random source we can assert the precise value an
-	// unlisted client observes — pre-CodeRabbit-verdict-21-finding-5
-	// the test only checked the index range, which a broken
-	// implementation that reused starts["Other"] for every client
-	// would still satisfy for childCount=4. Inject a known seed so the
-	// next-index calculation pins the unlisted client's value
-	// independently of "Other"'s configured seed.
+	// A seed configured for "Other" must NOT influence "Unlisted".
+	// With the injected random source we can assert the precise
+	// value an unlisted client observes — a range-only check would
+	// let a broken implementation that reused starts["Other"] for
+	// every client still satisfy childCount=4. Inject a known seed
+	// so the next-index calculation pins the unlisted client's
+	// value independently of "Other"'s configured seed.
 	c := NewCoordinatorWithStarts(map[string]int{"Other": 3})
 	// Pin the random seed to a value that is NOT 3 modulo 4 — choose
 	// 17 so 17 % 4 = 1, distinct from "Other"'s configured 3.

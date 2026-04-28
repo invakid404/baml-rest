@@ -8,7 +8,7 @@ import (
 )
 
 // TestGenerate_FailsFastOnUnsupportedWithClientWithBuildRequest pins
-// CodeRabbit verdict-24 finding F2: when SupportsWithClient is false
+// the SupportsWithClient invariant: when SupportsWithClient is false
 // but the introspected Request / StreamRequest singletons are non-nil,
 // codegen would emit BuildRequest paths that compile but cannot honor
 // the per-attempt clientOverride that fallback / round-robin /
@@ -26,9 +26,9 @@ func TestGenerate_FailsFastOnUnsupportedWithClientWithBuildRequest(t *testing.T)
 		name string
 		set  func()
 		// wantSubstr is a per-case token unique to the singleton state
-		// the case sets up (CodeRabbit verdict-38 finding F2). The
-		// previous test substring-matched on "Request", which appears
-		// in every panic message regardless of which singleton was
+		// the case sets up. A substring match on "Request" alone
+		// would appear in every panic message regardless of which
+		// singleton was
 		// set — masking a wrong-singleton panic. The post-fix panic
 		// includes "Request=true/false, StreamRequest=true/false";
 		// each case asserts the exact pair its setup produced.

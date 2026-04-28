@@ -3189,22 +3189,22 @@ func TestCallStreamSilentLegacyGetsKilled(t *testing.T) {
 
 	// Drain the stream so the CallStream goroutine finishes — the pool
 	// restarts the hung worker and propagates the error. Each result
-	// must be released back to the pool (CodeRabbit verdict-21 finding
-	// 9): pool/pool.go:1487-1493 transfers ownership to the consumer
-	// on send, so a blind drain leaks pooled StreamResult objects.
+	// must be released back to the pool: the pool transfers ownership
+	// to the consumer on send, so a blind drain leaks pooled
+	// StreamResult objects.
 	for r := range results {
 		workerplugin.ReleaseStreamResult(r)
 	}
 }
 
-// TestCallStreamPlannedMetadataDoesNotDisableHungDetection verifies the
-// post-verdict-15 invariant: a worker that emits planned metadata
-// upfront and then stalls in upstream HTTP must still be killed by
-// FirstByteTimeout. Planned metadata is now emitted before any HTTP
-// work (verdict-15), so it cannot count as upstream-progress evidence
-// the way heartbeat / stream / final / outcome metadata do. Without
-// this guard, planned-first emission would silently disable hung
-// detection and a hung upstream would never get retried/killed.
+// TestCallStreamPlannedMetadataDoesNotDisableHungDetection pins that a
+// worker which emits planned metadata upfront and then stalls in
+// upstream HTTP must still be killed by FirstByteTimeout. Planned
+// metadata emits before any HTTP work, so it cannot count as
+// upstream-progress evidence the way heartbeat / stream / final /
+// outcome metadata do. Without this guard, planned-first emission
+// would silently disable hung detection and a hung upstream would
+// never get retried/killed.
 func TestCallStreamPlannedMetadataDoesNotDisableHungDetection(t *testing.T) {
 	firstByteTimeout := 30 * time.Millisecond
 
@@ -3290,13 +3290,13 @@ func TestCallStreamPlannedMetadataDoesNotDisableHungDetection(t *testing.T) {
 	close(stopChecker)
 	<-checkerDone
 
-	// Drain + release pooled results — see drain at pool_test.go:3192
-	// for rationale (CodeRabbit verdict-21 finding 9). CodeRabbit
-	// verdict-39 finding F5: also pin that the planned-metadata frame
-	// the test injected actually reached the consumer. Without this,
-	// a regression that swallowed the planned frame upstream (and
-	// thereby bypassed whatever path the test means to exercise)
-	// could still pass the workerClosed timing check by coincidence.
+	// Drain + release pooled results — pool transfers ownership on
+	// send, so a blind drain leaks pooled StreamResult objects. Also
+	// pin that the planned-metadata frame the test injected actually
+	// reached the consumer: without this, a regression that swallowed
+	// the planned frame upstream (and thereby bypassed whatever path
+	// the test means to exercise) could still pass the workerClosed
+	// timing check by coincidence.
 	var seenPlanned bool
 	for r := range results {
 		if r.Kind == workerplugin.StreamResultKindMetadata &&
@@ -3317,13 +3317,12 @@ func TestCallStreamPlannedMetadataDoesNotDisableHungDetection(t *testing.T) {
 // first-byte gate, a fix that simply skipped all metadata would also
 // disable liveness for a request that completed successfully — wrong.
 func TestCallStreamOutcomeMetadataPreventsHungKill(t *testing.T) {
-	// CodeRabbit verdict-28 finding 5: bumped from 30/10/80ms to give
-	// race / CI scheduling slack. The checker fires every 5ms, and the
-	// arithmetic the test relies on — outcomeDelay < firstByteTimeout
-	// < outcomeDelay+finalDelay — held with the old margins on a quiet
-	// dev box but eroded under -race -count=N with concurrent timer
-	// pressure. The new constants keep the same intent (outcome arrives
-	// before the timeout, final after) with order-of-magnitude headroom.
+	// The checker fires every 5ms, and the arithmetic the test relies
+	// on — outcomeDelay < firstByteTimeout < outcomeDelay+finalDelay —
+	// needs order-of-magnitude headroom under -race -count=N with
+	// concurrent timer pressure. These constants keep the intent
+	// (outcome arrives before the timeout, final after) without
+	// flaking on busy CI.
 	firstByteTimeout := 100 * time.Millisecond
 	outcomeDelay := 30 * time.Millisecond
 	finalDelay := 200 * time.Millisecond
@@ -3411,13 +3410,12 @@ func TestCallStreamOutcomeMetadataPreventsHungKill(t *testing.T) {
 
 	// Wrap the drain in requireCompleteWithin so a regression that
 	// stalls the results channel surfaces as a timeout failure rather
-	// than a hung test (CodeRabbit verdict-38 finding F5). 2s is well
-	// above the test's intended 230ms timeline (outcome at 30ms,
-	// final at 230ms) but small enough to keep CI snappy. Capture the
-	// last Kind value (not the pointer) so the post-drain assertion
-	// can pin that the channel closed on a terminal frame; reading
-	// the pooled struct after Release would race with the next
-	// pool.Get caller.
+	// than a hung test. 2s is well above the test's intended 230ms
+	// timeline (outcome at 30ms, final at 230ms) but small enough to
+	// keep CI snappy. Capture the last Kind value (not the pointer)
+	// so the post-drain assertion can pin that the channel closed on
+	// a terminal frame; reading the pooled struct after Release would
+	// race with the next pool.Get caller.
 	var (
 		lastKind workerplugin.StreamResultKind
 		sawAny   bool
@@ -3448,15 +3446,14 @@ func TestCallStreamOutcomeMetadataPreventsHungKill(t *testing.T) {
 	}
 }
 
-// TestCallStreamPlannedMetadataDoesNotTriggerResetOnRetry verifies the
-// post-verdict-15 invariant that planned metadata, emitted upfront from
-// the orchestrator before any HTTP work, does not count as "forwarded
-// content the client must discard on retry". The pool's reset-injection
-// path was previously gated on sentAnyResults flipping for any
-// successful forward; with planned-first emission, that meant a
-// pre-first-byte retry would inject Reset onto the next attempt's
-// planned metadata even though no real content had reached the client.
-// Integration tests TestWorkerDeathMidStream/* depend on this guard.
+// TestCallStreamPlannedMetadataDoesNotTriggerResetOnRetry pins that
+// planned metadata, emitted upfront from the orchestrator before any
+// HTTP work, does not count as "forwarded content the client must
+// discard on retry". The pool's reset-injection path must skip
+// planned metadata; otherwise a pre-first-byte retry would inject
+// Reset onto the next attempt's planned metadata even though no real
+// content had reached the client. Integration tests
+// TestWorkerDeathMidStream/* depend on this guard.
 func TestCallStreamPlannedMetadataDoesNotTriggerResetOnRetry(t *testing.T) {
 	plannedPayload, err := json.Marshal(&bamlutils.Metadata{
 		Phase:      bamlutils.MetadataPhasePlanned,
@@ -3652,13 +3649,12 @@ func TestCallStreamRealContentTriggersResetOnRetry(t *testing.T) {
 		t.Fatalf("CallStream setup failed: %v", err)
 	}
 
-	// Order-aware verification (CodeRabbit verdict-23 finding F2):
-	// the previous "any Reset=true survives" check would pass even if
-	// a regression set Reset on the retry's planned metadata frame
-	// instead of the first non-metadata frame. The production rule is
-	// stricter — Reset must skip planned metadata and land on the
-	// next real result (pool/pool.go:1469-1484). The state machine
-	// observes:
+	// Order-aware verification: an "any Reset=true survives" check
+	// would pass even if a regression set Reset on the retry's
+	// planned metadata frame instead of the first non-metadata
+	// frame. The production rule is stricter — Reset must skip
+	// planned metadata and land on the next real result. The state
+	// machine observes:
 	//
 	//   1) the pre-retry partial (real content forwarded, sets
 	//      sawPreRetryStream and the retry-needs-reset condition);

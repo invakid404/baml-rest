@@ -126,7 +126,7 @@ func TestSetClientRegistry_ClearsStaleProviderCache(t *testing.T) {
 }
 
 // TestSetClientRegistry_StaticPrimary_PopulatesProviderFromIntrospected
-// covers verdict-13 findings 1, 2, 5: a runtime registry that names a
+// covers the case where a runtime registry names a
 // static primary by name without redefining it in clients[] (a normal
 // operator-facing way to switch to an existing introspected client)
 // must populate the cache from the introspected map, not leave it ""
@@ -153,7 +153,7 @@ func TestSetClientRegistry_StaticPrimary_PopulatesProviderFromIntrospected(t *te
 }
 
 // TestSetClientRegistry_PresentEmptyMatchingPrimary_StaysEmpty pins
-// the foundPrimary-flag invariant from verdict-13: a matching primary
+// the foundPrimary-flag invariant: a matching primary
 // entry that intentionally produces "" (operator typo'd provider:"")
 // must NOT be overwritten by introspected materialisation. Without
 // the explicit foundPrimary gate, a "cache is empty" trigger would
@@ -178,10 +178,9 @@ func TestSetClientRegistry_PresentEmptyMatchingPrimary_StaysEmpty(t *testing.T) 
 	if got := a.ClientRegistryProvider(); got != "" {
 		t.Errorf("ClientRegistryProvider(): got %q, want empty (present-empty primary must not be synthesized over)", got)
 	}
-	// CodeRabbit verdict-39 finding F4: also pin that the entry
-	// itself made it into BAML's BuildRequest-safe registry view
-	// with the empty provider preserved verbatim. See v0.219 sibling
-	// for full rationale.
+	// Also pin that the entry itself made it into BAML's
+	// BuildRequest-safe registry view with the empty provider
+	// preserved verbatim. See v0.219 sibling for full rationale.
 	provider, _, ok := buildRequestClientEntrySnapshot(a, "X")
 	if !ok {
 		t.Fatalf("BuildRequest registry should retain the present-empty entry; got missing")
@@ -219,7 +218,7 @@ func TestSetClientRegistry_PresentNonEmptyMatchingPrimary_UsesOverride(t *testin
 }
 
 // TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly is the
-// load-bearing assertion for PR #192 cold-review-4 + Option C — see
+// load-bearing assertion for the dual-view registry split — see
 // the v0.219 adapter test file for the full rationale.
 func TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly(t *testing.T) {
 	cases := []struct {
@@ -281,9 +280,9 @@ func TestSetClientRegistryKeepsExplicitStrategyParentForLegacyOnly(t *testing.T)
 				t.Errorf("LegacyUpstreamClientNames(): got %v, want [%s] (legacy view must preserve explicit strategy parent)", legacyNames, tc.client.Name)
 			}
 
-			// CodeRabbit verdict-38 finding F1: pin provider+options
-			// passed to BAML, not just the name. v0.215 forwards
-			// options unwrapped, so direct DeepEqual works.
+			// Pin (provider, options) passed to BAML, not just the
+			// name. v0.215 forwards options unwrapped, so direct
+			// DeepEqual works.
 			provider, options, ok := legacyClientEntrySnapshot(a, tc.client.Name)
 			if !ok {
 				t.Fatalf("legacyClientEntrySnapshot: entry %q missing from BAML's legacy registry", tc.client.Name)
@@ -333,7 +332,7 @@ func TestSetClientRegistryDropsInertPresenceOnlyParentInBothBamlViews(t *testing
 }
 
 // TestSetClientRegistry_DualViewPrimaryCacheUnderInertParent pins the
-// fix for CodeRabbit verdict-21 findings 1+2 generalised across views
+// primary-cache rule across both registry views
 // — see v0.219 adapter test file for the rationale.
 func TestSetClientRegistry_DualViewPrimaryCacheUnderInertParent(t *testing.T) {
 	primary := "TestFallbackPair"
@@ -386,8 +385,8 @@ func TestSetClientRegistry_DualViewPrimaryCacheUnderExplicitParent(t *testing.T)
 }
 
 // TestSetClientRegistry_PresentEmptyPrimaryIsNoOp mirrors the v0.219
-// regression test for CodeRabbit verdict-31 finding F1. See the
-// v0.219 sibling for the full rationale; same shape applies here.
+// sibling: a present-empty primary must be a no-op at the registry
+// seam. See the v0.219 test for the full rationale.
 func TestSetClientRegistry_PresentEmptyPrimaryIsNoOp(t *testing.T) {
 	a := &BamlAdapter{
 		Context: context.Background(),
@@ -422,9 +421,8 @@ func TestSetClientRegistry_PresentEmptyPrimaryIsNoOp(t *testing.T) {
 	if orig := a.OriginalClientRegistry(); orig == nil || orig.Primary == nil || *orig.Primary != "" {
 		t.Errorf("OriginalClientRegistry should preserve the present-empty primary verbatim; got %+v", orig)
 	}
-	// CodeRabbit verdict-40 finding F2: see v0.204 sibling for
-	// rationale. Length checks because the implementation reuses
-	// slices via `[:0]`.
+	// See v0.204 sibling for rationale. Length checks because the
+	// implementation reuses slices via `[:0]`.
 	if got := upstreamClientNamesSnapshot(a); len(got) != 0 {
 		t.Errorf("upstreamClientNamesSnapshot after present-empty primary: got %v, want empty", got)
 	}

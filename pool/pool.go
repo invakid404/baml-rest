@@ -335,7 +335,6 @@ func New(config *Config) (*Pool, error) {
 		// intentionally diverge by clamping to a safe deterministic
 		// value rather than mirroring the cast artifact; matches the
 		// in-process Coordinator's NewCoordinatorWithStarts contract.
-		// See PR #192 cold-review-2 finding 3.
 		seeds := make(map[string]uint64, len(config.SharedStateSeeds))
 		for k, v := range config.SharedStateSeeds {
 			if v < 0 {
@@ -1224,13 +1223,6 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 			// path already forwards metadata frames eagerly to the
 			// client; this preserves the same observability for the
 			// unary path on the error tail.
-			//
-			// Callers that previously assumed `err != nil → result == nil`
-			// continue to work: nil-checking the error first remains
-			// the correct pattern; what changes is that handlers that
-			// want to surface routing metadata on error can read it from
-			// the now-non-nil result before returning. See PR #192
-			// verdict-15 follow-up.
 			return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), err
 		case workerplugin.StreamResultKindFinal:
 			callResult := &workerplugin.CallResult{
@@ -1415,11 +1407,11 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// Mark first byte received (disables hung detection for this
 				// request) for events that genuinely indicate progress —
 				// heartbeat, stream content, final, error, and outcome
-				// metadata. SKIP planned metadata: post-verdict-15 it emits
-				// upfront from the orchestrator before any HTTP work, so a
-				// worker that emits planned and then stalls in upstream
-				// HTTP would otherwise disable FirstByteTimeout while never
-				// actually progressing. See PR #192 verdict-15 follow-up.
+				// metadata. SKIP planned metadata: it emits upfront from
+				// the orchestrator before any HTTP work, so a worker that
+				// emits planned and then stalls in upstream HTTP would
+				// otherwise disable FirstByteTimeout while never actually
+				// progressing.
 				isPlannedMetadata := result.Kind == workerplugin.StreamResultKindMetadata &&
 					metadataPhase(result.Data) != string(bamlutils.MetadataPhaseOutcome)
 				if !isPlannedMetadata {
@@ -1472,12 +1464,12 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// to the client (instead of a standalone synthetic message).
 				//
 				// Planned metadata is excluded for the same reason it's excluded
-				// from first-byte liveness: post-verdict-15 it emits upfront
-				// from the orchestrator before any HTTP work, so it does not
-				// represent forwarded content the client needs to discard.
-				// Reset must land on the first real result (heartbeat / stream /
-				// final / outcome metadata) so the streamwriter only resets
-				// state when there's actually state to reset.
+				// from first-byte liveness: it emits upfront from the
+				// orchestrator before any HTTP work, so it does not represent
+				// forwarded content the client needs to discard. Reset must
+				// land on the first real result (heartbeat / stream / final
+				// / outcome metadata) so the streamwriter only resets state
+				// when there's actually state to reset.
 				if needsReset && !injectedReset && !isPlannedMetadata {
 					result.Reset = true
 					injectedReset = true
@@ -1805,7 +1797,7 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 
 // Close immediately shuts down the pool and kills all workers.
 //
-// Contract (CodeRabbit verdict-21 finding 10):
+// Contract:
 //
 //   - Cancels the pool-level shutdown context so in-progress health
 //     RPCs abort instead of blocking for their full timeout.
