@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -1107,20 +1108,11 @@ func TestResolve_AdvancerOutOfRangeReturnsErrorNotPanic(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected resolver error for advancer idx=%d, got selected=%q", tc.idx, res.Selected)
 			}
-			if msg := err.Error(); !contains(msg, "out of range") {
+			if msg := err.Error(); !strings.Contains(msg, "out of range") {
 				t.Errorf("error message should mention 'out of range'; got %q", msg)
 			}
 		})
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 // TestResolve_RuntimeRRWithoutStrategy_ReturnsInvalidStrategySentinel

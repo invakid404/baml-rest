@@ -201,12 +201,12 @@ const (
 	// Per-attempt budget for a single broker.DialWithOptions call.
 	// go-plugin's GRPCBroker.DialWithOptions takes no context and its
 	// non-muxer dialer ignores any context-based cancellation
-	// (verified at /Users/inva/go/pkg/mod/github.com/hashicorp/go-plugin@v1.7.0/grpc_broker.go),
-	// so without a wall-clock bound a stuck dial would pin the
-	// caller's results-channel goroutine indefinitely. 5s is well
-	// above a healthy local-broker dial (<10ms) but below the pool
-	// init wall the parent ctx already enforces. CodeRabbit
-	// verdict-39 finding F10.
+	// (see github.com/hashicorp/go-plugin v1.7.0 grpc_broker.go), so
+	// without a wall-clock bound a stuck dial would pin the caller's
+	// results-channel goroutine indefinitely. 5s is well above a
+	// healthy local-broker dial (<10ms) but below the pool init wall
+	// the parent ctx already enforces. CodeRabbit verdict-39 finding
+	// F10; absolute-path scrub per verdict-41 finding F3.
 	extraGRPCDialAttemptTimeout = 5 * time.Second
 )
 

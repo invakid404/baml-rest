@@ -132,9 +132,18 @@ func TestSetClientRegistry_PresenceOnlyRRRoundTrip(t *testing.T) {
 	if got != reg || len(got.Clients) != 1 || got.Clients[0].Name != "MyRR" {
 		t.Errorf("OriginalClientRegistry not preserved; got %+v", got)
 	}
-	// BAML-bound: parent dropped.
+	// BAML-bound: parent dropped from BOTH views. Presence-only RR
+	// is inert (no provider, no options.strategy), so neither the
+	// BuildRequest-safe view nor the legacy view should forward it
+	// — BAML would reject the bare entry on either side. CodeRabbit
+	// verdict-41 finding F1: the legacy-view check was missing; a
+	// regression that left the parent in the legacy registry would
+	// have slipped past the BuildRequest-only assertion.
 	if names := upstreamClientNamesSnapshot(a); len(names) != 0 {
 		t.Errorf("UpstreamClientNames(): got %v, want empty for presence-only RR", names)
+	}
+	if names := legacyUpstreamClientNamesSnapshot(a); len(names) != 0 {
+		t.Errorf("legacyUpstreamClientNamesSnapshot after presence-only RR: got %v, want empty", names)
 	}
 	// Cache for primary still reflects the materialised+translated
 	// provider so ResolveProvider's shortcut returns the correct
