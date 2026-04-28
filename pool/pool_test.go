@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -3187,7 +3188,522 @@ func TestCallStreamSilentLegacyGetsKilled(t *testing.T) {
 	<-checkerDone
 
 	// Drain the stream so the CallStream goroutine finishes — the pool
-	// restarts the hung worker and propagates the error.
-	for range results {
+	// restarts the hung worker and propagates the error. Each result
+	// must be released back to the pool: the pool transfers ownership
+	// to the consumer on send, so a blind drain leaks pooled
+	// StreamResult objects.
+	for r := range results {
+		workerplugin.ReleaseStreamResult(r)
+	}
+}
+
+// TestCallStreamPlannedMetadataDoesNotDisableHungDetection pins that a
+// worker which emits planned metadata upfront and then stalls in
+// upstream HTTP must still be killed by FirstByteTimeout. Planned
+// metadata emits before any HTTP work, so it cannot count as
+// upstream-progress evidence the way heartbeat / stream / final /
+// outcome metadata do. Without this guard, planned-first emission
+// would silently disable hung detection and a hung upstream would
+// never get retried/killed.
+func TestCallStreamPlannedMetadataDoesNotDisableHungDetection(t *testing.T) {
+	firstByteTimeout := 30 * time.Millisecond
+
+	plannedPayload, err := json.Marshal(&bamlutils.Metadata{
+		Phase:      bamlutils.MetadataPhasePlanned,
+		Path:       "legacy",
+		PathReason: "invalid-round-robin-start-override",
+		Client:     "TestClient",
+	})
+	if err != nil {
+		t.Fatalf("marshal planned metadata: %v", err)
+	}
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(ctx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 1)
+			go func() {
+				defer close(ch)
+				// Emit planned metadata immediately, mirroring what the
+				// orchestrator now does.
+				md := workerplugin.GetStreamResult()
+				md.Kind = workerplugin.StreamResultKindMetadata
+				md.Data = append(md.Data[:0], plannedPayload...)
+				select {
+				case ch <- md:
+				case <-ctx.Done():
+					workerplugin.ReleaseStreamResult(md)
+					return
+				}
+				// Then stall — never produce a real first byte. The
+				// hung detector must still fire.
+				<-ctx.Done()
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+	p.SetFirstByteTimeout(firstByteTimeout)
+
+	workerClosed := make(chan struct{})
+	var closeOnce sync.Once
+	p.workers[0].worker.(*mockWorker).closeFn = func() error {
+		closeOnce.Do(func() { close(workerClosed) })
+		return nil
+	}
+
+	// Disable retries so the test observes the first-attempt hung kill
+	// directly without the pool silently retrying on a fresh worker.
+	p.config.MaxRetries = 0
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	stopChecker := make(chan struct{})
+	checkerDone := make(chan struct{})
+	go func() {
+		defer close(checkerDone)
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stopChecker:
+				return
+			case <-tick.C:
+				p.checkHungRequests()
+			}
+		}
+	}()
+
+	select {
+	case <-workerClosed:
+	case <-time.After(500 * time.Millisecond):
+		close(stopChecker)
+		<-checkerDone
+		t.Fatal("worker was not killed when planned metadata arrived but upstream stalled — first-byte gate must skip planned metadata")
+	}
+	close(stopChecker)
+	<-checkerDone
+
+	// Drain + release pooled results — pool transfers ownership on
+	// send, so a blind drain leaks pooled StreamResult objects. Also
+	// pin that the planned-metadata frame the test injected actually
+	// reached the consumer: without this, a regression that swallowed
+	// the planned frame upstream (and thereby bypassed whatever path
+	// the test means to exercise) could still pass the workerClosed
+	// timing check by coincidence.
+	var seenPlanned bool
+	for r := range results {
+		if r.Kind == workerplugin.StreamResultKindMetadata &&
+			metadataPhase(r.Data) == string(bamlutils.MetadataPhasePlanned) {
+			seenPlanned = true
+		}
+		workerplugin.ReleaseStreamResult(r)
+	}
+	if !seenPlanned {
+		t.Error("expected planned metadata frame to reach the consumer; none observed (the test's premise is invalid if the frame was lost upstream)")
+	}
+}
+
+// TestCallStreamOutcomeMetadataPreventsHungKill is the inverse-regression
+// guard: outcome metadata indicates the request actually progressed
+// (BAML produced a winning attempt), so it MUST count toward first-byte
+// liveness. Without distinguishing planned from outcome in the
+// first-byte gate, a fix that simply skipped all metadata would also
+// disable liveness for a request that completed successfully — wrong.
+func TestCallStreamOutcomeMetadataPreventsHungKill(t *testing.T) {
+	// The checker fires every 5ms, and the arithmetic the test relies
+	// on — outcomeDelay < firstByteTimeout < outcomeDelay+finalDelay —
+	// needs order-of-magnitude headroom under -race -count=N with
+	// concurrent timer pressure. These constants keep the intent
+	// (outcome arrives before the timeout, final after) without
+	// flaking on busy CI.
+	firstByteTimeout := 100 * time.Millisecond
+	outcomeDelay := 30 * time.Millisecond
+	finalDelay := 200 * time.Millisecond
+
+	outcomePayload, err := json.Marshal(&bamlutils.Metadata{
+		Phase:          bamlutils.MetadataPhaseOutcome,
+		Path:           "legacy",
+		Client:         "TestClient",
+		WinnerProvider: "openai",
+	})
+	if err != nil {
+		t.Fatalf("marshal outcome metadata: %v", err)
+	}
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(ctx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			ch := make(chan *workerplugin.StreamResult, 2)
+			go func() {
+				defer close(ch)
+				select {
+				case <-time.After(outcomeDelay):
+				case <-ctx.Done():
+					return
+				}
+				md := workerplugin.GetStreamResult()
+				md.Kind = workerplugin.StreamResultKindMetadata
+				md.Data = append(md.Data[:0], outcomePayload...)
+				select {
+				case ch <- md:
+				case <-ctx.Done():
+					workerplugin.ReleaseStreamResult(md)
+					return
+				}
+				select {
+				case <-time.After(finalDelay):
+				case <-ctx.Done():
+					return
+				}
+				final := workerplugin.GetStreamResult()
+				final.Kind = workerplugin.StreamResultKindFinal
+				final.Data = []byte(`"done"`)
+				select {
+				case ch <- final:
+				case <-ctx.Done():
+					workerplugin.ReleaseStreamResult(final)
+				}
+			}()
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+	p.SetFirstByteTimeout(firstByteTimeout)
+
+	workerClosed := make(chan struct{})
+	var closeOnce sync.Once
+	p.workers[0].worker.(*mockWorker).closeFn = func() error {
+		closeOnce.Do(func() { close(workerClosed) })
+		return nil
+	}
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	stopChecker := make(chan struct{})
+	checkerDone := make(chan struct{})
+	go func() {
+		defer close(checkerDone)
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stopChecker:
+				return
+			case <-tick.C:
+				p.checkHungRequests()
+			}
+		}
+	}()
+
+	// Wrap the drain in requireCompleteWithin so a regression that
+	// stalls the results channel surfaces as a timeout failure rather
+	// than a hung test. 2s is well above the test's intended 230ms
+	// timeline (outcome at 30ms, final at 230ms) but small enough to
+	// keep CI snappy. Capture the last Kind value (not the pointer)
+	// so the post-drain assertion can pin that the channel closed on
+	// a terminal frame; reading the pooled struct after Release would
+	// race with the next pool.Get caller.
+	var (
+		lastKind workerplugin.StreamResultKind
+		sawAny   bool
+	)
+	requireCompleteWithin(t, 2*time.Second, func() {
+		for r := range results {
+			lastKind = r.Kind
+			sawAny = true
+			workerplugin.ReleaseStreamResult(r)
+		}
+	})
+	close(stopChecker)
+	<-checkerDone
+
+	if !sawAny {
+		t.Fatal("results channel closed without delivering any frame")
+	}
+	// The success terminal in this test is StreamResultKindFinal;
+	// an Error tail would imply the success path collapsed.
+	if lastKind != workerplugin.StreamResultKindFinal {
+		t.Errorf("expected last frame to be Final; got kind=%v", lastKind)
+	}
+
+	select {
+	case <-workerClosed:
+		t.Fatal("worker should not have been killed when outcome metadata arrived within FirstByteTimeout")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+// TestCallStreamPlannedMetadataDoesNotTriggerResetOnRetry pins that
+// planned metadata, emitted upfront from the orchestrator before any
+// HTTP work, does not count as "forwarded content the client must
+// discard on retry". The pool's reset-injection path must skip
+// planned metadata; otherwise a pre-first-byte retry would inject
+// Reset onto the next attempt's planned metadata even though no real
+// content had reached the client. Integration tests
+// TestWorkerDeathMidStream/* depend on this guard.
+func TestCallStreamPlannedMetadataDoesNotTriggerResetOnRetry(t *testing.T) {
+	plannedPayload, err := json.Marshal(&bamlutils.Metadata{
+		Phase:      bamlutils.MetadataPhasePlanned,
+		Path:       "legacy",
+		PathReason: "invalid-round-robin-start-override",
+		Client:     "TestClient",
+	})
+	if err != nil {
+		t.Fatalf("marshal planned metadata: %v", err)
+	}
+
+	var callCount atomic.Int32
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(ctx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			n := callCount.Add(1)
+			ch := make(chan *workerplugin.StreamResult, 2)
+			if n == 1 {
+				// First attempt: emit planned, then die without
+				// producing any real content. Mirrors a worker
+				// that crashed (or was hung-killed) after the
+				// orchestrator's upfront planned emit but before
+				// BAML's first FunctionLog tick.
+				go func() {
+					defer close(ch)
+					md := workerplugin.GetStreamResult()
+					md.Kind = workerplugin.StreamResultKindMetadata
+					md.Data = append(md.Data[:0], plannedPayload...)
+					select {
+					case ch <- md:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(md)
+					}
+					// Simulate worker death by returning a
+					// retryable RPC error.
+					errR := workerplugin.GetStreamResult()
+					errR.Kind = workerplugin.StreamResultKindError
+					errR.Error = unavailableErr()
+					select {
+					case ch <- errR:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(errR)
+					}
+				}()
+			} else {
+				// Retry: emit planned + clean Final. Reset must
+				// NOT be injected — first attempt only forwarded
+				// planned metadata, which has no client-visible
+				// state to reset.
+				go func() {
+					defer close(ch)
+					md := workerplugin.GetStreamResult()
+					md.Kind = workerplugin.StreamResultKindMetadata
+					md.Data = append(md.Data[:0], plannedPayload...)
+					select {
+					case ch <- md:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(md)
+						return
+					}
+					final := workerplugin.GetStreamResult()
+					final.Kind = workerplugin.StreamResultKindFinal
+					final.Data = []byte(`"done"`)
+					select {
+					case ch <- final:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(final)
+					}
+				}()
+			}
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	var sawReset bool
+	var sawFinal bool
+	for r := range results {
+		if r.Reset {
+			sawReset = true
+		}
+		if r.Kind == workerplugin.StreamResultKindFinal {
+			sawFinal = true
+		}
+		workerplugin.ReleaseStreamResult(r)
+	}
+
+	if !sawFinal {
+		t.Fatal("expected a Final result after retry")
+	}
+	if sawReset {
+		t.Error("Reset must NOT be injected when only planned metadata was forwarded pre-retry")
+	}
+}
+
+// TestCallStreamRealContentTriggersResetOnRetry is the inverse-regression
+// guard. When real content (a stream partial) was forwarded before the
+// worker died, the retry MUST inject Reset on the next forwarded result
+// so the streamwriter discards accumulated state. Without this
+// distinction, a fix that blanket-skipped Reset on metadata frames
+// would also break the legitimate mid-stream-retry case.
+func TestCallStreamRealContentTriggersResetOnRetry(t *testing.T) {
+	plannedPayload, err := json.Marshal(&bamlutils.Metadata{
+		Phase:  bamlutils.MetadataPhasePlanned,
+		Path:   "buildrequest",
+		Client: "TestClient",
+	})
+	if err != nil {
+		t.Fatalf("marshal planned metadata: %v", err)
+	}
+
+	var callCount atomic.Int32
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.callStreamFn = func(ctx context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			n := callCount.Add(1)
+			ch := make(chan *workerplugin.StreamResult, 4)
+			if n == 1 {
+				// First attempt: planned + real partial content,
+				// then die. Real content went to the client →
+				// retry must inject Reset.
+				go func() {
+					defer close(ch)
+					md := workerplugin.GetStreamResult()
+					md.Kind = workerplugin.StreamResultKindMetadata
+					md.Data = append(md.Data[:0], plannedPayload...)
+					select {
+					case ch <- md:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(md)
+						return
+					}
+					partial := workerplugin.GetStreamResult()
+					partial.Kind = workerplugin.StreamResultKindStream
+					partial.Data = []byte(`"part"`)
+					select {
+					case ch <- partial:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(partial)
+						return
+					}
+					errR := workerplugin.GetStreamResult()
+					errR.Kind = workerplugin.StreamResultKindError
+					errR.Error = unavailableErr()
+					select {
+					case ch <- errR:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(errR)
+					}
+				}()
+			} else {
+				// Retry: planned + Final. The first non-planned
+				// forwarded result must carry Reset=true.
+				go func() {
+					defer close(ch)
+					md := workerplugin.GetStreamResult()
+					md.Kind = workerplugin.StreamResultKindMetadata
+					md.Data = append(md.Data[:0], plannedPayload...)
+					select {
+					case ch <- md:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(md)
+						return
+					}
+					final := workerplugin.GetStreamResult()
+					final.Kind = workerplugin.StreamResultKindFinal
+					final.Data = []byte(`"done"`)
+					select {
+					case ch <- final:
+					case <-ctx.Done():
+						workerplugin.ReleaseStreamResult(final)
+					}
+				}()
+			}
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+
+	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	// Order-aware verification: an "any Reset=true survives" check
+	// would pass even if a regression set Reset on the retry's
+	// planned metadata frame instead of the first non-metadata
+	// frame. The production rule is stricter — Reset must skip
+	// planned metadata and land on the next real result. The state
+	// machine observes:
+	//
+	//   1) the pre-retry partial (real content forwarded, sets
+	//      sawPreRetryStream and the retry-needs-reset condition);
+	//   2) zero or more metadata frames from the retry (planned), all
+	//      of which MUST have Reset=false;
+	//   3) the next non-metadata frame (Final in this fixture), which
+	//      MUST carry Reset=true.
+	var sawPreRetryStream, sawFinal, awaitingResetTarget bool
+	for r := range results {
+		switch {
+		case r.Kind == workerplugin.StreamResultKindMetadata:
+			if r.Reset {
+				t.Errorf("planned-metadata frame must never carry Reset=true; got Reset on metadata payload %q", string(r.Data))
+			}
+		case r.Kind == workerplugin.StreamResultKindStream:
+			// First stream partial is the pre-retry one — record so
+			// the retry's first non-metadata frame is the next one we
+			// observe.
+			if !sawPreRetryStream {
+				sawPreRetryStream = true
+				if r.Reset {
+					t.Error("pre-retry stream partial must not carry Reset=true; Reset is for the post-retry recovery frame")
+				}
+				awaitingResetTarget = true
+			} else if awaitingResetTarget {
+				if !r.Reset {
+					t.Error("first post-retry non-metadata frame must carry Reset=true to discard accumulated streamwriter state")
+				}
+				awaitingResetTarget = false
+			}
+		case r.Kind == workerplugin.StreamResultKindFinal:
+			sawFinal = true
+			if awaitingResetTarget {
+				if !r.Reset {
+					t.Error("first post-retry non-metadata frame must carry Reset=true (final-after-retry path)")
+				}
+				awaitingResetTarget = false
+			}
+		}
+		workerplugin.ReleaseStreamResult(r)
+	}
+
+	if !sawPreRetryStream {
+		t.Fatal("expected a pre-retry stream partial; the test fixture forwards real content before the unavailable error")
+	}
+	if !sawFinal {
+		t.Fatal("expected a Final result after retry")
+	}
+	if awaitingResetTarget {
+		t.Fatal("post-retry recovery frame never arrived; Reset injection point was missed")
 	}
 }

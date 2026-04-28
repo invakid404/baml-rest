@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/workerplugin"
+	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"google.golang.org/grpc"
@@ -39,6 +41,11 @@ func main() {
 		Output:     os.Stderr,
 		JSONFormat: true,
 	})
+	// Expose the logger to package-level helpers (roundRobinAdvancerFor)
+	// that need to surface handshake-level diagnostics. Set before Serve
+	// starts dispatching RPCs so the first request's helper call sees a
+	// non-nil value.
+	workerLogger = logger
 
 	// Load deployment-wide ClientRegistry defaults. A parse failure here is
 	// fatal by design: the worker exits non-zero, go-plugin's handshake
@@ -96,10 +103,21 @@ func main() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 
+	workerPlugin := &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg, logger: logger}}
+	// Install the AttachSharedState callback *before* handing the plugin to
+	// go-plugin. The host calls AttachSharedState once during handshake; if
+	// no handler is installed the RPC succeeds silently and the worker's
+	// round-robin resolution degrades to the in-process Coordinator (the
+	// baseline pre-shared-state behaviour).
+	workerPlugin.SetAttachSharedStateHandler(func(_ context.Context, client pb.SharedStateClient) error {
+		sharedStateClient.Store(&client)
+		return nil
+	})
+
 	goplugin.Serve(&goplugin.ServeConfig{
 		HandshakeConfig: workerplugin.Handshake,
 		Plugins: map[string]goplugin.Plugin{
-			"worker": &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg, logger: logger}},
+			"worker": workerPlugin,
 		},
 		GRPCServer: func(opts []grpc.ServerOption) *grpc.Server {
 			opts = append(opts, workerplugin.GRPCServerOptions()...)
@@ -107,6 +125,55 @@ func main() {
 		},
 		Logger: logger,
 	})
+}
+
+// sharedStateClient is the process-scoped handle the host installs via
+// AttachSharedState. Workers read it per-request to build a RemoteAdvancer
+// that delegates round-robin counter updates to the host's SharedStateStore.
+//
+// atomic.Pointer keeps the common read path lock-free: the host writes
+// once at handshake, every request reads. A nil pointer (unset / attach
+// never happened) is legal — callers treat it as "no shared state, use
+// the in-process coordinator".
+var sharedStateClient atomic.Pointer[pb.SharedStateClient]
+
+// workerLogger is the hclog logger set in main() and read from the
+// per-request helpers that need to log outside the workerImpl receiver
+// (e.g. roundRobinAdvancerFor). Set exactly once before goplugin.Serve
+// starts dispatching RPCs.
+var workerLogger hclog.Logger
+
+// noSharedStateWarnOnce ensures the "no shared state attached" warning
+// fires exactly once per process lifetime. Pool-managed workers always
+// attach during handshake; a nil client here means either a handshake
+// regression or a standalone test harness running the worker without
+// shared state. The one-shot warn surfaces the first case to operators
+// without spamming the log on every request.
+var noSharedStateWarnOnce sync.Once
+
+// roundRobinAdvancerFor returns the Advancer the generated dispatch path
+// should use for this request. When a shared-state client is attached it
+// builds a request-scoped RemoteAdvancer keyed on the inbound request_id;
+// otherwise it returns nil so orchestrator.ResolveEffectiveClient falls
+// back to the package-level Coordinator compiled into introspected.
+func roundRobinAdvancerFor(ctx context.Context) bamlutils.RoundRobinAdvancer {
+	clientPtr := sharedStateClient.Load()
+	if clientPtr == nil {
+		noSharedStateWarnOnce.Do(func() {
+			if workerLogger != nil {
+				workerLogger.Warn(
+					"round-robin falling back to in-process coordinator; " +
+						"host did not complete AttachSharedState handshake. " +
+						"Pool-managed workers should always attach — this " +
+						"usually indicates a broken handshake or a standalone " +
+						"test harness. baml-roundrobin rotations will be " +
+						"per-worker instead of pool-wide for the rest of " +
+						"this process's lifetime.")
+			}
+		})
+		return nil
+	}
+	return workerplugin.NewRemoteAdvancer(ctx, *clientPtr, workerplugin.RequestIDFromContext(ctx))
 }
 
 // defaultDrainLeakThreshold is how long a drain goroutine waits before logging
@@ -244,6 +311,11 @@ func (w *workerImpl) CallStream(ctx context.Context, methodName string, inputJSO
 	adapter := baml_rest.MakeAdapter(ctx)
 	adapter.SetLogger(w.logger)
 	adapter.SetStreamMode(streamMode)
+	// Install a per-request round-robin Advancer that delegates to the
+	// host-side SharedState store. Safe to call unconditionally: returns
+	// nil when no shared-state client is attached, and the adapter treats
+	// nil as "fall back to the introspected default Coordinator".
+	adapter.SetRoundRobinAdvancer(roundRobinAdvancerFor(ctx))
 	if err := options.apply(adapter); err != nil {
 		return nil, fmt.Errorf("failed to apply options: %w", err)
 	}

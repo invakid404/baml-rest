@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/google/uuid"
 	"github.com/hashicorp/go-plugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -114,6 +116,17 @@ type Config struct {
 	WorkerMemLimit int64
 	// WorkerStartTimeout bounds worker startup and restart handshake work (0 = no timeout)
 	WorkerStartTimeout time.Duration
+	// SharedStateSeeds seeds per-key initial values for the host-side
+	// SharedState counters. Populate from introspected.RoundRobinStart so
+	// baml-roundrobin clients that declared a `start N` option honour it.
+	// Keys not in the map start at a uniformly-random offset — same fresh-
+	// fleet behaviour as the legacy in-process Coordinator.
+	//
+	// Leaving this nil disables the reverse shared-state channel: workers
+	// never receive AttachSharedState and fall back to their in-process
+	// coordinators. Intended for tests and single-worker configurations
+	// where per-worker counters are acceptable.
+	SharedStateSeeds map[string]int
 }
 
 // DefaultConfig returns a default configuration
@@ -192,6 +205,13 @@ type Pool struct {
 	shutdownCancel     context.CancelFunc                  // cancels shutdownCtx
 	newWorker          func(id int) (*workerHandle, error) // override for testing; nil in production
 	beforeRestartStart func()
+
+	// sharedStateStore hosts the per-key atomic counters that drive
+	// cross-worker round-robin rotation. Nil when SharedStateSeeds was
+	// not configured (test harness / single-worker setups). When non-nil,
+	// every worker handshake dials back via AttachSharedState and
+	// subsequent RR decisions ride through it.
+	sharedStateStore *workerplugin.SharedStateStore
 }
 
 type workerHandle struct {
@@ -299,6 +319,39 @@ func New(config *Config) (*Pool, error) {
 		shutdownCancel: shutdownCancel,
 	}
 
+	// Build the shared-state store when seeds were configured. Workers
+	// dial back to the host-side server registered inside WorkerPlugin
+	// during GRPCClient handshake; see startWorker below for the
+	// per-worker wiring.
+	if config.SharedStateSeeds != nil {
+		// Snapshot the caller's map so post-construction mutations can't
+		// rewrite seeds mid-flight.
+		//
+		// Negative `start` values are clamped to zero. Upstream BAML
+		// computes `(start as usize) % strategy.len()` — sign-extension
+		// + bitcast, so -1i32 becomes 0xFFFFFFFFFFFFFFFF on 64-bit and
+		// the modulo result depends on the chain length rather than
+		// expressing a deliberate "wrap to last child" semantic. We
+		// intentionally diverge by clamping to a safe deterministic
+		// value rather than mirroring the cast artifact; matches the
+		// in-process Coordinator's NewCoordinatorWithStarts contract.
+		seeds := make(map[string]uint64, len(config.SharedStateSeeds))
+		for k, v := range config.SharedStateSeeds {
+			if v < 0 {
+				v = 0
+			}
+			seeds[k] = uint64(v)
+		}
+		p.sharedStateStore = workerplugin.NewSharedStateStore(func(key string) uint64 {
+			if seed, ok := seeds[key]; ok {
+				return seed
+			}
+			// Unseeded keys get a random offset so a fresh fleet does
+			// not lockstep on child 0. Matches roundrobin.counterFor.
+			return uint64(rand.Uint32())
+		})
+	}
+
 	// Initialize worker restart counter labels
 	workerRestarts.WithLabelValues(string(RestartReasonHung)).Add(0)
 	workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Add(0)
@@ -321,6 +374,19 @@ func New(config *Config) (*Pool, error) {
 	}
 
 	return p, nil
+}
+
+// pluginMap returns the go-plugin dispenser map for this pool. A fresh
+// WorkerPlugin is constructed per call so each worker connection carries
+// a plugin instance whose SharedStateImpl points at this pool's store —
+// tests that spin up multiple pools in the same process would otherwise
+// share the package-level workerplugin.PluginMap and bleed state.
+func (p *Pool) pluginMap() map[string]plugin.Plugin {
+	wp := &workerplugin.WorkerPlugin{}
+	if p.sharedStateStore != nil {
+		wp.SharedStateImpl = workerplugin.NewSharedStateServer(p.sharedStateStore)
+	}
+	return map[string]plugin.Plugin{"worker": wp}
 }
 
 var errWorkerStartAborted = fmt.Errorf("worker startup aborted")
@@ -365,7 +431,7 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: workerplugin.Handshake,
-		Plugins:         workerplugin.PluginMap,
+		Plugins:         p.pluginMap(),
 		Cmd:             cmd,
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
@@ -1149,7 +1215,15 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 		case workerplugin.StreamResultKindError:
 			err := workerplugin.NewErrorWithStack(result.Error, result.Stacktrace)
 			workerplugin.ReleaseStreamResult(result)
-			return nil, err
+			// Return a CallResult carrying any accumulated metadata
+			// alongside the error so the unary handler can still set
+			// X-BAML-Path / X-BAML-Path-Reason / X-BAML-Client headers
+			// for observability. Data/Raw stay empty — the caller's
+			// `if err != nil` branch should not read them. The streaming
+			// path already forwards metadata frames eagerly to the
+			// client; this preserves the same observability for the
+			// unary path on the error tail.
+			return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), err
 		case workerplugin.StreamResultKindFinal:
 			callResult := &workerplugin.CallResult{
 				Data:    result.Data,
@@ -1177,10 +1251,23 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 	// Stream closed without a final result. If the context was cancelled
 	// (client disconnect, deadline exceeded), surface that so callers can
 	// distinguish cancellation from unexpected stream termination.
+	// Preserve accumulated metadata on these tails too — same rationale as
+	// the explicit-Error case above.
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), ctx.Err()
 	}
-	return nil, fmt.Errorf("no final result received")
+	return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), fmt.Errorf("no final result received")
+}
+
+// metadataOnlyCallResult wraps accumulated planned/outcome metadata into a
+// CallResult so the unary handlers can surface routing observability on
+// error tails. Returns nil if both byte slices are empty so callers can
+// still distinguish "metadata available" from "nothing to report".
+func metadataOnlyCallResult(planned, outcome []byte) *workerplugin.CallResult {
+	if len(planned) == 0 && len(outcome) == 0 {
+		return nil
+	}
+	return &workerplugin.CallResult{Planned: planned, Outcome: outcome}
 }
 
 // CallStream executes a BAML method and streams results.
@@ -1197,10 +1284,26 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		return nil, err
 	}
 
+	// Generate a stable request id and thread it through every attempt.
+	// The worker forwards it as CallRequest.request_id, which the host's
+	// SharedState store uses as the idempotency key for FetchAdd. Pool
+	// retries must see the same id so the rotation index is resolved once
+	// per request — otherwise each retry would advance the counter a
+	// second time and the RR ordering would skip a child.
+	requestID := uuid.NewString()
+	ctx = workerplugin.WithRequestID(ctx, requestID)
+
 	wrappedResults := make(chan *workerplugin.StreamResult)
 
 	go func() {
 		defer close(wrappedResults)
+		// Release any FetchAdd idempotency entries recorded under this
+		// request id once the retry loop finishes (success, error, or
+		// caller cancellation — doesn't matter). A TTL sweep on the host
+		// side is the backstop for crashes that skip this defer.
+		if p.sharedStateStore != nil {
+			defer p.sharedStateStore.DropScope(requestID)
+		}
 
 		currentHandle := handle
 		var lastFailed *workerHandle
@@ -1301,8 +1404,19 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					}
 				}
 
-				// Mark first byte received (disables hung detection for this request)
-				req.gotFirstByte.Store(true)
+				// Mark first byte received (disables hung detection for this
+				// request) for events that genuinely indicate progress —
+				// heartbeat, stream content, final, error, and outcome
+				// metadata. SKIP planned metadata: it emits upfront from
+				// the orchestrator before any HTTP work, so a worker that
+				// emits planned and then stalls in upstream HTTP would
+				// otherwise disable FirstByteTimeout while never actually
+				// progressing.
+				isPlannedMetadata := result.Kind == workerplugin.StreamResultKindMetadata &&
+					metadataPhase(result.Data) != string(bamlutils.MetadataPhaseOutcome)
+				if !isPlannedMetadata {
+					req.gotFirstByte.Store(true)
+				}
 
 				// Filter heartbeat - only for first-byte tracking
 				if result.Kind == workerplugin.StreamResultKindHeartbeat {
@@ -1348,7 +1462,15 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// stream writer emits a reset event immediately before this data.
 				// This ties reset signaling to the first real result that makes it
 				// to the client (instead of a standalone synthetic message).
-				if needsReset && !injectedReset {
+				//
+				// Planned metadata is excluded for the same reason it's excluded
+				// from first-byte liveness: it emits upfront from the
+				// orchestrator before any HTTP work, so it does not represent
+				// forwarded content the client needs to discard. Reset must
+				// land on the first real result (heartbeat / stream / final
+				// / outcome metadata) so the streamwriter only resets state
+				// when there's actually state to reset.
+				if needsReset && !injectedReset && !isPlannedMetadata {
 					result.Reset = true
 					injectedReset = true
 					currentHandle.logger.Info().Msg("Injected reset marker for mid-stream retry")
@@ -1362,7 +1484,13 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// Forward the result to the client
 				select {
 				case wrappedResults <- result:
-					sentAnyResults = true
+					// Planned metadata is excluded from sentAnyResults so a
+					// pre-first-byte retry doesn't trigger reset injection —
+					// nothing meaningful was forwarded to the client yet.
+					// Symmetric with the first-byte gate above.
+					if !isPlannedMetadata {
+						sentAnyResults = true
+					}
 				case <-ctx.Done():
 					workerplugin.ReleaseStreamResult(result)
 					p.drainResultsAndCheckRestart(results, currentHandle)
@@ -1667,7 +1795,37 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	return p.Close()
 }
 
-// Close immediately shuts down the pool and kills all workers
+// Close immediately shuts down the pool and kills all workers.
+//
+// Contract:
+//
+//   - Cancels the pool-level shutdown context so in-progress health
+//     RPCs abort instead of blocking for their full timeout.
+//   - Closes the drain channel so callers stop waiting on it.
+//   - Snapshots and kills every worker plugin handle (worker
+//     subprocesses).
+//   - Waits on `restartWG` (so any in-flight restart goroutine has
+//     returned) and `p.wg` (which currently tracks only the health
+//     checker goroutine — see pool.go:373/555).
+//   - Closes the SharedStateStore, which only stops the background
+//     sweeper goroutine; remaining map operations stay safe after
+//     Close (workerplugin/sharedstate.go:140).
+//
+// What Close does **not** wait for: in-flight CallStream goroutines
+// (pool.go:1306). These goroutines are not registered with `p.wg` —
+// the design assumes Close is called when the caller wants every
+// worker subprocess killed *now*, not a graceful drain. Use
+// Shutdown(ctx) for a drain that waits for in-flight requests to
+// finish (or the context to expire), then calls Close.
+//
+// Race-safety with concurrent CallStream goroutines:
+// SharedStateStore methods (FetchAdd, DropScope, etc.) remain safe to
+// invoke after Close — Close only closes the sweeper's stopCh; the
+// underlying maps are not invalidated. So a CallStream goroutine
+// that defers DropScope(requestID) is fine even if Close has
+// returned by the time the defer fires. If a future change adds
+// state that *would* be unsafe to access post-Close, this contract
+// will need to change to track CallStream goroutines explicitly.
 func (p *Pool) Close() error {
 	if p == nil {
 		return nil
@@ -1710,6 +1868,9 @@ func (p *Pool) Close() error {
 
 	p.restartWG.Wait()
 	p.wg.Wait()
+	if p.sharedStateStore != nil {
+		p.sharedStateStore.Close()
+	}
 	p.logger.Info().Msg("Worker pool closed")
 	return nil
 }

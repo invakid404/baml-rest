@@ -281,6 +281,14 @@ var serveCmd = &cobra.Command{
 		poolConfig.PrettyLogs = prettyLogs
 		poolConfig.WorkerPath = workerPath
 		poolConfig.WorkerMemLimit = workerMemLimit
+		// Host the shared-state round-robin counters. Passing a non-nil
+		// seeds map enables the reverse broker channel between host and
+		// each worker — without it every worker rotates off an in-process
+		// coordinator and baml-roundrobin degrades to independent per-
+		// worker draws at PoolSize > 1. The map is consulted for BAML
+		// `start N` values; unseeded clients get a random offset on first
+		// touch, matching the legacy single-process Coordinator behaviour.
+		poolConfig.SharedStateSeeds = introspected.RoundRobinStart
 
 		workerPool, err := pool.New(poolConfig)
 		if err != nil {
@@ -389,12 +397,21 @@ var serveCmd = &cobra.Command{
 					defer cancel()
 
 					result, err := workerPool.Call(ctx, methodName, c.Body(), streamMode)
+					// Surface routing observability headers even on the
+					// error path. Pool.Call now preserves accumulated
+					// planned/outcome metadata in the result on error
+					// tails so X-BAML-Path / X-BAML-Path-Reason still
+					// reach the client when the request fails after the
+					// orchestrator emitted planned metadata. Pre-fix the
+					// 500 path returned with no headers, which made
+					// invalid-runtime-options diagnoses invisible.
+					if result != nil {
+						setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
+					}
 					if err != nil {
 						logger.Error().Err(err).Str("method", methodName).Msg("worker call failed")
 						return writeFiberJSONError(c, "failed to process request", fiber.StatusInternalServerError)
 					}
-
-					setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
 						return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{
@@ -474,6 +491,11 @@ var serveCmd = &cobra.Command{
 					}
 
 					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
+					// Surface routing headers on the error tail too — see
+					// the per-method handler above for rationale.
+					if result != nil {
+						setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
+					}
 					if err != nil {
 						logger.Error().Err(err).Msg("dynamic worker call failed")
 						return writeFiberJSONError(c, "failed to process request", fiber.StatusInternalServerError)
@@ -485,8 +507,6 @@ var serveCmd = &cobra.Command{
 						logger.Error().Err(err).Msg("dynamic response flatten failed")
 						return writeFiberJSONError(c, "failed to process response", fiber.StatusInternalServerError)
 					}
-
-					setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
 						return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{

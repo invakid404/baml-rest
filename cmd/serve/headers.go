@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/goccy/go-json"
+	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
@@ -24,6 +24,13 @@ const (
 	HeaderBAMLRetryCount       = "X-BAML-Retry-Count"
 	HeaderBAMLUpstreamDuration = "X-BAML-Upstream-Duration-Ms"
 	HeaderBAMLBamlCallCount    = "X-BAML-Baml-Call-Count"
+	// RoundRobin surfaces the outermost baml-roundrobin decision: Name is
+	// the strategy client, Selected is the picked child, Index is its
+	// 0-based position in the resolved child list. Absent when the
+	// resolved client is not a baml-roundrobin.
+	HeaderBAMLRoundRobinName     = "X-BAML-RoundRobin-Name"
+	HeaderBAMLRoundRobinSelected = "X-BAML-RoundRobin-Selected"
+	HeaderBAMLRoundRobinIndex    = "X-BAML-RoundRobin-Index"
 )
 
 // headerSetter abstracts over net/http.Header.Set and fiber.Ctx.Set so the
@@ -61,6 +68,15 @@ func setBAMLHeaders(setter headerSetter, planned, outcome *bamlutils.Metadata) {
 		}
 		if planned.RetryMax != nil {
 			setter(HeaderBAMLRetryMax, strconv.Itoa(*planned.RetryMax))
+		}
+		if rr := planned.RoundRobin; rr != nil {
+			if v := sanitizeTokenHeader(rr.Name); v != "" {
+				setter(HeaderBAMLRoundRobinName, v)
+			}
+			if v := sanitizeTokenHeader(rr.Selected); v != "" {
+				setter(HeaderBAMLRoundRobinSelected, v)
+			}
+			setter(HeaderBAMLRoundRobinIndex, strconv.Itoa(rr.Index))
 		}
 	}
 	if outcome != nil {

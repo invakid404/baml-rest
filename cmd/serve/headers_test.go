@@ -191,6 +191,80 @@ func TestSetBAMLHeaders_DropsControlChars(t *testing.T) {
 	}
 }
 
+func TestSetBAMLHeaders_RoundRobin(t *testing.T) {
+	t.Parallel()
+
+	t.Run("emits rr headers when present", func(t *testing.T) {
+		t.Parallel()
+		h := http.Header{}
+		planned := &bamlutils.Metadata{
+			Phase:  bamlutils.MetadataPhasePlanned,
+			Path:   "buildrequest",
+			Client: "ChildA",
+			RoundRobin: &bamlutils.RoundRobinInfo{
+				Name:     "MyRR",
+				Children: []string{"ChildA", "ChildB"},
+				Index:    0,
+				Selected: "ChildA",
+			},
+		}
+		setBAMLHeaders(netHTTPHeaderSetter(h), planned, nil)
+		if got := h.Get(HeaderBAMLRoundRobinName); got != "MyRR" {
+			t.Errorf("RoundRobinName: got %q, want MyRR", got)
+		}
+		if got := h.Get(HeaderBAMLRoundRobinSelected); got != "ChildA" {
+			t.Errorf("RoundRobinSelected: got %q, want ChildA", got)
+		}
+		if got := h.Get(HeaderBAMLRoundRobinIndex); got != "0" {
+			t.Errorf("RoundRobinIndex: got %q, want 0", got)
+		}
+	})
+
+	t.Run("omits rr headers when absent", func(t *testing.T) {
+		t.Parallel()
+		h := http.Header{}
+		planned := &bamlutils.Metadata{Phase: bamlutils.MetadataPhasePlanned, Path: "buildrequest", Client: "MyClient"}
+		setBAMLHeaders(netHTTPHeaderSetter(h), planned, nil)
+		for _, name := range []string{HeaderBAMLRoundRobinName, HeaderBAMLRoundRobinSelected, HeaderBAMLRoundRobinIndex} {
+			if got := h.Get(name); got != "" {
+				t.Errorf("%s should be absent when RoundRobin is nil; got %q", name, got)
+			}
+		}
+	})
+
+	t.Run("drops control chars in rr name", func(t *testing.T) {
+		t.Parallel()
+		h := http.Header{}
+		planned := &bamlutils.Metadata{
+			Phase:  bamlutils.MetadataPhasePlanned,
+			Path:   "buildrequest",
+			Client: "Child",
+			RoundRobin: &bamlutils.RoundRobinInfo{
+				Name:     "Bad\nRR",
+				Selected: "Good",
+				Index:    1,
+			},
+		}
+		setBAMLHeaders(netHTTPHeaderSetter(h), planned, nil)
+		if got := h.Get(HeaderBAMLRoundRobinName); got != "" {
+			t.Errorf("RoundRobinName should be dropped on control chars; got %q", got)
+		}
+		// Selected is sanitised independently of Name — a clean
+		// Selected must survive even when the sibling Name is
+		// dropped. Asserting only the Name drop and Index emission
+		// would let a regression that dropped Selected slip through
+		// (the clean-name subtest above wouldn't catch it since it
+		// never dirties Name).
+		if got := h.Get(HeaderBAMLRoundRobinSelected); got != "Good" {
+			t.Errorf("RoundRobinSelected should still emit when Name is dropped; got %q", got)
+		}
+		// Index is a number — always safe to emit.
+		if got := h.Get(HeaderBAMLRoundRobinIndex); got != "1" {
+			t.Errorf("RoundRobinIndex should still emit when Name is dropped; got %q", got)
+		}
+	})
+}
+
 func TestDecodeMetadataJSON_EmptyAndInvalid(t *testing.T) {
 	t.Parallel()
 

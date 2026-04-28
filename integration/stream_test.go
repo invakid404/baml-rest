@@ -409,10 +409,20 @@ func TestWorkerDeathMidStream(t *testing.T) {
 					sawErrorEvent = true
 				}
 
-				// After receiving the first event (first byte), kill the worker
-				if len(receivedEvents) == 1 && !killedWorker {
+				// Kill the worker after the first non-metadata event so
+				// the kill lands AFTER an actual upstream byte. Planned
+				// metadata is emitted upfront from the orchestrator
+				// before BAML's HTTP work starts — it's the routing
+				// decision, not upstream progress. Pool's reset-
+				// injection logic excludes planned metadata from
+				// sentAnyResults, so killing after the planned frame
+				// would land in pre-first-byte territory and the retry
+				// would (correctly) not inject Reset. The "after first
+				// byte" semantic this test asserts is "after a real
+				// upstream byte".
+				if event.Event != "metadata" && !killedWorker {
 					eventsBeforeKill = len(receivedEvents)
-					t.Log("First event received, killing worker...")
+					t.Log("First non-metadata event received, killing worker...")
 					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
 					result, err := BAMLClient.KillWorker(killCtx)
 					killCancel()
@@ -1500,10 +1510,16 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 					sawErrorEvent = true
 				}
 
-				// After receiving the first event (first byte), kill the worker
-				if len(receivedEvents) == 1 && !killedWorker {
+				// Kill after the first non-metadata event — see the SSE
+				// counterpart above for the rationale (planned metadata
+				// is emitted before BAML's HTTP work starts and does
+				// not represent upstream first-byte; a kill landing
+				// during the planned-only window correctly falls into
+				// pre-first-byte handling, which suppresses Reset on
+				// retry).
+				if !event.IsMetadata() && !killedWorker {
 					eventsBeforeKill = len(receivedEvents)
-					t.Log("First event received, killing worker...")
+					t.Log("First non-metadata event received, killing worker...")
 					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
 					result, err := BAMLClient.KillWorker(killCtx)
 					killCancel()
@@ -2132,13 +2148,33 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 			Options: opts,
 		})
 
-		// Cancel after a short delay (before first byte would arrive)
+		// Cancel after a short delay (before first byte would arrive).
+		// cancelFired is closed inside the timer callback so the event
+		// loop below can distinguish "before cancel" frames (which the
+		// test assertion gates on) from post-cancel teardown frames
+		// that legitimately drain after reqCancel(). Without this
+		// gate, any event the server flushed in the cancel-then-
+		// teardown window would inflate the count past the "no pre-
+		// cancel work" invariant the test claims to pin.
+		cancelFired := make(chan struct{})
 		cancelTimer := time.AfterFunc(500*time.Millisecond, func() {
 			reqCancel()
+			close(cancelFired)
 		})
 		defer cancelTimer.Stop()
 
 		var receivedEvents int
+		// nonPlannedEventsBeforeCancel counts every frame that is NOT
+		// planned metadata — data, final, reset, error, AND outcome
+		// metadata — observed BEFORE the cancelFired signal. Planned
+		// metadata emits upfront from the orchestrator before any
+		// HTTP work to the upstream provider, so a planned frame
+		// arriving in this window is expected and not a test failure.
+		// Outcome metadata is terminal state and must NOT appear in
+		// this pre-first-byte cancellation window — a `!IsMetadata()`
+		// predicate would skip both phases and hide a regression where
+		// outcome leaked through.
+		var nonPlannedEventsBeforeCancel int
 		var streamErr error
 
 		for {
@@ -2148,11 +2184,36 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 					goto done
 				}
 				receivedEvents++
+				// Only fail-flag events that arrived BEFORE cancel
+				// fired. After cancel, the server / pool can
+				// legitimately drain teardown frames; those are not
+				// what this test is pinning.
+				select {
+				case <-cancelFired:
+					// Post-cancel; ignore for counter purposes.
+				default:
+					if !event.IsPlannedMetadata() {
+						nonPlannedEventsBeforeCancel++
+					}
+				}
 				t.Logf("Received NDJSON event: type=%s", event.Event)
 			case err := <-errs:
 				if err != nil {
 					streamErr = err
 					t.Logf("Received NDJSON error: %v", err)
+					// A transport error before reqCancel() fires is
+					// exactly the kind of pre-first-byte signal this
+					// test is supposed to catch — silently logging it
+					// would hide a regression where the upstream
+					// connection broke before any byte landed. Post-
+					// cancel errors are expected teardown noise and
+					// stay logged-only via the cancelFired gate,
+					// mirroring the events branch.
+					select {
+					case <-cancelFired:
+					default:
+						nonPlannedEventsBeforeCancel++
+					}
 				}
 			case <-parentCtx.Done():
 				t.Fatal("Parent context cancelled unexpectedly")
@@ -2162,11 +2223,11 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 
 		elapsed := time.Since(startTime)
 		t.Logf("NDJSON request completed in %v", elapsed)
-		t.Logf("NDJSON events received: %d", receivedEvents)
+		t.Logf("NDJSON events received: %d (non-planned: %d)", receivedEvents, nonPlannedEventsBeforeCancel)
 		t.Logf("NDJSON stream error: %v", streamErr)
 
-		if receivedEvents != 0 {
-			t.Errorf("Expected zero NDJSON events before cancellation, got %d", receivedEvents)
+		if nonPlannedEventsBeforeCancel != 0 {
+			t.Errorf("Expected zero non-planned NDJSON events before cancellation, got %d (received %d total events; only PLANNED metadata is allowed since it emits upfront before any upstream work — outcome metadata, data, reset, error must not appear in a pre-first-byte cancellation window)", nonPlannedEventsBeforeCancel, receivedEvents)
 		}
 
 		// Should complete quickly (cancelled at ~500ms, not waiting 10s)

@@ -352,7 +352,7 @@ func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
 		Clients: []*testutil.ClientProperty{
 			{
 				Name:     "FallbackPrimary",
-				Provider: "openai-generic",
+				Provider: testutil.StringPtr("openai-generic"),
 				Options: map[string]any{
 					"model":    "fallback-primary",
 					"base_url": baseURL,
@@ -361,7 +361,7 @@ func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
 			},
 			{
 				Name:     "FallbackSecondary",
-				Provider: "openai",
+				Provider: testutil.StringPtr("openai"),
 				Options: map[string]any{
 					"model":    "fallback-secondary",
 					"base_url": baseURL,

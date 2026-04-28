@@ -17,6 +17,12 @@ message CallRequest {
   string method_name = 1;
   bytes input_json = 2;        // JSON-encoded input struct (includes __baml_options__ if present)
   StreamMode stream_mode = 3;  // Controls partial forwarding and raw collection
+  // Stable per-request identifier. Used by the worker as the operation_id
+  // when calling the host's SharedState.FetchAdd, so retries of the same
+  // request observe the same counter value and don't advance the rotation
+  // a second time. Empty means the worker should not attempt idempotency
+  // caching (legacy callers / tests without a generated request id).
+  string request_id = 4;
 }
 
 // Streaming result
@@ -82,6 +88,30 @@ message GetGoroutinesResponse {
   repeated string matched_stacks = 3; // Stack traces of matching goroutines
 }
 
+// Request sent by the host (serve process) to tell a worker where to dial
+// back for shared-state RPCs. The broker_id identifies an already-listening
+// listener on the host side (go-plugin GRPCBroker).
+message AttachSharedStateRequest {
+  uint32 broker_id = 1;
+}
+
+// Request to atomically add delta to a named counter and return the pre-
+// increment value. The counter space is flat; keys are chosen by the caller
+// (the worker) and the host stores whatever bytes it receives.
+//
+// If operation_id is non-empty, the host caches (key, operation_id) ->
+// previous and returns the cached value on retries without advancing the
+// counter. Empty operation_id disables caching: every call advances.
+message FetchAddRequest {
+  string key = 1;
+  uint64 delta = 2;
+  string operation_id = 3;
+}
+
+message FetchAddResponse {
+  uint64 previous = 1;
+}
+
 // Worker service
 service Worker {
   // Streaming call - returns stream of results
@@ -102,4 +132,19 @@ service Worker {
 
   // Get goroutine pprof data from worker process
   rpc GetGoroutines(GetGoroutinesRequest) returns (GetGoroutinesResponse);
+
+  // Hand the worker the broker id of a host-side SharedState server.
+  // The worker dials back via the plugin GRPCBroker and uses the returned
+  // connection for FetchAdd calls for the remainder of its lifetime.
+  rpc AttachSharedState(AttachSharedStateRequest) returns (Empty);
+}
+
+// Host-side shared state service. Runs in the serve process on a broker
+// socket; workers dial it after AttachSharedState. Intentionally dumb:
+// a flat keyspace of atomic counters. The host stores no round-robin
+// knowledge — worker code picks keys and applies its own modulus.
+service SharedState {
+  // Atomically add delta to the counter named by key and return the
+  // pre-increment value. See FetchAddRequest for idempotency semantics.
+  rpc FetchAdd(FetchAddRequest) returns (FetchAddResponse);
 }

@@ -151,11 +151,28 @@ type ClientRegistry struct {
 }
 
 // ClientProperty defines a client configuration.
+//
+// Provider is a *string so test cases can faithfully express the
+// three presence states the server distinguishes: nil (key omitted),
+// pointer-to-empty (key present, value ""), pointer-to-non-empty
+// (key present with a real value). A plain-string Provider could not
+// represent the omitted state — encoding/json would emit
+// `"provider":""` even when the test struct left it zero-valued —
+// turning every presence-only RR override into a present-empty entry
+// on the server and defeating the strategy-parent drop.
 type ClientProperty struct {
 	Name        string         `json:"name"`
-	Provider    string         `json:"provider"`
+	Provider    *string        `json:"provider,omitempty"`
 	RetryPolicy *string        `json:"retry_policy,omitempty"`
 	Options     map[string]any `json:"options,omitempty"`
+}
+
+// StringPtr returns a pointer to s. Test convenience for the
+// pointer-typed fields on ClientProperty / ClientRegistry; lets test
+// fixtures express `Provider: testutil.StringPtr("openai")` without
+// each caller declaring its own helper or local variable.
+func StringPtr(s string) *string {
+	return &s
 }
 
 // TypeBuilder allows injecting dynamic types.
@@ -326,9 +343,28 @@ func (e *StreamEvent) IsError() bool {
 	return e.Event == "error"
 }
 
-// IsMetadata returns true if this is a routing-metadata event.
+// IsMetadata returns true if this is a routing-metadata event of any
+// phase (planned or outcome).
 func (e *StreamEvent) IsMetadata() bool {
 	return e.Event == "metadata"
+}
+
+// IsPlannedMetadata returns true only when this is a metadata event
+// whose Phase is "planned". Pre-first-byte cancellation tests need to
+// skip the upfront planned emission while still flagging stray outcome
+// metadata that should not arrive before any upstream byte. A
+// nil/parse-failed payload is treated as not-planned so a malformed
+// metadata event surfaces as a failure rather than being silently
+// ignored.
+func (e *StreamEvent) IsPlannedMetadata() bool {
+	if !e.IsMetadata() {
+		return false
+	}
+	md, err := e.ParseMetadata()
+	if err != nil || md == nil {
+		return false
+	}
+	return md.Phase == "planned"
 }
 
 // StreamMetadata is the subset of bamlutils.Metadata fields the integration
@@ -336,19 +372,30 @@ func (e *StreamEvent) IsMetadata() bool {
 // server-side bamlutils package, and a full mirror would drift as unused
 // fields get added. Extend this only when a test needs a new field.
 type StreamMetadata struct {
-	Phase           string   `json:"phase"`
-	Path            string   `json:"path,omitempty"`
-	BuildRequestAPI string   `json:"build_request_api,omitempty"`
-	Client          string   `json:"client,omitempty"`
-	Strategy        string   `json:"strategy,omitempty"`
-	Chain           []string `json:"chain,omitempty"`
-	RetryMax        *int     `json:"retry_max,omitempty"`
-	RetryCount      *int     `json:"retry_count,omitempty"`
-	WinnerClient    string   `json:"winner_client,omitempty"`
-	WinnerProvider  string   `json:"winner_provider,omitempty"`
-	WinnerPath      string   `json:"winner_path,omitempty"`
-	UpstreamDurMs   *int64   `json:"upstream_duration_ms,omitempty"`
-	BamlCallCount   *int     `json:"baml_call_count,omitempty"`
+	Phase           string                `json:"phase"`
+	Path            string                `json:"path,omitempty"`
+	BuildRequestAPI string                `json:"build_request_api,omitempty"`
+	Client          string                `json:"client,omitempty"`
+	Strategy        string                `json:"strategy,omitempty"`
+	Chain           []string              `json:"chain,omitempty"`
+	RetryMax        *int                  `json:"retry_max,omitempty"`
+	RetryCount      *int                  `json:"retry_count,omitempty"`
+	WinnerClient    string                `json:"winner_client,omitempty"`
+	WinnerProvider  string                `json:"winner_provider,omitempty"`
+	WinnerPath      string                `json:"winner_path,omitempty"`
+	UpstreamDurMs   *int64                `json:"upstream_duration_ms,omitempty"`
+	BamlCallCount   *int                  `json:"baml_call_count,omitempty"`
+	RoundRobin      *StreamRoundRobinInfo `json:"round_robin,omitempty"`
+}
+
+// StreamRoundRobinInfo mirrors bamlutils.RoundRobinInfo for integration-test
+// assertions. Fields match the JSON shape emitted by the server; kept as a
+// separate type (not a package import) per the testutil non-import rule.
+type StreamRoundRobinInfo struct {
+	Name     string   `json:"name"`
+	Children []string `json:"children"`
+	Index    int      `json:"index"`
+	Selected string   `json:"selected"`
 }
 
 // ParseMetadata decodes a metadata event's data payload.
@@ -905,16 +952,19 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 // byte-for-byte — http.Header.Get canonicalizes on lookup, but keeping
 // the literal spelling identical makes grep-for-header-usage match.
 const (
-	HeaderBAMLPath             = "X-BAML-Path"
-	HeaderBAMLPathReason       = "X-BAML-Path-Reason"
-	HeaderBAMLBuildRequestAPI  = "X-BAML-Build-Request-API"
-	HeaderBAMLClient           = "X-BAML-Client"
-	HeaderBAMLWinnerClient     = "X-BAML-Winner-Client"
-	HeaderBAMLWinnerProvider   = "X-BAML-Winner-Provider"
-	HeaderBAMLRetryMax         = "X-BAML-Retry-Max"
-	HeaderBAMLRetryCount       = "X-BAML-Retry-Count"
-	HeaderBAMLUpstreamDuration = "X-BAML-Upstream-Duration-Ms"
-	HeaderBAMLBamlCallCount    = "X-BAML-Baml-Call-Count"
+	HeaderBAMLPath               = "X-BAML-Path"
+	HeaderBAMLPathReason         = "X-BAML-Path-Reason"
+	HeaderBAMLBuildRequestAPI    = "X-BAML-Build-Request-API"
+	HeaderBAMLClient             = "X-BAML-Client"
+	HeaderBAMLWinnerClient       = "X-BAML-Winner-Client"
+	HeaderBAMLWinnerProvider     = "X-BAML-Winner-Provider"
+	HeaderBAMLRetryMax           = "X-BAML-Retry-Max"
+	HeaderBAMLRetryCount         = "X-BAML-Retry-Count"
+	HeaderBAMLUpstreamDuration   = "X-BAML-Upstream-Duration-Ms"
+	HeaderBAMLBamlCallCount      = "X-BAML-Baml-Call-Count"
+	HeaderBAMLRoundRobinName     = "X-BAML-RoundRobin-Name"
+	HeaderBAMLRoundRobinSelected = "X-BAML-RoundRobin-Selected"
+	HeaderBAMLRoundRobinIndex    = "X-BAML-RoundRobin-Index"
 )
 
 // AssertHeaderEquals fails the test if the given header is missing or does
@@ -957,7 +1007,7 @@ func CreateTestClient(mockLLMURL string, scenarioID string) *ClientRegistry {
 		Clients: []*ClientProperty{
 			{
 				Name:     "TestClient",
-				Provider: "openai",
+				Provider: StringPtr("openai"),
 				Options: map[string]any{
 					"model":    scenarioID,
 					"base_url": mockLLMURL,
@@ -979,7 +1029,7 @@ func CreateAnthropicTestClient(mockLLMURL string, scenarioID string) *ClientRegi
 		Clients: []*ClientProperty{
 			{
 				Name:     "TestClient",
-				Provider: "anthropic",
+				Provider: StringPtr("anthropic"),
 				Options: map[string]any{
 					"model":      scenarioID,
 					"base_url":   mockLLMURL,

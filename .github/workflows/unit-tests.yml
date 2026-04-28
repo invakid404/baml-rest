@@ -32,8 +32,21 @@ jobs:
 
       - name: Run Unit Tests (all modules)
         run: |
-          # Adapter modules are version-pinned and tested by the integration test workflow
+          # Adapter modules run their own tests inside cmd/build/build.sh
+          # during the integration test workflow, against the BAML version
+          # they're pinned to.
           find . -name go.mod -not -path '*/adapters/adapter_*' -exec dirname {} \; | while read dir; do
             echo "=== Testing $dir ==="
             (cd "$dir" && go test -race -count=100 ./...)
           done
+
+      - name: Run cmd/serve unaryserver-tagged tests
+        run: |
+          # cmd/serve has chi-handler tests gated behind //go:build unaryserver
+          # (cmd/serve/unary_test.go); cmd/serve/unary.go is also tagged so
+          # cmd/serve/unary_stub.go can supply the default-build stub. The
+          # default `go test ./...` above silently skips the tagged suite,
+          # leaving the unary handler request path uncovered in CI
+          # (CodeRabbit verdict-30 finding F9). Run them as a dedicated step
+          # at the same race + repeat budget as the default suite.
+          go test -race -count=100 -tags=unaryserver ./cmd/serve/...

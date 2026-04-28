@@ -1,9 +1,325 @@
 package bamlutils
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+// TestClientProperty_ProviderPresenceFromJSON pins the JSON-decoded
+// provider-presence semantics. The struct-tag-driven decoder
+// collapses absent and
+// present-empty into the same zero value; the custom UnmarshalJSON
+// distinguishes them via ProviderSet so resolvers can route an
+// explicit "provider":"" override to legacy where BAML emits its
+// native invalid-provider error, rather than silently using the
+// introspected fallback.
+func TestClientProperty_ProviderPresenceFromJSON(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		wantPresent bool
+		wantValue   string
+	}{
+		{
+			name:        "provider key absent",
+			raw:         `{"name":"MyClient"}`,
+			wantPresent: false,
+			wantValue:   "",
+		},
+		{
+			name:        "provider key present non-empty",
+			raw:         `{"name":"MyClient","provider":"openai"}`,
+			wantPresent: true,
+			wantValue:   "openai",
+		},
+		{
+			name:        "provider key present empty",
+			raw:         `{"name":"MyClient","provider":""}`,
+			wantPresent: true,
+			wantValue:   "",
+		},
+		{
+			name:        "provider key present alongside options",
+			raw:         `{"name":"MyClient","provider":"","options":{"strategy":["A"]}}`,
+			wantPresent: true,
+			wantValue:   "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var c ClientProperty
+			if err := json.Unmarshal([]byte(tc.raw), &c); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if c.Provider != tc.wantValue {
+				t.Errorf("Provider: got %q, want %q", c.Provider, tc.wantValue)
+			}
+			if got := c.IsProviderPresent(); got != tc.wantPresent {
+				t.Errorf("IsProviderPresent(): got %v, want %v", got, tc.wantPresent)
+			}
+		})
+	}
+}
+
+// TestClientProperty_ProviderPresenceFromStructLiteral guarantees that
+// existing struct-literal test fixtures keep working without explicit
+// ProviderSet wiring: a non-empty Provider value implies presence.
+// Setting Provider:"" without ProviderSet means absent (the test-
+// fixture default). To simulate present-empty in a struct literal,
+// callers explicitly set ProviderSet:true.
+func TestClientProperty_ProviderPresenceFromStructLiteral(t *testing.T) {
+	cases := []struct {
+		name        string
+		client      ClientProperty
+		wantPresent bool
+	}{
+		{
+			name:        "non-empty Provider implies presence",
+			client:      ClientProperty{Name: "MyClient", Provider: "openai"},
+			wantPresent: true,
+		},
+		{
+			name:        "empty Provider without ProviderSet is absent",
+			client:      ClientProperty{Name: "MyClient"},
+			wantPresent: false,
+		},
+		{
+			name:        "explicit ProviderSet:true with empty Provider is present",
+			client:      ClientProperty{Name: "MyClient", ProviderSet: true},
+			wantPresent: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.client.IsProviderPresent(); got != tc.wantPresent {
+				t.Errorf("IsProviderPresent(): got %v, want %v", got, tc.wantPresent)
+			}
+		})
+	}
+}
+
+// TestClientProperty_NilSafe ensures the helper is nil-safe — resolver
+// paths sometimes hold a *ClientProperty that may not yet have been
+// resolved; treat nil as "no presence".
+func TestClientProperty_NilSafe(t *testing.T) {
+	var c *ClientProperty
+	if c.IsProviderPresent() {
+		t.Errorf("nil receiver: IsProviderPresent() = true, want false")
+	}
+}
+
+// TestTranslateUpstreamProvider pins the upstream-registry seam
+// translation. baml-rest's canonical "baml-roundrobin" spelling is
+// rejected by BAML
+// upstream's ClientProvider::from_str (clientspec.rs:119-144); the
+// translation helper rewrites it to "baml-round-robin" only at the
+// upstream registry seam. All other strings — including the operator-
+// supplied alternates — pass through unchanged so we never silently
+// mutate operator input.
+func TestTranslateUpstreamProvider(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// The single translation case: our canonical spelling becomes
+		// the BAML-upstream-accepted form before AddLlmClient.
+		{"baml-roundrobin", "baml-round-robin"},
+		// Both other RR spellings are upstream-accepted verbatim, so
+		// we preserve operator input.
+		{"baml-round-robin", "baml-round-robin"},
+		{"round-robin", "round-robin"},
+		// Both fallback spellings are upstream-accepted verbatim.
+		{"baml-fallback", "baml-fallback"},
+		{"fallback", "fallback"},
+		// Concrete providers pass through.
+		{"openai", "openai"},
+		{"anthropic", "anthropic"},
+		// Empty stays empty so present-empty entries can still surface
+		// BAML's canonical "Invalid client provider:" error at CFFI.
+		{"", ""},
+		// Unknown strings pass through unchanged; BAML's parser rejects
+		// them — that's the intended observable behaviour.
+		{"not-a-real-provider", "not-a-real-provider"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := TranslateUpstreamProvider(tc.in); got != tc.want {
+				t.Errorf("TranslateUpstreamProvider(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsResolvedStrategyParent pins the strategy-parent
+// classification: baml-rest-resolved RR / fallback strategy parent
+// entries must be classifiable from either the operator-supplied
+// provider or the introspected fallback, across all four RR
+// spellings and both fallback spellings. Non-strategy entries must
+// never classify here, regardless of presence state.
+func TestIsResolvedStrategyParent(t *testing.T) {
+	introspected := map[string]string{
+		"StaticRR":       "baml-roundrobin",
+		"StaticRRDash":   "baml-round-robin",
+		"StaticRRBare":   "round-robin",
+		"StaticFb":       "baml-fallback",
+		"StaticFbBare":   "fallback",
+		"StaticOpenAI":   "openai",
+	}
+	cases := []struct {
+		name   string
+		client *ClientProperty
+		want   bool
+	}{
+		// Presence-only — classified via introspected map.
+		{"presence-only RR (canonical introspected)", &ClientProperty{Name: "StaticRR"}, true},
+		{"presence-only RR (hyphenated introspected)", &ClientProperty{Name: "StaticRRDash"}, true},
+		{"presence-only RR (bare introspected)", &ClientProperty{Name: "StaticRRBare"}, true},
+		{"presence-only fallback (canonical)", &ClientProperty{Name: "StaticFb"}, true},
+		{"presence-only fallback (bare)", &ClientProperty{Name: "StaticFbBare"}, true},
+		{"presence-only openai (not strategy)", &ClientProperty{Name: "StaticOpenAI"}, false},
+		// Explicit provider — classified directly, ignoring introspected.
+		{"explicit baml-roundrobin", &ClientProperty{Name: "AnyName", Provider: "baml-roundrobin"}, true},
+		{"explicit baml-round-robin", &ClientProperty{Name: "AnyName", Provider: "baml-round-robin"}, true},
+		{"explicit round-robin", &ClientProperty{Name: "AnyName", Provider: "round-robin"}, true},
+		{"explicit baml-fallback", &ClientProperty{Name: "AnyName", Provider: "baml-fallback"}, true},
+		{"explicit fallback", &ClientProperty{Name: "AnyName", Provider: "fallback"}, true},
+		{"explicit openai", &ClientProperty{Name: "AnyName", Provider: "openai"}, false},
+		// Present-empty (operator typo'd) — classified as not-strategy
+		// because the empty string isn't an RR/fallback spelling and
+		// presence overrides the introspected lookup.
+		{"present-empty on RR-introspected name (operator override wins)", &ClientProperty{Name: "StaticRR", ProviderSet: true}, false},
+		// Unknown name with omitted provider — no introspected entry
+		// → empty string → not strategy.
+		{"unknown name with omitted provider", &ClientProperty{Name: "Unknown"}, false},
+		// Nil safety.
+		{"nil client", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsResolvedStrategyParent(tc.client, introspected); got != tc.want {
+				t.Errorf("IsResolvedStrategyParent: got %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nil introspected map with omitted provider", func(t *testing.T) {
+		if IsResolvedStrategyParent(&ClientProperty{Name: "StaticRR"}, nil) {
+			t.Errorf("nil introspected map: presence-only entry should classify as not-strategy")
+		}
+	})
+}
+
+// TestUpstreamClientRegistryProvider pins the four shapes the helper
+// must honour at the BAML CFFI seam: materialise omitted-provider
+// entries from the introspected
+// map so strategy-only / presence-only RR overrides actually reach
+// upstream as valid registry entries; preserve explicit present-empty
+// entries so BAML emits its canonical invalid-provider error;
+// translate the canonical "baml-roundrobin" spelling at the seam so
+// CFFI's parser accepts it; leave unknown-name omitted-provider
+// entries as "" so the request fails with BAML's own error rather than
+// us synthesising one.
+func TestUpstreamClientRegistryProvider(t *testing.T) {
+	introspected := map[string]string{
+		"StaticOpenAI": "openai",
+		"StaticRR":     "baml-roundrobin",
+		"StaticFb":     "baml-fallback",
+	}
+	cases := []struct {
+		name   string
+		client *ClientProperty
+		want   string
+	}{
+		{
+			name:   "nil client returns empty",
+			client: nil,
+			want:   "",
+		},
+		{
+			name:   "explicit provider passes through",
+			client: &ClientProperty{Name: "Anywhere", Provider: "anthropic"},
+			want:   "anthropic",
+		},
+		{
+			name:   "explicit baml-roundrobin gets translated",
+			client: &ClientProperty{Name: "Anywhere", Provider: "baml-roundrobin"},
+			want:   "baml-round-robin",
+		},
+		{
+			name:   "explicit baml-round-robin passes through",
+			client: &ClientProperty{Name: "Anywhere", Provider: "baml-round-robin"},
+			want:   "baml-round-robin",
+		},
+		{
+			name:   "explicit round-robin passes through",
+			client: &ClientProperty{Name: "Anywhere", Provider: "round-robin"},
+			want:   "round-robin",
+		},
+		{
+			name:   "present-empty stays empty (CFFI emits canonical error)",
+			client: &ClientProperty{Name: "StaticOpenAI", ProviderSet: true},
+			want:   "",
+		},
+		{
+			name:   "omitted provider materialised from introspected map",
+			client: &ClientProperty{Name: "StaticOpenAI"},
+			want:   "openai",
+		},
+		{
+			name: "omitted provider on RR client materialises and translates",
+			client: &ClientProperty{
+				Name:    "StaticRR",
+				Options: map[string]any{"strategy": []any{"A", "B"}},
+			},
+			want: "baml-round-robin",
+		},
+		{
+			name:   "omitted provider on fallback client materialises (no translation)",
+			client: &ClientProperty{Name: "StaticFb"},
+			want:   "baml-fallback",
+		},
+		{
+			name:   "unknown name with omitted provider stays empty",
+			client: &ClientProperty{Name: "UnknownClient"},
+			want:   "",
+		},
+		{
+			name:   "nil introspected map keeps omitted provider empty",
+			client: &ClientProperty{Name: "StaticOpenAI"},
+			want:   "openai", // introspected is non-nil in this test; nil case below
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := UpstreamClientRegistryProvider(tc.client, introspected)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// Nil-introspected case verified separately — the helper must not
+	// dereference the map when it's nil.
+	t.Run("nil introspected map with omitted provider returns empty", func(t *testing.T) {
+		got := UpstreamClientRegistryProvider(&ClientProperty{Name: "StaticOpenAI"}, nil)
+		if got != "" {
+			t.Errorf("got %q, want empty when introspected map is nil", got)
+		}
+	})
+
+	// Non-mutation invariant: calling the helper does not change the
+	// input ClientProperty. The resolver and metadata classifier read
+	// the original after the adapter sanitises the BAML-bound copy, so
+	// any mutation here would silently change downstream behaviour.
+	t.Run("does not mutate input client", func(t *testing.T) {
+		client := &ClientProperty{Name: "StaticOpenAI"}
+		_ = UpstreamClientRegistryProvider(client, introspected)
+		if client.Provider != "" || client.ProviderSet {
+			t.Errorf("input mutated: Provider=%q, ProviderSet=%v", client.Provider, client.ProviderSet)
+		}
+	})
+}
 
 func TestDynamicTypes_Validate(t *testing.T) {
 	tests := []struct {

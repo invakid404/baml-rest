@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/go-plugin"
 	"github.com/invakid404/baml-rest/bamlutils"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 	"google.golang.org/grpc"
@@ -83,6 +84,10 @@ func (c *testWorkerClient) Parse(context.Context, *pb.ParseRequest, ...grpc.Call
 
 func (c *testWorkerClient) GetGoroutines(context.Context, *pb.GetGoroutinesRequest, ...grpc.CallOption) (*pb.GetGoroutinesResponse, error) {
 	panic("unexpected GetGoroutines call")
+}
+
+func (c *testWorkerClient) AttachSharedState(context.Context, *pb.AttachSharedStateRequest, ...grpc.CallOption) (*pb.Empty, error) {
+	panic("unexpected AttachSharedState call")
 }
 
 type testStreamEvent struct {
@@ -399,5 +404,46 @@ func TestGRPCServerCallStreamDoesNotOverrideTerminalCancellation(t *testing.T) {
 	}
 	if stream.sent[0].Kind != pb.StreamResult_FINAL {
 		t.Fatalf("sent result kind = %v, want FINAL", stream.sent[0].Kind)
+	}
+}
+
+// TestAttachSharedState_NilHandlerFailsFast pins fail-fast on a nil
+// onAttach. Returning success when onAttach is nil would let the
+// host believe shared state was attached when in fact the worker
+// stored no SharedStateClient. Failing the RPC immediately surfaces
+// the misconfiguration before pool-wide round-robin silently
+// collapses to per-worker coordinators.
+//
+// We construct a GRPCServer with a non-nil broker pointer (to bypass
+// the broker-nil guard) and nil onAttach. The broker is never dialed
+// — the onAttach guard fires first.
+func TestAttachSharedState_NilHandlerFailsFast(t *testing.T) {
+	server := &GRPCServer{
+		Impl:     &testWorkerImpl{},
+		broker:   &plugin.GRPCBroker{},
+		onAttach: nil,
+	}
+	_, err := server.AttachSharedState(context.Background(), &pb.AttachSharedStateRequest{BrokerId: 1})
+	if err == nil {
+		t.Fatal("expected error from AttachSharedState with nil handler; got nil (misconfiguration would silently leave shared state unattached)")
+	}
+	if !strings.Contains(err.Error(), "shared-state attach handler not installed") {
+		t.Errorf("error %q does not mention the missing-handler condition", err)
+	}
+}
+
+// TestAttachSharedState_NilBrokerFailsFast guards that the nil-
+// broker check is still load-bearing alongside the nil-handler one.
+func TestAttachSharedState_NilBrokerFailsFast(t *testing.T) {
+	server := &GRPCServer{
+		Impl:   &testWorkerImpl{},
+		broker: nil,
+	}
+	_, err := server.AttachSharedState(context.Background(), &pb.AttachSharedStateRequest{BrokerId: 1})
+	if err == nil {
+		t.Fatal("expected error from AttachSharedState with nil broker; got nil")
+	}
+	if !strings.Contains(err.Error(), "broker not available") {
+		t.Errorf("error %q does not mention the missing-broker condition", err)
 	}
 }

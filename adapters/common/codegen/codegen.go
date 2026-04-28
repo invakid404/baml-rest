@@ -625,9 +625,113 @@ func emitBAMLHTTPRequestConversion(g *jen.Group) {
 	}), jen.Nil())
 }
 
-// Generate generates the adapter.go file for the given adapter package.
-// selfPkg should be the full package path, e.g. "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0"
+// Options configures code generation per adapter. Each adapter's
+// cmd/main.go populates this with its BAML-version-specific feature
+// flags before invoking GenerateWithOptions.
+type Options struct {
+	// SelfPkg is the adapter module's import path, e.g.
+	// "github.com/invakid404/baml-rest/adapters/adapter_v0_219_0".
+	SelfPkg string
+	// SupportsWithClient reports whether the bundled BAML runtime
+	// exposes the `WithClient(clientName)` CallOption. Added in BAML
+	// 0.219.0; older runtimes (v0.204, v0.215) lack the symbol and
+	// emitting a reference to it produces an "undefined: WithClient"
+	// compile error. When false, the generated router skips the
+	// per-call client override and the legacy path relies on BAML's
+	// own strategy rotation for baml-roundrobin chains.
+	SupportsWithClient bool
+}
+
+// Generate generates the adapter.go file for the given adapter
+// package. selfPkg should be the full package path, e.g.
+// "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0".
+// Feature flags are derived from the introspected output (currently
+// SupportsWithClient, which the introspect step detects by AST-
+// walking baml_client/*.go).
+//
+// Deprecated: prefer GenerateWithOptions for explicit per-adapter
+// feature flags. This wrapper is kept for backward compatibility.
 func Generate(selfPkg string) {
+	GenerateWithOptions(Options{
+		SelfPkg:            selfPkg,
+		SupportsWithClient: introspected.SupportsWithClient,
+	})
+}
+
+// GenerateWithOptions runs code generation with per-adapter feature
+// flags. See Options for the available knobs.
+func GenerateWithOptions(opts Options) {
+	generate(opts)
+}
+
+func generate(opts Options) {
+	selfPkg := opts.SelfPkg
+	supportsWithClient := opts.SupportsWithClient
+
+	// Fail-fast invariant: BuildRequest emission requires the target
+	// BAML runtime to expose WithClient — without it the generated
+	// router cannot honor the
+	// per-attempt clientOverride that fallback / round-robin / dynamic-
+	// primary semantics depend on. The introspected Request /
+	// StreamRequest singletons are the BR API presence signal; if
+	// they exist while SupportsWithClient is false, codegen would emit
+	// BuildRequest paths that compile but silently dispatch to the
+	// wrong client (planned metadata reports the resolved leaf, BAML
+	// builds the HTTP request for the static default).
+	//
+	// In the shipped matrix this is unreachable: v0.204/v0.215 expose
+	// neither Request/StreamRequest nor WithClient, and v0.219 sets
+	// SupportsWithClient=true. The guard catches custom BAML Go
+	// libraries, future partial API shapes, and direct
+	// GenerateWithOptions misuse — all paths where the configuration
+	// can drift out of sync without anyone noticing until production.
+	if !supportsWithClient && (introspected.Request != nil || introspected.StreamRequest != nil) {
+		// Include the per-singleton presence flags so the panic
+		// uniquely identifies which API surface is missing — a
+		// substring match on "Request" alone can't distinguish a
+		// Request-only-set case from a StreamRequest-only-set one.
+		panic(fmt.Sprintf("codegen: SupportsWithClient=false is incompatible with introspected Request/StreamRequest (Request=%v, StreamRequest=%v); BuildRequest emission requires WithClient to honor per-attempt client overrides",
+			introspected.Request != nil, introspected.StreamRequest != nil))
+	}
+
+	// withClientOverrideBlock wraps a `clientOverride != ""` guard around
+	// WithClient(clientOverride) appends. When the target BAML runtime
+	// lacks the WithClient CallOption (< 0.219.0), the whole block is
+	// elided — emitting jen.Empty() instead of a reference that would
+	// produce "undefined: WithClient" at adapter compile time. In that
+	// mode the legacy dispatcher's per-attempt client override becomes
+	// a no-op; baml-roundrobin strategy clients fall back to BAML's
+	// internal rotation, which is the pre-47e3203 behaviour.
+	withClientOverrideBlock := func(body ...jen.Code) jen.Code {
+		if !supportsWithClient {
+			return jen.Empty()
+		}
+		return jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(body...)
+	}
+
+	// withClientCloneAndAppend emits the clone-and-append-WithClient
+	// idiom that runs at every dispatch site where a per-attempt
+	// client override may have been resolved (BuildRequest leaf
+	// dispatch, mixed-mode bridge legacy children, top-level legacy
+	// fallthrough). The clone is load-bearing: the base options slice
+	// is shared with sibling requests via a backing array that may or
+	// may not have been reallocated by the upstream Append, and
+	// appending WithClient without cloning would mutate that shared
+	// state. Six call sites previously inlined this pattern with
+	// subtly different destination/source spellings; collapsing into
+	// one helper makes
+	// the invariant explicit and removes an opportunity for the
+	// clone to drift between sites. dst is the variable being
+	// reassigned, src is the slice to clone (often, but not always,
+	// the same name).
+	withClientCloneAndAppend := func(dst, src string) jen.Code {
+		return withClientOverrideBlock(
+			jen.Id(dst).Op("=").Append(
+				jen.Qual("slices", "Clone").Call(jen.Id(src)),
+				jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
+			),
+		)
+	}
 	selfAdapterPkg := selfPkg + "/adapter"
 	selfUtilsPkg := selfPkg + "/utils"
 
@@ -948,9 +1052,20 @@ func Generate(selfPkg string) {
 
 		// Helper: common preamble for both implementations
 		// Inner methods return only error, so early returns just return the error
-		makePreamble := func() []jen.Code {
+		//
+		// optionsHelperName selects which generated registry-options
+		// helper feeds the dispatch site. The default
+		// makeOptionsFromAdapter pulls the BuildRequest-safe registry
+		// view (drops every baml-rest-resolved strategy parent), used
+		// by BuildRequest dispatch and by mixed-mode bridge legacy-
+		// child callbacks (both target leaves, not parents).
+		// makeLegacyOptionsFromAdapter pulls the legacy view (preserves
+		// explicit parent overrides) and is used by the top-level
+		// final-legacy fallthrough so BAML can honour runtime
+		// strategy-parent overrides or emit canonical errors.
+		makePreambleWith := func(optionsHelperName string) []jen.Code {
 			preamble := []jen.Code{
-				jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id("makeOptionsFromAdapter").Call(jen.Id("adapter")),
+				jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id(optionsHelperName).Call(jen.Id("adapter")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Id("err")),
 				),
@@ -1139,6 +1254,18 @@ func Generate(selfPkg string) {
 			return preamble
 		}
 
+		// Convenience wrappers that pin the registry view at each
+		// dispatch site. BuildRequest landing sites (the buildRequest
+		// / buildCallRequest paths) get makePreamble; the top-level
+		// legacy fallthrough impls (_noRaw / _full) get
+		// makeLegacyPreamble.
+		makePreamble := func() []jen.Code {
+			return makePreambleWith("makeOptionsFromAdapter")
+		}
+		makeLegacyPreamble := func() []jen.Code {
+			return makePreambleWith("makeLegacyOptionsFromAdapter")
+		}
+
 		// Build a set of struct media param names for quick lookup
 		structMediaParamSet := make(map[string]bool, len(structMediaParams))
 		for _, smp := range structMediaParams {
@@ -1169,14 +1296,27 @@ func Generate(selfPkg string) {
 			noRawStreamCallParams = append(noRawStreamCallParams, argCallParam(arg))
 		}
 		noRawStreamCallParams = append(noRawStreamCallParams,
-			jen.Append(
-				jen.Id("options"),
-				jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
-			).Op("..."),
+			jen.Id("streamOpts").Op("..."),
 		)
 
 		// noRaw goroutine body - wrapped in gorecovery.GoHandler for panic resilience
 		noRawGoroutineBody := []jen.Code{
+			// Build streamOpts: base options + WithOnTick heartbeat; append
+			// WithClient(clientOverride) when the router passed a resolved leaf
+			// client (e.g. baml-roundrobin selected a specific child).
+			//
+			// The WithClient append clones streamOpts first, matching the
+			// driveStream pattern. Without the clone, streamOpts shares its
+			// backing array with `options` (the first append may or may not
+			// have reallocated, depending on capacity), and appending
+			// WithClient could mutate the caller's slice — stomping the
+			// options list for any sibling request that held the same
+			// backing array.
+			jen.Id("streamOpts").Op(":=").Append(
+				jen.Id("options"),
+				jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
+			),
+			withClientCloneAndAppend("streamOpts", "streamOpts"),
 			// Call Stream WITH OnTick for heartbeat tracking, but still use native streaming for data
 			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
 				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(noRawStreamCallParams...),
@@ -1272,7 +1412,11 @@ func Generate(selfPkg string) {
 			jen.Return(jen.Nil()),
 		}
 
-		noRawBody := makePreamble()
+		// _noRaw is the top-level legacy streaming impl invoked from
+		// the BuildRequest fallthrough branch (see __legacyClientOverride
+		// dispatch sites below). Use the legacy registry view so
+		// runtime strategy-parent overrides are visible to BAML.
+		noRawBody := makeLegacyPreamble()
 
 		// Delegate to shared orchestration helper - supplies per-method closures
 		noRawBody = append(noRawBody,
@@ -1315,6 +1459,7 @@ func Generate(selfPkg string) {
 				jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 				jen.Id("skipPartials").Bool(),
 				jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+				jen.Id("clientOverride").String(),
 			).
 			Error().
 			Block(noRawBody...)
@@ -1519,16 +1664,19 @@ func Generate(selfPkg string) {
 
 		// Build call parameters for the driveStream closure.
 		// The closure receives a pre-built opts slice (already contains WithOnTick)
-		// from the orchestration helper, so we use opts... directly.
+		// from the orchestration helper. We append WithClient(clientOverride) when
+		// the router resolved a specific leaf client (e.g. baml-roundrobin).
 		var driveStreamCallParams []jen.Code
 		driveStreamCallParams = append(driveStreamCallParams, jen.Id("adapter"))
 		for _, arg := range args {
 			driveStreamCallParams = append(driveStreamCallParams, argCallParam(arg))
 		}
-		driveStreamCallParams = append(driveStreamCallParams, jen.Id("opts").Op("..."))
+		driveStreamCallParams = append(driveStreamCallParams, jen.Id("driveOpts").Op("..."))
 
 		// Build the driveStream closure: creates the BAML stream, iterates, returns (finalResult, lastError).
 		driveStreamBody := []jen.Code{
+			jen.Id("driveOpts").Op(":=").Id("opts"),
+			withClientCloneAndAppend("driveOpts", "opts"),
 			jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
 				Qual(common.GeneratedClientPkg, "Stream").Dot(methodName).Call(driveStreamCallParams...),
 			jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
@@ -1577,8 +1725,11 @@ func Generate(selfPkg string) {
 			jen.Return(jen.Id("__r")),
 		}
 
+		// _full is the top-level legacy streaming impl with full raw
+		// collection, also invoked from the BuildRequest fallthrough.
+		// Same legacy-view rationale as _noRaw.
 		var fullBody []jen.Code
-		fullBody = append(fullBody, makePreamble()...)
+		fullBody = append(fullBody, makeLegacyPreamble()...)
 
 		// Delegate to shared full orchestration helper with per-method closures
 		fullBody = append(fullBody,
@@ -1632,6 +1783,7 @@ func Generate(selfPkg string) {
 				jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 				jen.Id("skipIntermediateParsing").Bool(),
 				jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+				jen.Id("clientOverride").String(),
 			).
 			Error().
 			Block(fullBody...)
@@ -1683,12 +1835,7 @@ func Generate(selfPkg string) {
 				).BlockFunc(func(g *jen.Group) {
 					// Build callOpts: clone options and append WithClient if override is set
 					g.Id("callOpts").Op(":=").Id("options")
-					g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
-						jen.Id("callOpts").Op("=").Append(
-							jen.Qual("slices", "Clone").Call(jen.Id("options")),
-							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-						),
-					)
+					g.Add(withClientCloneAndAppend("callOpts", "options"))
 					// Call StreamRequest.Method(ctx, args..., callOpts...)
 					g.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
 						Qual(common.GeneratedClientPkg, "StreamRequest").Dot(methodName).Call(buildRequestCallParams...)
@@ -1815,12 +1962,7 @@ func Generate(selfPkg string) {
 					jen.Id("sendHeartbeat").Func().Params(),
 				).Params(jen.Any(), jen.String(), jen.Error()).Block(
 					jen.Id("callOpts").Op(":=").Id("options"),
-					jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
-						jen.Id("callOpts").Op("=").Append(
-							jen.Qual("slices", "Clone").Call(jen.Id("options")),
-							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-						),
-					),
+					withClientCloneAndAppend("callOpts", "options"),
 					jen.Return(jen.Id("runLegacyChildStream").Call(
 						jen.Id("ctx"),
 						jen.Id("needsRaw"),
@@ -1864,6 +2006,7 @@ func Generate(selfPkg string) {
 					jen.Id("NeedsRaw"):             jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
 					jen.Id("IncludeThinkingInRaw"): jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
 					jen.Id("FallbackChain"):        jen.Id("fallbackChain"),
+					jen.Id("ClientOverride"):       jen.Id("clientOverride"),
 					jen.Id("ClientProviders"):      jen.Id("clientProviders"),
 					jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
 					jen.Id("LegacyStreamChild"):    jen.Id("legacyStreamChildFn"),
@@ -1931,6 +2074,7 @@ func Generate(selfPkg string) {
 					jen.Id("clientProviders").Map(jen.String()).String(),
 					jen.Id("legacyChildren").Map(jen.String()).Bool(),
 					jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+					jen.Id("clientOverride").String(),
 				).
 				Error().
 				Block(buildRequestBody...)
@@ -1981,12 +2125,7 @@ func Generate(selfPkg string) {
 				).BlockFunc(func(g *jen.Group) {
 					// Build callOpts: clone options and append WithClient if override is set
 					g.Id("callOpts").Op(":=").Id("options")
-					g.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
-						jen.Id("callOpts").Op("=").Append(
-							jen.Qual("slices", "Clone").Call(jen.Id("options")),
-							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-						),
-					)
+					g.Add(withClientCloneAndAppend("callOpts", "options"))
 					// Call Request.Method(ctx, args..., callOpts...) — non-streaming
 					g.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
 						Qual(common.GeneratedClientPkg, "Request").Dot(methodName).Call(callRequestCallParams...)
@@ -2068,12 +2207,7 @@ func Generate(selfPkg string) {
 					jen.Id("sendHeartbeat").Func().Params(),
 				).Params(jen.Any(), jen.String(), jen.Error()).Block(
 					jen.Id("callOpts").Op(":=").Id("options"),
-					jen.If(jen.Id("clientOverride").Op("!=").Lit("")).Block(
-						jen.Id("callOpts").Op("=").Append(
-							jen.Qual("slices", "Clone").Call(jen.Id("options")),
-							jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
-						),
-					),
+					withClientCloneAndAppend("callOpts", "options"),
 					jen.Return(jen.Id("runLegacyChildStream").Call(
 						jen.Id("ctx"),
 						jen.Id("needsRaw"),
@@ -2113,6 +2247,7 @@ func Generate(selfPkg string) {
 					jen.Id("NeedsRaw"):             jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
 					jen.Id("IncludeThinkingInRaw"): jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
 					jen.Id("FallbackChain"):        jen.Id("fallbackChain"),
+					jen.Id("ClientOverride"):       jen.Id("clientOverride"),
 					jen.Id("ClientProviders"):      jen.Id("clientProviders"),
 					jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
 					jen.Id("LegacyCallChild"):      jen.Id("legacyCallChildFn"),
@@ -2178,6 +2313,7 @@ func Generate(selfPkg string) {
 					jen.Id("clientProviders").Map(jen.String()).String(),
 					jen.Id("legacyChildren").Map(jen.String()).Bool(),
 					jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+					jen.Id("clientOverride").String(),
 				).
 				Error().
 				Block(buildCallRequestBody...)
@@ -2195,14 +2331,93 @@ func Generate(selfPkg string) {
 			jen.Var().Id("err").Error(),
 			jen.Id("mode").Op(":=").Id("adapter").Dot("StreamMode").Call(),
 		}
+		// Always seed __effective from ResolvePrimaryClient and leave
+		// __rrInfo nil. This is the legacy-equivalent shape: primary
+		// override applied, no RR unwrap, no coordinator advance, no
+		// RR metadata. supportsWithClient adapters with the flag on
+		// upgrade these via ResolveEffectiveClient below; everyone
+		// else (older adapters, or modern adapters with the flag off)
+		// keeps this baseline so BAML's own strategy rotation owns RR.
+		// Cold-review-5 F1.
+		routerBody = append(routerBody,
+			jen.Id("__effective").Op(":=").Qual(common.BuildRequestPkg, "ResolvePrimaryClient").Call(
+				jen.Id("adapter"),
+				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+			),
+			jen.Var().Id("__rrInfo").Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
+		)
+		if supportsWithClient {
+			// Cache UseBuildRequest() once per request so every gate
+			// downstream sees the same value. Cold-review-5 F1: prior
+			// to this, ResolveEffectiveClient ran unconditionally for
+			// supportsWithClient adapters and the BR landing blocks
+			// re-read the env var, which (a) made the flag-off path
+			// keep advancing the RR coordinator and pinning BAML to
+			// the leaf via WithClient, defeating its kill-switch
+			// contract, and (b) created split-decision risk if the
+			// cached value ever drifted within a request.
+			//
+			// Scoped under `if supportsWithClient` because every
+			// __useBuildRequest reference downstream — the upgrade
+			// gate just below, the BR landing-block gates, and the
+			// legacy predicate gate — is itself only emitted when
+			// supportsWithClient is true (those gates check
+			// hasCallBuildRequest / hasBuildRequest, which the
+			// invariant at codegen.go:699 ties to supportsWithClient
+			// via panic). Hoisting the declaration to router entry
+			// would emit "declared and not used" on v0.204 / v0.215
+			// adapters where every consumer is filtered out.
+			routerBody = append(routerBody,
+				jen.Id("__useBuildRequest").Op(":=").Qual(common.BuildRequestPkg, "UseBuildRequest").Call(),
+			)
+
+			// Full RR resolution upgrade: apply the runtime primary
+			// override, unwrap baml-roundrobin wrappers, and advance
+			// the coordinator (or the worker-installed RemoteAdvancer)
+			// for the leaf selection. Gated on __useBuildRequest so
+			// that flipping BAML_REST_USE_BUILD_REQUEST off truly
+			// reverts to the legacy CallStream+OnTick semantics —
+			// including BAML's per-worker runtime RR rotation. Without
+			// the runtime gate, the coordinator advances and __rrInfo
+			// gets populated even when the operator has explicitly
+			// disabled the new code path. Cold-review-5 F1.
+			routerBody = append(routerBody,
+				jen.If(jen.Id("__useBuildRequest")).Block(
+					jen.List(jen.Id("__rrEffective"), jen.Id("__rrInfoUpgrade"), jen.Id("__rrErr")).Op(":=").
+						Qual(common.BuildRequestPkg, "ResolveEffectiveClient").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+						jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+					),
+					jen.If(jen.Id("__rrErr").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Id("__rrErr")),
+					),
+					jen.Id("__effective").Op("=").Id("__rrEffective"),
+					jen.Id("__rrInfo").Op("=").Id("__rrInfoUpgrade"),
+				),
+			)
+		}
+		routerBody = append(routerBody,
+			jen.Id("__reg").Op(":=").Id("adapter").Dot("OriginalClientRegistry").Call(),
+		)
 
 		// Helper to generate the common retry policy resolution + dispatch call
 		// for both single-provider and fallback-chain paths.
+		//
+		// Keyed on __effective (the post-RR leaf) rather than
+		// FunctionClient[methodName] (the function's declared default
+		// client, which may be an RR wrapper). For non-RR functions the
+		// two are identical; for RR, we must use the child that will
+		// actually handle the request, otherwise the retry policy would
+		// come from the wrapper — retry config isn't inherited from
+		// strategy wrappers in BAML semantics.
 		resolveRetryPolicy := func() jen.Code {
 			return jen.Id("retryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
 				jen.Id("adapter"),
-				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-				jen.Qual(common.IntrospectedPkg, "FunctionRetryPolicy").Index(jen.Lit(methodName)),
+				jen.Id("__effective"),
+				jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
 				jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
 			)
 		}
@@ -2230,32 +2445,36 @@ func Generate(selfPkg string) {
 			routerBody = append(routerBody,
 				jen.Comment("Try non-streaming BuildRequest path for /call and /call-with-raw"),
 				jen.If(
-					jen.Qual(common.BuildRequestPkg, "UseBuildRequest").Call().
+					jen.Id("__useBuildRequest").
 						Op("&&").Qual(common.IntrospectedPkg, "Request").Op("!=").Nil().
 						Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
 						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
 				).Block(
-					// Single-provider path
-					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveProvider").Call(
-						jen.Id("adapter"),
-						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-						jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
+					// Single-provider path — keyed off the effective (post-RR)
+					// client. ResolveClientProvider consults the runtime
+					// registry for a per-client provider override before
+					// falling back to the introspected default.
+					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveClientProvider").Call(
+						jen.Id("__reg"),
+						jen.Id("__effective"),
+						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 					),
 					jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsCallProviderSupported").Call(jen.Id("provider"))).Block(
 						resolveRetryPolicy(),
-						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlan").Call(
-							jen.Id("adapter"),
-							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
+							jen.Id("__effective"),
 							jen.Id("provider"),
 							jen.Id("retryPolicy"),
 							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
 						),
+						jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
 							jen.Nil(), jen.Nil(),
 							jen.Nil(),
 							jen.Id("__planned"),
+							jen.Id("__effective"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2263,40 +2482,43 @@ func Generate(selfPkg string) {
 						jen.Return(jen.Id("out"), jen.Nil()),
 					),
 					// Fallback chain path: if single-provider check failed,
-					// try resolving a fallback chain. When a bridge block
-					// exists (hasBuildRequest), a mixed chain — one with any
-					// call-legacy children — must fall through so the bridge
-					// re-resolves it with IsProviderSupported; a child that is
-					// call-legacy may still be stream-supported, and the
-					// bridge's StreamRequest path drives such children better
-					// than legacyCallChildFn. This block therefore only takes
+					// try resolving a fallback chain off the effective client.
+					// When a bridge block exists (hasBuildRequest), a mixed
+					// chain — one with any call-legacy children — must fall
+					// through so the bridge re-resolves it with
+					// IsProviderSupported; a child that is call-legacy may
+					// still be stream-supported, and the bridge's
+					// StreamRequest path drives such children better than
+					// legacyCallChildFn. This block therefore only takes
 					// chains that are fully call-supported. When no bridge
 					// exists (hasBuildRequest=false) mixed chains stay here,
 					// matching the pre-bridge behaviour.
-					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
-						jen.Id("adapter"),
-						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren"), jen.Id("__fbReason")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClientWithReason").Call(
+						jen.Id("__reg"),
+						jen.Id("__effective"),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 						jen.Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
 					),
 					jen.If(fallbackChainConsumeCond(hasBuildRequest)).Block(
 						resolveRetryPolicy(),
-						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlan").Call(
-							jen.Id("adapter"),
-							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanForClient").Call(
+							jen.Id("__effective"),
 							jen.Id("__chain"),
 							jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
 							jen.Id("retryPolicy"),
 							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
+							jen.Id("__fbReason"),
 						),
+						jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 						jen.Id("err").Op("=").Id(buildCallRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
 							jen.Id("__chain"), jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
 							jen.Id("__planned"),
+							jen.Lit(""),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2315,32 +2537,33 @@ func Generate(selfPkg string) {
 			routerBody = append(routerBody,
 				jen.Comment("Try streaming BuildRequest path for /stream and /stream-with-raw"),
 				jen.If(
-					jen.Qual(common.BuildRequestPkg, "UseBuildRequest").Call().
+					jen.Id("__useBuildRequest").
 						Op("&&").Qual(common.IntrospectedPkg, "StreamRequest").Op("!=").Nil().
 						Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeStream").
 						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeStreamWithRaw")),
 				).Block(
-					// Single-provider path
-					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveProvider").Call(
-						jen.Id("adapter"),
-						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-						jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
+					// Single-provider path keyed off the effective client.
+					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveClientProvider").Call(
+						jen.Id("__reg"),
+						jen.Id("__effective"),
+						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 					),
 					jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
 						resolveRetryPolicy(),
-						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlan").Call(
-							jen.Id("adapter"),
-							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
+							jen.Id("__effective"),
 							jen.Id("provider"),
 							jen.Id("retryPolicy"),
 							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
 						),
+						jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
 							jen.Nil(), jen.Nil(),
 							jen.Nil(),
 							jen.Id("__planned"),
+							jen.Id("__effective"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2351,30 +2574,32 @@ func Generate(selfPkg string) {
 					// children) route through the BuildRequest path — the
 					// orchestrator dispatches legacy children to the
 					// generated legacyStreamChildFn.
-					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
-						jen.Id("adapter"),
-						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren"), jen.Id("__fbReason")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClientWithReason").Call(
+						jen.Id("__reg"),
+						jen.Id("__effective"),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 						jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
 					),
 					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
 						resolveRetryPolicy(),
-						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlan").Call(
-							jen.Id("adapter"),
-							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanForClient").Call(
+							jen.Id("__effective"),
 							jen.Id("__chain"),
 							jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
 							jen.Id("retryPolicy"),
 							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+							jen.Id("__fbReason"),
 						),
+						jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
 							jen.Id("__chain"), jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
 							jen.Id("__planned"),
+							jen.Lit(""),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2398,32 +2623,33 @@ func Generate(selfPkg string) {
 			routerBody = append(routerBody,
 				jen.Comment("Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable"),
 				jen.If(
-					jen.Qual(common.BuildRequestPkg, "UseBuildRequest").Call().
+					jen.Id("__useBuildRequest").
 						Op("&&").Qual(common.IntrospectedPkg, "StreamRequest").Op("!=").Nil().
 						Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
 						Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
 				).Block(
 					// Single-provider path
-					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveProvider").Call(
-						jen.Id("adapter"),
-						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-						jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
+					jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveClientProvider").Call(
+						jen.Id("__reg"),
+						jen.Id("__effective"),
+						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 					),
 					jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
 						resolveRetryPolicy(),
-						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlan").Call(
-							jen.Id("adapter"),
-							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
+							jen.Id("__effective"),
 							jen.Id("provider"),
 							jen.Id("retryPolicy"),
 							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
 						),
+						jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Id("provider"), jen.Id("retryPolicy"),
 							jen.Nil(), jen.Nil(),
 							jen.Nil(),
 							jen.Id("__planned"),
+							jen.Id("__effective"),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2433,30 +2659,32 @@ func Generate(selfPkg string) {
 					// Fallback chain path (bridge). Uses IsProviderSupported
 					// (stream side) because the whole point of the bridge is
 					// to accept chains that IsCallProviderSupported rejected.
-					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChain").Call(
-						jen.Id("adapter"),
-						jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+					jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren"), jen.Id("__fbReason")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClientWithReason").Call(
+						jen.Id("__reg"),
+						jen.Id("__effective"),
 						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 						jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 						jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
 					),
 					jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
 						resolveRetryPolicy(),
-						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlan").Call(
-							jen.Id("adapter"),
-							jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+						jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanForClient").Call(
+							jen.Id("__effective"),
 							jen.Id("__chain"),
 							jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
 							jen.Id("retryPolicy"),
 							jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+							jen.Id("__fbReason"),
 						),
+						jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 						jen.Id("err").Op("=").Id(buildRequestMethodName).Call(
 							jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 							jen.Lit(""), jen.Id("retryPolicy"),
 							jen.Id("__chain"), jen.Id("__cprov"),
 							jen.Id("__legacyChildren"),
 							jen.Id("__planned"),
+							jen.Lit(""),
 						),
 						jen.If(jen.Id("err").Op("!=").Nil()).Block(
 							jen.Return(jen.Nil(), jen.Id("err")),
@@ -2475,25 +2703,104 @@ func Generate(selfPkg string) {
 		// the generator).
 		routerBody = append(routerBody,
 			jen.Comment("Legacy path: CallStream + OnTick (for unsupported providers or when BuildRequest is disabled)"),
+			// Retry policy and client identity for the legacy dispatch
+			// derive from __effective, not FunctionClient[methodName].
+			// __effective already accounts for both the RR unwrap and
+			// any client_registry primary override, so this keys both
+			// the retry policy and the WithClient/plan on the client
+			// that will actually handle the request.
+			//
+			// Without this, a request with `primary` set to a client
+			// whose retry_policy is only statically declared (not
+			// redeclared in the runtime registry) would fall through to
+			// ResolveRetryPolicy's step-4 default — which looked up
+			// FunctionRetryPolicy[methodName] and therefore returned the
+			// FUNCTION's declared client's policy, not the primary-
+			// overridden client's. Same bug, in principle, as CR-11 on
+			// the BuildRequest path; the legacy branch was missed.
 			jen.Id("__legacyRetryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
 				jen.Id("adapter"),
-				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-				jen.Qual(common.IntrospectedPkg, "FunctionRetryPolicy").Index(jen.Lit(methodName)),
+				jen.Id("__effective"),
+				jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
 				jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
 			),
-			jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlan").Call(
-				jen.Id("adapter"),
-				jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
-				jen.Qual(common.IntrospectedPkg, "FunctionProvider").Index(jen.Lit(methodName)),
+			// Build the legacy metadata plan keyed on __effective in
+			// every case — RR, primary override, or neither. Previously
+			// the non-RR branch called BuildLegacyMetadataPlan with
+			// FunctionClient[methodName], which re-resolved primary
+			// internally but wouldn't propagate the resolved identity
+			// back out as __legacyClientOverride, so the subsequent
+			// WithClient append (on BAML 0.219+) targeted BAML with an
+			// empty override even when primary was set. Passing
+			// __effective unconditionally collapses the branching and
+			// fixes both paths. __rrInfo is copied in afterwards; it's
+			// nil on the non-RR and legacy-only-adapter paths.
+			// Mode-aware predicate selection: the legacy metadata
+			// plan classifies the request's provider against either
+			// the stream support table or the call support table. For
+			// call modes that reach final legacy *without* a stream
+			// bridge having re-resolved them (hasBuildRequest=false)
+			// the metadata reason should reflect the call-side
+			// classification — otherwise
+			// BAML_REST_DISABLE_CALL_BUILD_REQUEST or the debug
+			// BAML_REST_CALL_UNSUPPORTED_PROVIDERS flag can produce a
+			// too-optimistic PathReason. When a stream bridge exists
+			// every call-mode fallthrough has already been gated on
+			// IsProviderSupported, so the stream predicate is the
+			// correct one. Stream modes always use the stream
+			// predicate.
+			//
+			// Every BuildRequest landing block is also gated at
+			// runtime on UseBuildRequest() (codegen.go:2403, 2495,
+			// 2581). When BuildRequest is compiled in but the runtime
+			// gate returns false, /call and /call-with-raw skip both
+			// the non-streaming Request path AND the stream bridge,
+			// falling directly to final legacy. In that path no
+			// stream-bridge re-resolution happened, so the metadata
+			// predicate must be the call-side IsCallProviderSupported.
+			//
+			// Emit a runtime gate inside the hasBuildRequest=true
+			// arm: default to IsProviderSupported (correct when the
+			// stream bridge actually ran), and override to
+			// IsCallProviderSupported only when mode is a call mode
+			// AND UseBuildRequest() returned false. The
+			// no-hasBuildRequest arm keeps its original
+			// compile-time-only override since there is no stream
+			// bridge to re-resolve in any case.
+			jen.Id("__legacyPredicate").Op(":=").Qual(common.BuildRequestPkg, "IsProviderSupported"),
+			func() jen.Code {
+				callModeCond := jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
+					Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")
+				if hasBuildRequest {
+					return jen.If(
+						jen.Parens(callModeCond).
+							Op("&&").Op("!").Id("__useBuildRequest"),
+					).Block(
+						jen.Id("__legacyPredicate").Op("=").Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
+					)
+				}
+				return jen.If(callModeCond).Block(
+					jen.Id("__legacyPredicate").Op("=").Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
+				)
+			}(),
+			jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
+				jen.Id("__reg"),
+				jen.Id("__effective"),
+				jen.Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("__effective")),
 				jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-				// Use the streaming support check for classification. Call
-				// and stream support sets are usually aligned; a mismatch
-				// would only change the reason string — not the routing
-				// outcome (always legacy when we reach this code path).
-				jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
+				jen.Id("__legacyPredicate"),
 				jen.Id("__legacyRetryPolicy"),
 			),
+			jen.Id("__plannedLegacy").Dot("RoundRobin").Op("=").Id("__rrInfo"),
+			// __legacyClientOverride is always __effective: on 0.219+
+			// the legacy dispatcher uses it to append WithClient so
+			// BAML's runtime targets the same leaf the plan reports;
+			// on pre-0.219 adapters the helper is accepted as a
+			// function parameter but never read (WithClient emission
+			// is gated on supportsWithClient), so passing a non-empty
+			// value is harmless.
+			jen.Id("__legacyClientOverride").Op(":=").Id("__effective"),
 			jen.Qual(common.BuildRequestPkg, "LogLegacyClassification").Call(
 				jen.Id("adapter"),
 				jen.Lit(methodName),
@@ -2502,19 +2809,19 @@ func Generate(selfPkg string) {
 			jen.Switch(jen.Id("mode")).Block(
 				// StreamModeCall: final only, no raw, skip partials
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCall")).Block(
-					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True(), jen.Id("__plannedLegacy")),
+					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True(), jen.Id("__plannedLegacy"), jen.Id("__legacyClientOverride")),
 				),
 				// StreamModeStream: partials + final, no raw
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeStream")).Block(
-					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False(), jen.Id("__plannedLegacy")),
+					jen.Id("err").Op("=").Id(noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False(), jen.Id("__plannedLegacy"), jen.Id("__legacyClientOverride")),
 				),
 				// StreamModeCallWithRaw: final + raw, skip intermediate parsing
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCallWithRaw")).Block(
-					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True(), jen.Id("__plannedLegacy")),
+					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True(), jen.Id("__plannedLegacy"), jen.Id("__legacyClientOverride")),
 				),
 				// StreamModeStreamWithRaw: partials + final + raw
 				jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeStreamWithRaw")).Block(
-					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False(), jen.Id("__plannedLegacy")),
+					jen.Id("err").Op("=").Id(fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False(), jen.Id("__plannedLegacy"), jen.Id("__legacyClientOverride")),
 				),
 				// Default case to prevent silent hangs if unknown mode
 				jen.Default().Block(
@@ -2710,6 +3017,14 @@ func Generate(selfPkg string) {
 		)
 
 	// Generate `MakeAdapter`
+	//
+	// IntrospectedClientProvider plumbs the build-time client→provider
+	// map into the adapter so SetClientRegistry can materialise
+	// providers for omitted-provider runtime registry entries
+	// (strategy-only / presence-only RR overrides). Without this seam
+	// the adapter would forward `provider: ""` into BAML's CFFI, which
+	// rejects in ClientProvider::from_str (clientspec.rs:119-144) and
+	// kills the request before WithClient(leaf) resolves anything.
 	out.Func().Id("MakeAdapter").
 		Params(jen.Id("ctx").Qual("context", "Context")).
 		Qual(common.InterfacesPkg, "Adapter").
@@ -2726,7 +3041,8 @@ func Generate(selfPkg string) {
 							Block(
 								jen.Return(jen.Id("createTypeBuilder").Call(jen.Id("config"))),
 							),
-						jen.Id("MediaFactory"): jen.Id("createMedia"),
+						jen.Id("MediaFactory"):               jen.Id("createMedia"),
+						jen.Id("IntrospectedClientProvider"): jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 					}),
 			),
 		)
@@ -2776,9 +3092,25 @@ func Generate(selfPkg string) {
 			jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("unsupported media kind: %v"), jen.Id("kind"))),
 		)
 
-	// Generate `makeOptionsFromAdapter`
-	out.Func().Id("makeOptionsFromAdapter").
-		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
+	// makeOptionsFromAdapter and makeLegacyOptionsFromAdapter share
+	// every step except which registry field they read. Emit a single
+	// makeOptionsFromAdapterInternal that owns the type assertion +
+	// slice build + WithClientRegistry-and-TypeBuilder appends, then
+	// emit two thin wrappers that select the registry view via a
+	// boolean. Trades two duplicate generated functions for three
+	// smaller ones; the assertion happens once per call instead of
+	// once per emitted function.
+
+	// Generate `makeOptionsFromAdapterInternal` — shared body.
+	// `legacy` selects the registry view: false → ClientRegistry
+	// (BuildRequest-safe, drops every baml-rest-resolved strategy
+	// parent); true → LegacyClientRegistry (preserves explicit
+	// strategy-parent overrides).
+	out.Func().Id("makeOptionsFromAdapterInternal").
+		Params(
+			jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("legacy").Bool(),
+		).
 		Params(
 			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
 			jen.Error(),
@@ -2791,12 +3123,20 @@ func Generate(selfPkg string) {
 					jen.Id("adapterIn"),
 				)),
 			),
+			// Select the registry view at runtime so the same body
+			// covers both wrappers. The two fields have identical
+			// types, so the conditional collapses to a simple
+			// pointer pick.
+			jen.Id("registry").Op(":=").Id("adapter").Dot("ClientRegistry"),
+			jen.If(jen.Id("legacy")).Block(
+				jen.Id("registry").Op("=").Id("adapter").Dot("LegacyClientRegistry"),
+			),
 			// Pre-size with capacity 3: room for ClientRegistry + TypeBuilder + WithOnTick
 			jen.Id("result").Op(":=").Make(jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"), jen.Lit(0), jen.Lit(3)),
-			jen.If(jen.Id("adapter").Dot("ClientRegistry").Op("!=").Nil()).Block(
+			jen.If(jen.Id("registry").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),
 					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
-						Call(jen.Id("adapter").Dot("ClientRegistry"))),
+						Call(jen.Id("registry"))),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),
@@ -2804,6 +3144,33 @@ func Generate(selfPkg string) {
 						Call(jen.Id("adapter").Dot("TypeBuilder"))),
 			),
 			jen.Return(jen.Id("result"), jen.Nil()),
+		)
+
+	// Generate `makeOptionsFromAdapter` — BuildRequest-safe wrapper.
+	// Used by BuildRequest dispatch and mixed-mode bridge legacy-
+	// child callbacks (both target leaves, not parents).
+	out.Func().Id("makeOptionsFromAdapter").
+		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
+		Params(
+			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Error(),
+		).
+		Block(
+			jen.Return(jen.Id("makeOptionsFromAdapterInternal").Call(jen.Id("adapterIn"), jen.False())),
+		)
+
+	// Generate `makeLegacyOptionsFromAdapter` — legacy wrapper.
+	// Used by the top-level legacy fallthrough (_noRaw / _full impls
+	// invoked via __legacyClientOverride) so BAML can honour runtime
+	// strategy-parent overrides or emit canonical errors.
+	out.Func().Id("makeLegacyOptionsFromAdapter").
+		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
+		Params(
+			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Error(),
+		).
+		Block(
+			jen.Return(jen.Id("makeOptionsFromAdapterInternal").Call(jen.Id("adapterIn"), jen.True())),
 		)
 
 	// Generate `InitBamlRuntime` - wrapper for baml_client.InitRuntime()
@@ -3685,12 +4052,49 @@ func onTickType() *jen.Statement {
 func generateStreamHelpers(out *jen.File) {
 	streamResultIface := jen.Qual(common.InterfacesPkg, "StreamResult")
 
+	// emitPlannedPieces returns the two Jen nodes shared by
+	// runNoRawOrchestration and runFullOrchestration for emitting
+	// planned-metadata upfront from the stream goroutine: the
+	// `plannedSent atomic.Bool` declaration and the `emitPlanned`
+	// closure body. Centralised here so the two orchestrators don't
+	// duplicate the closure verbatim.
+	//
+	// The helper deliberately does NOT cover `lastFuncLog`: that
+	// declaration sits at different positions in each orchestrator
+	// (early in noRaw, after extractor setup in full) and carries
+	// site-specific rationale comments about FunctionLog live-handle
+	// semantics. Each call site keeps its `lastFuncLog` decl inline.
+	//
+	// Returned values are fresh Jen statements per invocation, so
+	// each call site gets its own AST nodes (no aliasing).
+	emitPlannedPieces := func() (plannedSentDecl, emitPlannedDecl jen.Code) {
+		plannedSentDecl = jen.Var().Id("plannedSent").Qual("sync/atomic", "Bool")
+		emitPlannedDecl = jen.Id("emitPlanned").Op(":=").Func().Params().Block(
+			jen.If(jen.Id("plannedMetadata").Op("==").Nil().Op("||").Id("newMetadataResult").Op("==").Nil()).Block(jen.Return()),
+			jen.If(jen.Op("!").Id("plannedSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(jen.Return()),
+			jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
+			jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
+			jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
+			jen.If(jen.Id("__m").Op("==").Nil()).Block(jen.Return()),
+			// Non-blocking emit: release on full / shutdown so a busy
+			// or torn-down channel cannot wedge this path. Matches the
+			// heartbeat's drop-on-full policy.
+			jen.Select().Block(
+				jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
+				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__m"))),
+				jen.Default().Block(jen.Id("release").Call(jen.Id("__m"))),
+			),
+		)
+		return
+	}
+
 	// ──────────────────────────────────────────────────────────────────
 	// runNoRawOrchestration
 	// ──────────────────────────────────────────────────────────────────
 	out.Comment("runNoRawOrchestration manages the noRaw streaming lifecycle:")
 	out.Comment("heartbeat tracking, onTick callback, goroutine launch, and panic recovery.")
 	out.Comment("The per-method body closure handles stream creation and iteration.")
+	plannedSentDeclA, emitPlannedDeclA := emitPlannedPieces()
 	out.Func().Id("runNoRawOrchestration").
 		Params(
 			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
@@ -3701,9 +4105,11 @@ func generateStreamHelpers(out *jen.File) {
 			// plannedMetadata: pre-built planned-phase Metadata for this request,
 			// or nil to disable metadata emission entirely (tests, mixed-mode
 			// legacy children whose parent orchestrator already emitted
-			// metadata for the chain). The orchestrator emits a planned event
-			// on the first tick (alongside the heartbeat) and an outcome
-			// event via the body's beforeFinal callback.
+			// metadata for the chain). The orchestrator emits the planned
+			// event upfront from the stream goroutine — before BAML's stream
+			// starts — so routing observability does not depend on BAML
+			// firing onTick. The outcome event is emitted later via the
+			// body's beforeFinal callback.
 			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			// newMetadataResult: pool-wraps a Metadata payload as a StreamResult.
 			// Required when plannedMetadata is non-nil.
@@ -3721,12 +4127,33 @@ func generateStreamHelpers(out *jen.File) {
 			// metadata event.
 			jen.Id("startTime").Op(":=").Qual("time", "Now").Call(),
 			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
+			// plannedSent gates the planned-metadata emission so the
+			// same payload doesn't go out twice. Emit it upfront
+			// (before body() runs the BAML stream) rather than inside
+			// onTick because planned metadata describes the routing
+			// decision already made — it must not depend on BAML's
+			// state-change callbacks firing. For requests where BAML
+			// completes synchronously (e.g., legacy path with
+			// WithClient naming a strategy parent that resolves
+			// through static IR), no onTick fires; gating planned
+			// emission on heartbeatSent would lose the event in that
+			// case.
+			plannedSentDeclA,
 			// lastFuncLog stores the most recent FunctionLog reference seen
 			// by onTick. Read by beforeFinal to derive winner identity and
 			// BAML's internal call count for the outcome event. nil if no
 			// onTick fired before the stream completed (rare; degrade
 			// gracefully via BuildLegacyOutcome's planned-fallback ladder).
 			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
+
+			// emitPlanned sends the planned-metadata event to out
+			// exactly once per orchestrator invocation. Called
+			// upfront from the stream goroutine below, before body()
+			// runs BAML's stream, so emission is guaranteed
+			// regardless of whether BAML fires onTick. plannedSent
+			// CAS guarantees idempotency. Body shared with
+			// runFullOrchestration via emitPlannedPieces.
+			emitPlannedDeclA,
 
 			jen.Id("onTick").Op(":=").Func().Params(
 				jen.Id("_").Qual("context", "Context"),
@@ -3746,23 +4173,6 @@ func generateStreamHelpers(out *jen.File) {
 					jen.Select().Block(
 						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 						jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
-					),
-					// Emit planned metadata as the second frame on first
-					// tick, after the heartbeat. The emission is guarded by
-					// the same CAS branch so it runs exactly once per
-					// orchestrator invocation (subsequent ticks skip).
-					// Non-blocking: release the result if the output buffer
-					// is full, matching the heartbeat's drop-on-full policy.
-					jen.If(jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").Id("newMetadataResult").Op("!=").Nil()).Block(
-						jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
-						jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
-						jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
-						jen.If(jen.Id("__m").Op("!=").Nil()).Block(
-							jen.Select().Block(
-								jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
-								jen.Default().Block(jen.Id("release").Call(jen.Id("__m"))),
-							),
-						),
 					),
 				),
 				jen.Return(jen.Nil()),
@@ -3824,6 +4234,12 @@ func generateStreamHelpers(out *jen.File) {
 
 			jen.Go().Func().Params().Block(
 				jen.Defer().Close(jen.Id("out")),
+				// Emit planned metadata upfront. Decoupled from onTick
+				// so the routing decision is observable even when BAML
+				// completes without firing onTick (legacy path with
+				// WithClient targeting a strategy parent that resolves
+				// through static IR).
+				jen.Id("emitPlanned").Call(),
 				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 					jen.Func().Params(jen.Id("err").Error()).Block(
 						jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("err")),
@@ -3850,6 +4266,7 @@ func generateStreamHelpers(out *jen.File) {
 	out.Comment("queue management, two-phase shutdown, heartbeat, onTick, partials goroutine,")
 	out.Comment("stream drain goroutine, and panic recovery.")
 	out.Comment("Per-method code supplies processTick, driveStream, and emitFinal closures.")
+	plannedSentDeclB, emitPlannedDeclB := emitPlannedPieces()
 	out.Func().Id("runFullOrchestration").
 		Params(
 			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
@@ -3860,9 +4277,11 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("release").Func().Params(streamResultIface.Clone()),
 			// plannedMetadata: pre-built planned-phase Metadata for this request,
 			// or nil to disable metadata emission entirely. The orchestrator
-			// emits a planned event on the first tick (alongside the heartbeat)
-			// and an outcome event just before the final result. Both events
-			// are constructed from this seed via newMetadataResult.
+			// emits the planned event upfront from the stream-drain goroutine
+			// — before driveStream starts BAML's stream — so routing
+			// observability does not depend on BAML firing onTick. The
+			// outcome event is emitted just before the final result. Both
+			// events are constructed from this seed via newMetadataResult.
 			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			// newMetadataResult: pool-wraps a Metadata payload as a StreamResult.
 			// Required when plannedMetadata is non-nil.
@@ -3905,8 +4324,20 @@ func generateStreamHelpers(out *jen.File) {
 			// the watcher goroutine to exit without waiting for adapter cancellation.
 			jen.Id("watcherDone").Op(":=").Make(jen.Chan().Struct()),
 			jen.Var().Id("heartbeatSent").Qual("sync/atomic", "Bool"),
+			// plannedSent gates the planned-metadata emission (decoupled
+			// from heartbeatSent so we can emit upfront without firing
+			// the heartbeat early). Same rationale as runNoRawOrchestration:
+			// planned metadata describes the routing decision already
+			// made and must not depend on BAML's onTick firing.
+			plannedSentDeclB,
 			jen.Var().Id("fatalMu").Qual("sync", "Mutex"),
 			jen.Var().Id("fatalErr").Error(),
+
+			// emitPlanned is called once per orchestrator invocation,
+			// upfront in the stream goroutine. plannedSent CAS
+			// guarantees idempotency. Body shared with
+			// runNoRawOrchestration via emitPlannedPieces.
+			emitPlannedDeclB,
 
 			// Extractor. The boolean argument captures the per-request
 			// IncludeThinkingInRaw opt-in: when true, Anthropic
@@ -3989,29 +4420,15 @@ func generateStreamHelpers(out *jen.File) {
 								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Return(jen.Nil())),
 								jen.Default().Block(),
 							),
-							// Heartbeat + planned metadata (same CAS branch so
-							// metadata is the second frame and fires exactly
-							// once per orchestrator invocation).
+							// Heartbeat: signals the pool's hung detector that
+							// upstream returned 2xx. Planned metadata emission
+							// is now decoupled and fires upfront from the
+							// stream goroutine — see emitPlanned above.
 							jen.If(jen.Id("heartbeatSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
 								jen.Id("__r").Op(":=").Id("newHeartbeat").Call(),
 								jen.Select().Block(
 									jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 									jen.Default().Block(jen.Id("release").Call(jen.Id("__r"))),
-								),
-								jen.If(jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").Id("newMetadataResult").Op("!=").Nil()).Block(
-									// Copy and tag Phase=Planned. Caller-supplied
-									// plannedMetadata may have been built with
-									// Phase already set, but flipping here makes
-									// the contract local and survives reuse.
-									jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
-									jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
-									jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
-									jen.If(jen.Id("__m").Op("!=").Nil()).Block(
-										jen.Select().Block(
-											jen.Case(jen.Id("out").Op("<-").Id("__m")).Block(),
-											jen.Default().Block(jen.Id("release").Call(jen.Id("__m"))),
-										),
-									),
 								),
 							),
 							// Store latest FunctionLog for the final reconciliation pass
@@ -4093,6 +4510,10 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Go().Func().Params().Block(
 				jen.Defer().Close(jen.Id("out")),
 				jen.Defer().Close(jen.Id("watcherDone")),
+				// Emit planned metadata upfront. Decoupled from onTick so
+				// the routing decision is observable even when BAML
+				// completes synchronously without firing onTick.
+				jen.Id("emitPlanned").Call(),
 				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 					jen.Func().Params(jen.Id("err").Error()).Block(
 						jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),

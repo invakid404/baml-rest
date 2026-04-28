@@ -10,6 +10,7 @@ package buildrequest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/retry"
 	"github.com/invakid404/baml-rest/bamlutils/sse"
@@ -39,14 +41,25 @@ func parseBuildRequestEnv() bool {
 // useBuildRequestOnce caches the result of parseBuildRequestEnv. The env var
 // is read once on first call and the result is reused for all subsequent
 // calls. This avoids repeated os.Getenv (which acquires a lock) on every
-// request dispatch — the generated router calls UseBuildRequest() twice per
-// request (once for the call path, once for the stream path).
+// request dispatch — the generated router reads the cached value once at
+// router entry and threads it into every gate (BuildRequest landing,
+// legacy predicate, and the supportsWithClient ResolveEffectiveClient
+// upgrade) so the same boolean drives every decision in a request.
 var useBuildRequestOnce sync.Once
 var useBuildRequestCached bool
 
 // UseBuildRequest returns true if the BuildRequest/StreamRequest paths are enabled.
 // Controlled by the BAML_REST_USE_BUILD_REQUEST environment variable.
-// When false, the legacy CallStream+OnTick path is used for all providers.
+//
+// When false, the flag is a full rollback to the legacy CallStream+OnTick
+// path: the BuildRequest transport is skipped, baml-rest's RR resolver
+// and coordinator are NOT engaged on supportsWithClient adapters, and
+// BAML's own runtime owns strategy rotation per-worker. This is the
+// kill-switch contract — flipping the flag off should remove every new
+// failure surface this PR added (RemoteAdvancer, SharedState broker,
+// in-process coordinator) from the request path so operators can revert
+// to pre-PR-192 semantics during incident response. Cold-review-5 F1.
+//
 // The environment variable is read once and cached for the process lifetime.
 func UseBuildRequest() bool {
 	useBuildRequestOnce.Do(func() {
@@ -162,24 +175,57 @@ func IsCallProviderSupported(provider string) bool {
 // ResolveProvider determines the provider for a function by checking the
 // runtime ClientRegistry override first, then falling back to the static
 // introspected default. The resolution order is:
-//  1. adapter.ClientRegistryProvider() — primary client's provider
-//  2. Named client override: if the function's default client name appears
-//     in client_registry.clients, use that client's provider
-//  3. Static introspected default (passed as fallback)
+//
+//  1. adapter.ClientRegistryProvider() — primary client's provider as
+//     pre-resolved by the adapter. Used only when non-empty; an empty
+//     return falls through to direct registry inspection so a present-
+//     empty primary can be distinguished from an absent primary
+//     (the adapter cache collapses both into "").
+//  2. Direct registry lookup of the primary client's clients[] entry,
+//     presence-aware. Surfaces present-empty as "" so the caller can
+//     route to legacy with PathReasonInvalidProviderOverride.
+//  3. Named client override: if the function's default client name
+//     appears in client_registry.clients with a present provider, use
+//     it (also presence-aware).
+//  4. Static introspected default (passed as fallback). Reached when
+//     no override is present anywhere — preserves strategy-only and
+//     presence-only registry overrides that intentionally don't carry
+//     a provider.
+//
+// Presence semantics matter because BAML upstream's
+// ClientProvider::from_str rejects empty provider strings
+// (clientspec.rs:119-144); we mirror that by NOT falling through to
+// the introspected provider when the registry sent an explicit
+// "provider":"".
 func ResolveProvider(adapter bamlutils.Adapter, defaultClientName string, introspectedProvider string) string {
-	// Check primary client override first
+	// Primary's provider via the adapter abstraction. Non-empty
+	// short-circuit retained so adapter implementations that pre-
+	// resolve the primary string keep working. An empty return
+	// falls through to direct registry inspection — the adapter cache
+	// collapses absent/present-empty into "" and we need the
+	// distinction.
 	if p := adapter.ClientRegistryProvider(); p != "" {
 		return p
 	}
 
-	// Check if the function's default client was overridden by name
-	if reg := adapter.OriginalClientRegistry(); reg != nil && defaultClientName != "" {
-		for _, client := range reg.Clients {
-			if client == nil {
-				continue
+	reg := adapter.OriginalClientRegistry()
+	if reg != nil {
+		// Primary client override (presence-aware): catches the
+		// present-empty case that the adapter cache hides.
+		if reg.Primary != nil && *reg.Primary != "" {
+			for _, client := range reg.Clients {
+				if client != nil && client.Name == *reg.Primary && client.IsProviderPresent() {
+					return client.Provider
+				}
 			}
-			if client.Name == defaultClientName {
-				return client.Provider
+		}
+
+		// Named client override on the function's default client.
+		if defaultClientName != "" {
+			for _, client := range reg.Clients {
+				if client != nil && client.Name == defaultClientName && client.IsProviderPresent() {
+					return client.Provider
+				}
 			}
 		}
 	}
@@ -227,13 +273,63 @@ const (
 	// unsupported provider, so the whole chain runs on legacy. Deliberate
 	// configuration — no operator alert.
 	PathReasonFallbackAllLegacy = "fallback-all-legacy"
-	// PathReasonRoundRobin: the resolved strategy is baml-roundrobin, which
-	// is intentionally legacy-only because BuildRequest lacks cross-request
-	// state. Deliberate configuration — no operator alert.
+	// PathReasonRoundRobin: the resolved strategy is baml-roundrobin and
+	// the request reached the legacy metadata-plan builder unresolved.
+	// In modern adapters (BAML >= 0.219.0 with SupportsWithClient) top-
+	// level RR is unwrapped by ResolveEffectiveClient before dispatch
+	// and does NOT land here; this reason only fires on older adapters
+	// that have no WithClient option, or as a defensive path when RR
+	// resolution failed (cycle / empty chain). The string value is
+	// preserved for backwards-compatibility with any metric parsers.
 	PathReasonRoundRobin = "roundrobin-legacy-only"
+	// PathReasonFallbackRoundRobinChildLegacy: the fallback chain
+	// contains a baml-roundrobin child. Top-level RR is centralised
+	// across workers via the SharedState broker socket, but nested RR
+	// inside a fallback chain is intentionally NOT unwrapped by the
+	// BuildRequest resolver — that would require a "preselect one RR
+	// leaf at each fallback position" design that's deferred. Such
+	// chains still work, but the RR child is handed to BAML's
+	// runtime on each worker, which means its rotation is per-worker,
+	// not centralised. Surfaced here so operators can spot the
+	// composition and know not to expect fleet-wide rotation for the
+	// nested client.
+	PathReasonFallbackRoundRobinChildLegacy = "fallback-roundrobin-child-legacy"
 	// PathReasonBuildRequestDisabled: BAML_REST_USE_BUILD_REQUEST is off.
 	// Deliberate configuration — no operator alert.
 	PathReasonBuildRequestDisabled = "buildrequest-disabled"
+	// PathReasonInvalidStrategyOverride: a runtime client_registry entry
+	// supplied an `options.strategy` value that ParseStrategyOption could
+	// not interpret as a non-empty bracketed list — bare tokens, mismatched
+	// brackets, empty arrays, heterogeneous []any with non-string elements,
+	// etc. BAML upstream rejects these inputs in ensure_strategy
+	// (baml-lib/llm-client/src/clients/helpers.rs:790-829) with
+	// "strategy must be an array" or "strategy must not be empty"; we
+	// route the request to legacy so BAML's runtime emits the canonical
+	// error rather than silently using the introspected chain.
+	PathReasonInvalidStrategyOverride = "invalid-strategy-override"
+	// PathReasonInvalidProviderOverride: a runtime client_registry entry
+	// explicitly supplied an empty `provider` value (`"provider": ""`).
+	// BAML upstream's ClientProvider::from_str rejects empty provider
+	// strings (clientspec.rs:119-144); we mirror that by routing the
+	// request to legacy rather than silently using the introspected
+	// fallback, so BAML emits its native invalid-provider error to the
+	// caller. Distinct from PathReasonEmptyProvider (which fires when
+	// no provider is configured anywhere) so operators reading the
+	// header can tell "operator typo'd a registry entry" apart from
+	// "client has no provider declared".
+	PathReasonInvalidProviderOverride = "invalid-provider-override"
+	// PathReasonInvalidRoundRobinStartOverride: a runtime
+	// client_registry entry on a baml-roundrobin client supplied an
+	// `options.start` value that inspectStartOverride could not
+	// interpret as a representable Go int — strings (including
+	// numeric strings like "1"), fractional floats, booleans, slices,
+	// maps, etc. BAML upstream parses RR `start` via
+	// PropertyHandler.ensure_int (round_robin.rs:75); we route to
+	// legacy so BAML emits the canonical integer-options error rather
+	// than us silently randomising. Distinct from
+	// PathReasonInvalidStrategyOverride so operators can tell the
+	// failing option apart in the X-BAML-Path-Reason header.
+	PathReasonInvalidRoundRobinStartOverride = "invalid-round-robin-start-override"
 )
 
 // ProviderResolution describes the outcome of resolving a request's routing
@@ -256,6 +352,113 @@ type ProviderResolution struct {
 	PathReason string
 }
 
+// ResolveEffectiveClient unwraps any baml-roundrobin wrappers around the
+// function's default client (after applying the runtime primary override)
+// and returns the leaf client name that the orchestrator should treat as
+// the effective request target. When the leaf is itself a fallback client
+// the chain resolution happens downstream — this function only strips
+// round-robin layers.
+//
+// rrInfo describes the outermost round-robin decision (name, children,
+// index, selected child). It is nil when no round-robin unwrap occurred.
+// Callers should copy rrInfo into the request metadata so operators can
+// observe which child was selected.
+//
+// advancer may be nil, in which case static round-robin resolution degrades
+// to per-request random selection. Production callers are expected to pass
+// the package-level advancer set at generated-adapter init — either the
+// in-process Coordinator (standalone) or a per-request RemoteAdvancer
+// installed by the worker on the host's SharedState socket.
+//
+// RR rotation cadence — intentional divergence from BAML upstream.
+// ResolveEffectiveClient advances the RR counter exactly once per REST
+// request at router entry. BAML's runtime advances once per outbound
+// LLM call under RR scope (see baml-runtime orchestrator/mod.rs:232
+// and :294), which means a leaf's retry_policy bleeds into rotation
+// distribution — three retries on a single REST request burn three
+// persistent counter slots. We treat rotation and per-child retry as
+// orthogonal: a child's transient failures should not reduce its share
+// of the rotation, and operators reading X-BAML-RoundRobin-Index get
+// a deterministic 1:1 cadence with request count. The divergence is
+// observable (next-request child selection differs from BAML under
+// sustained retry activity) but is intentional for this PR's
+// load-distribution semantic, not an accidental omission. A follow-up
+// could thread per-attempt advancement through the retry loop if
+// operators actually need BAML-parity rotation under failure — that
+// requires redesigning the advancer call site to fire per-attempt
+// rather than once at router entry.
+func ResolveEffectiveClient(
+	adapter bamlutils.Adapter,
+	defaultClientName string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	advancer roundrobin.Advancer,
+) (effective string, rrInfo *bamlutils.RoundRobinInfo, err error) {
+	reg := adapter.OriginalClientRegistry()
+
+	clientName := defaultClientName
+	if reg != nil && reg.Primary != nil && *reg.Primary != "" {
+		clientName = *reg.Primary
+	}
+
+	// A per-request Advancer installed on the adapter (typically a
+	// RemoteAdvancer talking to the host SharedState socket) takes
+	// precedence over the package-level coordinator. This is how pool-
+	// managed workers observe a single rotation across the fleet —
+	// without it, each worker would rotate off its own coordinator and
+	// round-robin would collapse into independent per-worker draws.
+	if reqAdvancer := adapter.RoundRobinAdvancer(); reqAdvancer != nil {
+		advancer = reqAdvancer
+	}
+
+	res, err := roundrobin.Resolve(roundrobin.ResolveInput{
+		ClientName:      clientName,
+		Registry:        reg,
+		FallbackChains:  fallbackChains,
+		ClientProviders: clientProviders,
+		Advancer:        advancer,
+	})
+	if err != nil {
+		// Invalid runtime overrides on `options.strategy` or
+		// `options.start` are not hard failures — the dispatcher should
+		// fall through to legacy so BAML's runtime emits the canonical
+		// ensure_strategy / ensure_int error. Returning the un-unwrapped
+		// client name lets the codegen-side support gate fail (the
+		// outer client is a strategy provider, which isn't in
+		// supportedProviders) and route to legacy, where
+		// ResolveProviderWithReason / BuildLegacyMetadataPlanForClient
+		// surface PathReasonInvalidStrategyOverride or
+		// PathReasonInvalidRoundRobinStartOverride for observability.
+		if errors.Is(err, roundrobin.ErrInvalidStrategyOverride) ||
+			errors.Is(err, roundrobin.ErrInvalidStartOverride) {
+			return clientName, nil, nil
+		}
+		return "", nil, err
+	}
+	return res.Selected, res.Info, nil
+}
+
+// ResolvePrimaryClient returns the request's effective client name after
+// applying the runtime client_registry primary override, without doing
+// any baml-roundrobin unwrap. Used by adapter versions that cannot honor
+// a resolved leaf child at dispatch time (BAML < 0.219.0 has no
+// WithClient CallOption, so the generated router passes the declared
+// strategy client name to BAML and lets BAML's own runtime rotate).
+//
+// Advancing our coordinator on those adapters would report a selection
+// in the metadata headers that doesn't match BAML's actual rotation, so
+// the generator skips the Resolve call entirely and uses this helper.
+// Returns empty string if defaultClientName is empty and no primary
+// override is set — callers should treat that the same as they treat
+// an empty FunctionClient entry.
+func ResolvePrimaryClient(adapter bamlutils.Adapter, defaultClientName string) string {
+	clientName := defaultClientName
+	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
+		clientName = *reg.Primary
+	}
+	return clientName
+}
+
 // ResolveProviderWithReason is ResolveProvider with the routing decision
 // classified for observability. Does not consider fallback chains — use
 // ResolveFallbackChainWithReason first when the resolved provider might be
@@ -272,6 +475,13 @@ func ResolveProviderWithReason(
 	isProviderSupported func(string) bool,
 ) ProviderResolution {
 	provider := ResolveProvider(adapter, defaultClientName, introspectedProvider)
+	// Fold strategy aliases (RR + fallback) onto canonical spellings so
+	// the classification switch below sees one form per strategy. A
+	// runtime registry entry using the bare "fallback" or "round-robin"
+	// alias would otherwise slip past the "baml-fallback" /
+	// "baml-roundrobin" arms and get treated as an unsupported single-
+	// provider string.
+	provider = normalizeStrategyProvider(provider)
 
 	// Determine the effective client name after primary override. This is
 	// what the metadata Client field should report, even when the provider
@@ -283,25 +493,83 @@ func ResolveProviderWithReason(
 
 	res := ProviderResolution{Client: clientName, Provider: provider}
 
+	// Both strategy arms below check for an invalid runtime
+	// `options.strategy` override and surface PathReasonInvalidStrategyOverride
+	// so the legacy plan distinguishes "operator typo" from a valid
+	// strategy that legitimately routes legacy. Without this, a malformed
+	// override would surface as PathReasonRoundRobin or empty (fallback)
+	// on the legacy plan, hiding the actual classification from
+	// operators reading metadata. The codegen-side gate is unchanged —
+	// the request still falls through to legacy because BuildRequest
+	// can't drive a strategy client whose chain we refuse to resolve.
+	reg := adapter.OriginalClientRegistry()
+
 	switch provider {
 	case "":
 		res.Path = "legacy"
-		res.PathReason = PathReasonEmptyProvider
+		// Distinguish "no provider configured anywhere" from "registry
+		// supplied an explicit empty provider string". Both surface as
+		// "" out of ResolveProvider, but the latter is a malformed
+		// runtime override that BAML's ClientProvider::from_str
+		// rejects (clientspec.rs:119-144); operators reading
+		// X-BAML-Path-Reason should see the actual cause.
+		//
+		// The check covers all three lookup keys ResolveProvider
+		// consults so a present-empty entry on any of them surfaces
+		// the right reason:
+		//
+		//   - clientName (= primary when set, else defaultClientName):
+		//     the client metadata reports.
+		//   - reg.Primary: the primary override itself, in case the
+		//     primary cache hid a present-empty provider.
+		//   - defaultClientName: the function's declared default,
+		//     which ResolveProvider falls through to when the primary
+		//     entry has no provider key. With primary set and no
+		//     primary `clients[]` entry, ResolveProvider returns ""
+		//     from the default lookup; the classifier needs a
+		//     checkpoint for it so it reports the
+		//     malformed-override reason rather than the generic
+		//     empty-provider reason.
+		switch {
+		case hasInvalidProviderOverride(reg, clientName):
+			res.PathReason = PathReasonInvalidProviderOverride
+		case reg != nil && reg.Primary != nil && *reg.Primary != "" && hasInvalidProviderOverride(reg, *reg.Primary):
+			res.PathReason = PathReasonInvalidProviderOverride
+		case hasInvalidProviderOverride(reg, defaultClientName):
+			res.PathReason = PathReasonInvalidProviderOverride
+		default:
+			res.PathReason = PathReasonEmptyProvider
+		}
 	case "baml-fallback":
 		res.Strategy = "baml-fallback"
 		res.Path = "legacy"
-		// PathReason is intentionally left empty here. Callers that care
-		// about the fallback classification (BuildLegacyMetadataPlan,
-		// router) invoke ResolveFallbackChainWithReason for the
-		// definitive reason — empty-chain, empty-child-provider,
-		// all-legacy, or "" (drivable). Pre-seeding a reason here would
-		// shadow the real classification when the request goes legacy
-		// for unrelated reasons (feature gate off, etc.) on a perfectly
-		// valid chain.
+		if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
+			res.PathReason = PathReasonInvalidStrategyOverride
+		}
+		// Otherwise PathReason is intentionally left empty here.
+		// Callers that care about the fallback classification
+		// (BuildLegacyMetadataPlan, router) invoke
+		// ResolveFallbackChainWithReason for the definitive reason —
+		// empty-chain, empty-child-provider, all-legacy, or ""
+		// (drivable). Pre-seeding a reason here would shadow the real
+		// classification when the request goes legacy for unrelated
+		// reasons (feature gate off, etc.) on a perfectly valid chain.
 	case "baml-roundrobin":
 		res.Strategy = "baml-roundrobin"
 		res.Path = "legacy"
-		res.PathReason = PathReasonRoundRobin
+		// Strategy / start invalidity both route to legacy via the same
+		// ErrInvalid* sentinel translation in ResolveEffectiveClient;
+		// the metadata reason just records WHICH option failed so
+		// operators reading X-BAML-Path-Reason can distinguish them.
+		// Strategy is checked first since `strategy` is the primary RR
+		// option and BAML upstream parses it before `start`.
+		if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
+			res.PathReason = PathReasonInvalidStrategyOverride
+		} else if hasInvalidStartOverride(reg, clientName) {
+			res.PathReason = PathReasonInvalidRoundRobinStartOverride
+		} else {
+			res.PathReason = PathReasonRoundRobin
+		}
 	default:
 		if isProviderSupported != nil && isProviderSupported(provider) {
 			res.Path = "buildrequest"
@@ -347,6 +615,31 @@ func BuildSingleProviderPlan(
 	return plan
 }
 
+// BuildSingleProviderPlanForClient is the primary-override-free sibling of
+// BuildSingleProviderPlan. Use after ResolveEffectiveClient has already
+// produced the effective client name (post-primary and post-RR unwrap) —
+// clientName is recorded verbatim as plan.Client.
+func BuildSingleProviderPlanForClient(
+	clientName string,
+	provider string,
+	retryPolicy *retry.Policy,
+	buildRequestAPI string,
+) *bamlutils.Metadata {
+	plan := &bamlutils.Metadata{
+		Phase:           bamlutils.MetadataPhasePlanned,
+		Path:            "buildrequest",
+		BuildRequestAPI: buildRequestAPI,
+		Client:          clientName,
+		Provider:        provider,
+		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+	return plan
+}
+
 // BuildFallbackChainPlan constructs planned metadata for a request routed
 // through the BuildRequest path as a fallback strategy. chain/providers/
 // legacyChildren are the resolved values from ResolveFallbackChain.
@@ -361,6 +654,7 @@ func BuildFallbackChainPlan(
 	legacyChildren map[string]bool,
 	retryPolicy *retry.Policy,
 	buildRequestAPI string,
+	pathReason string,
 ) *bamlutils.Metadata {
 	clientName := defaultClientName
 	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
@@ -372,6 +666,7 @@ func BuildFallbackChainPlan(
 		BuildRequestAPI: buildRequestAPI,
 		Client:          clientName,
 		Strategy:        "baml-fallback",
+		PathReason:      pathReason,
 		Chain:           append([]string(nil), chain...),
 		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
 	}
@@ -394,6 +689,56 @@ func BuildFallbackChainPlan(
 	return plan
 }
 
+// BuildFallbackChainPlanForClient is the primary-override-free sibling of
+// BuildFallbackChainPlan. Use after ResolveEffectiveClient has already
+// produced the effective client name.
+//
+// pathReason carries the informational classification from the
+// `WithReason` resolver — most commonly either empty (fully supported
+// chain, no notes) or PathReasonFallbackRoundRobinChildLegacy (chain
+// contains a baml-roundrobin child whose rotation is left to BAML's
+// runtime on each worker). Callers should pass the reason produced
+// by ResolveFallbackChainForClientWithReason so metadata consumers
+// see the composition rather than the generic "buildrequest
+// fallback" shape.
+func BuildFallbackChainPlanForClient(
+	clientName string,
+	chain []string,
+	providers map[string]string,
+	legacyChildren map[string]bool,
+	retryPolicy *retry.Policy,
+	buildRequestAPI string,
+	pathReason string,
+) *bamlutils.Metadata {
+	plan := &bamlutils.Metadata{
+		Phase:           bamlutils.MetadataPhasePlanned,
+		Path:            "buildrequest",
+		BuildRequestAPI: buildRequestAPI,
+		Client:          clientName,
+		Strategy:        "baml-fallback",
+		PathReason:      pathReason,
+		Chain:           append([]string(nil), chain...),
+		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+	if len(legacyChildren) > 0 {
+		names := make([]string, 0, len(legacyChildren))
+		for _, child := range chain {
+			if legacyChildren[child] {
+				names = append(names, child)
+			}
+		}
+		if len(names) > 0 {
+			plan.LegacyChildren = names
+		}
+	}
+	_ = providers
+	return plan
+}
+
 // BuildLegacyMetadataPlan constructs the planned metadata for a request that
 // will run on the legacy CallStream+OnTick path. Called by the generated
 // per-method legacy helpers (runNoRawOrchestration / runFullOrchestration
@@ -405,7 +750,12 @@ func BuildFallbackChainPlan(
 //   - unsupported or empty provider
 //   - fallback strategy not routable (empty chain, empty child provider,
 //     or all-legacy chain)
-//   - baml-roundrobin (intentionally legacy-only)
+//   - fallback chain contains a baml-roundrobin child whose rotation is
+//     left to BAML's per-worker runtime (PathReasonFallbackRoundRobinChildLegacy)
+//   - an unresolved baml-roundrobin top-level client — fires only on
+//     older adapters without SupportsWithClient, or defensively if RR
+//     resolution reached this builder without being unwrapped upstream
+//     (PathReasonRoundRobin)
 //
 // The plan includes retry policy information when a policy resolves, and
 // chain/legacyChildren information for strategy clients.
@@ -451,29 +801,32 @@ func BuildLegacyMetadataPlan(
 			adapter, defaultClientName, fallbackChains, clientProviders, isProviderSupported,
 		)
 		plan.PathReason = reason
-		// chain is nil when BuildRequest rejected the chain; fall back to
-		// the introspected chain so the plan still names the children.
-		// Look up by the runtime-resolved client first (resolution.Client
-		// already accounts for primary overrides) — falling through to
-		// defaultClientName only when the override doesn't list a chain.
+		// chain is nil when BuildRequest rejected the chain; rebuild
+		// from the runtime-resolved client (resolution.Client already
+		// accounts for primary overrides) so the plan still names the
+		// children. Use resolveFallbackStrategyChain rather than a
+		// direct map lookup so a runtime `strategy` override on the
+		// fallback client is honoured — without this, metadata would
+		// describe the wrong chain whenever a request used a runtime
+		// strategy option.
+		//
+		// Critically, key only on resolution.Client. Falling through
+		// to `defaultClientName`'s chain when the runtime client has
+		// no resolvable chain emits metadata with `Client=<runtime>`,
+		// `Chain=<defaultClient's chain>` — a mismatch that misleads
+		// operators when a primary override points at a fallback
+		// client with an invalid strategy override or empty chain.
+		// Leaving plan.Chain empty in that case keeps the metadata
+		// honest about what happens at runtime.
 		if chain == nil {
-			// Go through resolveFallbackStrategyChain, not a direct map
-			// lookup, so a runtime `strategy` option on the fallback
-			// client (via client_registry) is honoured. Falling straight
-			// to fallbackChains[...] silently ignored these overrides,
-			// making the metadata describe the wrong chain whenever a
-			// request used a runtime strategy option.
 			reg := adapter.OriginalClientRegistry()
 			chain = resolveFallbackStrategyChain(reg, resolution.Client, fallbackChains)
-			if chain == nil {
-				chain = resolveFallbackStrategyChain(reg, defaultClientName, fallbackChains)
-			}
 			// Resolve each child's provider through the runtime registry
 			// before consulting the static introspected map.
 			providers = make(map[string]string, len(chain))
 			legacy = make(map[string]bool)
 			for _, child := range chain {
-				p := resolveChildProvider(reg, child, clientProviders)
+				p := ResolveClientProvider(reg, child, clientProviders)
 				providers[child] = p
 				if p == "" || (isProviderSupported != nil && !isProviderSupported(p)) {
 					legacy[child] = true
@@ -505,14 +858,158 @@ func BuildLegacyMetadataPlan(
 	return plan
 }
 
-// ResolveFallbackChainWithReason wraps ResolveFallbackChain and returns a
-// classification alongside the usual (chain, providers, legacyChildren)
-// triple. The reason is empty when BuildRequest can drive the chain
-// (partially or fully); otherwise it is one of the PathReason* constants
-// describing why the chain degrades to legacy.
+// BuildLegacyMetadataPlanForClient is the primary-override-free sibling of
+// BuildLegacyMetadataPlan. The caller is expected to have already resolved
+// the effective client name (e.g. after applying the primary override and
+// any round-robin unwrap). No further primary lookup happens here — the
+// supplied clientName is treated as authoritative.
 //
-// When reason is non-empty the chain/providers/legacyChildren returns are
-// all nil, matching ResolveFallbackChain's contract.
+// Provider resolution for the effective client falls back from the runtime
+// registry to introspectedProvider when neither the registry override nor
+// the static introspected map names one.
+func BuildLegacyMetadataPlanForClient(
+	reg *bamlutils.ClientRegistry,
+	clientName string,
+	introspectedProvider string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+	retryPolicy *retry.Policy,
+) *bamlutils.Metadata {
+	provider := ResolveClientProvider(reg, clientName, clientProviders)
+	// ResolveClientProvider returns "" both for "no provider configured"
+	// and "present-empty override". In the absent case we want the
+	// introspected provider as a metadata fallback so the plan still
+	// names something. In the present-empty case we keep "" so the
+	// classification below records PathReasonInvalidProviderOverride
+	// — substituting the introspected provider here would mask the
+	// invalid override on metadata.
+	if provider == "" && !hasInvalidProviderOverride(reg, clientName) {
+		provider = introspectedProvider
+	}
+	// Fold strategy aliases (RR + fallback) onto canonical spellings so
+	// the classification switch below sees one form per strategy. A
+	// runtime client_registry entry that used BAML's hyphenated RR form
+	// or the bare "fallback" alias would otherwise fall through to the
+	// default branch and get classified as an unsupported single-
+	// provider. The resolver's own IsRoundRobinProvider and
+	// canonicaliseProvider in cmd/introspect already fold these aliases;
+	// this mirrors that for the metadata path.
+	provider = normalizeStrategyProvider(provider)
+
+	plan := &bamlutils.Metadata{
+		Phase:       bamlutils.MetadataPhasePlanned,
+		Path:        "legacy",
+		Client:      clientName,
+		RetryPolicy: EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+
+	switch provider {
+	case "":
+		if hasInvalidProviderOverride(reg, clientName) {
+			plan.PathReason = PathReasonInvalidProviderOverride
+		} else {
+			plan.PathReason = PathReasonEmptyProvider
+		}
+	case "baml-fallback":
+		plan.Strategy = "baml-fallback"
+		chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+			reg, clientName, fallbackChains, clientProviders, isProviderSupported,
+		)
+		plan.PathReason = reason
+		if chain == nil {
+			chain = resolveFallbackStrategyChain(reg, clientName, fallbackChains)
+			providers = make(map[string]string, len(chain))
+			legacy = make(map[string]bool)
+			for _, child := range chain {
+				p := ResolveClientProvider(reg, child, clientProviders)
+				providers[child] = p
+				if p == "" || (isProviderSupported != nil && !isProviderSupported(p)) {
+					legacy[child] = true
+				}
+			}
+		}
+		if len(chain) > 0 {
+			plan.Chain = append([]string(nil), chain...)
+			if len(legacy) > 0 {
+				names := make([]string, 0, len(legacy))
+				for _, child := range chain {
+					if legacy[child] {
+						names = append(names, child)
+					}
+				}
+				plan.LegacyChildren = names
+			}
+			_ = providers
+		}
+	case "baml-roundrobin":
+		// RoundRobin is normally resolved upstream before the legacy
+		// plan is built. We reach here in three cases:
+		//   - The RR resolver returned an error (cycle / empty chain)
+		//     and the caller fell through with the unresolved client
+		//     name.
+		//   - ResolveEffectiveClient short-circuited an invalid runtime
+		//     strategy override by returning the un-unwrapped client.
+		//     The routing is correct (legacy) but the *emitted
+		//     metadata* needs to reflect WHY — operators reading the
+		//     X-BAML-Path-Reason header should see the invalid-
+		//     override classification, not the generic RR-legacy
+		//     reason.
+		//   - ResolveEffectiveClient short-circuited an invalid runtime
+		//     `options.start` override. Same treatment as the strategy
+		//     case but a distinct reason so operators can tell which
+		//     option was malformed.
+		plan.Strategy = "baml-roundrobin"
+		if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
+			plan.PathReason = PathReasonInvalidStrategyOverride
+		} else if hasInvalidStartOverride(reg, clientName) {
+			plan.PathReason = PathReasonInvalidRoundRobinStartOverride
+		} else {
+			plan.PathReason = PathReasonRoundRobin
+		}
+	default:
+		plan.Provider = provider
+		if isProviderSupported != nil && !isProviderSupported(provider) {
+			plan.PathReason = PathReasonUnsupportedProvider
+		}
+	}
+
+	if plan.PathReason == "" && !UseBuildRequest() {
+		plan.PathReason = PathReasonBuildRequestDisabled
+	}
+
+	return plan
+}
+
+// ResolveFallbackChainWithReason wraps ResolveFallbackChain and returns
+// a classification alongside the usual (chain, providers, legacyChildren)
+// triple.
+//
+// `chain == nil` is the hard-failure signal: BuildRequest cannot drive
+// the request and the caller must fall through to legacy. `chain != nil`
+// means BuildRequest can drive the chain (potentially with mixed-mode
+// children).
+//
+// `reason` is *both* a hard-failure code and an informational tag,
+// distinguished by the chain:
+//
+//   - chain == nil, reason == "": the client is not a fallback strategy
+//     (caller's top-level classification handles the path).
+//   - chain == nil, reason != "": hard failure context — one of
+//     PathReasonInvalidStrategyOverride, PathReasonFallbackEmptyChain,
+//     PathReasonFallbackEmptyChildProvider, PathReasonFallbackAllLegacy.
+//   - chain != nil, reason == "": fully drivable chain.
+//   - chain != nil, reason == PathReasonFallbackRoundRobinChildLegacy:
+//     drivable chain that contains a baml-roundrobin child whose
+//     rotation is left to BAML's per-worker runtime. Informational
+//     metadata, not a failure — callers use the chain normally.
+//
+// Callers gate on `len(chain) > 0` for the hard routing decision and
+// pass `reason` straight through to metadata.
 func ResolveFallbackChainWithReason(
 	adapter bamlutils.Adapter,
 	defaultClientName string,
@@ -531,11 +1028,42 @@ func ResolveFallbackChainWithReason(
 		clientName = *reg.Primary
 	}
 
-	parentProvider := resolveChildProvider(reg, clientName, clientProviders)
+	return ResolveFallbackChainForClientWithReason(reg, clientName, fallbackChains, clientProviders, isProviderSupported)
+}
+
+// ResolveFallbackChainForClientWithReason is the primary-override-free
+// sibling of ResolveFallbackChainWithReason. Callers that have already
+// resolved the effective client name (e.g. after external round-robin
+// unwrap) pass that name directly; no further primary lookup or RR
+// unwrap happens inside.
+//
+// Return contract matches the sibling. `chain == nil` is the hard-
+// failure signal; `chain != nil` is drivable. `reason` is hard-failure
+// context when `chain == nil` and informational metadata
+// (PathReasonFallbackRoundRobinChildLegacy) when `chain != nil`.
+// Callers gate on `len(chain) > 0` for routing.
+func ResolveFallbackChainForClientWithReason(
+	reg *bamlutils.ClientRegistry,
+	clientName string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+) (chain []string, providers map[string]string, legacyChildren map[string]bool, reason string) {
+	parentProvider := ResolveClientProvider(reg, clientName, clientProviders)
 	if parentProvider != "baml-fallback" {
 		// Not a fallback client — caller decides the path from the
 		// top-level ResolveProviderWithReason classification instead.
 		return nil, nil, nil, ""
+	}
+
+	// Detect a present-but-unparseable runtime strategy override before
+	// chain resolution. Returning PathReasonInvalidStrategyOverride here
+	// causes the codegen-side `len(chain) > 0` gate to fall through to
+	// legacy, where BAML's runtime emits the canonical
+	// ensure_strategy error rather than us silently using the
+	// introspected chain.
+	if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
+		return nil, nil, nil, PathReasonInvalidStrategyOverride
 	}
 
 	resolvedChain := resolveFallbackStrategyChain(reg, clientName, fallbackChains)
@@ -546,15 +1074,27 @@ func ResolveFallbackChainWithReason(
 	chainProviders := make(map[string]string, len(resolvedChain))
 	chainLegacy := make(map[string]bool)
 	legacyPositions := 0
+	hasRoundRobinChild := false
 	for _, child := range resolvedChain {
-		p := resolveChildProvider(reg, child, clientProviders)
+		p := ResolveClientProvider(reg, child, clientProviders)
 		if p == "" {
 			return nil, nil, nil, PathReasonFallbackEmptyChildProvider
 		}
 		chainProviders[child] = p
-		if !isProviderSupported(p) {
+		// A nil support check means the caller couldn't determine support,
+		// not "nothing is supported" — treat every child as drivable in
+		// that case rather than panicking on the nil-func call or
+		// misclassifying the whole chain as legacy.
+		if isProviderSupported != nil && !isProviderSupported(p) {
 			chainLegacy[child] = true
 			legacyPositions++
+		}
+		// Detect any RR-provider child. Note: roundrobin.IsRoundRobinProvider
+		// folds all three spellings (baml-roundrobin / baml-round-robin /
+		// round-robin) onto the same classification so runtime registry
+		// overrides using any form are caught.
+		if roundrobin.IsRoundRobinProvider(p) {
+			hasRoundRobinChild = true
 		}
 	}
 
@@ -562,17 +1102,41 @@ func ResolveFallbackChainWithReason(
 		return nil, nil, nil, PathReasonFallbackAllLegacy
 	}
 
+	// Informational reason for mixed-mode chains that contain an RR
+	// child. The chain still runs: non-RR children take the BuildRequest
+	// path, and the RR child is handled by BAML's runtime on each worker
+	// (per-worker rotation, not centralised). Surface the composition in
+	// metadata so operators can distinguish it from a single-level RR,
+	// which IS centralised via the SharedState broker. Centralised
+	// unwrapping of RR children inside fallback chains is deferred.
+	if hasRoundRobinChild {
+		return resolvedChain, chainProviders, chainLegacy, PathReasonFallbackRoundRobinChildLegacy
+	}
+
 	return resolvedChain, chainProviders, chainLegacy, ""
 }
 
-// ResolveRetryPolicy determines the retry policy for a function. Resolution
-// order mirrors ResolveProvider so the same runtime client drives both
-// provider selection and retry behaviour:
-//  1. Per-request override from adapter.RetryConfig() (__baml_options__.retry)
-//  2. Primary client's retry_policy from runtime client_registry
-//  3. Named-client retry_policy for the function's default client in
-//     client_registry.clients
-//  4. Static introspected default from FunctionRetryPolicy → RetryPolicies
+// ResolveRetryPolicy determines the retry policy for a function.
+// Resolution order, in priority:
+//
+//  1. Per-request override from adapter.RetryConfig()
+//     (__baml_options__.retry).
+//  2. Runtime client_registry retry_policy lookup, scoped by primary:
+//     - When `reg.Primary` is non-nil and non-empty, ONLY consider the
+//       primary client's RetryPolicy (look up `reg.Clients` for the entry
+//       whose Name == *reg.Primary; if that entry has a non-nil
+//       RetryPolicy, dereference it via introspectedPolicies and return).
+//       The function-default runtime client (defaultClientName) is NOT
+//       consulted — the primary is the one actually being used for
+//       streaming, so inheriting a different client's retry config would
+//       cross wires. If the primary entry is missing or has no
+//       RetryPolicy, fall through to step 3.
+//     - When primary is nil or "", consult the function-default runtime
+//       client: scan reg.Clients for the entry whose Name ==
+//       defaultClientName; if found and its RetryPolicy is non-nil,
+//       dereference via introspectedPolicies and return.
+//  3. Static introspected default: introspectedPolicies[introspectedPolicyName]
+//     where introspectedPolicyName comes from FunctionRetryPolicy[method].
 //
 // introspectedPolicyName is the policy name from FunctionRetryPolicy[method].
 // introspectedPolicies is the full RetryPolicies map from introspection.
@@ -589,12 +1153,17 @@ func ResolveRetryPolicy(
 
 	// 2. Client-level retry_policy from runtime client_registry.
 	if reg := adapter.OriginalClientRegistry(); reg != nil {
-		// When primary is set, only check the primary client's retry_policy.
-		// Do NOT fall through to the default client — the primary client
-		// is the one actually being used for streaming, so inheriting a
-		// different client's retry policy would be incorrect. If the primary
-		// has no retry_policy, skip straight to the introspected default.
-		if reg.Primary != nil {
+		// When primary is set (and non-empty), only check the primary
+		// client's retry_policy. Do NOT fall through to the default
+		// client — the primary client is the one actually being used
+		// for streaming, so inheriting a different client's retry
+		// policy would be incorrect. If the primary has no
+		// retry_policy, skip straight to the introspected default.
+		// Present-empty primary (`"primary": ""`) is treated the same
+		// as nil here (matching the adapter SetClientRegistry guard)
+		// so the function's default client retry policy is consulted
+		// rather than skipped on a no-op payload.
+		if reg.Primary != nil && *reg.Primary != "" {
 			for _, client := range reg.Clients {
 				if client == nil {
 					continue
@@ -622,7 +1191,7 @@ func ResolveRetryPolicy(
 		}
 	}
 
-	// 4. Static introspected default
+	// 3. Static introspected default.
 	if introspectedPolicyName != "" {
 		return introspectedPolicies[introspectedPolicyName]
 	}
@@ -672,20 +1241,69 @@ func RetryConfigToPolicy(rc *bamlutils.RetryConfig) *retry.Policy {
 	return p
 }
 
-// resolveChildProvider returns the provider for a named client, checking
+// normalizeStrategyProvider folds the BAML strategy aliases that
+// clientspec.rs accepts onto the canonical baml-rest spellings used in
+// the classification switches downstream. Both round-robin and
+// fallback have a "with-prefix" and "without-prefix" form upstream:
+//
+//   - "round-robin" / "baml-round-robin" / "baml-roundrobin"
+//     → "baml-roundrobin"
+//   - "fallback" / "baml-fallback" → "baml-fallback"
+//
+// Without this normalisation, a runtime client_registry entry that
+// used the bare "fallback" alias (the form the BAML CLI init template
+// uses) would slip past the "baml-fallback" arm in
+// ResolveProviderWithReason and fall to legacy via
+// PathReasonUnsupportedProvider — losing chain plan, mixed-mode child
+// handling, and RR-child plumbing.
+//
+// roundrobin.NormalizeProvider already covers the RR aliases; we keep
+// this one-call helper to apply both classes at every classification
+// seam without each call site duplicating the alias check.
+func normalizeStrategyProvider(provider string) string {
+	provider = roundrobin.NormalizeProvider(provider)
+	if provider == "fallback" {
+		return "baml-fallback"
+	}
+	return provider
+}
+
+// ResolveClientProvider returns the provider for a named client, checking
 // runtime client_registry overrides before the introspected defaults. This
-// mirrors ResolveProvider's per-client resolution (lines 104-112) so that
-// runtime overrides that change a child's provider are respected for both
+// mirrors ResolveProvider's per-client resolution so that runtime
+// overrides that change a child's provider are respected for both
 // extraction format selection and the supported-provider gate.
-func resolveChildProvider(reg *bamlutils.ClientRegistry, clientName string, introspectedProviders map[string]string) string {
+//
+// The returned provider is normalised through normalizeStrategyProvider
+// so callers see one canonical spelling per strategy regardless of
+// which alias the .baml source or runtime registry used.
+//
+// Presence semantics:
+//
+//   - registry entry absent or has no provider key: fall back to the
+//     introspected provider, preserving strategy-only and presence-
+//     only overrides (a common shape in tests and in production
+//     dynamic-RR flows).
+//   - registry entry present with a non-empty provider: normalize and
+//     use the override.
+//   - registry entry present with an empty provider: return "" so the
+//     caller's IsProviderSupported gate fails and the request falls
+//     through to legacy. BAML upstream rejects empty provider strings
+//     (clientspec.rs:119-144); routing to legacy lets BAML emit its
+//     native invalid-provider error rather than us silently using the
+//     introspected fallback.
+func ResolveClientProvider(reg *bamlutils.ClientRegistry, clientName string, introspectedProviders map[string]string) string {
 	if reg != nil {
 		for _, client := range reg.Clients {
-			if client != nil && client.Name == clientName && client.Provider != "" {
-				return client.Provider
+			if client != nil && client.Name == clientName && client.IsProviderPresent() {
+				if client.Provider == "" {
+					return ""
+				}
+				return normalizeStrategyProvider(client.Provider)
 			}
 		}
 	}
-	return introspectedProviders[clientName]
+	return normalizeStrategyProvider(introspectedProviders[clientName])
 }
 
 func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlutils.ClientProperty {
@@ -700,78 +1318,61 @@ func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlut
 	return nil
 }
 
-func parseRuntimeStrategyOption(v any) []string {
-	normalizeStrategyToken := func(token string) string {
-		token = strings.TrimSpace(token)
-		if len(token) >= 2 {
-			if (token[0] == '"' && token[len(token)-1] == '"') || (token[0] == '\'' && token[len(token)-1] == '\'') {
-				token = token[1 : len(token)-1]
-			}
-		}
-		return strings.TrimSpace(token)
+// hasInvalidProviderOverride reports whether the runtime registry has
+// an entry for clientName whose `provider` key was supplied with the
+// empty string. BAML upstream's ClientProvider::from_str rejects empty
+// provider strings (clientspec.rs:119-144); ResolveProvider already
+// surfaces the empty value verbatim (rather than falling through to
+// the introspected provider) so the codegen gate routes the request
+// to legacy. This helper lets the metadata classifier distinguish
+// "operator sent provider:''" from "no provider configured anywhere"
+// — emitting PathReasonInvalidProviderOverride versus
+// PathReasonEmptyProvider respectively.
+//
+// Returns false when the registry is absent, the entry is missing, or
+// the entry simply omits the `provider` key (a strategy-only or
+// presence-only override that should keep using the introspected
+// provider).
+func hasInvalidProviderOverride(reg *bamlutils.ClientRegistry, clientName string) bool {
+	if reg == nil || clientName == "" {
+		return false
 	}
+	for _, c := range reg.Clients {
+		if c == nil || c.Name != clientName {
+			continue
+		}
+		return c.IsProviderPresent() && c.Provider == ""
+	}
+	return false
+}
 
-	splitStrategy := func(s string) []string {
-		s = strings.TrimSpace(s)
-		if strings.HasPrefix(s, "strategy ") {
-			s = strings.TrimSpace(strings.TrimPrefix(s, "strategy "))
-		}
-		if strings.HasPrefix(s, "[") {
-			s = s[1:]
-		}
-		if closeIdx := strings.LastIndex(s, "]"); closeIdx >= 0 {
-			s = s[:closeIdx]
-		}
-		parts := strings.FieldsFunc(s, func(r rune) bool {
-			return r == ',' || r == ' ' || r == '\t' || r == '\n'
-		})
-		chain := make([]string, 0, len(parts))
-		for _, part := range parts {
-			part = normalizeStrategyToken(part)
-			if part != "" {
-				chain = append(chain, part)
-			}
-		}
-		return chain
+// hasInvalidStartOverride reports whether the runtime registry has an
+// entry for clientName whose `options.start` value is present but
+// unparseable as an integer. Mirrors hasInvalidProviderOverride for
+// the `start` option so the metadata classifier can surface
+// PathReasonInvalidRoundRobinStartOverride distinctly from the
+// generic invalid-strategy / RR-legacy reasons.
+//
+// Returns false when the registry is absent, the entry is missing,
+// the entry has no options, the `start` key is absent, or the value
+// parses successfully — in all of which the metadata classifier
+// should keep its existing reason.
+func hasInvalidStartOverride(reg *bamlutils.ClientRegistry, clientName string) bool {
+	rc := findRuntimeClient(reg, clientName)
+	if rc == nil {
+		return false
 	}
-
-	switch vv := v.(type) {
-	case string:
-		return splitStrategy(vv)
-	case []string:
-		chain := make([]string, 0, len(vv))
-		for _, item := range vv {
-			item = normalizeStrategyToken(item)
-			if item != "" {
-				chain = append(chain, item)
-			}
-		}
-		return chain
-	case []any:
-		chain := make([]string, 0, len(vv))
-		for _, item := range vv {
-			str, ok := item.(string)
-			if !ok {
-				return nil
-			}
-			str = normalizeStrategyToken(str)
-			if str != "" {
-				chain = append(chain, str)
-			}
-		}
-		return chain
-	default:
-		return nil
-	}
+	_, present, valid := roundrobin.InspectStartOverride(rc.Options)
+	return present && !valid
 }
 
 func resolveFallbackStrategyChain(reg *bamlutils.ClientRegistry, clientName string, introspectedChains map[string][]string) []string {
-	if runtimeClient := findRuntimeClient(reg, clientName); runtimeClient != nil && runtimeClient.Options != nil {
-		if rawStrategy, ok := runtimeClient.Options["strategy"]; ok {
-			if chain := parseRuntimeStrategyOption(rawStrategy); len(chain) > 0 {
-				return chain
-			}
-		}
+	chain, present, valid := roundrobin.InspectStrategyOverride(reg, clientName)
+	if present && !valid {
+		return nil
+	}
+	if chain != nil {
+		return chain
 	}
 	return introspectedChains[clientName]
 }
@@ -816,13 +1417,21 @@ func ResolveFallbackChain(
 		clientName = *reg.Primary
 	}
 
-	// Only support baml-fallback in the BuildRequest path. baml-roundrobin
-	// requires cross-request state to distribute load (each new request
-	// should start at a different child), which the per-request orchestrator
-	// does not have. Without it, round-robin degrades to fallback (always
-	// starting at child 0), which is silently wrong. Leave round-robin on
-	// the legacy path where the BAML runtime handles the rotation.
-	parentProvider := resolveChildProvider(reg, clientName, clientProviders)
+	return ResolveFallbackChainForClient(reg, clientName, fallbackChains, clientProviders, isProviderSupported)
+}
+
+// ResolveFallbackChainForClient is the primary-override-free sibling of
+// ResolveFallbackChain. Use this after an external resolver has already
+// determined the effective client name (e.g. round-robin unwrap) — it
+// skips primary-override resolution and treats clientName as authoritative.
+func ResolveFallbackChainForClient(
+	reg *bamlutils.ClientRegistry,
+	clientName string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+) (chain []string, providers map[string]string, legacyChildren map[string]bool) {
+	parentProvider := ResolveClientProvider(reg, clientName, clientProviders)
 	if parentProvider != "baml-fallback" {
 		return nil, nil, nil
 	}
@@ -848,23 +1457,22 @@ func ResolveFallbackChain(
 	legacyChildren = make(map[string]bool)
 	legacyPositions := 0
 	for _, child := range chain {
-		p := resolveChildProvider(reg, child, clientProviders)
+		p := ResolveClientProvider(reg, child, clientProviders)
 		if p == "" {
 			return nil, nil, nil
 		}
 		providers[child] = p
-		if !isProviderSupported(p) {
+		// Nil support check means "caller didn't supply a filter"; defer
+		// the decision to the caller rather than treating every provider
+		// as unsupported (which would collapse the chain to all-legacy).
+		if isProviderSupported != nil && !isProviderSupported(p) {
 			legacyChildren[child] = true
 			legacyPositions++
 		}
 	}
 
 	// If every chain position is legacy, there is nothing for BuildRequest
-	// to do — the entire chain degenerates to legacy, and the caller is
-	// better off routing the request through the existing
-	// CallStream+OnTick path which can handle the chain wholesale (and
-	// preserves any runtime-specific behaviours like round-robin that
-	// BAML exposes for all-legacy strategies).
+	// to do — the entire chain degenerates to legacy.
 	if legacyPositions == len(chain) {
 		return nil, nil, nil
 	}
@@ -907,6 +1515,14 @@ type StreamConfig struct {
 	// When empty, the single Provider is used for all attempts.
 	FallbackChain []string
 
+	// ClientOverride, when non-empty, is passed as the clientOverride
+	// argument to buildRequest for single-provider attempts (FallbackChain
+	// empty). Used by the round-robin path to direct BAML to build the
+	// request for the RR-selected leaf client rather than the function's
+	// default. Ignored for fallback-chain attempts — those iterate child
+	// names and pass each as the per-attempt override.
+	ClientOverride string
+
 	// ClientProviders maps child client names to their provider strings.
 	// Used with FallbackChain to resolve the provider for each attempt.
 	// In mixed-mode chains this map includes both BuildRequest-supported
@@ -926,8 +1542,10 @@ type StreamConfig struct {
 
 	// MetadataPlan is the pre-computed planned metadata for this request.
 	// When non-nil, the orchestrator emits a single planned metadata event
-	// right after the first heartbeat fires (so clients observe liveness
-	// before routing decisions) and, on success, an outcome metadata event
+	// upfront — before any HTTP work — so the routing decision is observable
+	// even when the upstream provider never produces a 2xx (e.g., immediate
+	// validation failure or hung connection). Heartbeat fires later on
+	// upstream 2xx, and the outcome metadata event is emitted on success
 	// right before the final result. Nil disables metadata emission.
 	//
 	// The orchestrator populates the outcome event's winner fields (winner
@@ -1035,6 +1653,70 @@ func RunStreamOrchestration(
 		httpClient = llmhttp.DefaultClient
 	}
 
+	var heartbeatSent atomic.Bool
+
+	// sawStreamFrame tracks whether the current child/attempt window
+	// actually queued a non-reset StreamResultKindStream frame to
+	// `out`. Set inside tryOneStreamChild's trySendPartial only on the
+	// successful-send branch — drop-on-buffer-full and ctx.Done paths
+	// must NOT count, because the client never received those frames
+	// and there is no partial state to discard.
+	//
+	// Reset markers (StreamResultKindStream with reset=true) emitted
+	// at fallback-child handoff and retry callbacks are gated on this
+	// flag: a reset marker before any actual partial frame produces a
+	// false first-byte signal in the pool's hung detector
+	// (pool/pool.go:1415-1427 treats any non-planned-metadata kind as
+	// progress), letting a stream that hadn't yet produced upstream
+	// bytes look alive. Gating on sawStreamFrame ensures the reset
+	// only fires when there's genuine downstream state the next
+	// window needs to clear.
+	//
+	// heartbeatSent's reset behavior is independent of this flag.
+	// Resetting heartbeatSent across windows still correctly re-arms
+	// per-attempt liveness via the next window's organic heartbeat;
+	// only the reset *marker* is harmful.
+	var sawStreamFrame atomic.Bool
+
+	// plannedMetadataOnce gates the single planned-metadata emission. It is
+	// strictly once-per-orchestrator-invocation: the sync.Once is never
+	// reset within RunStreamOrchestration. This is deliberately stronger
+	// than heartbeatSent's contract: heartbeatSent IS reset on fallback-
+	// child handoff (~line 1955) and retry callbacks (~line 2008) so the
+	// next child/retry can re-arm pool first-byte detection, but the
+	// planned metadata describes the whole orchestrator run and must fire
+	// exactly once regardless of how many children/retries that run
+	// consumes.
+	//
+	// Pool-level retries produce a fresh orchestrator invocation with a
+	// fresh Once, so each pool attempt gets its own planned emission
+	// (pool rewrites the Attempt field).
+	var plannedMetadataOnce sync.Once
+	emitPlannedMetadata := func() {
+		if config.MetadataPlan == nil || config.NewMetadataResult == nil {
+			return
+		}
+		plannedMetadataOnce.Do(func() {
+			plan := *config.MetadataPlan
+			plan.Phase = bamlutils.MetadataPhasePlanned
+			plan.Attempt = 0
+			r := config.NewMetadataResult(&plan)
+			select {
+			case out <- r:
+			default:
+				r.Release()
+			}
+		})
+	}
+
+	// Emit planned metadata BEFORE validation so the routing decision
+	// is observable on every path, including immediate validation
+	// failures. Order: emit planned → validate → return (with metadata
+	// already out) on error, or proceed on success. The
+	// plannedMetadataOnce gate keeps the contract idempotent for
+	// sendHeartbeat below.
+	emitPlannedMetadata()
+
 	// Validate the configured provider(s) up front so invalid fallback chains
 	// fail before any stream/reset events are emitted.
 	if len(config.FallbackChain) == 0 {
@@ -1063,38 +1745,28 @@ func RunStreamOrchestration(
 		}
 	}
 
-	var heartbeatSent atomic.Bool
-
-	// plannedMetadataOnce gates the single planned-metadata emission. It is
-	// deliberately separate from heartbeatSent — heartbeatSent resets on
-	// each inner retry (so retried attempts re-arm first-byte hung
-	// detection), but the planned metadata describes the whole orchestrator
-	// run and must fire exactly once. Pool-level retries produce a fresh
-	// orchestrator invocation with a fresh Once, so each pool attempt gets
-	// its own planned emission (pool rewrites the Attempt field).
-	var plannedMetadataOnce sync.Once
-	emitPlannedMetadata := func() {
-		if config.MetadataPlan == nil || config.NewMetadataResult == nil {
-			return
-		}
-		plannedMetadataOnce.Do(func() {
-			plan := *config.MetadataPlan
-			plan.Phase = bamlutils.MetadataPhasePlanned
-			plan.Attempt = 0
-			r := config.NewMetadataResult(&plan)
-			select {
-			case out <- r:
-			default:
-				r.Release()
-			}
-		})
-	}
-
-	// Send initial heartbeat for hung detection, then emit planned metadata.
-	// Metadata is always *after* the heartbeat so that (a) the pool's
-	// first-byte tracking sees the heartbeat as liveness and (b) the pool's
-	// mid-retry reset injection lands on metadata only when a retry is
-	// actually in progress (consumeStream honors Reset on Metadata kind).
+	// sendHeartbeat fires when the upstream provider returns 2xx and
+	// also nudges the planned-metadata emit (a no-op after the upfront
+	// emit above — the plannedMetadataOnce gate guarantees idempotency).
+	//
+	// Heartbeat is gated on heartbeatSent — idempotent until that flag
+	// is reset. The flag IS reset deliberately at two seams within a
+	// single orchestrator invocation, allowing one heartbeat per
+	// upstream attempt/child window rather than once per whole
+	// orchestrator:
+	//
+	//   - fallback-child handoff after a failed prior child (see the
+	//     reset around line 1955): the next child must be able to
+	//     emit a fresh heartbeat so the pool's first-byte hung
+	//     detection re-arms for that attempt.
+	//   - retry callback before the next retry attempt (see the reset
+	//     around line 2008): same liveness-rearm rationale, applied
+	//     to retry windows on the BuildRequest path.
+	//
+	// Pool-level retries also create a fresh orchestrator invocation
+	// (and a fresh heartbeatSent), so the pool sees one heartbeat per
+	// pool-attempt × inner-attempt × child window rather than once per
+	// outer pool attempt.
 	sendHeartbeat := func() {
 		if heartbeatSent.CompareAndSwap(false, true) {
 			r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)
@@ -1135,6 +1807,11 @@ func RunStreamOrchestration(
 			r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawDelta, nil, false)
 			select {
 			case out <- r:
+				// Mark only on successful send: ctx.Done and the
+				// drop-on-buffer-full branches did not actually
+				// deliver a frame to the client, so the reset-marker
+				// gate must stay armed.
+				sawStreamFrame.Store(true)
 			case <-ctx.Done():
 				r.Release()
 				return ctx.Err()
@@ -1296,7 +1973,7 @@ func RunStreamOrchestration(
 	// matching the BAML runtime where retries retry the entire strategy.
 	attemptFull := func(attempt int) (any, error) {
 		if len(config.FallbackChain) == 0 {
-			finalResult, raw, err := tryOneStreamChild(config.Provider, "")
+			finalResult, raw, err := tryOneStreamChild(config.Provider, config.ClientOverride)
 			if err != nil {
 				return nil, err
 			}
@@ -1322,15 +1999,27 @@ func RunStreamOrchestration(
 			// Emit a reset signal before trying the next child so the
 			// downstream discards any partial/raw state leaked by the
 			// previous child's failed stream. Not needed before the first
-			// child in the chain. Only emitted when partials could have
-			// reached the client — for NeedsPartials=false (call modes
-			// bridged through this orchestrator) there is no partial state
-			// downstream, and the reset would falsely flip the pool's
-			// gotFirstByte flag, disabling hung detection for the next
-			// child. The heartbeat reset still runs so the next child
-			// re-arms first-byte detection via its own heartbeat.
+			// child in the chain. Gated on TWO conditions:
+			//
+			//   - config.NeedsPartials: for NeedsPartials=false (call
+			//     modes bridged through this orchestrator) there is no
+			//     partial state downstream, and the reset would falsely
+			//     flip the pool's gotFirstByte flag, disabling hung
+			//     detection for the next child.
+			//   - sawStreamFrame: the previous child window must have
+			//     actually queued a non-reset stream frame for there to
+			//     be partial state worth clearing. Without this gate, a
+			//     child that fails before producing any bytes would
+			//     still emit a reset, and the pool would treat that
+			//     reset (a StreamResultKindStream) as first-byte
+			//     progress for the next child — papering over a genuine
+			//     no-byte hang.
+			//
+			// The heartbeat reset is independent of the reset marker:
+			// it still runs on every handoff so the next child re-arms
+			// first-byte detection via its own organic heartbeat.
 			if i > 0 && lastErr != nil {
-				if config.NeedsPartials {
+				if config.NeedsPartials && sawStreamFrame.Load() {
 					r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
 					select {
 					case out <- r:
@@ -1339,6 +2028,12 @@ func RunStreamOrchestration(
 						return nil, ctx.Err()
 					}
 				}
+				// Clear sawStreamFrame for the next child's window
+				// regardless of whether we emitted a reset — the next
+				// child starts fresh and any frames it queues (or
+				// fails to queue) are what the next handoff/retry
+				// boundary will see.
+				sawStreamFrame.Store(false)
 				heartbeatSent.Store(false)
 			}
 			var (
@@ -1383,13 +2078,19 @@ func RunStreamOrchestration(
 
 	// Execute with retries
 	_, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, func(attempt int) {
-		// Emit reset signal so downstream discards accumulated partial state.
-		// Only emitted when partials could have reached the client. For
-		// NeedsPartials=false (call modes bridged through this orchestrator)
-		// there is no partial state downstream, and the reset event would
-		// falsely flip the pool's gotFirstByte flag before the retry's
-		// upstream has produced a byte — disabling hung detection.
-		if config.NeedsPartials {
+		// Emit reset signal so downstream discards accumulated partial
+		// state. Same TWO-condition gate as the fallback handoff
+		// above:
+		//
+		//   - config.NeedsPartials: NeedsPartials=false has no
+		//     partial state downstream and the reset would flip the
+		//     pool's gotFirstByte flag before the next attempt's
+		//     upstream produces a byte.
+		//   - sawStreamFrame: the just-failed attempt's last child
+		//     window must have actually queued a frame to the
+		//     client; otherwise the reset is a phantom that the pool
+		//     would mistake for first-byte progress.
+		if config.NeedsPartials && sawStreamFrame.Load() {
 			r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
 			select {
 			case out <- r:
@@ -1397,6 +2098,12 @@ func RunStreamOrchestration(
 				r.Release()
 			}
 		}
+
+		// Clear sawStreamFrame for the next attempt's window. Same
+		// rationale as the fallback handoff: the next attempt starts
+		// fresh, and the subsequent handoff/retry boundary should
+		// see only what THAT attempt managed to queue.
+		sawStreamFrame.Store(false)
 
 		// Reset heartbeat for new attempt so first-byte detection re-arms
 		// via the next attempt's heartbeat.

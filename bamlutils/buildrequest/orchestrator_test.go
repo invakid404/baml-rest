@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -245,17 +247,37 @@ func TestRunStreamOrchestration_HTTPError(t *testing.T) {
 }
 
 func TestRunStreamOrchestration_WithRetry(t *testing.T) {
+	// Models a partial response that streamed content before failing
+	// validation mid-stream — the realistic scenario the retry-boundary
+	// reset marker is for. Each failing attempt emits one valid SSE
+	// delta (so trySendPartial fires and sawStreamFrame=true) with
+	// content "stale"; parseFinal rejects "stale" and the attempt
+	// errors out. The third attempt streams "ok" which parseFinal
+	// accepts.
+	//
+	// The server-emits-stale-then-ok shape models "two failing
+	// windows that DID emit partials, retried; reset must fire each
+	// time" — reset markers only fire when there's actual partial
+	// state for the next window to clear, so the test must produce
+	// real partials before failing rather than a 500-before-any-byte.
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)
-		if n < 3 {
-			w.WriteHeader(500)
-			fmt.Fprint(w, "internal error")
-			return
-		}
+		flusher, _ := w.(http.Flusher)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
+		if n < 3 {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
@@ -273,13 +295,20 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 		},
 	}
 
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		if s == "stale" {
+			return nil, fmt.Errorf("rejected stale content")
+		}
+		return s, nil
+	}
+
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
 		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
-		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
+		parseFinal,
 		newTestResult,
 	)
 	close(out)
@@ -292,7 +321,9 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 		t.Errorf("expected 3 attempts, got %d", attempts.Load())
 	}
 
-	// Should have reset signals from retries
+	// Should have reset signals from retries — each failing attempt
+	// queued a partial frame before erroring out, so sawStreamFrame
+	// was true when the retry callback fired.
 	var resets, finals int
 	for r := range out {
 		tr := r.(*testResult)
@@ -304,8 +335,17 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 		}
 	}
 
-	if resets < 2 {
-		t.Errorf("expected at least 2 reset signals (for 2 retries), got %d", resets)
+	// Strict equality, not lower-bound. This is a single-provider
+	// retry scenario with exactly 3 attempts (n<3 fails, n==3
+	// succeeds), so exactly 2 retry boundaries fire. A
+	// duplicate-emission regression — reset fired from both the
+	// retry callback and another path, or state not cleared between
+	// boundaries — would slip past `resets >= 2` but fail strict
+	// equality. Aligns with the integration sibling
+	// (orchestrator_integration_test.go:440-448) which also asserts
+	// exactly 2.
+	if resets != 2 {
+		t.Errorf("expected 2 reset signals (one per retry boundary), got %d", resets)
 	}
 	if finals != 1 {
 		t.Errorf("expected 1 final, got %d", finals)
@@ -783,8 +823,86 @@ func TestRunStreamOrchestration_ValidatesAllFallbackChildrenUpFront(t *testing.T
 	}
 
 	close(out)
+	// With no MetadataPlan / NewMetadataResult on the config the
+	// upfront planned-metadata emit is a no-op (the nil-config
+	// short-circuit). So this branch pins "no stream output on
+	// validation error when metadata isn't wired up". The metadata-
+	// wired-up case is covered by
+	// TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError
+	// below.
 	for r := range out {
 		t.Fatalf("expected no stream results on upfront validation error, got kind %v", r.Kind())
+	}
+}
+
+// TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError
+// pins that when the orchestrator config supplies MetadataPlan +
+// NewMetadataResult, the planned-metadata event MUST be emitted
+// before any validation return. Otherwise the only observable signal
+// on exactly the failure modes operators most need to diagnose
+// (unsupported provider, malformed fallback chain) gets dropped.
+func TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testing.T) {
+	out := make(chan bamlutils.StreamResult, 10)
+
+	plan := &bamlutils.Metadata{
+		Path:       "buildrequest",
+		Client:     "PrimaryClient",
+		PathReason: "",
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out,
+		&StreamConfig{
+			FallbackChain: []string{"PrimaryClient", "MissingClient"},
+			ClientProviders: map[string]string{
+				"PrimaryClient": "openai",
+			},
+			MetadataPlan:      plan,
+			NewMetadataResult: newTestMetadataResult,
+		},
+		nil,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			t.Fatal("buildRequest should not be called when fallback validation fails")
+			return nil, nil
+		},
+		nil,
+		nil,
+		newTestResult,
+	)
+
+	if err == nil {
+		t.Fatal("expected validation error for unsupported or missing fallback child provider")
+	}
+
+	close(out)
+	planned, outcome, kinds, metadataPhases := collectMetadata(t, out)
+	if planned == nil {
+		t.Fatalf("expected one planned metadata result before validation error; got kinds=%v", kinds)
+	}
+	if outcome != nil {
+		t.Errorf("expected no outcome metadata on validation-error path, got %+v", outcome)
+	}
+	if planned.Phase != bamlutils.MetadataPhasePlanned {
+		t.Errorf("planned phase: got %q, want planned", planned.Phase)
+	}
+	if planned.Client != "PrimaryClient" {
+		t.Errorf("planned client: got %q, want PrimaryClient", planned.Client)
+	}
+	// Pin "exactly one frame, and it's the planned metadata".
+	// Allowing any number of trailing frames after the planned event
+	// (so long as outcome stayed nil) would let a regression that
+	// emitted spurious reset/error/data frames after a synchronous
+	// validation return (e.g. a reordering bug that lost the
+	// early-return) slip through. Strict frame count + kind + phase
+	// checks pin the full validation-error contract.
+	if len(kinds) != 1 {
+		t.Errorf("expected exactly 1 emitted frame on validation-error path, got %d (kinds=%v)", len(kinds), kinds)
+	}
+	if len(kinds) >= 1 && kinds[0] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("expected sole frame to be metadata; got kind=%v", kinds[0])
+	}
+	if len(metadataPhases) != 1 || metadataPhases[0] != bamlutils.MetadataPhasePlanned {
+		t.Errorf("expected exactly one planned metadata phase; got %v", metadataPhases)
 	}
 }
 
@@ -1176,9 +1294,15 @@ func TestResolveFallbackChain_NotFallback(t *testing.T) {
 	}
 }
 
-func TestResolveFallbackChain_RoundRobinGated(t *testing.T) {
-	// baml-roundrobin should NOT use the BuildRequest path because the
-	// orchestrator has no cross-request state to distribute load.
+func TestResolveFallbackChain_RoundRobinChildSkipped(t *testing.T) {
+	// ResolveFallbackChain only classifies baml-fallback parents. A
+	// baml-roundrobin parent returns nil,nil,nil — not because RR is
+	// "legacy-only" globally (top-level RR is resolved upstream by
+	// ResolveEffectiveClient for modern adapters with SupportsWithClient),
+	// but because this helper is the fallback-chain classifier. RR is
+	// handled either by the upstream resolver (modern) or by BAML's
+	// runtime under the legacy path (older adapters / nested RR children
+	// inside a fallback chain).
 	fallbackChains := map[string][]string{
 		"MyRoundRobin": {"ClientA", "ClientB"},
 	}
@@ -1195,7 +1319,101 @@ func TestResolveFallbackChain_RoundRobinGated(t *testing.T) {
 	)
 
 	if chain != nil || providers != nil || legacyChildren != nil {
-		t.Errorf("expected nil for baml-roundrobin (should use legacy path), got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
+		t.Errorf("expected nil for baml-roundrobin parent (classified elsewhere), got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
+	}
+}
+
+func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
+	// A fallback chain with a baml-roundrobin child still runs, but
+	// the PathReason surfaces the composition so operators can
+	// distinguish centralised top-level RR from per-worker nested
+	// RR. The RR child lands on the legacy child list
+	// (IsProviderSupported returns false for baml-roundrobin), and
+	// BAML's runtime handles its rotation on each worker
+	// independently. Centralised unwrapping of RR children inside
+	// fallback chains is deferred.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"OpenAIClient", "InnerRR"},
+		"InnerRR":    {"GoogleA", "GoogleB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback":   "baml-fallback",
+		"OpenAIClient": "openai",
+		"InnerRR":      "baml-roundrobin",
+		"GoogleA":      "google-ai",
+		"GoogleB":      "google-ai",
+	}
+
+	chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+		nil, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool {
+			return p == "openai" || p == "google-ai" || p == "anthropic"
+		},
+	)
+
+	if chain == nil {
+		t.Fatalf("expected chain to resolve (RR child is mixed-legacy, not abort), got nil with reason=%q", reason)
+	}
+	if reason != PathReasonFallbackRoundRobinChildLegacy {
+		t.Fatalf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+	}
+	if !legacy["InnerRR"] {
+		t.Errorf("InnerRR must be marked legacy (BAML runtime handles RR rotation per-worker), legacyChildren=%v", legacy)
+	}
+	if legacy["OpenAIClient"] {
+		t.Errorf("OpenAIClient is a supported provider — must not be on legacy list, legacyChildren=%v", legacy)
+	}
+	if providers["InnerRR"] != "baml-roundrobin" {
+		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin", providers["InnerRR"])
+	}
+}
+
+func TestResolveFallbackChain_FallbackWithRRChild_AliasSpellings(t *testing.T) {
+	// Resolver-level coverage for the non-canonical RR spellings the
+	// alias classifier must fold before deciding whether the child
+	// contributes PathReasonFallbackRoundRobinChildLegacy. The
+	// canonical "baml-roundrobin" form is exercised by
+	// TestResolveFallbackChain_FallbackWithRRChild above; this table
+	// pins the two alias forms (BAML upstream's hyphenated
+	// "baml-round-robin" and the bare "round-robin" shorthand).
+	// Both alias spellings must hit the resolver's RR-child path.
+	// (Metadata-plan-level coverage of all three spellings exists in
+	// TestBuildFallbackChainPlan_ReasonPlumbsFromResolver.)
+	cases := []struct {
+		name     string
+		provider string
+	}{
+		{name: "baml-round-robin", provider: "baml-round-robin"},
+		{name: "round-robin", provider: "round-robin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fallbackChains := map[string][]string{
+				"MyFallback": {"A", "InnerRR"},
+			}
+			clientProviders := map[string]string{
+				"MyFallback": "baml-fallback",
+				"A":          "openai",
+				"InnerRR":    tc.provider,
+			}
+
+			_, providers, _, reason := ResolveFallbackChainForClientWithReason(
+				nil, "MyFallback", fallbackChains, clientProviders,
+				func(p string) bool { return p == "openai" },
+			)
+			if reason != PathReasonFallbackRoundRobinChildLegacy {
+				t.Fatalf("reason with alias %q: got %q, want %q", tc.provider, reason, PathReasonFallbackRoundRobinChildLegacy)
+			}
+			// providers map must surface the canonical "baml-roundrobin"
+			// spelling regardless of which alias the caller's
+			// clientProviders used. ResolveClientProvider applies
+			// normalizeStrategyProvider, but a regression that dropped
+			// the normalisation on one path could still yield the
+			// right reason while leaking the alias here.
+			if got := providers["InnerRR"]; got != "baml-roundrobin" {
+				t.Errorf("providers[InnerRR] with alias %q: got %q, want baml-roundrobin (canonical)", tc.provider, got)
+			}
+		})
 	}
 }
 
@@ -2136,5 +2354,196 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain(t *t
 	// must still clear heartbeatSent.
 	if heartbeats < 2 {
 		t.Errorf("expected >=2 heartbeats (one per child), got %d", heartbeats)
+	}
+}
+
+// TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain pins
+// the in-chain reset marker contract: it must NOT fire when the
+// previous child failed BEFORE successfully queuing any
+// StreamResultKindStream frame to the client. NeedsPartials=true is
+// the regression class — without the sawStreamFrame gate, every
+// NeedsPartials handoff would emit a reset regardless of upstream
+// activity, and the pool's first-byte detector would treat that
+// reset (a Stream-kind result) as progress for the next child even
+// when the prior window produced zero bytes.
+//
+// The test uses a primary that returns 500 before any SSE byte (so
+// trySendPartial never runs and sawStreamFrame stays false) and a
+// secondary that succeeds. The channel must not carry a phantom
+// reset between the two children.
+func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := int(attempts.Add(1))
+		if attempt == 1 {
+			// Primary: 500 before any SSE byte. tryOneStreamChild
+			// fails out via httpClient.ExecuteStream's status check;
+			// trySendPartial never runs.
+			w.WriteHeader(500)
+			fmt.Fprint(w, "internal error")
+			return
+		}
+		// Secondary: clean SSE response with one delta.
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"good\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "",
+		RetryPolicy:   &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+		NeedsPartials: true, // partials wired up — reset only suppressed by the sawStreamFrame gate
+		FallbackChain: []string{"PrimaryClient", "SecondaryClient"},
+		ClientProviders: map[string]string{
+			"PrimaryClient":   "openai",
+			"SecondaryClient": "openai",
+		},
+	}
+
+	// Capture the clientOverride sequence so we can assert the
+	// fallback-handoff actually targeted SecondaryClient on the
+	// second attempt rather than re-running PrimaryClient. The HTTP
+	// server keys solely off request count, and buildRequest ignores
+	// the override, so a regression that retried the primary on the
+	// second attempt would still satisfy the resets/finals
+	// assertions below.
+	var (
+		overrideMu  sync.Mutex
+		overrideSeq []string
+	)
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			overrideMu.Lock()
+			overrideSeq = append(overrideSeq, clientOverride)
+			overrideMu.Unlock()
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	overrideMu.Lock()
+	gotOverrides := append([]string(nil), overrideSeq...)
+	overrideMu.Unlock()
+	wantOverrides := []string{"PrimaryClient", "SecondaryClient"}
+	if !reflect.DeepEqual(gotOverrides, wantOverrides) {
+		t.Errorf("clientOverride sequence: got %v, want %v (regression: fallback handoff did not switch children)", gotOverrides, wantOverrides)
+	}
+
+	var resets, finals int
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.reset {
+			resets++
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+		}
+	}
+	if resets != 0 {
+		t.Errorf("expected 0 reset events when prior child queued no stream frames; got %d", resets)
+	}
+	if finals != 1 {
+		t.Errorf("expected 1 final from secondary, got %d", finals)
+	}
+}
+
+// TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry is the
+// retry-callback sibling of the fallback-chain no-stream-frame test.
+// Same shape: first attempt fails before any stream frame, retry
+// succeeds; the retry-boundary reset must be suppressed.
+func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 2 {
+			w.WriteHeader(500)
+			fmt.Fprint(w, "internal error")
+			return
+		}
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "openai",
+		NeedsPartials: true,
+		NeedsRaw:      false,
+		RetryPolicy: &retry.Policy{
+			MaxRetries: 2,
+			Strategy:   &retry.ConstantDelay{DelayMs: 1},
+		},
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts.Load())
+	}
+
+	var resets, finals int
+	for r := range out {
+		tr := r.(*testResult)
+		if tr.reset {
+			resets++
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+		}
+	}
+	if resets != 0 {
+		t.Errorf("expected 0 reset events when prior attempt queued no stream frames; got %d", resets)
+	}
+	// Also pin success delivery so a regression that suppresses
+	// resets AND drops the final can't pass this test by only
+	// satisfying the reset-count check. Mirrors the fallback-chain
+	// sibling above.
+	if finals != 1 {
+		t.Errorf("expected 1 final from successful retry, got %d", finals)
 	}
 }

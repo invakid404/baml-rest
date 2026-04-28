@@ -14,6 +14,7 @@ func newTestBamlConfig() *bamlConfig {
 		functionClient:    make(map[string]string),
 		retryPolicies:     make(map[string]parsedRetryPolicy),
 		fallbackChains:    make(map[string][]string),
+		roundRobinStart:   make(map[string]int),
 	}
 }
 
@@ -1211,5 +1212,238 @@ func TestParseClientBlock_OptionsOpeningLineStrategyCommentWithClosingBracket(t 
 		if got[i] != want[i] {
 			t.Errorf("index %d: expected %q, got %q", i, want[i], got[i])
 		}
+	}
+}
+
+func TestParseClientBlock_RoundRobinStart_MultilineOptions(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-roundrobin",
+		"options {",
+		"    strategy [ClientA, ClientB]",
+		"    start 1",
+		"}",
+	}
+	parseClientBlock(cfg, "RR", block)
+	if got, ok := cfg.roundRobinStart["RR"]; !ok || got != 1 {
+		t.Fatalf("roundRobinStart[RR]: got (%d, %v), want (1, true)", got, ok)
+	}
+}
+
+func TestParseClientBlock_RoundRobinStart_InlineOptions(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider baml-roundrobin",
+		"options { strategy [A, B] start 2 }",
+	}
+	parseClientBlock(cfg, "RR", block)
+	if got, ok := cfg.roundRobinStart["RR"]; !ok || got != 2 {
+		t.Fatalf("roundRobinStart[RR]: got (%d, %v), want (2, true)", got, ok)
+	}
+}
+
+func TestParseClientBlock_RoundRobinStart_Absent(t *testing.T) {
+	// A RR client without `start N` must not leave a stale entry in the
+	// map — absence is the signal the coordinator uses to fall back to
+	// a random seed. Preseed a stale entry so the test fails if
+	// parseClientBlock inherits prior state instead of resetting.
+	cfg := newTestBamlConfig()
+	cfg.roundRobinStart["RR"] = 99
+	block := []string{
+		"provider baml-roundrobin",
+		"options {",
+		"    strategy [A, B]",
+		"}",
+	}
+	parseClientBlock(cfg, "RR", block)
+	if v, ok := cfg.roundRobinStart["RR"]; ok {
+		t.Fatalf("expected stale start to be cleared for RR, got %d", v)
+	}
+}
+
+func TestParseClientBlock_RoundRobinStart_InvalidIgnored(t *testing.T) {
+	// A malformed start value (non-integer) is silently ignored — codegen
+	// must not panic; the coordinator simply picks a random seed. Same
+	// preseed-and-cleared shape as the Absent test.
+	cfg := newTestBamlConfig()
+	cfg.roundRobinStart["RR"] = 99
+	block := []string{
+		"provider baml-roundrobin",
+		"options {",
+		"    strategy [A, B]",
+		"    start oops",
+		"}",
+	}
+	parseClientBlock(cfg, "RR", block)
+	if v, ok := cfg.roundRobinStart["RR"]; ok {
+		t.Fatalf("malformed start should clear stale entry, got %d", v)
+	}
+}
+
+// TestParseClientBlock_RoundRobinStart_TrailingCloseBrace pins
+// trailing-close-brace handling: BAML's grammar allows a
+// config-map entry to be followed directly by the closing `}` of the
+// options block (datamodel.pest:172-180), so a multiline options
+// block can legally end with `start 1 }` on the same line.
+// Pre-fix, ParseInt saw "1 }" verbatim and silently dropped a valid
+// declaration. Post-fix, the trailing close-brace and whitespace are
+// trimmed before parsing.
+func TestParseClientBlock_RoundRobinStart_TrailingCloseBrace(t *testing.T) {
+	t.Run("start on its own line ending with close-brace", func(t *testing.T) {
+		cfg := newTestBamlConfig()
+		block := []string{
+			"provider baml-roundrobin",
+			"options {",
+			"    strategy [A, B]",
+			"    start 1 }",
+		}
+		parseClientBlock(cfg, "RR", block)
+		if got, ok := cfg.roundRobinStart["RR"]; !ok || got != 1 {
+			t.Fatalf("roundRobinStart[RR]: got (%d, %v), want (1, true) — `start N }` final-line shape must parse", got, ok)
+		}
+	})
+
+	t.Run("start on closing-bracket line after multiline strategy", func(t *testing.T) {
+		// `] start 1 }` appears on the line that closes a multiline
+		// strategy list. Both the strategy and the start must be
+		// captured.
+		cfg := newTestBamlConfig()
+		block := []string{
+			"provider baml-roundrobin",
+			"options {",
+			"    strategy [",
+			"        A,",
+			"        B,",
+			"    ] start 1 }",
+		}
+		parseClientBlock(cfg, "RR", block)
+		if got, ok := cfg.roundRobinStart["RR"]; !ok || got != 1 {
+			t.Fatalf("roundRobinStart[RR]: got (%d, %v), want (1, true) — `] start N }` post-list-close suffix must parse", got, ok)
+		}
+		chain := cfg.fallbackChains["RR"]
+		if len(chain) != 2 || chain[0] != "A" || chain[1] != "B" {
+			t.Fatalf("fallbackChains[RR]: got %v, want [A B] — multiline strategy must still parse alongside the post-`]` start", chain)
+		}
+	})
+}
+
+// TestParseClientBlock_RoundRobinStart_OutOfI32Ignored pins the i32
+// contract: extractRoundRobinStart parses with bit
+// width 32 so values that fit in a Go int on a 64-bit platform but not
+// in BAML's i32 contract are rejected by the introspector — same
+// behaviour as the runtime override path's inspectStartOverride. Pre-
+// fix `strconv.Atoi` accepted these on 64-bit hosts and codegen would
+// emit them; BAML's `start as usize` cast then wrapped them silently.
+func TestParseClientBlock_RoundRobinStart_OutOfI32Ignored(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"one above MaxInt32", "2147483648"},
+		{"one below MinInt32", "-2147483649"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Preseed-and-cleared: out-of-i32 must be ignored AND
+			// must clear any stale entry from a prior parse.
+			cfg := newTestBamlConfig()
+			cfg.roundRobinStart["RR"] = 99
+			block := []string{
+				"provider baml-roundrobin",
+				"options {",
+				"    strategy [A, B]",
+				"    start " + tc.raw,
+				"}",
+			}
+			parseClientBlock(cfg, "RR", block)
+			if v, ok := cfg.roundRobinStart["RR"]; ok {
+				t.Fatalf("out-of-i32 start %q should clear stale entry, got %d", tc.raw, v)
+			}
+		})
+	}
+}
+
+// TestCanonicaliseProvider_FoldsAliases verifies the introspector
+// folds BAML's strategy aliases — both round-robin and fallback —
+// onto canonical baml-rest spellings. The BAML CLI init template
+// uses `provider fallback`, so config
+// files written from the docs hit the bare alias path. Without the
+// fold the runtime classifier would treat such clients as unsupported
+// single-providers.
+func TestCanonicaliseProvider_FoldsAliases(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"baml-roundrobin", "baml-roundrobin"},
+		{"baml-round-robin", "baml-roundrobin"},
+		{"round-robin", "baml-roundrobin"},
+		{"baml-fallback", "baml-fallback"},
+		{"fallback", "baml-fallback"},
+		{"openai", "openai"},
+		{"anthropic", "anthropic"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := canonicaliseProvider(tc.in); got != tc.want {
+				t.Errorf("canonicaliseProvider(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseClientBlock_BareFallbackAliasNormalised verifies that the
+// `provider fallback` spelling — the form BAML's CLI init template
+// emits — lands in the introspected ClientProvider map as the
+// canonical "baml-fallback" string. Cold-review-2 finding 2.
+//
+// Also asserts the fallback chain is captured under the bare alias:
+// the runtime classifier and
+// chain resolution both depend on cfg.fallbackChains[name] being
+// populated regardless of provider spelling, and a regression that
+// silently returned an empty chain for the bare alias would still
+// pass the provider-only assertion.
+func TestParseClientBlock_BareFallbackAliasNormalised(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider fallback",
+		"options {",
+		"    strategy [A, B]",
+		"}",
+	}
+	parseClientBlock(cfg, "MyFallback", block)
+	if got := cfg.clientProvider["MyFallback"]; got != "baml-fallback" {
+		t.Errorf("clientProvider[MyFallback]: got %q, want baml-fallback", got)
+	}
+	chain := cfg.fallbackChains["MyFallback"]
+	if len(chain) != 2 || chain[0] != "A" || chain[1] != "B" {
+		t.Errorf("fallbackChains[MyFallback]: got %v, want [A B] — chain must be captured under the bare alias too", chain)
+	}
+}
+
+// TestParseClientBlock_BareRoundRobinAliasNormalised is the round-robin
+// sibling of the fallback test above.
+// `provider round-robin` is the bare alias BAML accepts alongside the
+// canonical `baml-roundrobin` form; canonicaliseProvider folds it at the
+// raw-token layer, but the parse-block-level test pins the end-to-end
+// shape — provider canonicalised AND the strategy chain captured under
+// the alias — so a regression that broke either half would surface here
+// rather than slipping through on the existing canonicaliser-only test.
+func TestParseClientBlock_BareRoundRobinAliasNormalised(t *testing.T) {
+	cfg := newTestBamlConfig()
+	block := []string{
+		"provider round-robin",
+		"options {",
+		"    strategy [A, B]",
+		"}",
+	}
+	parseClientBlock(cfg, "MyRR", block)
+	if got := cfg.clientProvider["MyRR"]; got != "baml-roundrobin" {
+		t.Errorf("clientProvider[MyRR]: got %q, want baml-roundrobin", got)
+	}
+	chain := cfg.fallbackChains["MyRR"]
+	if len(chain) != 2 || chain[0] != "A" || chain[1] != "B" {
+		t.Errorf("fallbackChains[MyRR]: got %v, want [A B] — chain must be captured under the bare alias too", chain)
 	}
 }
