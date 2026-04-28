@@ -322,6 +322,19 @@ func TestRoundRobinCallWithRaw(t *testing.T) {
 					t.Errorf("CallWithRaw %d: Index header %q not an integer: %v", i, indexStr, err)
 				} else if idx < 0 || idx >= 2 {
 					t.Errorf("CallWithRaw %d: Index %d out of range [0, 2)", i, idx)
+				} else {
+					// CodeRabbit verdict-34 finding F5: pin the
+					// header consistency invariant — Selected must
+					// equal Children[Index]. The chain order matches
+					// TestRoundRobinPair's strategy in clients.baml
+					// (`[FallbackPrimary, FallbackSecondary]`). The
+					// previous range check would have accepted a
+					// swapped-header bug where Selected and Index
+					// pointed at different children.
+					children := []string{"FallbackPrimary", "FallbackSecondary"}
+					if got := children[idx]; got != selected {
+						t.Errorf("CallWithRaw %d: Selected=%q but Index=%d points at %q (header desync)", i, selected, idx, got)
+					}
 				}
 				seenIndices[indexStr] = true
 

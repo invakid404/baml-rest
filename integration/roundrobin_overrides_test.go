@@ -168,17 +168,23 @@ func TestRoundRobinOverrides_StrategyOnlyParent(t *testing.T) {
 	})
 }
 
-// TestRoundRobinOverrides_CanonicalSpellingTranslation covers F2: the
-// operator-supplied "baml-roundrobin" spelling — baml-rest's
-// canonical metadata form — is rejected by upstream BAML's
-// ClientProvider::from_str. Without F2's TranslateUpstreamProvider
-// the BAML call returns "Invalid client provider: baml-roundrobin".
-// With the fix BAML accepts. The strategy parent is also dropped
-// (F1) so the actual BAML registry never sees the parent at all,
-// but the test still proves the spelling translation lives at the
-// adapter seam — the cache (returned via headers/metadata) reflects
-// the canonical spelling.
-func TestRoundRobinOverrides_CanonicalSpellingTranslation(t *testing.T) {
+// TestRoundRobinOverrides_CanonicalSpellingRecognized verifies the
+// BuildRequest-path recognition of the canonical "baml-roundrobin"
+// spelling: an operator-supplied parent provider in the canonical
+// form must drive baml-rest's resolver (parent dropped, leaf
+// dispatched, RR headers populated) without any upstream BAML error.
+//
+// CodeRabbit verdict-34 finding F4: this test does NOT prove the
+// upstream-translation seam — the BuildRequest-safe registry view
+// drops the strategy parent before BAML parses anything, so BAML
+// never sees "baml-roundrobin" via this path. The
+// TranslateUpstreamProvider seam (which folds aliases for the
+// LEGACY-bound registry) is covered by adapter-level unit tests at
+// adapters/adapter_v0_219_0/adapter/adapter_test.go:181-205 and the
+// translation-table tests at bamlutils/interfaces_test.go:119-147,
+// :222-294. Renamed accordingly so the test name matches what it
+// actually pins.
+func TestRoundRobinOverrides_CanonicalSpellingRecognized(t *testing.T) {
 	skipIfNoBuildRequest(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		waitForHealthy(t, 30*time.Second)
@@ -259,6 +265,12 @@ func TestRoundRobinOverrides_DeterministicStart(t *testing.T) {
 			if resp.StatusCode != 200 {
 				t.Fatalf("Call %d: expected 200, got %d: %s", i, resp.StatusCode, resp.Error)
 			}
+			// Pin the routing path before checking the deterministic
+			// selection — a regression that fell back to legacy could
+			// still emit headers but the start=1 contract is a
+			// BuildRequest-path-only guarantee. CodeRabbit verdict-34
+			// finding F3.
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
 			selected := resp.Headers.Get(testutil.HeaderBAMLRoundRobinSelected)
 			if selected != "FallbackSecondary" {
 				t.Errorf("Call %d: Selected=%q, want FallbackSecondary (start=1 must be deterministic)", i, selected)

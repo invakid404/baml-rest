@@ -1628,21 +1628,74 @@ func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 // "eof" depending on the wrap layer, "connection reset by peer" vs
 // "Connection reset" depending on the OS. Lowercasing both sides
 // dodges that surface without weakening the substring match.
+//
+// Needles are concrete transport-class messages only (CodeRabbit
+// verdict-34 finding F7). The earlier list included a bare "eof"
+// substring that also matched application/parser failures like
+// "unexpected EOF" or "EOF while parsing JSON" — those are genuine
+// content-shape regressions that must NOT be classified as transport
+// flakes. The current list pins to symptoms produced specifically by
+// HTTP/transport teardown paths.
 func isNilDefaultClientTransportFlake(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
 	for _, needle := range []string{
-		"eof",
+		"stale keepalive",
+		"stale-keepalive",
+		"http2: server sent goaway",
+		"connection reset by peer",
 		"connection refused",
 		"broken pipe",
-		"connection reset",
-		"use of closed network connection",
+		"closed network connection",
 	} {
 		if strings.Contains(msg, needle) {
 			return true
 		}
 	}
 	return false
+}
+
+// TestIsNilDefaultClientTransportFlake_NeedleList pins the
+// transport-class needle list (CodeRabbit verdict-34 finding F7).
+// The bare "eof" substring used to match application/parser failures
+// like "unexpected EOF"; the current list excludes that and only
+// matches concrete transport-teardown symptoms.
+func TestIsNilDefaultClientTransportFlake_NeedleList(t *testing.T) {
+	transport := []string{
+		"net/http: stale keepalive",
+		"stale-keepalive detected",
+		"http2: server sent GOAWAY",
+		"read tcp 127.0.0.1:1234->127.0.0.1:5678: connection reset by peer",
+		"dial tcp 127.0.0.1:5678: connect: connection refused",
+		"write: broken pipe",
+		"use of closed network connection",
+		"USE OF CLOSED NETWORK CONNECTION", // case-insensitivity
+	}
+	for _, msg := range transport {
+		if !isNilDefaultClientTransportFlake(fmt.Errorf("%s", msg)) {
+			t.Errorf("expected transport-class needle to match: %q", msg)
+		}
+	}
+
+	notTransport := []string{
+		"unexpected EOF",
+		"unexpected EOF while parsing JSON",
+		"buildrequest: failed to parse final result: unexpected end of JSON input",
+		"buildrequest: delta extraction failed: bad provider response",
+		"context deadline exceeded",
+		"",
+	}
+	for _, msg := range notTransport {
+		if msg == "" {
+			if isNilDefaultClientTransportFlake(nil) {
+				t.Errorf("expected nil error to be classified as not-transport")
+			}
+			continue
+		}
+		if isNilDefaultClientTransportFlake(fmt.Errorf("%s", msg)) {
+			t.Errorf("expected non-transport message to be rejected: %q", msg)
+		}
+	}
 }

@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -877,7 +879,7 @@ func TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError(t *tes
 	}
 
 	close(out)
-	planned, outcome, kinds, _ := collectMetadata(t, out)
+	planned, outcome, kinds, metadataPhases := collectMetadata(t, out)
 	if planned == nil {
 		t.Fatalf("expected one planned metadata result before validation error; got kinds=%v", kinds)
 	}
@@ -889,6 +891,23 @@ func TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError(t *tes
 	}
 	if planned.Client != "PrimaryClient" {
 		t.Errorf("planned client: got %q, want PrimaryClient", planned.Client)
+	}
+	// CodeRabbit verdict-34 finding F2: pin "exactly one frame, and
+	// it's the planned metadata". The previous assertions allowed any
+	// number of trailing frames after the planned event so long as
+	// outcome stayed nil — a regression that emitted spurious
+	// reset/error/data frames after a synchronous validation return
+	// (e.g. a reordering bug that lost the early-return) would slip
+	// through. Strict frame count + kind + phase checks pin the full
+	// validation-error contract.
+	if len(kinds) != 1 {
+		t.Errorf("expected exactly 1 emitted frame on validation-error path, got %d (kinds=%v)", len(kinds), kinds)
+	}
+	if len(kinds) >= 1 && kinds[0] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("expected sole frame to be metadata; got kind=%v", kinds[0])
+	}
+	if len(metadataPhases) != 1 || metadataPhases[0] != bamlutils.MetadataPhasePlanned {
+		t.Errorf("expected exactly one planned metadata phase; got %v", metadataPhases)
 	}
 }
 
@@ -2400,9 +2419,24 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testin
 		},
 	}
 
+	// Capture the clientOverride sequence so we can assert the
+	// fallback-handoff actually targeted SecondaryClient on the second
+	// attempt rather than re-running PrimaryClient (CodeRabbit
+	// verdict-34 finding F1). The HTTP server keys solely off request
+	// count, and buildRequest ignores the override, so a regression
+	// that retried the primary on the second attempt would still
+	// satisfy the resets/finals assertions below.
+	var (
+		overrideMu  sync.Mutex
+		overrideSeq []string
+	)
+
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
 		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			overrideMu.Lock()
+			overrideSeq = append(overrideSeq, clientOverride)
+			overrideMu.Unlock()
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(_ context.Context, s string) (any, error) { return s, nil },
@@ -2413,6 +2447,14 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testin
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	overrideMu.Lock()
+	gotOverrides := append([]string(nil), overrideSeq...)
+	overrideMu.Unlock()
+	wantOverrides := []string{"PrimaryClient", "SecondaryClient"}
+	if !reflect.DeepEqual(gotOverrides, wantOverrides) {
+		t.Errorf("clientOverride sequence: got %v, want %v (regression: fallback handoff did not switch children)", gotOverrides, wantOverrides)
 	}
 
 	var resets, finals int

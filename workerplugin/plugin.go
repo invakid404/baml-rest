@@ -2,8 +2,10 @@ package workerplugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"runtime"
 	"time"
 
@@ -274,10 +276,20 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 		}
 		go func() {
 			// Serve returns when listener is closed (plugin teardown).
-			// Errors here aren't actionable — log and drop.
-			if err := srv.Serve(listener); err != nil {
-				log.Printf("[WARN] shared-state server: %v", err)
+			// Filter out the expected shutdown signals — without this,
+			// every clean teardown emits a [WARN] line that operators
+			// have to learn to ignore, training them to ignore real
+			// problems too. CodeRabbit verdict-34 finding F6.
+			err := srv.Serve(listener)
+			if err == nil {
+				return
 			}
+			if errors.Is(err, grpc.ErrServerStopped) ||
+				errors.Is(err, net.ErrClosed) ||
+				errors.Is(err, context.Canceled) {
+				return
+			}
+			log.Printf("[WARN] shared-state server: %v", err)
 		}()
 
 		attachCtx := ctx
