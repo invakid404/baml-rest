@@ -16,7 +16,7 @@ require (
 	github.com/gofiber/fiber/v3 v3.2.0
 	github.com/gregwebs/go-recovery v0.4.1
 	github.com/hashicorp/go-hclog v1.6.3
-	github.com/hashicorp/go-plugin v1.7.0
+	github.com/hashicorp/go-plugin v1.8.0
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_219_0 v0.0.0-00010101000000-000000000000
