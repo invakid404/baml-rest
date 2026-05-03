@@ -12,7 +12,7 @@ require (
 	github.com/getkin/kin-openapi v0.136.0
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/goccy/go-json v0.10.6
-	github.com/gofiber/contrib/v3/zerolog v1.0.3
+	github.com/gofiber/contrib/v3/zerolog v1.0.4
 	github.com/gofiber/fiber/v3 v3.2.0
 	github.com/gregwebs/go-recovery v0.4.1
 	github.com/hashicorp/go-hclog v1.6.3
@@ -98,7 +98,7 @@ require (
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.21 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.2.0 // indirect
