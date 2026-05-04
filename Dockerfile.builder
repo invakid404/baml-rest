@@ -3,7 +3,7 @@
 # Can be used as a base image for faster builds
 
 # Go version (defined once, re-declared in each stage that needs it)
-ARG GO_VERSION=1.26.1
+ARG GO_VERSION=1.26.2
 
 # ============================================================================
 # Stage 1: Builder (native platform for fast builds with cross-compilation)
