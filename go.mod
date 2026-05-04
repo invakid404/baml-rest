@@ -40,7 +40,7 @@ require (
 	github.com/stoewer/go-strcase v1.3.1
 	github.com/testcontainers/testcontainers-go v0.42.0
 	golang.org/x/mod v0.35.0
-	google.golang.org/grpc v1.80.0
+	google.golang.org/grpc v1.81.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	gopkg.in/yaml.v3 v3.0.1
 )
