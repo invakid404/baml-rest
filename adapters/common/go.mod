@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest/adapters/common
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/dave/jennifer v1.7.1

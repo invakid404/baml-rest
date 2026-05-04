@@ -15,7 +15,7 @@ permissions:
   packages: write
 
 env:
-  GO_VERSION: '1.26.1'
+  GO_VERSION: "1.26.2"
 
 jobs:
   # Build Linux binaries on release
@@ -96,7 +96,7 @@ jobs:
           # Create temporary keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-          
+
           # Decode certificate and import to keychain
           echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -104,16 +104,16 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import certificate.p12 -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          
+
           # Add keychain to search list
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed s/\"//g)
-          
+
           # Sign the binary
           /usr/bin/codesign --force --sign "$MACOS_IDENTITY" --options runtime --timestamp ${{ matrix.output }}
-          
+
           # Verify signature
           /usr/bin/codesign --verify --verbose ${{ matrix.output }}
-          
+
           # Clean up
           security delete-keychain "$KEYCHAIN_PATH"
           rm certificate.p12
@@ -126,7 +126,7 @@ jobs:
         run: |
           # Create a zip file (required for notarization)
           ditto -c -k --keepParent ${{ matrix.output }} ${{ matrix.output }}.zip
-          
+
           # Submit for notarization
           xcrun notarytool submit ${{ matrix.output }}.zip \
             --apple-id "$APPLE_ID" \
