@@ -1,10 +1,26 @@
 go 1.26.2
 
+// NOTE: ./adapters/adapter_v* directories are intentionally NOT included in
+// this workspace. Each adapter pins a specific github.com/boundaryml/baml
+// version that represents a different compatibility level, and Go's module
+// system enforces a single resolved version per module path across all
+// workspace modules (via Minimum Version Selection). Adding the adapters
+// here causes `go work sync` to bump every adapter's pinned BAML version to
+// the highest one across the workspace, defeating the per-adapter pinning.
+//
+// Each adapter is reachable from the root module via the `replace` directives
+// in go.mod, so editor tooling and the build scripts continue to work; for
+// per-adapter development, run `go` commands from inside the adapter
+// directory (cd adapters/adapter_v0_XXX_0 && go build ./...) so that Go uses
+// the adapter's own go.mod with its pinned BAML version instead of the
+// workspace's resolved version.
+//
+// To refresh indirect dependencies in the workspace AND in the per-adapter
+// modules without bumping the pinned BAML versions, run `./scripts/sync.sh`
+// from anywhere in the repo. It runs `go work sync` for the workspace members
+// and then `GOWORK=off go mod tidy` in each adapter directory.
 use (
 	.
-	./adapters/adapter_v0_204_0
-	./adapters/adapter_v0_215_0
-	./adapters/adapter_v0_219_0
 	./adapters/common
 	./bamlutils
 	./introspected
