@@ -147,4 +147,3 @@ func TestSharedState_BrokerHandshakeAndFetchAdd(t *testing.T) {
 		t.Fatalf("FetchAdd #4 empty op: got previous=%d, want 2", resp4.GetPrevious())
 	}
 }
-

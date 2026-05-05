@@ -104,11 +104,11 @@ func main() {
 	)
 
 	workerPlugin := &workerplugin.WorkerPlugin{Impl: &workerImpl{metricsReg: metricsReg, logger: logger}}
-	// Install the AttachSharedState callback *before* handing the plugin to
-	// go-plugin. The host calls AttachSharedState once during handshake; if
-	// no handler is installed the RPC succeeds silently and the worker's
-	// round-robin resolution degrades to the in-process Coordinator (the
-	// baseline pre-shared-state behaviour).
+	// Install the AttachSharedState callback *before* handing the plugin
+	// to go-plugin. The host calls AttachSharedState once during
+	// handshake; without a handler the RPC fails fast (see
+	// workerplugin/grpc.go) and worker startup fails — there is no
+	// silent fallback to the in-process Coordinator on this path.
 	workerPlugin.SetAttachSharedStateHandler(func(_ context.Context, client pb.SharedStateClient) error {
 		sharedStateClient.Store(&client)
 		return nil
