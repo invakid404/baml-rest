@@ -143,8 +143,8 @@ func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
 				Options: opts,
 			})
 
-			var gotFinal bool
-			var gotError bool
+			finals := 0
+			errCount := 0
 			for {
 				select {
 				case event, ok := <-events:
@@ -155,16 +155,16 @@ func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
 						resets.Add(1)
 					}
 					if event.IsFinal() {
-						gotFinal = true
+						finals++
 					}
 					if event.IsError() {
-						gotError = true
+						errCount++
 						t.Logf("Request %d got error event: %s", idx, event.Data)
 					}
 				case err := <-errs:
 					if err != nil {
 						t.Logf("Request %d stream error: %v", idx, err)
-						gotError = true
+						errCount++
 					}
 				case <-ctx.Done():
 					goto done
@@ -172,8 +172,8 @@ func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
 			}
 		done:
 
-			if !gotFinal || gotError {
-				t.Logf("Request %d: final=%v error=%v", idx, gotFinal, gotError)
+			if finals != 1 || errCount != 0 {
+				t.Logf("Request %d: finals=%d errors=%d", idx, finals, errCount)
 				failures.Add(1)
 			}
 		}(i)
@@ -261,7 +261,7 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 		}
 
 		// Drain remaining events — expect recovery (reset + final).
-		var gotFinal bool
+		finals := 0
 		for {
 			select {
 			case event, ok := <-events:
@@ -269,7 +269,7 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 					goto roundDone
 				}
 				if event.IsFinal() {
-					gotFinal = true
+					finals++
 				}
 			case err := <-errs:
 				if err != nil {
@@ -281,8 +281,8 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 		}
 	roundDone:
 
-		if !gotFinal {
-			t.Errorf("Round %d: never got final result after worker death", round)
+		if finals != 1 {
+			t.Errorf("Round %d: expected exactly 1 final result after worker death, got %d", round, finals)
 		}
 
 		// Verify a simple call works after recovery.
@@ -457,7 +457,8 @@ func TestMixedRequestsDuringWorkerDeath(t *testing.T) {
 				Input:   map[string]any{"description": fmt.Sprintf("streamer_%d", idx)},
 				Options: streamOpts,
 			})
-			var gotFinal, gotError bool
+			finals := 0
+			errCount := 0
 			for {
 				select {
 				case event, ok := <-events:
@@ -465,21 +466,21 @@ func TestMixedRequestsDuringWorkerDeath(t *testing.T) {
 						goto done
 					}
 					if event.IsFinal() {
-						gotFinal = true
+						finals++
 					}
 					if event.IsError() {
-						gotError = true
+						errCount++
 					}
 				case err := <-errs:
 					if err != nil {
-						gotError = true
+						errCount++
 					}
 				case <-ctx.Done():
 					goto done
 				}
 			}
 		done:
-			if !gotFinal || gotError {
+			if finals != 1 || errCount != 0 {
 				streamFailures.Add(1)
 			}
 		}(i)
