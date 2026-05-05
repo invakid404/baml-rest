@@ -212,17 +212,21 @@ func TestRunCallOrchestration_WithRetry(t *testing.T) {
 	}
 
 	// Should succeed on 3rd attempt: heartbeat + final
-	hasFinal := false
+	finals := 0
+	errors := 0
 	for _, r := range results {
-		if r.Kind() == bamlutils.StreamResultKindFinal {
-			hasFinal = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			finals++
 			if r.Final() != "retry success" {
 				t.Errorf("expected 'retry success', got %v", r.Final())
 			}
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
-	if !hasFinal {
-		t.Fatal("expected a final result after retry")
+	if finals != 1 || errors != 0 {
+		t.Fatalf("expected exactly 1 final and 0 errors after retry, got finals=%d errors=%d", finals, errors)
 	}
 
 	if attempts.Load() != 3 {
@@ -264,14 +268,18 @@ func TestRunCallOrchestration_RetryExhausted(t *testing.T) {
 	}
 
 	// Should get an error after exhausting retries
-	hasError := false
+	errs := 0
+	finals := 0
 	for r := range out {
-		if r.Kind() == bamlutils.StreamResultKindError {
-			hasError = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindError:
+			errs++
+		case bamlutils.StreamResultKindFinal:
+			finals++
 		}
 	}
-	if !hasError {
-		t.Fatal("expected error result after exhausting retries")
+	if errs != 1 || finals != 0 {
+		t.Fatalf("expected exactly 1 error and 0 finals after exhausting retries, got errs=%d finals=%d", errs, finals)
 	}
 }
 
@@ -531,17 +539,21 @@ func TestRunCallOrchestration_ParseFinalError(t *testing.T) {
 		results = append(results, r)
 	}
 
-	hasError := false
+	errs := 0
+	finals := 0
 	for _, r := range results {
-		if r.Kind() == bamlutils.StreamResultKindError {
-			hasError = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindError:
+			errs++
 			if !strings.Contains(r.Error().Error(), "parse failed") {
 				t.Errorf("unexpected error: %v", r.Error())
 			}
+		case bamlutils.StreamResultKindFinal:
+			finals++
 		}
 	}
-	if !hasError {
-		t.Fatal("expected parse error result")
+	if errs != 1 || finals != 0 {
+		t.Fatalf("expected exactly 1 parse error and 0 finals, got errs=%d finals=%d", errs, finals)
 	}
 }
 
@@ -576,20 +588,24 @@ func TestRunCallOrchestration_Anthropic(t *testing.T) {
 		results = append(results, r)
 	}
 
-	hasFinal := false
+	finals := 0
+	errors := 0
 	for _, r := range results {
-		if r.Kind() == bamlutils.StreamResultKindFinal {
-			hasFinal = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			finals++
 			if r.Final() != "Anthropic response" {
 				t.Errorf("expected 'Anthropic response', got %v", r.Final())
 			}
 			if r.Raw() != "Anthropic response" {
 				t.Errorf("expected raw 'Anthropic response', got %q", r.Raw())
 			}
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
-	if !hasFinal {
-		t.Fatal("expected final result")
+	if finals != 1 || errors != 0 {
+		t.Fatalf("expected exactly 1 final and 0 errors, got finals=%d errors=%d", finals, errors)
 	}
 }
 
@@ -637,10 +653,12 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_Default(t *testing.T) {
 		results = append(results, r)
 	}
 
-	hasFinal := false
+	finals := 0
+	errors := 0
 	for _, r := range results {
-		if r.Kind() == bamlutils.StreamResultKindFinal {
-			hasFinal = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			finals++
 			expectedRaw := "The answer is 42"
 			if r.Raw() != expectedRaw {
 				t.Errorf("Raw() = %q, expected %q (thinking should be dropped under default flag)", r.Raw(), expectedRaw)
@@ -648,10 +666,12 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_Default(t *testing.T) {
 			if r.Final() != "The answer is 42" {
 				t.Errorf("Final() = %v, expected 'The answer is 42'", r.Final())
 			}
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
-	if !hasFinal {
-		t.Fatal("no final result found")
+	if finals != 1 || errors != 0 {
+		t.Fatalf("expected exactly 1 final and 0 errors, got finals=%d errors=%d", finals, errors)
 	}
 }
 
@@ -700,10 +720,12 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_OptIn(t *testing.T) {
 		results = append(results, r)
 	}
 
-	hasFinal := false
+	finals := 0
+	errors := 0
 	for _, r := range results {
-		if r.Kind() == bamlutils.StreamResultKindFinal {
-			hasFinal = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			finals++
 			expectedRaw := "Step 1: reason...The answer is 42"
 			if r.Raw() != expectedRaw {
 				t.Errorf("Raw() = %q, expected %q (thinking + text)", r.Raw(), expectedRaw)
@@ -711,10 +733,12 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_OptIn(t *testing.T) {
 			if r.Final() != "The answer is 42" {
 				t.Errorf("Final() = %v, expected 'The answer is 42'", r.Final())
 			}
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
-	if !hasFinal {
-		t.Fatal("no final result found")
+	if finals != 1 || errors != 0 {
+		t.Fatalf("expected exactly 1 final and 0 errors, got finals=%d errors=%d", finals, errors)
 	}
 }
 
@@ -832,18 +856,21 @@ func TestRunCallOrchestration_RetryDoesNotEmitRetryHeartbeats(t *testing.T) {
 
 	// Exactly 1 heartbeat: onSuccess after the 2xx response on the 3rd attempt.
 	heartbeats := 0
-	hasFinal := false
+	finals := 0
+	errors := 0
 	for _, r := range results {
 		switch r.Kind() {
 		case bamlutils.StreamResultKindHeartbeat:
 			heartbeats++
 		case bamlutils.StreamResultKindFinal:
-			hasFinal = true
+			finals++
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
 
-	if !hasFinal {
-		t.Fatal("expected a final result")
+	if finals != 1 || errors != 0 {
+		t.Fatalf("expected exactly 1 final and 0 errors, got finals=%d errors=%d", finals, errors)
 	}
 	if heartbeats != 1 {
 		t.Errorf("expected exactly 1 heartbeat (onSuccess only), got %d", heartbeats)
@@ -918,17 +945,21 @@ func TestRunCallOrchestration_RetryRebuildsRequest(t *testing.T) {
 	}
 
 	// The first attempt hits server1 (500), retry rebuilds and hits server2 (200).
-	hasFinal := false
+	finals := 0
+	errors := 0
 	for r := range out {
-		if r.Kind() == bamlutils.StreamResultKindFinal {
-			hasFinal = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			finals++
 			if r.Final() != "server2 ok" {
 				t.Errorf("expected 'server2 ok', got %v", r.Final())
 			}
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
-	if !hasFinal {
-		t.Fatal("expected a final result from server2 after retry rotation")
+	if finals != 1 || errors != 0 {
+		t.Fatalf("expected exactly 1 final and 0 errors from server2 after retry rotation, got finals=%d errors=%d", finals, errors)
 	}
 }
 
@@ -1134,17 +1165,21 @@ func TestRunCallOrchestration_FallbackChain(t *testing.T) {
 	}
 
 	// Verify the result was extracted with the anthropic provider
-	hasFinal := false
+	finals := 0
+	errors := 0
 	for r := range out {
-		if r.Kind() == bamlutils.StreamResultKindFinal {
-			hasFinal = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			finals++
 			if r.Final() != "anthropic ok" {
 				t.Errorf("expected 'anthropic ok', got %v", r.Final())
 			}
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
-	if !hasFinal {
-		t.Fatal("expected a final result from anthropic fallback")
+	if finals != 1 || errors != 0 {
+		t.Fatalf("expected exactly 1 final and 0 errors from anthropic fallback, got finals=%d errors=%d", finals, errors)
 	}
 }
 
@@ -1202,20 +1237,24 @@ func TestRunCallOrchestration_FallbackChainWithRaw(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var hasFinal bool
+	finals := 0
+	errors := 0
 	for r := range out {
-		if r.Kind() == bamlutils.StreamResultKindFinal {
-			hasFinal = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			finals++
 			if r.Final() != "fallback ok" {
 				t.Errorf("expected 'fallback ok', got %v", r.Final())
 			}
 			if r.Raw() != "fallback ok" {
 				t.Errorf("expected Raw()='fallback ok', got %q", r.Raw())
 			}
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
-	if !hasFinal {
-		t.Fatal("expected a final result from fallback")
+	if finals != 1 || errors != 0 {
+		t.Fatalf("expected exactly 1 final and 0 errors from fallback, got finals=%d errors=%d", finals, errors)
 	}
 }
 
@@ -1269,17 +1308,21 @@ func TestRunCallOrchestration_FallbackChainExtractionFailure(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	hasFinal := false
+	finals := 0
+	errors := 0
 	for r := range out {
-		if r.Kind() == bamlutils.StreamResultKindFinal {
-			hasFinal = true
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			finals++
 			if r.Final() != "recovered" {
 				t.Errorf("expected 'recovered', got %v", r.Final())
 			}
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
-	if !hasFinal {
-		t.Fatal("expected final result after extraction failure retry")
+	if finals != 1 || errors != 0 {
+		t.Fatalf("expected exactly 1 final and 0 errors after extraction failure retry, got finals=%d errors=%d", finals, errors)
 	}
 	if got := int(attempts.Load()); got != 2 {
 		t.Errorf("expected exactly 2 attempts (1 extraction failure + 1 success), got %d", got)

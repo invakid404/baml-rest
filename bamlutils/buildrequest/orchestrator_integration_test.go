@@ -340,11 +340,11 @@ func TestEmptyCompletion_LetParseFinalDecide(t *testing.T) {
 	close(out)
 
 	// Should have a final result, NOT an error
-	var gotFinal bool
+	finals := 0
 	for r := range out {
 		tr := r.(*testResult)
 		if tr.kind == bamlutils.StreamResultKindFinal {
-			gotFinal = true
+			finals++
 			if tr.final != "parsed:" {
 				t.Errorf("expected final='parsed:', got %q", tr.final)
 			}
@@ -353,8 +353,8 @@ func TestEmptyCompletion_LetParseFinalDecide(t *testing.T) {
 			t.Errorf("should not get error for empty completion, got: %v", tr.err)
 		}
 	}
-	if !gotFinal {
-		t.Error("expected a final result for empty completion")
+	if finals != 1 {
+		t.Errorf("expected exactly 1 final result for empty completion, got %d", finals)
 	}
 }
 

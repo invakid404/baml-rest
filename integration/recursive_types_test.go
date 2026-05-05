@@ -187,6 +187,13 @@ func TestRecursiveTypes(t *testing.T) {
 		if lastEvent == nil {
 			t.Fatal("Expected at least one stream event")
 		}
+		var tree map[string]any
+		if err := json.Unmarshal(lastEvent.Data, &tree); err != nil {
+			t.Fatalf("Failed to unmarshal last event Data: %v (data=%s)", err, string(lastEvent.Data))
+		}
+		if tree["value"] != "root" {
+			t.Errorf("Expected last event tree value='root', got %v (data=%s)", tree["value"], string(lastEvent.Data))
+		}
 	})
 
 	t.Run("tree_node_parse", func(t *testing.T) {
@@ -343,6 +350,13 @@ func TestRecursiveTypesWithMedia(t *testing.T) {
 		}
 		if lastEvent == nil {
 			t.Fatal("Expected at least one stream event")
+		}
+		var tree map[string]any
+		if err := json.Unmarshal(lastEvent.Data, &tree); err != nil {
+			t.Fatalf("Failed to unmarshal last event Data: %v (data=%s)", err, string(lastEvent.Data))
+		}
+		if tree["label"] != "root" {
+			t.Errorf("Expected last event tree label='root', got %v (data=%s)", tree["label"], string(lastEvent.Data))
 		}
 	})
 }

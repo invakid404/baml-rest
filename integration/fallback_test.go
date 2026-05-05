@@ -619,10 +619,10 @@ func TestFallbackStream(t *testing.T) {
 			Input:  map[string]any{"name": "World"},
 		})
 
-		var gotError bool
+		errCount := 0
 		for ev := range partials {
 			if ev.IsError() {
-				gotError = true
+				errCount++
 			}
 		}
 		// Drain the error channel
@@ -630,8 +630,8 @@ func TestFallbackStream(t *testing.T) {
 			t.Logf("Stream error channel: %v", streamErr)
 		}
 
-		if !gotError {
-			t.Error("Expected an error event when all fallback clients fail")
+		if errCount != 1 {
+			t.Errorf("Expected exactly 1 terminal error event when all fallback clients fail, got %d", errCount)
 		}
 
 		if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {

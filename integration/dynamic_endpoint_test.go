@@ -647,10 +647,10 @@ func TestDynamicEndpoint(t *testing.T) {
 			},
 		})
 
-		var gotFinal bool
+		finals := 0
 		for event := range events {
 			if event.IsFinal() {
-				gotFinal = true
+				finals++
 			}
 		}
 
@@ -663,8 +663,8 @@ func TestDynamicEndpoint(t *testing.T) {
 		default:
 		}
 
-		if !gotFinal {
-			t.Error("Expected to receive final event")
+		if finals != 1 {
+			t.Errorf("Expected exactly 1 final event, got %d", finals)
 		}
 	})
 
@@ -1008,6 +1008,13 @@ func TestDynamicEndpointMultiPartContent(t *testing.T) {
 
 		if lastEvent == nil {
 			t.Fatal("Expected at least one stream event")
+		}
+		var dyn map[string]any
+		if err := json.Unmarshal(lastEvent.Data, &dyn); err != nil {
+			t.Fatalf("Failed to unmarshal last event Data: %v (data=%s)", err, string(lastEvent.Data))
+		}
+		if dyn["description"] != "An image" {
+			t.Errorf("Expected last event description='An image', got %v (data=%s)", dyn["description"], string(lastEvent.Data))
 		}
 	})
 }
