@@ -247,9 +247,16 @@ func Resolve(in ResolveInput) (*Result, error) {
 	}
 }
 
-// selectIndex picks the child index for a RR resolution. Dynamic clients
-// (whose RR identity is declared purely via runtime client_registry) get
-// a fresh selection matching BAML's fresh-Arc-per-context semantics:
+// selectIndex picks the child index for a RR resolution. The
+// dynamic-vs-Coordinator switch is governed by
+// isDynamicRRClient(reg, clientName), which treats *any* runtime
+// client_registry entry for clientName as dynamic — strategy-only,
+// presence-only (registry touch with no overrides), or full provider
+// override all qualify. The rationale lives on isDynamicRRClient: BAML
+// upstream rebuilds a fresh Arc<LLMProvider> per request-scoped context
+// whenever the registry touches a client, so any registry presence
+// must bypass the long-lived Coordinator counter and use fresh-per-
+// context selection. Dynamic clients get:
 // when `options.start` is supplied, the selection is deterministic at
 // `int(uint64(start) % uint64(childCount))` (cast-then-modulo, matching
 // upstream BAML's `(start as usize) % strategy.len()` and the

@@ -228,6 +228,31 @@ func TestRoundRobinCall(t *testing.T) {
 			} else if actualChild != selected {
 				t.Errorf("body was served by %q but Selected header says %q (metadata/dispatch desync)", actualChild, selected)
 			}
+
+			// Index ↔ Selected binding: the planned-metadata Index is a
+			// position in the chain as declared in clients.baml. The
+			// pair ordering for TestRoundRobinPair is
+			// [FallbackPrimary, FallbackSecondary] (see
+			// integration/testdata/baml_src/clients.baml:80-84). Sibling
+			// /call and /call-with-raw three-child tests already pin
+			// children[idx] == Selected; without an analogous assertion
+			// here, an off-by-one or wrong-pair index could ship while
+			// every other header assertion still passed.
+			if actualChild != "" {
+				pair := []string{"FallbackPrimary", "FallbackSecondary"}
+				expectedIndex := -1
+				for i, name := range pair {
+					if name == actualChild {
+						expectedIndex = i
+						break
+					}
+				}
+				if expectedIndex < 0 {
+					t.Errorf("actualChild %q is not in pair %v; cannot bind Index", actualChild, pair)
+				} else {
+					testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLRoundRobinIndex, strconv.Itoa(expectedIndex))
+				}
+			}
 		})
 
 		t.Run("three_client_rotation", func(t *testing.T) {

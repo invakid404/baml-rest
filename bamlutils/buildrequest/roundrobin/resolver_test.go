@@ -1173,6 +1173,13 @@ func TestResolve_AdvancerOutOfRangeReturnsErrorNotPanic(t *testing.T) {
 			if msg := err.Error(); !strings.Contains(msg, "out of range") {
 				t.Errorf("error message should mention 'out of range'; got %q", msg)
 			}
+			// Production returns nil, err on the bounds check
+			// (resolver.go:233-234). Pin that contract — a future change
+			// that returned a partial *Result alongside the error would
+			// still pass the err and message assertions above.
+			if res != nil {
+				t.Errorf("expected nil result on out-of-range error for idx=%d, got %+v", tc.idx, res)
+			}
 		})
 	}
 }

@@ -2014,9 +2014,13 @@ func TestRunStreamOrchestration_FallbackChainResetBetweenChildren(t *testing.T) 
 		t.Errorf("clientOverride sequence: got %v, want %v (regression: fallback handoff did not switch children)", gotOverrides, wantOverrides)
 	}
 
-	// Find the reset signal — there should be at least one between the
-	// primary's partial and the secondary's partial/final.
-	sawReset := false
+	// Count reset signals — the in-chain handoff path has exactly one
+	// emission site (orchestrator.go:2185-2223), and the retry-boundary
+	// reset path (orchestrator.go:2265-2292) is not reached because the
+	// full attempt succeeds. So a healthy run has resets == 1; a
+	// duplicate reset is a real regression and a missing reset means
+	// the secondary's frames stack onto the primary's stale buffer.
+	resets := 0
 	sawStalePartial := false
 	errorFrames := 0
 	finalVal := ""
@@ -2025,7 +2029,7 @@ func TestRunStreamOrchestration_FallbackChainResetBetweenChildren(t *testing.T) 
 			sawStalePartial = true
 		}
 		if r.kind == bamlutils.StreamResultKindStream && r.reset {
-			sawReset = true
+			resets++
 		}
 		if r.kind == bamlutils.StreamResultKindError {
 			errorFrames++
@@ -2043,8 +2047,8 @@ func TestRunStreamOrchestration_FallbackChainResetBetweenChildren(t *testing.T) 
 	if !sawStalePartial {
 		t.Fatal("primary never emitted 'stale' partial to the channel; the reset-between-children invariant cannot be exercised")
 	}
-	if sawStalePartial && !sawReset {
-		t.Error("primary emitted partial data but no reset signal was sent before the secondary child")
+	if sawStalePartial && resets != 1 {
+		t.Errorf("expected exactly 1 reset signal between primary and secondary; got %d", resets)
 	}
 	// RunStreamOrchestration emits StreamResultKindError only after
 	// retry.Execute returns an error (whole plan exhausted). A
