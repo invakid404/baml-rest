@@ -547,13 +547,14 @@ func TestRetry_ExponentialBackoff(t *testing.T) {
 	mu.Lock()
 	ts := timestamps
 	mu.Unlock()
-	if len(ts) >= 3 {
-		delay1 := ts[1].Sub(ts[0])
-		delay2 := ts[2].Sub(ts[1])
-		// Second delay should be roughly 2x the first (with some tolerance)
-		if delay2 < delay1 {
-			t.Errorf("expected increasing delays, got delay1=%v, delay2=%v", delay1, delay2)
-		}
+	if len(ts) != 3 {
+		t.Fatalf("expected exactly 3 server timestamps (one per attempt), got %d", len(ts))
+	}
+	delay1 := ts[1].Sub(ts[0])
+	delay2 := ts[2].Sub(ts[1])
+	// Second delay should be roughly 2x the first (with some tolerance)
+	if delay2 < delay1 {
+		t.Errorf("expected increasing delays, got delay1=%v, delay2=%v", delay1, delay2)
 	}
 }
 
@@ -625,9 +626,11 @@ func TestStreamResultOrder(t *testing.T) {
 		results = append(results, r.(*testResult))
 	}
 
-	// Verify order: heartbeat first, then partials, then final
-	if len(results) < 3 {
-		t.Fatalf("expected at least 3 results (heartbeat + partial + final), got %d", len(results))
+	// Verify order: heartbeat first, then partials, then final.
+	// Server emits two SSE deltas, so the deterministic shape is
+	// [heartbeat, stream, stream, final] = 4 frames.
+	if len(results) != 4 {
+		t.Fatalf("expected exactly 4 results (heartbeat + 2 partials + final), got %d", len(results))
 	}
 
 	if results[0].kind != bamlutils.StreamResultKindHeartbeat {

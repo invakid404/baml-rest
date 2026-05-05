@@ -106,16 +106,23 @@ func TestRunStreamOrchestration_EmitsPlannedFirstThenHeartbeat(t *testing.T) {
 		t.Fatalf("expected outcome metadata to be emitted")
 	}
 
-	// Planned metadata is emitted upfront (first event); heartbeat fires
-	// later from sendHeartbeat when the provider returns 2xx.
-	if len(kinds) < 2 {
-		t.Fatalf("expected at least planned + heartbeat events; got %d", len(kinds))
+	// Success path emits exactly four frames in order: planned metadata
+	// (upfront), heartbeat (sendHeartbeat on 2xx), outcome metadata
+	// (just before final), final.
+	if len(kinds) != 4 {
+		t.Fatalf("expected exactly 4 frames (planned, heartbeat, outcome, final); got %d: %v", len(kinds), kinds)
 	}
 	if kinds[0] != bamlutils.StreamResultKindMetadata {
-		t.Errorf("first event should be planned metadata; got kind %d", kinds[0])
+		t.Errorf("frame 0 should be planned metadata; got kind %d", kinds[0])
 	}
 	if kinds[1] != bamlutils.StreamResultKindHeartbeat {
-		t.Errorf("second event should be heartbeat; got kind %d", kinds[1])
+		t.Errorf("frame 1 should be heartbeat; got kind %d", kinds[1])
+	}
+	if kinds[2] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("frame 2 should be outcome metadata; got kind %d", kinds[2])
+	}
+	if kinds[3] != bamlutils.StreamResultKindFinal {
+		t.Errorf("frame 3 should be final; got kind %d", kinds[3])
 	}
 	// Pin that the FIRST metadata payload was MetadataPhasePlanned,
 	// not just "some metadata kind first". A regression that swapped
@@ -185,17 +192,22 @@ func TestRunCallOrchestration_EmitsPlannedAndOutcome(t *testing.T) {
 		t.Fatalf("expected outcome metadata to be emitted")
 	}
 
-	// Planned metadata is emitted upfront (first event); heartbeat fires
-	// later from sendHeartbeat when the provider returns 2xx. See the
-	// streaming orchestrator's ordering test for rationale.
-	if len(kinds) < 2 {
-		t.Fatalf("expected at least 2 events; got %d", len(kinds))
+	// Success path emits exactly four frames in order: planned, heartbeat,
+	// outcome, final. See the streaming counterpart for rationale.
+	if len(kinds) != 4 {
+		t.Fatalf("expected exactly 4 frames (planned, heartbeat, outcome, final); got %d: %v", len(kinds), kinds)
 	}
 	if kinds[0] != bamlutils.StreamResultKindMetadata {
-		t.Errorf("first event should be planned metadata; got kind %d", kinds[0])
+		t.Errorf("frame 0 should be planned metadata; got kind %d", kinds[0])
 	}
 	if kinds[1] != bamlutils.StreamResultKindHeartbeat {
-		t.Errorf("second event should be heartbeat; got kind %d", kinds[1])
+		t.Errorf("frame 1 should be heartbeat; got kind %d", kinds[1])
+	}
+	if kinds[2] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("frame 2 should be outcome metadata; got kind %d", kinds[2])
+	}
+	if kinds[3] != bamlutils.StreamResultKindFinal {
+		t.Errorf("frame 3 should be final; got kind %d", kinds[3])
 	}
 	// See streaming counterpart for rationale.
 	if len(metadataPhases) == 0 || metadataPhases[0] != bamlutils.MetadataPhasePlanned {

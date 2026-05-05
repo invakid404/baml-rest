@@ -129,8 +129,8 @@ func TestRunStreamOrchestration_Success(t *testing.T) {
 	if errors != 0 {
 		t.Errorf("expected 0 errors, got %d", errors)
 	}
-	if partials < 1 {
-		t.Errorf("expected at least 1 partial, got %d", partials)
+	if partials != 3 {
+		t.Errorf("expected 3 partials (one per SSE delta), got %d", partials)
 	}
 
 	// The final result should have the full accumulated text
@@ -377,8 +377,8 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 	// classification, tr.reset is the reset bit, and the comparison is
 	// against bamlutils.StreamResultKindStream (the non-reset partial
 	// shape).
-	if nonResetPartials == 0 {
-		t.Errorf("expected at least one non-reset partial (testResult with kind == bamlutils.StreamResultKindStream and reset == false); got 0")
+	if nonResetPartials != 3 {
+		t.Errorf("expected 3 non-reset partials (one per attempt's delta — 2x 'stale' + 1x 'ok'), got %d", nonResetPartials)
 	}
 }
 
@@ -2150,8 +2150,8 @@ func TestRunStreamOrchestration_MixedChain_LegacySucceedsSecond(t *testing.T) {
 			errors++
 		}
 	}
-	if resets < 1 {
-		t.Errorf("expected at least one reset signal between children, got %d", resets)
+	if resets != 1 {
+		t.Errorf("expected exactly 1 reset signal between children, got %d", resets)
 	}
 	if finals != 1 {
 		t.Fatalf("expected exactly one final, got %d", finals)
@@ -2233,8 +2233,8 @@ func TestRunStreamOrchestration_MixedChain_LegacyFirstFails_SupportedWins(t *tes
 			errors++
 		}
 	}
-	if partials < 1 {
-		t.Errorf("expected at least one partial from the supported child, got %d", partials)
+	if partials != 1 {
+		t.Errorf("expected exactly 1 partial from the supported child, got %d", partials)
 	}
 	if finals != 1 {
 		t.Fatalf("expected exactly one final, got %d", finals)
@@ -2600,15 +2600,16 @@ func TestRunStreamOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 		}
 	}
 
-	if heartbeats < 2 {
+	if heartbeats != 2 {
 		// Supported child emits one on HTTP connect, legacy callback
-		// emits a second after its reset. Fewer than two indicates the
-		// reset failed to clear heartbeatSent, or the legacy callback
-		// never fired sendHeartbeat.
-		t.Errorf("expected at least 2 heartbeats (one per child attempt), got %d", heartbeats)
+		// emits a second after its reset. A different count indicates
+		// the reset failed to clear heartbeatSent, the legacy callback
+		// never fired sendHeartbeat, or a duplicate heartbeat slipped
+		// past.
+		t.Errorf("expected exactly 2 heartbeats (one per child attempt), got %d", heartbeats)
 	}
-	if partials < 1 {
-		t.Errorf("expected at least 1 partial from the supported child stream, got %d", partials)
+	if partials != 1 {
+		t.Errorf("expected exactly 1 partial from the supported child stream, got %d", partials)
 	}
 	if resets != 1 {
 		t.Errorf("expected exactly 1 reset between children, got %d", resets)
@@ -2777,8 +2778,8 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_Retry(t *testing.T
 	// The failing attempt never produces a byte (500 before SSE begins), so
 	// its sendHeartbeat never fires. The retry re-arms heartbeatSent; the
 	// successful attempt then fires one heartbeat on HTTP connect.
-	if heartbeats < 1 {
-		t.Errorf("expected >=1 heartbeat from the successful attempt; got %d", heartbeats)
+	if heartbeats != 1 {
+		t.Errorf("expected exactly 1 heartbeat from the successful attempt; got %d", heartbeats)
 	}
 	// RunStreamOrchestration emits StreamResultKindError only after
 	// retry.Execute returns an error (whole plan exhausted). A
@@ -2913,8 +2914,8 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain(t *t
 	}
 	// Both children emit a heartbeat on HTTP connect; the in-chain reset
 	// must still clear heartbeatSent.
-	if heartbeats < 2 {
-		t.Errorf("expected >=2 heartbeats (one per child), got %d", heartbeats)
+	if heartbeats != 2 {
+		t.Errorf("expected exactly 2 heartbeats (one per child), got %d", heartbeats)
 	}
 	// RunStreamOrchestration emits StreamResultKindError only after
 	// retry.Execute returns an error (whole plan exhausted). A
