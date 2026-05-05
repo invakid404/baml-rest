@@ -145,11 +145,18 @@ func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
 
 			finals := 0
 			errCount := 0
-			for {
+			// Drain BOTH channels until each producer closes its half.
+			// streamRequest defers close on errs and events; on events-close-
+			// first races the buffered errs value would otherwise be left
+			// unread, hiding a non-nil parse/scanner error behind
+			// `finals == 1 && errCount == 0`. Disable each arm on close
+			// (set chan to nil) and exit only when both are nil.
+			for events != nil || errs != nil {
 				select {
 				case event, ok := <-events:
 					if !ok {
-						goto done
+						events = nil
+						continue
 					}
 					if event.IsReset() {
 						resets.Add(1)
@@ -163,9 +170,6 @@ func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
 					}
 				case err, ok := <-errs:
 					if !ok {
-						// errs producer closed (testutil.streamRequest defers close);
-						// disable this select arm so it doesn't busy-spin yielding nil
-						// while the events channel is still draining.
 						errs = nil
 						continue
 					}
@@ -250,23 +254,36 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 		finals := 0
 		errCount := 0
 
-		// Wait for first event.
-		select {
-		case event, ok := <-events:
-			if !ok {
-				t.Fatalf("Round %d: stream closed before first event", round)
+		// Wait for first event. Two-value receive on errs so a closed-but-
+		// empty errs channel does not surface as a spurious
+		// `stream error before first event: <nil>` fatal — disable the arm
+		// on close and keep waiting on events / timeout.
+		firstEventBudget := time.NewTimer(30 * time.Second)
+		defer firstEventBudget.Stop()
+	waitFirst:
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					t.Fatalf("Round %d: stream closed before first event", round)
+				}
+				t.Logf("Round %d: got first event: type=%s", round, event.Event)
+				if event.IsError() {
+					errCount++
+				}
+				if event.IsFinal() {
+					finals++
+				}
+				break waitFirst
+			case err, ok := <-errs:
+				if !ok {
+					errs = nil
+					continue
+				}
+				t.Fatalf("Round %d: stream error before first event: %v", round, err)
+			case <-firstEventBudget.C:
+				t.Fatalf("Round %d: timeout waiting for first event", round)
 			}
-			t.Logf("Round %d: got first event: type=%s", round, event.Event)
-			if event.IsError() {
-				errCount++
-			}
-			if event.IsFinal() {
-				finals++
-			}
-		case err := <-errs:
-			t.Fatalf("Round %d: stream error before first event: %v", round, err)
-		case <-time.After(30 * time.Second):
-			t.Fatalf("Round %d: timeout waiting for first event", round)
 		}
 
 		// Kill a worker.
@@ -279,12 +296,16 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 			t.Logf("Round %d: killed worker %d", round, result.WorkerID)
 		}
 
-		// Drain remaining events — expect recovery (reset + final).
-		for {
+		// Drain remaining events — expect recovery (reset + final). Drain
+		// BOTH channels until each producer closes its half so an
+		// events-close-first race doesn't strand a buffered errs value
+		// behind a `finals == 1 && errCount == 0` false pass.
+		for events != nil || errs != nil {
 			select {
 			case event, ok := <-events:
 				if !ok {
-					goto roundDone
+					events = nil
+					continue
 				}
 				if event.IsFinal() {
 					finals++
@@ -294,8 +315,6 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 				}
 			case err, ok := <-errs:
 				if !ok {
-					// errs producer closed; disable this arm so it doesn't
-					// busy-spin yielding nil while events drains.
 					errs = nil
 					continue
 				}
@@ -307,7 +326,6 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 				t.Fatalf("Round %d: timeout draining stream", round)
 			}
 		}
-	roundDone:
 
 		if finals != 1 || errCount != 0 {
 			t.Errorf("Round %d: expected exactly 1 final and 0 errors after worker death, got finals=%d errCount=%d", round, finals, errCount)
@@ -487,11 +505,14 @@ func TestMixedRequestsDuringWorkerDeath(t *testing.T) {
 			})
 			finals := 0
 			errCount := 0
-			for {
+			// Drain BOTH channels until each producer closes its half so an
+			// events-close-first race doesn't strand a buffered errs value.
+			for events != nil || errs != nil {
 				select {
 				case event, ok := <-events:
 					if !ok {
-						goto done
+						events = nil
+						continue
 					}
 					if event.IsFinal() {
 						finals++
@@ -501,8 +522,6 @@ func TestMixedRequestsDuringWorkerDeath(t *testing.T) {
 					}
 				case err, ok := <-errs:
 					if !ok {
-						// errs producer closed; disable this arm so it
-						// doesn't busy-spin yielding nil.
 						errs = nil
 						continue
 					}
