@@ -259,7 +259,6 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 		// `stream error before first event: <nil>` fatal — disable the arm
 		// on close and keep waiting on events / timeout.
 		firstEventBudget := time.NewTimer(30 * time.Second)
-		defer firstEventBudget.Stop()
 	waitFirst:
 		for {
 			select {
@@ -285,6 +284,7 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 				t.Fatalf("Round %d: timeout waiting for first event", round)
 			}
 		}
+		firstEventBudget.Stop()
 
 		// Kill a worker.
 		killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
