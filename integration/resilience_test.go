@@ -161,7 +161,14 @@ func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
 						errCount++
 						t.Logf("Request %d got error event: %s", idx, event.Data)
 					}
-				case err := <-errs:
+				case err, ok := <-errs:
+					if !ok {
+						// errs producer closed (testutil.streamRequest defers close);
+						// disable this select arm so it doesn't busy-spin yielding nil
+						// while the events channel is still draining.
+						errs = nil
+						continue
+					}
 					if err != nil {
 						t.Logf("Request %d stream error: %v", idx, err)
 						errCount++
@@ -271,7 +278,13 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 				if event.IsFinal() {
 					finals++
 				}
-			case err := <-errs:
+			case err, ok := <-errs:
+				if !ok {
+					// errs producer closed; disable this arm so it doesn't
+					// busy-spin yielding nil while events drains.
+					errs = nil
+					continue
+				}
 				if err != nil {
 					t.Logf("Round %d: stream error during drain: %v", round, err)
 				}
@@ -471,7 +484,13 @@ func TestMixedRequestsDuringWorkerDeath(t *testing.T) {
 					if event.IsError() {
 						errCount++
 					}
-				case err := <-errs:
+				case err, ok := <-errs:
+					if !ok {
+						// errs producer closed; disable this arm so it
+						// doesn't busy-spin yielding nil.
+						errs = nil
+						continue
+					}
 					if err != nil {
 						errCount++
 					}
