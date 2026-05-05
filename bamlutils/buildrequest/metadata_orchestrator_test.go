@@ -15,7 +15,7 @@ func newTestMetadataResult(md *bamlutils.Metadata) bamlutils.StreamResult {
 	return &testResult{kind: bamlutils.StreamResultKindMetadata, metadata: md}
 }
 
-func collectMetadata(t *testing.T, ch <-chan bamlutils.StreamResult) (planned, outcome *bamlutils.Metadata, allKinds []bamlutils.StreamResultKind) {
+func collectMetadata(t *testing.T, ch <-chan bamlutils.StreamResult) (planned, outcome *bamlutils.Metadata, allKinds []bamlutils.StreamResultKind, metadataPhases []bamlutils.MetadataPhase) {
 	t.Helper()
 	for r := range ch {
 		allKinds = append(allKinds, r.Kind())
@@ -24,6 +24,13 @@ func collectMetadata(t *testing.T, ch <-chan bamlutils.StreamResult) (planned, o
 			if md == nil {
 				t.Fatalf("metadata kind without payload")
 			}
+			// metadataPhases preserves the in-channel ORDER of the
+			// metadata events so callers can assert "planned came
+			// first". A phase-bucketed return alone (planned,
+			// outcome) hides event order — a regression that emitted
+			// outcome before planned could still satisfy
+			// `kinds[0] == Metadata` and `planned != nil`.
+			metadataPhases = append(metadataPhases, md.Phase)
 			switch md.Phase {
 			case bamlutils.MetadataPhasePlanned:
 				if planned != nil {
@@ -40,14 +47,20 @@ func collectMetadata(t *testing.T, ch <-chan bamlutils.StreamResult) (planned, o
 			}
 		}
 	}
-	return planned, outcome, allKinds
+	return planned, outcome, allKinds, metadataPhases
 }
 
-// TestRunStreamOrchestration_EmitsPlannedAfterHeartbeat verifies the
-// ordering invariant from §4a: heartbeat is the first event, planned
-// metadata is the second. This guarantees the pool's first-byte tracking
-// and reset injection logic continues to work.
-func TestRunStreamOrchestration_EmitsPlannedAfterHeartbeat(t *testing.T) {
+// TestRunStreamOrchestration_EmitsPlannedFirstThenHeartbeat verifies
+// the planned-first ordering: planned metadata is emitted upfront
+// from the orchestrator (before any HTTP work), and the heartbeat
+// fires later when the upstream provider returns 2xx. Emitting
+// heartbeat first and gating planned on the heartbeat CAS would lose
+// the planned event for requests that completed without firing the
+// onSuccess heartbeat (legacy path with WithClient targeting a
+// strategy parent that resolves through static IR). Pool's
+// first-byte tracking treats any first event as liveness, so
+// planned-first does not break hung detection.
+func TestRunStreamOrchestration_EmitsPlannedFirstThenHeartbeat(t *testing.T) {
 	server := makeOpenAIServer([]string{"hi"})
 	defer server.Close()
 
@@ -85,7 +98,7 @@ func TestRunStreamOrchestration_EmitsPlannedAfterHeartbeat(t *testing.T) {
 	}
 	close(out)
 
-	planned, outcome, kinds := collectMetadata(t, out)
+	planned, outcome, kinds, metadataPhases := collectMetadata(t, out)
 	if planned == nil {
 		t.Fatalf("expected planned metadata to be emitted")
 	}
@@ -93,15 +106,23 @@ func TestRunStreamOrchestration_EmitsPlannedAfterHeartbeat(t *testing.T) {
 		t.Fatalf("expected outcome metadata to be emitted")
 	}
 
-	// Heartbeat must be first; planned metadata second.
+	// Planned metadata is emitted upfront (first event); heartbeat fires
+	// later from sendHeartbeat when the provider returns 2xx.
 	if len(kinds) < 2 {
-		t.Fatalf("expected at least heartbeat + planned events; got %d", len(kinds))
+		t.Fatalf("expected at least planned + heartbeat events; got %d", len(kinds))
 	}
-	if kinds[0] != bamlutils.StreamResultKindHeartbeat {
-		t.Errorf("first event should be heartbeat; got kind %d", kinds[0])
+	if kinds[0] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("first event should be planned metadata; got kind %d", kinds[0])
 	}
-	if kinds[1] != bamlutils.StreamResultKindMetadata {
-		t.Errorf("second event should be metadata (planned); got kind %d", kinds[1])
+	if kinds[1] != bamlutils.StreamResultKindHeartbeat {
+		t.Errorf("second event should be heartbeat; got kind %d", kinds[1])
+	}
+	// Pin that the FIRST metadata payload was MetadataPhasePlanned,
+	// not just "some metadata kind first". A regression that swapped
+	// planned/outcome emission order would still satisfy
+	// `kinds[0] == Metadata` but flunk this check.
+	if len(metadataPhases) == 0 || metadataPhases[0] != bamlutils.MetadataPhasePlanned {
+		t.Errorf("first metadata phase should be planned; got %v", metadataPhases)
 	}
 
 	// Phase invariants.
@@ -156,7 +177,7 @@ func TestRunCallOrchestration_EmitsPlannedAndOutcome(t *testing.T) {
 	}
 	close(out)
 
-	planned, outcome, kinds := collectMetadata(t, out)
+	planned, outcome, kinds, metadataPhases := collectMetadata(t, out)
 	if planned == nil {
 		t.Fatalf("expected planned metadata to be emitted")
 	}
@@ -164,15 +185,21 @@ func TestRunCallOrchestration_EmitsPlannedAndOutcome(t *testing.T) {
 		t.Fatalf("expected outcome metadata to be emitted")
 	}
 
-	// Heartbeat (from sendHeartbeat onSuccess) must precede planned metadata.
+	// Planned metadata is emitted upfront (first event); heartbeat fires
+	// later from sendHeartbeat when the provider returns 2xx. See the
+	// streaming orchestrator's ordering test for rationale.
 	if len(kinds) < 2 {
 		t.Fatalf("expected at least 2 events; got %d", len(kinds))
 	}
-	if kinds[0] != bamlutils.StreamResultKindHeartbeat {
-		t.Errorf("first event should be heartbeat; got kind %d", kinds[0])
+	if kinds[0] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("first event should be planned metadata; got kind %d", kinds[0])
 	}
-	if kinds[1] != bamlutils.StreamResultKindMetadata {
-		t.Errorf("second event should be metadata (planned); got kind %d", kinds[1])
+	if kinds[1] != bamlutils.StreamResultKindHeartbeat {
+		t.Errorf("second event should be heartbeat; got kind %d", kinds[1])
+	}
+	// See streaming counterpart for rationale.
+	if len(metadataPhases) == 0 || metadataPhases[0] != bamlutils.MetadataPhasePlanned {
+		t.Errorf("first metadata phase should be planned; got %v", metadataPhases)
 	}
 
 	if outcome.WinnerProvider != "openai" {

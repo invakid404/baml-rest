@@ -18,6 +18,13 @@ import (
 // writes, causing a convoy effect at high concurrency.
 const ExtraGRPCConns = 3
 
+// SharedStateBrokerID is the fixed broker id used for the reverse
+// host-served SharedState socket. The worker -> host connection for
+// cross-request round-robin counters flows over this id. Picked to sit
+// immediately past the ExtraGRPCConns range so it cannot collide with
+// the worker-served extra connections (ids 1..ExtraGRPCConns).
+const SharedStateBrokerID uint32 = ExtraGRPCConns + 1
+
 // multiConnWorker distributes RPCs across multiple gRPC connections to the
 // same worker process via round-robin.
 type multiConnWorker struct {

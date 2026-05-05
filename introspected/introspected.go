@@ -4,6 +4,7 @@ package introspected
 
 import (
 	bamlutils "github.com/invakid404/baml-rest/bamlutils"
+	roundrobin "github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
 	retry "github.com/invakid404/baml-rest/bamlutils/retry"
 )
 
@@ -45,6 +46,9 @@ var RequestFuncs = map[string]any{}
 var StreamRequest any
 var StreamRequestFuncs = map[string]any{}
 
+// SupportsWithClient is true when baml_client exposes WithClient(string) (BAML v0.219.0+)
+var SupportsWithClient = false
+
 // FunctionClient maps BAML function names to their default client name
 var FunctionClient = map[string]string{}
 
@@ -60,8 +64,26 @@ var RetryPolicies = map[string]*retry.Policy{}
 // FunctionRetryPolicy maps BAML function names to their retry policy name
 var FunctionRetryPolicy = map[string]string{}
 
+// ClientRetryPolicy maps BAML client names to their declared retry policy name.
+// Used by the BuildRequest router (keyed on the effective client after any
+// baml-roundrobin unwrap) instead of FunctionRetryPolicy.
+var ClientRetryPolicy = map[string]string{}
+
 // FallbackChains maps strategy client names to their ordered list of child client names
 var FallbackChains = map[string][]string{}
+
+// RoundRobinStart maps baml-roundrobin client names to their configured
+// start index. Nil by default so cmd/serve's nil-check on SharedStateSeeds
+// skips provisioning the host-side SharedState broker socket; the
+// generator replaces this stub with an initialised map only when the
+// .baml source defines at least one baml-roundrobin client.
+var RoundRobinStart map[string]int
+
+// RoundRobinCoordinator holds the per-process, per-client round-robin
+// counters used by the BuildRequest path. Generated introspection emits
+// a freshly-constructed Coordinator here so static baml-roundrobin
+// clients keep contiguous counters across requests.
+var RoundRobinCoordinator = roundrobin.NewCoordinatorWithStarts(RoundRobinStart)
 
 // TypeBuilder type
 type TypeBuilder struct{}

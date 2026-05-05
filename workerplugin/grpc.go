@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/hashicorp/go-plugin"
 	"github.com/invakid404/baml-rest/bamlutils"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 	"google.golang.org/grpc"
@@ -53,10 +54,66 @@ func pbToStreamMode(m pb.StreamMode) bamlutils.StreamMode {
 type GRPCServer struct {
 	pb.UnimplementedWorkerServer
 	Impl Worker
+	// broker is captured from WorkerPlugin.GRPCServer so the AttachSharedState
+	// handler can dial back to the host-side broker socket. It is set once
+	// at handshake time and never mutated.
+	broker *plugin.GRPCBroker
+	// onAttach is invoked after the worker successfully dials back to the
+	// host's SharedState broker socket. Set by WorkerPlugin.GRPCServer.
+	onAttach func(ctx context.Context, client pb.SharedStateClient) error
+}
+
+// AttachSharedState is called by the host after it begins serving the
+// shared-state socket on the broker id given in the request. The worker
+// dials back, hands the resulting client to the installed callback, and
+// returns. Any dial error is propagated; the host treats a failure here
+// as fatal for that worker (without shared state, pool-wide round-robin
+// collapses back to per-worker coordinators, which is the bug this RPC
+// exists to fix).
+func (s *GRPCServer) AttachSharedState(ctx context.Context, req *pb.AttachSharedStateRequest) (*pb.Empty, error) {
+	if s.broker == nil {
+		return nil, fmt.Errorf("worker: broker not available for shared-state dial-back")
+	}
+	if s.onAttach == nil {
+		// No handler installed — fail fast. The host calls this RPC
+		// only when it has
+		// SharedStateImpl set on its WorkerPlugin (plugin.go:244-249);
+		// reaching here without a handler means the worker side
+		// neglected to install one before plugin.Serve. Returning
+		// success would be misleading: the host believes shared
+		// state is attached, but the worker never stores a
+		// SharedStateClient, so pool-wide round-robin silently
+		// collapses to per-worker coordinators.
+		//
+		// Standalone / test harnesses without shared state should
+		// avoid invoking this RPC at all by leaving WorkerPlugin.
+		// SharedStateImpl nil on the host side, not by accepting a
+		// no-op attach here.
+		return nil, fmt.Errorf("worker: shared-state attach handler not installed")
+	}
+	conn, err := s.broker.DialWithOptions(req.GetBrokerId(), GRPCDialOptions()...)
+	if err != nil {
+		return nil, fmt.Errorf("worker: dial shared-state broker id=%d: %w", req.GetBrokerId(), err)
+	}
+	client := pb.NewSharedStateClient(conn)
+	if err := s.onAttach(ctx, client); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("worker: install shared-state client: %w", err)
+	}
+	// Intentionally do NOT close conn on success. The client is meant
+	// to live for the worker's lifetime; go-plugin closes the underlying
+	// broker stream when the plugin is killed, which tears the conn
+	// down for us.
+	return &pb.Empty{}, nil
 }
 
 func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStreamServer) error {
-	results, err := s.Impl.CallStream(stream.Context(), req.MethodName, req.InputJson, pbToStreamMode(req.StreamMode))
+	// Re-attach the request_id from the wire payload onto the handler
+	// context so the worker's round-robin wiring can pick it up without
+	// every call path threading it as an argument. Empty RequestId is
+	// fine — WithRequestID short-circuits.
+	ctx := WithRequestID(stream.Context(), req.GetRequestId())
+	results, err := s.Impl.CallStream(ctx, req.MethodName, req.InputJson, pbToStreamMode(req.StreamMode))
 	if err != nil {
 		return err
 	}
@@ -157,6 +214,7 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 		MethodName: methodName,
 		InputJson:  inputJSON,
 		StreamMode: streamModeToPb(streamMode),
+		RequestId:  RequestIDFromContext(ctx),
 	})
 	if err != nil {
 		return nil, err

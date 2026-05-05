@@ -519,6 +519,69 @@ goimports -w .
 echo "Running adapter (${ADAPTER_VERSION})..."
 go run "${ADAPTER_VERSION}/cmd/main.go"
 
+# Run adapter unit tests against the pinned BAML version. Reaching this
+# point means the adapter source is final: hacks have been applied, the
+# BAML dependency is pinned, the workspace is synced, and the adapter
+# generator has run. Tests run here exercise the exact code that
+# compiles into the worker binary on the next step. Running from the
+# adapter module directory (rather than the workspace root) ensures the
+# tests resolve against the version-pinned BAML in that module's go.mod
+# — running from the root would pick up the wrong version for older
+# adapters. ./... covers both adapter/ and utils/ packages within the
+# adapter module.
+#
+# GOWORK=off is load-bearing: even when
+# cd'd into the adapter module, the workspace's go.work pulls every
+# adapter into MVS resolution and `go test` picks the highest BAML
+# version across all members — e.g. from adapter_v0_204_0, `go list -m`
+# would resolve to v0.219.0 because v0.219's adapter is also in the
+# workspace. Disabling workspace mode forces resolution against the
+# adapter's own go.mod, which is the version we actually want to test.
+#
+# `go mod download` runs first under GOWORK=off so the adapter's own
+# go.sum gets hydrated for whatever BAML pseudo-version the build
+# step pinned (signoff-30 blocker): adapter go.sum files are checked
+# in for the canonical pinned version, but the build script can
+# upgrade to a fresh pseudo-version mid-build, which then trips
+# `missing go.sum entry for go.mod file` on the test command.
+# Hydrating only the resolved versions is narrower than `go mod tidy`
+# and safe in this throwaway build directory.
+#
+# We also need to teach the adapter module how to resolve the
+# generated baml_client module (signoff-31 blocker): introspected.go
+# (re-generated upstream by `go run cmd/introspect/main.go`) imports
+# `github.com/invakid404/baml-rest/baml_client`, which lives at
+# ./baml_client in the build tree. Under workspace mode the
+# `go work use ./baml_client` line at line 325 above made that
+# resolvable from every workspace member; under GOWORK=off the
+# adapter module sees only its own go.mod, which has no
+# require/replace for baml_client (it's a checkout-time-only
+# module). The two `go mod edit` calls below add the missing
+# require + relative replace so the test compile resolves it.
+#
+# When CUSTOM_BAML_GO_LIB is set, the workspace also has a replace
+# for `github.com/boundaryml/baml` pointing at a local checkout
+# (line 473). We mirror that into the adapter module too so the
+# adapter test compiles against the same patched BAML the worker
+# binary will link — without this, GOWORK=off would resolve the
+# adapter's pinned BAML version from the proxy and the tests
+# would diverge from what production runs.
+#
+# All of these `go mod edit` calls land in the throwaway
+# BUILD_WORK copy of the adapter (cp -r at line 308 above), so
+# they don't pollute the source tree's go.mod.
+echo "Running adapter unit tests (${ADAPTER_VERSION})..."
+(
+    cd "${ADAPTER_VERSION}"
+    GOWORK=off go mod edit -require "github.com/invakid404/baml-rest/baml_client@v0.0.0"
+    GOWORK=off go mod edit -replace "github.com/invakid404/baml-rest/baml_client=../../baml_client"
+    if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
+        GOWORK=off go mod edit -replace "github.com/boundaryml/baml=${CUSTOM_BAML_GO_LIB}"
+    fi
+    GOWORK=off go mod download
+    GOWORK=off go test -race -count=1 ./...
+)
+
 # Build worker binary first (this imports baml and loads the shared library)
 echo "Building worker binary..."
 WORKER_LDFLAGS=""

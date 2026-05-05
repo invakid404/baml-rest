@@ -391,6 +391,17 @@ func TestWorkerDeathMidStream(t *testing.T) {
 		var killedWorker bool
 		var eventsBeforeKill int
 
+		// postKillDeadline bounds how long the drain waits AFTER a
+		// successful KillWorker before failing the test. Without this,
+		// a wedged retry would block until the outer ctx (the test's
+		// overall budget) expires, surfacing as a confusing whole-
+		// test timeout instead of a precise "post-kill drain stuck"
+		// signal. The deadline is started lazily when the kill
+		// succeeds; before that, the regular ctx + events/errs
+		// channels drive the loop.
+		var postKillTimer *time.Timer
+		var postKillC <-chan time.Time
+
 		// Process events
 		for {
 			select {
@@ -409,10 +420,20 @@ func TestWorkerDeathMidStream(t *testing.T) {
 					sawErrorEvent = true
 				}
 
-				// After receiving the first event (first byte), kill the worker
-				if len(receivedEvents) == 1 && !killedWorker {
+				// Kill the worker after the first non-metadata event so
+				// the kill lands AFTER an actual upstream byte. Planned
+				// metadata is emitted upfront from the orchestrator
+				// before BAML's HTTP work starts — it's the routing
+				// decision, not upstream progress. Pool's reset-
+				// injection logic excludes planned metadata from
+				// sentAnyResults, so killing after the planned frame
+				// would land in pre-first-byte territory and the retry
+				// would (correctly) not inject Reset. The "after first
+				// byte" semantic this test asserts is "after a real
+				// upstream byte".
+				if event.Event != "metadata" && !killedWorker {
 					eventsBeforeKill = len(receivedEvents)
-					t.Log("First event received, killing worker...")
+					t.Log("First non-metadata event received, killing worker...")
 					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
 					result, err := BAMLClient.KillWorker(killCtx)
 					killCancel()
@@ -423,6 +444,21 @@ func TestWorkerDeathMidStream(t *testing.T) {
 						t.Logf("Killed worker %d with %d in-flight requests, gotFirstByte=%v",
 							result.WorkerID, result.InFlightCount, result.GotFirstByte)
 						killedWorker = true
+						// Start a 30s post-kill drain bound. Retry +
+						// reset event + final should all arrive well
+						// within this budget; anything longer
+						// indicates a wedged retry handoff that
+						// should fail loudly rather than ride out
+						// the test's whole-context timeout (60s).
+						//
+						// Sized to comfortably accommodate the
+						// scenario's intentionally slow streaming
+						// shape (75-char content, 5-char chunks,
+						// 500ms chunk delay → ~7.5s normal stream
+						// time after retry start) plus headroom for
+						// CI scheduling jitter on slow runners.
+						postKillTimer = time.NewTimer(30 * time.Second)
+						postKillC = postKillTimer.C
 					}
 				}
 
@@ -431,6 +467,10 @@ func TestWorkerDeathMidStream(t *testing.T) {
 					streamErr = err
 					t.Logf("Received stream error: %v", err)
 				}
+			case <-postKillC:
+				t.Errorf("post-kill drain exceeded 30s — retry handoff appears wedged. events=%d, sawReset=%v, sawError=%v, streamErr=%v",
+					len(receivedEvents), sawResetEvent, sawErrorEvent, streamErr)
+				goto done
 			case <-ctx.Done():
 				t.Logf("Context cancelled")
 				streamErr = ctx.Err()
@@ -438,6 +478,9 @@ func TestWorkerDeathMidStream(t *testing.T) {
 			}
 		}
 	done:
+		if postKillTimer != nil {
+			postKillTimer.Stop()
+		}
 
 		t.Logf("=== RESULTS ===")
 		t.Logf("Total events received: %d", len(receivedEvents))
@@ -1482,6 +1525,15 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 		var killedWorker bool
 		var eventsBeforeKill int
 
+		// postKillDeadline bounds how long the drain waits AFTER a
+		// successful KillWorker before failing the test. Mirrors the
+		// SSE counterpart above: without this, a wedged retry would
+		// block until the outer ctx expires, surfacing as a confusing
+		// whole-test timeout instead of a precise "post-kill drain
+		// stuck" signal.
+		var postKillTimer *time.Timer
+		var postKillC <-chan time.Time
+
 		// Process events
 		for {
 			select {
@@ -1500,10 +1552,16 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 					sawErrorEvent = true
 				}
 
-				// After receiving the first event (first byte), kill the worker
-				if len(receivedEvents) == 1 && !killedWorker {
+				// Kill after the first non-metadata event — see the SSE
+				// counterpart above for the rationale (planned metadata
+				// is emitted before BAML's HTTP work starts and does
+				// not represent upstream first-byte; a kill landing
+				// during the planned-only window correctly falls into
+				// pre-first-byte handling, which suppresses Reset on
+				// retry).
+				if !event.IsMetadata() && !killedWorker {
 					eventsBeforeKill = len(receivedEvents)
-					t.Log("First event received, killing worker...")
+					t.Log("First non-metadata event received, killing worker...")
 					killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
 					result, err := BAMLClient.KillWorker(killCtx)
 					killCancel()
@@ -1514,6 +1572,14 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 						t.Logf("Killed worker %d with %d in-flight requests, gotFirstByte=%v",
 							result.WorkerID, result.InFlightCount, result.GotFirstByte)
 						killedWorker = true
+						// Same 30s post-kill bound as the SSE
+						// counterpart: scenario's slow streaming
+						// shape (75-char content, 5-char chunks,
+						// 500ms chunk delay → ~7.5s post-retry
+						// stream time) plus headroom for CI
+						// scheduling jitter.
+						postKillTimer = time.NewTimer(30 * time.Second)
+						postKillC = postKillTimer.C
 					}
 				}
 
@@ -1522,6 +1588,10 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 					streamErr = err
 					t.Logf("Received stream error: %v", err)
 				}
+			case <-postKillC:
+				t.Errorf("post-kill drain exceeded 30s — retry handoff appears wedged. events=%d, eventsBeforeKill=%d, sawReset=%v, sawError=%v, streamErr=%v",
+					len(receivedEvents), eventsBeforeKill, sawResetEvent, sawErrorEvent, streamErr)
+				goto done
 			case <-ctx.Done():
 				t.Logf("Context cancelled")
 				streamErr = ctx.Err()
@@ -1529,6 +1599,9 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 			}
 		}
 	done:
+		if postKillTimer != nil {
+			postKillTimer.Stop()
+		}
 
 		t.Logf("=== RESULTS ===")
 		t.Logf("Total events received: %d", len(receivedEvents))
@@ -2132,13 +2205,33 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 			Options: opts,
 		})
 
-		// Cancel after a short delay (before first byte would arrive)
+		// Cancel after a short delay (before first byte would arrive).
+		// cancelFired is closed inside the timer callback so the event
+		// loop below can distinguish "before cancel" frames (which the
+		// test assertion gates on) from post-cancel teardown frames
+		// that legitimately drain after reqCancel(). Without this
+		// gate, any event the server flushed in the cancel-then-
+		// teardown window would inflate the count past the "no pre-
+		// cancel work" invariant the test claims to pin.
+		cancelFired := make(chan struct{})
 		cancelTimer := time.AfterFunc(500*time.Millisecond, func() {
+			close(cancelFired)
 			reqCancel()
 		})
 		defer cancelTimer.Stop()
 
 		var receivedEvents int
+		// nonPlannedEventsBeforeCancel counts every frame that is NOT
+		// planned metadata — data, final, reset, error, AND outcome
+		// metadata — observed BEFORE the cancelFired signal. Planned
+		// metadata emits upfront from the orchestrator before any
+		// HTTP work to the upstream provider, so a planned frame
+		// arriving in this window is expected and not a test failure.
+		// Outcome metadata is terminal state and must NOT appear in
+		// this pre-first-byte cancellation window — a `!IsMetadata()`
+		// predicate would skip both phases and hide a regression where
+		// outcome leaked through.
+		var nonPlannedEventsBeforeCancel int
 		var streamErr error
 
 		for {
@@ -2148,11 +2241,36 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 					goto done
 				}
 				receivedEvents++
+				// Only fail-flag events that arrived BEFORE cancel
+				// fired. After cancel, the server / pool can
+				// legitimately drain teardown frames; those are not
+				// what this test is pinning.
+				select {
+				case <-cancelFired:
+					// Post-cancel; ignore for counter purposes.
+				default:
+					if !event.IsPlannedMetadata() {
+						nonPlannedEventsBeforeCancel++
+					}
+				}
 				t.Logf("Received NDJSON event: type=%s", event.Event)
 			case err := <-errs:
 				if err != nil {
 					streamErr = err
 					t.Logf("Received NDJSON error: %v", err)
+					// A transport error before reqCancel() fires is
+					// exactly the kind of pre-first-byte signal this
+					// test is supposed to catch — silently logging it
+					// would hide a regression where the upstream
+					// connection broke before any byte landed. Post-
+					// cancel errors are expected teardown noise and
+					// stay logged-only via the cancelFired gate,
+					// mirroring the events branch.
+					select {
+					case <-cancelFired:
+					default:
+						nonPlannedEventsBeforeCancel++
+					}
 				}
 			case <-parentCtx.Done():
 				t.Fatal("Parent context cancelled unexpectedly")
@@ -2162,11 +2280,26 @@ func TestRequestCancellationNDJSON(t *testing.T) {
 
 		elapsed := time.Since(startTime)
 		t.Logf("NDJSON request completed in %v", elapsed)
-		t.Logf("NDJSON events received: %d", receivedEvents)
+		t.Logf("NDJSON events received: %d (non-planned: %d)", receivedEvents, nonPlannedEventsBeforeCancel)
 		t.Logf("NDJSON stream error: %v", streamErr)
 
-		if receivedEvents != 0 {
-			t.Errorf("Expected zero NDJSON events before cancellation, got %d", receivedEvents)
+		// Verify the cancellation actually fired before evaluating
+		// the "no pre-cancel work" invariant. If the stream completed
+		// before cancelFired closed (e.g. the server returned
+		// instantly, or the timer was preempted by a fast drain), the
+		// counter can be 0 vacuously without proving cancellation
+		// crossed the intended point. Bound the wait so a wedged
+		// timer fails loudly here rather than passing as a vacuous 0.
+		select {
+		case <-cancelFired:
+			// Cancellation fired as expected; the counter assertion
+			// below is meaningful.
+		case <-time.After(5 * time.Second):
+			t.Fatalf("cancelFired never closed within 5s — pre-first-byte cancellation never crossed; the no-pre-cancel-work assertion below would be vacuous")
+		}
+
+		if nonPlannedEventsBeforeCancel != 0 {
+			t.Errorf("Expected zero non-planned NDJSON events before cancellation, got %d (received %d total events; only PLANNED metadata is allowed since it emits upfront before any upstream work — outcome metadata, data, reset, error must not appear in a pre-first-byte cancellation window)", nonPlannedEventsBeforeCancel, receivedEvents)
 		}
 
 		// Should complete quickly (cancelled at ~500ms, not waiting 10s)

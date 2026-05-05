@@ -2,7 +2,10 @@ package workerplugin
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"net"
 	"runtime"
 	"time"
 
@@ -161,6 +164,32 @@ type WorkerPlugin struct {
 	plugin.Plugin
 	// Impl is the concrete implementation, used by the server side
 	Impl Worker
+	// SharedStateImpl hosts a pb.SharedStateServer on the plugin broker
+	// so workers can dial back for cross-request round-robin counters.
+	// Nil in standalone/test setups — the worker then keeps its in-process
+	// Coordinator. Production is pool-managed and injects a store-backed
+	// server via pool.Config.SharedStateSeeds.
+	SharedStateImpl pb.SharedStateServer
+	// SharedStateAttachTimeout bounds the initial AttachSharedState RPC
+	// from the host to the worker. Non-positive (<= 0) uses the 10s default.
+	SharedStateAttachTimeout time.Duration
+	// AttachSharedState is set by the worker side in GRPCServer and
+	// invoked on AttachSharedState requests. Keeps the plumbing in the
+	// plugin package rather than spreading gRPC details into cmd/worker.
+	onAttachSharedState func(ctx context.Context, client pb.SharedStateClient) error
+}
+
+// SetAttachSharedStateHandler installs the worker-side callback invoked
+// when the host dials AttachSharedState. The callback receives a
+// pb.SharedStateClient already connected to the host broker socket;
+// the worker is expected to hold onto it for the lifetime of the process.
+//
+// This stays on WorkerPlugin (rather than hanging off the Worker
+// interface) because the Worker interface is pure per-request RPC; the
+// shared-state client is a process-level handle the worker gets once,
+// at plugin-handshake time.
+func (p *WorkerPlugin) SetAttachSharedStateHandler(fn func(ctx context.Context, client pb.SharedStateClient) error) {
+	p.onAttachSharedState = fn
 }
 
 const (
@@ -169,10 +198,23 @@ const (
 	extraGRPCDialRetries = 2
 	// Linear backoff base between retries.
 	extraGRPCDialRetryBackoff = 100 * time.Millisecond
+	// Per-attempt budget for a single broker.DialWithOptions call.
+	// go-plugin's GRPCBroker.DialWithOptions takes no context and its
+	// non-muxer dialer ignores any context-based cancellation
+	// (see github.com/hashicorp/go-plugin v1.7.0 grpc_broker.go), so
+	// without a wall-clock bound a stuck dial would pin the caller's
+	// results-channel goroutine indefinitely. 5s is well above a
+	// healthy local-broker dial (<10ms) but below the pool init wall
+	// the parent ctx already enforces.
+	extraGRPCDialAttemptTimeout = 5 * time.Second
 )
 
 func (p *WorkerPlugin) GRPCServer(broker *plugin.GRPCBroker, s *grpc.Server) error {
-	impl := &GRPCServer{Impl: p.Impl}
+	impl := &GRPCServer{
+		Impl:     p.Impl,
+		broker:   broker,
+		onAttach: p.onAttachSharedState,
+	}
 	pb.RegisterWorkerServer(s, impl)
 
 	// Start extra gRPC servers via the broker for multi-connection support.
@@ -199,7 +241,76 @@ type brokerDialResult struct {
 }
 
 func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker, c *grpc.ClientConn) (interface{}, error) {
-	primary := &GRPCClient{client: pb.NewWorkerClient(c)}
+	// go-plugin does not contract ctx as non-nil across all call paths;
+	// older consumers invoke GRPCClient with a nil context during
+	// handshake, which would panic the later WithTimeout call. A nil ctx
+	// has no deadline or cancellation to propagate — Background is the
+	// correct replacement.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	primaryClient := pb.NewWorkerClient(c)
+	primary := &GRPCClient{client: primaryClient}
+
+	// Stand up the reverse shared-state server before returning, so the
+	// worker side can dial back as soon as AttachSharedState arrives.
+	// If SharedStateImpl is nil the host isn't hosting a store (e.g.
+	// standalone harness) and we skip the reverse channel entirely; the
+	// worker falls back to its in-process Coordinator.
+	//
+	// cleanupSharedState stops the reverse server AND closes its
+	// listener on every error path between Accept and the successful
+	// return. Successful return intentionally keeps the reverse server
+	// alive — go-plugin teardown closes the listener.
+	cleanupSharedState := func() {}
+	if p.SharedStateImpl != nil {
+		// broker.Accept publishes the id over the handshake stream
+		// synchronously before returning a listener, so the worker's
+		// subsequent Dial is guaranteed to find the id ready. No retry
+		// loop needed.
+		listener, err := broker.Accept(SharedStateBrokerID)
+		if err != nil {
+			return nil, fmt.Errorf("host: accept shared-state broker id=%d: %w", SharedStateBrokerID, err)
+		}
+		srv := grpc.NewServer(GRPCServerOptions()...)
+		pb.RegisterSharedStateServer(srv, p.SharedStateImpl)
+		cleanupSharedState = func() {
+			srv.Stop()
+			_ = listener.Close()
+		}
+		go func() {
+			// Serve returns when listener is closed (plugin teardown).
+			// Filter out the expected shutdown signals — without this,
+			// every clean teardown emits a [WARN] line that operators
+			// have to learn to ignore, training them to ignore real
+			// problems too.
+			err := srv.Serve(listener)
+			if err == nil {
+				return
+			}
+			if errors.Is(err, grpc.ErrServerStopped) ||
+				errors.Is(err, net.ErrClosed) ||
+				errors.Is(err, context.Canceled) {
+				return
+			}
+			log.Printf("[WARN] shared-state server: %v", err)
+		}()
+
+		// Resolve the attach timeout once: caller-supplied value if
+		// positive, otherwise the 10s default.
+		attachTimeout := p.SharedStateAttachTimeout
+		if attachTimeout <= 0 {
+			attachTimeout = 10 * time.Second
+		}
+		attachCtx, cancel := context.WithTimeout(ctx, attachTimeout)
+		defer cancel()
+		if _, err := primaryClient.AttachSharedState(attachCtx, &pb.AttachSharedStateRequest{
+			BrokerId: SharedStateBrokerID,
+		}); err != nil {
+			cleanupSharedState()
+			return nil, fmt.Errorf("host: AttachSharedState failed: %w", err)
+		}
+	}
 
 	allWorkers := []Worker{primary}
 	var conns []*grpc.ClientConn
@@ -220,17 +331,34 @@ func (p *WorkerPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBroker
 	}
 
 	var connected int
+	var received uint32
 	for range ExtraGRPCConns {
 		r := <-results
-		if r.err != nil {
-			if ctx != nil && ctx.Err() != nil {
-				// Context cancelled — clean up any connections we already
-				// collected before returning.
-				for _, c := range conns {
-					c.Close()
-				}
-				return nil, ctx.Err()
+		received++
+		// Honor cancellation regardless of whether this result is a
+		// success or an error. dialBrokerOnce can lose the success/
+		// cancel race and return (conn, nil) just as the parent ctx
+		// fires — without this check, the late conn would be appended
+		// to `conns` and leaked. Drain the remaining in-flight dials
+		// too, closing any late-arriving successful conn so we don't
+		// leak the FD on a goroutine that lost the cancellation race.
+		if ctx != nil && ctx.Err() != nil {
+			if r.err == nil && r.conn != nil {
+				r.conn.Close()
 			}
+			for j := received; j < ExtraGRPCConns; j++ {
+				late := <-results
+				if late.err == nil && late.conn != nil {
+					late.conn.Close()
+				}
+			}
+			for _, c := range conns {
+				c.Close()
+			}
+			cleanupSharedState()
+			return nil, ctx.Err()
+		}
+		if r.err != nil {
 			log.Printf("[WARN] failed to dial extra gRPC connection %d after %d attempts: %v", r.id, extraGRPCDialRetries+1, r.err)
 			continue
 		}
@@ -256,7 +384,19 @@ func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id 
 
 	var lastErr error
 	for attempt := 0; attempt <= extraGRPCDialRetries; attempt++ {
-		conn, err := broker.DialWithOptions(id, GRPCDialOptions()...)
+		// Short-circuit before dialBrokerOnce when the parent ctx is
+		// already cancelled. dialBrokerOnce itself selects on
+		// ctx.Done so this isn't a correctness bug for the result
+		// channel — but spawning a goroutine + drain path for a
+		// doomed dial is wasted work, and avoids transiently holding
+		// broker resources during teardown. The outer caller's
+		// "exactly one brokerDialResult per pending dial" contract
+		// is preserved: this branch returns once with the cancel
+		// error.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		conn, err := dialBrokerOnce(ctx, broker, id)
 		if err == nil {
 			return conn, nil
 		}
@@ -278,6 +418,63 @@ func dialBrokerConnWithRetry(ctx context.Context, broker *plugin.GRPCBroker, id 
 	}
 
 	return nil, lastErr
+}
+
+// dialBrokerOnce wraps a single broker.DialWithOptions call with a
+// per-attempt timeout (extraGRPCDialAttemptTimeout) and parent-ctx
+// cancellation. go-plugin's GRPCBroker.DialWithOptions has no context
+// parameter and its non-muxer dialer ignores any context-based
+// cancellation, so a stuck dial cannot be aborted by passing a child
+// context. The helper goroutine pattern below lets us bound the wait
+// without changing go-plugin's API: we kick off the dial on a
+// background goroutine and race it against the per-attempt context.
+//
+// The dial goroutine itself owns late-success cleanup via a select on
+// done <- res vs ctx.Done(). The `done` channel is UNBUFFERED — load-
+// bearing for correctness. With a buffered channel, the inner send
+// would always succeed (cap=1 is always ready for the first send),
+// even after the outer select returned on ctx.Done(); the result
+// would orphan in the channel and the conn would leak. The
+// unbuffered channel pairs send with receive: if the outer takes
+// the ctx.Done branch first, the inner's select observes the same
+// ctx already cancelled and falls through to the cleanup arm —
+// closing any successfully-dialled-but-late conn.
+//
+// dialBrokerConnWithRetry's outer caller writes exactly one
+// brokerDialResult to the `results` channel for each connection ID,
+// and the cancellation drain depends on receiving exactly one result
+// per pending dial. dialBrokerOnce ALWAYS returns either (conn, nil)
+// or (nil, err) — never blocks indefinitely — preserving that
+// invariant.
+func dialBrokerOnce(parent context.Context, broker *plugin.GRPCBroker, id uint32) (*grpc.ClientConn, error) {
+	ctx, cancel := context.WithTimeout(parent, extraGRPCDialAttemptTimeout)
+	defer cancel()
+
+	type result struct {
+		conn *grpc.ClientConn
+		err  error
+	}
+	done := make(chan result) // unbuffered — see doc comment above for the cleanup-correctness reason
+	go func() {
+		conn, err := broker.DialWithOptions(id, GRPCDialOptions()...)
+		res := result{conn: conn, err: err}
+		select {
+		case done <- res:
+		case <-ctx.Done():
+			// Outer already returned on ctx.Done. Close any conn the
+			// dial produced so we don't leak the FD on the late path.
+			if err == nil && conn != nil {
+				conn.Close()
+			}
+		}
+	}()
+
+	select {
+	case r := <-done:
+		return r.conn, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // GRPCDialOptions returns gRPC dial options shared by all connections

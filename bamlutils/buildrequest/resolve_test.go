@@ -16,6 +16,7 @@ type mockAdapter struct {
 	includeThinkingInRaw   bool
 	clientRegistryProvider string
 	originalRegistry       *bamlutils.ClientRegistry
+	roundRobinAdvancer     bamlutils.RoundRobinAdvancer
 }
 
 func (m *mockAdapter) SetClientRegistry(_ *bamlutils.ClientRegistry) error { return nil }
@@ -39,6 +40,10 @@ func (m *mockAdapter) HTTPClient() *llmhttp.Client              { return nil }
 func (m *mockAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
 	return m.originalRegistry
 }
+func (m *mockAdapter) SetRoundRobinAdvancer(a bamlutils.RoundRobinAdvancer) {
+	m.roundRobinAdvancer = a
+}
+func (m *mockAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer { return m.roundRobinAdvancer }
 
 // ============================================================================
 // ResolveProvider tests
@@ -110,6 +115,190 @@ func TestResolveProvider_PrimaryOverridesNamedClient(t *testing.T) {
 	got := ResolveProvider(adapter, "MyClient", "openai")
 	if got != "anthropic" {
 		t.Errorf("expected primary 'anthropic' to win, got %q", got)
+	}
+}
+
+// TestResolveProvider_NormalisesStrategyAliases pins that every
+// non-empty return path runs through normalizeStrategyProvider.
+// ResolveProviderWithReason and ResolveClientProvider already
+// normalise; ResolveProvider previously leaked raw aliases on the
+// adapter-cache, primary-override, named-client, and introspected-
+// fallback paths, leaving downstream classification dependent on
+// which seam happened to answer first. The four cases below cover
+// each return path with each aliased spelling so a regression to
+// raw aliases trips at exactly the seam it broke at.
+func TestResolveProvider_NormalisesStrategyAliases(t *testing.T) {
+	type call struct {
+		seam     string
+		adapter  *mockAdapter
+		spelling string
+	}
+
+	cases := []struct {
+		name string
+		calls []call
+		want  string
+	}{
+		{
+			name: "fallback-aliases-collapse-to-baml-fallback",
+			want: "baml-fallback",
+			calls: []call{
+				// adapter-cache: cached pre-resolved primary-provider
+				// path. spelling=openai diverges from the override so
+				// a regression that bypassed the cache and reached the
+				// introspected fallback would surface as want="openai"
+				// (i.e. the test would fail) rather than coincide on
+				// the same normalised result.
+				{
+					seam: "adapter-cache",
+					adapter: &mockAdapter{
+						Context:                context.Background(),
+						clientRegistryProvider: "fallback",
+					},
+					spelling: "openai",
+				},
+				// primary-override: registry.Primary points at a
+				// runtime entry whose Provider is the fallback
+				// override. clientRegistryProvider stays empty so
+				// ResolveProvider exercises the direct registry
+				// lookup branch (NOT the cache). spelling=openai
+				// disambiguates from the introspected fallback the
+				// same way as adapter-cache above.
+				{
+					seam: "primary-override",
+					adapter: func() *mockAdapter {
+						primary := "PrimaryClient"
+						return &mockAdapter{
+							Context: context.Background(),
+							originalRegistry: &bamlutils.ClientRegistry{
+								Primary: &primary,
+								Clients: []*bamlutils.ClientProperty{
+									{Name: "PrimaryClient", Provider: "fallback"},
+								},
+							},
+						}
+					}(),
+					spelling: "openai",
+				},
+				// named-client-override: registry has an entry for
+				// the named default client with the fallback
+				// override; clientRegistryProvider empty + Primary
+				// nil so the direct named-lookup branch fires.
+				{
+					seam: "named-client-override",
+					adapter: &mockAdapter{
+						Context: context.Background(),
+						originalRegistry: &bamlutils.ClientRegistry{
+							Clients: []*bamlutils.ClientProperty{
+								{Name: "MyClient", Provider: "fallback"},
+							},
+						},
+					},
+					spelling: "openai",
+				},
+				// introspected-fallback: bare adapter, no runtime
+				// registry. spelling=fallback so the introspected
+				// path normalises and produces the expected
+				// canonical "baml-fallback".
+				{
+					seam:     "introspected-fallback",
+					adapter:  &mockAdapter{Context: context.Background()},
+					spelling: "fallback",
+				},
+			},
+		},
+		{
+			name: "round-robin-aliases-collapse-to-baml-roundrobin",
+			want: "baml-roundrobin",
+			calls: []call{
+				// adapter-cache: cached pre-resolved provider path.
+				// spelling=openai diverges from the override so a
+				// regression that bypassed the cache and reached the
+				// introspected fallback would surface as want=openai
+				// (i.e. test fails) rather than coincide on the same
+				// normalised result.
+				{
+					seam: "adapter-cache",
+					adapter: &mockAdapter{
+						Context:                context.Background(),
+						clientRegistryProvider: "round-robin",
+					},
+					spelling: "openai",
+				},
+				// primary-override: registry.Primary points at a
+				// runtime entry whose Provider is an RR alias.
+				// clientRegistryProvider stays empty so the direct
+				// registry-Primary lookup branch fires (NOT the
+				// cache). spelling=openai disambiguates as above.
+				{
+					seam: "primary-override",
+					adapter: func() *mockAdapter {
+						primary := "PrimaryClient"
+						return &mockAdapter{
+							Context: context.Background(),
+							originalRegistry: &bamlutils.ClientRegistry{
+								Primary: &primary,
+								Clients: []*bamlutils.ClientProperty{
+									{Name: "PrimaryClient", Provider: "round-robin"},
+								},
+							},
+						}
+					}(),
+					spelling: "openai",
+				},
+				// named-client-override: registry has an entry for
+				// the named default client with an RR alias as the
+				// override; clientRegistryProvider empty + Primary
+				// nil so the direct named-lookup branch fires.
+				{
+					seam: "named-client-override",
+					adapter: &mockAdapter{
+						Context: context.Background(),
+						originalRegistry: &bamlutils.ClientRegistry{
+							Clients: []*bamlutils.ClientProperty{
+								{Name: "MyClient", Provider: "baml-round-robin"},
+							},
+						},
+					},
+					spelling: "openai",
+				},
+				// introspected-* rows: bare adapter, no runtime
+				// registry. The static spelling argument is what
+				// gets normalised — three rows cover the three
+				// accepted RR spellings.
+				{
+					seam:     "introspected-bare-round-robin",
+					adapter:  &mockAdapter{Context: context.Background()},
+					spelling: "round-robin",
+				},
+				{
+					seam:     "introspected-baml-round-robin",
+					adapter:  &mockAdapter{Context: context.Background()},
+					spelling: "baml-round-robin",
+				},
+				{
+					seam:     "introspected-canonical-baml-roundrobin",
+					adapter:  &mockAdapter{Context: context.Background()},
+					spelling: "baml-roundrobin",
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, c := range tc.calls {
+				// `introspected-*` cases use a mock adapter with no
+				// runtime registry / provider entry, so ResolveProvider
+				// falls back to the static spelling argument and the
+				// normalisation under test fires on that path.
+				got := ResolveProvider(c.adapter, "MyClient", c.spelling)
+				if got != tc.want {
+					t.Errorf("[%s] ResolveProvider with spelling %q: got %q, want %q",
+						c.seam, c.spelling, got, tc.want)
+				}
+			}
+		})
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -84,8 +85,9 @@ func generateStub() {
 	// MediaParams stub
 	generateMediaParams(out, nil)
 
-	// BuildRequest/StreamRequest stubs (nil = not available)
-	generateBuildRequestVars(out, nil, nil, "")
+	// BuildRequest/StreamRequest stubs (nil = not available);
+	// SupportsWithClient defaults to false in stub mode.
+	generateBuildRequestVars(out, nil, nil, "", false)
 
 	// .baml config stubs (empty maps)
 	generateBamlConfigVars(out)
@@ -112,6 +114,15 @@ func generateFull() {
 		// BuildRequest API (BAML v0.219.0+)
 		requestFile       *parsedFile
 		streamRequestFile *parsedFile
+
+		// supportsWithClient reports whether the generated baml_client
+		// exposes the top-level WithClient(clientName) CallOption.
+		// Added in BAML v0.219.0; older runtimes lack the symbol.
+		// Detected via the same AST walk that finds Request /
+		// StreamRequest, and emitted as introspected.SupportsWithClient
+		// so the codegen.Generate(selfPkg) wrapper can pick the right
+		// Options without a hardcoded compile-time decision.
+		supportsWithClient bool
 	)
 
 	err := filepath.WalkDir("baml_client", func(path string, dirEntry os.DirEntry, err error) error {
@@ -123,44 +134,80 @@ func generateFull() {
 			return nil
 		}
 
+		// Skip _test.go files anywhere under baml_client. User or
+		// generator test code could define top-level identifiers that
+		// collide with our canonical-surface detection (Stream,
+		// Parse, ParseStream, Request, StreamRequest, WithClient) —
+		// scanning them would produce false positives that gate
+		// codegen on the wrong file.
+		if strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+
 		fileSet := token.NewFileSet()
 		file, err := parser.ParseFile(fileSet, path, nil, parser.ParseComments)
 		if err != nil {
 			return err
 		}
 
-		// Look for Stream variable (functions_stream.go)
-		if streamFile == nil {
-			if streamVar := file.Scope.Lookup("Stream"); streamVar != nil && streamVar.Kind == ast.Var {
-				streamFile = &parsedFile{file: file, path: path}
-			}
-		}
+		// inRootDir reports whether the file lives directly under the
+		// baml_client walk root (no intermediate subdirectory). The
+		// canonical-surface symbols (Stream, Parse, ParseStream,
+		// Request, StreamRequest, WithClient, sync functions) are
+		// emitted into package baml_client at the root by the BAML
+		// generator. Subpackages (types, stream_types, type_builder,
+		// etc.) can legitimately export same-named identifiers
+		// without being the canonical detection target — gate the
+		// scope lookups on root-only so a subpackage can't poison
+		// the surface choice. type_builder collection below stays
+		// subdir-agnostic by design (it's the only path that
+		// intentionally crosses subdirectories).
+		inRootDir := filepath.Dir(path) == "baml_client"
 
-		// Look for Parse variable (functions_parse.go)
-		if parseFile == nil {
-			if parseVar := file.Scope.Lookup("Parse"); parseVar != nil && parseVar.Kind == ast.Var {
-				parseFile = &parsedFile{file: file, path: path}
+		if inRootDir {
+			// Look for Stream variable (functions_stream.go)
+			if streamFile == nil {
+				if streamVar := file.Scope.Lookup("Stream"); streamVar != nil && streamVar.Kind == ast.Var {
+					streamFile = &parsedFile{file: file, path: path}
+				}
 			}
-		}
 
-		// Look for ParseStream variable (functions_parse_stream.go)
-		if parseStreamFile == nil {
-			if parseStreamVar := file.Scope.Lookup("ParseStream"); parseStreamVar != nil && parseStreamVar.Kind == ast.Var {
-				parseStreamFile = &parsedFile{file: file, path: path}
+			// Look for Parse variable (functions_parse.go)
+			if parseFile == nil {
+				if parseVar := file.Scope.Lookup("Parse"); parseVar != nil && parseVar.Kind == ast.Var {
+					parseFile = &parsedFile{file: file, path: path}
+				}
 			}
-		}
 
-		// Look for Request variable (functions_build_request.go, BAML v0.219.0+)
-		if requestFile == nil {
-			if requestVar := file.Scope.Lookup("Request"); requestVar != nil && requestVar.Kind == ast.Var {
-				requestFile = &parsedFile{file: file, path: path}
+			// Look for ParseStream variable (functions_parse_stream.go)
+			if parseStreamFile == nil {
+				if parseStreamVar := file.Scope.Lookup("ParseStream"); parseStreamVar != nil && parseStreamVar.Kind == ast.Var {
+					parseStreamFile = &parsedFile{file: file, path: path}
+				}
 			}
-		}
 
-		// Look for StreamRequest variable (functions_build_request_stream.go, BAML v0.219.0+)
-		if streamRequestFile == nil {
-			if streamRequestVar := file.Scope.Lookup("StreamRequest"); streamRequestVar != nil && streamRequestVar.Kind == ast.Var {
-				streamRequestFile = &parsedFile{file: file, path: path}
+			// Look for Request variable (functions_build_request.go, BAML v0.219.0+)
+			if requestFile == nil {
+				if requestVar := file.Scope.Lookup("Request"); requestVar != nil && requestVar.Kind == ast.Var {
+					requestFile = &parsedFile{file: file, path: path}
+				}
+			}
+
+			// Look for StreamRequest variable (functions_build_request_stream.go, BAML v0.219.0+)
+			if streamRequestFile == nil {
+				if streamRequestVar := file.Scope.Lookup("StreamRequest"); streamRequestVar != nil && streamRequestVar.Kind == ast.Var {
+					streamRequestFile = &parsedFile{file: file, path: path}
+				}
+			}
+
+			// Look for the top-level WithClient(client string) CallOption
+			// (runtime.go, BAML v0.219.0+). Detected as a free function
+			// declaration; the receiver-less top-level form is what the
+			// generator emits in WithClient appends.
+			if !supportsWithClient {
+				if withClientObj := file.Scope.Lookup("WithClient"); withClientObj != nil && withClientObj.Kind == ast.Fun {
+					supportsWithClient = true
+				}
 			}
 		}
 
@@ -169,25 +216,27 @@ func generateFull() {
 			typeBuilderFiles = append(typeBuilderFiles, &parsedFile{file: file, path: path})
 		}
 
-		// Look for sync functions in functions.go
-		if syncFuncsFile == nil {
-			for _, decl := range file.Decls {
-				funcDecl, ok := decl.(*ast.FuncDecl)
-				if !ok {
-					continue
-				}
-				if funcDecl.Recv != nil {
-					continue
-				}
-				if funcDecl.Type.Params == nil || len(funcDecl.Type.Params.List) == 0 {
-					continue
-				}
-				firstParam := funcDecl.Type.Params.List[0]
-				if selectorExpr, ok := firstParam.Type.(*ast.SelectorExpr); ok {
-					if ident, ok := selectorExpr.X.(*ast.Ident); ok {
-						if ident.Name == "context" && selectorExpr.Sel.Name == "Context" {
-							syncFuncsFile = &parsedFile{file: file, path: path}
-							break
+		if inRootDir {
+			// Look for sync functions in functions.go
+			if syncFuncsFile == nil {
+				for _, decl := range file.Decls {
+					funcDecl, ok := decl.(*ast.FuncDecl)
+					if !ok {
+						continue
+					}
+					if funcDecl.Recv != nil {
+						continue
+					}
+					if funcDecl.Type.Params == nil || len(funcDecl.Type.Params.List) == 0 {
+						continue
+					}
+					firstParam := funcDecl.Type.Params.List[0]
+					if selectorExpr, ok := firstParam.Type.(*ast.SelectorExpr); ok {
+						if ident, ok := selectorExpr.X.(*ast.Ident); ok {
+							if ident.Name == "context" && selectorExpr.Sel.Name == "Context" {
+								syncFuncsFile = &parsedFile{file: file, path: path}
+								break
+							}
 						}
 					}
 				}
@@ -305,7 +354,7 @@ func generateFull() {
 	)
 
 	// --- BuildRequest/StreamRequest API (BAML v0.219.0+) ---
-	generateBuildRequestVars(out, requestFile, streamRequestFile, streamPkg)
+	generateBuildRequestVars(out, requestFile, streamRequestFile, streamPkg, supportsWithClient)
 
 	// --- .baml introspection data for provider detection and retry ---
 	generateBamlConfigVars(out)
@@ -1028,7 +1077,11 @@ func extractBuildRequestMethods(f *parsedFile, receiverName string) []map[string
 // generateBuildRequestVars generates the Request/StreamRequest variables and
 // their method/func maps. If requestFile or streamRequestFile is nil, generates
 // nil/empty stubs (for BAML versions < 0.219.0).
-func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *parsedFile, streamPkg string) {
+//
+// supportsWithClient feeds introspected.SupportsWithClient, used by the
+// codegen.Generate(selfPkg) wrapper to pick the right Options without
+// hardcoding a compile-time decision.
+func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *parsedFile, streamPkg string, supportsWithClient bool) {
 	retryPkg := "github.com/invakid404/baml-rest/bamlutils/retry"
 	// Force the import so the stub compiles even when the maps are empty
 	out.Anon(retryPkg)
@@ -1070,6 +1123,14 @@ func generateBuildRequestVars(out *jen.File, requestFile, streamRequestFile *par
 		out.Var().Id("StreamRequest").Any()
 		out.Var().Id("StreamRequestFuncs").Op("=").Map(jen.String()).Any().Values()
 	}
+
+	// SupportsWithClient — true when baml_client exposes the top-level
+	// WithClient(string) CallOption (BAML v0.219.0+). Read by
+	// codegen.Generate(selfPkg) so legacy callers without an explicit
+	// Options struct get the right behaviour for the bundled BAML
+	// runtime.
+	out.Comment("SupportsWithClient is true when baml_client exposes WithClient(string) (BAML v0.219.0+)")
+	out.Var().Id("SupportsWithClient").Op("=").Lit(supportsWithClient)
 }
 
 // bamlConfig holds parsed .baml configuration data.
@@ -1088,6 +1149,13 @@ type bamlConfig struct {
 	// BuildRequest path to baml-fallback and leaving baml-roundrobin on legacy)
 	// happens later at runtime in ResolveFallbackChain.
 	fallbackChains map[string][]string
+	// roundRobinStart maps baml-roundrobin client name → configured `start`
+	// option value. Only populated for clients that set `start N` inside
+	// their options block; absent entries leave the coordinator free to
+	// pick a random seed. Provider filtering happens at runtime — the
+	// parser records the value for any client whose options contain
+	// `start N`, regardless of provider.
+	roundRobinStart map[string]int
 }
 
 type parsedRetryPolicy struct {
@@ -1109,6 +1177,7 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 		functionClient:    make(map[string]string),
 		retryPolicies:     make(map[string]parsedRetryPolicy),
 		fallbackChains:    make(map[string][]string),
+		roundRobinStart:   make(map[string]int),
 	}
 
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -1342,6 +1411,7 @@ var bamlConfigKeys = []string{
 	"options ",
 	"client ",
 	"prompt ",
+	"start ",
 	"type ",
 }
 
@@ -1520,6 +1590,23 @@ func cleanBamlValue(s string) string {
 }
 
 func parseClientBlock(cfg *bamlConfig, name string, block []string) {
+	// Clear stale per-client state derived from the block before
+	// processing so a re-parse of the same client name doesn't
+	// inherit values absent from the new block. extractRoundRobinStart
+	// only writes on success — without this delete, a previously-
+	// parsed `start N` would persist if the new block omits it,
+	// silently keeping a deterministic seed where the random-seed
+	// behaviour is documented.
+	// fallbackChains, clientProvider, and clientRetryPolicy are
+	// written unconditionally below for blocks that declare them, so
+	// they're not subject to the same stale-survives bug — but we
+	// still reset them here defensively in case future block-level
+	// statements become conditional too.
+	delete(cfg.roundRobinStart, name)
+	delete(cfg.fallbackChains, name)
+	delete(cfg.clientProvider, name)
+	delete(cfg.clientRetryPolicy, name)
+
 	nestedDepth := 0
 	inOptions := false
 	optionsDepth := 0
@@ -1551,6 +1638,19 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 					if len(chain) > 0 {
 						cfg.fallbackChains[name] = chain
 					}
+					// Post-`]` suffix may carry a `start N` declaration
+					// (and the closing `}` of the options block). The
+					// extractRoundRobinStart trim handles trailing
+					// `}`/`]` so a tail like ` start 1 }` parses
+					// correctly. Mirrors the inline `options { ...
+					// strategy [...] start 1 }` path.
+					if optionsDepth == 1 {
+						if closeIdx := strings.LastIndex(strippedLine, "]"); closeIdx >= 0 {
+							if startVal, ok := extractRoundRobinStart(strippedLine[closeIdx+1:]); ok {
+								cfg.roundRobinStart[name] = startVal
+							}
+						}
+					}
 				}
 				// Still need to update depth — the "]" line might also close options
 				stripped := stripInlineComment(stripStringLiterals(line))
@@ -1579,6 +1679,19 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 					inStrategyList = true
 					strategyBuf.Reset()
 					strategyBuf.WriteString(strategyLine)
+				}
+			}
+			// Only pick up `start N` from the top-level options block
+			// (depth == 1). Nested sub-blocks — hypothetical
+			// `options { nested { start 5 } }` — would otherwise leak
+			// into roundRobinStart[name] and override the client-level
+			// seed with a value that wasn't meant for it. optionsDepth
+			// reflects the depth going INTO this line; the brace-delta
+			// update happens after, so the gate here sees the right
+			// level for the current line's content.
+			if optionsDepth == 1 {
+				if startVal, ok := extractRoundRobinStart(line); ok {
+					cfg.roundRobinStart[name] = startVal
 				}
 			}
 			stripped := stripInlineComment(stripStringLiterals(line))
@@ -1619,6 +1732,9 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 							strategyBuf.WriteString(strategyLine)
 						}
 					}
+					if startVal, ok := extractRoundRobinStart(inner); ok {
+						cfg.roundRobinStart[name] = startVal
+					}
 				}
 				if optionsDepth <= 0 {
 					inOptions = false
@@ -1630,12 +1746,39 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 			continue
 		}
 		if strings.HasPrefix(line, "provider ") {
-			cfg.clientProvider[name] = cleanBamlValue(strings.TrimPrefix(line, "provider "))
+			cfg.clientProvider[name] = canonicaliseProvider(cleanBamlValue(strings.TrimPrefix(line, "provider ")))
 		}
 		if strings.HasPrefix(line, "retry_policy ") {
 			cfg.clientRetryPolicy[name] = cleanBamlValue(strings.TrimPrefix(line, "retry_policy "))
 		}
 	}
+}
+
+// canonicaliseProvider folds the round-robin and fallback strategy
+// aliases that BAML upstream accepts onto the canonical baml-rest
+// spellings so downstream maps — ClientProvider, router
+// classification, metadata — only ever see one spelling per strategy:
+//
+//   - "baml-roundrobin" / "baml-round-robin" / "round-robin"
+//     → "baml-roundrobin"
+//   - "fallback" / "baml-fallback" → "baml-fallback"
+//
+// BAML upstream's clientspec.rs:139-142 accepts both forms for each
+// strategy. The "fallback" alias is the spelling the BAML CLI init
+// template emits (baml_cli_init.baml:118), so operators following the
+// docs hit it routinely. Without this normalisation the BuildRequest
+// classification would treat "fallback" as a single-provider client,
+// fall to legacy via PathReasonUnsupportedProvider, and lose every
+// BuildRequest-only capability for that client (chain plan, mixed-mode
+// child handling, RR-child plumbing).
+func canonicaliseProvider(provider string) string {
+	switch provider {
+	case "baml-roundrobin", "baml-round-robin", "round-robin":
+		return "baml-roundrobin"
+	case "baml-fallback", "fallback":
+		return "baml-fallback"
+	}
+	return provider
 }
 
 func extractStrategyStatement(line string) string {
@@ -1646,6 +1789,56 @@ func extractStrategyStatement(line string) string {
 		}
 	}
 	return ""
+}
+
+// extractRoundRobinStart scans a line (or split inline segment) for a
+// `start N` statement from a baml-roundrobin client's options block and
+// returns the parsed integer. Returns ok=false when no such statement
+// exists or the value is not a valid i32 — malformed or out-of-range
+// input is silently ignored so that a bad `start` value falls back to
+// the random seed rather than erroring out codegen.
+//
+// Parses with bit width 32 so values
+// outside [math.MinInt32, math.MaxInt32] are rejected here too. The
+// runtime override path (resolver.inspectStartOverride) already
+// rejects out-of-i32 ints to mirror BAML's `ensure_int` parse::<i32>()
+// contract; aligning the introspected parser keeps both code paths in
+// agreement and avoids a 64-bit-platform-only divergence where a
+// statically-declared start value would survive codegen and then be
+// silently wrapped by BAML's `start as usize` cast.
+func extractRoundRobinStart(line string) (int, bool) {
+	for _, stmt := range splitInlineStatements(line) {
+		trimmed := strings.TrimSpace(stripInlineComment(stmt))
+		if !strings.HasPrefix(trimmed, "start ") {
+			continue
+		}
+		// Use TrimPrefix directly rather than cleanBamlValue: stripping
+		// quotes here would let `start "1"` parse as 1 even though the
+		// runtime parser (roundrobin/resolver.go inspectStartOverride)
+		// rejects string-shaped starts. Static introspection must
+		// match runtime behaviour so the codegen support gate is
+		// consistent with the runtime classifier; let strconv.ParseInt
+		// fail on quoted input.
+		raw := strings.TrimPrefix(trimmed, "start ")
+		// Strip trailing block / list closers and whitespace before
+		// ParseInt: BAML's grammar
+		// (engine/baml-lib/ast/src/parser/datamodel.pest:172-180)
+		// allows config-map entries to be followed directly by the
+		// closing `}`, e.g. `options { strategy [...] start 1 }` on
+		// the final line of a multiline options block. Without this
+		// trim, ParseInt sees "1 }" and silently drops a valid
+		// declaration.
+		raw = strings.TrimRight(raw, " \t}]")
+		if raw == "" {
+			continue
+		}
+		v, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			continue
+		}
+		return int(v), true
+	}
+	return 0, false
 }
 
 // parseStrategyList extracts client names from a strategy line like
@@ -1906,6 +2099,58 @@ func generateBamlConfigVars(out *jen.File) {
 	}
 	out.Var().Id("FunctionRetryPolicy").Op("=").Map(jen.String()).String().Values(frpEntries...)
 
+	// ClientRetryPolicy: the per-client retry policy name declared in
+	// each client's options block. The BuildRequest router uses this,
+	// keyed on the *effective* client (after any baml-roundrobin unwrap),
+	// rather than FunctionRetryPolicy — which is fixed to the function's
+	// declared default client. For a function whose default client is
+	// an RR wrapper, FunctionRetryPolicy returns the wrapper's policy,
+	// not the child that actually handles the request; ClientRetryPolicy
+	// lets the router pick up the correct child-level policy.
+	out.Comment("ClientRetryPolicy maps BAML client names to their declared retry policy name")
+	{
+		entries := make([]jen.Code, 0, len(cfg.clientRetryPolicy))
+		keys := make([]string, 0, len(cfg.clientRetryPolicy))
+		for k := range cfg.clientRetryPolicy {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, clientName := range keys {
+			entries = append(entries, jen.Lit(clientName).Op(":").Lit(cfg.clientRetryPolicy[clientName]))
+		}
+		out.Var().Id("ClientRetryPolicy").Op("=").Map(jen.String()).String().Values(entries...)
+	}
+
+	// Scan for fallback -> round-robin composition at introspect time
+	// and emit a one-time build-log warning per (fallback, rr-child)
+	// pair. This PR intentionally defers centralised unwrapping of RR
+	// children inside fallback chains. Nested RR still runs
+	// correctly under BAML's per-worker
+	// runtime rotation; the warning just flags the composition so
+	// operators don't mistake pool-wide RR for nested-RR-works-too.
+	// Keys are sorted so the build-log output is stable across runs.
+	{
+		parents := make([]string, 0, len(cfg.fallbackChains))
+		for parent := range cfg.fallbackChains {
+			parents = append(parents, parent)
+		}
+		sort.Strings(parents)
+		for _, parent := range parents {
+			if cfg.clientProvider[parent] != "baml-fallback" {
+				continue
+			}
+			for _, child := range cfg.fallbackChains[parent] {
+				if cfg.clientProvider[child] != "baml-roundrobin" {
+					continue
+				}
+				log.Printf("baml-rest introspect: fallback client %q has baml-roundrobin child %q; "+
+					"nested round-robin rotates per-worker via BAML's runtime (cross-worker "+
+					"centralisation is only applied to top-level round-robin clients)",
+					parent, child)
+			}
+		}
+	}
+
 	// FallbackChains: maps strategy client names (baml-fallback, baml-roundrobin)
 	// to their ordered list of child client names from the strategy option.
 	out.Comment("FallbackChains maps strategy client names to their ordered list of child client names")
@@ -1926,4 +2171,60 @@ func generateBamlConfigVars(out *jen.File) {
 		}
 		out.Var().Id("FallbackChains").Op("=").Map(jen.String()).Index().String().Values(entries...)
 	}
+
+	// RoundRobinStart captures the `start` option from each baml-roundrobin
+	// client's options block. Only clients that explicitly set `start N`
+	// appear here; others rely on the coordinator's random seed. The map
+	// is passed to the coordinator constructor so static RR rotations
+	// begin deterministically when the operator asks for it.
+	//
+	// When the .baml source defines no baml-roundrobin clients at all,
+	// RoundRobinStart is emitted as a plain nil declaration rather than
+	// an empty map literal. cmd/serve uses the nil-ness to decide
+	// whether to stand up the host-side SharedState gRPC server — an
+	// installation with no RR clients pays no setup cost for the
+	// reverse-broker channel that would otherwise be unused.
+	hasRoundRobinClients := false
+	for _, provider := range cfg.clientProvider {
+		if provider == "baml-roundrobin" {
+			hasRoundRobinClients = true
+			break
+		}
+	}
+	out.Comment("RoundRobinStart maps baml-roundrobin client names to their configured start index")
+	out.Comment("Nil when the source defines no baml-roundrobin clients; cmd/serve uses that as the gate")
+	out.Comment("for provisioning the host-side SharedState server.")
+	if !hasRoundRobinClients {
+		out.Var().Id("RoundRobinStart").Map(jen.String()).Int()
+	} else {
+		// Filter to baml-roundrobin clients only. cfg.roundRobinStart
+		// is populated by the `start N` option extractor, which the
+		// parser runs on every options block — nothing in the parser
+		// is RR-specific, so a non-RR client that happens to declare
+		// `start N` (a provider-specific option or a typo) would end
+		// up here and get fed to the Coordinator's per-client seed
+		// map as if it were an RR rotation seed. Dropping non-RR
+		// entries at emission time keeps the generated map honest.
+		entries := make([]jen.Code, 0, len(cfg.roundRobinStart))
+		keys := make([]string, 0, len(cfg.roundRobinStart))
+		for k := range cfg.roundRobinStart {
+			if cfg.clientProvider[k] != "baml-roundrobin" {
+				continue
+			}
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, clientName := range keys {
+			entries = append(entries, jen.Lit(clientName).Op(":").Lit(cfg.roundRobinStart[clientName]))
+		}
+		out.Var().Id("RoundRobinStart").Op("=").Map(jen.String()).Int().Values(entries...)
+	}
+
+	// RoundRobinCoordinator: one persistent coordinator per generated
+	// adapter package. The BuildRequest path routes static round-robin
+	// selection through it so counters live for the process lifetime
+	// instead of resetting per request. Dynamic RR clients (registered
+	// purely through client_registry overrides) bypass this coordinator.
+	out.Comment("RoundRobinCoordinator holds per-client round-robin counters shared across requests")
+	out.Var().Id("RoundRobinCoordinator").Op("=").Qual("github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin", "NewCoordinatorWithStarts").Call(jen.Id("RoundRobinStart"))
 }

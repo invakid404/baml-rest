@@ -348,11 +348,11 @@ func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
 	// path is deterministic.
 	baseURL := env.MockLLMInternal
 	registry := &testutil.ClientRegistry{
-		Primary: "TestFallbackPair",
+		Primary: testutil.StringPtr("TestFallbackPair"),
 		Clients: []*testutil.ClientProperty{
 			{
 				Name:     "FallbackPrimary",
-				Provider: "openai-generic",
+				Provider: testutil.StringPtr("openai-generic"),
 				Options: map[string]any{
 					"model":    "fallback-primary",
 					"base_url": baseURL,
@@ -361,7 +361,7 @@ func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
 			},
 			{
 				Name:     "FallbackSecondary",
-				Provider: "openai",
+				Provider: testutil.StringPtr("openai"),
 				Options: map[string]any{
 					"model":    "fallback-secondary",
 					"base_url": baseURL,

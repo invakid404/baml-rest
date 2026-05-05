@@ -82,11 +82,11 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 		// Deliberately omit allowed_role_metadata from the caller's options;
 		// the deployment default must inject it at the worker.
 		registry := &testutil.ClientRegistry{
-			Primary: "TestClient",
+			Primary: testutil.StringPtr("TestClient"),
 			Clients: []*testutil.ClientProperty{
 				{
 					Name:     "TestClient",
-					Provider: "openai-generic",
+					Provider: testutil.StringPtr("openai-generic"),
 					Options: map[string]any{
 						"model":    scenarioID,
 						"base_url": env.MockLLMInternal,
@@ -135,9 +135,10 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 	})
 
 	t.Run("negative_no_default_drops_cache_control", func(t *testing.T) {
-		// Shared TestEnv has no BAML_REST_CLIENT_DEFAULTS, so this reproduces
-		// the pre-fix behavior: BAML defaults allowed_role_metadata to None
-		// and silently strips cache_control before serialization.
+		// Shared TestEnv has no BAML_REST_CLIENT_DEFAULTS, so this
+		// reproduces BAML's default behavior: allowed_role_metadata
+		// defaults to None and cache_control is silently stripped
+		// before serialization.
 		scenarioID := "test-client-defaults-negative"
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -146,11 +147,11 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 		registerCacheScenario(t, MockClient, scenarioID)
 
 		registry := &testutil.ClientRegistry{
-			Primary: "TestClient",
+			Primary: testutil.StringPtr("TestClient"),
 			Clients: []*testutil.ClientProperty{
 				{
 					Name:     "TestClient",
-					Provider: "openai-generic",
+					Provider: testutil.StringPtr("openai-generic"),
 					Options: map[string]any{
 						"model":    scenarioID,
 						"base_url": TestEnv.MockLLMInternal,

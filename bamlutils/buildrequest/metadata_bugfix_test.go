@@ -134,13 +134,14 @@ func equalStringSlice(a, b []string) bool {
 	return true
 }
 
-// TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain exercises the
-// CodeRabbit finding about `fallbackChains[...]` lookups in the rebuild path.
-// A runtime `strategy` option on the fallback client replaces the introspected
-// chain; the metadata plan must reflect that override. Today the rebuild
-// reads `fallbackChains[resolution.Client]` / `fallbackChains[defaultClientName]`
-// directly, bypassing resolveFallbackStrategyChain — the authoritative
-// resolver that accounts for runtime strategy overrides.
+// TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain pins the
+// rebuild path's runtime-strategy handling. A runtime `strategy`
+// option on the fallback client replaces the introspected chain;
+// the metadata plan must reflect that override. The rebuild reads
+// `fallbackChains[resolution.Client]` /
+// `fallbackChains[defaultClientName]` directly, bypassing
+// resolveFallbackStrategyChain — the authoritative resolver that
+// accounts for runtime strategy overrides.
 func TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain(t *testing.T) {
 	// Runtime registry configures the fallback client with a custom chain,
 	// AND overrides all children to aws-bedrock so the chain falls to
@@ -176,12 +177,12 @@ func TestBuildLegacyMetadataPlan_RuntimeStrategyOverrideChain(t *testing.T) {
 	}
 }
 
-// TestResolveFallbackChainWithReason_EmptyPrimaryIgnored exercises
-// CodeRabbit's second finding. A ClientRegistry with Primary pointing to
-// an empty string should be treated as "no primary override" — matching
-// ResolveProviderWithReason's behaviour. Today
-// ResolveFallbackChainWithReason treats Primary: ptr("") as an override,
-// so it looks up an empty client name and reaches the wrong conclusion.
+// TestResolveFallbackChainWithReason_EmptyPrimaryIgnored pins the
+// empty-primary contract: a ClientRegistry with Primary pointing to
+// an empty string must be treated as "no primary override", matching
+// ResolveProviderWithReason. Treating Primary: ptr("") as an
+// override would look up an empty client name and reach the wrong
+// conclusion.
 func TestResolveFallbackChainWithReason_EmptyPrimaryIgnored(t *testing.T) {
 	emptyPrimary := ""
 	adapter := &mockAdapter{
@@ -273,5 +274,67 @@ func TestBuildLegacyMetadataPlan_RuntimeOverrideRespectedInLegacyChain(t *testin
 	// directly, missed the runtime override, and left LegacyChildren empty.
 	if len(plan.LegacyChildren) != 1 || plan.LegacyChildren[0] != "Child" {
 		t.Fatalf("BUG: rebuild ignored runtime provider override; LegacyChildren=%v, want [Child]", plan.LegacyChildren)
+	}
+}
+
+// TestBuildLegacyMetadataPlan_ExplicitFallbackProviderWithoutStrategySkipsRebuild
+// pins the chain-rebuild guard for the missing-strategy case: a
+// runtime client_registry entry that supplies an explicit fallback
+// provider with no `options.strategy` produces a plan whose Chain
+// stays empty even though the introspected fallbackChains map has
+// children. Surfacing the static chain in metadata for a request
+// the resolver rejected as malformed would mislead operators
+// into thinking the static chain ran. Mirrors the
+// BuildLegacyMetadataPlanForClient sibling so both classification
+// seams are consistent.
+func TestBuildLegacyMetadataPlan_ExplicitFallbackProviderWithoutStrategySkipsRebuild(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+	}{
+		{"baml-fallback canonical", "baml-fallback"},
+		{"fallback alias", "fallback"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Clients: []*bamlutils.ClientProperty{
+						// Explicit provider, no options.strategy —
+						// invalid runtime override per the resolver-
+						// level contract.
+						{Name: "Strategy", Provider: tc.provider, ProviderSet: true},
+					},
+				},
+			}
+			chains := map[string][]string{
+				// Non-empty introspected chain to make the rebuild
+				// guard observable: without the guard the rebuild
+				// would surface [Primary, Backup] in plan.Chain even
+				// though the resolver rejected the override.
+				"Strategy": {"Primary", "Backup"},
+			}
+			providers := map[string]string{
+				"Strategy": "baml-fallback",
+				"Primary":  "openai",
+				"Backup":   "anthropic",
+			}
+
+			plan := BuildLegacyMetadataPlan(adapter, "Strategy", "baml-fallback", chains, providers, IsProviderSupported, nil)
+
+			if plan.PathReason != PathReasonInvalidStrategyOverride {
+				t.Errorf("PathReason: got %q, want %q", plan.PathReason, PathReasonInvalidStrategyOverride)
+			}
+			if len(plan.Chain) != 0 {
+				t.Errorf("Chain: got %v, want empty (rebuild must be skipped on invalid-override classification)", plan.Chain)
+			}
+			if len(plan.LegacyChildren) != 0 {
+				t.Errorf("LegacyChildren: got %v, want empty", plan.LegacyChildren)
+			}
+			if plan.Strategy != "baml-fallback" {
+				t.Errorf("Strategy: got %q, want baml-fallback", plan.Strategy)
+			}
+		})
 	}
 }
