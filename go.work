@@ -14,6 +14,11 @@ go 1.26.2
 // directory (cd adapters/adapter_v0_XXX_0 && go build ./...) so that Go uses
 // the adapter's own go.mod with its pinned BAML version instead of the
 // workspace's resolved version.
+//
+// To refresh indirect dependencies in the workspace AND in the per-adapter
+// modules without bumping the pinned BAML versions, run `./scripts/sync.sh`
+// from anywhere in the repo. It runs `go work sync` for the workspace members
+// and then `GOWORK=off go mod tidy` in each adapter directory.
 use (
 	.
 	./adapters/common
