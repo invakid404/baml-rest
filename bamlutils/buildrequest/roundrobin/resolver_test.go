@@ -139,12 +139,46 @@ func TestResolve_NestedRR_ReportsOutermost(t *testing.T) {
 	if res.Info.Name != "Outer" {
 		t.Fatalf("Info.Name: want Outer (outermost), got %q", res.Info.Name)
 	}
+	// Info.Children must mirror the outermost chain as declared in the
+	// fixture above (FallbackChains["Outer"]). A regression that
+	// substituted the inner chain (X, Y) into outer metadata would still
+	// pass the Info.Name assertion above.
+	wantOuterChildren := []string{"InnerRR", "Plain"}
+	if len(res.Info.Children) != len(wantOuterChildren) {
+		t.Fatalf("Info.Children len: want %d (%v), got %d (%v)", len(wantOuterChildren), wantOuterChildren, len(res.Info.Children), res.Info.Children)
+	}
+	for i, want := range wantOuterChildren {
+		if res.Info.Children[i] != want {
+			t.Fatalf("Info.Children[%d]: want %q, got %q (full: %v)", i, want, res.Info.Children[i], res.Info.Children)
+		}
+	}
+	// Info.Selected names the outer chain member that the outer RR picked
+	// (NOT the final non-RR leaf). It must be one of the outer children.
+	switch res.Info.Selected {
+	case "InnerRR", "Plain":
+	default:
+		t.Fatalf("Info.Selected: want one of {InnerRR, Plain} (outer chain members), got %q", res.Info.Selected)
+	}
 	// Selected might be "Plain", "X", or "Y" depending on random outer
 	// selection and (when outer picked InnerRR) inner selection.
 	switch res.Selected {
 	case "Plain", "X", "Y":
 	default:
 		t.Fatalf("unexpected selected: %q", res.Selected)
+	}
+	// Outer-vs-leaf coherence: when the leaf is "Plain", outer must have
+	// chosen "Plain" directly; when the leaf is "X" or "Y", outer must
+	// have routed through "InnerRR". A desync between leaf and outer
+	// pick would point at a metadata bug in nested traversal.
+	switch res.Selected {
+	case "Plain":
+		if res.Info.Selected != "Plain" {
+			t.Fatalf("leaf Selected=%q implies Info.Selected=%q, got %q", res.Selected, "Plain", res.Info.Selected)
+		}
+	case "X", "Y":
+		if res.Info.Selected != "InnerRR" {
+			t.Fatalf("leaf Selected=%q implies Info.Selected=%q, got %q", res.Selected, "InnerRR", res.Info.Selected)
+		}
 	}
 }
 

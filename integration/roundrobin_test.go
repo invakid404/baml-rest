@@ -161,6 +161,18 @@ func TestRoundRobinCall(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
+			// children mirrors the chain order declared by
+			// TestRoundRobinPair in clients.baml; each iteration's
+			// X-BAML-RoundRobin-Index is a position in this list, and
+			// consecutive indices must step by exactly (prev+1) % len.
+			// A stuck counter or a sweep re-advance would manifest as a
+			// repeated or skipped index even when assertBalanced still
+			// passed at the end. The Coordinator's start offset is
+			// process-global and may be either element on the first
+			// call; prevIndex == -1 is the initial-state guard that
+			// allows that while pinning every subsequent step.
+			children := []string{"FallbackPrimary", "FallbackSecondary"}
+			prevIndex := -1
 			const runs = 4
 			for i := 0; i < runs; i++ {
 				resp, err := client.Call(ctx, testutil.CallRequest{
@@ -181,6 +193,26 @@ func TestRoundRobinCall(t *testing.T) {
 				// return 200 and balance correctly, but the routing
 				// invariant would be broken.
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
+
+				selected := resp.Headers.Get(testutil.HeaderBAMLRoundRobinSelected)
+				indexStr := resp.Headers.Get(testutil.HeaderBAMLRoundRobinIndex)
+				idx, convErr := strconv.Atoi(indexStr)
+				if convErr != nil {
+					t.Fatalf("Call %d: Index header %q not an integer: %v", i, indexStr, convErr)
+				}
+				if idx < 0 || idx >= len(children) {
+					t.Fatalf("Call %d: Index %d out of range [0, %d)", i, idx, len(children))
+				}
+				if children[idx] != selected {
+					t.Errorf("Call %d: Selected=%q but children[%d]=%q", i, selected, idx, children[idx])
+				}
+				if prevIndex >= 0 {
+					expected := (prevIndex + 1) % len(children)
+					if idx != expected {
+						t.Errorf("Call %d: Index %d does not advance from prev %d (expected %d)", i, idx, prevIndex, expected)
+					}
+				}
+				prevIndex = idx
 			}
 
 			assertBalanced(t, []string{"fallback-primary", "fallback-secondary"}, runs)
