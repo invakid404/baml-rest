@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/goccy/go-json v0.10.6
+	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000

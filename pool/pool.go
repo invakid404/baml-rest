@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/google/uuid"
 	"github.com/hashicorp/go-plugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -114,6 +116,17 @@ type Config struct {
 	WorkerMemLimit int64
 	// WorkerStartTimeout bounds worker startup and restart handshake work (0 = no timeout)
 	WorkerStartTimeout time.Duration
+	// SharedStateSeeds seeds per-key initial values for the host-side
+	// SharedState counters. Populate from introspected.RoundRobinStart so
+	// baml-roundrobin clients that declared a `start N` option honour it.
+	// Keys not in the map start at a uniformly-random offset — same fresh-
+	// fleet behaviour as the legacy in-process Coordinator.
+	//
+	// Leaving this nil disables the reverse shared-state channel: workers
+	// never receive AttachSharedState and fall back to their in-process
+	// coordinators. Intended for tests and single-worker configurations
+	// where per-worker counters are acceptable.
+	SharedStateSeeds map[string]int
 }
 
 // DefaultConfig returns a default configuration
@@ -125,6 +138,33 @@ func DefaultConfig() *Config {
 		FirstByteTimeout:    120 * time.Second,
 		WorkerStartTimeout:  30 * time.Second,
 	}
+}
+
+// convertSharedStateSeeds snapshots the caller's `start` map into the
+// uint64 wire format the SharedStateStore consumes. Negative `start`
+// values are reinterpreted as unsigned (uint64(int(-1)) yields
+// 0xFFFFFFFFFFFFFFFF on 64-bit), matching upstream BAML's runtime
+// expression `(start as usize) % strategy.len()` — a sign-extending
+// bitcast from i32. Mirroring the cast here keeps host-side rotation
+// aligned with what BAML's per-worker runtime computes on the legacy
+// path: a request with start=-1 dispatches the same child regardless
+// of whether the rotation traverses the centralised SharedState
+// counter or BAML's per-worker runtime.
+//
+// The snapshot also defends against post-construction mutations of
+// the caller's map mid-flight.
+//
+// Extracted as a top-level helper so the cast contract is unit-
+// testable in isolation; a clamp-to-zero regression in this
+// conversion would not be caught by the in-process Coordinator's
+// tests because pool.New consumes the seeds via a separate code
+// path (workerplugin.SharedStateStore).
+func convertSharedStateSeeds(starts map[string]int) map[string]uint64 {
+	seeds := make(map[string]uint64, len(starts))
+	for k, v := range starts {
+		seeds[k] = uint64(v)
+	}
+	return seeds
 }
 
 // inFlightRequest tracks an active request on a worker
@@ -184,7 +224,7 @@ type Pool struct {
 	closed             atomic.Bool
 	draining           atomic.Bool
 	drainOnce          sync.Once
-	drainCh            chan struct{} // closed when pool begins draining; selectable unlike atomic bool
+	drainCh            chan struct{} // closed when Close()/hard-shutdown fires; selectable unlike atomic bool. NOT closed at graceful Shutdown's drain start — accepted requests must finish their retries through shutdownCtx instead.
 	wg                 sync.WaitGroup
 	restartWG          sync.WaitGroup
 	done               chan struct{}
@@ -192,6 +232,29 @@ type Pool struct {
 	shutdownCancel     context.CancelFunc                  // cancels shutdownCtx
 	newWorker          func(id int) (*workerHandle, error) // override for testing; nil in production
 	beforeRestartStart func()
+
+	// admissionMu serialises Shutdown's draining transition with
+	// beginLogicalRequest. A request that observes draining=false
+	// inside beginLogicalRequest under this lock is guaranteed to
+	// have its logicalInFlight increment seen by Shutdown's drain-
+	// loop wait — without the lock, a TOCTOU window between the
+	// admission check and the increment would let Shutdown observe
+	// logicalInFlight=0 and tear down workers while the request is
+	// still mid-handoff.
+	admissionMu sync.Mutex
+	// logicalInFlight counts logical requests admitted via
+	// beginLogicalRequest. Decremented exactly once via the returned
+	// done function, even across pool retries — the per-attempt
+	// inFlightReq map zeroes out between trackRequest/cleanup pairs,
+	// so it is not a reliable graceful-drain signal.
+	logicalInFlight atomic.Int64
+
+	// sharedStateStore hosts the per-key atomic counters that drive
+	// cross-worker round-robin rotation. Nil when SharedStateSeeds was
+	// not configured (test harness / single-worker setups). When non-nil,
+	// every worker handshake dials back via AttachSharedState and
+	// subsequent RR decisions ride through it.
+	sharedStateStore *workerplugin.SharedStateStore
 }
 
 type workerHandle struct {
@@ -299,6 +362,22 @@ func New(config *Config) (*Pool, error) {
 		shutdownCancel: shutdownCancel,
 	}
 
+	// Build the shared-state store when seeds were configured. Workers
+	// dial back to the host-side server registered inside WorkerPlugin
+	// during GRPCClient handshake; see startWorker below for the
+	// per-worker wiring.
+	if config.SharedStateSeeds != nil {
+		seeds := convertSharedStateSeeds(config.SharedStateSeeds)
+		p.sharedStateStore = workerplugin.NewSharedStateStore(func(key string) uint64 {
+			if seed, ok := seeds[key]; ok {
+				return seed
+			}
+			// Unseeded keys get a random offset so a fresh fleet does
+			// not lockstep on child 0. Matches roundrobin.counterFor.
+			return uint64(rand.Uint32())
+		})
+	}
+
 	// Initialize worker restart counter labels
 	workerRestarts.WithLabelValues(string(RestartReasonHung)).Add(0)
 	workerRestarts.WithLabelValues(string(RestartReasonUnhealthy)).Add(0)
@@ -321,6 +400,19 @@ func New(config *Config) (*Pool, error) {
 	}
 
 	return p, nil
+}
+
+// pluginMap returns the go-plugin dispenser map for this pool. A fresh
+// WorkerPlugin is constructed per call so each worker connection carries
+// a plugin instance whose SharedStateImpl points at this pool's store —
+// tests that spin up multiple pools in the same process would otherwise
+// share the package-level workerplugin.PluginMap and bleed state.
+func (p *Pool) pluginMap() map[string]plugin.Plugin {
+	wp := &workerplugin.WorkerPlugin{}
+	if p.sharedStateStore != nil {
+		wp.SharedStateImpl = workerplugin.NewSharedStateServer(p.sharedStateStore)
+	}
+	return map[string]plugin.Plugin{"worker": wp}
 }
 
 var errWorkerStartAborted = fmt.Errorf("worker startup aborted")
@@ -365,7 +457,7 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: workerplugin.Handshake,
-		Plugins:         workerplugin.PluginMap,
+		Plugins:         p.pluginMap(),
 		Cmd:             cmd,
 		AllowedProtocols: []plugin.Protocol{
 			plugin.ProtocolGRPC,
@@ -770,17 +862,65 @@ func (p *Pool) restartWorker(id int, failed *workerHandle) {
 	failed.kill()
 }
 
-// getWorker returns a worker using round-robin selection
+// beginLogicalRequest is the admission point for a new logical
+// request entering the pool. It serialises with Shutdown's
+// draining-transition under admissionMu so a request observed as
+// admitted (returning a non-nil done) is guaranteed to be counted
+// by Shutdown's drain-wait, and Shutdown observed as draining is
+// guaranteed to reject every subsequent admission attempt.
+//
+// Callers must invoke the returned `done` exactly once — typically
+// via `defer done()` immediately after admission succeeds. Calling
+// done multiple times is safe (idempotent via sync.Once); a missed
+// done would leak a logicalInFlight increment and stall shutdown.
+//
+// The accounting is independent of the per-attempt inFlightReq
+// map: a logical request remains counted across retry boundaries
+// even while no per-attempt entry exists (between cleanup() and
+// trackRequest() for the next attempt). That gap is the graceful-
+// drain race totalInFlight() exposes — Shutdown waits on
+// logicalInFlight instead.
+func (p *Pool) beginLogicalRequest() (done func(), err error) {
+	p.admissionMu.Lock()
+	defer p.admissionMu.Unlock()
+
+	if p.closed.Load() {
+		return nil, fmt.Errorf("pool is closed")
+	}
+	if p.draining.Load() {
+		return nil, fmt.Errorf("pool is draining, not accepting new requests")
+	}
+	p.logicalInFlight.Add(1)
+	var once sync.Once
+	return func() {
+		once.Do(func() { p.logicalInFlight.Add(-1) })
+	}, nil
+}
+
+// getWorker returns a worker using round-robin selection. Rejects
+// new requests during graceful drain — the admission path used by
+// beginLogicalRequest's caller before the request enters the pool.
+// Already-admitted requests must use getWorkerAccepted so a
+// drain in progress does not abort their retries.
 func (p *Pool) getWorker() (*workerHandle, error) {
+	if p.draining.Load() {
+		return nil, fmt.Errorf("pool is draining, not accepting new requests")
+	}
+	return p.getWorkerAccepted()
+}
+
+// getWorkerAccepted is the worker-selection path for requests
+// already admitted by beginLogicalRequest. It rejects only on hard
+// close (Close() / shutdown timeout) so a graceful drain does not
+// strand mid-flight retries. The semantics mirror getWorker
+// otherwise — round-robin over healthy workers, returning a
+// "no healthy workers" error when every slot is unhealthy.
+func (p *Pool) getWorkerAccepted() (*workerHandle, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if p.closed.Load() {
 		return nil, fmt.Errorf("pool is closed")
-	}
-
-	if p.draining.Load() {
-		return nil, fmt.Errorf("pool is draining, not accepting new requests")
 	}
 
 	// Round-robin selection
@@ -868,19 +1008,24 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 	}
 }
 
-// getWorkerForRetry returns a healthy worker for a retry attempt.
+// getWorkerForRetry returns a healthy worker for a retry attempt of
+// an already-admitted logical request. Uses getWorkerAccepted so a
+// graceful drain in progress does not abort an in-flight retry —
+// admitted requests must run to completion or hard close, not
+// halfway through. Hard close (Close() / shutdown timeout via
+// drainCh) still aborts every wait.
 //
 // Four cases:
-//  1. getWorker() returns a different (healthy) handle → returned immediately.
-//  2. getWorker() returns the same handle that just failed (pool size 1,
+//  1. getWorkerAccepted() returns a different (healthy) handle → returned immediately.
+//  2. getWorkerAccepted() returns the same handle that just failed (pool size 1,
 //     or all others also dead) → waits for the in-progress restart on
 //     that handle to complete, then re-fetches.
-//  3. getWorker() finds no healthy workers and lastFailed is set → waits
+//  3. getWorkerAccepted() finds no healthy workers and lastFailed is set → waits
 //     for its restart, then re-fetches. This is the pool-size-1 path
 //     after killWorkerAndRetry/checkHealth marks the handle unhealthy
 //     before firing the async restart.
-//  4. getWorker() finds no healthy workers and lastFailed is nil (new
-//     request arriving while a restart is in progress) → scans all
+//  4. getWorkerAccepted() finds no healthy workers and lastFailed is nil (initial
+//     attempt arriving while a restart is in progress) → scans all
 //     workers for one that's restarting and waits for it. This prevents
 //     new requests from failing immediately with "no healthy workers"
 //     during the brief window between a worker being marked unhealthy
@@ -888,11 +1033,11 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 //
 // All waits are context-aware.
 func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) (*workerHandle, error) {
-	handle, err := p.getWorker()
+	handle, err := p.getWorkerAccepted()
 	if err != nil {
-		// Fast-reject: don't wait for restarts if the pool is shutting
-		// down — the caller should see the closed/draining error immediately.
-		if p.closed.Load() || p.draining.Load() {
+		// Fast-reject: only on hard close. A graceful drain leaves
+		// admitted requests free to wait for restarts.
+		if p.closed.Load() {
 			return nil, err
 		}
 
@@ -902,9 +1047,9 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 			if awaitErr := p.awaitRestart(ctx, lastFailed); awaitErr != nil {
 				return nil, awaitErr
 			}
-			return p.getWorker()
+			return p.getWorkerAccepted()
 		}
-		// New request (not a retry): wait for ANY restarting worker
+		// Initial attempt (lastFailed nil): wait for ANY restarting worker
 		// to finish rather than picking one that might be slow.
 		// Loop because awaitAnyRestart can be woken by a failed restart
 		// (restartDone is always closed, even on startWorker failure) —
@@ -915,10 +1060,10 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 				if ctx.Err() != nil {
 					return nil, awaitErr
 				}
-				if handle, retryErr := p.getWorker(); retryErr == nil {
+				if handle, retryErr := p.getWorkerAccepted(); retryErr == nil {
 					return handle, nil
 				}
-				if p.closed.Load() || p.draining.Load() {
+				if p.closed.Load() {
 					return nil, awaitErr
 				}
 				// No restarts visible. The common async-restart gap is
@@ -933,11 +1078,11 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 				return nil, awaitErr
 			}
 			yielded = false // reset after a successful await
-			if handle, retryErr := p.getWorker(); retryErr == nil {
+			if handle, retryErr := p.getWorkerAccepted(); retryErr == nil {
 				return handle, nil
 			}
-			// Still no healthy workers. Re-check shutdown state.
-			if p.closed.Load() || p.draining.Load() {
+			// Still no healthy workers. Re-check hard-close state.
+			if p.closed.Load() {
 				return nil, err
 			}
 			// Loop: another restart may still be in progress.
@@ -951,7 +1096,7 @@ func (p *Pool) getWorkerForRetry(ctx context.Context, lastFailed *workerHandle) 
 	if err := p.awaitRestart(ctx, handle); err != nil {
 		return nil, err
 	}
-	return p.getWorker()
+	return p.getWorkerAccepted()
 }
 
 // awaitAnyRestart waits for ANY worker restart to complete, returning
@@ -1083,6 +1228,12 @@ func (p *Pool) hasUnhealthyWorkers() bool {
 // Parse parses raw LLM output using a BAML method's schema.
 // Supports automatic retry on worker infrastructure failures (crashes, network issues).
 func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
+	done, err := p.beginLogicalRequest()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
 	var lastErr error
 	var lastFailed *workerHandle
 
@@ -1149,7 +1300,15 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 		case workerplugin.StreamResultKindError:
 			err := workerplugin.NewErrorWithStack(result.Error, result.Stacktrace)
 			workerplugin.ReleaseStreamResult(result)
-			return nil, err
+			// Return a CallResult carrying any accumulated metadata
+			// alongside the error so the unary handler can still set
+			// X-BAML-Path / X-BAML-Path-Reason / X-BAML-Client headers
+			// for observability. Data/Raw stay empty — the caller's
+			// `if err != nil` branch should not read them. The streaming
+			// path already forwards metadata frames eagerly to the
+			// client; this preserves the same observability for the
+			// unary path on the error tail.
+			return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), err
 		case workerplugin.StreamResultKindFinal:
 			callResult := &workerplugin.CallResult{
 				Data:    result.Data,
@@ -1164,10 +1323,20 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 			// only need to inspect the Phase to decide which slot the
 			// payload belongs in, then copy the bytes (the underlying
 			// buffer is about to be released back to the pool).
+			//
+			// A planned-phase frame marks the start of a new attempt:
+			// clear outcomeMetadata so a stale outcome from a prior
+			// attempt cannot be paired with the new attempt's planned
+			// route on the error tail. The unary handler decodes both
+			// fields together to emit X-BAML-Path / -Outcome-Winner /
+			// -Outcome-Retry headers; mixing attempt N's planned with
+			// attempt N-1's outcome would silently report the wrong
+			// winner alongside the current attempt's routing.
 			if phase := metadataPhase(result.Data); phase == string(bamlutils.MetadataPhaseOutcome) {
 				outcomeMetadata = append(outcomeMetadata[:0], result.Data...)
 			} else {
 				plannedMetadata = append(plannedMetadata[:0], result.Data...)
+				outcomeMetadata = outcomeMetadata[:0]
 			}
 		}
 		// StreamResultKindStream / Metadata / others - continue waiting for final
@@ -1177,10 +1346,23 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 	// Stream closed without a final result. If the context was cancelled
 	// (client disconnect, deadline exceeded), surface that so callers can
 	// distinguish cancellation from unexpected stream termination.
+	// Preserve accumulated metadata on these tails too — same rationale as
+	// the explicit-Error case above.
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), ctx.Err()
 	}
-	return nil, fmt.Errorf("no final result received")
+	return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), fmt.Errorf("no final result received")
+}
+
+// metadataOnlyCallResult wraps accumulated planned/outcome metadata into a
+// CallResult so the unary handlers can surface routing observability on
+// error tails. Returns nil if both byte slices are empty so callers can
+// still distinguish "metadata available" from "nothing to report".
+func metadataOnlyCallResult(planned, outcome []byte) *workerplugin.CallResult {
+	if len(planned) == 0 && len(outcome) == 0 {
+		return nil
+	}
+	return &workerplugin.CallResult{Planned: planned, Outcome: outcome}
 }
 
 // CallStream executes a BAML method and streams results.
@@ -1188,19 +1370,50 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 // both before first byte and mid-stream. On mid-stream retry, a reset message is injected
 // so clients can discard accumulated partial state.
 func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
-	// Verify we can get at least one worker before starting.
-	// Use getWorkerForRetry(nil) so that new requests arriving during a
-	// restart window wait for the replacement rather than failing immediately
-	// with "no healthy workers available".
-	handle, err := p.getWorkerForRetry(ctx, nil)
+	// Admission point. beginLogicalRequest serialises with Shutdown
+	// under admissionMu so a request that observes draining=false
+	// here is guaranteed to be counted in Shutdown's drain wait.
+	// done is invoked exactly once via the deferred call inside the
+	// goroutine below — or before the goroutine launches if setup
+	// fails after admission.
+	done, err := p.beginLogicalRequest()
 	if err != nil {
 		return nil, err
 	}
 
+	// Verify we can get at least one worker before starting.
+	// Use getWorkerForRetry(nil) so that new requests arriving during a
+	// restart window wait for the replacement rather than failing immediately
+	// with "no healthy workers available". getWorkerForRetry uses the
+	// accepted-request worker-selection path so a graceful drain
+	// concurrent with this admission does not abort the request.
+	handle, err := p.getWorkerForRetry(ctx, nil)
+	if err != nil {
+		done()
+		return nil, err
+	}
+
+	// Generate a stable request id and thread it through every attempt.
+	// The worker forwards it as CallRequest.request_id, which the host's
+	// SharedState store uses as the idempotency key for FetchAdd. Pool
+	// retries must see the same id so the rotation index is resolved once
+	// per request — otherwise each retry would advance the counter a
+	// second time and the RR ordering would skip a child.
+	requestID := uuid.NewString()
+	ctx = workerplugin.WithRequestID(ctx, requestID)
+
 	wrappedResults := make(chan *workerplugin.StreamResult)
 
 	go func() {
+		defer done()
 		defer close(wrappedResults)
+		// Release any FetchAdd idempotency entries recorded under this
+		// request id once the retry loop finishes (success, error, or
+		// caller cancellation — doesn't matter). A TTL sweep on the host
+		// side is the backstop for crashes that skip this defer.
+		if p.sharedStateStore != nil {
+			defer p.sharedStateStore.DropScope(requestID)
+		}
 
 		currentHandle := handle
 		var lastFailed *workerHandle
@@ -1301,8 +1514,19 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					}
 				}
 
-				// Mark first byte received (disables hung detection for this request)
-				req.gotFirstByte.Store(true)
+				// Mark first byte received (disables hung detection for this
+				// request) for events that genuinely indicate progress —
+				// heartbeat, stream content, final, error, and outcome
+				// metadata. SKIP planned metadata: it emits upfront from
+				// the orchestrator before any HTTP work, so a worker that
+				// emits planned and then stalls in upstream HTTP would
+				// otherwise disable FirstByteTimeout while never actually
+				// progressing.
+				isPlannedMetadata := result.Kind == workerplugin.StreamResultKindMetadata &&
+					metadataPhase(result.Data) != string(bamlutils.MetadataPhaseOutcome)
+				if !isPlannedMetadata {
+					req.gotFirstByte.Store(true)
+				}
 
 				// Filter heartbeat - only for first-byte tracking
 				if result.Kind == workerplugin.StreamResultKindHeartbeat {
@@ -1348,7 +1572,15 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// stream writer emits a reset event immediately before this data.
 				// This ties reset signaling to the first real result that makes it
 				// to the client (instead of a standalone synthetic message).
-				if needsReset && !injectedReset {
+				//
+				// Planned metadata is excluded for the same reason it's excluded
+				// from first-byte liveness: it emits upfront from the
+				// orchestrator before any HTTP work, so it does not represent
+				// forwarded content the client needs to discard. Reset must
+				// land on the first real result (heartbeat / stream / final
+				// / outcome metadata) so the streamwriter only resets state
+				// when there's actually state to reset.
+				if needsReset && !injectedReset && !isPlannedMetadata {
 					result.Reset = true
 					injectedReset = true
 					currentHandle.logger.Info().Msg("Injected reset marker for mid-stream retry")
@@ -1362,7 +1594,13 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// Forward the result to the client
 				select {
 				case wrappedResults <- result:
-					sentAnyResults = true
+					// Planned metadata is excluded from sentAnyResults so a
+					// pre-first-byte retry doesn't trigger reset injection —
+					// nothing meaningful was forwarded to the client yet.
+					// Symmetric with the first-byte gate above.
+					if !isPlannedMetadata {
+						sentAnyResults = true
+					}
 				case <-ctx.Done():
 					workerplugin.ReleaseStreamResult(result)
 					p.drainResultsAndCheckRestart(results, currentHandle)
@@ -1637,19 +1875,31 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 		return nil
 	}
 
-	// Start draining - reject new requests
+	// Start draining under admissionMu so the transition is atomic
+	// with beginLogicalRequest's draining-check + logicalInFlight
+	// increment. Any request that admitted before this lock acquired
+	// is guaranteed to be counted in logicalInFlight by the time we
+	// read it below; any request that arrives after is rejected.
+	//
+	// drainCh is intentionally NOT closed here. drainCh is the hard-
+	// close signal used by Close() and by the shutdown-timeout
+	// fallback below; closing it at graceful drain would abort
+	// already-admitted requests' retry loops mid-flight, which is
+	// exactly the race this function is trying to avoid.
+	p.admissionMu.Lock()
 	p.draining.Store(true)
-	if p.drainCh != nil {
-		p.drainOnce.Do(func() { close(p.drainCh) })
-	}
+	p.admissionMu.Unlock()
 	p.logger.Info().Msg("Pool draining, waiting for in-flight requests to complete")
 
-	// Wait for in-flight requests to complete
+	// Wait for logical in-flight requests to drain. logicalInFlight
+	// stays incremented across pool retry boundaries — unlike
+	// totalInFlight() which counts only per-attempt entries and
+	// would observe 0 in the gap between trackRequest cleanups.
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		inFlight := p.totalInFlight()
+		inFlight := p.logicalInFlight.Load()
 		if inFlight == 0 {
 			p.logger.Info().Msg("All in-flight requests completed")
 			break
@@ -1667,7 +1917,37 @@ func (p *Pool) Shutdown(ctx context.Context) error {
 	return p.Close()
 }
 
-// Close immediately shuts down the pool and kills all workers
+// Close immediately shuts down the pool and kills all workers.
+//
+// Contract:
+//
+//   - Cancels the pool-level shutdown context so in-progress health
+//     RPCs abort instead of blocking for their full timeout.
+//   - Closes the drain channel so callers stop waiting on it.
+//   - Snapshots and kills every worker plugin handle (worker
+//     subprocesses).
+//   - Waits on `restartWG` (so any in-flight restart goroutine has
+//     returned) and `p.wg` (which currently tracks only the health
+//     checker goroutine — see pool.go:373/555).
+//   - Closes the SharedStateStore, which only stops the background
+//     sweeper goroutine; remaining map operations stay safe after
+//     Close (workerplugin/sharedstate.go:140).
+//
+// What Close does **not** wait for: in-flight CallStream goroutines
+// (pool.go:1306). These goroutines are not registered with `p.wg` —
+// the design assumes Close is called when the caller wants every
+// worker subprocess killed *now*, not a graceful drain. Use
+// Shutdown(ctx) for a drain that waits for in-flight requests to
+// finish (or the context to expire), then calls Close.
+//
+// Race-safety with concurrent CallStream goroutines:
+// SharedStateStore methods (FetchAdd, DropScope, etc.) remain safe to
+// invoke after Close — Close only closes the sweeper's stopCh; the
+// underlying maps are not invalidated. So a CallStream goroutine
+// that defers DropScope(requestID) is fine even if Close has
+// returned by the time the defer fires. If a future change adds
+// state that *would* be unsafe to access post-Close, this contract
+// will need to change to track CallStream goroutines explicitly.
 func (p *Pool) Close() error {
 	if p == nil {
 		return nil
@@ -1710,6 +1990,9 @@ func (p *Pool) Close() error {
 
 	p.restartWG.Wait()
 	p.wg.Wait()
+	if p.sharedStateStore != nil {
+		p.sharedStateStore.Close()
+	}
 	p.logger.Info().Msg("Worker pool closed")
 	return nil
 }

@@ -28,6 +28,7 @@ import (
 	fiberrequestid "github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/pool"
@@ -200,8 +201,18 @@ var serveCmd = &cobra.Command{
 		}
 		logger := zerolog.New(output).With().Timestamp().Logger()
 
-		if introspected.Request == nil {
-			logger.Warn().Msg("BAML < 0.219.0 detected: BuildRequest API is unavailable, all requests will use the CallStream+OnTick path. Upgrade to BAML >= 0.219.0 to enable the BuildRequest code path.")
+		// Mirror the SharedStateSeeds gate's availability predicate
+		// below: the BuildRequest path is exercisable as long as
+		// EITHER non-streaming Request or streaming StreamRequest is
+		// exposed by the generated codegen. Warn only when neither
+		// surface exists (streaming-only BAML still has a usable
+		// BuildRequest path via StreamRequest, even when Request is
+		// nil — the call bridge falls back). Without this widening
+		// the warning misleadingly fires on streaming-only BAML
+		// installations that are perfectly capable of using the
+		// BuildRequest path.
+		if introspected.Request == nil && introspected.StreamRequest == nil {
+			logger.Warn().Msg("No BuildRequest surface available (neither Request nor StreamRequest exposed): all requests will use the CallStream+OnTick path. Upgrade BAML or check the generated baml_client to enable the BuildRequest code path.")
 		}
 
 		// Configure memory limits
@@ -281,6 +292,37 @@ var serveCmd = &cobra.Command{
 		poolConfig.PrettyLogs = prettyLogs
 		poolConfig.WorkerPath = workerPath
 		poolConfig.WorkerMemLimit = workerMemLimit
+		// Host the shared-state round-robin counters. Passing a non-nil
+		// seeds map enables the reverse broker channel between host and
+		// each worker — without it every worker rotates off an in-process
+		// coordinator and baml-roundrobin degrades to independent per-
+		// worker draws at PoolSize > 1. The map is consulted for BAML
+		// `start N` values; unseeded clients get a random offset on first
+		// touch, matching the legacy single-process Coordinator behaviour.
+		//
+		// Gated on UseBuildRequest: with the kill-switch off, baml-rest's
+		// RR resolver isn't engaged on the request path (the codegen
+		// upgrade gate at adapters/common/codegen/codegen.go skips
+		// ResolveEffectiveClient and the worker's per-request
+		// SetRoundRobinAdvancer feeds an unread advancer), so the broker
+		// channel and the AttachSharedState handshake would be pure dead
+		// weight. Skipping seeds collapses the kill-switch contract
+		// end-to-end: no host-side store, no SharedStateImpl in the
+		// plugin map, no reverse-broker dial, and BAML's per-worker
+		// runtime owns rotation exactly as it did pre-PR.
+		// Gate on BuildRequest enabled AND at least one BuildRequest
+		// surface (Request or StreamRequest) actually exposed by the
+		// generated codegen. Streaming-only BAML emits
+		// `var Request any` / `var StreamRequest any` for the absent
+		// surface (cmd/introspect/main.go); the codegen distinguishes
+		// the two surfaces (codegen.go non-stream vs stream emission)
+		// and the call bridge can fall back to StreamRequest when
+		// Request is nil. Only when neither surface exists does the
+		// BuildRequest path become unexercisable — wiring SharedState
+		// in that case would be pure dead weight.
+		if buildrequest.UseBuildRequest() && (introspected.Request != nil || introspected.StreamRequest != nil) {
+			poolConfig.SharedStateSeeds = introspected.RoundRobinStart
+		}
 
 		workerPool, err := pool.New(poolConfig)
 		if err != nil {
@@ -389,12 +431,27 @@ var serveCmd = &cobra.Command{
 					defer cancel()
 
 					result, err := workerPool.Call(ctx, methodName, c.Body(), streamMode)
+					// Surface routing observability headers even on the
+					// error path. Pool.Call now preserves accumulated
+					// planned/outcome metadata in the result on error
+					// tails so X-BAML-Path / X-BAML-Path-Reason still
+					// reach the client when the request fails after the
+					// orchestrator emitted planned metadata. Pre-fix the
+					// 500 path returned with no headers, which made
+					// invalid-runtime-options diagnoses invisible.
+					if result != nil {
+						setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
+					}
 					if err != nil {
 						logger.Error().Err(err).Str("method", methodName).Msg("worker call failed")
+						// Mirror writeChiWorkerError (cmd/serve/unary.go):
+						// classify context cancellation / deadline as 408 so
+						// client-driven aborts don't inflate 5xx error metrics.
+						if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+							return writeFiberJSONError(c, "request canceled", fiber.StatusRequestTimeout)
+						}
 						return writeFiberJSONError(c, "failed to process request", fiber.StatusInternalServerError)
 					}
-
-					setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
 						return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{
@@ -474,8 +531,19 @@ var serveCmd = &cobra.Command{
 					}
 
 					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
+					// Surface routing headers on the error tail too — see
+					// the per-method handler above for rationale.
+					if result != nil {
+						setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
+					}
 					if err != nil {
 						logger.Error().Err(err).Msg("dynamic worker call failed")
+						// Mirror writeChiWorkerError (cmd/serve/unary.go):
+						// classify context cancellation / deadline as 408 so
+						// client-driven aborts don't inflate 5xx error metrics.
+						if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+							return writeFiberJSONError(c, "request canceled", fiber.StatusRequestTimeout)
+						}
 						return writeFiberJSONError(c, "failed to process request", fiber.StatusInternalServerError)
 					}
 
@@ -485,8 +553,6 @@ var serveCmd = &cobra.Command{
 						logger.Error().Err(err).Msg("dynamic response flatten failed")
 						return writeFiberJSONError(c, "failed to process response", fiber.StatusInternalServerError)
 					}
-
-					setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
 						return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{

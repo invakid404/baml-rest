@@ -43,6 +43,12 @@ type CallConfig struct {
 	// When empty, the single Provider is used for all attempts.
 	FallbackChain []string
 
+	// ClientOverride mirrors StreamConfig.ClientOverride — the
+	// clientOverride value forwarded to buildRequest on single-provider
+	// attempts, used by the round-robin path to target the RR-selected
+	// leaf instead of the function's default client.
+	ClientOverride string
+
 	// ClientProviders maps child client names to their provider strings.
 	// Used with FallbackChain to resolve the provider for each attempt.
 	// In mixed-mode chains this map includes both BuildRequest-supported
@@ -58,7 +64,9 @@ type CallConfig struct {
 
 	// MetadataPlan is the pre-computed planned metadata for this request.
 	// See StreamConfig.MetadataPlan for the contract; the call orchestrator
-	// behaves identically (heartbeat → planned metadata → final → outcome).
+	// behaves identically — planned metadata is emitted upfront from the
+	// orchestrator before any HTTP work, then heartbeat fires on upstream
+	// 2xx, and outcome metadata is emitted on success right before final.
 	MetadataPlan *bamlutils.Metadata
 
 	// NewMetadataResult constructs a pooled StreamResult wrapping a metadata
@@ -125,9 +133,14 @@ type ExtractResponseFunc func(provider string, responseBody string, includeThink
 // The request is rebuilt on each attempt because BuildRequest fallback routing
 // may select a different child client/provider per retry. The generated
 // adapter passes the chosen child via clientOverride, and Request may return a
-// different HTTP request on each invocation. baml-roundrobin stays on the
-// legacy path because this per-request orchestrator does not keep cross-request
-// rotation state.
+// different HTTP request on each invocation.
+//
+// Top-level baml-roundrobin is resolved upstream by ResolveEffectiveClient
+// (backed by SharedStateStore for cross-worker centralisation on modern
+// adapters with SupportsWithClient); this orchestrator then dispatches to
+// the resolved leaf like any other single-provider client. Older adapters
+// without SupportsWithClient, and baml-roundrobin nested inside a fallback
+// chain, still fall through to BAML's per-worker runtime rotation.
 //
 // The output channel is NOT closed by this function — the caller (generated
 // code) is responsible for closing it.
@@ -146,6 +159,55 @@ func RunCallOrchestration(
 	if httpClient == nil {
 		httpClient = llmhttp.DefaultClient
 	}
+
+	// sendHeartbeat emits a heartbeat to the pool's hung detector via
+	// Execute()'s onSuccess callback. It fires after the provider returns
+	// a 2xx status but before the body is read, so the pool sees liveness
+	// without waiting for the full body to buffer.
+	//
+	// Heartbeat sends are best-effort: if the output channel is full the
+	// heartbeat is dropped (via the default branch) and the StreamResult
+	// is released back to the pool. This is safe because a full channel
+	// means the consumer already has buffered results and won't consider
+	// the worker hung.
+	var heartbeatSent atomic.Bool
+
+	// plannedMetadataOnce gates the single planned-metadata emission
+	// (see RunStreamOrchestration for the rationale — heartbeatSent resets
+	// per inner retry, planned metadata must not).
+	var plannedMetadataOnce sync.Once
+	emitPlannedMetadata := func() {
+		if config.MetadataPlan == nil || config.NewMetadataResult == nil {
+			return
+		}
+		plannedMetadataOnce.Do(func() {
+			plan := *config.MetadataPlan
+			plan.Phase = bamlutils.MetadataPhasePlanned
+			plan.Attempt = 0
+			r := config.NewMetadataResult(&plan)
+			// Block on the send so planned metadata is never silently
+			// dropped when the consumer is momentarily not ready —
+			// callers (cmd/serve and pool) and tests assert the planned
+			// frame is observable on every path. Only abandon the send
+			// when the orchestrator's context is cancelled, in which case
+			// the StreamResult must be released back to its pool.
+			// Heartbeat keeps non-blocking semantics elsewhere because
+			// a full channel implies the consumer already has buffered
+			// liveness; planned metadata is the routing-decision frame
+			// and has no analogue.
+			select {
+			case out <- r:
+			case <-ctx.Done():
+				r.Release()
+			}
+		})
+	}
+
+	// Emit planned metadata BEFORE validation so the routing decision
+	// is observable on every path, including immediate validation
+	// failures. See RunStreamOrchestration for the parallel
+	// arrangement.
+	emitPlannedMetadata()
 
 	// Validate the configured provider(s) up front so invalid fallback
 	// chains fail before any retry attempts are launched. The validation
@@ -176,39 +238,6 @@ func RunCallOrchestration(
 				return fmt.Errorf("buildrequest: unsupported or empty provider %q for child %q", provider, child)
 			}
 		}
-	}
-
-	// sendHeartbeat emits a heartbeat to the pool's hung detector via
-	// Execute()'s onSuccess callback. It fires after the provider returns
-	// a 2xx status but before the body is read, so the pool sees liveness
-	// without waiting for the full body to buffer.
-	//
-	// Heartbeat sends are best-effort: if the output channel is full the
-	// heartbeat is dropped (via the default branch) and the StreamResult
-	// is released back to the pool. This is safe because a full channel
-	// means the consumer already has buffered results and won't consider
-	// the worker hung.
-	var heartbeatSent atomic.Bool
-
-	// plannedMetadataOnce gates the single planned-metadata emission
-	// (see RunStreamOrchestration for the rationale — heartbeatSent resets
-	// per inner retry, planned metadata must not).
-	var plannedMetadataOnce sync.Once
-	emitPlannedMetadata := func() {
-		if config.MetadataPlan == nil || config.NewMetadataResult == nil {
-			return
-		}
-		plannedMetadataOnce.Do(func() {
-			plan := *config.MetadataPlan
-			plan.Phase = bamlutils.MetadataPhasePlanned
-			plan.Attempt = 0
-			r := config.NewMetadataResult(&plan)
-			select {
-			case out <- r:
-			default:
-				r.Release()
-			}
-		})
 	}
 
 	sendHeartbeat := func() {
@@ -299,7 +328,7 @@ func RunCallOrchestration(
 	// entire strategy after all children fail.
 	attemptFull := func(attempt int) (any, error) {
 		if len(config.FallbackChain) == 0 {
-			result, err := tryOneChild(config.Provider, "")
+			result, err := tryOneChild(config.Provider, config.ClientOverride)
 			if err == nil {
 				finalAttempt = attempt
 				if config.MetadataPlan != nil {

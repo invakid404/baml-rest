@@ -363,17 +363,29 @@ func TestEmptyCompletion_LetParseFinalDecide(t *testing.T) {
 // ============================================================================
 
 func TestRetry_SuccessAfterFailures(t *testing.T) {
+	// See TestRunStreamOrchestration_WithRetry for the test shape
+	// rationale: this test models partial-then-fail attempts (one
+	// SSE delta queued via trySendPartial, then parseFinal rejection)
+	// so sawStreamFrame is true when the retry callback fires and
+	// the reset marker is genuinely needed.
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)
-		if n < 3 {
-			w.WriteHeader(500)
-			fmt.Fprint(w, "internal error")
-			return
-		}
+		flusher, _ := w.(http.Flusher)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
+		if n < 3 {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"success\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
@@ -391,13 +403,20 @@ func TestRetry_SuccessAfterFailures(t *testing.T) {
 		},
 	}
 
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		if s == "stale" {
+			return nil, fmt.Errorf("rejected stale content")
+		}
+		return s, nil
+	}
+
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
 		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
-		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
+		parseFinal,
 		newTestResult,
 	)
 	close(out)
@@ -415,7 +434,9 @@ func TestRetry_SuccessAfterFailures(t *testing.T) {
 		t.Errorf("expected 3 attempts, got %d", attempts.Load())
 	}
 
-	// Verify reset signals were emitted for retries
+	// Verify reset signals were emitted for retries — each failing
+	// attempt queued a partial frame before erroring, so sawStreamFrame
+	// was true when the retry callback fired.
 	var resets int
 	for _, r := range results {
 		if r.reset {

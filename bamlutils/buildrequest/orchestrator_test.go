@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -245,17 +247,37 @@ func TestRunStreamOrchestration_HTTPError(t *testing.T) {
 }
 
 func TestRunStreamOrchestration_WithRetry(t *testing.T) {
+	// Models a partial response that streamed content before failing
+	// validation mid-stream — the realistic scenario the retry-boundary
+	// reset marker is for. Each failing attempt emits one valid SSE
+	// delta (so trySendPartial fires and sawStreamFrame=true) with
+	// content "stale"; parseFinal rejects "stale" and the attempt
+	// errors out. The third attempt streams "ok" which parseFinal
+	// accepts.
+	//
+	// The server-emits-stale-then-ok shape models "two failing
+	// windows that DID emit partials, retried; reset must fire each
+	// time" — reset markers only fire when there's actual partial
+	// state for the next window to clear, so the test must produce
+	// real partials before failing rather than a 500-before-any-byte.
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := attempts.Add(1)
-		if n < 3 {
-			w.WriteHeader(500)
-			fmt.Fprint(w, "internal error")
-			return
-		}
+		flusher, _ := w.(http.Flusher)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
+		if n < 3 {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
@@ -273,13 +295,20 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 		},
 	}
 
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		if s == "stale" {
+			return nil, fmt.Errorf("rejected stale content")
+		}
+		return s, nil
+	}
+
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
 		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
-		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
+		parseFinal,
 		newTestResult,
 	)
 	close(out)
@@ -292,23 +321,64 @@ func TestRunStreamOrchestration_WithRetry(t *testing.T) {
 		t.Errorf("expected 3 attempts, got %d", attempts.Load())
 	}
 
-	// Should have reset signals from retries
-	var resets, finals int
+	// Should have reset signals from retries — each failing attempt
+	// queued a partial frame before erroring out, so sawStreamFrame
+	// was true when the retry callback fired.
+	var resets, finals, errors, nonResetPartials int
 	for r := range out {
 		tr := r.(*testResult)
-		if tr.reset {
+		// Production emits resets specifically as
+		// StreamResultKindStream with reset=true (orchestrator.go
+		// reset-emission seams). Counting on `tr.reset` alone would
+		// match a hypothetical Final/Error result that carried a
+		// stale reset bit — gate strictly so a regression that
+		// mis-tags a reset can't slip past as a counter increment.
+		if tr.kind == bamlutils.StreamResultKindStream && tr.reset {
 			resets++
+		}
+		if tr.kind == bamlutils.StreamResultKindStream && !tr.reset {
+			nonResetPartials++
 		}
 		if tr.kind == bamlutils.StreamResultKindFinal {
 			finals++
 		}
+		if tr.kind == bamlutils.StreamResultKindError {
+			errors++
+		}
 	}
 
-	if resets < 2 {
-		t.Errorf("expected at least 2 reset signals (for 2 retries), got %d", resets)
+	// Strict equality, not lower-bound. This is a single-provider
+	// retry scenario with exactly 3 attempts (n<3 fails, n==3
+	// succeeds), so exactly 2 retry boundaries fire. A
+	// duplicate-emission regression — reset fired from both the
+	// retry callback and another path, or state not cleared between
+	// boundaries — would slip past `resets >= 2` but fail strict
+	// equality. Aligns with the integration sibling
+	// (orchestrator_integration_test.go:440-448) which also asserts
+	// exactly 2.
+	if resets != 2 {
+		t.Errorf("expected 2 reset signals (one per retry boundary), got %d", resets)
 	}
 	if finals != 1 {
 		t.Errorf("expected 1 final, got %d", finals)
+	}
+	// RunStreamOrchestration emits StreamResultKindError only after
+	// retry.Execute returns an error (whole plan exhausted). A
+	// successful retry path that also emits Error frames is a
+	// contract regression — error and final should be mutually
+	// exclusive on a single attempt's outcome.
+	if errors != 0 {
+		t.Errorf("expected 0 error frames on a recovered retry; got %d", errors)
+	}
+	// Without this counter, a regression that emits resets but no real
+	// partials (e.g. all queued frames mis-tagged or dropped before
+	// dispatch) would silently pass the resets/finals/errors trio.
+	// testResult is the local stream sink type; tr.kind is its result
+	// classification, tr.reset is the reset bit, and the comparison is
+	// against bamlutils.StreamResultKindStream (the non-reset partial
+	// shape).
+	if nonResetPartials == 0 {
+		t.Errorf("expected at least one non-reset partial (testResult with kind == bamlutils.StreamResultKindStream and reset == false); got 0")
 	}
 }
 
@@ -783,8 +853,86 @@ func TestRunStreamOrchestration_ValidatesAllFallbackChildrenUpFront(t *testing.T
 	}
 
 	close(out)
+	// With no MetadataPlan / NewMetadataResult on the config the
+	// upfront planned-metadata emit is a no-op (the nil-config
+	// short-circuit). So this branch pins "no stream output on
+	// validation error when metadata isn't wired up". The metadata-
+	// wired-up case is covered by
+	// TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError
+	// below.
 	for r := range out {
 		t.Fatalf("expected no stream results on upfront validation error, got kind %v", r.Kind())
+	}
+}
+
+// TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError
+// pins that when the orchestrator config supplies MetadataPlan +
+// NewMetadataResult, the planned-metadata event MUST be emitted
+// before any validation return. Otherwise the only observable signal
+// on exactly the failure modes operators most need to diagnose
+// (unsupported provider, malformed fallback chain) gets dropped.
+func TestRunStreamOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testing.T) {
+	out := make(chan bamlutils.StreamResult, 10)
+
+	plan := &bamlutils.Metadata{
+		Path:       "buildrequest",
+		Client:     "PrimaryClient",
+		PathReason: "",
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out,
+		&StreamConfig{
+			FallbackChain: []string{"PrimaryClient", "MissingClient"},
+			ClientProviders: map[string]string{
+				"PrimaryClient": "openai",
+			},
+			MetadataPlan:      plan,
+			NewMetadataResult: newTestMetadataResult,
+		},
+		nil,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			t.Fatal("buildRequest should not be called when fallback validation fails")
+			return nil, nil
+		},
+		nil,
+		nil,
+		newTestResult,
+	)
+
+	if err == nil {
+		t.Fatal("expected validation error for unsupported or missing fallback child provider")
+	}
+
+	close(out)
+	planned, outcome, kinds, metadataPhases := collectMetadata(t, out)
+	if planned == nil {
+		t.Fatalf("expected one planned metadata result before validation error; got kinds=%v", kinds)
+	}
+	if outcome != nil {
+		t.Errorf("expected no outcome metadata on validation-error path, got %+v", outcome)
+	}
+	if planned.Phase != bamlutils.MetadataPhasePlanned {
+		t.Errorf("planned phase: got %q, want planned", planned.Phase)
+	}
+	if planned.Client != "PrimaryClient" {
+		t.Errorf("planned client: got %q, want PrimaryClient", planned.Client)
+	}
+	// Pin "exactly one frame, and it's the planned metadata".
+	// Allowing any number of trailing frames after the planned event
+	// (so long as outcome stayed nil) would let a regression that
+	// emitted spurious reset/error/data frames after a synchronous
+	// validation return (e.g. a reordering bug that lost the
+	// early-return) slip through. Strict frame count + kind + phase
+	// checks pin the full validation-error contract.
+	if len(kinds) != 1 {
+		t.Errorf("expected exactly 1 emitted frame on validation-error path, got %d (kinds=%v)", len(kinds), kinds)
+	}
+	if len(kinds) >= 1 && kinds[0] != bamlutils.StreamResultKindMetadata {
+		t.Errorf("expected sole frame to be metadata; got kind=%v", kinds[0])
+	}
+	if len(metadataPhases) != 1 || metadataPhases[0] != bamlutils.MetadataPhasePlanned {
+		t.Errorf("expected exactly one planned metadata phase; got %v", metadataPhases)
 	}
 }
 
@@ -1176,9 +1324,15 @@ func TestResolveFallbackChain_NotFallback(t *testing.T) {
 	}
 }
 
-func TestResolveFallbackChain_RoundRobinGated(t *testing.T) {
-	// baml-roundrobin should NOT use the BuildRequest path because the
-	// orchestrator has no cross-request state to distribute load.
+func TestResolveFallbackChain_RoundRobinChildSkipped(t *testing.T) {
+	// ResolveFallbackChain only classifies baml-fallback parents. A
+	// baml-roundrobin parent returns nil,nil,nil — not because RR is
+	// "legacy-only" globally (top-level RR is resolved upstream by
+	// ResolveEffectiveClient for modern adapters with SupportsWithClient),
+	// but because this helper is the fallback-chain classifier. RR is
+	// handled either by the upstream resolver (modern) or by BAML's
+	// runtime under the legacy path (older adapters / nested RR children
+	// inside a fallback chain).
 	fallbackChains := map[string][]string{
 		"MyRoundRobin": {"ClientA", "ClientB"},
 	}
@@ -1195,7 +1349,528 @@ func TestResolveFallbackChain_RoundRobinGated(t *testing.T) {
 	)
 
 	if chain != nil || providers != nil || legacyChildren != nil {
-		t.Errorf("expected nil for baml-roundrobin (should use legacy path), got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
+		t.Errorf("expected nil for baml-roundrobin parent (classified elsewhere), got chain=%v providers=%v legacy=%v", chain, providers, legacyChildren)
+	}
+}
+
+func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
+	// A fallback chain with a baml-roundrobin child still runs, but
+	// the PathReason surfaces the composition so operators can
+	// distinguish centralised top-level RR from per-worker nested
+	// RR. The RR child lands on the legacy child list
+	// (IsProviderSupported returns false for baml-roundrobin), and
+	// BAML's runtime handles its rotation on each worker
+	// independently. Centralised unwrapping of RR children inside
+	// fallback chains is deferred.
+	fallbackChains := map[string][]string{
+		"MyFallback": {"OpenAIClient", "InnerRR"},
+		"InnerRR":    {"GoogleA", "GoogleB"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback":   "baml-fallback",
+		"OpenAIClient": "openai",
+		"InnerRR":      "baml-roundrobin",
+		"GoogleA":      "google-ai",
+		"GoogleB":      "google-ai",
+	}
+
+	chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+		nil, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool {
+			return p == "openai" || p == "google-ai" || p == "anthropic"
+		},
+	)
+
+	if chain == nil {
+		t.Fatalf("expected chain to resolve (RR child is mixed-legacy, not abort), got nil with reason=%q", reason)
+	}
+	if reason != PathReasonFallbackRoundRobinChildLegacy {
+		t.Fatalf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+	}
+	if !legacy["InnerRR"] {
+		t.Errorf("InnerRR must be marked legacy (BAML runtime handles RR rotation per-worker), legacyChildren=%v", legacy)
+	}
+	if legacy["OpenAIClient"] {
+		t.Errorf("OpenAIClient is a supported provider — must not be on legacy list, legacyChildren=%v", legacy)
+	}
+	if providers["InnerRR"] != "baml-roundrobin" {
+		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin", providers["InnerRR"])
+	}
+}
+
+func TestResolveFallbackChain_FallbackWithRRChild_AliasSpellings(t *testing.T) {
+	// Resolver-level coverage for the non-canonical RR spellings the
+	// alias classifier must fold before deciding whether the child
+	// contributes PathReasonFallbackRoundRobinChildLegacy. The
+	// canonical "baml-roundrobin" form is exercised by
+	// TestResolveFallbackChain_FallbackWithRRChild above; this table
+	// pins the two alias forms (BAML upstream's hyphenated
+	// "baml-round-robin" and the bare "round-robin" shorthand).
+	// Both alias spellings must hit the resolver's RR-child path.
+	// (Metadata-plan-level coverage of all three spellings exists in
+	// TestBuildFallbackChainPlan_ReasonPlumbsFromResolver.)
+	cases := []struct {
+		name     string
+		provider string
+	}{
+		{name: "baml-round-robin", provider: "baml-round-robin"},
+		{name: "round-robin", provider: "round-robin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fallbackChains := map[string][]string{
+				"MyFallback": {"A", "InnerRR"},
+			}
+			clientProviders := map[string]string{
+				"MyFallback": "baml-fallback",
+				"A":          "openai",
+				"InnerRR":    tc.provider,
+			}
+
+			_, providers, _, reason := ResolveFallbackChainForClientWithReason(
+				nil, "MyFallback", fallbackChains, clientProviders,
+				func(p string) bool { return p == "openai" },
+			)
+			if reason != PathReasonFallbackRoundRobinChildLegacy {
+				t.Fatalf("reason with alias %q: got %q, want %q", tc.provider, reason, PathReasonFallbackRoundRobinChildLegacy)
+			}
+			// providers map must surface the canonical "baml-roundrobin"
+			// spelling regardless of which alias the caller's
+			// clientProviders used. ResolveClientProvider applies
+			// normalizeStrategyProvider, but a regression that dropped
+			// the normalisation on one path could still yield the
+			// right reason while leaking the alias here.
+			if got := providers["InnerRR"]; got != "baml-roundrobin" {
+				t.Errorf("providers[InnerRR] with alias %q: got %q, want baml-roundrobin (canonical)", tc.provider, got)
+			}
+		})
+	}
+}
+
+// TestResolveFallbackChain_NestedInvalidStrategyOverride pins the
+// invalid-nested preflight: a fallback chain whose nested RR child
+// has a present-but-malformed runtime `strategy` override must abort
+// chain resolution with PathReasonInvalidStrategyOverride. The caller
+// (codegen `len(chain) > 0` gate) then routes the whole request to
+// top-level legacy, where BAML's eager registry parse emits the
+// canonical ensure_strategy error against the full runtime registry.
+//
+// Without this preflight, the mixed-mode legacy callback for InnerRR
+// would forward the invalid entry into BAML inside the per-child
+// callback, BAML's rejection would be re-classified as an ordinary
+// fallback child failure, and a later successful sibling could
+// silently mask the operator's misconfiguration — exactly the
+// validation suppression the top-level invalid-override fallthrough
+// was designed to prevent.
+func TestResolveFallbackChain_NestedInvalidStrategyOverride(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"FastLeaf", "InnerRR"},
+		"InnerRR":    {"StaticBlue", "StaticGreen"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"FastLeaf":   "openai",
+		"InnerRR":    "baml-roundrobin",
+	}
+
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			// "garbage" parses to an empty chain — present but invalid.
+			{Name: "InnerRR", Provider: "round-robin", ProviderSet: true,
+				Options: map[string]any{"strategy": "garbage"}},
+		},
+	}
+
+	chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+		reg, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+
+	if chain != nil {
+		t.Fatalf("expected nil chain for invalid nested strategy override, got %v", chain)
+	}
+	if reason != PathReasonInvalidStrategyOverride {
+		t.Errorf("reason: got %q, want %q", reason, PathReasonInvalidStrategyOverride)
+	}
+	if providers != nil {
+		t.Errorf("providers must be nil when chain is rejected, got %v", providers)
+	}
+	if legacy != nil {
+		t.Errorf("legacyChildren must be nil when chain is rejected, got %v", legacy)
+	}
+}
+
+// TestResolveFallbackChain_NestedInvalidStartOverride pins the same
+// invalid-nested preflight for the `start` option. Mirrors the
+// top-level invalid-start route (TestRoundRobinOverrides_InvalidStart-
+// RoutesToLegacy) so the contract is consistent between top-level RR
+// and nested-RR-inside-fallback compositions: an invalid `start`
+// surfaces upstream's canonical ensure_int error rather than silently
+// using the static child config.
+func TestResolveFallbackChain_NestedInvalidStartOverride(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"FastLeaf", "InnerRR"},
+		"InnerRR":    {"StaticBlue", "StaticGreen"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"FastLeaf":   "openai",
+		"InnerRR":    "baml-roundrobin",
+	}
+
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			// String "1" — present-but-invalid for a numeric option.
+			{Name: "InnerRR", Provider: "round-robin", ProviderSet: true,
+				Options: map[string]any{
+					"strategy": []any{"StaticBlue", "StaticGreen"},
+					"start":    "1",
+				}},
+		},
+	}
+
+	chain, _, _, reason := ResolveFallbackChainForClientWithReason(
+		reg, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+
+	if chain != nil {
+		t.Fatalf("expected nil chain for invalid nested start override, got %v", chain)
+	}
+	if reason != PathReasonInvalidRoundRobinStartOverride {
+		t.Errorf("reason: got %q, want %q", reason, PathReasonInvalidRoundRobinStartOverride)
+	}
+}
+
+// TestResolveFallbackChain_NestedInvalidProviderOverride pins the
+// preflight's provider-precedence path: a present-empty `provider`
+// on a nested strategy-parent child surfaces
+// PathReasonInvalidProviderOverride, mirroring the top-level
+// classifier's switch precedence. Operators reading
+// X-BAML-Path-Reason then see the same reason whether the invalid
+// override targets the request's top-level client or a nested
+// fallback chain child.
+func TestResolveFallbackChain_NestedInvalidProviderOverride(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"FastLeaf", "InnerRR"},
+		"InnerRR":    {"StaticBlue", "StaticGreen"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"FastLeaf":   "openai",
+		"InnerRR":    "baml-roundrobin",
+	}
+
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			// Provider explicitly set to "" — operator typo or hostile
+			// input. Forwarding "" into BAML's CFFI is rejected
+			// in ClientProvider::from_str.
+			{Name: "InnerRR", Provider: "", ProviderSet: true},
+		},
+	}
+
+	chain, _, _, reason := ResolveFallbackChainForClientWithReason(
+		reg, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+
+	if chain != nil {
+		t.Fatalf("expected nil chain for invalid nested provider override, got %v", chain)
+	}
+	if reason != PathReasonInvalidProviderOverride {
+		t.Errorf("reason: got %q, want %q", reason, PathReasonInvalidProviderOverride)
+	}
+}
+
+// TestResolveFallbackChain_NestedValidOverrideStillResolves pins
+// negative coverage: a nested strategy-parent child WITH a valid
+// runtime override (changed strategy children, valid start, valid
+// provider) must still resolve normally with the existing
+// PathReasonFallbackRoundRobinChildLegacy. The preflight's
+// "any nested override → legacy" alternative would lose mixed-mode
+// orchestration for legitimate runtime overrides; this test guards
+// against that drift.
+func TestResolveFallbackChain_NestedValidOverrideStillResolves(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"FastLeaf", "InnerRR"},
+		"InnerRR":    {"StaticBlue", "StaticGreen"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"FastLeaf":   "openai",
+		"InnerRR":    "baml-roundrobin",
+	}
+
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			// Valid: redirects InnerRR's children at runtime.
+			{Name: "InnerRR", Provider: "round-robin", ProviderSet: true,
+				Options: map[string]any{
+					"strategy": []any{"TenantLeaf"},
+					"start":    0,
+				}},
+			{Name: "TenantLeaf", Provider: "openai", ProviderSet: true},
+		},
+	}
+
+	chain, _, legacy, reason := ResolveFallbackChainForClientWithReason(
+		reg, "MyFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+
+	if chain == nil {
+		t.Fatalf("expected chain to resolve for valid nested override, got nil with reason=%q", reason)
+	}
+	if reason != PathReasonFallbackRoundRobinChildLegacy {
+		t.Errorf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+	}
+	if !legacy["InnerRR"] {
+		t.Errorf("InnerRR must remain on the mixed-mode legacy child list (BAML runtime handles RR rotation), legacyChildren=%v", legacy)
+	}
+}
+
+// TestResolveFallbackChain_TransitiveInvalidStartOverride pins the
+// transitive scope of the invalid-nested preflight: a fallback chain
+// whose immediate strategy-parent child is itself a fallback that
+// transitively reaches an RR with an invalid runtime `start` must
+// short-circuit to top-level legacy with
+// PathReasonInvalidRoundRobinStartOverride. Without transitive scope,
+// the deep RR's malformed entry would be carried into the mixed-mode
+// per-child legacy callback's scoped registry, BAML's eager parse
+// would reject it inside InnerFallback's callback, RunStream-/
+// CallOrchestration would re-classify the rejection as an ordinary
+// fallback child failure, and the LaterLeaf sibling could silently
+// answer the request with 200 — masking the misconfiguration.
+//
+// The LaterLeaf sibling is load-bearing: it's the trailing valid
+// child that would have absorbed the deep failure under the
+// immediate-only preflight. Its presence forces this test to depend
+// on transitive walking specifically.
+func TestResolveFallbackChain_TransitiveInvalidStartOverride(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyOuterFallback": {"InnerFallback", "LaterLeaf"},
+		"InnerFallback":   {"DeeperRR"},
+		"DeeperRR":        {"LeafX", "LeafY"},
+	}
+	clientProviders := map[string]string{
+		"MyOuterFallback": "baml-fallback",
+		"InnerFallback":   "baml-fallback",
+		"DeeperRR":        "baml-roundrobin",
+		"LeafX":           "openai",
+		"LeafY":           "openai",
+		"LaterLeaf":       "openai",
+	}
+
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			// DeeperRR is two strategy-parent levels below the
+			// outer chain's immediate child (InnerFallback).
+			// Numeric string fails BAML's i32 ensure_int contract.
+			{Name: "DeeperRR", Provider: "round-robin", ProviderSet: true,
+				Options: map[string]any{
+					"strategy": []any{"LeafX", "LeafY"},
+					"start":    "1",
+				}},
+		},
+	}
+
+	chain, _, _, reason := ResolveFallbackChainForClientWithReason(
+		reg, "MyOuterFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+
+	if chain != nil {
+		t.Fatalf("expected nil chain (deep invalid start should short-circuit), got %v", chain)
+	}
+	if reason != PathReasonInvalidRoundRobinStartOverride {
+		t.Errorf("reason: got %q, want %q (transitive walk should catch deep invalid start)",
+			reason, PathReasonInvalidRoundRobinStartOverride)
+	}
+}
+
+// TestResolveFallbackChain_TransitiveInvalidStrategyOverride is the
+// strategy-side counterpart to TransitiveInvalidStartOverride. Same
+// composition (Outer → InnerFallback → DeeperRR + LaterLeaf), but the
+// deep invalid override is a malformed `strategy` value rather than
+// `start`. Asserts the transitive walk catches it with
+// PathReasonInvalidStrategyOverride.
+func TestResolveFallbackChain_TransitiveInvalidStrategyOverride(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyOuterFallback": {"InnerFallback", "LaterLeaf"},
+		"InnerFallback":   {"DeeperRR"},
+		"DeeperRR":        {"LeafX", "LeafY"},
+	}
+	clientProviders := map[string]string{
+		"MyOuterFallback": "baml-fallback",
+		"InnerFallback":   "baml-fallback",
+		"DeeperRR":        "baml-roundrobin",
+		"LeafX":           "openai",
+		"LeafY":           "openai",
+		"LaterLeaf":       "openai",
+	}
+
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			// "garbage" parses to an empty chain — present but invalid
+			// per InspectStrategyOverride's three-state classification.
+			{Name: "DeeperRR", Provider: "round-robin", ProviderSet: true,
+				Options: map[string]any{"strategy": "garbage"}},
+		},
+	}
+
+	chain, _, _, reason := ResolveFallbackChainForClientWithReason(
+		reg, "MyOuterFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+
+	if chain != nil {
+		t.Fatalf("expected nil chain (deep invalid strategy should short-circuit), got %v", chain)
+	}
+	if reason != PathReasonInvalidStrategyOverride {
+		t.Errorf("reason: got %q, want %q (transitive walk should catch deep invalid strategy)",
+			reason, PathReasonInvalidStrategyOverride)
+	}
+}
+
+// TestResolveFallbackChain_TransitivePresentEmptyProviderOverride
+// pins the provider-side transitive case. The deep override is a
+// present-empty `provider:""` — operator typo or hostile input that
+// BAML's CFFI rejects in ClientProvider::from_str. Same Outer →
+// InnerFallback → DeeperRR + LaterLeaf composition; LaterLeaf would
+// mask the failure under immediate-only scope.
+//
+// Per-node precedence in the transitive walk surfaces this case as
+// PathReasonInvalidProviderOverride (provider checked before
+// strategy/start at each visited node), matching
+// ResolveProviderWithReason's top-level switch.
+func TestResolveFallbackChain_TransitivePresentEmptyProviderOverride(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyOuterFallback": {"InnerFallback", "LaterLeaf"},
+		"InnerFallback":   {"DeeperRR"},
+		"DeeperRR":        {"LeafX", "LeafY"},
+	}
+	clientProviders := map[string]string{
+		"MyOuterFallback": "baml-fallback",
+		"InnerFallback":   "baml-fallback",
+		"DeeperRR":        "baml-roundrobin",
+		"LeafX":           "openai",
+		"LeafY":           "openai",
+		"LaterLeaf":       "openai",
+	}
+
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			// Provider explicitly set to empty string — present but
+			// invalid. Without the runtime override the introspected
+			// provider (baml-roundrobin) would classify normally.
+			{Name: "DeeperRR", Provider: "", ProviderSet: true},
+		},
+	}
+
+	chain, _, _, reason := ResolveFallbackChainForClientWithReason(
+		reg, "MyOuterFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+
+	if chain != nil {
+		t.Fatalf("expected nil chain (deep invalid provider should short-circuit), got %v", chain)
+	}
+	if reason != PathReasonInvalidProviderOverride {
+		t.Errorf("reason: got %q, want %q (transitive walk should catch deep present-empty provider)",
+			reason, PathReasonInvalidProviderOverride)
+	}
+}
+
+// TestResolveFallbackChain_TransitiveCycleSafe pins that a self-
+// cyclic strategy graph (InnerFallback → InnerFallback) does not
+// infinite-loop the transitive walk. The visited set in
+// FindInvalidReachableStrategyOverride is the guard. With no
+// invalid override anywhere in the graph the chain must resolve
+// normally — empty reason and a non-empty chain.
+//
+// Mixed-mode composition (FastLeaf + InnerFallback) keeps the chain
+// drivable: InnerFallback is a strategy parent so it lands on
+// legacyChildren, but a chain with at least one BR-supported
+// sibling escapes the legacyPositions == len(chain) short-circuit
+// and is returned to the caller.
+func TestResolveFallbackChain_TransitiveCycleSafe(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyOuterFallback": {"FastLeaf", "InnerFallback"},
+		"InnerFallback":   {"InnerFallback"},
+	}
+	clientProviders := map[string]string{
+		"MyOuterFallback": "baml-fallback",
+		"FastLeaf":        "openai",
+		"InnerFallback":   "baml-fallback",
+	}
+
+	chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+		nil, "MyOuterFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected len=2 chain (FastLeaf, InnerFallback), got %d: %v", len(chain), chain)
+	}
+	if reason != "" {
+		t.Errorf("reason: got %q, want empty (cycle without invalid overrides should not surface a path reason)", reason)
+	}
+	if providers["FastLeaf"] != "openai" {
+		t.Errorf("FastLeaf provider: got %q, want openai", providers["FastLeaf"])
+	}
+	if !legacy["InnerFallback"] {
+		t.Errorf("InnerFallback must be on the mixed-mode legacy child list (strategy parent), legacyChildren=%v", legacy)
+	}
+}
+
+// TestResolveFallbackChain_NestedExplicitRRProviderWithoutStrategy
+// pins the chain-preflight contract for the missing-strategy case:
+// a nested RR child whose runtime override carries an explicit RR
+// provider but no `options.strategy` must route the whole request
+// to top-level legacy with PathReasonInvalidStrategyOverride.
+// Falling back to the introspected chain would silently dispatch
+// a static child while BAML's eager parse rejects the shape — the
+// validation-suppression class the preflight rules out.
+//
+// LaterLeaf is load-bearing: it's the trailing valid sibling that
+// would have masked the deep failure under per-child legacy
+// dispatch. Its presence means this test depends specifically on
+// the transitive walk catching the missing-strategy case.
+func TestResolveFallbackChain_NestedExplicitRRProviderWithoutStrategy(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyOuterFallback": {"InnerRR", "LaterLeaf"},
+		"InnerRR":         {"StaticBlue", "StaticGreen"},
+	}
+	clientProviders := map[string]string{
+		"MyOuterFallback": "baml-fallback",
+		"InnerRR":         "baml-roundrobin",
+		"StaticBlue":      "openai",
+		"StaticGreen":     "openai",
+		"LaterLeaf":       "openai",
+	}
+
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			// Explicit RR provider, no options.strategy — runtime
+			// shape that BAML's eager parse rejects with
+			// ensure_strategy.
+			{Name: "InnerRR", Provider: "round-robin", ProviderSet: true,
+				Options: map[string]any{"temperature": 0.7}},
+		},
+	}
+
+	chain, _, _, reason := ResolveFallbackChainForClientWithReason(
+		reg, "MyOuterFallback", fallbackChains, clientProviders,
+		func(p string) bool { return p == "openai" },
+	)
+
+	if chain != nil {
+		t.Fatalf("expected nil chain (explicit RR provider w/ no strategy should short-circuit), got %v", chain)
+	}
+	if reason != PathReasonInvalidStrategyOverride {
+		t.Errorf("reason: got %q, want %q (transitive walk should catch explicit-provider+no-strategy)",
+			reason, PathReasonInvalidStrategyOverride)
 	}
 }
 
@@ -1285,7 +1960,20 @@ func TestRunStreamOrchestration_FallbackChainResetBetweenChildren(t *testing.T) 
 		},
 	}
 
+	// Capture the clientOverride sequence so we can assert the
+	// fallback-handoff actually targeted SecondaryClient on the second
+	// attempt rather than re-running PrimaryClient. The HTTP server keys
+	// solely off request count, and buildFn ignores the override, so a
+	// regression that retried the primary on the second attempt would
+	// still satisfy the reset/final assertions below.
+	var (
+		overrideMu  sync.Mutex
+		overrideSeq []string
+	)
 	buildFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		overrideMu.Lock()
+		overrideSeq = append(overrideSeq, clientOverride)
+		overrideMu.Unlock()
 		return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 	}
 
@@ -1318,25 +2006,57 @@ func TestRunStreamOrchestration_FallbackChainResetBetweenChildren(t *testing.T) 
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Find the reset signal — there should be at least one between the
-	// primary's partial and the secondary's partial/final.
-	sawReset := false
+	overrideMu.Lock()
+	gotOverrides := append([]string(nil), overrideSeq...)
+	overrideMu.Unlock()
+	wantOverrides := []string{"PrimaryClient", "SecondaryClient"}
+	if !reflect.DeepEqual(gotOverrides, wantOverrides) {
+		t.Errorf("clientOverride sequence: got %v, want %v (regression: fallback handoff did not switch children)", gotOverrides, wantOverrides)
+	}
+
+	// Count reset signals — the in-chain handoff path has exactly one
+	// emission site (orchestrator.go:2185-2223), and the retry-boundary
+	// reset path (orchestrator.go:2265-2292) is not reached because the
+	// full attempt succeeds. So a healthy run has resets == 1; a
+	// duplicate reset is a real regression and a missing reset means
+	// the secondary's frames stack onto the primary's stale buffer.
+	resets := 0
 	sawStalePartial := false
+	errorFrames := 0
 	finalVal := ""
 	for _, r := range results {
 		if r.kind == bamlutils.StreamResultKindStream && r.stream == "stale" {
 			sawStalePartial = true
 		}
 		if r.kind == bamlutils.StreamResultKindStream && r.reset {
-			sawReset = true
+			resets++
+		}
+		if r.kind == bamlutils.StreamResultKindError {
+			errorFrames++
 		}
 		if r.kind == bamlutils.StreamResultKindFinal {
 			finalVal, _ = r.final.(string)
 		}
 	}
 
-	if sawStalePartial && !sawReset {
-		t.Error("primary emitted partial data but no reset signal was sent before the secondary child")
+	// Fast-fail if the primary never emitted the stale partial. The
+	// reset assertion below is guarded on sawStalePartial; without
+	// this fast-fail, a regression that stops the primary from
+	// emitting any partial at all would silently skip the reset
+	// assertion and give a false green.
+	if !sawStalePartial {
+		t.Fatal("primary never emitted 'stale' partial to the channel; the reset-between-children invariant cannot be exercised")
+	}
+	if sawStalePartial && resets != 1 {
+		t.Errorf("expected exactly 1 reset signal between primary and secondary; got %d", resets)
+	}
+	// RunStreamOrchestration emits StreamResultKindError only after
+	// retry.Execute returns an error (whole plan exhausted). A
+	// successful fallback-handoff path that also emits an Error frame
+	// is a contract regression — the reset/final assertions wouldn't
+	// catch it on their own.
+	if errorFrames != 0 {
+		t.Errorf("expected 0 error frames on a recovered fallback handoff; got %d", errorFrames)
 	}
 	if finalVal != "good data" {
 		t.Errorf("expected final='good data', got %q", finalVal)
@@ -1413,7 +2133,7 @@ func TestRunStreamOrchestration_MixedChain_LegacySucceedsSecond(t *testing.T) {
 		t.Errorf("expected needsRaw=true, got false")
 	}
 
-	var resets, finals int
+	var resets, finals, errors int
 	var finalVal any
 	var finalRaw string
 	for r := range out {
@@ -1425,6 +2145,9 @@ func TestRunStreamOrchestration_MixedChain_LegacySucceedsSecond(t *testing.T) {
 			finals++
 			finalVal = tr.final
 			finalRaw = tr.raw
+		}
+		if tr.kind == bamlutils.StreamResultKindError {
+			errors++
 		}
 	}
 	if resets < 1 {
@@ -1438,6 +2161,13 @@ func TestRunStreamOrchestration_MixedChain_LegacySucceedsSecond(t *testing.T) {
 	}
 	if finalRaw != "legacy raw" {
 		t.Errorf("expected raw='legacy raw', got %q", finalRaw)
+	}
+	// RunStreamOrchestration emits StreamResultKindError only after
+	// retry.Execute returns an error (whole plan exhausted). A
+	// successful legacy-second handoff that also emits an Error
+	// frame is a contract regression.
+	if errors != 0 {
+		t.Errorf("expected 0 error frames on a recovered legacy-second handoff; got %d", errors)
 	}
 }
 
@@ -1487,7 +2217,7 @@ func TestRunStreamOrchestration_MixedChain_LegacyFirstFails_SupportedWins(t *tes
 		t.Fatalf("expected legacy callback invoked once, got %d", legacyCalled.Load())
 	}
 
-	var partials, finals int
+	var partials, finals, errors int
 	var finalVal any
 	for r := range out {
 		tr := r.(*testResult)
@@ -1499,6 +2229,8 @@ func TestRunStreamOrchestration_MixedChain_LegacyFirstFails_SupportedWins(t *tes
 		case bamlutils.StreamResultKindFinal:
 			finals++
 			finalVal = tr.final
+		case bamlutils.StreamResultKindError:
+			errors++
 		}
 	}
 	if partials < 1 {
@@ -1506,6 +2238,14 @@ func TestRunStreamOrchestration_MixedChain_LegacyFirstFails_SupportedWins(t *tes
 	}
 	if finals != 1 {
 		t.Fatalf("expected exactly one final, got %d", finals)
+	}
+	// RunStreamOrchestration emits StreamResultKindError only after
+	// retry.Execute returns an error (whole plan exhausted). A
+	// successful legacy-first-fails handoff that also emits an Error
+	// frame is a contract regression — mirrors the sibling assertion
+	// in TestRunStreamOrchestration_MixedChain_SupportedFirstFails_LegacyWins.
+	if errors != 0 {
+		t.Errorf("expected 0 error frames on a recovered legacy-first-fails handoff; got %d", errors)
 	}
 	if finalVal != "good" {
 		t.Errorf("expected final='good' from supported child, got %v", finalVal)
@@ -2009,10 +2749,12 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_Retry(t *testing.T
 		t.Fatalf("expected 2 attempts, got %d", attempts.Load())
 	}
 
-	var resets, finals, heartbeats int
+	var resets, finals, heartbeats, errors int
 	for r := range out {
 		tr := r.(*testResult)
-		if tr.reset {
+		// Strict gate on Stream+reset so a stray reset bit on a Final
+		// or Error result can't inflate the counter.
+		if tr.kind == bamlutils.StreamResultKindStream && tr.reset {
 			resets++
 		}
 		if tr.kind == bamlutils.StreamResultKindFinal {
@@ -2020,6 +2762,9 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_Retry(t *testing.T
 		}
 		if tr.kind == bamlutils.StreamResultKindHeartbeat {
 			heartbeats++
+		}
+		if tr.kind == bamlutils.StreamResultKindError {
+			errors++
 		}
 	}
 
@@ -2034,6 +2779,13 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_Retry(t *testing.T
 	// successful attempt then fires one heartbeat on HTTP connect.
 	if heartbeats < 1 {
 		t.Errorf("expected >=1 heartbeat from the successful attempt; got %d", heartbeats)
+	}
+	// RunStreamOrchestration emits StreamResultKindError only after
+	// retry.Execute returns an error (whole plan exhausted). A
+	// recovered retry that also emits Error frames is a contract
+	// regression.
+	if errors != 0 {
+		t.Errorf("expected 0 error frames on a recovered retry; got %d", errors)
 	}
 }
 
@@ -2092,9 +2844,23 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain(t *t
 		return s, nil
 	}
 
+	// Capture the clientOverride sequence so we can assert the
+	// fallback-handoff actually targeted SecondaryClient on the second
+	// attempt rather than re-running PrimaryClient. The HTTP server keys
+	// solely off request count, and buildFn ignores the override, so a
+	// regression that retried the primary on the second attempt would
+	// still satisfy the resets/finals assertions below.
+	var (
+		overrideMu  sync.Mutex
+		overrideSeq []string
+	)
+
 	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
 		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			overrideMu.Lock()
+			overrideSeq = append(overrideSeq, clientOverride)
+			overrideMu.Unlock()
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
 		},
 		nil,
@@ -2107,11 +2873,21 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain(t *t
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var resets, finals, heartbeats int
+	overrideMu.Lock()
+	gotOverrides := append([]string(nil), overrideSeq...)
+	overrideMu.Unlock()
+	wantOverrides := []string{"PrimaryClient", "SecondaryClient"}
+	if !reflect.DeepEqual(gotOverrides, wantOverrides) {
+		t.Errorf("clientOverride sequence: got %v, want %v (regression: fallback handoff did not switch children)", gotOverrides, wantOverrides)
+	}
+
+	var resets, finals, heartbeats, errors int
 	var finalVal any
 	for r := range out {
 		tr := r.(*testResult)
-		if tr.reset {
+		// Strict gate on Stream+reset; a stray bit on Final/Error
+		// must not show up as a reset.
+		if tr.kind == bamlutils.StreamResultKindStream && tr.reset {
 			resets++
 		}
 		if tr.kind == bamlutils.StreamResultKindFinal {
@@ -2120,6 +2896,9 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain(t *t
 		}
 		if tr.kind == bamlutils.StreamResultKindHeartbeat {
 			heartbeats++
+		}
+		if tr.kind == bamlutils.StreamResultKindError {
+			errors++
 		}
 	}
 
@@ -2136,5 +2915,227 @@ func TestRunStreamOrchestration_NoResetWhenNeedsPartialsFalse_FallbackChain(t *t
 	// must still clear heartbeatSent.
 	if heartbeats < 2 {
 		t.Errorf("expected >=2 heartbeats (one per child), got %d", heartbeats)
+	}
+	// RunStreamOrchestration emits StreamResultKindError only after
+	// retry.Execute returns an error (whole plan exhausted). A
+	// successful fallback handoff that also emits an Error frame is
+	// a contract regression.
+	if errors != 0 {
+		t.Errorf("expected 0 error frames on a recovered fallback handoff; got %d", errors)
+	}
+}
+
+// TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain pins
+// the in-chain reset marker contract: it must NOT fire when the
+// previous child failed BEFORE successfully queuing any
+// StreamResultKindStream frame to the client. NeedsPartials=true is
+// the regression class — without the sawStreamFrame gate, every
+// NeedsPartials handoff would emit a reset regardless of upstream
+// activity, and the pool's first-byte detector would treat that
+// reset (a Stream-kind result) as progress for the next child even
+// when the prior window produced zero bytes.
+//
+// The test uses a primary that returns 500 before any SSE byte (so
+// trySendPartial never runs and sawStreamFrame stays false) and a
+// secondary that succeeds. The channel must not carry a phantom
+// reset between the two children.
+func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_FallbackChain(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := int(attempts.Add(1))
+		if attempt == 1 {
+			// Primary: 500 before any SSE byte. tryOneStreamChild
+			// fails out via httpClient.ExecuteStream's status check;
+			// trySendPartial never runs.
+			w.WriteHeader(500)
+			fmt.Fprint(w, "internal error")
+			return
+		}
+		// Secondary: clean SSE response with one delta.
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"good\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "",
+		RetryPolicy:   &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 1}},
+		NeedsPartials: true, // partials wired up — reset only suppressed by the sawStreamFrame gate
+		FallbackChain: []string{"PrimaryClient", "SecondaryClient"},
+		ClientProviders: map[string]string{
+			"PrimaryClient":   "openai",
+			"SecondaryClient": "openai",
+		},
+	}
+
+	// Capture the clientOverride sequence so we can assert the
+	// fallback-handoff actually targeted SecondaryClient on the
+	// second attempt rather than re-running PrimaryClient. The HTTP
+	// server keys solely off request count, and buildRequest ignores
+	// the override, so a regression that retried the primary on the
+	// second attempt would still satisfy the resets/finals
+	// assertions below.
+	var (
+		overrideMu  sync.Mutex
+		overrideSeq []string
+	)
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			overrideMu.Lock()
+			overrideSeq = append(overrideSeq, clientOverride)
+			overrideMu.Unlock()
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	overrideMu.Lock()
+	gotOverrides := append([]string(nil), overrideSeq...)
+	overrideMu.Unlock()
+	wantOverrides := []string{"PrimaryClient", "SecondaryClient"}
+	if !reflect.DeepEqual(gotOverrides, wantOverrides) {
+		t.Errorf("clientOverride sequence: got %v, want %v (regression: fallback handoff did not switch children)", gotOverrides, wantOverrides)
+	}
+
+	var resets, finals, errors int
+	for r := range out {
+		tr := r.(*testResult)
+		// Strict gate on Stream+reset; only a Stream result should
+		// carry the reset bit.
+		if tr.kind == bamlutils.StreamResultKindStream && tr.reset {
+			resets++
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+		}
+		if tr.kind == bamlutils.StreamResultKindError {
+			errors++
+		}
+	}
+	if resets != 0 {
+		t.Errorf("expected 0 reset events when prior child queued no stream frames; got %d", resets)
+	}
+	if finals != 1 {
+		t.Errorf("expected 1 final from secondary, got %d", finals)
+	}
+	// RunStreamOrchestration emits StreamResultKindError only after
+	// retry.Execute returns an error (whole plan exhausted). A
+	// successful fallback handoff that also emits an Error frame is
+	// a contract regression.
+	if errors != 0 {
+		t.Errorf("expected 0 error frames on a recovered fallback handoff; got %d", errors)
+	}
+}
+
+// TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry is the
+// retry-callback sibling of the fallback-chain no-stream-frame test.
+// Same shape: first attempt fails before any stream frame, retry
+// succeeds; the retry-boundary reset must be suppressed.
+func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 2 {
+			w.WriteHeader(500)
+			fmt.Fprint(w, "internal error")
+			return
+		}
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "openai",
+		NeedsPartials: true,
+		NeedsRaw:      false,
+		RetryPolicy: &retry.Policy{
+			MaxRetries: 2,
+			Strategy:   &retry.ConstantDelay{DelayMs: 1},
+		},
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		func(_ context.Context, s string) (any, error) { return s, nil },
+		newTestResult,
+	)
+	close(out)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts.Load())
+	}
+
+	var resets, finals, errors int
+	for r := range out {
+		tr := r.(*testResult)
+		// Strict gate on Stream+reset; only a Stream result should
+		// carry the reset bit.
+		if tr.kind == bamlutils.StreamResultKindStream && tr.reset {
+			resets++
+		}
+		if tr.kind == bamlutils.StreamResultKindFinal {
+			finals++
+		}
+		if tr.kind == bamlutils.StreamResultKindError {
+			errors++
+		}
+	}
+	if resets != 0 {
+		t.Errorf("expected 0 reset events when prior attempt queued no stream frames; got %d", resets)
+	}
+	// Also pin success delivery so a regression that suppresses
+	// resets AND drops the final can't pass this test by only
+	// satisfying the reset-count check. Mirrors the fallback-chain
+	// sibling above.
+	if finals != 1 {
+		t.Errorf("expected 1 final from successful retry, got %d", finals)
+	}
+	// RunStreamOrchestration emits StreamResultKindError only after
+	// retry.Execute returns an error (whole plan exhausted). A
+	// recovered retry that also emits Error frames is a contract
+	// regression.
+	if errors != 0 {
+		t.Errorf("expected 0 error frames on a recovered retry; got %d", errors)
 	}
 }

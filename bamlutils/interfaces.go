@@ -2,6 +2,8 @@ package bamlutils
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -96,6 +98,29 @@ type Metadata struct {
 	// legacy path (the BuildRequest path issues one HTTP request per outer
 	// attempt and surfaces its retries via RetryCount).
 	BamlCallCount *int `json:"baml_call_count,omitempty"`
+
+	// RoundRobin describes the round-robin decision for this request. Non-nil
+	// when the resolved client is a baml-roundrobin strategy (at any level of
+	// nesting); nil otherwise. The populated Info reflects the OUTERMOST RR
+	// decision — inner RR strategies still advance their own counters but are
+	// not reported separately.
+	RoundRobin *RoundRobinInfo `json:"round_robin,omitempty"`
+}
+
+// RoundRobinInfo captures the outcome of resolving a baml-roundrobin strategy
+// client for a single request. It carries both the configured chain and the
+// child that was picked, so consumers can verify the distribution without
+// replaying the decision themselves.
+type RoundRobinInfo struct {
+	// Name is the client name of the round-robin strategy itself.
+	Name string `json:"name"`
+	// Children is the ordered list of candidate children considered for
+	// this request, after any client_registry strategy override was applied.
+	Children []string `json:"children"`
+	// Index is the 0-based position in Children that was selected.
+	Index int `json:"index"`
+	// Selected is Children[Index] — the child dispatched to.
+	Selected string `json:"selected"`
 }
 
 // StreamMode controls how streaming results are processed and what data is collected.
@@ -143,11 +168,336 @@ type ClientRegistry struct {
 	Clients []*ClientProperty `json:"clients"`
 }
 
+// ErrDuplicateClientName is the sentinel returned by ClientRegistry.Validate
+// when two or more entries in Clients share a Name. BAML's upstream
+// AddLlmClient stores entries in a map (last-wins on duplicate names), but
+// every baml-rest lookup — primary-provider cache, BuildRequest preflight
+// helpers, RR resolver provider/strategy lookups — scans the slice forward
+// and returns the FIRST match. Silently picking one over the other lets a
+// runtime registry with two `{Name:"Tenant"}` entries (first openai, second
+// empty-provider) route under one classification while BAML executes the
+// other; classification, support gating, retry-policy resolution, RR
+// inspection, and X-BAML-Path-Reason all drift from what BAML actually
+// runs. Rejecting at the adapter entry-point surfaces the operator's
+// ambiguous input as a hard error rather than letting the divergence mask
+// itself.
+var ErrDuplicateClientName = errors.New("bamlutils: duplicate client name in client_registry.clients[]")
+
+// ErrEmptyClientName is the sentinel returned by ClientRegistry.Validate
+// when an entry in Clients has Name == "". Empty Names are operator typos
+// that BAML's AddLlmClient would happily index under "" while every
+// baml-rest lookup keys on Name — so the entry effectively becomes a
+// nameless ghost the resolver / classifier can't reach but that BAML
+// might still execute. Worse, OriginalClientRegistry is captured at the
+// top of every adapter's SetClientRegistry, so even a forward-loop skip
+// in the BAML-bound views would still let generated scoped-child
+// registries (codegen.go BuildLegacyChildRegistryEntries) re-introduce
+// the empty-name entry from the original. Rejecting at Validate() is
+// the only seam that closes both vectors.
+var ErrEmptyClientName = errors.New("bamlutils: empty client name in client_registry.clients[]")
+
+// Validate returns the appropriate sentinel (wrapped with diagnostics)
+// when the runtime registry has invariant violations:
+//
+//   - ErrEmptyClientName when an entry has Name == "". The wrapped
+//     error names the slice index so the operator can locate the
+//     offending entry. Empty-Name is checked BEFORE duplicates so an
+//     entry violating both invariants surfaces as ErrEmptyClientName
+//     (the more fundamental shape).
+//   - ErrDuplicateClientName when two or more entries share a Name.
+//     The wrapped error names the duplicate.
+//
+// nil entries are skipped — nil represents an operator-tolerable
+// absence (a JSON-shaped `clients: [null]` doesn't carry intent), as
+// distinct from an empty-Name typo where the operator clearly meant
+// to declare a client.
+//
+// All adapter SetClientRegistry implementations must call Validate
+// BEFORE any state mutation so a rejected registry leaves the adapter's
+// three views (BuildRequest-safe, legacy, original) unchanged. Returned
+// errors wrap their respective sentinels so callers can match with
+// errors.Is.
+func (r *ClientRegistry) Validate() error {
+	if r == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(r.Clients))
+	for i, c := range r.Clients {
+		if c == nil {
+			continue
+		}
+		if c.Name == "" {
+			return fmt.Errorf("%w: client at index %d", ErrEmptyClientName, i)
+		}
+		if _, dup := seen[c.Name]; dup {
+			return fmt.Errorf("%w: %q", ErrDuplicateClientName, c.Name)
+		}
+		seen[c.Name] = struct{}{}
+	}
+	return nil
+}
+
 type ClientProperty struct {
 	Name        string         `json:"name"`
 	Provider    string         `json:"provider"`
 	RetryPolicy *string        `json:"retry_policy"`
 	Options     map[string]any `json:"options,omitempty"`
+
+	// ProviderSet records whether the runtime client_registry JSON
+	// supplied a `provider` key. The struct-tag-driven decoder collapses
+	// "key absent" and "key present with empty string" into the zero
+	// value, hiding requests that explicitly clear the provider — a
+	// shape BAML upstream rejects in ClientProvider::from_str
+	// (clientspec.rs:119-144). Custom UnmarshalJSON below populates
+	// this so the resolvers can route present-empty overrides to legacy
+	// (where BAML emits its native invalid-provider error) instead of
+	// silently using the introspected fallback.
+	//
+	// Test fixtures using struct literals do not invoke UnmarshalJSON;
+	// IsProviderPresent treats Provider != "" as implicit presence so
+	// existing fixtures keep working without explicit ProviderSet
+	// wiring. To simulate "present-empty" in a struct literal, set
+	// {Provider: "", ProviderSet: true}.
+	ProviderSet bool `json:"-"`
+}
+
+// IsProviderPresent reports whether the runtime client_registry entry
+// supplied a `provider` value the resolver should honour. Returns true
+// when either Provider is non-empty (struct-literal convenience for
+// tests) or ProviderSet is true (JSON-decoded entry that explicitly
+// included the `provider` key, even if its value is empty).
+//
+// Three states the callers care about:
+//
+//   - !IsProviderPresent(): provider key absent — fall back to the
+//     introspected provider (preserves strategy-only and presence-only
+//     registry overrides).
+//   - IsProviderPresent() && Provider != "": valid override — normalize
+//     and use.
+//   - IsProviderPresent() && Provider == "": invalid override — caller
+//     routes to legacy with PathReasonInvalidProviderOverride so BAML
+//     emits its native invalid-provider error.
+func (c *ClientProperty) IsProviderPresent() bool {
+	if c == nil {
+		return false
+	}
+	return c.Provider != "" || c.ProviderSet
+}
+
+// UnmarshalJSON populates ProviderSet from the raw input so callers
+// can distinguish "provider key absent" from "provider key present
+// with empty string". The struct-tag decoder collapses both into the
+// zero value, but BAML upstream rejects empty provider strings, so
+// the request resolver needs to route present-empty overrides to
+// legacy rather than silently using the introspected provider.
+func (c *ClientProperty) UnmarshalJSON(data []byte) error {
+	type alias ClientProperty // avoid recursion
+	aux := alias{}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*c = ClientProperty(aux)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	_, c.ProviderSet = raw["provider"]
+	return nil
+}
+
+// MarshalJSON preserves the absent vs present-empty distinction
+// across a round-trip. The default marshaler emits
+// `"provider":""` for both states because Provider is a plain string
+// — once unmarshalled and re-marshalled, an originally-absent value
+// would re-decode as present-empty and silently route to legacy with
+// PathReasonInvalidProviderOverride. Emit the key only when
+// IsProviderPresent() reports true; absent + non-empty is impossible
+// since IsProviderPresent treats Provider != "" as implicit presence.
+//
+// The alias type strips ClientProperty's MarshalJSON method to avoid
+// infinite recursion. Provider is overlaid as a *string so omitempty
+// drops the key on the absent path while keeping `"provider":""` on
+// the present-empty path.
+func (c ClientProperty) MarshalJSON() ([]byte, error) {
+	type alias ClientProperty
+	out := struct {
+		Provider *string `json:"provider,omitempty"`
+		alias
+	}{
+		alias: alias(c),
+	}
+	if c.IsProviderPresent() {
+		p := c.Provider
+		out.Provider = &p
+	}
+	return json.Marshal(out)
+}
+
+// TranslateUpstreamProvider converts baml-rest's canonical provider
+// spelling into a form BAML upstream's ClientProvider::from_str
+// accepts (clientspec.rs:119-144). Specifically, baml-rest treats
+// "baml-roundrobin" as canonical for metadata/headers, but BAML
+// upstream only accepts "baml-round-robin" (with the inner hyphen)
+// and "round-robin" — sending "baml-roundrobin" verbatim into the
+// upstream ClientRegistry triggers a CFFI-time decode failure.
+//
+// The translation is intentionally narrow: only "baml-roundrobin"
+// is rewritten. "baml-round-robin", "round-robin", "fallback",
+// "baml-fallback", and every concrete provider all pass through
+// unchanged — they are already accepted upstream verbatim. Operator
+// spellings that arrive on a registry entry's Provider field are
+// preserved when valid; the helper exists solely to avoid translating
+// our own canonical naming into a CFFI rejection.
+//
+// This is the BAML-bound spelling. baml-rest's classification layer
+// continues to fold all RR aliases onto "baml-roundrobin" via
+// roundrobin.NormalizeProvider for metadata/header consistency; only
+// the upstream registry seam invokes this translation.
+func TranslateUpstreamProvider(provider string) string {
+	if provider == "baml-roundrobin" {
+		return "baml-round-robin"
+	}
+	return provider
+}
+
+// IsResolvedStrategyParent reports whether a runtime client_registry
+// entry is a baml-rest-resolved RR or fallback strategy parent. These
+// entries must not be forwarded into BAML's upstream client registry:
+//
+//   - Modern adapters (SupportsWithClient=true) resolve strategy
+//     parents to a leaf via ResolveEffectiveClient and dispatch with
+//     WithClient(leaf). BAML never executes the parent, so forwarding
+//     it serves no purpose.
+//   - The parent often carries a shape BAML's parser rejects:
+//     presence-only `{Name:"MyRR"}` has no `options.strategy`
+//     (round_robin.rs:73-83 requires it); strategy-only with a
+//     bracketed-string (`options.strategy: "[\"A\",\"B\"]"`) is
+//     baml-rest-specific and BAML's ensure_strategy demands an array
+//     (helpers.rs:790-829).
+//   - The original registry stays untouched so baml-rest's resolver
+//     and metadata classifier (and the options.start parser) read
+//     the parent verbatim from OriginalClientRegistry.
+//
+// Spelling: classification uses the operator-supplied provider when
+// IsProviderPresent (covering the `provider:"round-robin"` /
+// `provider:"baml-roundrobin"` / `provider:"baml-round-robin"` cases),
+// or the introspected provider for omitted-provider entries (covering
+// strategy-only and presence-only overrides on a static RR client).
+// All four RR spellings and both fallback spellings classify here.
+func IsResolvedStrategyParent(client *ClientProperty, introspectedProviders map[string]string) bool {
+	if client == nil {
+		return false
+	}
+	var provider string
+	if client.IsProviderPresent() {
+		provider = client.Provider
+	} else if introspectedProviders != nil {
+		provider = introspectedProviders[client.Name]
+	}
+	return isStrategyProviderName(provider)
+}
+
+// ShouldDropStrategyParentForTopLevelLegacy reports whether a runtime
+// client_registry entry should be hidden from the *top-level legacy*
+// BAML registry view. Used in tandem with IsResolvedStrategyParent
+// (which gates the broader BuildRequest-bound view).
+//
+// The two views split because BAML's to_clients (client_registry/mod.rs:
+// 109) eagerly parses every runtime client per request, so a parent
+// shape BAML rejects fails the entire request — not just the dispatch
+// of that parent. The BuildRequest-bound view drops every resolved
+// strategy parent (baml-rest dispatches WithClient(leaf), so BAML
+// never needs the parent), shielding leaf calls from unrelated parent
+// shapes. The legacy view must keep parents BAML *can* execute (so
+// runtime fallback overrides actually take effect) and parents BAML
+// would *reject canonically* (so invalid-strategy / invalid-start
+// overrides surface upstream's error rather than silently using static
+// config). The only entries we strip from legacy are inert presence-
+// only static parents — `{Name:"TestRR"}` with no provider/strategy/
+// start — which would re-trigger the original missing-strategy CFFI
+// failure if forwarded.
+//
+// Returns true (drop) only when:
+//   - the entry classifies as a resolved strategy parent, and
+//   - it has no operator-supplied Provider, and
+//   - its Options carry neither `strategy` nor `start`.
+//
+// Otherwise returns false (keep). An explicit `provider`, `strategy`,
+// or `start` on the entry is the operator's signal that they intend
+// to drive (or alter) the parent at runtime; forwarding it lets BAML
+// honour the override or emit its canonical validation error.
+func ShouldDropStrategyParentForTopLevelLegacy(client *ClientProperty, introspectedProviders map[string]string) bool {
+	if !IsResolvedStrategyParent(client, introspectedProviders) {
+		return false
+	}
+	if client.IsProviderPresent() {
+		return false
+	}
+	if client.Options != nil {
+		if _, ok := client.Options["strategy"]; ok {
+			return false
+		}
+		if _, ok := client.Options["start"]; ok {
+			return false
+		}
+	}
+	return true
+}
+
+// isStrategyProviderName reports whether p is one of the BAML strategy
+// provider spellings (RR or fallback). Inlined here rather than
+// imported from bamlutils/buildrequest/roundrobin to avoid a package
+// cycle (roundrobin already imports bamlutils).
+func isStrategyProviderName(p string) bool {
+	switch p {
+	case "round-robin", "baml-round-robin", "baml-roundrobin",
+		"fallback", "baml-fallback":
+		return true
+	}
+	return false
+}
+
+// UpstreamClientRegistryProvider returns the provider string suitable
+// for forwarding to BAML's upstream baml.ClientRegistry.AddLlmClient.
+// It resolves the three presence states ClientProperty can be in and
+// applies the CFFI-bound spelling translation:
+//
+//   - client.IsProviderPresent() == true: pass client.Provider through
+//     TranslateUpstreamProvider. Includes the present-empty case
+//     (Provider == "" && ProviderSet); we forward "" so BAML emits
+//     its canonical invalid-provider error rather than us masking the
+//     operator's typo with an introspected fallback.
+//   - client.IsProviderPresent() == false AND introspectedProviders
+//     names this client: substitute the introspected provider after
+//     translation. This makes strategy-only and presence-only runtime
+//     registry entries valid at the BAML CFFI seam — without the
+//     materialisation, WithClientRegistry would forward them to
+//     upstream and fail end-to-end.
+//   - client.IsProviderPresent() == false AND no introspected entry:
+//     return "". The operator referred to a name we know nothing about;
+//     letting CFFI emit its native error is clearer than synthesising
+//     one here, and matches the legacy handling of unknown-name runtime
+//     overrides.
+//
+// The helper does not mutate the input ClientProperty. Callers that
+// need the original presence-aware view (the resolver, the metadata
+// classifier, the options.start parser) continue to read from the
+// adapter's OriginalClientRegistry, which preserves the operator's
+// exact input verbatim.
+//
+func UpstreamClientRegistryProvider(client *ClientProperty, introspectedProviders map[string]string) string {
+	if client == nil {
+		return ""
+	}
+	if client.IsProviderPresent() {
+		return TranslateUpstreamProvider(client.Provider)
+	}
+	if introspectedProviders != nil {
+		if p := introspectedProviders[client.Name]; p != "" {
+			return TranslateUpstreamProvider(p)
+		}
+	}
+	return ""
 }
 
 type TypeBuilder struct {
@@ -486,6 +836,29 @@ type Logger interface {
 	Error(msg string, args ...interface{})
 }
 
+// RoundRobinAdvancer returns the next child index for a static baml-
+// roundrobin client. Declared here (rather than in the roundrobin
+// subpackage) so Adapter can expose a RoundRobinAdvancer accessor
+// without a dependency on buildrequest/roundrobin, which would be a
+// cycle. The roundrobin package re-exports this as `Advancer` via a
+// type alias for call sites that prefer that spelling.
+//
+// Implementations must return a value in [0, childCount). childCount
+// must be > 0; a zero or negative value returns (0, nil) without
+// touching state in the existing implementations.
+//
+// The error return is load-bearing for the remote-advancer case: when
+// a pool-managed worker has been attached to a host SharedState socket
+// but the round-trip fails (transport error, host crash, etc.), the
+// caller must fail the request rather than silently fall back to a
+// local random pick. A silent fallback would collapse the pool-wide
+// rotation back to per-worker draws exactly when central coordination
+// is supposed to kick in — the failure mode the shared-state wiring
+// exists to eliminate. In-process implementations always return nil.
+type RoundRobinAdvancer interface {
+	Advance(clientName string, childCount int) (int, error)
+}
+
 type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
@@ -529,6 +902,15 @@ type Adapter interface {
 	// or nil to use llmhttp.DefaultClient. This allows injecting a custom
 	// HTTP client (e.g., for testing or proxy support).
 	HTTPClient() *llmhttp.Client
+	// SetRoundRobinAdvancer installs the per-request Advancer used by the
+	// BuildRequest path to resolve baml-roundrobin strategy clients. Pool-
+	// managed workers set this to a RemoteAdvancer that talks to the host
+	// SharedState service; standalone workers leave it unset and fall back
+	// to the package-level Coordinator compiled into introspected.
+	SetRoundRobinAdvancer(advancer RoundRobinAdvancer)
+	// RoundRobinAdvancer returns the per-request Advancer, or nil if none
+	// was installed. Callers treat nil as "use the introspected default".
+	RoundRobinAdvancer() RoundRobinAdvancer
 }
 
 // BamlOptions contains optional configuration for BAML method calls

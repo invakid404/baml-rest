@@ -1007,8 +1007,8 @@ func TestMediaEdgeCases(t *testing.T) {
 			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
 				t.Skip("Skipping: optional media encoding requires BAML >= 0.215.0")
 			}
-			// Tests image?[] as a direct function param — this is the exact edge case from
-			// finding 1: []*MediaInput where range variable is already a pointer.
+			// Tests image?[] as a direct function param — []*MediaInput
+			// where the range variable is already a pointer.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
@@ -1085,8 +1085,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
 				t.Skip("Skipping: optional media encoding requires BAML >= 0.215.0")
 			}
-			// Tests class with image?[] field — this is the exact edge case from
-			// finding 2: []*MediaInput in a nested struct field.
+			// Tests class with image?[] field — []*MediaInput in a nested struct field.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 

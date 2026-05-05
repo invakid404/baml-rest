@@ -2,6 +2,7 @@ package buildrequest
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -168,12 +169,99 @@ func TestBuildFallbackChainPlan_APIFieldCarriesThrough(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
 	chain := []string{"A", "B"}
 	providers := map[string]string{"A": "openai", "B": "anthropic"}
-	plan := BuildFallbackChainPlan(adapter, "Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest)
+	plan := BuildFallbackChainPlan(adapter, "Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest, "")
 	if plan.BuildRequestAPI != BuildRequestAPIStreamRequest {
 		t.Errorf("BuildRequestAPI: got %q, want %q", plan.BuildRequestAPI, BuildRequestAPIStreamRequest)
 	}
 	if plan.Strategy != "baml-fallback" {
 		t.Errorf("strategy: got %q, want baml-fallback", plan.Strategy)
+	}
+	if plan.PathReason != "" {
+		t.Errorf("pathReason: got %q, want empty (no reason passed)", plan.PathReason)
+	}
+}
+
+// TestBuildFallbackChainPlan_RRChildPathReasonPlumbed pins that the
+// resolver reason (PathReasonFallbackRoundRobinChildLegacy, emitted
+// by ResolveFallbackChainForClientWithReason when a baml-roundrobin
+// child appears in the chain) reaches the emitted plan. Plug the
+// reason value into BuildFallbackChainPlan and assert it surfaces on
+// plan.PathReason. A refactor that drops the arg or stops
+// threading it in codegen fails here.
+func TestBuildFallbackChainPlan_RRChildPathReasonPlumbed(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+	chain := []string{"OpenAIClient", "InnerRR"}
+	providers := map[string]string{
+		"OpenAIClient": "openai",
+		"InnerRR":      "baml-roundrobin",
+	}
+	legacy := map[string]bool{"InnerRR": true}
+
+	t.Run("canonical spelling via adapter-based plan builder", func(t *testing.T) {
+		plan := BuildFallbackChainPlan(adapter, "MyFallback", chain, providers, legacy, nil, BuildRequestAPIStreamRequest,
+			PathReasonFallbackRoundRobinChildLegacy)
+		if plan.PathReason != PathReasonFallbackRoundRobinChildLegacy {
+			t.Fatalf("PathReason: got %q, want %q", plan.PathReason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+		if plan.Strategy != "baml-fallback" {
+			t.Errorf("strategy: got %q, want baml-fallback", plan.Strategy)
+		}
+		if len(plan.LegacyChildren) != 1 || plan.LegacyChildren[0] != "InnerRR" {
+			t.Errorf("LegacyChildren: got %v, want [InnerRR]", plan.LegacyChildren)
+		}
+	})
+
+	t.Run("client-name plan builder", func(t *testing.T) {
+		plan := BuildFallbackChainPlanForClient("MyFallback", chain, providers, legacy, nil, BuildRequestAPIRequest,
+			PathReasonFallbackRoundRobinChildLegacy)
+		if plan.PathReason != PathReasonFallbackRoundRobinChildLegacy {
+			t.Fatalf("PathReason: got %q, want %q", plan.PathReason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+	})
+}
+
+// TestBuildFallbackChainPlan_ReasonPlumbsFromResolver simulates the
+// codegen call sequence: the `WithReason` resolver produces the reason,
+// which codegen threads into the plan builder. This test exercises
+// both halves together for the hyphenated BAML-upstream spelling
+// (baml-round-robin) and the canonical one, so a regression in either
+// the resolver's alias folding or the plumbing surfaces here.
+func TestBuildFallbackChainPlan_ReasonPlumbsFromResolver(t *testing.T) {
+	tests := []struct {
+		name       string
+		rrProvider string
+	}{
+		{name: "canonical spelling", rrProvider: "baml-roundrobin"},
+		{name: "hyphenated upstream spelling", rrProvider: "baml-round-robin"},
+		{name: "shorthand", rrProvider: "round-robin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fallbackChains := map[string][]string{
+				"MyFallback": {"OpenAIClient", "InnerRR"},
+			}
+			clientProviders := map[string]string{
+				"MyFallback":   "baml-fallback",
+				"OpenAIClient": "openai",
+				"InnerRR":      tt.rrProvider,
+			}
+
+			chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+				nil, "MyFallback", fallbackChains, clientProviders,
+				func(p string) bool { return p == "openai" },
+			)
+			if chain == nil {
+				t.Fatalf("expected chain to resolve, got nil with reason=%q", reason)
+			}
+			if reason != PathReasonFallbackRoundRobinChildLegacy {
+				t.Fatalf("resolver reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+			}
+
+			plan := BuildFallbackChainPlanForClient("MyFallback", chain, providers, legacy, nil, BuildRequestAPIStreamRequest, reason)
+			if plan.PathReason != PathReasonFallbackRoundRobinChildLegacy {
+				t.Fatalf("plan.PathReason: got %q, want %q — resolver reason did not reach emitted metadata", plan.PathReason, PathReasonFallbackRoundRobinChildLegacy)
+			}
+		})
 	}
 }
 
@@ -188,6 +276,1372 @@ func TestBuildLegacyMetadataPlan_UnsupportedProvider(t *testing.T) {
 	}
 	if plan.Provider != "aws-bedrock" {
 		t.Errorf("provider: got %q, want aws-bedrock", plan.Provider)
+	}
+}
+
+// invalidStrategyOverrides enumerates the runtime client_registry shapes
+// that ParseStrategyOption refuses (per BAML upstream's ensure_strategy
+// contract). Reused across the fallback-chain and round-robin tests
+// below so both resolvers stay in lockstep on which inputs are
+// considered "present-but-invalid".
+//
+// Each of these must surface as PathReasonInvalidStrategyOverride (or
+// the resolver-level equivalent for RR — ErrInvalidStrategyOverride)
+// rather than silently using the introspected chain.
+func invalidStrategyOverrides() []struct {
+	name string
+	raw  any
+} {
+	return []struct {
+		name string
+		raw  any
+	}{
+		{"empty []string", []string{}},
+		{"empty []any", []any{}},
+		{"empty bracket string", "[]"},
+		{"prefix + empty brackets", "strategy []"},
+		{"half-bracketed string", "strategy [A"},
+		{"bare token string", "ClientA"},
+		{"heterogeneous []any", []any{"A", 42}},
+		{"only-blank []string", []string{"", "  "}},
+	}
+}
+
+func TestResolveProviderWithReason_FallbackInvalidOverride(t *testing.T) {
+	for _, tc := range invalidStrategyOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Clients: []*bamlutils.ClientProperty{
+						{
+							Name:     "MyFallback",
+							Provider: "baml-fallback",
+							Options:  map[string]any{"strategy": tc.raw},
+						},
+					},
+				},
+			}
+			res := ResolveProviderWithReason(adapter, "MyFallback", "baml-fallback", IsProviderSupported)
+			if res.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", res.Path)
+			}
+			if res.PathReason != PathReasonInvalidStrategyOverride {
+				t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidStrategyOverride)
+			}
+			if res.Strategy != "baml-fallback" {
+				t.Errorf("strategy: got %q, want baml-fallback", res.Strategy)
+			}
+		})
+	}
+}
+
+func TestResolveProviderWithReason_RoundRobinInvalidOverride(t *testing.T) {
+	for _, tc := range invalidStrategyOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Clients: []*bamlutils.ClientProperty{
+						{
+							Name:     "MyRR",
+							Provider: "baml-roundrobin",
+							Options:  map[string]any{"strategy": tc.raw},
+						},
+					},
+				},
+			}
+			res := ResolveProviderWithReason(adapter, "MyRR", "baml-roundrobin", IsProviderSupported)
+			if res.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", res.Path)
+			}
+			if res.PathReason != PathReasonInvalidStrategyOverride {
+				t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidStrategyOverride)
+			}
+			if res.Strategy != "baml-roundrobin" {
+				t.Errorf("strategy: got %q, want baml-roundrobin", res.Strategy)
+			}
+		})
+	}
+}
+
+func TestResolveProviderWithReason_RoundRobinAbsentStrategyKeepsRoundRobinReason(t *testing.T) {
+	// A runtime registry entry without a strategy key (or no entry at
+	// all) must still surface as PathReasonRoundRobin — the
+	// invalid-strategy detection must not regress the RR-legacy
+	// classification for valid configurations.
+	adapter := &mockAdapter{Context: context.Background()}
+	res := ResolveProviderWithReason(adapter, "MyRR", "baml-roundrobin", IsProviderSupported)
+	if res.PathReason != PathReasonRoundRobin {
+		t.Errorf("absent override must yield RR reason; got %q", res.PathReason)
+	}
+}
+
+func TestResolveFallbackChainForClientWithReason_InvalidOverride(t *testing.T) {
+	for _, tc := range invalidStrategyOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyFallback",
+						Provider: "baml-fallback",
+						Options:  map[string]any{"strategy": tc.raw},
+					},
+				},
+			}
+			chains := map[string][]string{"MyFallback": {"A", "B"}}
+			providers := map[string]string{
+				"MyFallback": "baml-fallback",
+				"A":          "openai",
+				"B":          "anthropic",
+			}
+			chain, _, _, reason := ResolveFallbackChainForClientWithReason(reg, "MyFallback", chains, providers, IsProviderSupported)
+			if chain != nil {
+				t.Errorf("expected nil chain for invalid override; got %v", chain)
+			}
+			if reason != PathReasonInvalidStrategyOverride {
+				t.Errorf("reason: got %q, want %q", reason, PathReasonInvalidStrategyOverride)
+			}
+		})
+	}
+}
+
+func TestResolveFallbackChainForClientWithReason_AbsentOverrideKeepsIntrospected(t *testing.T) {
+	// No runtime override → introspected chain is honoured. Regression
+	// guard: the invalid-override detection must not trip on a registry
+	// entry that lacks the strategy key (or for a client missing from
+	// the registry entirely).
+	cases := []struct {
+		name string
+		reg  *bamlutils.ClientRegistry
+	}{
+		{
+			name: "no registry",
+			reg:  nil,
+		},
+		{
+			name: "registry without entry for client",
+			reg: &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "Other", Provider: "openai"},
+				},
+			},
+		},
+		{
+			name: "registry with entry but no strategy key",
+			reg: &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "MyFallback", Options: map[string]any{"temperature": 0.5}},
+				},
+			},
+		},
+	}
+	chains := map[string][]string{"MyFallback": {"A", "B"}}
+	providers := map[string]string{
+		"MyFallback": "baml-fallback",
+		"A":          "openai",
+		"B":          "anthropic",
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chain, _, _, reason := ResolveFallbackChainForClientWithReason(tc.reg, "MyFallback", chains, providers, IsProviderSupported)
+			if reason != "" {
+				t.Errorf("reason: got %q, want empty (drivable chain)", reason)
+			}
+			if len(chain) != 2 {
+				t.Errorf("chain: got %v, want [A B]", chain)
+			}
+		})
+	}
+}
+
+func TestResolveFallbackChainForClientWithReason_ValidOverrideHonoured(t *testing.T) {
+	// A parseable override must take precedence over the introspected
+	// chain. Regression guard: the invalid-override gate must only fire
+	// when the parser refused to accept the value.
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{
+				Name:     "MyFallback",
+				Provider: "baml-fallback",
+				Options:  map[string]any{"strategy": []string{"X", "Y"}},
+			},
+		},
+	}
+	chains := map[string][]string{"MyFallback": {"A", "B"}}
+	providers := map[string]string{
+		"MyFallback": "baml-fallback",
+		"X":          "openai",
+		"Y":          "anthropic",
+		"A":          "openai",
+		"B":          "anthropic",
+	}
+	chain, _, _, reason := ResolveFallbackChainForClientWithReason(reg, "MyFallback", chains, providers, IsProviderSupported)
+	if reason != "" {
+		t.Errorf("reason: got %q, want empty (valid override)", reason)
+	}
+	if len(chain) != 2 || chain[0] != "X" || chain[1] != "Y" {
+		t.Errorf("chain: got %v, want [X Y]", chain)
+	}
+}
+
+// TestResolveProviderWithReason_BareFallbackAlias verifies that
+// BAML upstream's clientspec.rs:139-140 alias contract is honoured:
+// both "fallback" and "baml-fallback" are accepted as the fallback
+// strategy provider, and the BAML CLI init template emits the bare
+// "fallback" form. Without alias normalisation a `provider fallback`
+// client would fall through to the default switch arm and get
+// classified as an unsupported single-provider, losing every
+// BuildRequest-only capability for that client.
+//
+// The static introspector also folds the alias (canonicaliseProvider in
+// cmd/introspect/main.go), but we test runtime classification here
+// because the runtime path is what flips behaviour for
+// client_registry overrides — exercising both seams individually.
+func TestResolveProviderWithReason_BareFallbackAlias(t *testing.T) {
+	t.Run("static introspected provider", func(t *testing.T) {
+		// In production, the introspector's canonicaliseProvider folds
+		// the alias before the runtime ever sees it. The
+		// ResolveProviderWithReason classifier still normalises
+		// defensively in case a code path bypasses introspection (e.g.
+		// hand-built test maps, or a future static-config layer).
+		adapter := &mockAdapter{Context: context.Background()}
+		res := ResolveProviderWithReason(adapter, "MyFallback", "fallback", IsProviderSupported)
+		if res.Strategy != "baml-fallback" {
+			t.Errorf("strategy: got %q, want baml-fallback", res.Strategy)
+		}
+		if res.Path != "legacy" {
+			t.Errorf("path: got %q, want legacy", res.Path)
+		}
+		if res.PathReason != "" {
+			t.Errorf("reason: got %q, want empty (drivable fallback)", res.PathReason)
+		}
+	})
+	t.Run("runtime registry override provider", func(t *testing.T) {
+		adapter := &mockAdapter{
+			Context: context.Background(),
+			originalRegistry: &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "MyFallback", Provider: "fallback"},
+				},
+			},
+		}
+		res := ResolveProviderWithReason(adapter, "MyFallback", "openai", IsProviderSupported)
+		if res.Strategy != "baml-fallback" {
+			t.Errorf("strategy: got %q, want baml-fallback (runtime alias must normalise)", res.Strategy)
+		}
+		if res.Path != "legacy" {
+			t.Errorf("path: got %q, want legacy", res.Path)
+		}
+	})
+}
+
+// TestResolveFallbackChainForClientWithReason_BareFallbackAlias verifies
+// the chain-resolution seam normalises the alias too. Without this,
+// the parentProvider check (`!= "baml-fallback"`) would early-return
+// nil for a fallback client spelled "fallback" and the BuildRequest
+// fallback chain would never be enumerated.
+func TestResolveFallbackChainForClientWithReason_BareFallbackAlias(t *testing.T) {
+	t.Run("static introspected", func(t *testing.T) {
+		chains := map[string][]string{"MyFallback": {"A", "B"}}
+		// Caller's introspected map uses the bare alias — simulates a
+		// path that bypasses canonicaliseProvider (defensive
+		// normalisation at the runtime seam).
+		providers := map[string]string{
+			"MyFallback": "fallback",
+			"A":          "openai",
+			"B":          "anthropic",
+		}
+		chain, _, _, reason := ResolveFallbackChainForClientWithReason(nil, "MyFallback", chains, providers, IsProviderSupported)
+		if reason != "" {
+			t.Errorf("reason: got %q, want empty (drivable chain)", reason)
+		}
+		if len(chain) != 2 || chain[0] != "A" || chain[1] != "B" {
+			t.Errorf("chain: got %v, want [A B]", chain)
+		}
+	})
+	t.Run("runtime registry override", func(t *testing.T) {
+		// Explicit runtime provider override carries a full
+		// shape: strategy mirrors the chain so the test isolates
+		// the alias-normalisation behaviour. The classifier's
+		// explicit-strategy-provider + no-strategy contract
+		// returns PathReasonInvalidStrategyOverride; supplying
+		// the strategy here lets the alias normalisation surface
+		// a drivable chain instead.
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyFallback",
+					Provider: "fallback",
+					Options:  map[string]any{"strategy": []any{"A", "B"}},
+				},
+			},
+		}
+		chains := map[string][]string{"MyFallback": {"A", "B"}}
+		providers := map[string]string{
+			"MyFallback": "openai", // intentionally different — runtime alias must win
+			"A":          "openai",
+			"B":          "anthropic",
+		}
+		chain, _, _, reason := ResolveFallbackChainForClientWithReason(reg, "MyFallback", chains, providers, IsProviderSupported)
+		if reason != "" {
+			t.Errorf("reason: got %q, want empty (drivable chain)", reason)
+		}
+		if len(chain) != 2 {
+			t.Errorf("chain: got %v, want [A B]", chain)
+		}
+	})
+}
+
+func TestNormalizeStrategyProvider_FoldsAliases(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"baml-roundrobin", "baml-roundrobin"},
+		{"baml-round-robin", "baml-roundrobin"},
+		{"round-robin", "baml-roundrobin"},
+		{"baml-fallback", "baml-fallback"},
+		{"fallback", "baml-fallback"},
+		{"openai", "openai"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := normalizeStrategyProvider(tc.in); got != tc.want {
+				t.Errorf("normalizeStrategyProvider(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_RRInvalidOverride covers the
+// codegen-side metadata seam (codegen.go:2631-2643): the generated
+// dispatcher reaches the legacy branch with __effective == the
+// un-unwrapped RR client when ResolveEffectiveClient short-circuited
+// an invalid strategy override (see ResolveEffectiveClient at
+// orchestrator.go:344-365 and the translation of
+// ErrInvalidStrategyOverride). The plan emitted there must surface
+// PathReasonInvalidStrategyOverride so operators reading
+// X-BAML-Path-Reason see the actual classification — without this,
+// the request is correctly routed but the metadata reports the
+// generic PathReasonRoundRobin "roundrobin-legacy-only" reason and
+// hides the operator typo.
+//
+// ResolveProviderWithReason is exercised separately; this test pins
+// the helper-level seam BuildLegacyMetadataPlanForClient, which has
+// its own RR arm.
+func TestBuildLegacyMetadataPlanForClient_RRInvalidOverride(t *testing.T) {
+	for _, tc := range invalidStrategyOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyRR",
+						Provider: "baml-roundrobin",
+						Options:  map[string]any{"strategy": tc.raw},
+					},
+				},
+			}
+			plan := BuildLegacyMetadataPlanForClient(
+				reg,
+				"MyRR",
+				"baml-roundrobin",
+				map[string][]string{"MyRR": {"A", "B"}},
+				map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+				IsProviderSupported,
+				nil,
+			)
+			if plan.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", plan.Path)
+			}
+			if plan.Strategy != "baml-roundrobin" {
+				t.Errorf("strategy: got %q, want baml-roundrobin", plan.Strategy)
+			}
+			if plan.PathReason != PathReasonInvalidStrategyOverride {
+				t.Errorf("reason: got %q, want %q (legacy plan must surface invalid-override over the RR-legacy default)", plan.PathReason, PathReasonInvalidStrategyOverride)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_RRAbsentOverrideKeepsRoundRobinReason
+// is the inverse-regression guard. A registry entry without a
+// strategy key (or no registry at all) must continue to surface
+// PathReasonRoundRobin — the invalid-override detection must not
+// regress the standard RR-legacy classification. Mirrors the
+// ResolveProviderWithReason guard one layer up.
+func TestBuildLegacyMetadataPlanForClient_RRAbsentOverrideKeepsRoundRobinReason(t *testing.T) {
+	cases := []struct {
+		name string
+		reg  *bamlutils.ClientRegistry
+	}{
+		{name: "no registry", reg: nil},
+		{
+			name: "registry without entry",
+			reg: &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "Other", Provider: "openai"},
+				},
+			},
+		},
+		{
+			name: "registry entry with no strategy key",
+			reg: &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "MyRR", Options: map[string]any{"temperature": 0.5}},
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := BuildLegacyMetadataPlanForClient(
+				tc.reg,
+				"MyRR",
+				"baml-roundrobin",
+				map[string][]string{"MyRR": {"A", "B"}},
+				map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+				IsProviderSupported,
+				nil,
+			)
+			if plan.PathReason != PathReasonRoundRobin {
+				t.Errorf("reason: got %q, want %q (absent override must yield RR-legacy reason)", plan.PathReason, PathReasonRoundRobin)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_FallbackInvalidOverride covers
+// the same emitted-metadata seam for fallback strategies. The fallback
+// arm delegates to ResolveFallbackChainForClientWithReason which
+// already returns PathReasonInvalidStrategyOverride; this regression
+// test pins that contract end-to-end through the legacy plan builder
+// so a future refactor can't accidentally drop the reason on the
+// floor (e.g. by overwriting plan.PathReason after the chain returns).
+func TestBuildLegacyMetadataPlanForClient_FallbackInvalidOverride(t *testing.T) {
+	for _, tc := range invalidStrategyOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyFallback",
+						Provider: "baml-fallback",
+						Options:  map[string]any{"strategy": tc.raw},
+					},
+				},
+			}
+			plan := BuildLegacyMetadataPlanForClient(
+				reg,
+				"MyFallback",
+				"baml-fallback",
+				map[string][]string{"MyFallback": {"A", "B"}},
+				map[string]string{"MyFallback": "baml-fallback", "A": "openai", "B": "anthropic"},
+				IsProviderSupported,
+				nil,
+			)
+			if plan.Strategy != "baml-fallback" {
+				t.Errorf("strategy: got %q, want baml-fallback", plan.Strategy)
+			}
+			if plan.PathReason != PathReasonInvalidStrategyOverride {
+				t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonInvalidStrategyOverride)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlan_RuntimeClientWithoutChainDoesNotLeakDefaultChain
+// pins the metadata contract: when a primary override points the
+// request at a fallback client whose chain cannot be resolved
+// (invalid strategy override or empty introspected chain), the
+// rebuild block in BuildLegacyMetadataPlan must NOT fall through to
+// `defaultClientName`'s introspected chain. Doing so would emit
+// metadata with `Client=<runtime client>` but
+// `Chain=<default client's chain>` — a mismatch that misleads
+// operators reading X-BAML-Path-Reason / metadata payloads when
+// debugging a runtime override.
+//
+// The plan leaves Chain empty when the runtime-resolved client has
+// no chain, so Client and Chain always describe the same client.
+func TestBuildLegacyMetadataPlan_RuntimeClientWithoutChainDoesNotLeakDefaultChain(t *testing.T) {
+	cases := []struct {
+		name           string
+		overrideClient *bamlutils.ClientProperty
+	}{
+		{
+			name: "invalid strategy override on runtime client",
+			overrideClient: &bamlutils.ClientProperty{
+				Name:     "OverrideStrategy",
+				Provider: "baml-fallback",
+				Options:  map[string]any{"strategy": "[]"},
+			},
+		},
+		{
+			name: "runtime client with no chain in introspected map",
+			overrideClient: &bamlutils.ClientProperty{
+				Name:     "OverrideStrategy",
+				Provider: "baml-fallback",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := "OverrideStrategy"
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Primary: &primary,
+					Clients: []*bamlutils.ClientProperty{tc.overrideClient},
+				},
+			}
+			// DefaultStrategy has a chain in the introspected map;
+			// OverrideStrategy does not (or has an invalid override).
+			// The previous behaviour leaked DefaultA/DefaultB into the
+			// emitted plan even though the request resolved to
+			// OverrideStrategy.
+			fallbackChains := map[string][]string{
+				"DefaultStrategy": {"DefaultA", "DefaultB"},
+			}
+			providers := map[string]string{
+				"DefaultStrategy":  "baml-fallback",
+				"OverrideStrategy": "baml-fallback",
+				"DefaultA":         "openai",
+				"DefaultB":         "anthropic",
+			}
+			plan := BuildLegacyMetadataPlan(
+				adapter,
+				"DefaultStrategy",
+				"baml-fallback",
+				fallbackChains,
+				providers,
+				IsProviderSupported,
+				nil,
+			)
+			if plan.Client != "OverrideStrategy" {
+				t.Errorf("client: got %q, want OverrideStrategy", plan.Client)
+			}
+			if len(plan.Chain) != 0 {
+				t.Errorf("chain: got %v, want empty (default client's chain must not leak when runtime client has none)", plan.Chain)
+			}
+			if len(plan.LegacyChildren) != 0 {
+				t.Errorf("legacyChildren: got %v, want empty (must not be populated from leaked chain)", plan.LegacyChildren)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlan_RuntimeClientWithChainStillEmitsChain is
+// the inverse-regression guard for runtime clients with their own
+// resolvable chain. When the runtime client DOES have a resolvable
+// chain, the plan must still describe it — dropping the
+// defaultClientName fallback must not regress the common "primary
+// override points at a different valid fallback client" case.
+func TestBuildLegacyMetadataPlan_RuntimeClientWithChainStillEmitsChain(t *testing.T) {
+	primary := "OverrideStrategy"
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Primary: &primary,
+		},
+	}
+	fallbackChains := map[string][]string{
+		"DefaultStrategy":  {"DefaultA", "DefaultB"},
+		"OverrideStrategy": {"OverrideA", "OverrideB"},
+	}
+	providers := map[string]string{
+		"DefaultStrategy":  "baml-fallback",
+		"OverrideStrategy": "baml-fallback",
+		"DefaultA":         "openai",
+		"DefaultB":         "anthropic",
+		"OverrideA":        "openai",
+		"OverrideB":        "anthropic",
+	}
+	plan := BuildLegacyMetadataPlan(
+		adapter,
+		"DefaultStrategy",
+		"baml-fallback",
+		fallbackChains,
+		providers,
+		IsProviderSupported,
+		nil,
+	)
+	if plan.Client != "OverrideStrategy" {
+		t.Errorf("client: got %q, want OverrideStrategy", plan.Client)
+	}
+	if len(plan.Chain) != 2 || plan.Chain[0] != "OverrideA" || plan.Chain[1] != "OverrideB" {
+		t.Errorf("chain: got %v, want [OverrideA OverrideB]", plan.Chain)
+	}
+}
+
+// TestResolveProviderWithReason_PresentEmptyProvider pins that a
+// runtime client_registry entry which explicitly sends
+// "provider":"" must surface PathReasonInvalidProviderOverride and
+// route to legacy. BAML upstream's ClientProvider::from_str rejects
+// empty provider strings (clientspec.rs:119-144); silently falling
+// through to the introspected provider would hide the malformed
+// override from BAML and from operators reading X-BAML-Path-Reason.
+func TestResolveProviderWithReason_PresentEmptyProvider(t *testing.T) {
+	t.Run("named-client override", func(t *testing.T) {
+		adapter := &mockAdapter{
+			Context: context.Background(),
+			originalRegistry: &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "MyClient", Provider: "", ProviderSet: true},
+				},
+			},
+		}
+		res := ResolveProviderWithReason(adapter, "MyClient", "openai", IsProviderSupported)
+		if res.Path != "legacy" {
+			t.Errorf("path: got %q, want legacy", res.Path)
+		}
+		if res.PathReason != PathReasonInvalidProviderOverride {
+			t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidProviderOverride)
+		}
+	})
+	t.Run("primary override", func(t *testing.T) {
+		primary := "MyPrimary"
+		adapter := &mockAdapter{
+			Context: context.Background(),
+			originalRegistry: &bamlutils.ClientRegistry{
+				Primary: &primary,
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "MyPrimary", Provider: "", ProviderSet: true},
+				},
+			},
+		}
+		res := ResolveProviderWithReason(adapter, "MyClient", "openai", IsProviderSupported)
+		if res.PathReason != PathReasonInvalidProviderOverride {
+			t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidProviderOverride)
+		}
+	})
+}
+
+// TestResolveProviderWithReason_PrimarySetDefaultClientPresentEmpty
+// pins the classifier's defaultClientName checkpoint: when
+// reg.Primary is set but has no `clients[]` entry (or the entry
+// omits the provider key) and the function's defaultClientName entry
+// carries an explicit "provider":"", ResolveProvider falls through
+// to the default-client lookup and returns "". The classifier must
+// recognise this as the invalid-override case rather than reporting
+// PathReasonEmptyProvider — without the defaultClientName checkpoint
+// both other checkpoints reduce to the primary key, which has no
+// entry.
+func TestResolveProviderWithReason_PrimarySetDefaultClientPresentEmpty(t *testing.T) {
+	cases := []struct {
+		name    string
+		clients []*bamlutils.ClientProperty
+	}{
+		{
+			name: "no primary entry at all",
+			clients: []*bamlutils.ClientProperty{
+				{Name: "DefaultClient", Provider: "", ProviderSet: true},
+			},
+		},
+		{
+			name: "primary entry with provider omitted",
+			clients: []*bamlutils.ClientProperty{
+				{Name: "PrimaryClient"}, // presence-only, no provider key
+				{Name: "DefaultClient", Provider: "", ProviderSet: true},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := "PrimaryClient"
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Primary: &primary,
+					Clients: tc.clients,
+				},
+			}
+			res := ResolveProviderWithReason(adapter, "DefaultClient", "openai", IsProviderSupported)
+			if res.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", res.Path)
+			}
+			if res.PathReason != PathReasonInvalidProviderOverride {
+				t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidProviderOverride)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlan_PrimarySetDefaultClientPresentEmpty pins
+// the same fix end-to-end through BuildLegacyMetadataPlan, which is
+// the helper the verdict identified as the affected exported API
+// (BuildLegacyMetadataPlanForClient is the codegen-side path and
+// receives the resolved client name directly, so it doesn't have the
+// primary-vs-default ambiguity). Belt-and-suspenders coverage.
+func TestBuildLegacyMetadataPlan_PrimarySetDefaultClientPresentEmpty(t *testing.T) {
+	primary := "PrimaryClient"
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Primary: &primary,
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "DefaultClient", Provider: "", ProviderSet: true},
+			},
+		},
+	}
+	plan := BuildLegacyMetadataPlan(adapter, "DefaultClient", "openai", nil, nil, IsProviderSupported, nil)
+	if plan.Path != "legacy" {
+		t.Errorf("path: got %q, want legacy", plan.Path)
+	}
+	if plan.PathReason != PathReasonInvalidProviderOverride {
+		t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonInvalidProviderOverride)
+	}
+}
+
+// TestResolveProviderWithReason_AbsentProviderKeepsIntrospected is
+// the inverse-regression guard. A registry entry that omits the
+// provider key (strategy-only override, presence-only dynamic entry)
+// must keep using the introspected provider — preserving the
+// existing flows that drive RR strategy-only and presence-only
+// behaviour. Without this guard the present-empty handling could
+// regress TestResolve_StrategyOnlyOverride_IsDynamic and
+// TestResolve_RegistryPresenceWithoutOverride_IsDynamic in the RR
+// package by routing absent-provider entries to legacy alongside
+// present-empty entries.
+func TestResolveProviderWithReason_AbsentProviderKeepsIntrospected(t *testing.T) {
+	cases := []struct {
+		name     string
+		client   *bamlutils.ClientProperty
+		wantPath string
+	}{
+		{
+			name:     "presence-only entry",
+			client:   &bamlutils.ClientProperty{Name: "MyClient"},
+			wantPath: "buildrequest",
+		},
+		{
+			name: "strategy-only override",
+			client: &bamlutils.ClientProperty{
+				Name:    "MyClient",
+				Options: map[string]any{"strategy": []any{"A", "B"}},
+			},
+			wantPath: "buildrequest",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Clients: []*bamlutils.ClientProperty{tc.client},
+				},
+			}
+			res := ResolveProviderWithReason(adapter, "MyClient", "openai", IsProviderSupported)
+			if res.Path != tc.wantPath {
+				t.Errorf("path: got %q, want %q", res.Path, tc.wantPath)
+			}
+			if res.Provider != "openai" {
+				t.Errorf("provider: got %q, want openai (introspected fallback)", res.Provider)
+			}
+		})
+	}
+}
+
+// TestResolveClientProvider_PresentEmptyReturnsEmpty pins the resolver
+// helper behaviour the codegen-side BuildRequest gate depends on. A
+// present-empty override must surface as "" so IsProviderSupported
+// returns false and the dispatcher falls through to legacy. An absent
+// override must continue to fall through to the introspected provider
+// so strategy-only and presence-only flows keep working.
+func TestResolveClientProvider_PresentEmptyReturnsEmpty(t *testing.T) {
+	intro := map[string]string{"MyClient": "openai"}
+
+	t.Run("present-empty surfaces as empty", func(t *testing.T) {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "MyClient", Provider: "", ProviderSet: true},
+			},
+		}
+		got := ResolveClientProvider(reg, "MyClient", intro)
+		if got != "" {
+			t.Errorf("present-empty: got %q, want empty (introspected must NOT leak in)", got)
+		}
+	})
+
+	t.Run("absent provider falls through to introspected", func(t *testing.T) {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "MyClient"}, // no provider, no ProviderSet
+			},
+		}
+		got := ResolveClientProvider(reg, "MyClient", intro)
+		if got != "openai" {
+			t.Errorf("absent: got %q, want openai (introspected fallback)", got)
+		}
+	})
+
+	t.Run("present non-empty wins", func(t *testing.T) {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "MyClient", Provider: "anthropic"},
+			},
+		}
+		got := ResolveClientProvider(reg, "MyClient", intro)
+		if got != "anthropic" {
+			t.Errorf("present non-empty: got %q, want anthropic", got)
+		}
+	})
+
+	t.Run("no registry entry falls through to introspected", func(t *testing.T) {
+		reg := &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "OtherClient", Provider: "anthropic"},
+			},
+		}
+		got := ResolveClientProvider(reg, "MyClient", intro)
+		if got != "openai" {
+			t.Errorf("no entry: got %q, want openai", got)
+		}
+	})
+}
+
+// TestBuildLegacyMetadataPlanForClient_PresentEmptyProvider covers the
+// codegen-side metadata seam. The generated dispatcher reaches
+// BuildLegacyMetadataPlanForClient when the BuildRequest gate failed,
+// which for a present-empty override happens because
+// ResolveClientProvider now returns "" instead of falling through to
+// the introspected provider. The emitted plan must report
+// PathReasonInvalidProviderOverride so operators reading
+// X-BAML-Path-Reason see the actual cause.
+func TestBuildLegacyMetadataPlanForClient_PresentEmptyProvider(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{Name: "MyClient", Provider: "", ProviderSet: true},
+		},
+	}
+	plan := BuildLegacyMetadataPlanForClient(
+		reg,
+		"MyClient",
+		"openai",
+		nil,
+		map[string]string{"MyClient": "openai"},
+		IsProviderSupported,
+		nil,
+	)
+	if plan.Path != "legacy" {
+		t.Errorf("path: got %q, want legacy", plan.Path)
+	}
+	if plan.PathReason != PathReasonInvalidProviderOverride {
+		t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonInvalidProviderOverride)
+	}
+	if plan.Provider != "" {
+		t.Errorf("provider: got %q, want empty (introspected must not leak in)", plan.Provider)
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_AbsentProviderKeepsEmptyProviderReason
+// is the inverse-regression guard. A client with no provider configured
+// anywhere must continue to report PathReasonEmptyProvider, not the
+// new PathReasonInvalidProviderOverride. This test is the boundary
+// between the two reasons.
+func TestBuildLegacyMetadataPlanForClient_AbsentProviderKeepsEmptyProviderReason(t *testing.T) {
+	plan := BuildLegacyMetadataPlanForClient(
+		nil,
+		"MyClient",
+		"",
+		nil,
+		nil,
+		IsProviderSupported,
+		nil,
+	)
+	if plan.PathReason != PathReasonEmptyProvider {
+		t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonEmptyProvider)
+	}
+}
+
+// invalidStartOverrides enumerates the runtime client_registry shapes
+// that inspectStartOverride refuses (per BAML upstream's ensure_int
+// contract). Reused across the resolver-level (already in
+// resolver_test.go) and the orchestrator-level metadata tests below
+// so both classifications stay in lockstep on which inputs are
+// considered "present-but-invalid".
+//
+// Each of these must surface as PathReasonInvalidRoundRobinStartOverride
+// from the metadata classifier — the resolver-side counterpart returns
+// ErrInvalidStartOverride.
+func invalidStartOverrides() []struct {
+	name string
+	raw  any
+} {
+	return []struct {
+		name string
+		raw  any
+	}{
+		{"numeric string", "1"},
+		{"empty string", ""},
+		{"fractional float", 1.5},
+		{"boolean true", true},
+		{"slice", []any{1, 2}},
+		{"map", map[string]any{"x": 1}},
+		// Align this metadata-side table with the resolver-side
+		// rejection matrix (resolver_test.go:912-920) — unsigned
+		// ints and json.Number must surface the same canonical
+		// PathReasonInvalidRoundRobinStartOverride classification,
+		// not silently fall back through.
+		{"uint", uint(1)},
+		{"json.Number numeric", json.Number("5")},
+		{"json.Number malformed", json.Number("abc")},
+	}
+}
+
+// TestResolveProviderWithReason_RoundRobinInvalidStartOverride pins
+// the metadata classifier contract for invalid `options.start`. A
+// runtime client_registry entry on a baml-roundrobin client whose
+// start value is not parseable as an integer must surface
+// PathReasonInvalidRoundRobinStartOverride so operators reading
+// X-BAML-Path-Reason can distinguish a malformed start option from a
+// malformed strategy option (PathReasonInvalidStrategyOverride) or
+// the generic RR-legacy reason.
+func TestResolveProviderWithReason_RoundRobinInvalidStartOverride(t *testing.T) {
+	for _, tc := range invalidStartOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			// Include a valid strategy alongside the invalid start
+			// so the classifier isolates the start-override
+			// invalidity. The metadata classifier's
+			// explicit-RR-provider + no-strategy contract returns
+			// PathReasonInvalidStrategyOverride; pinning a valid
+			// strategy here lets the start-side classifier
+			// surface its own reason instead.
+			adapter := &mockAdapter{
+				Context: context.Background(),
+				originalRegistry: &bamlutils.ClientRegistry{
+					Clients: []*bamlutils.ClientProperty{
+						{
+							Name:     "MyRR",
+							Provider: "baml-roundrobin",
+							Options: map[string]any{
+								"strategy": []any{"A", "B"},
+								"start":    tc.raw,
+							},
+						},
+					},
+				},
+			}
+			res := ResolveProviderWithReason(adapter, "MyRR", "baml-roundrobin", IsProviderSupported)
+			if res.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", res.Path)
+			}
+			if res.PathReason != PathReasonInvalidRoundRobinStartOverride {
+				t.Errorf("reason: got %q, want %q", res.PathReason, PathReasonInvalidRoundRobinStartOverride)
+			}
+			if res.Strategy != "baml-roundrobin" {
+				t.Errorf("strategy: got %q, want baml-roundrobin", res.Strategy)
+			}
+		})
+	}
+}
+
+// TestResolveProviderWithReason_RoundRobinExplicitProviderWithoutStrategy
+// pins the metadata classifier's missing-strategy contract: a
+// runtime registry entry on a baml-roundrobin client whose
+// `provider` is set to an RR alias but whose Options has no
+// `strategy` key must surface PathReasonInvalidStrategyOverride.
+// Without this, the classifier falls through to the generic
+// PathReasonRoundRobin ("roundrobin-legacy-only"), so
+// X-BAML-Path-Reason disagrees with the resolver's actual routing
+// decision (which short-circuits to legacy via
+// ErrInvalidStrategyOverride for this shape).
+func TestResolveProviderWithReason_RoundRobinExplicitProviderWithoutStrategy(t *testing.T) {
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyRR",
+					Provider: "round-robin",
+					// no strategy, no start — explicit-provider
+					// without options.strategy.
+					Options: map[string]any{},
+				},
+			},
+		},
+	}
+	res := ResolveProviderWithReason(adapter, "MyRR", "baml-roundrobin", IsProviderSupported)
+	if res.Path != "legacy" {
+		t.Errorf("path: got %q, want legacy", res.Path)
+	}
+	if res.PathReason != PathReasonInvalidStrategyOverride {
+		t.Errorf("reason: got %q, want %q (explicit RR provider + no options.strategy → invalid-strategy-override, not roundrobin-legacy-only)",
+			res.PathReason, PathReasonInvalidStrategyOverride)
+	}
+	if res.Strategy != "baml-roundrobin" {
+		t.Errorf("strategy: got %q, want baml-roundrobin", res.Strategy)
+	}
+}
+
+// TestResolveProviderWithReason_FallbackExplicitProviderWithoutStrategy
+// is the fallback-side companion. Same shape — explicit fallback
+// provider with no `options.strategy` must surface
+// PathReasonInvalidStrategyOverride at the metadata seam.
+func TestResolveProviderWithReason_FallbackExplicitProviderWithoutStrategy(t *testing.T) {
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyFallback",
+					Provider: "fallback",
+					Options:  map[string]any{},
+				},
+			},
+		},
+	}
+	res := ResolveProviderWithReason(adapter, "MyFallback", "baml-fallback", IsProviderSupported)
+	if res.Path != "legacy" {
+		t.Errorf("path: got %q, want legacy", res.Path)
+	}
+	if res.PathReason != PathReasonInvalidStrategyOverride {
+		t.Errorf("reason: got %q, want %q (explicit fallback provider + no options.strategy → invalid-strategy-override)",
+			res.PathReason, PathReasonInvalidStrategyOverride)
+	}
+	if res.Strategy != "baml-fallback" {
+		t.Errorf("strategy: got %q, want baml-fallback", res.Strategy)
+	}
+}
+
+// TestResolveProviderWithReason_RoundRobinInvalidStrategyTakesPrecedence
+// pins the priority when BOTH `strategy` and `start` are malformed:
+// strategy is checked first since BAML upstream parses it before
+// start. Without this guard a future refactor could silently emit
+// PathReasonInvalidRoundRobinStartOverride for a request whose
+// underlying break is the strategy chain.
+func TestResolveProviderWithReason_RoundRobinInvalidStrategyTakesPrecedence(t *testing.T) {
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyRR",
+					Provider: "baml-roundrobin",
+					Options: map[string]any{
+						"strategy": "ClientA",  // bare token — invalid
+						"start":    "not an int", // also invalid
+					},
+				},
+			},
+		},
+	}
+	res := ResolveProviderWithReason(adapter, "MyRR", "baml-roundrobin", IsProviderSupported)
+	if res.PathReason != PathReasonInvalidStrategyOverride {
+		t.Errorf("reason: got %q, want %q (strategy takes precedence over start)", res.PathReason, PathReasonInvalidStrategyOverride)
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_RRInvalidStartOverride covers
+// the codegen-side metadata seam for invalid start overrides. The
+// generated dispatcher reaches BuildLegacyMetadataPlanForClient after
+// ResolveEffectiveClient short-circuited an invalid start override by
+// returning the un-unwrapped client name; the emitted plan must
+// report PathReasonInvalidRoundRobinStartOverride.
+func TestBuildLegacyMetadataPlanForClient_RRInvalidStartOverride(t *testing.T) {
+	for _, tc := range invalidStartOverrides() {
+		t.Run(tc.name, func(t *testing.T) {
+			// Include a valid strategy alongside the invalid start
+			// so the classifier isolates start-handling. Mirrors
+			// the sibling ResolveProviderWithReason test — the
+			// metadata classifier's explicit-RR-provider +
+			// no-strategy contract returns the strategy reason
+			// first; a valid strategy lets the start-side
+			// classifier surface its own reason.
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{
+						Name:     "MyRR",
+						Provider: "baml-roundrobin",
+						Options: map[string]any{
+							"strategy": []any{"A", "B"},
+							"start":    tc.raw,
+						},
+					},
+				},
+			}
+			plan := BuildLegacyMetadataPlanForClient(
+				reg,
+				"MyRR",
+				"baml-roundrobin",
+				map[string][]string{"MyRR": {"A", "B"}},
+				map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+				IsProviderSupported,
+				nil,
+			)
+			if plan.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", plan.Path)
+			}
+			if plan.PathReason != PathReasonInvalidRoundRobinStartOverride {
+				t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonInvalidRoundRobinStartOverride)
+			}
+			if plan.Strategy != "baml-roundrobin" {
+				t.Errorf("strategy: got %q, want baml-roundrobin", plan.Strategy)
+			}
+		})
+	}
+}
+
+// TestResolveEffectiveClient_InvalidStartTranslatesToLegacy verifies
+// that ResolveEffectiveClient mirrors its existing
+// ErrInvalidStrategyOverride handling for ErrInvalidStartOverride —
+// both sentinels translate to "return the un-unwrapped client name
+// with no error", letting the codegen support gate fail and the
+// request fall to legacy where BAML emits the canonical options
+// error.
+func TestResolveEffectiveClient_InvalidStartTranslatesToLegacy(t *testing.T) {
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{
+					Name:     "MyRR",
+					Provider: "baml-roundrobin",
+					// A valid `strategy` is required so the resolver
+					// advances past the explicit-RR-provider-without-
+					// strategy preflight (which surfaces
+					// ErrInvalidStrategyOverride first) and reaches
+					// start parsing — the seam this test pins.
+					Options: map[string]any{
+						"strategy": []any{"A", "B"},
+						"start":    "not an int",
+					},
+				},
+			},
+		},
+	}
+	effective, rrInfo, err := ResolveEffectiveClient(
+		adapter,
+		"MyRR",
+		map[string][]string{"MyRR": {"A", "B"}},
+		map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+		nil, // advancer not consulted for invalid-start case
+	)
+	if err != nil {
+		t.Fatalf("expected nil error (sentinel translated to legacy fallthrough), got %v", err)
+	}
+	if effective != "MyRR" {
+		t.Errorf("effective: got %q, want MyRR (un-unwrapped strategy name)", effective)
+	}
+	if rrInfo != nil {
+		t.Errorf("rrInfo: got %+v, want nil (no RR decision occurred)", rrInfo)
+	}
+}
+
+// TestResolveEffectiveClient_AdapterAdvancerTakesPrecedence pins the
+// per-request advancer override at the adapter seam. A pool-managed
+// worker installs a per-request RemoteAdvancer on the adapter (talking
+// to the host SharedState socket); ResolveEffectiveClient must consult
+// that advancer in preference to the package-level coordinator passed
+// as the parameter, otherwise each worker would rotate off its own
+// coordinator and the fleet's round-robin would collapse into
+// independent per-worker draws.
+//
+// Uses a static RR client (no runtime registry override) so that
+// selectIndex routes through the supplied Advancer rather than the
+// dynamic-client AdvanceDynamic random-draw path.
+func TestResolveEffectiveClient_AdapterAdvancerTakesPrecedence(t *testing.T) {
+	adapter := &mockAdapter{
+		Context: context.Background(),
+	}
+	// Adapter-installed advancer always returns index 1 ("B"). The
+	// package-level advancer always returns index 0 ("A"). If the
+	// adapter override is honoured, the resolved leaf is "B".
+	adapterAdvancer := &fixedAdvancer{idx: 1}
+	packageAdvancer := &fixedAdvancer{idx: 0}
+	adapter.SetRoundRobinAdvancer(adapterAdvancer)
+
+	effective, rrInfo, err := ResolveEffectiveClient(
+		adapter,
+		"MyRR",
+		map[string][]string{"MyRR": {"A", "B"}},
+		map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+		packageAdvancer,
+	)
+	if err != nil {
+		t.Fatalf("ResolveEffectiveClient: unexpected error: %v", err)
+	}
+	if effective != "B" {
+		t.Errorf("effective: got %q, want B (adapter-installed advancer must win over package-level)", effective)
+	}
+	if rrInfo == nil || rrInfo.Index != 1 {
+		t.Errorf("rrInfo: got %+v, want {Index: 1, Selected: B} from adapter advancer", rrInfo)
+	}
+	if adapterAdvancer.calls != 1 {
+		t.Errorf("adapter advancer call count: got %d, want 1", adapterAdvancer.calls)
+	}
+	if packageAdvancer.calls != 0 {
+		t.Errorf("package-level advancer call count: got %d, want 0 (must be skipped when adapter override is present)", packageAdvancer.calls)
+	}
+}
+
+// fixedAdvancer is a test-only Advancer that always returns the
+// configured index and tracks call count. Lets the precedence test
+// distinguish which advancer the resolver actually consulted.
+type fixedAdvancer struct {
+	idx   int
+	calls int
+}
+
+func (f *fixedAdvancer) Advance(_ string, _ int) (int, error) {
+	f.calls++
+	return f.idx, nil
+}
+
+// TestResolveFallbackChainForClientWithReason_ExplicitProviderWithoutStrategy
+// pins the chain-resolution preflight for the missing-strategy
+// case: a runtime client_registry entry that supplies an explicit
+// fallback provider but no `options.strategy` must short-circuit
+// to legacy with PathReasonInvalidStrategyOverride, regardless of
+// whether the introspected map has a static chain.
+//
+// Mirrors the resolver-level (roundrobin.Resolve) and metadata-
+// classifier (ResolveProviderWithReason) contracts; without this
+// preflight the chain-resolver would hand callers a populated
+// chain through the introspected fallback while the resolver had
+// already routed the request to legacy — silent classification
+// drift across the seams.
+func TestResolveFallbackChainForClientWithReason_ExplicitProviderWithoutStrategy(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+	}{
+		{"baml-fallback canonical", "baml-fallback"},
+		{"fallback alias", "fallback"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					// Explicit provider, no options.strategy.
+					{Name: "MyFallback", Provider: tc.provider, ProviderSet: true},
+				},
+			}
+			chains := map[string][]string{"MyFallback": {"A", "B"}}
+			providers := map[string]string{
+				"MyFallback": "baml-fallback",
+				"A":          "openai",
+				"B":          "anthropic",
+			}
+			chain, providersOut, legacy, reason := ResolveFallbackChainForClientWithReason(
+				reg, "MyFallback", chains, providers, IsProviderSupported,
+			)
+			if chain != nil {
+				t.Errorf("chain: got %v, want nil (preflight should reject)", chain)
+			}
+			if providersOut != nil {
+				t.Errorf("providers: got %v, want nil", providersOut)
+			}
+			if legacy != nil {
+				t.Errorf("legacy: got %v, want nil", legacy)
+			}
+			if reason != PathReasonInvalidStrategyOverride {
+				t.Errorf("reason: got %q, want %q", reason, PathReasonInvalidStrategyOverride)
+			}
+		})
+	}
+}
+
+// TestResolveFallbackChainForClientWithReason_AbsentOverrideUsesIntrospected
+// is the inverse-regression guard for the explicit-provider-
+// without-strategy preflight: a client with NO runtime registry
+// entry must still resolve through the introspected chain.
+func TestResolveFallbackChainForClientWithReason_AbsentOverrideUsesIntrospected(t *testing.T) {
+	chains := map[string][]string{"MyFallback": {"A", "B"}}
+	providers := map[string]string{
+		"MyFallback": "baml-fallback",
+		"A":          "openai",
+		"B":          "anthropic",
+	}
+	chain, _, _, reason := ResolveFallbackChainForClientWithReason(
+		nil, "MyFallback", chains, providers, IsProviderSupported,
+	)
+	if reason != "" {
+		t.Errorf("reason: got %q, want empty (drivable chain)", reason)
+	}
+	if len(chain) != 2 || chain[0] != "A" || chain[1] != "B" {
+		t.Errorf("chain: got %v, want [A B]", chain)
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_RRExplicitProviderWithoutStrategy
+// pins the metadata-plan seam for the missing-strategy case on the
+// roundrobin path. Mirrors the ResolveProviderWithReason and chain-
+// resolution siblings — every classification seam emits the same
+// path-reason for the same operator input.
+func TestBuildLegacyMetadataPlanForClient_RRExplicitProviderWithoutStrategy(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+	}{
+		{"round-robin alias", "round-robin"},
+		{"baml-roundrobin canonical", "baml-roundrobin"},
+		{"baml-round-robin alias", "baml-round-robin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &bamlutils.ClientRegistry{
+				Clients: []*bamlutils.ClientProperty{
+					{Name: "MyRR", Provider: tc.provider, ProviderSet: true},
+				},
+			}
+			plan := BuildLegacyMetadataPlanForClient(
+				reg,
+				"MyRR",
+				"baml-roundrobin",
+				map[string][]string{"MyRR": {"A", "B"}},
+				map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+				IsProviderSupported,
+				nil,
+			)
+			if plan.Path != "legacy" {
+				t.Errorf("path: got %q, want legacy", plan.Path)
+			}
+			if plan.Strategy != "baml-roundrobin" {
+				t.Errorf("strategy: got %q, want baml-roundrobin", plan.Strategy)
+			}
+			if plan.PathReason != PathReasonInvalidStrategyOverride {
+				t.Errorf("reason: got %q, want %q (explicit RR provider + no options.strategy → invalid-strategy-override, not roundrobin-legacy-only)",
+					plan.PathReason, PathReasonInvalidStrategyOverride)
+			}
+		})
+	}
+}
+
+// TestBuildLegacyMetadataPlanForClient_RRValidStartKeepsRoundRobinReason
+// is the inverse-regression guard for valid start overrides. A valid
+// integer `start` must not trip the new path reason — RR clients with valid
+// runtime configuration that reach the legacy plan (older adapters,
+// resolver errors) should still surface PathReasonRoundRobin.
+//
+// Strategy is supplied alongside start so the runtime override is
+// structurally complete; the classifier's explicit-RR-provider +
+// no-strategy contract returns PathReasonInvalidStrategyOverride
+// otherwise, which would shadow the start-side classification this
+// test is meant to pin.
+func TestBuildLegacyMetadataPlanForClient_RRValidStartKeepsRoundRobinReason(t *testing.T) {
+	reg := &bamlutils.ClientRegistry{
+		Clients: []*bamlutils.ClientProperty{
+			{
+				Name:     "MyRR",
+				Provider: "baml-roundrobin",
+				Options: map[string]any{
+					"strategy": []any{"A", "B"},
+					"start":    1,
+				},
+			},
+		},
+	}
+	plan := BuildLegacyMetadataPlanForClient(
+		reg,
+		"MyRR",
+		"baml-roundrobin",
+		map[string][]string{"MyRR": {"A", "B"}},
+		map[string]string{"MyRR": "baml-roundrobin", "A": "openai", "B": "anthropic"},
+		IsProviderSupported,
+		nil,
+	)
+	if plan.PathReason != PathReasonRoundRobin {
+		t.Errorf("reason: got %q, want %q", plan.PathReason, PathReasonRoundRobin)
 	}
 }
 
