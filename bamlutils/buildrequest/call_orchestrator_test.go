@@ -269,13 +269,17 @@ func TestRunCallOrchestration_RetryExhausted(t *testing.T) {
 
 	// Should get an error after exhausting retries
 	errs := 0
+	finals := 0
 	for r := range out {
-		if r.Kind() == bamlutils.StreamResultKindError {
+		switch r.Kind() {
+		case bamlutils.StreamResultKindError:
 			errs++
+		case bamlutils.StreamResultKindFinal:
+			finals++
 		}
 	}
-	if errs != 1 {
-		t.Fatalf("expected exactly 1 error result after exhausting retries, got %d", errs)
+	if errs != 1 || finals != 0 {
+		t.Fatalf("expected exactly 1 error and 0 finals after exhausting retries, got errs=%d finals=%d", errs, finals)
 	}
 }
 
@@ -536,16 +540,20 @@ func TestRunCallOrchestration_ParseFinalError(t *testing.T) {
 	}
 
 	errs := 0
+	finals := 0
 	for _, r := range results {
-		if r.Kind() == bamlutils.StreamResultKindError {
+		switch r.Kind() {
+		case bamlutils.StreamResultKindError:
 			errs++
 			if !strings.Contains(r.Error().Error(), "parse failed") {
 				t.Errorf("unexpected error: %v", r.Error())
 			}
+		case bamlutils.StreamResultKindFinal:
+			finals++
 		}
 	}
-	if errs != 1 {
-		t.Fatalf("expected exactly 1 parse error result, got %d", errs)
+	if errs != 1 || finals != 0 {
+		t.Fatalf("expected exactly 1 parse error and 0 finals, got errs=%d finals=%d", errs, finals)
 	}
 }
 

@@ -244,6 +244,12 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 			Options: opts,
 		})
 
+		// Declared before the first-event wait so an error event observed
+		// as the first event (or a non-nil errs receive at any point) is
+		// counted toward the round's exclusivity check below.
+		finals := 0
+		errCount := 0
+
 		// Wait for first event.
 		select {
 		case event, ok := <-events:
@@ -251,6 +257,12 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 				t.Fatalf("Round %d: stream closed before first event", round)
 			}
 			t.Logf("Round %d: got first event: type=%s", round, event.Event)
+			if event.IsError() {
+				errCount++
+			}
+			if event.IsFinal() {
+				finals++
+			}
 		case err := <-errs:
 			t.Fatalf("Round %d: stream error before first event: %v", round, err)
 		case <-time.After(30 * time.Second):
@@ -268,7 +280,6 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 		}
 
 		// Drain remaining events — expect recovery (reset + final).
-		finals := 0
 		for {
 			select {
 			case event, ok := <-events:
@@ -277,6 +288,9 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 				}
 				if event.IsFinal() {
 					finals++
+				}
+				if event.IsError() {
+					errCount++
 				}
 			case err, ok := <-errs:
 				if !ok {
@@ -287,6 +301,7 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 				}
 				if err != nil {
 					t.Logf("Round %d: stream error during drain: %v", round, err)
+					errCount++
 				}
 			case <-time.After(30 * time.Second):
 				t.Fatalf("Round %d: timeout draining stream", round)
@@ -294,8 +309,8 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 		}
 	roundDone:
 
-		if finals != 1 {
-			t.Errorf("Round %d: expected exactly 1 final result after worker death, got %d", round, finals)
+		if finals != 1 || errCount != 0 {
+			t.Errorf("Round %d: expected exactly 1 final and 0 errors after worker death, got finals=%d errCount=%d", round, finals, errCount)
 		}
 
 		// Verify a simple call works after recovery.
