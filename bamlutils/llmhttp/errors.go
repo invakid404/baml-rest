@@ -94,12 +94,19 @@ func (e *TransportError) Unwrap() []error {
 // the right category attached, or nil if err is not a transport flake.
 // Called at each transport wrap site.
 //
-// bareEOFAcceptable gates the stale-keepalive bare-EOF heuristic:
-// true at initial-Do wrap sites (where bare EOF unambiguously means
-// the upstream tore down a reusable connection before any body was
-// read); false at body-read wrap sites (where bare EOF is application
-// content failure, not transport).
-func classifyTransportErr(err error, prefix string, bareEOFAcceptable bool) *TransportError {
+// staleConnTeardownAcceptable gates the entire TransportFlakeStaleConnTeardown
+// family — fasthttp.ErrConnectionClosed, the HTTP/2 GOAWAY substring, the
+// x/net/http2.GoAwayError forward-compat secondary, and the bare-EOF
+// heuristic — together. Pass true at initial-Do wrap sites (no body has
+// been read yet, so a torn-down reusable connection is unambiguously a
+// transport flake). Pass false at body-read wrap sites: every form of
+// stale-conn-teardown there overlaps with mid-content failure, so the
+// strict-content-integrity contract rejects them all rather than letting
+// a torn-down stream silently look like a transport flake.
+//
+// Typed syscall errors (ECONNREFUSED / ECONNRESET / EPIPE) and net.ErrClosed
+// remain ungated: those are unambiguous transport drops at any layer.
+func classifyTransportErr(err error, prefix string, staleConnTeardownAcceptable bool) *TransportError {
 	if err == nil {
 		return nil
 	}
@@ -113,7 +120,13 @@ func classifyTransportErr(err error, prefix string, bareEOFAcceptable bool) *Tra
 		return &TransportError{Category: TransportFlakeBrokenPipe, Prefix: prefix, Underlying: err}
 	case errors.Is(err, net.ErrClosed):
 		return &TransportError{Category: TransportFlakeClosedConnection, Prefix: prefix, Underlying: err}
-	case errors.Is(err, fasthttp.ErrConnectionClosed):
+	}
+
+	if !staleConnTeardownAcceptable {
+		return nil
+	}
+
+	if errors.Is(err, fasthttp.ErrConnectionClosed) {
 		return &TransportError{Category: TransportFlakeStaleConnTeardown, Prefix: prefix, Underlying: err}
 	}
 
@@ -134,9 +147,7 @@ func classifyTransportErr(err error, prefix string, bareEOFAcceptable bool) *Tra
 
 	// net/http stale-keepalive teardown: errServerClosedIdle is
 	// unexported, so the bare-EOF heuristic is the only signal.
-	// Active only at initial-Do wrap sites; at body-read sites bare
-	// EOF is application content failure (deliberately rejected).
-	if bareEOFAcceptable && errors.Is(err, io.EOF) {
+	if errors.Is(err, io.EOF) {
 		return &TransportError{Category: TransportFlakeStaleConnTeardown, Prefix: prefix, Underlying: err}
 	}
 
