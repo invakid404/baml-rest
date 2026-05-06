@@ -99,6 +99,106 @@ func TestUnwrapDynamicValue_MapStringRefEnum(t *testing.T) {
 	}
 }
 
+func TestUnwrapDynamicValue_OptionalMapStringRefClass(t *testing.T) {
+	inner := map[string]serde.DynamicClass{
+		"i1": {
+			Name: "Issue",
+			Fields: map[string]any{
+				"description": "from optional map",
+				"type": serde.DynamicEnum{
+					Name:  "IssueType",
+					Value: "Payment_Required",
+				},
+			},
+		},
+	}
+	got := UnwrapDynamicValue(&inner)
+
+	want := map[string]any{
+		"i1": map[string]any{
+			"description": "from optional map",
+			"type":        "Payment_Required",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("optional(map<string, ref Class>) unwrap mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestUnwrapDynamicValue_ListMapStringRefEnum(t *testing.T) {
+	in := []map[string]serde.DynamicEnum{
+		{
+			"a": {Name: "Status", Value: "ACTIVE"},
+			"b": {Name: "Status", Value: "PENDING"},
+		},
+	}
+	got := UnwrapDynamicValue(in)
+
+	want := []any{
+		map[string]any{"a": "ACTIVE", "b": "PENDING"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("list(map<string, ref Enum>) unwrap mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestUnwrapDynamicValue_MapStringListRefClass(t *testing.T) {
+	in := map[string][]serde.DynamicClass{
+		"open": {
+			{
+				Name: "Issue",
+				Fields: map[string]any{
+					"description": "nested list",
+					"type": serde.DynamicEnum{
+						Name:  "IssueType",
+						Value: "Payment_Required",
+					},
+				},
+			},
+		},
+	}
+	got := UnwrapDynamicValue(in)
+
+	want := map[string]any{
+		"open": []any{
+			map[string]any{
+				"description": "nested list",
+				"type":        "Payment_Required",
+			},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("map<string, list(ref Class)> unwrap mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestUnwrapDynamicValue_DynamicUnionMapStringRefEnum(t *testing.T) {
+	in := serde.DynamicUnion{
+		Value: map[string]serde.DynamicEnum{
+			"a": {Name: "Status", Value: "ACTIVE"},
+			"b": {Name: "Status", Value: "PENDING"},
+		},
+	}
+	got := UnwrapDynamicValue(in)
+
+	want := map[string]any{"a": "ACTIVE", "b": "PENDING"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("union(map<string, ref Enum>) unwrap mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestUnwrapDynamicValue_NonStringMapKeyFallback(t *testing.T) {
+	in := map[int]serde.DynamicEnum{
+		7: {Name: "Status", Value: "ACTIVE"},
+	}
+	got := UnwrapDynamicValue(in)
+
+	want := map[string]any{"7": "ACTIVE"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("non-string map key fallback mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
 // TestUnwrapDynamicValue_NilPointer ensures the pre-existing nil-pointer
 // short-circuit still wins over the new pointer-deref branch.
 func TestUnwrapDynamicValue_NilPointer(t *testing.T) {

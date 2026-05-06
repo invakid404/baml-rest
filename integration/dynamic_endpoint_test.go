@@ -694,6 +694,71 @@ func TestDynamicEndpoint(t *testing.T) {
 		}
 	})
 
+	t.Run("call_repro_map_string_ref_enum_unwrapped", func(t *testing.T) {
+		if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+			t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		opts := setupNonStreamingScenario(t, "test-dynamic-call-map-string-ref-enum", `{"status_by_id": {"a": "ACTIVE", "b": "PENDING"}}`)
+
+		resp, err := BAMLClient.DynamicCall(ctx, testutil.DynamicRequest{
+			Messages: []testutil.DynamicMessage{
+				{Role: "user", Content: "Return statuses by id."},
+			},
+			ClientRegistry: opts.ClientRegistry,
+			OutputSchema: &testutil.DynamicOutputSchema{
+				Enums: map[string]*testutil.DynamicEnum{
+					"DynCallMapEnumStatus": {
+						Values: []*testutil.DynamicEnumValue{
+							{Name: "ACTIVE"},
+							{Name: "PENDING"},
+							{Name: "INACTIVE"},
+						},
+					},
+				},
+				Properties: map[string]*testutil.DynamicProperty{
+					"status_by_id": {
+						Type:   "map",
+						Keys:   &testutil.DynamicTypeSpec{Type: "string"},
+						Values: &testutil.DynamicTypeSpec{Ref: "DynCallMapEnumStatus"},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("DynamicCall failed: %v", err)
+		}
+
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		byID, ok := result["status_by_id"].(map[string]any)
+		if !ok {
+			t.Fatalf("Expected status_by_id to be an object, got %T: %v", result["status_by_id"], result["status_by_id"])
+		}
+
+		want := map[string]string{"a": "ACTIVE", "b": "PENDING"}
+		for k, w := range want {
+			got := byID[k]
+			if leaked, isMap := got.(map[string]any); isMap {
+				t.Errorf("/call/_dynamic map<string, ref Enum>[%q] leaked DynamicEnum {Name, Value} wrapper, got: %v", k, leaked)
+				continue
+			}
+			if got != w {
+				t.Errorf("Expected status_by_id[%q] = %q (string), got %v (type: %T)", k, w, got, got)
+			}
+		}
+	})
+
 	// Parse validation tests
 	t.Run("validation_missing_raw", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
