@@ -566,7 +566,8 @@ func TestMediaStreamEndpoint(t *testing.T) {
 		// path-dependent count (Legacy=6, BuildRequest=7) because BAML's
 		// SSE extractor coalesces one partial in the Legacy leg only.
 		// Pinning either value would lock in path-specific BAML internals
-		// rather than a stable contract; deferred for #199 PR-C.
+		// rather than a stable contract, so the lower bound intentionally
+		// remains.
 		if eventCount < 2 {
 			t.Errorf("Expected multiple events, got %d", eventCount)
 		}

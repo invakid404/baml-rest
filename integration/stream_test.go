@@ -1392,7 +1392,9 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 		// timing-sensitive (the `resetCount > 0` log below acknowledges
 		// this branch). The typical-case shape is segments=1 (no
 		// retry) but a tightened pin would flake on the retry branch
-		// without surfacing a real regression. Deferred for #199 PR-C.
+		// without surfacing a real regression; keep the lower bound
+		// until the retry path exposes a path-stable segment-count
+		// contract.
 		if len(segments) == 0 {
 			t.Fatal("Expected at least one segment with raw values")
 		}
