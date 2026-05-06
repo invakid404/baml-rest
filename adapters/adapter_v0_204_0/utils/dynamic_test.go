@@ -107,3 +107,32 @@ func TestUnwrapDynamicValue_NilPointer(t *testing.T) {
 		t.Fatalf("nil *[]DynamicClass should unwrap to nil, got %#v", got)
 	}
 }
+
+func TestUnwrapDynamicValue_PointerToTypedNilSlicePreservesNil(t *testing.T) {
+	var inner []serde.DynamicClass
+	got := UnwrapDynamicValue(&inner)
+	if !isNilLike(got) {
+		t.Fatalf("pointer to typed nil slice should preserve nil semantics, got %#v", got)
+	}
+}
+
+func TestUnwrapDynamicValue_TypedNilMapPreservesNil(t *testing.T) {
+	var in map[string]serde.DynamicClass
+	got := UnwrapDynamicValue(in)
+	if !isNilLike(got) {
+		t.Fatalf("typed nil map should preserve nil semantics, got %#v", got)
+	}
+}
+
+func isNilLike(value any) bool {
+	if value == nil {
+		return true
+	}
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return rv.IsNil()
+	default:
+		return false
+	}
+}

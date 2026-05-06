@@ -44,6 +44,9 @@ func UnwrapDynamicValue(value any) any {
 	}
 
 	if anyMap, ok := value.(map[string]any); ok {
+		if anyMap == nil {
+			return value
+		}
 		result := make(map[string]any, len(anyMap))
 		for k, v := range anyMap {
 			result[k] = UnwrapDynamicValue(v)
@@ -52,6 +55,9 @@ func UnwrapDynamicValue(value any) any {
 	}
 
 	if anySlice, ok := value.([]any); ok {
+		if anySlice == nil {
+			return value
+		}
 		result := make([]any, len(anySlice))
 		for i, v := range anySlice {
 			result[i] = UnwrapDynamicValue(v)
@@ -61,6 +67,9 @@ func UnwrapDynamicValue(value any) any {
 
 	// Handle other slice types via reflection (BAML may return typed slices)
 	if rv.Kind() == reflect.Slice {
+		if rv.IsNil() {
+			return value
+		}
 		result := make([]any, rv.Len())
 		for i := 0; i < rv.Len(); i++ {
 			result[i] = UnwrapDynamicValue(rv.Index(i).Interface())
@@ -73,6 +82,9 @@ func UnwrapDynamicValue(value any) any {
 	// JSON-marshal the value type's exported fields, leaking the internal
 	// {Name, Fields} / {Name, Value} wrappers.
 	if rv.Kind() == reflect.Map {
+		if rv.IsNil() {
+			return value
+		}
 		result := make(map[string]any, rv.Len())
 		iter := rv.MapRange()
 		for iter.Next() {
