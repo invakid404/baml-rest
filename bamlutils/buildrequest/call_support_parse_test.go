@@ -1,5 +1,3 @@
-//go:build debug
-
 package buildrequest
 
 import (
