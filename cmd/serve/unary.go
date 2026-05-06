@@ -4,21 +4,16 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/goccy/go-json"
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/internal/httplogger"
 	"github.com/invakid404/baml-rest/pool"
-	"github.com/invakid404/baml-rest/workerplugin"
 	"github.com/rs/zerolog"
 )
 
@@ -26,33 +21,6 @@ const defaultUnaryPort = 8081
 
 func init() {
 	serveCmd.Flags().IntVar(&unaryPort, "unary-port", defaultUnaryPort, "Port for the unary server (0 = disabled). Serves /call/*, /call-with-raw/*, /parse/* on a net/http server with reliable client-disconnect cancellation")
-}
-
-// unaryCaller is the subset of *pool.Pool the unary chi handlers depend
-// on. Declared as an interface so tests can construct mocks without
-// spinning up a real worker pool. *pool.Pool satisfies it via Pool.Call
-// (signature matches by structural typing). Production routing in
-// newUnaryRouter passes the pool directly.
-type unaryCaller interface {
-	Call(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (*workerplugin.CallResult, error)
-}
-
-// chiHeadersEmitter is the function-typed seam the chi dynamic call
-// handler uses to publish BAML observability headers from a CallResult's
-// planned/outcome JSON. Extracted so tests can substitute a counting
-// wrapper and verify call frequency (e.g., exactly once on success,
-// once on error tail, zero when no result was produced) — assertions
-// the previous Header().Values()-based test could not actually make,
-// because http.Header.Set silently overwrites on repeat calls.
-type chiHeadersEmitter func(w http.ResponseWriter, planned, outcome []byte)
-
-// defaultChiHeadersEmitter is the production header emitter: decodes
-// the JSON-encoded planned/outcome payloads and forwards them to
-// setBAMLHeaders via netHTTPHeaderSetter. Tests inject their own
-// emitter into makeChiDynamicCallHandler instead of swapping this var
-// (avoids the global-mutation race that makes parallel tests unsafe).
-func defaultChiHeadersEmitter(w http.ResponseWriter, planned, outcome []byte) {
-	setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(planned), decodeMetadataJSON(outcome))
 }
 
 // newUnaryServer creates the chi-based unary HTTP server if unaryPort > 0.
@@ -88,10 +56,17 @@ func newUnaryRouter(
 	r.Use(middleware.RequestID)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			if reqID := middleware.GetReqID(req.Context()); reqID != "" {
+			reqID := middleware.GetReqID(req.Context())
+			if reqID != "" {
 				w.Header().Set("X-Request-Id", reqID)
 			}
-			next.ServeHTTP(w, req)
+			// Bridge chi's middleware request ID into the untagged
+			// handler-side context key so writeChiJSONError (which
+			// lives in unary_handlers.go and must compile without a
+			// chi dep) can populate the JSON error envelope's
+			// request_id field.
+			ctx := context.WithValue(req.Context(), unaryRequestIDKey{}, reqID)
+			next.ServeHTTP(w, req.WithContext(ctx))
 		})
 	})
 	r.Use(httplogger.RequestLogger(logger, &httplogger.Options{
@@ -126,218 +101,6 @@ func newUnaryRouter(
 	}
 
 	return r
-}
-
-// ---------------------------------------------------------------------------
-// chi handler factories
-// ---------------------------------------------------------------------------
-
-func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.StreamMode) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-
-		body, statusCode, err := readUnaryBody(r)
-		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", statusCode)
-			return
-		}
-
-		result, err := p.Call(ctx, methodName, body, streamMode)
-		// Surface routing observability headers even on the error path
-		// (Pool.Call preserves accumulated planned/outcome metadata in
-		// the result for error tails). See cmd/serve/main.go for the
-		// full rationale.
-		if result != nil {
-			setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
-		}
-		if err != nil {
-			writeChiWorkerError(w, r, err, "failed to process request")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if streamMode.NeedsRaw() {
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(CallWithRawResponse{
-				Data: result.Data,
-				Raw:  result.Raw,
-			})
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(result.Data)
-	}
-}
-
-func makeChiParseHandler(p *pool.Pool, methodName string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-
-		body, statusCode, err := readUnaryBody(r)
-		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", statusCode)
-			return
-		}
-
-		result, err := p.Parse(ctx, methodName, body)
-		if err != nil {
-			writeChiWorkerError(w, r, err, "failed to parse response")
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(result.Data)
-	}
-}
-
-func makeChiDynamicCallHandler(p unaryCaller, streamMode bamlutils.StreamMode) http.HandlerFunc {
-	return makeChiDynamicCallHandlerWithEmitter(p, streamMode, defaultChiHeadersEmitter)
-}
-
-// makeChiDynamicCallHandlerWithEmitter is the test-injectable form of
-// makeChiDynamicCallHandler. Production callers go through the
-// default-emitter wrapper above; tests pass a counting wrapper so they
-// can assert how many times the headers seam was invoked.
-func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.StreamMode, emit chiHeadersEmitter) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-
-		body, statusCode, err := readUnaryBody(r)
-		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", statusCode)
-			return
-		}
-
-		var input bamlutils.DynamicInput
-		if err := json.Unmarshal(body, &input); err != nil {
-			writeChiJSONError(w, r, "invalid JSON payload", http.StatusBadRequest)
-			return
-		}
-		if err := input.Validate(); err != nil {
-			writeChiJSONError(w, r, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		workerInput, err := input.ToWorkerInput()
-		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process dynamic input", http.StatusInternalServerError)
-			return
-		}
-
-		result, err := p.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
-		// Surface routing observability headers even on the error path
-		// — Pool.Call preserves accumulated planned/outcome metadata in
-		// the result for error tails. Mirrors the static chi handler
-		// above and the fiber dynamic handler in cmd/serve/main.go.
-		if result != nil {
-			emit(w, result.Planned, result.Outcome)
-		}
-		if err != nil {
-			writeChiWorkerError(w, r, err, "failed to process request")
-			return
-		}
-
-		flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
-		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process response", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if streamMode.NeedsRaw() {
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(CallWithRawResponse{
-				Data: flattenedData,
-				Raw:  result.Raw,
-			})
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(flattenedData)
-	}
-}
-
-func makeChiDynamicParseHandler(p *pool.Pool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-
-		body, statusCode, err := readUnaryBody(r)
-		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", statusCode)
-			return
-		}
-
-		var input bamlutils.DynamicParseInput
-		if err := json.Unmarshal(body, &input); err != nil {
-			writeChiJSONError(w, r, "invalid JSON payload", http.StatusBadRequest)
-			return
-		}
-		if err := input.Validate(); err != nil {
-			writeChiJSONError(w, r, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		workerInput, err := input.ToWorkerInput()
-		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process dynamic input", http.StatusInternalServerError)
-			return
-		}
-
-		result, err := p.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
-		if err != nil {
-			writeChiWorkerError(w, r, err, "failed to parse response")
-			return
-		}
-
-		flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
-		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process response", http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(flattenedData)
-	}
-}
-
-// readUnaryBody reads the request body and returns the appropriate HTTP status
-// code on failure. MaxBytesReader errors yield 413; other read errors yield 400.
-func readUnaryBody(r *http.Request) ([]byte, int, error) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			return nil, http.StatusRequestEntityTooLarge, err
-		}
-		return nil, http.StatusBadRequest, err
-	}
-	return body, 0, nil
-}
-
-// writeChiJSONError writes a JSON error response using the standard apierror envelope.
-func writeChiJSONError(w http.ResponseWriter, r *http.Request, message string, statusCode int) {
-	apierror.WriteJSON(w, message, statusCode, middleware.GetReqID(r.Context()))
-}
-
-// writeChiWorkerError classifies worker errors: context cancellation is reported
-// as 408 (not 500) so it doesn't inflate error metrics.
-func writeChiWorkerError(w http.ResponseWriter, r *http.Request, err error, fallbackMessage string) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		writeChiJSONError(w, r, "request canceled", http.StatusRequestTimeout)
-		return
-	}
-	httplogger.SetError(r.Context(), err)
-	writeChiJSONError(w, r, fallbackMessage, http.StatusInternalServerError)
 }
 
 // chiMetricsMiddleware records the same HTTP metrics as the Fiber middleware

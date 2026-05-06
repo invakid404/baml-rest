@@ -1,5 +1,3 @@
-//go:build unaryserver
-
 package main
 
 import (
