@@ -386,7 +386,7 @@ func TestWorkerDeathMidStream(t *testing.T) {
 
 		var receivedEvents []testutil.StreamEvent
 		var streamErr error
-		var sawResetEvent bool
+		var resetEventCount int
 		var sawErrorEvent bool
 		var killedWorker bool
 		var eventsBeforeKill int
@@ -413,7 +413,7 @@ func TestWorkerDeathMidStream(t *testing.T) {
 				t.Logf("Received event %d: type=%s, data_len=%d", len(receivedEvents), event.Event, len(event.Data))
 
 				if event.Event == "reset" {
-					sawResetEvent = true
+					resetEventCount++
 					t.Log(">>> SAW RESET EVENT - retry with reset working!")
 				}
 				if event.Event == "error" {
@@ -468,8 +468,8 @@ func TestWorkerDeathMidStream(t *testing.T) {
 					t.Logf("Received stream error: %v", err)
 				}
 			case <-postKillC:
-				t.Errorf("post-kill drain exceeded 30s — retry handoff appears wedged. events=%d, sawReset=%v, sawError=%v, streamErr=%v",
-					len(receivedEvents), sawResetEvent, sawErrorEvent, streamErr)
+				t.Errorf("post-kill drain exceeded 30s — retry handoff appears wedged. events=%d, resets=%d, sawError=%v, streamErr=%v",
+					len(receivedEvents), resetEventCount, sawErrorEvent, streamErr)
 				goto done
 			case <-ctx.Done():
 				t.Logf("Context cancelled")
@@ -487,7 +487,7 @@ func TestWorkerDeathMidStream(t *testing.T) {
 		t.Logf("Events before kill: %d", eventsBeforeKill)
 		t.Logf("Stream error: %v", streamErr)
 		t.Logf("Worker killed: %v", killedWorker)
-		t.Logf("Saw reset event: %v", sawResetEvent)
+		t.Logf("Reset events: %d", resetEventCount)
 		t.Logf("Saw error event: %v", sawErrorEvent)
 
 		for i, event := range receivedEvents {
@@ -505,9 +505,11 @@ func TestWorkerDeathMidStream(t *testing.T) {
 
 		// VERIFY EXPECTED BEHAVIOR:
 
-		// 1. Should have seen a reset event (indicating retry happened)
-		if !sawResetEvent {
-			t.Error("Expected reset event after worker death - mid-stream retry should inject reset")
+		// 1. Should have seen exactly one reset event (one worker kill → one
+		//    reset injection on retry handoff). A duplicate reset would
+		//    indicate a producer-side regression.
+		if resetEventCount != 1 {
+			t.Errorf("Expected exactly 1 reset event after worker death, got %d - mid-stream retry should inject reset once per kill", resetEventCount)
 		}
 
 		// 2. Should have completed successfully (no error event, stream closed gracefully)
@@ -1520,7 +1522,7 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 
 		var receivedEvents []testutil.StreamEvent
 		var streamErr error
-		var sawResetEvent bool
+		var resetEventCount int
 		var sawErrorEvent bool
 		var killedWorker bool
 		var eventsBeforeKill int
@@ -1545,7 +1547,7 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 				t.Logf("Received event %d: type=%s, data_len=%d", len(receivedEvents), event.Event, len(event.Data))
 
 				if event.IsReset() {
-					sawResetEvent = true
+					resetEventCount++
 					t.Log(">>> SAW RESET EVENT - retry with reset working in NDJSON!")
 				}
 				if event.IsError() {
@@ -1589,8 +1591,8 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 					t.Logf("Received stream error: %v", err)
 				}
 			case <-postKillC:
-				t.Errorf("post-kill drain exceeded 30s — retry handoff appears wedged. events=%d, eventsBeforeKill=%d, sawReset=%v, sawError=%v, streamErr=%v",
-					len(receivedEvents), eventsBeforeKill, sawResetEvent, sawErrorEvent, streamErr)
+				t.Errorf("post-kill drain exceeded 30s — retry handoff appears wedged. events=%d, eventsBeforeKill=%d, resets=%d, sawError=%v, streamErr=%v",
+					len(receivedEvents), eventsBeforeKill, resetEventCount, sawErrorEvent, streamErr)
 				goto done
 			case <-ctx.Done():
 				t.Logf("Context cancelled")
@@ -1608,7 +1610,7 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 		t.Logf("Events before kill: %d", eventsBeforeKill)
 		t.Logf("Stream error: %v", streamErr)
 		t.Logf("Worker killed: %v", killedWorker)
-		t.Logf("Saw reset event: %v", sawResetEvent)
+		t.Logf("Reset events: %d", resetEventCount)
 		t.Logf("Saw error event: %v", sawErrorEvent)
 
 		// Verify test setup worked
@@ -1622,9 +1624,11 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 
 		// VERIFY EXPECTED BEHAVIOR:
 
-		// 1. Should have seen a reset event (indicating retry happened)
-		if !sawResetEvent {
-			t.Error("Expected reset event after worker death - mid-stream retry should inject reset")
+		// 1. Should have seen exactly one reset event (one worker kill → one
+		//    reset injection on retry handoff). A duplicate reset would
+		//    indicate a producer-side regression.
+		if resetEventCount != 1 {
+			t.Errorf("Expected exactly 1 reset event after worker death, got %d - mid-stream retry should inject reset once per kill", resetEventCount)
 		}
 
 		// 2. Should have completed successfully (no error event, stream closed gracefully)

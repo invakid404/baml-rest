@@ -588,7 +588,7 @@ func TestMediaStreamEndpoint(t *testing.T) {
 
 		var eventCount int
 		var lastEvent testutil.StreamEvent
-		var sawFinal bool
+		var finals int
 
 		for {
 			select {
@@ -599,7 +599,7 @@ func TestMediaStreamEndpoint(t *testing.T) {
 				eventCount++
 				lastEvent = event
 				if event.IsFinal() {
-					sawFinal = true
+					finals++
 				}
 			case err := <-errs:
 				if err != nil {
@@ -615,8 +615,8 @@ func TestMediaStreamEndpoint(t *testing.T) {
 			t.Errorf("Expected multiple events, got %d", eventCount)
 		}
 
-		if !sawFinal {
-			t.Error("Expected a final event")
+		if finals != 1 {
+			t.Errorf("Expected exactly 1 final event, got %d", finals)
 		}
 
 		var result string

@@ -1196,26 +1196,26 @@ func TestCallStreamMidStreamRetry(t *testing.T) {
 
 	// Wrapped in requireCompleteWithin so a future regression where the
 	// producer/wrapper fails to close the channel surfaces as a test
-	// timeout rather than hanging the test binary. atomic.Bool because
+	// timeout rather than hanging the test binary. atomic.Int32 because
 	// the helper runs the closure in a goroutine.
-	var gotReset, gotFinal atomic.Bool
+	var resets, finals atomic.Int32
 	requireCompleteWithin(t, 2*time.Second, func() {
 		for r := range results {
 			if r.Reset {
-				gotReset.Store(true)
+				resets.Add(1)
 			}
 			if r.Kind == workerplugin.StreamResultKindFinal {
-				gotFinal.Store(true)
+				finals.Add(1)
 			}
 			workerplugin.ReleaseStreamResult(r)
 		}
 	})
 
-	if !gotReset.Load() {
-		t.Error("expected reset event after mid-stream retry")
+	if got := resets.Load(); got != 1 {
+		t.Errorf("expected exactly 1 reset event after mid-stream retry, got %d", got)
 	}
-	if !gotFinal.Load() {
-		t.Error("expected final result after retry")
+	if got := finals.Load(); got != 1 {
+		t.Errorf("expected exactly 1 final result after retry, got %d", got)
 	}
 }
 
@@ -1898,18 +1898,18 @@ func TestCallStreamUnexpectedEOF(t *testing.T) {
 		t.Fatalf("CallStream setup failed: %v", err)
 	}
 
-	var gotFinal bool
+	var finals atomic.Int32
 	requireCompleteWithin(t, 5*time.Second, func() {
 		for r := range results {
 			if r.Kind == workerplugin.StreamResultKindFinal {
-				gotFinal = true
+				finals.Add(1)
 			}
 			workerplugin.ReleaseStreamResult(r)
 		}
 	})
 
-	if !gotFinal {
-		t.Error("expected final result after unexpected EOF retry")
+	if got := finals.Load(); got != 1 {
+		t.Errorf("expected exactly 1 final result after unexpected EOF retry, got %d", got)
 	}
 }
 
@@ -1932,18 +1932,18 @@ func TestCallStreamExhaustsRetries(t *testing.T) {
 		t.Fatalf("CallStream setup should succeed: %v", err)
 	}
 
-	var gotError bool
+	var errs atomic.Int32
 	requireCompleteWithin(t, 10*time.Second, func() {
 		for r := range results {
 			if r.Kind == workerplugin.StreamResultKindError {
-				gotError = true
+				errs.Add(1)
 			}
 			workerplugin.ReleaseStreamResult(r)
 		}
 	})
 
-	if !gotError {
-		t.Error("expected error after exhausting all retries")
+	if got := errs.Load(); got != 1 {
+		t.Errorf("expected exactly 1 error after exhausting all retries, got %d", got)
 	}
 }
 
@@ -1968,18 +1968,18 @@ func TestCallStreamNonRetryableError(t *testing.T) {
 		t.Fatalf("CallStream setup should succeed: %v", err)
 	}
 
-	var gotError bool
+	var errs atomic.Int32
 	requireCompleteWithin(t, 5*time.Second, func() {
 		for r := range results {
 			if r.Kind == workerplugin.StreamResultKindError {
-				gotError = true
+				errs.Add(1)
 			}
 			workerplugin.ReleaseStreamResult(r)
 		}
 	})
 
-	if !gotError {
-		t.Error("expected non-retryable error forwarded to consumer")
+	if got := errs.Load(); got != 1 {
+		t.Errorf("expected exactly 1 non-retryable error forwarded to consumer, got %d", got)
 	}
 	if c := callCounts.Load(); c != 1 {
 		t.Errorf("expected 1 call (no retry for non-retryable), got %d", c)
@@ -3356,15 +3356,15 @@ func TestCallStreamSlowLegacyHeartbeatPreventsHungKill(t *testing.T) {
 
 	// Wrapped in requireCompleteWithin so a future regression where the
 	// producer/wrapper fails to close the channel surfaces as a test
-	// timeout rather than hanging the test binary. atomic.Bool +
+	// timeout rather than hanging the test binary. atomic.Int32 +
 	// atomic.Pointer[string] for the cross-goroutine reads after the
 	// helper returns.
-	var gotFinal atomic.Bool
+	var finals atomic.Int32
 	var gotData atomic.Pointer[string]
 	requireCompleteWithin(t, 2*time.Second, func() {
 		for r := range results {
 			if r.Kind == workerplugin.StreamResultKindFinal {
-				gotFinal.Store(true)
+				finals.Add(1)
 				data := string(r.Data)
 				gotData.Store(&data)
 			}
@@ -3377,8 +3377,8 @@ func TestCallStreamSlowLegacyHeartbeatPreventsHungKill(t *testing.T) {
 	if !heartbeatSent.Load() {
 		t.Fatal("heartbeat was never delivered into the worker result channel — the test premise (heartbeat disables hung-kill) cannot be evaluated; the worker-not-killed assertion below would pass for a trivial reason")
 	}
-	if !gotFinal.Load() {
-		t.Fatalf("expected a final result, stream terminated without one")
+	if got := finals.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 final result, got %d", got)
 	}
 	if got := gotData.Load(); got == nil || *got != `"mixed-mode-final"` {
 		var gotStr string
@@ -3591,18 +3591,20 @@ func TestCallStreamPlannedMetadataDoesNotDisableHungDetection(t *testing.T) {
 	// producer/wrapper fails to close the channel surfaces as a test-
 	// process timeout rather than hanging the whole test binary. The
 	// happy path closes via `defer close(ch)` in the mock factory.
-	var seenPlanned atomic.Bool
+	var planned atomic.Int32
 	requireCompleteWithin(t, 2*time.Second, func() {
 		for r := range results {
 			if r.Kind == workerplugin.StreamResultKindMetadata &&
 				metadataPhase(r.Data) == string(bamlutils.MetadataPhasePlanned) {
-				seenPlanned.Store(true)
+				planned.Add(1)
 			}
 			workerplugin.ReleaseStreamResult(r)
 		}
 	})
-	if !seenPlanned.Load() {
-		t.Error("expected planned metadata frame to reach the consumer; none observed (the test's premise is invalid if the frame was lost upstream)")
+	// Planned metadata is upfront-emit-once per request; a duplicate would
+	// indicate a producer-side regression.
+	if got := planned.Load(); got != 1 {
+		t.Errorf("expected exactly 1 planned metadata frame to reach the consumer, got %d (the test's premise is invalid if the frame was lost upstream)", got)
 	}
 }
 
@@ -3848,23 +3850,24 @@ func TestCallStreamPlannedMetadataDoesNotTriggerResetOnRetry(t *testing.T) {
 
 	// Wrapped in requireCompleteWithin so a future regression where the
 	// producer/wrapper fails to close the channel surfaces as a test
-	// timeout rather than hanging the test binary. atomic.Bool because
+	// timeout rather than hanging the test binary. atomic.Int32 because
 	// the helper runs the closure in a goroutine.
-	var sawReset, sawFinal atomic.Bool
+	var sawReset atomic.Bool
+	var finals atomic.Int32
 	requireCompleteWithin(t, 2*time.Second, func() {
 		for r := range results {
 			if r.Reset {
 				sawReset.Store(true)
 			}
 			if r.Kind == workerplugin.StreamResultKindFinal {
-				sawFinal.Store(true)
+				finals.Add(1)
 			}
 			workerplugin.ReleaseStreamResult(r)
 		}
 	})
 
-	if !sawFinal.Load() {
-		t.Fatal("expected a Final result after retry")
+	if got := finals.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 Final result after retry, got %d", got)
 	}
 	if sawReset.Load() {
 		t.Error("Reset must NOT be injected when only planned metadata was forwarded pre-retry")

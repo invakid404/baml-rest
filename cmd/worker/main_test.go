@@ -297,6 +297,15 @@ func TestBridgeStreamResultsForwardsStreamResult(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridged stream result")
 	}
+
+	select {
+	case _, ok := <-out:
+		if ok {
+			t.Fatal("expected bridged output channel to close after upstream closes (no leakage past the single forwarded frame)")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged output channel to close")
+	}
 }
 
 func TestBridgeStreamResultsResetOnlyStreamHasNoPayload(t *testing.T) {
@@ -333,6 +342,15 @@ func TestBridgeStreamResultsResetOnlyStreamHasNoPayload(t *testing.T) {
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridged reset-only stream result")
+	}
+
+	select {
+	case _, ok := <-out:
+		if ok {
+			t.Fatal("expected bridged output channel to close after upstream closes (no leakage past the reset-only frame)")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged output channel to close")
 	}
 }
 

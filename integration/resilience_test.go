@@ -143,28 +143,39 @@ func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
 				Options: opts,
 			})
 
-			var gotFinal bool
-			var gotError bool
-			for {
+			finals := 0
+			errCount := 0
+			// Drain BOTH channels until each producer closes its half.
+			// streamRequest defers close on errs and events; on events-close-
+			// first races the buffered errs value would otherwise be left
+			// unread, hiding a non-nil parse/scanner error behind
+			// `finals == 1 && errCount == 0`. Disable each arm on close
+			// (set chan to nil) and exit only when both are nil.
+			for events != nil || errs != nil {
 				select {
 				case event, ok := <-events:
 					if !ok {
-						goto done
+						events = nil
+						continue
 					}
 					if event.IsReset() {
 						resets.Add(1)
 					}
 					if event.IsFinal() {
-						gotFinal = true
+						finals++
 					}
 					if event.IsError() {
-						gotError = true
+						errCount++
 						t.Logf("Request %d got error event: %s", idx, event.Data)
 					}
-				case err := <-errs:
+				case err, ok := <-errs:
+					if !ok {
+						errs = nil
+						continue
+					}
 					if err != nil {
 						t.Logf("Request %d stream error: %v", idx, err)
-						gotError = true
+						errCount++
 					}
 				case <-ctx.Done():
 					goto done
@@ -172,8 +183,8 @@ func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
 			}
 		done:
 
-			if !gotFinal || gotError {
-				t.Logf("Request %d: final=%v error=%v", idx, gotFinal, gotError)
+			if finals != 1 || errCount != 0 {
+				t.Logf("Request %d: finals=%d errors=%d", idx, finals, errCount)
 				failures.Add(1)
 			}
 		}(i)
@@ -237,18 +248,43 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 			Options: opts,
 		})
 
-		// Wait for first event.
-		select {
-		case event, ok := <-events:
-			if !ok {
-				t.Fatalf("Round %d: stream closed before first event", round)
+		// Declared before the first-event wait so an error event observed
+		// as the first event (or a non-nil errs receive at any point) is
+		// counted toward the round's exclusivity check below.
+		finals := 0
+		errCount := 0
+
+		// Wait for first event. Two-value receive on errs so a closed-but-
+		// empty errs channel does not surface as a spurious
+		// `stream error before first event: <nil>` fatal — disable the arm
+		// on close and keep waiting on events / timeout.
+		firstEventBudget := time.NewTimer(30 * time.Second)
+	waitFirst:
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					t.Fatalf("Round %d: stream closed before first event", round)
+				}
+				t.Logf("Round %d: got first event: type=%s", round, event.Event)
+				if event.IsError() {
+					errCount++
+				}
+				if event.IsFinal() {
+					finals++
+				}
+				break waitFirst
+			case err, ok := <-errs:
+				if !ok {
+					errs = nil
+					continue
+				}
+				t.Fatalf("Round %d: stream error before first event: %v", round, err)
+			case <-firstEventBudget.C:
+				t.Fatalf("Round %d: timeout waiting for first event", round)
 			}
-			t.Logf("Round %d: got first event: type=%s", round, event.Event)
-		case err := <-errs:
-			t.Fatalf("Round %d: stream error before first event: %v", round, err)
-		case <-time.After(30 * time.Second):
-			t.Fatalf("Round %d: timeout waiting for first event", round)
 		}
+		firstEventBudget.Stop()
 
 		// Kill a worker.
 		killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -260,29 +296,39 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 			t.Logf("Round %d: killed worker %d", round, result.WorkerID)
 		}
 
-		// Drain remaining events — expect recovery (reset + final).
-		var gotFinal bool
-		for {
+		// Drain remaining events — expect recovery (reset + final). Drain
+		// BOTH channels until each producer closes its half so an
+		// events-close-first race doesn't strand a buffered errs value
+		// behind a `finals == 1 && errCount == 0` false pass.
+		for events != nil || errs != nil {
 			select {
 			case event, ok := <-events:
 				if !ok {
-					goto roundDone
+					events = nil
+					continue
 				}
 				if event.IsFinal() {
-					gotFinal = true
+					finals++
 				}
-			case err := <-errs:
+				if event.IsError() {
+					errCount++
+				}
+			case err, ok := <-errs:
+				if !ok {
+					errs = nil
+					continue
+				}
 				if err != nil {
 					t.Logf("Round %d: stream error during drain: %v", round, err)
+					errCount++
 				}
 			case <-time.After(30 * time.Second):
 				t.Fatalf("Round %d: timeout draining stream", round)
 			}
 		}
-	roundDone:
 
-		if !gotFinal {
-			t.Errorf("Round %d: never got final result after worker death", round)
+		if finals != 1 || errCount != 0 {
+			t.Errorf("Round %d: expected exactly 1 final and 0 errors after worker death, got finals=%d errCount=%d", round, finals, errCount)
 		}
 
 		// Verify a simple call works after recovery.
@@ -457,29 +503,37 @@ func TestMixedRequestsDuringWorkerDeath(t *testing.T) {
 				Input:   map[string]any{"description": fmt.Sprintf("streamer_%d", idx)},
 				Options: streamOpts,
 			})
-			var gotFinal, gotError bool
-			for {
+			finals := 0
+			errCount := 0
+			// Drain BOTH channels until each producer closes its half so an
+			// events-close-first race doesn't strand a buffered errs value.
+			for events != nil || errs != nil {
 				select {
 				case event, ok := <-events:
 					if !ok {
-						goto done
+						events = nil
+						continue
 					}
 					if event.IsFinal() {
-						gotFinal = true
+						finals++
 					}
 					if event.IsError() {
-						gotError = true
+						errCount++
 					}
-				case err := <-errs:
+				case err, ok := <-errs:
+					if !ok {
+						errs = nil
+						continue
+					}
 					if err != nil {
-						gotError = true
+						errCount++
 					}
 				case <-ctx.Done():
 					goto done
 				}
 			}
 		done:
-			if !gotFinal || gotError {
+			if finals != 1 || errCount != 0 {
 				streamFailures.Add(1)
 			}
 		}(i)

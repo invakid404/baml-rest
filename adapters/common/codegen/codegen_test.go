@@ -151,6 +151,9 @@ func TestStructContainsMediaVisited_SharedVisitedAcrossFields(t *testing.T) {
 	if !visited[reflect.TypeOf(mutualB{})] {
 		t.Error("mutualB should be in visited set after scanning mutualA")
 	}
+	if got := len(visited); got != 2 {
+		t.Errorf("visited set: got len=%d (%v), want exactly 2 — only mutualA + mutualB should be recorded; any extra would indicate the walker descended past the cycle pair", got, visited)
+	}
 }
 
 // TestEmitMakeLegacyStreamOptionsFromAdapter_PinsPrimaryToClientOverride

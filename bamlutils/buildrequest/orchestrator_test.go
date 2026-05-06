@@ -1628,6 +1628,9 @@ func TestResolveFallbackChain_NestedValidOverrideStillResolves(t *testing.T) {
 	if !legacy["InnerRR"] {
 		t.Errorf("InnerRR must remain on the mixed-mode legacy child list (BAML runtime handles RR rotation), legacyChildren=%v", legacy)
 	}
+	if legacy["FastLeaf"] {
+		t.Errorf("FastLeaf is a supported leaf; it must NOT be misclassified as legacy, legacyChildren=%v", legacy)
+	}
 }
 
 // TestResolveFallbackChain_TransitiveInvalidStartOverride pins the
@@ -1821,6 +1824,9 @@ func TestResolveFallbackChain_TransitiveCycleSafe(t *testing.T) {
 	}
 	if !legacy["InnerFallback"] {
 		t.Errorf("InnerFallback must be on the mixed-mode legacy child list (strategy parent), legacyChildren=%v", legacy)
+	}
+	if legacy["FastLeaf"] {
+		t.Errorf("FastLeaf is a supported leaf; it must NOT be misclassified as legacy, legacyChildren=%v", legacy)
 	}
 }
 

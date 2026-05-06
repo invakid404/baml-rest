@@ -32,15 +32,13 @@ func TestBuildLegacyChildRegistryEntries_IncludesNonStrategyLeaves(t *testing.T)
 
 	entries := BuildLegacyChildRegistryEntries(reg, "InnerRR", introspectedProviders, introspectedChains)
 
-	got := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		got[e.Name] = true
+	gotNames := make([]string, len(entries))
+	for i, e := range entries {
+		gotNames[i] = e.Name
 	}
-	if !got["TenantLeaf"] {
-		t.Errorf("expected TenantLeaf in scoped registry; entries=%+v", entries)
-	}
-	if !got["InnerRR"] {
-		t.Errorf("expected InnerRR in scoped registry (target strategy parent); entries=%+v", entries)
+	want := []string{"TenantLeaf", "InnerRR"}
+	if !reflect.DeepEqual(gotNames, want) {
+		t.Errorf("scoped registry names: got %v, want %v (entries=%+v); the static introspected chain leaves StaticBlue/StaticGreen must NOT leak in alongside the runtime override", gotNames, want, entries)
 	}
 }
 
@@ -67,10 +65,17 @@ func TestBuildLegacyChildRegistryEntries_DropsUnreachableStrategyParents(t *test
 
 	entries := BuildLegacyChildRegistryEntries(reg, "InnerRR", introspectedProviders, nil)
 
-	for _, e := range entries {
-		if e.Name == "OtherFallback" {
-			t.Errorf("OtherFallback (unreachable) leaked into scoped registry: entries=%+v", entries)
-		}
+	gotNames := make([]string, len(entries))
+	for i, e := range entries {
+		gotNames[i] = e.Name
+	}
+	// LeafA isn't in reg.Clients (only in InnerRR.strategy), so it's not
+	// emitted as an entry even though it's reachable. Only InnerRR (the
+	// target) survives reg.Clients iteration; OtherFallback is unreachable
+	// and dropped.
+	want := []string{"InnerRR"}
+	if !reflect.DeepEqual(gotNames, want) {
+		t.Errorf("scoped registry names: got %v, want %v (entries=%+v); OtherFallback must drop, only the target InnerRR survives", gotNames, want, entries)
 	}
 }
 
@@ -97,18 +102,13 @@ func TestBuildLegacyChildRegistryEntries_TransitiveReachability(t *testing.T) {
 
 	entries := BuildLegacyChildRegistryEntries(reg, "InnerFallback", introspectedProviders, nil)
 
-	got := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		got[e.Name] = true
+	gotNames := make([]string, len(entries))
+	for i, e := range entries {
+		gotNames[i] = e.Name
 	}
-	if !got["InnerFallback"] {
-		t.Errorf("expected InnerFallback in scoped registry; entries=%+v", entries)
-	}
-	if !got["DeeperRR"] {
-		t.Errorf("expected DeeperRR (transitively reachable) in scoped registry; entries=%+v", entries)
-	}
-	if !got["TenantLeaf"] {
-		t.Errorf("expected TenantLeaf (leaf) in scoped registry; entries=%+v", entries)
+	want := []string{"InnerFallback", "DeeperRR", "TenantLeaf"}
+	if !reflect.DeepEqual(gotNames, want) {
+		t.Errorf("scoped registry names: got %v, want %v (entries=%+v); transitive walk must include all three", gotNames, want, entries)
 	}
 }
 
@@ -157,15 +157,13 @@ func TestBuildLegacyChildRegistryEntries_DynamicOnlyParent(t *testing.T) {
 
 	entries := BuildLegacyChildRegistryEntries(reg, "DynamicFallback", nil, nil)
 
-	got := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		got[e.Name] = true
+	gotNames := make([]string, len(entries))
+	for i, e := range entries {
+		gotNames[i] = e.Name
 	}
-	if !got["DynamicFallback"] {
-		t.Errorf("expected DynamicFallback (dynamic-only nested parent) in scoped registry; entries=%+v", entries)
-	}
-	if !got["TenantLeaf"] {
-		t.Errorf("expected TenantLeaf (dynamic leaf under DynamicFallback) in scoped registry; entries=%+v", entries)
+	want := []string{"DynamicFallback", "TenantLeaf"}
+	if !reflect.DeepEqual(gotNames, want) {
+		t.Errorf("scoped registry names: got %v, want %v (entries=%+v); dynamic-only nested parent and its leaf must both reach the registry", gotNames, want, entries)
 	}
 }
 
@@ -287,18 +285,15 @@ func TestBuildLegacyChildRegistryEntries_DropsUnreachableLeaf(t *testing.T) {
 
 	entries := BuildLegacyChildRegistryEntries(reg, "InnerRR", nil, nil)
 
-	got := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		got[e.Name] = true
+	gotNames := make([]string, len(entries))
+	for i, e := range entries {
+		gotNames[i] = e.Name
 	}
-	if !got["ReachableLeaf"] {
-		t.Errorf("ReachableLeaf must survive — it is in InnerRR.strategy; entries=%+v", entries)
-	}
-	if got["UnrelatedLeaf"] {
-		t.Errorf("UnrelatedLeaf (unreachable) leaked into scoped registry; entries=%+v", entries)
-	}
-	if !got["InnerRR"] {
-		t.Errorf("InnerRR (target) must survive; entries=%+v", entries)
+	// reg.Clients order: ReachableLeaf, UnrelatedLeaf, InnerRR. UnrelatedLeaf
+	// is dropped via the reachability gate; the others survive in source order.
+	want := []string{"ReachableLeaf", "InnerRR"}
+	if !reflect.DeepEqual(gotNames, want) {
+		t.Errorf("scoped registry names: got %v, want %v (entries=%+v); UnrelatedLeaf must drop, ReachableLeaf and target InnerRR survive in reg.Clients order", gotNames, want, entries)
 	}
 }
 
@@ -388,18 +383,16 @@ func TestBuildLegacyChildRegistryEntries_InvalidStrategyOverrideStopsWalk(t *tes
 
 	entries := BuildLegacyChildRegistryEntries(reg, "InnerFallback", introspectedProviders, introspectedChains)
 
-	got := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		got[e.Name] = true
+	gotNames := make([]string, len(entries))
+	for i, e := range entries {
+		gotNames[i] = e.Name
 	}
-	if !got["InnerFallback"] {
-		t.Errorf("InnerFallback (target with present-invalid override) must still be in the scoped registry; entries=%+v", entries)
-	}
-	if got["StaticDeeperRR"] {
-		t.Errorf("StaticDeeperRR leaked through fall-through to introspected chain — invalid runtime override should stop the walk, not silently use the static graph; entries=%+v", entries)
-	}
-	if got["OtherStaticRR"] {
-		t.Errorf("OtherStaticRR leaked through fall-through to introspected chain — invalid runtime override should stop the walk; entries=%+v", entries)
+	// Only the target survives — the present-invalid override must stop
+	// the walk so neither static descendant (StaticDeeperRR/OtherStaticRR)
+	// leaks via fall-through to the introspected chain.
+	want := []string{"InnerFallback"}
+	if !reflect.DeepEqual(gotNames, want) {
+		t.Errorf("scoped registry names: got %v, want %v (entries=%+v); invalid runtime override must stop the walk, not silently descend the static graph", gotNames, want, entries)
 	}
 }
 
