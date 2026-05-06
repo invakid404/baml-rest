@@ -2,6 +2,7 @@ package buildrequest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1093,7 +1094,7 @@ func TestRunCallOrchestration_NilHTTPClient(t *testing.T) {
 		if len(streamErrs) != 1 {
 			t.Fatalf("nil-client fallback: expected exactly one terminal stream error per RunCallOrchestration's contract, got %d: %v", len(streamErrs), streamErrs)
 		}
-		if !isNilDefaultClientTransportFlake(streamErrs[0]) {
+		if !errors.Is(streamErrs[0], llmhttp.ErrTransportFlake) {
 			t.Fatalf("nil-client fallback: stream error is not a recognised transport flake (parse/extract/request-construction regression?): %v", streamErrs[0])
 		}
 		t.Logf("nil-client fallback: acceptable transient transport failure: %v", streamErrs[0])
@@ -1711,128 +1712,5 @@ func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 	}
 	if finalVal != "ok" {
 		t.Errorf("Final payload: got %v, want %q", finalVal, "ok")
-	}
-}
-
-// isNilDefaultClientTransportFlake reports whether err looks like the
-// documented stale-keepalive transport class TestRunCallOrchestration_
-// NilHTTPClient tolerates under CI's `-race -count=100` rotation. The
-// check is substring-based on err.Error() — the test result type does
-// not carry stack traces. Treating every StreamResultKindError as a
-// transport flake would hide parse / extract / request-construction
-// regressions behind the label, so the whitelist is narrow.
-//
-// Comparison is case-insensitive: net/http and net/url wrap errors
-// with assorted casing — "EOF" vs "eof" depending on the wrap layer,
-// "connection reset by peer" vs "Connection reset" depending on the
-// OS. Lowercasing both sides dodges that surface without weakening
-// the substring match.
-//
-// Needles are concrete transport-class messages only — a bare "eof"
-// substring would also match application/parser failures like
-// "unexpected EOF" or "EOF while parsing JSON" (genuine
-// content-shape regressions that must NOT be classified as transport
-// flakes). The list pins to symptoms produced specifically by
-// HTTP/transport teardown paths.
-//
-// The wrapped-EOF predicate at the top of the function catches
-// net/http's keepalive-EOF flakes after llmhttp wraps every
-// transport error with `llmhttp: request failed: %w`
-// (bamlutils/llmhttp/llmhttp.go). net/http surfaces stale-keepalive
-// teardown either as a bare `Post "<url>": EOF` or a `... net/http:
-// Transport failed to read from server: EOF` — both terminate with
-// `: EOF` on the wrapped message. Prefix + suffix together accept
-// those two known shapes while rejecting unwrapped `unexpected EOF`
-// and `llmhttp: failed to read response body: unexpected EOF`
-// (different wrapper).
-func isNilDefaultClientTransportFlake(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	if strings.HasPrefix(msg, "llmhttp: request failed: ") && strings.HasSuffix(msg, ": eof") {
-		return true
-	}
-	for _, needle := range []string{
-		"stale keepalive",
-		"stale-keepalive",
-		"http2: server sent goaway",
-		"connection reset by peer",
-		"connection refused",
-		"broken pipe",
-		"closed network connection",
-		// fasthttp's ErrConnectionClosed surface — emitted when the
-		// server tears down a keepalive connection between request
-		// reuses (the same race the bare-EOF prefix+suffix predicate
-		// catches for net/http). The fasthttp backend wraps this as
-		// "llmhttp: request failed: the server closed connection
-		// before returning the first response byte. ..." so the
-		// substring is concrete enough not to collide with content-
-		// shape failures.
-		"closed connection before returning the first response byte",
-	} {
-		if strings.Contains(msg, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-// TestIsNilDefaultClientTransportFlake_NeedleList pins the
-// transport-class needle list and the wrapped-EOF predicate. A bare
-// "eof" substring would match application/parser failures like
-// "unexpected EOF"; the current shape uses concrete-substring
-// needles for direct transport-teardown symptoms plus a prefix+
-// suffix predicate for llmhttp's wrapped EOF.
-func TestIsNilDefaultClientTransportFlake_NeedleList(t *testing.T) {
-	transport := []string{
-		// Existing concrete transport-class substrings.
-		"net/http: stale keepalive",
-		"stale-keepalive detected",
-		"http2: server sent GOAWAY",
-		"read tcp 127.0.0.1:1234->127.0.0.1:5678: connection reset by peer",
-		"dial tcp 127.0.0.1:5678: connect: connection refused",
-		"write: broken pipe",
-		"use of closed network connection",
-		"USE OF CLOSED NETWORK CONNECTION", // case-insensitivity
-		// fasthttp ErrConnectionClosed surface, wrapped by llmhttp.
-		`llmhttp: request failed: the server closed connection before returning the first response byte. Make sure the server returns 'Connection: close' response header before closing the connection`,
-		// Wrapped-EOF accept cases — the two real surfaceable shapes
-		// from net/http stale-keepalive teardown after llmhttp wraps
-		// with "llmhttp: request failed: %w".
-		`llmhttp: request failed: Post "http://127.0.0.1:1234": EOF`,
-		`llmhttp: request failed: Post "http://127.0.0.1:1234": net/http: Transport failed to read from server: EOF`,
-		// Lower-case variant confirms the case-insensitive match.
-		`llmhttp: request failed: post "http://127.0.0.1:1234": eof`,
-	}
-	for _, msg := range transport {
-		if !isNilDefaultClientTransportFlake(fmt.Errorf("%s", msg)) {
-			t.Errorf("expected transport-class needle to match: %q", msg)
-		}
-	}
-
-	notTransport := []string{
-		"unexpected EOF",
-		"unexpected EOF while parsing JSON",
-		"buildrequest: failed to parse final result: unexpected end of JSON input",
-		"buildrequest: delta extraction failed: bad provider response",
-		"context deadline exceeded",
-		// Reject cases — these prove the prefix+suffix predicate
-		// doesn't paper over genuine content-shape failures even
-		// when the prefix matches.
-		"llmhttp: request failed: unexpected EOF",            // same prefix, suffix is "unexpected eof" not ": eof"
-		"llmhttp: failed to read response body: unexpected EOF", // different prefix
-		"",
-	}
-	for _, msg := range notTransport {
-		if msg == "" {
-			if isNilDefaultClientTransportFlake(nil) {
-				t.Errorf("expected nil error to be classified as not-transport")
-			}
-			continue
-		}
-		if isNilDefaultClientTransportFlake(fmt.Errorf("%s", msg)) {
-			t.Errorf("expected non-transport message to be rejected: %q", msg)
-		}
 	}
 }
