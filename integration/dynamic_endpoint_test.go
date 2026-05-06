@@ -1622,8 +1622,13 @@ func TestDynamicEndpointPromptWhitespace(t *testing.T) {
 			}
 
 			messages := extractLLMMessageTexts(t, captured)
-			if len(messages) < 6 {
-				t.Fatalf("Expected at least 6 messages, got %d", len(messages))
+			// The request sends 6 messages (system + 5 conversation turns)
+			// and BAML's dynamic endpoint forwards the messages array 1:1
+			// to the LLM, so the captured count is structurally exact.
+			// A regression that dropped, duplicated, or synthesized
+			// messages would fail strict but pass a lower-bound check.
+			if len(messages) != 6 {
+				t.Fatalf("Expected exactly 6 messages, got %d", len(messages))
 			}
 
 			for i, m := range messages {

@@ -69,9 +69,15 @@ func TestStreamEndpoint(t *testing.T) {
 		}
 	done:
 
-		// Should have received multiple events (chunked streaming)
-		if eventCount < 2 {
-			t.Errorf("Expected multiple events, got %d", eventCount)
+		// Path-stable: the loop above filters metadata out of eventCount,
+		// so the count is partials + final from the BAML stream alone.
+		// The 43-char content streams in three 20/20/3-char chunks via
+		// setupScenario's ChunkSize=20; both legs emit one partial per
+		// delta with no coalescing for 3-chunk runs. 3 partials + 1
+		// final = 4. Verified deterministic across 5 Legacy + 1
+		// BuildRequest run locally.
+		if eventCount != 4 {
+			t.Errorf("Expected exactly 4 non-metadata events (3 partials + final), got %d", eventCount)
 		}
 
 		// Last event should have the complete data
@@ -499,8 +505,14 @@ func TestWorkerDeathMidStream(t *testing.T) {
 			t.Error("Failed to kill worker - test setup issue")
 		}
 
-		if eventsBeforeKill == 0 {
-			t.Error("Expected to receive at least one event before worker death")
+		// Kill fires on the first non-metadata event (per the loop
+		// above), at which point receivedEvents contains exactly
+		// [planned metadata, first partial]. Both Legacy and BuildRequest
+		// emit planned metadata before any upstream byte, so this count
+		// is path-stable. Verified deterministic across 5 Legacy + 1
+		// BuildRequest run locally.
+		if eventsBeforeKill != 2 {
+			t.Errorf("Expected exactly 2 events before worker death (planned metadata + first partial), got %d", eventsBeforeKill)
 		}
 
 		// VERIFY EXPECTED BEHAVIOR:
@@ -940,9 +952,12 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 		}
 	done:
 
-		// Should have received multiple events (chunked streaming)
-		if eventCount < 2 {
-			t.Errorf("Expected multiple events, got %d", eventCount)
+		// Path-stable: like the SSE counterpart, the loop above filters
+		// metadata out of eventCount, leaving partials + final. 3
+		// partials + 1 final = 4. Verified deterministic across 5
+		// Legacy + 1 BuildRequest run locally.
+		if eventCount != 4 {
+			t.Errorf("Expected exactly 4 non-metadata events (3 partials + final), got %d", eventCount)
 		}
 
 		// Last non-metadata event should be a data event
@@ -1372,7 +1387,12 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 			segments = append(segments, currentSegment)
 		}
 
-		// Should have at least one segment with multiple raw values
+		// Lower-bound retained intentionally: segment count depends on
+		// whether BAML triggers an internal retry mid-stream, which is
+		// timing-sensitive (the `resetCount > 0` log below acknowledges
+		// this branch). The typical-case shape is segments=1 (no
+		// retry) but a tightened pin would flake on the retry branch
+		// without surfacing a real regression. Deferred for #199 PR-C.
 		if len(segments) == 0 {
 			t.Fatal("Expected at least one segment with raw values")
 		}
@@ -1618,8 +1638,12 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 			t.Error("Failed to kill worker - test setup issue")
 		}
 
-		if eventsBeforeKill == 0 {
-			t.Error("Expected to receive at least one event before worker death")
+		// Same path-stable shape as the SSE counterpart: kill lands on
+		// the first non-metadata event, after exactly 1 planned metadata
+		// frame. eventsBeforeKill == 2 in both legs; verified across 5
+		// Legacy + 1 BuildRequest run locally.
+		if eventsBeforeKill != 2 {
+			t.Errorf("Expected exactly 2 events before worker death (planned metadata + first partial), got %d", eventsBeforeKill)
 		}
 
 		// VERIFY EXPECTED BEHAVIOR:

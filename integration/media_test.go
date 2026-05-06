@@ -421,8 +421,15 @@ func TestNestedMediaStreamEndpoint(t *testing.T) {
 		}
 	doneNestedStream:
 
-		if eventCount < 2 {
-			t.Errorf("Expected multiple events, got %d", eventCount)
+		// Path-stable shape: 1 planned metadata + 3 partials + 1 outcome
+		// metadata + 1 final = 6. The mock streams the 44-char content in
+		// three 20/20/4-char chunks via setupScenario's ChunkSize=20, BAML's
+		// extractor emits a partial per delta with no observed coalescing
+		// for 3-chunk runs, and both Legacy and BuildRequest legs emit
+		// planned/outcome around the partials. Verified deterministic
+		// across 5 Legacy runs + 1 BuildRequest run locally.
+		if eventCount != 6 {
+			t.Errorf("Expected exactly 6 events (planned + 3 partials + outcome + final), got %d", eventCount)
 		}
 
 		var result string
@@ -555,6 +562,11 @@ func TestMediaStreamEndpoint(t *testing.T) {
 		}
 	done:
 
+		// Lower-bound retained intentionally: 67-char content yields a
+		// path-dependent count (Legacy=6, BuildRequest=7) because BAML's
+		// SSE extractor coalesces one partial in the Legacy leg only.
+		// Pinning either value would lock in path-specific BAML internals
+		// rather than a stable contract; deferred for #199 PR-C.
 		if eventCount < 2 {
 			t.Errorf("Expected multiple events, got %d", eventCount)
 		}
@@ -611,6 +623,10 @@ func TestMediaStreamEndpoint(t *testing.T) {
 		}
 	done2:
 
+		// Lower-bound retained: same path-dependent partial-coalescing
+		// as the SSE counterpart above (Legacy=6, BuildRequest=7) for
+		// 4-chunk content. The companion `finals != 1` check below pins
+		// the part of the contract that is path-stable.
 		if eventCount < 2 {
 			t.Errorf("Expected multiple events, got %d", eventCount)
 		}
@@ -668,6 +684,9 @@ func TestMediaStreamEndpoint(t *testing.T) {
 		}
 	done3:
 
+		// Lower-bound retained: same path-dependent partial-coalescing
+		// (Legacy=6, BuildRequest=7) for 4-chunk content; deferred per
+		// the SSE site rationale above.
 		if eventCount < 2 {
 			t.Errorf("Expected multiple events, got %d", eventCount)
 		}
@@ -720,8 +739,13 @@ func TestMediaStreamEndpoint(t *testing.T) {
 		}
 	done4:
 
-		if eventCount < 2 {
-			t.Errorf("Expected multiple events, got %d", eventCount)
+		// Path-stable shape: 1 planned metadata + 2 partials + 1 outcome
+		// metadata + 1 final = 5. The 37-char content streams in two
+		// 20/17-char chunks (no coalescing observed for 2-chunk runs in
+		// either leg). Verified deterministic across 5 Legacy runs + 1
+		// BuildRequest run locally.
+		if eventCount != 5 {
+			t.Errorf("Expected exactly 5 events (planned + 2 partials + outcome + final), got %d", eventCount)
 		}
 
 		// Final event should have raw content
