@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -81,10 +83,11 @@ func isTransientConnError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "EOF")
+	return errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, io.EOF)
 }
 
 // errorResponse represents the JSON error response format from the server.
