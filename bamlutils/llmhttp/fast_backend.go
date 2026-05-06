@@ -71,6 +71,9 @@ func (c *Client) executeFast(ctx context.Context, req *Request, rewrittenURL str
 			if ctxErr := awaitCtxIfPastDeadline(ctx); ctxErr != nil {
 				return nil, ctxErr
 			}
+			if te := classifyTransportErr(err, "llmhttp: request failed", true); te != nil {
+				return nil, te
+			}
 			return nil, fmt.Errorf("llmhttp: request failed: %w", err)
 		}
 
@@ -176,6 +179,9 @@ func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenU
 	if doErr != nil {
 		fasthttp.ReleaseRequest(fReq)
 		fasthttp.ReleaseResponse(fResp)
+		if te := classifyTransportErr(doErr, "llmhttp: request failed", true); te != nil {
+			return nil, te
+		}
 		return nil, fmt.Errorf("llmhttp: request failed: %w", doErr)
 	}
 
@@ -645,6 +651,9 @@ func readFastBodyLimitedCtx(ctx context.Context, resp *fasthttp.Response, maxByt
 			// timer to land and surface ctx.Err() instead.
 			if err := awaitCtxIfPastDeadline(ctx); err != nil {
 				return nil, err
+			}
+			if te := classifyTransportErr(r.err, "llmhttp: failed to read response body", false); te != nil {
+				return nil, te
 			}
 			return nil, fmt.Errorf("llmhttp: failed to read response body: %w", r.err)
 		}

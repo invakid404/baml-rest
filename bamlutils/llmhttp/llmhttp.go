@@ -240,6 +240,9 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		if te := classifyTransportErr(err, "llmhttp: request failed", true); te != nil {
+			return nil, te
+		}
 		return nil, fmt.Errorf("llmhttp: request failed: %w", err)
 	}
 
@@ -352,6 +355,9 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		if te := classifyTransportErr(err, "llmhttp: request failed", true); te != nil {
+			return nil, te
+		}
 		return nil, fmt.Errorf("llmhttp: request failed: %w", err)
 	}
 	defer resp.Body.Close()
@@ -380,6 +386,9 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 	// we get exactly that many bytes, the response exceeded the limit.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBodyBytes+1))
 	if err != nil {
+		if te := classifyTransportErr(err, "llmhttp: failed to read response body", false); te != nil {
+			return nil, te
+		}
 		return nil, fmt.Errorf("llmhttp: failed to read response body: %w", err)
 	}
 
