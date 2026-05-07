@@ -4,10 +4,11 @@ import "testing"
 
 // TestRewriteRelativeReplaceLine pins the contract for the single-line
 // rewriter: only genuinely-relative go.mod replace targets ("./",
-// "../", or exact ".") get rewritten; module-path replaces and
-// absolute-path replaces pass through verbatim. CR verdict-2 flagged
-// the prior `strings.Index(line, "=> ..")` form as too narrow — these
-// cases lock in the broadened detection.
+// "../", exact ".", or exact "..") get rewritten; module-path replaces
+// and absolute-path replaces pass through verbatim. The sub-cases also
+// pin trailing-suffix preservation (versions, comments, tab padding)
+// so a regression that re-narrows the detection or drops a trailing
+// field trips a check.
 func TestRewriteRelativeReplaceLine(t *testing.T) {
 	const origDir = "/repo/adapters/adapter_v0_215_0"
 	cases := []struct {
@@ -26,21 +27,19 @@ func TestRewriteRelativeReplaceLine(t *testing.T) {
 			want: "\tgithub.com/invakid404/baml-rest/bamlutils => /repo/bamlutils",
 		},
 		{
-			name: "same-dir relative replace (./ — previously skipped)",
+			name: "same-dir relative replace (./local)",
 			in:   "\texample.com/local => ./local",
 			want: "\texample.com/local => /repo/adapters/adapter_v0_215_0/local",
 		},
 		{
-			name: "exact dot relative replace (. — previously skipped)",
+			name: "exact same-dir replace (.)",
 			in:   "\texample.com/self => .",
 			want: "\texample.com/self => /repo/adapters/adapter_v0_215_0",
 		},
 		{
-			// Codex sign-off NO-GO blocker on the v2 fix: the new
-			// HasPrefix("../") check missed exact ".." (no trailing
-			// slash). The previous substring matcher caught it by
-			// accident; the predicate has to spell it out.
-			name: "exact double-dot relative replace (.. — verdict-2 v3 gap)",
+			// Exact ".." needs an explicit predicate arm because
+			// strings.HasPrefix("..", "../") is false.
+			name: "exact parent-dir replace (..)",
 			in:   "\texample.com/parent => ..",
 			want: "\texample.com/parent => /repo/adapters",
 		},
@@ -66,8 +65,8 @@ func TestRewriteRelativeReplaceLine(t *testing.T) {
 		},
 		{
 			name: "preserves trailing comment on a relative replace",
-			in:   "\texample.com/x => ../sibling // see #199",
-			want: "\texample.com/x => /repo/adapters/sibling // see #199",
+			in:   "\texample.com/x => ../sibling // local fork",
+			want: "\texample.com/x => /repo/adapters/sibling // local fork",
 		},
 		{
 			name: "single-line replace directive (outside a block)",
@@ -96,7 +95,7 @@ func TestIsRelativeReplacePath(t *testing.T) {
 		want bool
 	}{
 		{".", true},
-		{"..", true}, // verdict-2 v3 gap: exact ".." was missed by HasPrefix("../")
+		{"..", true}, // HasPrefix("..", "../") is false; predicate needs an explicit arm.
 		{"./local", true},
 		{"./", true},
 		{"../common", true},
