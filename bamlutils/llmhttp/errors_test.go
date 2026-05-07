@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -325,4 +326,103 @@ func containsTransportFlakeText(s string) bool {
 		}
 	}
 	return false
+}
+
+func TestClassifyStreamErrc(t *testing.T) {
+	t.Parallel()
+
+	transportReset := &net.OpError{Op: "read", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}
+
+	cases := []struct {
+		name           string
+		in             error
+		wantNil        bool
+		wantFlake      bool
+		wantUnderlying error
+	}{
+		{
+			name:    "nil terminal passes through",
+			in:      nil,
+			wantNil: true,
+		},
+		{
+			name:           "ECONNRESET classifies and exposes ErrTransportFlake + underlying",
+			in:             transportReset,
+			wantFlake:      true,
+			wantUnderlying: syscall.ECONNRESET,
+		},
+		{
+			name:           "EPIPE classifies",
+			in:             &net.OpError{Op: "write", Err: &os.SyscallError{Syscall: "write", Err: syscall.EPIPE}},
+			wantFlake:      true,
+			wantUnderlying: syscall.EPIPE,
+		},
+		{
+			name:           "io.ErrUnexpectedEOF stays content-integrity (no flake, chain preserved)",
+			in:             io.ErrUnexpectedEOF,
+			wantFlake:      false,
+			wantUnderlying: io.ErrUnexpectedEOF,
+		},
+		{
+			name:           "bare io.EOF is not a flake at body-read sites (gate=false)",
+			in:             io.EOF,
+			wantFlake:      false,
+			wantUnderlying: io.EOF,
+		},
+		{
+			name:           "context.DeadlineExceeded is not a flake but chain is preserved",
+			in:             context.DeadlineExceeded,
+			wantFlake:      false,
+			wantUnderlying: context.DeadlineExceeded,
+		},
+		{
+			name:      "unrelated err wraps but does not match ErrTransportFlake",
+			in:        errors.New("nope"),
+			wantFlake: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src := make(chan error, 1)
+			src <- tc.in
+			close(src)
+
+			out := classifyStreamErrc(src)
+
+			got, ok := <-out
+			if !ok {
+				t.Fatal("out channel closed without emitting a value")
+			}
+			// classifyStreamErrc must emit exactly one terminal value
+			// then close, mirroring sseclient.Stream's errc contract.
+			if extra, stillOpen := <-out; stillOpen {
+				t.Fatalf("out channel still open after one value, got extra: %v", extra)
+			}
+
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil terminal, got %v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected non-nil error for input %v, got nil", tc.in)
+			}
+			if errors.Is(got, ErrTransportFlake) != tc.wantFlake {
+				t.Errorf("errors.Is(err, ErrTransportFlake) = %v; want %v; err = %v", !tc.wantFlake, tc.wantFlake, got)
+			}
+			if tc.wantUnderlying != nil && !errors.Is(got, tc.wantUnderlying) {
+				t.Errorf("errors.Is(err, underlying) = false; want true; err = %v", got)
+			}
+			// Non-flake errors are wrapped with the body-read prefix
+			// — match the rendering of the non-streaming sites.
+			if !tc.wantFlake {
+				if !strings.Contains(got.Error(), "llmhttp: failed to read response body") {
+					t.Errorf("non-flake err should carry the body-read prefix; got: %q", got.Error())
+				}
+			}
+		})
+	}
 }
