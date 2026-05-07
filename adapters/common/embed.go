@@ -4,7 +4,7 @@ import (
 	"embed"
 )
 
-//go:embed codegen/codegen.go embed.go go.mod go.sum helpers.go testdriver testhelpers/snapshot.go utils/dynamic.go
+//go:embed adapterversions codegen/codegen.go embed.go go.mod go.sum helpers.go testdriver testhelpers/snapshot.go utils/dynamic.go
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)
