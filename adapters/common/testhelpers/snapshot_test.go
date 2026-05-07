@@ -176,7 +176,6 @@ type driftRegistryEntryOptionsWrongElem struct {
 }
 
 func TestClientEntrySnapshot_ShapeDrift(t *testing.T) {
-	withEntry := func(reg any) any { return reg }
 	cases := []struct {
 		name string
 		reg  any
@@ -192,39 +191,39 @@ func TestClientEntrySnapshot_ShapeDrift(t *testing.T) {
 		// through the typed *baml.ClientRegistry parameter.
 		{
 			name: "clients-defined-string-key",
-			reg: withEntry(&driftRegistryDefinedStringKey{
+			reg: &driftRegistryDefinedStringKey{
 				clients: map[definedStringKey]struct {
 					provider string
 					options  map[string]any
 				}{"x": {provider: "openai", options: nil}},
-			}),
+			},
 		},
 		{
 			name: "provider-defined-string",
-			reg: withEntry(&driftRegistryProviderDefinedString{
+			reg: &driftRegistryProviderDefinedString{
 				clients: map[string]struct {
 					provider definedStringKey
 					options  map[string]any
 				}{"x": {provider: "openai", options: nil}},
-			}),
+			},
 		},
 		{
 			name: "options-defined-string-key",
-			reg: withEntry(&driftRegistryOptionsDefinedKey{
+			reg: &driftRegistryOptionsDefinedKey{
 				clients: map[string]struct {
 					provider string
 					options  map[definedStringKey]any
 				}{"x": {provider: "openai", options: nil}},
-			}),
+			},
 		},
 		{
 			name: "options-wrong-value-type",
-			reg: withEntry(&driftRegistryOptionsWrongValue{
+			reg: &driftRegistryOptionsWrongValue{
 				clients: map[string]struct {
 					provider string
 					options  map[string]string
 				}{"x": {provider: "openai", options: nil}},
-			}),
+			},
 		},
 		// Entry-level drift cases: exercise the guards that fire after
 		// a present entry is fetched from the `clients` map. Each case
@@ -238,27 +237,27 @@ func TestClientEntrySnapshot_ShapeDrift(t *testing.T) {
 		},
 		{
 			name: "entry-missing-provider-options",
-			reg: withEntry(&driftRegistryEntryMissingFields{
+			reg: &driftRegistryEntryMissingFields{
 				clients: map[string]struct{ other int }{"x": {other: 1}},
-			}),
+			},
 		},
 		{
 			name: "entry-provider-wrong-kind",
-			reg: withEntry(&driftRegistryEntryProviderWrongKind{
+			reg: &driftRegistryEntryProviderWrongKind{
 				clients: map[string]struct {
 					provider int
 					options  map[string]any
 				}{"x": {provider: 7, options: nil}},
-			}),
+			},
 		},
 		{
 			name: "entry-options-wrong-elem",
-			reg: withEntry(&driftRegistryEntryOptionsWrongElem{
+			reg: &driftRegistryEntryOptionsWrongElem{
 				clients: map[string]struct {
 					provider string
 					options  []string
 				}{"x": {provider: "openai", options: nil}},
-			}),
+			},
 		},
 	}
 	for _, tc := range cases {
