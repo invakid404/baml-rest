@@ -226,10 +226,10 @@ func TestClientEntrySnapshot_ShapeDrift(t *testing.T) {
 				}{"x": {provider: "openai", options: nil}},
 			}),
 		},
-		// Entry-level drift cases (verdict-1 F1): exercise the guards
-		// that fire after a present entry is fetched from the `clients`
-		// map. Each case populates "x" so MapIndex returns a valid
-		// Value, then the per-field guard rejects.
+		// Entry-level drift cases: exercise the guards that fire after
+		// a present entry is fetched from the `clients` map. Each case
+		// populates "x" so MapIndex returns a valid Value, then the
+		// per-field guard rejects.
 		{
 			name: "entry-not-struct",
 			reg: &driftRegistryEntryNotStruct{
