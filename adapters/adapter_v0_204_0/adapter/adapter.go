@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"fmt"
 
 	baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -197,6 +198,10 @@ func (b *BamlAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
 }
 
 func (b *BamlAdapter) SetTypeBuilder(tb *bamlutils.TypeBuilder) error {
+	if b.TypeBuilderFactory == nil {
+		return fmt.Errorf("adapter: TypeBuilderFactory not set")
+	}
+
 	typeBuilder, err := b.TypeBuilderFactory(tb)
 	if err != nil {
 		return err
@@ -222,10 +227,18 @@ func (b *BamlAdapter) Logger() bamlutils.Logger {
 }
 
 func (b *BamlAdapter) NewMediaFromURL(kind bamlutils.MediaKind, url string, mimeType *string) (any, error) {
+	if b.MediaFactory == nil {
+		return nil, fmt.Errorf("adapter: MediaFactory not set")
+	}
+
 	return b.MediaFactory(kind, &url, nil, mimeType)
 }
 
 func (b *BamlAdapter) NewMediaFromBase64(kind bamlutils.MediaKind, base64 string, mimeType *string) (any, error) {
+	if b.MediaFactory == nil {
+		return nil, fmt.Errorf("adapter: MediaFactory not set")
+	}
+
 	return b.MediaFactory(kind, nil, &base64, mimeType)
 }
 
