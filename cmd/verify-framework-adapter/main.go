@@ -36,6 +36,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -46,44 +48,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/invakid404/baml-rest/adapters/common/adapterversions"
 	"github.com/invakid404/baml-rest/adapters/common/codegen"
 )
-
-type adapterCase struct {
-	dirName string
-	opts    codegen.Options
-}
-
-var cases = []adapterCase{
-	{
-		dirName: "adapter_v0_204_0",
-		opts: codegen.Options{
-			SelfPkg:            "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0",
-			SupportsWithClient: false,
-			HasWrapMapValues:   true,
-			HasHTTPClient:      false,
-		},
-	},
-	{
-		dirName: "adapter_v0_215_0",
-		opts: codegen.Options{
-			SelfPkg:            "github.com/invakid404/baml-rest/adapters/adapter_v0_215_0",
-			SupportsWithClient: false,
-			HasWrapMapValues:   false,
-			HasHTTPClient:      false,
-		},
-	},
-	{
-		dirName: "adapter_v0_219_0",
-		opts: codegen.Options{
-			SelfPkg:            "github.com/invakid404/baml-rest/adapters/adapter_v0_219_0",
-			SupportsWithClient: true,
-			HasWrapMapValues:   false,
-			HasHTTPClient:      true,
-		},
-	},
-}
 
 func main() {
 	repoRoot, err := os.Getwd()
@@ -95,9 +64,9 @@ func main() {
 	}
 
 	totalFailures := 0
-	for _, c := range cases {
-		fmt.Printf("=== %s ===\n", c.dirName)
-		failures := runChecks(repoRoot, c)
+	for _, fa := range adapterversions.FrameworkAdapters {
+		fmt.Printf("=== %s ===\n", fa.DirName)
+		failures := runChecks(repoRoot, fa)
 		if failures == 0 {
 			fmt.Printf("    PASS: all 3 checks green\n")
 		} else {
@@ -113,8 +82,8 @@ func main() {
 	fmt.Println("\nAll framework-adapter codegen-emit checks passed.")
 }
 
-func runChecks(repoRoot string, c adapterCase) int {
-	tmp, err := os.MkdirTemp("", "verify-framework-"+c.dirName+"-*")
+func runChecks(repoRoot string, fa adapterversions.FrameworkAdapter) int {
+	tmp, err := os.MkdirTemp("", "verify-framework-"+fa.DirName+"-*")
 	if err != nil {
 		fail("mktemp: %v", err)
 	}
@@ -122,13 +91,13 @@ func runChecks(repoRoot string, c adapterCase) int {
 
 	// Emit candidate.
 	candidatePath := filepath.Join(tmp, "adapter_emitted_1.go")
-	codegen.GenerateFrameworkAdapter(c.opts, candidatePath)
+	codegen.GenerateFrameworkAdapter(fa.Options, candidatePath)
 
 	failures := 0
 
 	// Check 1: structural equivalence (AST diff after gofmt, ignoring
 	// comments).
-	handPath := filepath.Join(repoRoot, "adapters", c.dirName, "adapter", "adapter.go")
+	handPath := filepath.Join(repoRoot, "adapters", fa.DirName, "adapter", "adapter.go")
 	if err := checkStructuralEquivalence(candidatePath, handPath); err != nil {
 		fmt.Printf("    Check 1 (structural equivalence): FAIL: %v\n", err)
 		failures++
@@ -138,7 +107,7 @@ func runChecks(repoRoot string, c adapterCase) int {
 
 	// Check 2: deterministic emission.
 	candidatePath2 := filepath.Join(tmp, "adapter_emitted_2.go")
-	codegen.GenerateFrameworkAdapter(c.opts, candidatePath2)
+	codegen.GenerateFrameworkAdapter(fa.Options, candidatePath2)
 	if err := checkDeterministicEmission(candidatePath, candidatePath2); err != nil {
 		fmt.Printf("    Check 2 (deterministic emission): FAIL: %v\n", err)
 		failures++
@@ -147,7 +116,7 @@ func runChecks(repoRoot string, c adapterCase) int {
 	}
 
 	// Check 3: behavioural test parity.
-	if err := checkBehaviouralTestParity(repoRoot, c, candidatePath); err != nil {
+	if err := checkBehaviouralTestParity(repoRoot, fa, candidatePath); err != nil {
 		fmt.Printf("    Check 3 (behavioural test parity): FAIL: %v\n", err)
 		failures++
 	} else {
@@ -268,12 +237,24 @@ func truncate(s string) string {
 	return s[:max] + "...[+" + fmt.Sprint(len(s)-max) + " bytes]"
 }
 
+// gofmtTimeout caps the gofmt subprocess at 30s. A single gofmted
+// adapter.go is sub-second on healthy CI; 30s is the "hung process"
+// circuit-breaker so the verifier fails fast with a specific timeout
+// error rather than burning the workflow's broad timeout budget.
+const gofmtTimeout = 30 * time.Second
+
 func gofmtFile(path string) ([]byte, error) {
-	cmd := exec.Command("gofmt", path)
+	ctx, cancel := context.WithTimeout(context.Background(), gofmtTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gofmt", path)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, fmt.Errorf("gofmt timed out after %s on %s: %s", gofmtTimeout, path, errb.String())
+	}
+	if err != nil {
 		return nil, fmt.Errorf("%w: %s", err, errb.String())
 	}
 	return out.Bytes(), nil
@@ -303,9 +284,9 @@ func checkDeterministicEmission(path1, path2 string) error {
 // absolute paths (because the tempdir copy is one level removed from
 // the source-tree's siblings), and runs `GOWORK=off go test
 // ./adapter/`. The hand-written source-tree files are NEVER touched.
-func checkBehaviouralTestParity(repoRoot string, c adapterCase, candidatePath string) error {
-	srcDir := filepath.Join(repoRoot, "adapters", c.dirName)
-	tmpDir, err := os.MkdirTemp("", "verify-fwadapter-test-"+c.dirName+"-*")
+func checkBehaviouralTestParity(repoRoot string, fa adapterversions.FrameworkAdapter, candidatePath string) error {
+	srcDir := filepath.Join(repoRoot, "adapters", fa.DirName)
+	tmpDir, err := os.MkdirTemp("", "verify-fwadapter-test-"+fa.DirName+"-*")
 	if err != nil {
 		return err
 	}
@@ -332,17 +313,30 @@ func checkBehaviouralTestParity(repoRoot string, c adapterCase, candidatePath st
 		return fmt.Errorf("rewrite go.mod replaces: %w", err)
 	}
 
-	cmd := exec.Command("go", "test", "./adapter/")
+	ctx, cancel := context.WithTimeout(context.Background(), goTestTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "test", "./adapter/")
 	cmd.Dir = tmpDir
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
+	err = cmd.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("go test ./adapter/ timed out after %s\nstdout:\n%s\nstderr:\n%s",
+			goTestTimeout, out.String(), errb.String())
+	}
+	if err != nil {
 		return fmt.Errorf("%w\nstdout:\n%s\nstderr:\n%s", err, out.String(), errb.String())
 	}
 	return nil
 }
+
+// goTestTimeout caps the per-adapter `go test ./adapter/` subprocess
+// at 5 minutes. The post-PR-3 shared driver runs sub-second per
+// adapter today; 5 minutes is the circuit-breaker for a hung test or
+// an unresponsive `go` toolchain.
+const goTestTimeout = 5 * time.Minute
 
 func copyDir(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
