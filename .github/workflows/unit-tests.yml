@@ -35,9 +35,23 @@ jobs:
           # Adapter modules run their own tests inside cmd/build/build.sh
           # during the integration test workflow, against the BAML version
           # they're pinned to.
+          #
+          # adapters/common is also outside go.work (it directly requires
+          # github.com/boundaryml/baml v0.204.0; keeping it in the workspace
+          # would make go work sync lift its BAML pin to the workspace MVS
+          # max — see go.work for the full rationale). With go.work active,
+          # `go test ./...` from inside common resolves through the
+          # workspace's main module (root), which doesn't contain
+          # adapters/common packages, and fails setup. GOWORK=off forces
+          # common's own go.mod to be the build list — same envelope
+          # scripts/sync.sh uses for the per-adapter tidies.
           find . -name go.mod -not -path '*/adapters/adapter_*' -exec dirname {} \; | while read dir; do
             echo "=== Testing $dir ==="
-            (cd "$dir" && go test -race -count=100 ./...)
+            if [ "$dir" = "./adapters/common" ]; then
+              (cd "$dir" && GOWORK=off go test -race -count=100 ./...)
+            else
+              (cd "$dir" && go test -race -count=100 ./...)
+            fi
           done
 
       - name: Verify framework adapter codegen-emit
