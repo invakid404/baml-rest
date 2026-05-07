@@ -142,11 +142,11 @@ func TestClientEntrySnapshot_ShapeDrift(t *testing.T) {
 		{"pointer-to-non-struct", func() any { s := "x"; return &s }()},
 		{"missing-clients-field", &driftRegistryNoClientsField{}},
 		{"wrong-key-kind", &driftRegistryWrongKeyKind{}},
-		// Regression cases for the exact-type guards added per Codex's
-		// NO-GO finding on PR 2: each previously-Kind-only guard would
-		// have either panicked (clients-key) or silently misbehaved
-		// (provider/options) when crossed by a synthetic input via the
-		// `any` boundary that wasn't reachable through *baml.ClientRegistry.
+		// Regression cases for the exact-type guards: each previously
+		// Kind-only guard would have either panicked (clients-key) or
+		// silently misbehaved (provider/options) when crossed by a
+		// synthetic input via the `any` boundary that isn't reachable
+		// through the typed *baml.ClientRegistry parameter.
 		{
 			name: "clients-defined-string-key",
 			reg: withEntry(&driftRegistryDefinedStringKey{
