@@ -374,32 +374,55 @@ func absoluteReplacesInGoMod(goModPath, origDir string) error {
 	}
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
-		// Match lines like "  X => ../../foo" or "  X => ../bar" inside
-		// or outside a replace block.
-		idx := strings.Index(line, "=> ..")
-		if idx < 0 {
-			continue
-		}
-		prefix := line[:idx+3] // through "=> "
-		rest := strings.TrimSpace(line[idx+3:])
-		// rest is something like "../common" or "../../bamlutils" — may
-		// have a trailing version on a single-line `replace X => path
-		// version` form, but per-adapter go.mod files use the bare
-		// path form.
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			continue
-		}
-		relPath := fields[0]
-		absPath := filepath.Clean(filepath.Join(origDir, relPath))
-		// Preserve any extra trailing fields (version, comment).
-		extra := ""
-		if len(fields) > 1 {
-			extra = " " + strings.Join(fields[1:], " ")
-		}
-		lines[i] = prefix + absPath + extra
+		lines[i] = rewriteRelativeReplaceLine(line, origDir)
 	}
 	return os.WriteFile(goModPath, []byte(strings.Join(lines, "\n")), 0644)
+}
+
+// rewriteRelativeReplaceLine inspects one go.mod line for a `=>
+// <relpath>` replace directive and rewrites <relpath> to its absolute
+// equivalent (resolved against origDir) when <relpath> is genuinely
+// relative — exactly ".", a "./" prefix, or a "../" prefix. Module-
+// path replaces (`=> github.com/foo/bar v1.2.3`), absolute-path
+// replaces, and lines with no `=>` are returned verbatim. Whitespace
+// before/after the path, version suffixes, and trailing comments are
+// preserved.
+func rewriteRelativeReplaceLine(line, origDir string) string {
+	idx := strings.Index(line, "=>")
+	if idx < 0 {
+		return line
+	}
+	prefix := line[:idx+len("=>")]
+	rest := line[idx+len("=>"):]
+	trimmed := strings.TrimLeft(rest, " \t")
+	if trimmed == "" {
+		return line
+	}
+	leadingWS := rest[:len(rest)-len(trimmed)]
+	// Path token ends at the first whitespace boundary or EOL.
+	end := len(trimmed)
+	for j, r := range trimmed {
+		if r == ' ' || r == '\t' {
+			end = j
+			break
+		}
+	}
+	relPath := trimmed[:end]
+	if !isRelativeReplacePath(relPath) {
+		return line
+	}
+	tail := trimmed[end:] // everything after the path token, verbatim
+	absPath := filepath.Clean(filepath.Join(origDir, relPath))
+	return prefix + leadingWS + absPath + tail
+}
+
+// isRelativeReplacePath reports whether p is a relative filesystem
+// path of the shape go.mod's `replace ... => <path>` directives use:
+// either exactly ".", or prefixed with "./" or "../". Module paths
+// (e.g. "github.com/foo/bar") and absolute paths (e.g. "/usr/local")
+// return false; the rewrite must leave them alone.
+func isRelativeReplacePath(p string) bool {
+	return p == "." || strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../")
 }
 
 func fail(format string, a ...any) {
