@@ -36,6 +36,15 @@ func TestRewriteRelativeReplaceLine(t *testing.T) {
 			want: "\texample.com/self => /repo/adapters/adapter_v0_215_0",
 		},
 		{
+			// Codex sign-off NO-GO blocker on the v2 fix: the new
+			// HasPrefix("../") check missed exact ".." (no trailing
+			// slash). The previous substring matcher caught it by
+			// accident; the predicate has to spell it out.
+			name: "exact double-dot relative replace (.. — verdict-2 v3 gap)",
+			in:   "\texample.com/parent => ..",
+			want: "\texample.com/parent => /repo/adapters",
+		},
+		{
 			name: "module-path replace passes through (no rewrite)",
 			in:   "\tgithub.com/foo/bar => github.com/foo/bar-fork v1.2.3",
 			want: "\tgithub.com/foo/bar => github.com/foo/bar-fork v1.2.3",
@@ -87,6 +96,7 @@ func TestIsRelativeReplacePath(t *testing.T) {
 		want bool
 	}{
 		{".", true},
+		{"..", true}, // verdict-2 v3 gap: exact ".." was missed by HasPrefix("../")
 		{"./local", true},
 		{"./", true},
 		{"../common", true},

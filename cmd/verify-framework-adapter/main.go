@@ -418,11 +418,16 @@ func rewriteRelativeReplaceLine(line, origDir string) string {
 
 // isRelativeReplacePath reports whether p is a relative filesystem
 // path of the shape go.mod's `replace ... => <path>` directives use:
-// either exactly ".", or prefixed with "./" or "../". Module paths
-// (e.g. "github.com/foo/bar") and absolute paths (e.g. "/usr/local")
-// return false; the rewrite must leave them alone.
+// either exactly "." or "..", or prefixed with "./" or "../". Module
+// paths (e.g. "github.com/foo/bar") and absolute paths (e.g.
+// "/usr/local") return false; the rewrite must leave them alone.
+//
+// Exact ".." is a separate arm because HasPrefix("..", "../") is
+// false (no trailing slash). The previous substring matcher
+// (`"=> .."`) caught both `=> ..` and `=> ../foo` by accident; the
+// predicate has to spell that out.
 func isRelativeReplacePath(p string) bool {
-	return p == "." || strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../")
+	return p == "." || p == ".." || strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../")
 }
 
 func fail(format string, a ...any) {
