@@ -132,6 +132,49 @@ type driftRegistryOptionsWrongValue struct {
 	}
 }
 
+// driftRegistryEntryNotStruct has the right `clients` map key (string)
+// but its value is a string rather than the clientProperty struct. The
+// `entry.Kind() != reflect.Struct` guard must reject this with ok=false.
+type driftRegistryEntryNotStruct struct {
+	primary *string
+	clients map[string]string
+}
+
+// driftRegistryEntryMissingFields has the right key/value-struct shape
+// but the value struct lacks the `provider` and `options` fields. The
+// `providerField.IsValid()` / `optionsField.IsValid()` guards must
+// reject this with ok=false.
+type driftRegistryEntryMissingFields struct {
+	primary *string
+	clients map[string]struct {
+		other int
+	}
+}
+
+// driftRegistryEntryProviderWrongKind has a `provider` field whose kind
+// is not String at all (the existing `provider-defined-string` case
+// covers the alias path; this is the kind-mismatch path). The exact-type
+// guard on `provider` must reject this with ok=false.
+type driftRegistryEntryProviderWrongKind struct {
+	primary *string
+	clients map[string]struct {
+		provider int
+		options  map[string]any
+	}
+}
+
+// driftRegistryEntryOptionsWrongElem has an `options` field that isn't
+// a map at all (the existing `options-*` cases cover map-key/value
+// drift; this is the not-a-map path). The exact-type guard on `options`
+// must reject this with ok=false.
+type driftRegistryEntryOptionsWrongElem struct {
+	primary *string
+	clients map[string]struct {
+		provider string
+		options  []string
+	}
+}
+
 func TestClientEntrySnapshot_ShapeDrift(t *testing.T) {
 	withEntry := func(reg any) any { return reg }
 	cases := []struct {
@@ -180,6 +223,40 @@ func TestClientEntrySnapshot_ShapeDrift(t *testing.T) {
 				clients: map[string]struct {
 					provider string
 					options  map[string]string
+				}{"x": {provider: "openai", options: nil}},
+			}),
+		},
+		// Entry-level drift cases (verdict-1 F1): exercise the guards
+		// that fire after a present entry is fetched from the `clients`
+		// map. Each case populates "x" so MapIndex returns a valid
+		// Value, then the per-field guard rejects.
+		{
+			name: "entry-not-struct",
+			reg: &driftRegistryEntryNotStruct{
+				clients: map[string]string{"x": "openai"},
+			},
+		},
+		{
+			name: "entry-missing-provider-options",
+			reg: withEntry(&driftRegistryEntryMissingFields{
+				clients: map[string]struct{ other int }{"x": {other: 1}},
+			}),
+		},
+		{
+			name: "entry-provider-wrong-kind",
+			reg: withEntry(&driftRegistryEntryProviderWrongKind{
+				clients: map[string]struct {
+					provider int
+					options  map[string]any
+				}{"x": {provider: 7, options: nil}},
+			}),
+		},
+		{
+			name: "entry-options-wrong-elem",
+			reg: withEntry(&driftRegistryEntryOptionsWrongElem{
+				clients: map[string]struct {
+					provider string
+					options  []string
 				}{"x": {provider: "openai", options: nil}},
 			}),
 		},
