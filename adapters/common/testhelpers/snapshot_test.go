@@ -83,7 +83,57 @@ type driftRegistryWrongKeyKind struct {
 	}
 }
 
+// definedStringKey is the regression case for the exact-type guard on the
+// `clients` map key: a defined-string alias passes a Kind-only check and
+// then panics at MapIndex when keyed with a plain `string`. The exact-type
+// guard must reject this with ok=false.
+type definedStringKey string
+
+type driftRegistryDefinedStringKey struct {
+	primary *string
+	clients map[definedStringKey]struct {
+		provider string
+		options  map[string]any
+	}
+}
+
+// driftRegistryProviderDefinedString has the right `clients` shape but
+// the entry's `provider` field is a defined-string alias rather than a
+// plain `string`. The exact-type guard on `provider` must reject this.
+type driftRegistryProviderDefinedString struct {
+	primary *string
+	clients map[string]struct {
+		provider definedStringKey
+		options  map[string]any
+	}
+}
+
+// driftRegistryOptionsDefinedKey has the right `clients` shape but the
+// entry's `options` map key is a defined-string alias rather than a plain
+// `string`. The exact-type guard on `options` must reject this.
+type driftRegistryOptionsDefinedKey struct {
+	primary *string
+	clients map[string]struct {
+		provider string
+		options  map[definedStringKey]any
+	}
+}
+
+// driftRegistryOptionsWrongValue has the right `clients` shape but the
+// entry's `options` map value is `string` instead of `any`. The
+// exact-type guard on `options` must reject this — silently iterating
+// such a map and copying values would coerce them to `any` and surprise
+// downstream callers.
+type driftRegistryOptionsWrongValue struct {
+	primary *string
+	clients map[string]struct {
+		provider string
+		options  map[string]string
+	}
+}
+
 func TestClientEntrySnapshot_ShapeDrift(t *testing.T) {
+	withEntry := func(reg any) any { return reg }
 	cases := []struct {
 		name string
 		reg  any
@@ -92,9 +142,55 @@ func TestClientEntrySnapshot_ShapeDrift(t *testing.T) {
 		{"pointer-to-non-struct", func() any { s := "x"; return &s }()},
 		{"missing-clients-field", &driftRegistryNoClientsField{}},
 		{"wrong-key-kind", &driftRegistryWrongKeyKind{}},
+		// Regression cases for the exact-type guards added per Codex's
+		// NO-GO finding on PR 2: each previously-Kind-only guard would
+		// have either panicked (clients-key) or silently misbehaved
+		// (provider/options) when crossed by a synthetic input via the
+		// `any` boundary that wasn't reachable through *baml.ClientRegistry.
+		{
+			name: "clients-defined-string-key",
+			reg: withEntry(&driftRegistryDefinedStringKey{
+				clients: map[definedStringKey]struct {
+					provider string
+					options  map[string]any
+				}{"x": {provider: "openai", options: nil}},
+			}),
+		},
+		{
+			name: "provider-defined-string",
+			reg: withEntry(&driftRegistryProviderDefinedString{
+				clients: map[string]struct {
+					provider definedStringKey
+					options  map[string]any
+				}{"x": {provider: "openai", options: nil}},
+			}),
+		},
+		{
+			name: "options-defined-string-key",
+			reg: withEntry(&driftRegistryOptionsDefinedKey{
+				clients: map[string]struct {
+					provider string
+					options  map[definedStringKey]any
+				}{"x": {provider: "openai", options: nil}},
+			}),
+		},
+		{
+			name: "options-wrong-value-type",
+			reg: withEntry(&driftRegistryOptionsWrongValue{
+				clients: map[string]struct {
+					provider string
+					options  map[string]string
+				}{"x": {provider: "openai", options: nil}},
+			}),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("ClientEntrySnapshot panicked on shape drift: %v", r)
+				}
+			}()
 			if _, _, ok := testhelpers.ClientEntrySnapshot(tc.reg, "x"); ok {
 				t.Errorf("ok=true on shape drift, want false")
 			}
@@ -153,7 +249,16 @@ type driftRegistryPrimaryNotPointer struct {
 	clients map[string]any
 }
 
+// driftRegistryPrimaryDefinedStringPtr is the regression case for the
+// exact-`*string` guard: `*StringAlias` would pass Kind=Ptr +
+// Elem().Kind()=String but break the round-trip-as-Go-string contract.
+type driftRegistryPrimaryDefinedStringPtr struct {
+	primary *definedStringKey
+	clients map[string]any
+}
+
 func TestClientRegistryPrimarySnapshot_ShapeDrift(t *testing.T) {
+	aliasVal := definedStringKey("Primary")
 	cases := []struct {
 		name string
 		reg  any
@@ -163,9 +268,15 @@ func TestClientRegistryPrimarySnapshot_ShapeDrift(t *testing.T) {
 		{"missing-primary-field", &driftRegistryNoPrimaryField{}},
 		{"primary-wrong-elem", &driftRegistryPrimaryWrongElem{}},
 		{"primary-not-pointer", &driftRegistryPrimaryNotPointer{}},
+		{"primary-defined-string-ptr", &driftRegistryPrimaryDefinedStringPtr{primary: &aliasVal}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("ClientRegistryPrimarySnapshot panicked on shape drift: %v", r)
+				}
+			}()
 			if got := testhelpers.ClientRegistryPrimarySnapshot(tc.reg); got != nil {
 				t.Errorf("got %q, want nil on shape drift", *got)
 			}

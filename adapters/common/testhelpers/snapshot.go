@@ -10,6 +10,16 @@
 // changes the registry shape surfaces loudly via ok=false (or a nil result)
 // rather than panicking on UnsafeAddr against an unexpected type.
 //
+// Type guards use exact-type comparison (e.g. `reflect.TypeOf("")` rather
+// than `Kind() == reflect.String`) on every code path that subsequently
+// constructs a typed reflect.Value to interact with the field — most
+// notably `MapIndex` against the `clients` map, which would panic on a
+// defined-string-alias key that passes a Kind-only check. Kind-only checks
+// would suffice while the helpers took a typed `*baml.ClientRegistry`
+// parameter (BAML's pinned shape made the alias case unreachable), but the
+// shared `any` boundary makes arbitrary synthetic shapes reachable, so the
+// guards are tightened accordingly.
+//
 // These helpers underpin the per-adapter `clientEntrySnapshot` and
 // `clientRegistryPrimarySnapshot` test wrappers; production code must not
 // consume them.
@@ -18,6 +28,12 @@ package testhelpers
 import (
 	"reflect"
 	"unsafe"
+)
+
+var (
+	stringType       = reflect.TypeOf("")
+	stringPtrType    = reflect.TypeOf((*string)(nil))
+	stringAnyMapType = reflect.TypeOf(map[string]any(nil))
 )
 
 // ClientEntrySnapshot reads the (provider, options) tuple BAML stored under
@@ -49,7 +65,10 @@ func ClientEntrySnapshot(reg any, name string) (provider string, options map[str
 	if !clientsField.IsValid() || clientsField.Kind() != reflect.Map {
 		return "", nil, false
 	}
-	if clientsField.Type().Key().Kind() != reflect.String {
+	// Exact-type guard on the map key: a defined-string alias
+	// (`type myString string`) would pass a Kind-only check and then
+	// panic at MapIndex below when keyed with a plain `string`.
+	if clientsField.Type().Key() != stringType {
 		return "", nil, false
 	}
 	clientsField = reflect.NewAt(clientsField.Type(), unsafe.Pointer(clientsField.UnsafeAddr())).Elem()
@@ -71,10 +90,15 @@ func ClientEntrySnapshot(reg any, name string) (provider string, options map[str
 	if !providerField.IsValid() || !optionsField.IsValid() {
 		return "", nil, false
 	}
-	if providerField.Kind() != reflect.String {
+	// Exact-type guards: `provider` must be `string` and `options` must be
+	// `map[string]any`. Kind-only checks would let a defined-type alias
+	// through; the read paths below would silently coerce or — for the
+	// options-key case — be one MapIndex(plainString) away from panicking
+	// if the iteration strategy ever changes.
+	if providerField.Type() != stringType {
 		return "", nil, false
 	}
-	if optionsField.Kind() != reflect.Map || optionsField.Type().Key().Kind() != reflect.String {
+	if optionsField.Type() != stringAnyMapType {
 		return "", nil, false
 	}
 	providerField = reflect.NewAt(providerField.Type(), unsafe.Pointer(providerField.UnsafeAddr())).Elem()
@@ -110,10 +134,13 @@ func ClientRegistryPrimarySnapshot(reg any) *string {
 		return nil
 	}
 	primaryField := regVal.FieldByName("primary")
-	if !primaryField.IsValid() || primaryField.Kind() != reflect.Ptr {
+	if !primaryField.IsValid() {
 		return nil
 	}
-	if primaryField.Type().Elem().Kind() != reflect.String {
+	// Exact-type guard: `primary` must be `*string`. A `*StringAlias`
+	// would pass Kind=Ptr + Elem().Kind()=String but break callers that
+	// expect the value to round-trip as a Go string.
+	if primaryField.Type() != stringPtrType {
 		return nil
 	}
 	primaryField = reflect.NewAt(primaryField.Type(), unsafe.Pointer(primaryField.UnsafeAddr())).Elem()
