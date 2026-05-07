@@ -3,6 +3,7 @@ module github.com/invakid404/baml-rest/adapters/common
 go 1.26.2
 
 require (
+	github.com/boundaryml/baml v0.204.0
 	github.com/dave/jennifer v1.7.1
 	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000
@@ -26,6 +27,7 @@ require (
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
+	google.golang.org/protobuf v1.36.6 // indirect
 )
 
 replace (
