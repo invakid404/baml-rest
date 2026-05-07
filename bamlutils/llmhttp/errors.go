@@ -2,6 +2,7 @@ package llmhttp
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -152,4 +153,32 @@ func classifyTransportErr(err error, prefix string, staleConnTeardownAcceptable 
 	}
 
 	return nil
+}
+
+// classifyStreamErrc consumes the single terminal value sseclient.Stream
+// (and the fast-path stream reader) emits and re-emits it on a buffered(1)
+// channel after running non-nil values through classifyTransportErr with
+// body-read semantics — same as Execute and readFastBodyLimitedCtx, where
+// any bytes already delivered upstream rule out the gated stale-conn-
+// teardown family. A typed mid-stream transport drop (ECONNRESET / EPIPE /
+// ECONNREFUSED / net.ErrClosed) therefore carries the ErrTransportFlake
+// umbrella sentinel out of the streaming path; io.ErrUnexpectedEOF
+// (chunked truncation) falls through to the generic wrap so its
+// content-integrity meaning is preserved.
+func classifyStreamErrc(src <-chan error) <-chan error {
+	out := make(chan error, 1)
+	go func() {
+		defer close(out)
+		err := <-src
+		if err == nil {
+			out <- nil
+			return
+		}
+		if te := classifyTransportErr(err, "llmhttp: failed to read response body", false); te != nil {
+			out <- te
+			return
+		}
+		out <- fmt.Errorf("llmhttp: failed to read response body: %w", err)
+	}()
+	return out
 }

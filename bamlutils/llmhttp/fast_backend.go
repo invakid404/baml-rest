@@ -243,13 +243,16 @@ func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenU
 
 	rc := newFastStreamReader(ctx, fReq, fResp, bodyStream, slot, hc)
 
+	// Same classification wrapper as the stdlib path in ExecuteStream:
+	// surface typed mid-stream transport drops as ErrTransportFlake while
+	// leaving io.ErrUnexpectedEOF (chunked truncation) intact.
 	events, errc := sseclient.Stream(ctx, rc)
 
 	return &StreamResponse{
 		StatusCode: status,
 		Headers:    headers,
 		Events:     events,
-		Errc:       errc,
+		Errc:       classifyStreamErrc(errc),
 		body:       rc,
 	}, nil
 }

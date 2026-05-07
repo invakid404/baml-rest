@@ -270,14 +270,18 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 		return nil, fmt.Errorf("llmhttp: unexpected Content-Type %q (expected text/event-stream): %s", ct, string(body))
 	}
 
-	// Start SSE parsing on the response body
+	// Start SSE parsing on the response body. The terminal value sseclient
+	// emits on errc is run through classifyStreamErrc so a mid-stream typed
+	// transport drop (ECONNRESET / EPIPE / ECONNREFUSED / net.ErrClosed)
+	// carries ErrTransportFlake out of the streaming path — matching the
+	// non-streaming body-read site at Execute below.
 	events, errc := sseclient.Stream(ctx, resp.Body)
 
 	return &StreamResponse{
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Header,
 		Events:     events,
-		Errc:       errc,
+		Errc:       classifyStreamErrc(errc),
 		body:       resp.Body,
 	}, nil
 }

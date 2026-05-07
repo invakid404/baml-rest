@@ -2,11 +2,15 @@ package llmhttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -921,5 +925,137 @@ func TestExecuteOnSuccessNotFiredOnError(t *testing.T) {
 	}
 	if called {
 		t.Fatal("onSuccess callback should not fire on non-2xx response")
+	}
+}
+
+// roundTripperFunc lets a test return a synthetic *http.Response with a
+// body of its choosing — useful for driving ExecuteStream over a body
+// reader that emits valid SSE bytes and then a typed transport error.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// scriptedReader emits a fixed prefix on its first Read calls and then
+// returns finalErr once the prefix has been drained. Used to simulate a
+// streaming body that delivers a complete SSE event before the transport
+// connection drops mid-stream.
+type scriptedReader struct {
+	prefix []byte
+	pos    int
+	err    error
+	closed bool
+}
+
+func (s *scriptedReader) Read(p []byte) (int, error) {
+	if s.pos < len(s.prefix) {
+		n := copy(p, s.prefix[s.pos:])
+		s.pos += n
+		return n, nil
+	}
+	return 0, s.err
+}
+
+func (s *scriptedReader) Close() error {
+	s.closed = true
+	return nil
+}
+
+func TestExecuteStream_MidStreamTransportFlakeClassified(t *testing.T) {
+	// Force the net/http dispatch path so the custom RoundTripper is the
+	// only thing that observes the request — the cache's ALPN probe must
+	// not run against a fake URL.
+	t.Setenv(EnvVarClientMode, "nethttp")
+
+	transportErr := &net.OpError{Op: "read", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}
+
+	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body := &scriptedReader{
+			prefix: []byte("data: first\n\ndata: [DONE]\n\n"),
+			err:    transportErr,
+		}
+		return &http.Response{
+			Status:     "200 OK",
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+			Request:    r,
+		}, nil
+	})
+
+	client := NewClient(&http.Client{Transport: rt})
+	resp, err := client.ExecuteStream(context.Background(), &Request{
+		URL:    "http://example.invalid/",
+		Method: "POST",
+		Body:   `{}`,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	defer resp.Close()
+
+	var events []sseclient.Event
+	for ev := range resp.Events {
+		events = append(events, ev)
+	}
+	if len(events) < 1 {
+		t.Fatal("expected at least one event before the transport drop")
+	}
+
+	streamErr := <-resp.Errc
+	if streamErr == nil {
+		t.Fatal("expected non-nil terminal error after a mid-stream ECONNRESET")
+	}
+	if !errors.Is(streamErr, ErrTransportFlake) {
+		t.Errorf("errors.Is(err, ErrTransportFlake) = false; want true; err = %v", streamErr)
+	}
+	if !errors.Is(streamErr, syscall.ECONNRESET) {
+		t.Errorf("errors.Is(err, syscall.ECONNRESET) = false; want true; err = %v", streamErr)
+	}
+}
+
+func TestExecuteStream_TruncationStaysContentIntegrity(t *testing.T) {
+	// io.ErrUnexpectedEOF (chunked truncation) must NOT be reclassified
+	// as ErrTransportFlake — the body-read site uses
+	// staleConnTeardownAcceptable=false, and the wrapper must mirror
+	// that. Truncation is a content-integrity failure, not a transport
+	// flake.
+	t.Setenv(EnvVarClientMode, "nethttp")
+
+	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body := &scriptedReader{
+			prefix: []byte("data: partial\n\n"),
+			err:    io.ErrUnexpectedEOF,
+		}
+		return &http.Response{
+			Status:     "200 OK",
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+			Request:    r,
+		}, nil
+	})
+
+	client := NewClient(&http.Client{Transport: rt})
+	resp, err := client.ExecuteStream(context.Background(), &Request{
+		URL:    "http://example.invalid/",
+		Method: "POST",
+		Body:   `{}`,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	defer resp.Close()
+
+	for range resp.Events {
+	}
+	streamErr := <-resp.Errc
+	if streamErr == nil {
+		t.Fatal("expected non-nil terminal error for truncated body")
+	}
+	if errors.Is(streamErr, ErrTransportFlake) {
+		t.Errorf("io.ErrUnexpectedEOF must not match ErrTransportFlake; err = %v", streamErr)
+	}
+	if !errors.Is(streamErr, io.ErrUnexpectedEOF) {
+		t.Errorf("errors.Is(err, io.ErrUnexpectedEOF) = false; want true; err = %v", streamErr)
 	}
 }
