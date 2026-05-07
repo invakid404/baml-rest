@@ -1,0 +1,414 @@
+// verify-framework-adapter is the CI-side gate for #199 item 1 / PR
+// 4a's verifier-only phase. It runs three independent checks against
+// the codegen-emitted framework adapter.go for every per-adapter
+// module:
+//
+//  1. Structural equivalence: emit the framework adapter.go, gofmt
+//     it, parse with go/parser, and AST-diff against the source-
+//     tree's hand-written file (also gofmted). Tolerates comment-
+//     text differences; fails on any other AST-level divergence.
+//
+//  2. Deterministic emission: run the emitter twice and byte-diff the
+//     outputs. Fails if any map iteration in the new emit code or in
+//     a downstream jen helper is unsorted.
+//
+//  3. Behavioural test parity: copy the per-adapter module to a
+//     tempdir, replace adapter/adapter.go with the codegen-emitted
+//     candidate, rewrite the go.mod's relative `replace` directives
+//     to absolute paths so the tempdir copy compiles, and run
+//     `GOWORK=off go test ./adapter/`. Fails on any test failure.
+//
+// 4a leaves the hand-written adapter.go files in place. 4b removes
+// them once 4a's verifier has been green for N consecutive main-
+// branch runs covering at least one PR touching adapters/ or
+// adapters/common/codegen/.
+//
+// Exit codes: 0 = all checks pass for all adapters; 1 = any failure.
+//
+// Invocation:
+//
+//	cd <repo-root>
+//	go run ./cmd/verify-framework-adapter
+//
+// CI invokes the same command after a checkout-clean job. Output is
+// human-readable; CI greps for "FAIL" on non-zero exit.
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/invakid404/baml-rest/adapters/common/codegen"
+)
+
+type adapterCase struct {
+	dirName string
+	opts    codegen.Options
+}
+
+var cases = []adapterCase{
+	{
+		dirName: "adapter_v0_204_0",
+		opts: codegen.Options{
+			SelfPkg:            "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0",
+			SupportsWithClient: false,
+			HasWrapMapValues:   true,
+			HasHTTPClient:      false,
+		},
+	},
+	{
+		dirName: "adapter_v0_215_0",
+		opts: codegen.Options{
+			SelfPkg:            "github.com/invakid404/baml-rest/adapters/adapter_v0_215_0",
+			SupportsWithClient: false,
+			HasWrapMapValues:   false,
+			HasHTTPClient:      false,
+		},
+	},
+	{
+		dirName: "adapter_v0_219_0",
+		opts: codegen.Options{
+			SelfPkg:            "github.com/invakid404/baml-rest/adapters/adapter_v0_219_0",
+			SupportsWithClient: true,
+			HasWrapMapValues:   false,
+			HasHTTPClient:      true,
+		},
+	},
+}
+
+func main() {
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		fail("getcwd: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "go.work")); err != nil {
+		fail("must be invoked from the repo root (no go.work in %s)", repoRoot)
+	}
+
+	totalFailures := 0
+	for _, c := range cases {
+		fmt.Printf("=== %s ===\n", c.dirName)
+		failures := runChecks(repoRoot, c)
+		if failures == 0 {
+			fmt.Printf("    PASS: all 3 checks green\n")
+		} else {
+			fmt.Printf("    FAIL: %d check(s) failed\n", failures)
+		}
+		totalFailures += failures
+	}
+
+	if totalFailures > 0 {
+		fmt.Fprintf(os.Stderr, "\nFAIL: %d check failure(s) across all adapters\n", totalFailures)
+		os.Exit(1)
+	}
+	fmt.Println("\nAll framework-adapter codegen-emit checks passed.")
+}
+
+func runChecks(repoRoot string, c adapterCase) int {
+	tmp, err := os.MkdirTemp("", "verify-framework-"+c.dirName+"-*")
+	if err != nil {
+		fail("mktemp: %v", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	// Emit candidate.
+	candidatePath := filepath.Join(tmp, "adapter_emitted_1.go")
+	codegen.GenerateFrameworkAdapter(c.opts, candidatePath)
+
+	failures := 0
+
+	// Check 1: structural equivalence (AST diff after gofmt, ignoring
+	// comments).
+	handPath := filepath.Join(repoRoot, "adapters", c.dirName, "adapter", "adapter.go")
+	if err := checkStructuralEquivalence(candidatePath, handPath); err != nil {
+		fmt.Printf("    Check 1 (structural equivalence): FAIL: %v\n", err)
+		failures++
+	} else {
+		fmt.Printf("    Check 1 (structural equivalence): PASS\n")
+	}
+
+	// Check 2: deterministic emission.
+	candidatePath2 := filepath.Join(tmp, "adapter_emitted_2.go")
+	codegen.GenerateFrameworkAdapter(c.opts, candidatePath2)
+	if err := checkDeterministicEmission(candidatePath, candidatePath2); err != nil {
+		fmt.Printf("    Check 2 (deterministic emission): FAIL: %v\n", err)
+		failures++
+	} else {
+		fmt.Printf("    Check 2 (deterministic emission): PASS\n")
+	}
+
+	// Check 3: behavioural test parity.
+	if err := checkBehaviouralTestParity(repoRoot, c, candidatePath); err != nil {
+		fmt.Printf("    Check 3 (behavioural test parity): FAIL: %v\n", err)
+		failures++
+	} else {
+		fmt.Printf("    Check 3 (behavioural test parity): PASS\n")
+	}
+
+	return failures
+}
+
+// checkStructuralEquivalence verifies the codegen-emitted file and
+// the hand-written file are AST-equivalent after gofmt, ignoring
+// comments and node positions. Returns nil on equivalence; non-nil
+// error otherwise with a short description of the first divergence.
+func checkStructuralEquivalence(candidatePath, handPath string) error {
+	candData, err := gofmtFile(candidatePath)
+	if err != nil {
+		return fmt.Errorf("gofmt candidate: %w", err)
+	}
+	handData, err := gofmtFile(handPath)
+	if err != nil {
+		return fmt.Errorf("gofmt hand-written: %w", err)
+	}
+
+	fset := token.NewFileSet()
+	candFile, err := parser.ParseFile(fset, candidatePath, candData, parser.SkipObjectResolution)
+	if err != nil {
+		return fmt.Errorf("parse candidate: %w", err)
+	}
+	handFile, err := parser.ParseFile(fset, handPath, handData, parser.SkipObjectResolution)
+	if err != nil {
+		return fmt.Errorf("parse hand-written: %w", err)
+	}
+
+	candTokens := canonicalTokens(candFile)
+	handTokens := canonicalTokens(handFile)
+
+	if len(candTokens) != len(handTokens) {
+		// Surface the first divergence location for easier debugging.
+		return fmt.Errorf("AST shape differs: candidate has %d top-level decls, hand-written has %d", len(candTokens), len(handTokens))
+	}
+
+	for i := range candTokens {
+		if candTokens[i] != handTokens[i] {
+			return fmt.Errorf("decl #%d AST diverges:\n  candidate:    %s\n  hand-written: %s",
+				i, truncate(candTokens[i]), truncate(handTokens[i]))
+		}
+	}
+	return nil
+}
+
+// canonicalTokens walks the file's top-level declarations and reduces
+// each to a comment-stripped, normalised string suitable for
+// equivalence comparison. The transform: strip all comments, strip
+// line/column positions, normalise import-spec aliasing, then format
+// each decl back to source text.
+func canonicalTokens(f *ast.File) []string {
+	out := make([]string, 0, len(f.Decls))
+	stripCommentsFile(f)
+	for _, decl := range f.Decls {
+		out = append(out, normaliseDecl(decl))
+	}
+	return out
+}
+
+// stripCommentsFile clears comment groups attached to the file and
+// every node reachable from its declarations. We can't simply nil
+// f.Comments because the *ast.GenDecl/FuncDecl carry their own Doc /
+// inline-Comment fields that printer reattaches. Walk the tree and
+// nil them all.
+func stripCommentsFile(f *ast.File) {
+	f.Comments = nil
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch d := n.(type) {
+		case *ast.GenDecl:
+			d.Doc = nil
+		case *ast.FuncDecl:
+			d.Doc = nil
+		case *ast.Field:
+			d.Doc = nil
+			d.Comment = nil
+		case *ast.ImportSpec:
+			d.Doc = nil
+			d.Comment = nil
+		case *ast.ValueSpec:
+			d.Doc = nil
+			d.Comment = nil
+		case *ast.TypeSpec:
+			d.Doc = nil
+			d.Comment = nil
+		}
+		return true
+	})
+}
+
+func normaliseDecl(decl ast.Decl) string {
+	var buf bytes.Buffer
+	fset := token.NewFileSet()
+	if err := format.Node(&buf, fset, decl); err != nil {
+		return fmt.Sprintf("<format error: %v>", err)
+	}
+	// Collapse all whitespace runs to a single space so cosmetic line
+	// breaks in struct field initialisers / function bodies don't
+	// register as differences.
+	return collapseWhitespace(buf.String())
+}
+
+var wsRE = regexp.MustCompile(`\s+`)
+
+func collapseWhitespace(s string) string {
+	return strings.TrimSpace(wsRE.ReplaceAllString(s, " "))
+}
+
+func truncate(s string) string {
+	const max = 200
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...[+" + fmt.Sprint(len(s)-max) + " bytes]"
+}
+
+func gofmtFile(path string) ([]byte, error) {
+	cmd := exec.Command("gofmt", path)
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%w: %s", err, errb.String())
+	}
+	return out.Bytes(), nil
+}
+
+// checkDeterministicEmission byte-compares two consecutive emit
+// outputs. They must be identical; any drift means the emitter has
+// non-deterministic behaviour (typically an unsorted map iteration).
+func checkDeterministicEmission(path1, path2 string) error {
+	a, err := os.ReadFile(path1)
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(path2)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(a, b) {
+		return fmt.Errorf("emit run 1 (%d bytes) != emit run 2 (%d bytes)", len(a), len(b))
+	}
+	return nil
+}
+
+// checkBehaviouralTestParity copies the per-adapter module to a
+// tempdir, replaces adapter/adapter.go with the codegen-emitted
+// candidate, rewrites go.mod's relative `replace` directives to
+// absolute paths (because the tempdir copy is one level removed from
+// the source-tree's siblings), and runs `GOWORK=off go test
+// ./adapter/`. The hand-written source-tree files are NEVER touched.
+func checkBehaviouralTestParity(repoRoot string, c adapterCase, candidatePath string) error {
+	srcDir := filepath.Join(repoRoot, "adapters", c.dirName)
+	tmpDir, err := os.MkdirTemp("", "verify-fwadapter-test-"+c.dirName+"-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := copyDir(srcDir, tmpDir); err != nil {
+		return fmt.Errorf("copy adapter dir: %w", err)
+	}
+
+	// Swap the hand-written adapter.go for the codegen-emitted
+	// candidate.
+	candData, err := os.ReadFile(candidatePath)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "adapter", "adapter.go"), candData, 0644); err != nil {
+		return err
+	}
+
+	// Rewrite go.mod replaces from "../common" / "../../bamlutils" /
+	// etc. to absolute paths so the tempdir's `go test` resolves them
+	// against the repo source tree.
+	if err := absoluteReplacesInGoMod(filepath.Join(tmpDir, "go.mod"), srcDir); err != nil {
+		return fmt.Errorf("rewrite go.mod replaces: %w", err)
+	}
+
+	cmd := exec.Command("go", "test", "./adapter/")
+	cmd.Dir = tmpDir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w\nstdout:\n%s\nstderr:\n%s", err, out.String(), errb.String())
+	}
+	return nil
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
+}
+
+// absoluteReplacesInGoMod rewrites every relative `=> <relpath>`
+// directive in goModPath so that <relpath> resolves to the same
+// absolute location it would resolve to from origDir. This is the
+// minimal patch that makes a tempdir-copied per-adapter module's
+// go.mod work without depending on go.work.
+func absoluteReplacesInGoMod(goModPath, origDir string) error {
+	data, err := os.ReadFile(goModPath)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		// Match lines like "  X => ../../foo" or "  X => ../bar" inside
+		// or outside a replace block.
+		idx := strings.Index(line, "=> ..")
+		if idx < 0 {
+			continue
+		}
+		prefix := line[:idx+3] // through "=> "
+		rest := strings.TrimSpace(line[idx+3:])
+		// rest is something like "../common" or "../../bamlutils" — may
+		// have a trailing version on a single-line `replace X => path
+		// version` form, but per-adapter go.mod files use the bare
+		// path form.
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			continue
+		}
+		relPath := fields[0]
+		absPath := filepath.Clean(filepath.Join(origDir, relPath))
+		// Preserve any extra trailing fields (version, comment).
+		extra := ""
+		if len(fields) > 1 {
+			extra = " " + strings.Join(fields[1:], " ")
+		}
+		lines[i] = prefix + absPath + extra
+	}
+	return os.WriteFile(goModPath, []byte(strings.Join(lines, "\n")), 0644)
+}
+
+func fail(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "verify-framework-adapter: "+format+"\n", a...)
+	os.Exit(2)
+}
