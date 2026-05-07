@@ -1,6 +1,6 @@
 // Package adapterversions is the canonical inventory of pinned BAML
 // adapter versions baml-rest supports, plus the codegen.Options each
-// version requires. Two consumers share this list:
+// version requires. Three consumers share this list:
 //
 //   - cmd/verify-framework-adapter (the PR 4a CI verifier) iterates
 //     FrameworkAdapters to run the structural-equivalence /
@@ -9,6 +9,9 @@
 //   - Each adapters/adapter_v0_<X>_0/cmd/main.go calls
 //     MustOptionsForSelfPkg to fetch its own options without
 //     re-declaring the matrix.
+//   - cmd/verify-adapter-pins iterates PinnedModules to assert each
+//     pinned go.mod still resolves github.com/boundaryml/baml to its
+//     canonical version after `scripts/sync.sh` runs.
 //
 // Keeping the list in one place avoids the (verifier, 3 cmd/main.go)
 // duplication and means new adapter versions or new feature flags get
@@ -30,6 +33,12 @@ type FrameworkAdapter struct {
 	// "adapter_v0_204_0". Consumed by the verifier to build paths
 	// like adapters/<DirName>/adapter/adapter.go.
 	DirName string
+	// BAMLVersion is the canonical github.com/boundaryml/baml pin for
+	// this adapter's go.mod, e.g. "v0.204.0". The pin verifier reads
+	// this to assert that `go list -m github.com/boundaryml/baml`
+	// inside adapters/<DirName> still returns this exact version
+	// after `scripts/sync.sh` runs.
+	BAMLVersion string
 	// Options is the per-version codegen feature matrix the adapter's
 	// cmd/main.go would otherwise inline. Every field codegen.Options
 	// carries today is captured here so consumers don't accidentally
@@ -42,7 +51,8 @@ type FrameworkAdapter struct {
 // per-version flag values are paired with their SelfPkg here.
 var FrameworkAdapters = []FrameworkAdapter{
 	{
-		DirName: "adapter_v0_204_0",
+		DirName:     "adapter_v0_204_0",
+		BAMLVersion: "v0.204.0",
 		Options: codegen.Options{
 			SelfPkg:            "github.com/invakid404/baml-rest/adapters/adapter_v0_204_0",
 			SupportsWithClient: false,
@@ -51,7 +61,8 @@ var FrameworkAdapters = []FrameworkAdapter{
 		},
 	},
 	{
-		DirName: "adapter_v0_215_0",
+		DirName:     "adapter_v0_215_0",
+		BAMLVersion: "v0.215.0",
 		Options: codegen.Options{
 			SelfPkg:            "github.com/invakid404/baml-rest/adapters/adapter_v0_215_0",
 			SupportsWithClient: false,
@@ -60,7 +71,8 @@ var FrameworkAdapters = []FrameworkAdapter{
 		},
 	},
 	{
-		DirName: "adapter_v0_219_0",
+		DirName:     "adapter_v0_219_0",
+		BAMLVersion: "v0.219.0",
 		Options: codegen.Options{
 			SelfPkg:            "github.com/invakid404/baml-rest/adapters/adapter_v0_219_0",
 			SupportsWithClient: true,
@@ -68,6 +80,33 @@ var FrameworkAdapters = []FrameworkAdapter{
 			HasHTTPClient:      true,
 		},
 	},
+}
+
+// PinnedModule is one (DirName, BAMLVersion) pair that the pin
+// verifier asserts against. PinnedModules is the union of
+// adapters/common (which is not a FrameworkAdapter — it has no
+// codegen.Options matrix — but does pin a BAML version that must not
+// drift) and the FrameworkAdapters set.
+type PinnedModule struct {
+	// DirName is the path relative to the repo root, e.g.
+	// "adapters/common" or "adapters/adapter_v0_204_0". The verifier
+	// resolves it under repoRoot to run `go list -m`.
+	DirName string
+	// BAMLVersion is the canonical github.com/boundaryml/baml pin
+	// expected for the module at DirName.
+	BAMLVersion string
+}
+
+// PinnedModules is the canonical pin matrix consumed by
+// cmd/verify-adapter-pins. The common module pins the lowest adapter
+// BAML version (v0.204.0) so that the local `replace ../common`
+// directives in each adapter's go.mod can satisfy v0.204.0,
+// v0.215.0, and v0.219.0 without pulling any adapter forward.
+var PinnedModules = []PinnedModule{
+	{DirName: "adapters/common", BAMLVersion: "v0.204.0"},
+	{DirName: "adapters/adapter_v0_204_0", BAMLVersion: "v0.204.0"},
+	{DirName: "adapters/adapter_v0_215_0", BAMLVersion: "v0.215.0"},
+	{DirName: "adapters/adapter_v0_219_0", BAMLVersion: "v0.219.0"},
 }
 
 // MustOptionsForSelfPkg returns the codegen.Options registered for

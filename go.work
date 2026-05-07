@@ -1,12 +1,21 @@
 go 1.26.2
 
-// NOTE: ./adapters/adapter_v* directories are intentionally NOT included in
-// this workspace. Each adapter pins a specific github.com/boundaryml/baml
-// version that represents a different compatibility level, and Go's module
-// system enforces a single resolved version per module path across all
-// workspace modules (via Minimum Version Selection). Adding the adapters
-// here causes `go work sync` to bump every adapter's pinned BAML version to
-// the highest one across the workspace, defeating the per-adapter pinning.
+// NOTE: ./adapters/adapter_v* and ./adapters/common are intentionally NOT
+// included in this workspace. Each adapter pins a specific
+// github.com/boundaryml/baml version that represents a different
+// compatibility level, and Go's module system enforces a single resolved
+// version per module path across all workspace modules (via Minimum Version
+// Selection). Adding the adapters here causes `go work sync` to bump every
+// adapter's pinned BAML version to the highest one across the workspace,
+// defeating the per-adapter pinning.
+//
+// adapters/common is also excluded for the same reason: it directly requires
+// github.com/boundaryml/baml, and each adapter_v* go.mod has a local
+// `replace ../common` that propagates whatever BAML version common pins. If
+// common is a workspace member, `go work sync` lifts it to the workspace-MVS
+// max (currently v0.219.0, because root go.mod requires + replaces all three
+// versioned adapters), and the next `GOWORK=off go mod tidy` in each adapter
+// then propagates that lifted requirement back into the adapter pins.
 //
 // Each adapter is reachable from the root module via the `replace` directives
 // in go.mod, so editor tooling and the build scripts continue to work; for
@@ -17,11 +26,12 @@ go 1.26.2
 //
 // To refresh indirect dependencies in the workspace AND in the per-adapter
 // modules without bumping the pinned BAML versions, run `./scripts/sync.sh`
-// from anywhere in the repo. It runs `go work sync` for the workspace members
-// and then `GOWORK=off go mod tidy` in each adapter directory.
+// from anywhere in the repo. It runs `go work sync` for the workspace
+// members, then `GOWORK=off go mod tidy` in adapters/common and each
+// adapter_v* directory, and finally asserts the BAML pin matrix via
+// cmd/verify-adapter-pins.
 use (
 	.
-	./adapters/common
 	./bamlutils
 	./introspected
 	./pool
