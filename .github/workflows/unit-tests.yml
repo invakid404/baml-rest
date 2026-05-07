@@ -50,3 +50,18 @@ jobs:
         # check has been green for ≥N consecutive main-branch runs covering
         # at least one PR touching adapters/ or adapters/common/codegen/.
         run: go run ./cmd/verify-framework-adapter
+
+      - name: scripts/sync.sh fresh-tree gate
+        # Fresh-tree gate for the sync.sh / per-adapter BAML-pin contract.
+        # Running sync.sh on a clean checkout must leave every pinned
+        # module's go.mod / go.sum byte-identical: if `go work sync` ever
+        # lifts a pin (the regression fixed by removing adapters/common
+        # from go.work), this step fails with a diff. The verify step
+        # double-asserts the pin matrix via cmd/verify-adapter-pins so a
+        # diff-free-but-wrong state can't slip through either.
+        run: |
+          git status --porcelain
+          ./scripts/sync.sh
+          git diff --exit-code -- \
+            adapters/common/go.mod adapters/common/go.sum \
+            'adapters/adapter_v0_*/go.mod' 'adapters/adapter_v0_*/go.sum'
