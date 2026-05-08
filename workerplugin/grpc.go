@@ -194,12 +194,16 @@ func (s *GRPCServer) Parse(ctx context.Context, req *pb.ParseRequest) (*pb.Parse
 			resp.Stacktrace = fullErr
 		}
 		// Forward any worker-side classification + structured details.
-		// If the worker returned an *ErrorWithStack with a Code/Details
-		// already set, prefer those; the host treats them as authoritative.
-		if codedErr, ok := err.(interface{ GetCode() string }); ok {
+		// errors.As walks the wrap chain so a worker that wraps an
+		// *ErrorWithStack (e.g. fmt.Errorf("parse %s: %w", method, err))
+		// still surfaces its code/details — a direct type assertion
+		// would only match the top-level value and silently drop them.
+		var codedErr interface{ GetCode() string }
+		if errors.As(err, &codedErr) {
 			resp.ErrorCode = codedErr.GetCode()
 		}
-		if detailsErr, ok := err.(interface{ GetDetails() []byte }); ok {
+		var detailsErr interface{ GetDetails() []byte }
+		if errors.As(err, &detailsErr) {
 			resp.ErrorDetailsJson = detailsErr.GetDetails()
 		}
 		return resp, nil

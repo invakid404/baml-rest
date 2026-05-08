@@ -559,12 +559,10 @@ var serveCmd = &cobra.Command{
 
 			makeDynamicStreamHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
-					workerInput, statusCode, err := parseDynamicStreamInput(c.Body())
+					workerInput, statusCode, code, err := parseDynamicStreamInput(c.Body())
 					if err != nil {
-						code := apierror.CodeInvalidRequest
 						if statusCode >= fiber.StatusInternalServerError {
 							logger.Error().Err(err).Msg("dynamic stream input parsing failed")
-							code = apierror.CodeInternalError
 						}
 						return writeFiberJSONErrorWithCode(c, err.Error(), code, nil, statusCode)
 					}
@@ -704,22 +702,27 @@ var serveCmd = &cobra.Command{
 	},
 }
 
-func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int, err error) {
+// parseDynamicStreamInput parses + validates the JSON body for a
+// dynamic streaming endpoint and returns the worker-shaped input
+// alongside the apierror.Code that classifies any failure (so callers
+// preserve machine-readable codes instead of collapsing every 4xx into
+// invalid_request). On success: code is "" and statusCode is 0.
+func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int, code apierror.Code, err error) {
 	var input bamlutils.DynamicInput
 	if err := json.Unmarshal(rawBody, &input); err != nil {
-		return nil, fiber.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err)
+		return nil, fiber.StatusBadRequest, apierror.CodeInvalidJSON, fmt.Errorf("invalid JSON: %w", err)
 	}
 
 	if err := input.Validate(); err != nil {
-		return nil, fiber.StatusBadRequest, err
+		return nil, fiber.StatusBadRequest, apierror.CodeInvalidRequest, err
 	}
 
 	workerInput, err = input.ToWorkerInput()
 	if err != nil {
-		return nil, fiber.StatusInternalServerError, fmt.Errorf("failed to convert input: %w", err)
+		return nil, fiber.StatusInternalServerError, apierror.CodeInternalError, fmt.Errorf("failed to convert input: %w", err)
 	}
 
-	return workerInput, 0, nil
+	return workerInput, 0, "", nil
 }
 
 func init() {

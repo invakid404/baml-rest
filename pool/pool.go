@@ -2163,6 +2163,18 @@ func isRetryableWorkerError(err error) bool {
 	return false
 }
 
+// IsCallerCancellationError reports whether err originated from
+// caller-side cancellation (context.Canceled / context.DeadlineExceeded
+// or a gRPC Canceled / DeadlineExceeded status, including the
+// string-serialized forms that lose their *status.Status across the
+// boundary). Use this at the HTTP layer to distinguish a client-driven
+// abort (request_canceled) from a retryable worker infrastructure
+// failure (worker_unavailable) — the underlying gRPC code is the same
+// for both, so IsRetryableWorkerError alone can't tell them apart.
+func IsCallerCancellationError(err error) bool {
+	return isCallerCancellationError(err)
+}
+
 func isCallerCancellationError(err error) bool {
 	if err == nil {
 		return false

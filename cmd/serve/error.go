@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"net/http"
 
@@ -35,23 +34,21 @@ func writeFiberJSONErrorWithCode(c fiber.Ctx, message string, code apierror.Code
 //
 // The actual error message is forwarded to the client verbatim — this is a
 // developer-facing API where opaque "failed to process request" responses
-// strand both human users and LLM-agent consumers. The classification logic:
-//
-//   - context.Canceled / DeadlineExceeded → 408 request_canceled
-//   - retryable infrastructure failure that exhausted pool retries
-//     (worker crash, gRPC Unavailable, transport reset) → 500 worker_unavailable
-//   - everything else (BAML validation, LLM provider error, parse failure
-//     bubbled from the worker) → 500 worker_error
+// strand both human users and LLM-agent consumers. classifyWorkerError owns
+// the code/status mapping; this helper routes a request_canceled outcome to
+// 408 (so client-driven aborts don't inflate 5xx metrics) and everything
+// else to 500 with the classified code/details.
 //
 // Stacktraces from worker panics, when present, are forwarded as
 // details.stacktrace so an LLM agent receiving the error as feedback has
-// the full picture. The full error is also logged via httplogger.SetError.
+// the full picture. The full error is also logged via httplogger.SetError
+// for non-cancellation paths.
 func writeFiberWorkerError(c fiber.Ctx, err error) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return writeFiberJSONErrorWithCode(c, "request canceled", apierror.CodeRequestCanceled, nil, fiber.StatusRequestTimeout)
+	code, details := classifyWorkerError(err)
+	if code == apierror.CodeRequestCanceled {
+		return writeFiberJSONErrorWithCode(c, "request canceled", code, details, fiber.StatusRequestTimeout)
 	}
 	httplogger.SetError(c.Context(), err)
-	code, details := classifyWorkerError(err)
 	return writeFiberJSONErrorWithCode(c, err.Error(), code, details, fiber.StatusInternalServerError)
 }
 
@@ -60,11 +57,11 @@ func writeFiberWorkerError(c fiber.Ctx, err error) error {
 // (BAML couldn't validate raw LLM output against the method schema)
 // rather than an LLM call failure.
 func writeFiberParseWorkerError(c fiber.Ctx, err error) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return writeFiberJSONErrorWithCode(c, "request canceled", apierror.CodeRequestCanceled, nil, fiber.StatusRequestTimeout)
+	code, details := classifyWorkerError(err)
+	if code == apierror.CodeRequestCanceled {
+		return writeFiberJSONErrorWithCode(c, "request canceled", code, details, fiber.StatusRequestTimeout)
 	}
 	httplogger.SetError(c.Context(), err)
-	code, details := classifyWorkerError(err)
 	if code == apierror.CodeWorkerError {
 		code = apierror.CodeParseError
 	}
@@ -82,10 +79,18 @@ func writeFiberInternalError(c fiber.Ctx, err error) error {
 
 // classifyWorkerError inspects err and returns the apierror.Code that
 // best describes the failure plus any structured details that should
-// reach the client envelope. Worker-supplied codes (carried by
-// *workerplugin.ErrorWithStack) take precedence; otherwise the
-// classification falls back to pool.IsRetryableWorkerError to distinguish
-// transient infrastructure failure from a real BAML/LLM error.
+// reach the client envelope. Precedence:
+//  1. Worker-supplied code (carried by *workerplugin.ErrorWithStack)
+//     wins — when the worker classified the error, we trust it.
+//  2. Caller cancellation (context.Canceled / DeadlineExceeded or
+//     gRPC Canceled / DeadlineExceeded) maps to request_canceled.
+//     Checked BEFORE pool.IsRetryableWorkerError because the latter
+//     treats those gRPC codes as retryable infrastructure too — without
+//     this short-circuit, a client-driven abort surfaces as
+//     worker_unavailable on streaming and unary paths alike.
+//  3. pool.IsRetryableWorkerError → worker_unavailable (transient infra
+//     failure, retries exhausted by the pool).
+//  4. Default → worker_error (BAML / LLM application error).
 func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
 	var details json.RawMessage
 
@@ -98,11 +103,12 @@ func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
 		}
 	}
 
-	// Worker-supplied code wins over heuristic classification — when
-	// the worker has typed knowledge of the failure (e.g. "this is a
-	// parse_error against the BAML schema"), we trust it.
 	if stackErr != nil && stackErr.GetCode() != "" {
 		return apierror.Code(stackErr.GetCode()), details
+	}
+
+	if pool.IsCallerCancellationError(err) {
+		return apierror.CodeRequestCanceled, details
 	}
 
 	if pool.IsRetryableWorkerError(err) {
@@ -120,22 +126,22 @@ func writeChiJSONErrorWithCode(w http.ResponseWriter, r *http.Request, message s
 }
 
 func writeChiWorkerErrorClassified(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		writeChiJSONErrorWithCode(w, r, "request canceled", apierror.CodeRequestCanceled, nil, http.StatusRequestTimeout)
+	code, details := classifyWorkerError(err)
+	if code == apierror.CodeRequestCanceled {
+		writeChiJSONErrorWithCode(w, r, "request canceled", code, details, http.StatusRequestTimeout)
 		return
 	}
 	httplogger.SetError(r.Context(), err)
-	code, details := classifyWorkerError(err)
 	writeChiJSONErrorWithCode(w, r, err.Error(), code, details, http.StatusInternalServerError)
 }
 
 func writeChiParseWorkerError(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		writeChiJSONErrorWithCode(w, r, "request canceled", apierror.CodeRequestCanceled, nil, http.StatusRequestTimeout)
+	code, details := classifyWorkerError(err)
+	if code == apierror.CodeRequestCanceled {
+		writeChiJSONErrorWithCode(w, r, "request canceled", code, details, http.StatusRequestTimeout)
 		return
 	}
 	httplogger.SetError(r.Context(), err)
-	code, details := classifyWorkerError(err)
 	if code == apierror.CodeWorkerError {
 		code = apierror.CodeParseError
 	}
