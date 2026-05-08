@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"reflect"
+	"slices"
 
 	"github.com/dave/jennifer/jen"
 	"github.com/invakid404/baml-rest/adapters/common"
@@ -636,7 +637,23 @@ func (g *generator) emitDynamicUnwrapFunc(funcName string, typePtr *jen.Statemen
 func (g *generator) emitMethods() []methodOut {
 	var methods []methodOut
 
-	for methodName, args := range introspected.SyncMethods {
+	// Sort method names so emitted declaration order is deterministic
+	// across runs. Go's `range` over a map randomises iteration order,
+	// which propagated through the emitted Methods map (and the
+	// generated input/output struct + impl declarations whose names
+	// derive from methodName), making two consecutive generator runs
+	// produce ASTs whose top-level declarations sit in arbitrary
+	// positions. The framework adapter emitter's CI determinism check
+	// caught a similar drift; this is the same fix for the streaming
+	// router half.
+	methodNames := make([]string, 0, len(introspected.SyncMethods))
+	for k := range introspected.SyncMethods {
+		methodNames = append(methodNames, k)
+	}
+	slices.Sort(methodNames)
+
+	for _, methodName := range methodNames {
+		args := introspected.SyncMethods[methodName]
 		me, ok := g.newMethodEmitter(methodName, args)
 		if !ok {
 			continue
@@ -698,7 +715,17 @@ type parseMethodOut struct {
 func (g *generator) emitParseMethods() []parseMethodOut {
 	var parseMethods []parseMethodOut
 
-	for methodName := range introspected.ParseMethods {
+	// Same map-iteration determinism fix as emitMethods: sort the
+	// parse-method names so emitted parse_<Method> functions and the
+	// resulting ParseMethods map appear in a stable order across
+	// runs.
+	parseMethodNames := make([]string, 0, len(introspected.ParseMethods))
+	for k := range introspected.ParseMethods {
+		parseMethodNames = append(parseMethodNames, k)
+	}
+	slices.Sort(parseMethodNames)
+
+	for _, methodName := range parseMethodNames {
 		// Get the sync function to determine return type
 		syncFuncValue, ok := introspected.SyncFuncs[methodName]
 		if !ok {
