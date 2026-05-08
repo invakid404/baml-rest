@@ -1308,6 +1308,15 @@ func TestIsRetryableWorkerError(t *testing.T) {
 		{"nested Canceled over Internal", fmt.Errorf("rpc error: code = Canceled desc = rpc error: code = Internal desc = something"), true},
 		{"nested Unavailable over Internal", fmt.Errorf("rpc error: code = Unavailable desc = rpc error: code = Internal desc = something"), true},
 		{"wrapped Unavailable message", status.Error(codes.Unknown, "connection reset"), true},
+		// ErrPoolRetriesExhausted: the pool's terminal error after all
+		// retryable attempts gave up. Itself a worker_unavailable
+		// signal — every wrapped form must classify retryable so the
+		// HTTP layer surfaces worker_unavailable, not worker_error.
+		{"ErrPoolRetriesExhausted bare", ErrPoolRetriesExhausted, true},
+		{"ErrPoolRetriesExhausted wrapping Unavailable", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, status.Error(codes.Unavailable, "worker died")), true},
+		{"ErrPoolRetriesExhausted wrapping serialized Canceled", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("rpc error: code = Canceled desc = hung")), true},
+		{"ErrPoolRetriesExhausted with bare suffix", fmt.Errorf("%w (no terminal stream frame)", ErrPoolRetriesExhausted), true},
+		{"ErrPoolRetriesExhausted double-wrapped", fmt.Errorf("downstream gave up: %w", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, status.Error(codes.Unavailable, "x"))), true},
 	}
 
 	for _, tt := range tests {

@@ -1277,7 +1277,7 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 		return nil, err
 	}
 
-	return nil, fmt.Errorf("all parse retries exhausted: %w", lastErr)
+	return nil, fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, lastErr)
 }
 
 // Call executes a BAML method and returns the final result.
@@ -1418,6 +1418,14 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		currentHandle := handle
 		var lastFailed *workerHandle
 		var sentAnyResults bool
+		// lastRetryableErr is the most recent retryable worker error
+		// observed across attempts. Captured both pre-stream (CallStream
+		// dial/handshake failure) and mid-stream (StreamResultKindError
+		// classified as retryable). On retry exhaustion it's wrapped into
+		// the terminal sendStreamError so the HTTP layer's classifier sees
+		// the underlying gRPC code (Unavailable / Canceled / etc.) and
+		// surfaces worker_unavailable instead of worker_error.
+		var lastRetryableErr error
 		// currentAttempt is the pool-level attempt number stamped onto every
 		// metadata event before forwarding. The orchestrator inside the worker
 		// always emits Attempt=0; the pool owns this field because only the
@@ -1479,6 +1487,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 						Err(err).
 						Msg("Retrying stream after worker failure")
 					lastFailed = currentHandle
+					lastRetryableErr = err
 					continue
 				}
 
@@ -1563,6 +1572,10 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 						Int("attempt", attempt+1).
 						Err(result.Error).
 						Msg("Retryable error mid-stream, will retry")
+					// Capture the error before Release zeroes the
+					// StreamResult: the interface value is copied here,
+					// so the underlying error survives the pool put-back.
+					lastRetryableErr = result.Error
 					workerplugin.ReleaseStreamResult(result)
 					shouldRetry = true
 					break
@@ -1643,8 +1656,22 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			lastFailed = currentHandle
 		}
 
-		// All retries exhausted
-		sendStreamError(ctx, wrappedResults, fmt.Errorf("all stream retries exhausted"))
+		// All retries exhausted. Wrap the last retryable error so the
+		// HTTP layer's IsRetryableWorkerError check sees the
+		// ErrPoolRetriesExhausted sentinel and surfaces
+		// worker_unavailable to the client. lastRetryableErr is nil
+		// only on the rare path where the worker channel closed
+		// without a terminal frame on every attempt; in that case we
+		// emit the bare sentinel — still classified correctly thanks
+		// to the errors.Is short-circuit at the top of
+		// isRetryableWorkerError.
+		var exhaustedErr error
+		if lastRetryableErr != nil {
+			exhaustedErr = fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, lastRetryableErr)
+		} else {
+			exhaustedErr = fmt.Errorf("%w (no terminal stream frame)", ErrPoolRetriesExhausted)
+		}
+		sendStreamError(ctx, wrappedResults, exhaustedErr)
 	}()
 
 	return wrappedResults, nil
@@ -2032,9 +2059,20 @@ func parseSerializedGRPCCode(errStr string) (string, bool) {
 	return rest[:end], true
 }
 
+// ErrPoolRetriesExhausted is the sentinel wrapped (via fmt.Errorf %w)
+// into the terminal error returned by Pool.Call, Pool.CallStream, and
+// Pool.Parse when the pool gives up after exhausting all configured
+// retry attempts on retryable worker infrastructure failures. It is
+// itself a worker_unavailable signal: the failures that drove
+// exhaustion were each individually classified as retryable
+// infrastructure, so the cumulative outcome is too. errors.Is detects
+// this regardless of the wrapped chain shape.
+var ErrPoolRetriesExhausted = errors.New("pool retries exhausted")
+
 // IsRetryableWorkerError reports whether err indicates a worker
 // infrastructure failure (crash, network issue, gRPC Unavailable /
-// Canceled / DeadlineExceeded, transport reset / EOF) rather than an
+// Canceled / DeadlineExceeded, transport reset / EOF, or pool-level
+// retry exhaustion via ErrPoolRetriesExhausted) rather than an
 // application-level error from BAML or the upstream LLM. The pool uses
 // this to decide whether to retry on another worker; the HTTP layer
 // uses it to distinguish a transient infrastructure failure from a real
@@ -2049,6 +2087,18 @@ func IsRetryableWorkerError(err error) bool {
 func isRetryableWorkerError(err error) bool {
 	if err == nil {
 		return false
+	}
+
+	// Pool-level retry exhaustion (ErrPoolRetriesExhausted) is by
+	// definition retryable infrastructure: the loop only exhausts on
+	// per-attempt errors that were each individually retryable. The
+	// terminal sentinel is detected up front so callers don't have to
+	// reason about the wrapped error chain. Inside the pool's per-
+	// attempt retry loop the sentinel never appears (it's emitted only
+	// at the post-loop terminal site), so this short-circuit doesn't
+	// change retry semantics.
+	if errors.Is(err, ErrPoolRetriesExhausted) {
+		return true
 	}
 
 	// First, try to extract gRPC status code (preferred method).
