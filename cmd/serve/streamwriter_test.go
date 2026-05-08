@@ -8,6 +8,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -17,6 +18,8 @@ type recordingPublisher struct {
 	metadataFrames [][]byte
 	resetCount     int
 	errors         []string
+	errorCodes     []apierror.Code
+	errorDetails   [][]byte
 }
 
 func (p *recordingPublisher) PublishData(data []byte, raw string) error {
@@ -31,8 +34,14 @@ func (p *recordingPublisher) PublishFinal(data []byte, raw string) error {
 	return nil
 }
 
-func (p *recordingPublisher) PublishError(errMsg string) error {
+func (p *recordingPublisher) PublishError(errMsg string, code apierror.Code, details json.RawMessage) error {
 	p.errors = append(p.errors, errMsg)
+	p.errorCodes = append(p.errorCodes, code)
+	if details == nil {
+		p.errorDetails = append(p.errorDetails, nil)
+	} else {
+		p.errorDetails = append(p.errorDetails, append([]byte(nil), details...))
+	}
 	return nil
 }
 

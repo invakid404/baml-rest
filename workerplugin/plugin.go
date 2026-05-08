@@ -67,11 +67,20 @@ type CallResult struct {
 	Outcome []byte
 }
 
-// ErrorWithStack wraps an error with an optional stacktrace.
-// Used to propagate stacktraces from worker panics through the pool to the server.
+// ErrorWithStack wraps an error with an optional stacktrace and an
+// optional worker-supplied classification code + structured details.
+// Used to propagate diagnostic info from worker errors through the pool
+// to the HTTP layer, where the code/details surface in the API error
+// envelope and the stacktrace lands in the request log.
 type ErrorWithStack struct {
 	Err        error
 	Stacktrace string
+	// Code is the worker's machine-readable classification of this error,
+	// when available. Empty when the worker did not classify.
+	Code string
+	// Details is JSON-encoded structured context (e.g. parse failure
+	// fields, BAML diagnostic info), when available. nil when none.
+	Details []byte
 }
 
 func (e *ErrorWithStack) Error() string {
@@ -87,12 +96,34 @@ func (e *ErrorWithStack) GetStacktrace() string {
 	return e.Stacktrace
 }
 
+// GetCode returns the worker-supplied error code, or empty string if none.
+func (e *ErrorWithStack) GetCode() string {
+	return e.Code
+}
+
+// GetDetails returns the worker-supplied JSON-encoded details, or nil if none.
+func (e *ErrorWithStack) GetDetails() []byte {
+	return e.Details
+}
+
 // NewErrorWithStack creates an error that carries a stacktrace.
 func NewErrorWithStack(err error, stacktrace string) error {
 	if stacktrace == "" {
 		return err
 	}
 	return &ErrorWithStack{Err: err, Stacktrace: stacktrace}
+}
+
+// NewErrorWithMetadata creates an error that carries a stacktrace, an
+// optional classification code, and optional JSON-encoded details. When
+// all three optional fields are empty the original err is returned
+// unwrapped, so callers can use this unconditionally without paying for
+// a wrapper allocation when there's nothing to carry.
+func NewErrorWithMetadata(err error, stacktrace, code string, details []byte) error {
+	if stacktrace == "" && code == "" && len(details) == 0 {
+		return err
+	}
+	return &ErrorWithStack{Err: err, Stacktrace: stacktrace, Code: code, Details: details}
 }
 
 // StreamResult represents a streaming result from a BAML method
@@ -103,6 +134,14 @@ type StreamResult struct {
 	Error      error  // Error (populated on Error kind)
 	Stacktrace string // Stacktrace (populated on Error kind, when available)
 	Reset      bool   // When true, client should discard accumulated state (retry occurred)
+	// ErrorCode is the worker's machine-readable classification of
+	// Error, when available. Empty when the worker did not classify.
+	// Populated only on StreamResultKindError.
+	ErrorCode string
+	// ErrorDetails is JSON-encoded structured context for Error
+	// (e.g. parse failure fields), when available. nil when none.
+	// Populated only on StreamResultKindError.
+	ErrorDetails []byte
 }
 
 type StreamResultKind int

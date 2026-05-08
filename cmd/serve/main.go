@@ -29,6 +29,7 @@ import (
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
+	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/pool"
@@ -444,13 +445,7 @@ var serveCmd = &cobra.Command{
 					}
 					if err != nil {
 						logger.Error().Err(err).Str("method", methodName).Msg("worker call failed")
-						// Mirror writeChiWorkerError (cmd/serve/unary.go):
-						// classify context cancellation / deadline as 408 so
-						// client-driven aborts don't inflate 5xx error metrics.
-						if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-							return writeFiberJSONError(c, "request canceled", fiber.StatusRequestTimeout)
-						}
-						return writeFiberJSONError(c, "failed to process request", fiber.StatusInternalServerError)
+						return writeFiberWorkerError(c, err)
 					}
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
@@ -475,7 +470,7 @@ var serveCmd = &cobra.Command{
 					case contentTypeSSE:
 						return HandleSSEStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false)
 					default:
-						return writeFiberJSONError(c, "Not Acceptable: server can produce text/event-stream or application/x-ndjson", fiber.StatusNotAcceptable)
+						return writeFiberJSONErrorWithCode(c, "Not Acceptable: server can produce text/event-stream or application/x-ndjson", apierror.CodeNotAcceptable, nil, fiber.StatusNotAcceptable)
 					}
 				}
 			}
@@ -491,7 +486,7 @@ var serveCmd = &cobra.Command{
 				result, err := workerPool.Parse(ctx, methodName, c.Body())
 				if err != nil {
 					logger.Error().Err(err).Str("method", methodName).Msg("worker parse failed")
-					return writeFiberJSONError(c, "failed to parse response", fiber.StatusInternalServerError)
+					return writeFiberParseWorkerError(c, err)
 				}
 
 				c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
@@ -516,18 +511,18 @@ var serveCmd = &cobra.Command{
 					// Parse and validate dynamic input
 					var input bamlutils.DynamicInput
 					if err := json.Unmarshal(rawBody, &input); err != nil {
-						return writeFiberJSONError(c, "invalid JSON payload", fiber.StatusBadRequest)
+						return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidJSON, nil, fiber.StatusBadRequest)
 					}
 
 					if err := input.Validate(); err != nil {
-						return writeFiberJSONError(c, err.Error(), fiber.StatusBadRequest)
+						return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidRequest, nil, fiber.StatusBadRequest)
 					}
 
 					// Convert to internal format
 					workerInput, err := input.ToWorkerInput()
 					if err != nil {
 						logger.Error().Err(err).Msg("dynamic input conversion failed")
-						return writeFiberJSONError(c, "failed to process dynamic input", fiber.StatusInternalServerError)
+						return writeFiberInternalError(c, err)
 					}
 
 					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
@@ -538,20 +533,14 @@ var serveCmd = &cobra.Command{
 					}
 					if err != nil {
 						logger.Error().Err(err).Msg("dynamic worker call failed")
-						// Mirror writeChiWorkerError (cmd/serve/unary.go):
-						// classify context cancellation / deadline as 408 so
-						// client-driven aborts don't inflate 5xx error metrics.
-						if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-							return writeFiberJSONError(c, "request canceled", fiber.StatusRequestTimeout)
-						}
-						return writeFiberJSONError(c, "failed to process request", fiber.StatusInternalServerError)
+						return writeFiberWorkerError(c, err)
 					}
 
 					// Flatten DynamicProperties to root level for better UX
 					flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 					if err != nil {
 						logger.Error().Err(err).Msg("dynamic response flatten failed")
-						return writeFiberJSONError(c, "failed to process response", fiber.StatusInternalServerError)
+						return writeFiberInternalError(c, err)
 					}
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
@@ -572,12 +561,12 @@ var serveCmd = &cobra.Command{
 				return func(c fiber.Ctx) error {
 					workerInput, statusCode, err := parseDynamicStreamInput(c.Body())
 					if err != nil {
-						message := err.Error()
+						code := apierror.CodeInvalidRequest
 						if statusCode >= fiber.StatusInternalServerError {
 							logger.Error().Err(err).Msg("dynamic stream input parsing failed")
-							message = "failed to process dynamic stream input"
+							code = apierror.CodeInternalError
 						}
-						return writeFiberJSONError(c, message, statusCode)
+						return writeFiberJSONErrorWithCode(c, err.Error(), code, nil, statusCode)
 					}
 
 					switch c.Accepts(contentTypeSSE, ContentTypeNDJSON) {
@@ -586,7 +575,7 @@ var serveCmd = &cobra.Command{
 					case contentTypeSSE:
 						return HandleSSEStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
 					default:
-						return writeFiberJSONError(c, "Not Acceptable: server can produce text/event-stream or application/x-ndjson", fiber.StatusNotAcceptable)
+						return writeFiberJSONErrorWithCode(c, "Not Acceptable: server can produce text/event-stream or application/x-ndjson", apierror.CodeNotAcceptable, nil, fiber.StatusNotAcceptable)
 					}
 				}
 			}
@@ -604,30 +593,30 @@ var serveCmd = &cobra.Command{
 				// Parse and validate dynamic parse input
 				var input bamlutils.DynamicParseInput
 				if err := json.Unmarshal(rawBody, &input); err != nil {
-					return writeFiberJSONError(c, "invalid JSON payload", fiber.StatusBadRequest)
+					return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidJSON, nil, fiber.StatusBadRequest)
 				}
 				if err := input.Validate(); err != nil {
-					return writeFiberJSONError(c, err.Error(), fiber.StatusBadRequest)
+					return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidRequest, nil, fiber.StatusBadRequest)
 				}
 
 				// Convert to internal format
 				workerInput, err := input.ToWorkerInput()
 				if err != nil {
 					logger.Error().Err(err).Msg("dynamic parse input conversion failed")
-					return writeFiberJSONError(c, "failed to process dynamic input", fiber.StatusInternalServerError)
+					return writeFiberInternalError(c, err)
 				}
 
 				result, err := workerPool.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
 				if err != nil {
 					logger.Error().Err(err).Msg("dynamic worker parse failed")
-					return writeFiberJSONError(c, "failed to parse response", fiber.StatusInternalServerError)
+					return writeFiberParseWorkerError(c, err)
 				}
 
 				// Flatten DynamicProperties to root level for better UX
 				flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 				if err != nil {
 					logger.Error().Err(err).Msg("dynamic parse response flatten failed")
-					return writeFiberJSONError(c, "failed to process response", fiber.StatusInternalServerError)
+					return writeFiberInternalError(c, err)
 				}
 
 				c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)

@@ -132,6 +132,12 @@ func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStream
 			if fullErr := fmt.Sprintf("%+v", result.Error); fullErr != pbResult.Error {
 				pbResult.Stacktrace = fullErr
 			}
+			// Forward any worker-side classification + structured
+			// details verbatim. The host inspects ErrorCode to choose
+			// the HTTP error code and forwards ErrorDetails to the
+			// client envelope as-is, so the worker controls both.
+			pbResult.ErrorCode = result.ErrorCode
+			pbResult.ErrorDetailsJson = result.ErrorDetails
 		}
 		if err := stream.Send(pbResult); err != nil {
 			ReleaseStreamResult(result)
@@ -186,6 +192,15 @@ func (s *GRPCServer) Parse(ctx context.Context, req *pb.ParseRequest) (*pb.Parse
 		// Extract stacktrace using %+v formatting (works with go-recovery and pkg/errors style errors)
 		if fullErr := fmt.Sprintf("%+v", err); fullErr != resp.Error {
 			resp.Stacktrace = fullErr
+		}
+		// Forward any worker-side classification + structured details.
+		// If the worker returned an *ErrorWithStack with a Code/Details
+		// already set, prefer those; the host treats them as authoritative.
+		if codedErr, ok := err.(interface{ GetCode() string }); ok {
+			resp.ErrorCode = codedErr.GetCode()
+		}
+		if detailsErr, ok := err.(interface{ GetDetails() []byte }); ok {
+			resp.ErrorDetailsJson = detailsErr.GetDetails()
 		}
 		return resp, nil
 	}
@@ -245,6 +260,8 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 			if resp.Error != "" {
 				result.Error = fmt.Errorf("%s", resp.Error)
 				result.Stacktrace = resp.Stacktrace
+				result.ErrorCode = resp.ErrorCode
+				result.ErrorDetails = resp.ErrorDetailsJson
 			}
 			results <- result
 		}
@@ -290,7 +307,7 @@ func (c *GRPCClient) Parse(ctx context.Context, methodName string, inputJSON []b
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, NewErrorWithStack(fmt.Errorf("%s", resp.Error), resp.Stacktrace)
+		return nil, NewErrorWithMetadata(fmt.Errorf("%s", resp.Error), resp.Stacktrace, resp.ErrorCode, resp.ErrorDetailsJson)
 	}
 	return &ParseResult{Data: resp.DataJson}, nil
 }

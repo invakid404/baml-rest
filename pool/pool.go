@@ -1298,7 +1298,7 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 	for result := range results {
 		switch result.Kind {
 		case workerplugin.StreamResultKindError:
-			err := workerplugin.NewErrorWithStack(result.Error, result.Stacktrace)
+			err := workerplugin.NewErrorWithMetadata(result.Error, result.Stacktrace, result.ErrorCode, result.ErrorDetails)
 			workerplugin.ReleaseStreamResult(result)
 			// Return a CallResult carrying any accumulated metadata
 			// alongside the error so the unary handler can still set
@@ -2030,6 +2030,17 @@ func parseSerializedGRPCCode(errStr string) (string, bool) {
 		return "", false
 	}
 	return rest[:end], true
+}
+
+// IsRetryableWorkerError reports whether err indicates a worker
+// infrastructure failure (crash, network issue, gRPC Unavailable /
+// Canceled / DeadlineExceeded, transport reset / EOF) rather than an
+// application-level error from BAML or the upstream LLM. The pool uses
+// this to decide whether to retry on another worker; the HTTP layer
+// uses it to distinguish a transient infrastructure failure from a real
+// BAML/LLM error in the response code surfaced to the client.
+func IsRetryableWorkerError(err error) bool {
+	return isRetryableWorkerError(err)
 }
 
 // isRetryableWorkerError returns true if the error indicates a worker infrastructure
