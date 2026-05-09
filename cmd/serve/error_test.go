@@ -76,6 +76,35 @@ func TestClassifyWorkerError_RetriesExhaustedBeatsCancellation(t *testing.T) {
 	}
 }
 
+// TestClassifyWorkerError_PoolUnavailable pins the admission-side
+// sentinel: pre-retry pool-availability failures (pool closed,
+// draining, no healthy workers) classify as worker_unavailable rather
+// than falling through to worker_error on plain string matching.
+// Without ErrPoolUnavailable wrapping, "pool is closed" or "no healthy
+// workers available" would surface as worker_error and clients
+// wouldn't know to retry against transient infra unavailability.
+func TestClassifyWorkerError_PoolUnavailable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"pool closed", fmt.Errorf("%w: pool is closed", pool.ErrPoolUnavailable)},
+		{"pool draining", fmt.Errorf("%w: pool is draining, not accepting new requests", pool.ErrPoolUnavailable)},
+		{"no healthy workers", fmt.Errorf("%w: no healthy workers available", pool.ErrPoolUnavailable)},
+		{"bare sentinel", pool.ErrPoolUnavailable},
+		{"sentinel through outer wrap", fmt.Errorf("call failed: %w", fmt.Errorf("%w: pool is closed", pool.ErrPoolUnavailable))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, _ := classifyWorkerError(tt.err)
+			if code != apierror.CodeWorkerUnavailable {
+				t.Errorf("classifyWorkerError(%v) code = %q, want %q", tt.err, code, apierror.CodeWorkerUnavailable)
+			}
+		})
+	}
+}
+
 // TestClassifyWorkerError_PrecedenceOrder spot-checks the full
 // classification ladder so future reorderings can't silently break a
 // rung. Each case exercises exactly one rung.
@@ -380,8 +409,17 @@ func TestClassifyStreamResultError_NormalizesWorkerFields(t *testing.T) {
 			Stacktrace:   trace,
 		}
 		_, details := classifyStreamResultError(result)
-		if !strings.Contains(string(details), "stacktrace") {
-			t.Errorf("expected stacktrace fallback, got details = %s", details)
+		if details == nil {
+			t.Fatalf("expected stacktrace fallback, got nil details")
+		}
+		var parsed struct {
+			Stacktrace string `json:"stacktrace"`
+		}
+		if err := json.Unmarshal(details, &parsed); err != nil {
+			t.Fatalf("details did not unmarshal as {stacktrace}: %v (raw: %s)", err, details)
+		}
+		if parsed.Stacktrace != trace {
+			t.Errorf("details.stacktrace = %q, want %q", parsed.Stacktrace, trace)
 		}
 	})
 }

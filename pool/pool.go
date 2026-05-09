@@ -885,10 +885,10 @@ func (p *Pool) beginLogicalRequest() (done func(), err error) {
 	defer p.admissionMu.Unlock()
 
 	if p.closed.Load() {
-		return nil, fmt.Errorf("pool is closed")
+		return nil, fmt.Errorf("%w: pool is closed", ErrPoolUnavailable)
 	}
 	if p.draining.Load() {
-		return nil, fmt.Errorf("pool is draining, not accepting new requests")
+		return nil, fmt.Errorf("%w: pool is draining, not accepting new requests", ErrPoolUnavailable)
 	}
 	p.logicalInFlight.Add(1)
 	var once sync.Once
@@ -904,7 +904,7 @@ func (p *Pool) beginLogicalRequest() (done func(), err error) {
 // drain in progress does not abort their retries.
 func (p *Pool) getWorker() (*workerHandle, error) {
 	if p.draining.Load() {
-		return nil, fmt.Errorf("pool is draining, not accepting new requests")
+		return nil, fmt.Errorf("%w: pool is draining, not accepting new requests", ErrPoolUnavailable)
 	}
 	return p.getWorkerAccepted()
 }
@@ -920,7 +920,7 @@ func (p *Pool) getWorkerAccepted() (*workerHandle, error) {
 	defer p.mu.RUnlock()
 
 	if p.closed.Load() {
-		return nil, fmt.Errorf("pool is closed")
+		return nil, fmt.Errorf("%w: pool is closed", ErrPoolUnavailable)
 	}
 
 	// Round-robin selection
@@ -933,7 +933,7 @@ func (p *Pool) getWorkerAccepted() (*workerHandle, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("no healthy workers available")
+	return nil, fmt.Errorf("%w: no healthy workers available", ErrPoolUnavailable)
 }
 
 // awaitRestart waits for an in-progress restart of handle to complete,
@@ -2102,6 +2102,17 @@ func parseSerializedGRPCCode(errStr string) (string, bool) {
 // this regardless of the wrapped chain shape.
 var ErrPoolRetriesExhausted = errors.New("pool retries exhausted")
 
+// ErrPoolUnavailable is the sentinel wrapped into pre-retry pool
+// availability failures: "pool is closed", "pool is draining, not
+// accepting new requests", "no healthy workers available". These are
+// host-side decisions that block the request from ever reaching a
+// worker — distinct from per-attempt retryable failures (which use
+// ErrPoolRetriesExhausted only after the loop gives up). Both
+// sentinels classify as worker_unavailable at the HTTP layer; the
+// distinction matters only to consumers that want to log the
+// admission-vs-execution boundary separately.
+var ErrPoolUnavailable = errors.New("pool unavailable")
+
 // IsRetryableWorkerError reports whether err indicates a worker
 // infrastructure failure (crash, network issue, gRPC Unavailable /
 // Canceled / DeadlineExceeded, transport reset / EOF, or pool-level
@@ -2130,7 +2141,15 @@ func isRetryableWorkerError(err error) bool {
 	// attempt retry loop the sentinel never appears (it's emitted only
 	// at the post-loop terminal site), so this short-circuit doesn't
 	// change retry semantics.
-	if errors.Is(err, ErrPoolRetriesExhausted) {
+	//
+	// ErrPoolUnavailable is the admission-side counterpart: pool
+	// closed/draining or no healthy workers means the request never
+	// reached a worker. Same outcome class — worker_unavailable at
+	// the HTTP layer. The retry loop only classifies errors returned
+	// by worker.CallStream / worker.Parse (gRPC), so this sentinel
+	// also never appears in the loop's classification calls and the
+	// short-circuit is safe.
+	if errors.Is(err, ErrPoolRetriesExhausted) || errors.Is(err, ErrPoolUnavailable) {
 		return true
 	}
 

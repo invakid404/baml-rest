@@ -1326,6 +1326,15 @@ func TestIsRetryableWorkerError(t *testing.T) {
 		{"ErrPoolRetriesExhausted wrapping pool closed", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("pool is closed")), true},
 		{"ErrPoolRetriesExhausted wrapping pool draining", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("pool is draining")), true},
 		{"ErrPoolRetriesExhausted wrapping no-workers-with-previous", fmt.Errorf("%w: retry failed, no workers available: %w (previous: dead worker)", ErrPoolRetriesExhausted, errors.New("no healthy workers available")), true},
+		// ErrPoolUnavailable: admission-side counterpart, wrapped at
+		// the pool's user-facing entry points (beginLogicalRequest,
+		// getWorker, getWorkerAccepted) when the pool can't accept a
+		// request at all (closed/draining/no-healthy-workers).
+		{"ErrPoolUnavailable bare", ErrPoolUnavailable, true},
+		{"ErrPoolUnavailable wrapping pool closed", fmt.Errorf("%w: pool is closed", ErrPoolUnavailable), true},
+		{"ErrPoolUnavailable wrapping pool draining", fmt.Errorf("%w: pool is draining, not accepting new requests", ErrPoolUnavailable), true},
+		{"ErrPoolUnavailable wrapping no healthy workers", fmt.Errorf("%w: no healthy workers available", ErrPoolUnavailable), true},
+		{"ErrPoolUnavailable through outer wrap", fmt.Errorf("call failed: %w", fmt.Errorf("%w: pool is closed", ErrPoolUnavailable)), true},
 	}
 
 	for _, tt := range tests {

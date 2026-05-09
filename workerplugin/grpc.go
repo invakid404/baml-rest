@@ -138,6 +138,24 @@ func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStream
 			// client envelope as-is, so the worker controls both.
 			pbResult.ErrorCode = result.ErrorCode
 			pbResult.ErrorDetailsJson = result.ErrorDetails
+			// Mirror the Parse extraction: when the worker's Impl
+			// wraps an *ErrorWithStack into result.Error without
+			// also setting the explicit StreamResult fields,
+			// errors.As walks the chain and recovers code/details
+			// so they survive the gRPC boundary instead of falling
+			// back to host-side worker_error classification.
+			if pbResult.ErrorCode == "" {
+				var codedErr interface{ GetCode() string }
+				if errors.As(result.Error, &codedErr) {
+					pbResult.ErrorCode = codedErr.GetCode()
+				}
+			}
+			if pbResult.ErrorDetailsJson == nil {
+				var detailsErr interface{ GetDetails() []byte }
+				if errors.As(result.Error, &detailsErr) {
+					pbResult.ErrorDetailsJson = detailsErr.GetDetails()
+				}
+			}
 		}
 		if err := stream.Send(pbResult); err != nil {
 			ReleaseStreamResult(result)
