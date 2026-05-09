@@ -359,6 +359,50 @@ func TestGetCurrentContent_OnlyUsesLastCall(t *testing.T) {
 	}
 }
 
+// TestGetCurrentContent_OpenAIReasoningOptIn proves the includeThinking
+// parameter on GetCurrentContent reaches ExtractDeltaContent for the OpenAI-
+// compatible Chat Completions arm. This is a separate code path from
+// IncrementalExtractor.ExtractFrom (covered by
+// TestIncrementalExtractor_OpenAIReasoning_StreamOrder), so the flag-
+// plumbing needs its own coverage.
+//
+// A reasoning-only delta (no delta.content) yields:
+//   - flag=false: "" (reasoning_content not surfaced)
+//   - flag=true:  "think" (reasoning_content concatenated into Raw, which
+//     GetCurrentContent returns)
+func TestGetCurrentContent_OpenAIReasoningOptIn(t *testing.T) {
+	for _, provider := range []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter"} {
+		t.Run(provider, func(t *testing.T) {
+			data := &StreamingData{
+				Calls: []StreamingCall{
+					{
+						Provider: provider,
+						Chunks: []SSEChunk{
+							mockChunk{`{"choices":[{"delta":{"reasoning_content":"think"}}]}`},
+						},
+					},
+				},
+			}
+
+			off, err := GetCurrentContent(data, false)
+			if err != nil {
+				t.Fatalf("flag=false: unexpected error: %v", err)
+			}
+			if off != "" {
+				t.Errorf("flag=false: expected empty content (reasoning_content not surfaced), got %q", off)
+			}
+
+			on, err := GetCurrentContent(data, true)
+			if err != nil {
+				t.Fatalf("flag=true: unexpected error: %v", err)
+			}
+			if on != "think" {
+				t.Errorf("flag=true: expected %q (reasoning_content surfaced), got %q", "think", on)
+			}
+		})
+	}
+}
+
 func TestIncrementalExtractor_ZeroCallCount(t *testing.T) {
 	extractor := NewIncrementalExtractor(false)
 

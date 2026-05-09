@@ -1051,6 +1051,34 @@ func TestExtractResponseContent_OpenAIReasoningContent(t *testing.T) {
 	}
 }
 
+// TestExtractResponseContent_OpenAIReasoningContentMissingContent locks in
+// the contract that reasoning_content is telemetry — its presence does NOT
+// relax message.content's required-ness for the OpenAI-compatible Chat
+// Completions providers. A response that omits message.content but includes
+// message.reasoning_content must error in both flag values, and must return
+// empty parseable AND empty raw (no telemetry leakage from a malformed
+// response).
+func TestExtractResponseContent_OpenAIReasoningContentMissingContent(t *testing.T) {
+	body := `{"choices":[{"message":{"reasoning_content":"chain of thought"}}]}`
+
+	for _, provider := range []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter"} {
+		t.Run(provider, func(t *testing.T) {
+			for _, flag := range []bool{false, true} {
+				parseable, raw, err := ExtractResponseContent(provider, body, flag)
+				if err == nil {
+					t.Errorf("includeThinking=%v: expected error for missing message.content (reasoning_content alone is not a valid response)", flag)
+				}
+				if parseable != "" {
+					t.Errorf("includeThinking=%v: expected empty parseable on error, got %q", flag, parseable)
+				}
+				if raw != "" {
+					t.Errorf("includeThinking=%v: expected empty raw on error (no telemetry leakage), got %q", flag, raw)
+				}
+			}
+		})
+	}
+}
+
 func TestExtractResponseContent_UnsupportedProvider(t *testing.T) {
 	_, _, err := ExtractResponseContent("aws-bedrock", `{}`, false)
 	if err == nil {
