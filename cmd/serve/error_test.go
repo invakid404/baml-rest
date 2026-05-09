@@ -76,6 +76,44 @@ func TestClassifyWorkerError_RetriesExhaustedBeatsCancellation(t *testing.T) {
 	}
 }
 
+// TestClassifyWorkerError_CancelBranchWrapsCtxErr pins the
+// race-window contract for Pool.Parse / Pool.CallStream's caller-
+// cancel branch: when ctx is cancelled but getWorkerForRetry
+// returns a non-cancel error (e.g. "no healthy workers available"
+// from a transient race), wrapping ctx.Err() — not the pool err —
+// is what lets classifyWorkerError detect the cancellation and
+// surface request_canceled. Wrapping the pool err alone would
+// leave context.Canceled out of the chain entirely and the
+// retry-exhaustion sentinel branch would otherwise capture the
+// shape as worker_unavailable.
+func TestClassifyWorkerError_CancelBranchWrapsCtxErr(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			"context.Canceled wrapped, pool err as %v",
+			fmt.Errorf("retry failed, no workers available: %w (pool error: %v)", context.Canceled, errors.New("no healthy workers available")),
+		},
+		{
+			"context.DeadlineExceeded wrapped, pool err as %v",
+			fmt.Errorf("retry failed, no workers available: %w (pool error: %v)", context.DeadlineExceeded, errors.New("pool is closed")),
+		},
+		{
+			"with previous lastErr in message",
+			fmt.Errorf("retry failed, no workers available: %w (pool error: %v, previous: %v)", context.Canceled, errors.New("no healthy workers available"), errors.New("worker died")),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := classifyWorkerError(tt.err)
+			if got != apierror.CodeRequestCanceled {
+				t.Errorf("classifyWorkerError = %q, want %q", got, apierror.CodeRequestCanceled)
+			}
+		})
+	}
+}
+
 // TestClassifyWorkerError_PoolUnavailable pins the admission-side
 // sentinel: pre-retry pool-availability failures (pool closed,
 // draining, no healthy workers) classify as worker_unavailable rather

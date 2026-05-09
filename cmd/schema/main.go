@@ -11,6 +11,7 @@ import (
 	"github.com/goccy/go-json"
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/apierror"
 )
 
 func main() {
@@ -475,21 +476,14 @@ func generateOpenAPISchema() *openapi3.T {
 		},
 	}
 
-	// Enum of stable error classification codes. Kept in sync by hand
-	// with the apierror.Code constants in internal/apierror/error.go;
-	// add new codes in both places. Clients (humans and LLM agents)
-	// should branch on `code` rather than parsing `error`.
-	errorCodeEnum := []any{
-		"invalid_json",
-		"invalid_request",
-		"request_too_large",
-		"body_read_error",
-		"not_acceptable",
-		"request_canceled",
-		"worker_unavailable",
-		"worker_error",
-		"parse_error",
-		"internal_error",
+	// Enum of stable error classification codes, sourced directly
+	// from internal/apierror so the OpenAPI schema can never drift
+	// from the runtime contract. Add new codes there; this slice
+	// updates automatically.
+	apiCodes := apierror.AllCodes()
+	errorCodeEnum := make([]any, len(apiCodes))
+	for i, c := range apiCodes {
+		errorCodeEnum[i] = string(c)
 	}
 	errorCodeSchema := func() *openapi3.SchemaRef {
 		return &openapi3.SchemaRef{

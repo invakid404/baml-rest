@@ -12,6 +12,33 @@ import (
 // on these without parsing free-form messages.
 type Code string
 
+// allCodes is the canonical ordered list of public Code constants.
+// Single source of truth for IsKnown() (membership check) and
+// AllCodes() (enum exposed to the OpenAPI generator). Add new codes
+// here so both consumers stay in sync.
+var allCodes = []Code{
+	CodeInvalidJSON,
+	CodeInvalidRequest,
+	CodeRequestTooLarge,
+	CodeBodyReadError,
+	CodeNotAcceptable,
+	CodeRequestCanceled,
+	CodeWorkerUnavailable,
+	CodeWorkerError,
+	CodeParseError,
+	CodeInternalError,
+}
+
+// AllCodes returns the canonical list of public Code constants in
+// declaration order. Returned slice is a copy so callers can't mutate
+// the package-level source. Used by the OpenAPI schema generator to
+// build the error-code enum without duplicating the list.
+func AllCodes() []Code {
+	out := make([]Code, len(allCodes))
+	copy(out, allCodes)
+	return out
+}
+
 // IsKnown reports whether c is one of the documented Code constants.
 // The HTTP layer validates worker-supplied codes against this set
 // before forwarding them so the public OpenAPI enum stays
@@ -19,12 +46,10 @@ type Code string
 // host-side classification rather than introducing an off-contract
 // value into the response envelope.
 func (c Code) IsKnown() bool {
-	switch c {
-	case CodeInvalidJSON, CodeInvalidRequest, CodeRequestTooLarge,
-		CodeBodyReadError, CodeNotAcceptable, CodeRequestCanceled,
-		CodeWorkerUnavailable, CodeWorkerError, CodeParseError,
-		CodeInternalError:
-		return true
+	for _, k := range allCodes {
+		if c == k {
+			return true
+		}
 	}
 	return false
 }

@@ -119,11 +119,22 @@ func NewErrorWithStack(err error, stacktrace string) error {
 // all three optional fields are empty the original err is returned
 // unwrapped, so callers can use this unconditionally without paying for
 // a wrapper allocation when there's nothing to carry.
+//
+// The details slice is copied before storage so the wrapped error
+// owns its own buffer. Callers commonly pass StreamResult.ErrorDetails
+// fields whose backing arrays come from pooled gRPC decode buffers —
+// without a copy, releasing the StreamResult back to its pool would
+// alias an in-use buffer that the wrapped error still holds.
 func NewErrorWithMetadata(err error, stacktrace, code string, details []byte) error {
 	if stacktrace == "" && code == "" && len(details) == 0 {
 		return err
 	}
-	return &ErrorWithStack{Err: err, Stacktrace: stacktrace, Code: code, Details: details}
+	var detailsCopy []byte
+	if len(details) > 0 {
+		detailsCopy = make([]byte, len(details))
+		copy(detailsCopy, details)
+	}
+	return &ErrorWithStack{Err: err, Stacktrace: stacktrace, Code: code, Details: detailsCopy}
 }
 
 // StreamResult represents a streaming result from a BAML method
