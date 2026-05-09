@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/hashicorp/go-plugin"
@@ -129,12 +130,7 @@ func NewErrorWithMetadata(err error, stacktrace, code string, details []byte) er
 	if stacktrace == "" && code == "" && len(details) == 0 {
 		return err
 	}
-	var detailsCopy []byte
-	if len(details) > 0 {
-		detailsCopy = make([]byte, len(details))
-		copy(detailsCopy, details)
-	}
-	return &ErrorWithStack{Err: err, Stacktrace: stacktrace, Code: code, Details: detailsCopy}
+	return &ErrorWithStack{Err: err, Stacktrace: stacktrace, Code: code, Details: slices.Clone(details)}
 }
 
 // StreamResult represents a streaming result from a BAML method
