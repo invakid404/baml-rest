@@ -677,3 +677,136 @@ func TestExtractDeltaPartsFromText_GeminiThoughtFiltering(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractDeltaPartsFromText_GeminiIncludeThinkingInRaw asserts the
+// Phase 3 dual-builder behavior for the Google AI / Vertex AI streaming
+// branch:
+//
+//   - Parseable always excludes thought-tagged parts (text-only, fed to
+//     the BAML parser via ParseStream).
+//   - Raw mirrors Parseable when includeThinking is false; when true, Raw
+//     additionally surfaces thought-tagged string text in wire order for
+//     /with-raw telemetry.
+//   - Non-string text on a thought part is silently skipped under both
+//     flag values (thought parts are filtered, not validated, in keeping
+//     with the forgiving streaming semantics).
+//
+// Parseable invariance across the includeThinking flag is asserted for
+// every fixture; Raw equality across the flag is intentionally NOT
+// asserted, because Phase 3's whole point is that Raw diverges under
+// opt-in.
+func TestExtractDeltaPartsFromText_GeminiIncludeThinkingInRaw(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		parseable string
+		rawOff    string
+		rawOn     string
+	}{
+		{
+			name:      "thought then visible",
+			body:      `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true},{"text":"Visible"}]}}]}`,
+			parseable: "Visible",
+			rawOff:    "Visible",
+			rawOn:     "thoughtVisible",
+		},
+		{
+			name:      "interleaved thought preserves order",
+			body:      `{"candidates":[{"content":{"parts":[{"text":"A"},{"text":"B","thought":true},{"text":"C"}]}}]}`,
+			parseable: "AC",
+			rawOff:    "AC",
+			rawOn:     "ABC",
+		},
+		{
+			name:      "thought only",
+			body:      `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true}]}}]}`,
+			parseable: "",
+			rawOff:    "",
+			rawOn:     "thought",
+		},
+		{
+			// Numeric text on a thought part: silently skipped under both
+			// flag values. The visible part still flows through normally.
+			name:      "thought non-string text skipped under opt-in",
+			body:      `{"candidates":[{"content":{"parts":[{"text":42,"thought":true},{"text":"Visible"}]}}]}`,
+			parseable: "Visible",
+			rawOff:    "Visible",
+			rawOn:     "Visible",
+		},
+	}
+
+	for _, provider := range []string{"google-ai", "vertex-ai"} {
+		for _, tc := range cases {
+			t.Run(provider+"/"+tc.name, func(t *testing.T) {
+				off, err := ExtractDeltaPartsFromText(provider, tc.body, false)
+				if err != nil {
+					t.Fatalf("ExtractDeltaPartsFromText(includeThinking=false) returned error: %v", err)
+				}
+				if off.Parseable != tc.parseable {
+					t.Errorf("flag=false Parseable = %q, want %q", off.Parseable, tc.parseable)
+				}
+				if off.Raw != tc.rawOff {
+					t.Errorf("flag=false Raw = %q, want %q", off.Raw, tc.rawOff)
+				}
+
+				on, err := ExtractDeltaPartsFromText(provider, tc.body, true)
+				if err != nil {
+					t.Fatalf("ExtractDeltaPartsFromText(includeThinking=true) returned error: %v", err)
+				}
+				if on.Parseable != tc.parseable {
+					t.Errorf("flag=true Parseable = %q, want %q", on.Parseable, tc.parseable)
+				}
+				if on.Raw != tc.rawOn {
+					t.Errorf("flag=true Raw = %q, want %q", on.Raw, tc.rawOn)
+				}
+
+				// Structural parseable invariance: Parseable must be
+				// byte-identical across both flag values for every fixture.
+				if off.Parseable != on.Parseable {
+					t.Errorf("Parseable diverged across includeThinking: false=%q true=%q", off.Parseable, on.Parseable)
+				}
+			})
+		}
+	}
+}
+
+// TestIncrementalExtractor_GeminiThinking_ParseableInvariant exercises
+// ExtractFrom on a Gemini SSE chunk through both flag-off and flag-on
+// IncrementalExtractor instances, proving that the stored
+// includeThinkingInRaw flag reaches ExtractDeltaPartsFromText in both the
+// rebuild and incremental paths and that the parseable buffer is
+// byte-identical regardless of the flag.
+func TestIncrementalExtractor_GeminiThinking_ParseableInvariant(t *testing.T) {
+	chunks := []SSEChunk{
+		mockChunk{`{"candidates":[{"content":{"parts":[{"text":"think","thought":true},{"text":"Hello"}]}}]}`},
+		mockChunk{`{"candidates":[{"content":{"parts":[{"text":" more","thought":true},{"text":" world"}]}}]}`},
+	}
+
+	for _, provider := range []string{"google-ai", "vertex-ai"} {
+		t.Run(provider, func(t *testing.T) {
+			off := NewIncrementalExtractor(false)
+			resOff := off.Extract(1, provider, chunks)
+
+			on := NewIncrementalExtractor(true)
+			resOn := on.Extract(1, provider, chunks)
+
+			if resOff.ParseableFull != "Hello world" {
+				t.Errorf("flag=false ParseableFull = %q, want %q", resOff.ParseableFull, "Hello world")
+			}
+			if resOff.RawFull != "Hello world" {
+				t.Errorf("flag=false RawFull = %q, want %q", resOff.RawFull, "Hello world")
+			}
+			if resOn.ParseableFull != "Hello world" {
+				t.Errorf("flag=true ParseableFull = %q, want %q", resOn.ParseableFull, "Hello world")
+			}
+			if resOn.RawFull != "thinkHello more world" {
+				t.Errorf("flag=true RawFull = %q, want %q", resOn.RawFull, "thinkHello more world")
+			}
+
+			// Structural parseable invariance under the IncrementalExtractor.
+			if resOff.ParseableFull != resOn.ParseableFull {
+				t.Errorf("ParseableFull diverged across includeThinkingInRaw: false=%q true=%q", resOff.ParseableFull, resOn.ParseableFull)
+			}
+		})
+	}
+}

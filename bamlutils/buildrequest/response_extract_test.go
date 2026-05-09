@@ -858,6 +858,97 @@ func TestExtractResponseContent_GeminiThoughtOnly(t *testing.T) {
 	}
 }
 
+// TestExtractResponseContent_GeminiIncludeThinkingInRaw asserts the
+// Phase 3 dual-builder behavior for the Gemini non-streaming branch:
+//
+//   - Parseable always excludes thought-tagged parts (text-only, fed to
+//     Parse.Method via /call).
+//   - Raw mirrors Parseable when includeThinking is false; when true,
+//     Raw additionally surfaces thought-tagged string text in wire order
+//     for /call-with-raw telemetry.
+//   - Strict validation is preserved for non-thought parts (non-string
+//     text errors). Thought parts are filtered, not validated, so non-
+//     string text on a thought part is silently skipped under both flag
+//     values — consistent with Phase 2's behavior.
+//
+// Parseable invariance across the includeThinking flag is asserted for
+// every fixture; Raw is intentionally allowed to diverge.
+func TestExtractResponseContent_GeminiIncludeThinkingInRaw(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		parseable string
+		rawOff    string
+		rawOn     string
+	}{
+		{
+			name:      "thought then visible",
+			body:      `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true},{"text":"Visible"}]}}]}`,
+			parseable: "Visible",
+			rawOff:    "Visible",
+			rawOn:     "thoughtVisible",
+		},
+		{
+			name:      "interleaved thought preserves order",
+			body:      `{"candidates":[{"content":{"parts":[{"text":"A"},{"text":"B","thought":true},{"text":"C"}]}}]}`,
+			parseable: "AC",
+			rawOff:    "AC",
+			rawOn:     "ABC",
+		},
+		{
+			name:      "thought only",
+			body:      `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true}]}}]}`,
+			parseable: "",
+			rawOff:    "",
+			rawOn:     "thought",
+		},
+		{
+			// Numeric text on a thought part: silently skipped (no error)
+			// under both flag values, since thought parts contribute to
+			// neither parseable nor validated raw output.
+			name:      "thought non-string text skipped under opt-in",
+			body:      `{"candidates":[{"content":{"parts":[{"text":42,"thought":true},{"text":"Visible"}]}}]}`,
+			parseable: "Visible",
+			rawOff:    "Visible",
+			rawOn:     "Visible",
+		},
+	}
+
+	for _, provider := range []string{"google-ai", "vertex-ai"} {
+		for _, tc := range cases {
+			t.Run(provider+"/"+tc.name, func(t *testing.T) {
+				parseableOff, rawOff, err := ExtractResponseContent(provider, tc.body, false)
+				if err != nil {
+					t.Fatalf("ExtractResponseContent(includeThinking=false) returned error: %v", err)
+				}
+				if parseableOff != tc.parseable {
+					t.Errorf("flag=false parseable = %q, want %q", parseableOff, tc.parseable)
+				}
+				if rawOff != tc.rawOff {
+					t.Errorf("flag=false raw = %q, want %q", rawOff, tc.rawOff)
+				}
+
+				parseableOn, rawOn, err := ExtractResponseContent(provider, tc.body, true)
+				if err != nil {
+					t.Fatalf("ExtractResponseContent(includeThinking=true) returned error: %v", err)
+				}
+				if parseableOn != tc.parseable {
+					t.Errorf("flag=true parseable = %q, want %q", parseableOn, tc.parseable)
+				}
+				if rawOn != tc.rawOn {
+					t.Errorf("flag=true raw = %q, want %q", rawOn, tc.rawOn)
+				}
+
+				// Structural parseable invariance: byte-identical across
+				// both flag values for every fixture.
+				if parseableOff != parseableOn {
+					t.Errorf("parseable diverged across includeThinking: false=%q true=%q", parseableOff, parseableOn)
+				}
+			})
+		}
+	}
+}
+
 func TestExtractResponseContent_UnsupportedProvider(t *testing.T) {
 	_, _, err := ExtractResponseContent("aws-bedrock", `{}`, false)
 	if err == nil {
