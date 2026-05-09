@@ -181,6 +181,40 @@ func TestClassifyWorkerError_StructuredDetailsBeatStacktrace(t *testing.T) {
 	}
 }
 
+// TestClassifyStreamResultError_StructuredDetailsOverride is the
+// streaming-side counterpart to TestClassifyWorkerError_StructuredDetailsBeatStacktrace:
+// when a worker emits both ErrorDetails (a valid JSON object) and a
+// Stacktrace, the structured payload wins and the stacktrace stays
+// out of the response (it's still logged via httplogger.SetError on
+// the calling path). Pins the precedence so a future refactor of
+// classifyStreamResultError can't silently regress to clobbering
+// worker-supplied structured details with the stacktrace fallback.
+func TestClassifyStreamResultError_StructuredDetailsOverride(t *testing.T) {
+	wantDetails := []byte(`{"foo":"bar","field":"sentiment"}`)
+	result := &workerplugin.StreamResult{
+		Kind:         workerplugin.StreamResultKindError,
+		Error:        errors.New("BAML parse error"),
+		ErrorDetails: wantDetails,
+		Stacktrace:   "goroutine 9 [running]:\nshould.not.appear(...)",
+	}
+
+	_, details := classifyStreamResultError(result)
+	if string(details) != string(wantDetails) {
+		t.Errorf("details = %s, want %s", details, wantDetails)
+	}
+	if strings.Contains(string(details), "stacktrace") {
+		t.Errorf("details should not include stacktrace when structured details supplied; got %s", details)
+	}
+
+	var parsed map[string]string
+	if err := json.Unmarshal(details, &parsed); err != nil {
+		t.Fatalf("details did not unmarshal as object: %v (raw: %s)", err, details)
+	}
+	if parsed["foo"] != "bar" || parsed["field"] != "sentiment" {
+		t.Errorf("unmarshaled details = %v, want foo=bar field=sentiment", parsed)
+	}
+}
+
 // TestClassifyStreamResultError_StacktraceDetails covers the streaming
 // counterpart: StreamResult.Stacktrace surfaces as
 // {"stacktrace": "..."} when ErrorDetails is empty. Mirrors the unary
