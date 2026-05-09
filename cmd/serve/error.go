@@ -157,17 +157,23 @@ func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
 // they're authored worker-side and there's no shared schema enforcing
 // them, so off-contract values are dropped rather than forwarded:
 //
-//   - code is preserved only if it's one of the documented apierror.Code
-//     constants (apierror.Code.IsKnown). Unknown codes return ""
-//     (empty), which makes classifyWorkerError fall through to host-
-//     side classification — the public OpenAPI enum stays authoritative.
+//   - code is preserved only if it's worker-facing
+//     (apierror.Code.IsWorkerFacing): worker_error, parse_error, or
+//     internal_error. Request-layer codes (invalid_json,
+//     request_canceled, etc.) and pool-admission codes
+//     (worker_unavailable) are owned by the host — honoring a worker
+//     that claimed e.g. request_canceled would let worker-side text
+//     force the host's 408 classifier branch and dictate HTTP status
+//     semantics. Non-worker-facing codes fall through to host-side
+//     classification, which is the authoritative source for those
+//     classes.
 //   - details is preserved only if it parses as a JSON OBJECT; scalars,
 //     arrays, and null are dropped. The OpenAPI schema declares
 //     details as an object (additionalProperties), so anything else
 //     would lie about the contract and confuse generated clients.
 func normalizeWorkerMetadata(rawCode string, rawDetails []byte) (apierror.Code, json.RawMessage) {
 	var code apierror.Code
-	if c := apierror.Code(rawCode); c.IsKnown() {
+	if c := apierror.Code(rawCode); c.IsWorkerFacing() {
 		code = c
 	}
 	var details json.RawMessage

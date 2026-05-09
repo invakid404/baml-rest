@@ -2088,6 +2088,16 @@ type Stats struct {
 	InFlight       int64
 }
 
+// grpcSerializedPrefix is the gRPC error-string serialization header.
+// Callers that need to be sure they're inspecting a TOP-LEVEL gRPC
+// error (rather than a worker-wrapped string that merely embeds the
+// header somewhere) must HasPrefix-match against this constant
+// before calling parseSerializedGRPCCode. The retry classifier and
+// IsTypedCancellationError both do this so wrapped worker errors
+// like "provider failed: rpc error: code = Unavailable ..." don't
+// flip retry / cancellation rungs.
+const grpcSerializedPrefix = "rpc error: code = "
+
 // parseSerializedGRPCCode extracts the top-level gRPC status code name from
 // a serialized gRPC error string. gRPC errors serialize as
 // "rpc error: code = <Code> desc = <Message>". This function parses only
@@ -2095,13 +2105,17 @@ type Stats struct {
 // descriptions like "rpc error: code = Internal desc = rpc error: code = Canceled ...".
 // Returns the code name (e.g. "Internal", "Canceled") and true, or ("", false)
 // if the string doesn't match the format.
+//
+// Uses substring search (not prefix match) so callers can opt into
+// either lenience or strictness: HasPrefix-guard the input first when
+// you want strictness (see grpcSerializedPrefix), pass the raw string
+// when you want lenience.
 func parseSerializedGRPCCode(errStr string) (string, bool) {
-	const prefix = "rpc error: code = "
-	idx := strings.Index(errStr, prefix)
+	idx := strings.Index(errStr, grpcSerializedPrefix)
 	if idx < 0 {
 		return "", false
 	}
-	start := idx + len(prefix)
+	start := idx + len(grpcSerializedPrefix)
 	if start >= len(errStr) {
 		return "", false
 	}
@@ -2224,15 +2238,24 @@ func isRetryableWorkerError(err error) bool {
 	errStr := err.Error()
 
 	// Serialized gRPC errors: parse the top-level code and use it as the
-	// authoritative signal. This correctly handles nested errors like
-	// "rpc error: code = Internal desc = rpc error: code = Canceled ..."
-	// by only looking at the first (top-level) code.
-	if code, ok := parseSerializedGRPCCode(errStr); ok {
-		switch code {
-		case "Unavailable", "Canceled", "DeadlineExceeded":
-			return true
+	// authoritative signal. parseSerializedGRPCCode itself uses substring
+	// search so callers in other contexts can pick up nested codes; here
+	// we require the "rpc error: code = " header at offset 0 so a worker
+	// / provider error like "openai: provider returned: rpc error: code =
+	// Unavailable ..." does NOT auto-trigger retry. Top-level boundary-
+	// serialized gRPC errors (the legitimate case that survives
+	// fmt.Errorf("%s", resp.Error) reconstruction) always start with the
+	// prefix; anything wrapped is the worker's classification choice and
+	// must surface as worker_error rather than being retried as if it
+	// were transport infrastructure.
+	if strings.HasPrefix(errStr, grpcSerializedPrefix) {
+		if code, ok := parseSerializedGRPCCode(errStr); ok {
+			switch code {
+			case "Unavailable", "Canceled", "DeadlineExceeded":
+				return true
+			}
+			return false
 		}
-		return false
 	}
 
 	// Plain error without gRPC structure — only match transport-level
@@ -2302,9 +2325,8 @@ func IsTypedCancellationError(err error) bool {
 		}
 		return false
 	}
-	const grpcPrefix = "rpc error: code = "
 	errStr := err.Error()
-	if !strings.HasPrefix(errStr, grpcPrefix) {
+	if !strings.HasPrefix(errStr, grpcSerializedPrefix) {
 		return false
 	}
 	if code, ok := parseSerializedGRPCCode(errStr); ok {

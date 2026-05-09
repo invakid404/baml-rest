@@ -154,29 +154,31 @@ func TestClassifyWorkerError_NoFalsePositiveOnContextCanceledText(t *testing.T) 
 			apierror.CodeWorkerError,
 		},
 		// Embedded serialized-gRPC text in worker / provider errors
-		// must NOT classify as cancellation (408). parseSerializedGRPCCode
-		// itself uses substring search (the retry classifier wants
-		// that lenience), so IsTypedCancellationError requires the
-		// "rpc error: code = " header at offset 0. Without the
-		// prefix-only guard, a wrapped provider error like
-		// "provider failed: rpc error: code = Canceled ..." would
-		// surface as 408 — exactly the false-positive class this
-		// helper exists to avoid.
-		//
-		// These cases land on worker_unavailable (not worker_error)
-		// because IsRetryableWorkerError still substring-matches
-		// embedded gRPC codes. That's a related-but-separate concern
-		// outside this fix's scope; the point pinned here is that
-		// the cancellation precedence rung does not fire.
+		// must NOT classify as cancellation (408) OR as transient
+		// infrastructure (worker_unavailable). Both IsTypedCancellationError
+		// and isRetryableWorkerError now require the
+		// "rpc error: code = " header at offset 0 before consulting
+		// parseSerializedGRPCCode (which itself uses substring search
+		// — the strictness lives at the call site). Without the
+		// prefix guard, a wrapped provider error like "provider
+		// failed: rpc error: code = Canceled ..." would surface as
+		// 408 (cancellation rung) or worker_unavailable (retryable
+		// rung). After the guards, both rungs skip and classification
+		// falls through to worker_error.
 		{
 			"embedded serialized gRPC Canceled in worker text",
 			errors.New("provider failed: rpc error: code = Canceled desc = upstream gone"),
-			apierror.CodeWorkerUnavailable,
+			apierror.CodeWorkerError,
 		},
 		{
 			"embedded serialized gRPC DeadlineExceeded in worker text",
 			errors.New("upstream call: rpc error: code = DeadlineExceeded desc = upstream timeout"),
-			apierror.CodeWorkerUnavailable,
+			apierror.CodeWorkerError,
+		},
+		{
+			"embedded serialized gRPC Unavailable in worker text",
+			errors.New("provider returned: rpc error: code = Unavailable desc = downstream"),
+			apierror.CodeWorkerError,
 		},
 		// Sanity: typed forms still classify correctly.
 		{
@@ -481,6 +483,49 @@ func TestClassifyWorkerError_UnknownWorkerCodeFallsThrough(t *testing.T) {
 	got, _ := classifyWorkerError(err)
 	if got != apierror.CodeWorkerUnavailable {
 		t.Errorf("classifyWorkerError = %q, want %q (host-side reclassification of inner Unavailable)", got, apierror.CodeWorkerUnavailable)
+	}
+}
+
+// TestClassifyWorkerError_NonWorkerFacingCodeRejected pins the
+// IsWorkerFacing whitelist: even when the worker emits a known
+// apierror.Code, the host honors it only for worker-facing classes
+// (worker_error / parse_error / internal_error). Request-layer codes
+// (request_canceled, invalid_json, ...) and pool-admission codes
+// (worker_unavailable) are owned by the host — honoring a worker
+// that claimed e.g. request_canceled would let worker text force
+// the 408 branch in writeFiberWorkerError and dictate HTTP status
+// semantics. The wrapped err here has gRPC code Internal (which
+// would normally classify as worker_error via the fall-through), so
+// rejection of the worker code surfaces worker_error, not the
+// claimed request_canceled.
+func TestClassifyWorkerError_NonWorkerFacingCodeRejected(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawCode  string
+		wantCode apierror.Code
+	}{
+		{"worker claims request_canceled", string(apierror.CodeRequestCanceled), apierror.CodeWorkerError},
+		{"worker claims invalid_json", string(apierror.CodeInvalidJSON), apierror.CodeWorkerError},
+		{"worker claims request_too_large", string(apierror.CodeRequestTooLarge), apierror.CodeWorkerError},
+		{"worker claims worker_unavailable", string(apierror.CodeWorkerUnavailable), apierror.CodeWorkerError},
+		// Worker-facing codes still pass through.
+		{"worker claims worker_error", string(apierror.CodeWorkerError), apierror.CodeWorkerError},
+		{"worker claims parse_error", string(apierror.CodeParseError), apierror.CodeParseError},
+		{"worker claims internal_error", string(apierror.CodeInternalError), apierror.CodeInternalError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := workerplugin.NewErrorWithMetadata(
+				status.Error(codes.Internal, "boom"),
+				"",
+				tt.rawCode,
+				nil,
+			)
+			got, _ := classifyWorkerError(err)
+			if got != tt.wantCode {
+				t.Errorf("classifyWorkerError = %q, want %q", got, tt.wantCode)
+			}
+		})
 	}
 }
 

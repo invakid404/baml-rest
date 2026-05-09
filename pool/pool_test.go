@@ -1335,6 +1335,17 @@ func TestIsRetryableWorkerError(t *testing.T) {
 		{"ErrPoolUnavailable wrapping pool draining", fmt.Errorf("%w: pool is draining, not accepting new requests", ErrPoolUnavailable), true},
 		{"ErrPoolUnavailable wrapping no healthy workers", fmt.Errorf("%w: no healthy workers available", ErrPoolUnavailable), true},
 		{"ErrPoolUnavailable through outer wrap", fmt.Errorf("call failed: %w", fmt.Errorf("%w: pool is closed", ErrPoolUnavailable)), true},
+		// Embedded serialized-gRPC text must NOT trigger retry. The
+		// prefix guard requires "rpc error: code = " at offset 0 so a
+		// worker / provider error like "openai: provider returned: rpc
+		// error: code = Unavailable ..." surfaces as worker_error
+		// instead of being retried as if it were transport
+		// infrastructure. Top-level boundary-serialized gRPC errors
+		// (preceding cases) still classify because the prefix is at
+		// offset 0 after fmt.Errorf("%s", resp.Error) reconstruction.
+		{"embedded gRPC Unavailable in worker text", errors.New("provider returned: rpc error: code = Unavailable desc = down"), false},
+		{"embedded gRPC Canceled in worker text", errors.New("upstream: rpc error: code = Canceled desc = abort"), false},
+		{"embedded gRPC DeadlineExceeded in worker text", errors.New("openai: rpc error: code = DeadlineExceeded desc = timeout"), false},
 	}
 
 	for _, tt := range tests {

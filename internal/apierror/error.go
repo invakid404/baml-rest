@@ -54,6 +54,29 @@ func (c Code) IsKnown() bool {
 	return false
 }
 
+// IsWorkerFacing reports whether c is a code a worker is allowed to
+// self-classify as. Workers can only emit codes that describe what
+// happened inside the worker process — request-layer codes
+// (invalid_json, request_too_large, request_canceled, ...) and pool-
+// admission codes (worker_unavailable) are owned by the host and
+// must NOT be honored if a worker supplies them: doing so would let
+// worker-side text dictate HTTP status semantics (e.g. claiming
+// request_canceled to force a 408 from the host's classifier).
+//
+// The allow-list is intentionally narrow: the worker-classified
+// outcomes the host trusts are exactly worker_error (BAML / LLM
+// application error), parse_error (BAML couldn't validate raw
+// output against the method schema), and internal_error (a Go-side
+// processing bug inside the worker). Unknown or non-worker-facing
+// codes fall back to host-side classification.
+func (c Code) IsWorkerFacing() bool {
+	switch c {
+	case CodeWorkerError, CodeParseError, CodeInternalError:
+		return true
+	}
+	return false
+}
+
 const (
 	// CodeInvalidJSON: request body wasn't valid JSON.
 	CodeInvalidJSON Code = "invalid_json"
