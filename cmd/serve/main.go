@@ -575,6 +575,15 @@ var serveCmd = &cobra.Command{
 					if err != nil {
 						if statusCode >= fiber.StatusInternalServerError {
 							logger.Error().Err(err).Msg("dynamic stream input parsing failed")
+							// 5xx tail: route through writeFiberInternalError so
+							// httplogger.SetError attaches the error to the request-
+							// scoped structured log alongside the discrete logger
+							// line above. Wire shape is unchanged —
+							// parseDynamicStreamInput only returns statusCode>=500
+							// from the ToWorkerInput path, which already classifies
+							// as CodeInternalError, so the helper produces an
+							// identical envelope.
+							return writeFiberInternalError(c, err)
 						}
 						return writeFiberJSONErrorWithCode(c, err.Error(), code, nil, statusCode)
 					}
