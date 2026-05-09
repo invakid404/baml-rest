@@ -601,3 +601,79 @@ func TestDeltaProviderSupportMatchesExtractor(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractDeltaPartsFromText_GeminiThoughtFiltering asserts that the
+// Google AI / Vertex AI streaming branch iterates all parts, skips entries
+// flagged thought:true, and concatenates the surviving text fields.
+//
+// Aligned with upstream BAML's text_content_part filter
+// (engine/baml-runtime/src/internal/llm_client/primitive/google/response_handler.rs).
+//
+// Parseable invariance across includeThinking is asserted; Raw equality
+// across the flag is intentionally NOT asserted here — Phase 3 will diverge
+// Gemini Raw under opt-in, and locking it now would block that.
+func TestExtractDeltaPartsFromText_GeminiThoughtFiltering(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "single part",
+			body: `{"candidates":[{"content":{"parts":[{"text":"Answer"}]}}]}`,
+			want: "Answer",
+		},
+		{
+			name: "multi part concatenation",
+			body: `{"candidates":[{"content":{"parts":[{"text":"Hello "},{"text":"world"}]}}]}`,
+			want: "Hello world",
+		},
+		{
+			name: "thought at index 0 is skipped",
+			body: `{"candidates":[{"content":{"parts":[{"text":"internal","thought":true},{"text":"Visible"}]}}]}`,
+			want: "Visible",
+		},
+		{
+			name: "thought-only yields empty",
+			body: `{"candidates":[{"content":{"parts":[{"text":"internal","thought":true}]}}]}`,
+			want: "",
+		},
+		{
+			// Defensive guard: gjson stringifies non-string scalars via
+			// String(), so an unguarded WriteString on a numeric text
+			// field would emit "42Visible" instead of "Visible".
+			name: "non-string text field is skipped",
+			body: `{"candidates":[{"content":{"parts":[{"text":42},{"text":"Visible"}]}}]}`,
+			want: "Visible",
+		},
+	}
+
+	for _, provider := range []string{"google-ai", "vertex-ai"} {
+		for _, tc := range cases {
+			t.Run(provider+"/"+tc.name, func(t *testing.T) {
+				parts, err := ExtractDeltaPartsFromText(provider, tc.body, false)
+				if err != nil {
+					t.Fatalf("ExtractDeltaPartsFromText returned error: %v", err)
+				}
+				if parts.Parseable != tc.want {
+					t.Errorf("Parseable = %q, want %q", parts.Parseable, tc.want)
+				}
+				if parts.Raw != tc.want {
+					t.Errorf("Raw = %q, want %q (Phase 2: Raw == Parseable for Gemini)", parts.Raw, tc.want)
+				}
+
+				// Parseable must be byte-identical regardless of the
+				// includeThinking flag. Raw is intentionally not compared
+				// across the flag — Phase 3 will diverge Gemini Raw under
+				// opt-in, and locking it here would block that.
+				partsThinking, err := ExtractDeltaPartsFromText(provider, tc.body, true)
+				if err != nil {
+					t.Fatalf("ExtractDeltaPartsFromText(includeThinking=true) returned error: %v", err)
+				}
+				if partsThinking.Parseable != parts.Parseable {
+					t.Errorf("Parseable diverged across includeThinking: false=%q true=%q", parts.Parseable, partsThinking.Parseable)
+				}
+			})
+		}
+	}
+}

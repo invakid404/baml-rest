@@ -122,9 +122,30 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeThinking 
 		return DeltaParts{}, nil
 
 	// Google (both use same format)
-	// Path: candidates[0].content.parts[0].text
+	// Path: candidates[0].content.parts[]
+	// Iterate all parts, skip those flagged thought:true so reasoning text
+	// never enters Parseable. Concatenate the remaining text fields with no
+	// separator — matches upstream BAML's text_content_part filter
+	// (engine/baml-runtime/src/internal/llm_client/primitive/google/response_handler.rs).
+	// Missing or non-array parts yields an empty delta with no error,
+	// preserving the prior forgiving streaming semantics.
 	case "google-ai", "vertex-ai":
-		delta := gjson.Get(rawText, "candidates.0.content.parts.0.text").String()
+		parts := gjson.Get(rawText, "candidates.0.content.parts")
+		var sb strings.Builder
+		if parts.IsArray() {
+			parts.ForEach(func(_, part gjson.Result) bool {
+				if part.Get("thought").Bool() {
+					return true
+				}
+				text := part.Get("text")
+				if text.Type != gjson.String {
+					return true
+				}
+				sb.WriteString(text.String())
+				return true
+			})
+		}
+		delta := sb.String()
 		return DeltaParts{Parseable: delta, Raw: delta}, nil
 
 	// AWS Bedrock (Debug string format)
