@@ -1735,11 +1735,48 @@ func TestAwaitRestartReturnsOnDrain(t *testing.T) {
 	p.drainOnce.Do(func() { close(p.drainCh) })
 
 	err := p.awaitRestart(context.Background(), failed)
-	if err == nil || err.Error() != "pool is draining" {
-		t.Fatalf("expected pool is draining error, got %v", err)
+	if err == nil {
+		t.Fatalf("expected pool is draining error, got nil")
+	}
+	// Source-wrap contract: drain-path return must carry
+	// ErrPoolUnavailable so HTTP-layer classification lands on
+	// worker_unavailable without callers having to re-wrap. The
+	// human-readable "pool is draining" suffix is preserved as a
+	// diagnostic — pin both shape and message.
+	if !errors.Is(err, ErrPoolUnavailable) {
+		t.Fatalf("expected ErrPoolUnavailable in chain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "pool is draining") {
+		t.Fatalf("expected message to mention 'pool is draining', got %q", err.Error())
 	}
 	if got := startCalls.Load(); got != 0 {
 		t.Fatalf("awaitRestart spawned %d replacement(s); want 0", got)
+	}
+}
+
+// TestAwaitAnyRestartWrapsNoRestartsWithSentinel pins the source-wrap
+// contract for awaitAnyRestart's "no workers restarting" return: it
+// must surface as ErrPoolUnavailable so the HTTP layer classifies the
+// pre-loop initial-attempt give-up (CallStream / Parse on a pool with
+// no healthy or restarting workers) as worker_unavailable instead of
+// falling through to worker_error. Without source-wrap, this only
+// worked because every getWorkerForRetry caller remembered to wrap;
+// future callers shouldn't have to.
+func TestAwaitAnyRestartWrapsNoRestartsWithSentinel(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	// All workers healthy and no restarts in progress — awaitAnyRestart
+	// should immediately return its no-restarts error.
+	err := p.awaitAnyRestart(context.Background())
+	if err == nil {
+		t.Fatalf("expected no-restarts error, got nil")
+	}
+	if !errors.Is(err, ErrPoolUnavailable) {
+		t.Fatalf("expected ErrPoolUnavailable in chain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no workers restarting") {
+		t.Fatalf("expected message to mention 'no workers restarting', got %q", err.Error())
 	}
 }
 

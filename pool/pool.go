@@ -956,7 +956,7 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 			case <-ch:
 				return nil
 			case <-p.drainCh:
-				return fmt.Errorf("pool is draining")
+				return errPoolDraining()
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -973,7 +973,7 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 
 		select {
 		case <-p.drainCh:
-			return fmt.Errorf("pool is draining")
+			return errPoolDraining()
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
@@ -988,7 +988,7 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 
 	select {
 	case <-p.drainCh:
-		return fmt.Errorf("pool is draining")
+		return errPoolDraining()
 	default:
 	}
 
@@ -1002,7 +1002,7 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 	case <-done:
 		return nil
 	case <-p.drainCh:
-		return fmt.Errorf("pool is draining")
+		return errPoolDraining()
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -1150,7 +1150,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 			if sawPending {
 				return nil
 			}
-			return fmt.Errorf("no workers restarting")
+			return fmt.Errorf("%w: no workers restarting", ErrPoolUnavailable)
 		}
 		sawPending = true
 
@@ -1161,7 +1161,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 				case 0:
 					return ctx.Err()
 				case 1:
-					return fmt.Errorf("pool is draining")
+					return errPoolDraining()
 				default:
 					return nil
 				}
@@ -1176,7 +1176,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 			case 0:
 				return ctx.Err()
 			case 1:
-				return fmt.Errorf("pool is draining")
+				return errPoolDraining()
 			case len(cases) - 1:
 			default:
 				return nil
@@ -1186,7 +1186,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-p.drainCh:
-				return fmt.Errorf("pool is draining")
+				return errPoolDraining()
 			default:
 			}
 		}
@@ -1198,7 +1198,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-p.drainCh:
-			return fmt.Errorf("pool is draining")
+			return errPoolDraining()
 		default:
 		}
 
@@ -2136,6 +2136,17 @@ var ErrPoolRetriesExhausted = errors.New("pool retries exhausted")
 // distinction matters only to consumers that want to log the
 // admission-vs-execution boundary separately.
 var ErrPoolUnavailable = errors.New("pool unavailable")
+
+// errPoolDraining is the canonical "pool is draining" error returned
+// from the restart-wait helpers (awaitRestart, awaitAnyRestart). It
+// wraps ErrPoolUnavailable at the source so callers (Parse,
+// CallStream, getWorkerForRetry) don't have to remember the wrap and
+// future call sites get worker_unavailable classification by default.
+// Mirrors the source-wrap pattern getWorkerAccepted uses for
+// "pool is closed" / "no healthy workers available".
+func errPoolDraining() error {
+	return fmt.Errorf("%w: pool is draining", ErrPoolUnavailable)
+}
 
 // IsRetryableWorkerError reports whether err indicates a worker
 // infrastructure failure (crash, network issue, gRPC Unavailable /
