@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 
@@ -106,19 +107,21 @@ func writeFiberInternalError(c fiber.Ctx, err error) error {
 // Stacktraces are also independently logged via httplogger.SetError —
 // the response copy is the explicit, agent-facing channel.
 func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
+	var workerCode apierror.Code
 	var details json.RawMessage
 
 	var stackErr *workerplugin.ErrorWithStack
 	if errors.As(err, &stackErr) {
-		if d := stackErr.GetDetails(); len(d) > 0 && json.Valid(d) {
-			details = json.RawMessage(d)
-		} else if st := stackErr.GetStacktrace(); st != "" {
-			details = stacktraceDetailsJSON(st)
+		workerCode, details = normalizeWorkerMetadata(stackErr.GetCode(), stackErr.GetDetails())
+		if details == nil {
+			if st := stackErr.GetStacktrace(); st != "" {
+				details = stacktraceDetailsJSON(st)
+			}
 		}
 	}
 
-	if stackErr != nil && stackErr.GetCode() != "" {
-		return apierror.Code(stackErr.GetCode()), details
+	if workerCode != "" {
+		return workerCode, details
 	}
 
 	if errors.Is(err, pool.ErrPoolRetriesExhausted) {
@@ -133,6 +136,43 @@ func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
 		return apierror.CodeWorkerUnavailable, details
 	}
 	return apierror.CodeWorkerError, details
+}
+
+// normalizeWorkerMetadata accepts the raw worker-supplied code +
+// details bytes and returns the contract-compliant pair to put on the
+// response envelope. The host treats both fields as untrusted because
+// they're authored worker-side and there's no shared schema enforcing
+// them, so off-contract values are dropped rather than forwarded:
+//
+//   - code is preserved only if it's one of the documented apierror.Code
+//     constants (apierror.Code.IsKnown). Unknown codes return ""
+//     (empty), which makes classifyWorkerError fall through to host-
+//     side classification — the public OpenAPI enum stays authoritative.
+//   - details is preserved only if it parses as a JSON OBJECT; scalars,
+//     arrays, and null are dropped. The OpenAPI schema declares
+//     details as an object (additionalProperties), so anything else
+//     would lie about the contract and confuse generated clients.
+func normalizeWorkerMetadata(rawCode string, rawDetails []byte) (apierror.Code, json.RawMessage) {
+	var code apierror.Code
+	if c := apierror.Code(rawCode); c.IsKnown() {
+		code = c
+	}
+	var details json.RawMessage
+	if isJSONObject(rawDetails) {
+		details = json.RawMessage(rawDetails)
+	}
+	return code, details
+}
+
+// isJSONObject reports whether b is a syntactically valid JSON
+// document AND its top-level value is an object (`{...}`). Used to
+// gate worker-supplied details against the OpenAPI contract.
+func isJSONObject(b []byte) bool {
+	trimmed := bytes.TrimLeft(b, " \t\n\r")
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return false
+	}
+	return json.Valid(trimmed)
 }
 
 // stacktraceDetailsJSON marshals st into the canonical

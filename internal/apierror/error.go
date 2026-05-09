@@ -12,6 +12,23 @@ import (
 // on these without parsing free-form messages.
 type Code string
 
+// IsKnown reports whether c is one of the documented Code constants.
+// The HTTP layer validates worker-supplied codes against this set
+// before forwarding them so the public OpenAPI enum stays
+// authoritative — a worker emitting an unknown code falls back to
+// host-side classification rather than introducing an off-contract
+// value into the response envelope.
+func (c Code) IsKnown() bool {
+	switch c {
+	case CodeInvalidJSON, CodeInvalidRequest, CodeRequestTooLarge,
+		CodeBodyReadError, CodeNotAcceptable, CodeRequestCanceled,
+		CodeWorkerUnavailable, CodeWorkerError, CodeParseError,
+		CodeInternalError:
+		return true
+	}
+	return false
+}
+
 const (
 	// CodeInvalidJSON: request body wasn't valid JSON.
 	CodeInvalidJSON Code = "invalid_json"

@@ -201,19 +201,20 @@ func HandleNDJSONStreamFiber(
 // details for a mid-stream StreamResultKindError frame. Worker-supplied
 // fields on the StreamResult itself (ErrorCode / ErrorDetails / Stacktrace,
 // populated from the proto) take priority over heuristic classification
-// of the embedded error value. When ErrorDetails is empty but Stacktrace
-// is set (the typical worker-panic shape), the stacktrace is wrapped as
+// of the embedded error value, but worker code/details are routed
+// through normalizeWorkerMetadata first so off-contract values
+// (unknown codes, non-object details) are dropped instead of
+// forwarded. When ErrorDetails is empty (or fails normalization) and
+// Stacktrace is set, the stacktrace is wrapped as
 // {"stacktrace": "..."} so the response carries the same panic trace
 // classifyWorkerError would expose for unary endpoints.
 func classifyStreamResultError(result *workerplugin.StreamResult) (apierror.Code, json.RawMessage) {
-	var details json.RawMessage
-	if len(result.ErrorDetails) > 0 && json.Valid(result.ErrorDetails) {
-		details = json.RawMessage(result.ErrorDetails)
-	} else if result.Stacktrace != "" {
+	workerCode, details := normalizeWorkerMetadata(result.ErrorCode, result.ErrorDetails)
+	if details == nil && result.Stacktrace != "" {
 		details = stacktraceDetailsJSON(result.Stacktrace)
 	}
-	if result.ErrorCode != "" {
-		return apierror.Code(result.ErrorCode), details
+	if workerCode != "" {
+		return workerCode, details
 	}
 	code, fallbackDetails := classifyWorkerError(result.Error)
 	if details == nil {

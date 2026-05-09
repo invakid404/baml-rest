@@ -207,3 +207,137 @@ func TestClassifyStreamResultError_StacktraceDetails(t *testing.T) {
 		t.Errorf("details.stacktrace = %q, want %q", parsed.Stacktrace, trace)
 	}
 }
+
+// TestNormalizeWorkerMetadata pins the contract: worker-supplied codes
+// are validated against the public apierror.Code enum, and details are
+// validated as JSON objects. Anything off-contract is dropped — the
+// host-side classifier then takes over for code, and a stacktrace
+// fallback (handled by the caller) replaces malformed details.
+func TestNormalizeWorkerMetadata(t *testing.T) {
+	tests := []struct {
+		name        string
+		rawCode     string
+		rawDetails  []byte
+		wantCode    apierror.Code
+		wantDetails string // empty means details should be nil
+	}{
+		// Code validation
+		{"known code preserved", string(apierror.CodeParseError), nil, apierror.CodeParseError, ""},
+		{"known worker_error preserved", string(apierror.CodeWorkerError), nil, apierror.CodeWorkerError, ""},
+		{"unknown code dropped", "made_up_code", nil, "", ""},
+		{"empty code stays empty", "", nil, "", ""},
+		{"case-mismatch unknown dropped", "Worker_Error", nil, "", ""},
+
+		// Details validation
+		{"valid object preserved", "", []byte(`{"field":"x"}`), "", `{"field":"x"}`},
+		{"empty object preserved", "", []byte(`{}`), "", `{}`},
+		{"object with leading whitespace preserved", "", []byte(" \n{\"x\":1}"), "", " \n{\"x\":1}"},
+		{"json null dropped", "", []byte(`null`), "", ""},
+		{"json scalar dropped", "", []byte(`42`), "", ""},
+		{"json string dropped", "", []byte(`"oops"`), "", ""},
+		{"json bool dropped", "", []byte(`true`), "", ""},
+		{"json array dropped", "", []byte(`[1,2,3]`), "", ""},
+		{"invalid json dropped", "", []byte(`{not json}`), "", ""},
+		{"empty bytes stays nil", "", []byte{}, "", ""},
+		{"nil bytes stays nil", "", nil, "", ""},
+
+		// Combined
+		{"valid code + valid object both preserved", string(apierror.CodeParseError), []byte(`{"a":1}`), apierror.CodeParseError, `{"a":1}`},
+		{"valid code + invalid details: code kept, details dropped", string(apierror.CodeParseError), []byte(`null`), apierror.CodeParseError, ""},
+		{"invalid code + valid details: code dropped, details kept", "bogus", []byte(`{"a":1}`), "", `{"a":1}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotCode, gotDetails := normalizeWorkerMetadata(tt.rawCode, tt.rawDetails)
+			if gotCode != tt.wantCode {
+				t.Errorf("code = %q, want %q", gotCode, tt.wantCode)
+			}
+			if tt.wantDetails == "" {
+				if gotDetails != nil {
+					t.Errorf("details = %s, want nil", gotDetails)
+				}
+			} else {
+				if string(gotDetails) != tt.wantDetails {
+					t.Errorf("details = %s, want %s", gotDetails, tt.wantDetails)
+				}
+			}
+		})
+	}
+}
+
+// TestClassifyWorkerError_UnknownWorkerCodeFallsThrough verifies that
+// a worker emitting an off-contract code falls through to host-side
+// classification rather than introducing the unknown code into the
+// response envelope. Locks the public OpenAPI enum as authoritative.
+func TestClassifyWorkerError_UnknownWorkerCodeFallsThrough(t *testing.T) {
+	err := workerplugin.NewErrorWithMetadata(
+		status.Error(codes.Unavailable, "worker died"),
+		"",
+		"made_up_code",
+		nil,
+	)
+	got, _ := classifyWorkerError(err)
+	if got != apierror.CodeWorkerUnavailable {
+		t.Errorf("classifyWorkerError = %q, want %q (host-side reclassification of inner Unavailable)", got, apierror.CodeWorkerUnavailable)
+	}
+}
+
+// TestClassifyWorkerError_ScalarDetailsFallsBackToStacktrace verifies
+// that worker-supplied non-object details get dropped, and when a
+// stacktrace is available it's used to synthesize the response
+// details instead. Without normalization the schema-violating scalar
+// would have been forwarded.
+func TestClassifyWorkerError_ScalarDetailsFallsBackToStacktrace(t *testing.T) {
+	const trace = "goroutine 1 [running]:\npanic..."
+	err := workerplugin.NewErrorWithMetadata(
+		errors.New("worker panic"),
+		trace,
+		"",
+		[]byte(`null`), // schema-violating
+	)
+	_, details := classifyWorkerError(err)
+	if details == nil {
+		t.Fatal("expected stacktrace fallback, got nil details")
+	}
+	var parsed struct {
+		Stacktrace string `json:"stacktrace"`
+	}
+	if err := json.Unmarshal(details, &parsed); err != nil {
+		t.Fatalf("details did not unmarshal as {stacktrace}: %v (raw: %s)", err, details)
+	}
+	if parsed.Stacktrace != trace {
+		t.Errorf("details.stacktrace = %q, want %q", parsed.Stacktrace, trace)
+	}
+}
+
+// TestClassifyStreamResultError_NormalizesWorkerFields mirrors the
+// unary normalization tests for the streaming path: worker-supplied
+// fields on a StreamResult go through the same gate.
+func TestClassifyStreamResultError_NormalizesWorkerFields(t *testing.T) {
+	t.Run("unknown code falls through", func(t *testing.T) {
+		result := &workerplugin.StreamResult{
+			Kind:      workerplugin.StreamResultKindError,
+			Error:     status.Error(codes.Unavailable, "worker died"),
+			ErrorCode: "fictional_code",
+		}
+		got, _ := classifyStreamResultError(result)
+		if got != apierror.CodeWorkerUnavailable {
+			t.Errorf("code = %q, want %q", got, apierror.CodeWorkerUnavailable)
+		}
+	})
+
+	t.Run("scalar details dropped, stacktrace replaces", func(t *testing.T) {
+		const trace = "goroutine 7..."
+		result := &workerplugin.StreamResult{
+			Kind:         workerplugin.StreamResultKindError,
+			Error:        errors.New("worker panic"),
+			ErrorDetails: []byte(`42`),
+			Stacktrace:   trace,
+		}
+		_, details := classifyStreamResultError(result)
+		if !strings.Contains(string(details), "stacktrace") {
+			t.Errorf("expected stacktrace fallback, got details = %s", details)
+		}
+	})
+}
