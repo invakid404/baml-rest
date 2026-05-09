@@ -103,12 +103,73 @@ func TestClassifyWorkerError_CancelBranchWrapsCtxErr(t *testing.T) {
 			"with previous lastErr in message",
 			fmt.Errorf("retry failed, no workers available: %w (pool error: %v, previous: %v)", context.Canceled, errors.New("no healthy workers available"), errors.New("worker died")),
 		},
+		// CallStream pre-loop cancel shape: caller cancelled before
+		// the goroutine even started, getWorkerForRetry surfaced a
+		// non-cancel error in the race window. The pre-loop wrap
+		// (pool.go:1421) emits this exact format.
+		{
+			"CallStream pre-loop cancel wrap",
+			fmt.Errorf("could not acquire worker: %w (pool error: %v)", context.Canceled, errors.New("pool is draining")),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, _ := classifyWorkerError(tt.err)
 			if got != apierror.CodeRequestCanceled {
 				t.Errorf("classifyWorkerError = %q, want %q", got, apierror.CodeRequestCanceled)
+			}
+		})
+	}
+}
+
+// TestClassifyWorkerError_NoFalsePositiveOnContextCanceledText pins
+// the typed-cancellation contract: a plain worker error string that
+// happens to contain "context canceled" or "context deadline
+// exceeded" verbatim (e.g. an upstream LLM provider error message)
+// must NOT be classified as request_canceled. Previously
+// classifyWorkerError used pool.IsCallerCancellationError, whose
+// trailing string-match fallback would fire on these substrings —
+// turning a real worker_error into a misleading 408. Switched to
+// pool.IsTypedCancellationError which uses only typed signals
+// (errors.Is, *status.Status, "rpc error: code = Canceled" prefix).
+func TestClassifyWorkerError_NoFalsePositiveOnContextCanceledText(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want apierror.Code
+	}{
+		{
+			"upstream LLM timeout containing canceled text",
+			errors.New("openai: provider error: context deadline exceeded"),
+			apierror.CodeWorkerError,
+		},
+		{
+			"BAML parse failure containing canceled text",
+			errors.New("BAML parse error: validation failed; context canceled at line 12"),
+			apierror.CodeWorkerError,
+		},
+		{
+			"plain canceled-shaped error stays worker_error",
+			errors.New("context canceled by upstream"),
+			apierror.CodeWorkerError,
+		},
+		// Sanity: typed forms still classify correctly.
+		{
+			"typed context.Canceled still classifies as canceled",
+			context.Canceled,
+			apierror.CodeRequestCanceled,
+		},
+		{
+			"serialized gRPC Canceled still classifies as canceled",
+			errors.New("rpc error: code = Canceled desc = client gone"),
+			apierror.CodeRequestCanceled,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := classifyWorkerError(tt.err)
+			if got != tt.want {
+				t.Errorf("classifyWorkerError(%q) = %q, want %q", tt.err, got, tt.want)
 			}
 		})
 	}
@@ -131,6 +192,10 @@ func TestClassifyWorkerError_PoolUnavailable(t *testing.T) {
 		{"no healthy workers", fmt.Errorf("%w: no healthy workers available", pool.ErrPoolUnavailable)},
 		{"bare sentinel", pool.ErrPoolUnavailable},
 		{"sentinel through outer wrap", fmt.Errorf("call failed: %w", fmt.Errorf("%w: pool is closed", pool.ErrPoolUnavailable))},
+		// CallStream pre-loop wrap shape: getWorkerForRetry returned
+		// a non-cancel error and the caller didn't cancel. The
+		// pre-loop wrap (pool.go:1421) emits this exact format.
+		{"CallStream pre-loop wrap", fmt.Errorf("%w: %w", pool.ErrPoolUnavailable, errors.New("pool is draining"))},
 	}
 
 	for _, tt := range tests {

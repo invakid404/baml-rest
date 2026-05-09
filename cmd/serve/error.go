@@ -91,11 +91,16 @@ func writeFiberInternalError(c fiber.Ctx, err error) error {
 //     driven abort. Pool retry exhaustion is by definition infra, not
 //     a client cancellation.
 //  3. Caller cancellation (context.Canceled / DeadlineExceeded or
-//     gRPC Canceled / DeadlineExceeded) maps to request_canceled.
-//     Checked BEFORE pool.IsRetryableWorkerError because the latter
-//     treats those gRPC codes as retryable infrastructure too — without
-//     this short-circuit, a client-driven abort surfaces as
-//     worker_unavailable on streaming and unary paths alike.
+//     gRPC Canceled / DeadlineExceeded) maps to request_canceled. Uses
+//     pool.IsTypedCancellationError (NOT IsCallerCancellationError) so
+//     a plain worker error string like "openai: provider timeout:
+//     context deadline exceeded" does NOT trigger this branch — only
+//     typed signals (errors.Is, gRPC status, serialized "rpc error:
+//     code = Canceled" prefix) qualify. Checked BEFORE
+//     pool.IsRetryableWorkerError because the latter treats those gRPC
+//     codes as retryable infrastructure too — without this short-circuit,
+//     a client-driven abort surfaces as worker_unavailable on streaming
+//     and unary paths alike.
 //  4. pool.IsRetryableWorkerError → worker_unavailable (transient infra
 //     failure, retries exhausted by the pool).
 //  5. Default → worker_error (BAML / LLM application error).
@@ -128,7 +133,7 @@ func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
 		return apierror.CodeWorkerUnavailable, details
 	}
 
-	if pool.IsCallerCancellationError(err) {
+	if pool.IsTypedCancellationError(err) {
 		return apierror.CodeRequestCanceled, details
 	}
 

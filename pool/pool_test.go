@@ -1399,6 +1399,56 @@ func TestIsCallerCancellationError(t *testing.T) {
 	}
 }
 
+// TestIsTypedCancellationError pins the typed-only contract: same as
+// IsCallerCancellationError EXCEPT plain string fallbacks for "context
+// canceled" / "context deadline exceeded" return false. The HTTP
+// classifier uses this so worker / LLM-provider error text mentioning
+// those substrings doesn't get misreported as request_canceled.
+func TestIsTypedCancellationError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		// Typed signals that MUST still classify as cancellation —
+		// these have to keep working or real caller aborts misroute.
+		{"nil", nil, false},
+		{"context.Canceled", context.Canceled, true},
+		{"context.DeadlineExceeded", context.DeadlineExceeded, true},
+		{"wrapped context.Canceled", fmt.Errorf("call failed: %w", context.Canceled), true},
+		{"wrapped context.DeadlineExceeded", fmt.Errorf("call failed: %w", context.DeadlineExceeded), true},
+		{"gRPC Canceled", status.Error(codes.Canceled, "request canceled"), true},
+		{"gRPC DeadlineExceeded", status.Error(codes.DeadlineExceeded, "deadline"), true},
+		{"serialized gRPC Canceled", fmt.Errorf("rpc error: code = Canceled desc = x"), true},
+		{"serialized gRPC DeadlineExceeded", fmt.Errorf("rpc error: code = DeadlineExceeded desc = x"), true},
+
+		// gRPC status authoritative — non-cancel codes stay non-cancel.
+		{"gRPC Internal", status.Error(codes.Internal, "panic"), false},
+		{"gRPC Unavailable with cancel text", status.Error(codes.Unavailable, "context canceled"), false},
+		{"serialized gRPC Internal with deadline text", fmt.Errorf("rpc error: code = Internal desc = context deadline exceeded"), false},
+
+		// THE DIFFERENTIATOR: plain strings that look like cancellation
+		// but aren't typed get rejected here even though they pass
+		// IsCallerCancellationError. Worker text containing these
+		// substrings (upstream LLM provider errors, BAML diagnostics)
+		// must NOT classify as caller cancellation at the HTTP layer.
+		{"plain context canceled string", fmt.Errorf("context canceled"), false},
+		{"plain context deadline exceeded string", fmt.Errorf("context deadline exceeded"), false},
+		{"wrapped plain canceled string", fmt.Errorf("upstream: context canceled"), false},
+		{"upstream provider deadline message", fmt.Errorf("openai: provider error: context deadline exceeded"), false},
+
+		{"unrelated text", fmt.Errorf("something broke"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsTypedCancellationError(tt.err); got != tt.want {
+				t.Errorf("IsTypedCancellationError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests: getWorker / getWorkerForRetry
 // ---------------------------------------------------------------------------

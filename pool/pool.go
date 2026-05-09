@@ -1420,7 +1420,19 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 	handle, err := p.getWorkerForRetry(ctx, nil)
 	if err != nil {
 		done()
-		return nil, err
+		// Pre-loop admission tail: getWorkerForRetry can return
+		// awaitRestart/awaitAnyRestart errors as bare strings ("pool
+		// is draining", "no workers restarting") that don't carry
+		// the ErrPoolUnavailable wrap getWorkerAccepted applies. Wrap
+		// here so classifyWorkerError surfaces worker_unavailable
+		// rather than falling through to worker_error. Caller-cancel
+		// path uses ctx.Err() (the typed cancellation) so the HTTP
+		// classifier lands on request_canceled — see Pool.Parse for
+		// the race-window rationale.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("could not acquire worker: %w (pool error: %v)", ctx.Err(), err)
+		}
+		return nil, fmt.Errorf("%w: %w", ErrPoolUnavailable, err)
 	}
 
 	// Generate a stable request id and thread it through every attempt.
@@ -2231,12 +2243,46 @@ func isRetryableWorkerError(err error) bool {
 // caller-side cancellation (context.Canceled / context.DeadlineExceeded
 // or a gRPC Canceled / DeadlineExceeded status, including the
 // string-serialized forms that lose their *status.Status across the
-// boundary). Use this at the HTTP layer to distinguish a client-driven
-// abort (request_canceled) from a retryable worker infrastructure
-// failure (worker_unavailable) — the underlying gRPC code is the same
-// for both, so IsRetryableWorkerError alone can't tell them apart.
+// boundary). The pool's per-attempt retry loop uses this to decide
+// whether to skip restart on a cancelled request — false positives
+// from the trailing string-match fallback are tolerable there because
+// the worst case is a missed restart, not a misclassified response.
+// HTTP-layer code classification should prefer IsTypedCancellationError
+// instead.
 func IsCallerCancellationError(err error) bool {
 	return isCallerCancellationError(err)
+}
+
+// IsTypedCancellationError reports whether err is shaped like
+// caller-side cancellation using ONLY typed signals: errors.Is against
+// context.Canceled / DeadlineExceeded, *status.Status code, or a
+// serialized "rpc error: code = Canceled/DeadlineExceeded ..." string
+// produced by gRPC's String boundary. Unlike IsCallerCancellationError,
+// it does NOT fall back to plain substring matching of "context
+// canceled" / "context deadline exceeded" — those strings appear
+// verbatim inside worker / LLM-provider application errors (e.g.
+// "openai: request failed: context deadline exceeded"), and matching
+// them would let the HTTP layer misreport a real worker_error /
+// parse_error as 408 request_canceled. Use this at boundaries where
+// the err under inspection might be plain worker text.
+func IsTypedCancellationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if st, ok := status.FromError(err); ok {
+		switch st.Code() {
+		case codes.Canceled, codes.DeadlineExceeded:
+			return true
+		}
+		return false
+	}
+	if code, ok := parseSerializedGRPCCode(err.Error()); ok {
+		return code == "Canceled" || code == "DeadlineExceeded"
+	}
+	return false
 }
 
 func isCallerCancellationError(err error) bool {
