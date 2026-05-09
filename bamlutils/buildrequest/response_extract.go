@@ -219,7 +219,11 @@ func extractAnthropicContent(provider string, responseBody string, includeThinki
 }
 
 // extractGeminiContent extracts text from a Google AI / Vertex AI (Gemini)
-// non-streaming response.
+// non-streaming response. Parts flagged thought:true are filtered out
+// entirely so reasoning text never enters parseable — aligned with
+// upstream BAML's text_content_part filter
+// (engine/baml-runtime/src/internal/llm_client/primitive/google/response_handler.rs).
+// Non-thought parts retain the existing strict validation.
 func extractGeminiContent(provider string, responseBody string) (string, error) {
 	parts := gjson.Get(responseBody, "candidates.0.content.parts")
 
@@ -231,6 +235,11 @@ func extractGeminiContent(provider string, responseBody string) (string, error) 
 			if !part.IsObject() {
 				iterErr = fmt.Errorf("%s: non-object element in parts array (got %s)", provider, part.Type)
 				return false
+			}
+			// Skip thought parts before any text validation; their text
+			// field shape is irrelevant to parseable output.
+			if part.Get("thought").Bool() {
+				return true
 			}
 			text := part.Get("text")
 			if text.Exists() {

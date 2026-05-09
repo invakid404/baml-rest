@@ -794,6 +794,70 @@ func TestExtractResponseContent_VertexMultipleParts(t *testing.T) {
 	}
 }
 
+// TestExtractResponseContent_GeminiThoughtAtIndexZero asserts that a thought
+// part at index 0 is filtered out and the visible text from the next part is
+// returned as both parseable and raw, with no error.
+//
+// Aligned with upstream BAML's text_content_part filter
+// (engine/baml-runtime/src/internal/llm_client/primitive/google/response_handler.rs).
+func TestExtractResponseContent_GeminiThoughtAtIndexZero(t *testing.T) {
+	body := `{"candidates":[{"content":{"parts":[
+		{"text":"internal reasoning","thought":true},
+		{"text":"Visible answer"}
+	],"role":"model"}}]}`
+
+	for _, provider := range []string{"google-ai", "vertex-ai"} {
+		t.Run(provider, func(t *testing.T) {
+			parseable, raw, err := ExtractResponseContent(provider, body, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if parseable != "Visible answer" {
+				t.Errorf("parseable = %q, want %q", parseable, "Visible answer")
+			}
+			if raw != "Visible answer" {
+				t.Errorf("raw = %q, want %q (Phase 2: raw == parseable for Gemini)", raw, "Visible answer")
+			}
+
+			// Parseable must be byte-identical regardless of the
+			// includeThinking flag. Raw is intentionally not compared across
+			// the flag — Phase 3 will diverge Gemini raw under opt-in.
+			parseableThinking, _, err := ExtractResponseContent(provider, body, true)
+			if err != nil {
+				t.Fatalf("unexpected error with includeThinking=true: %v", err)
+			}
+			if parseableThinking != parseable {
+				t.Errorf("parseable diverged across includeThinking: false=%q true=%q", parseable, parseableThinking)
+			}
+		})
+	}
+}
+
+// TestExtractResponseContent_GeminiThoughtOnly asserts that a response whose
+// only parts are thought:true returns empty parseable and raw with no error,
+// matching upstream BAML's unwrap_or_default behavior.
+func TestExtractResponseContent_GeminiThoughtOnly(t *testing.T) {
+	body := `{"candidates":[{"content":{"parts":[
+		{"text":"reasoning a","thought":true},
+		{"text":"reasoning b","thought":true}
+	],"role":"model"}}]}`
+
+	for _, provider := range []string{"google-ai", "vertex-ai"} {
+		t.Run(provider, func(t *testing.T) {
+			parseable, raw, err := ExtractResponseContent(provider, body, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if parseable != "" {
+				t.Errorf("parseable = %q, want empty string", parseable)
+			}
+			if raw != "" {
+				t.Errorf("raw = %q, want empty string (Phase 2: raw == parseable for Gemini)", raw)
+			}
+		})
+	}
+}
+
 func TestExtractResponseContent_UnsupportedProvider(t *testing.T) {
 	_, _, err := ExtractResponseContent("aws-bedrock", `{}`, false)
 	if err == nil {
