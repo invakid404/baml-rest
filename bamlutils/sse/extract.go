@@ -137,7 +137,11 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeThinking 
 				if part.Get("thought").Bool() {
 					return true
 				}
-				sb.WriteString(part.Get("text").String())
+				text := part.Get("text")
+				if text.Type != gjson.String {
+					return true
+				}
+				sb.WriteString(text.String())
 				return true
 			})
 		}

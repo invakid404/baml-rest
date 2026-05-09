@@ -638,6 +638,14 @@ func TestExtractDeltaPartsFromText_GeminiThoughtFiltering(t *testing.T) {
 			body: `{"candidates":[{"content":{"parts":[{"text":"internal","thought":true}]}}]}`,
 			want: "",
 		},
+		{
+			// Defensive guard: gjson stringifies non-string scalars via
+			// String(), so an unguarded WriteString on a numeric text
+			// field would emit "42Visible" instead of "Visible".
+			name: "non-string text field is skipped",
+			body: `{"candidates":[{"content":{"parts":[{"text":42},{"text":"Visible"}]}}]}`,
+			want: "Visible",
+		},
 	}
 
 	for _, provider := range []string{"google-ai", "vertex-ai"} {
