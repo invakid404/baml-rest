@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/goccy/go-json"
+	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -595,4 +597,130 @@ func TestClassifyStreamResultError_NormalizesWorkerFields(t *testing.T) {
 			t.Errorf("details.stacktrace = %q, want %q", parsed.Stacktrace, trace)
 		}
 	})
+}
+
+// TestFiberErrorHandler_413MapsToRequestTooLarge pins the app-wide
+// ErrorHandler contract: a *fiber.Error with status 413 (BodyLimit
+// being the production source) maps to CodeRequestTooLarge in the
+// JSON envelope, mirroring chi's writeChiBodyReadError 413 path.
+// Without this handler, Fiber's default ErrorHandler emits
+// text/plain "Request Entity Too Large" with no apierror.Code —
+// clients (and LLM agents) lose the ability to branch on the code.
+//
+// Tested through a route that returns the framework error directly
+// rather than through the BodyLimit middleware: app.Test rejects
+// over-limit requests at the test transport layer before reaching
+// the ErrorHandler chain, so the BodyLimit↔ErrorHandler integration
+// is a Fiber framework concern. What we own is the *fiber.Error→
+// apierror.Code mapping; that's what this asserts.
+func TestFiberErrorHandler_413MapsToRequestTooLarge(t *testing.T) {
+	app := fiber.New(fiber.Config{
+		JSONEncoder:  json.Marshal,
+		JSONDecoder:  json.Unmarshal,
+		ErrorHandler: fiberErrorHandler,
+	})
+	app.Post("/oversize", func(c fiber.Ctx) error {
+		return fiber.NewError(fiber.StatusRequestEntityTooLarge, "body size exceeds the given limit")
+	})
+
+	req, _ := http.NewRequest(http.MethodPost, "http://example.com/oversize", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+	if ct := resp.Header.Get(fiber.HeaderContentType); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json (Fiber default would emit text/plain)", ct)
+	}
+	var parsed apierror.Response
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if parsed.Code != apierror.CodeRequestTooLarge {
+		t.Errorf("Code = %q, want %q", parsed.Code, apierror.CodeRequestTooLarge)
+	}
+	if parsed.Error != "body size exceeds the given limit" {
+		t.Errorf("Error = %q, want it to forward the framework-supplied message", parsed.Error)
+	}
+}
+
+// TestFiberErrorHandler_GenericFiberErrorEmitsJSON pins the
+// fall-through for non-413 *fiber.Error values: they still get the
+// JSON envelope with the framework status, just without a specific
+// code. The fiber.Error message is forwarded so the body still
+// names the class — clients consuming the envelope shape don't
+// need a special case for "this came from Fiber, not our handlers."
+func TestFiberErrorHandler_GenericFiberErrorEmitsJSON(t *testing.T) {
+	app := fiber.New(fiber.Config{
+		JSONEncoder:  json.Marshal,
+		JSONDecoder:  json.Unmarshal,
+		ErrorHandler: fiberErrorHandler,
+	})
+	app.Get("/needs-method", func(c fiber.Ctx) error {
+		return fiber.ErrMethodNotAllowed
+	})
+
+	req, _ := http.NewRequest(http.MethodGet, "http://example.com/needs-method", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", resp.StatusCode)
+	}
+	if ct := resp.Header.Get(fiber.HeaderContentType); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	var parsed apierror.Response
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if parsed.Code != "" {
+		t.Errorf("Code = %q, want empty (no apierror.Code is meaningful for generic fiber.Error)", parsed.Code)
+	}
+	if parsed.Error == "" {
+		t.Errorf("Error must carry the fiber.Error message; got empty")
+	}
+}
+
+// TestFiberErrorHandler_PlainErrorMapsToInternal pins the safety net
+// for non-fiber.Error errors: a handler returning a bare error
+// (without writing a response itself) gets surfaced as 500
+// internal_error rather than Fiber's default text/plain handling.
+func TestFiberErrorHandler_PlainErrorMapsToInternal(t *testing.T) {
+	app := fiber.New(fiber.Config{
+		JSONEncoder:  json.Marshal,
+		JSONDecoder:  json.Unmarshal,
+		ErrorHandler: fiberErrorHandler,
+	})
+	app.Get("/bug", func(c fiber.Ctx) error {
+		return errors.New("upstream blew up")
+	})
+
+	req, _ := http.NewRequest(http.MethodGet, "http://example.com/bug", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	var parsed apierror.Response
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if parsed.Code != apierror.CodeInternalError {
+		t.Errorf("Code = %q, want %q", parsed.Code, apierror.CodeInternalError)
+	}
+	if !strings.Contains(parsed.Error, "upstream blew up") {
+		t.Errorf("Error = %q, want it to forward the original message", parsed.Error)
+	}
 }

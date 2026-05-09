@@ -333,10 +333,22 @@ var serveCmd = &cobra.Command{
 		logger.Info().Int("size", poolSize).Msg("Worker pool initialized")
 
 		// Create Fiber app
+		//
+		// ErrorHandler maps framework-emitted *fiber.Error values into
+		// the apierror response shape so framework-level failures
+		// (BodyLimit/413 in particular, but also 404 / 405 / etc.)
+		// surface as the same coded JSON envelope our handlers emit
+		// instead of Fiber's default text/plain body. Without this,
+		// a 413 from BodyLimit bypassed writeFiberJSONErrorWithCode
+		// and clients lost the request_too_large code that the chi
+		// path already produces via writeChiBodyReadError. Non-
+		// *fiber.Error errors (uncaught from a handler) default to
+		// 500 internal_error.
 		app := fiber.New(fiber.Config{
-			JSONEncoder: json.Marshal,
-			JSONDecoder: json.Unmarshal,
-			BodyLimit:   maxRequestBodyBytes,
+			JSONEncoder:  json.Marshal,
+			JSONDecoder:  json.Unmarshal,
+			BodyLimit:    maxRequestBodyBytes,
+			ErrorHandler: fiberErrorHandler,
 		})
 
 		// Set global panic recovery handler to use structured logging

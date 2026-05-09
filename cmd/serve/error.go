@@ -89,6 +89,37 @@ func writeFiberInternalError(c fiber.Ctx, err error) error {
 	return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInternalError, nil, fiber.StatusInternalServerError)
 }
 
+// fiberErrorHandler is the app-wide ErrorHandler. It catches
+// framework-emitted errors (BodyLimit/413, route 404/405, malformed
+// transport-level requests) plus any error a handler returned
+// without writing a response itself, and converts them into the
+// apierror JSON envelope so the wire shape is identical to what the
+// chi path emits. Without this, Fiber's default ErrorHandler returns
+// text/plain and strips the apierror.Code field — clients (and LLM
+// agents) consuming errors then can't branch on the code at all for
+// framework-level failures.
+//
+// Mapping:
+//   - *fiber.Error 413 → CodeRequestTooLarge (parity with chi's
+//     writeChiBodyReadError handling of MaxBytesReader exhaustion).
+//   - Other *fiber.Error → JSON envelope with the framework-supplied
+//     status and message; no apierror.Code is set because the host
+//     has nothing meaningful to add (the fiber.Error message already
+//     names the class — "Method Not Allowed", "Not Found", etc.).
+//   - Anything else (a handler returning a non-fiber.Error without
+//     writing a response): 500 internal_error.
+func fiberErrorHandler(c fiber.Ctx, err error) error {
+	var fiberErr *fiber.Error
+	if errors.As(err, &fiberErr) {
+		var code apierror.Code
+		if fiberErr.Code == fiber.StatusRequestEntityTooLarge {
+			code = apierror.CodeRequestTooLarge
+		}
+		return writeFiberJSONErrorWithCode(c, fiberErr.Message, code, nil, fiberErr.Code)
+	}
+	return writeFiberInternalError(c, err)
+}
+
 // classifyWorkerError inspects err and returns the apierror.Code that
 // best describes the failure plus any structured details that should
 // reach the client envelope. Precedence:
