@@ -1266,14 +1266,24 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 			// Pool-side give-up before completing all attempts: no
 			// healthy worker available for the next attempt (workers
 			// dead, pool draining/closed, restart still in flight).
-			// Wrap with the sentinel so HTTP classifies as
-			// worker_unavailable instead of falling through to
-			// worker_error — same outcome class as the post-loop
-			// exhaustion tail.
+			// HTTP classification lands on worker_unavailable either
+			// way — both ErrPoolRetriesExhausted and the source-wrap
+			// ErrPoolUnavailable on err map to that class via the
+			// sentinel short-circuit in IsRetryableWorkerError.
+			//
+			// When lastErr != nil at least one attempt actually ran,
+			// so wrapping with ErrPoolRetriesExhausted is the
+			// accurate sentinel. When lastErr == nil this is the
+			// initial attempt and no retries happened — claiming
+			// "retries exhausted" would be misleading; return err
+			// directly so the chain carries only ErrPoolUnavailable
+			// (already wrapped at the source by awaitRestart /
+			// awaitAnyRestart / getWorkerAccepted), matching the
+			// pre-loop tail in Pool.CallStream.
 			if lastErr != nil {
 				return nil, fmt.Errorf("%w: retry failed, no workers available: %w (previous: %v)", ErrPoolRetriesExhausted, err, lastErr)
 			}
-			return nil, fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, err)
+			return nil, err
 		}
 
 		attemptCtx, cancel := context.WithCancel(ctx)

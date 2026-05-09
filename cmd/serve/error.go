@@ -21,12 +21,15 @@ func writeFiberJSONError(c fiber.Ctx, message string, statusCode int) error {
 
 // writeFiberJSONErrorWithCode writes a JSON error response carrying a
 // machine-readable code and optional structured details. Pass code=""
-// and details=nil to omit those fields.
+// and details=nil to omit those fields. details is validated through
+// apierror.ValidDetails so an invalid json.RawMessage cannot corrupt
+// the encoded body — same defense-in-depth as apierror.WriteJSONWithCode
+// applies on the chi side.
 func writeFiberJSONErrorWithCode(c fiber.Ctx, message string, code apierror.Code, details json.RawMessage, statusCode int) error {
 	return c.Status(statusCode).JSON(apierror.Response{
 		Error:     message,
 		Code:      code,
-		Details:   details,
+		Details:   apierror.ValidDetails(details),
 		RequestID: fiberrequestid.FromContext(c),
 	})
 }

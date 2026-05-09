@@ -649,6 +649,37 @@ func TestParseRetryAfterRestart(t *testing.T) {
 
 // TestParseExhaustsRetries verifies that Parse returns an error after
 // MaxRetries when every worker fails.
+// TestParseInitialAttemptDoesNotClaimRetriesExhausted pins the
+// initial-attempt branch in Pool.Parse: when getWorkerForRetry fails
+// before any worker call (admission OK, but no healthy workers and
+// no restart in progress), the returned error must wrap
+// ErrPoolUnavailable (the source-wrap from awaitAnyRestart /
+// getWorkerAccepted) and NOT ErrPoolRetriesExhausted — no retries
+// happened, so claiming "retries exhausted" would be misleading.
+// HTTP classification stays on worker_unavailable either way; the
+// distinction is semantic accuracy in the chain.
+func TestParseInitialAttemptDoesNotClaimRetriesExhausted(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	// Mark the only worker unhealthy without dispatching a restart so
+	// the initial getWorkerForRetry call fails: getWorkerAccepted
+	// returns ErrPoolUnavailable ("no healthy workers"), awaitAnyRestart
+	// finds no restarts in progress and also returns ErrPoolUnavailable.
+	p.workers[0].healthy.Store(false)
+
+	_, err := p.Parse(context.Background(), "Test", []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error from initial attempt with no healthy workers")
+	}
+	if !errors.Is(err, ErrPoolUnavailable) {
+		t.Errorf("expected ErrPoolUnavailable in chain, got %v", err)
+	}
+	if errors.Is(err, ErrPoolRetriesExhausted) {
+		t.Errorf("ErrPoolRetriesExhausted must NOT appear on initial-attempt failure (no retries happened); chain: %v", err)
+	}
+}
+
 func TestParseExhaustsRetries(t *testing.T) {
 	factory := func(id int) (*workerHandle, error) {
 		w := newMockWorker()

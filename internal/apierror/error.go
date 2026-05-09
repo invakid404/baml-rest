@@ -134,11 +134,20 @@ func WriteJSON(w http.ResponseWriter, message string, statusCode int, requestID 
 // WriteJSONWithCode writes a JSON-formatted error response carrying a
 // machine-readable code and optional structured details. Pass code=""
 // and details=nil to omit those fields from the response.
+//
+// details is validated with json.Valid before being placed on the
+// response: invalid bytes are dropped and Details is omitted, so the
+// encoded body is always well-formed JSON. Upstream callers
+// (cmd/serve/error.go normalizeWorkerMetadata) already gate to JSON
+// objects, but this helper is exported and the validation here is
+// defense-in-depth — without it, a future caller passing an invalid
+// json.RawMessage would emit malformed bytes verbatim because
+// json.RawMessage's MarshalJSON returns its input as-is.
 func WriteJSONWithCode(w http.ResponseWriter, message string, code Code, details json.RawMessage, statusCode int, requestID string) {
 	resp := Response{
 		Error:     message,
 		Code:      code,
-		Details:   details,
+		Details:   ValidDetails(details),
 		RequestID: requestID,
 	}
 
@@ -147,4 +156,21 @@ func WriteJSONWithCode(w http.ResponseWriter, message string, code Code, details
 
 	// Best effort - if encoding fails, we've already written the status code
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// ValidDetails returns details unchanged when the bytes parse as
+// valid JSON, or nil otherwise. Callers placing a json.RawMessage
+// onto the Response envelope should run it through this helper so
+// the encoded body is always well-formed — RawMessage is verbatim-
+// marshalled, so an invalid payload would otherwise corrupt the
+// response stream. nil and empty inputs are passed through (and
+// omit from the envelope via the omitempty json tag).
+func ValidDetails(details json.RawMessage) json.RawMessage {
+	if len(details) == 0 {
+		return details
+	}
+	if !json.Valid(details) {
+		return nil
+	}
+	return details
 }
