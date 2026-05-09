@@ -25,7 +25,8 @@ import (
 //   - raw: the text used for /call-with-raw's Raw() field. By default
 //     equals parseable (matches BAML's RawLLMResponse() text-only
 //     contract). When includeThinking is true, raw additionally carries
-//     provider-specific reasoning content (Anthropic thinking blocks).
+//     provider-specific reasoning content (Anthropic thinking blocks,
+//     Gemini thought-tagged parts).
 //
 // Returns an error for unsupported providers, empty bodies, invalid JSON,
 // and when a non-empty response body does not contain the expected structure.
@@ -55,8 +56,7 @@ func ExtractResponseContent(provider string, responseBody string, includeThinkin
 		return text, text, extractErr
 
 	case "google-ai", "vertex-ai":
-		text, extractErr := extractGeminiContent(provider, responseBody)
-		return text, text, extractErr
+		return extractGeminiContent(provider, responseBody, includeThinking)
 
 	default:
 		return "", "", fmt.Errorf("unsupported provider for non-streaming extraction: %s", provider)
@@ -219,16 +219,28 @@ func extractAnthropicContent(provider string, responseBody string, includeThinki
 }
 
 // extractGeminiContent extracts text from a Google AI / Vertex AI (Gemini)
-// non-streaming response. Parts flagged thought:true are filtered out
-// entirely so reasoning text never enters parseable — aligned with
-// upstream BAML's text_content_part filter
-// (engine/baml-runtime/src/internal/llm_client/primitive/google/response_handler.rs).
-// Non-thought parts retain the existing strict validation.
-func extractGeminiContent(provider string, responseBody string) (string, error) {
+// non-streaming response.
+//
+// Returns two strings:
+//   - parseable: only non-thought string text. Thought-tagged parts never
+//     enter parseable — aligned with upstream BAML's text_content_part
+//     filter at
+//     engine/baml-runtime/src/internal/llm_client/primitive/google/response_handler.rs.
+//   - raw: non-thought string text always; thought-tagged parts only when
+//     includeThinking is true (the per-request opt-in for surfacing
+//     reasoning text via /call-with-raw's Raw()).
+//
+// Non-thought parts retain the existing strict validation: missing parts,
+// non-object array elements, and non-string text on a non-thought part
+// remain errors. Thought parts are filtered, not validated — non-string
+// text on a thought part is silently skipped, since the part contributes
+// to neither parseable nor (validated) raw output.
+func extractGeminiContent(provider string, responseBody string, includeThinking bool) (parseable, raw string, err error) {
 	parts := gjson.Get(responseBody, "candidates.0.content.parts")
 
 	if parts.IsArray() {
-		var sb strings.Builder
+		var parseableSB strings.Builder
+		var rawSB strings.Builder
 		var iterErr error
 		parts.ForEach(func(_, part gjson.Result) bool {
 			// Reject non-object array elements
@@ -236,9 +248,15 @@ func extractGeminiContent(provider string, responseBody string) (string, error) 
 				iterErr = fmt.Errorf("%s: non-object element in parts array (got %s)", provider, part.Type)
 				return false
 			}
-			// Skip thought parts before any text validation; their text
-			// field shape is irrelevant to parseable output.
+			// Thought parts are filtered, not validated. They never enter
+			// parseable; they enter raw only as opt-in string text.
 			if part.Get("thought").Bool() {
+				if includeThinking {
+					text := part.Get("text")
+					if text.Type == gjson.String {
+						rawSB.WriteString(text.String())
+					}
+				}
 				return true
 			}
 			text := part.Get("text")
@@ -247,17 +265,18 @@ func extractGeminiContent(provider string, responseBody string) (string, error) 
 					iterErr = fmt.Errorf("%s: unexpected type for part text field (got %s)", provider, text.Type)
 					return false
 				}
-				sb.WriteString(text.String())
+				parseableSB.WriteString(text.String())
+				rawSB.WriteString(text.String())
 			}
 			return true
 		})
 		if iterErr != nil {
-			return "", iterErr
+			return "", "", iterErr
 		}
-		return sb.String(), nil
+		return parseableSB.String(), rawSB.String(), nil
 	}
 
-	return "", fmt.Errorf("%s: could not extract text content from response (candidates[0].content.parts not found)", provider)
+	return "", "", fmt.Errorf("%s: could not extract text content from response (candidates[0].content.parts not found)", provider)
 }
 
 // extractOpenAIResponsesContent extracts text from an OpenAI Responses API
