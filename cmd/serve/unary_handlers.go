@@ -9,7 +9,6 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/apierror"
-	"github.com/invakid404/baml-rest/internal/httplogger"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
@@ -63,7 +62,7 @@ func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.St
 
 		body, statusCode, err := readUnaryBody(r)
 		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", statusCode)
+			writeChiBodyReadError(w, r, err, statusCode)
 			return
 		}
 
@@ -76,7 +75,7 @@ func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.St
 			setBAMLHeaders(netHTTPHeaderSetter(w.Header()), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
 		}
 		if err != nil {
-			writeChiWorkerError(w, r, err, "failed to process request")
+			writeChiWorkerErrorClassified(w, r, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -101,13 +100,13 @@ func makeChiParseHandler(p *pool.Pool, methodName string) http.HandlerFunc {
 
 		body, statusCode, err := readUnaryBody(r)
 		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", statusCode)
+			writeChiBodyReadError(w, r, err, statusCode)
 			return
 		}
 
 		result, err := p.Parse(ctx, methodName, body)
 		if err != nil {
-			writeChiWorkerError(w, r, err, "failed to parse response")
+			writeChiParseWorkerError(w, r, err)
 			return
 		}
 
@@ -132,24 +131,23 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 
 		body, statusCode, err := readUnaryBody(r)
 		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", statusCode)
+			writeChiBodyReadError(w, r, err, statusCode)
 			return
 		}
 
 		var input bamlutils.DynamicInput
 		if err := json.Unmarshal(body, &input); err != nil {
-			writeChiJSONError(w, r, "invalid JSON payload", http.StatusBadRequest)
+			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidJSON, nil, http.StatusBadRequest)
 			return
 		}
 		if err := input.Validate(); err != nil {
-			writeChiJSONError(w, r, err.Error(), http.StatusBadRequest)
+			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidRequest, nil, http.StatusBadRequest)
 			return
 		}
 
 		workerInput, err := input.ToWorkerInput()
 		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process dynamic input", http.StatusInternalServerError)
+			writeChiInternalError(w, r, err)
 			return
 		}
 
@@ -162,14 +160,13 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 			emit(w, result.Planned, result.Outcome)
 		}
 		if err != nil {
-			writeChiWorkerError(w, r, err, "failed to process request")
+			writeChiWorkerErrorClassified(w, r, err)
 			return
 		}
 
 		flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process response", http.StatusInternalServerError)
+			writeChiInternalError(w, r, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -194,37 +191,35 @@ func makeChiDynamicParseHandler(p *pool.Pool) http.HandlerFunc {
 
 		body, statusCode, err := readUnaryBody(r)
 		if err != nil {
-			writeChiJSONError(w, r, "failed to read request body", statusCode)
+			writeChiBodyReadError(w, r, err, statusCode)
 			return
 		}
 
 		var input bamlutils.DynamicParseInput
 		if err := json.Unmarshal(body, &input); err != nil {
-			writeChiJSONError(w, r, "invalid JSON payload", http.StatusBadRequest)
+			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidJSON, nil, http.StatusBadRequest)
 			return
 		}
 		if err := input.Validate(); err != nil {
-			writeChiJSONError(w, r, err.Error(), http.StatusBadRequest)
+			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidRequest, nil, http.StatusBadRequest)
 			return
 		}
 
 		workerInput, err := input.ToWorkerInput()
 		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process dynamic input", http.StatusInternalServerError)
+			writeChiInternalError(w, r, err)
 			return
 		}
 
 		result, err := p.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
 		if err != nil {
-			writeChiWorkerError(w, r, err, "failed to parse response")
+			writeChiParseWorkerError(w, r, err)
 			return
 		}
 
 		flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 		if err != nil {
-			httplogger.SetError(r.Context(), err)
-			writeChiJSONError(w, r, "failed to process response", http.StatusInternalServerError)
+			writeChiInternalError(w, r, err)
 			return
 		}
 
@@ -248,18 +243,13 @@ func readUnaryBody(r *http.Request) ([]byte, int, error) {
 	return body, 0, nil
 }
 
-// writeChiJSONError writes a JSON error response using the standard apierror envelope.
-func writeChiJSONError(w http.ResponseWriter, r *http.Request, message string, statusCode int) {
-	apierror.WriteJSON(w, message, statusCode, unaryRequestID(r.Context()))
-}
-
-// writeChiWorkerError classifies worker errors: context cancellation is reported
-// as 408 (not 500) so it doesn't inflate error metrics.
-func writeChiWorkerError(w http.ResponseWriter, r *http.Request, err error, fallbackMessage string) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		writeChiJSONError(w, r, "request canceled", http.StatusRequestTimeout)
-		return
+// writeChiBodyReadError classifies a body-read failure: 413
+// request_too_large for MaxBytesReader exhaustion (statusCode 413
+// produced by readUnaryBody), other I/O failures as 400 body_read_error.
+func writeChiBodyReadError(w http.ResponseWriter, r *http.Request, err error, statusCode int) {
+	code := apierror.CodeBodyReadError
+	if statusCode == http.StatusRequestEntityTooLarge {
+		code = apierror.CodeRequestTooLarge
 	}
-	httplogger.SetError(r.Context(), err)
-	writeChiJSONError(w, r, fallbackMessage, http.StatusInternalServerError)
+	writeChiJSONErrorWithCode(w, r, err.Error(), code, nil, statusCode)
 }

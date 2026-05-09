@@ -132,6 +132,30 @@ func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStream
 			if fullErr := fmt.Sprintf("%+v", result.Error); fullErr != pbResult.Error {
 				pbResult.Stacktrace = fullErr
 			}
+			// Forward any worker-side classification + structured
+			// details verbatim. The host inspects ErrorCode to choose
+			// the HTTP error code and forwards ErrorDetails to the
+			// client envelope as-is, so the worker controls both.
+			pbResult.ErrorCode = result.ErrorCode
+			pbResult.ErrorDetailsJson = result.ErrorDetails
+			// Mirror the Parse extraction: when the worker's Impl
+			// wraps an *ErrorWithStack into result.Error without
+			// also setting the explicit StreamResult fields,
+			// errors.As walks the chain and recovers code/details
+			// so they survive the gRPC boundary instead of falling
+			// back to host-side worker_error classification.
+			if pbResult.ErrorCode == "" {
+				var codedErr interface{ GetCode() string }
+				if errors.As(result.Error, &codedErr) {
+					pbResult.ErrorCode = codedErr.GetCode()
+				}
+			}
+			if pbResult.ErrorDetailsJson == nil {
+				var detailsErr interface{ GetDetails() []byte }
+				if errors.As(result.Error, &detailsErr) {
+					pbResult.ErrorDetailsJson = detailsErr.GetDetails()
+				}
+			}
 		}
 		if err := stream.Send(pbResult); err != nil {
 			ReleaseStreamResult(result)
@@ -186,6 +210,19 @@ func (s *GRPCServer) Parse(ctx context.Context, req *pb.ParseRequest) (*pb.Parse
 		// Extract stacktrace using %+v formatting (works with go-recovery and pkg/errors style errors)
 		if fullErr := fmt.Sprintf("%+v", err); fullErr != resp.Error {
 			resp.Stacktrace = fullErr
+		}
+		// Forward any worker-side classification + structured details.
+		// errors.As walks the wrap chain so a worker that wraps an
+		// *ErrorWithStack (e.g. fmt.Errorf("parse %s: %w", method, err))
+		// still surfaces its code/details — a direct type assertion
+		// would only match the top-level value and silently drop them.
+		var codedErr interface{ GetCode() string }
+		if errors.As(err, &codedErr) {
+			resp.ErrorCode = codedErr.GetCode()
+		}
+		var detailsErr interface{ GetDetails() []byte }
+		if errors.As(err, &detailsErr) {
+			resp.ErrorDetailsJson = detailsErr.GetDetails()
 		}
 		return resp, nil
 	}
@@ -245,6 +282,8 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 			if resp.Error != "" {
 				result.Error = fmt.Errorf("%s", resp.Error)
 				result.Stacktrace = resp.Stacktrace
+				result.ErrorCode = resp.ErrorCode
+				result.ErrorDetails = resp.ErrorDetailsJson
 			}
 			results <- result
 		}
@@ -290,7 +329,7 @@ func (c *GRPCClient) Parse(ctx context.Context, methodName string, inputJSON []b
 		return nil, err
 	}
 	if resp.Error != "" {
-		return nil, NewErrorWithStack(fmt.Errorf("%s", resp.Error), resp.Stacktrace)
+		return nil, NewErrorWithMetadata(fmt.Errorf("%s", resp.Error), resp.Stacktrace, resp.ErrorCode, resp.ErrorDetailsJson)
 	}
 	return &ParseResult{Data: resp.DataJson}, nil
 }

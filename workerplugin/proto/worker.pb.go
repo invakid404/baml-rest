@@ -205,15 +205,17 @@ func (x *CallRequest) GetRequestId() string {
 
 // Streaming result
 type StreamResult struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kind          StreamResult_Kind      `protobuf:"varint,1,opt,name=kind,proto3,enum=workerplugin.StreamResult_Kind" json:"kind,omitempty"`
-	DataJson      []byte                 `protobuf:"bytes,2,opt,name=data_json,json=dataJson,proto3" json:"data_json,omitempty"` // JSON-encoded stream/final/metadata data
-	Raw           string                 `protobuf:"bytes,3,opt,name=raw,proto3" json:"raw,omitempty"`                           // Raw LLM response text (populated on FINAL)
-	Error         string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`                       // Error message (populated on ERROR)
-	Stacktrace    string                 `protobuf:"bytes,5,opt,name=stacktrace,proto3" json:"stacktrace,omitempty"`             // Stacktrace (populated on ERROR, when available)
-	Reset_        bool                   `protobuf:"varint,6,opt,name=reset,proto3" json:"reset,omitempty"`                      // When true, client should discard accumulated state (retry occurred)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Kind             StreamResult_Kind      `protobuf:"varint,1,opt,name=kind,proto3,enum=workerplugin.StreamResult_Kind" json:"kind,omitempty"`
+	DataJson         []byte                 `protobuf:"bytes,2,opt,name=data_json,json=dataJson,proto3" json:"data_json,omitempty"`                           // JSON-encoded stream/final/metadata data
+	Raw              string                 `protobuf:"bytes,3,opt,name=raw,proto3" json:"raw,omitempty"`                                                     // Raw LLM response text (populated on FINAL)
+	Error            string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`                                                 // Error message (populated on ERROR)
+	Stacktrace       string                 `protobuf:"bytes,5,opt,name=stacktrace,proto3" json:"stacktrace,omitempty"`                                       // Stacktrace (populated on ERROR, when available)
+	Reset_           bool                   `protobuf:"varint,6,opt,name=reset,proto3" json:"reset,omitempty"`                                                // When true, client should discard accumulated state (retry occurred)
+	ErrorCode        string                 `protobuf:"bytes,7,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`                        // Machine-readable error class (populated on ERROR, when worker can classify)
+	ErrorDetailsJson []byte                 `protobuf:"bytes,8,opt,name=error_details_json,json=errorDetailsJson,proto3" json:"error_details_json,omitempty"` // JSON-encoded structured error details (populated on ERROR, when available)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *StreamResult) Reset() {
@@ -286,6 +288,20 @@ func (x *StreamResult) GetReset_() bool {
 		return x.Reset_
 	}
 	return false
+}
+
+func (x *StreamResult) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+func (x *StreamResult) GetErrorDetailsJson() []byte {
+	if x != nil {
+		return x.ErrorDetailsJson
+	}
+	return nil
 }
 
 // Health check
@@ -532,12 +548,14 @@ func (x *ParseRequest) GetInputJson() []byte {
 
 // Parse response
 type ParseResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DataJson      []byte                 `protobuf:"bytes,1,opt,name=data_json,json=dataJson,proto3" json:"data_json,omitempty"` // JSON-encoded parsed result
-	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`                       // Error message (if parsing failed)
-	Stacktrace    string                 `protobuf:"bytes,3,opt,name=stacktrace,proto3" json:"stacktrace,omitempty"`             // Stacktrace (if parsing failed, when available)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	DataJson         []byte                 `protobuf:"bytes,1,opt,name=data_json,json=dataJson,proto3" json:"data_json,omitempty"`                           // JSON-encoded parsed result
+	Error            string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`                                                 // Error message (if parsing failed)
+	Stacktrace       string                 `protobuf:"bytes,3,opt,name=stacktrace,proto3" json:"stacktrace,omitempty"`                                       // Stacktrace (if parsing failed, when available)
+	ErrorCode        string                 `protobuf:"bytes,4,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`                        // Machine-readable error class (when worker can classify)
+	ErrorDetailsJson []byte                 `protobuf:"bytes,5,opt,name=error_details_json,json=errorDetailsJson,proto3" json:"error_details_json,omitempty"` // JSON-encoded structured error details (when available)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ParseResponse) Reset() {
@@ -589,6 +607,20 @@ func (x *ParseResponse) GetStacktrace() string {
 		return x.Stacktrace
 	}
 	return ""
+}
+
+func (x *ParseResponse) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+func (x *ParseResponse) GetErrorDetailsJson() []byte {
+	if x != nil {
+		return x.ErrorDetailsJson
+	}
+	return nil
 }
 
 // Goroutines request - for getting pprof data from worker
@@ -868,7 +900,7 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\vstream_mode\x18\x03 \x01(\x0e2\x18.workerplugin.StreamModeR\n" +
 	"streamMode\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x04 \x01(\tR\trequestId\"\x85\x02\n" +
+	"request_id\x18\x04 \x01(\tR\trequestId\"\xd2\x02\n" +
 	"\fStreamResult\x123\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1f.workerplugin.StreamResult.KindR\x04kind\x12\x1b\n" +
 	"\tdata_json\x18\x02 \x01(\fR\bdataJson\x12\x10\n" +
@@ -877,7 +909,10 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\n" +
 	"stacktrace\x18\x05 \x01(\tR\n" +
 	"stacktrace\x12\x14\n" +
-	"\x05reset\x18\x06 \x01(\bR\x05reset\"E\n" +
+	"\x05reset\x18\x06 \x01(\bR\x05reset\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\a \x01(\tR\terrorCode\x12,\n" +
+	"\x12error_details_json\x18\b \x01(\fR\x10errorDetailsJson\"E\n" +
 	"\x04Kind\x12\n" +
 	"\n" +
 	"\x06STREAM\x10\x00\x12\t\n" +
@@ -899,13 +934,16 @@ const file_workerplugin_proto_worker_proto_rawDesc = "" +
 	"\vmethod_name\x18\x01 \x01(\tR\n" +
 	"methodName\x12\x1d\n" +
 	"\n" +
-	"input_json\x18\x02 \x01(\fR\tinputJson\"b\n" +
+	"input_json\x18\x02 \x01(\fR\tinputJson\"\xaf\x01\n" +
 	"\rParseResponse\x12\x1b\n" +
 	"\tdata_json\x18\x01 \x01(\fR\bdataJson\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12\x1e\n" +
 	"\n" +
 	"stacktrace\x18\x03 \x01(\tR\n" +
-	"stacktrace\".\n" +
+	"stacktrace\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x04 \x01(\tR\terrorCode\x12,\n" +
+	"\x12error_details_json\x18\x05 \x01(\fR\x10errorDetailsJson\".\n" +
 	"\x14GetGoroutinesRequest\x12\x16\n" +
 	"\x06filter\x18\x01 \x01(\tR\x06filter\"\x80\x01\n" +
 	"\x15GetGoroutinesResponse\x12\x1f\n" +

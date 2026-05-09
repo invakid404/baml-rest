@@ -11,6 +11,7 @@ import (
 	"github.com/goccy/go-json"
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/apierror"
 )
 
 func main() {
@@ -475,6 +476,36 @@ func generateOpenAPISchema() *openapi3.T {
 		},
 	}
 
+	// Enum of stable error classification codes, sourced directly
+	// from internal/apierror so the OpenAPI schema can never drift
+	// from the runtime contract. Add new codes there; this slice
+	// updates automatically.
+	apiCodes := apierror.AllCodes()
+	errorCodeEnum := make([]any, len(apiCodes))
+	for i, c := range apiCodes {
+		errorCodeEnum[i] = string(c)
+	}
+	errorCodeSchema := func() *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeString},
+				Description: "Stable, machine-readable error class. Branch on this rather than parsing the message.",
+				Enum:        errorCodeEnum,
+			},
+		}
+	}
+	errorDetailsSchema := func() *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeObject},
+				Description: "Optional structured context. May carry {\"stacktrace\": \"...\"} on worker panics, or worker-supplied diagnostic fields when available. Absent when no structured details exist.",
+				AdditionalProperties: openapi3.AdditionalProperties{
+					Has: boolPtr(true),
+				},
+			},
+		}
+	}
+
 	streamErrorEventSchemaName := "__StreamErrorEvent__"
 	schemas[streamErrorEventSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
@@ -493,6 +524,8 @@ func generateOpenAPISchema() *openapi3.T {
 						Description: "Error message describing what went wrong",
 					},
 				},
+				"code":    errorCodeSchema(),
+				"details": errorDetailsSchema(),
 			},
 			Required: []string{"type", "error"},
 		},
@@ -511,6 +544,8 @@ func generateOpenAPISchema() *openapi3.T {
 						Description: "Error message describing what went wrong",
 					},
 				},
+				"code":    errorCodeSchema(),
+				"details": errorDetailsSchema(),
 				"request_id": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeString},

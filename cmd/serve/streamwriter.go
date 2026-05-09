@@ -10,6 +10,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -33,11 +34,17 @@ const (
 )
 
 // NDJSONEvent represents a single NDJSON streaming event.
+//
+// Code and Details are populated only on Type=="error" events. Both are
+// omitempty so non-error frames stay compact and existing consumers
+// pinned on {type, data, raw, error} continue to deserialize cleanly.
 type NDJSONEvent struct {
-	Type  NDJSONEventType `json:"type"`
-	Data  json.RawMessage `json:"data,omitempty"`
-	Raw   string          `json:"raw,omitempty"`
-	Error string          `json:"error,omitempty"`
+	Type    NDJSONEventType `json:"type"`
+	Data    json.RawMessage `json:"data,omitempty"`
+	Raw     string          `json:"raw,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	Code    apierror.Code   `json:"code,omitempty"`
+	Details json.RawMessage `json:"details,omitempty"`
 }
 
 // NDJSONStreamWriterPublisher implements StreamPublisher for native Fiber streaming.
@@ -141,8 +148,8 @@ func (p *NDJSONStreamWriterPublisher) PublishMetadata(payload json.RawMessage) e
 	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventMetadata, Data: payload})
 }
 
-func (p *NDJSONStreamWriterPublisher) PublishError(errMsg string) error {
-	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventError, Error: errMsg})
+func (p *NDJSONStreamWriterPublisher) PublishError(errMsg string, code apierror.Code, details json.RawMessage) error {
+	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventError, Error: errMsg, Code: code, Details: details})
 }
 
 func (p *NDJSONStreamWriterPublisher) Close() {
@@ -181,12 +188,39 @@ func HandleNDJSONStreamFiber(
 
 		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 		if err != nil {
-			_ = publisher.PublishError(err.Error())
+			code, details := classifyWorkerError(err)
+			_ = publisher.PublishError(err.Error(), code, details)
 			return
 		}
 
 		consumeStream(results, publisher, streamMode, flattenDynamic)
 	})
+}
+
+// classifyStreamResultError extracts the error code and structured
+// details for a mid-stream StreamResultKindError frame. Worker-supplied
+// fields on the StreamResult itself (ErrorCode / ErrorDetails / Stacktrace,
+// populated from the proto) take priority over heuristic classification
+// of the embedded error value, but worker code/details are routed
+// through normalizeWorkerMetadata first so off-contract values
+// (unknown codes, non-object details) are dropped instead of
+// forwarded. When ErrorDetails is empty (or fails normalization) and
+// Stacktrace is set, the stacktrace is wrapped as
+// {"stacktrace": "..."} so the response carries the same panic trace
+// classifyWorkerError would expose for unary endpoints.
+func classifyStreamResultError(result *workerplugin.StreamResult) (apierror.Code, json.RawMessage) {
+	workerCode, details := normalizeWorkerMetadata(result.ErrorCode, result.ErrorDetails)
+	if details == nil && result.Stacktrace != "" {
+		details = stacktraceDetailsJSON(result.Stacktrace)
+	}
+	if workerCode != "" {
+		return workerCode, details
+	}
+	code, fallbackDetails := classifyWorkerError(result.Error)
+	if details == nil {
+		details = fallbackDetails
+	}
+	return code, details
 }
 
 // StreamPublisher is the unified interface for publishing stream events.
@@ -199,8 +233,10 @@ type StreamPublisher interface {
 	PublishFinal(data []byte, raw string) error
 	// PublishReset sends a reset event indicating client should discard state.
 	PublishReset() error
-	// PublishError sends an error event.
-	PublishError(errMsg string) error
+	// PublishError sends an error event. code and details may be empty/nil
+	// when no classification is available — the underlying transport
+	// omits those fields from the wire.
+	PublishError(errMsg string, code apierror.Code, details json.RawMessage) error
 	// PublishMetadata sends a routing/retry metadata event.
 	// payload is the JSON-encoded bamlutils.Metadata value.
 	PublishMetadata(payload json.RawMessage) error
@@ -361,9 +397,16 @@ func (p *SSEStreamWriterPublisher) PublishMetadata(payload json.RawMessage) erro
 	return p.writeEvent(sseEventMetadata, unsafeutil.BytesToString(payload))
 }
 
-func (p *SSEStreamWriterPublisher) PublishError(errMsg string) error {
-	payload, err := json.Marshal(map[string]string{"error": errMsg})
+func (p *SSEStreamWriterPublisher) PublishError(errMsg string, code apierror.Code, details json.RawMessage) error {
+	envelope := struct {
+		Error   string          `json:"error"`
+		Code    apierror.Code   `json:"code,omitempty"`
+		Details json.RawMessage `json:"details,omitempty"`
+	}{Error: errMsg, Code: code, Details: details}
+	payload, err := json.Marshal(envelope)
 	if err != nil {
+		// Fallback: at least surface the message as the data payload so
+		// the client sees the failure even if envelope marshaling broke.
 		return p.writeEvent(sseEventError, errMsg)
 	}
 
@@ -407,7 +450,8 @@ func HandleSSEStreamFiber(
 
 		results, err := workerPool.CallStream(streamCtx, methodName, rawBody, streamMode)
 		if err != nil {
-			_ = publisher.PublishError(err.Error())
+			code, details := classifyWorkerError(err)
+			_ = publisher.PublishError(err.Error(), code, details)
 			return
 		}
 
@@ -431,7 +475,13 @@ func consumeStream(
 		switch result.Kind {
 		case workerplugin.StreamResultKindError:
 			if result.Error != nil {
-				_ = publisher.PublishError(result.Error.Error())
+				// Worker-supplied code/details (carried over the gRPC
+				// boundary on StreamResult) take precedence over the
+				// host-side classifier; if absent, classifyWorkerError
+				// falls back to pool.IsRetryableWorkerError to choose
+				// between worker_unavailable and worker_error.
+				code, details := classifyStreamResultError(result)
+				_ = publisher.PublishError(result.Error.Error(), code, details)
 			}
 
 		case workerplugin.StreamResultKindMetadata:

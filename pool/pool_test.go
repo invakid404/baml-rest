@@ -649,6 +649,37 @@ func TestParseRetryAfterRestart(t *testing.T) {
 
 // TestParseExhaustsRetries verifies that Parse returns an error after
 // MaxRetries when every worker fails.
+// TestParseInitialAttemptDoesNotClaimRetriesExhausted pins the
+// initial-attempt branch in Pool.Parse: when getWorkerForRetry fails
+// before any worker call (admission OK, but no healthy workers and
+// no restart in progress), the returned error must wrap
+// ErrPoolUnavailable (the source-wrap from awaitAnyRestart /
+// getWorkerAccepted) and NOT ErrPoolRetriesExhausted — no retries
+// happened, so claiming "retries exhausted" would be misleading.
+// HTTP classification stays on worker_unavailable either way; the
+// distinction is semantic accuracy in the chain.
+func TestParseInitialAttemptDoesNotClaimRetriesExhausted(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	// Mark the only worker unhealthy without dispatching a restart so
+	// the initial getWorkerForRetry call fails: getWorkerAccepted
+	// returns ErrPoolUnavailable ("no healthy workers"), awaitAnyRestart
+	// finds no restarts in progress and also returns ErrPoolUnavailable.
+	p.workers[0].healthy.Store(false)
+
+	_, err := p.Parse(context.Background(), "Test", []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error from initial attempt with no healthy workers")
+	}
+	if !errors.Is(err, ErrPoolUnavailable) {
+		t.Errorf("expected ErrPoolUnavailable in chain, got %v", err)
+	}
+	if errors.Is(err, ErrPoolRetriesExhausted) {
+		t.Errorf("ErrPoolRetriesExhausted must NOT appear on initial-attempt failure (no retries happened); chain: %v", err)
+	}
+}
+
 func TestParseExhaustsRetries(t *testing.T) {
 	factory := func(id int) (*workerHandle, error) {
 		w := newMockWorker()
@@ -1308,6 +1339,44 @@ func TestIsRetryableWorkerError(t *testing.T) {
 		{"nested Canceled over Internal", fmt.Errorf("rpc error: code = Canceled desc = rpc error: code = Internal desc = something"), true},
 		{"nested Unavailable over Internal", fmt.Errorf("rpc error: code = Unavailable desc = rpc error: code = Internal desc = something"), true},
 		{"wrapped Unavailable message", status.Error(codes.Unknown, "connection reset"), true},
+		// ErrPoolRetriesExhausted: the pool's terminal error after all
+		// retryable attempts gave up. Itself a worker_unavailable
+		// signal — every wrapped form must classify retryable so the
+		// HTTP layer surfaces worker_unavailable, not worker_error.
+		{"ErrPoolRetriesExhausted bare", ErrPoolRetriesExhausted, true},
+		{"ErrPoolRetriesExhausted wrapping Unavailable", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, status.Error(codes.Unavailable, "worker died")), true},
+		{"ErrPoolRetriesExhausted wrapping serialized Canceled", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("rpc error: code = Canceled desc = hung")), true},
+		{"ErrPoolRetriesExhausted with bare suffix", fmt.Errorf("%w (no terminal stream frame)", ErrPoolRetriesExhausted), true},
+		{"ErrPoolRetriesExhausted double-wrapped", fmt.Errorf("downstream gave up: %w", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, status.Error(codes.Unavailable, "x"))), true},
+		// No-workers retry tail: the pool wraps with the sentinel
+		// when getWorkerForRetry fails for a non-cancel reason (no
+		// healthy workers, pool closed, restart not ready). Plain
+		// strings like "no healthy workers available" don't carry a
+		// gRPC code — the sentinel is what carries the classification.
+		{"ErrPoolRetriesExhausted wrapping no healthy workers", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("no healthy workers available")), true},
+		{"ErrPoolRetriesExhausted wrapping pool closed", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("pool is closed")), true},
+		{"ErrPoolRetriesExhausted wrapping pool draining", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("pool is draining")), true},
+		{"ErrPoolRetriesExhausted wrapping no-workers-with-previous", fmt.Errorf("%w: retry failed, no workers available: %w (previous: dead worker)", ErrPoolRetriesExhausted, errors.New("no healthy workers available")), true},
+		// ErrPoolUnavailable: admission-side counterpart, wrapped at
+		// the pool's user-facing entry points (beginLogicalRequest,
+		// getWorker, getWorkerAccepted) when the pool can't accept a
+		// request at all (closed/draining/no-healthy-workers).
+		{"ErrPoolUnavailable bare", ErrPoolUnavailable, true},
+		{"ErrPoolUnavailable wrapping pool closed", fmt.Errorf("%w: pool is closed", ErrPoolUnavailable), true},
+		{"ErrPoolUnavailable wrapping pool draining", fmt.Errorf("%w: pool is draining, not accepting new requests", ErrPoolUnavailable), true},
+		{"ErrPoolUnavailable wrapping no healthy workers", fmt.Errorf("%w: no healthy workers available", ErrPoolUnavailable), true},
+		{"ErrPoolUnavailable through outer wrap", fmt.Errorf("call failed: %w", fmt.Errorf("%w: pool is closed", ErrPoolUnavailable)), true},
+		// Embedded serialized-gRPC text must NOT trigger retry. The
+		// prefix guard requires "rpc error: code = " at offset 0 so a
+		// worker / provider error like "openai: provider returned: rpc
+		// error: code = Unavailable ..." surfaces as worker_error
+		// instead of being retried as if it were transport
+		// infrastructure. Top-level boundary-serialized gRPC errors
+		// (preceding cases) still classify because the prefix is at
+		// offset 0 after fmt.Errorf("%s", resp.Error) reconstruction.
+		{"embedded gRPC Unavailable in worker text", errors.New("provider returned: rpc error: code = Unavailable desc = down"), false},
+		{"embedded gRPC Canceled in worker text", errors.New("upstream: rpc error: code = Canceled desc = abort"), false},
+		{"embedded gRPC DeadlineExceeded in worker text", errors.New("openai: rpc error: code = DeadlineExceeded desc = timeout"), false},
 	}
 
 	for _, tt := range tests {
@@ -1367,6 +1436,66 @@ func TestIsCallerCancellationError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isCallerCancellationError(tt.err); got != tt.want {
 				t.Errorf("isCallerCancellationError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsTypedCancellationError pins the typed-only contract: same as
+// IsCallerCancellationError EXCEPT plain string fallbacks for "context
+// canceled" / "context deadline exceeded" return false. The HTTP
+// classifier uses this so worker / LLM-provider error text mentioning
+// those substrings doesn't get misreported as request_canceled.
+func TestIsTypedCancellationError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		// Typed signals that MUST still classify as cancellation —
+		// these have to keep working or real caller aborts misroute.
+		{"nil", nil, false},
+		{"context.Canceled", context.Canceled, true},
+		{"context.DeadlineExceeded", context.DeadlineExceeded, true},
+		{"wrapped context.Canceled", fmt.Errorf("call failed: %w", context.Canceled), true},
+		{"wrapped context.DeadlineExceeded", fmt.Errorf("call failed: %w", context.DeadlineExceeded), true},
+		{"gRPC Canceled", status.Error(codes.Canceled, "request canceled"), true},
+		{"gRPC DeadlineExceeded", status.Error(codes.DeadlineExceeded, "deadline"), true},
+		{"serialized gRPC Canceled", fmt.Errorf("rpc error: code = Canceled desc = x"), true},
+		{"serialized gRPC DeadlineExceeded", fmt.Errorf("rpc error: code = DeadlineExceeded desc = x"), true},
+
+		// gRPC status authoritative — non-cancel codes stay non-cancel.
+		{"gRPC Internal", status.Error(codes.Internal, "panic"), false},
+		{"gRPC Unavailable with cancel text", status.Error(codes.Unavailable, "context canceled"), false},
+		{"serialized gRPC Internal with deadline text", fmt.Errorf("rpc error: code = Internal desc = context deadline exceeded"), false},
+
+		// THE DIFFERENTIATOR: plain strings that look like cancellation
+		// but aren't typed get rejected here even though they pass
+		// IsCallerCancellationError. Worker text containing these
+		// substrings (upstream LLM provider errors, BAML diagnostics)
+		// must NOT classify as caller cancellation at the HTTP layer.
+		{"plain context canceled string", fmt.Errorf("context canceled"), false},
+		{"plain context deadline exceeded string", fmt.Errorf("context deadline exceeded"), false},
+		{"wrapped plain canceled string", fmt.Errorf("upstream: context canceled"), false},
+		{"upstream provider deadline message", fmt.Errorf("openai: provider error: context deadline exceeded"), false},
+
+		// Embedded serialized-gRPC text must NOT classify as
+		// cancellation. parseSerializedGRPCCode accepts the prefix
+		// anywhere in the string, so without the prefix-only guard a
+		// wrapped worker error like "provider failed: rpc error:
+		// code = Canceled ..." would surface as 408 request_canceled.
+		// Top-level boundary-serialized gRPC errors (preceding case)
+		// still classify because the prefix is at offset 0.
+		{"embedded serialized gRPC Canceled", fmt.Errorf("provider failed: rpc error: code = Canceled desc = x"), false},
+		{"embedded serialized gRPC DeadlineExceeded", fmt.Errorf("upstream call: rpc error: code = DeadlineExceeded desc = x"), false},
+
+		{"unrelated text", fmt.Errorf("something broke"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsTypedCancellationError(tt.err); got != tt.want {
+				t.Errorf("IsTypedCancellationError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}
@@ -1648,11 +1777,48 @@ func TestAwaitRestartReturnsOnDrain(t *testing.T) {
 	p.drainOnce.Do(func() { close(p.drainCh) })
 
 	err := p.awaitRestart(context.Background(), failed)
-	if err == nil || err.Error() != "pool is draining" {
-		t.Fatalf("expected pool is draining error, got %v", err)
+	if err == nil {
+		t.Fatalf("expected pool is draining error, got nil")
+	}
+	// Source-wrap contract: drain-path return must carry
+	// ErrPoolUnavailable so HTTP-layer classification lands on
+	// worker_unavailable without callers having to re-wrap. The
+	// human-readable "pool is draining" suffix is preserved as a
+	// diagnostic — pin both shape and message.
+	if !errors.Is(err, ErrPoolUnavailable) {
+		t.Fatalf("expected ErrPoolUnavailable in chain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "pool is draining") {
+		t.Fatalf("expected message to mention 'pool is draining', got %q", err.Error())
 	}
 	if got := startCalls.Load(); got != 0 {
 		t.Fatalf("awaitRestart spawned %d replacement(s); want 0", got)
+	}
+}
+
+// TestAwaitAnyRestartWrapsNoRestartsWithSentinel pins the source-wrap
+// contract for awaitAnyRestart's "no workers restarting" return: it
+// must surface as ErrPoolUnavailable so the HTTP layer classifies the
+// pre-loop initial-attempt give-up (CallStream / Parse on a pool with
+// no healthy or restarting workers) as worker_unavailable instead of
+// falling through to worker_error. Without source-wrap, this only
+// worked because every getWorkerForRetry caller remembered to wrap;
+// future callers shouldn't have to.
+func TestAwaitAnyRestartWrapsNoRestartsWithSentinel(t *testing.T) {
+	p := newTestPool(t, 1, goodFactory)
+	defer p.Close()
+
+	// All workers healthy and no restarts in progress — awaitAnyRestart
+	// should immediately return its no-restarts error.
+	err := p.awaitAnyRestart(context.Background())
+	if err == nil {
+		t.Fatalf("expected no-restarts error, got nil")
+	}
+	if !errors.Is(err, ErrPoolUnavailable) {
+		t.Fatalf("expected ErrPoolUnavailable in chain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no workers restarting") {
+		t.Fatalf("expected message to mention 'no workers restarting', got %q", err.Error())
 	}
 }
 

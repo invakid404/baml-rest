@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -17,6 +19,8 @@ type recordingPublisher struct {
 	metadataFrames [][]byte
 	resetCount     int
 	errors         []string
+	errorCodes     []apierror.Code
+	errorDetails   [][]byte
 }
 
 func (p *recordingPublisher) PublishData(data []byte, raw string) error {
@@ -31,8 +35,14 @@ func (p *recordingPublisher) PublishFinal(data []byte, raw string) error {
 	return nil
 }
 
-func (p *recordingPublisher) PublishError(errMsg string) error {
+func (p *recordingPublisher) PublishError(errMsg string, code apierror.Code, details json.RawMessage) error {
 	p.errors = append(p.errors, errMsg)
+	p.errorCodes = append(p.errorCodes, code)
+	if details == nil {
+		p.errorDetails = append(p.errorDetails, nil)
+	} else {
+		p.errorDetails = append(p.errorDetails, append([]byte(nil), details...))
+	}
 	return nil
 }
 
@@ -296,5 +306,68 @@ func TestConsumeStream_HonorsResetOnMetadata(t *testing.T) {
 	}
 	if len(publisher.finalFrames) != 1 {
 		t.Fatalf("expected 1 final frame, got %d", len(publisher.finalFrames))
+	}
+}
+
+// TestConsumeStream_ForwardsErrorCodeAndDetails pins the pool→publisher
+// contract that worker-supplied ErrorCode and ErrorDetails on a
+// StreamResultKindError frame propagate verbatim into the published
+// error event. Regression guard: any future refactor that drops these
+// fields silently degrades the stream error envelope back to a
+// message-only string and breaks LLM-agent error-feedback loops.
+func TestConsumeStream_ForwardsErrorCodeAndDetails(t *testing.T) {
+	t.Parallel()
+
+	wantDetails := []byte(`{"field":"sentiment","expected":"positive|negative|neutral"}`)
+	results := make(chan *workerplugin.StreamResult, 1)
+	results <- &workerplugin.StreamResult{
+		Kind:         workerplugin.StreamResultKindError,
+		Error:        fmt.Errorf("BAML parse error: invalid enum value"),
+		ErrorCode:    string(apierror.CodeParseError),
+		ErrorDetails: wantDetails,
+	}
+	close(results)
+
+	publisher := &recordingPublisher{}
+	consumeStream(results, publisher, bamlutils.StreamModeStream, false)
+
+	if len(publisher.errors) != 1 {
+		t.Fatalf("expected 1 error frame, got %d", len(publisher.errors))
+	}
+	if publisher.errors[0] != "BAML parse error: invalid enum value" {
+		t.Errorf("error message = %q, want %q", publisher.errors[0], "BAML parse error: invalid enum value")
+	}
+	if len(publisher.errorCodes) != 1 || publisher.errorCodes[0] != apierror.CodeParseError {
+		t.Errorf("error code = %q, want %q", publisher.errorCodes, apierror.CodeParseError)
+	}
+	if len(publisher.errorDetails) != 1 || string(publisher.errorDetails[0]) != string(wantDetails) {
+		t.Errorf("error details = %q, want %q", publisher.errorDetails, wantDetails)
+	}
+}
+
+// TestConsumeStream_ClassifiesUnclassifiedErrorsAsWorkerError covers
+// the fallback path: when the worker emits an error without an
+// ErrorCode (the common case today, before BAML exposes typed errors),
+// the publisher still receives a host-side classification — not an
+// empty string — so clients always see a usable code.
+func TestConsumeStream_ClassifiesUnclassifiedErrorsAsWorkerError(t *testing.T) {
+	t.Parallel()
+
+	results := make(chan *workerplugin.StreamResult, 1)
+	results <- &workerplugin.StreamResult{
+		Kind:  workerplugin.StreamResultKindError,
+		Error: fmt.Errorf("upstream LLM returned 429"),
+		// No ErrorCode / ErrorDetails — exercises classifyWorkerError
+		// fallback. The error is plain (not a gRPC status, not a
+		// retries-exhausted sentinel), so the classifier returns
+		// worker_error.
+	}
+	close(results)
+
+	publisher := &recordingPublisher{}
+	consumeStream(results, publisher, bamlutils.StreamModeStream, false)
+
+	if len(publisher.errorCodes) != 1 || publisher.errorCodes[0] != apierror.CodeWorkerError {
+		t.Errorf("error code = %q, want %q", publisher.errorCodes, apierror.CodeWorkerError)
 	}
 }

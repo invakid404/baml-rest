@@ -40,6 +40,8 @@ message StreamResult {
   string error = 4;            // Error message (populated on ERROR)
   string stacktrace = 5;       // Stacktrace (populated on ERROR, when available)
   bool reset = 6;              // When true, client should discard accumulated state (retry occurred)
+  string error_code = 7;       // Machine-readable error class (populated on ERROR, when worker can classify)
+  bytes error_details_json = 8; // JSON-encoded structured error details (populated on ERROR, when available)
 }
 
 // Health check
@@ -74,6 +76,8 @@ message ParseResponse {
   bytes data_json = 1;         // JSON-encoded parsed result
   string error = 2;            // Error message (if parsing failed)
   string stacktrace = 3;       // Stacktrace (if parsing failed, when available)
+  string error_code = 4;       // Machine-readable error class (when worker can classify)
+  bytes error_details_json = 5; // JSON-encoded structured error details (when available)
 }
 
 // Goroutines request - for getting pprof data from worker

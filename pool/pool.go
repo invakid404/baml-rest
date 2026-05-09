@@ -885,10 +885,10 @@ func (p *Pool) beginLogicalRequest() (done func(), err error) {
 	defer p.admissionMu.Unlock()
 
 	if p.closed.Load() {
-		return nil, fmt.Errorf("pool is closed")
+		return nil, fmt.Errorf("%w: pool is closed", ErrPoolUnavailable)
 	}
 	if p.draining.Load() {
-		return nil, fmt.Errorf("pool is draining, not accepting new requests")
+		return nil, fmt.Errorf("%w: pool is draining, not accepting new requests", ErrPoolUnavailable)
 	}
 	p.logicalInFlight.Add(1)
 	var once sync.Once
@@ -904,7 +904,7 @@ func (p *Pool) beginLogicalRequest() (done func(), err error) {
 // drain in progress does not abort their retries.
 func (p *Pool) getWorker() (*workerHandle, error) {
 	if p.draining.Load() {
-		return nil, fmt.Errorf("pool is draining, not accepting new requests")
+		return nil, fmt.Errorf("%w: pool is draining, not accepting new requests", ErrPoolUnavailable)
 	}
 	return p.getWorkerAccepted()
 }
@@ -920,7 +920,7 @@ func (p *Pool) getWorkerAccepted() (*workerHandle, error) {
 	defer p.mu.RUnlock()
 
 	if p.closed.Load() {
-		return nil, fmt.Errorf("pool is closed")
+		return nil, fmt.Errorf("%w: pool is closed", ErrPoolUnavailable)
 	}
 
 	// Round-robin selection
@@ -933,7 +933,7 @@ func (p *Pool) getWorkerAccepted() (*workerHandle, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("no healthy workers available")
+	return nil, fmt.Errorf("%w: no healthy workers available", ErrPoolUnavailable)
 }
 
 // awaitRestart waits for an in-progress restart of handle to complete,
@@ -956,7 +956,7 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 			case <-ch:
 				return nil
 			case <-p.drainCh:
-				return fmt.Errorf("pool is draining")
+				return errPoolDraining()
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -973,7 +973,7 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 
 		select {
 		case <-p.drainCh:
-			return fmt.Errorf("pool is draining")
+			return errPoolDraining()
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
@@ -988,7 +988,7 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 
 	select {
 	case <-p.drainCh:
-		return fmt.Errorf("pool is draining")
+		return errPoolDraining()
 	default:
 	}
 
@@ -1002,7 +1002,7 @@ func (p *Pool) awaitRestart(ctx context.Context, handle *workerHandle) error {
 	case <-done:
 		return nil
 	case <-p.drainCh:
-		return fmt.Errorf("pool is draining")
+		return errPoolDraining()
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -1150,7 +1150,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 			if sawPending {
 				return nil
 			}
-			return fmt.Errorf("no workers restarting")
+			return fmt.Errorf("%w: no workers restarting", ErrPoolUnavailable)
 		}
 		sawPending = true
 
@@ -1161,7 +1161,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 				case 0:
 					return ctx.Err()
 				case 1:
-					return fmt.Errorf("pool is draining")
+					return errPoolDraining()
 				default:
 					return nil
 				}
@@ -1176,7 +1176,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 			case 0:
 				return ctx.Err()
 			case 1:
-				return fmt.Errorf("pool is draining")
+				return errPoolDraining()
 			case len(cases) - 1:
 			default:
 				return nil
@@ -1186,7 +1186,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-p.drainCh:
-				return fmt.Errorf("pool is draining")
+				return errPoolDraining()
 			default:
 			}
 		}
@@ -1198,7 +1198,7 @@ func (p *Pool) awaitAnyRestart(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-p.drainCh:
-			return fmt.Errorf("pool is draining")
+			return errPoolDraining()
 		default:
 		}
 
@@ -1240,8 +1240,48 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
 		handle, err := p.getWorkerForRetry(ctx, lastFailed)
 		if err != nil {
+			// Caller-cancellation path: wrap ctx.Err() (which IS
+			// context.Canceled or context.DeadlineExceeded), not the
+			// raw getWorkerForRetry err. There's a race window where
+			// ctx becomes cancelled between getWorkerForRetry's
+			// internal getWorkerAccepted call and its return — in
+			// that window err can be e.g. "no healthy workers
+			// available" while ctx.Err() is set. Wrapping err would
+			// leave classifyWorkerError unable to detect the
+			// cancellation (errors.Is(outer, context.Canceled) ==
+			// false), so the request would surface as
+			// worker_unavailable instead of request_canceled. The
+			// pool err is preserved as a %v diagnostic so logs still
+			// show why the pool couldn't recover before the caller
+			// gave up. classifyWorkerError checks the
+			// retry-exhaustion sentinel before
+			// IsCallerCancellationError, so omitting the sentinel
+			// here is what makes the cancellation path win.
+			if ctx.Err() != nil {
+				if lastErr != nil {
+					return nil, fmt.Errorf("retry failed, no workers available: %w (pool error: %v, previous: %v)", ctx.Err(), err, lastErr)
+				}
+				return nil, fmt.Errorf("retry failed, no workers available: %w (pool error: %v)", ctx.Err(), err)
+			}
+			// Pool-side give-up before completing all attempts: no
+			// healthy worker available for the next attempt (workers
+			// dead, pool draining/closed, restart still in flight).
+			// HTTP classification lands on worker_unavailable either
+			// way — both ErrPoolRetriesExhausted and the source-wrap
+			// ErrPoolUnavailable on err map to that class via the
+			// sentinel short-circuit in IsRetryableWorkerError.
+			//
+			// When lastErr != nil at least one attempt actually ran,
+			// so wrapping with ErrPoolRetriesExhausted is the
+			// accurate sentinel. When lastErr == nil this is the
+			// initial attempt and no retries happened — claiming
+			// "retries exhausted" would be misleading; return err
+			// directly so the chain carries only ErrPoolUnavailable
+			// (already wrapped at the source by awaitRestart /
+			// awaitAnyRestart / getWorkerAccepted), matching the
+			// pre-loop tail in Pool.CallStream.
 			if lastErr != nil {
-				return nil, fmt.Errorf("retry failed, no workers available: %w (previous: %v)", err, lastErr)
+				return nil, fmt.Errorf("%w: retry failed, no workers available: %w (previous: %v)", ErrPoolRetriesExhausted, err, lastErr)
 			}
 			return nil, err
 		}
@@ -1277,7 +1317,7 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 		return nil, err
 	}
 
-	return nil, fmt.Errorf("all parse retries exhausted: %w", lastErr)
+	return nil, fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, lastErr)
 }
 
 // Call executes a BAML method and returns the final result.
@@ -1298,7 +1338,7 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 	for result := range results {
 		switch result.Kind {
 		case workerplugin.StreamResultKindError:
-			err := workerplugin.NewErrorWithStack(result.Error, result.Stacktrace)
+			err := workerplugin.NewErrorWithMetadata(result.Error, result.Stacktrace, result.ErrorCode, result.ErrorDetails)
 			workerplugin.ReleaseStreamResult(result)
 			// Return a CallResult carrying any accumulated metadata
 			// alongside the error so the unary handler can still set
@@ -1390,7 +1430,19 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 	handle, err := p.getWorkerForRetry(ctx, nil)
 	if err != nil {
 		done()
-		return nil, err
+		// Pre-loop admission tail: getWorkerForRetry can return
+		// awaitRestart/awaitAnyRestart errors as bare strings ("pool
+		// is draining", "no workers restarting") that don't carry
+		// the ErrPoolUnavailable wrap getWorkerAccepted applies. Wrap
+		// here so classifyWorkerError surfaces worker_unavailable
+		// rather than falling through to worker_error. Caller-cancel
+		// path uses ctx.Err() (the typed cancellation) so the HTTP
+		// classifier lands on request_canceled — see Pool.Parse for
+		// the race-window rationale.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("could not acquire worker: %w (pool error: %v)", ctx.Err(), err)
+		}
+		return nil, fmt.Errorf("%w: %w", ErrPoolUnavailable, err)
 	}
 
 	// Generate a stable request id and thread it through every attempt.
@@ -1418,6 +1470,14 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		currentHandle := handle
 		var lastFailed *workerHandle
 		var sentAnyResults bool
+		// lastRetryableErr is the most recent retryable worker error
+		// observed across attempts. Captured both pre-stream (CallStream
+		// dial/handshake failure) and mid-stream (StreamResultKindError
+		// classified as retryable). On retry exhaustion it's wrapped into
+		// the terminal sendStreamError so the HTTP layer's classifier sees
+		// the underlying gRPC code (Unavailable / Canceled / etc.) and
+		// surfaces worker_unavailable instead of worker_error.
+		var lastRetryableErr error
 		// currentAttempt is the pool-level attempt number stamped onto every
 		// metadata event before forwarding. The orchestrator inside the worker
 		// always emits Attempt=0; the pool owns this field because only the
@@ -1432,7 +1492,22 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				var err error
 				currentHandle, err = p.getWorkerForRetry(ctx, lastFailed)
 				if err != nil {
-					sendStreamError(ctx, wrappedResults, fmt.Errorf("retry failed, no workers available: %w", err))
+					// Wrap with the retry-exhaustion sentinel only
+					// when this is a pool-side give-up, not a client-
+					// driven abort. On the cancel branch, wrap
+					// ctx.Err() rather than err so classifyWorkerError
+					// observes context.Canceled / DeadlineExceeded
+					// regardless of what getWorkerForRetry returned —
+					// see Pool.Parse for the full race-window
+					// rationale. The pool err is preserved as a %v
+					// diagnostic in the message.
+					var sendErr error
+					if ctx.Err() != nil {
+						sendErr = fmt.Errorf("retry failed, no workers available: %w (pool error: %v)", ctx.Err(), err)
+					} else {
+						sendErr = fmt.Errorf("%w: retry failed, no workers available: %w", ErrPoolRetriesExhausted, err)
+					}
+					sendStreamError(ctx, wrappedResults, sendErr)
 					return
 				}
 			}
@@ -1479,6 +1554,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 						Err(err).
 						Msg("Retrying stream after worker failure")
 					lastFailed = currentHandle
+					lastRetryableErr = err
 					continue
 				}
 
@@ -1563,6 +1639,10 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 						Int("attempt", attempt+1).
 						Err(result.Error).
 						Msg("Retryable error mid-stream, will retry")
+					// Capture the error before Release zeroes the
+					// StreamResult: the interface value is copied here,
+					// so the underlying error survives the pool put-back.
+					lastRetryableErr = result.Error
 					workerplugin.ReleaseStreamResult(result)
 					shouldRetry = true
 					break
@@ -1643,8 +1723,22 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			lastFailed = currentHandle
 		}
 
-		// All retries exhausted
-		sendStreamError(ctx, wrappedResults, fmt.Errorf("all stream retries exhausted"))
+		// All retries exhausted. Wrap the last retryable error so the
+		// HTTP layer's IsRetryableWorkerError check sees the
+		// ErrPoolRetriesExhausted sentinel and surfaces
+		// worker_unavailable to the client. lastRetryableErr is nil
+		// only on the rare path where the worker channel closed
+		// without a terminal frame on every attempt; in that case we
+		// emit the bare sentinel — still classified correctly thanks
+		// to the errors.Is short-circuit at the top of
+		// isRetryableWorkerError.
+		var exhaustedErr error
+		if lastRetryableErr != nil {
+			exhaustedErr = fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, lastRetryableErr)
+		} else {
+			exhaustedErr = fmt.Errorf("%w (no terminal stream frame)", ErrPoolRetriesExhausted)
+		}
+		sendStreamError(ctx, wrappedResults, exhaustedErr)
 	}()
 
 	return wrappedResults, nil
@@ -2004,6 +2098,16 @@ type Stats struct {
 	InFlight       int64
 }
 
+// grpcSerializedPrefix is the gRPC error-string serialization header.
+// Callers that need to be sure they're inspecting a TOP-LEVEL gRPC
+// error (rather than a worker-wrapped string that merely embeds the
+// header somewhere) must HasPrefix-match against this constant
+// before calling parseSerializedGRPCCode. The retry classifier and
+// IsTypedCancellationError both do this so wrapped worker errors
+// like "provider failed: rpc error: code = Unavailable ..." don't
+// flip retry / cancellation rungs.
+const grpcSerializedPrefix = "rpc error: code = "
+
 // parseSerializedGRPCCode extracts the top-level gRPC status code name from
 // a serialized gRPC error string. gRPC errors serialize as
 // "rpc error: code = <Code> desc = <Message>". This function parses only
@@ -2011,13 +2115,17 @@ type Stats struct {
 // descriptions like "rpc error: code = Internal desc = rpc error: code = Canceled ...".
 // Returns the code name (e.g. "Internal", "Canceled") and true, or ("", false)
 // if the string doesn't match the format.
+//
+// Uses substring search (not prefix match) so callers can opt into
+// either lenience or strictness: HasPrefix-guard the input first when
+// you want strictness (see grpcSerializedPrefix), pass the raw string
+// when you want lenience.
 func parseSerializedGRPCCode(errStr string) (string, bool) {
-	const prefix = "rpc error: code = "
-	idx := strings.Index(errStr, prefix)
+	idx := strings.Index(errStr, grpcSerializedPrefix)
 	if idx < 0 {
 		return "", false
 	}
-	start := idx + len(prefix)
+	start := idx + len(grpcSerializedPrefix)
 	if start >= len(errStr) {
 		return "", false
 	}
@@ -2032,12 +2140,76 @@ func parseSerializedGRPCCode(errStr string) (string, bool) {
 	return rest[:end], true
 }
 
+// ErrPoolRetriesExhausted is the sentinel wrapped (via fmt.Errorf %w)
+// into the terminal error returned by Pool.Call, Pool.CallStream, and
+// Pool.Parse when the pool gives up after exhausting all configured
+// retry attempts on retryable worker infrastructure failures. It is
+// itself a worker_unavailable signal: the failures that drove
+// exhaustion were each individually classified as retryable
+// infrastructure, so the cumulative outcome is too. errors.Is detects
+// this regardless of the wrapped chain shape.
+var ErrPoolRetriesExhausted = errors.New("pool retries exhausted")
+
+// ErrPoolUnavailable is the sentinel wrapped into pre-retry pool
+// availability failures: "pool is closed", "pool is draining, not
+// accepting new requests", "no healthy workers available". These are
+// host-side decisions that block the request from ever reaching a
+// worker — distinct from per-attempt retryable failures (which use
+// ErrPoolRetriesExhausted only after the loop gives up). Both
+// sentinels classify as worker_unavailable at the HTTP layer; the
+// distinction matters only to consumers that want to log the
+// admission-vs-execution boundary separately.
+var ErrPoolUnavailable = errors.New("pool unavailable")
+
+// errPoolDraining is the canonical "pool is draining" error returned
+// from the restart-wait helpers (awaitRestart, awaitAnyRestart). It
+// wraps ErrPoolUnavailable at the source so callers (Parse,
+// CallStream, getWorkerForRetry) don't have to remember the wrap and
+// future call sites get worker_unavailable classification by default.
+// Mirrors the source-wrap pattern getWorkerAccepted uses for
+// "pool is closed" / "no healthy workers available".
+func errPoolDraining() error {
+	return fmt.Errorf("%w: pool is draining", ErrPoolUnavailable)
+}
+
+// IsRetryableWorkerError reports whether err indicates a worker
+// infrastructure failure (crash, network issue, gRPC Unavailable /
+// Canceled / DeadlineExceeded, transport reset / EOF, or pool-level
+// retry exhaustion via ErrPoolRetriesExhausted) rather than an
+// application-level error from BAML or the upstream LLM. The pool uses
+// this to decide whether to retry on another worker; the HTTP layer
+// uses it to distinguish a transient infrastructure failure from a real
+// BAML/LLM error in the response code surfaced to the client.
+func IsRetryableWorkerError(err error) bool {
+	return isRetryableWorkerError(err)
+}
+
 // isRetryableWorkerError returns true if the error indicates a worker infrastructure
 // failure (crash, network issue) rather than an application-level error from BAML/LLM.
 // These errors should trigger automatic retry on another worker.
 func isRetryableWorkerError(err error) bool {
 	if err == nil {
 		return false
+	}
+
+	// Pool-level retry exhaustion (ErrPoolRetriesExhausted) is by
+	// definition retryable infrastructure: the loop only exhausts on
+	// per-attempt errors that were each individually retryable. The
+	// terminal sentinel is detected up front so callers don't have to
+	// reason about the wrapped error chain. Inside the pool's per-
+	// attempt retry loop the sentinel never appears (it's emitted only
+	// at the post-loop terminal site), so this short-circuit doesn't
+	// change retry semantics.
+	//
+	// ErrPoolUnavailable is the admission-side counterpart: pool
+	// closed/draining or no healthy workers means the request never
+	// reached a worker. Same outcome class — worker_unavailable at
+	// the HTTP layer. The retry loop only classifies errors returned
+	// by worker.CallStream / worker.Parse (gRPC), so this sentinel
+	// also never appears in the loop's classification calls and the
+	// short-circuit is safe.
+	if errors.Is(err, ErrPoolRetriesExhausted) || errors.Is(err, ErrPoolUnavailable) {
+		return true
 	}
 
 	// First, try to extract gRPC status code (preferred method).
@@ -2076,15 +2248,24 @@ func isRetryableWorkerError(err error) bool {
 	errStr := err.Error()
 
 	// Serialized gRPC errors: parse the top-level code and use it as the
-	// authoritative signal. This correctly handles nested errors like
-	// "rpc error: code = Internal desc = rpc error: code = Canceled ..."
-	// by only looking at the first (top-level) code.
-	if code, ok := parseSerializedGRPCCode(errStr); ok {
-		switch code {
-		case "Unavailable", "Canceled", "DeadlineExceeded":
-			return true
+	// authoritative signal. parseSerializedGRPCCode itself uses substring
+	// search so callers in other contexts can pick up nested codes; here
+	// we require the "rpc error: code = " header at offset 0 so a worker
+	// / provider error like "openai: provider returned: rpc error: code =
+	// Unavailable ..." does NOT auto-trigger retry. Top-level boundary-
+	// serialized gRPC errors (the legitimate case that survives
+	// fmt.Errorf("%s", resp.Error) reconstruction) always start with the
+	// prefix; anything wrapped is the worker's classification choice and
+	// must surface as worker_error rather than being retried as if it
+	// were transport infrastructure.
+	if strings.HasPrefix(errStr, grpcSerializedPrefix) {
+		if code, ok := parseSerializedGRPCCode(errStr); ok {
+			switch code {
+			case "Unavailable", "Canceled", "DeadlineExceeded":
+				return true
+			}
+			return false
 		}
-		return false
 	}
 
 	// Plain error without gRPC structure — only match transport-level
@@ -2099,6 +2280,68 @@ func isRetryableWorkerError(err error) bool {
 		return true
 	}
 
+	return false
+}
+
+// IsCallerCancellationError reports whether err originated from
+// caller-side cancellation (context.Canceled / context.DeadlineExceeded
+// or a gRPC Canceled / DeadlineExceeded status, including the
+// string-serialized forms that lose their *status.Status across the
+// boundary). The pool's per-attempt retry loop uses this to decide
+// whether to skip restart on a cancelled request — false positives
+// from the trailing string-match fallback are tolerable there because
+// the worst case is a missed restart, not a misclassified response.
+// HTTP-layer code classification should prefer IsTypedCancellationError
+// instead.
+func IsCallerCancellationError(err error) bool {
+	return isCallerCancellationError(err)
+}
+
+// IsTypedCancellationError reports whether err is shaped like
+// caller-side cancellation using ONLY typed signals: errors.Is against
+// context.Canceled / DeadlineExceeded, *status.Status code, or a
+// serialized "rpc error: code = Canceled/DeadlineExceeded ..." string
+// produced by gRPC's String boundary. Unlike IsCallerCancellationError,
+// it does NOT fall back to plain substring matching of "context
+// canceled" / "context deadline exceeded" — those strings appear
+// verbatim inside worker / LLM-provider application errors (e.g.
+// "openai: request failed: context deadline exceeded"), and matching
+// them would let the HTTP layer misreport a real worker_error /
+// parse_error as 408 request_canceled. Use this at boundaries where
+// the err under inspection might be plain worker text.
+//
+// The serialized-gRPC fallback requires the "rpc error: code = "
+// header at the START of the error string. parseSerializedGRPCCode
+// itself uses substring search (so the retry classifier can pick up
+// gRPC codes inside wrapped errors), but applying that lenience to
+// cancellation classification would let a plain worker error like
+// "provider failed: rpc error: code = DeadlineExceeded ..." surface
+// as 408 — exactly the false-positive class this helper exists to
+// avoid. Top-level boundary-serialized gRPC errors (the legitimate
+// case that survives fmt.Errorf("%s", resp.Error) reconstruction)
+// always start with the prefix, so the prefix check catches them
+// while rejecting the embedded-substring case.
+func IsTypedCancellationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if st, ok := status.FromError(err); ok {
+		switch st.Code() {
+		case codes.Canceled, codes.DeadlineExceeded:
+			return true
+		}
+		return false
+	}
+	errStr := err.Error()
+	if !strings.HasPrefix(errStr, grpcSerializedPrefix) {
+		return false
+	}
+	if code, ok := parseSerializedGRPCCode(errStr); ok {
+		return code == "Canceled" || code == "DeadlineExceeded"
+	}
 	return false
 }
 
