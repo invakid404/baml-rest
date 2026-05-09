@@ -101,8 +101,18 @@ func TestClassifyWorkerError_PrecedenceOrder(t *testing.T) {
 			apierror.CodeRequestCanceled,
 		},
 		{
+			"context.DeadlineExceeded → request_canceled",
+			context.DeadlineExceeded,
+			apierror.CodeRequestCanceled,
+		},
+		{
 			"gRPC Canceled status → request_canceled",
 			status.Error(codes.Canceled, "client gone"),
+			apierror.CodeRequestCanceled,
+		},
+		{
+			"gRPC DeadlineExceeded status → request_canceled",
+			status.Error(codes.DeadlineExceeded, "request timed out"),
 			apierror.CodeRequestCanceled,
 		},
 		{
