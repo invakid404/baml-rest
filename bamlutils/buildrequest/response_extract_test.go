@@ -949,6 +949,108 @@ func TestExtractResponseContent_GeminiIncludeThinkingInRaw(t *testing.T) {
 	}
 }
 
+// TestExtractResponseContent_OpenAIReasoningContent asserts the Phase 4
+// dual-output behavior for the OpenAI-compatible Chat Completions
+// non-streaming branch (openai, openai-generic, azure-openai, ollama,
+// openrouter):
+//
+//   - parseable always reflects only message.content. Reasoning content
+//     never enters parseable so the BAML parser cannot be influenced.
+//   - raw mirrors parseable when includeThinking is false; when true, raw
+//     additionally surfaces message.reasoning_content appended after content.
+//   - Non-string reasoning_content is silently skipped under both flag
+//     values, matching the defensive pattern used elsewhere for optional
+//     reasoning surfaces. reasoning_content is telemetry — its presence
+//     does not change content's strict error semantics.
+//
+// Parseable invariance across the includeThinking flag is asserted for
+// every fixture × provider; raw equality across the flag is intentionally
+// allowed to diverge.
+func TestExtractResponseContent_OpenAIReasoningContent(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		parseable string
+		rawOff    string
+		rawOn     string
+	}{
+		{
+			name:      "scalar content plus reasoning",
+			body:      `{"choices":[{"message":{"content":"Hello world","reasoning_content":"chain of thought"}}]}`,
+			parseable: "Hello world",
+			rawOff:    "Hello world",
+			rawOn:     "Hello worldchain of thought",
+		},
+		{
+			name: "array text content plus reasoning",
+			body: `{"choices":[{"message":{"content":[
+				{"type":"text","text":"Hello "},
+				{"type":"text","text":"world"}
+			],"reasoning_content":"chain of thought"}}]}`,
+			parseable: "Hello world",
+			rawOff:    "Hello world",
+			rawOn:     "Hello worldchain of thought",
+		},
+		{
+			name:      "empty-string content plus reasoning",
+			body:      `{"choices":[{"message":{"content":"","reasoning_content":"chain of thought"}}]}`,
+			parseable: "",
+			rawOff:    "",
+			rawOn:     "chain of thought",
+		},
+		{
+			name:      "explicit-null content plus reasoning",
+			body:      `{"choices":[{"message":{"content":null,"reasoning_content":"chain of thought"}}]}`,
+			parseable: "",
+			rawOff:    "",
+			rawOn:     "chain of thought",
+		},
+		{
+			// Defensive: non-string reasoning_content is silently skipped
+			// under opt-in. content's strict error semantics are unaffected.
+			name:      "non-string reasoning ignored under opt-in",
+			body:      `{"choices":[{"message":{"content":"Hello","reasoning_content":42}}]}`,
+			parseable: "Hello",
+			rawOff:    "Hello",
+			rawOn:     "Hello",
+		},
+	}
+
+	for _, provider := range []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter"} {
+		for _, tc := range cases {
+			t.Run(provider+"/"+tc.name, func(t *testing.T) {
+				parseableOff, rawOff, err := ExtractResponseContent(provider, tc.body, false)
+				if err != nil {
+					t.Fatalf("ExtractResponseContent(includeThinking=false) returned error: %v", err)
+				}
+				if parseableOff != tc.parseable {
+					t.Errorf("flag=false parseable = %q, want %q", parseableOff, tc.parseable)
+				}
+				if rawOff != tc.rawOff {
+					t.Errorf("flag=false raw = %q, want %q", rawOff, tc.rawOff)
+				}
+
+				parseableOn, rawOn, err := ExtractResponseContent(provider, tc.body, true)
+				if err != nil {
+					t.Fatalf("ExtractResponseContent(includeThinking=true) returned error: %v", err)
+				}
+				if parseableOn != tc.parseable {
+					t.Errorf("flag=true parseable = %q, want %q", parseableOn, tc.parseable)
+				}
+				if rawOn != tc.rawOn {
+					t.Errorf("flag=true raw = %q, want %q", rawOn, tc.rawOn)
+				}
+
+				// Structural parseable invariance: byte-identical across
+				// both flag values for every fixture.
+				if parseableOff != parseableOn {
+					t.Errorf("parseable diverged across includeThinking: false=%q true=%q", parseableOff, parseableOn)
+				}
+			})
+		}
+	}
+}
+
 func TestExtractResponseContent_UnsupportedProvider(t *testing.T) {
 	_, _, err := ExtractResponseContent("aws-bedrock", `{}`, false)
 	if err == nil {

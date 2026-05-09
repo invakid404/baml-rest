@@ -15,7 +15,8 @@ import (
 // caller opts in via IncludeThinkingInRaw on the IncrementalExtractor or
 // the includeThinking parameter on ExtractDeltaPartsFromText, Raw
 // additionally carries provider-specific reasoning text (Anthropic
-// thinking_delta, Gemini thought-tagged parts).
+// thinking_delta, Gemini thought-tagged parts, OpenAI Chat Completions
+// reasoning_content).
 type DeltaParts struct {
 	Parseable string
 	Raw       string
@@ -45,8 +46,8 @@ type StreamingData struct {
 // includeThinking is the per-request opt-in flag for surfacing provider-
 // specific reasoning content. False (default) yields BAML-aligned text-only
 // content; true additionally accumulates provider-specific reasoning text
-// (Anthropic thinking_delta, Gemini thought-tagged parts) into the
-// returned string.
+// (Anthropic thinking_delta, Gemini thought-tagged parts, OpenAI Chat
+// Completions reasoning_content) into the returned string.
 func GetCurrentContent(data *StreamingData, includeThinking bool) (string, error) {
 	if len(data.Calls) == 0 {
 		return "", nil
@@ -84,16 +85,29 @@ func ExtractDeltaContent(provider string, chunk SSEChunk, includeThinking bool) 
 // specific reasoning content in Raw. When false (default), Parseable == Raw
 // and reasoning events are dropped — matching BAML's RawLLMResponse()
 // text-only contract. When true, provider-specific reasoning text
-// (Anthropic thinking_delta, Gemini thought-tagged parts) contributes to
-// Raw only; Parseable is unaffected by construction so the BAML parser
-// cannot be influenced by reasoning text.
+// (Anthropic thinking_delta, Gemini thought-tagged parts, OpenAI Chat
+// Completions reasoning_content) contributes to Raw only; Parseable is
+// unaffected by construction so the BAML parser cannot be influenced by
+// reasoning text.
 func ExtractDeltaPartsFromText(provider string, rawText string, includeThinking bool) (DeltaParts, error) {
 	switch provider {
 	// OpenAI-compatible providers (Chat Completions API format)
-	// Path: choices[0].delta.content
+	// Path: choices[0].delta.content (parseable+raw); choices[0].delta.reasoning_content
+	// (raw only, opt-in). reasoning_content is the de-facto reasoning surface
+	// for DeepSeek-R1 and several OAI-compat gateways; non-string values are
+	// silently skipped, matching the forgiving streaming semantics. Order is
+	// content-first within a single delta; event order is preserved across
+	// SSE chunks by IncrementalExtractor.
 	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter":
 		delta := gjson.Get(rawText, "choices.0.delta.content").String()
-		return DeltaParts{Parseable: delta, Raw: delta}, nil
+		raw := delta
+		if includeThinking {
+			reasoning := gjson.Get(rawText, "choices.0.delta.reasoning_content")
+			if reasoning.Type == gjson.String {
+				raw += reasoning.String()
+			}
+		}
+		return DeltaParts{Parseable: delta, Raw: raw}, nil
 
 	// OpenAI Responses API (different format)
 	// Path: delta (when type == "response.output_text.delta")
@@ -253,7 +267,8 @@ func IsDeltaProviderSupported(provider string) bool {
 //   - raw accumulates wire-output deltas (from DeltaParts.Raw). When
 //     includeThinkingInRaw is true, this additionally carries provider-
 //     specific reasoning text (Anthropic thinking_delta, Gemini thought-
-//     tagged parts); otherwise it equals the parseable buffer byte-for-byte.
+//     tagged parts, OpenAI Chat Completions reasoning_content); otherwise
+//     it equals the parseable buffer byte-for-byte.
 //
 // Under the default flag-off configuration the two buffers always hold
 // identical content. Under opt-in they diverge whenever a non-text content
@@ -276,17 +291,19 @@ type IncrementalExtractor struct {
 	// provider-specific reasoning content. False (default) yields BAML-
 	// aligned text-only output across both buffers; true additionally
 	// accumulates provider-specific reasoning text (Anthropic
-	// thinking_delta, Gemini thought-tagged parts) into raw only.
+	// thinking_delta, Gemini thought-tagged parts, OpenAI Chat Completions
+	// reasoning_content) into raw only.
 	includeThinkingInRaw bool
 }
 
 // NewIncrementalExtractor creates a new incremental extractor. Pass
 // includeThinking=true to opt the extractor into accumulating provider-
 // specific reasoning content (Anthropic thinking_delta, Gemini thought-
-// tagged parts) alongside text deltas in the raw buffer; pass false
-// (default) for BAML-aligned text-only output across both the parseable
-// and raw buffers. The parseable buffer is text-only regardless of this
-// flag — the gate only affects the raw buffer.
+// tagged parts, OpenAI Chat Completions reasoning_content) alongside text
+// deltas in the raw buffer; pass false (default) for BAML-aligned
+// text-only output across both the parseable and raw buffers. The
+// parseable buffer is text-only regardless of this flag — the gate only
+// affects the raw buffer.
 func NewIncrementalExtractor(includeThinking bool) *IncrementalExtractor {
 	return &IncrementalExtractor{includeThinkingInRaw: includeThinking}
 }
@@ -434,8 +451,9 @@ func ExtractFrom[T SSEChunk](e *IncrementalExtractor, callCount int, provider st
 
 // RawFull returns the complete accumulated raw content without processing
 // new data. Under IncludeThinkingInRaw=true this includes provider-specific
-// reasoning text (Anthropic thinking_delta, Gemini thought-tagged parts);
-// otherwise it matches ParseableFull byte-for-byte.
+// reasoning text (Anthropic thinking_delta, Gemini thought-tagged parts,
+// OpenAI Chat Completions reasoning_content); otherwise it matches
+// ParseableFull byte-for-byte.
 func (e *IncrementalExtractor) RawFull() string {
 	return e.raw.String()
 }
