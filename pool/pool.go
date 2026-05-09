@@ -1240,10 +1240,31 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
 		handle, err := p.getWorkerForRetry(ctx, lastFailed)
 		if err != nil {
-			if lastErr != nil {
-				return nil, fmt.Errorf("retry failed, no workers available: %w (previous: %v)", err, lastErr)
+			// Caller-cancellation path: propagate err (and lastErr
+			// context) without the retry-exhaustion sentinel.
+			// classifyWorkerError checks the sentinel before
+			// IsCallerCancellationError — wrapping here would hijack
+			// a client-driven abort and surface it as
+			// worker_unavailable. The post-loop exhaustion path can
+			// safely wrap because at that point the loop only ran
+			// because the caller didn't cancel.
+			if ctx.Err() != nil {
+				if lastErr != nil {
+					return nil, fmt.Errorf("retry failed, no workers available: %w (previous: %v)", err, lastErr)
+				}
+				return nil, err
 			}
-			return nil, err
+			// Pool-side give-up before completing all attempts: no
+			// healthy worker available for the next attempt (workers
+			// dead, pool draining/closed, restart still in flight).
+			// Wrap with the sentinel so HTTP classifies as
+			// worker_unavailable instead of falling through to
+			// worker_error — same outcome class as the post-loop
+			// exhaustion tail.
+			if lastErr != nil {
+				return nil, fmt.Errorf("%w: retry failed, no workers available: %w (previous: %v)", ErrPoolRetriesExhausted, err, lastErr)
+			}
+			return nil, fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, err)
 		}
 
 		attemptCtx, cancel := context.WithCancel(ctx)
@@ -1440,7 +1461,19 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				var err error
 				currentHandle, err = p.getWorkerForRetry(ctx, lastFailed)
 				if err != nil {
-					sendStreamError(ctx, wrappedResults, fmt.Errorf("retry failed, no workers available: %w", err))
+					// Wrap with the retry-exhaustion sentinel only
+					// when this is a pool-side give-up, not a client-
+					// driven abort — see Pool.Parse for the full
+					// rationale. ctx.Err() is the discriminator: if
+					// caller cancelled, propagate raw so
+					// classifyWorkerError lands on request_canceled.
+					var sendErr error
+					if ctx.Err() != nil {
+						sendErr = fmt.Errorf("retry failed, no workers available: %w", err)
+					} else {
+						sendErr = fmt.Errorf("%w: retry failed, no workers available: %w", ErrPoolRetriesExhausted, err)
+					}
+					sendStreamError(ctx, wrappedResults, sendErr)
 					return
 				}
 			}

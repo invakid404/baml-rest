@@ -45,6 +45,25 @@ func TestClassifyWorkerError_RetriesExhaustedBeatsCancellation(t *testing.T) {
 			"exhausted with no inner error",
 			fmt.Errorf("%w (no terminal stream frame)", pool.ErrPoolRetriesExhausted),
 		},
+		// No-workers retry tail: getWorkerForRetry can't supply a
+		// replacement worker after a retryable failure, and the pool
+		// wraps with the sentinel so the HTTP layer classifies as
+		// worker_unavailable rather than falling through to
+		// worker_error on the plain "no healthy workers available"
+		// string. Caller-cancellation paths bypass the wrap (verified
+		// separately via the precedence test below).
+		{
+			"exhausted wrapping no healthy workers",
+			fmt.Errorf("%w: %w", pool.ErrPoolRetriesExhausted, errors.New("no healthy workers available")),
+		},
+		{
+			"exhausted wrapping pool closed",
+			fmt.Errorf("%w: %w", pool.ErrPoolRetriesExhausted, errors.New("pool is closed")),
+		},
+		{
+			"exhausted wrapping no-workers with previous",
+			fmt.Errorf("%w: retry failed, no workers available: %w (previous: worker died)", pool.ErrPoolRetriesExhausted, errors.New("no healthy workers available")),
+		},
 	}
 
 	for _, tt := range tests {

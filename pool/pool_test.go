@@ -1317,6 +1317,15 @@ func TestIsRetryableWorkerError(t *testing.T) {
 		{"ErrPoolRetriesExhausted wrapping serialized Canceled", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("rpc error: code = Canceled desc = hung")), true},
 		{"ErrPoolRetriesExhausted with bare suffix", fmt.Errorf("%w (no terminal stream frame)", ErrPoolRetriesExhausted), true},
 		{"ErrPoolRetriesExhausted double-wrapped", fmt.Errorf("downstream gave up: %w", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, status.Error(codes.Unavailable, "x"))), true},
+		// No-workers retry tail: the pool wraps with the sentinel
+		// when getWorkerForRetry fails for a non-cancel reason (no
+		// healthy workers, pool closed, restart not ready). Plain
+		// strings like "no healthy workers available" don't carry a
+		// gRPC code — the sentinel is what carries the classification.
+		{"ErrPoolRetriesExhausted wrapping no healthy workers", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("no healthy workers available")), true},
+		{"ErrPoolRetriesExhausted wrapping pool closed", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("pool is closed")), true},
+		{"ErrPoolRetriesExhausted wrapping pool draining", fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, errors.New("pool is draining")), true},
+		{"ErrPoolRetriesExhausted wrapping no-workers-with-previous", fmt.Errorf("%w: retry failed, no workers available: %w (previous: dead worker)", ErrPoolRetriesExhausted, errors.New("no healthy workers available")), true},
 	}
 
 	for _, tt := range tests {
