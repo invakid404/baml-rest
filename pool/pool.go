@@ -2265,6 +2265,18 @@ func IsCallerCancellationError(err error) bool {
 // them would let the HTTP layer misreport a real worker_error /
 // parse_error as 408 request_canceled. Use this at boundaries where
 // the err under inspection might be plain worker text.
+//
+// The serialized-gRPC fallback requires the "rpc error: code = "
+// header at the START of the error string. parseSerializedGRPCCode
+// itself uses substring search (so the retry classifier can pick up
+// gRPC codes inside wrapped errors), but applying that lenience to
+// cancellation classification would let a plain worker error like
+// "provider failed: rpc error: code = DeadlineExceeded ..." surface
+// as 408 — exactly the false-positive class this helper exists to
+// avoid. Top-level boundary-serialized gRPC errors (the legitimate
+// case that survives fmt.Errorf("%s", resp.Error) reconstruction)
+// always start with the prefix, so the prefix check catches them
+// while rejecting the embedded-substring case.
 func IsTypedCancellationError(err error) bool {
 	if err == nil {
 		return false
@@ -2279,7 +2291,12 @@ func IsTypedCancellationError(err error) bool {
 		}
 		return false
 	}
-	if code, ok := parseSerializedGRPCCode(err.Error()); ok {
+	const grpcPrefix = "rpc error: code = "
+	errStr := err.Error()
+	if !strings.HasPrefix(errStr, grpcPrefix) {
+		return false
+	}
+	if code, ok := parseSerializedGRPCCode(errStr); ok {
 		return code == "Canceled" || code == "DeadlineExceeded"
 	}
 	return false

@@ -40,6 +40,14 @@ func writeFiberJSONErrorWithCode(c fiber.Ctx, message string, code apierror.Code
 // 408 (so client-driven aborts don't inflate 5xx metrics) and everything
 // else to 500 with the classified code/details.
 //
+// Even on the 408 cancellation tail the original err.Error() is forwarded
+// (rather than a fixed "request canceled" string), so the response
+// distinguishes context.Canceled vs context.DeadlineExceeded vs deeper
+// pool diagnostic wraps like "could not acquire worker: context deadline
+// exceeded (pool error: ...)". The 408 status + request_canceled code
+// convey the semantic class; the body keeps the discriminating message
+// so LLM-agent consumers and human debuggers can act on it.
+//
 // Stacktraces from worker panics, when present, are forwarded as
 // details.stacktrace so an LLM agent receiving the error as feedback has
 // the full picture. The full error is also logged via httplogger.SetError
@@ -47,7 +55,7 @@ func writeFiberJSONErrorWithCode(c fiber.Ctx, message string, code apierror.Code
 func writeFiberWorkerError(c fiber.Ctx, err error) error {
 	code, details := classifyWorkerError(err)
 	if code == apierror.CodeRequestCanceled {
-		return writeFiberJSONErrorWithCode(c, "request canceled", code, details, fiber.StatusRequestTimeout)
+		return writeFiberJSONErrorWithCode(c, err.Error(), code, details, fiber.StatusRequestTimeout)
 	}
 	httplogger.SetError(c.Context(), err)
 	return writeFiberJSONErrorWithCode(c, err.Error(), code, details, fiber.StatusInternalServerError)
@@ -60,7 +68,7 @@ func writeFiberWorkerError(c fiber.Ctx, err error) error {
 func writeFiberParseWorkerError(c fiber.Ctx, err error) error {
 	code, details := classifyWorkerError(err)
 	if code == apierror.CodeRequestCanceled {
-		return writeFiberJSONErrorWithCode(c, "request canceled", code, details, fiber.StatusRequestTimeout)
+		return writeFiberJSONErrorWithCode(c, err.Error(), code, details, fiber.StatusRequestTimeout)
 	}
 	httplogger.SetError(c.Context(), err)
 	if code == apierror.CodeWorkerError {
@@ -205,7 +213,7 @@ func writeChiJSONErrorWithCode(w http.ResponseWriter, r *http.Request, message s
 func writeChiWorkerErrorClassified(w http.ResponseWriter, r *http.Request, err error) {
 	code, details := classifyWorkerError(err)
 	if code == apierror.CodeRequestCanceled {
-		writeChiJSONErrorWithCode(w, r, "request canceled", code, details, http.StatusRequestTimeout)
+		writeChiJSONErrorWithCode(w, r, err.Error(), code, details, http.StatusRequestTimeout)
 		return
 	}
 	httplogger.SetError(r.Context(), err)
@@ -215,7 +223,7 @@ func writeChiWorkerErrorClassified(w http.ResponseWriter, r *http.Request, err e
 func writeChiParseWorkerError(w http.ResponseWriter, r *http.Request, err error) {
 	code, details := classifyWorkerError(err)
 	if code == apierror.CodeRequestCanceled {
-		writeChiJSONErrorWithCode(w, r, "request canceled", code, details, http.StatusRequestTimeout)
+		writeChiJSONErrorWithCode(w, r, err.Error(), code, details, http.StatusRequestTimeout)
 		return
 	}
 	httplogger.SetError(r.Context(), err)

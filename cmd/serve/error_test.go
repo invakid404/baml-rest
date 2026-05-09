@@ -153,6 +153,31 @@ func TestClassifyWorkerError_NoFalsePositiveOnContextCanceledText(t *testing.T) 
 			errors.New("context canceled by upstream"),
 			apierror.CodeWorkerError,
 		},
+		// Embedded serialized-gRPC text in worker / provider errors
+		// must NOT classify as cancellation (408). parseSerializedGRPCCode
+		// itself uses substring search (the retry classifier wants
+		// that lenience), so IsTypedCancellationError requires the
+		// "rpc error: code = " header at offset 0. Without the
+		// prefix-only guard, a wrapped provider error like
+		// "provider failed: rpc error: code = Canceled ..." would
+		// surface as 408 — exactly the false-positive class this
+		// helper exists to avoid.
+		//
+		// These cases land on worker_unavailable (not worker_error)
+		// because IsRetryableWorkerError still substring-matches
+		// embedded gRPC codes. That's a related-but-separate concern
+		// outside this fix's scope; the point pinned here is that
+		// the cancellation precedence rung does not fire.
+		{
+			"embedded serialized gRPC Canceled in worker text",
+			errors.New("provider failed: rpc error: code = Canceled desc = upstream gone"),
+			apierror.CodeWorkerUnavailable,
+		},
+		{
+			"embedded serialized gRPC DeadlineExceeded in worker text",
+			errors.New("upstream call: rpc error: code = DeadlineExceeded desc = upstream timeout"),
+			apierror.CodeWorkerUnavailable,
+		},
 		// Sanity: typed forms still classify correctly.
 		{
 			"typed context.Canceled still classifies as canceled",

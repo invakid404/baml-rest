@@ -1437,6 +1437,16 @@ func TestIsTypedCancellationError(t *testing.T) {
 		{"wrapped plain canceled string", fmt.Errorf("upstream: context canceled"), false},
 		{"upstream provider deadline message", fmt.Errorf("openai: provider error: context deadline exceeded"), false},
 
+		// Embedded serialized-gRPC text must NOT classify as
+		// cancellation. parseSerializedGRPCCode accepts the prefix
+		// anywhere in the string, so without the prefix-only guard a
+		// wrapped worker error like "provider failed: rpc error:
+		// code = Canceled ..." would surface as 408 request_canceled.
+		// Top-level boundary-serialized gRPC errors (preceding case)
+		// still classify because the prefix is at offset 0.
+		{"embedded serialized gRPC Canceled", fmt.Errorf("provider failed: rpc error: code = Canceled desc = x"), false},
+		{"embedded serialized gRPC DeadlineExceeded", fmt.Errorf("upstream call: rpc error: code = DeadlineExceeded desc = x"), false},
+
 		{"unrelated text", fmt.Errorf("something broke"), false},
 	}
 
