@@ -475,6 +475,43 @@ func generateOpenAPISchema() *openapi3.T {
 		},
 	}
 
+	// Enum of stable error classification codes. Kept in sync by hand
+	// with the apierror.Code constants in internal/apierror/error.go;
+	// add new codes in both places. Clients (humans and LLM agents)
+	// should branch on `code` rather than parsing `error`.
+	errorCodeEnum := []any{
+		"invalid_json",
+		"invalid_request",
+		"request_too_large",
+		"body_read_error",
+		"not_acceptable",
+		"request_canceled",
+		"worker_unavailable",
+		"worker_error",
+		"parse_error",
+		"internal_error",
+	}
+	errorCodeSchema := func() *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeString},
+				Description: "Stable, machine-readable error class. Branch on this rather than parsing the message.",
+				Enum:        errorCodeEnum,
+			},
+		}
+	}
+	errorDetailsSchema := func() *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeObject},
+				Description: "Optional structured context. May carry {\"stacktrace\": \"...\"} on worker panics, or worker-supplied diagnostic fields when available. Absent when no structured details exist.",
+				AdditionalProperties: openapi3.AdditionalProperties{
+					Has: boolPtr(true),
+				},
+			},
+		}
+	}
+
 	streamErrorEventSchemaName := "__StreamErrorEvent__"
 	schemas[streamErrorEventSchemaName] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
@@ -493,6 +530,8 @@ func generateOpenAPISchema() *openapi3.T {
 						Description: "Error message describing what went wrong",
 					},
 				},
+				"code":    errorCodeSchema(),
+				"details": errorDetailsSchema(),
 			},
 			Required: []string{"type", "error"},
 		},
@@ -511,6 +550,8 @@ func generateOpenAPISchema() *openapi3.T {
 						Description: "Error message describing what went wrong",
 					},
 				},
+				"code":    errorCodeSchema(),
+				"details": errorDetailsSchema(),
 				"request_id": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeString},

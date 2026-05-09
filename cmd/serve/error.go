@@ -82,29 +82,47 @@ func writeFiberInternalError(c fiber.Ctx, err error) error {
 // reach the client envelope. Precedence:
 //  1. Worker-supplied code (carried by *workerplugin.ErrorWithStack)
 //     wins — when the worker classified the error, we trust it.
-//  2. Caller cancellation (context.Canceled / DeadlineExceeded or
+//  2. pool.ErrPoolRetriesExhausted → worker_unavailable. Checked BEFORE
+//     caller-cancellation because the pool's retry loop wraps the last
+//     retryable err under the sentinel, and that last err is often a
+//     hung-detection-driven gRPC Canceled / DeadlineExceeded — which
+//     IsCallerCancellationError would otherwise misread as a client-
+//     driven abort. Pool retry exhaustion is by definition infra, not
+//     a client cancellation.
+//  3. Caller cancellation (context.Canceled / DeadlineExceeded or
 //     gRPC Canceled / DeadlineExceeded) maps to request_canceled.
 //     Checked BEFORE pool.IsRetryableWorkerError because the latter
 //     treats those gRPC codes as retryable infrastructure too — without
 //     this short-circuit, a client-driven abort surfaces as
 //     worker_unavailable on streaming and unary paths alike.
-//  3. pool.IsRetryableWorkerError → worker_unavailable (transient infra
+//  4. pool.IsRetryableWorkerError → worker_unavailable (transient infra
 //     failure, retries exhausted by the pool).
-//  4. Default → worker_error (BAML / LLM application error).
+//  5. Default → worker_error (BAML / LLM application error).
+//
+// Details precedence: a worker-supplied JSON Details payload wins; if
+// none is present, a worker-supplied stacktrace is wrapped as
+// {"stacktrace": "..."} so an LLM agent receiving the error as feedback
+// (or a human debugging) sees the panic trace alongside the message.
+// Stacktraces are also independently logged via httplogger.SetError —
+// the response copy is the explicit, agent-facing channel.
 func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
 	var details json.RawMessage
 
-	// Worker-supplied details (BAML diagnostic JSON, parse failure
-	// fields) — forward verbatim if they form a valid JSON value.
 	var stackErr *workerplugin.ErrorWithStack
 	if errors.As(err, &stackErr) {
 		if d := stackErr.GetDetails(); len(d) > 0 && json.Valid(d) {
 			details = json.RawMessage(d)
+		} else if st := stackErr.GetStacktrace(); st != "" {
+			details = stacktraceDetailsJSON(st)
 		}
 	}
 
 	if stackErr != nil && stackErr.GetCode() != "" {
 		return apierror.Code(stackErr.GetCode()), details
+	}
+
+	if errors.Is(err, pool.ErrPoolRetriesExhausted) {
+		return apierror.CodeWorkerUnavailable, details
 	}
 
 	if pool.IsCallerCancellationError(err) {
@@ -115,6 +133,20 @@ func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
 		return apierror.CodeWorkerUnavailable, details
 	}
 	return apierror.CodeWorkerError, details
+}
+
+// stacktraceDetailsJSON marshals st into the canonical
+// {"stacktrace": "..."} envelope used by the response Details field.
+// Falls back to nil on the (effectively impossible) marshal failure so
+// callers don't ship a half-formed payload.
+func stacktraceDetailsJSON(st string) json.RawMessage {
+	payload, err := json.Marshal(struct {
+		Stacktrace string `json:"stacktrace"`
+	}{Stacktrace: st})
+	if err != nil {
+		return nil
+	}
+	return payload
 }
 
 // netHTTPHeaderApiError is the chi/net-http analogue of

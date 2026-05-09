@@ -199,13 +199,18 @@ func HandleNDJSONStreamFiber(
 
 // classifyStreamResultError extracts the error code and structured
 // details for a mid-stream StreamResultKindError frame. Worker-supplied
-// fields on the StreamResult itself (ErrorCode / ErrorDetails, populated
-// from the proto) take priority over heuristic classification of the
-// embedded error value.
+// fields on the StreamResult itself (ErrorCode / ErrorDetails / Stacktrace,
+// populated from the proto) take priority over heuristic classification
+// of the embedded error value. When ErrorDetails is empty but Stacktrace
+// is set (the typical worker-panic shape), the stacktrace is wrapped as
+// {"stacktrace": "..."} so the response carries the same panic trace
+// classifyWorkerError would expose for unary endpoints.
 func classifyStreamResultError(result *workerplugin.StreamResult) (apierror.Code, json.RawMessage) {
 	var details json.RawMessage
 	if len(result.ErrorDetails) > 0 && json.Valid(result.ErrorDetails) {
 		details = json.RawMessage(result.ErrorDetails)
+	} else if result.Stacktrace != "" {
+		details = stacktraceDetailsJSON(result.Stacktrace)
 	}
 	if result.ErrorCode != "" {
 		return apierror.Code(result.ErrorCode), details
