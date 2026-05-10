@@ -3,6 +3,7 @@ package buildrequest
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -155,6 +156,17 @@ func TestBuildSingleProviderPlan(t *testing.T) {
 	if plan.RetryMax != nil {
 		t.Errorf("RetryMax should be nil when policy is nil; got %v", plan.RetryMax)
 	}
+	// Issue #237 PR 1 introduces FallbackTargets / FallbackRoundRobin
+	// as vocabulary fields. Single-provider plans never have fallback
+	// children to describe, so the builder must leave both nil. PR 2
+	// only ever populates them for fallback-chain plans whose immediate
+	// RR children resolve to a BR-drivable leaf.
+	if plan.FallbackTargets != nil {
+		t.Errorf("single-provider plan must not set FallbackTargets; got %v", plan.FallbackTargets)
+	}
+	if plan.FallbackRoundRobin != nil {
+		t.Errorf("single-provider plan must not set FallbackRoundRobin; got %v", plan.FallbackRoundRobin)
+	}
 }
 
 func TestBuildSingleProviderPlan_StreamRequestAPI(t *testing.T) {
@@ -178,6 +190,69 @@ func TestBuildFallbackChainPlan_APIFieldCarriesThrough(t *testing.T) {
 	}
 	if plan.PathReason != "" {
 		t.Errorf("pathReason: got %q, want empty (no reason passed)", plan.PathReason)
+	}
+}
+
+// TestBuildFallbackChainPlan_FallbackTargetFieldsLeftEmpty pins that
+// the PR 1 vocabulary additions stay nil under the existing plan-builder
+// signatures (issue #237). PR 2 introduces the producer that populates
+// these maps for the narrow centralised-RR case; PR 1 keeps the wire
+// shape identical to pre-#237 for every plan the builders emit.
+func TestBuildFallbackChainPlan_FallbackTargetFieldsLeftEmpty(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+	chain := []string{"A", "B"}
+	providers := map[string]string{"A": "openai", "B": "anthropic"}
+
+	t.Run("adapter-based builder", func(t *testing.T) {
+		plan := BuildFallbackChainPlan(adapter, "Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest, "")
+		if plan.FallbackTargets != nil {
+			t.Errorf("FallbackTargets must be nil before PR 2 wires the producer; got %v", plan.FallbackTargets)
+		}
+		if plan.FallbackRoundRobin != nil {
+			t.Errorf("FallbackRoundRobin must be nil before PR 2 wires the producer; got %v", plan.FallbackRoundRobin)
+		}
+		// JSON encoding must omit the new keys entirely so the wire
+		// shape remains byte-identical to pre-#237 for these plans.
+		data, err := json.Marshal(plan)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if got := string(data); strings.Contains(got, `"fallback_targets"`) || strings.Contains(got, `"fallback_round_robin"`) {
+			t.Errorf("planned JSON must not carry the new fallback-target keys; got %s", got)
+		}
+	})
+
+	t.Run("client-name builder", func(t *testing.T) {
+		plan := BuildFallbackChainPlanForClient("Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest, "")
+		if plan.FallbackTargets != nil {
+			t.Errorf("FallbackTargets must be nil before PR 2 wires the producer; got %v", plan.FallbackTargets)
+		}
+		if plan.FallbackRoundRobin != nil {
+			t.Errorf("FallbackRoundRobin must be nil before PR 2 wires the producer; got %v", plan.FallbackRoundRobin)
+		}
+	})
+}
+
+// TestBuildLegacyMetadataPlan_FallbackTargetFieldsLeftEmpty pins the
+// same vocabulary-only invariant for the legacy plan builders. PR 1
+// never produces fallback-target metadata on the legacy path either —
+// the centralisation behaviour PR 2 adds is BuildRequest-only.
+func TestBuildLegacyMetadataPlan_FallbackTargetFieldsLeftEmpty(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+	plan := BuildLegacyMetadataPlan(adapter, "MyClient", "aws-bedrock", nil, nil, IsProviderSupported, nil)
+	if plan.FallbackTargets != nil {
+		t.Errorf("legacy plan must not set FallbackTargets; got %v", plan.FallbackTargets)
+	}
+	if plan.FallbackRoundRobin != nil {
+		t.Errorf("legacy plan must not set FallbackRoundRobin; got %v", plan.FallbackRoundRobin)
+	}
+
+	planForClient := BuildLegacyMetadataPlanForClient(nil, "MyClient", "aws-bedrock", nil, nil, IsProviderSupported, nil)
+	if planForClient.FallbackTargets != nil {
+		t.Errorf("legacy plan (for-client) must not set FallbackTargets; got %v", planForClient.FallbackTargets)
+	}
+	if planForClient.FallbackRoundRobin != nil {
+		t.Errorf("legacy plan (for-client) must not set FallbackRoundRobin; got %v", planForClient.FallbackRoundRobin)
 	}
 }
 

@@ -56,10 +56,20 @@ const (
 // only on one path (e.g. RetryCount on BuildRequest, BamlCallCount on
 // legacy) — see per-field doc strings for the contract.
 type Metadata struct {
-	Phase      MetadataPhase `json:"phase"`                 // "planned" or "outcome"
-	Attempt    int           `json:"attempt"`               // pool-level attempt number (0-based). Orchestrator emits 0; pool rewrites.
-	Path       string        `json:"path"`                  // "buildrequest" or "legacy"
-	PathReason string        `json:"path_reason,omitempty"` // legacy classification enum; empty when Path=="buildrequest"
+	Phase   MetadataPhase `json:"phase"`   // "planned" or "outcome"
+	Attempt int           `json:"attempt"` // pool-level attempt number (0-based). Orchestrator emits 0; pool rewrites.
+	Path    string        `json:"path"`    // "buildrequest" or "legacy"
+	// PathReason is an informational routing-classification token. It
+	// historically reported only legacy-side classifications (unsupported
+	// provider, empty provider, fallback-empty-chain, etc.) and was
+	// documented as "empty when Path==buildrequest". Since #237 PR 1 it
+	// also carries BuildRequest-side informational reasons — most
+	// notably PathReasonFallbackRoundRobinChildBuildRequest, set when an
+	// immediate RR fallback child was centrally unwrapped to a leaf and
+	// dispatched via BuildRequest rather than the legacy callback. The
+	// field still defaults to empty when there's nothing informational
+	// to report.
+	PathReason string `json:"path_reason,omitempty"`
 
 	// BuildRequestAPI identifies which BAML API drove a Path=="buildrequest"
 	// request. "request" means the non-streaming Request API (unary HTTP,
@@ -105,6 +115,38 @@ type Metadata struct {
 	// decision — inner RR strategies still advance their own counters but are
 	// not reported separately.
 	RoundRobin *RoundRobinInfo `json:"round_robin,omitempty"`
+
+	// FallbackTargets is a sparse map from fallback chain child names to
+	// the target client actually dispatched, populated when an immediate
+	// RR fallback child is centrally unwrapped to a leaf and driven via
+	// BuildRequest rather than handed to BAML's per-worker runtime
+	// through the legacy callback (see issue #237). The map is sparse —
+	// entries are omitted when target == child, so a chain whose
+	// children all dispatch verbatim leaves this field nil.
+	//
+	// PR 1 introduces the field; consumers populate it starting in
+	// PR 2 (resolver/orchestrator dispatch). Outcome events clear this
+	// field — the planned phase describes intent, while the realised
+	// winner is encoded in WinnerClient on outcome.
+	FallbackTargets map[string]string `json:"fallback_targets,omitempty"`
+
+	// FallbackRoundRobin reports the round-robin selection for fallback
+	// chain children that resolved through BuildRequest centralization
+	// (see issue #237). Keyed by the fallback chain child name (the RR
+	// wrapper), valued by the per-child RoundRobinInfo describing which
+	// leaf was picked.
+	//
+	// Distinct from the top-level RoundRobin field, which always
+	// describes the OUTERMOST RR decision — reusing it for nested
+	// fallback RR would collide with compositions like
+	// rr[fallback[rr[A,B], C], D] and would change the meaning of
+	// existing unary headers. A per-child map keeps the two concepts
+	// separate.
+	//
+	// PR 1 introduces the field; consumers populate it starting in
+	// PR 2. Outcome events clear this field for the same reason
+	// FallbackTargets is cleared.
+	FallbackRoundRobin map[string]*RoundRobinInfo `json:"fallback_round_robin,omitempty"`
 }
 
 // RoundRobinInfo captures the outcome of resolving a baml-roundrobin strategy

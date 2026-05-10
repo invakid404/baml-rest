@@ -78,6 +78,21 @@ const (
 	// composition and know not to expect fleet-wide rotation for the
 	// nested client.
 	PathReasonFallbackRoundRobinChildLegacy = "fallback-roundrobin-child-legacy"
+	// PathReasonFallbackRoundRobinChildBuildRequest reports that an
+	// immediate baml-roundrobin fallback child was centrally unwrapped
+	// to a leaf and dispatched via the BuildRequest path, rather than
+	// handed off to BAML's per-worker runtime through the legacy
+	// callback. The selected leaf appears in Metadata.FallbackTargets
+	// keyed by the RR wrapper's chain-position name, and the RR
+	// decision itself appears in Metadata.FallbackRoundRobin under the
+	// same key.
+	//
+	// Distinct from PathReasonFallbackRoundRobinChildLegacy, which
+	// keeps describing nested RR children that remain on the legacy
+	// callback (deferred shapes, unsupported leaves, invalid
+	// `options.strategy` / `options.start` overrides). New in issue
+	// #237 PR 1 (vocabulary only); consumed starting in PR 2.
+	PathReasonFallbackRoundRobinChildBuildRequest = "fallback-roundrobin-child-buildrequest"
 	// PathReasonBuildRequestDisabled: BAML_REST_USE_BUILD_REQUEST is off.
 	// Deliberate configuration — no operator alert.
 	PathReasonBuildRequestDisabled = "buildrequest-disabled"
