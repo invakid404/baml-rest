@@ -90,6 +90,45 @@ func ResolveRetryPolicy(
 	return nil
 }
 
+// ResolveStrategyAwareRetryPolicy resolves the retry policy for a request
+// where the originally-routed client (a strategy wrapper, like
+// baml-roundrobin or baml-fallback) may have been unwrapped to a leaf
+// for dispatch. Priority order:
+//
+//  1. Per-request override (`__baml_options__.retry`) — handled inside
+//     the underlying ResolveRetryPolicy and short-circuits regardless of
+//     which client name is keyed.
+//  2. Strategy-wrapper retry_policy — runtime client_registry entry for
+//     strategyClient, falling back to its static introspected name.
+//  3. Effective-leaf retry_policy — same shape on effectiveClient, only
+//     consulted when strategyClient != effectiveClient (i.e. an RR or
+//     fallback unwrap actually happened) AND the wrapper had no policy.
+//  4. nil.
+//
+// This mirrors BAML's runtime: LLMStrategyProvider::WithRetryPolicy
+// (engine/baml-runtime/src/internal/llm_client/strategy/mod.rs) wraps
+// the whole strategy in ExecutionScope::Retry when the wrapper has its
+// own retry_policy; otherwise the selected child's policy applies.
+//
+// Pre-RR-unwrap callers (where strategyClient == effectiveClient) get
+// behavior identical to a single ResolveRetryPolicy call.
+func ResolveStrategyAwareRetryPolicy(
+	adapter bamlutils.Adapter,
+	strategyClient, effectiveClient string,
+	strategyPolicyName, effectivePolicyName string,
+	introspectedPolicies map[string]*retry.Policy,
+) *retry.Policy {
+	if p := ResolveRetryPolicy(adapter, strategyClient, strategyPolicyName, introspectedPolicies); p != nil {
+		return p
+	}
+	if strategyClient != effectiveClient {
+		if p := ResolveRetryPolicy(adapter, effectiveClient, effectivePolicyName, introspectedPolicies); p != nil {
+			return p
+		}
+	}
+	return nil
+}
+
 // EncodeRetryPolicy formats a retry.Policy into the compact string used by
 // the Metadata.RetryPolicy field. Examples:
 //

@@ -521,3 +521,206 @@ func TestResolveRetryPolicy_PrimaryWithoutRetryNoIntrospected(t *testing.T) {
 		t.Errorf("expected nil policy when primary has no retry and no introspected default, got MaxRetries=%d", got.MaxRetries)
 	}
 }
+
+// ============================================================================
+// ResolveStrategyAwareRetryPolicy tests
+// ============================================================================
+//
+// These pin the wrapper-first / leaf-fallback contract that mirrors
+// BAML's LLMStrategyProvider::WithRetryPolicy semantics. Each table
+// row builds an adapter + introspected policies map and asserts the
+// resolved MaxRetries (or nil) for a (strategyClient, effectiveClient)
+// pair.
+
+func TestResolveStrategyAwareRetryPolicy(t *testing.T) {
+	// Shared introspected map used across cases. Case-specific overrides
+	// rebind locally.
+	commonPolicies := map[string]*retry.Policy{
+		"WrapperRetry": {MaxRetries: 7, Strategy: &retry.ConstantDelay{DelayMs: 50}},
+		"LeafRetry":    {MaxRetries: 3, Strategy: &retry.ConstantDelay{DelayMs: 200}},
+	}
+
+	type testCase struct {
+		name                string
+		adapter             *mockAdapter
+		strategyClient      string
+		effectiveClient     string
+		strategyPolicyName  string
+		effectivePolicyName string
+		policies            map[string]*retry.Policy
+		wantNil             bool
+		wantMaxRetries      int
+	}
+
+	cases := []testCase{
+		{
+			// Wrapper has a static introspected policy, leaf has none.
+			// BAML semantics: wrapper retry is applied around the
+			// strategy iteration.
+			name:                "wrapper-static-leaf-none",
+			adapter:             &mockAdapter{Context: context.Background()},
+			strategyClient:      "MyRR",
+			effectiveClient:     "Leaf",
+			strategyPolicyName:  "WrapperRetry",
+			effectivePolicyName: "",
+			policies:            commonPolicies,
+			wantMaxRetries:      7,
+		},
+		{
+			// Both wrapper and leaf have policies. Wrapper wins.
+			name:                "wrapper-static-leaf-static",
+			adapter:             &mockAdapter{Context: context.Background()},
+			strategyClient:      "MyRR",
+			effectiveClient:     "Leaf",
+			strategyPolicyName:  "WrapperRetry",
+			effectivePolicyName: "LeafRetry",
+			policies:            commonPolicies,
+			wantMaxRetries:      7,
+		},
+		{
+			// Wrapper has none, leaf has policy. Leaf-fallback fires.
+			name:                "wrapper-none-leaf-static",
+			adapter:             &mockAdapter{Context: context.Background()},
+			strategyClient:      "MyRR",
+			effectiveClient:     "Leaf",
+			strategyPolicyName:  "",
+			effectivePolicyName: "LeafRetry",
+			policies:            commonPolicies,
+			wantMaxRetries:      3,
+		},
+		{
+			// Runtime client_registry policy on the wrapper wins over a
+			// leaf static introspected policy.
+			name: "wrapper-runtime-registry-beats-leaf-static",
+			adapter: func() *mockAdapter {
+				name := "WrapperRetry"
+				return &mockAdapter{
+					Context: context.Background(),
+					originalRegistry: &bamlutils.ClientRegistry{
+						Clients: []*bamlutils.ClientProperty{
+							{Name: "MyRR", Provider: "baml-roundrobin", RetryPolicy: &name},
+						},
+					},
+				}
+			}(),
+			strategyClient:      "MyRR",
+			effectiveClient:     "Leaf",
+			strategyPolicyName:  "",
+			effectivePolicyName: "LeafRetry",
+			policies:            commonPolicies,
+			wantMaxRetries:      7,
+		},
+		{
+			// Per-request __baml_options__.retry override wins
+			// regardless of which client name is keyed. Verify that
+			// the override short-circuits the wrapper-first call AND
+			// is not double-applied (it's the same value either way).
+			name: "per-request-override-wins-over-everything",
+			adapter: &mockAdapter{
+				Context:     context.Background(),
+				retryConfig: &bamlutils.RetryConfig{MaxRetries: 11, Strategy: "constant_delay", DelayMs: 1},
+			},
+			strategyClient:      "MyRR",
+			effectiveClient:     "Leaf",
+			strategyPolicyName:  "WrapperRetry",
+			effectivePolicyName: "LeafRetry",
+			policies:            commonPolicies,
+			wantMaxRetries:      11,
+		},
+		{
+			// strategyClient == effectiveClient (no RR unwrap
+			// happened). Behavior must match a single
+			// ResolveRetryPolicy call — leaf-fallback path is
+			// suppressed by the equality guard, so a nil wrapper
+			// resolution yields nil even if a separate "leaf" entry
+			// existed in the policies map.
+			name:                "no-unwrap-equal-names-matches-single-call",
+			adapter:             &mockAdapter{Context: context.Background()},
+			strategyClient:      "MyClient",
+			effectiveClient:     "MyClient",
+			strategyPolicyName:  "WrapperRetry",
+			effectivePolicyName: "WrapperRetry",
+			policies:            commonPolicies,
+			wantMaxRetries:      7,
+		},
+		{
+			// Both nil → returns nil (no retries).
+			name:                "both-nil",
+			adapter:             &mockAdapter{Context: context.Background()},
+			strategyClient:      "MyRR",
+			effectiveClient:     "Leaf",
+			strategyPolicyName:  "",
+			effectivePolicyName: "",
+			policies:            commonPolicies,
+			wantNil:             true,
+		},
+		{
+			// Equal-name no-unwrap with no policies → nil. Pins that
+			// the equal-name short-circuit doesn't accidentally
+			// double-resolve.
+			name:                "no-unwrap-no-policy-nil",
+			adapter:             &mockAdapter{Context: context.Background()},
+			strategyClient:      "Solo",
+			effectiveClient:     "Solo",
+			strategyPolicyName:  "",
+			effectivePolicyName: "",
+			policies:            commonPolicies,
+			wantNil:             true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResolveStrategyAwareRetryPolicy(
+				tc.adapter,
+				tc.strategyClient,
+				tc.effectiveClient,
+				tc.strategyPolicyName,
+				tc.effectivePolicyName,
+				tc.policies,
+			)
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil policy, got MaxRetries=%d", got.MaxRetries)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected non-nil policy with MaxRetries=%d, got nil", tc.wantMaxRetries)
+			}
+			if got.MaxRetries != tc.wantMaxRetries {
+				t.Errorf("expected MaxRetries=%d, got %d", tc.wantMaxRetries, got.MaxRetries)
+			}
+		})
+	}
+}
+
+// TestResolveStrategyAwareRetryPolicy_LeafFallbackUsesEffectiveName
+// pins the priority-3 path: wrapper has no policy in either runtime
+// registry or introspected map, but the leaf does. The helper must
+// invoke ResolveRetryPolicy with the EFFECTIVE name on the second
+// call so the runtime registry lookup keys off the leaf, not the
+// wrapper. A regression that mistakenly passed strategyClient on the
+// fallback call would miss the leaf's runtime-registry retry_policy.
+func TestResolveStrategyAwareRetryPolicy_LeafFallbackUsesEffectiveName(t *testing.T) {
+	leafPolicy := "LeafRetry"
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Clients: []*bamlutils.ClientProperty{
+				{Name: "Leaf", Provider: "openai", RetryPolicy: &leafPolicy},
+			},
+		},
+	}
+	policies := map[string]*retry.Policy{
+		"LeafRetry": {MaxRetries: 4, Strategy: &retry.ConstantDelay{DelayMs: 25}},
+	}
+
+	got := ResolveStrategyAwareRetryPolicy(adapter, "MyRR", "Leaf", "", "", policies)
+	if got == nil {
+		t.Fatal("expected leaf-fallback to find the runtime-registry policy on Leaf, got nil")
+	}
+	if got.MaxRetries != 4 {
+		t.Errorf("expected leaf MaxRetries=4, got %d", got.MaxRetries)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/dave/jennifer/jen"
+	"github.com/invakid404/baml-rest/adapters/common"
+	"github.com/invakid404/baml-rest/introspected"
 )
 
 // Self-referential types for testing cycle detection in structContainsMedia.
@@ -622,5 +624,118 @@ func TestEnumValueAttrsCode_Order(t *testing.T) {
 
 	if !(descIdx < aliasIdx && aliasIdx < skipIdx) {
 		t.Error("enumValueAttrsCode() methods not in expected order (Description, Alias, Skip)")
+	}
+}
+
+// TestEmitRouter_RetryResolutionUsesStrategyAwareHelper pins the
+// post-fix shape of the per-method router: retry resolution calls
+// ResolveStrategyAwareRetryPolicy and is keyed on BOTH __retryClient
+// (the pre-unwrap strategy / primary-override target) and __effective
+// (the post-RR-unwrap leaf). The legacy retry-resolution emit at the
+// bottom of the router is always emitted, so this test asserts on
+// that site directly. With the introspected.Request /
+// introspected.StreamRequest singletons set non-nil, the BuildRequest
+// landing-block retry calls are also emitted and the assertion
+// catches a regression at every site.
+//
+// A regression to the previous shape — keying retry on __effective
+// only, after ResolveEffectiveClient overwrote it to the RR leaf —
+// silently dropped any retry_policy declared on a strategy wrapper
+// (RR or fallback) on the v0.219+ BuildRequest path, contradicting
+// BAML's LLMStrategyProvider::WithRetryPolicy semantics.
+func TestEmitRouter_RetryResolutionUsesStrategyAwareHelper(t *testing.T) {
+	// Save + restore the introspected BuildRequest singletons. The
+	// codegen package treats both nil as "legacy-only adapter", which
+	// would skip the BR landing blocks (and their resolveRetryPolicy
+	// emits) entirely. Setting both non-nil exercises every retry
+	// emit site so the assertions catch a regression at any of them.
+	savedRequest := introspected.Request
+	savedStreamRequest := introspected.StreamRequest
+	t.Cleanup(func() {
+		introspected.Request = savedRequest
+		introspected.StreamRequest = savedStreamRequest
+	})
+	introspected.Request = struct{}{}
+	introspected.StreamRequest = struct{}{}
+
+	// Minimal generator: only fields emitRouter reads.
+	g := &generator{
+		out:                common.MakeFile(),
+		supportsWithClient: true,
+	}
+	me := &methodEmitter{
+		g:                          g,
+		methodName:                 "GreetUser",
+		buildRequestMethodName:     "greetUser_buildRequest",
+		buildCallRequestMethodName: "greetUser_buildCallRequest",
+		noRawMethodName:            "greetUser_noRaw",
+		fullMethodName:             "greetUser_full",
+	}
+
+	me.emitRouter()
+	rendered := g.out.GoString()
+
+	// Pin the __retryClient declaration. The pre-unwrap client name
+	// must be captured BEFORE __effective is overwritten by
+	// ResolveEffectiveClient; without this, the wrapper-first retry
+	// resolution downstream cannot see the strategy-wrapper name.
+	if !strings.Contains(rendered, "__retryClient :=") {
+		t.Errorf("router must declare __retryClient (pre-unwrap client name); rendered:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "buildrequest.ResolvePrimaryClient(adapter, introspected.FunctionClient[\"GreetUser\"])") {
+		t.Errorf("__retryClient must seed from ResolvePrimaryClient (applies primary override but no RR unwrap); rendered:\n%s", rendered)
+	}
+
+	// Pin that __effective starts at __retryClient and is only
+	// overwritten by the conditional ResolveEffectiveClient block.
+	// "__effective := __retryClient" couples the two so we never
+	// emit the legacy shape that seeded __effective directly from
+	// ResolvePrimaryClient (which would lose the wrapper name when
+	// the conditional block reassigns __effective).
+	if !strings.Contains(rendered, "__effective := __retryClient") {
+		t.Errorf("__effective must alias __retryClient at seed time so the wrapper name survives the RR-unwrap reassignment; rendered:\n%s", rendered)
+	}
+
+	// Pin: every retry resolution call must be the strategy-aware
+	// helper. The plain ResolveRetryPolicy call (the pre-fix shape)
+	// must not appear anywhere in the router.
+	if strings.Contains(rendered, "buildrequest.ResolveRetryPolicy(") {
+		t.Errorf("router must not call buildrequest.ResolveRetryPolicy directly — wrapper-first semantics require ResolveStrategyAwareRetryPolicy; rendered:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "buildrequest.ResolveStrategyAwareRetryPolicy(") {
+		t.Errorf("router must call buildrequest.ResolveStrategyAwareRetryPolicy for retry resolution; rendered:\n%s", rendered)
+	}
+
+	// Pin the actual argument shape. Both __retryClient and
+	// __effective (and the corresponding ClientRetryPolicy lookups
+	// keyed by each) must be passed into every helper invocation.
+	// A regression that passed __effective in both wrapper and leaf
+	// slots would compile but quietly revert to leaf-only retry.
+	wantArgs := "ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)"
+	if !strings.Contains(rendered, wantArgs) {
+		t.Errorf("ResolveStrategyAwareRetryPolicy call missing expected (strategy, effective) argument shape:\nwant fragment:\n%s\nrendered:\n%s", wantArgs, rendered)
+	}
+	// Negative pin: the symmetric wrong-shape — keying both wrapper
+	// and leaf slots on __effective — would silently revert to
+	// leaf-only retry. The strategy-aware helper short-circuits its
+	// leaf-fallback when strategyClient == effectiveClient, so a
+	// regression that passed __effective in both positions would
+	// type-check and compile cleanly.
+	wrongArgs := "ResolveStrategyAwareRetryPolicy(adapter, __effective, __effective,"
+	if strings.Contains(rendered, wrongArgs) {
+		t.Errorf("ResolveStrategyAwareRetryPolicy must not be called with __effective in both strategy and effective slots — that silently reverts to leaf-only retry; rendered:\n%s", rendered)
+	}
+
+	// Pin: the legacy retry resolution (always-emitted, at router
+	// bottom) is keyed on __retryClient too. Detect by counting
+	// __legacyRetryPolicy occurrences and asserting the strategy-
+	// aware helper appears between them and the next blank line.
+	legacyIdx := strings.Index(rendered, "__legacyRetryPolicy :=")
+	if legacyIdx < 0 {
+		t.Fatalf("router must declare __legacyRetryPolicy for the legacy fallthrough path; rendered:\n%s", rendered)
+	}
+	helperAfterLegacy := strings.Index(rendered[legacyIdx:], "buildrequest.ResolveStrategyAwareRetryPolicy(")
+	if helperAfterLegacy < 0 {
+		t.Errorf("__legacyRetryPolicy must be assigned from ResolveStrategyAwareRetryPolicy (not the leaf-only ResolveRetryPolicy); rendered:\n%s", rendered)
 	}
 }

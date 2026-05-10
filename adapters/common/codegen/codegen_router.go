@@ -32,18 +32,27 @@ func (me *methodEmitter) emitRouter() {
 		jen.Var().Id("err").Error(),
 		jen.Id("mode").Op(":=").Id("adapter").Dot("StreamMode").Call(),
 	}
-	// Always seed __effective from ResolvePrimaryClient and leave
-	// __rrInfo nil. This is the legacy-equivalent shape: primary
-	// override applied, no RR unwrap, no coordinator advance, no
-	// RR metadata. supportsWithClient adapters with the flag on
-	// upgrade these via ResolveEffectiveClient below; everyone
+	// Seed __retryClient and __effective from ResolvePrimaryClient
+	// and leave __rrInfo nil. This is the legacy-equivalent shape:
+	// primary override applied, no RR unwrap, no coordinator advance,
+	// no RR metadata. supportsWithClient adapters with the flag on
+	// upgrade __effective via ResolveEffectiveClient below; everyone
 	// else (older adapters, or modern adapters with the flag off)
 	// keeps this baseline so BAML's own strategy rotation owns RR.
+	//
+	// __retryClient preserves the pre-unwrap client name (the strategy
+	// wrapper itself, or the function's primary-override target).
+	// __effective may later become an RR-selected leaf, but
+	// retry-policy resolution must be wrapper-first to honor BAML's
+	// LLMStrategyProvider::WithRetryPolicy semantics — when an RR or
+	// fallback wrapper carries its own retry_policy, BAML applies it
+	// AROUND the strategy iteration rather than per-leaf.
 	routerBody = append(routerBody,
-		jen.Id("__effective").Op(":=").Qual(common.BuildRequestPkg, "ResolvePrimaryClient").Call(
+		jen.Id("__retryClient").Op(":=").Qual(common.BuildRequestPkg, "ResolvePrimaryClient").Call(
 			jen.Id("adapter"),
 			jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(me.methodName)),
 		),
+		jen.Id("__effective").Op(":=").Id("__retryClient"),
 		jen.Var().Id("__rrInfo").Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
 	)
 	if g.supportsWithClient {
@@ -107,17 +116,24 @@ func (me *methodEmitter) emitRouter() {
 	// Helper to generate the common retry policy resolution + dispatch call
 	// for both single-provider and fallback-chain paths.
 	//
-	// Keyed on __effective (the post-RR leaf) rather than
-	// FunctionClient[methodName] (the function's declared default
-	// client, which may be an RR wrapper). For non-RR functions the
-	// two are identical; for RR, we must use the child that will
-	// actually handle the request, otherwise the retry policy would
-	// come from the wrapper — retry config isn't inherited from
-	// strategy wrappers in BAML semantics.
+	// Wrapper-first, leaf-fallback. BAML's LLMStrategyProvider
+	// implements WithRetryPolicy
+	// (engine/baml-runtime/src/internal/llm_client/strategy/mod.rs):
+	// when the strategy wrapper has its own retry_policy, BAML wraps
+	// the whole strategy iteration in ExecutionScope::Retry; only
+	// when the wrapper has none does the selected leaf's retry_policy
+	// apply. ResolveStrategyAwareRetryPolicy honors that order: it
+	// consults __retryClient (pre-unwrap wrapper / primary override)
+	// first and falls back to __effective (post-RR leaf) only when
+	// the wrapper has no policy and the unwrap actually changed the
+	// client name. The per-request __baml_options__.retry override
+	// remains highest priority via the underlying ResolveRetryPolicy.
 	resolveRetryPolicy := func() jen.Code {
-		return jen.Id("retryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
+		return jen.Id("retryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveStrategyAwareRetryPolicy").Call(
 			jen.Id("adapter"),
+			jen.Id("__retryClient"),
 			jen.Id("__effective"),
+			jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__retryClient")),
 			jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
 			jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
 		)
@@ -404,24 +420,26 @@ func (me *methodEmitter) emitRouter() {
 	// the generator).
 	routerBody = append(routerBody,
 		jen.Comment("Legacy path: CallStream + OnTick (for unsupported providers or when BuildRequest is disabled)"),
-		// Retry policy and client identity for the legacy dispatch
-		// derive from __effective, not FunctionClient[methodName].
-		// __effective already accounts for both the RR unwrap and
-		// any client_registry primary override, so this keys both
-		// the retry policy and the WithClient/plan on the client
-		// that will actually handle the request.
+		// Retry policy resolution mirrors the BuildRequest paths:
+		// wrapper-first (__retryClient — the pre-unwrap strategy /
+		// primary-override target) with leaf-fallback to __effective
+		// (the post-RR leaf, which also folds in any client_registry
+		// primary override). The dispatched client identity for
+		// WithClient / SetPrimaryClient is __effective so the legacy
+		// dispatcher actually contacts the resolved leaf, but retry
+		// honors BAML's LLMStrategyProvider::WithRetryPolicy.
 		//
-		// Without this, a request with `primary` set to a client
-		// whose retry_policy is only statically declared (not
-		// redeclared in the runtime registry) would fall through to
-		// ResolveRetryPolicy's step-4 default — which looked up
-		// FunctionRetryPolicy[methodName] and therefore returned the
-		// FUNCTION's declared client's policy, not the primary-
-		// overridden client's. The BuildRequest path had the same
-		// bug; the legacy branch was missed.
-		jen.Id("__legacyRetryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveRetryPolicy").Call(
+		// Without this seam, a request that resolved __effective to
+		// a leaf via RR unwrap or primary override would lose the
+		// strategy wrapper's retry_policy: ResolveRetryPolicy on the
+		// leaf alone cannot see the wrapper's introspected entry,
+		// since ClientRetryPolicy is keyed by client name and the
+		// wrapper's name was thrown away at __effective assignment.
+		jen.Id("__legacyRetryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveStrategyAwareRetryPolicy").Call(
 			jen.Id("adapter"),
+			jen.Id("__retryClient"),
 			jen.Id("__effective"),
+			jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__retryClient")),
 			jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
 			jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
 		),
