@@ -1318,7 +1318,7 @@ func TestResolveProviderWithReason_RoundRobinInvalidStrategyTakesPrecedence(t *t
 					Name:     "MyRR",
 					Provider: "baml-roundrobin",
 					Options: map[string]any{
-						"strategy": "ClientA",  // bare token — invalid
+						"strategy": "ClientA",    // bare token — invalid
 						"start":    "not an int", // also invalid
 					},
 				},
@@ -1702,5 +1702,150 @@ func TestBuildLegacyMetadataPlanForClient_NilSupportRebuildClassifiesStrategyChi
 	if !equalStringSlice(plan.LegacyChildren, wantLegacy) {
 		t.Errorf("LegacyChildren: got %v, want %v (strategy wrappers must be marked legacy in the rebuild even under nil-support)",
 			plan.LegacyChildren, wantLegacy)
+	}
+}
+
+// TestOrderedLegacyChildren pins the chain-order filter that backs the four
+// inline LegacyChildren extraction sites. The nil-when-empty contract is
+// load-bearing for in-memory consistency — keeping plan.LegacyChildren the
+// same shape across every builder lets callers (and tests) treat nil as
+// "no legacy children" without distinguishing it from an empty slice — so
+// the helper returns nil rather than an empty slice in every degenerate
+// case.
+func TestOrderedLegacyChildren(t *testing.T) {
+	cases := []struct {
+		name   string
+		chain  []string
+		legacy map[string]bool
+		want   []string
+	}{
+		{
+			name:   "nil legacy map returns nil",
+			chain:  []string{"a", "b"},
+			legacy: nil,
+			want:   nil,
+		},
+		{
+			name:   "empty legacy map returns nil",
+			chain:  []string{"a", "b"},
+			legacy: map[string]bool{},
+			want:   nil,
+		},
+		{
+			name:   "preserves chain order, not map iteration order",
+			chain:  []string{"a", "b", "c"},
+			legacy: map[string]bool{"c": true, "a": true},
+			want:   []string{"a", "c"},
+		},
+		{
+			name:   "ignores legacy keys not present in chain",
+			chain:  []string{"a", "b"},
+			legacy: map[string]bool{"a": true, "x": true},
+			want:   []string{"a"},
+		},
+		{
+			name:   "all-out-of-chain legacy keys returns nil",
+			chain:  []string{"a", "b"},
+			legacy: map[string]bool{"x": true, "y": true},
+			want:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := orderedLegacyChildren(tc.chain, tc.legacy)
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("got %v, want nil (nil-when-empty contract)", got)
+				}
+				return
+			}
+			if !equalStringSlice(got, tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRebuildLegacyChainMetadata pins the per-child provider resolution
+// and classification predicate shared by BuildLegacyMetadataPlan and
+// BuildLegacyMetadataPlanForClient when the resolver returned chain==nil
+// and the metadata builder reconstructs the introspected chain. The
+// predicate must mirror ResolveFallbackChain*WithReason exactly — see
+// #234 for the strategy-child / nil-support classification contract.
+func TestRebuildLegacyChainMetadata(t *testing.T) {
+	clientProviders := map[string]string{
+		"Leaf1":    "openai",
+		"Leaf2":    "anthropic",
+		"Bedrock":  "aws-bedrock",
+		"InnerRR":  "baml-roundrobin",
+		"InnerFB":  "baml-fallback",
+		"Unmapped": "",
+	}
+	supportOnlyOpenAI := func(p string) bool { return p == "openai" }
+	supportOpenAIAndAnthropic := func(p string) bool { return p == "openai" || p == "anthropic" }
+
+	cases := []struct {
+		name        string
+		chain       []string
+		support     func(string) bool
+		wantLegacy  map[string]bool
+		wantProvLen int
+	}{
+		{
+			name:        "all supported leaves",
+			chain:       []string{"Leaf1", "Leaf2"},
+			support:     supportOpenAIAndAnthropic,
+			wantLegacy:  map[string]bool{},
+			wantProvLen: 2,
+		},
+		{
+			name:        "unresolved provider classified legacy",
+			chain:       []string{"Leaf1", "Unmapped"},
+			support:     supportOpenAIAndAnthropic,
+			wantLegacy:  map[string]bool{"Unmapped": true},
+			wantProvLen: 2,
+		},
+		{
+			name:        "strategy child always legacy regardless of support",
+			chain:       []string{"Leaf1", "InnerRR", "InnerFB"},
+			support:     func(string) bool { return true },
+			wantLegacy:  map[string]bool{"InnerRR": true, "InnerFB": true},
+			wantProvLen: 3,
+		},
+		{
+			name:        "nil support keeps ordinary leaves drivable, strategy children still legacy",
+			chain:       []string{"Leaf1", "InnerRR"},
+			support:     nil,
+			wantLegacy:  map[string]bool{"InnerRR": true},
+			wantProvLen: 2,
+		},
+		{
+			name:        "unsupported leaf classified by support function",
+			chain:       []string{"Leaf1", "Bedrock"},
+			support:     supportOnlyOpenAI,
+			wantLegacy:  map[string]bool{"Bedrock": true},
+			wantProvLen: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotProviders, gotLegacy := rebuildLegacyChainMetadata(nil, tc.chain, clientProviders, tc.support)
+			if len(gotProviders) != tc.wantProvLen {
+				t.Errorf("providers length: got %d, want %d (providers map should hold an entry per chain child)", len(gotProviders), tc.wantProvLen)
+			}
+			for _, child := range tc.chain {
+				if _, ok := gotProviders[child]; !ok {
+					t.Errorf("providers missing entry for %q (every chain child must be mapped, even when its provider is empty)", child)
+				}
+			}
+			if len(gotLegacy) != len(tc.wantLegacy) {
+				t.Errorf("legacy size: got %v, want %v", gotLegacy, tc.wantLegacy)
+			}
+			for child, want := range tc.wantLegacy {
+				if gotLegacy[child] != want {
+					t.Errorf("legacy[%q]: got %v, want %v", child, gotLegacy[child], want)
+				}
+			}
+		})
 	}
 }
