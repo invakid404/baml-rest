@@ -1021,6 +1021,21 @@ func TestExtractDeltaPartsFromText_OpenAIResponsesReasoningSummary(t *testing.T)
 			rawOn:     "Hello",
 		},
 		{
+			// Defensive: non-string delta on output_text.delta is silently
+			// skipped, matching the gjson.String guard in the extractor.
+			// The wire format always emits a string here, so this is a
+			// belt-and-braces guard mirroring the adjacent
+			// reasoning_summary_text.delta arm — it prevents gjson coercing
+			// a non-string into the literal string representation of the
+			// JSON value (which would land in Parseable and be fed to the
+			// BAML parser).
+			name:      "non-string output_text delta is skipped",
+			body:      `{"type":"response.output_text.delta","delta":42}`,
+			parseable: "",
+			rawOff:    "",
+			rawOn:     "",
+		},
+		{
 			name:      "reasoning_summary_text.delta opt-in surfaces summary",
 			body:      `{"type":"response.reasoning_summary_text.delta","delta":"thought"}`,
 			parseable: "",

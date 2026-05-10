@@ -123,8 +123,12 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeThinking 
 	case "openai-responses":
 		switch gjson.Get(rawText, "type").String() {
 		case "response.output_text.delta":
-			delta := gjson.Get(rawText, "delta").String()
-			return DeltaParts{Parseable: delta, Raw: delta}, nil
+			delta := gjson.Get(rawText, "delta")
+			if delta.Type != gjson.String {
+				return DeltaParts{}, nil
+			}
+			text := delta.String()
+			return DeltaParts{Parseable: text, Raw: text}, nil
 
 		case "response.reasoning_summary_text.delta":
 			if !includeThinking {
