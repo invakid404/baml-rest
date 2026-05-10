@@ -219,3 +219,11 @@ function GetSimpleRoundRobin(input: string) -> SimpleOutput {
     prompt #"{{ ctx.output_format }}
     Process: {{ input }}"#
 }
+
+// RR wrapper that carries its own retry_policy. Verifies the
+// wrapper's max_retries propagates after RR unwrap (previously
+// dropped by codegen keying retry on the post-unwrap leaf).
+function GetGreetingRoundRobinWithRetry(name: string) -> string {
+    client TestRoundRobinWithRetry
+    prompt #"Say hello to {{ name }}"#
+}

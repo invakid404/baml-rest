@@ -90,3 +90,31 @@ client<llm> TestRoundRobinChain {
         strategy [FallbackPrimary, FallbackSecondary, FallbackTertiary]
     }
 }
+
+// ============================================================
+// Round-robin wrapper with its own retry_policy
+//
+// Pins the BAML semantic that LLMStrategyProvider::WithRetryPolicy
+// honors a retry_policy declared on the strategy wrapper itself
+// (applied AROUND the strategy iteration). The leaf clients here
+// have NO retry_policy of their own, so any retry behavior observed
+// when the wrapper is unwrapped to a leaf must be inherited from
+// the wrapper. Used by integration tests to verify codegen routes
+// wrapper retry through the post-RR-unwrap path on v0.219+.
+// ============================================================
+
+retry_policy RoundRobinWrapperRetry {
+    max_retries 2
+    strategy {
+        type constant_delay
+        delay_ms 50
+    }
+}
+
+client<llm> TestRoundRobinWithRetry {
+    provider round-robin
+    retry_policy RoundRobinWrapperRetry
+    options {
+        strategy [FallbackPrimary, FallbackSecondary]
+    }
+}
