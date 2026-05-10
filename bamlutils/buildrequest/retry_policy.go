@@ -90,6 +90,55 @@ func ResolveRetryPolicy(
 	return nil
 }
 
+// resolveRetryPolicyForClient is a primary-ignoring variant of
+// ResolveRetryPolicy used by ResolveStrategyAwareRetryPolicy's
+// leaf-fallback path. It mirrors the non-primary branch of
+// ResolveRetryPolicy exactly — same registry / introspected
+// priority, same nil-guards — but scans for clientName directly
+// rather than *reg.Primary.
+//
+// Why this is needed: ResolveRetryPolicy short-circuits to
+// reg.Primary when set, scanning ONLY for the primary entry and
+// then falling through to step 3 if the primary has no
+// retry_policy. So when the strategy wrapper is itself the
+// registry primary (a common production shape: client_registry
+// override pinned to the wrapper), calling ResolveRetryPolicy
+// with the leaf's name still keys the registry scan off the
+// primary and never reaches the leaf entry, silently shadowing
+// the leaf's runtime-registry retry_policy. The leaf-fallback
+// path needs a direct client-name scan to unshadow this.
+//
+// Per-request override priority is intentionally NOT consulted
+// here: the wrapper-first call in ResolveStrategyAwareRetryPolicy
+// already routes through ResolveRetryPolicy, which handles the
+// override before ever reaching the leaf-fallback. Re-checking
+// the override here would either no-op (override already
+// returned) or double-count (impossible since the override is
+// idempotent). Keeping this helper override-free keeps the
+// priority chain explicit at the strategy-aware level.
+func resolveRetryPolicyForClient(
+	adapter bamlutils.Adapter,
+	clientName, introspectedPolicyName string,
+	introspectedPolicies map[string]*retry.Policy,
+) *retry.Policy {
+	if reg := adapter.OriginalClientRegistry(); reg != nil && clientName != "" {
+		for _, client := range reg.Clients {
+			if client == nil {
+				continue
+			}
+			if client.Name == clientName && client.RetryPolicy != nil {
+				if p, ok := introspectedPolicies[*client.RetryPolicy]; ok {
+					return p
+				}
+			}
+		}
+	}
+	if introspectedPolicyName != "" {
+		return introspectedPolicies[introspectedPolicyName]
+	}
+	return nil
+}
+
 // ResolveStrategyAwareRetryPolicy resolves the retry policy for a request
 // where the originally-routed client (a strategy wrapper, like
 // baml-roundrobin or baml-fallback) may have been unwrapped to a leaf
@@ -112,6 +161,12 @@ func ResolveRetryPolicy(
 //
 // Pre-RR-unwrap callers (where strategyClient == effectiveClient) get
 // behavior identical to a single ResolveRetryPolicy call.
+//
+// The leaf-fallback (priority 3) deliberately routes through
+// resolveRetryPolicyForClient rather than ResolveRetryPolicy: when the
+// strategy wrapper is itself the registry primary, ResolveRetryPolicy's
+// primary-only scan never reaches the leaf entry, silently shadowing
+// the leaf's runtime-registry retry_policy.
 func ResolveStrategyAwareRetryPolicy(
 	adapter bamlutils.Adapter,
 	strategyClient, effectiveClient string,
@@ -122,7 +177,7 @@ func ResolveStrategyAwareRetryPolicy(
 		return p
 	}
 	if strategyClient != effectiveClient {
-		if p := ResolveRetryPolicy(adapter, effectiveClient, effectivePolicyName, introspectedPolicies); p != nil {
+		if p := resolveRetryPolicyForClient(adapter, effectiveClient, effectivePolicyName, introspectedPolicies); p != nil {
 			return p
 		}
 	}

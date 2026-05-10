@@ -698,10 +698,14 @@ func TestResolveStrategyAwareRetryPolicy(t *testing.T) {
 // TestResolveStrategyAwareRetryPolicy_LeafFallbackUsesEffectiveName
 // pins the priority-3 path: wrapper has no policy in either runtime
 // registry or introspected map, but the leaf does. The helper must
-// invoke ResolveRetryPolicy with the EFFECTIVE name on the second
-// call so the runtime registry lookup keys off the leaf, not the
-// wrapper. A regression that mistakenly passed strategyClient on the
-// fallback call would miss the leaf's runtime-registry retry_policy.
+// invoke the runtime-registry lookup with the EFFECTIVE name on the
+// second call so it keys off the leaf, not the wrapper. A regression
+// that mistakenly passed strategyClient on the fallback call would
+// miss the leaf's runtime-registry retry_policy.
+//
+// This test exercises the primary-nil registry shape; the
+// reg.Primary-set companion lives in
+// TestResolveStrategyAwareRetryPolicy_LeafFallbackUnshadowedByPrimary.
 func TestResolveStrategyAwareRetryPolicy_LeafFallbackUsesEffectiveName(t *testing.T) {
 	leafPolicy := "LeafRetry"
 	adapter := &mockAdapter{
@@ -722,5 +726,58 @@ func TestResolveStrategyAwareRetryPolicy_LeafFallbackUsesEffectiveName(t *testin
 	}
 	if got.MaxRetries != 4 {
 		t.Errorf("expected leaf MaxRetries=4, got %d", got.MaxRetries)
+	}
+}
+
+// TestResolveStrategyAwareRetryPolicy_LeafFallbackUnshadowedByPrimary
+// pins the production-shaped scenario CodeRabbit verdict-1 surfaced:
+// when the strategy wrapper IS the runtime registry primary, the
+// inner ResolveRetryPolicy short-circuits to a primary-only scan
+// (retry_policy.go: the `reg.Primary != nil && *reg.Primary != ""`
+// branch), so the leaf-fallback's second call — even with the
+// leaf's effective name passed in — never reaches the leaf's entry.
+// The fix is to use a primary-ignoring helper for the leaf-fallback
+// call so the leaf's runtime-registry retry_policy is honored.
+//
+// Failure mode without the fix: ResolveStrategyAwareRetryPolicy
+// returns nil even though the leaf's runtime-registry retry_policy
+// is fully populated. The first-call wrapper path returns nil
+// (primary entry exists but has no RetryPolicy and no introspected
+// fallback), and the second-call leaf path is shadowed by the same
+// primary-only scan and also returns nil.
+//
+// The fix path: leaf-fallback uses resolveRetryPolicyForClient, which
+// scans by direct client name instead of *reg.Primary. The wrapper-
+// first call still uses ResolveRetryPolicy so its primary-aware
+// behavior + per-request override priority are unchanged.
+func TestResolveStrategyAwareRetryPolicy_LeafFallbackUnshadowedByPrimary(t *testing.T) {
+	primary := "MyRR"
+	leafPolicy := "LeafRetry"
+	adapter := &mockAdapter{
+		Context: context.Background(),
+		originalRegistry: &bamlutils.ClientRegistry{
+			Primary: &primary,
+			Clients: []*bamlutils.ClientProperty{
+				// Wrapper is the registry primary but carries no
+				// retry policy of its own — and has no introspected
+				// fallback either (strategyPolicyName="").
+				{Name: "MyRR", Provider: "baml-roundrobin"},
+				// Leaf has a runtime-registry retry policy. This is
+				// what the strategy-aware helper must surface via
+				// the leaf-fallback path.
+				{Name: "Leaf", Provider: "openai", RetryPolicy: &leafPolicy},
+			},
+		},
+	}
+	policies := map[string]*retry.Policy{
+		"LeafRetry": {MaxRetries: 9, Strategy: &retry.ConstantDelay{DelayMs: 75}},
+	}
+
+	got := ResolveStrategyAwareRetryPolicy(adapter, "MyRR", "Leaf", "", "", policies)
+	if got == nil {
+		t.Fatal("expected leaf-fallback to find Leaf's runtime-registry retry_policy despite MyRR being the registry primary; got nil (leaf-fallback shadowed by primary-only scan in inner ResolveRetryPolicy)")
+	}
+	if got.MaxRetries != 9 {
+		t.Errorf("expected leaf MaxRetries=9, got %d", got.MaxRetries)
 	}
 }
