@@ -3,11 +3,26 @@ package buildrequest
 import (
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
 )
+
+// countingAdvancer atomically increments a counter on every Advance
+// call and otherwise returns 0. Used by the F2 nil-support
+// short-circuit regression test to assert the typed resolver does NOT
+// touch the advancer when isProviderSupported is nil — burning a
+// rotation slot (or, for a RemoteAdvancer, an idempotency-cache slot
+// via host round-trip) on a result we'd discard violates the
+// nil-support contract documented at isCentralizationEligible.
+type countingAdvancer struct{ calls atomic.Int64 }
+
+func (c *countingAdvancer) Advance(_ string, _ int) (int, error) {
+	c.calls.Add(1)
+	return 0, nil
+}
 
 // pinnedIndexAdvancer returns the same child index every call. Used by
 // the PR 2 resolver tests so a single static RR chain's nested
@@ -284,6 +299,13 @@ func TestResolveFallbackChainPlanForClient(t *testing.T) {
 		// where the orchestrator's IsProviderSupported gate has no
 		// signal. Mirrors the resolver's nil-support contract from
 		// #234 for ordinary leaves.
+		//
+		// Critically, the typed resolver MUST short-circuit BEFORE
+		// invoking the advancer — for a remote SharedState advancer,
+		// touching the rotation under nil-support would burn an
+		// idempotency-cache slot via a host round-trip whose result
+		// the eligibility check would discard. The counting advancer
+		// below pins zero advances on the nil-support path.
 		fallbackChains := map[string][]string{
 			"MyFallback": {"InnerRR", "C"},
 			"InnerRR":    {"A", "B"},
@@ -295,9 +317,10 @@ func TestResolveFallbackChainPlanForClient(t *testing.T) {
 			"B":          "openai",
 			"C":          "openai",
 		}
+		adv := &countingAdvancer{}
 		res, err := ResolveFallbackChainPlanForClient(
 			nil, "MyFallback", fallbackChains, clientProviders, nil,
-			&pinnedIndexAdvancer{idx: 0},
+			adv,
 		)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -305,8 +328,56 @@ func TestResolveFallbackChainPlanForClient(t *testing.T) {
 		if !res.LegacyChildren["InnerRR"] {
 			t.Errorf("InnerRR must remain legacy under nil isProviderSupported, got %v", res.LegacyChildren)
 		}
+		if _, ok := res.Targets["InnerRR"]; ok {
+			t.Errorf("Targets[InnerRR] must not be set under nil-support, got %v", res.Targets)
+		}
 		if res.Reason != PathReasonFallbackRoundRobinChildLegacy {
 			t.Errorf("Reason: got %q, want %q", res.Reason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+		if got := adv.calls.Load(); got != 0 {
+			t.Errorf("advancer call count under nil-support: got %d, want 0 (must short-circuit BEFORE resolveImmediateRRChild — issue #237 PR 2 F2)",
+				got)
+		}
+	})
+
+	t.Run("duplicate-rr-child-rejected", func(t *testing.T) {
+		// A fallback chain containing the same RR-wrapper child name
+		// twice would silently overwrite chainProviders[child] /
+		// targets[child] / nestedRR[child] on the second iteration.
+		// The orchestrator iterates FallbackChain positionally and
+		// reads FallbackTargets[child] by name, so it'd dispatch BOTH
+		// iterations to the second iteration's target — wrong runtime
+		// routing. Reject request-fatal at the typed seam (issue #237
+		// PR 2 F1). The 4-tuple wrapper's hard-error → legacy
+		// demotion preserves codegen-driven dispatch behaviour;
+		// see Test4TupleWrapper_DemoteCentralizedToLegacy.
+		fallbackChains := map[string][]string{
+			"MyFallback": {"InnerRR", "InnerRR", "C"},
+			"InnerRR":    {"A", "B"},
+		}
+		clientProviders := map[string]string{
+			"MyFallback": "baml-fallback",
+			"InnerRR":    "baml-roundrobin",
+			"A":          "openai",
+			"B":          "openai",
+			"C":          "openai",
+		}
+		res, err := ResolveFallbackChainPlanForClient(
+			nil, "MyFallback", fallbackChains, clientProviders, supportOpenAI,
+			&pinnedIndexAdvancer{idx: 0},
+		)
+		if err == nil {
+			t.Fatalf("expected request-fatal error for duplicate RR child, got resolution=%+v", res)
+		}
+		if res != nil {
+			t.Errorf("expected nil resolution alongside the error, got %+v", res)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "duplicate") {
+			t.Errorf("error message must mention \"duplicate\", got: %v", err)
+		}
+		if !strings.Contains(msg, "InnerRR") {
+			t.Errorf("error message must name the offending RR child \"InnerRR\", got: %v", err)
 		}
 	})
 

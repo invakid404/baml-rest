@@ -2,6 +2,7 @@ package buildrequest
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
@@ -130,11 +131,23 @@ func ResolveFallbackChainPlanForClient(
 	chainLegacy := make(map[string]bool)
 	var targets map[string]string
 	var nestedRR map[string]*bamlutils.RoundRobinInfo
+	// rrChildPositions tracks the chain index of each immediate RR
+	// fallback child seen so far. The typed Targets / NestedRoundRobin
+	// maps and the orchestrator's FallbackTargets config are all keyed
+	// by child name, while FallbackChain is positional — so a chain
+	// like [InnerRR, InnerRR, C] would silently overwrite the first
+	// iteration's per-child writes with the second's, and the
+	// orchestrator (iterating positionally, looking up by name) would
+	// dispatch BOTH iterations to the second's target. Reject
+	// duplicates request-fatal at the typed seam; the 4-tuple wrapper's
+	// hard-error → legacy demotion preserves codegen-driven dispatch
+	// behaviour.
+	var rrChildPositions map[string]int
 	legacyPositions := 0
 	hasRoundRobinChildLegacy := false
 	hasRoundRobinChildCentralized := false
 
-	for _, child := range resolvedChain {
+	for i, child := range resolvedChain {
 		if hasInvalidProviderOverride(reg, child) {
 			return &FallbackChainResolution{Reason: PathReasonInvalidProviderOverride}, nil
 		}
@@ -161,10 +174,16 @@ func ResolveFallbackChainPlanForClient(
 		//   1. Resolved provider is RR (this branch).
 		//   2. Invalid-override preflight passed (handled above for
 		//      every strategy child).
-		//   3. RR resolution yields a selected leaf without a hard error.
-		//   4. Selected leaf is non-strategy (not RR, not fallback).
-		//   5. Selected leaf's provider is non-empty AND supported by
-		//      isProviderSupported (or isProviderSupported is non-nil).
+		//   3. isProviderSupported is non-nil — the precondition for
+		//      ANY centralization attempt. Without a support predicate
+		//      we can't determine BR-eligibility for the selected leaf,
+		//      so attempting RR resolution is wasted work — and for a
+		//      remote advancer it would burn an idempotency-cache slot
+		//      via a host round-trip whose result we'd discard.
+		//   4. RR resolution yields a selected leaf without a hard error.
+		//   5. Selected leaf is non-strategy (not RR, not fallback).
+		//   6. Selected leaf's provider is non-empty AND supported by
+		//      isProviderSupported.
 		//
 		// Hard errors from roundrobin.Resolve — cycle detection, empty
 		// children, advancer transport errors, out-of-range indices —
@@ -176,45 +195,70 @@ func ResolveFallbackChainPlanForClient(
 		// surfaces as a top-level legacy fallthrough rather than a
 		// silent request-fatal.
 		if roundrobin.IsRoundRobinProvider(p) {
-			leaf, leafProvider, info, err := resolveImmediateRRChild(reg, child, fallbackChains, clientProviders, advancer)
-			if err != nil {
-				if errors.Is(err, roundrobin.ErrInvalidStrategyOverride) {
-					return &FallbackChainResolution{Reason: PathReasonInvalidStrategyOverride}, nil
-				}
-				if errors.Is(err, roundrobin.ErrInvalidStartOverride) {
-					return &FallbackChainResolution{Reason: PathReasonInvalidRoundRobinStartOverride}, nil
-				}
-				// Hard error — propagate to the caller; the request
-				// fails fast, matching top-level RR semantics.
-				return nil, err
+			// Duplicate-RR-child guard runs FIRST (before the
+			// nil-support short-circuit) so an operator-broken chain
+			// is rejected regardless of whether centralization would
+			// even be attempted on a single iteration.
+			if prev, seen := rrChildPositions[child]; seen {
+				return nil, fmt.Errorf(
+					"buildrequest: fallback %q contains duplicate round-robin child %q at positions %d and %d",
+					clientName, child, prev, i,
+				)
 			}
-			if isCentralizationEligible(leaf, leafProvider, isProviderSupported) {
-				// Centralize: drop legacy classification, surface
-				// leaf provider for support gating, record the
-				// dispatch target and RR decision.
-				chainProviders[child] = leafProvider
-				if leaf != child {
-					if targets == nil {
-						targets = make(map[string]string)
-					}
-					targets[child] = leaf
-				}
-				if info != nil {
-					if nestedRR == nil {
-						nestedRR = make(map[string]*bamlutils.RoundRobinInfo)
-					}
-					nestedRR[child] = info
-				}
-				hasRoundRobinChildCentralized = true
-				continue
+			if rrChildPositions == nil {
+				rrChildPositions = make(map[string]int)
 			}
-			// Ineligible — fall through to the legacy classification
-			// path below. The wrapper provider stays on chainProviders
-			// (already set above before the centralization attempt
-			// rewrote it for the success path; rewrite the value back
-			// since the centralization attempt didn't take).
-			chainProviders[child] = p
-			hasRoundRobinChildLegacy = true
+			rrChildPositions[child] = i
+
+			if isProviderSupported == nil {
+				// Precondition #3 fails — skip the advance entirely
+				// and let the legacy-classification block below mark
+				// the wrapper as legacy. This keeps the documented
+				// nil-support contract (see isCentralizationEligible)
+				// honest: we never call into the advancer for a
+				// branch we already know is going to be discarded.
+				hasRoundRobinChildLegacy = true
+			} else {
+				leaf, leafProvider, info, err := resolveImmediateRRChild(reg, child, fallbackChains, clientProviders, advancer)
+				if err != nil {
+					if errors.Is(err, roundrobin.ErrInvalidStrategyOverride) {
+						return &FallbackChainResolution{Reason: PathReasonInvalidStrategyOverride}, nil
+					}
+					if errors.Is(err, roundrobin.ErrInvalidStartOverride) {
+						return &FallbackChainResolution{Reason: PathReasonInvalidRoundRobinStartOverride}, nil
+					}
+					// Hard error — propagate to the caller; the request
+					// fails fast, matching top-level RR semantics.
+					return nil, err
+				}
+				if isCentralizationEligible(leaf, leafProvider, isProviderSupported) {
+					// Centralize: drop legacy classification, surface
+					// leaf provider for support gating, record the
+					// dispatch target and RR decision.
+					chainProviders[child] = leafProvider
+					if leaf != child {
+						if targets == nil {
+							targets = make(map[string]string)
+						}
+						targets[child] = leaf
+					}
+					if info != nil {
+						if nestedRR == nil {
+							nestedRR = make(map[string]*bamlutils.RoundRobinInfo)
+						}
+						nestedRR[child] = info
+					}
+					hasRoundRobinChildCentralized = true
+					continue
+				}
+				// Ineligible — fall through to the legacy classification
+				// path below. The wrapper provider stays on chainProviders
+				// (already set above before the centralization attempt
+				// rewrote it for the success path; rewrite the value back
+				// since the centralization attempt didn't take).
+				chainProviders[child] = p
+				hasRoundRobinChildLegacy = true
+			}
 		}
 
 		// Strategy-provider children (RR — ineligible, fallback)
@@ -290,14 +334,18 @@ func resolveImmediateRRChild(
 }
 
 // isCentralizationEligible enforces the leaf-side eligibility checks
-// (#4 non-strategy leaf, #5 BR-supported leaf provider). A nil
-// isProviderSupported is treated as "unable to determine support" —
-// the centralization path is intentionally conservative under nil
-// (the orchestrator's IsProviderSupported gate has no signal to gate
-// on, so dispatching as drivable could route an unsupported leaf
-// through BuildRequest). Ordinary leaves under nil-support stay
-// drivable via the existing legacy-classification predicate, which
-// matches #234's contract for the same nil case.
+// (#5 non-strategy leaf, #6 BR-supported leaf provider) AFTER RR
+// resolution has happened. A nil isProviderSupported is also rejected
+// here defensively — but in practice the typed resolver short-circuits
+// on nil-support BEFORE invoking resolveImmediateRRChild (precondition
+// #3 in the chain-walk loop), so this branch is unreachable on the
+// happy path. Keeping the nil check here means a future caller that
+// invokes isCentralizationEligible directly stays safe under the same
+// "unable to determine support → not eligible" contract.
+//
+// Ordinary leaves under nil-support stay drivable via the existing
+// legacy-classification predicate, which matches #234's contract for
+// the same nil case.
 func isCentralizationEligible(leaf, leafProvider string, isProviderSupported func(string) bool) bool {
 	if leaf == "" || leafProvider == "" {
 		return false

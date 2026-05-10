@@ -1275,4 +1275,49 @@ func Test4TupleWrapper_DemoteCentralizedToLegacy(t *testing.T) {
 			t.Errorf("reason: got %q, want \"\" (clean BR-drivable chain)", reason)
 		}
 	})
+
+	t.Run("duplicate-rr-child-demoted-to-legacy", func(t *testing.T) {
+		// The typed helper rejects a duplicate-named RR fallback
+		// child request-fatal (issue #237 PR 2 F1). The 4-tuple
+		// wrapper's hard-error → legacy demotion shim must catch
+		// that error and return the pre-PR-2 legacy classification
+		// shape, so codegen-driven dispatch keeps using the legacy
+		// callback regardless of whether the operator's chain
+		// contains the duplicate name. This test pins the demotion
+		// path for the F1 case specifically — without it, the
+		// 4-tuple wrapper would surface a centralized-shape mistake
+		// the moment codegen migrates partially.
+		fallbackChains := map[string][]string{
+			"MyFallback": {"InnerRR", "InnerRR", "C"},
+			"InnerRR":    {"A", "B"},
+		}
+		clientProviders := map[string]string{
+			"MyFallback": "baml-fallback",
+			"InnerRR":    "baml-roundrobin",
+			"A":          "openai",
+			"B":          "openai",
+			"C":          "openai",
+		}
+		chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+			nil, "MyFallback", fallbackChains, clientProviders, supportOpenAI,
+		)
+		if chain == nil {
+			t.Fatalf("expected the 4-tuple wrapper to demote the typed F1 hard error to legacy classification (drivable chain), got nil with reason=%q", reason)
+		}
+		// Legacy classification preserves the duplicate names in
+		// chain order — the chain still has the operator's shape;
+		// the wrapper is just on the legacy child list now.
+		if len(chain) != 3 {
+			t.Errorf("chain length: got %d, want 3 (legacy classification keeps duplicate-name positions)", len(chain))
+		}
+		if !legacy["InnerRR"] {
+			t.Errorf("InnerRR must be on the legacy child list (demoted from F1 hard error), legacyChildren=%v", legacy)
+		}
+		if providers["InnerRR"] != "baml-roundrobin" {
+			t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin (demoted, NOT leaf provider)", providers["InnerRR"])
+		}
+		if reason != PathReasonFallbackRoundRobinChildLegacy {
+			t.Errorf("reason: got %q, want %q (4-tuple seam demotes the F1 hard error to ChildLegacy)", reason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+	})
 }
