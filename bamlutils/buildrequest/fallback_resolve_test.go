@@ -978,3 +978,118 @@ func TestResolveFallbackChain_FallbackAllowed(t *testing.T) {
 		t.Errorf("expected no legacy children for all-supported chain, got %v", legacyChildren)
 	}
 }
+
+// TestResolveFallbackChainForClientWithReason_NilSupportCheck_StrategyChildrenLegacy
+// pins the nil-isProviderSupported contract for strategy-provider
+// children: BuildRequest cannot drive a strategy wrapper as a leaf,
+// so RR / fallback children must always land on the legacy child
+// list regardless of whether the caller passed a support predicate.
+//
+// Ordinary leaf providers in the same chain stay drivable (unknown
+// support → not legacy) under nil-support, so the chain itself
+// resolves with at least one supported sibling.
+//
+// PathReasonFallbackRoundRobinChildLegacy must continue to fire
+// only for RR children — fallback children become legacy children
+// without the RR-specific informational reason.
+func TestResolveFallbackChainForClientWithReason_NilSupportCheck_StrategyChildrenLegacy(t *testing.T) {
+	cases := []struct {
+		name           string
+		outerClient    string
+		fallbackChains map[string][]string
+		providers      map[string]string
+		legacyChild    string
+		drivableChild  string
+		wantReason     string
+	}{
+		{
+			name:        "roundrobin-child",
+			outerClient: "MyFallback",
+			fallbackChains: map[string][]string{
+				"MyFallback": {"FastLeaf", "InnerRR"},
+			},
+			providers: map[string]string{
+				"MyFallback": "baml-fallback",
+				"FastLeaf":   "openai",
+				"InnerRR":    "baml-roundrobin",
+			},
+			legacyChild:   "InnerRR",
+			drivableChild: "FastLeaf",
+			wantReason:    PathReasonFallbackRoundRobinChildLegacy,
+		},
+		{
+			name:        "fallback-child",
+			outerClient: "MyOuterFallback",
+			fallbackChains: map[string][]string{
+				"MyOuterFallback": {"FastLeaf", "InnerFallback"},
+			},
+			providers: map[string]string{
+				"MyOuterFallback": "baml-fallback",
+				"FastLeaf":        "openai",
+				"InnerFallback":   "baml-fallback",
+			},
+			legacyChild:   "InnerFallback",
+			drivableChild: "FastLeaf",
+			wantReason:    "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+				nil, tc.outerClient, tc.fallbackChains, tc.providers,
+				nil,
+			)
+			if chain == nil {
+				t.Fatalf("expected chain to resolve under nil isProviderSupported (mixed-mode strategy child + drivable leaf), got nil with reason=%q", reason)
+			}
+			if len(chain) != 2 {
+				t.Fatalf("expected len=2 chain, got %d: %v", len(chain), chain)
+			}
+			if reason != tc.wantReason {
+				t.Errorf("reason: got %q, want %q", reason, tc.wantReason)
+			}
+			if !legacy[tc.legacyChild] {
+				t.Errorf("%s must be classified legacy under nil-support (strategy wrapper), legacyChildren=%v", tc.legacyChild, legacy)
+			}
+			if legacy[tc.drivableChild] {
+				t.Errorf("%s is an ordinary leaf provider — must not be legacy under nil-support, legacyChildren=%v", tc.drivableChild, legacy)
+			}
+			if providers[tc.legacyChild] == "" {
+				t.Errorf("providers[%s] must be populated even when child is legacy, providers=%v", tc.legacyChild, providers)
+			}
+		})
+	}
+}
+
+// TestResolveFallbackChainForClient_NilSupportCheck_StrategyChildClassified
+// pins that the no-reason sibling helper returns the same
+// legacyChildren map after discarding reason. Regression guard
+// against a future divergence between the two exported entry
+// points' nil-support handling.
+func TestResolveFallbackChainForClient_NilSupportCheck_StrategyChildClassified(t *testing.T) {
+	fallbackChains := map[string][]string{
+		"MyFallback": {"FastLeaf", "InnerRR"},
+	}
+	clientProviders := map[string]string{
+		"MyFallback": "baml-fallback",
+		"FastLeaf":   "openai",
+		"InnerRR":    "baml-roundrobin",
+	}
+
+	chain, providers, legacy := ResolveFallbackChainForClient(
+		nil, "MyFallback", fallbackChains, clientProviders, nil,
+	)
+
+	if len(chain) != 2 {
+		t.Fatalf("expected len=2 chain (mixed-mode RR child + drivable leaf) under nil-support, got %d: %v", len(chain), chain)
+	}
+	if !legacy["InnerRR"] {
+		t.Errorf("InnerRR must be classified legacy via the no-reason sibling, legacyChildren=%v", legacy)
+	}
+	if legacy["FastLeaf"] {
+		t.Errorf("FastLeaf must not be misclassified as legacy under nil-support, legacyChildren=%v", legacy)
+	}
+	if providers["InnerRR"] != "baml-roundrobin" {
+		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin", providers["InnerRR"])
+	}
+}
