@@ -667,6 +667,41 @@ func TestResolveStrategyAwareRetryPolicy(t *testing.T) {
 			policies:            commonPolicies,
 			wantNil:             true,
 		},
+		{
+			// Equal-name no-unwrap WITH a populated effective fallback
+			// policy. This is the load-bearing pin on the
+			// `strategyClient != effectiveClient` guard inside
+			// ResolveStrategyAwareRetryPolicy.
+			//
+			// Trace WITH the guard: wrapper-first call sees
+			// strategyPolicyName="" and no matching runtime registry
+			// entry → returns nil. The guard then suppresses the
+			// leaf-fallback because strategyClient == effectiveClient,
+			// so the helper returns nil. wantNil=true holds.
+			//
+			// Trace WITHOUT the guard: wrapper-first returns nil as
+			// before, but then the leaf-fallback fires unconditionally
+			// → resolveRetryPolicyForClient picks up
+			// effectivePolicyName="LeafRetry" → returns the LeafRetry
+			// policy (MaxRetries=3). The test would fail with
+			// "expected nil, got MaxRetries=3", catching the
+			// regression.
+			//
+			// This sub-case differs from no-unwrap-no-policy-nil
+			// (where effectivePolicyName="" makes the leaf-fallback
+			// also return nil and the guard becomes a no-op) and from
+			// no-unwrap-equal-names-matches-single-call (where the
+			// wrapper-first call returns non-nil and short-circuits
+			// before the guard matters).
+			name:                "no-unwrap-equal-names-suppresses-leaf-fallback",
+			adapter:             &mockAdapter{Context: context.Background()},
+			strategyClient:      "Solo",
+			effectiveClient:     "Solo",
+			strategyPolicyName:  "",
+			effectivePolicyName: "LeafRetry",
+			policies:            commonPolicies,
+			wantNil:             true,
+		},
 	}
 
 	for _, tc := range cases {
