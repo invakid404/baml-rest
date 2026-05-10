@@ -1079,6 +1079,174 @@ func TestExtractResponseContent_OpenAIReasoningContentMissingContent(t *testing.
 	}
 }
 
+// TestExtractResponseContent_OpenAIResponsesReasoningSummary asserts the
+// Phase 5 dual-output behavior for the OpenAI Responses API non-streaming
+// branch (provider key "openai-responses"):
+//
+//   - parseable always reflects only message output_text. Reasoning summary
+//     surfaces never enter parseable so the BAML parser cannot be influenced.
+//   - raw mirrors parseable when includeThinking is false; when true, raw
+//     additionally surfaces reasoning items' summary[].text entries written
+//     into raw at the position they appear in output[]. Output-array order
+//     is preserved (no canonical reorder).
+//   - Reasoning summary shape is treated as optional telemetry: non-array
+//     summary, non-object entries, missing text, and non-string text are all
+//     silently skipped — they never produce errors.
+//   - The strict no-message-item contract is preserved: a reasoning-only
+//     response (no message item) still errors regardless of the flag.
+//
+// Parseable invariance across the includeThinking flag is asserted for every
+// successful fixture; rawOff equality with parseable is also asserted (when
+// flag is off, raw must mirror parseable byte-for-byte). rawOn equality is
+// intentionally allowed to diverge — that is the whole point of opt-in.
+//
+// OpenAI's underlying reasoning chain-of-thought is server-encrypted for
+// o1/o3-style models. We only surface the human-readable summaries OpenAI
+// exposes via summary[].text; reasoning.content[].text and encrypted_content
+// are intentionally not surfaced.
+func TestExtractResponseContent_OpenAIResponsesReasoningSummary(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		parseable string
+		rawOn     string
+	}{
+		{
+			name:      "message only",
+			body:      `{"output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}],"role":"assistant"}]}`,
+			parseable: "Hello",
+			rawOn:     "Hello",
+		},
+		{
+			// Reasoning before message: raw under opt-in is summary + message.
+			name: "reasoning before message",
+			body: `{"output":[
+				{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]},
+				{"type":"message","content":[{"type":"output_text","text":"Hello"}],"role":"assistant"}
+			]}`,
+			parseable: "Hello",
+			rawOn:     "thoughtHello",
+		},
+		{
+			// Reasoning AFTER message: raw under opt-in preserves output
+			// order, so it is message + summary (no canonical reorder).
+			name: "reasoning after message",
+			body: `{"output":[
+				{"type":"message","content":[{"type":"output_text","text":"Hello"}],"role":"assistant"},
+				{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]}
+			]}`,
+			parseable: "Hello",
+			rawOn:     "Hellothought",
+		},
+		{
+			// Multiple reasoning items, multiple summary[] entries each, all
+			// concatenated under opt-in in output[]/summary[] order.
+			name: "multiple reasoning items multiple summary entries",
+			body: `{"output":[
+				{"type":"reasoning","summary":[
+					{"type":"summary_text","text":"r1a"},
+					{"type":"summary_text","text":"r1b"}
+				]},
+				{"type":"message","content":[{"type":"output_text","text":"Hi"}],"role":"assistant"},
+				{"type":"reasoning","summary":[
+					{"type":"summary_text","text":"r2a"},
+					{"type":"summary_text","text":"r2b"}
+				]}
+			]}`,
+			parseable: "Hi",
+			rawOn:     "r1ar1bHir2ar2b",
+		},
+		{
+			// Reasoning + message-with-empty-content-array: parseable is
+			// empty (valid — empty content is a valid Responses message),
+			// raw under opt-in is just the summary. This proves the message
+			// item is still required (no error here because a message item
+			// with empty content IS present).
+			name: "reasoning plus message with empty content array",
+			body: `{"output":[
+				{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]},
+				{"type":"message","content":[],"role":"assistant"}
+			]}`,
+			parseable: "",
+			rawOn:     "thought",
+		},
+		{
+			// Malformed reasoning summary shape: non-array summary, non-object
+			// entries, missing text, non-string text are all silently skipped.
+			// The message item still extracts correctly and no error is raised.
+			name: "malformed reasoning summary silently skipped",
+			body: `{"output":[
+				{"type":"reasoning","summary":"not an array"},
+				{"type":"reasoning","summary":[
+					"not an object",
+					{"type":"summary_text"},
+					{"type":"summary_text","text":42},
+					{"type":"summary_text","text":"valid"}
+				]},
+				{"type":"message","content":[{"type":"output_text","text":"Hello"}],"role":"assistant"}
+			]}`,
+			parseable: "Hello",
+			rawOn:     "validHello",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parseableOff, rawOff, err := ExtractResponseContent("openai-responses", tc.body, false)
+			if err != nil {
+				t.Fatalf("ExtractResponseContent(includeThinking=false) returned error: %v", err)
+			}
+			if parseableOff != tc.parseable {
+				t.Errorf("flag=false parseable = %q, want %q", parseableOff, tc.parseable)
+			}
+			// Flag-off: raw must mirror parseable byte-for-byte.
+			if rawOff != parseableOff {
+				t.Errorf("flag=false raw = %q, want raw == parseable = %q", rawOff, parseableOff)
+			}
+
+			parseableOn, rawOn, err := ExtractResponseContent("openai-responses", tc.body, true)
+			if err != nil {
+				t.Fatalf("ExtractResponseContent(includeThinking=true) returned error: %v", err)
+			}
+			if parseableOn != tc.parseable {
+				t.Errorf("flag=true parseable = %q, want %q", parseableOn, tc.parseable)
+			}
+			if rawOn != tc.rawOn {
+				t.Errorf("flag=true raw = %q, want %q", rawOn, tc.rawOn)
+			}
+
+			// Structural parseable invariance: byte-identical across both flag
+			// values for every successful fixture.
+			if parseableOff != parseableOn {
+				t.Errorf("parseable diverged across includeThinking: false=%q true=%q", parseableOff, parseableOn)
+			}
+		})
+	}
+}
+
+// TestExtractResponseContent_OpenAIResponsesReasoningSummaryNoMessageStillErrors
+// locks in the contract that reasoning summaries are telemetry — their
+// presence does NOT relax the existing "message item required" contract for
+// the OpenAI Responses API non-streaming branch. A reasoning-only response
+// (no message item) must error in both flag values, and must return empty
+// parseable AND empty raw (no telemetry leakage from a malformed response).
+func TestExtractResponseContent_OpenAIResponsesReasoningSummaryNoMessageStillErrors(t *testing.T) {
+	body := `{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]}]}`
+
+	for _, flag := range []bool{false, true} {
+		parseable, raw, err := ExtractResponseContent("openai-responses", body, flag)
+		if err == nil {
+			t.Errorf("includeThinking=%v: expected error for missing message item (reasoning-only response is not a valid response)", flag)
+		}
+		if parseable != "" {
+			t.Errorf("includeThinking=%v: expected empty parseable on error, got %q", flag, parseable)
+		}
+		if raw != "" {
+			t.Errorf("includeThinking=%v: expected empty raw on error (no telemetry leakage), got %q", flag, raw)
+		}
+	}
+}
+
 func TestExtractResponseContent_UnsupportedProvider(t *testing.T) {
 	_, _, err := ExtractResponseContent("aws-bedrock", `{}`, false)
 	if err == nil {

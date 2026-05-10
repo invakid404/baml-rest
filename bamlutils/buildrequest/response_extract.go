@@ -27,7 +27,8 @@ import (
 //     contract). When includeThinking is true, raw additionally carries
 //     provider-specific reasoning content (Anthropic thinking blocks,
 //     Gemini thought-tagged parts, OpenAI Chat Completions
-//     reasoning_content).
+//     reasoning_content, OpenAI Responses reasoning summary[].text
+//     entries from output[].type == "reasoning" items).
 //
 // Returns an error for unsupported providers, empty bodies, invalid JSON,
 // and when a non-empty response body does not contain the expected structure.
@@ -52,8 +53,7 @@ func ExtractResponseContent(provider string, responseBody string, includeThinkin
 		return extractAnthropicContent(provider, responseBody, includeThinking)
 
 	case "openai-responses":
-		text, extractErr := extractOpenAIResponsesContent(provider, responseBody)
-		return text, text, extractErr
+		return extractOpenAIResponsesContent(provider, responseBody, includeThinking)
 
 	case "google-ai", "vertex-ai":
 		return extractGeminiContent(provider, responseBody, includeThinking)
@@ -308,28 +308,51 @@ func extractGeminiContent(provider string, responseBody string, includeThinking 
 //
 //	{
 //	  "output": [
-//	    {"type": "reasoning", "content": [], "summary": []},
+//	    {"type": "reasoning", "content": [], "summary": [
+//	      {"type": "summary_text", "text": "..."}
+//	    ], "encrypted_content": "..."},
 //	    {"type": "message", "status": "completed", "content": [
 //	      {"type": "output_text", "text": "The response text."}
 //	    ], "role": "assistant"}
 //	  ]
 //	}
 //
-// We concatenate assistant text across all output items with type ==
-// "message". Responses API output ordering/count is model-dependent, so we
-// must not assume the first message item contains the whole answer. Reasoning
-// items are skipped (they are not part of the model's answer).
-func extractOpenAIResponsesContent(provider string, responseBody string) (string, error) {
+// Returns two strings:
+//   - parseable: assistant text from all output items with type == "message",
+//     concatenated in array order. Reasoning surfaces never enter this value
+//     so the BAML parser cannot be influenced by reasoning text.
+//   - raw: assistant message text always; when includeThinking is true,
+//     reasoning items' summary[].text entries are additionally written into
+//     raw at the position they appear in output[]. Output-array order is
+//     preserved — if a reasoning item comes before the message, raw is
+//     "summary + message"; if it comes after, raw is "message + summary".
+//
+// Responses API output ordering/count is model-dependent, so we walk the
+// array in order rather than assume the first message item contains the
+// whole answer.
+//
+// OpenAI's underlying reasoning chain-of-thought is server-encrypted for
+// o1/o3-style models. Phase 5 only surfaces the human-readable summaries
+// OpenAI exposes via summary[].text; reasoning.content[].text and
+// encrypted_content are intentionally not surfaced.
+//
+// Reasoning summary shape is treated as optional telemetry: non-array
+// summary, non-object entries, missing text, and non-string text are all
+// silently skipped — they never produce errors. The strict no-message-item
+// contract is preserved: a reasoning-only response (no message item) still
+// errors regardless of the flag.
+func extractOpenAIResponsesContent(provider, responseBody string, includeThinking bool) (parseable, raw string, err error) {
 	output := gjson.Get(responseBody, "output")
 	if !output.IsArray() {
-		return "", fmt.Errorf("%s: could not extract text content from response (output array not found)", provider)
+		return "", "", fmt.Errorf("%s: could not extract text content from response (output array not found)", provider)
 	}
 
 	// Validate ALL output elements are objects, then aggregate all message
 	// items. We must not stop early because trailing output items still need
 	// validation and may contain additional assistant text.
-	var found bool
-	var sb strings.Builder
+	var foundMessage bool
+	var parseableSB strings.Builder
+	var rawSB strings.Builder
 	var outputErr error
 	output.ForEach(func(_, item gjson.Result) bool {
 		if !item.IsObject() {
@@ -342,8 +365,9 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 			outputErr = fmt.Errorf("%s: output array element missing required 'type' field", provider)
 			return false
 		}
-		if itemTypeField.String() == "message" {
-			found = true
+		switch itemTypeField.String() {
+		case "message":
+			foundMessage = true
 			contentArray := item.Get("content")
 			if !contentArray.IsArray() {
 				outputErr = fmt.Errorf("%s: message item has no content array", provider)
@@ -367,7 +391,8 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 						outputErr = fmt.Errorf("%s: unexpected type for output_text text field (got %s)", provider, textField.Type)
 						return false
 					}
-					sb.WriteString(textField.String())
+					parseableSB.WriteString(textField.String())
+					rawSB.WriteString(textField.String())
 				case "refusal":
 					refusalField := entry.Get("refusal")
 					refusalText := "unknown reason"
@@ -382,16 +407,41 @@ func extractOpenAIResponsesContent(provider string, responseBody string) (string
 			if outputErr != nil {
 				return false
 			}
+
+		case "reasoning":
+			if includeThinking {
+				appendOpenAIResponsesReasoningSummary(item, &rawSB)
+			}
 		}
 		return true
 	})
 
 	if outputErr != nil {
-		return "", outputErr
+		return "", "", outputErr
 	}
-	if !found {
-		return "", fmt.Errorf("%s: no message item found in output array", provider)
+	if !foundMessage {
+		return "", "", fmt.Errorf("%s: no message item found in output array", provider)
 	}
 
-	return sb.String(), nil
+	return parseableSB.String(), rawSB.String(), nil
+}
+
+// appendOpenAIResponsesReasoningSummary writes the human-readable summary
+// entries of an OpenAI Responses reasoning item to rawSB. The summary shape
+// is treated as optional telemetry — non-array summary, non-object entries,
+// missing text, and non-string text are silently skipped. reasoning.content
+// and encrypted_content are NOT inspected; the underlying chain-of-thought
+// is server-encrypted and intentionally not surfaced.
+func appendOpenAIResponsesReasoningSummary(item gjson.Result, rawSB *strings.Builder) {
+	summary := item.Get("summary")
+	if !summary.IsArray() {
+		return
+	}
+	summary.ForEach(func(_, entry gjson.Result) bool {
+		text := entry.Get("text")
+		if text.Type == gjson.String {
+			rawSB.WriteString(text.String())
+		}
+		return true
+	})
 }
