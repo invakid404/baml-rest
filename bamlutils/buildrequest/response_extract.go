@@ -26,7 +26,8 @@ import (
 //     equals parseable (matches BAML's RawLLMResponse() text-only
 //     contract). When includeThinking is true, raw additionally carries
 //     provider-specific reasoning content (Anthropic thinking blocks,
-//     Gemini thought-tagged parts).
+//     Gemini thought-tagged parts, OpenAI Chat Completions
+//     reasoning_content).
 //
 // Returns an error for unsupported providers, empty bodies, invalid JSON,
 // and when a non-empty response body does not contain the expected structure.
@@ -45,8 +46,7 @@ func ExtractResponseContent(provider string, responseBody string, includeThinkin
 
 	switch provider {
 	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter":
-		text, extractErr := extractOpenAIContent(provider, responseBody)
-		return text, text, extractErr
+		return extractOpenAIContent(provider, responseBody, includeThinking)
 
 	case "anthropic":
 		return extractAnthropicContent(provider, responseBody, includeThinking)
@@ -66,6 +66,16 @@ func ExtractResponseContent(provider string, responseBody string, includeThinkin
 // extractOpenAIContent extracts text from an OpenAI Chat Completions
 // non-streaming response.
 //
+// Returns two strings:
+//   - parseable: text content only — message.content (scalar string, array
+//     text parts, or explicit null). Reasoning content never enters this
+//     value, so the BAML parser cannot be influenced by reasoning text.
+//   - raw: text content always; when includeThinking is true, additionally
+//     carries message.reasoning_content (the de-facto reasoning surface for
+//     DeepSeek-R1 and several OAI-compat gateways) appended after content.
+//     Non-string reasoning_content is silently skipped, matching the
+//     defensive pattern used elsewhere for optional reasoning surfaces.
+//
 // Handles:
 //   - Scalar string content (common case)
 //   - Array content parts (multimodal / tool-use)
@@ -73,8 +83,20 @@ func ExtractResponseContent(provider string, responseBody string, includeThinkin
 //   - Refusal responses (message.refusal field or {"type":"refusal"} parts)
 //
 // Returns an error for refusals, missing/malformed content, and non-object
-// array elements.
-func extractOpenAIContent(provider string, responseBody string) (string, error) {
+// array elements. reasoning_content is telemetry — its presence does not
+// change content's strict error semantics.
+func extractOpenAIContent(provider, responseBody string, includeThinking bool) (parseable, raw string, err error) {
+	appendReasoning := func(parseable string) string {
+		if !includeThinking {
+			return parseable
+		}
+		reasoning := gjson.Get(responseBody, "choices.0.message.reasoning_content")
+		if reasoning.Type != gjson.String {
+			return parseable
+		}
+		return parseable + reasoning.String()
+	}
+
 	// Check for refusal first. OpenAI returns refusals either as a
 	// top-level message.refusal field or as a content array part with
 	// type == "refusal". The presence of the refusal field means the model
@@ -85,14 +107,15 @@ func extractOpenAIContent(provider string, responseBody string) (string, error) 
 		if refusal.Type == gjson.String && refusal.String() != "" {
 			refusalText = refusal.String()
 		}
-		return "", fmt.Errorf("%s: model refused request: %s", provider, refusalText)
+		return "", "", fmt.Errorf("%s: model refused request: %s", provider, refusalText)
 	}
 
 	content := gjson.Get(responseBody, "choices.0.message.content")
 
 	// Scalar string — the common case
 	if content.Type == gjson.String {
-		return content.String(), nil
+		text := content.String()
+		return text, appendReasoning(text), nil
 	}
 
 	// Array of content parts
@@ -136,21 +159,22 @@ func extractOpenAIContent(provider string, responseBody string) (string, error) 
 			return true
 		})
 		if iterErr != nil {
-			return "", iterErr
+			return "", "", iterErr
 		}
-		return sb.String(), nil
+		text := sb.String()
+		return text, appendReasoning(text), nil
 	}
 
 	// Explicitly null content (e.g. function-call-only responses) — valid.
 	if content.Exists() && content.Type == gjson.Null {
-		return "", nil
+		return "", appendReasoning(""), nil
 	}
 
 	if content.Exists() {
-		return "", fmt.Errorf("%s: unexpected content type in response (got %s)", provider, content.Type)
+		return "", "", fmt.Errorf("%s: unexpected content type in response (got %s)", provider, content.Type)
 	}
 
-	return "", fmt.Errorf("%s: could not extract text content from response (choices[0].message.content not found)", provider)
+	return "", "", fmt.Errorf("%s: could not extract text content from response (choices[0].message.content not found)", provider)
 }
 
 // extractAnthropicContent extracts text from an Anthropic Messages API
