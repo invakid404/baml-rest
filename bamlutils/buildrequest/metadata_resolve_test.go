@@ -1662,3 +1662,45 @@ func TestEncodeRetryPolicy_Formats(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildLegacyMetadataPlanForClient_NilSupportRebuildClassifiesStrategyChildren
+// pins the rebuild path's strategy-child classification under nil
+// isProviderSupported. When every chain child is a strategy
+// wrapper, ResolveFallbackChainForClientWithReason returns
+// (chain=nil, reason=PathReasonFallbackAllLegacy); the metadata
+// builder then rebuilds the chain shape for observability. Without
+// the predicate fix at the rebuild sites, strategy children would
+// be omitted from LegacyChildren under nil-support — leaving the
+// metadata inconsistent with the resolver's classification.
+//
+// Both BuildLegacyMetadataPlan and BuildLegacyMetadataPlanForClient
+// share the same rebuild shape; the For-Client sibling is the seam
+// codegen invokes, so the test pins that variant.
+func TestBuildLegacyMetadataPlanForClient_NilSupportRebuildClassifiesStrategyChildren(t *testing.T) {
+	chains := map[string][]string{
+		"MyFallback": {"InnerRR1", "InnerRR2"},
+	}
+	providers := map[string]string{
+		"MyFallback": "baml-fallback",
+		"InnerRR1":   "baml-roundrobin",
+		"InnerRR2":   "baml-roundrobin",
+	}
+
+	plan := BuildLegacyMetadataPlanForClient(
+		nil, "MyFallback", "baml-fallback", chains, providers,
+		nil, nil,
+	)
+
+	if plan.PathReason != PathReasonFallbackAllLegacy {
+		t.Fatalf("PathReason: got %q, want %q (every child is a strategy wrapper under nil-support)",
+			plan.PathReason, PathReasonFallbackAllLegacy)
+	}
+	if got, want := plan.Chain, []string{"InnerRR1", "InnerRR2"}; !equalStringSlice(got, want) {
+		t.Errorf("Chain: got %v, want %v (rebuild must surface introspected chain for observability)", got, want)
+	}
+	wantLegacy := []string{"InnerRR1", "InnerRR2"}
+	if !equalStringSlice(plan.LegacyChildren, wantLegacy) {
+		t.Errorf("LegacyChildren: got %v, want %v (strategy wrappers must be marked legacy in the rebuild even under nil-support)",
+			plan.LegacyChildren, wantLegacy)
+	}
+}

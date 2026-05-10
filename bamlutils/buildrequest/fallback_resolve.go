@@ -139,6 +139,8 @@ func ResolveFallbackChainForClientWithReason(
 		}
 		chainProviders[child] = p
 
+		isStrategyChild := isStrategyProvider(p)
+
 		// Preflight (strategy/start): a nested strategy-parent child,
 		// or any strategy parent transitively reachable from it,
 		// carrying an invalid runtime override (malformed strategy,
@@ -164,7 +166,7 @@ func ResolveFallbackChainForClientWithReason(
 		// use a visited set to guard cycles. So a valid runtime
 		// override at any depth keeps the mixed-mode path, and an
 		// invalid override at any depth re-routes uniformly.
-		if isStrategyProvider(p) {
+		if isStrategyChild {
 			if reason := FindInvalidReachableStrategyOverride(
 				reg, child, clientProviders, fallbackChains,
 			); reason != "" {
@@ -173,10 +175,17 @@ func ResolveFallbackChainForClientWithReason(
 		}
 
 		// A nil support check means the caller couldn't determine support,
-		// not "nothing is supported" — treat every child as drivable in
-		// that case rather than panicking on the nil-func call or
-		// misclassifying the whole chain as legacy.
-		if isProviderSupported != nil && !isProviderSupported(p) {
+		// not "nothing is supported" — treat ordinary leaf providers as
+		// drivable in that case (unknown support → not legacy) rather
+		// than panicking on the nil-func call or misclassifying the
+		// whole chain as legacy.
+		//
+		// Strategy-provider children (round-robin, fallback) are always
+		// classified legacy here regardless of the support predicate:
+		// BuildRequest cannot drive a strategy wrapper as a leaf, so
+		// the wrapper child must take the legacy callback path even
+		// when the caller passed nil for isProviderSupported.
+		if isStrategyChild || (isProviderSupported != nil && !isProviderSupported(p)) {
 			chainLegacy[child] = true
 			legacyPositions++
 		}

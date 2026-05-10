@@ -535,7 +535,12 @@ func BuildLegacyMetadataPlan(
 			for _, child := range chain {
 				p := ResolveClientProvider(reg, child, clientProviders)
 				providers[child] = p
-				if p == "" || (isProviderSupported != nil && !isProviderSupported(p)) {
+				// Strategy-provider children (RR, fallback) are always
+				// legacy — BuildRequest can't drive a strategy wrapper
+				// as a leaf — independent of the support predicate, so
+				// the rebuild stays consistent with the resolver's own
+				// classification when isProviderSupported is nil.
+				if p == "" || isStrategyProvider(p) || (isProviderSupported != nil && !isProviderSupported(p)) {
 					legacy[child] = true
 				}
 			}
@@ -645,7 +650,12 @@ func BuildLegacyMetadataPlanForClient(
 			for _, child := range chain {
 				p := ResolveClientProvider(reg, child, clientProviders)
 				providers[child] = p
-				if p == "" || (isProviderSupported != nil && !isProviderSupported(p)) {
+				// Strategy-provider children (RR, fallback) are always
+				// legacy — BuildRequest can't drive a strategy wrapper
+				// as a leaf — independent of the support predicate, so
+				// the rebuild stays consistent with the resolver's own
+				// classification when isProviderSupported is nil.
+				if p == "" || isStrategyProvider(p) || (isProviderSupported != nil && !isProviderSupported(p)) {
 					legacy[child] = true
 				}
 			}

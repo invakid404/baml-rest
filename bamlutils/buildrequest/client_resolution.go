@@ -362,7 +362,7 @@ func hasExplicitStrategyProviderWithoutStrategy(reg *bamlutils.ClientRegistry, c
 // parents are the ones whose runtime overrides are dropped from the
 // BuildRequest-safe view and silently masked when invalid.
 func isStrategyProvider(p string) bool {
-	return roundrobin.IsRoundRobinProvider(p) || p == "baml-fallback" || p == "fallback"
+	return roundrobin.IsRoundRobinProvider(p) || normalizeStrategyProvider(p) == "baml-fallback"
 }
 
 
