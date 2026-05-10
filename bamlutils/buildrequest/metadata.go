@@ -308,10 +308,11 @@ func newPlanBase(path, clientName string, retryPolicy *retry.Policy, buildReques
 
 // orderedLegacyChildren returns the chain-ordered subset of children whose
 // legacy[child] is true. Returns nil — not an empty slice — when there are
-// no matches so callers can assign plan.LegacyChildren = orderedLegacyChildren(...)
-// without inadvertently materialising an empty slice in the JSON payload
-// (Metadata.LegacyChildren is `omitempty`, and empty-vs-nil affects whether
-// the field is dropped on the wire).
+// no matches, so plan.LegacyChildren keeps a uniform in-memory shape across
+// every builder: callers (and tests) can treat nil as "no legacy children"
+// without distinguishing it from an empty slice. The wire payload is
+// unaffected either way because Metadata.LegacyChildren is `omitempty` and
+// drops both, but the in-memory consistency is the load-bearing invariant.
 func orderedLegacyChildren(chain []string, legacy map[string]bool) []string {
 	if len(legacy) == 0 {
 		return nil

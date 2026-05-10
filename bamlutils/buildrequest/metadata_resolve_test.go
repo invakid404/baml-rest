@@ -1707,9 +1707,11 @@ func TestBuildLegacyMetadataPlanForClient_NilSupportRebuildClassifiesStrategyChi
 
 // TestOrderedLegacyChildren pins the chain-order filter that backs the four
 // inline LegacyChildren extraction sites. The nil-when-empty contract is
-// load-bearing for JSON marshaling — promoting nil to []string{} would
-// change observable plan shape for downstream consumers — so the helper
-// returns nil rather than an empty slice in every degenerate case.
+// load-bearing for in-memory consistency — keeping plan.LegacyChildren the
+// same shape across every builder lets callers (and tests) treat nil as
+// "no legacy children" without distinguishing it from an empty slice — so
+// the helper returns nil rather than an empty slice in every degenerate
+// case.
 func TestOrderedLegacyChildren(t *testing.T) {
 	cases := []struct {
 		name   string
