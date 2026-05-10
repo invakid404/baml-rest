@@ -16,7 +16,7 @@ import (
 // the includeThinking parameter on ExtractDeltaPartsFromText, Raw
 // additionally carries provider-specific reasoning text (Anthropic
 // thinking_delta, Gemini thought-tagged parts, OpenAI Chat Completions
-// reasoning_content).
+// reasoning_content, OpenAI Responses reasoning_summary_text deltas).
 type DeltaParts struct {
 	Parseable string
 	Raw       string
@@ -47,7 +47,8 @@ type StreamingData struct {
 // specific reasoning content. False (default) yields BAML-aligned text-only
 // content; true additionally accumulates provider-specific reasoning text
 // (Anthropic thinking_delta, Gemini thought-tagged parts, OpenAI Chat
-// Completions reasoning_content) into the returned string.
+// Completions reasoning_content, OpenAI Responses reasoning_summary_text
+// deltas) into the returned string.
 func GetCurrentContent(data *StreamingData, includeThinking bool) (string, error) {
 	if len(data.Calls) == 0 {
 		return "", nil
@@ -86,9 +87,9 @@ func ExtractDeltaContent(provider string, chunk SSEChunk, includeThinking bool) 
 // and reasoning events are dropped — matching BAML's RawLLMResponse()
 // text-only contract. When true, provider-specific reasoning text
 // (Anthropic thinking_delta, Gemini thought-tagged parts, OpenAI Chat
-// Completions reasoning_content) contributes to Raw only; Parseable is
-// unaffected by construction so the BAML parser cannot be influenced by
-// reasoning text.
+// Completions reasoning_content, OpenAI Responses reasoning_summary_text
+// deltas) contributes to Raw only; Parseable is unaffected by construction
+// so the BAML parser cannot be influenced by reasoning text.
 func ExtractDeltaPartsFromText(provider string, rawText string, includeThinking bool) (DeltaParts, error) {
 	switch provider {
 	// OpenAI-compatible providers (Chat Completions API format)
@@ -110,11 +111,30 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeThinking 
 		return DeltaParts{Parseable: delta, Raw: raw}, nil
 
 	// OpenAI Responses API (different format)
-	// Path: delta (when type == "response.output_text.delta")
+	// Path: delta (when type == "response.output_text.delta") for parseable+raw.
+	// Path: delta (when type == "response.reasoning_summary_text.delta") for raw
+	// only, opt-in. Surfacing the human-readable reasoning summary OpenAI
+	// exposes for o1/o3-style models; the underlying chain-of-thought is
+	// server-encrypted and intentionally not surfaced. Only the *_text.delta
+	// event contributes — the bracketing *_part.added / *_part.done and the
+	// *_text.done event are no-ops here, since the stateless extractor has no
+	// dedupe and acting on done-events would duplicate text already emitted by
+	// the deltas (mirroring the existing response.output_text.done treatment).
 	case "openai-responses":
-		if gjson.Get(rawText, "type").String() == "response.output_text.delta" {
+		switch gjson.Get(rawText, "type").String() {
+		case "response.output_text.delta":
 			delta := gjson.Get(rawText, "delta").String()
 			return DeltaParts{Parseable: delta, Raw: delta}, nil
+
+		case "response.reasoning_summary_text.delta":
+			if !includeThinking {
+				return DeltaParts{}, nil
+			}
+			delta := gjson.Get(rawText, "delta")
+			if delta.Type != gjson.String {
+				return DeltaParts{}, nil
+			}
+			return DeltaParts{Raw: delta.String()}, nil
 		}
 		return DeltaParts{}, nil
 
@@ -267,8 +287,9 @@ func IsDeltaProviderSupported(provider string) bool {
 //   - raw accumulates wire-output deltas (from DeltaParts.Raw). When
 //     includeThinkingInRaw is true, this additionally carries provider-
 //     specific reasoning text (Anthropic thinking_delta, Gemini thought-
-//     tagged parts, OpenAI Chat Completions reasoning_content); otherwise
-//     it equals the parseable buffer byte-for-byte.
+//     tagged parts, OpenAI Chat Completions reasoning_content, OpenAI
+//     Responses reasoning_summary_text deltas); otherwise it equals the
+//     parseable buffer byte-for-byte.
 //
 // Under the default flag-off configuration the two buffers always hold
 // identical content. Under opt-in they diverge whenever a non-text content
@@ -292,18 +313,20 @@ type IncrementalExtractor struct {
 	// aligned text-only output across both buffers; true additionally
 	// accumulates provider-specific reasoning text (Anthropic
 	// thinking_delta, Gemini thought-tagged parts, OpenAI Chat Completions
-	// reasoning_content) into raw only.
+	// reasoning_content, OpenAI Responses reasoning_summary_text deltas)
+	// into raw only.
 	includeThinkingInRaw bool
 }
 
 // NewIncrementalExtractor creates a new incremental extractor. Pass
 // includeThinking=true to opt the extractor into accumulating provider-
 // specific reasoning content (Anthropic thinking_delta, Gemini thought-
-// tagged parts, OpenAI Chat Completions reasoning_content) alongside text
-// deltas in the raw buffer; pass false (default) for BAML-aligned
-// text-only output across both the parseable and raw buffers. The
-// parseable buffer is text-only regardless of this flag — the gate only
-// affects the raw buffer.
+// tagged parts, OpenAI Chat Completions reasoning_content, OpenAI
+// Responses reasoning_summary_text deltas) alongside text deltas in the
+// raw buffer; pass false (default) for BAML-aligned text-only output
+// across both the parseable and raw buffers. The parseable buffer is
+// text-only regardless of this flag — the gate only affects the raw
+// buffer.
 func NewIncrementalExtractor(includeThinking bool) *IncrementalExtractor {
 	return &IncrementalExtractor{includeThinkingInRaw: includeThinking}
 }
@@ -452,8 +475,9 @@ func ExtractFrom[T SSEChunk](e *IncrementalExtractor, callCount int, provider st
 // RawFull returns the complete accumulated raw content without processing
 // new data. Under IncludeThinkingInRaw=true this includes provider-specific
 // reasoning text (Anthropic thinking_delta, Gemini thought-tagged parts,
-// OpenAI Chat Completions reasoning_content); otherwise it matches
-// ParseableFull byte-for-byte.
+// OpenAI Chat Completions reasoning_content, OpenAI Responses
+// reasoning_summary_text deltas); otherwise it matches ParseableFull
+// byte-for-byte.
 func (e *IncrementalExtractor) RawFull() string {
 	return e.raw.String()
 }
