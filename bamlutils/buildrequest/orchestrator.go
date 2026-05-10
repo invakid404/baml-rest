@@ -241,6 +241,24 @@ type StreamConfig struct {
 	// fails up-front validation otherwise.
 	LegacyChildren map[string]bool
 
+	// FallbackTargets is the dispatch-target counterpart of the metadata
+	// field of the same name on bamlutils.Metadata — see that field's
+	// doc string for the wire-shape contract. PR 1 adds the field; PR 2
+	// (issue #237) wires the BuildRequest dispatch loop to honour
+	// FallbackTargets[child] when computing the WithClient target for
+	// an immediate RR fallback child that was centrally unwrapped to a
+	// leaf. The orchestrator is the consumer; resolver/planning
+	// upstream is the producer.
+	FallbackTargets map[string]string
+
+	// FallbackRoundRobin mirrors Metadata.FallbackRoundRobin — the
+	// per-child RR decision for fallback children resolved through
+	// BuildRequest centralization. PR 1 adds the field; PR 2 wires
+	// resolver output to populate it so outgoing planned metadata
+	// describes both the selected leaf (FallbackTargets[child]) and
+	// the RR decision behind that selection.
+	FallbackRoundRobin map[string]*bamlutils.RoundRobinInfo
+
 	// MetadataPlan is the pre-computed planned metadata for this request.
 	// When non-nil, the orchestrator emits a single planned metadata event
 	// upfront — before any HTTP work — so the routing decision is observable
@@ -629,6 +647,16 @@ func RunStreamOrchestration(
 		outcome.RetryPolicy = ""
 		outcome.Chain = nil
 		outcome.LegacyChildren = nil
+		// FallbackTargets / FallbackRoundRobin describe PLANNED
+		// fallback-chain intent — which RR-wrapper children were
+		// centrally unwrapped to leaves and which leaves the RR
+		// decision picked (issue #237). The realised winner is
+		// encoded in WinnerClient on outcome, so retaining these
+		// planned-only fields duplicates information and inflates
+		// the outcome payload. Clear them alongside Chain /
+		// LegacyChildren for the same reason.
+		outcome.FallbackTargets = nil
+		outcome.FallbackRoundRobin = nil
 		outcome.Strategy = ""
 		outcome.Provider = ""
 

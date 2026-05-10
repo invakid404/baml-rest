@@ -1,6 +1,7 @@
 package bamlutils
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -150,6 +151,107 @@ func TestMetadata_JSONRoundtrip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMetadata_FallbackTargetsAndRoundRobinRoundtrip verifies the new
+// fallback-target vocabulary added in issue #237 PR 1 (FallbackTargets,
+// FallbackRoundRobin) survives a JSON encode → decode cycle, AND that
+// both fields honour their `omitempty` JSON tags for the nil and empty-
+// map cases.
+//
+// The nil / empty-map invariant is load-bearing: PR 2 will start
+// populating these fields on a narrow set of plans, so the existing wire
+// shape (no `fallback_targets` / `fallback_round_robin` keys at all) must
+// hold for every plan PR 1's behaviour-neutral builders emit. A regression
+// that emits empty-but-non-nil maps would change the wire shape for every
+// existing caller.
+func TestMetadata_FallbackTargetsAndRoundRobinRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("populated", func(t *testing.T) {
+		t.Parallel()
+		md := Metadata{
+			Phase:    MetadataPhasePlanned,
+			Path:     "buildrequest",
+			Client:   "Strategy",
+			Strategy: "baml-fallback",
+			Chain:    []string{"InnerRR", "Backup"},
+			FallbackTargets: map[string]string{
+				"InnerRR": "A",
+			},
+			FallbackRoundRobin: map[string]*RoundRobinInfo{
+				"InnerRR": {
+					Name:     "InnerRR",
+					Children: []string{"A", "B"},
+					Index:    0,
+					Selected: "A",
+				},
+			},
+		}
+		data, err := json.Marshal(&md)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !bytes.Contains(data, []byte(`"fallback_targets"`)) {
+			t.Errorf("populated FallbackTargets should appear on the wire; got %s", data)
+		}
+		if !bytes.Contains(data, []byte(`"fallback_round_robin"`)) {
+			t.Errorf("populated FallbackRoundRobin should appear on the wire; got %s", data)
+		}
+		var got Metadata
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got.FallbackTargets["InnerRR"] != "A" {
+			t.Errorf("FallbackTargets[InnerRR]: got %q, want A", got.FallbackTargets["InnerRR"])
+		}
+		rr, ok := got.FallbackRoundRobin["InnerRR"]
+		if !ok || rr == nil {
+			t.Fatalf("FallbackRoundRobin[InnerRR] missing; got map=%v", got.FallbackRoundRobin)
+		}
+		if rr.Name != "InnerRR" || rr.Selected != "A" || rr.Index != 0 || len(rr.Children) != 2 {
+			t.Errorf("FallbackRoundRobin[InnerRR]: got %+v", rr)
+		}
+	})
+
+	t.Run("nil fields are omitted", func(t *testing.T) {
+		t.Parallel()
+		md := Metadata{Phase: MetadataPhasePlanned, Path: "buildrequest"}
+		data, err := json.Marshal(&md)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if bytes.Contains(data, []byte(`"fallback_targets"`)) {
+			t.Errorf("nil FallbackTargets must be omitted from wire; got %s", data)
+		}
+		if bytes.Contains(data, []byte(`"fallback_round_robin"`)) {
+			t.Errorf("nil FallbackRoundRobin must be omitted from wire; got %s", data)
+		}
+	})
+
+	t.Run("empty maps are omitted", func(t *testing.T) {
+		t.Parallel()
+		md := Metadata{
+			Phase:              MetadataPhasePlanned,
+			Path:               "buildrequest",
+			FallbackTargets:    map[string]string{},
+			FallbackRoundRobin: map[string]*RoundRobinInfo{},
+		}
+		data, err := json.Marshal(&md)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		// Maps with `omitempty` drop on len()==0, so the wire shape
+		// for an explicit empty map is identical to nil. PR 2 will
+		// populate these maps for a narrow set of plans only, so every
+		// other plan keeps the existing wire payload byte-for-byte.
+		if bytes.Contains(data, []byte(`"fallback_targets"`)) {
+			t.Errorf("empty FallbackTargets must be omitted from wire; got %s", data)
+		}
+		if bytes.Contains(data, []byte(`"fallback_round_robin"`)) {
+			t.Errorf("empty FallbackRoundRobin must be omitted from wire; got %s", data)
+		}
+	})
 }
 
 // TestMetadata_AbsenceVsZero verifies the distinction between an absent

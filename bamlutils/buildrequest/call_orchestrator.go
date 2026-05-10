@@ -62,6 +62,20 @@ type CallConfig struct {
 	// Mirrors StreamConfig.LegacyChildren — see that field for details.
 	LegacyChildren map[string]bool
 
+	// FallbackTargets mirrors StreamConfig.FallbackTargets — see that
+	// field (and Metadata.FallbackTargets) for the contract. PR 1 adds
+	// the field; PR 2 (issue #237) wires the call-side BuildRequest
+	// dispatch loop to honour FallbackTargets[child] when computing the
+	// WithClient target for centrally-unwrapped RR fallback children.
+	FallbackTargets map[string]string
+
+	// FallbackRoundRobin mirrors StreamConfig.FallbackRoundRobin —
+	// per-child RR decisions for fallback children resolved through
+	// BuildRequest centralization. PR 1 adds the field; PR 2 populates
+	// it from resolver output so outgoing planned metadata describes
+	// the selected leaf alongside the RR decision behind it.
+	FallbackRoundRobin map[string]*bamlutils.RoundRobinInfo
+
 	// MetadataPlan is the pre-computed planned metadata for this request.
 	// See StreamConfig.MetadataPlan for the contract; the call orchestrator
 	// behaves identically — planned metadata is emitted upfront from the
@@ -404,6 +418,12 @@ func RunCallOrchestration(
 		outcome.RetryPolicy = ""
 		outcome.Chain = nil
 		outcome.LegacyChildren = nil
+		// See the streaming orchestrator's outcome builder for the
+		// rationale on clearing these planned-only fallback-target
+		// fields — issue #237's planned shape describes intent, the
+		// realised winner already appears in WinnerClient.
+		outcome.FallbackTargets = nil
+		outcome.FallbackRoundRobin = nil
 		outcome.Strategy = ""
 		outcome.Provider = ""
 

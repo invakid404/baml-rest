@@ -256,6 +256,143 @@ func TestRunCallOrchestration_NoMetadataPlanIsNoop(t *testing.T) {
 	}
 }
 
+// TestRunStreamOrchestration_OutcomeClearsFallbackTargetFields pins
+// that the outcome event drops the planned-only fallback-target
+// vocabulary added in issue #237 PR 1 (FallbackTargets,
+// FallbackRoundRobin), alongside the existing Chain / LegacyChildren
+// clearing. Planned metadata describes intent (which RR-wrapper child
+// was unwrapped to which leaf, which RR decision was behind it); the
+// realised winner is already encoded in WinnerClient on outcome, so
+// duplicating the planned-shape on outcome only inflates the payload.
+//
+// PR 1 never populates these fields, but the test seeds the plan with
+// representative values so the clearing logic is observable. PR 2 will
+// have the resolver actually populate them; this test pins the
+// contract before the producer lands so PR 2 cannot accidentally leak
+// planned-only intent into outcome.
+func TestRunStreamOrchestration_OutcomeClearsFallbackTargetFields(t *testing.T) {
+	server := makeOpenAIServer([]string{"hi"})
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	plan := &bamlutils.Metadata{
+		Path:     "buildrequest",
+		Client:   "MyClient",
+		Provider: "openai",
+		FallbackTargets: map[string]string{
+			"InnerRR": "A",
+		},
+		FallbackRoundRobin: map[string]*bamlutils.RoundRobinInfo{
+			"InnerRR": {Name: "InnerRR", Children: []string{"A", "B"}, Selected: "A"},
+		},
+	}
+
+	config := &StreamConfig{
+		Provider:          "openai",
+		MetadataPlan:      plan,
+		NewMetadataResult: newTestMetadataResult,
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(),
+		out,
+		config,
+		client,
+		func(ctx context.Context, _ string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(ctx context.Context, s string) (any, error) { return s, nil },
+		func(ctx context.Context, s string) (any, error) { return s, nil },
+		newTestResult,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	close(out)
+
+	planned, outcome, _, _ := collectMetadata(t, out)
+	if planned == nil || outcome == nil {
+		t.Fatalf("expected both planned and outcome metadata; got planned=%v outcome=%v", planned, outcome)
+	}
+	// Sanity: planned event carries the seeded values so the test
+	// proves the clearing happened on outcome specifically, not that
+	// the seeded values silently dropped through marshaling.
+	if planned.FallbackTargets["InnerRR"] != "A" {
+		t.Errorf("planned FallbackTargets[InnerRR]: got %q, want A", planned.FallbackTargets["InnerRR"])
+	}
+	if planned.FallbackRoundRobin["InnerRR"] == nil {
+		t.Errorf("planned FallbackRoundRobin[InnerRR]: nil, want non-nil")
+	}
+	// Contract: outcome event clears the planned-only fields.
+	if outcome.FallbackTargets != nil {
+		t.Errorf("outcome FallbackTargets must be cleared; got %v", outcome.FallbackTargets)
+	}
+	if outcome.FallbackRoundRobin != nil {
+		t.Errorf("outcome FallbackRoundRobin must be cleared; got %v", outcome.FallbackRoundRobin)
+	}
+}
+
+// TestRunCallOrchestration_OutcomeClearsFallbackTargetFields mirrors
+// the streaming test above for the non-streaming call path. See the
+// streaming test for rationale on why the planned-only fields must
+// clear on outcome.
+func TestRunCallOrchestration_OutcomeClearsFallbackTargetFields(t *testing.T) {
+	server := makeJSONServer(200, `{"choices":[{"message":{"content":"hi"}}]}`)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	plan := &bamlutils.Metadata{
+		Path:     "buildrequest",
+		Client:   "MyClient",
+		Provider: "openai",
+		FallbackTargets: map[string]string{
+			"InnerRR": "A",
+		},
+		FallbackRoundRobin: map[string]*bamlutils.RoundRobinInfo{
+			"InnerRR": {Name: "InnerRR", Children: []string{"A", "B"}, Selected: "A"},
+		},
+	}
+
+	config := &CallConfig{
+		Provider:          "openai",
+		MetadataPlan:      plan,
+		NewMetadataResult: newTestMetadataResult,
+	}
+
+	err := RunCallOrchestration(
+		context.Background(), out, config, client,
+		makeBuildCallRequest(server.URL),
+		identityParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	close(out)
+
+	planned, outcome, _, _ := collectMetadata(t, out)
+	if planned == nil || outcome == nil {
+		t.Fatalf("expected both planned and outcome metadata; got planned=%v outcome=%v", planned, outcome)
+	}
+	if planned.FallbackTargets["InnerRR"] != "A" {
+		t.Errorf("planned FallbackTargets[InnerRR]: got %q, want A", planned.FallbackTargets["InnerRR"])
+	}
+	if planned.FallbackRoundRobin["InnerRR"] == nil {
+		t.Errorf("planned FallbackRoundRobin[InnerRR]: nil, want non-nil")
+	}
+	if outcome.FallbackTargets != nil {
+		t.Errorf("outcome FallbackTargets must be cleared; got %v", outcome.FallbackTargets)
+	}
+	if outcome.FallbackRoundRobin != nil {
+		t.Errorf("outcome FallbackRoundRobin must be cleared; got %v", outcome.FallbackRoundRobin)
+	}
+}
+
 // TestRunStreamOrchestration_NoMetadataPlanIsNoop verifies that callers
 // who don't care about routing metadata (legacy tests, deliberate opt-out)
 // see no metadata events at all.
