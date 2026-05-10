@@ -766,17 +766,22 @@ func RunStreamOrchestration(
 				heartbeatSent.Store(false)
 			}
 			var (
-				finalResult any
-				raw         string
-				err         error
-				path        string
+				finalResult  any
+				raw          string
+				err          error
+				path         string
+				winnerTarget = child
 			)
 			if config.LegacyChildren[child] {
 				// Legacy children run via BAML's Stream API. The callback
 				// owns heartbeat timing (fires sendHeartbeat on the first
 				// FunctionLog tick) so pool hung-detection stays correct.
 				// Partials are never emitted by the callback — it reports
-				// only (final, raw, err).
+				// only (final, raw, err). Note: callback dispatch stays
+				// rooted at `child` (the chain-position name) so the
+				// scoped registry preserves runtime strategy overrides
+				// for true legacy children — FallbackTargets is honored
+				// for the BuildRequest path only.
 				finalResult, raw, err = config.LegacyStreamChild(
 					ctx,
 					child,
@@ -787,11 +792,32 @@ func RunStreamOrchestration(
 				path = "legacy"
 			} else {
 				provider := config.ClientProviders[child]
-				finalResult, raw, err = tryOneStreamChild(provider, child)
+				// Wrapper-vs-target identity (issue #237 PR 2): when an
+				// immediate RR fallback child was centrally unwrapped
+				// to a leaf, FallbackTargets[child] names that leaf.
+				// Dispatch BuildRequest against the leaf so BAML's
+				// runtime sees the resolved client identity directly,
+				// not the RR wrapper (which would re-rotate per-worker
+				// inside BAML and defeat the centralization). When the
+				// map has no entry or the entry equals child, dispatch
+				// passes the chain-position name verbatim — preserving
+				// the pre-PR-2 shape for chains with no centralization.
+				if t, ok := config.FallbackTargets[child]; ok && t != "" {
+					winnerTarget = t
+				}
+				finalResult, raw, err = tryOneStreamChild(provider, winnerTarget)
 				path = "buildrequest"
 			}
 			if err == nil {
-				winnerClient = child
+				// WinnerClient names the client actually contacted:
+				// for legacy children, the wrapper (chain-position
+				// name); for BR children, the dispatch target (the
+				// centralized leaf when FallbackTargets[child] is set,
+				// otherwise the chain-position name). WinnerProvider
+				// stays keyed by the chain position so it reflects
+				// the resolver's classification (leaf provider for
+				// centralized RR children, wrapper provider otherwise).
+				winnerClient = winnerTarget
 				winnerProvider = config.ClientProviders[child]
 				winnerPath = path
 				finalRetryCount = attempt

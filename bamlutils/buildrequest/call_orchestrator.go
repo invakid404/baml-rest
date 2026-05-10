@@ -362,7 +362,11 @@ func RunCallOrchestration(
 				// Legacy children run via BAML's Stream API. The callback
 				// owns heartbeat timing (fires sendHeartbeat on the first
 				// FunctionLog tick) so pool hung-detection stays correct
-				// for slow upstreams that eventually produce bytes.
+				// for slow upstreams that eventually produce bytes. Note:
+				// callback dispatch stays rooted at `child` (the
+				// chain-position name) — FallbackTargets is honored only
+				// for the BuildRequest path, since the legacy callback's
+				// scoped registry depends on the wrapper identity.
 				finalResult, raw, err := config.LegacyCallChild(
 					ctx,
 					child,
@@ -384,10 +388,19 @@ func RunCallOrchestration(
 				continue
 			}
 			provider := config.ClientProviders[child]
-			result, err := tryOneChild(provider, child)
+			// Wrapper-vs-target identity (issue #237 PR 2): when an
+			// immediate RR fallback child was centrally unwrapped to a
+			// leaf, FallbackTargets[child] names that leaf. Mirrors the
+			// streaming orchestrator — see RunStreamOrchestration for
+			// the full rationale.
+			target := child
+			if t, ok := config.FallbackTargets[child]; ok && t != "" {
+				target = t
+			}
+			result, err := tryOneChild(provider, target)
 			if err == nil {
 				finalAttempt = attempt
-				result.winnerClient = child
+				result.winnerClient = target
 				return result, nil
 			}
 			lastErr = err

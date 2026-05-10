@@ -425,14 +425,16 @@ func TestResolveFallbackChain_RoundRobinChildSkipped(t *testing.T) {
 }
 
 func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
-	// A fallback chain with a baml-roundrobin child still runs, but
-	// the PathReason surfaces the composition so operators can
-	// distinguish centralised top-level RR from per-worker nested
-	// RR. The RR child lands on the legacy child list
-	// (IsProviderSupported returns false for baml-roundrobin), and
-	// BAML's runtime handles its rotation on each worker
-	// independently. Centralised unwrapping of RR children inside
-	// fallback chains is deferred.
+	// A fallback chain whose immediate baml-roundrobin child has a
+	// BR-supported selected leaf is centrally unwrapped to that leaf
+	// (issue #237 PR 2). The 4-tuple wrapper surfaces the change as
+	// (a) the RR wrapper child REMOVED from legacyChildren, (b)
+	// providers[child] rewritten to the leaf provider so the
+	// orchestrator's IsProviderSupported gate sees the leaf, and (c)
+	// reason == PathReasonFallbackRoundRobinChildBuildRequest. The
+	// per-child Targets / NestedRoundRobin information requires the
+	// typed ResolveFallbackChainPlanForClient helper — the 4-tuple
+	// wrapper deliberately loses it for codegen-compat.
 	fallbackChains := map[string][]string{
 		"MyFallback": {"OpenAIClient", "InnerRR"},
 		"InnerRR":    {"GoogleA", "GoogleB"},
@@ -453,19 +455,20 @@ func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
 	)
 
 	if chain == nil {
-		t.Fatalf("expected chain to resolve (RR child is mixed-legacy, not abort), got nil with reason=%q", reason)
+		t.Fatalf("expected chain to resolve, got nil with reason=%q", reason)
 	}
-	if reason != PathReasonFallbackRoundRobinChildLegacy {
-		t.Fatalf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+	if reason != PathReasonFallbackRoundRobinChildBuildRequest {
+		t.Fatalf("reason: got %q, want %q (centralized RR child should surface ChildBuildRequest)",
+			reason, PathReasonFallbackRoundRobinChildBuildRequest)
 	}
-	if !legacy["InnerRR"] {
-		t.Errorf("InnerRR must be marked legacy (BAML runtime handles RR rotation per-worker), legacyChildren=%v", legacy)
+	if legacy["InnerRR"] {
+		t.Errorf("InnerRR must NOT be marked legacy after centralization, legacyChildren=%v", legacy)
 	}
 	if legacy["OpenAIClient"] {
 		t.Errorf("OpenAIClient is a supported provider — must not be on legacy list, legacyChildren=%v", legacy)
 	}
-	if providers["InnerRR"] != "baml-roundrobin" {
-		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin", providers["InnerRR"])
+	if providers["InnerRR"] != "google-ai" {
+		t.Errorf("providers[InnerRR]: got %q, want google-ai (leaf provider after centralization)", providers["InnerRR"])
 	}
 }
 
@@ -657,11 +660,13 @@ func TestResolveFallbackChain_NestedInvalidProviderOverride(t *testing.T) {
 // TestResolveFallbackChain_NestedValidOverrideStillResolves pins
 // negative coverage: a nested strategy-parent child WITH a valid
 // runtime override (changed strategy children, valid start, valid
-// provider) must still resolve normally with the existing
-// PathReasonFallbackRoundRobinChildLegacy. The preflight's
-// "any nested override → legacy" alternative would lose mixed-mode
-// orchestration for legitimate runtime overrides; this test guards
-// against that drift.
+// provider) must resolve normally. Issue #237 PR 2 makes the valid
+// override eligible for centralization — TenantLeaf is BR-supported,
+// so the RR wrapper is centrally unwrapped to it and the reason
+// reports ChildBuildRequest. The preflight's "any nested override →
+// legacy" alternative would lose mixed-mode orchestration entirely
+// (centralized or otherwise) for legitimate runtime overrides; this
+// test still guards against that drift.
 func TestResolveFallbackChain_NestedValidOverrideStillResolves(t *testing.T) {
 	fallbackChains := map[string][]string{
 		"MyFallback": {"FastLeaf", "InnerRR"},
@@ -685,7 +690,7 @@ func TestResolveFallbackChain_NestedValidOverrideStillResolves(t *testing.T) {
 		},
 	}
 
-	chain, _, legacy, reason := ResolveFallbackChainForClientWithReason(
+	chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
 		reg, "MyFallback", fallbackChains, clientProviders,
 		func(p string) bool { return p == "openai" },
 	)
@@ -693,14 +698,18 @@ func TestResolveFallbackChain_NestedValidOverrideStillResolves(t *testing.T) {
 	if chain == nil {
 		t.Fatalf("expected chain to resolve for valid nested override, got nil with reason=%q", reason)
 	}
-	if reason != PathReasonFallbackRoundRobinChildLegacy {
-		t.Errorf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+	if reason != PathReasonFallbackRoundRobinChildBuildRequest {
+		t.Errorf("reason: got %q, want %q (valid override with BR-supported leaf should centralize)",
+			reason, PathReasonFallbackRoundRobinChildBuildRequest)
 	}
-	if !legacy["InnerRR"] {
-		t.Errorf("InnerRR must remain on the mixed-mode legacy child list (BAML runtime handles RR rotation), legacyChildren=%v", legacy)
+	if legacy["InnerRR"] {
+		t.Errorf("InnerRR must NOT be marked legacy after centralization, legacyChildren=%v", legacy)
 	}
 	if legacy["FastLeaf"] {
 		t.Errorf("FastLeaf is a supported leaf; it must NOT be misclassified as legacy, legacyChildren=%v", legacy)
+	}
+	if providers["InnerRR"] != "openai" {
+		t.Errorf("providers[InnerRR]: got %q, want openai (leaf provider after centralization to TenantLeaf)", providers["InnerRR"])
 	}
 }
 
