@@ -278,6 +278,86 @@ func ResolveProviderWithReason(
 	return res
 }
 
+// newPlanBase returns a *bamlutils.Metadata pre-populated with the planned-
+// phase preamble shared by every plan builder in this file: Phase, Path,
+// BuildRequestAPI, Client, RetryPolicy, and the RetryMax pointer-to-copied-
+// local. Callers layer per-flavor fields (Provider, Strategy, PathReason,
+// Chain, LegacyChildren) onto the returned plan.
+//
+// Legacy plans pass buildRequestAPI == "" — bamlutils.Metadata declares the
+// field with `omitempty`, so the empty value is dropped from the JSON
+// payload and matches the previous hand-written literals byte-for-byte.
+//
+// The RetryMax assignment uses a copied local rather than &retryPolicy.MaxRetries
+// directly so the plan owns its own backing int — preserving the existing
+// ownership pattern that downstream consumers (and tests) observe.
+func newPlanBase(path, clientName string, retryPolicy *retry.Policy, buildRequestAPI string) *bamlutils.Metadata {
+	plan := &bamlutils.Metadata{
+		Phase:           bamlutils.MetadataPhasePlanned,
+		Path:            path,
+		BuildRequestAPI: buildRequestAPI,
+		Client:          clientName,
+		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
+	}
+	if retryPolicy != nil {
+		m := retryPolicy.MaxRetries
+		plan.RetryMax = &m
+	}
+	return plan
+}
+
+// orderedLegacyChildren returns the chain-ordered subset of children whose
+// legacy[child] is true. Returns nil — not an empty slice — when there are
+// no matches so callers can assign plan.LegacyChildren = orderedLegacyChildren(...)
+// without inadvertently materialising an empty slice in the JSON payload
+// (Metadata.LegacyChildren is `omitempty`, and empty-vs-nil affects whether
+// the field is dropped on the wire).
+func orderedLegacyChildren(chain []string, legacy map[string]bool) []string {
+	if len(legacy) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(legacy))
+	for _, child := range chain {
+		if legacy[child] {
+			names = append(names, child)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+// rebuildLegacyChainMetadata walks chain and produces the per-child provider
+// map and the legacy classification map used to populate plan.Chain /
+// plan.LegacyChildren when the resolver returned no chain (typically the
+// runtime-override path: ResolveFallbackChain* returned chain == nil and the
+// caller wants the introspected chain enumerated for observability).
+//
+// Classification mirrors the resolver's own predicate after #234: a child is
+// legacy if its resolved provider is empty, is itself a strategy wrapper
+// (BuildRequest can't drive RR / fallback as a leaf), or is rejected by the
+// supplied support predicate. Passing isProviderSupported == nil keeps
+// strategy children legacy while leaving ordinary leaves drivable, matching
+// the resolver's nil-predicate behaviour.
+func rebuildLegacyChainMetadata(
+	reg *bamlutils.ClientRegistry,
+	chain []string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+) (providers map[string]string, legacy map[string]bool) {
+	providers = make(map[string]string, len(chain))
+	legacy = make(map[string]bool)
+	for _, child := range chain {
+		p := ResolveClientProvider(reg, child, clientProviders)
+		providers[child] = p
+		if p == "" || isStrategyProvider(p) || (isProviderSupported != nil && !isProviderSupported(p)) {
+			legacy[child] = true
+		}
+	}
+	return providers, legacy
+}
+
 // BuildSingleProviderPlan constructs planned metadata for a request routed
 // through the BuildRequest path with a single (non-strategy) client. Called
 // by the generated router once the provider has been resolved and the
@@ -292,22 +372,8 @@ func BuildSingleProviderPlan(
 	retryPolicy *retry.Policy,
 	buildRequestAPI string,
 ) *bamlutils.Metadata {
-	clientName := defaultClientName
-	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
-		clientName = *reg.Primary
-	}
-	plan := &bamlutils.Metadata{
-		Phase:           bamlutils.MetadataPhasePlanned,
-		Path:            "buildrequest",
-		BuildRequestAPI: buildRequestAPI,
-		Client:          clientName,
-		Provider:        provider,
-		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
-	}
-	if retryPolicy != nil {
-		m := retryPolicy.MaxRetries
-		plan.RetryMax = &m
-	}
+	plan := newPlanBase("buildrequest", ResolvePrimaryClient(adapter, defaultClientName), retryPolicy, buildRequestAPI)
+	plan.Provider = provider
 	return plan
 }
 
@@ -321,18 +387,8 @@ func BuildSingleProviderPlanForClient(
 	retryPolicy *retry.Policy,
 	buildRequestAPI string,
 ) *bamlutils.Metadata {
-	plan := &bamlutils.Metadata{
-		Phase:           bamlutils.MetadataPhasePlanned,
-		Path:            "buildrequest",
-		BuildRequestAPI: buildRequestAPI,
-		Client:          clientName,
-		Provider:        provider,
-		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
-	}
-	if retryPolicy != nil {
-		m := retryPolicy.MaxRetries
-		plan.RetryMax = &m
-	}
+	plan := newPlanBase("buildrequest", clientName, retryPolicy, buildRequestAPI)
+	plan.Provider = provider
 	return plan
 }
 
@@ -352,35 +408,11 @@ func BuildFallbackChainPlan(
 	buildRequestAPI string,
 	pathReason string,
 ) *bamlutils.Metadata {
-	clientName := defaultClientName
-	if reg := adapter.OriginalClientRegistry(); reg != nil && reg.Primary != nil && *reg.Primary != "" {
-		clientName = *reg.Primary
-	}
-	plan := &bamlutils.Metadata{
-		Phase:           bamlutils.MetadataPhasePlanned,
-		Path:            "buildrequest",
-		BuildRequestAPI: buildRequestAPI,
-		Client:          clientName,
-		Strategy:        "baml-fallback",
-		PathReason:      pathReason,
-		Chain:           append([]string(nil), chain...),
-		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
-	}
-	if retryPolicy != nil {
-		m := retryPolicy.MaxRetries
-		plan.RetryMax = &m
-	}
-	if len(legacyChildren) > 0 {
-		names := make([]string, 0, len(legacyChildren))
-		for _, child := range chain {
-			if legacyChildren[child] {
-				names = append(names, child)
-			}
-		}
-		if len(names) > 0 {
-			plan.LegacyChildren = names
-		}
-	}
+	plan := newPlanBase("buildrequest", ResolvePrimaryClient(adapter, defaultClientName), retryPolicy, buildRequestAPI)
+	plan.Strategy = "baml-fallback"
+	plan.PathReason = pathReason
+	plan.Chain = append([]string(nil), chain...)
+	plan.LegacyChildren = orderedLegacyChildren(chain, legacyChildren)
 	_ = providers // reserved: future outcome metadata may expose per-child details
 	return plan
 }
@@ -406,31 +438,11 @@ func BuildFallbackChainPlanForClient(
 	buildRequestAPI string,
 	pathReason string,
 ) *bamlutils.Metadata {
-	plan := &bamlutils.Metadata{
-		Phase:           bamlutils.MetadataPhasePlanned,
-		Path:            "buildrequest",
-		BuildRequestAPI: buildRequestAPI,
-		Client:          clientName,
-		Strategy:        "baml-fallback",
-		PathReason:      pathReason,
-		Chain:           append([]string(nil), chain...),
-		RetryPolicy:     EncodeRetryPolicy(retryPolicy),
-	}
-	if retryPolicy != nil {
-		m := retryPolicy.MaxRetries
-		plan.RetryMax = &m
-	}
-	if len(legacyChildren) > 0 {
-		names := make([]string, 0, len(legacyChildren))
-		for _, child := range chain {
-			if legacyChildren[child] {
-				names = append(names, child)
-			}
-		}
-		if len(names) > 0 {
-			plan.LegacyChildren = names
-		}
-	}
+	plan := newPlanBase("buildrequest", clientName, retryPolicy, buildRequestAPI)
+	plan.Strategy = "baml-fallback"
+	plan.PathReason = pathReason
+	plan.Chain = append([]string(nil), chain...)
+	plan.LegacyChildren = orderedLegacyChildren(chain, legacyChildren)
 	_ = providers
 	return plan
 }
@@ -469,14 +481,9 @@ func BuildLegacyMetadataPlan(
 ) *bamlutils.Metadata {
 	resolution := ResolveProviderWithReason(adapter, defaultClientName, introspectedProvider, isProviderSupported)
 
-	plan := &bamlutils.Metadata{
-		Phase:       bamlutils.MetadataPhasePlanned,
-		Path:        "legacy",
-		Client:      resolution.Client,
-		Strategy:    resolution.Strategy,
-		PathReason:  resolution.PathReason,
-		RetryPolicy: EncodeRetryPolicy(retryPolicy),
-	}
+	plan := newPlanBase("legacy", resolution.Client, retryPolicy, "")
+	plan.Strategy = resolution.Strategy
+	plan.PathReason = resolution.PathReason
 	// Only populate Provider for non-strategy routes. When Strategy is set
 	// (e.g. "baml-fallback"), resolution.Provider echoes the strategy name,
 	// which would misrepresent it as a real provider in the header /
@@ -484,10 +491,6 @@ func BuildLegacyMetadataPlan(
 	// provider info lives in Chain / LegacyChildren.
 	if resolution.Strategy == "" {
 		plan.Provider = resolution.Provider
-	}
-	if retryPolicy != nil {
-		m := retryPolicy.MaxRetries
-		plan.RetryMax = &m
 	}
 
 	// If the resolved client is a fallback strategy, enumerate the chain so
@@ -528,34 +531,11 @@ func BuildLegacyMetadataPlan(
 		if chain == nil && !isInvalidOverrideReason(reason) {
 			reg := adapter.OriginalClientRegistry()
 			chain = resolveFallbackStrategyChain(reg, resolution.Client, fallbackChains)
-			// Resolve each child's provider through the runtime registry
-			// before consulting the static introspected map.
-			providers = make(map[string]string, len(chain))
-			legacy = make(map[string]bool)
-			for _, child := range chain {
-				p := ResolveClientProvider(reg, child, clientProviders)
-				providers[child] = p
-				// Strategy-provider children (RR, fallback) are always
-				// legacy — BuildRequest can't drive a strategy wrapper
-				// as a leaf — independent of the support predicate, so
-				// the rebuild stays consistent with the resolver's own
-				// classification when isProviderSupported is nil.
-				if p == "" || isStrategyProvider(p) || (isProviderSupported != nil && !isProviderSupported(p)) {
-					legacy[child] = true
-				}
-			}
+			providers, legacy = rebuildLegacyChainMetadata(reg, chain, clientProviders, isProviderSupported)
 		}
 		if len(chain) > 0 {
 			plan.Chain = append([]string(nil), chain...)
-			if len(legacy) > 0 {
-				names := make([]string, 0, len(legacy))
-				for _, child := range chain {
-					if legacy[child] {
-						names = append(names, child)
-					}
-				}
-				plan.LegacyChildren = names
-			}
+			plan.LegacyChildren = orderedLegacyChildren(chain, legacy)
 			_ = providers // providers reserved for future outcome population
 		}
 	}
@@ -609,16 +589,7 @@ func BuildLegacyMetadataPlanForClient(
 	// this mirrors that for the metadata path.
 	provider = normalizeStrategyProvider(provider)
 
-	plan := &bamlutils.Metadata{
-		Phase:       bamlutils.MetadataPhasePlanned,
-		Path:        "legacy",
-		Client:      clientName,
-		RetryPolicy: EncodeRetryPolicy(retryPolicy),
-	}
-	if retryPolicy != nil {
-		m := retryPolicy.MaxRetries
-		plan.RetryMax = &m
-	}
+	plan := newPlanBase("legacy", clientName, retryPolicy, "")
 
 	switch provider {
 	case "":
@@ -645,32 +616,11 @@ func BuildLegacyMetadataPlanForClient(
 		// is still useful context.
 		if chain == nil && !isInvalidOverrideReason(reason) {
 			chain = resolveFallbackStrategyChain(reg, clientName, fallbackChains)
-			providers = make(map[string]string, len(chain))
-			legacy = make(map[string]bool)
-			for _, child := range chain {
-				p := ResolveClientProvider(reg, child, clientProviders)
-				providers[child] = p
-				// Strategy-provider children (RR, fallback) are always
-				// legacy — BuildRequest can't drive a strategy wrapper
-				// as a leaf — independent of the support predicate, so
-				// the rebuild stays consistent with the resolver's own
-				// classification when isProviderSupported is nil.
-				if p == "" || isStrategyProvider(p) || (isProviderSupported != nil && !isProviderSupported(p)) {
-					legacy[child] = true
-				}
-			}
+			providers, legacy = rebuildLegacyChainMetadata(reg, chain, clientProviders, isProviderSupported)
 		}
 		if len(chain) > 0 {
 			plan.Chain = append([]string(nil), chain...)
-			if len(legacy) > 0 {
-				names := make([]string, 0, len(legacy))
-				for _, child := range chain {
-					if legacy[child] {
-						names = append(names, child)
-					}
-				}
-				plan.LegacyChildren = names
-			}
+			plan.LegacyChildren = orderedLegacyChildren(chain, legacy)
 			_ = providers
 		}
 	case "baml-roundrobin":
