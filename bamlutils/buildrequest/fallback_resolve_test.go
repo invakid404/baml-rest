@@ -425,14 +425,23 @@ func TestResolveFallbackChain_RoundRobinChildSkipped(t *testing.T) {
 }
 
 func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
-	// A fallback chain with a baml-roundrobin child still runs, but
-	// the PathReason surfaces the composition so operators can
-	// distinguish centralised top-level RR from per-worker nested
-	// RR. The RR child lands on the legacy child list
-	// (IsProviderSupported returns false for baml-roundrobin), and
-	// BAML's runtime handles its rotation on each worker
-	// independently. Centralised unwrapping of RR children inside
-	// fallback chains is deferred.
+	// A fallback chain with a baml-roundrobin child still runs at the
+	// 4-tuple seam. The PathReason surfaces the composition so
+	// operators can distinguish centralised top-level RR from
+	// per-worker nested RR. The RR child lands on the legacy child
+	// list and BAML's runtime handles its rotation on each worker
+	// independently. Issue #237 PR 2's typed
+	// ResolveFallbackChainPlanForClient helper centralizes immediate
+	// RR fallback children with a BR-supported leaf, but the 4-tuple
+	// wrapper deliberately demotes those results back to legacy
+	// classification because codegen-emitted call sites cannot pass
+	// FallbackTargets through the orchestrator config until PR 3
+	// (#237) wires codegen to the typed helper. Surfacing the
+	// centralized shape here would route BuildRequest against the RR
+	// wrapper name (wrong-client dispatch). The typed-helper tests in
+	// fallback_resolve_plan_test.go pin centralization at the typed
+	// seam; this test pins the demoted 4-tuple shape codegen relies
+	// on today.
 	fallbackChains := map[string][]string{
 		"MyFallback": {"OpenAIClient", "InnerRR"},
 		"InnerRR":    {"GoogleA", "GoogleB"},
@@ -453,19 +462,19 @@ func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
 	)
 
 	if chain == nil {
-		t.Fatalf("expected chain to resolve (RR child is mixed-legacy, not abort), got nil with reason=%q", reason)
+		t.Fatalf("expected chain to resolve (RR child is mixed-legacy at the 4-tuple seam), got nil with reason=%q", reason)
 	}
 	if reason != PathReasonFallbackRoundRobinChildLegacy {
 		t.Fatalf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
 	}
 	if !legacy["InnerRR"] {
-		t.Errorf("InnerRR must be marked legacy (BAML runtime handles RR rotation per-worker), legacyChildren=%v", legacy)
+		t.Errorf("InnerRR must be marked legacy at the 4-tuple seam (BAML runtime handles RR rotation per-worker until PR 3), legacyChildren=%v", legacy)
 	}
 	if legacy["OpenAIClient"] {
 		t.Errorf("OpenAIClient is a supported provider — must not be on legacy list, legacyChildren=%v", legacy)
 	}
 	if providers["InnerRR"] != "baml-roundrobin" {
-		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin", providers["InnerRR"])
+		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin (wrapper provider — leaf-provider demotion is reverted at the 4-tuple seam)", providers["InnerRR"])
 	}
 }
 
@@ -658,10 +667,16 @@ func TestResolveFallbackChain_NestedInvalidProviderOverride(t *testing.T) {
 // negative coverage: a nested strategy-parent child WITH a valid
 // runtime override (changed strategy children, valid start, valid
 // provider) must still resolve normally with the existing
-// PathReasonFallbackRoundRobinChildLegacy. The preflight's
-// "any nested override → legacy" alternative would lose mixed-mode
-// orchestration for legitimate runtime overrides; this test guards
-// against that drift.
+// PathReasonFallbackRoundRobinChildLegacy at the 4-tuple seam. The
+// preflight's "any nested override → legacy" alternative would lose
+// mixed-mode orchestration for legitimate runtime overrides; this
+// test guards against that drift.
+//
+// Issue #237 PR 2's typed ResolveFallbackChainPlanForClient
+// centralizes this exact override (TenantLeaf is BR-supported) — see
+// fallback_resolve_plan_test.go. The 4-tuple wrapper demotes the
+// centralized result to legacy classification for codegen-back-compat
+// until PR 3 wires codegen to the typed helper.
 func TestResolveFallbackChain_NestedValidOverrideStillResolves(t *testing.T) {
 	fallbackChains := map[string][]string{
 		"MyFallback": {"FastLeaf", "InnerRR"},
@@ -694,10 +709,11 @@ func TestResolveFallbackChain_NestedValidOverrideStillResolves(t *testing.T) {
 		t.Fatalf("expected chain to resolve for valid nested override, got nil with reason=%q", reason)
 	}
 	if reason != PathReasonFallbackRoundRobinChildLegacy {
-		t.Errorf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+		t.Errorf("reason: got %q, want %q (4-tuple seam demotes centralization until PR 3)",
+			reason, PathReasonFallbackRoundRobinChildLegacy)
 	}
 	if !legacy["InnerRR"] {
-		t.Errorf("InnerRR must remain on the mixed-mode legacy child list (BAML runtime handles RR rotation), legacyChildren=%v", legacy)
+		t.Errorf("InnerRR must remain on the mixed-mode legacy child list at the 4-tuple seam, legacyChildren=%v", legacy)
 	}
 	if legacy["FastLeaf"] {
 		t.Errorf("FastLeaf is a supported leaf; it must NOT be misclassified as legacy, legacyChildren=%v", legacy)
@@ -1092,4 +1108,216 @@ func TestResolveFallbackChainForClient_NilSupportCheck_StrategyChildClassified(t
 	if providers["InnerRR"] != "baml-roundrobin" {
 		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin", providers["InnerRR"])
 	}
+}
+
+// Test4TupleWrapper_DemoteCentralizedToLegacy is the regression guard
+// for issue #237 PR 2's compat shim. The typed helper
+// (ResolveFallbackChainPlanForClient) correctly centralizes immediate
+// RR fallback children with a BR-supported leaf — but codegen-emitted
+// call sites (`adapters/common/codegen/codegen_router.go`) consume the
+// 4-tuple ResolveFallbackChainForClientWithReason wrapper and have no
+// path to thread Targets / NestedRoundRobin through to the
+// orchestrator's StreamConfig / CallConfig until PR 3 (#237) wires
+// codegen to the typed helper.
+//
+// If the wrapper exposed the centralized shape (legacy[child]=false,
+// providers[child]=leafProvider, reason=ChildBuildRequest), the
+// orchestrator's BuildRequest dispatch — which falls back to the
+// chain-position name when FallbackTargets[child] is empty — would
+// fire against the RR wrapper name. That's wrong-client routing: BAML
+// would receive WithClient("InnerRR") instead of WithClient(leaf), and
+// per-worker rotation (the legacy-callback path) would be silently
+// replaced by a single-leaf BR call with stale wrapper identity.
+//
+// This test pins the demotion contract: at the 4-tuple seam, every
+// composition that the typed helper would centralize MUST come back
+// as legacy classification — same shape as pre-PR-2 — so codegen
+// dispatches through the legacy callback exactly as it did before.
+// Centralization metadata is exercised by the typed-helper tests in
+// fallback_resolve_plan_test.go.
+func Test4TupleWrapper_DemoteCentralizedToLegacy(t *testing.T) {
+	supportOpenAI := func(p string) bool { return p == "openai" }
+
+	t.Run("eligible-rr-child-demoted", func(t *testing.T) {
+		// The typed helper would centralize InnerRR (leaves are
+		// openai = BR-supported). The 4-tuple wrapper must demote.
+		fallbackChains := map[string][]string{
+			"MyFallback": {"InnerRR", "C"},
+			"InnerRR":    {"A", "B"},
+		}
+		clientProviders := map[string]string{
+			"MyFallback": "baml-fallback",
+			"InnerRR":    "baml-roundrobin",
+			"A":          "openai",
+			"B":          "openai",
+			"C":          "openai",
+		}
+		chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+			nil, "MyFallback", fallbackChains, clientProviders, supportOpenAI,
+		)
+		if chain == nil {
+			t.Fatalf("expected drivable chain (mixed-mode), got nil with reason=%q", reason)
+		}
+		if !legacy["InnerRR"] {
+			t.Errorf("InnerRR must be DEMOTED to legacy at the 4-tuple seam (codegen back-compat), legacyChildren=%v", legacy)
+		}
+		if legacy["C"] {
+			t.Errorf("C is a BR-supported leaf; must not be misclassified as legacy, legacyChildren=%v", legacy)
+		}
+		if providers["InnerRR"] != "baml-roundrobin" {
+			t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin (wrapper provider — leaf-provider must NOT escape the 4-tuple seam)",
+				providers["InnerRR"])
+		}
+		if reason != PathReasonFallbackRoundRobinChildLegacy {
+			t.Errorf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+	})
+
+	t.Run("multiple-eligible-rr-children-all-demoted", func(t *testing.T) {
+		// Two siblings the typed helper would each centralize
+		// independently. Both must demote at the 4-tuple seam — a
+		// regression that demoted only one would leak the other's
+		// centralized shape and trigger wrong-client BR dispatch on
+		// just that sibling, harder to spot in production.
+		fallbackChains := map[string][]string{
+			"MyFallback": {"RR1", "RR2", "E"},
+			"RR1":        {"A", "B"},
+			"RR2":        {"C", "D"},
+		}
+		clientProviders := map[string]string{
+			"MyFallback": "baml-fallback",
+			"RR1":        "baml-roundrobin",
+			"RR2":        "baml-roundrobin",
+			"A":          "openai",
+			"B":          "openai",
+			"C":          "openai",
+			"D":          "openai",
+			"E":          "openai",
+		}
+		chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+			nil, "MyFallback", fallbackChains, clientProviders, supportOpenAI,
+		)
+		if chain == nil {
+			t.Fatalf("expected drivable chain, got nil with reason=%q", reason)
+		}
+		if !legacy["RR1"] || !legacy["RR2"] {
+			t.Errorf("both RR wrappers must be demoted to legacy at the 4-tuple seam, legacyChildren=%v", legacy)
+		}
+		if legacy["E"] {
+			t.Errorf("E is a BR-supported leaf; must not be legacy, legacyChildren=%v", legacy)
+		}
+		if providers["RR1"] != "baml-roundrobin" || providers["RR2"] != "baml-roundrobin" {
+			t.Errorf("providers must keep wrapper spelling for both RR siblings, got %v", providers)
+		}
+		if reason != PathReasonFallbackRoundRobinChildLegacy {
+			t.Errorf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+	})
+
+	t.Run("ineligible-rr-child-already-legacy", func(t *testing.T) {
+		// The typed helper would NOT centralize this composition —
+		// leaves are aws-bedrock (not BR-supported). The 4-tuple
+		// wrapper's shape must match the typed helper's shape here
+		// (no demotion fires; both layers agree). Confirms the
+		// demotion is idempotent and doesn't perturb already-legacy
+		// classifications.
+		fallbackChains := map[string][]string{
+			"MyFallback": {"InnerRR", "C"},
+			"InnerRR":    {"Bedrock1", "Bedrock2"},
+		}
+		clientProviders := map[string]string{
+			"MyFallback": "baml-fallback",
+			"InnerRR":    "baml-roundrobin",
+			"Bedrock1":   "aws-bedrock",
+			"Bedrock2":   "aws-bedrock",
+			"C":          "openai",
+		}
+		chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+			nil, "MyFallback", fallbackChains, clientProviders, supportOpenAI,
+		)
+		if chain == nil {
+			t.Fatalf("expected drivable chain, got nil with reason=%q", reason)
+		}
+		if !legacy["InnerRR"] {
+			t.Errorf("InnerRR must be legacy (unsupported leaf — typed helper would not centralize either), legacyChildren=%v", legacy)
+		}
+		if providers["InnerRR"] != "baml-roundrobin" {
+			t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin", providers["InnerRR"])
+		}
+		if reason != PathReasonFallbackRoundRobinChildLegacy {
+			t.Errorf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+	})
+
+	t.Run("non-rr-fallback-chain-unchanged-no-demotion", func(t *testing.T) {
+		// Pure non-strategy fallback chain — the typed helper
+		// returns no Targets / NestedRoundRobin so the demotion
+		// branch must not fire. Pins that the new check doesn't
+		// regress non-RR compositions.
+		fallbackChains := map[string][]string{
+			"MyFallback": {"A", "B"},
+		}
+		clientProviders := map[string]string{
+			"MyFallback": "baml-fallback",
+			"A":          "openai",
+			"B":          "openai",
+		}
+		chain, _, legacy, reason := ResolveFallbackChainForClientWithReason(
+			nil, "MyFallback", fallbackChains, clientProviders, supportOpenAI,
+		)
+		if chain == nil {
+			t.Fatalf("expected drivable chain, got nil with reason=%q", reason)
+		}
+		if len(legacy) != 0 {
+			t.Errorf("expected no legacy children for fully-supported non-RR chain, got %v", legacy)
+		}
+		if reason != "" {
+			t.Errorf("reason: got %q, want \"\" (clean BR-drivable chain)", reason)
+		}
+	})
+
+	t.Run("duplicate-rr-child-demoted-to-legacy", func(t *testing.T) {
+		// The typed helper rejects a duplicate-named RR fallback
+		// child request-fatal (issue #237 PR 2 F1). The 4-tuple
+		// wrapper's hard-error → legacy demotion shim must catch
+		// that error and return the pre-PR-2 legacy classification
+		// shape, so codegen-driven dispatch keeps using the legacy
+		// callback regardless of whether the operator's chain
+		// contains the duplicate name. This test pins the demotion
+		// path for the F1 case specifically — without it, the
+		// 4-tuple wrapper would surface a centralized-shape mistake
+		// the moment codegen migrates partially.
+		fallbackChains := map[string][]string{
+			"MyFallback": {"InnerRR", "InnerRR", "C"},
+			"InnerRR":    {"A", "B"},
+		}
+		clientProviders := map[string]string{
+			"MyFallback": "baml-fallback",
+			"InnerRR":    "baml-roundrobin",
+			"A":          "openai",
+			"B":          "openai",
+			"C":          "openai",
+		}
+		chain, providers, legacy, reason := ResolveFallbackChainForClientWithReason(
+			nil, "MyFallback", fallbackChains, clientProviders, supportOpenAI,
+		)
+		if chain == nil {
+			t.Fatalf("expected the 4-tuple wrapper to demote the typed F1 hard error to legacy classification (drivable chain), got nil with reason=%q", reason)
+		}
+		// Legacy classification preserves the duplicate names in
+		// chain order — the chain still has the operator's shape;
+		// the wrapper is just on the legacy child list now.
+		if len(chain) != 3 {
+			t.Errorf("chain length: got %d, want 3 (legacy classification keeps duplicate-name positions)", len(chain))
+		}
+		if !legacy["InnerRR"] {
+			t.Errorf("InnerRR must be on the legacy child list (demoted from F1 hard error), legacyChildren=%v", legacy)
+		}
+		if providers["InnerRR"] != "baml-roundrobin" {
+			t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin (demoted, NOT leaf provider)", providers["InnerRR"])
+		}
+		if reason != PathReasonFallbackRoundRobinChildLegacy {
+			t.Errorf("reason: got %q, want %q (4-tuple seam demotes the F1 hard error to ChildLegacy)", reason, PathReasonFallbackRoundRobinChildLegacy)
+		}
+	})
 }

@@ -433,6 +433,53 @@ func BuildFallbackChainPlan(
 	return plan
 }
 
+// BuildFallbackChainPlanFromResolution constructs planned metadata for a
+// request routed through the BuildRequest path as a fallback strategy,
+// consuming the typed FallbackChainResolution produced by
+// ResolveFallbackChainPlanForClient. Distinct from the 4-tuple-input
+// sibling (BuildFallbackChainPlanForClient) so issue #237 PR 2's
+// per-child Targets and NestedRoundRobin information survives into the
+// planned metadata payload.
+//
+// Callers consuming the new typed resolver pass the resolution directly;
+// the 4-tuple plan builders stay as a compatibility surface for code
+// (notably the generated router) that hasn't migrated yet. PR 3 wires
+// the router through this typed builder.
+//
+// Sparse-map contract:
+//   - FallbackTargets entries are omitted when target == child (the
+//     resolver's contract); callers don't need to filter.
+//   - FallbackRoundRobin is nil when no centralization happened, so the
+//     plan's JSON payload drops the key via omitempty.
+func BuildFallbackChainPlanFromResolution(
+	clientName string,
+	resolution *FallbackChainResolution,
+	retryPolicy *retry.Policy,
+	buildRequestAPI string,
+) *bamlutils.Metadata {
+	plan := newPlanBase("buildrequest", clientName, retryPolicy, buildRequestAPI)
+	plan.Strategy = "baml-fallback"
+	if resolution == nil {
+		return plan
+	}
+	plan.PathReason = resolution.Reason
+	plan.Chain = append([]string(nil), resolution.Chain...)
+	plan.LegacyChildren = orderedLegacyChildren(resolution.Chain, resolution.LegacyChildren)
+	if len(resolution.Targets) > 0 {
+		plan.FallbackTargets = make(map[string]string, len(resolution.Targets))
+		for k, v := range resolution.Targets {
+			plan.FallbackTargets[k] = v
+		}
+	}
+	if len(resolution.NestedRoundRobin) > 0 {
+		plan.FallbackRoundRobin = make(map[string]*bamlutils.RoundRobinInfo, len(resolution.NestedRoundRobin))
+		for k, v := range resolution.NestedRoundRobin {
+			plan.FallbackRoundRobin[k] = v
+		}
+	}
+	return plan
+}
+
 // BuildFallbackChainPlanForClient is the primary-override-free sibling of
 // BuildFallbackChainPlan. Use after ResolveEffectiveClient has already
 // produced the effective client name.
