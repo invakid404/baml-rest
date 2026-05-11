@@ -4,6 +4,8 @@ go 1.26.2
 
 require (
 	github.com/alecthomas/participle/v2 v2.1.4
+	github.com/aws/aws-sdk-go-v2 v1.41.7
+	github.com/aws/aws-sdk-go-v2/config v1.32.17
 	github.com/goccy/go-json v0.10.6
 	github.com/tidwall/gjson v1.19.0
 	github.com/valyala/fasthttp v1.71.0
@@ -14,8 +16,6 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
-	github.com/aws/aws-sdk-go-v2 v1.41.7 // indirect
-	github.com/aws/aws-sdk-go-v2/config v1.32.17 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.16 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.23 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.23 // indirect

@@ -6,6 +6,24 @@ import (
 	"github.com/invakid404/baml-rest/introspected"
 )
 
+// emitMaybeAttachBedrockAuth emits the call-branch postProcess block
+// that hands the freshly-built *llmhttp.Request to
+// llmhttp.MaybeAttachBedrockAuth, returning early on error. The
+// helper is the URL-pattern attach hook from #243 PR 1: it no-ops on
+// non-bedrock URLs, so the unconditional emit costs every other
+// provider nothing. Extracted as a named function so codegen tests
+// can pin the exact emitted shape AND assert it does not appear in
+// the streaming-path emission (which passes nil postProcess to
+// emitBAMLHTTPRequestConversion). PR1-bedrock breadcrumb.
+func emitMaybeAttachBedrockAuth(g *jen.Group) {
+	g.If(
+		jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "MaybeAttachBedrockAuth").Call(jen.Id("ctx"), jen.Id("req")),
+		jen.Id("authErr").Op("!=").Nil(),
+	).Block(
+		jen.Return(jen.Nil(), jen.Id("authErr")),
+	)
+}
+
 // emitBAMLHTTPRequestConversion generates the jen code that converts a
 // baml.HTTPRequest (stored in local variable "httpReq") into a
 // *llmhttp.Request stored in local variable "req", emits any postProcess
@@ -458,14 +476,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			// invisible to every other provider. Streaming codegen
 			// stays untouched in PR 1 — streaming is gated by
 			// supportedProviders["aws-bedrock"] which lands in PR 3.
-			emitBAMLHTTPRequestConversion(jg, func(g *jen.Group) {
-				g.If(
-					jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "MaybeAttachBedrockAuth").Call(jen.Id("ctx"), jen.Id("req")),
-					jen.Id("authErr").Op("!=").Nil(),
-				).Block(
-					jen.Return(jen.Nil(), jen.Id("authErr")),
-				)
-			})
+			emitBAMLHTTPRequestConversion(jg, emitMaybeAttachBedrockAuth)
 		}),
 
 		// parseFinalFn: calls Parse.Method(ctx, text, opts...)

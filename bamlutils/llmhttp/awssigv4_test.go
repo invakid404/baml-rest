@@ -198,6 +198,158 @@ func TestSignRequest_MissingFields(t *testing.T) {
 	}
 }
 
+// TestMaybeAttachBedrockAuth_Detection pins the URL-pattern detection
+// path that the codegen call branch relies on. The codegen emits an
+// unconditional MaybeAttachBedrockAuth(ctx, req) for every provider's
+// generated _buildCallRequest, so this test must cover both the
+// attach-on-bedrock-host case AND the no-op case for every URL shape
+// that isn't a standard Bedrock runtime host.
+//
+// Scope note: only the default Bedrock runtime endpoint pattern
+// (bedrock-runtime.<region>.amazonaws.com) attaches. FIPS / China /
+// GovCloud / endpoint_url override shapes are intentionally not
+// covered here — that's #243 PR 4 territory.
+func TestMaybeAttachBedrockAuth_Detection(t *testing.T) {
+	cases := []struct {
+		name       string
+		url        string
+		wantAttach bool
+		wantRegion string
+	}{
+		{
+			name:       "standard bedrock-runtime us-east-1",
+			url:        "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-sonnet/converse",
+			wantAttach: true,
+			wantRegion: "us-east-1",
+		},
+		{
+			name:       "standard bedrock-runtime eu-west-3",
+			url:        "https://bedrock-runtime.eu-west-3.amazonaws.com/model/foo/converse",
+			wantAttach: true,
+			wantRegion: "eu-west-3",
+		},
+		{
+			// Non-bedrock provider URL — must not attach. Locks in the
+			// "every other provider pays nothing" contract that gates
+			// the unconditional codegen emit.
+			name:       "openai chat completions",
+			url:        "https://api.openai.com/v1/chat/completions",
+			wantAttach: false,
+		},
+		{
+			// Bedrock CONTROL-plane host (no `-runtime` suffix on the
+			// service label). The signing path must not attach to
+			// control-plane requests — they use a different IAM scope
+			// and operation set. Locking this distinction in case the
+			// pattern is ever loosened.
+			name:       "bedrock control plane",
+			url:        "https://bedrock.us-east-1.amazonaws.com/foundation-models",
+			wantAttach: false,
+		},
+		{
+			// Malformed URL — must not panic and must not attach.
+			name:       "malformed URL",
+			url:        "://broken",
+			wantAttach: false,
+		},
+		{
+			name:       "empty URL",
+			url:        "",
+			wantAttach: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &Request{URL: tc.url, Method: "POST", Body: "{}"}
+			if err := MaybeAttachBedrockAuth(context.Background(), req); err != nil {
+				t.Fatalf("MaybeAttachBedrockAuth: unexpected error: %v", err)
+			}
+			if tc.wantAttach {
+				if req.AWSAuth == nil {
+					t.Fatal("expected AWSAuth attached, got nil")
+				}
+				if req.AWSAuth.Region != tc.wantRegion {
+					t.Errorf("Region = %q, want %q", req.AWSAuth.Region, tc.wantRegion)
+				}
+				if req.AWSAuth.Service != "bedrock" {
+					t.Errorf("Service = %q, want %q", req.AWSAuth.Service, "bedrock")
+				}
+				if req.AWSAuth.Credentials == nil {
+					t.Error("expected Credentials provider to be non-nil")
+				}
+			} else {
+				if req.AWSAuth != nil {
+					t.Errorf("expected AWSAuth nil for %q, got %+v", tc.url, req.AWSAuth)
+				}
+			}
+		})
+	}
+}
+
+// TestMaybeAttachBedrockAuth_PreRewriteRegionFlowsIntoSignature pins
+// the load-bearing invariant for the codegen call branch + llmhttp URL
+// rewrite interaction:
+//
+//   - The codegen calls MaybeAttachBedrockAuth on the BAML-emitted URL
+//     (the standard bedrock-runtime.<region>.amazonaws.com), which
+//     locks the AWSAuth.Region into the request.
+//   - llmhttp then rewrites the URL to whatever the operator's
+//     URL-rewrite rules point at (typically a mock/proxy host).
+//   - signRequest signs the REWRITTEN URL but uses the AWSAuth.Region
+//     from pre-rewrite — so the signature's credential scope still
+//     references the original AWS region.
+//
+// Without this invariant, mock-based tests and proxy-fronted
+// deployments would either fail signature validation or sign for the
+// wrong region. The integration test exercises the full orchestrator
+// stack with manually-injected AWSAuth; this test exercises the
+// codegen-equivalent attach path on its own.
+func TestMaybeAttachBedrockAuth_PreRewriteRegionFlowsIntoSignature(t *testing.T) {
+	req := &Request{
+		URL:     "https://bedrock-runtime.eu-west-1.amazonaws.com/model/foo/converse",
+		Method:  "POST",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Body:    `{"messages":[]}`,
+	}
+	if err := MaybeAttachBedrockAuth(context.Background(), req); err != nil {
+		t.Fatalf("MaybeAttachBedrockAuth: %v", err)
+	}
+	if req.AWSAuth == nil {
+		t.Fatal("expected AWSAuth attached")
+	}
+	if req.AWSAuth.Region != "eu-west-1" {
+		t.Fatalf("Region = %q, want eu-west-1 (extracted pre-rewrite from bedrock URL)", req.AWSAuth.Region)
+	}
+
+	// Replace the default credential provider + clock with deterministic
+	// fixtures so the resulting signature is predictable and so we
+	// don't depend on the host's AWS configuration. The Region from
+	// MaybeAttachBedrockAuth must survive this override.
+	pinned := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	req.AWSAuth.Credentials = staticCreds{
+		cred: aws.Credentials{
+			AccessKeyID:     "AKIDEXAMPLE",
+			SecretAccessKey: "SECRETEXAMPLE",
+		},
+	}
+	req.AWSAuth.NowFunc = func() time.Time { return pinned }
+
+	// Sign with a rewritten mock URL — simulating llmhttp's
+	// resolveRequestURL step. The credential scope in the Authorization
+	// header must still reference the original bedrock URL's region.
+	rewritten := "http://127.0.0.1:9999/model/foo/converse"
+	if err := signRequest(context.Background(), req, rewritten); err != nil {
+		t.Fatalf("signRequest: %v", err)
+	}
+	auth := req.Headers["Authorization"]
+	if auth == "" {
+		t.Fatal("Authorization header missing after signRequest")
+	}
+	if !strings.Contains(auth, "/20260511/eu-west-1/bedrock/aws4_request") {
+		t.Errorf("Authorization credential scope did not reference pre-rewrite region eu-west-1/bedrock.\n  got: %s", auth)
+	}
+}
+
 func TestParseBedrockRegion(t *testing.T) {
 	cases := []struct {
 		url     string
