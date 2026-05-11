@@ -103,6 +103,21 @@ func signRequest(ctx context.Context, req *Request, rewrittenURL string) error {
 	if err != nil {
 		return fmt.Errorf("llmhttp: build sign-only request: %w", err)
 	}
+	// Purge any prior SigV4 headers (case-insensitive) before mirroring
+	// caller headers into httpReq. Without this, reuse of a *Request
+	// leaks stale Authorization / X-Amz-* — most concerning
+	// X-Amz-Security-Token, which the next sign won't overwrite when
+	// the new credential lacks a session token. Headers is a plain
+	// map[string]string so case variants ("x-amz-date" vs "X-Amz-Date")
+	// can otherwise coexist; an EqualFold walk drops all of them.
+	for key := range req.Headers {
+		for _, target := range sigV4OwnedHeaders {
+			if strings.EqualFold(key, target) {
+				delete(req.Headers, key)
+				break
+			}
+		}
+	}
 	// Mirror caller-supplied headers, routing Host through Request.Host
 	// (mirrors buildHTTPRequest) so the SDK sees the same effective
 	// host both backends will send on the wire.
@@ -130,24 +145,36 @@ func signRequest(ctx context.Context, req *Request, rewrittenURL string) error {
 	}
 
 	if req.Headers == nil {
-		req.Headers = make(map[string]string, 4)
+		req.Headers = make(map[string]string, len(sigV4OwnedHeaders))
 	}
 	// SignHTTP writes Authorization + X-Amz-Date (and X-Amz-Security-Token
 	// when the credential carries a session token). Copy them — plus
 	// X-Amz-Content-Sha256 which we set manually — back onto req.Headers
 	// so both the net/http and fasthttp dispatch backends emit them on
-	// the wire.
-	for _, name := range []string{
-		"Authorization",
-		"X-Amz-Date",
-		"X-Amz-Content-Sha256",
-		"X-Amz-Security-Token",
-	} {
+	// the wire. Shares sigV4OwnedHeaders with the pre-mirror purge above
+	// so the canonical-case copy-back can never miss a header that was
+	// purged but produced by the signer.
+	for _, name := range sigV4OwnedHeaders {
 		if v := httpReq.Header.Get(name); v != "" {
 			req.Headers[name] = v
 		}
 	}
 	return nil
+}
+
+// sigV4OwnedHeaders enumerates the request headers the SigV4 signing
+// path writes (or that signRequest itself sets pre-sign in the case of
+// X-Amz-Content-Sha256). Used both to purge stale prior-sign headers
+// from req.Headers before mirroring and to copy fresh signed headers
+// back onto req.Headers after SignHTTP. Keeping the set in one place
+// means adding a new SigV4 header (e.g. an additional X-Amz-* header
+// in a future signer version) automatically updates both halves of
+// the lifecycle and the regression tests.
+var sigV4OwnedHeaders = []string{
+	"Authorization",
+	"X-Amz-Date",
+	"X-Amz-Content-Sha256",
+	"X-Amz-Security-Token",
 }
 
 // parseBedrockRegion extracts the AWS region from a BAML-emitted
@@ -183,10 +210,21 @@ func parseBedrockRegion(rawURL string) (string, error) {
 	return region, nil
 }
 
+// defaultAWSConfigLoader loads an aws.Config via the standard SDK
+// default chain. Indirected through a package-level var so tests can
+// substitute a deterministic loader (e.g. first-call-fail / second-
+// call-succeed scenarios) without driving the real AWS SDK chain.
+// Production callers always go through config.LoadDefaultConfig.
+var defaultAWSConfigLoader = func(ctx context.Context) (aws.Config, error) {
+	return config.LoadDefaultConfig(ctx)
+}
+
 var (
-	defaultAWSCredsOnce sync.Once
-	defaultAWSCreds     aws.CredentialsProvider
-	defaultAWSCredsErr  error
+	defaultAWSCredsMu sync.Mutex
+	// defaultAWSCreds is nil until the first successful load. Failures
+	// must NOT populate this — see DefaultAWSCredentialProvider's
+	// retry-on-failure contract.
+	defaultAWSCreds aws.CredentialsProvider
 )
 
 // DefaultAWSCredentialProvider returns a process-wide cached
@@ -194,21 +232,37 @@ var (
 // (environment variables, shared config, profile, IMDS). Called from
 // the aws-bedrock codegen branch when attaching AWSAuth to a request.
 //
-// The provider is loaded once on first call; refresh is owned by the
-// SDK's internal cred cache. PR1-bedrock breadcrumb: PR 4 will
-// introduce a path to override this with static `.baml` credentials
-// once the adapter exposes them through a non-public surface.
+// Successful loads are cached for the worker lifetime; the SDK's
+// internal cred cache owns refresh from there. **Failures are not
+// cached** — a transient first-call failure (canceled request context,
+// malformed shared config, IMDS timeout) would otherwise poison Bedrock
+// auth for the rest of the worker's life. Subsequent calls retry via
+// the loader.
+//
+// PR1-bedrock breadcrumb: PR 4 will introduce a path to override this
+// with static `.baml` credentials once the adapter exposes them
+// through a non-public surface.
 func DefaultAWSCredentialProvider(ctx context.Context) (aws.CredentialsProvider, error) {
-	defaultAWSCredsOnce.Do(func() {
-		cfg, err := config.LoadDefaultConfig(ctx)
-		if err != nil {
-			defaultAWSCredsErr = err
-			return
-		}
+	defaultAWSCredsMu.Lock()
+	cached := defaultAWSCreds
+	defaultAWSCredsMu.Unlock()
+	if cached != nil {
+		return cached, nil
+	}
+
+	cfg, err := defaultAWSConfigLoader(ctx)
+	if err != nil {
+		// Intentionally do not cache. The next call retries.
+		return nil, err
+	}
+
+	defaultAWSCredsMu.Lock()
+	defer defaultAWSCredsMu.Unlock()
+	// Double-checked: another goroutine may have raced past our first
+	// unlock and populated the cache. Reuse their provider so callers
+	// see a single canonical provider for the worker lifetime.
+	if defaultAWSCreds == nil {
 		defaultAWSCreds = cfg.Credentials
-	})
-	if defaultAWSCredsErr != nil {
-		return nil, defaultAWSCredsErr
 	}
 	return defaultAWSCreds, nil
 }

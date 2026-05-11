@@ -2,6 +2,7 @@ package llmhttp
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -170,6 +171,93 @@ func TestSignRequest_SignsRewrittenURL(t *testing.T) {
 	}
 	if rOriginal.Headers["Authorization"] == rRewritten.Headers["Authorization"] {
 		t.Error("expected different Authorization headers when the signed URL host differs")
+	}
+}
+
+// TestSignRequest_PurgesStaleSigV4HeadersAcrossReuse pins the
+// CR follow-up (PR #244): when the same *Request is reused for two
+// sequential signings — first with a session-token credential, then
+// with a no-token credential — none of the prior SigV4 headers may
+// survive into the second sign. The most concerning leak is
+// X-Amz-Security-Token: SignHTTP only writes it when the new
+// credential carries a session token, so without an explicit purge
+// the stale token rides along on the new request.
+//
+// Also covers the case-variant leak: a header set with non-canonical
+// casing (e.g. "x-amz-date") must be purged so it can't coexist
+// alongside the canonical "X-Amz-Date" the signer writes.
+//
+// llmhttp.Request.Headers is a plain map[string]string (not http.Header),
+// so case canonicalization is the caller's job — which is exactly the
+// motivation for the EqualFold walk in signRequest.
+func TestSignRequest_PurgesStaleSigV4HeadersAcrossReuse(t *testing.T) {
+	pinned1 := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	pinned2 := time.Date(2026, 5, 11, 13, 0, 0, 0, time.UTC)
+
+	req := &Request{
+		URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+		Method: "POST",
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+			// Deliberate case variant on a SigV4-owned header — the
+			// purge must catch it regardless of casing so it can't
+			// coexist with the canonical key the signer writes below.
+			"x-amz-date": "stale-case-variant",
+		},
+		Body:    `{"messages":[]}`,
+		AWSAuth: newPinnedAuth(pinned1, "FIRST-SESSION-TOKEN"),
+	}
+	if err := signRequest(context.Background(), req, req.URL); err != nil {
+		t.Fatalf("first sign: %v", err)
+	}
+	// Sanity: first sign produced a session-token header (the credential
+	// has one) — this is the value that MUST be purged on the next sign.
+	if req.Headers["X-Amz-Security-Token"] != "FIRST-SESSION-TOKEN" {
+		t.Fatalf("first sign did not produce expected session token; got Headers=%+v", req.Headers)
+	}
+	// Sanity: the stale case-variant entry is gone after the first
+	// sign too (the purge runs every sign, not just on reuse).
+	if _, ok := req.Headers["x-amz-date"]; ok {
+		t.Errorf("first sign did not purge case-variant x-amz-date; Headers=%+v", req.Headers)
+	}
+
+	firstAuth := req.Headers["Authorization"]
+	firstDate := req.Headers["X-Amz-Date"]
+	if firstAuth == "" || firstDate == "" {
+		t.Fatalf("first sign missing Authorization / X-Amz-Date; Headers=%+v", req.Headers)
+	}
+
+	// Now re-sign the same *Request with a credential that has no
+	// session token. The purge must remove the stale token; the new
+	// Authorization + X-Amz-Date must reflect the second sign.
+	req.AWSAuth = newPinnedAuth(pinned2, "")
+
+	if err := signRequest(context.Background(), req, req.URL); err != nil {
+		t.Fatalf("second sign: %v", err)
+	}
+
+	// Walk Headers case-insensitively to catch any X-Amz-Security-Token
+	// variant that might have leaked. EqualFold against every SigV4 key
+	// here matches the production-code purge invariant.
+	for k, v := range req.Headers {
+		if strings.EqualFold(k, "X-Amz-Security-Token") {
+			t.Errorf("stale session-token header survived: Headers[%q] = %q (entire Headers: %+v)", k, v, req.Headers)
+		}
+	}
+	// The second sign's headers must replace the first sign's values.
+	if req.Headers["Authorization"] == firstAuth {
+		t.Errorf("Authorization did not change between signs (stale value persisted): %q", firstAuth)
+	}
+	if got, want := req.Headers["X-Amz-Date"], "20260511T130000Z"; got != want {
+		t.Errorf("X-Amz-Date = %q, want %q (second sign's pinned time)", got, want)
+	}
+	if got := req.Headers["X-Amz-Date"]; got == firstDate {
+		t.Errorf("X-Amz-Date did not change between signs (stale value persisted): %q", firstDate)
+	}
+	// Caller-owned non-SigV4 header must survive the purge — only
+	// sigV4OwnedHeaders are dropped, everything else passes through.
+	if req.Headers["Content-Type"] != "application/json" {
+		t.Errorf("Content-Type should survive purge; Headers=%+v", req.Headers)
 	}
 }
 
@@ -347,6 +435,91 @@ func TestMaybeAttachBedrockAuth_PreRewriteRegionFlowsIntoSignature(t *testing.T)
 	}
 	if !strings.Contains(auth, "/20260511/eu-west-1/bedrock/aws4_request") {
 		t.Errorf("Authorization credential scope did not reference pre-rewrite region eu-west-1/bedrock.\n  got: %s", auth)
+	}
+}
+
+// TestDefaultAWSCredentialProvider_RetriesAfterFailure pins the
+// CR follow-up (PR #244): a transient first-call failure from the
+// AWS config loader must NOT poison the cache. The next call has to
+// retry the loader.
+//
+// The previous shape used sync.Once and cached both the provider and
+// the loader's error — a single canceled request context (or any
+// transient LoadDefaultConfig failure) would permanently disable
+// Bedrock auth for the worker. This test substitutes the loader via
+// defaultAWSConfigLoader so first-call-fail / second-call-succeed is
+// deterministic without driving the real AWS SDK chain.
+//
+// Concurrency note: the test resets the cache state under the same
+// mutex the production code uses, then restores it on cleanup so
+// adjacent tests sharing the package-global cache aren't perturbed.
+func TestDefaultAWSCredentialProvider_RetriesAfterFailure(t *testing.T) {
+	// Save and restore the loader + cache so this test is hermetic.
+	savedLoader := defaultAWSConfigLoader
+	defaultAWSCredsMu.Lock()
+	savedCreds := defaultAWSCreds
+	defaultAWSCreds = nil
+	defaultAWSCredsMu.Unlock()
+	t.Cleanup(func() {
+		defaultAWSConfigLoader = savedLoader
+		defaultAWSCredsMu.Lock()
+		defaultAWSCreds = savedCreds
+		defaultAWSCredsMu.Unlock()
+	})
+
+	// First call: loader returns an error. The provider must surface
+	// the error and must not cache anything.
+	calls := 0
+	wantErr := errors.New("simulated config load failure")
+	defaultAWSConfigLoader = func(ctx context.Context) (aws.Config, error) {
+		calls++
+		return aws.Config{}, wantErr
+	}
+	if _, err := DefaultAWSCredentialProvider(context.Background()); err == nil {
+		t.Fatal("first call: expected loader error, got nil")
+	} else if !errors.Is(err, wantErr) {
+		t.Fatalf("first call: error = %v, want wantErr (%v)", err, wantErr)
+	}
+	if calls != 1 {
+		t.Fatalf("first call: expected loader invoked once, got %d", calls)
+	}
+
+	// Defensive: confirm the failure did not populate the cache.
+	defaultAWSCredsMu.Lock()
+	leakedCache := defaultAWSCreds
+	defaultAWSCredsMu.Unlock()
+	if leakedCache != nil {
+		t.Errorf("first-call failure leaked into cache: %+v", leakedCache)
+	}
+
+	// Second call: loader succeeds. Caller must get a non-nil provider.
+	defaultAWSConfigLoader = func(ctx context.Context) (aws.Config, error) {
+		calls++
+		return aws.Config{Credentials: staticCreds{}}, nil
+	}
+	got, err := DefaultAWSCredentialProvider(context.Background())
+	if err != nil {
+		t.Fatalf("second call: unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("second call: expected non-nil provider")
+	}
+	if calls != 2 {
+		t.Fatalf("second call: expected loader invoked twice total, got %d", calls)
+	}
+
+	// Third call: loader stays mounted but the success cache must
+	// short-circuit, so calls stays at 2. Locks in the "successful
+	// loads are cached" half of the contract.
+	got2, err := DefaultAWSCredentialProvider(context.Background())
+	if err != nil {
+		t.Fatalf("third call: unexpected error: %v", err)
+	}
+	if got2 == nil {
+		t.Fatal("third call: expected non-nil provider")
+	}
+	if calls != 2 {
+		t.Errorf("third call: expected cache hit (calls=2), got loader invocations=%d", calls)
 	}
 }
 
