@@ -32,7 +32,10 @@ const (
 	// cannot make routing decisions without a provider.
 	PathReasonEmptyProvider = "empty-provider"
 	// PathReasonUnsupportedProvider: the resolved provider is not in the
-	// BuildRequest supported set (e.g. aws-bedrock).
+	// BuildRequest supported set. PR1-bedrock breadcrumb: aws-bedrock
+	// is partially supported as of #243 PR 1 (call only; streaming
+	// still legacy-routed via this reason until #243 PR 3 wires the
+	// AWS event-stream decoder).
 	PathReasonUnsupportedProvider = "unsupported-provider"
 	// PathReasonFallbackEmptyChain: the resolved strategy client resolves
 	// to baml-fallback but has no children, so BuildRequest has nothing

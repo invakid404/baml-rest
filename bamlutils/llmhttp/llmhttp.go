@@ -31,6 +31,14 @@ type Request struct {
 	Method  string
 	Headers map[string]string
 	Body    string // Raw request body (JSON string)
+
+	// AWSAuth, when non-nil, drives the SigV4 signing hook after URL
+	// rewrite and before backend dispatch. nil leaves headers untouched
+	// — every non-bedrock provider hits that path. PR1-bedrock
+	// breadcrumb: introduced for aws-bedrock on the BuildRequest path
+	// (see #243); PR 3 reuses this for streaming, PR 4 scrubs
+	// breadcrumb comments.
+	AWSAuth *AWSAuthConfig
 }
 
 // StreamResponse represents an active streaming HTTP connection to an LLM
@@ -220,6 +228,14 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 
 	rewritten := resolveRequestURL(req)
 
+	// SigV4 signing runs after URL rewrite (so the signature matches
+	// the host the request actually goes out with) and before either
+	// backend dispatch (so net/http and fasthttp see the same signed
+	// headers). PR1-bedrock breadcrumb.
+	if err := signRequest(ctx, req, rewritten); err != nil {
+		return nil, err
+	}
+
 	// Dispatch to fasthttp when the per-origin cache says the host speaks
 	// HTTP/1.1. Cache misses probe (or short-circuit on http://) before
 	// returning; cache hits are a single atomic load.
@@ -343,6 +359,14 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 	}
 
 	rewritten := resolveRequestURL(req)
+
+	// SigV4 signing runs after URL rewrite (so the signature matches
+	// the host the request actually goes out with) and before either
+	// backend dispatch (so net/http and fasthttp see the same signed
+	// headers). PR1-bedrock breadcrumb.
+	if err := signRequest(ctx, req, rewritten); err != nil {
+		return nil, err
+	}
 
 	if c.cache != nil {
 		if origin, err := parseOrigin(rewritten); err == nil {

@@ -8,10 +8,15 @@ import (
 
 // emitBAMLHTTPRequestConversion generates the jen code that converts a
 // baml.HTTPRequest (stored in local variable "httpReq") into a
-// *llmhttp.Request. This is shared by both the streaming _buildRequest
-// and non-streaming _buildCallRequest codegen paths to avoid duplication
-// and ensure they stay in sync.
-func emitBAMLHTTPRequestConversion(g *jen.Group) {
+// *llmhttp.Request stored in local variable "req", emits any postProcess
+// statements (e.g. PR1-bedrock SigV4 metadata attach), and returns
+// (req, nil). Shared by both the streaming _buildRequest and
+// non-streaming _buildCallRequest codegen paths so they stay in sync.
+//
+// postProcess receives the closure scope so callers can add side
+// effects (header rewrites, auth attachment) after `req` is built but
+// before the closure returns. nil is fine.
+func emitBAMLHTTPRequestConversion(g *jen.Group, postProcess func(*jen.Group)) {
 	g.List(jen.Id("url"), jen.Id("urlErr")).Op(":=").Id("httpReq").Dot("Url").Call()
 	g.If(jen.Id("urlErr").Op("!=").Nil()).Block(
 		jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get URL: %w"), jen.Id("urlErr"))),
@@ -32,12 +37,16 @@ func emitBAMLHTTPRequestConversion(g *jen.Group) {
 	g.If(jen.Id("bodyTextErr").Op("!=").Nil()).Block(
 		jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get body text: %w"), jen.Id("bodyTextErr"))),
 	)
-	g.Return(jen.Op("&").Qual(common.LLMHTTPPkg, "Request").Values(jen.Dict{
+	g.Id("req").Op(":=").Op("&").Qual(common.LLMHTTPPkg, "Request").Values(jen.Dict{
 		jen.Id("URL"):     jen.Id("url"),
 		jen.Id("Method"):  jen.Id("method"),
 		jen.Id("Headers"): jen.Id("headers"),
 		jen.Id("Body"):    jen.Id("bodyText"),
-	}), jen.Nil())
+	})
+	if postProcess != nil {
+		postProcess(g)
+	}
+	g.Return(jen.Id("req"), jen.Nil())
 }
 
 // buildLegacyChildCallParams emits the call-parameter list for the
@@ -121,7 +130,7 @@ func (me *methodEmitter) emitBuildRequest() {
 			jg.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
 			)
-			emitBAMLHTTPRequestConversion(jg)
+			emitBAMLHTTPRequestConversion(jg, nil)
 		}),
 
 		// parseStreamFn: calls ParseStream.Method(ctx, accumulated, opts...)
@@ -442,7 +451,21 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jg.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
 			)
-			emitBAMLHTTPRequestConversion(jg)
+			// PR1-bedrock breadcrumb (issue #243): the call branch
+			// attaches AWS SigV4 metadata when the BAML-emitted URL
+			// looks like a Bedrock Converse endpoint. Non-bedrock URLs
+			// are a no-op for MaybeAttachBedrockAuth, so this stays
+			// invisible to every other provider. Streaming codegen
+			// stays untouched in PR 1 — streaming is gated by
+			// supportedProviders["aws-bedrock"] which lands in PR 3.
+			emitBAMLHTTPRequestConversion(jg, func(g *jen.Group) {
+				g.If(
+					jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "MaybeAttachBedrockAuth").Call(jen.Id("ctx"), jen.Id("req")),
+					jen.Id("authErr").Op("!=").Nil(),
+				).Block(
+					jen.Return(jen.Nil(), jen.Id("authErr")),
+				)
+			})
 		}),
 
 		// parseFinalFn: calls Parse.Method(ctx, text, opts...)

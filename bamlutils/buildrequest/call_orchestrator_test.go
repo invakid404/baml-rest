@@ -371,7 +371,7 @@ func TestRunCallOrchestration_CancellationDuringParse(t *testing.T) {
 func TestRunCallOrchestration_UnsupportedProvider(t *testing.T) {
 	out := make(chan bamlutils.StreamResult, 100)
 	config := &CallConfig{
-		Provider: "aws-bedrock",
+		Provider: "unknown-provider",
 	}
 
 	err := RunCallOrchestration(
@@ -429,7 +429,7 @@ func TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testi
 	}
 
 	config := &CallConfig{
-		Provider:          "aws-bedrock",
+		Provider:          "unknown-provider",
 		MetadataPlan:      plan,
 		NewMetadataResult: newTestMetadataResult,
 	}
@@ -974,14 +974,14 @@ func TestRunCallOrchestration_RetryRebuildsRequest(t *testing.T) {
 }
 
 func TestIsCallProviderSupported(t *testing.T) {
-	supported := []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter", "openai-responses", "anthropic", "google-ai", "vertex-ai"}
+	supported := []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter", "openai-responses", "anthropic", "google-ai", "vertex-ai", "aws-bedrock"}
 	for _, p := range supported {
 		if !IsCallProviderSupported(p) {
 			t.Errorf("expected %q to be supported", p)
 		}
 	}
 
-	unsupported := []string{"aws-bedrock", "unknown", ""}
+	unsupported := []string{"unknown", ""}
 	for _, p := range unsupported {
 		if IsCallProviderSupported(p) {
 			t.Errorf("expected %q to be unsupported", p)
@@ -1352,7 +1352,7 @@ func TestRunCallOrchestration_ValidatesAllChildren(t *testing.T) {
 			FallbackChain: []string{"GoodClient", "BadClient"},
 			ClientProviders: map[string]string{
 				"GoodClient": "openai",
-				"BadClient":  "aws-bedrock",
+				"BadClient":  "unknown-provider",
 			},
 		},
 		nil,
