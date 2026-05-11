@@ -293,7 +293,12 @@ func (me *methodEmitter) emitBuildRequest() {
 		// up-front validation passes even when legacyChildren is nil.
 		// MetadataPlan / NewMetadataResult carry the per-request
 		// routing metadata through to the orchestrator's planned +
-		// outcome emissions.
+		// outcome emissions. FallbackTargets / FallbackRoundRobin
+		// carry the per-child dispatch target and RR decision for
+		// centralized RR fallback children — the orchestrator's
+		// dispatch loop consults FallbackTargets[child] when computing
+		// the WithClient target so a centrally-unwrapped RR child
+		// routes to the selected leaf rather than the RR wrapper name.
 		jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
 			jen.Id("Provider"):             jen.Id("provider"),
 			jen.Id("RetryPolicy"):          jen.Id("retryPolicy"),
@@ -304,6 +309,8 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("ClientOverride"):       jen.Id("clientOverride"),
 			jen.Id("ClientProviders"):      jen.Id("clientProviders"),
 			jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
+			jen.Id("FallbackTargets"):      jen.Id("fallbackTargets"),
+			jen.Id("FallbackRoundRobin"):   jen.Id("fallbackRoundRobin"),
 			jen.Id("LegacyStreamChild"):    jen.Id("legacyStreamChildFn"),
 			jen.Id("MetadataPlan"):         jen.Id("plannedMetadata"),
 			jen.Id("NewMetadataResult"): jen.Func().Params(
@@ -368,6 +375,8 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("fallbackChain").Index().String(),
 			jen.Id("clientProviders").Map(jen.String()).String(),
 			jen.Id("legacyChildren").Map(jen.String()).Bool(),
+			jen.Id("fallbackTargets").Map(jen.String()).String(),
+			jen.Id("fallbackRoundRobin").Map(jen.String()).Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
 			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			jen.Id("clientOverride").String(),
 		).
@@ -539,7 +548,11 @@ func (me *methodEmitter) emitBuildCallRequest() {
 
 		// CallConfig. LegacyChildren is populated for mixed chains;
 		// LegacyCallChild is always wired so validation passes even
-		// when legacyChildren is nil.
+		// when legacyChildren is nil. FallbackTargets / FallbackRound-
+		// Robin mirror StreamConfig — the call-side dispatch loop
+		// also honours FallbackTargets[child] when computing the
+		// per-attempt WithClient target so centralized RR fallback
+		// children dispatch to the leaf rather than the wrapper.
 		jen.Id("callConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "CallConfig").Values(jen.Dict{
 			jen.Id("Provider"):             jen.Id("provider"),
 			jen.Id("RetryPolicy"):          jen.Id("retryPolicy"),
@@ -549,6 +562,8 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jen.Id("ClientOverride"):       jen.Id("clientOverride"),
 			jen.Id("ClientProviders"):      jen.Id("clientProviders"),
 			jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
+			jen.Id("FallbackTargets"):      jen.Id("fallbackTargets"),
+			jen.Id("FallbackRoundRobin"):   jen.Id("fallbackRoundRobin"),
 			jen.Id("LegacyCallChild"):      jen.Id("legacyCallChildFn"),
 			jen.Id("MetadataPlan"):         jen.Id("plannedMetadata"),
 			jen.Id("NewMetadataResult"): jen.Func().Params(
@@ -611,6 +626,8 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jen.Id("fallbackChain").Index().String(),
 			jen.Id("clientProviders").Map(jen.String()).String(),
 			jen.Id("legacyChildren").Map(jen.String()).Bool(),
+			jen.Id("fallbackTargets").Map(jen.String()).String(),
+			jen.Id("fallbackRoundRobin").Map(jen.String()).Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
 			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			jen.Id("clientOverride").String(),
 		).

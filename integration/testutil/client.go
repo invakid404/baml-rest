@@ -383,20 +383,23 @@ func (e *StreamEvent) IsPlannedMetadata() bool {
 // server-side bamlutils package, and a full mirror would drift as unused
 // fields get added. Extend this only when a test needs a new field.
 type StreamMetadata struct {
-	Phase           string                `json:"phase"`
-	Path            string                `json:"path,omitempty"`
-	BuildRequestAPI string                `json:"build_request_api,omitempty"`
-	Client          string                `json:"client,omitempty"`
-	Strategy        string                `json:"strategy,omitempty"`
-	Chain           []string              `json:"chain,omitempty"`
-	RetryMax        *int                  `json:"retry_max,omitempty"`
-	RetryCount      *int                  `json:"retry_count,omitempty"`
-	WinnerClient    string                `json:"winner_client,omitempty"`
-	WinnerProvider  string                `json:"winner_provider,omitempty"`
-	WinnerPath      string                `json:"winner_path,omitempty"`
-	UpstreamDurMs   *int64                `json:"upstream_duration_ms,omitempty"`
-	BamlCallCount   *int                  `json:"baml_call_count,omitempty"`
-	RoundRobin      *StreamRoundRobinInfo `json:"round_robin,omitempty"`
+	Phase              string                           `json:"phase"`
+	Path               string                           `json:"path,omitempty"`
+	PathReason         string                           `json:"path_reason,omitempty"`
+	BuildRequestAPI    string                           `json:"build_request_api,omitempty"`
+	Client             string                           `json:"client,omitempty"`
+	Strategy           string                           `json:"strategy,omitempty"`
+	Chain              []string                         `json:"chain,omitempty"`
+	RetryMax           *int                             `json:"retry_max,omitempty"`
+	RetryCount         *int                             `json:"retry_count,omitempty"`
+	WinnerClient       string                           `json:"winner_client,omitempty"`
+	WinnerProvider     string                           `json:"winner_provider,omitempty"`
+	WinnerPath         string                           `json:"winner_path,omitempty"`
+	UpstreamDurMs      *int64                           `json:"upstream_duration_ms,omitempty"`
+	BamlCallCount      *int                             `json:"baml_call_count,omitempty"`
+	RoundRobin         *StreamRoundRobinInfo            `json:"round_robin,omitempty"`
+	FallbackTargets    map[string]string                `json:"fallback_targets,omitempty"`
+	FallbackRoundRobin map[string]*StreamRoundRobinInfo `json:"fallback_round_robin,omitempty"`
 }
 
 // StreamRoundRobinInfo mirrors bamlutils.RoundRobinInfo for integration-test

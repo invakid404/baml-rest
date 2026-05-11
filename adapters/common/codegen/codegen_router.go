@@ -147,12 +147,17 @@ func (me *methodEmitter) emitRouter() {
 	// children through the streaming path rather than legacyCallChildFn.
 	// Without a bridge, the call block is the only BuildRequest landing
 	// spot and accepts any non-empty chain, matching pre-bridge behaviour.
+	//
+	// Reads off __resolution (the typed FallbackChainResolution from
+	// ResolveFallbackChainPlanForClient); nil-checking guards against
+	// the "not a fallback strategy" return shape.
 	fallbackChainConsumeCond := func(hasBridge bool) jen.Code {
-		nonEmpty := jen.Len(jen.Id("__chain")).Op(">").Lit(0)
+		nonEmpty := jen.Id("__resolution").Op("!=").Nil().
+			Op("&&").Len(jen.Id("__resolution").Dot("Chain")).Op(">").Lit(0)
 		if !hasBridge {
 			return nonEmpty
 		}
-		return nonEmpty.Op("&&").Len(jen.Id("__legacyChildren")).Op("==").Lit(0)
+		return nonEmpty.Op("&&").Len(jen.Id("__resolution").Dot("LegacyChildren")).Op("==").Lit(0)
 	}
 
 	// Non-streaming BuildRequest path for /call and /call-with-raw.
@@ -190,6 +195,7 @@ func (me *methodEmitter) emitRouter() {
 						jen.Id("provider"), jen.Id("retryPolicy"),
 						jen.Nil(), jen.Nil(),
 						jen.Nil(),
+						jen.Nil(), jen.Nil(),
 						jen.Id("__planned"),
 						jen.Id("__effective"),
 					),
@@ -210,30 +216,49 @@ func (me *methodEmitter) emitRouter() {
 				// chains that are fully call-supported. When no bridge
 				// exists (hasBuildRequest=false) mixed chains stay here,
 				// matching the pre-bridge behaviour.
-				jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren"), jen.Id("__fbReason")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClientWithReason").Call(
+				//
+				// The typed resolver threads its per-child Targets +
+				// NestedRoundRobin onto the generated config so that
+				// centrally-unwrapped RR fallback children dispatch to
+				// the selected leaf via the BuildRequest path while
+				// rotation stays cross-worker. The advancer preference
+				// (PreferAdvancer) mirrors ResolveEffectiveClient so the
+				// SharedState idempotency key threads identically for
+				// top-level and nested RR. Hard errors from the resolver
+				// (cycle / empty children / advancer transport / duplicate
+				// RR child) propagate request-fatal — matching top-level
+				// RR semantics — rather than silently degrading.
+				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
 					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 					jen.Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
+					jen.Qual(common.BuildRequestPkg, "PreferAdvancer").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+					),
+				),
+				jen.If(jen.Id("__fbErr").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("__fbErr")),
 				),
 				jen.If(fallbackChainConsumeCond(hasBuildRequest)).Block(
 					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanForClient").Call(
+					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
 						jen.Id("__effective"),
-						jen.Id("__chain"),
-						jen.Id("__cprov"),
-						jen.Id("__legacyChildren"),
+						jen.Id("__resolution"),
 						jen.Id("retryPolicy"),
 						jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
-						jen.Id("__fbReason"),
 					),
 					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 					jen.Id("err").Op("=").Id(me.buildCallRequestMethodName).Call(
 						jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 						jen.Lit(""), jen.Id("retryPolicy"),
-						jen.Id("__chain"), jen.Id("__cprov"),
-						jen.Id("__legacyChildren"),
+						jen.Id("__resolution").Dot("Chain"),
+						jen.Id("__resolution").Dot("Providers"),
+						jen.Id("__resolution").Dot("LegacyChildren"),
+						jen.Id("__resolution").Dot("Targets"),
+						jen.Id("__resolution").Dot("NestedRoundRobin"),
 						jen.Id("__planned"),
 						jen.Lit(""),
 					),
@@ -279,6 +304,7 @@ func (me *methodEmitter) emitRouter() {
 						jen.Id("provider"), jen.Id("retryPolicy"),
 						jen.Nil(), jen.Nil(),
 						jen.Nil(),
+						jen.Nil(), jen.Nil(),
 						jen.Id("__planned"),
 						jen.Id("__effective"),
 					),
@@ -290,31 +316,44 @@ func (me *methodEmitter) emitRouter() {
 				// Fallback chain path. Mixed chains (with any legacy
 				// children) route through the BuildRequest path — the
 				// orchestrator dispatches legacy children to the
-				// generated legacyStreamChildFn.
-				jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren"), jen.Id("__fbReason")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClientWithReason").Call(
+				// generated legacyStreamChildFn. Centralized RR fallback
+				// children (an immediate RR child whose selected leaf is
+				// BR-supported) reach BuildRequest with the leaf in
+				// __resolution.Targets so dispatch rotates cross-worker
+				// via the same advancer top-level RR uses; ineligible RR
+				// children stay on the legacy callback path. Hard
+				// resolver errors propagate request-fatal.
+				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
 					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 					jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
+					jen.Qual(common.BuildRequestPkg, "PreferAdvancer").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+					),
 				),
-				jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
+				jen.If(jen.Id("__fbErr").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("__fbErr")),
+				),
+				jen.If(jen.Id("__resolution").Op("!=").Nil().Op("&&").Len(jen.Id("__resolution").Dot("Chain")).Op(">").Lit(0)).Block(
 					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanForClient").Call(
+					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
 						jen.Id("__effective"),
-						jen.Id("__chain"),
-						jen.Id("__cprov"),
-						jen.Id("__legacyChildren"),
+						jen.Id("__resolution"),
 						jen.Id("retryPolicy"),
 						jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
-						jen.Id("__fbReason"),
 					),
 					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 					jen.Id("err").Op("=").Id(me.buildRequestMethodName).Call(
 						jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 						jen.Lit(""), jen.Id("retryPolicy"),
-						jen.Id("__chain"), jen.Id("__cprov"),
-						jen.Id("__legacyChildren"),
+						jen.Id("__resolution").Dot("Chain"),
+						jen.Id("__resolution").Dot("Providers"),
+						jen.Id("__resolution").Dot("LegacyChildren"),
+						jen.Id("__resolution").Dot("Targets"),
+						jen.Id("__resolution").Dot("NestedRoundRobin"),
 						jen.Id("__planned"),
 						jen.Lit(""),
 					),
@@ -365,6 +404,7 @@ func (me *methodEmitter) emitRouter() {
 						jen.Id("provider"), jen.Id("retryPolicy"),
 						jen.Nil(), jen.Nil(),
 						jen.Nil(),
+						jen.Nil(), jen.Nil(),
 						jen.Id("__planned"),
 						jen.Id("__effective"),
 					),
@@ -376,30 +416,41 @@ func (me *methodEmitter) emitRouter() {
 				// Fallback chain path (bridge). Uses IsProviderSupported
 				// (stream side) because the whole point of the bridge is
 				// to accept chains that IsCallProviderSupported rejected.
-				jen.List(jen.Id("__chain"), jen.Id("__cprov"), jen.Id("__legacyChildren"), jen.Id("__fbReason")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainForClientWithReason").Call(
+				// Threads the typed resolver's per-child Targets +
+				// NestedRoundRobin through to orchestrator dispatch so
+				// centralized RR fallback children rotate cross-worker
+				// even on the bridge path.
+				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
 					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 					jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
+					jen.Qual(common.BuildRequestPkg, "PreferAdvancer").Call(
+						jen.Id("adapter"),
+						jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+					),
 				),
-				jen.If(jen.Len(jen.Id("__chain")).Op(">").Lit(0)).Block(
+				jen.If(jen.Id("__fbErr").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("__fbErr")),
+				),
+				jen.If(jen.Id("__resolution").Op("!=").Nil().Op("&&").Len(jen.Id("__resolution").Dot("Chain")).Op(">").Lit(0)).Block(
 					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanForClient").Call(
+					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
 						jen.Id("__effective"),
-						jen.Id("__chain"),
-						jen.Id("__cprov"),
-						jen.Id("__legacyChildren"),
+						jen.Id("__resolution"),
 						jen.Id("retryPolicy"),
 						jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
-						jen.Id("__fbReason"),
 					),
 					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 					jen.Id("err").Op("=").Id(me.buildRequestMethodName).Call(
 						jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
 						jen.Lit(""), jen.Id("retryPolicy"),
-						jen.Id("__chain"), jen.Id("__cprov"),
-						jen.Id("__legacyChildren"),
+						jen.Id("__resolution").Dot("Chain"),
+						jen.Id("__resolution").Dot("Providers"),
+						jen.Id("__resolution").Dot("LegacyChildren"),
+						jen.Id("__resolution").Dot("Targets"),
+						jen.Id("__resolution").Dot("NestedRoundRobin"),
 						jen.Id("__planned"),
 						jen.Lit(""),
 					),

@@ -14,13 +14,13 @@ import (
 )
 
 // TestRunStreamOrchestration_FallbackTargets_RoutesBuildRequestToLeaf
-// pins the streaming orchestrator's wrapper-vs-target dispatch
-// (issue #237 PR 2). When the resolver has centralized an immediate
-// RR fallback child to a leaf, StreamConfig.FallbackTargets[child]
-// names that leaf and the orchestrator must pass IT (not the wrapper
-// child) as the clientOverride to buildRequest. On success,
-// WinnerClient must report the leaf — the dispatch target is the
-// realised serving identity.
+// pins the streaming orchestrator's wrapper-vs-target dispatch. When
+// the resolver has centralized an immediate RR fallback child to a
+// leaf, StreamConfig.FallbackTargets[child] names that leaf and the
+// orchestrator must pass IT (not the wrapper child) as the
+// clientOverride to buildRequest. On success, WinnerClient must
+// report the leaf — the dispatch target is the realised serving
+// identity.
 func TestRunStreamOrchestration_FallbackTargets_RoutesBuildRequestToLeaf(t *testing.T) {
 	server := makeOpenAIServer([]string{"hi"})
 	defer server.Close()
@@ -49,7 +49,7 @@ func TestRunStreamOrchestration_FallbackTargets_RoutesBuildRequestToLeaf(t *test
 			"InnerRR": "openai",
 			"Sibling": "openai",
 		},
-		// PR 2 resolver populates this when InnerRR's RR resolution
+		// Resolver populates this when InnerRR's RR resolution
 		// selected the leaf "A". The orchestrator must dispatch BR
 		// against "A", not "InnerRR".
 		FallbackTargets:   map[string]string{"InnerRR": "A"},
@@ -99,11 +99,12 @@ func TestRunStreamOrchestration_FallbackTargets_RoutesBuildRequestToLeaf(t *test
 }
 
 // TestRunStreamOrchestration_FallbackTargets_EmptyPassesThrough pins
-// the backward-compatible shape: a chain with no FallbackTargets
-// entries (or an entry equal to child) keeps the pre-PR-2 dispatch
-// identity — clientOverride equals the chain-position name. Crucial
-// for codegen sites that haven't migrated to populating FallbackTargets
-// yet (PR 3 wires those).
+// the pass-through shape: a chain with no FallbackTargets entries (or
+// an entry equal to child) dispatches BuildRequest against the chain-
+// position name verbatim — the dispatch identity equals the configured
+// child name. Required for any chain that didn't centralise an RR
+// child: the orchestrator must not silently mutate the dispatch target
+// when FallbackTargets is empty.
 func TestRunStreamOrchestration_FallbackTargets_EmptyPassesThrough(t *testing.T) {
 	server := makeOpenAIServer([]string{"ok"})
 	defer server.Close()
@@ -124,7 +125,7 @@ func TestRunStreamOrchestration_FallbackTargets_EmptyPassesThrough(t *testing.T)
 		ClientProviders: map[string]string{
 			"OnlyChild": "openai",
 		},
-		// No FallbackTargets — pre-PR-2 shape.
+		// No FallbackTargets — pass-through dispatch shape.
 	}
 
 	err := RunStreamOrchestration(
@@ -152,7 +153,7 @@ func TestRunStreamOrchestration_FallbackTargets_EmptyPassesThrough(t *testing.T)
 // dispatch with the chain-position name (the wrapper) as the
 // clientOverride. The legacy callback's scoped registry depends on
 // the wrapper identity to preserve runtime strategy overrides for
-// genuinely-deferred RR shapes (see #199 / #224 codegen scope split).
+// genuinely-deferred RR shapes.
 func TestRunStreamOrchestration_FallbackTargets_LegacyChildStaysAtWrapper(t *testing.T) {
 	out := make(chan bamlutils.StreamResult, 100)
 

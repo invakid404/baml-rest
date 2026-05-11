@@ -25,7 +25,7 @@ func (c *countingAdvancer) Advance(_ string, _ int) (int, error) {
 }
 
 // pinnedIndexAdvancer returns the same child index every call. Used by
-// the PR 2 resolver tests so a single static RR chain's nested
+// the typed-resolver tests so a single static RR chain's nested
 // resolution is deterministic regardless of process-random
 // AdvanceDynamic ordering — the assertion focuses on classification
 // (legacy/drivable, providers, targets, reason), and a fixed advancer
@@ -44,12 +44,13 @@ func (p *pinnedIndexAdvancer) Advance(_ string, childCount int) (int, error) {
 	return p.idx, nil
 }
 
-// TestResolveFallbackChainPlanForClient covers the PR 2 centralization
-// matrix surfaced through the typed FallbackChainResolution helper. The
-// 4-tuple wrapper sub-cases are pinned by the existing
-// TestResolveFallbackChain_* tests; this table focuses on Targets and
-// NestedRoundRobin shape (the typed-only outputs) plus the
-// sentinel-vs-hard-error matching that the wrapper deliberately demotes.
+// TestResolveFallbackChainPlanForClient covers the RR-child
+// centralization matrix surfaced through the typed
+// FallbackChainResolution helper. The 4-tuple wrapper sub-cases are
+// pinned by the existing TestResolveFallbackChain_* tests; this table
+// focuses on Targets and NestedRoundRobin shape (the typed-only
+// outputs) plus the sentinel-vs-hard-error matching that the wrapper
+// deliberately demotes.
 func TestResolveFallbackChainPlanForClient(t *testing.T) {
 	// Shared support predicate — openai-only so we can pin centralization
 	// eligibility purely off provider strings.
@@ -218,9 +219,9 @@ func TestResolveFallbackChainPlanForClient(t *testing.T) {
 		// has no runtime override is a hard error matching top-level
 		// RR semantics — request-fatal (not silent legacy fallthrough).
 		// The typed helper propagates the error; the 4-tuple wrapper
-		// would demote to legacy, but that's a deliberate codegen
-		// compatibility shim. PR 3's typed call sites will surface
-		// this as a request-fatal failure.
+		// would demote to legacy for the metadata-classifier seam.
+		// Codegen's router call sites consume the typed helper directly
+		// so the failure surfaces request-fatal at dispatch time.
 		fallbackChains := map[string][]string{
 			"MyFallback": {"InnerRR", "C"},
 			// InnerRR's chain is intentionally absent.
@@ -248,9 +249,9 @@ func TestResolveFallbackChainPlanForClient(t *testing.T) {
 		// Two immediate RR children, each with their own BR-supported
 		// leaves. The resolver must centralize both and populate the
 		// per-child Targets / NestedRoundRobin maps without
-		// cross-talk. Mirrors the "multiple immediate RR children"
-		// shape called out as in-scope for #237 (rr1 + rr2 keyed by
-		// distinct names; SharedState idempotency separates them).
+		// cross-talk. The "multiple immediate RR children" shape is
+		// supported because SharedState keys idempotency by RR client
+		// name + request id, so rr1 + rr2 naturally separate.
 		fallbackChains := map[string][]string{
 			"MyFallback": {"RR1", "RR2", "E"},
 			"RR1":        {"A", "B"},
@@ -335,7 +336,7 @@ func TestResolveFallbackChainPlanForClient(t *testing.T) {
 			t.Errorf("Reason: got %q, want %q", res.Reason, PathReasonFallbackRoundRobinChildLegacy)
 		}
 		if got := adv.calls.Load(); got != 0 {
-			t.Errorf("advancer call count under nil-support: got %d, want 0 (must short-circuit BEFORE resolveImmediateRRChild — issue #237 PR 2 F2)",
+			t.Errorf("advancer call count under nil-support: got %d, want 0 (must short-circuit BEFORE resolveImmediateRRChild so a remote advancer never burns an idempotency-cache slot on a branch the resolver already knows is ineligible)",
 				got)
 		}
 	})
@@ -347,10 +348,11 @@ func TestResolveFallbackChainPlanForClient(t *testing.T) {
 		// The orchestrator iterates FallbackChain positionally and
 		// reads FallbackTargets[child] by name, so it'd dispatch BOTH
 		// iterations to the second iteration's target — wrong runtime
-		// routing. Reject request-fatal at the typed seam (issue #237
-		// PR 2 F1). The 4-tuple wrapper's hard-error → legacy
-		// demotion preserves codegen-driven dispatch behaviour;
-		// see Test4TupleWrapper_DemoteCentralizedToLegacy.
+		// routing. Reject request-fatal at the typed seam so codegen-
+		// emitted call sites surface the operator-broken chain. The
+		// 4-tuple wrapper's hard-error → legacy demotion preserves
+		// chain enumeration for the legacy metadata classifier; see
+		// Test4TupleWrapper_DemoteCentralizedToLegacy.
 		fallbackChains := map[string][]string{
 			"MyFallback": {"InnerRR", "InnerRR", "C"},
 			"InnerRR":    {"A", "B"},
@@ -432,7 +434,7 @@ func TestResolveFallbackChainPlanForClient(t *testing.T) {
 }
 
 // TestBuildFallbackChainPlanFromResolution pins that the typed plan
-// builder threads PR 2's per-child outputs (FallbackTargets,
+// builder threads the resolver's per-child outputs (FallbackTargets,
 // FallbackRoundRobin) into planned metadata. Without this seam,
 // downstream consumers (the unary metadata header set, JSON metadata
 // events) would never see which leaf was picked for a centralized RR
@@ -482,7 +484,7 @@ func TestBuildFallbackChainPlanFromResolution(t *testing.T) {
 // sparse-map contract: a resolution with no Targets / no NestedRoundRobin
 // produces a plan with both fields nil (so JSON `omitempty` drops the
 // keys). Important so non-centralized fallback chains emit the same
-// payload shape they did before PR 1.
+// payload shape as plans that predate the fallback-target vocabulary.
 func TestBuildFallbackChainPlanFromResolution_NilEmptyMaps(t *testing.T) {
 	res := &FallbackChainResolution{
 		Chain:          []string{"A", "B"},
@@ -499,11 +501,11 @@ func TestBuildFallbackChainPlanFromResolution_NilEmptyMaps(t *testing.T) {
 }
 
 // TestResolveFallbackChainPlan_SentinelClassificationMatchesTopLevel
-// is the targeted regression guard for issue #237 PR 2 section 4 —
+// is the regression guard for the sentinel-class vs hard-error split:
 // sentinel-class errors from roundrobin.Resolve translate to the
 // existing PathReasonInvalid* reasons (carve-out) while hard errors
-// propagate (request-fatal). Section-by-section parity with
-// ResolveEffectiveClient's posture in client_resolution.go.
+// propagate (request-fatal). Posture parity with
+// ResolveEffectiveClient in client_resolution.go.
 func TestResolveFallbackChainPlan_SentinelClassificationMatchesTopLevel(t *testing.T) {
 	// Defensive guard: even if a future code path skips the
 	// per-child invalid-override preflight, the typed helper's

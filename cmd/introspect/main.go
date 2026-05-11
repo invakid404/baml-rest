@@ -2121,13 +2121,32 @@ func generateBamlConfigVars(out *jen.File) {
 		out.Var().Id("ClientRetryPolicy").Op("=").Map(jen.String()).String().Values(entries...)
 	}
 
-	// Scan for fallback -> round-robin composition at introspect time
-	// and emit a one-time build-log warning per (fallback, rr-child)
-	// pair. This PR intentionally defers centralised unwrapping of RR
-	// children inside fallback chains. Nested RR still runs
-	// correctly under BAML's per-worker
-	// runtime rotation; the warning just flags the composition so
-	// operators don't mistake pool-wide RR for nested-RR-works-too.
+	// Scan for fallback compositions whose RR-child centralisation is
+	// still deferred and emit a one-time build-log warning per (fallback,
+	// rr-child) pair. The static `fallback[rr[A,B], C]` shape — RR child
+	// whose every leaf is a non-strategy client — is centralised via the
+	// BuildRequest path and rotates cross-worker like top-level RR; that
+	// case no longer warns.
+	//
+	// The remaining deferred shapes are statically introspectable from
+	// the chain map alone:
+	//
+	//   1. Immediate RR fallback child whose selected leaf is itself a
+	//      strategy wrapper (e.g. fallback[rr[fallback[A,B], C], D]).
+	//      Recursive fallback planning inside a fallback child isn't
+	//      modelled yet; the RR child stays on the legacy callback so
+	//      BAML's per-worker runtime owns rotation.
+	//
+	//   2. Nested fallback containing an RR child (e.g.
+	//      fallback[fallback[rr[A,B], C], D]). The outer chain's
+	//      classification only inspects immediate children; an RR a level
+	//      deeper isn't reachable for centralisation and runs per-worker.
+	//
+	// Out-of-scope shapes not detectable statically (unsupported leaf
+	// providers like aws-bedrock, runtime overrides on options.strategy
+	// or options.start) don't warn at introspect time — the runtime
+	// resolver handles them via PathReasonFallbackRoundRobinChildLegacy.
+	//
 	// Keys are sorted so the build-log output is stable across runs.
 	{
 		parents := make([]string, 0, len(cfg.fallbackChains))
@@ -2135,18 +2154,52 @@ func generateBamlConfigVars(out *jen.File) {
 			parents = append(parents, parent)
 		}
 		sort.Strings(parents)
+		isStrategyProvider := func(p string) bool {
+			return p == "baml-roundrobin" || p == "baml-fallback"
+		}
 		for _, parent := range parents {
 			if cfg.clientProvider[parent] != "baml-fallback" {
 				continue
 			}
 			for _, child := range cfg.fallbackChains[parent] {
-				if cfg.clientProvider[child] != "baml-roundrobin" {
-					continue
+				childProvider := cfg.clientProvider[child]
+				switch childProvider {
+				case "baml-roundrobin":
+					// Deferred shape 1: RR child whose every leaf is a
+					// non-strategy client is centralised — no warning.
+					// Warn only when at least one leaf is itself a
+					// strategy wrapper.
+					rrHasStrategyLeaf := false
+					for _, leaf := range cfg.fallbackChains[child] {
+						if isStrategyProvider(cfg.clientProvider[leaf]) {
+							rrHasStrategyLeaf = true
+							break
+						}
+					}
+					if !rrHasStrategyLeaf {
+						continue
+					}
+					log.Printf("baml-rest introspect: fallback client %q has round-robin child %q "+
+						"whose chain contains a strategy leaf; this composition stays on the "+
+						"legacy per-worker rotation path because recursive strategy planning "+
+						"inside a fallback child isn't modelled yet",
+						parent, child)
+				case "baml-fallback":
+					// Deferred shape 2: nested fallback containing RR.
+					// Warn per (parent, nested-fallback child) when the
+					// nested fallback has at least one immediate RR
+					// child; centralisation only reaches immediate
+					// fallback children.
+					for _, grandchild := range cfg.fallbackChains[child] {
+						if cfg.clientProvider[grandchild] == "baml-roundrobin" {
+							log.Printf("baml-rest introspect: fallback client %q has nested fallback "+
+								"child %q whose chain contains round-robin grandchild %q; this composition "+
+								"stays on the legacy per-worker rotation path because centralisation "+
+								"only reaches immediate fallback children",
+								parent, child, grandchild)
+						}
+					}
 				}
-				log.Printf("baml-rest introspect: fallback client %q has baml-roundrobin child %q; "+
-					"nested round-robin rotates per-worker via BAML's runtime (cross-worker "+
-					"centralisation is only applied to top-level round-robin clients)",
-					parent, child)
 			}
 		}
 	}
