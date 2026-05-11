@@ -13,7 +13,7 @@ import (
 type mockAdapter struct {
 	context.Context
 	retryConfig            *bamlutils.RetryConfig
-	includeThinkingInRaw   bool
+	includeReasoning       bool
 	clientRegistryProvider string
 	originalRegistry       *bamlutils.ClientRegistry
 	roundRobinAdvancer     bamlutils.RoundRobinAdvancer
@@ -33,8 +33,8 @@ func (m *mockAdapter) NewMediaFromBase64(_ bamlutils.MediaKind, _ string, _ *str
 }
 func (m *mockAdapter) SetRetryConfig(rc *bamlutils.RetryConfig) { m.retryConfig = rc }
 func (m *mockAdapter) RetryConfig() *bamlutils.RetryConfig      { return m.retryConfig }
-func (m *mockAdapter) SetIncludeThinkingInRaw(v bool)           { m.includeThinkingInRaw = v }
-func (m *mockAdapter) IncludeThinkingInRaw() bool               { return m.includeThinkingInRaw }
+func (m *mockAdapter) SetIncludeReasoning(v bool)               { m.includeReasoning = v }
+func (m *mockAdapter) IncludeReasoning() bool                   { return m.includeReasoning }
 func (m *mockAdapter) ClientRegistryProvider() string           { return m.clientRegistryProvider }
 func (m *mockAdapter) HTTPClient() *llmhttp.Client              { return nil }
 func (m *mockAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {

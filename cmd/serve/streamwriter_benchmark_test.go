@@ -18,7 +18,7 @@ func BenchmarkNDJSONPublishDataParallel(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if err := publisher.PublishData(data, "raw-payload"); err != nil {
+			if err := publisher.PublishData(data, "raw-payload", ""); err != nil {
 				panic(err)
 			}
 		}
@@ -48,7 +48,7 @@ func BenchmarkSSEPublishDataParallel(b *testing.B) {
 
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					if err := publisher.PublishData(data, tc.raw); err != nil {
+					if err := publisher.PublishData(data, tc.raw, ""); err != nil {
 						panic(err)
 					}
 				}

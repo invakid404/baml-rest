@@ -29,13 +29,16 @@ type CallConfig struct {
 	// (for /call-with-raw endpoint).
 	NeedsRaw bool
 
-	// IncludeThinkingInRaw is the per-request opt-in for surfacing
-	// provider-specific reasoning/thinking content in raw. When true,
-	// the response extractor accumulates Anthropic thinking blocks
-	// into raw alongside text blocks. When false (default), raw
-	// matches BAML's RawLLMResponse() text-only semantics. The flag
-	// never affects the parseable text passed to Parse.
-	IncludeThinkingInRaw bool
+	// IncludeReasoning is the per-request opt-in for surfacing provider-
+	// specific reasoning/thinking text on the structured reasoning
+	// channel of /with-raw endpoints, distinct from raw. When true, the
+	// response extractor populates the reasoning channel with Anthropic
+	// thinking blocks / Gemini thought parts / OpenAI Chat Completions
+	// reasoning_content / OpenAI Responses summary entries. When false
+	// (default), the reasoning channel stays empty. The flag never
+	// affects raw (always text-only) or the parseable text passed to
+	// Parse.
+	IncludeReasoning bool
 
 	// FallbackChain is the ordered list of child client names for fallback
 	// strategies. When non-empty, each retry attempt walks the entire chain
@@ -110,7 +113,7 @@ type LegacyCallChildFunc func(
 	provider string,
 	needsRaw bool,
 	sendHeartbeat func(),
-) (finalResult any, raw string, err error)
+) (finalResult any, raw, reasoning string, err error)
 
 // BuildCallRequestFunc builds an HTTP request for a non-streaming call by
 // calling Request.Method(ctx, args, opts...) and converting the result
@@ -120,22 +123,24 @@ type LegacyCallChildFunc func(
 type BuildCallRequestFunc func(ctx context.Context, clientOverride string) (*llmhttp.Request, error)
 
 // ExtractResponseFunc extracts the LLM output text from a non-streaming
-// JSON response body. Returns two strings: parseable (for Parse.Method)
-// and raw (for /call-with-raw's Raw()).
+// JSON response body. Returns three strings: parseable (for Parse.Method),
+// raw (for /call-with-raw's Raw()), and reasoning (for /call-with-raw's
+// Reasoning()).
 //
-// Parseable is always text-only — reasoning/thinking content is never
-// accumulated into it, so the BAML parser cannot be influenced by
-// reasoning text. Raw matches parseable by default; when includeThinking
-// is true the function may additionally surface provider-specific
-// reasoning (e.g. Anthropic thinking blocks) in raw for telemetry.
-type ExtractResponseFunc func(provider string, responseBody string, includeThinking bool) (parseable, raw string, err error)
+// Parseable and raw are always text-only — reasoning/thinking content is
+// never accumulated into either, so neither the BAML parser nor the wire's
+// raw channel can be influenced by reasoning text. When includeReasoning
+// is true the function populates the reasoning return with provider-
+// specific reasoning text (e.g. Anthropic thinking blocks); otherwise
+// reasoning is empty.
+type ExtractResponseFunc func(provider string, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error)
 
 // RunCallOrchestration executes the non-streaming BuildRequest path.
 //
 // Flow — single retry loop covering HTTP, extraction, and parsing:
 //  1. buildRequest(ctx, clientOverride) → llmhttp.Request
 //  2. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
-//  3. extractResponse(provider, body, includeThinking) → parseable + raw text
+//  3. extractResponse(provider, body, includeReasoning) → parseable + raw + reasoning text
 //  4. parseFinal(ctx, parseable) → typed result
 //  5. emit StreamResultKindFinal on channel
 //
@@ -256,7 +261,7 @@ func RunCallOrchestration(
 
 	sendHeartbeat := func() {
 		if heartbeatSent.CompareAndSwap(false, true) {
-			r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)
+			r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", "", nil, false)
 			select {
 			case out <- r:
 			default:
@@ -289,12 +294,13 @@ func RunCallOrchestration(
 		}
 	}
 
-	// callAttemptResult carries the final parsed value and raw text from
-	// the winning attempt, plus the winner's routing identity for outcome
-	// metadata.
+	// callAttemptResult carries the final parsed value, raw text, and
+	// reasoning text from the winning attempt, plus the winner's routing
+	// identity for outcome metadata.
 	type callAttemptResult struct {
 		finalResult    any
 		raw            string
+		reasoning      string
 		winnerClient   string
 		winnerProvider string
 		winnerPath     string
@@ -313,7 +319,7 @@ func RunCallOrchestration(
 			return nil, httpErr
 		}
 
-		parseable, raw, extractErr := extractResponse(provider, resp.Body, config.IncludeThinkingInRaw)
+		parseable, raw, reasoning, extractErr := extractResponse(provider, resp.Body, config.IncludeReasoning)
 		if extractErr != nil {
 			return nil, fmt.Errorf("buildrequest: failed to extract response content: %w", extractErr)
 		}
@@ -326,6 +332,7 @@ func RunCallOrchestration(
 		return &callAttemptResult{
 			finalResult:    finalResult,
 			raw:            raw,
+			reasoning:      reasoning,
 			winnerProvider: provider,
 			winnerPath:     "buildrequest",
 		}, nil
@@ -367,7 +374,7 @@ func RunCallOrchestration(
 				// chain-position name) — FallbackTargets is honored only
 				// for the BuildRequest path, since the legacy callback's
 				// scoped registry depends on the wrapper identity.
-				finalResult, raw, err := config.LegacyCallChild(
+				finalResult, raw, reasoning, err := config.LegacyCallChild(
 					ctx,
 					child,
 					config.ClientProviders[child],
@@ -379,6 +386,7 @@ func RunCallOrchestration(
 					return &callAttemptResult{
 						finalResult:    finalResult,
 						raw:            raw,
+						reasoning:      reasoning,
 						winnerClient:   child,
 						winnerProvider: config.ClientProviders[child],
 						winnerPath:     "legacy",
@@ -415,7 +423,7 @@ func RunCallOrchestration(
 	result, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, nil)
 
 	if err != nil {
-		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, "", err, false))
+		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, "", "", err, false))
 		return nil
 	}
 
@@ -454,10 +462,12 @@ func RunCallOrchestration(
 	}
 
 	rawForFinal := ""
+	reasoningForFinal := ""
 	if config.NeedsRaw {
 		rawForFinal = winningResult.raw
+		reasoningForFinal = winningResult.reasoning
 	}
-	trySend(newResult(bamlutils.StreamResultKindFinal, nil, winningResult.finalResult, rawForFinal, nil, false))
+	trySend(newResult(bamlutils.StreamResultKindFinal, nil, winningResult.finalResult, rawForFinal, reasoningForFinal, nil, false))
 
 	return nil
 }

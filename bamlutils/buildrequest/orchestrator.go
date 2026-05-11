@@ -198,13 +198,16 @@ type StreamConfig struct {
 	// NeedsRaw is true if the caller wants raw LLM response text.
 	NeedsRaw bool
 
-	// IncludeThinkingInRaw is the per-request opt-in for surfacing
-	// provider-specific reasoning/thinking content in raw. When true,
-	// the streaming extractor accumulates Anthropic thinking_delta
-	// events into raw alongside text deltas. When false (default),
-	// raw matches BAML's RawLLMResponse() text-only semantics. The
-	// flag never affects the parseable text passed to ParseStream.
-	IncludeThinkingInRaw bool
+	// IncludeReasoning is the per-request opt-in for surfacing provider-
+	// specific reasoning/thinking text on the structured reasoning
+	// channel of /with-raw endpoints, distinct from raw. When true, the
+	// streaming extractor accumulates Anthropic thinking_delta / Gemini
+	// thought parts / OpenAI Chat Completions reasoning_content / OpenAI
+	// Responses reasoning_summary_text deltas into the reasoning channel
+	// alongside text deltas. When false (default), the reasoning channel
+	// stays empty. The flag never affects raw (always text-only) or the
+	// parseable text passed to ParseStream.
+	IncludeReasoning bool
 
 	// ParseThrottleInterval is the minimum time between ParseStream calls.
 	// Zero means parse on every SSE event (no throttling).
@@ -298,16 +301,15 @@ type StreamConfig struct {
 	// makeOptionsFromAdapter does not translate it — outer retries handle
 	// per-request retries, so only the inner BAML static retry compounds.
 	//
-	// Raw note: legacy raw comes from BAML's FunctionLog.RawLLMResponse(),
-	// which is text-only across providers (BAML's runtime drops Anthropic-
-	// thinking_delta and equivalents). Under the default
-	// IncludeThinkingInRaw=false this exactly matches the BuildRequest
-	// path's behavior. Under IncludeThinkingInRaw=true, this niche path's
-	// raw stays text-only — the flag has no effect here because BAML's
-	// runtime never surfaces thinking content for this codepath to
-	// accumulate. Documented as a known limitation in the
-	// include-thinking-in-raw tracking issue; revisit only if reported in
-	// a real workflow.
+	// Raw + reasoning note: legacy raw comes from BAML's
+	// FunctionLog.RawLLMResponse(), which is text-only across providers
+	// (BAML's runtime drops Anthropic thinking_delta and equivalents).
+	// Reasoning for the mixed-mode legacy child path is currently always
+	// empty: the legacy helper reads BAML's authoritative raw view and
+	// does not run its own SSE extractor over the response, so it has no
+	// source of reasoning text. The inline (non-mixed) legacy code path
+	// does surface reasoning via the shared extractor — see
+	// codegen_stream_helpers.go's runFullOrchestration.
 	LegacyStreamChild LegacyStreamChildFunc
 }
 
@@ -320,7 +322,7 @@ type LegacyStreamChildFunc func(
 	provider string,
 	needsRaw bool,
 	sendHeartbeat func(),
-) (finalResult any, raw string, err error)
+) (finalResult any, raw, reasoning string, err error)
 
 // BuildRequestFunc builds an HTTP request for streaming by calling
 // StreamRequest.Method(ctx, args, opts...) and converting the result
@@ -339,7 +341,11 @@ type ParseFinalFunc func(ctx context.Context, accumulated string) (any, error)
 
 // NewResultFunc creates a new pooled StreamResult with the given fields.
 // This is provided by the generated adapter code (the per-method pool getter).
-type NewResultFunc func(kind bamlutils.StreamResultKind, stream, final any, raw string, err error, reset bool) bamlutils.StreamResult
+//
+// reasoning carries provider-specific reasoning text for the structured
+// /with-raw reasoning channel. Populated only when IncludeReasoning is on;
+// callers pass "" otherwise (raw stays text-only by construction).
+type NewResultFunc func(kind bamlutils.StreamResultKind, stream, final any, raw, reasoning string, err error, reset bool) bamlutils.StreamResult
 
 // NewMetadataResultFunc creates a new pooled StreamResult wrapping a metadata
 // payload. Provided by the generated adapter code via the per-method metadata
@@ -487,7 +493,7 @@ func RunStreamOrchestration(
 	// outer pool attempt.
 	sendHeartbeat := func() {
 		if heartbeatSent.CompareAndSwap(false, true) {
-			r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", nil, false)
+			r := newResult(bamlutils.StreamResultKindHeartbeat, nil, nil, "", "", nil, false)
 			select {
 			case out <- r:
 			default:
@@ -498,19 +504,20 @@ func RunStreamOrchestration(
 	}
 
 	// tryOneStreamChild runs a single child's streaming attempt against the
-	// BuildRequest path. Returns the parsed final plus the accumulated raw
-	// text; the caller (attemptFull) is responsible for emitting the final
-	// result on the output channel so supported and legacy children share a
-	// single emission path.
-	tryOneStreamChild := func(provider, clientOverride string) (any, string, error) {
+	// BuildRequest path. Returns the parsed final, the accumulated raw
+	// (text-only) text, and the accumulated reasoning text; the caller
+	// (attemptFull) is responsible for emitting the final result on the
+	// output channel so supported and legacy children share a single
+	// emission path.
+	tryOneStreamChild := func(provider, clientOverride string) (any, string, string, error) {
 		req, err := buildRequest(ctx, clientOverride)
 		if err != nil {
-			return nil, "", fmt.Errorf("buildrequest: failed to build request: %w", err)
+			return nil, "", "", fmt.Errorf("buildrequest: failed to build request: %w", err)
 		}
 
 		resp, err := httpClient.ExecuteStream(ctx, req)
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 		defer resp.Close()
 
@@ -519,10 +526,11 @@ func RunStreamOrchestration(
 
 		var parseableAccumulated strings.Builder
 		var rawAccumulated strings.Builder
+		var reasoningAccumulated strings.Builder
 		var lastParseTime time.Time
 
-		trySendPartial := func(parsed any, rawDelta string) error {
-			r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawDelta, nil, false)
+		trySendPartial := func(parsed any, rawDelta, reasoningDelta string) error {
+			r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawDelta, reasoningDelta, nil, false)
 			select {
 			case out <- r:
 				// Mark only on successful send: ctx.Done and the
@@ -540,18 +548,22 @@ func RunStreamOrchestration(
 		}
 
 		for ev := range resp.Events {
-			// Extract parseable/raw delta content from the SSE event using this
-			// attempt's provider. When IncludeThinkingInRaw is true, Anthropic
-			// thinking_delta events contribute to Raw only; Parseable always
-			// excludes thinking so the BAML parser cannot be influenced by
-			// reasoning text regardless of the flag.
-			delta, extractErr := sse.ExtractDeltaPartsFromText(provider, ev.Data, config.IncludeThinkingInRaw)
+			// Extract parseable/raw/reasoning delta content from the SSE
+			// event using this attempt's provider. Reasoning text never
+			// enters Parseable or Raw; under IncludeReasoning=true it
+			// populates DeltaParts.Reasoning instead.
+			delta, extractErr := sse.ExtractDeltaPartsFromText(provider, ev.Data, config.IncludeReasoning)
 			if extractErr != nil {
 				// Extraction error — fail the attempt so retry logic can handle it
 				// rather than silently accumulating incomplete text.
-				return nil, "", fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
+				return nil, "", "", fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
 			}
-			if delta.Raw == "" {
+			// Skip when nothing meaningful arrived on any channel. Under
+			// IncludeReasoning=true a reasoning-only event has empty Raw
+			// but non-empty Reasoning — so the gate must consider
+			// Reasoning too, otherwise reasoning-only frames would be
+			// dropped without ever reaching the wire.
+			if delta.Raw == "" && delta.Parseable == "" && delta.Reasoning == "" {
 				continue
 			}
 
@@ -559,11 +571,14 @@ func RunStreamOrchestration(
 			if delta.Parseable != "" {
 				parseableAccumulated.WriteString(delta.Parseable)
 			}
+			if delta.Reasoning != "" {
+				reasoningAccumulated.WriteString(delta.Reasoning)
+			}
 
 			if config.NeedsPartials && delta.Parseable == "" {
 				if config.NeedsRaw {
-					if err := trySendPartial(nil, delta.Raw); err != nil {
-						return nil, "", err
+					if err := trySendPartial(nil, delta.Raw, delta.Reasoning); err != nil {
+						return nil, "", "", err
 					}
 				}
 				continue
@@ -587,35 +602,39 @@ func RunStreamOrchestration(
 					parsed, parseErr := parseStream(ctx, parseableAccumulated.String())
 					if parseErr == nil && parsed != nil {
 						rawForResult := ""
+						reasoningForResult := ""
 						if config.NeedsRaw {
 							rawForResult = delta.Raw
+							reasoningForResult = delta.Reasoning
 						}
-						if err := trySendPartial(parsed, rawForResult); err != nil {
-							return nil, "", err
+						if err := trySendPartial(parsed, rawForResult, reasoningForResult); err != nil {
+							return nil, "", "", err
 						}
 					}
 				}
 			} else if config.NeedsRaw {
-				// Raw-only mode: accumulate silently; full raw text is
-				// included in the final result via rawForFinal.
+				// Raw-only mode: accumulate silently; full raw + reasoning
+				// text is included in the final result via rawForFinal /
+				// reasoningForFinal.
 			}
 		}
 
 		// Check for stream errors
 		if streamErr := <-resp.Errc; streamErr != nil {
-			return nil, "", fmt.Errorf("buildrequest: stream error: %w", streamErr)
+			return nil, "", "", fmt.Errorf("buildrequest: stream error: %w", streamErr)
 		}
 
 		// Parse the final result — let parseFinal decide whether an empty
 		// completion is valid. The legacy path does not reject empty strings.
 		fullRaw := rawAccumulated.String()
+		fullReasoning := reasoningAccumulated.String()
 
 		finalResult, parseErr := parseFinal(ctx, parseableAccumulated.String())
 		if parseErr != nil {
-			return nil, "", fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)
+			return nil, "", "", fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)
 		}
 
-		return finalResult, fullRaw, nil
+		return finalResult, fullRaw, fullReasoning, nil
 	}
 
 	// Track the winning attempt for outcome metadata. Populated by
@@ -680,13 +699,15 @@ func RunStreamOrchestration(
 	// here guarantees exactly one final event regardless of whether the
 	// winning child was BuildRequest-driven or routed through the legacy
 	// helper.
-	emitFinal := func(finalResult any, raw string) error {
+	emitFinal := func(finalResult any, raw, reasoning string) error {
 		emitOutcomeMetadata()
 		rawForFinal := ""
+		reasoningForFinal := ""
 		if config.NeedsRaw {
 			rawForFinal = raw
+			reasoningForFinal = reasoning
 		}
-		r := newResult(bamlutils.StreamResultKindFinal, nil, finalResult, rawForFinal, nil, false)
+		r := newResult(bamlutils.StreamResultKindFinal, nil, finalResult, rawForFinal, reasoningForFinal, nil, false)
 		select {
 		case out <- r:
 			return nil
@@ -701,7 +722,7 @@ func RunStreamOrchestration(
 	// matching the BAML runtime where retries retry the entire strategy.
 	attemptFull := func(attempt int) (any, error) {
 		if len(config.FallbackChain) == 0 {
-			finalResult, raw, err := tryOneStreamChild(config.Provider, config.ClientOverride)
+			finalResult, raw, reasoning, err := tryOneStreamChild(config.Provider, config.ClientOverride)
 			if err != nil {
 				return nil, err
 			}
@@ -712,7 +733,7 @@ func RunStreamOrchestration(
 			winnerProvider = config.Provider
 			winnerPath = "buildrequest"
 			finalRetryCount = attempt
-			if emitErr := emitFinal(finalResult, raw); emitErr != nil {
+			if emitErr := emitFinal(finalResult, raw, reasoning); emitErr != nil {
 				return nil, emitErr
 			}
 			return finalResult, nil
@@ -748,7 +769,7 @@ func RunStreamOrchestration(
 			// first-byte detection via its own organic heartbeat.
 			if i > 0 && lastErr != nil {
 				if config.NeedsPartials && sawStreamFrame.Load() {
-					r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
+					r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", "", nil, true)
 					select {
 					case out <- r:
 					case <-ctx.Done():
@@ -767,6 +788,7 @@ func RunStreamOrchestration(
 			var (
 				finalResult  any
 				raw          string
+				reasoning    string
 				err          error
 				path         string
 				winnerTarget = child
@@ -776,12 +798,12 @@ func RunStreamOrchestration(
 				// owns heartbeat timing (fires sendHeartbeat on the first
 				// FunctionLog tick) so pool hung-detection stays correct.
 				// Partials are never emitted by the callback — it reports
-				// only (final, raw, err). Note: callback dispatch stays
-				// rooted at `child` (the chain-position name) so the
-				// scoped registry preserves runtime strategy overrides
-				// for true legacy children — FallbackTargets is honored
-				// for the BuildRequest path only.
-				finalResult, raw, err = config.LegacyStreamChild(
+				// only (final, raw, reasoning, err). Note: callback
+				// dispatch stays rooted at `child` (the chain-position
+				// name) so the scoped registry preserves runtime strategy
+				// overrides for true legacy children — FallbackTargets is
+				// honored for the BuildRequest path only.
+				finalResult, raw, reasoning, err = config.LegacyStreamChild(
 					ctx,
 					child,
 					config.ClientProviders[child],
@@ -804,7 +826,7 @@ func RunStreamOrchestration(
 				if t, ok := config.FallbackTargets[child]; ok && t != "" {
 					winnerTarget = t
 				}
-				finalResult, raw, err = tryOneStreamChild(provider, winnerTarget)
+				finalResult, raw, reasoning, err = tryOneStreamChild(provider, winnerTarget)
 				path = "buildrequest"
 			}
 			if err == nil {
@@ -820,7 +842,7 @@ func RunStreamOrchestration(
 				winnerProvider = config.ClientProviders[child]
 				winnerPath = path
 				finalRetryCount = attempt
-				if emitErr := emitFinal(finalResult, raw); emitErr != nil {
+				if emitErr := emitFinal(finalResult, raw, reasoning); emitErr != nil {
 					return nil, emitErr
 				}
 				return finalResult, nil
@@ -845,7 +867,7 @@ func RunStreamOrchestration(
 		//     client; otherwise the reset is a phantom that the pool
 		//     would mistake for first-byte progress.
 		if config.NeedsPartials && sawStreamFrame.Load() {
-			r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", nil, true)
+			r := newResult(bamlutils.StreamResultKindStream, nil, nil, "", "", nil, true)
 			select {
 			case out <- r:
 			case <-ctx.Done():
@@ -866,7 +888,7 @@ func RunStreamOrchestration(
 
 	if err != nil && ctx.Err() == nil {
 		// Emit error result (skip if context was cancelled — cancellation is not an error)
-		r := newResult(bamlutils.StreamResultKindError, nil, nil, "", err, false)
+		r := newResult(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
 		select {
 		case out <- r:
 		case <-ctx.Done():

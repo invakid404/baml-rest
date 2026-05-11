@@ -267,7 +267,9 @@ func generateStreamHelpers(out *jen.File) {
 				jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
 			).Params(jen.Any(), jen.Error()),
 			// emitFinal: wrap and emit the final result.
-			jen.Id("emitFinal").Func().Params(jen.Any(), jen.String()).Add(streamResultIface.Clone()),
+			// Signature is (result, raw, reasoning) — raw is text-only, reasoning
+			// is the structured /with-raw reasoning channel.
+			jen.Id("emitFinal").Func().Params(jen.Any(), jen.String(), jen.String()).Add(streamResultIface.Clone()),
 		).
 		Error().
 		Block(
@@ -309,15 +311,13 @@ func generateStreamHelpers(out *jen.File) {
 			emitPlannedDeclB,
 
 			// Extractor. The boolean argument captures the per-request
-			// IncludeThinkingInRaw opt-in: when true, Anthropic
-			// thinking_delta events are accumulated into the extractor's
-			// raw buffer alongside text deltas; when false (default), the
-			// extractor matches BAML's RawLLMResponse() text-only
-			// semantics. Parseable text seen by Parse/ParseStream is never
-			// affected by this flag — the extractor only feeds the raw
-			// channel.
+			// IncludeReasoning opt-in: when true, provider-specific
+			// reasoning text is accumulated into the extractor's
+			// reasoning buffer; when false (default), the reasoning
+			// buffer stays empty. Parseable and raw buffers are
+			// text-only by construction regardless of this flag.
 			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(
-				jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
+				jen.Id("adapter").Dot("IncludeReasoning").Call(),
 			),
 			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
 			// lastFuncLog stores the most recent FunctionLog reference seen by
@@ -532,40 +532,33 @@ func generateStreamHelpers(out *jen.File) {
 						),
 
 						// Emit final. Reconciling extractor.RawFull() with
-						// RawLLMResponse() handles two distinct concerns:
+						// RawLLMResponse() handles the stale-SSE-view race:
+						// in rare CI-only races where lastFuncLog's SSEChunks
+						// view is stale (onTick didn't cover the final SSE
+						// event), the extractor can end up truncated while
+						// RawLLMResponse is complete. We splice in only the
+						// missing text suffix from RawLLMResponse so any
+						// late text the extractor missed is recovered.
 						//
-						//   - Stale-SSE-view race (always-on): in rare CI-only
-						//     races where lastFuncLog's SSEChunks view is stale
-						//     (onTick didn't cover the final SSE event), the
-						//     extractor can end up truncated or empty while
-						//     RawLLMResponse is complete. We splice in only the
-						//     missing text suffix from RawLLMResponse so any
-						//     late text the extractor missed is recovered.
+						// Both the extractor's raw buffer and RawLLMResponse
+						// are text-only under the new model — reasoning is
+						// surfaced via the separate ReasoningFull buffer and
+						// no reconciliation is needed for it (BAML's runtime
+						// doesn't track reasoning, so the extractor is the
+						// sole source of truth).
 						//
-						//   - IncludeThinkingInRaw opt-in (per-request): when
-						//     enabled, the extractor accumulates Anthropic
-						//     thinking_delta into raw while BAML's runtime never
-						//     surfaces thinking. The splice approach preserves
-						//     thinking content (which lives only in
-						//     extractor.RawFull) alongside any recovered text.
-						//
-						// Reconciliation logic:
+						// Reconciliation logic for raw:
 						//   1. If RawLLMResponse extends extractor.ParseableFull
 						//      as a prefix and is longer, splice in the missing
-						//      text suffix. This is the common case under both
-						//      stale-race and happy-path-with-opt-in.
+						//      text suffix.
 						//   2. Else if RawLLMResponse is longer than
 						//      extractor.RawFull (the prefix invariant is
-						//      violated — should not happen under Anthropic's
-						//      thinking-then-text ordering, but defend anyway),
-						//      defer to RawLLMResponse for correctness. This
-						//      loses thinking under opt-in but ensures the
-						//      authoritative text wins.
-						//   3. Else keep extractor.RawFull (happy path:
-						//      extractor's view is at least as complete).
+						//      violated — defensive), defer to RawLLMResponse.
+						//   3. Else keep extractor.RawFull.
 						jen.Id("extractorMu").Dot("Lock").Call(),
 						jen.Id("finalRaw").Op(":=").Id("extractor").Dot("RawFull").Call(),
 						jen.Id("parseableFull").Op(":=").Id("extractor").Dot("ParseableFull").Call(),
+						jen.Id("finalReasoning").Op(":=").Id("extractor").Dot("ReasoningFull").Call(),
 						jen.Id("extractorMu").Dot("Unlock").Call(),
 						jen.If(jen.Id("flOk")).Block(
 							jen.If(
@@ -639,7 +632,7 @@ func generateStreamHelpers(out *jen.File) {
 							),
 						),
 
-						jen.Id("__r").Op(":=").Id("emitFinal").Call(jen.Id("finalResult"), jen.Id("finalRaw")),
+						jen.Id("__r").Op(":=").Id("emitFinal").Call(jen.Id("finalResult"), jen.Id("finalRaw"), jen.Id("finalReasoning")),
 						jen.Select().Block(
 							jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
 							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__r"))),

@@ -165,12 +165,14 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("stream").Any(),
 			jen.Id("final").Any(),
 			jen.Id("raw").String(),
+			jen.Id("reasoning").String(),
 			jen.Id("err").Error(),
 			jen.Id("reset").Bool(),
 		).Params(jen.Qual(common.InterfacesPkg, "StreamResult")).Block(
 			jen.Id("r").Op(":=").Id(me.getterFuncName).Call(),
 			jen.Id("r").Dot("kind").Op("=").Id("kind"),
 			jen.Id("r").Dot("raw").Op("=").Id("raw"),
+			jen.Id("r").Dot("reasoning").Op("=").Id("reasoning"),
 			jen.Id("r").Dot("err").Op("=").Id("err"),
 			jen.Id("r").Dot("reset").Op("=").Id("reset"),
 			// Set stream field: try *T first (pointer return), then T (value return → take address)
@@ -300,19 +302,19 @@ func (me *methodEmitter) emitBuildRequest() {
 		// the WithClient target so a centrally-unwrapped RR child
 		// routes to the selected leaf rather than the RR wrapper name.
 		jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
-			jen.Id("Provider"):             jen.Id("provider"),
-			jen.Id("RetryPolicy"):          jen.Id("retryPolicy"),
-			jen.Id("NeedsPartials"):        jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
-			jen.Id("NeedsRaw"):             jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-			jen.Id("IncludeThinkingInRaw"): jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
-			jen.Id("FallbackChain"):        jen.Id("fallbackChain"),
-			jen.Id("ClientOverride"):       jen.Id("clientOverride"),
-			jen.Id("ClientProviders"):      jen.Id("clientProviders"),
-			jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
-			jen.Id("FallbackTargets"):      jen.Id("fallbackTargets"),
-			jen.Id("FallbackRoundRobin"):   jen.Id("fallbackRoundRobin"),
-			jen.Id("LegacyStreamChild"):    jen.Id("legacyStreamChildFn"),
-			jen.Id("MetadataPlan"):         jen.Id("plannedMetadata"),
+			jen.Id("Provider"):           jen.Id("provider"),
+			jen.Id("RetryPolicy"):        jen.Id("retryPolicy"),
+			jen.Id("NeedsPartials"):      jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
+			jen.Id("NeedsRaw"):           jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+			jen.Id("IncludeReasoning"):   jen.Id("adapter").Dot("IncludeReasoning").Call(),
+			jen.Id("FallbackChain"):      jen.Id("fallbackChain"),
+			jen.Id("ClientOverride"):     jen.Id("clientOverride"),
+			jen.Id("ClientProviders"):    jen.Id("clientProviders"),
+			jen.Id("LegacyChildren"):     jen.Id("legacyChildren"),
+			jen.Id("FallbackTargets"):    jen.Id("fallbackTargets"),
+			jen.Id("FallbackRoundRobin"): jen.Id("fallbackRoundRobin"),
+			jen.Id("LegacyStreamChild"):  jen.Id("legacyStreamChildFn"),
+			jen.Id("MetadataPlan"):       jen.Id("plannedMetadata"),
 			jen.Id("NewMetadataResult"): jen.Func().Params(
 				jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			).Qual(common.InterfacesPkg, "StreamResult").Block(
@@ -338,7 +340,7 @@ func (me *methodEmitter) emitBuildRequest() {
 				jen.Func().Params(jen.Id("err").Error()).Block(
 					jen.Id("__errR").Op(":=").Id("newResultFn").Call(
 						jen.Qual(common.InterfacesPkg, "StreamResultKindError"),
-						jen.Nil(), jen.Nil(), jen.Lit(""), jen.Id("err"), jen.False(),
+						jen.Nil(), jen.Nil(), jen.Lit(""), jen.Lit(""), jen.Id("err"), jen.False(),
 					),
 					jen.Select().Block(
 						jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
@@ -460,12 +462,14 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jen.Id("stream").Any(), // unused in non-streaming path; kept for signature parity
 			jen.Id("final").Any(),
 			jen.Id("raw").String(),
+			jen.Id("reasoning").String(),
 			jen.Id("err").Error(),
 			jen.Id("reset").Bool(),
 		).Params(jen.Qual(common.InterfacesPkg, "StreamResult")).Block(
 			jen.Id("r").Op(":=").Id(me.getterFuncName).Call(),
 			jen.Id("r").Dot("kind").Op("=").Id("kind"),
 			jen.Id("r").Dot("raw").Op("=").Id("raw"),
+			jen.Id("r").Dot("reasoning").Op("=").Id("reasoning"),
 			jen.Id("r").Dot("err").Op("=").Id("err"),
 			jen.Id("r").Dot("reset").Op("=").Id("reset"),
 			// Set final field: try *T first (pointer return), then T (value return → take address)
@@ -554,18 +558,18 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		// per-attempt WithClient target so centralized RR fallback
 		// children dispatch to the leaf rather than the wrapper.
 		jen.Id("callConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "CallConfig").Values(jen.Dict{
-			jen.Id("Provider"):             jen.Id("provider"),
-			jen.Id("RetryPolicy"):          jen.Id("retryPolicy"),
-			jen.Id("NeedsRaw"):             jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-			jen.Id("IncludeThinkingInRaw"): jen.Id("adapter").Dot("IncludeThinkingInRaw").Call(),
-			jen.Id("FallbackChain"):        jen.Id("fallbackChain"),
-			jen.Id("ClientOverride"):       jen.Id("clientOverride"),
-			jen.Id("ClientProviders"):      jen.Id("clientProviders"),
-			jen.Id("LegacyChildren"):       jen.Id("legacyChildren"),
-			jen.Id("FallbackTargets"):      jen.Id("fallbackTargets"),
-			jen.Id("FallbackRoundRobin"):   jen.Id("fallbackRoundRobin"),
-			jen.Id("LegacyCallChild"):      jen.Id("legacyCallChildFn"),
-			jen.Id("MetadataPlan"):         jen.Id("plannedMetadata"),
+			jen.Id("Provider"):           jen.Id("provider"),
+			jen.Id("RetryPolicy"):        jen.Id("retryPolicy"),
+			jen.Id("NeedsRaw"):           jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+			jen.Id("IncludeReasoning"):   jen.Id("adapter").Dot("IncludeReasoning").Call(),
+			jen.Id("FallbackChain"):      jen.Id("fallbackChain"),
+			jen.Id("ClientOverride"):     jen.Id("clientOverride"),
+			jen.Id("ClientProviders"):    jen.Id("clientProviders"),
+			jen.Id("LegacyChildren"):     jen.Id("legacyChildren"),
+			jen.Id("FallbackTargets"):    jen.Id("fallbackTargets"),
+			jen.Id("FallbackRoundRobin"): jen.Id("fallbackRoundRobin"),
+			jen.Id("LegacyCallChild"):    jen.Id("legacyCallChildFn"),
+			jen.Id("MetadataPlan"):       jen.Id("plannedMetadata"),
 			jen.Id("NewMetadataResult"): jen.Func().Params(
 				jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
 			).Qual(common.InterfacesPkg, "StreamResult").Block(
@@ -589,7 +593,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 				jen.Func().Params(jen.Id("err").Error()).Block(
 					jen.Id("__errR").Op(":=").Id("newResultFn").Call(
 						jen.Qual(common.InterfacesPkg, "StreamResultKindError"),
-						jen.Nil(), jen.Nil(), jen.Lit(""), jen.Id("err"), jen.False(),
+						jen.Nil(), jen.Nil(), jen.Lit(""), jen.Lit(""), jen.Id("err"), jen.False(),
 					),
 					jen.Select().Block(
 						jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),

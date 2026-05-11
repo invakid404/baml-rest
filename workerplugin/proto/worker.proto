@@ -36,12 +36,13 @@ message StreamResult {
   }
   Kind kind = 1;
   bytes data_json = 2;         // JSON-encoded stream/final/metadata data
-  string raw = 3;              // Raw LLM response text (populated on FINAL)
+  string raw = 3;              // Raw LLM response text, always text-only (populated on FINAL/STREAM)
   string error = 4;            // Error message (populated on ERROR)
   string stacktrace = 5;       // Stacktrace (populated on ERROR, when available)
   bool reset = 6;              // When true, client should discard accumulated state (retry occurred)
   string error_code = 7;       // Machine-readable error class (populated on ERROR, when worker can classify)
   bytes error_details_json = 8; // JSON-encoded structured error details (populated on ERROR, when available)
+  string reasoning = 9;        // Provider-specific reasoning/thinking text, populated only when __baml_options__.include_reasoning is true
 }
 
 // Health check

@@ -82,8 +82,9 @@ func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.St
 		if streamMode.NeedsRaw() {
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(CallWithRawResponse{
-				Data: result.Data,
-				Raw:  result.Raw,
+				Data:      result.Data,
+				Raw:       result.Raw,
+				Reasoning: result.Reasoning,
 			})
 			return
 		}
@@ -173,8 +174,9 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 		if streamMode.NeedsRaw() {
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(CallWithRawResponse{
-				Data: flattenedData,
-				Raw:  result.Raw,
+				Data:      flattenedData,
+				Raw:       result.Raw,
+				Reasoning: result.Reasoning,
 			})
 			return
 		}

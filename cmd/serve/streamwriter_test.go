@@ -23,13 +23,13 @@ type recordingPublisher struct {
 	errorDetails   [][]byte
 }
 
-func (p *recordingPublisher) PublishData(data []byte, raw string) error {
+func (p *recordingPublisher) PublishData(data []byte, raw, reasoning string) error {
 	dup := append([]byte(nil), data...)
 	p.dataFrames = append(p.dataFrames, dup)
 	return nil
 }
 
-func (p *recordingPublisher) PublishFinal(data []byte, raw string) error {
+func (p *recordingPublisher) PublishFinal(data []byte, raw, reasoning string) error {
 	dup := append([]byte(nil), data...)
 	p.finalFrames = append(p.finalFrames, dup)
 	return nil

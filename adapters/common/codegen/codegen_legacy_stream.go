@@ -279,33 +279,36 @@ func (me *methodEmitter) emitLegacyStream() {
 		),
 		jen.If(jen.Id("skipIntermediateParsing")).Block(jen.Return(jen.Nil())),
 		// Skip if absolutely nothing new arrived this tick (no delta on
-		// either buffer) and no reset occurred.
+		// any buffer) and no reset occurred. Reasoning is checked too —
+		// under IncludeReasoning=true a reasoning-only event has empty
+		// Parseable and Raw, so the gate must consider ReasoningDelta to
+		// avoid dropping that frame before it reaches the wire.
 		jen.If(
 			jen.Id("extractResult").Dot("ParseableDelta").Op("==").Lit("").
 				Op("&&").Id("extractResult").Dot("RawDelta").Op("==").Lit("").
+				Op("&&").Id("extractResult").Dot("ReasoningDelta").Op("==").Lit("").
 				Op("&&").Op("!").Id("extractResult").Dot("Reset"),
 		).Block(jen.Return(jen.Nil())),
 		// parseable is the cumulative text-only buffer fed to ParseStream.
 		// Reasoning content (e.g. Anthropic thinking_delta under
-		// IncludeThinkingInRaw=true) is excluded by construction in
-		// IncrementalExtractor, so the BAML parser sees only the textual
-		// response stream regardless of the opt-in flag.
+		// IncludeReasoning=true) is excluded by construction in
+		// IncrementalExtractor.
 		jen.Id("parseable").Op(":=").Id("extractResult").Dot("ParseableFull"),
 		jen.Id("parseableDelta").Op(":=").Id("extractResult").Dot("ParseableDelta"),
-		// rawDelta is the per-tick wire-output content. Mirrors
-		// parseableDelta when the opt-in is off; additionally carries
-		// thinking_delta content under opt-in.
+		// rawDelta is the per-tick wire-output content (text-only by
+		// construction). reasoningDelta is the per-tick reasoning text —
+		// populated only under IncludeReasoning=true.
 		jen.Id("rawDelta").Op(":=").Id("extractResult").Dot("RawDelta"),
-		// Raw-only / reset-only path. Triggered when:
+		jen.Id("reasoningDelta").Op(":=").Id("extractResult").Dot("ReasoningDelta"),
+		// Raw-only / reasoning-only / reset-only path. Triggered when:
 		//   - No parseable content has accumulated yet (e.g., the only
 		//     events seen so far are thinking_delta under opt-in).
-		//   - No new parseable content this tick (e.g., a thinking-only
-		//     event under opt-in advanced raw but not parseable).
+		//   - No new parseable content this tick.
 		//   - A reset boundary occurred but parseable is empty.
 		//
-		// In all three cases we cannot meaningfully call ParseStream, but
-		// we still emit a partial so the wire's raw buffer accumulates and
-		// any reset boundary reaches the client.
+		// We cannot meaningfully call ParseStream, but we still emit a
+		// partial so the wire's raw + reasoning buffers accumulate and any
+		// reset boundary reaches the client.
 		jen.If(
 			jen.Id("parseable").Op("==").Lit("").
 				Op("||").Id("parseableDelta").Op("==").Lit(""),
@@ -317,6 +320,7 @@ func (me *methodEmitter) emitLegacyStream() {
 			jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
 			jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
 			jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
+			jen.Id("__r").Dot("reasoning").Op("=").Id("reasoningDelta"),
 			jen.Id("__r").Dot("reset").Op("=").Id("extractResult").Dot("Reset"),
 			// Reset-bearing partials must not be dropped: block until sent or cancelled.
 			jen.If(jen.Id("extractResult").Dot("Reset")).Block(
@@ -354,6 +358,7 @@ func (me *methodEmitter) emitLegacyStream() {
 			jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
 			jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
 			jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
+			jen.Id("__r").Dot("reasoning").Op("=").Id("reasoningDelta"),
 			jen.Id("__r").Dot("streamParsed").Op("=").Id("parsedPtr"),
 			jen.Id("__r").Dot("reset").Op("=").Id("extractResult").Dot("Reset"),
 			// Reset-bearing partials must not be dropped: block until sent or cancelled.
@@ -381,6 +386,7 @@ func (me *methodEmitter) emitLegacyStream() {
 			jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
 			jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
 			jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
+			jen.Id("__r").Dot("reasoning").Op("=").Id("reasoningDelta"),
 			jen.Id("__r").Dot("reset").Op("=").Lit(true),
 			jen.Select().Block(
 				jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
@@ -427,6 +433,7 @@ func (me *methodEmitter) emitLegacyStream() {
 		jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
 		jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindFinal"),
 		jen.Id("__r").Dot("raw").Op("=").Id("raw"),
+		jen.Id("__r").Dot("reasoning").Op("=").Id("reasoning"),
 		jen.If(jen.Id("result").Op("!=").Nil()).Block(
 			jen.If(
 				jen.List(jen.Id("ptr"), jen.Id("ok")).Op(":=").Id("result").Assert(me.finalTypePtr.Clone()),
@@ -499,7 +506,7 @@ func (me *methodEmitter) emitLegacyStream() {
 				jen.Id("opts").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
 			).Params(jen.Any(), jen.Error()).Block(driveStreamBody...),
 			// emitFinal
-			jen.Func().Params(jen.Id("result").Any(), jen.Id("raw").String()).Qual(common.InterfacesPkg, "StreamResult").Block(emitFinalBody...),
+			jen.Func().Params(jen.Id("result").Any(), jen.Id("raw").String(), jen.Id("reasoning").String()).Qual(common.InterfacesPkg, "StreamResult").Block(emitFinalBody...),
 		)),
 	)
 

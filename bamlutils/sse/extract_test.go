@@ -217,7 +217,7 @@ func TestIncrementalExtractor_DifferentProviders(t *testing.T) {
 }
 
 // TestExtractDeltaPartsFromText_AnthropicThinking_Default verifies that with
-// includeThinking=false (the default, BAML-aligned behavior), Anthropic
+// includeReasoning=false (the default, BAML-aligned behavior), Anthropic
 // thinking_delta events contribute nothing to either Parseable or Raw, while
 // text_delta events behave normally.
 func TestExtractDeltaPartsFromText_AnthropicThinking_Default(t *testing.T) {
@@ -239,15 +239,15 @@ func TestExtractDeltaPartsFromText_AnthropicThinking_Default(t *testing.T) {
 }
 
 // TestExtractDeltaPartsFromText_AnthropicThinking_OptIn verifies that with
-// includeThinking=true, Anthropic thinking_delta events accumulate into Raw
-// while Parseable stays empty (so the BAML parser is never fed thinking
-// content). text_delta behavior is unchanged.
+// includeReasoning=true, Anthropic thinking_delta events populate the
+// Reasoning channel while Parseable and Raw stay empty (raw is text-only
+// by construction). text_delta behavior is unchanged.
 func TestExtractDeltaPartsFromText_AnthropicThinking_OptIn(t *testing.T) {
 	textDelta, err := ExtractDeltaPartsFromText("anthropic", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"Answer"}}`, true)
 	if err != nil {
 		t.Fatalf("text delta extraction failed: %v", err)
 	}
-	if textDelta.Parseable != "Answer" || textDelta.Raw != "Answer" {
+	if textDelta.Parseable != "Answer" || textDelta.Raw != "Answer" || textDelta.Reasoning != "" {
 		t.Fatalf("unexpected text delta: %+v", textDelta)
 	}
 
@@ -255,14 +255,14 @@ func TestExtractDeltaPartsFromText_AnthropicThinking_OptIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thinking delta extraction failed: %v", err)
 	}
-	if thinkingDelta.Parseable != "" || thinkingDelta.Raw != "Reasoning" {
+	if thinkingDelta.Parseable != "" || thinkingDelta.Raw != "" || thinkingDelta.Reasoning != "Reasoning" {
 		t.Fatalf("unexpected thinking delta under opt-in: %+v", thinkingDelta)
 	}
 }
 
 // TestExtractDeltaPartsFromText_AnthropicThinking_ParseableInvariant codifies
 // the structural guarantee that Parseable never includes thinking content,
-// regardless of the includeThinking flag value. Any future refactor that
+// regardless of the includeReasoning flag value. Any future refactor that
 // breaks this invariant will fail this test.
 func TestExtractDeltaPartsFromText_AnthropicThinking_ParseableInvariant(t *testing.T) {
 	chunks := []string{
@@ -288,9 +288,9 @@ func TestExtractDeltaPartsFromText_AnthropicThinking_ParseableInvariant(t *testi
 // TestIncrementalExtractor_AnthropicThinking_ParseableInvariant exercises the
 // extractor end-to-end with a thinking-then-text Anthropic stream and asserts
 // the structural guarantee at the buffer level: regardless of the
-// IncludeThinkingInRaw flag, the parseable buffer is text-only. Under opt-in
-// the raw buffer additionally carries thinking content; under default both
-// buffers are equal.
+// IncludeReasoning flag, the parseable and raw buffers are text-only. Under
+// opt-in the reasoning buffer additionally carries thinking content; under
+// default the reasoning buffer is empty.
 //
 // This test is the architectural counterpart to the per-event parseable
 // invariant test above — it verifies the guarantee survives accumulation,
@@ -303,7 +303,7 @@ func TestIncrementalExtractor_AnthropicThinking_ParseableInvariant(t *testing.T)
 		mockChunk{`{"type":"content_block_delta","delta":{"type":"text_delta","text":"is 42"}}`},
 	}
 
-	// Default flag: both buffers carry text only.
+	// Default flag: parseable and raw text-only; reasoning empty.
 	extOff := NewIncrementalExtractor(false)
 	rOff := extOff.Extract(1, "anthropic", chunks)
 	if rOff.ParseableFull != "The answer is 42" {
@@ -312,22 +312,33 @@ func TestIncrementalExtractor_AnthropicThinking_ParseableInvariant(t *testing.T)
 	if rOff.RawFull != "The answer is 42" {
 		t.Errorf("default: RawFull = %q, want %q (text-only)", rOff.RawFull, "The answer is 42")
 	}
+	if rOff.ReasoningFull != "" {
+		t.Errorf("default: ReasoningFull = %q, want empty", rOff.ReasoningFull)
+	}
 
-	// Opt-in: parseable still text-only, raw carries thinking + text.
+	// Opt-in: parseable + raw still text-only; reasoning carries thinking.
 	extOn := NewIncrementalExtractor(true)
 	rOn := extOn.Extract(1, "anthropic", chunks)
 	if rOn.ParseableFull != "The answer is 42" {
 		t.Errorf("opt-in: ParseableFull = %q, want %q (parseable invariant violated!)", rOn.ParseableFull, "The answer is 42")
 	}
-	expectedRaw := "Let me reason...The answer  still thinkingis 42"
-	if rOn.RawFull != expectedRaw {
-		t.Errorf("opt-in: RawFull = %q, want %q", rOn.RawFull, expectedRaw)
+	if rOn.RawFull != "The answer is 42" {
+		t.Errorf("opt-in: RawFull = %q, want %q (raw is text-only by construction)", rOn.RawFull, "The answer is 42")
+	}
+	expectedReasoning := "Let me reason... still thinking"
+	if rOn.ReasoningFull != expectedReasoning {
+		t.Errorf("opt-in: ReasoningFull = %q, want %q", rOn.ReasoningFull, expectedReasoning)
 	}
 
-	// Cross-flag invariant: parseable is byte-identical regardless of flag.
+	// Cross-flag invariant: parseable and raw are byte-identical
+	// regardless of flag.
 	if rOff.ParseableFull != rOn.ParseableFull {
 		t.Errorf("Parseable diverged across flag values: off=%q on=%q",
 			rOff.ParseableFull, rOn.ParseableFull)
+	}
+	if rOff.RawFull != rOn.RawFull {
+		t.Errorf("Raw diverged across flag values: off=%q on=%q",
+			rOff.RawFull, rOn.RawFull)
 	}
 }
 
@@ -359,18 +370,12 @@ func TestGetCurrentContent_OnlyUsesLastCall(t *testing.T) {
 	}
 }
 
-// TestGetCurrentContent_OpenAIReasoningOptIn proves the includeThinking
-// parameter on GetCurrentContent reaches ExtractDeltaContent for the OpenAI-
-// compatible Chat Completions arm. This is a separate code path from
-// IncrementalExtractor.ExtractFrom (covered by
-// TestIncrementalExtractor_OpenAIReasoning_StreamOrder), so the flag-
-// plumbing needs its own coverage.
-//
-// A reasoning-only delta (no delta.content) yields:
-//   - flag=false: "" (reasoning_content not surfaced)
-//   - flag=true:  "think" (reasoning_content concatenated into Raw, which
-//     GetCurrentContent returns)
-func TestGetCurrentContent_OpenAIReasoningOptIn(t *testing.T) {
+// TestGetCurrentContent_OpenAIReasoningRawOnly verifies that
+// GetCurrentContent returns only Raw text (never reasoning). Under both
+// flag values, a reasoning-only delta yields an empty result because Raw
+// is text-only by construction. Callers that need reasoning text must
+// use ExtractDeltaPartsFromText directly and walk DeltaParts.Reasoning.
+func TestGetCurrentContent_OpenAIReasoningRawOnly(t *testing.T) {
 	for _, provider := range []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter"} {
 		t.Run(provider, func(t *testing.T) {
 			data := &StreamingData{
@@ -389,15 +394,15 @@ func TestGetCurrentContent_OpenAIReasoningOptIn(t *testing.T) {
 				t.Fatalf("flag=false: unexpected error: %v", err)
 			}
 			if off != "" {
-				t.Errorf("flag=false: expected empty content (reasoning_content not surfaced), got %q", off)
+				t.Errorf("flag=false: expected empty content (reasoning_content not in raw), got %q", off)
 			}
 
 			on, err := GetCurrentContent(data, true)
 			if err != nil {
 				t.Fatalf("flag=true: unexpected error: %v", err)
 			}
-			if on != "think" {
-				t.Errorf("flag=true: expected %q (reasoning_content surfaced), got %q", "think", on)
+			if on != "" {
+				t.Errorf("flag=true: expected empty content (raw is text-only; reasoning surfaces via DeltaParts.Reasoning), got %q", on)
 			}
 		})
 	}
@@ -653,7 +658,7 @@ func TestDeltaProviderSupportMatchesExtractor(t *testing.T) {
 // Aligned with upstream BAML's text_content_part filter
 // (engine/baml-runtime/src/internal/llm_client/primitive/google/response_handler.rs).
 //
-// Parseable invariance across includeThinking is asserted; Raw equality
+// Parseable invariance across includeReasoning is asserted; Raw equality
 // across the flag is intentionally NOT asserted here — Phase 3 will diverge
 // Gemini Raw under opt-in, and locking it now would block that.
 func TestExtractDeltaPartsFromText_GeminiThoughtFiltering(t *testing.T) {
@@ -707,75 +712,73 @@ func TestExtractDeltaPartsFromText_GeminiThoughtFiltering(t *testing.T) {
 				}
 
 				// Parseable must be byte-identical regardless of the
-				// includeThinking flag. Raw is intentionally not compared
+				// includeReasoning flag. Raw is intentionally not compared
 				// across the flag — Phase 3 will diverge Gemini Raw under
 				// opt-in, and locking it here would block that.
 				partsThinking, err := ExtractDeltaPartsFromText(provider, tc.body, true)
 				if err != nil {
-					t.Fatalf("ExtractDeltaPartsFromText(includeThinking=true) returned error: %v", err)
+					t.Fatalf("ExtractDeltaPartsFromText(includeReasoning=true) returned error: %v", err)
 				}
 				if partsThinking.Parseable != parts.Parseable {
-					t.Errorf("Parseable diverged across includeThinking: false=%q true=%q", parts.Parseable, partsThinking.Parseable)
+					t.Errorf("Parseable diverged across includeReasoning: false=%q true=%q", parts.Parseable, partsThinking.Parseable)
 				}
 			})
 		}
 	}
 }
 
-// TestExtractDeltaPartsFromText_GeminiIncludeThinkingInRaw asserts the
-// Phase 3 dual-builder behavior for the Google AI / Vertex AI streaming
-// branch:
+// TestExtractDeltaPartsFromText_GeminiIncludeReasoning asserts the
+// per-flag behavior for the Google AI / Vertex AI streaming branch:
 //
 //   - Parseable always excludes thought-tagged parts (text-only, fed to
 //     the BAML parser via ParseStream).
-//   - Raw mirrors Parseable when includeThinking is false; when true, Raw
-//     additionally surfaces thought-tagged string text in wire order for
-//     /with-raw telemetry.
+//   - Raw mirrors Parseable regardless of flag — raw is text-only by
+//     construction.
+//   - Reasoning surfaces thought-tagged string text only when
+//     includeReasoning is true.
 //   - Non-string text on a thought part is silently skipped under both
-//     flag values (thought parts are filtered, not validated, in keeping
-//     with the forgiving streaming semantics).
+//     flag values (thought parts are filtered, not validated).
 //
-// Parseable invariance across the includeThinking flag is asserted for
-// every fixture; Raw equality across the flag is intentionally NOT
-// asserted, because Phase 3's whole point is that Raw diverges under
-// opt-in.
-func TestExtractDeltaPartsFromText_GeminiIncludeThinkingInRaw(t *testing.T) {
+// Parseable + raw invariance across the includeReasoning flag is
+// asserted for every fixture; Reasoning is intentionally allowed to
+// diverge.
+func TestExtractDeltaPartsFromText_GeminiIncludeReasoning(t *testing.T) {
 	cases := []struct {
-		name      string
-		body      string
-		parseable string
-		rawOff    string
-		rawOn     string
+		name        string
+		body        string
+		parseable   string
+		raw         string
+		reasoningOn string
 	}{
 		{
-			name:      "thought then visible",
-			body:      `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true},{"text":"Visible"}]}}]}`,
-			parseable: "Visible",
-			rawOff:    "Visible",
-			rawOn:     "thoughtVisible",
+			name:        "thought then visible",
+			body:        `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true},{"text":"Visible"}]}}]}`,
+			parseable:   "Visible",
+			raw:         "Visible",
+			reasoningOn: "thought",
 		},
 		{
-			name:      "interleaved thought preserves order",
-			body:      `{"candidates":[{"content":{"parts":[{"text":"A"},{"text":"B","thought":true},{"text":"C"}]}}]}`,
-			parseable: "AC",
-			rawOff:    "AC",
-			rawOn:     "ABC",
+			name:        "interleaved thought preserves order",
+			body:        `{"candidates":[{"content":{"parts":[{"text":"A"},{"text":"B","thought":true},{"text":"C"}]}}]}`,
+			parseable:   "AC",
+			raw:         "AC",
+			reasoningOn: "B",
 		},
 		{
-			name:      "thought only",
-			body:      `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true}]}}]}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "thought",
+			name:        "thought only",
+			body:        `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true}]}}]}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "thought",
 		},
 		{
 			// Numeric text on a thought part: silently skipped under both
-			// flag values. The visible part still flows through normally.
-			name:      "thought non-string text skipped under opt-in",
-			body:      `{"candidates":[{"content":{"parts":[{"text":42,"thought":true},{"text":"Visible"}]}}]}`,
-			parseable: "Visible",
-			rawOff:    "Visible",
-			rawOn:     "Visible",
+			// flag values.
+			name:        "thought non-string text skipped under opt-in",
+			body:        `{"candidates":[{"content":{"parts":[{"text":42,"thought":true},{"text":"Visible"}]}}]}`,
+			parseable:   "Visible",
+			raw:         "Visible",
+			reasoningOn: "",
 		},
 	}
 
@@ -784,30 +787,39 @@ func TestExtractDeltaPartsFromText_GeminiIncludeThinkingInRaw(t *testing.T) {
 			t.Run(provider+"/"+tc.name, func(t *testing.T) {
 				off, err := ExtractDeltaPartsFromText(provider, tc.body, false)
 				if err != nil {
-					t.Fatalf("ExtractDeltaPartsFromText(includeThinking=false) returned error: %v", err)
+					t.Fatalf("ExtractDeltaPartsFromText(includeReasoning=false) returned error: %v", err)
 				}
 				if off.Parseable != tc.parseable {
 					t.Errorf("flag=false Parseable = %q, want %q", off.Parseable, tc.parseable)
 				}
-				if off.Raw != tc.rawOff {
-					t.Errorf("flag=false Raw = %q, want %q", off.Raw, tc.rawOff)
+				if off.Raw != tc.raw {
+					t.Errorf("flag=false Raw = %q, want %q", off.Raw, tc.raw)
+				}
+				if off.Reasoning != "" {
+					t.Errorf("flag=false Reasoning = %q, want empty", off.Reasoning)
 				}
 
 				on, err := ExtractDeltaPartsFromText(provider, tc.body, true)
 				if err != nil {
-					t.Fatalf("ExtractDeltaPartsFromText(includeThinking=true) returned error: %v", err)
+					t.Fatalf("ExtractDeltaPartsFromText(includeReasoning=true) returned error: %v", err)
 				}
 				if on.Parseable != tc.parseable {
 					t.Errorf("flag=true Parseable = %q, want %q", on.Parseable, tc.parseable)
 				}
-				if on.Raw != tc.rawOn {
-					t.Errorf("flag=true Raw = %q, want %q", on.Raw, tc.rawOn)
+				if on.Raw != tc.raw {
+					t.Errorf("flag=true Raw = %q, want %q (raw is text-only regardless of flag)", on.Raw, tc.raw)
+				}
+				if on.Reasoning != tc.reasoningOn {
+					t.Errorf("flag=true Reasoning = %q, want %q", on.Reasoning, tc.reasoningOn)
 				}
 
-				// Structural parseable invariance: Parseable must be
-				// byte-identical across both flag values for every fixture.
+				// Structural parseable + raw invariance: byte-identical
+				// across both flag values for every fixture.
 				if off.Parseable != on.Parseable {
-					t.Errorf("Parseable diverged across includeThinking: false=%q true=%q", off.Parseable, on.Parseable)
+					t.Errorf("Parseable diverged across includeReasoning: false=%q true=%q", off.Parseable, on.Parseable)
+				}
+				if off.Raw != on.Raw {
+					t.Errorf("Raw diverged across includeReasoning: false=%q true=%q", off.Raw, on.Raw)
 				}
 			})
 		}
@@ -820,52 +832,52 @@ func TestExtractDeltaPartsFromText_GeminiIncludeThinkingInRaw(t *testing.T) {
 //
 //   - Parseable always reflects only delta.content (text-only, fed to the
 //     BAML parser via ParseStream).
-//   - Raw mirrors Parseable when includeThinking is false; when true, Raw
+//   - Raw mirrors Parseable when includeReasoning is false; when true, Raw
 //     additionally surfaces delta.reasoning_content appended after content.
 //   - Non-string reasoning_content is silently skipped under both flag
 //     values, matching the forgiving streaming semantics for optional
 //     reasoning surfaces.
 //
-// Parseable invariance across the includeThinking flag is asserted for
+// Parseable invariance across the includeReasoning flag is asserted for
 // every fixture × provider; Raw equality across the flag is intentionally
 // NOT asserted, because the whole point of opt-in is that Raw diverges.
 func TestExtractDeltaPartsFromText_OpenAIReasoningContent(t *testing.T) {
 	cases := []struct {
-		name      string
-		body      string
-		parseable string
-		rawOff    string
-		rawOn     string
+		name        string
+		body        string
+		parseable   string
+		raw         string
+		reasoningOn string
 	}{
 		{
-			name:      "content only",
-			body:      `{"choices":[{"delta":{"content":"Hello"}}]}`,
-			parseable: "Hello",
-			rawOff:    "Hello",
-			rawOn:     "Hello",
+			name:        "content only",
+			body:        `{"choices":[{"delta":{"content":"Hello"}}]}`,
+			parseable:   "Hello",
+			raw:         "Hello",
+			reasoningOn: "",
 		},
 		{
-			name:      "reasoning only",
-			body:      `{"choices":[{"delta":{"reasoning_content":"think"}}]}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "think",
+			name:        "reasoning only",
+			body:        `{"choices":[{"delta":{"reasoning_content":"think"}}]}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "think",
 		},
 		{
-			name:      "content plus reasoning",
-			body:      `{"choices":[{"delta":{"content":"Hello","reasoning_content":"think"}}]}`,
-			parseable: "Hello",
-			rawOff:    "Hello",
-			rawOn:     "Hellothink",
+			name:        "content plus reasoning",
+			body:        `{"choices":[{"delta":{"content":"Hello","reasoning_content":"think"}}]}`,
+			parseable:   "Hello",
+			raw:         "Hello",
+			reasoningOn: "think",
 		},
 		{
 			// Defensive: non-string reasoning_content is silently skipped
 			// under opt-in, matching the gjson.String guard in the extractor.
-			name:      "non-string reasoning ignored under opt-in",
-			body:      `{"choices":[{"delta":{"content":"Hello","reasoning_content":42}}]}`,
-			parseable: "Hello",
-			rawOff:    "Hello",
-			rawOn:     "Hello",
+			name:        "non-string reasoning ignored under opt-in",
+			body:        `{"choices":[{"delta":{"content":"Hello","reasoning_content":42}}]}`,
+			parseable:   "Hello",
+			raw:         "Hello",
+			reasoningOn: "",
 		},
 	}
 
@@ -874,30 +886,39 @@ func TestExtractDeltaPartsFromText_OpenAIReasoningContent(t *testing.T) {
 			t.Run(provider+"/"+tc.name, func(t *testing.T) {
 				off, err := ExtractDeltaPartsFromText(provider, tc.body, false)
 				if err != nil {
-					t.Fatalf("ExtractDeltaPartsFromText(includeThinking=false) returned error: %v", err)
+					t.Fatalf("ExtractDeltaPartsFromText(includeReasoning=false) returned error: %v", err)
 				}
 				if off.Parseable != tc.parseable {
 					t.Errorf("flag=false Parseable = %q, want %q", off.Parseable, tc.parseable)
 				}
-				if off.Raw != tc.rawOff {
-					t.Errorf("flag=false Raw = %q, want %q", off.Raw, tc.rawOff)
+				if off.Raw != tc.raw {
+					t.Errorf("flag=false Raw = %q, want %q", off.Raw, tc.raw)
+				}
+				if off.Reasoning != "" {
+					t.Errorf("flag=false Reasoning = %q, want empty", off.Reasoning)
 				}
 
 				on, err := ExtractDeltaPartsFromText(provider, tc.body, true)
 				if err != nil {
-					t.Fatalf("ExtractDeltaPartsFromText(includeThinking=true) returned error: %v", err)
+					t.Fatalf("ExtractDeltaPartsFromText(includeReasoning=true) returned error: %v", err)
 				}
 				if on.Parseable != tc.parseable {
 					t.Errorf("flag=true Parseable = %q, want %q", on.Parseable, tc.parseable)
 				}
-				if on.Raw != tc.rawOn {
-					t.Errorf("flag=true Raw = %q, want %q", on.Raw, tc.rawOn)
+				if on.Raw != tc.raw {
+					t.Errorf("flag=true Raw = %q, want %q (raw is text-only regardless of flag)", on.Raw, tc.raw)
+				}
+				if on.Reasoning != tc.reasoningOn {
+					t.Errorf("flag=true Reasoning = %q, want %q", on.Reasoning, tc.reasoningOn)
 				}
 
-				// Structural parseable invariance: byte-identical across
-				// both flag values for every fixture.
+				// Structural parseable + raw invariance: byte-identical
+				// across both flag values for every fixture.
 				if off.Parseable != on.Parseable {
-					t.Errorf("Parseable diverged across includeThinking: false=%q true=%q", off.Parseable, on.Parseable)
+					t.Errorf("Parseable diverged across includeReasoning: false=%q true=%q", off.Parseable, on.Parseable)
+				}
+				if off.Raw != on.Raw {
+					t.Errorf("Raw diverged across includeReasoning: false=%q true=%q", off.Raw, on.Raw)
 				}
 			})
 		}
@@ -905,11 +926,11 @@ func TestExtractDeltaPartsFromText_OpenAIReasoningContent(t *testing.T) {
 }
 
 // TestIncrementalExtractor_OpenAIReasoning_StreamOrder verifies that the
-// stored includeThinkingInRaw flag reaches ExtractDeltaPartsFromText through
-// IncrementalExtractor.ExtractFrom, and that event order is preserved across
-// SSE chunks: a reasoning-only event followed by a content-only event yields
-// "reasoning + content" in raw under opt-in, but only the content under the
-// default flag.
+// stored includeReasoning flag reaches ExtractDeltaPartsFromText through
+// IncrementalExtractor.ExtractFrom, and that event order is preserved on
+// the reasoning buffer: a reasoning-only event followed by a content-only
+// event yields reasoning="think" + raw="Hello" under opt-in, and reasoning
+// empty under default. Raw stays text-only regardless.
 func TestIncrementalExtractor_OpenAIReasoning_StreamOrder(t *testing.T) {
 	chunks := []SSEChunk{
 		mockChunk{`{"choices":[{"delta":{"reasoning_content":"think"}}]}`},
@@ -926,19 +947,29 @@ func TestIncrementalExtractor_OpenAIReasoning_StreamOrder(t *testing.T) {
 			if resOff.RawFull != "Hello" {
 				t.Errorf("flag=false RawFull = %q, want %q", resOff.RawFull, "Hello")
 			}
+			if resOff.ReasoningFull != "" {
+				t.Errorf("flag=false ReasoningFull = %q, want empty", resOff.ReasoningFull)
+			}
 
 			on := NewIncrementalExtractor(true)
 			resOn := on.Extract(1, provider, chunks)
 			if resOn.ParseableFull != "Hello" {
 				t.Errorf("flag=true ParseableFull = %q, want %q (parseable invariant violated!)", resOn.ParseableFull, "Hello")
 			}
-			if resOn.RawFull != "thinkHello" {
-				t.Errorf("flag=true RawFull = %q, want %q (event order: reasoning event first)", resOn.RawFull, "thinkHello")
+			if resOn.RawFull != "Hello" {
+				t.Errorf("flag=true RawFull = %q, want %q (raw is text-only by construction)", resOn.RawFull, "Hello")
+			}
+			if resOn.ReasoningFull != "think" {
+				t.Errorf("flag=true ReasoningFull = %q, want %q", resOn.ReasoningFull, "think")
 			}
 
-			// Structural parseable invariance across the IncrementalExtractor.
+			// Structural parseable + raw invariance across the
+			// IncrementalExtractor.
 			if resOff.ParseableFull != resOn.ParseableFull {
-				t.Errorf("ParseableFull diverged across includeThinkingInRaw: false=%q true=%q", resOff.ParseableFull, resOn.ParseableFull)
+				t.Errorf("ParseableFull diverged across includeReasoning: false=%q true=%q", resOff.ParseableFull, resOn.ParseableFull)
+			}
+			if resOff.RawFull != resOn.RawFull {
+				t.Errorf("RawFull diverged across includeReasoning: false=%q true=%q", resOff.RawFull, resOn.RawFull)
 			}
 		})
 	}
@@ -947,8 +978,8 @@ func TestIncrementalExtractor_OpenAIReasoning_StreamOrder(t *testing.T) {
 // TestIncrementalExtractor_GeminiThinking_ParseableInvariant exercises
 // ExtractFrom on a Gemini SSE chunk through both flag-off and flag-on
 // IncrementalExtractor instances, proving that the stored
-// includeThinkingInRaw flag reaches ExtractDeltaPartsFromText in both the
-// rebuild and incremental paths and that the parseable buffer is
+// includeReasoning flag reaches ExtractDeltaPartsFromText in both the
+// rebuild and incremental paths and that the parseable + raw buffers are
 // byte-identical regardless of the flag.
 func TestIncrementalExtractor_GeminiThinking_ParseableInvariant(t *testing.T) {
 	chunks := []SSEChunk{
@@ -970,16 +1001,26 @@ func TestIncrementalExtractor_GeminiThinking_ParseableInvariant(t *testing.T) {
 			if resOff.RawFull != "Hello world" {
 				t.Errorf("flag=false RawFull = %q, want %q", resOff.RawFull, "Hello world")
 			}
+			if resOff.ReasoningFull != "" {
+				t.Errorf("flag=false ReasoningFull = %q, want empty", resOff.ReasoningFull)
+			}
 			if resOn.ParseableFull != "Hello world" {
 				t.Errorf("flag=true ParseableFull = %q, want %q", resOn.ParseableFull, "Hello world")
 			}
-			if resOn.RawFull != "thinkHello more world" {
-				t.Errorf("flag=true RawFull = %q, want %q", resOn.RawFull, "thinkHello more world")
+			if resOn.RawFull != "Hello world" {
+				t.Errorf("flag=true RawFull = %q, want %q (raw is text-only by construction)", resOn.RawFull, "Hello world")
+			}
+			if resOn.ReasoningFull != "think more" {
+				t.Errorf("flag=true ReasoningFull = %q, want %q", resOn.ReasoningFull, "think more")
 			}
 
-			// Structural parseable invariance under the IncrementalExtractor.
+			// Structural parseable + raw invariance under the
+			// IncrementalExtractor.
 			if resOff.ParseableFull != resOn.ParseableFull {
-				t.Errorf("ParseableFull diverged across includeThinkingInRaw: false=%q true=%q", resOff.ParseableFull, resOn.ParseableFull)
+				t.Errorf("ParseableFull diverged across includeReasoning: false=%q true=%q", resOff.ParseableFull, resOn.ParseableFull)
+			}
+			if resOff.RawFull != resOn.RawFull {
+				t.Errorf("RawFull diverged across includeReasoning: false=%q true=%q", resOff.RawFull, resOn.RawFull)
 			}
 		})
 	}
@@ -990,9 +1031,9 @@ func TestIncrementalExtractor_GeminiThinking_ParseableInvariant(t *testing.T) {
 // streaming branch (provider key "openai-responses"):
 //
 //   - response.output_text.delta contributes to both Parseable and Raw
-//     regardless of includeThinking (text-only message stream).
+//     regardless of includeReasoning (text-only message stream).
 //   - response.reasoning_summary_text.delta contributes to Raw only, and
-//     only when includeThinking is true. Parseable always stays empty.
+//     only when includeReasoning is true. Parseable always stays empty.
 //   - Non-string delta on a reasoning_summary_text.delta event is silently
 //     skipped under opt-in (defensive gjson.String guard).
 //   - response.reasoning_summary_part.added is a bracket/setup event and
@@ -1002,81 +1043,72 @@ func TestIncrementalExtractor_GeminiThinking_ParseableInvariant(t *testing.T) {
 //     extractor would duplicate text already emitted by the deltas (mirrors
 //     the existing response.output_text.done treatment).
 //
-// Parseable invariance across the includeThinking flag is asserted for
+// Parseable invariance across the includeReasoning flag is asserted for
 // every fixture; Raw equality across the flag is intentionally NOT
 // asserted, because the whole point of opt-in is that Raw diverges.
 func TestExtractDeltaPartsFromText_OpenAIResponsesReasoningSummary(t *testing.T) {
 	cases := []struct {
-		name      string
-		body      string
-		parseable string
-		rawOff    string
-		rawOn     string
+		name        string
+		body        string
+		parseable   string
+		raw         string
+		reasoningOn string
 	}{
 		{
-			name:      "output_text.delta",
-			body:      `{"type":"response.output_text.delta","delta":"Hello"}`,
-			parseable: "Hello",
-			rawOff:    "Hello",
-			rawOn:     "Hello",
+			name:        "output_text.delta",
+			body:        `{"type":"response.output_text.delta","delta":"Hello"}`,
+			parseable:   "Hello",
+			raw:         "Hello",
+			reasoningOn: "",
 		},
 		{
 			// Defensive: non-string delta on output_text.delta is silently
 			// skipped, matching the gjson.String guard in the extractor.
-			// The wire format always emits a string here, so this is a
-			// belt-and-braces guard mirroring the adjacent
-			// reasoning_summary_text.delta arm — it prevents gjson coercing
-			// a non-string into the literal string representation of the
-			// JSON value (which would land in Parseable and be fed to the
-			// BAML parser).
-			name:      "non-string output_text delta is skipped",
-			body:      `{"type":"response.output_text.delta","delta":42}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "",
+			name:        "non-string output_text delta is skipped",
+			body:        `{"type":"response.output_text.delta","delta":42}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "",
 		},
 		{
-			name:      "reasoning_summary_text.delta opt-in surfaces summary",
-			body:      `{"type":"response.reasoning_summary_text.delta","delta":"thought"}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "thought",
+			name:        "reasoning_summary_text.delta opt-in surfaces summary",
+			body:        `{"type":"response.reasoning_summary_text.delta","delta":"thought"}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "thought",
 		},
 		{
 			// Defensive: non-string delta on a reasoning summary event is
-			// silently skipped under opt-in, matching the gjson.String guard
-			// in the extractor.
-			name:      "reasoning_summary_text.delta non-string delta ignored",
-			body:      `{"type":"response.reasoning_summary_text.delta","delta":42}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "",
+			// silently skipped under opt-in.
+			name:        "reasoning_summary_text.delta non-string delta ignored",
+			body:        `{"type":"response.reasoning_summary_text.delta","delta":42}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "",
 		},
 		{
-			name:      "reasoning_summary_part.added is a no-op",
-			body:      `{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "",
+			name:        "reasoning_summary_part.added is a no-op",
+			body:        `{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":""}}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "",
 		},
 		{
 			// Done event carries the full summary text but is intentionally
 			// not extracted — acting on it would duplicate text from the
 			// preceding *_text.delta events in this stateless extractor.
-			name:      "reasoning_summary_part.done is a no-op (avoids duplicate text)",
-			body:      `{"type":"response.reasoning_summary_part.done","part":{"type":"summary_text","text":"thought complete"}}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "",
+			name:        "reasoning_summary_part.done is a no-op (avoids duplicate text)",
+			body:        `{"type":"response.reasoning_summary_part.done","part":{"type":"summary_text","text":"thought complete"}}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "",
 		},
 		{
-			// Same rationale as part.done; mirrors the current
-			// response.output_text.done treatment.
-			name:      "reasoning_summary_text.done is a no-op (avoids duplicate text)",
-			body:      `{"type":"response.reasoning_summary_text.done","text":"thought complete"}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "",
+			name:        "reasoning_summary_text.done is a no-op (avoids duplicate text)",
+			body:        `{"type":"response.reasoning_summary_text.done","text":"thought complete"}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "",
 		},
 	}
 
@@ -1084,42 +1116,51 @@ func TestExtractDeltaPartsFromText_OpenAIResponsesReasoningSummary(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			off, err := ExtractDeltaPartsFromText("openai-responses", tc.body, false)
 			if err != nil {
-				t.Fatalf("ExtractDeltaPartsFromText(includeThinking=false) returned error: %v", err)
+				t.Fatalf("ExtractDeltaPartsFromText(includeReasoning=false) returned error: %v", err)
 			}
 			if off.Parseable != tc.parseable {
 				t.Errorf("flag=false Parseable = %q, want %q", off.Parseable, tc.parseable)
 			}
-			if off.Raw != tc.rawOff {
-				t.Errorf("flag=false Raw = %q, want %q", off.Raw, tc.rawOff)
+			if off.Raw != tc.raw {
+				t.Errorf("flag=false Raw = %q, want %q", off.Raw, tc.raw)
+			}
+			if off.Reasoning != "" {
+				t.Errorf("flag=false Reasoning = %q, want empty", off.Reasoning)
 			}
 
 			on, err := ExtractDeltaPartsFromText("openai-responses", tc.body, true)
 			if err != nil {
-				t.Fatalf("ExtractDeltaPartsFromText(includeThinking=true) returned error: %v", err)
+				t.Fatalf("ExtractDeltaPartsFromText(includeReasoning=true) returned error: %v", err)
 			}
 			if on.Parseable != tc.parseable {
 				t.Errorf("flag=true Parseable = %q, want %q", on.Parseable, tc.parseable)
 			}
-			if on.Raw != tc.rawOn {
-				t.Errorf("flag=true Raw = %q, want %q", on.Raw, tc.rawOn)
+			if on.Raw != tc.raw {
+				t.Errorf("flag=true Raw = %q, want %q (raw is text-only regardless of flag)", on.Raw, tc.raw)
+			}
+			if on.Reasoning != tc.reasoningOn {
+				t.Errorf("flag=true Reasoning = %q, want %q", on.Reasoning, tc.reasoningOn)
 			}
 
-			// Structural parseable invariance: byte-identical across both
-			// flag values for every fixture.
+			// Structural parseable + raw invariance: byte-identical across
+			// both flag values for every fixture.
 			if off.Parseable != on.Parseable {
-				t.Errorf("Parseable diverged across includeThinking: false=%q true=%q", off.Parseable, on.Parseable)
+				t.Errorf("Parseable diverged across includeReasoning: false=%q true=%q", off.Parseable, on.Parseable)
+			}
+			if off.Raw != on.Raw {
+				t.Errorf("Raw diverged across includeReasoning: false=%q true=%q", off.Raw, on.Raw)
 			}
 		})
 	}
 }
 
 // TestIncrementalExtractor_OpenAIResponsesReasoningSummary_StreamOrder
-// verifies that the stored includeThinkingInRaw flag reaches
+// verifies that the stored includeReasoning flag reaches
 // ExtractDeltaPartsFromText through IncrementalExtractor.ExtractFrom for
-// the openai-responses provider, and that event order is preserved across
-// SSE chunks: interleaved summary/text deltas yield the expected
-// concatenation in raw under opt-in, while parseable stays text-only and
-// flag-off RawFull mirrors ParseableFull byte-for-byte.
+// the openai-responses provider, and that event order is preserved on
+// the reasoning buffer: interleaved summary/text deltas yield reasoning
+// "think1 think2 " in order under opt-in, while parseable and raw stay
+// text-only and flag-invariant.
 func TestIncrementalExtractor_OpenAIResponsesReasoningSummary_StreamOrder(t *testing.T) {
 	chunks := []SSEChunk{
 		mockChunk{`{"type":"response.reasoning_summary_text.delta","delta":"think1 "}`},
@@ -1136,34 +1177,37 @@ func TestIncrementalExtractor_OpenAIResponsesReasoningSummary_StreamOrder(t *tes
 	if resOff.RawFull != "Hello world" {
 		t.Errorf("flag=false RawFull = %q, want %q (must mirror ParseableFull when flag is off)", resOff.RawFull, "Hello world")
 	}
+	if resOff.ReasoningFull != "" {
+		t.Errorf("flag=false ReasoningFull = %q, want empty", resOff.ReasoningFull)
+	}
 
 	on := NewIncrementalExtractor(true)
 	resOn := on.Extract(1, "openai-responses", chunks)
 	if resOn.ParseableFull != "Hello world" {
 		t.Errorf("flag=true ParseableFull = %q, want %q (parseable invariant violated!)", resOn.ParseableFull, "Hello world")
 	}
-	if resOn.RawFull != "think1 Hello think2 world" {
-		t.Errorf("flag=true RawFull = %q, want %q (event order must be preserved)", resOn.RawFull, "think1 Hello think2 world")
+	if resOn.RawFull != "Hello world" {
+		t.Errorf("flag=true RawFull = %q, want %q (raw is text-only by construction)", resOn.RawFull, "Hello world")
+	}
+	if resOn.ReasoningFull != "think1 think2 " {
+		t.Errorf("flag=true ReasoningFull = %q, want %q (event order must be preserved)", resOn.ReasoningFull, "think1 think2 ")
 	}
 
-	// Structural parseable invariance across the IncrementalExtractor.
+	// Structural parseable + raw invariance across the IncrementalExtractor.
 	if resOff.ParseableFull != resOn.ParseableFull {
-		t.Errorf("ParseableFull diverged across includeThinkingInRaw: false=%q true=%q", resOff.ParseableFull, resOn.ParseableFull)
+		t.Errorf("ParseableFull diverged across includeReasoning: false=%q true=%q", resOff.ParseableFull, resOn.ParseableFull)
+	}
+	if resOff.RawFull != resOn.RawFull {
+		t.Errorf("RawFull diverged across includeReasoning: false=%q true=%q", resOff.RawFull, resOn.RawFull)
 	}
 }
 
-// TestGetCurrentContent_OpenAIResponsesReasoningSummaryOptIn proves the
-// includeThinking parameter on GetCurrentContent reaches ExtractDeltaContent
-// for the openai-responses arm. This is a separate code path from
-// IncrementalExtractor.ExtractFrom (covered by
-// TestIncrementalExtractor_OpenAIResponsesReasoningSummary_StreamOrder), so
-// the flag-plumbing needs its own coverage.
-//
-// A summary-only chunk yields:
-//   - flag=false: "" (reasoning summary not surfaced)
-//   - flag=true:  "thought" (summary delta concatenated into Raw, which
-//     GetCurrentContent returns)
-func TestGetCurrentContent_OpenAIResponsesReasoningSummaryOptIn(t *testing.T) {
+// TestGetCurrentContent_OpenAIResponsesReasoningSummaryRawOnly verifies
+// that GetCurrentContent returns only Raw text. A summary-only chunk
+// yields empty content under both flag values because Raw is text-only
+// by construction; reasoning surfaces via DeltaParts.Reasoning, not via
+// the Raw-returning helper.
+func TestGetCurrentContent_OpenAIResponsesReasoningSummaryRawOnly(t *testing.T) {
 	data := &StreamingData{
 		Calls: []StreamingCall{
 			{
@@ -1180,14 +1224,14 @@ func TestGetCurrentContent_OpenAIResponsesReasoningSummaryOptIn(t *testing.T) {
 		t.Fatalf("flag=false: unexpected error: %v", err)
 	}
 	if off != "" {
-		t.Errorf("flag=false: expected empty content (reasoning summary not surfaced), got %q", off)
+		t.Errorf("flag=false: expected empty content (reasoning summary not in raw), got %q", off)
 	}
 
 	on, err := GetCurrentContent(data, true)
 	if err != nil {
 		t.Fatalf("flag=true: unexpected error: %v", err)
 	}
-	if on != "thought" {
-		t.Errorf("flag=true: expected %q (reasoning summary surfaced), got %q", "thought", on)
+	if on != "" {
+		t.Errorf("flag=true: expected empty content (raw is text-only; reasoning surfaces via DeltaParts.Reasoning), got %q", on)
 	}
 }

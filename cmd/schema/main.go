@@ -42,7 +42,10 @@ func main() {
 const streamSchemaSuffix = "__Stream"
 
 // makeStreamEventSchema creates a streaming event schema with the given type and data schema.
-// If includeRaw is true, adds a "raw" field for LLM output.
+// If includeRaw is true, adds a required "raw" field and an optional
+// "reasoning" field for LLM output. Reasoning is optional (omitempty on
+// the wire) because it is only populated when the request opts into
+// __baml_options__.include_reasoning.
 func makeStreamEventSchema(eventType, description string, dataSchema *openapi3.SchemaRef, includeRaw bool, rawDescription string) *openapi3.SchemaRef {
 	props := openapi3.Schemas{
 		"type": &openapi3.SchemaRef{
@@ -63,6 +66,12 @@ func makeStreamEventSchema(eventType, description string, dataSchema *openapi3.S
 			},
 		}
 		required = append(required, "raw")
+		props["reasoning"] = &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeString},
+				Description: "Provider-specific reasoning/thinking text accumulated to this point. Populated only when __baml_options__.include_reasoning is true.",
+			},
+		}
 	}
 
 	return &openapi3.SchemaRef{
@@ -695,7 +704,13 @@ func generateOpenAPISchema() *openapi3.T {
 					"raw": &openapi3.SchemaRef{
 						Value: &openapi3.Schema{
 							Type:        &openapi3.Types{openapi3.TypeString},
-							Description: "Raw LLM response text",
+							Description: "Raw LLM response text, always text-only",
+						},
+					},
+					"reasoning": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type:        &openapi3.Types{openapi3.TypeString},
+							Description: "Provider-specific reasoning/thinking text. Populated only when __baml_options__.include_reasoning is true.",
 						},
 					},
 				},
@@ -1608,7 +1623,13 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				"raw": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeString},
-						Description: "Raw LLM response text",
+						Description: "Raw LLM response text, always text-only",
+					},
+				},
+				"reasoning": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeString},
+						Description: "Provider-specific reasoning/thinking text. Populated only when __baml_options__.include_reasoning is true.",
 					},
 				},
 			},

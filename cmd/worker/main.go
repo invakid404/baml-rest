@@ -285,10 +285,10 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter) error {
 		adapter.SetRetryConfig(o.Options.Retry)
 	}
 
-	// Always pass IncludeThinkingInRaw through (even when false) so the
+	// Always pass IncludeReasoning through (even when false) so the
 	// adapter reflects an explicit per-request choice. Default value
-	// matches BAML's RawLLMResponse() text-only contract.
-	adapter.SetIncludeThinkingInRaw(o.Options.IncludeThinkingInRaw)
+	// leaves the structured reasoning channel empty.
+	adapter.SetIncludeReasoning(o.Options.IncludeReasoning)
 
 	return nil
 }
@@ -400,6 +400,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 			case bamlutils.StreamResultKindStream:
 				pluginResult.Kind = workerplugin.StreamResultKindStream
 				pluginResult.Raw = result.Raw()
+				pluginResult.Reasoning = result.Reasoning()
 				// Reset-only stream results intentionally carry no payload. If we
 				// marshal nil here, it becomes JSON `null`, which downstream would
 				// publish as a bogus partial frame in addition to the reset event.
@@ -413,6 +414,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 					}
 				} else {
 					pluginResult.Raw = ""
+					pluginResult.Reasoning = ""
 				}
 			case bamlutils.StreamResultKindFinal:
 				data, err := json.Marshal(result.Final())
@@ -423,6 +425,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 					pluginResult.Kind = workerplugin.StreamResultKindFinal
 					pluginResult.Data = data
 					pluginResult.Raw = result.Raw()
+					pluginResult.Reasoning = result.Reasoning()
 				}
 			case bamlutils.StreamResultKindHeartbeat:
 				pluginResult.Kind = workerplugin.StreamResultKindHeartbeat

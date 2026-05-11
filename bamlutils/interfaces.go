@@ -14,8 +14,15 @@ type StreamResult interface {
 	Stream() any
 	Final() any
 	Error() error
-	// Raw returns the raw LLM response text at this streaming point
+	// Raw returns the raw LLM response text at this streaming point.
+	// Always text-only — provider-specific reasoning text is surfaced via
+	// Reasoning() instead.
 	Raw() string
+	// Reasoning returns the provider-specific reasoning/thinking text at
+	// this streaming point. Populated only when the caller opts into
+	// surfacing reasoning via __baml_options__.include_reasoning; empty
+	// otherwise.
+	Reasoning() string
 	// Reset returns true if the client should discard accumulated state (retry occurred)
 	Reset() bool
 	// Metadata returns the routing/retry metadata payload. Non-nil only when
@@ -920,14 +927,15 @@ type Adapter interface {
 	SetRetryConfig(config *RetryConfig)
 	// RetryConfig returns the per-request retry config, or nil if not set.
 	RetryConfig() *RetryConfig
-	// SetIncludeThinkingInRaw enables provider-specific reasoning/thinking
-	// content in the /with-raw `raw` field for this request. Default false
-	// matches upstream BAML's RawLLMResponse() semantics (text-only). The
-	// flag never affects the parseable text seen by Parse/ParseStream.
-	SetIncludeThinkingInRaw(includeThinking bool)
-	// IncludeThinkingInRaw returns the per-request opt-in flag. Defaults to
+	// SetIncludeReasoning enables routing of provider-specific reasoning/
+	// thinking text into the structured /with-raw `reasoning` channel,
+	// distinct from `raw`. Default false leaves the reasoning field empty.
+	// The flag never affects the parseable text seen by Parse/ParseStream,
+	// and never affects `raw` (which is always text-only by construction).
+	SetIncludeReasoning(includeReasoning bool)
+	// IncludeReasoning returns the per-request opt-in flag. Defaults to
 	// false when no override has been applied.
-	IncludeThinkingInRaw() bool
+	IncludeReasoning() bool
 	// ClientRegistryProvider returns the provider string of the primary client
 	// from the runtime ClientRegistry override, or empty string if no override.
 	// Used by the BuildRequest router to select the correct SSE delta extractor.
@@ -956,16 +964,18 @@ type BamlOptions struct {
 	ClientRegistry *ClientRegistry `json:"client_registry"`
 	TypeBuilder    *TypeBuilder    `json:"type_builder"`
 	Retry          *RetryConfig    `json:"retry,omitempty"`
-	// IncludeThinkingInRaw opts the request into having provider-specific
-	// reasoning/thinking content surfaced in /with-raw's `raw` field.
+	// IncludeReasoning opts the request into surfacing provider-specific
+	// reasoning/thinking text on the structured `reasoning` response field
+	// of /with-raw endpoints, distinct from `raw`. When false (default),
+	// the field is empty. When true, providers that produce reasoning
+	// surfaces (Anthropic thinking blocks, Gemini thought parts, OpenAI
+	// Chat Completions reasoning_content, OpenAI Responses summary items)
+	// populate the reasoning field with their text.
 	//
-	// Default false aligns baml-rest with upstream BAML's RawLLMResponse()
-	// semantics (text-only). Set true to additionally accumulate Anthropic
-	// thinking_delta / thinking blocks (and, in later phases, other providers'
-	// reasoning surfaces) into raw for telemetry. The flag never affects the
-	// parseable text passed to Parse/ParseStream — that stays text-only by
-	// construction so reasoning content cannot influence parsing.
-	IncludeThinkingInRaw bool `json:"include_thinking_in_raw,omitempty"`
+	// `raw` stays text-only by construction in all states — reasoning is
+	// never muxed into raw under any flag value. The flag never affects
+	// the parseable text passed to Parse/ParseStream.
+	IncludeReasoning bool `json:"include_reasoning,omitempty"`
 }
 
 // RetryConfig provides explicit retry configuration for the BuildRequest path.

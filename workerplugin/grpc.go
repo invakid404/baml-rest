@@ -121,10 +121,11 @@ func (s *GRPCServer) CallStream(req *pb.CallRequest, stream pb.Worker_CallStream
 	sentTerminal := false
 	for result := range results {
 		pbResult := &pb.StreamResult{
-			Kind:     pb.StreamResult_Kind(result.Kind),
-			DataJson: result.Data,
-			Raw:      result.Raw,
-			Reset_:   result.Reset,
+			Kind:      pb.StreamResult_Kind(result.Kind),
+			DataJson:  result.Data,
+			Raw:       result.Raw,
+			Reasoning: result.Reasoning,
+			Reset_:    result.Reset,
 		}
 		if result.Error != nil {
 			pbResult.Error = result.Error.Error()
@@ -278,6 +279,7 @@ func (c *GRPCClient) CallStream(ctx context.Context, methodName string, inputJSO
 			result.Kind = StreamResultKind(resp.Kind)
 			result.Data = resp.DataJson
 			result.Raw = resp.Raw
+			result.Reasoning = resp.Reasoning
 			result.Reset = resp.GetReset_()
 			if resp.Error != "" {
 				result.Error = fmt.Errorf("%s", resp.Error)

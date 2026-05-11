@@ -462,8 +462,9 @@ var serveCmd = &cobra.Command{
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
 						return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{
-							Data: result.Data,
-							Raw:  result.Raw,
+							Data:      result.Data,
+							Raw:       result.Raw,
+							Reasoning: result.Reasoning,
 						})
 					}
 
@@ -557,8 +558,9 @@ var serveCmd = &cobra.Command{
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
 						return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{
-							Data: flattenedData,
-							Raw:  result.Raw,
+							Data:      flattenedData,
+							Raw:       result.Raw,
+							Reasoning: result.Reasoning,
 						})
 					}
 
@@ -766,8 +768,9 @@ func main() {
 
 // CallWithRawResponse is the response format for the /call-with-raw endpoint
 type CallWithRawResponse struct {
-	Data json.RawMessage `json:"data"`
-	Raw  string          `json:"raw"`
+	Data      json.RawMessage `json:"data"`
+	Raw       string          `json:"raw"`
+	Reasoning string          `json:"reasoning,omitempty"`
 }
 
 // combinedMetricsGatherer gathers metrics from the main process and all workers
