@@ -655,6 +655,12 @@ func generateStreamHelpers(out *jen.File) {
 	out.Comment("sendHeartbeat on the first FunctionLog tick (matching the")
 	out.Comment("BuildRequest path's post-HTTP liveness semantics) and captures the")
 	out.Comment("last FunctionLog so raw can be read via RawLLMResponse.")
+	// Signature: (any, raw string, reasoning string, error). Reasoning
+	// is always the empty string — this helper reads BAML's authoritative
+	// FunctionLog.RawLLMResponse() for raw and has no extractor to populate
+	// reasoning, so mixed-mode legacy children never surface reasoning.
+	// The empty string keeps the return-arity aligned with the rest of
+	// the LegacyStream/CallChildFunc contract.
 	out.Func().Id("runLegacyChildStream").
 		Params(
 			jen.Id("ctx").Qual("context", "Context"),
@@ -664,7 +670,7 @@ func generateStreamHelpers(out *jen.File) {
 				jen.Add(onTickType()),
 			).Params(jen.Any(), jen.Error()),
 		).
-		Params(jen.Any(), jen.String(), jen.Error()).
+		Params(jen.Any(), jen.String(), jen.String(), jen.Error()).
 		Block(
 			// Track first-tick state so sendHeartbeat fires exactly once when
 			// BAML reports the first FunctionLog tick (i.e. first observed
@@ -689,7 +695,7 @@ func generateStreamHelpers(out *jen.File) {
 
 			jen.List(jen.Id("finalResult"), jen.Id("err")).Op(":=").Id("driveStream").Call(jen.Id("onTick")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
-				jen.Return(jen.Nil(), jen.Lit(""), jen.Id("err")),
+				jen.Return(jen.Nil(), jen.Lit(""), jen.Lit(""), jen.Id("err")),
 			),
 
 			// Raw is only computed when requested; callers that don't need
@@ -709,6 +715,6 @@ func generateStreamHelpers(out *jen.File) {
 				),
 			),
 
-			jen.Return(jen.Id("finalResult"), jen.Id("raw"), jen.Nil()),
+			jen.Return(jen.Id("finalResult"), jen.Id("raw"), jen.Lit(""), jen.Nil()),
 		)
 }

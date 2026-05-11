@@ -247,17 +247,23 @@ func (me *methodEmitter) emitBuildRequest() {
 		// reachable from clientOverride plus all non-strategy
 		// leaves, so unrelated explicit parents in the request
 		// can't poison this child via BAML's eager registry parse.
+		// Signature: (any, raw string, reasoning string, error). The
+		// reasoning return is always empty for mixed-mode legacy children —
+		// this path reads BAML's FunctionLog.RawLLMResponse() (text-only)
+		// and has no extractor to populate reasoning. Documented limitation;
+		// see bamlutils/buildrequest/orchestrator.go's
+		// StreamConfig.LegacyStreamChild doc-comment.
 		jen.Id("legacyStreamChildFn").Op(":=").Func().Params(
 			jen.Id("ctx").Qual("context", "Context"),
 			jen.Id("clientOverride").String(),
 			jen.Id("_").String(),
 			jen.Id("needsRaw").Bool(),
 			jen.Id("sendHeartbeat").Func().Params(),
-		).Params(jen.Any(), jen.String(), jen.Error()).Block(
+		).Params(jen.Any(), jen.String(), jen.String(), jen.Error()).Block(
 			jen.List(jen.Id("callOpts"), jen.Id("childOptsErr")).Op(":=").
 				Id("makeLegacyChildOptionsFromAdapter").Call(jen.Id("adapter"), jen.Id("clientOverride")),
 			jen.If(jen.Id("childOptsErr").Op("!=").Nil()).Block(
-				jen.Return(jen.Nil(), jen.Lit(""), jen.Id("childOptsErr")),
+				jen.Return(jen.Nil(), jen.Lit(""), jen.Lit(""), jen.Id("childOptsErr")),
 			),
 			g.withClientCloneAndAppend("callOpts", "callOpts"),
 			jen.Return(jen.Id("runLegacyChildStream").Call(
@@ -507,17 +513,21 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		// for the rationale, including why the per-callback
 		// scoped registry from makeLegacyChildOptionsFromAdapter
 		// is used instead of the outer BuildRequest-safe options.
+		//
+		// Signature: (any, raw string, reasoning string, error). Reasoning
+		// is always empty for mixed-mode legacy children; see
+		// legacyStreamChildFn for the rationale.
 		jen.Id("legacyCallChildFn").Op(":=").Func().Params(
 			jen.Id("ctx").Qual("context", "Context"),
 			jen.Id("clientOverride").String(),
 			jen.Id("_").String(),
 			jen.Id("needsRaw").Bool(),
 			jen.Id("sendHeartbeat").Func().Params(),
-		).Params(jen.Any(), jen.String(), jen.Error()).Block(
+		).Params(jen.Any(), jen.String(), jen.String(), jen.Error()).Block(
 			jen.List(jen.Id("callOpts"), jen.Id("childOptsErr")).Op(":=").
 				Id("makeLegacyChildOptionsFromAdapter").Call(jen.Id("adapter"), jen.Id("clientOverride")),
 			jen.If(jen.Id("childOptsErr").Op("!=").Nil()).Block(
-				jen.Return(jen.Nil(), jen.Lit(""), jen.Id("childOptsErr")),
+				jen.Return(jen.Nil(), jen.Lit(""), jen.Lit(""), jen.Id("childOptsErr")),
 			),
 			g.withClientCloneAndAppend("callOpts", "callOpts"),
 			jen.Return(jen.Id("runLegacyChildStream").Call(

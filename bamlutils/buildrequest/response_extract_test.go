@@ -986,15 +986,17 @@ func TestExtractResponseContent_GeminiIncludeReasoning(t *testing.T) {
 //
 //   - parseable always reflects only message.content. Reasoning content
 //     never enters parseable so the BAML parser cannot be influenced.
-//   - raw mirrors parseable when includeReasoning is false; when true, raw
-//     additionally surfaces message.reasoning_content appended after content.
+//   - raw mirrors parseable in all states — raw is text-only by
+//     construction and never carries message.reasoning_content.
+//   - reasoning surfaces message.reasoning_content only when
+//     includeReasoning is true; otherwise empty.
 //   - Non-string reasoning_content is silently skipped under both flag
 //     values, matching the defensive pattern used elsewhere for optional
 //     reasoning surfaces. reasoning_content is telemetry — its presence
 //     does not change content's strict error semantics.
 //
-// Parseable invariance across the includeReasoning flag is asserted for
-// every fixture × provider; raw equality across the flag is intentionally
+// Parseable and raw invariance across the includeReasoning flag is
+// asserted for every fixture × provider; reasoning is intentionally
 // allowed to diverge.
 func TestExtractResponseContent_OpenAIReasoningContent(t *testing.T) {
 	cases := []struct {
@@ -1122,25 +1124,25 @@ func TestExtractResponseContent_OpenAIReasoningContentMissingContent(t *testing.
 }
 
 // TestExtractResponseContent_OpenAIResponsesReasoningSummary asserts the
-// Phase 5 dual-output behavior for the OpenAI Responses API non-streaming
+// three-channel behavior for the OpenAI Responses API non-streaming
 // branch (provider key "openai-responses"):
 //
 //   - parseable always reflects only message output_text. Reasoning summary
 //     surfaces never enter parseable so the BAML parser cannot be influenced.
-//   - raw mirrors parseable when includeReasoning is false; when true, raw
-//     additionally surfaces reasoning items' summary[].text entries written
-//     into raw at the position they appear in output[]. Output-array order
-//     is preserved (no canonical reorder).
+//   - raw mirrors parseable in all states — raw is text-only by construction
+//     and never carries reasoning summaries.
+//   - reasoning surfaces reasoning items' summary[].text entries only when
+//     includeReasoning is true, concatenated in output[]/summary[] order.
+//     Output-array order is preserved (no canonical reorder).
 //   - Reasoning summary shape is treated as optional telemetry: non-array
 //     summary, non-object entries, missing text, and non-string text are all
 //     silently skipped — they never produce errors.
 //   - The strict no-message-item contract is preserved: a reasoning-only
 //     response (no message item) still errors regardless of the flag.
 //
-// Parseable invariance across the includeReasoning flag is asserted for every
-// successful fixture; rawOff equality with parseable is also asserted (when
-// flag is off, raw must mirror parseable byte-for-byte). rawOn equality is
-// intentionally allowed to diverge — that is the whole point of opt-in.
+// Parseable and raw invariance across the includeReasoning flag is asserted
+// for every successful fixture (raw must equal parseable byte-for-byte under
+// both flag values). Reasoning is intentionally allowed to diverge.
 //
 // OpenAI's underlying reasoning chain-of-thought is server-encrypted for
 // o1/o3-style models. We only surface the human-readable summaries OpenAI

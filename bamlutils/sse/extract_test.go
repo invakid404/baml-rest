@@ -826,21 +826,24 @@ func TestExtractDeltaPartsFromText_GeminiIncludeReasoning(t *testing.T) {
 	}
 }
 
-// TestExtractDeltaPartsFromText_OpenAIReasoningContent asserts the Phase 4
-// dual-output behavior for the OpenAI-compatible Chat Completions streaming
-// branch (openai, openai-generic, azure-openai, ollama, openrouter):
+// TestExtractDeltaPartsFromText_OpenAIReasoningContent asserts the
+// three-channel behavior for the OpenAI-compatible Chat Completions
+// streaming branch (openai, openai-generic, azure-openai, ollama,
+// openrouter):
 //
 //   - Parseable always reflects only delta.content (text-only, fed to the
 //     BAML parser via ParseStream).
-//   - Raw mirrors Parseable when includeReasoning is false; when true, Raw
-//     additionally surfaces delta.reasoning_content appended after content.
+//   - Raw mirrors Parseable in all states — raw is text-only by
+//     construction and never carries reasoning_content.
+//   - Reasoning surfaces delta.reasoning_content only when
+//     includeReasoning is true; otherwise empty.
 //   - Non-string reasoning_content is silently skipped under both flag
 //     values, matching the forgiving streaming semantics for optional
 //     reasoning surfaces.
 //
-// Parseable invariance across the includeReasoning flag is asserted for
-// every fixture × provider; Raw equality across the flag is intentionally
-// NOT asserted, because the whole point of opt-in is that Raw diverges.
+// Parseable and Raw invariance across the includeReasoning flag is
+// asserted for every fixture × provider; Reasoning is intentionally
+// allowed to diverge.
 func TestExtractDeltaPartsFromText_OpenAIReasoningContent(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -1026,14 +1029,15 @@ func TestIncrementalExtractor_GeminiThinking_ParseableInvariant(t *testing.T) {
 	}
 }
 
-// TestExtractDeltaPartsFromText_OpenAIResponsesReasoningSummary asserts the
-// Phase 5 dual-output behavior for the OpenAI Responses API (`/v1/responses`)
-// streaming branch (provider key "openai-responses"):
+// TestExtractDeltaPartsFromText_OpenAIResponsesReasoningSummary asserts
+// the three-channel behavior for the OpenAI Responses API
+// (`/v1/responses`) streaming branch (provider key "openai-responses"):
 //
 //   - response.output_text.delta contributes to both Parseable and Raw
 //     regardless of includeReasoning (text-only message stream).
-//   - response.reasoning_summary_text.delta contributes to Raw only, and
-//     only when includeReasoning is true. Parseable always stays empty.
+//   - response.reasoning_summary_text.delta contributes to Reasoning only,
+//     and only when includeReasoning is true. Parseable and Raw always
+//     stay empty for reasoning events (raw is text-only by construction).
 //   - Non-string delta on a reasoning_summary_text.delta event is silently
 //     skipped under opt-in (defensive gjson.String guard).
 //   - response.reasoning_summary_part.added is a bracket/setup event and
@@ -1043,9 +1047,9 @@ func TestIncrementalExtractor_GeminiThinking_ParseableInvariant(t *testing.T) {
 //     extractor would duplicate text already emitted by the deltas (mirrors
 //     the existing response.output_text.done treatment).
 //
-// Parseable invariance across the includeReasoning flag is asserted for
-// every fixture; Raw equality across the flag is intentionally NOT
-// asserted, because the whole point of opt-in is that Raw diverges.
+// Parseable and Raw invariance across the includeReasoning flag is
+// asserted for every fixture; Reasoning is intentionally allowed to
+// diverge.
 func TestExtractDeltaPartsFromText_OpenAIResponsesReasoningSummary(t *testing.T) {
 	cases := []struct {
 		name        string
