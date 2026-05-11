@@ -55,8 +55,9 @@ var PluginMap = map[string]plugin.Plugin{
 
 // CallResult represents the result of a BAML method call
 type CallResult struct {
-	Data []byte // JSON-encoded result
-	Raw  string // Raw LLM response
+	Data      []byte // JSON-encoded result
+	Raw       string // Raw LLM response, text-only by construction
+	Reasoning string // Provider-specific reasoning/thinking text; empty unless __baml_options__.include_reasoning is true
 	// Planned and Outcome carry routing/retry metadata for the request.
 	// Both BuildRequest and legacy paths now synthesize planned + outcome
 	// events, so the bytes are typically populated for any successful call;
@@ -137,7 +138,8 @@ func NewErrorWithMetadata(err error, stacktrace, code string, details []byte) er
 type StreamResult struct {
 	Kind       StreamResultKind
 	Data       []byte // JSON-encoded data
-	Raw        string // Raw LLM response (populated on Final)
+	Raw        string // Raw LLM response, text-only by construction (populated on Stream/Final)
+	Reasoning  string // Provider-specific reasoning/thinking text; empty unless __baml_options__.include_reasoning is true
 	Error      error  // Error (populated on Error kind)
 	Stacktrace string // Stacktrace (populated on Error kind, when available)
 	Reset      bool   // When true, client should discard accumulated state (retry occurred)

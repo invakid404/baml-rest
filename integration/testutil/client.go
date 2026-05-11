@@ -140,11 +140,11 @@ type CallRequest struct {
 type BAMLOptions struct {
 	ClientRegistry *ClientRegistry `json:"client_registry,omitempty"`
 	TypeBuilder    *TypeBuilder    `json:"type_builder,omitempty"`
-	// IncludeThinkingInRaw mirrors bamlutils.BamlOptions.IncludeThinkingInRaw.
-	// Default false matches BAML's RawLLMResponse() text-only contract; set
-	// true to opt the request into surfacing provider-specific reasoning
-	// content (e.g. Anthropic thinking blocks) in /with-raw's `raw` field.
-	IncludeThinkingInRaw bool `json:"include_thinking_in_raw,omitempty"`
+	// IncludeReasoning mirrors bamlutils.BamlOptions.IncludeReasoning.
+	// Default false leaves /with-raw's `reasoning` field empty; set true
+	// to opt the request into surfacing provider-specific reasoning text
+	// (e.g. Anthropic thinking blocks) on that dedicated channel.
+	IncludeReasoning bool `json:"include_reasoning,omitempty"`
 }
 
 // ClientRegistry allows overriding client configuration.
@@ -260,6 +260,7 @@ type CallWithRawResponse struct {
 	Headers    http.Header     // Response headers — used for X-BAML-* assertions
 	Data       json.RawMessage `json:"data"`
 	Raw        string          `json:"raw"`
+	Reasoning  string          `json:"reasoning,omitempty"`
 	Error      string
 }
 
@@ -321,9 +322,10 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 
 // StreamEvent represents a single event from /stream endpoints (works for both SSE and NDJSON).
 type StreamEvent struct {
-	Event string          // Event type: "data", "final", "reset", "error" for NDJSON; "" for SSE data, "final"/"reset"/"error" for SSE
-	Data  json.RawMessage // Event data
-	Raw   string          // For stream-with-raw, the raw LLM output at this point
+	Event     string          // Event type: "data", "final", "reset", "error" for NDJSON; "" for SSE data, "final"/"reset"/"error" for SSE
+	Data      json.RawMessage // Event data
+	Raw       string          // For stream-with-raw, the raw LLM output at this point
+	Reasoning string          // For stream-with-raw with __baml_options__.include_reasoning, the reasoning text at this point
 }
 
 // IsPartialData returns true if this is a partial data event (type: "data").
@@ -834,8 +836,19 @@ func buildRequestBody(input map[string]any, opts *BAMLOptions) ([]byte, error) {
 	return json.Marshal(body)
 }
 
-func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expectRawEnvelope bool) error {
+// newStreamScanner returns a bufio.Scanner configured with a 2 MiB max
+// token size (vs bufio's 64 KiB default) so a single SSE/NDJSON frame
+// carrying large reasoning text doesn't blow up the test client with
+// `bufio.Scanner: token too long`. Frames exceeding 2 MiB still fail
+// loudly through the scanner's error path — no silent truncation.
+func newStreamScanner(r io.Reader) *bufio.Scanner {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	return scanner
+}
+
+func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expectRawEnvelope bool) error {
+	scanner := newStreamScanner(r)
 	var currentEvent StreamEvent
 	var dataBuffer bytes.Buffer
 
@@ -857,11 +870,13 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expec
 		// from raw-absent.
 		if expectRawEnvelope {
 			var rawData struct {
-				Data json.RawMessage `json:"data"`
-				Raw  *string         `json:"raw"`
+				Data      json.RawMessage `json:"data"`
+				Raw       *string         `json:"raw"`
+				Reasoning string          `json:"reasoning,omitempty"`
 			}
 			if err := json.Unmarshal(data, &rawData); err == nil && rawData.Raw != nil {
 				currentEvent.Raw = *rawData.Raw
+				currentEvent.Reasoning = rawData.Reasoning
 				// rawData.Data is already a freshly-allocated copy via
 				// json.RawMessage's UnmarshalJSON, so no extra copy needed.
 				currentEvent.Data = rawData.Data
@@ -913,14 +928,15 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expec
 
 // ndjsonEvent represents a single NDJSON streaming event from the server.
 type ndjsonEvent struct {
-	Type  string          `json:"type"`
-	Data  json.RawMessage `json:"data,omitempty"`
-	Raw   string          `json:"raw,omitempty"`
-	Error string          `json:"error,omitempty"`
+	Type      string          `json:"type"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	Raw       string          `json:"raw,omitempty"`
+	Reasoning string          `json:"reasoning,omitempty"`
+	Error     string          `json:"error,omitempty"`
 }
 
 func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) error {
-	scanner := bufio.NewScanner(r)
+	scanner := newStreamScanner(r)
 
 	for scanner.Scan() {
 		select {
@@ -944,9 +960,10 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 		}
 
 		streamEvent := StreamEvent{
-			Event: event.Type,
-			Data:  event.Data,
-			Raw:   event.Raw,
+			Event:     event.Type,
+			Data:      event.Data,
+			Raw:       event.Raw,
+			Reasoning: event.Reasoning,
 		}
 
 		// For error events, store the error message in Data
@@ -1116,6 +1133,7 @@ type DynamicCallWithRawResponse struct {
 	StatusCode int
 	Data       json.RawMessage `json:"data"`
 	Raw        string          `json:"raw"`
+	Reasoning  string          `json:"reasoning,omitempty"`
 	Error      string
 }
 

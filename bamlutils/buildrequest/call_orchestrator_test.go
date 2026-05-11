@@ -611,8 +611,9 @@ func TestRunCallOrchestration_Anthropic(t *testing.T) {
 }
 
 func TestRunCallOrchestration_AnthropicThinkingSplit_Default(t *testing.T) {
-	// Default (IncludeThinkingInRaw=false, BAML-aligned): both parseable and
-	// raw exclude thinking. parseFinal receives text only; Raw() returns text.
+	// Default (IncludeReasoning=false, BAML-aligned): parseable and raw
+	// exclude thinking, reasoning is empty. parseFinal receives text only;
+	// Raw() returns text; Reasoning() returns empty.
 	body := `{"content":[{"type":"thinking","thinking":"Step 1: reason..."},{"type":"text","text":"The answer is 42"}],"stop_reason":"end_turn"}`
 	server := makeJSONServer(200, body)
 	defer server.Close()
@@ -621,9 +622,9 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_Default(t *testing.T) {
 	out := make(chan bamlutils.StreamResult, 100)
 
 	config := &CallConfig{
-		Provider:             "anthropic",
-		NeedsRaw:             true,
-		IncludeThinkingInRaw: false,
+		Provider:         "anthropic",
+		NeedsRaw:         true,
+		IncludeReasoning: false,
 	}
 
 	var parseFinalInput string
@@ -664,6 +665,9 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_Default(t *testing.T) {
 			if r.Raw() != expectedRaw {
 				t.Errorf("Raw() = %q, expected %q (thinking should be dropped under default flag)", r.Raw(), expectedRaw)
 			}
+			if r.Reasoning() != "" {
+				t.Errorf("Reasoning() = %q, expected empty (flag off)", r.Reasoning())
+			}
 			if r.Final() != "The answer is 42" {
 				t.Errorf("Final() = %v, expected 'The answer is 42'", r.Final())
 			}
@@ -677,8 +681,9 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_Default(t *testing.T) {
 }
 
 func TestRunCallOrchestration_AnthropicThinkingSplit_OptIn(t *testing.T) {
-	// Opt-in (IncludeThinkingInRaw=true): parseable still excludes thinking
-	// (the BAML parser must never see it), Raw() includes thinking + text.
+	// Opt-in (IncludeReasoning=true): parseable and raw still exclude
+	// thinking (raw is text-only by construction); Reasoning() carries the
+	// thinking text on its dedicated channel.
 	body := `{"content":[{"type":"thinking","thinking":"Step 1: reason..."},{"type":"text","text":"The answer is 42"}],"stop_reason":"end_turn"}`
 	server := makeJSONServer(200, body)
 	defer server.Close()
@@ -687,9 +692,9 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_OptIn(t *testing.T) {
 	out := make(chan bamlutils.StreamResult, 100)
 
 	config := &CallConfig{
-		Provider:             "anthropic",
-		NeedsRaw:             true,
-		IncludeThinkingInRaw: true,
+		Provider:         "anthropic",
+		NeedsRaw:         true,
+		IncludeReasoning: true,
 	}
 
 	var parseFinalInput string
@@ -727,9 +732,13 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_OptIn(t *testing.T) {
 		switch r.Kind() {
 		case bamlutils.StreamResultKindFinal:
 			finals++
-			expectedRaw := "Step 1: reason...The answer is 42"
+			expectedRaw := "The answer is 42"
 			if r.Raw() != expectedRaw {
-				t.Errorf("Raw() = %q, expected %q (thinking + text)", r.Raw(), expectedRaw)
+				t.Errorf("Raw() = %q, expected %q (raw is text-only regardless of flag)", r.Raw(), expectedRaw)
+			}
+			expectedReasoning := "Step 1: reason..."
+			if r.Reasoning() != expectedReasoning {
+				t.Errorf("Reasoning() = %q, expected %q", r.Reasoning(), expectedReasoning)
 			}
 			if r.Final() != "The answer is 42" {
 				t.Errorf("Final() = %v, expected 'The answer is 42'", r.Final())
@@ -1381,12 +1390,12 @@ func TestRunCallOrchestration_MixedChain_LegacySucceedsSecond(t *testing.T) {
 
 	var legacyCalled atomic.Int32
 	var gotOverride, gotProvider string
-	legacyCallChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+	legacyCallChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
 		legacyCalled.Add(1)
 		gotOverride = clientOverride
 		gotProvider = provider
 		sendHeartbeat()
-		return "legacy call final", "legacy call raw", nil
+		return "legacy call final", "legacy call raw", "", nil
 	}
 
 	config := &CallConfig{
@@ -1455,9 +1464,9 @@ func TestRunCallOrchestration_MixedChain_LegacyFirstFails_SupportedWins(t *testi
 	out := make(chan bamlutils.StreamResult, 100)
 
 	var legacyCalled atomic.Int32
-	legacyCallChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+	legacyCallChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
 		legacyCalled.Add(1)
-		return nil, "", fmt.Errorf("legacy upstream 500")
+		return nil, "", "", fmt.Errorf("legacy upstream 500")
 	}
 
 	config := &CallConfig{
@@ -1557,20 +1566,20 @@ func TestRunCallOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 
 	httpClient := llmhttp.NewClient(supportedServer.Client())
 
-	legacyCallChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+	legacyCallChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
 		if clientOverride != "LegacyChild" {
 			t.Errorf("legacy callback got clientOverride=%q, want LegacyChild", clientOverride)
 		}
 		req := &llmhttp.Request{URL: legacyServer.URL, Method: "POST", Body: `{}`}
 		resp, err := httpClient.Execute(ctx, req, sendHeartbeat)
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 		raw := resp.Body
 		if !needsRaw {
 			raw = ""
 		}
-		return legacyFinal, raw, nil
+		return legacyFinal, raw, "", nil
 	}
 
 	out := make(chan bamlutils.StreamResult, 100)

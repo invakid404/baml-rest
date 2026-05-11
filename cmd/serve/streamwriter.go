@@ -38,13 +38,18 @@ const (
 // Code and Details are populated only on Type=="error" events. Both are
 // omitempty so non-error frames stay compact and existing consumers
 // pinned on {type, data, raw, error} continue to deserialize cleanly.
+//
+// Reasoning is populated only when __baml_options__.include_reasoning is
+// true and the provider produced reasoning/thinking text; omitempty keeps
+// the legacy wire shape byte-identical when the flag is off.
 type NDJSONEvent struct {
-	Type    NDJSONEventType `json:"type"`
-	Data    json.RawMessage `json:"data,omitempty"`
-	Raw     string          `json:"raw,omitempty"`
-	Error   string          `json:"error,omitempty"`
-	Code    apierror.Code   `json:"code,omitempty"`
-	Details json.RawMessage `json:"details,omitempty"`
+	Type      NDJSONEventType `json:"type"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	Raw       string          `json:"raw,omitempty"`
+	Reasoning string          `json:"reasoning,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	Code      apierror.Code   `json:"code,omitempty"`
+	Details   json.RawMessage `json:"details,omitempty"`
 }
 
 // NDJSONStreamWriterPublisher implements StreamPublisher for native Fiber streaming.
@@ -124,18 +129,24 @@ func (p *NDJSONStreamWriterPublisher) startKeepalive(ctx context.Context, interv
 	}()
 }
 
-func (p *NDJSONStreamWriterPublisher) PublishData(data []byte, raw string) error {
+func (p *NDJSONStreamWriterPublisher) PublishData(data []byte, raw, reasoning string) error {
 	event := &NDJSONEvent{Type: NDJSONEventData, Data: data}
 	if raw != "" {
 		event.Raw = raw
 	}
+	if reasoning != "" {
+		event.Reasoning = reasoning
+	}
 	return p.writeEvent(event)
 }
 
-func (p *NDJSONStreamWriterPublisher) PublishFinal(data []byte, raw string) error {
+func (p *NDJSONStreamWriterPublisher) PublishFinal(data []byte, raw, reasoning string) error {
 	event := &NDJSONEvent{Type: NDJSONEventFinal, Data: data}
 	if raw != "" {
 		event.Raw = raw
+	}
+	if reasoning != "" {
+		event.Reasoning = reasoning
 	}
 	return p.writeEvent(event)
 }
@@ -226,11 +237,13 @@ func classifyStreamResultError(result *workerplugin.StreamResult) (apierror.Code
 // StreamPublisher is the unified interface for publishing stream events.
 // Both SSE and NDJSON implementations use this interface.
 type StreamPublisher interface {
-	// PublishData sends a partial data event with parsed data and optional raw response.
-	// Partial events may have null values for fields not yet parsed.
-	PublishData(data []byte, raw string) error
-	// PublishFinal sends the final data event with the complete, validated result.
-	PublishFinal(data []byte, raw string) error
+	// PublishData sends a partial data event with parsed data, optional raw
+	// response, and optional reasoning text. Partial events may have null
+	// values for fields not yet parsed.
+	PublishData(data []byte, raw, reasoning string) error
+	// PublishFinal sends the final data event with the complete, validated
+	// result, plus optional raw + reasoning.
+	PublishFinal(data []byte, raw, reasoning string) error
 	// PublishReset sends a reset event indicating client should discard state.
 	PublishReset() error
 	// PublishError sends an error event. code and details may be empty/nil
@@ -356,12 +369,12 @@ func (p *SSEStreamWriterPublisher) startKeepalive(ctx context.Context, interval 
 	}()
 }
 
-func (p *SSEStreamWriterPublisher) formatPayload(data []byte, raw string) (string, error) {
+func (p *SSEStreamWriterPublisher) formatPayload(data []byte, raw, reasoning string) (string, error) {
 	if !p.needsRaw {
 		return unsafeutil.BytesToString(data), nil
 	}
 
-	wrapped, err := json.Marshal(CallWithRawResponse{Data: data, Raw: raw})
+	wrapped, err := json.Marshal(CallWithRawResponse{Data: data, Raw: raw, Reasoning: reasoning})
 	if err != nil {
 		return "", err
 	}
@@ -369,8 +382,8 @@ func (p *SSEStreamWriterPublisher) formatPayload(data []byte, raw string) (strin
 	return unsafeutil.BytesToString(wrapped), nil
 }
 
-func (p *SSEStreamWriterPublisher) PublishData(data []byte, raw string) error {
-	payload, err := p.formatPayload(data, raw)
+func (p *SSEStreamWriterPublisher) PublishData(data []byte, raw, reasoning string) error {
+	payload, err := p.formatPayload(data, raw, reasoning)
 	if err != nil {
 		p.cancel()
 		return err
@@ -379,8 +392,8 @@ func (p *SSEStreamWriterPublisher) PublishData(data []byte, raw string) error {
 	return p.writeEvent("", payload)
 }
 
-func (p *SSEStreamWriterPublisher) PublishFinal(data []byte, raw string) error {
-	payload, err := p.formatPayload(data, raw)
+func (p *SSEStreamWriterPublisher) PublishFinal(data []byte, raw, reasoning string) error {
+	payload, err := p.formatPayload(data, raw, reasoning)
 	if err != nil {
 		p.cancel()
 		return err
@@ -468,8 +481,11 @@ func consumeStream(
 	streamMode bamlutils.StreamMode,
 	flattenDynamic bool,
 ) {
-	// Accumulate raw deltas for output (internal gRPC sends deltas to save bandwidth)
+	// Accumulate raw + reasoning deltas for output (internal gRPC sends
+	// deltas to save bandwidth). Reasoning accumulates in lockstep with
+	// raw, including the reset-clears-both contract below.
 	var accumulatedRaw strings.Builder
+	var accumulatedReasoning strings.Builder
 
 	for result := range results {
 		switch result.Kind {
@@ -491,6 +507,7 @@ func consumeStream(
 			// accumulated state first, then see the new routing decision.
 			if result.Reset {
 				accumulatedRaw.Reset()
+				accumulatedReasoning.Reset()
 				if err := publisher.PublishReset(); err != nil {
 					workerplugin.ReleaseStreamResult(result)
 					drainResults(results)
@@ -509,6 +526,7 @@ func consumeStream(
 			// Handle reset signal (retry occurred)
 			if result.Reset {
 				accumulatedRaw.Reset()
+				accumulatedReasoning.Reset()
 				if err := publisher.PublishReset(); err != nil {
 					workerplugin.ReleaseStreamResult(result)
 					drainResults(results)
@@ -516,18 +534,20 @@ func consumeStream(
 				}
 				// Reset-only events carry no stream payload and should not also
 				// publish a bogus data frame (for example JSON null).
-				if len(result.Data) == 0 && result.Raw == "" {
+				if len(result.Data) == 0 && result.Raw == "" && result.Reasoning == "" {
 					workerplugin.ReleaseStreamResult(result)
 					continue
 				}
 			}
 
-			// Determine raw output for this event
-			var rawForOutput string
+			// Determine raw + reasoning output for this event
+			var rawForOutput, reasoningForOutput string
 			if streamMode.NeedsRaw() {
-				// Accumulate delta into full raw response
+				// Accumulate deltas into full raw + reasoning response
 				accumulatedRaw.WriteString(result.Raw)
+				accumulatedReasoning.WriteString(result.Reasoning)
 				rawForOutput = accumulatedRaw.String()
+				reasoningForOutput = accumulatedReasoning.String()
 			}
 
 			// Flatten DynamicProperties for dynamic endpoints
@@ -539,7 +559,7 @@ func consumeStream(
 			}
 
 			// Publish partial data event (may have null placeholders for unparsed fields)
-			if err := publisher.PublishData(data, rawForOutput); err != nil {
+			if err := publisher.PublishData(data, rawForOutput, reasoningForOutput); err != nil {
 				workerplugin.ReleaseStreamResult(result)
 				drainResults(results)
 				return
@@ -549,6 +569,7 @@ func consumeStream(
 			// Handle reset signal (retry occurred) - unlikely but possible
 			if result.Reset {
 				accumulatedRaw.Reset()
+				accumulatedReasoning.Reset()
 				if err := publisher.PublishReset(); err != nil {
 					workerplugin.ReleaseStreamResult(result)
 					drainResults(results)
@@ -556,11 +577,12 @@ func consumeStream(
 				}
 			}
 
-			// Determine raw output for final event
-			var rawForOutput string
+			// Determine raw + reasoning output for final event
+			var rawForOutput, reasoningForOutput string
 			if streamMode.NeedsRaw() {
-				// Final contains full raw
+				// Final contains full raw + reasoning
 				rawForOutput = result.Raw
+				reasoningForOutput = result.Reasoning
 			}
 
 			// Flatten DynamicProperties for dynamic endpoints
@@ -572,7 +594,7 @@ func consumeStream(
 			}
 
 			// Publish final data event (complete, validated result)
-			if err := publisher.PublishFinal(data, rawForOutput); err != nil {
+			if err := publisher.PublishFinal(data, rawForOutput, reasoningForOutput); err != nil {
 				workerplugin.ReleaseStreamResult(result)
 				drainResults(results)
 				return

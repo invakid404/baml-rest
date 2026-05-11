@@ -116,12 +116,13 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("retryConfig holds per-request retry overrides from __baml_options__.retry."),
 		jen.Id("retryConfig").Op("*").Qual(bamlutilsPkg, "RetryConfig"),
 		jen.Line(),
-		jen.Comment("includeThinkingInRaw is the per-request opt-in for surfacing"),
-		jen.Comment("provider-specific reasoning/thinking content in /with-raw's raw"),
-		jen.Comment("field. Mirrors __baml_options__.include_thinking_in_raw and is"),
-		jen.Comment("honored by the SSE/non-streaming extractors. Never affects the"),
-		jen.Comment("parseable text passed to Parse/ParseStream."),
-		jen.Id("includeThinkingInRaw").Bool(),
+		jen.Comment("includeReasoning is the per-request opt-in for surfacing"),
+		jen.Comment("provider-specific reasoning/thinking text on /with-raw's"),
+		jen.Comment("reasoning field, distinct from raw (which stays text-only)."),
+		jen.Comment("Mirrors __baml_options__.include_reasoning and is honored by"),
+		jen.Comment("the SSE/non-streaming extractors. Never affects the parseable"),
+		jen.Comment("text passed to Parse/ParseStream."),
+		jen.Id("includeReasoning").Bool(),
 		jen.Line(),
 		jen.Comment("clientRegistryProvider is the provider of the primary client from"),
 		jen.Comment("the runtime ClientRegistry override. Empty if no override."),
@@ -165,7 +166,7 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 	out.Type().Id("BamlAdapter").Struct(structFields...)
 
 	emitFrameworkAdapterRetryConfig(out, bamlutilsPkg)
-	emitFrameworkAdapterIncludeThinkingInRaw(out)
+	emitFrameworkAdapterIncludeReasoning(out)
 	emitFrameworkAdapterSetClientRegistry(out, opts, bamlPkg, bamlutilsPkg)
 	emitFrameworkAdapterClientRegistryProvider(out)
 	emitFrameworkAdapterOriginalClientRegistry(out, bamlutilsPkg)
@@ -196,17 +197,17 @@ func emitFrameworkAdapterRetryConfig(out *jen.File, bamlutilsPkg string) {
 		)
 }
 
-func emitFrameworkAdapterIncludeThinkingInRaw(out *jen.File) {
+func emitFrameworkAdapterIncludeReasoning(out *jen.File) {
 	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
-		Id("SetIncludeThinkingInRaw").Params(jen.Id("includeThinking").Bool()).
+		Id("SetIncludeReasoning").Params(jen.Id("includeReasoning").Bool()).
 		Block(
-			jen.Id("b").Dot("includeThinkingInRaw").Op("=").Id("includeThinking"),
+			jen.Id("b").Dot("includeReasoning").Op("=").Id("includeReasoning"),
 		)
 
 	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
-		Id("IncludeThinkingInRaw").Params().Bool().
+		Id("IncludeReasoning").Params().Bool().
 		Block(
-			jen.Return(jen.Id("b").Dot("includeThinkingInRaw")),
+			jen.Return(jen.Id("b").Dot("includeReasoning")),
 		)
 }
 

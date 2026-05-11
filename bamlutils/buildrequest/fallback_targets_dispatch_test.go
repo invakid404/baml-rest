@@ -162,12 +162,12 @@ func TestRunStreamOrchestration_FallbackTargets_LegacyChildStaysAtWrapper(t *tes
 		legacyProvider string
 	)
 	legacyCalled := atomic.Int32{}
-	legacyFn := func(_ context.Context, clientOverride, provider string, _ bool, sendHeartbeat func()) (any, string, error) {
+	legacyFn := func(_ context.Context, clientOverride, provider string, _ bool, sendHeartbeat func()) (any, string, string, error) {
 		legacyCalled.Add(1)
 		legacyOverride = clientOverride
 		legacyProvider = provider
 		sendHeartbeat()
-		return "legacy ok", "", nil
+		return "legacy ok", "", "", nil
 	}
 
 	config := &StreamConfig{
@@ -257,7 +257,7 @@ func TestRunCallOrchestration_FallbackTargets_RoutesBuildRequestToLeaf(t *testin
 		context.Background(), out, config, client,
 		buildFn,
 		func(_ context.Context, s string) (any, error) { return s, nil },
-		func(_ string, body string, _ bool) (string, string, error) { return body, body, nil },
+		func(_ string, body string, _ bool) (string, string, string, error) { return body, body, "", nil },
 		newTestResult,
 	)
 	close(out)

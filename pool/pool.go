@@ -1351,10 +1351,11 @@ func (p *Pool) Call(ctx context.Context, methodName string, inputJSON []byte, st
 			return metadataOnlyCallResult(plannedMetadata, outcomeMetadata), err
 		case workerplugin.StreamResultKindFinal:
 			callResult := &workerplugin.CallResult{
-				Data:    result.Data,
-				Raw:     result.Raw,
-				Planned: plannedMetadata,
-				Outcome: outcomeMetadata,
+				Data:      result.Data,
+				Raw:       result.Raw,
+				Reasoning: result.Reasoning,
+				Planned:   plannedMetadata,
+				Outcome:   outcomeMetadata,
 			}
 			workerplugin.ReleaseStreamResult(result)
 			return callResult, nil

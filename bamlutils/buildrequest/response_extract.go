@@ -17,64 +17,64 @@ import (
 // JSON response body. Each provider returns a different JSON structure for
 // non-streaming completions.
 //
-// Returns two strings:
-//   - parseable: the text that should be passed to Parse.Method(). For
-//     all providers this is text-only — reasoning/thinking content is
-//     never accumulated into parseable so the BAML parser cannot be
-//     influenced by reasoning text.
-//   - raw: the text used for /call-with-raw's Raw() field. By default
-//     equals parseable (matches BAML's RawLLMResponse() text-only
-//     contract). When includeThinking is true, raw additionally carries
-//     provider-specific reasoning content (Anthropic thinking blocks,
-//     Gemini thought-tagged parts, OpenAI Chat Completions
-//     reasoning_content, OpenAI Responses reasoning summary[].text
-//     entries from output[].type == "reasoning" items).
+// Returns three strings:
+//   - parseable: text content fed to Parse.Method(). For all providers
+//     this is text-only — reasoning/thinking content is never
+//     accumulated into parseable so the BAML parser cannot be influenced
+//     by reasoning text.
+//   - raw: the text used for /call-with-raw's Raw() field. Also text-only
+//     by construction; matches parseable for the providers handled here.
+//   - reasoning: provider-specific reasoning text (Anthropic thinking
+//     blocks, Gemini thought-tagged parts, OpenAI Chat Completions
+//     reasoning_content, OpenAI Responses summary[].text entries from
+//     output[].type == "reasoning" items). Populated only when
+//     includeReasoning is true; empty otherwise.
 //
 // Returns an error for unsupported providers, empty bodies, invalid JSON,
 // and when a non-empty response body does not contain the expected structure.
-func ExtractResponseContent(provider string, responseBody string, includeThinking bool) (parseable, raw string, err error) {
+func ExtractResponseContent(provider string, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
 	// An LLM provider should never return a valid 200 with an empty body.
 	if strings.TrimSpace(responseBody) == "" {
-		return "", "", fmt.Errorf("provider %s: empty response body", provider)
+		return "", "", "", fmt.Errorf("provider %s: empty response body", provider)
 	}
 
 	// Validate JSON before provider-specific extraction. gjson is lenient
 	// and will return fields from truncated payloads or bodies with trailing
 	// garbage, which could produce false-success on corrupted 200 responses.
 	if !gjson.Valid(responseBody) {
-		return "", "", fmt.Errorf("provider %s: response body is not valid JSON", provider)
+		return "", "", "", fmt.Errorf("provider %s: response body is not valid JSON", provider)
 	}
 
 	switch provider {
 	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter":
-		return extractOpenAIContent(provider, responseBody, includeThinking)
+		return extractOpenAIContent(provider, responseBody, includeReasoning)
 
 	case "anthropic":
-		return extractAnthropicContent(provider, responseBody, includeThinking)
+		return extractAnthropicContent(provider, responseBody, includeReasoning)
 
 	case "openai-responses":
-		return extractOpenAIResponsesContent(provider, responseBody, includeThinking)
+		return extractOpenAIResponsesContent(provider, responseBody, includeReasoning)
 
 	case "google-ai", "vertex-ai":
-		return extractGeminiContent(provider, responseBody, includeThinking)
+		return extractGeminiContent(provider, responseBody, includeReasoning)
 
 	default:
-		return "", "", fmt.Errorf("unsupported provider for non-streaming extraction: %s", provider)
+		return "", "", "", fmt.Errorf("unsupported provider for non-streaming extraction: %s", provider)
 	}
 }
 
 // extractOpenAIContent extracts text from an OpenAI Chat Completions
 // non-streaming response.
 //
-// Returns two strings:
+// Returns:
 //   - parseable: text content only — message.content (scalar string, array
 //     text parts, or explicit null). Reasoning content never enters this
-//     value, so the BAML parser cannot be influenced by reasoning text.
-//   - raw: text content always; when includeThinking is true, additionally
-//     carries message.reasoning_content (the de-facto reasoning surface for
-//     DeepSeek-R1 and several OAI-compat gateways) appended after content.
-//     Non-string reasoning_content is silently skipped, matching the
-//     defensive pattern used elsewhere for optional reasoning surfaces.
+//     value.
+//   - raw: same as parseable (text-only by construction).
+//   - reasoning: message.reasoning_content when includeReasoning is true
+//     (the de-facto reasoning surface for DeepSeek-R1 and several
+//     OAI-compat gateways). Non-string reasoning_content is silently
+//     skipped.
 //
 // Handles:
 //   - Scalar string content (common case)
@@ -85,16 +85,16 @@ func ExtractResponseContent(provider string, responseBody string, includeThinkin
 // Returns an error for refusals, missing/malformed content, and non-object
 // array elements. reasoning_content is telemetry — its presence does not
 // change content's strict error semantics.
-func extractOpenAIContent(provider, responseBody string, includeThinking bool) (parseable, raw string, err error) {
-	appendReasoning := func(parseable string) string {
-		if !includeThinking {
-			return parseable
+func extractOpenAIContent(provider, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+	extractReasoning := func() string {
+		if !includeReasoning {
+			return ""
 		}
-		reasoning := gjson.Get(responseBody, "choices.0.message.reasoning_content")
-		if reasoning.Type != gjson.String {
-			return parseable
+		r := gjson.Get(responseBody, "choices.0.message.reasoning_content")
+		if r.Type != gjson.String {
+			return ""
 		}
-		return parseable + reasoning.String()
+		return r.String()
 	}
 
 	// Check for refusal first. OpenAI returns refusals either as a
@@ -107,7 +107,7 @@ func extractOpenAIContent(provider, responseBody string, includeThinking bool) (
 		if refusal.Type == gjson.String && refusal.String() != "" {
 			refusalText = refusal.String()
 		}
-		return "", "", fmt.Errorf("%s: model refused request: %s", provider, refusalText)
+		return "", "", "", fmt.Errorf("%s: model refused request: %s", provider, refusalText)
 	}
 
 	content := gjson.Get(responseBody, "choices.0.message.content")
@@ -115,7 +115,7 @@ func extractOpenAIContent(provider, responseBody string, includeThinking bool) (
 	// Scalar string — the common case
 	if content.Type == gjson.String {
 		text := content.String()
-		return text, appendReasoning(text), nil
+		return text, text, extractReasoning(), nil
 	}
 
 	// Array of content parts
@@ -159,44 +159,39 @@ func extractOpenAIContent(provider, responseBody string, includeThinking bool) (
 			return true
 		})
 		if iterErr != nil {
-			return "", "", iterErr
+			return "", "", "", iterErr
 		}
 		text := sb.String()
-		return text, appendReasoning(text), nil
+		return text, text, extractReasoning(), nil
 	}
 
 	// Explicitly null content (e.g. function-call-only responses) — valid.
 	if content.Exists() && content.Type == gjson.Null {
-		return "", appendReasoning(""), nil
+		return "", "", extractReasoning(), nil
 	}
 
 	if content.Exists() {
-		return "", "", fmt.Errorf("%s: unexpected content type in response (got %s)", provider, content.Type)
+		return "", "", "", fmt.Errorf("%s: unexpected content type in response (got %s)", provider, content.Type)
 	}
 
-	return "", "", fmt.Errorf("%s: could not extract text content from response (choices[0].message.content not found)", provider)
+	return "", "", "", fmt.Errorf("%s: could not extract text content from response (choices[0].message.content not found)", provider)
 }
 
 // extractAnthropicContent extracts text from an Anthropic Messages API
 // non-streaming response.
 //
-// Returns two strings:
+// Returns:
 //   - parseable: only "text" blocks (the final answer), suitable for
-//     Parse.Method. Thinking blocks are never accumulated here — by
-//     construction — so the BAML parser cannot be influenced by
-//     reasoning text regardless of the includeThinking flag.
-//   - raw: "text" blocks always; "thinking" blocks only when
-//     includeThinking is true (the per-request opt-in for surfacing
-//     reasoning content via /call-with-raw's Raw()).
-//
-// The default (includeThinking=false) matches BAML's RawLLMResponse()
-// text-only contract.
-func extractAnthropicContent(provider string, responseBody string, includeThinking bool) (parseable, raw string, err error) {
+//     Parse.Method. Thinking blocks are never accumulated here.
+//   - raw: same as parseable (text-only by construction).
+//   - reasoning: "thinking" blocks' thinking text, only when
+//     includeReasoning is true. Empty otherwise.
+func extractAnthropicContent(provider string, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
 	contentArray := gjson.Get(responseBody, "content")
 
 	if contentArray.IsArray() {
 		var parseableSB strings.Builder
-		var rawSB strings.Builder
+		var reasoningSB strings.Builder
 		var iterErr error
 		contentArray.ForEach(func(_, value gjson.Result) bool {
 			// Reject non-object array elements
@@ -218,53 +213,54 @@ func extractAnthropicContent(provider string, responseBody string, includeThinki
 					return false
 				}
 				parseableSB.WriteString(textField.String())
-				rawSB.WriteString(textField.String())
 			case "thinking":
 				thinkField := value.Get("thinking")
 				if thinkField.Type != gjson.String {
 					iterErr = fmt.Errorf("%s: unexpected type for thinking block (got %s)", provider, thinkField.Type)
 					return false
 				}
-				// Thinking goes to raw only when the caller has opted in;
-				// parseable never receives thinking content.
-				if includeThinking {
-					rawSB.WriteString(thinkField.String())
+				// Thinking populates reasoning only when the caller has
+				// opted in; parseable and raw never receive thinking
+				// content.
+				if includeReasoning {
+					reasoningSB.WriteString(thinkField.String())
 				}
 			}
 			return true
 		})
 		if iterErr != nil {
-			return "", "", iterErr
+			return "", "", "", iterErr
 		}
-		return parseableSB.String(), rawSB.String(), nil
+		text := parseableSB.String()
+		return text, text, reasoningSB.String(), nil
 	}
 
-	return "", "", fmt.Errorf("%s: could not extract text content from response (content array not found)", provider)
+	return "", "", "", fmt.Errorf("%s: could not extract text content from response (content array not found)", provider)
 }
 
 // extractGeminiContent extracts text from a Google AI / Vertex AI (Gemini)
 // non-streaming response.
 //
-// Returns two strings:
+// Returns:
 //   - parseable: only non-thought string text. Thought-tagged parts never
 //     enter parseable — aligned with upstream BAML's text_content_part
 //     filter at
 //     engine/baml-runtime/src/internal/llm_client/primitive/google/response_handler.rs.
-//   - raw: non-thought string text always; thought-tagged parts only when
-//     includeThinking is true (the per-request opt-in for surfacing
-//     reasoning text via /call-with-raw's Raw()).
+//   - raw: same as parseable (text-only by construction).
+//   - reasoning: thought-tagged parts' text, only when includeReasoning
+//     is true. Empty otherwise.
 //
 // Non-thought parts retain the existing strict validation: missing parts,
 // non-object array elements, and non-string text on a non-thought part
 // remain errors. Thought parts are filtered, not validated — non-string
 // text on a thought part is silently skipped, since the part contributes
-// to neither parseable nor (validated) raw output.
-func extractGeminiContent(provider string, responseBody string, includeThinking bool) (parseable, raw string, err error) {
+// to neither parseable nor (validated) reasoning output.
+func extractGeminiContent(provider string, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
 	parts := gjson.Get(responseBody, "candidates.0.content.parts")
 
 	if parts.IsArray() {
 		var parseableSB strings.Builder
-		var rawSB strings.Builder
+		var reasoningSB strings.Builder
 		var iterErr error
 		parts.ForEach(func(_, part gjson.Result) bool {
 			// Reject non-object array elements
@@ -273,12 +269,13 @@ func extractGeminiContent(provider string, responseBody string, includeThinking 
 				return false
 			}
 			// Thought parts are filtered, not validated. They never enter
-			// parseable; they enter raw only as opt-in string text.
+			// parseable/raw; they populate reasoning only as opt-in string
+			// text.
 			if part.Get("thought").Bool() {
-				if includeThinking {
+				if includeReasoning {
 					text := part.Get("text")
 					if text.Type == gjson.String {
-						rawSB.WriteString(text.String())
+						reasoningSB.WriteString(text.String())
 					}
 				}
 				return true
@@ -290,17 +287,17 @@ func extractGeminiContent(provider string, responseBody string, includeThinking 
 					return false
 				}
 				parseableSB.WriteString(text.String())
-				rawSB.WriteString(text.String())
 			}
 			return true
 		})
 		if iterErr != nil {
-			return "", "", iterErr
+			return "", "", "", iterErr
 		}
-		return parseableSB.String(), rawSB.String(), nil
+		text := parseableSB.String()
+		return text, text, reasoningSB.String(), nil
 	}
 
-	return "", "", fmt.Errorf("%s: could not extract text content from response (candidates[0].content.parts not found)", provider)
+	return "", "", "", fmt.Errorf("%s: could not extract text content from response (candidates[0].content.parts not found)", provider)
 }
 
 // extractOpenAIResponsesContent extracts text from an OpenAI Responses API
@@ -317,34 +314,32 @@ func extractGeminiContent(provider string, responseBody string, includeThinking 
 //	  ]
 //	}
 //
-// Returns two strings:
+// Returns:
 //   - parseable: assistant text from all output items with type == "message",
-//     concatenated in array order. Reasoning surfaces never enter this value
-//     so the BAML parser cannot be influenced by reasoning text.
-//   - raw: assistant message text always; when includeThinking is true,
-//     reasoning items' summary[].text entries are additionally written into
-//     raw at the position they appear in output[]. Output-array order is
-//     preserved — if a reasoning item comes before the message, raw is
-//     "summary + message"; if it comes after, raw is "message + summary".
+//     concatenated in array order. Reasoning surfaces never enter this
+//     value.
+//   - raw: same as parseable (text-only by construction).
+//   - reasoning: when includeReasoning is true, reasoning items'
+//     summary[].text entries are written into reasoning in array order.
 //
 // Responses API output ordering/count is model-dependent, so we walk the
 // array in order rather than assume the first message item contains the
 // whole answer.
 //
 // OpenAI's underlying reasoning chain-of-thought is server-encrypted for
-// o1/o3-style models. Phase 5 only surfaces the human-readable summaries
-// OpenAI exposes via summary[].text; reasoning.content[].text and
-// encrypted_content are intentionally not surfaced.
+// o1/o3-style models. Only the human-readable summary[].text entries are
+// surfaced; reasoning.content[].text and encrypted_content are intentionally
+// not surfaced.
 //
 // Reasoning summary shape is treated as optional telemetry: non-array
 // summary, non-object entries, missing text, and non-string text are all
 // silently skipped — they never produce errors. The strict no-message-item
 // contract is preserved: a reasoning-only response (no message item) still
 // errors regardless of the flag.
-func extractOpenAIResponsesContent(provider, responseBody string, includeThinking bool) (parseable, raw string, err error) {
+func extractOpenAIResponsesContent(provider, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
 	output := gjson.Get(responseBody, "output")
 	if !output.IsArray() {
-		return "", "", fmt.Errorf("%s: could not extract text content from response (output array not found)", provider)
+		return "", "", "", fmt.Errorf("%s: could not extract text content from response (output array not found)", provider)
 	}
 
 	// Validate ALL output elements are objects, then aggregate all message
@@ -352,7 +347,7 @@ func extractOpenAIResponsesContent(provider, responseBody string, includeThinkin
 	// validation and may contain additional assistant text.
 	var foundMessage bool
 	var parseableSB strings.Builder
-	var rawSB strings.Builder
+	var reasoningSB strings.Builder
 	var outputErr error
 	output.ForEach(func(_, item gjson.Result) bool {
 		if !item.IsObject() {
@@ -392,7 +387,6 @@ func extractOpenAIResponsesContent(provider, responseBody string, includeThinkin
 						return false
 					}
 					parseableSB.WriteString(textField.String())
-					rawSB.WriteString(textField.String())
 				case "refusal":
 					refusalField := entry.Get("refusal")
 					refusalText := "unknown reason"
@@ -409,30 +403,31 @@ func extractOpenAIResponsesContent(provider, responseBody string, includeThinkin
 			}
 
 		case "reasoning":
-			if includeThinking {
-				appendOpenAIResponsesReasoningSummary(item, &rawSB)
+			if includeReasoning {
+				appendOpenAIResponsesReasoningSummary(item, &reasoningSB)
 			}
 		}
 		return true
 	})
 
 	if outputErr != nil {
-		return "", "", outputErr
+		return "", "", "", outputErr
 	}
 	if !foundMessage {
-		return "", "", fmt.Errorf("%s: no message item found in output array", provider)
+		return "", "", "", fmt.Errorf("%s: no message item found in output array", provider)
 	}
 
-	return parseableSB.String(), rawSB.String(), nil
+	text := parseableSB.String()
+	return text, text, reasoningSB.String(), nil
 }
 
 // appendOpenAIResponsesReasoningSummary writes the human-readable summary
-// entries of an OpenAI Responses reasoning item to rawSB. The summary shape
+// entries of an OpenAI Responses reasoning item to sb. The summary shape
 // is treated as optional telemetry — non-array summary, non-object entries,
 // missing text, and non-string text are silently skipped. reasoning.content
 // and encrypted_content are NOT inspected; the underlying chain-of-thought
 // is server-encrypted and intentionally not surfaced.
-func appendOpenAIResponsesReasoningSummary(item gjson.Result, rawSB *strings.Builder) {
+func appendOpenAIResponsesReasoningSummary(item gjson.Result, sb *strings.Builder) {
 	summary := item.Get("summary")
 	if !summary.IsArray() {
 		return
@@ -440,7 +435,7 @@ func appendOpenAIResponsesReasoningSummary(item gjson.Result, rawSB *strings.Bui
 	summary.ForEach(func(_, entry gjson.Result) bool {
 		text := entry.Get("text")
 		if text.Type == gjson.String {
-			rawSB.WriteString(text.String())
+			sb.WriteString(text.String())
 		}
 		return true
 	})

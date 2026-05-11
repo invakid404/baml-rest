@@ -20,13 +20,14 @@ import (
 
 // testResult implements bamlutils.StreamResult for testing
 type testResult struct {
-	kind     bamlutils.StreamResultKind
-	stream   any
-	final    any
-	raw      string
-	err      error
-	reset    bool
-	metadata *bamlutils.Metadata
+	kind      bamlutils.StreamResultKind
+	stream    any
+	final     any
+	raw       string
+	reasoning string
+	err       error
+	reset     bool
+	metadata  *bamlutils.Metadata
 }
 
 func (r *testResult) Kind() bamlutils.StreamResultKind { return r.kind }
@@ -34,12 +35,13 @@ func (r *testResult) Stream() any                      { return r.stream }
 func (r *testResult) Final() any                       { return r.final }
 func (r *testResult) Error() error                     { return r.err }
 func (r *testResult) Raw() string                      { return r.raw }
+func (r *testResult) Reasoning() string                { return r.reasoning }
 func (r *testResult) Reset() bool                      { return r.reset }
 func (r *testResult) Metadata() *bamlutils.Metadata    { return r.metadata }
 func (r *testResult) Release()                         {}
 
-func newTestResult(kind bamlutils.StreamResultKind, stream, final any, raw string, err error, reset bool) bamlutils.StreamResult {
-	return &testResult{kind: kind, stream: stream, final: final, raw: raw, err: err, reset: reset}
+func newTestResult(kind bamlutils.StreamResultKind, stream, final any, raw, reasoning string, err error, reset bool) bamlutils.StreamResult {
+	return &testResult{kind: kind, stream: stream, final: final, raw: raw, reasoning: reasoning, err: err, reset: reset}
 }
 
 func makeOpenAIServer(chunks []string) *httptest.Server {
@@ -603,10 +605,10 @@ func TestRunStreamOrchestration_AnthropicThinkingUsesAnswerOnlyParsing(t *testin
 }
 
 func TestRunStreamOrchestration_AnthropicThinkingDropsThinkingFromRaw_Default(t *testing.T) {
-	// Default (IncludeThinkingInRaw=false, BAML-aligned): thinking_delta
-	// events are dropped from the extractor entirely. They produce no Stream
-	// kind result (delta.Raw is empty), so partials count is 2 (text deltas
-	// only), and final raw equals parseable.
+	// Default (IncludeReasoning=false, BAML-aligned): thinking_delta events
+	// produce no Stream-kind frame and never reach raw or reasoning. Partials
+	// count is 2 (text deltas only), and final raw equals parseable. The
+	// reasoning channel is empty on every frame.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
@@ -623,10 +625,10 @@ func TestRunStreamOrchestration_AnthropicThinkingDropsThinkingFromRaw_Default(t 
 	out := make(chan bamlutils.StreamResult, 100)
 
 	config := &StreamConfig{
-		Provider:             "anthropic",
-		NeedsPartials:        true,
-		NeedsRaw:             true,
-		IncludeThinkingInRaw: false,
+		Provider:         "anthropic",
+		NeedsPartials:    true,
+		NeedsRaw:         true,
+		IncludeReasoning: false,
 	}
 
 	var parseStreamInputs []string
@@ -660,12 +662,14 @@ func TestRunStreamOrchestration_AnthropicThinkingDropsThinkingFromRaw_Default(t 
 	}
 
 	var partialRaws []string
+	var partialReasonings []string
 	var partialStreams []any
 	var finalResult *testResult
 	for r := range out {
 		tr := r.(*testResult)
 		if tr.kind == bamlutils.StreamResultKindStream {
 			partialRaws = append(partialRaws, tr.raw)
+			partialReasonings = append(partialReasonings, tr.reasoning)
 			partialStreams = append(partialStreams, tr.stream)
 		}
 		if tr.kind == bamlutils.StreamResultKindFinal {
@@ -675,6 +679,11 @@ func TestRunStreamOrchestration_AnthropicThinkingDropsThinkingFromRaw_Default(t 
 
 	if want := []string{"The answer", " is 42"}; len(partialRaws) != len(want) || partialRaws[0] != want[0] || partialRaws[1] != want[1] {
 		t.Fatalf("partial raws = %v, want %v", partialRaws, want)
+	}
+	for i, reasoning := range partialReasonings {
+		if reasoning != "" {
+			t.Errorf("partial reasoning[%d] = %q, want empty (flag off)", i, reasoning)
+		}
 	}
 	if partialStreams[0] != "The answer" || partialStreams[1] != "The answer is 42" {
 		t.Fatalf("text partial streams = %v", partialStreams)
@@ -688,12 +697,16 @@ func TestRunStreamOrchestration_AnthropicThinkingDropsThinkingFromRaw_Default(t 
 	if finalResult.raw != "The answer is 42" {
 		t.Fatalf("final raw = %q (thinking should be dropped under default flag)", finalResult.raw)
 	}
+	if finalResult.reasoning != "" {
+		t.Fatalf("final reasoning = %q, want empty (flag off)", finalResult.reasoning)
+	}
 }
 
 func TestRunStreamOrchestration_AnthropicThinkingPreservesRawStream_OptIn(t *testing.T) {
-	// Opt-in (IncludeThinkingInRaw=true): thinking_delta events accumulate
-	// into the raw stream alongside text deltas. Parseable still excludes
-	// thinking content (the BAML parser must never see it).
+	// Opt-in (IncludeReasoning=true): thinking_delta events populate the
+	// reasoning channel via dedicated reasoning-only Stream frames. Parseable
+	// and raw still exclude thinking content (raw stays text-only by
+	// construction).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
@@ -710,10 +723,10 @@ func TestRunStreamOrchestration_AnthropicThinkingPreservesRawStream_OptIn(t *tes
 	out := make(chan bamlutils.StreamResult, 100)
 
 	config := &StreamConfig{
-		Provider:             "anthropic",
-		NeedsPartials:        true,
-		NeedsRaw:             true,
-		IncludeThinkingInRaw: true,
+		Provider:         "anthropic",
+		NeedsPartials:    true,
+		NeedsRaw:         true,
+		IncludeReasoning: true,
 	}
 
 	var parseStreamInputs []string
@@ -747,12 +760,14 @@ func TestRunStreamOrchestration_AnthropicThinkingPreservesRawStream_OptIn(t *tes
 	}
 
 	var partialRaws []string
+	var partialReasonings []string
 	var partialStreams []any
 	var finalResult *testResult
 	for r := range out {
 		tr := r.(*testResult)
 		if tr.kind == bamlutils.StreamResultKindStream {
 			partialRaws = append(partialRaws, tr.raw)
+			partialReasonings = append(partialReasonings, tr.reasoning)
 			partialStreams = append(partialStreams, tr.stream)
 		}
 		if tr.kind == bamlutils.StreamResultKindFinal {
@@ -760,11 +775,17 @@ func TestRunStreamOrchestration_AnthropicThinkingPreservesRawStream_OptIn(t *tes
 		}
 	}
 
-	if want := []string{"Step 1: reason...", "The answer", " Step 2: refine...", " is 42"}; len(partialRaws) != len(want) || partialRaws[0] != want[0] || partialRaws[1] != want[1] || partialRaws[2] != want[2] || partialRaws[3] != want[3] {
+	// Per-event order: thinking, text, thinking, text. Thinking events
+	// carry only reasoning (raw is empty, stream is nil); text events
+	// carry only raw + parsed stream (reasoning is empty).
+	if want := []string{"", "The answer", "", " is 42"}; len(partialRaws) != len(want) || partialRaws[0] != want[0] || partialRaws[1] != want[1] || partialRaws[2] != want[2] || partialRaws[3] != want[3] {
 		t.Fatalf("partial raws = %v, want %v", partialRaws, want)
 	}
+	if want := []string{"Step 1: reason...", "", " Step 2: refine...", ""}; len(partialReasonings) != len(want) || partialReasonings[0] != want[0] || partialReasonings[1] != want[1] || partialReasonings[2] != want[2] || partialReasonings[3] != want[3] {
+		t.Fatalf("partial reasonings = %v, want %v", partialReasonings, want)
+	}
 	if partialStreams[0] != nil || partialStreams[2] != nil {
-		t.Fatalf("thinking partials should be raw-only, got streams %v", partialStreams)
+		t.Fatalf("reasoning partials should be raw-only/reasoning-only, got streams %v", partialStreams)
 	}
 	if partialStreams[1] != "The answer" || partialStreams[3] != "The answer is 42" {
 		t.Fatalf("text partial streams = %v", partialStreams)
@@ -775,8 +796,11 @@ func TestRunStreamOrchestration_AnthropicThinkingPreservesRawStream_OptIn(t *tes
 	if finalResult.final != "The answer is 42" {
 		t.Fatalf("final = %v, want %q", finalResult.final, "The answer is 42")
 	}
-	if finalResult.raw != "Step 1: reason...The answer Step 2: refine... is 42" {
-		t.Fatalf("final raw = %q", finalResult.raw)
+	if finalResult.raw != "The answer is 42" {
+		t.Fatalf("final raw = %q (raw is text-only regardless of flag)", finalResult.raw)
+	}
+	if finalResult.reasoning != "Step 1: reason... Step 2: refine..." {
+		t.Fatalf("final reasoning = %q", finalResult.reasoning)
 	}
 }
 
@@ -1115,13 +1139,13 @@ func TestRunStreamOrchestration_MixedChain_LegacySucceedsSecond(t *testing.T) {
 	var gotOverride string
 	var gotProvider string
 	var gotNeedsRaw bool
-	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
 		legacyCalled.Add(1)
 		gotOverride = clientOverride
 		gotProvider = provider
 		gotNeedsRaw = needsRaw
 		sendHeartbeat()
-		return "legacy ok", "legacy raw", nil
+		return "legacy ok", "legacy raw", "", nil
 	}
 
 	config := &StreamConfig{
@@ -1216,9 +1240,9 @@ func TestRunStreamOrchestration_MixedChain_LegacyFirstFails_SupportedWins(t *tes
 	out := make(chan bamlutils.StreamResult, 100)
 
 	var legacyCalled atomic.Int32
-	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
 		legacyCalled.Add(1)
-		return nil, "", fmt.Errorf("legacy upstream 500")
+		return nil, "", "", fmt.Errorf("legacy upstream 500")
 	}
 
 	config := &StreamConfig{
@@ -1334,12 +1358,12 @@ func TestRunStreamOrchestration_MixedChain_LegacyHeartbeat(t *testing.T) {
 				"LegacyChild": "aws-bedrock",
 			},
 			LegacyChildren: map[string]bool{"LegacyChild": true},
-			LegacyStreamChild: func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+			LegacyStreamChild: func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
 				// Call sendHeartbeat multiple times to verify idempotency.
 				sendHeartbeat()
 				sendHeartbeat()
 				sendHeartbeat()
-				return "ok", "", nil
+				return "ok", "", "", nil
 			},
 		}
 		err := RunStreamOrchestration(
@@ -1382,12 +1406,12 @@ func TestRunStreamOrchestration_MixedChain_LegacyHeartbeat(t *testing.T) {
 				"LegacyChild": "aws-bedrock",
 			},
 			LegacyChildren: map[string]bool{"LegacyChild": true},
-			LegacyStreamChild: func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+			LegacyStreamChild: func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
 				// Simulate failure before any upstream byte — callback
 				// never fires the heartbeat. Pool hung-detection should
 				// still be able to kill this request if it hangs long
 				// enough; here we just assert no heartbeat leaked.
-				return nil, "", fmt.Errorf("upstream 4xx")
+				return nil, "", "", fmt.Errorf("upstream 4xx")
 			},
 		}
 		err := RunStreamOrchestration(
@@ -1420,9 +1444,9 @@ func TestRunStreamOrchestration_MixedChain_LegacyHeartbeat(t *testing.T) {
 // propagated to the final emission only when NeedsRaw is true.
 func TestRunStreamOrchestration_MixedChain_LegacyRawPropagation(t *testing.T) {
 	legacyChildFn := func(raw string) LegacyStreamChildFunc {
-		return func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+		return func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
 			sendHeartbeat()
-			return "final", raw, nil
+			return "final", raw, "", nil
 		}
 	}
 
@@ -1545,20 +1569,20 @@ func TestRunStreamOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 	// Legacy callback mirrors runLegacyChildStream: make a real HTTP call
 	// via llmhttp, fire sendHeartbeat on first byte (via the Execute
 	// onSuccess callback), read the body as raw, and synthesize a final.
-	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, error) {
+	legacyStreamChild := func(ctx context.Context, clientOverride, provider string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
 		if clientOverride != "LegacyChild" {
 			t.Errorf("legacy callback got clientOverride=%q, want LegacyChild", clientOverride)
 		}
 		req := &llmhttp.Request{URL: legacyServer.URL, Method: "POST", Body: `{}`}
 		resp, err := httpClient.Execute(ctx, req, sendHeartbeat)
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
 		raw := resp.Body
 		if !needsRaw {
 			raw = ""
 		}
-		return legacyFinal, raw, nil
+		return legacyFinal, raw, "", nil
 	}
 
 	out := make(chan bamlutils.StreamResult, 100)

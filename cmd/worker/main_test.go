@@ -13,15 +13,16 @@ import (
 )
 
 type fakeStreamResult struct {
-	kind     bamlutils.StreamResultKind
-	stream   any
-	final    any
-	err      error
-	raw      string
-	reset    bool
-	metadata *bamlutils.Metadata
-	release  sync.Once
-	released chan struct{}
+	kind      bamlutils.StreamResultKind
+	stream    any
+	final     any
+	err       error
+	raw       string
+	reasoning string
+	reset     bool
+	metadata  *bamlutils.Metadata
+	release   sync.Once
+	released  chan struct{}
 }
 
 func newFakeStreamResult(kind bamlutils.StreamResultKind) *fakeStreamResult {
@@ -36,6 +37,7 @@ func (r *fakeStreamResult) Stream() any                      { return r.stream }
 func (r *fakeStreamResult) Final() any                       { return r.final }
 func (r *fakeStreamResult) Error() error                     { return r.err }
 func (r *fakeStreamResult) Raw() string                      { return r.raw }
+func (r *fakeStreamResult) Reasoning() string                { return r.reasoning }
 func (r *fakeStreamResult) Reset() bool                      { return r.reset }
 func (r *fakeStreamResult) Metadata() *bamlutils.Metadata    { return r.metadata }
 func (r *fakeStreamResult) Release() {
@@ -213,6 +215,7 @@ func TestBridgeStreamResultsForwardsFinalResult(t *testing.T) {
 	fake := newFakeStreamResult(bamlutils.StreamResultKindFinal)
 	fake.final = map[string]string{"message": "done"}
 	fake.raw = "raw-output"
+	fake.reasoning = "thinking-output"
 	fake.reset = true
 	in <- fake
 	close(in)
@@ -239,6 +242,9 @@ func TestBridgeStreamResultsForwardsFinalResult(t *testing.T) {
 		}
 		if got.Raw != "raw-output" {
 			t.Fatalf("unexpected raw output: %q", got.Raw)
+		}
+		if got.Reasoning != "thinking-output" {
+			t.Fatalf("unexpected reasoning output: %q", got.Reasoning)
 		}
 		if !got.Reset {
 			t.Fatal("expected reset flag to propagate")
@@ -270,6 +276,7 @@ func TestBridgeStreamResultsForwardsStreamResult(t *testing.T) {
 	fake := newFakeStreamResult(bamlutils.StreamResultKindStream)
 	fake.stream = map[string]string{"delta": "hi"}
 	fake.raw = "partial-raw"
+	fake.reasoning = "partial-reasoning"
 	fake.reset = true
 	in <- fake
 	close(in)
@@ -290,6 +297,9 @@ func TestBridgeStreamResultsForwardsStreamResult(t *testing.T) {
 		}
 		if got.Raw != "partial-raw" {
 			t.Fatalf("unexpected raw output: %q", got.Raw)
+		}
+		if got.Reasoning != "partial-reasoning" {
+			t.Fatalf("unexpected reasoning output: %q", got.Reasoning)
 		}
 		if !got.Reset {
 			t.Fatal("expected reset flag to propagate")
@@ -317,6 +327,12 @@ func TestBridgeStreamResultsResetOnlyStreamHasNoPayload(t *testing.T) {
 	in := make(chan bamlutils.StreamResult, 1)
 	fake := newFakeStreamResult(bamlutils.StreamResultKindStream)
 	fake.reset = true
+	// Seed non-empty sentinels on the upstream fake so the empty-on-bridged
+	// assertions below actively prove the bridge clears these fields for
+	// reset-only frames. Without sentinels the assertions would be
+	// satisfied trivially by the fake's zero-valued defaults.
+	fake.raw = "reset-raw-sentinel"
+	fake.reasoning = "reset-reasoning-sentinel"
 	in <- fake
 	close(in)
 
@@ -338,7 +354,10 @@ func TestBridgeStreamResultsResetOnlyStreamHasNoPayload(t *testing.T) {
 			t.Fatalf("expected no payload for reset-only stream result, got %q", string(got.Data))
 		}
 		if got.Raw != "" {
-			t.Fatalf("expected empty raw for reset-only stream result, got %q", got.Raw)
+			t.Fatalf("expected empty raw for reset-only stream result (sentinel must be cleared), got %q", got.Raw)
+		}
+		if got.Reasoning != "" {
+			t.Fatalf("expected empty reasoning for reset-only stream result (sentinel must be cleared), got %q", got.Reasoning)
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridged reset-only stream result")
@@ -351,6 +370,62 @@ func TestBridgeStreamResultsResetOnlyStreamHasNoPayload(t *testing.T) {
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridged output channel to close")
+	}
+}
+
+// TestBridgeStreamResultsMarshalErrorClearsRawAndReasoning pins the
+// order-of-operations invariant in the stream branch: when
+// json.Marshal(result.Stream()) fails, the bridge reclassifies the
+// frame to StreamResultKindError and must NOT carry raw/reasoning from
+// the doomed stream attempt onto the error frame. Otherwise the client
+// sees an error event alongside accumulated bytes it can't reconcile
+// (the accumulators are still live downstream).
+//
+// A channel value is the simplest reliable way to make encoding/json
+// fail — json.Marshal returns "json: unsupported type: chan int" for
+// any channel.
+func TestBridgeStreamResultsMarshalErrorClearsRawAndReasoning(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindStream)
+	fake.stream = make(chan int) // unmarshalable
+	fake.raw = "marshal-error-raw-sentinel"
+	fake.reasoning = "marshal-error-reasoning-sentinel"
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged error result after marshal failure")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.Kind != workerplugin.StreamResultKindError {
+			t.Fatalf("expected error kind after marshal failure, got %v", got.Kind)
+		}
+		if got.Error == nil {
+			t.Fatal("expected non-nil error on marshal failure")
+		}
+		if !strings.Contains(got.Error.Error(), "failed to marshal stream result") {
+			t.Errorf("expected marshal-error message, got %v", got.Error)
+		}
+		// The load-bearing assertion: raw/reasoning from the doomed
+		// stream attempt must NOT ride along on the reclassified
+		// error frame.
+		if got.Raw != "" {
+			t.Errorf("expected empty raw on marshal-error frame (sentinel must not leak), got %q", got.Raw)
+		}
+		if got.Reasoning != "" {
+			t.Errorf("expected empty reasoning on marshal-error frame (sentinel must not leak), got %q", got.Reasoning)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged marshal-error result")
 	}
 }
 

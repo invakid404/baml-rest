@@ -223,6 +223,7 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 	out.Type().Id(me.outputStructName).Struct(
 		jen.Id("kind").Qual(common.InterfacesPkg, "StreamResultKind"),
 		jen.Id("raw").String(),
+		jen.Id("reasoning").String(),
 		jen.Id("streamParsed").Add(me.streamTypePtr.Clone()),
 		jen.Id("finalParsed").Add(me.finalTypePtr.Clone()),
 		jen.Id("err").Error(),
@@ -286,6 +287,15 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 		String().
 		Block(
 			jen.Return(selfName.Clone().Dot("raw")),
+		)
+
+	// Reasoning() method - returns the structured reasoning channel
+	out.Func().
+		Params(selfParam.Clone()).
+		Id("Reasoning").Params().
+		String().
+		Block(
+			jen.Return(selfName.Clone().Dot("reasoning")),
 		)
 
 	// Reset() method - returns true if client should discard accumulated state

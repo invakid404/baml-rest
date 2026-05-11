@@ -7,7 +7,7 @@ import (
 
 func TestExtractResponseContent_OpenAI(t *testing.T) {
 	body := `{"id":"chatcmpl-abc","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello world"},"finish_reason":"stop"}]}`
-	text, _, err := ExtractResponseContent("openai", body, false)
+	text, _, _, err := ExtractResponseContent("openai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestExtractResponseContent_OpenAICompatible(t *testing.T) {
 
 	for _, provider := range []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter"} {
 		t.Run(provider, func(t *testing.T) {
-			text, _, err := ExtractResponseContent(provider, body, false)
+			text, _, _, err := ExtractResponseContent(provider, body, false)
 			if err != nil {
 				t.Fatalf("unexpected error for %s: %v", provider, err)
 			}
@@ -34,7 +34,7 @@ func TestExtractResponseContent_OpenAICompatible(t *testing.T) {
 
 func TestExtractResponseContent_OpenAIEmptyContent(t *testing.T) {
 	body := `{"choices":[{"message":{"content":""}}]}`
-	text, _, err := ExtractResponseContent("openai", body, false)
+	text, _, _, err := ExtractResponseContent("openai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestExtractResponseContent_OpenAIEmptyContent(t *testing.T) {
 func TestExtractResponseContent_OpenAINullContent(t *testing.T) {
 	// Some providers return null content for function calls
 	body := `{"choices":[{"message":{"content":null,"function_call":{"name":"foo"}}}]}`
-	text, _, err := ExtractResponseContent("openai", body, false)
+	text, _, _, err := ExtractResponseContent("openai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestExtractResponseContent_OpenAINullContent(t *testing.T) {
 func TestExtractResponseContent_OpenAINumericContent(t *testing.T) {
 	// content is a number — unexpected type, should error
 	body := `{"choices":[{"message":{"content":123}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for numeric content")
 	}
@@ -67,7 +67,7 @@ func TestExtractResponseContent_OpenAINumericContent(t *testing.T) {
 func TestExtractResponseContent_OpenAIObjectContent(t *testing.T) {
 	// content is an object (not array) — unexpected type, should error
 	body := `{"choices":[{"message":{"content":{"foo":"bar"}}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for object content")
 	}
@@ -75,7 +75,7 @@ func TestExtractResponseContent_OpenAIObjectContent(t *testing.T) {
 
 func TestExtractResponseContent_OpenAIBoolContent(t *testing.T) {
 	body := `{"choices":[{"message":{"content":true}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for boolean content")
 	}
@@ -84,7 +84,7 @@ func TestExtractResponseContent_OpenAIBoolContent(t *testing.T) {
 func TestExtractResponseContent_OpenAIRefusal(t *testing.T) {
 	// message.refusal field present → error surfacing the refusal text
 	body := `{"choices":[{"message":{"role":"assistant","refusal":"I cannot help with that","content":null}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for refusal response")
 	}
@@ -96,7 +96,7 @@ func TestExtractResponseContent_OpenAIRefusal(t *testing.T) {
 func TestExtractResponseContent_OpenAIRefusalEmptyTopLevel(t *testing.T) {
 	// message.refusal is an empty string with null content — still a refusal
 	body := `{"choices":[{"message":{"refusal":"","content":null}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for empty top-level refusal")
 	}
@@ -108,7 +108,7 @@ func TestExtractResponseContent_OpenAIRefusalEmptyTopLevel(t *testing.T) {
 func TestExtractResponseContent_OpenAIRefusalNullFallsThrough(t *testing.T) {
 	// Explicit null refusal with valid content — not a refusal, normal extraction
 	body := `{"choices":[{"message":{"refusal":null,"content":"Hello world"}}]}`
-	text, _, err := ExtractResponseContent("openai", body, false)
+	text, _, _, err := ExtractResponseContent("openai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestExtractResponseContent_OpenAIRefusalNullFallsThrough(t *testing.T) {
 func TestExtractResponseContent_OpenAIRefusalNonString(t *testing.T) {
 	// message.refusal is a non-string type — still a refusal
 	body := `{"choices":[{"message":{"refusal":true,"content":null}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for non-string top-level refusal")
 	}
@@ -132,7 +132,7 @@ func TestExtractResponseContent_OpenAIRefusalNonString(t *testing.T) {
 func TestExtractResponseContent_OpenAIRefusalInContentArray(t *testing.T) {
 	// {"type":"refusal"} part in content array → error
 	body := `{"choices":[{"message":{"content":[{"type":"refusal","refusal":"Not allowed"}]}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for refusal content part")
 	}
@@ -144,7 +144,7 @@ func TestExtractResponseContent_OpenAIRefusalInContentArray(t *testing.T) {
 func TestExtractResponseContent_OpenAIRefusalEmptyText(t *testing.T) {
 	// type=="refusal" with empty refusal field — still an error
 	body := `{"choices":[{"message":{"content":[{"type":"refusal","refusal":""}]}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for refusal part with empty text")
 	}
@@ -156,7 +156,7 @@ func TestExtractResponseContent_OpenAIRefusalEmptyText(t *testing.T) {
 func TestExtractResponseContent_OpenAIRefusalMissingField(t *testing.T) {
 	// type=="refusal" with no refusal field at all — still an error
 	body := `{"choices":[{"message":{"content":[{"type":"refusal"}]}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for refusal part with missing field")
 	}
@@ -168,7 +168,7 @@ func TestExtractResponseContent_OpenAIRefusalMissingField(t *testing.T) {
 func TestExtractResponseContent_OpenAIArrayNonObjectElement(t *testing.T) {
 	// content array with a non-object element → error
 	body := `{"choices":[{"message":{"content":[123]}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for non-object element in content array")
 	}
@@ -176,7 +176,7 @@ func TestExtractResponseContent_OpenAIArrayNonObjectElement(t *testing.T) {
 
 func TestExtractResponseContent_AnthropicNonObjectElement(t *testing.T) {
 	body := `{"content":["not an object"]}`
-	_, _, err := ExtractResponseContent("anthropic", body, false)
+	_, _, _, err := ExtractResponseContent("anthropic", body, false)
 	if err == nil {
 		t.Fatal("expected error for non-object element in Anthropic content array")
 	}
@@ -184,7 +184,7 @@ func TestExtractResponseContent_AnthropicNonObjectElement(t *testing.T) {
 
 func TestExtractResponseContent_GeminiNonObjectElement(t *testing.T) {
 	body := `{"candidates":[{"content":{"parts":["not an object"]}}]}`
-	_, _, err := ExtractResponseContent("google-ai", body, false)
+	_, _, _, err := ExtractResponseContent("google-ai", body, false)
 	if err == nil {
 		t.Fatal("expected error for non-object element in Gemini parts array")
 	}
@@ -194,7 +194,7 @@ func TestExtractResponseContent_GeminiNonObjectElement(t *testing.T) {
 
 func TestExtractResponseContent_OpenAIResponses(t *testing.T) {
 	body := `{"output":[{"type":"message","status":"completed","content":[{"type":"output_text","text":"Hello from Responses API"}],"role":"assistant"}]}`
-	text, _, err := ExtractResponseContent("openai-responses", body, false)
+	text, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestExtractResponseContent_OpenAIResponsesMultiPart(t *testing.T) {
 		{"type":"output_text","text":"Part one. "},
 		{"type":"output_text","text":"Part two."}
 	],"role":"assistant"}]}`
-	text, _, err := ExtractResponseContent("openai-responses", body, false)
+	text, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestExtractResponseContent_OpenAIResponsesWithReasoning(t *testing.T) {
 			{"type":"output_text","text":"The answer is 42"}
 		],"role":"assistant"}
 	]}`
-	text, _, err := ExtractResponseContent("openai-responses", body, false)
+	text, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestExtractResponseContent_OpenAIResponsesMultipleMessageItems(t *testing.T
 		{"type":"reasoning","content":[],"summary":[]},
 		{"type":"message","content":[{"type":"output_text","text":"Second."}],"role":"assistant"}
 	]}`
-	text, _, err := ExtractResponseContent("openai-responses", body, false)
+	text, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestExtractResponseContent_OpenAIResponsesMultipleMessageItemsMultiPart(t *
 			{"type":"output_text","text":"D"}
 		],"role":"assistant"}
 	]}`
-	text, _, err := ExtractResponseContent("openai-responses", body, false)
+	text, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestExtractResponseContent_OpenAIResponsesMultipleMessageItemsMultiPart(t *
 func TestExtractResponseContent_OpenAIResponsesNoMessageItem(t *testing.T) {
 	// No message item in output → error
 	body := `{"output":[{"type":"reasoning","content":[],"summary":[]}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for missing message item")
 	}
@@ -281,7 +281,7 @@ func TestExtractResponseContent_OpenAIResponsesNoMessageItem(t *testing.T) {
 func TestExtractResponseContent_OpenAIResponsesEmptyContent(t *testing.T) {
 	// Message item with empty content array → empty string (valid)
 	body := `{"output":[{"type":"message","content":[],"role":"assistant"}]}`
-	text, _, err := ExtractResponseContent("openai-responses", body, false)
+	text, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestExtractResponseContent_OpenAIResponsesEmptyContent(t *testing.T) {
 func TestExtractResponseContent_OpenAIResponsesNonObjectOutputElement(t *testing.T) {
 	// Non-object element in output array → error (not silently skipped)
 	body := `{"output":[123,{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for non-object element in output array")
 	}
@@ -302,7 +302,7 @@ func TestExtractResponseContent_OpenAIResponsesNonObjectOutputElement(t *testing
 func TestExtractResponseContent_OpenAIResponsesOutputMissingType(t *testing.T) {
 	// Output item with no type field before valid message → error
 	body := `{"output":[{"foo":"bar"},{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for output item missing type field")
 	}
@@ -311,7 +311,7 @@ func TestExtractResponseContent_OpenAIResponsesOutputMissingType(t *testing.T) {
 func TestExtractResponseContent_OpenAIResponsesOutputNonStringType(t *testing.T) {
 	// Output item with non-string type before valid message → error
 	body := `{"output":[{"type":true},{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for output item with non-string type field")
 	}
@@ -320,7 +320,7 @@ func TestExtractResponseContent_OpenAIResponsesOutputNonStringType(t *testing.T)
 func TestExtractResponseContent_OpenAIResponsesTrailingNonObjectOutputElement(t *testing.T) {
 	// Non-object element AFTER a valid message item → still an error
 	body := `{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"},123]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for trailing non-object element in output array")
 	}
@@ -328,7 +328,7 @@ func TestExtractResponseContent_OpenAIResponsesTrailingNonObjectOutputElement(t 
 
 func TestExtractResponseContent_OpenAIResponsesMissingOutput(t *testing.T) {
 	body := `{"id":"resp_01"}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for missing output array")
 	}
@@ -337,7 +337,7 @@ func TestExtractResponseContent_OpenAIResponsesMissingOutput(t *testing.T) {
 func TestExtractResponseContent_OpenAIResponsesMalformedTextField(t *testing.T) {
 	// output_text with non-string text → error
 	body := `{"output":[{"type":"message","content":[{"type":"output_text","text":123}],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for non-string text field")
 	}
@@ -346,7 +346,7 @@ func TestExtractResponseContent_OpenAIResponsesMalformedTextField(t *testing.T) 
 func TestExtractResponseContent_OpenAIResponsesNonObjectContent(t *testing.T) {
 	// Non-object element in content array → error
 	body := `{"output":[{"type":"message","content":["not an object"],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for non-object content element")
 	}
@@ -355,7 +355,7 @@ func TestExtractResponseContent_OpenAIResponsesNonObjectContent(t *testing.T) {
 func TestExtractResponseContent_OpenAIResponsesMissingContentArray(t *testing.T) {
 	// Message item with no content field → error
 	body := `{"output":[{"type":"message","role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for missing content array in message item")
 	}
@@ -364,7 +364,7 @@ func TestExtractResponseContent_OpenAIResponsesMissingContentArray(t *testing.T)
 func TestExtractResponseContent_OpenAIResponsesRefusal(t *testing.T) {
 	// Refusal-only response → error with refusal text
 	body := `{"output":[{"type":"message","content":[{"type":"refusal","refusal":"I cannot help with that"}],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for refusal content part")
 	}
@@ -382,7 +382,7 @@ func TestExtractResponseContent_OpenAIResponsesRefusalBeforeText(t *testing.T) {
 		{"type":"refusal","refusal":"Not allowed"},
 		{"type":"output_text","text":"Should not reach this"}
 	],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for refusal part even with output_text present")
 	}
@@ -394,7 +394,7 @@ func TestExtractResponseContent_OpenAIResponsesRefusalBeforeText(t *testing.T) {
 func TestExtractResponseContent_OpenAIResponsesRefusalEmptyText(t *testing.T) {
 	// Refusal part with empty refusal field — still an error
 	body := `{"output":[{"type":"message","content":[{"type":"refusal","refusal":""}],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for refusal part with empty text")
 	}
@@ -406,7 +406,7 @@ func TestExtractResponseContent_OpenAIResponsesRefusalEmptyText(t *testing.T) {
 func TestExtractResponseContent_OpenAIResponsesRefusalMissingField(t *testing.T) {
 	// Refusal part with no refusal field — still an error
 	body := `{"output":[{"type":"message","content":[{"type":"refusal"}],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for refusal part with missing field")
 	}
@@ -423,7 +423,7 @@ func TestExtractResponseContent_OpenAIArrayContent(t *testing.T) {
 		{"type":"text","text":"Hello"},
 		{"type":"text","text":" world"}
 	]}}]}`
-	text, _, err := ExtractResponseContent("openai", body, false)
+	text, _, _, err := ExtractResponseContent("openai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestExtractResponseContent_OpenAIArrayContentMixed(t *testing.T) {
 		{"type":"image_url","image_url":{"url":"https://example.com/img.png"}},
 		{"type":"text","text":"After image."}
 	]}}]}`
-	text, _, err := ExtractResponseContent("openai", body, false)
+	text, _, _, err := ExtractResponseContent("openai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestExtractResponseContent_OpenAIArrayContentMixed(t *testing.T) {
 func TestExtractResponseContent_OpenAIArrayContentMalformedTextField(t *testing.T) {
 	// text field is a number instead of string — should error
 	body := `{"choices":[{"message":{"content":[{"type":"text","text":123}]}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for numeric text field in content part")
 	}
@@ -459,7 +459,7 @@ func TestExtractResponseContent_OpenAIArrayContentMalformedTextField(t *testing.
 
 func TestExtractResponseContent_OpenAIArrayContentSingleText(t *testing.T) {
 	body := `{"choices":[{"message":{"content":[{"type":"text","text":"only text"}]}}]}`
-	text, _, err := ExtractResponseContent("openai", body, false)
+	text, _, _, err := ExtractResponseContent("openai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestExtractResponseContent_OpenAIArrayContentSingleText(t *testing.T) {
 func TestExtractResponseContent_OpenAIArrayContentMissingType(t *testing.T) {
 	// Content part with no type field → error (not silently skipped)
 	body := `{"choices":[{"message":{"content":[{"text":"ok"}]}}]}`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for content part missing type field")
 	}
@@ -479,7 +479,7 @@ func TestExtractResponseContent_OpenAIArrayContentMissingType(t *testing.T) {
 
 func TestExtractResponseContent_AnthropicMissingBlockType(t *testing.T) {
 	body := `{"content":[{"text":"ok"}]}`
-	_, _, err := ExtractResponseContent("anthropic", body, false)
+	_, _, _, err := ExtractResponseContent("anthropic", body, false)
 	if err == nil {
 		t.Fatal("expected error for Anthropic content block missing type field")
 	}
@@ -487,7 +487,7 @@ func TestExtractResponseContent_AnthropicMissingBlockType(t *testing.T) {
 
 func TestExtractResponseContent_OpenAIResponsesMissingContentType(t *testing.T) {
 	body := `{"output":[{"type":"message","content":[{"text":"ok"}],"role":"assistant"}]}`
-	_, _, err := ExtractResponseContent("openai-responses", body, false)
+	_, _, _, err := ExtractResponseContent("openai-responses", body, false)
 	if err == nil {
 		t.Fatal("expected error for Responses API content entry missing type field")
 	}
@@ -495,7 +495,7 @@ func TestExtractResponseContent_OpenAIResponsesMissingContentType(t *testing.T) 
 
 func TestExtractResponseContent_OpenAIArrayContentEmpty(t *testing.T) {
 	body := `{"choices":[{"message":{"content":[]}}]}`
-	text, _, err := ExtractResponseContent("openai", body, false)
+	text, _, _, err := ExtractResponseContent("openai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -514,7 +514,7 @@ func TestExtractResponseContent_Anthropic(t *testing.T) {
 		],
 		"stop_reason": "end_turn"
 	}`
-	text, _, err := ExtractResponseContent("anthropic", body, false)
+	text, _, _, err := ExtractResponseContent("anthropic", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestExtractResponseContent_AnthropicMultipleTextBlocks(t *testing.T) {
 			{"type": "text", "text": "Second part."}
 		]
 	}`
-	text, _, err := ExtractResponseContent("anthropic", body, false)
+	text, _, _, err := ExtractResponseContent("anthropic", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -540,15 +540,15 @@ func TestExtractResponseContent_AnthropicMultipleTextBlocks(t *testing.T) {
 }
 
 func TestExtractResponseContent_AnthropicWithThinking_Default(t *testing.T) {
-	// Default (includeThinking=false, BAML-aligned): parseable AND raw
-	// contain only the text block. Thinking blocks are dropped from raw.
+	// Default (includeReasoning=false): parseable, raw, and reasoning all
+	// reflect the text-only block. Thinking blocks contribute nowhere.
 	body := `{
 		"content": [
 			{"type": "thinking", "thinking": "Let me think about this..."},
 			{"type": "text", "text": "The answer is 42"}
 		]
 	}`
-	parseable, raw, err := ExtractResponseContent("anthropic", body, false)
+	parseable, raw, reasoning, err := ExtractResponseContent("anthropic", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -556,45 +556,52 @@ func TestExtractResponseContent_AnthropicWithThinking_Default(t *testing.T) {
 		t.Errorf("expected parseable 'The answer is 42', got %q", parseable)
 	}
 	if raw != "The answer is 42" {
-		t.Errorf("expected raw 'The answer is 42' (thinking dropped), got %q", raw)
+		t.Errorf("expected raw 'The answer is 42' (text-only), got %q", raw)
+	}
+	if reasoning != "" {
+		t.Errorf("expected reasoning empty under flag-off, got %q", reasoning)
 	}
 }
 
 func TestExtractResponseContent_AnthropicWithThinking_OptIn(t *testing.T) {
-	// Opt-in (includeThinking=true): parseable contains only text (the BAML
-	// parser must never see thinking content), raw contains thinking + text.
+	// Opt-in (includeReasoning=true): parseable and raw still exclude
+	// thinking (raw stays text-only by construction); reasoning carries
+	// the thinking text on its dedicated channel.
 	body := `{
 		"content": [
 			{"type": "thinking", "thinking": "Let me think about this..."},
 			{"type": "text", "text": "The answer is 42"}
 		]
 	}`
-	parseable, raw, err := ExtractResponseContent("anthropic", body, true)
+	parseable, raw, reasoning, err := ExtractResponseContent("anthropic", body, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if parseable != "The answer is 42" {
 		t.Errorf("expected parseable 'The answer is 42', got %q", parseable)
 	}
-	if raw != "Let me think about this...The answer is 42" {
-		t.Errorf("expected raw 'Let me think about this...The answer is 42', got %q", raw)
+	if raw != "The answer is 42" {
+		t.Errorf("expected raw 'The answer is 42' (text-only by construction), got %q", raw)
+	}
+	if reasoning != "Let me think about this..." {
+		t.Errorf("expected reasoning 'Let me think about this...', got %q", reasoning)
 	}
 }
 
 func TestExtractResponseContent_AnthropicWithThinking_ParseableInvariant(t *testing.T) {
 	// Parseable must never include thinking content, regardless of the
-	// includeThinking flag value. Codifies the structural guarantee.
+	// includeReasoning flag value. Codifies the structural guarantee.
 	body := `{
 		"content": [
 			{"type": "thinking", "thinking": "Let me think about this..."},
 			{"type": "text", "text": "The answer is 42"}
 		]
 	}`
-	parseableOff, _, err := ExtractResponseContent("anthropic", body, false)
+	parseableOff, _, _, err := ExtractResponseContent("anthropic", body, false)
 	if err != nil {
 		t.Fatalf("flag=false extraction failed: %v", err)
 	}
-	parseableOn, _, err := ExtractResponseContent("anthropic", body, true)
+	parseableOn, _, _, err := ExtractResponseContent("anthropic", body, true)
 	if err != nil {
 		t.Fatalf("flag=true extraction failed: %v", err)
 	}
@@ -608,13 +615,13 @@ func TestExtractResponseContent_AnthropicWithThinking_ParseableInvariant(t *test
 }
 
 func TestExtractResponseContent_AnthropicThinkingOnly_Default(t *testing.T) {
-	// Default: thinking-only response is empty in both parseable and raw.
+	// Default: thinking-only response is empty across all three channels.
 	body := `{
 		"content": [
 			{"type": "thinking", "thinking": "Reasoning without output"}
 		]
 	}`
-	parseable, raw, err := ExtractResponseContent("anthropic", body, false)
+	parseable, raw, reasoning, err := ExtractResponseContent("anthropic", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -622,32 +629,39 @@ func TestExtractResponseContent_AnthropicThinkingOnly_Default(t *testing.T) {
 		t.Errorf("expected empty parseable, got %q", parseable)
 	}
 	if raw != "" {
-		t.Errorf("expected empty raw under default flag, got %q", raw)
+		t.Errorf("expected empty raw, got %q", raw)
+	}
+	if reasoning != "" {
+		t.Errorf("expected empty reasoning under default flag, got %q", reasoning)
 	}
 }
 
 func TestExtractResponseContent_AnthropicThinkingOnly_OptIn(t *testing.T) {
-	// Opt-in: thinking-only response has empty parseable and the thinking in raw.
+	// Opt-in: thinking-only response has empty parseable and raw (raw is
+	// text-only by construction); thinking text surfaces on reasoning.
 	body := `{
 		"content": [
 			{"type": "thinking", "thinking": "Reasoning without output"}
 		]
 	}`
-	parseable, raw, err := ExtractResponseContent("anthropic", body, true)
+	parseable, raw, reasoning, err := ExtractResponseContent("anthropic", body, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if parseable != "" {
 		t.Errorf("expected empty parseable, got %q", parseable)
 	}
-	if raw != "Reasoning without output" {
-		t.Errorf("expected raw thinking content under opt-in, got %q", raw)
+	if raw != "" {
+		t.Errorf("expected empty raw (text-only by construction), got %q", raw)
+	}
+	if reasoning != "Reasoning without output" {
+		t.Errorf("expected reasoning thinking content under opt-in, got %q", reasoning)
 	}
 }
 
 func TestExtractResponseContent_AnthropicMalformedTextField(t *testing.T) {
 	body := `{"content":[{"type":"text","text":123}]}`
-	_, _, err := ExtractResponseContent("anthropic", body, false)
+	_, _, _, err := ExtractResponseContent("anthropic", body, false)
 	if err == nil {
 		t.Fatal("expected error for numeric text field in Anthropic block")
 	}
@@ -655,7 +669,7 @@ func TestExtractResponseContent_AnthropicMalformedTextField(t *testing.T) {
 
 func TestExtractResponseContent_AnthropicMalformedThinkingField(t *testing.T) {
 	body := `{"content":[{"type":"thinking","thinking":true}]}`
-	_, _, err := ExtractResponseContent("anthropic", body, false)
+	_, _, _, err := ExtractResponseContent("anthropic", body, false)
 	if err == nil {
 		t.Fatal("expected error for boolean thinking field in Anthropic block")
 	}
@@ -663,7 +677,7 @@ func TestExtractResponseContent_AnthropicMalformedThinkingField(t *testing.T) {
 
 func TestExtractResponseContent_AnthropicEmptyContent(t *testing.T) {
 	body := `{"content": []}`
-	text, _, err := ExtractResponseContent("anthropic", body, false)
+	text, _, _, err := ExtractResponseContent("anthropic", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -675,7 +689,7 @@ func TestExtractResponseContent_AnthropicEmptyContent(t *testing.T) {
 func TestExtractResponseContent_AnthropicMissingContent(t *testing.T) {
 	// Non-empty body but no content array → error (malformed Anthropic response)
 	body := `{"id": "msg_01"}`
-	_, _, err := ExtractResponseContent("anthropic", body, false)
+	_, _, _, err := ExtractResponseContent("anthropic", body, false)
 	if err == nil {
 		t.Fatal("expected error for missing content array in non-empty body")
 	}
@@ -693,7 +707,7 @@ func TestExtractResponseContent_GoogleAI(t *testing.T) {
 			}
 		]
 	}`
-	text, _, err := ExtractResponseContent("google-ai", body, false)
+	text, _, _, err := ExtractResponseContent("google-ai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -704,7 +718,7 @@ func TestExtractResponseContent_GoogleAI(t *testing.T) {
 
 func TestExtractResponseContent_VertexAI(t *testing.T) {
 	body := `{"candidates":[{"content":{"parts":[{"text":"Vertex response"}],"role":"model"}}]}`
-	text, _, err := ExtractResponseContent("vertex-ai", body, false)
+	text, _, _, err := ExtractResponseContent("vertex-ai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -719,7 +733,7 @@ func TestExtractResponseContent_GeminiMultipleParts(t *testing.T) {
 		{"text":"First paragraph. "},
 		{"text":"Second paragraph."}
 	],"role":"model"}}]}`
-	text, _, err := ExtractResponseContent("google-ai", body, false)
+	text, _, _, err := ExtractResponseContent("google-ai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -735,7 +749,7 @@ func TestExtractResponseContent_GeminiMixedParts(t *testing.T) {
 		{"functionCall":{"name":"get_weather","args":{"city":"NYC"}}},
 		{"text":"Done."}
 	],"role":"model"}}]}`
-	text, _, err := ExtractResponseContent("google-ai", body, false)
+	text, _, _, err := ExtractResponseContent("google-ai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -746,7 +760,7 @@ func TestExtractResponseContent_GeminiMixedParts(t *testing.T) {
 
 func TestExtractResponseContent_GeminiMalformedTextField(t *testing.T) {
 	body := `{"candidates":[{"content":{"parts":[{"text":123}]}}]}`
-	_, _, err := ExtractResponseContent("google-ai", body, false)
+	_, _, _, err := ExtractResponseContent("google-ai", body, false)
 	if err == nil {
 		t.Fatal("expected error for numeric text field in Gemini part")
 	}
@@ -754,7 +768,7 @@ func TestExtractResponseContent_GeminiMalformedTextField(t *testing.T) {
 
 func TestExtractResponseContent_GeminiObjectTextField(t *testing.T) {
 	body := `{"candidates":[{"content":{"parts":[{"text":{"a":1}}]}}]}`
-	_, _, err := ExtractResponseContent("google-ai", body, false)
+	_, _, _, err := ExtractResponseContent("google-ai", body, false)
 	if err == nil {
 		t.Fatal("expected error for object text field in Gemini part")
 	}
@@ -762,7 +776,7 @@ func TestExtractResponseContent_GeminiObjectTextField(t *testing.T) {
 
 func TestExtractResponseContent_GeminiEmptyParts(t *testing.T) {
 	body := `{"candidates":[{"content":{"parts":[],"role":"model"}}]}`
-	text, _, err := ExtractResponseContent("google-ai", body, false)
+	text, _, _, err := ExtractResponseContent("google-ai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -774,7 +788,7 @@ func TestExtractResponseContent_GeminiEmptyParts(t *testing.T) {
 func TestExtractResponseContent_GeminiMissingParts(t *testing.T) {
 	// Non-empty body but parts array is missing → error
 	body := `{"candidates":[{"content":{"role":"model"}}]}`
-	_, _, err := ExtractResponseContent("google-ai", body, false)
+	_, _, _, err := ExtractResponseContent("google-ai", body, false)
 	if err == nil {
 		t.Fatal("expected error for missing parts in non-empty body")
 	}
@@ -785,7 +799,7 @@ func TestExtractResponseContent_VertexMultipleParts(t *testing.T) {
 		{"text":"Part A"},
 		{"text":"Part B"}
 	],"role":"model"}}]}`
-	text, _, err := ExtractResponseContent("vertex-ai", body, false)
+	text, _, _, err := ExtractResponseContent("vertex-ai", body, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -808,7 +822,7 @@ func TestExtractResponseContent_GeminiThoughtAtIndexZero(t *testing.T) {
 
 	for _, provider := range []string{"google-ai", "vertex-ai"} {
 		t.Run(provider, func(t *testing.T) {
-			parseable, raw, err := ExtractResponseContent(provider, body, false)
+			parseable, raw, reasoning, err := ExtractResponseContent(provider, body, false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -816,18 +830,26 @@ func TestExtractResponseContent_GeminiThoughtAtIndexZero(t *testing.T) {
 				t.Errorf("parseable = %q, want %q", parseable, "Visible answer")
 			}
 			if raw != "Visible answer" {
-				t.Errorf("raw = %q, want %q (Phase 2: raw == parseable for Gemini)", raw, "Visible answer")
+				t.Errorf("raw = %q, want %q (raw == parseable for Gemini)", raw, "Visible answer")
+			}
+			if reasoning != "" {
+				t.Errorf("reasoning = %q, want empty (flag off)", reasoning)
 			}
 
-			// Parseable must be byte-identical regardless of the
-			// includeThinking flag. Raw is intentionally not compared across
-			// the flag — Phase 3 will diverge Gemini raw under opt-in.
-			parseableThinking, _, err := ExtractResponseContent(provider, body, true)
+			// Parseable and raw must both be byte-identical regardless of
+			// the includeReasoning flag — both are text-only by construction
+			// in all states. Reasoning is the only field that diverges
+			// under opt-in (covered by the dedicated Gemini reasoning test
+			// below).
+			parseableThinking, rawThinking, _, err := ExtractResponseContent(provider, body, true)
 			if err != nil {
-				t.Fatalf("unexpected error with includeThinking=true: %v", err)
+				t.Fatalf("unexpected error with includeReasoning=true: %v", err)
 			}
 			if parseableThinking != parseable {
-				t.Errorf("parseable diverged across includeThinking: false=%q true=%q", parseable, parseableThinking)
+				t.Errorf("parseable diverged across includeReasoning: false=%q true=%q", parseable, parseableThinking)
+			}
+			if rawThinking != raw {
+				t.Errorf("raw diverged across includeReasoning: false=%q true=%q (raw is text-only by construction)", raw, rawThinking)
 			}
 		})
 	}
@@ -844,7 +866,7 @@ func TestExtractResponseContent_GeminiThoughtOnly(t *testing.T) {
 
 	for _, provider := range []string{"google-ai", "vertex-ai"} {
 		t.Run(provider, func(t *testing.T) {
-			parseable, raw, err := ExtractResponseContent(provider, body, false)
+			parseable, raw, reasoning, err := ExtractResponseContent(provider, body, false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -852,97 +874,110 @@ func TestExtractResponseContent_GeminiThoughtOnly(t *testing.T) {
 				t.Errorf("parseable = %q, want empty string", parseable)
 			}
 			if raw != "" {
-				t.Errorf("raw = %q, want empty string (Phase 2: raw == parseable for Gemini)", raw)
+				t.Errorf("raw = %q, want empty string (raw == parseable for Gemini)", raw)
+			}
+			if reasoning != "" {
+				t.Errorf("reasoning = %q, want empty (flag off)", reasoning)
 			}
 		})
 	}
 }
 
-// TestExtractResponseContent_GeminiIncludeThinkingInRaw asserts the
-// Phase 3 dual-builder behavior for the Gemini non-streaming branch:
+// TestExtractResponseContent_GeminiIncludeReasoning asserts the
+// per-flag behavior for the Gemini non-streaming branch:
 //
 //   - Parseable always excludes thought-tagged parts (text-only, fed to
 //     Parse.Method via /call).
-//   - Raw mirrors Parseable when includeThinking is false; when true,
-//     Raw additionally surfaces thought-tagged string text in wire order
-//     for /call-with-raw telemetry.
+//   - Raw mirrors Parseable regardless of the flag — raw is text-only by
+//     construction in all states.
+//   - Reasoning surfaces thought-tagged string text only when
+//     includeReasoning is true.
 //   - Strict validation is preserved for non-thought parts (non-string
 //     text errors). Thought parts are filtered, not validated, so non-
 //     string text on a thought part is silently skipped under both flag
-//     values — consistent with Phase 2's behavior.
+//     values.
 //
-// Parseable invariance across the includeThinking flag is asserted for
-// every fixture; Raw is intentionally allowed to diverge.
-func TestExtractResponseContent_GeminiIncludeThinkingInRaw(t *testing.T) {
+// Parseable and raw invariance across the includeReasoning flag is
+// asserted for every fixture; reasoning is intentionally allowed to
+// diverge.
+func TestExtractResponseContent_GeminiIncludeReasoning(t *testing.T) {
 	cases := []struct {
-		name      string
-		body      string
-		parseable string
-		rawOff    string
-		rawOn     string
+		name        string
+		body        string
+		parseable   string
+		raw         string
+		reasoningOn string
 	}{
 		{
-			name:      "thought then visible",
-			body:      `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true},{"text":"Visible"}]}}]}`,
-			parseable: "Visible",
-			rawOff:    "Visible",
-			rawOn:     "thoughtVisible",
+			name:        "thought then visible",
+			body:        `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true},{"text":"Visible"}]}}]}`,
+			parseable:   "Visible",
+			raw:         "Visible",
+			reasoningOn: "thought",
 		},
 		{
-			name:      "interleaved thought preserves order",
-			body:      `{"candidates":[{"content":{"parts":[{"text":"A"},{"text":"B","thought":true},{"text":"C"}]}}]}`,
-			parseable: "AC",
-			rawOff:    "AC",
-			rawOn:     "ABC",
+			name:        "interleaved thought preserves order",
+			body:        `{"candidates":[{"content":{"parts":[{"text":"A"},{"text":"B","thought":true},{"text":"C"}]}}]}`,
+			parseable:   "AC",
+			raw:         "AC",
+			reasoningOn: "B",
 		},
 		{
-			name:      "thought only",
-			body:      `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true}]}}]}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "thought",
+			name:        "thought only",
+			body:        `{"candidates":[{"content":{"parts":[{"text":"thought","thought":true}]}}]}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "thought",
 		},
 		{
 			// Numeric text on a thought part: silently skipped (no error)
-			// under both flag values, since thought parts contribute to
-			// neither parseable nor validated raw output.
-			name:      "thought non-string text skipped under opt-in",
-			body:      `{"candidates":[{"content":{"parts":[{"text":42,"thought":true},{"text":"Visible"}]}}]}`,
-			parseable: "Visible",
-			rawOff:    "Visible",
-			rawOn:     "Visible",
+			// under both flag values.
+			name:        "thought non-string text skipped under opt-in",
+			body:        `{"candidates":[{"content":{"parts":[{"text":42,"thought":true},{"text":"Visible"}]}}]}`,
+			parseable:   "Visible",
+			raw:         "Visible",
+			reasoningOn: "",
 		},
 	}
 
 	for _, provider := range []string{"google-ai", "vertex-ai"} {
 		for _, tc := range cases {
 			t.Run(provider+"/"+tc.name, func(t *testing.T) {
-				parseableOff, rawOff, err := ExtractResponseContent(provider, tc.body, false)
+				parseableOff, rawOff, reasoningOff, err := ExtractResponseContent(provider, tc.body, false)
 				if err != nil {
-					t.Fatalf("ExtractResponseContent(includeThinking=false) returned error: %v", err)
+					t.Fatalf("ExtractResponseContent(includeReasoning=false) returned error: %v", err)
 				}
 				if parseableOff != tc.parseable {
 					t.Errorf("flag=false parseable = %q, want %q", parseableOff, tc.parseable)
 				}
-				if rawOff != tc.rawOff {
-					t.Errorf("flag=false raw = %q, want %q", rawOff, tc.rawOff)
+				if rawOff != tc.raw {
+					t.Errorf("flag=false raw = %q, want %q", rawOff, tc.raw)
+				}
+				if reasoningOff != "" {
+					t.Errorf("flag=false reasoning = %q, want empty", reasoningOff)
 				}
 
-				parseableOn, rawOn, err := ExtractResponseContent(provider, tc.body, true)
+				parseableOn, rawOn, reasoningOn, err := ExtractResponseContent(provider, tc.body, true)
 				if err != nil {
-					t.Fatalf("ExtractResponseContent(includeThinking=true) returned error: %v", err)
+					t.Fatalf("ExtractResponseContent(includeReasoning=true) returned error: %v", err)
 				}
 				if parseableOn != tc.parseable {
 					t.Errorf("flag=true parseable = %q, want %q", parseableOn, tc.parseable)
 				}
-				if rawOn != tc.rawOn {
-					t.Errorf("flag=true raw = %q, want %q", rawOn, tc.rawOn)
+				if rawOn != tc.raw {
+					t.Errorf("flag=true raw = %q, want %q (raw is text-only regardless of flag)", rawOn, tc.raw)
+				}
+				if reasoningOn != tc.reasoningOn {
+					t.Errorf("flag=true reasoning = %q, want %q", reasoningOn, tc.reasoningOn)
 				}
 
-				// Structural parseable invariance: byte-identical across
-				// both flag values for every fixture.
+				// Structural parseable + raw invariance: byte-identical
+				// across both flag values for every fixture.
 				if parseableOff != parseableOn {
-					t.Errorf("parseable diverged across includeThinking: false=%q true=%q", parseableOff, parseableOn)
+					t.Errorf("parseable diverged across includeReasoning: false=%q true=%q", parseableOff, parseableOn)
+				}
+				if rawOff != rawOn {
+					t.Errorf("raw diverged across includeReasoning: false=%q true=%q (raw should be flag-invariant)", rawOff, rawOn)
 				}
 			})
 		}
@@ -956,30 +991,32 @@ func TestExtractResponseContent_GeminiIncludeThinkingInRaw(t *testing.T) {
 //
 //   - parseable always reflects only message.content. Reasoning content
 //     never enters parseable so the BAML parser cannot be influenced.
-//   - raw mirrors parseable when includeThinking is false; when true, raw
-//     additionally surfaces message.reasoning_content appended after content.
+//   - raw mirrors parseable in all states — raw is text-only by
+//     construction and never carries message.reasoning_content.
+//   - reasoning surfaces message.reasoning_content only when
+//     includeReasoning is true; otherwise empty.
 //   - Non-string reasoning_content is silently skipped under both flag
 //     values, matching the defensive pattern used elsewhere for optional
 //     reasoning surfaces. reasoning_content is telemetry — its presence
 //     does not change content's strict error semantics.
 //
-// Parseable invariance across the includeThinking flag is asserted for
-// every fixture × provider; raw equality across the flag is intentionally
+// Parseable and raw invariance across the includeReasoning flag is
+// asserted for every fixture × provider; reasoning is intentionally
 // allowed to diverge.
 func TestExtractResponseContent_OpenAIReasoningContent(t *testing.T) {
 	cases := []struct {
-		name      string
-		body      string
-		parseable string
-		rawOff    string
-		rawOn     string
+		name        string
+		body        string
+		parseable   string
+		raw         string
+		reasoningOn string
 	}{
 		{
-			name:      "scalar content plus reasoning",
-			body:      `{"choices":[{"message":{"content":"Hello world","reasoning_content":"chain of thought"}}]}`,
-			parseable: "Hello world",
-			rawOff:    "Hello world",
-			rawOn:     "Hello worldchain of thought",
+			name:        "scalar content plus reasoning",
+			body:        `{"choices":[{"message":{"content":"Hello world","reasoning_content":"chain of thought"}}]}`,
+			parseable:   "Hello world",
+			raw:         "Hello world",
+			reasoningOn: "chain of thought",
 		},
 		{
 			name: "array text content plus reasoning",
@@ -987,64 +1024,73 @@ func TestExtractResponseContent_OpenAIReasoningContent(t *testing.T) {
 				{"type":"text","text":"Hello "},
 				{"type":"text","text":"world"}
 			],"reasoning_content":"chain of thought"}}]}`,
-			parseable: "Hello world",
-			rawOff:    "Hello world",
-			rawOn:     "Hello worldchain of thought",
+			parseable:   "Hello world",
+			raw:         "Hello world",
+			reasoningOn: "chain of thought",
 		},
 		{
-			name:      "empty-string content plus reasoning",
-			body:      `{"choices":[{"message":{"content":"","reasoning_content":"chain of thought"}}]}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "chain of thought",
+			name:        "empty-string content plus reasoning",
+			body:        `{"choices":[{"message":{"content":"","reasoning_content":"chain of thought"}}]}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "chain of thought",
 		},
 		{
-			name:      "explicit-null content plus reasoning",
-			body:      `{"choices":[{"message":{"content":null,"reasoning_content":"chain of thought"}}]}`,
-			parseable: "",
-			rawOff:    "",
-			rawOn:     "chain of thought",
+			name:        "explicit-null content plus reasoning",
+			body:        `{"choices":[{"message":{"content":null,"reasoning_content":"chain of thought"}}]}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "chain of thought",
 		},
 		{
 			// Defensive: non-string reasoning_content is silently skipped
-			// under opt-in. content's strict error semantics are unaffected.
-			name:      "non-string reasoning ignored under opt-in",
-			body:      `{"choices":[{"message":{"content":"Hello","reasoning_content":42}}]}`,
-			parseable: "Hello",
-			rawOff:    "Hello",
-			rawOn:     "Hello",
+			// under opt-in.
+			name:        "non-string reasoning ignored under opt-in",
+			body:        `{"choices":[{"message":{"content":"Hello","reasoning_content":42}}]}`,
+			parseable:   "Hello",
+			raw:         "Hello",
+			reasoningOn: "",
 		},
 	}
 
 	for _, provider := range []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter"} {
 		for _, tc := range cases {
 			t.Run(provider+"/"+tc.name, func(t *testing.T) {
-				parseableOff, rawOff, err := ExtractResponseContent(provider, tc.body, false)
+				parseableOff, rawOff, reasoningOff, err := ExtractResponseContent(provider, tc.body, false)
 				if err != nil {
-					t.Fatalf("ExtractResponseContent(includeThinking=false) returned error: %v", err)
+					t.Fatalf("ExtractResponseContent(includeReasoning=false) returned error: %v", err)
 				}
 				if parseableOff != tc.parseable {
 					t.Errorf("flag=false parseable = %q, want %q", parseableOff, tc.parseable)
 				}
-				if rawOff != tc.rawOff {
-					t.Errorf("flag=false raw = %q, want %q", rawOff, tc.rawOff)
+				if rawOff != tc.raw {
+					t.Errorf("flag=false raw = %q, want %q", rawOff, tc.raw)
+				}
+				if reasoningOff != "" {
+					t.Errorf("flag=false reasoning = %q, want empty", reasoningOff)
 				}
 
-				parseableOn, rawOn, err := ExtractResponseContent(provider, tc.body, true)
+				parseableOn, rawOn, reasoningOn, err := ExtractResponseContent(provider, tc.body, true)
 				if err != nil {
-					t.Fatalf("ExtractResponseContent(includeThinking=true) returned error: %v", err)
+					t.Fatalf("ExtractResponseContent(includeReasoning=true) returned error: %v", err)
 				}
 				if parseableOn != tc.parseable {
 					t.Errorf("flag=true parseable = %q, want %q", parseableOn, tc.parseable)
 				}
-				if rawOn != tc.rawOn {
-					t.Errorf("flag=true raw = %q, want %q", rawOn, tc.rawOn)
+				if rawOn != tc.raw {
+					t.Errorf("flag=true raw = %q, want %q (raw is text-only regardless of flag)", rawOn, tc.raw)
+				}
+				if reasoningOn != tc.reasoningOn {
+					t.Errorf("flag=true reasoning = %q, want %q", reasoningOn, tc.reasoningOn)
 				}
 
-				// Structural parseable invariance: byte-identical across
-				// both flag values for every fixture.
+				// Structural parseable + raw invariance: byte-identical
+				// across both flag values for every fixture.
 				if parseableOff != parseableOn {
-					t.Errorf("parseable diverged across includeThinking: false=%q true=%q", parseableOff, parseableOn)
+					t.Errorf("parseable diverged across includeReasoning: false=%q true=%q", parseableOff, parseableOn)
+				}
+				if rawOff != rawOn {
+					t.Errorf("raw diverged across includeReasoning: false=%q true=%q", rawOff, rawOn)
 				}
 			})
 		}
@@ -1064,15 +1110,18 @@ func TestExtractResponseContent_OpenAIReasoningContentMissingContent(t *testing.
 	for _, provider := range []string{"openai", "openai-generic", "azure-openai", "ollama", "openrouter"} {
 		t.Run(provider, func(t *testing.T) {
 			for _, flag := range []bool{false, true} {
-				parseable, raw, err := ExtractResponseContent(provider, body, flag)
+				parseable, raw, reasoning, err := ExtractResponseContent(provider, body, flag)
 				if err == nil {
-					t.Errorf("includeThinking=%v: expected error for missing message.content (reasoning_content alone is not a valid response)", flag)
+					t.Errorf("includeReasoning=%v: expected error for missing message.content (reasoning_content alone is not a valid response)", flag)
 				}
 				if parseable != "" {
-					t.Errorf("includeThinking=%v: expected empty parseable on error, got %q", flag, parseable)
+					t.Errorf("includeReasoning=%v: expected empty parseable on error, got %q", flag, parseable)
 				}
 				if raw != "" {
-					t.Errorf("includeThinking=%v: expected empty raw on error (no telemetry leakage), got %q", flag, raw)
+					t.Errorf("includeReasoning=%v: expected empty raw on error (no telemetry leakage), got %q", flag, raw)
+				}
+				if reasoning != "" {
+					t.Errorf("includeReasoning=%v: expected empty reasoning on error, got %q", flag, reasoning)
 				}
 			}
 		})
@@ -1080,25 +1129,25 @@ func TestExtractResponseContent_OpenAIReasoningContentMissingContent(t *testing.
 }
 
 // TestExtractResponseContent_OpenAIResponsesReasoningSummary asserts the
-// Phase 5 dual-output behavior for the OpenAI Responses API non-streaming
+// three-channel behavior for the OpenAI Responses API non-streaming
 // branch (provider key "openai-responses"):
 //
 //   - parseable always reflects only message output_text. Reasoning summary
 //     surfaces never enter parseable so the BAML parser cannot be influenced.
-//   - raw mirrors parseable when includeThinking is false; when true, raw
-//     additionally surfaces reasoning items' summary[].text entries written
-//     into raw at the position they appear in output[]. Output-array order
-//     is preserved (no canonical reorder).
+//   - raw mirrors parseable in all states — raw is text-only by construction
+//     and never carries reasoning summaries.
+//   - reasoning surfaces reasoning items' summary[].text entries only when
+//     includeReasoning is true, concatenated in output[]/summary[] order.
+//     Output-array order is preserved (no canonical reorder).
 //   - Reasoning summary shape is treated as optional telemetry: non-array
 //     summary, non-object entries, missing text, and non-string text are all
 //     silently skipped — they never produce errors.
 //   - The strict no-message-item contract is preserved: a reasoning-only
 //     response (no message item) still errors regardless of the flag.
 //
-// Parseable invariance across the includeThinking flag is asserted for every
-// successful fixture; rawOff equality with parseable is also asserted (when
-// flag is off, raw must mirror parseable byte-for-byte). rawOn equality is
-// intentionally allowed to diverge — that is the whole point of opt-in.
+// Parseable and raw invariance across the includeReasoning flag is asserted
+// for every successful fixture (raw must equal parseable byte-for-byte under
+// both flag values). Reasoning is intentionally allowed to diverge.
 //
 // OpenAI's underlying reasoning chain-of-thought is server-encrypted for
 // o1/o3-style models. We only surface the human-readable summaries OpenAI
@@ -1106,37 +1155,37 @@ func TestExtractResponseContent_OpenAIReasoningContentMissingContent(t *testing.
 // are intentionally not surfaced.
 func TestExtractResponseContent_OpenAIResponsesReasoningSummary(t *testing.T) {
 	cases := []struct {
-		name      string
-		body      string
-		parseable string
-		rawOn     string
+		name        string
+		body        string
+		parseable   string
+		reasoningOn string
 	}{
 		{
-			name:      "message only",
-			body:      `{"output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}],"role":"assistant"}]}`,
-			parseable: "Hello",
-			rawOn:     "Hello",
+			name:        "message only",
+			body:        `{"output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}],"role":"assistant"}]}`,
+			parseable:   "Hello",
+			reasoningOn: "",
 		},
 		{
-			// Reasoning before message: raw under opt-in is summary + message.
+			// Reasoning before message: reasoning under opt-in is just the summary.
 			name: "reasoning before message",
 			body: `{"output":[
 				{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]},
 				{"type":"message","content":[{"type":"output_text","text":"Hello"}],"role":"assistant"}
 			]}`,
-			parseable: "Hello",
-			rawOn:     "thoughtHello",
+			parseable:   "Hello",
+			reasoningOn: "thought",
 		},
 		{
-			// Reasoning AFTER message: raw under opt-in preserves output
-			// order, so it is message + summary (no canonical reorder).
+			// Reasoning AFTER message: reasoning under opt-in preserves output
+			// order of reasoning items.
 			name: "reasoning after message",
 			body: `{"output":[
 				{"type":"message","content":[{"type":"output_text","text":"Hello"}],"role":"assistant"},
 				{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]}
 			]}`,
-			parseable: "Hello",
-			rawOn:     "Hellothought",
+			parseable:   "Hello",
+			reasoningOn: "thought",
 		},
 		{
 			// Multiple reasoning items, multiple summary[] entries each, all
@@ -1153,22 +1202,20 @@ func TestExtractResponseContent_OpenAIResponsesReasoningSummary(t *testing.T) {
 					{"type":"summary_text","text":"r2b"}
 				]}
 			]}`,
-			parseable: "Hi",
-			rawOn:     "r1ar1bHir2ar2b",
+			parseable:   "Hi",
+			reasoningOn: "r1ar1br2ar2b",
 		},
 		{
 			// Reasoning + message-with-empty-content-array: parseable is
 			// empty (valid — empty content is a valid Responses message),
-			// raw under opt-in is just the summary. This proves the message
-			// item is still required (no error here because a message item
-			// with empty content IS present).
+			// reasoning under opt-in is the summary.
 			name: "reasoning plus message with empty content array",
 			body: `{"output":[
 				{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]},
 				{"type":"message","content":[],"role":"assistant"}
 			]}`,
-			parseable: "",
-			rawOn:     "thought",
+			parseable:   "",
+			reasoningOn: "thought",
 		},
 		{
 			// Malformed reasoning summary shape: non-array summary, non-object
@@ -1185,40 +1232,50 @@ func TestExtractResponseContent_OpenAIResponsesReasoningSummary(t *testing.T) {
 				]},
 				{"type":"message","content":[{"type":"output_text","text":"Hello"}],"role":"assistant"}
 			]}`,
-			parseable: "Hello",
-			rawOn:     "validHello",
+			parseable:   "Hello",
+			reasoningOn: "valid",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			parseableOff, rawOff, err := ExtractResponseContent("openai-responses", tc.body, false)
+			parseableOff, rawOff, reasoningOff, err := ExtractResponseContent("openai-responses", tc.body, false)
 			if err != nil {
-				t.Fatalf("ExtractResponseContent(includeThinking=false) returned error: %v", err)
+				t.Fatalf("ExtractResponseContent(includeReasoning=false) returned error: %v", err)
 			}
 			if parseableOff != tc.parseable {
 				t.Errorf("flag=false parseable = %q, want %q", parseableOff, tc.parseable)
 			}
-			// Flag-off: raw must mirror parseable byte-for-byte.
+			// Flag-off: raw mirrors parseable byte-for-byte.
 			if rawOff != parseableOff {
 				t.Errorf("flag=false raw = %q, want raw == parseable = %q", rawOff, parseableOff)
 			}
+			if reasoningOff != "" {
+				t.Errorf("flag=false reasoning = %q, want empty", reasoningOff)
+			}
 
-			parseableOn, rawOn, err := ExtractResponseContent("openai-responses", tc.body, true)
+			parseableOn, rawOn, reasoningOn, err := ExtractResponseContent("openai-responses", tc.body, true)
 			if err != nil {
-				t.Fatalf("ExtractResponseContent(includeThinking=true) returned error: %v", err)
+				t.Fatalf("ExtractResponseContent(includeReasoning=true) returned error: %v", err)
 			}
 			if parseableOn != tc.parseable {
 				t.Errorf("flag=true parseable = %q, want %q", parseableOn, tc.parseable)
 			}
-			if rawOn != tc.rawOn {
-				t.Errorf("flag=true raw = %q, want %q", rawOn, tc.rawOn)
+			// Raw is text-only regardless of flag.
+			if rawOn != parseableOn {
+				t.Errorf("flag=true raw = %q, want raw == parseable = %q (raw is text-only regardless of flag)", rawOn, parseableOn)
+			}
+			if reasoningOn != tc.reasoningOn {
+				t.Errorf("flag=true reasoning = %q, want %q", reasoningOn, tc.reasoningOn)
 			}
 
-			// Structural parseable invariance: byte-identical across both flag
-			// values for every successful fixture.
+			// Structural parseable + raw invariance: byte-identical across
+			// both flag values for every successful fixture.
 			if parseableOff != parseableOn {
-				t.Errorf("parseable diverged across includeThinking: false=%q true=%q", parseableOff, parseableOn)
+				t.Errorf("parseable diverged across includeReasoning: false=%q true=%q", parseableOff, parseableOn)
+			}
+			if rawOff != rawOn {
+				t.Errorf("raw diverged across includeReasoning: false=%q true=%q", rawOff, rawOn)
 			}
 		})
 	}
@@ -1234,28 +1291,31 @@ func TestExtractResponseContent_OpenAIResponsesReasoningSummaryNoMessageStillErr
 	body := `{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"thought"}]}]}`
 
 	for _, flag := range []bool{false, true} {
-		parseable, raw, err := ExtractResponseContent("openai-responses", body, flag)
+		parseable, raw, reasoning, err := ExtractResponseContent("openai-responses", body, flag)
 		if err == nil {
-			t.Errorf("includeThinking=%v: expected error for missing message item (reasoning-only response is not a valid response)", flag)
+			t.Errorf("includeReasoning=%v: expected error for missing message item (reasoning-only response is not a valid response)", flag)
 		}
 		if parseable != "" {
-			t.Errorf("includeThinking=%v: expected empty parseable on error, got %q", flag, parseable)
+			t.Errorf("includeReasoning=%v: expected empty parseable on error, got %q", flag, parseable)
 		}
 		if raw != "" {
-			t.Errorf("includeThinking=%v: expected empty raw on error (no telemetry leakage), got %q", flag, raw)
+			t.Errorf("includeReasoning=%v: expected empty raw on error (no telemetry leakage), got %q", flag, raw)
+		}
+		if reasoning != "" {
+			t.Errorf("includeReasoning=%v: expected empty reasoning on error, got %q", flag, reasoning)
 		}
 	}
 }
 
 func TestExtractResponseContent_UnsupportedProvider(t *testing.T) {
-	_, _, err := ExtractResponseContent("aws-bedrock", `{}`, false)
+	_, _, _, err := ExtractResponseContent("aws-bedrock", `{}`, false)
 	if err == nil {
 		t.Fatal("expected error for unsupported provider")
 	}
 }
 
 func TestExtractResponseContent_UnknownProvider(t *testing.T) {
-	_, _, err := ExtractResponseContent("some-unknown-provider", `{}`, false)
+	_, _, _, err := ExtractResponseContent("some-unknown-provider", `{}`, false)
 	if err == nil {
 		t.Fatal("expected error for unknown provider")
 	}
@@ -1265,7 +1325,7 @@ func TestExtractResponseContent_MalformedJSON(t *testing.T) {
 	// Non-empty body that isn't valid JSON → error (can't extract content)
 	for _, provider := range []string{"openai", "anthropic", "google-ai"} {
 		t.Run(provider, func(t *testing.T) {
-			_, _, err := ExtractResponseContent(provider, `{invalid json}`, false)
+			_, _, _, err := ExtractResponseContent(provider, `{invalid json}`, false)
 			if err == nil {
 				t.Fatalf("expected error for malformed JSON with provider %s", provider)
 			}
@@ -1277,7 +1337,7 @@ func TestExtractResponseContent_TrailingGarbage(t *testing.T) {
 	// Valid JSON followed by trailing garbage — gjson would accept this
 	// but gjson.Valid rejects it. Should error, not false-success.
 	body := `{"choices":[{"message":{"content":"ok"}}]} garbage`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for JSON with trailing garbage")
 	}
@@ -1286,7 +1346,7 @@ func TestExtractResponseContent_TrailingGarbage(t *testing.T) {
 func TestExtractResponseContent_TruncatedJSON(t *testing.T) {
 	// Truncated JSON that gjson can still partially query — should error.
 	body := `{"choices":[{"message":{"content":"partial`
-	_, _, err := ExtractResponseContent("openai", body, false)
+	_, _, _, err := ExtractResponseContent("openai", body, false)
 	if err == nil {
 		t.Fatal("expected error for truncated JSON")
 	}
@@ -1304,7 +1364,7 @@ func TestExtractResponseContent_MissingExpectedFields(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
-			_, _, err := ExtractResponseContent(tt.provider, tt.body, false)
+			_, _, _, err := ExtractResponseContent(tt.provider, tt.body, false)
 			if err == nil {
 				t.Fatalf("expected error for %s with missing fields", tt.provider)
 			}
@@ -1316,7 +1376,7 @@ func TestExtractResponseContent_EmptyBody(t *testing.T) {
 	// An LLM provider should never return a valid 200 with an empty body.
 	for _, provider := range []string{"openai", "anthropic", "google-ai"} {
 		t.Run(provider, func(t *testing.T) {
-			_, _, err := ExtractResponseContent(provider, "", false)
+			_, _, _, err := ExtractResponseContent(provider, "", false)
 			if err == nil {
 				t.Fatalf("expected error for empty body with provider %s", provider)
 			}
@@ -1325,7 +1385,7 @@ func TestExtractResponseContent_EmptyBody(t *testing.T) {
 }
 
 func TestExtractResponseContent_WhitespaceOnlyBody(t *testing.T) {
-	_, _, err := ExtractResponseContent("openai", "   \n\t  ", false)
+	_, _, _, err := ExtractResponseContent("openai", "   \n\t  ", false)
 	if err == nil {
 		t.Fatal("expected error for whitespace-only body")
 	}
@@ -1354,7 +1414,7 @@ func TestCallProviderWhitelistMatchesExtractor(t *testing.T) {
 			if !ok {
 				t.Fatalf("provider %q in callSupportedProviders but no test body defined", provider)
 			}
-			parseable, _, err := ExtractResponseContent(provider, body, false)
+			parseable, _, _, err := ExtractResponseContent(provider, body, false)
 			if err != nil {
 				t.Fatalf("ExtractResponseContent(%q) returned error: %v", provider, err)
 			}

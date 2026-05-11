@@ -15,7 +15,11 @@ import (
 
 type recordingPublisher struct {
 	dataFrames     [][]byte
+	dataRaw        []string
+	dataReasoning  []string
 	finalFrames    [][]byte
+	finalRaw       []string
+	finalReasoning []string
 	metadataFrames [][]byte
 	resetCount     int
 	errors         []string
@@ -23,15 +27,19 @@ type recordingPublisher struct {
 	errorDetails   [][]byte
 }
 
-func (p *recordingPublisher) PublishData(data []byte, raw string) error {
+func (p *recordingPublisher) PublishData(data []byte, raw, reasoning string) error {
 	dup := append([]byte(nil), data...)
 	p.dataFrames = append(p.dataFrames, dup)
+	p.dataRaw = append(p.dataRaw, raw)
+	p.dataReasoning = append(p.dataReasoning, reasoning)
 	return nil
 }
 
-func (p *recordingPublisher) PublishFinal(data []byte, raw string) error {
+func (p *recordingPublisher) PublishFinal(data []byte, raw, reasoning string) error {
 	dup := append([]byte(nil), data...)
 	p.finalFrames = append(p.finalFrames, dup)
+	p.finalRaw = append(p.finalRaw, raw)
+	p.finalReasoning = append(p.finalReasoning, reasoning)
 	return nil
 }
 
@@ -370,4 +378,84 @@ func TestConsumeStream_ClassifiesUnclassifiedErrorsAsWorkerError(t *testing.T) {
 	if len(publisher.errorCodes) != 1 || publisher.errorCodes[0] != apierror.CodeWorkerError {
 		t.Errorf("error code = %q, want %q", publisher.errorCodes, apierror.CodeWorkerError)
 	}
+}
+
+// TestConsumeStream_ForwardsRawAndReasoningAcrossStreamAndFinal pins the
+// pool→publisher contract that the per-frame raw and reasoning values
+// flow through to PublishData/PublishFinal in stream-with-raw mode.
+//
+// The bridge accumulates raw and reasoning deltas separately across
+// successive Stream frames and forwards the cumulative pair on each
+// PublishData call; the Final frame carries the complete values
+// verbatim. A regression that dropped or swapped either field would
+// silently degrade the wire shape for clients pinned on either channel.
+//
+// Distinct, non-empty values for raw vs reasoning are critical here:
+// equal-or-empty fixtures would also pass under a buggy "publisher
+// duplicates raw into reasoning" implementation.
+func TestConsumeStream_ForwardsRawAndReasoningAcrossStreamAndFinal(t *testing.T) {
+	t.Parallel()
+
+	results := make(chan *workerplugin.StreamResult, 3)
+	// Two stream deltas + one final. The bridge accumulates raw and
+	// reasoning separately on the way to PublishData; the final frame
+	// carries the complete values directly.
+	results <- &workerplugin.StreamResult{
+		Kind:      workerplugin.StreamResultKindStream,
+		Data:      []byte(`{"x":1}`),
+		Raw:       "raw-a ",
+		Reasoning: "think-a ",
+	}
+	results <- &workerplugin.StreamResult{
+		Kind:      workerplugin.StreamResultKindStream,
+		Data:      []byte(`{"x":2}`),
+		Raw:       "raw-b",
+		Reasoning: "think-b",
+	}
+	results <- &workerplugin.StreamResult{
+		Kind:      workerplugin.StreamResultKindFinal,
+		Data:      []byte(`{"x":3}`),
+		Raw:       "raw-final",
+		Reasoning: "think-final",
+	}
+	close(results)
+
+	publisher := &recordingPublisher{}
+	consumeStream(results, publisher, bamlutils.StreamModeStreamWithRaw, false)
+
+	if got, want := len(publisher.dataFrames), 2; got != want {
+		t.Fatalf("dataFrames len = %d, want %d", got, want)
+	}
+	// PublishData receives the accumulated raw + reasoning at each
+	// stream frame. The bridge accumulates deltas before publishing.
+	if got, want := publisher.dataRaw, []string{"raw-a ", "raw-a raw-b"}; !slicesEqual(got, want) {
+		t.Errorf("dataRaw = %q, want %q", got, want)
+	}
+	if got, want := publisher.dataReasoning, []string{"think-a ", "think-a think-b"}; !slicesEqual(got, want) {
+		t.Errorf("dataReasoning = %q, want %q", got, want)
+	}
+
+	if got, want := len(publisher.finalFrames), 1; got != want {
+		t.Fatalf("finalFrames len = %d, want %d", got, want)
+	}
+	// PublishFinal receives the final's own raw + reasoning directly
+	// (the orchestrator delivers complete values on the Final frame).
+	if got, want := publisher.finalRaw, []string{"raw-final"}; !slicesEqual(got, want) {
+		t.Errorf("finalRaw = %q, want %q", got, want)
+	}
+	if got, want := publisher.finalReasoning, []string{"think-final"}; !slicesEqual(got, want) {
+		t.Errorf("finalReasoning = %q, want %q", got, want)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
