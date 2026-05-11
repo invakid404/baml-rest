@@ -1498,8 +1498,33 @@ func TestParseShorthandClient(t *testing.T) {
 		{"aws-bedrock", "aws-bedrock/claude-3", "aws-bedrock", "claude-3", true},
 		{"baml-openai-chat legacy alias", "baml-openai-chat/gpt-4", "baml-openai-chat", "gpt-4", true},
 		{"baml-anthropic-chat legacy alias", "baml-anthropic-chat/claude-3", "baml-anthropic-chat", "claude-3", true},
+		// Legacy alias: `baml-azure-chat` is accepted by upstream
+		// BAML's ClientProvider::from_str (clientspec.rs:125, v0.219.0)
+		// and passes through canonicaliseProvider unchanged — only the
+		// strategy aliases (round-robin / fallback) get folded.
+		{"baml-azure-chat legacy alias", "baml-azure-chat/my-deployment", "baml-azure-chat", "my-deployment", true},
+		// Legacy alias: `baml-ollama-chat` is accepted by upstream
+		// BAML's ClientProvider::from_str (clientspec.rs:129, v0.219.0)
+		// and passes through canonicaliseProvider unchanged.
+		{"baml-ollama-chat legacy alias", "baml-ollama-chat/llama3", "baml-ollama-chat", "llama3", true},
 		{"fallback strategy shorthand canonicalised", "fallback/foo", "baml-fallback", "foo", true},
+		// Strategy alias: `baml-fallback` is the already-canonical
+		// spelling — upstream accepts it (clientspec.rs:140) and
+		// canonicaliseProvider returns it as-is. Unlike round-robin,
+		// the canonical-output and upstream-input forms agree here,
+		// so this row complements the "fallback" row above without
+		// the canonical-vs-input asymmetry that the no-hyphen
+		// `baml-roundrobin/foo` negative row pins.
+		{"baml-fallback strategy shorthand canonical", "baml-fallback/foo", "baml-fallback", "foo", true},
 		{"round-robin strategy shorthand canonicalised", "round-robin/foo", "baml-roundrobin", "foo", true},
+		// Strategy alias: `baml-round-robin` (hyphenated) IS accepted
+		// by upstream BAML's ClientProvider::from_str
+		// (clientspec.rs:142) and canonicaliseProvider folds it to
+		// `baml-roundrobin` (no hyphen — baml-rest's emit-side
+		// canonical). Contrast with the negative `baml-roundrobin/foo`
+		// row below, where the no-hyphen form is explicitly rejected
+		// because upstream does not accept it as shorthand input.
+		{"baml-round-robin strategy shorthand canonicalised", "baml-round-robin/foo", "baml-roundrobin", "foo", true},
 		// Negative: baml-rest's INTERNAL canonical spelling for the
 		// round-robin strategy is `baml-roundrobin` (no hyphen between
 		// "round" and "robin"). Upstream BAML's ClientProvider::from_str
