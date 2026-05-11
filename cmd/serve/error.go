@@ -192,8 +192,8 @@ func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
 // them, so off-contract values are dropped rather than forwarded:
 //
 //   - code is preserved only if it's worker-facing
-//     (apierror.Code.IsWorkerFacing): worker_error, parse_error, or
-//     internal_error. Request-layer codes (invalid_json,
+//     (apierror.Code.IsWorkerFacing): worker_error, provider_error,
+//     parse_error, or internal_error. Request-layer codes (invalid_json,
 //     request_canceled, etc.) and pool-admission codes
 //     (worker_unavailable) are owned by the host — honoring a worker
 //     that claimed e.g. request_canceled would let worker-side text

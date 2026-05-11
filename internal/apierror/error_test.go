@@ -107,6 +107,7 @@ func TestIsWorkerFacing(t *testing.T) {
 		want bool
 	}{
 		{CodeWorkerError, true},
+		{CodeProviderError, true},
 		{CodeParseError, true},
 		{CodeInternalError, true},
 		// Request-layer (host-owned) — not worker-facing.
