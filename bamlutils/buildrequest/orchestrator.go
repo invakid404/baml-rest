@@ -143,9 +143,6 @@ func IsProviderSupported(provider string) bool {
 // from supportedProviders because the streaming path requires SSE format
 // compatibility while the non-streaming path requires JSON response format
 // compatibility — different constraints that may evolve independently.
-//
-// "aws-bedrock" is excluded pending verification that BAML's Request API
-// supports Bedrock (see design doc Section 5.3).
 var callSupportedProviders = map[string]bool{
 	"openai":           true,
 	"openai-generic":   true,
@@ -156,6 +153,15 @@ var callSupportedProviders = map[string]bool{
 	"anthropic":        true,
 	"google-ai":        true,
 	"vertex-ai":        true,
+	// aws-bedrock: call only (v0.219+). Streaming lands in #243 PR 3.
+	// See #243 for scope. PR1-bedrock breadcrumb: PR 4 scrubs comments.
+	// Scope cuts active in PR 1: v0.204/v0.215 fall through to legacy
+	// (codegen's _buildCallRequest is gated on introspected.Request,
+	// which only resolves on v0.219), default credential chain only
+	// (no static .baml creds), default Bedrock runtime endpoint only
+	// (no endpoint_url override). All three remaining items are
+	// tracked in #243 PR 4.
+	"aws-bedrock": true,
 }
 
 // IsCallProviderSupported returns true if the provider's non-streaming JSON

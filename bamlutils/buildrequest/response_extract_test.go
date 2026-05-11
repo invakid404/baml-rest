@@ -1307,13 +1307,6 @@ func TestExtractResponseContent_OpenAIResponsesReasoningSummaryNoMessageStillErr
 	}
 }
 
-func TestExtractResponseContent_UnsupportedProvider(t *testing.T) {
-	_, _, _, err := ExtractResponseContent("aws-bedrock", `{}`, false)
-	if err == nil {
-		t.Fatal("expected error for unsupported provider")
-	}
-}
-
 func TestExtractResponseContent_UnknownProvider(t *testing.T) {
 	_, _, _, err := ExtractResponseContent("some-unknown-provider", `{}`, false)
 	if err == nil {
@@ -1391,6 +1384,193 @@ func TestExtractResponseContent_WhitespaceOnlyBody(t *testing.T) {
 	}
 }
 
+// ======== AWS Bedrock tests ========
+
+func TestExtractResponseContent_AWSBedrock_Basic(t *testing.T) {
+	body := `{"output":{"message":{"role":"assistant","content":[{"text":"Hello from Bedrock"}]}},"stopReason":"end_turn"}`
+	parseable, raw, reasoning, err := ExtractResponseContent("aws-bedrock", body, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if parseable != "Hello from Bedrock" {
+		t.Errorf("parseable = %q, want %q", parseable, "Hello from Bedrock")
+	}
+	if raw != parseable {
+		t.Errorf("raw = %q, want same as parseable (%q)", raw, parseable)
+	}
+	if reasoning != "" {
+		t.Errorf("reasoning = %q, want empty (flag off)", reasoning)
+	}
+}
+
+func TestExtractResponseContent_AWSBedrock_MultiTextBlocks(t *testing.T) {
+	body := `{"output":{"message":{"role":"assistant","content":[
+		{"text":"Part one. "},
+		{"text":"Part two."}
+	]}}}`
+	parseable, _, _, err := ExtractResponseContent("aws-bedrock", body, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if parseable != "Part one. Part two." {
+		t.Errorf("parseable = %q, want %q", parseable, "Part one. Part two.")
+	}
+}
+
+func TestExtractResponseContent_AWSBedrock_IncludeReasoning(t *testing.T) {
+	// Reasoning text is surfaced only with includeReasoning=true. The
+	// parseable + raw invariance across the flag is asserted for every
+	// fixture.
+	cases := []struct {
+		name        string
+		body        string
+		parseable   string
+		raw         string
+		reasoningOn string
+	}{
+		{
+			name: "text then reasoning",
+			body: `{"output":{"message":{"role":"assistant","content":[
+				{"text":"Visible answer"},
+				{"reasoningContent":{"reasoningText":{"text":"chain-of-thought","signature":"sig123"}}}
+			]}}}`,
+			parseable:   "Visible answer",
+			raw:         "Visible answer",
+			reasoningOn: "chain-of-thought",
+		},
+		{
+			name: "reasoning then text preserves order",
+			body: `{"output":{"message":{"role":"assistant","content":[
+				{"reasoningContent":{"reasoningText":{"text":"first thought "}}},
+				{"text":"AC"},
+				{"reasoningContent":{"reasoningText":{"text":"second thought"}}}
+			]}}}`,
+			parseable:   "AC",
+			raw:         "AC",
+			reasoningOn: "first thought second thought",
+		},
+		{
+			name: "reasoning only (no text)",
+			body: `{"output":{"message":{"role":"assistant","content":[
+				{"reasoningContent":{"reasoningText":{"text":"all-thought"}}}
+			]}}}`,
+			parseable:   "",
+			raw:         "",
+			reasoningOn: "all-thought",
+		},
+		{
+			// Reasoning block with no reasoningText field — silently
+			// skipped on the reasoning channel (PR1-bedrock scope cut
+			// for signature/redactedContent), but the block is still
+			// recognised so the no-recognised-content guard does not
+			// fire.
+			name: "reasoning block with no text",
+			body: `{"output":{"message":{"role":"assistant","content":[
+				{"text":"Answer"},
+				{"reasoningContent":{"redactedContent":"opaque-bytes"}}
+			]}}}`,
+			parseable:   "Answer",
+			raw:         "Answer",
+			reasoningOn: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parseableOff, rawOff, reasoningOff, err := ExtractResponseContent("aws-bedrock", tc.body, false)
+			if err != nil {
+				t.Fatalf("flag=false: unexpected error: %v", err)
+			}
+			if parseableOff != tc.parseable {
+				t.Errorf("flag=false parseable = %q, want %q", parseableOff, tc.parseable)
+			}
+			if rawOff != tc.raw {
+				t.Errorf("flag=false raw = %q, want %q", rawOff, tc.raw)
+			}
+			if reasoningOff != "" {
+				t.Errorf("flag=false reasoning = %q, want empty", reasoningOff)
+			}
+
+			parseableOn, rawOn, reasoningOn, err := ExtractResponseContent("aws-bedrock", tc.body, true)
+			if err != nil {
+				t.Fatalf("flag=true: unexpected error: %v", err)
+			}
+			if parseableOn != tc.parseable {
+				t.Errorf("flag=true parseable = %q, want %q", parseableOn, tc.parseable)
+			}
+			if rawOn != tc.raw {
+				t.Errorf("flag=true raw = %q, want %q (raw is text-only regardless of flag)", rawOn, tc.raw)
+			}
+			if reasoningOn != tc.reasoningOn {
+				t.Errorf("flag=true reasoning = %q, want %q", reasoningOn, tc.reasoningOn)
+			}
+
+			if parseableOff != parseableOn {
+				t.Errorf("parseable diverged across includeReasoning: false=%q true=%q", parseableOff, parseableOn)
+			}
+			if rawOff != rawOn {
+				t.Errorf("raw diverged across includeReasoning: false=%q true=%q (raw should be flag-invariant)", rawOff, rawOn)
+			}
+		})
+	}
+}
+
+func TestExtractResponseContent_AWSBedrock_MissingOutputMessage(t *testing.T) {
+	body := `{"stopReason":"end_turn"}`
+	_, _, _, err := ExtractResponseContent("aws-bedrock", body, false)
+	if err == nil {
+		t.Fatal("expected error for missing output.message")
+	}
+}
+
+func TestExtractResponseContent_AWSBedrock_ContentNotArray(t *testing.T) {
+	body := `{"output":{"message":{"role":"assistant","content":"not an array"}}}`
+	_, _, _, err := ExtractResponseContent("aws-bedrock", body, false)
+	if err == nil {
+		t.Fatal("expected error for non-array content")
+	}
+}
+
+func TestExtractResponseContent_AWSBedrock_NonObjectElement(t *testing.T) {
+	body := `{"output":{"message":{"role":"assistant","content":["not an object"]}}}`
+	_, _, _, err := ExtractResponseContent("aws-bedrock", body, false)
+	if err == nil {
+		t.Fatal("expected error for non-object element in content array")
+	}
+}
+
+func TestExtractResponseContent_AWSBedrock_NonStringText(t *testing.T) {
+	body := `{"output":{"message":{"role":"assistant","content":[{"text":123}]}}}`
+	_, _, _, err := ExtractResponseContent("aws-bedrock", body, false)
+	if err == nil {
+		t.Fatal("expected error for non-string text field")
+	}
+}
+
+func TestExtractResponseContent_AWSBedrock_EmptyContent(t *testing.T) {
+	// Empty content array means no recognised blocks — should error
+	// rather than return ("", "", "", nil), so a corrupted 200 cannot
+	// look like a valid empty completion.
+	body := `{"output":{"message":{"role":"assistant","content":[]}}}`
+	_, _, _, err := ExtractResponseContent("aws-bedrock", body, false)
+	if err == nil {
+		t.Fatal("expected error for empty content array")
+	}
+}
+
+func TestExtractResponseContent_AWSBedrock_ToolUseOnly(t *testing.T) {
+	// Tool-use blocks are out of scope for PR 1. A response that
+	// contains ONLY unrecognised blocks must error — silently
+	// returning "" would let a tool-call-only completion masquerade as
+	// an empty success.
+	body := `{"output":{"message":{"role":"assistant","content":[
+		{"toolUse":{"name":"foo","input":{}}}
+	]}}}`
+	_, _, _, err := ExtractResponseContent("aws-bedrock", body, false)
+	if err == nil {
+		t.Fatal("expected error when only tool-use blocks are present (PR 1 scope cut)")
+	}
+}
+
 // TestCallProviderWhitelistMatchesExtractor verifies that every provider
 // in callSupportedProviders has a corresponding case in
 // ExtractResponseContent. This prevents desynchronization.
@@ -1406,6 +1586,7 @@ func TestCallProviderWhitelistMatchesExtractor(t *testing.T) {
 		"anthropic":        `{"content":[{"type":"text","text":"test"}]}`,
 		"google-ai":        `{"candidates":[{"content":{"parts":[{"text":"test"}]}}]}`,
 		"vertex-ai":        `{"candidates":[{"content":{"parts":[{"text":"test"}]}}]}`,
+		"aws-bedrock":      `{"output":{"message":{"role":"assistant","content":[{"text":"test"}]}}}`,
 	}
 
 	for provider := range callSupportedProviders {
