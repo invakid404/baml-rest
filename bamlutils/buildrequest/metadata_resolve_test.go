@@ -156,11 +156,11 @@ func TestBuildSingleProviderPlan(t *testing.T) {
 	if plan.RetryMax != nil {
 		t.Errorf("RetryMax should be nil when policy is nil; got %v", plan.RetryMax)
 	}
-	// Issue #237 PR 1 introduces FallbackTargets / FallbackRoundRobin
-	// as vocabulary fields. Single-provider plans never have fallback
-	// children to describe, so the builder must leave both nil. PR 2
-	// only ever populates them for fallback-chain plans whose immediate
-	// RR children resolve to a BR-drivable leaf.
+	// FallbackTargets / FallbackRoundRobin are populated only on
+	// fallback-chain plans whose immediate RR children centrally
+	// resolve to a BR-drivable leaf. Single-provider plans never have
+	// fallback children to describe, so the builder must leave both
+	// nil.
 	if plan.FallbackTargets != nil {
 		t.Errorf("single-provider plan must not set FallbackTargets; got %v", plan.FallbackTargets)
 	}
@@ -194,10 +194,11 @@ func TestBuildFallbackChainPlan_APIFieldCarriesThrough(t *testing.T) {
 }
 
 // TestBuildFallbackChainPlan_FallbackTargetFieldsLeftEmpty pins that
-// the PR 1 vocabulary additions stay nil under the existing plan-builder
-// signatures (issue #237). PR 2 introduces the producer that populates
-// these maps for the narrow centralised-RR case; PR 1 keeps the wire
-// shape identical to pre-#237 for every plan the builders emit.
+// the 4-tuple plan builders never populate FallbackTargets /
+// FallbackRoundRobin. The typed BuildFallbackChainPlanFromResolution
+// is the only producer of these fields; the 4-tuple builders feed the
+// legacy metadata classifier, which describes the chain shape for
+// observability and never carries per-child Targets.
 func TestBuildFallbackChainPlan_FallbackTargetFieldsLeftEmpty(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
 	chain := []string{"A", "B"}
@@ -206,37 +207,38 @@ func TestBuildFallbackChainPlan_FallbackTargetFieldsLeftEmpty(t *testing.T) {
 	t.Run("adapter-based builder", func(t *testing.T) {
 		plan := BuildFallbackChainPlan(adapter, "Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest, "")
 		if plan.FallbackTargets != nil {
-			t.Errorf("FallbackTargets must be nil before PR 2 wires the producer; got %v", plan.FallbackTargets)
+			t.Errorf("FallbackTargets must be nil on 4-tuple plan; got %v", plan.FallbackTargets)
 		}
 		if plan.FallbackRoundRobin != nil {
-			t.Errorf("FallbackRoundRobin must be nil before PR 2 wires the producer; got %v", plan.FallbackRoundRobin)
+			t.Errorf("FallbackRoundRobin must be nil on 4-tuple plan; got %v", plan.FallbackRoundRobin)
 		}
 		// JSON encoding must omit the new keys entirely so the wire
-		// shape remains byte-identical to pre-#237 for these plans.
+		// shape stays minimal for plans whose builder doesn't populate
+		// the fallback-target vocabulary.
 		data, err := json.Marshal(plan)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
 		if got := string(data); strings.Contains(got, `"fallback_targets"`) || strings.Contains(got, `"fallback_round_robin"`) {
-			t.Errorf("planned JSON must not carry the new fallback-target keys; got %s", got)
+			t.Errorf("planned JSON must not carry the fallback-target keys for 4-tuple plans; got %s", got)
 		}
 	})
 
 	t.Run("client-name builder", func(t *testing.T) {
 		plan := BuildFallbackChainPlanForClient("Strategy", chain, providers, nil, nil, BuildRequestAPIStreamRequest, "")
 		if plan.FallbackTargets != nil {
-			t.Errorf("FallbackTargets must be nil before PR 2 wires the producer; got %v", plan.FallbackTargets)
+			t.Errorf("FallbackTargets must be nil on 4-tuple plan; got %v", plan.FallbackTargets)
 		}
 		if plan.FallbackRoundRobin != nil {
-			t.Errorf("FallbackRoundRobin must be nil before PR 2 wires the producer; got %v", plan.FallbackRoundRobin)
+			t.Errorf("FallbackRoundRobin must be nil on 4-tuple plan; got %v", plan.FallbackRoundRobin)
 		}
 	})
 }
 
 // TestBuildLegacyMetadataPlan_FallbackTargetFieldsLeftEmpty pins the
-// same vocabulary-only invariant for the legacy plan builders. PR 1
-// never produces fallback-target metadata on the legacy path either —
-// the centralisation behaviour PR 2 adds is BuildRequest-only.
+// same vocabulary-only invariant for the legacy plan builders. The
+// legacy path never carries fallback-target metadata — centralisation
+// is BuildRequest-only.
 func TestBuildLegacyMetadataPlan_FallbackTargetFieldsLeftEmpty(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
 	plan := BuildLegacyMetadataPlan(adapter, "MyClient", "aws-bedrock", nil, nil, IsProviderSupported, nil)

@@ -63,17 +63,17 @@ type CallConfig struct {
 	LegacyChildren map[string]bool
 
 	// FallbackTargets mirrors StreamConfig.FallbackTargets — see that
-	// field (and Metadata.FallbackTargets) for the contract. PR 1 adds
-	// the field; PR 2 (issue #237) wires the call-side BuildRequest
-	// dispatch loop to honour FallbackTargets[child] when computing the
-	// WithClient target for centrally-unwrapped RR fallback children.
+	// field (and Metadata.FallbackTargets) for the contract. The call-
+	// side BuildRequest dispatch loop honours FallbackTargets[child]
+	// when computing the WithClient target for centrally-unwrapped RR
+	// fallback children.
 	FallbackTargets map[string]string
 
 	// FallbackRoundRobin mirrors StreamConfig.FallbackRoundRobin —
 	// per-child RR decisions for fallback children resolved through
-	// BuildRequest centralization. PR 1 adds the field; PR 2 populates
-	// it from resolver output so outgoing planned metadata describes
-	// the selected leaf alongside the RR decision behind it.
+	// BuildRequest centralization. Populated from resolver output so
+	// outgoing planned metadata describes the selected leaf alongside
+	// the RR decision behind it.
 	FallbackRoundRobin map[string]*bamlutils.RoundRobinInfo
 
 	// MetadataPlan is the pre-computed planned metadata for this request.
@@ -388,9 +388,9 @@ func RunCallOrchestration(
 				continue
 			}
 			provider := config.ClientProviders[child]
-			// Wrapper-vs-target identity (issue #237 PR 2): when an
-			// immediate RR fallback child was centrally unwrapped to a
-			// leaf, FallbackTargets[child] names that leaf. Mirrors the
+			// Wrapper-vs-target identity: when an immediate RR fallback
+			// child was centrally unwrapped to a leaf,
+			// FallbackTargets[child] names that leaf. Mirrors the
 			// streaming orchestrator — see RunStreamOrchestration for
 			// the full rationale.
 			target := child
@@ -433,8 +433,8 @@ func RunCallOrchestration(
 		outcome.LegacyChildren = nil
 		// See the streaming orchestrator's outcome builder for the
 		// rationale on clearing these planned-only fallback-target
-		// fields — issue #237's planned shape describes intent, the
-		// realised winner already appears in WinnerClient.
+		// fields — the planned shape describes intent, the realised
+		// winner already appears in WinnerClient.
 		outcome.FallbackTargets = nil
 		outcome.FallbackRoundRobin = nil
 		outcome.Strategy = ""

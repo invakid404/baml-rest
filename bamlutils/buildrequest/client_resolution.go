@@ -133,9 +133,10 @@ func ResolveEffectiveClient(
 	// managed workers observe a single rotation across the fleet —
 	// without it, each worker would rotate off its own coordinator and
 	// round-robin would collapse into independent per-worker draws.
-	if reqAdvancer := adapter.RoundRobinAdvancer(); reqAdvancer != nil {
-		advancer = reqAdvancer
-	}
+	// PreferAdvancer is the shared seam top-level and fallback-RR
+	// resolution use; routing both through it keeps the precedence rule
+	// in one place.
+	advancer = PreferAdvancer(adapter, advancer)
 
 	res, err := roundrobin.Resolve(roundrobin.ResolveInput{
 		ClientName:      clientName,
@@ -162,6 +163,21 @@ func ResolveEffectiveClient(
 		return "", nil, err
 	}
 	return res.Selected, res.Info, nil
+}
+
+// PreferAdvancer returns the per-request RoundRobinAdvancer installed on
+// the adapter when set, otherwise the supplied fallback. Mirrors the
+// preference ResolveEffectiveClient applies for top-level RR so that
+// nested fallback-RR resolution observes the same advancer — and the
+// same SharedState idempotency key under pool retries — that top-level
+// RR uses. Callers pass the package-level Coordinator as the fallback
+// so standalone workers without a RemoteAdvancer still rotate
+// deterministically against the introspected starts.
+func PreferAdvancer(adapter bamlutils.Adapter, fallback roundrobin.Advancer) roundrobin.Advancer {
+	if a := adapter.RoundRobinAdvancer(); a != nil {
+		return a
+	}
+	return fallback
 }
 
 // ResolvePrimaryClient returns the request's effective client name after
@@ -269,7 +285,7 @@ func findRuntimeClient(reg *bamlutils.ClientRegistry, clientName string) *bamlut
 // surfaces the empty value verbatim (rather than falling through to
 // the introspected provider) so the codegen gate routes the request
 // to legacy. This helper lets the metadata classifier distinguish
-// "operator sent provider:''" from "no provider configured anywhere"
+// "operator sent provider:”" from "no provider configured anywhere"
 // — emitting PathReasonInvalidProviderOverride versus
 // PathReasonEmptyProvider respectively.
 //
@@ -364,7 +380,6 @@ func hasExplicitStrategyProviderWithoutStrategy(reg *bamlutils.ClientRegistry, c
 func isStrategyProvider(p string) bool {
 	return roundrobin.IsRoundRobinProvider(p) || normalizeStrategyProvider(p) == "baml-fallback"
 }
-
 
 func resolveFallbackStrategyChain(reg *bamlutils.ClientRegistry, clientName string, introspectedChains map[string][]string) []string {
 	chain, present, valid := roundrobin.InspectStrategyOverride(reg, clientName)

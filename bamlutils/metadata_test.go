@@ -153,18 +153,17 @@ func TestMetadata_JSONRoundtrip(t *testing.T) {
 	}
 }
 
-// TestMetadata_FallbackTargetsAndRoundRobinRoundtrip verifies the new
-// fallback-target vocabulary added in issue #237 PR 1 (FallbackTargets,
-// FallbackRoundRobin) survives a JSON encode → decode cycle, AND that
-// both fields honour their `omitempty` JSON tags for the nil and empty-
-// map cases.
+// TestMetadata_FallbackTargetsAndRoundRobinRoundtrip verifies that the
+// fallback-target vocabulary (FallbackTargets, FallbackRoundRobin)
+// survives a JSON encode → decode cycle, AND that both fields honour
+// their `omitempty` JSON tags for the nil and empty-map cases.
 //
-// The nil / empty-map invariant is load-bearing: PR 2 will start
-// populating these fields on a narrow set of plans, so the existing wire
-// shape (no `fallback_targets` / `fallback_round_robin` keys at all) must
-// hold for every plan PR 1's behaviour-neutral builders emit. A regression
-// that emits empty-but-non-nil maps would change the wire shape for every
-// existing caller.
+// The nil / empty-map invariant is load-bearing: only the narrow set of
+// plans that come out of a centralised RR-child resolution populates
+// these fields, so the wire shape (no `fallback_targets` /
+// `fallback_round_robin` keys at all) must hold for every other plan
+// the builders emit. A regression that emits empty-but-non-nil maps
+// would change the wire shape for every existing consumer.
 func TestMetadata_FallbackTargetsAndRoundRobinRoundtrip(t *testing.T) {
 	t.Parallel()
 
@@ -242,9 +241,10 @@ func TestMetadata_FallbackTargetsAndRoundRobinRoundtrip(t *testing.T) {
 			t.Fatalf("marshal: %v", err)
 		}
 		// Maps with `omitempty` drop on len()==0, so the wire shape
-		// for an explicit empty map is identical to nil. PR 2 will
-		// populate these maps for a narrow set of plans only, so every
-		// other plan keeps the existing wire payload byte-for-byte.
+		// for an explicit empty map is identical to nil. Only the
+		// narrow set of plans coming out of a centralised RR-child
+		// resolution populates these maps; every other plan keeps
+		// the existing wire payload byte-for-byte.
 		if bytes.Contains(data, []byte(`"fallback_targets"`)) {
 			t.Errorf("empty FallbackTargets must be omitted from wire; got %s", data)
 		}

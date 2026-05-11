@@ -687,24 +687,23 @@ func TestLegacyMode_RR_NoCentralization(t *testing.T) {
 	})
 }
 
-// TestNestedStrategyOverrides_ValidRRChildHonoured pins the
-// per-callback scoped registry contract end-to-end: a fallback chain
-// whose nested RR child has a valid runtime override
-// (changed-strategy → tenant leaf) must reach BAML inside the mixed-
-// mode legacy callback. The mixed-mode legacy child callback uses a
-// per-callback scoped registry (makeLegacyChildOptionsFromAdapter)
-// rather than the outer BuildRequest-safe options — that scope keeps
-// TestRoundRobinPair plus its strategy override visible to BAML so
-// BAML executes the runtime-defined leaf instead of the compiled
-// static `[FallbackPrimary, FallbackSecondary]`. A regression that
-// reused the outer options would silently dispatch primary/secondary
-// even though the request changed the RR's strategy at runtime.
+// TestNestedStrategyOverrides_ValidRRChildHonoured pins the runtime-
+// override path end-to-end for a fallback whose nested RR child has a
+// changed-strategy override pointing at a single leaf. The resolver
+// detects the runtime override, centralises the RR child by selecting
+// that single leaf, and dispatches it through BuildRequest — the
+// override leaf (FallbackTertiary) must therefore receive the request
+// while the introspected RR chain leaves (FallbackPrimary,
+// FallbackSecondary) stay at zero hits.
 //
 // The load-bearing assertion is the per-mock hit count: tertiary must
-// receive the request, primary/secondary must NOT. Header presence
-// alone would not catch the bug since the mixed-mode classification
-// header (X-BAML-Path-Reason: fallback-round-robin-child-legacy) is
-// emitted whether or not the override actually reached BAML.
+// receive the request, primary/secondary must NOT. Routing metadata
+// (X-BAML-Path=buildrequest, X-BAML-Path-Reason=fallback-roundrobin-
+// child-buildrequest) gets pinned alongside the hit counts so a
+// regression that demotes the centralisation back to the legacy
+// callback would also fail visibly. A regression that dropped the
+// override from the resolver's view would dispatch
+// primary/secondary instead and the hit counts would catch it.
 func TestNestedStrategyOverrides_ValidRRChildHonoured(t *testing.T) {
 	skipIfNoBuildRequest(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
@@ -733,11 +732,12 @@ func TestNestedStrategyOverrides_ValidRRChildHonoured(t *testing.T) {
 							},
 						},
 						// Nested RR's runtime strategy override —
-						// must reach BAML for the test to pass.
-						// Without the per-callback scoped registry,
-						// this entry is dropped from BAML's view and
-						// the compiled `[FallbackPrimary,
-						// FallbackSecondary]` runs instead.
+						// must reach the resolver for the test to
+						// pass. The resolver builds the unwrap on the
+						// runtime registry view so a regression that
+						// drops the override would resolve the RR
+						// chain from the introspected `[FallbackPrimary,
+						// FallbackSecondary]` list instead.
 						{
 							Name:     "TestRoundRobinPair",
 							Provider: testutil.StringPtr("round-robin"),
@@ -757,6 +757,19 @@ func TestNestedStrategyOverrides_ValidRRChildHonoured(t *testing.T) {
 				resp.StatusCode, string(resp.Body), resp.Error)
 		}
 
+		// Routing classification: the static composition now lands on
+		// the centralised BuildRequest path, so the metadata reason
+		// must be the BuildRequest informational token rather than the
+		// legacy-callback reason that the pre-centralisation shape
+		// emitted.
+		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
+		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPathReason, "fallback-roundrobin-child-buildrequest")
+		// The centralised dispatch surfaces the served leaf on
+		// outcome — the override targets FallbackTertiary, so that's
+		// what the winner header reports.
+		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackTertiary")
+		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
+
 		mockCtx, mockCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer mockCancel()
 		primaryHits, err := MockClient.GetRequestCount(mockCtx, "fallback-primary")
@@ -772,16 +785,15 @@ func TestNestedStrategyOverrides_ValidRRChildHonoured(t *testing.T) {
 			t.Fatalf("GetRequestCount fallback-tertiary: %v", err)
 		}
 		if primaryHits != 0 {
-			t.Errorf("FallbackPrimary received %d hits; nested RR runtime strategy override was dropped from BAML's view "+
+			t.Errorf("FallbackPrimary received %d hits; nested RR runtime strategy override was dropped from the resolver's view "+
 				"(static [FallbackPrimary, FallbackSecondary] silently won)", primaryHits)
 		}
 		if secondaryHits != 0 {
-			t.Errorf("FallbackSecondary received %d hits; nested RR runtime strategy override was dropped from BAML's view "+
+			t.Errorf("FallbackSecondary received %d hits; nested RR runtime strategy override was dropped from the resolver's view "+
 				"(static [FallbackPrimary, FallbackSecondary] silently won)", secondaryHits)
 		}
 		if tertiaryHits == 0 {
-			t.Errorf("FallbackTertiary received 0 hits; nested RR runtime strategy override never reached BAML "+
-				"(per-callback scoped registry regression)")
+			t.Errorf("FallbackTertiary received 0 hits; nested RR runtime strategy override never reached the centralised dispatch")
 		}
 	})
 }

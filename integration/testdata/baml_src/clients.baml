@@ -118,3 +118,22 @@ client<llm> TestRoundRobinWithRetry {
         strategy [FallbackPrimary, FallbackSecondary]
     }
 }
+
+// ============================================================
+// Fallback containing an immediate round-robin child
+//
+// Static composition that exercises centralised RR-child
+// unwrapping: the fallback chain's first entry is an RR wrapper
+// whose leaves are ordinary openai leaves. Centralised dispatch
+// rotates across [FallbackPrimary, FallbackSecondary] via the
+// same SharedState advancer top-level RR uses, while the sibling
+// fallback child FallbackTertiary remains a static leaf for
+// failure-handoff coverage.
+// ============================================================
+
+client<llm> TestFallbackRoundRobinPair {
+    provider baml-fallback
+    options {
+        strategy [TestRoundRobinPair, FallbackTertiary]
+    }
+}

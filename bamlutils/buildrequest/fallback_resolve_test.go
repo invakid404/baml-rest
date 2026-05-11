@@ -429,19 +429,16 @@ func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
 	// 4-tuple seam. The PathReason surfaces the composition so
 	// operators can distinguish centralised top-level RR from
 	// per-worker nested RR. The RR child lands on the legacy child
-	// list and BAML's runtime handles its rotation on each worker
-	// independently. Issue #237 PR 2's typed
-	// ResolveFallbackChainPlanForClient helper centralizes immediate
-	// RR fallback children with a BR-supported leaf, but the 4-tuple
-	// wrapper deliberately demotes those results back to legacy
-	// classification because codegen-emitted call sites cannot pass
-	// FallbackTargets through the orchestrator config until PR 3
-	// (#237) wires codegen to the typed helper. Surfacing the
-	// centralized shape here would route BuildRequest against the RR
-	// wrapper name (wrong-client dispatch). The typed-helper tests in
+	// list at this seam because the 4-tuple shape has no field for
+	// per-child Targets — the typed ResolveFallbackChainPlanForClient
+	// helper centralizes immediate RR fallback children with a BR-
+	// supported leaf, but the 4-tuple wrapper demotes those results
+	// back to legacy classification so the metadata classifier sees
+	// a stable wrapper-keyed enumeration. The typed-helper tests in
 	// fallback_resolve_plan_test.go pin centralization at the typed
-	// seam; this test pins the demoted 4-tuple shape codegen relies
-	// on today.
+	// seam (which is what codegen-emitted call sites consume); this
+	// test pins the demoted 4-tuple shape used by the legacy metadata
+	// classifier.
 	fallbackChains := map[string][]string{
 		"MyFallback": {"OpenAIClient", "InnerRR"},
 		"InnerRR":    {"GoogleA", "GoogleB"},
@@ -468,13 +465,13 @@ func TestResolveFallbackChain_FallbackWithRRChild_SurfacesReason(t *testing.T) {
 		t.Fatalf("reason: got %q, want %q", reason, PathReasonFallbackRoundRobinChildLegacy)
 	}
 	if !legacy["InnerRR"] {
-		t.Errorf("InnerRR must be marked legacy at the 4-tuple seam (BAML runtime handles RR rotation per-worker until PR 3), legacyChildren=%v", legacy)
+		t.Errorf("InnerRR must be marked legacy at the 4-tuple seam (the 4-tuple shape carries no Targets field, so centralisation is demoted here for metadata-classifier stability), legacyChildren=%v", legacy)
 	}
 	if legacy["OpenAIClient"] {
 		t.Errorf("OpenAIClient is a supported provider — must not be on legacy list, legacyChildren=%v", legacy)
 	}
 	if providers["InnerRR"] != "baml-roundrobin" {
-		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin (wrapper provider — leaf-provider demotion is reverted at the 4-tuple seam)", providers["InnerRR"])
+		t.Errorf("providers[InnerRR]: got %q, want baml-roundrobin (wrapper provider — the 4-tuple seam reports the wrapper, not the leaf)", providers["InnerRR"])
 	}
 }
 
@@ -672,11 +669,11 @@ func TestResolveFallbackChain_NestedInvalidProviderOverride(t *testing.T) {
 // mixed-mode orchestration for legitimate runtime overrides; this
 // test guards against that drift.
 //
-// Issue #237 PR 2's typed ResolveFallbackChainPlanForClient
-// centralizes this exact override (TenantLeaf is BR-supported) — see
+// The typed ResolveFallbackChainPlanForClient centralizes this exact
+// override (TenantLeaf is BR-supported) — see
 // fallback_resolve_plan_test.go. The 4-tuple wrapper demotes the
-// centralized result to legacy classification for codegen-back-compat
-// until PR 3 wires codegen to the typed helper.
+// centralized result to legacy classification for the metadata-
+// classifier seam.
 func TestResolveFallbackChain_NestedValidOverrideStillResolves(t *testing.T) {
 	fallbackChains := map[string][]string{
 		"MyFallback": {"FastLeaf", "InnerRR"},
@@ -709,7 +706,7 @@ func TestResolveFallbackChain_NestedValidOverrideStillResolves(t *testing.T) {
 		t.Fatalf("expected chain to resolve for valid nested override, got nil with reason=%q", reason)
 	}
 	if reason != PathReasonFallbackRoundRobinChildLegacy {
-		t.Errorf("reason: got %q, want %q (4-tuple seam demotes centralization until PR 3)",
+		t.Errorf("reason: got %q, want %q (4-tuple seam demotes centralization for metadata-classifier stability)",
 			reason, PathReasonFallbackRoundRobinChildLegacy)
 	}
 	if !legacy["InnerRR"] {
@@ -1111,30 +1108,28 @@ func TestResolveFallbackChainForClient_NilSupportCheck_StrategyChildClassified(t
 }
 
 // Test4TupleWrapper_DemoteCentralizedToLegacy is the regression guard
-// for issue #237 PR 2's compat shim. The typed helper
+// for the 4-tuple wrapper's metadata-classifier seam. The typed helper
 // (ResolveFallbackChainPlanForClient) correctly centralizes immediate
-// RR fallback children with a BR-supported leaf — but codegen-emitted
-// call sites (`adapters/common/codegen/codegen_router.go`) consume the
-// 4-tuple ResolveFallbackChainForClientWithReason wrapper and have no
-// path to thread Targets / NestedRoundRobin through to the
-// orchestrator's StreamConfig / CallConfig until PR 3 (#237) wires
-// codegen to the typed helper.
+// RR fallback children with a BR-supported leaf — but the 4-tuple
+// ResolveFallbackChainForClientWithReason wrapper has no field to
+// thread Targets / NestedRoundRobin, so a caller that consumed the
+// centralized shape here would be reading wrapper-keyed providers
+// for what's actually a leaf-keyed dispatch decision.
 //
-// If the wrapper exposed the centralized shape (legacy[child]=false,
-// providers[child]=leafProvider, reason=ChildBuildRequest), the
-// orchestrator's BuildRequest dispatch — which falls back to the
-// chain-position name when FallbackTargets[child] is empty — would
-// fire against the RR wrapper name. That's wrong-client routing: BAML
-// would receive WithClient("InnerRR") instead of WithClient(leaf), and
-// per-worker rotation (the legacy-callback path) would be silently
-// replaced by a single-leaf BR call with stale wrapper identity.
+// The 4-tuple shape is consumed only by the legacy-path metadata
+// classifier (BuildLegacyMetadataPlan{,ForClient}), which never
+// dispatches against the returned providers — it only enumerates the
+// chain shape for observability. The wrapper-keyed shape is the
+// stable surface for that consumer regardless of whether the typed
+// helper would have centralised a given immediate RR child.
 //
 // This test pins the demotion contract: at the 4-tuple seam, every
 // composition that the typed helper would centralize MUST come back
-// as legacy classification — same shape as pre-PR-2 — so codegen
-// dispatches through the legacy callback exactly as it did before.
-// Centralization metadata is exercised by the typed-helper tests in
-// fallback_resolve_plan_test.go.
+// as legacy classification — the wrapper-keyed shape — so the
+// metadata classifier sees a stable enumeration. Routing-decision
+// consumers (codegen-emitted call sites) drive
+// ResolveFallbackChainPlanForClient directly and observe the
+// centralized shape there.
 func Test4TupleWrapper_DemoteCentralizedToLegacy(t *testing.T) {
 	supportOpenAI := func(p string) bool { return p == "openai" }
 
@@ -1159,7 +1154,7 @@ func Test4TupleWrapper_DemoteCentralizedToLegacy(t *testing.T) {
 			t.Fatalf("expected drivable chain (mixed-mode), got nil with reason=%q", reason)
 		}
 		if !legacy["InnerRR"] {
-			t.Errorf("InnerRR must be DEMOTED to legacy at the 4-tuple seam (codegen back-compat), legacyChildren=%v", legacy)
+			t.Errorf("InnerRR must be DEMOTED to legacy at the 4-tuple seam (the metadata-classifier consumer expects wrapper-keyed shape), legacyChildren=%v", legacy)
 		}
 		if legacy["C"] {
 			t.Errorf("C is a BR-supported leaf; must not be misclassified as legacy, legacyChildren=%v", legacy)
@@ -1278,15 +1273,12 @@ func Test4TupleWrapper_DemoteCentralizedToLegacy(t *testing.T) {
 
 	t.Run("duplicate-rr-child-demoted-to-legacy", func(t *testing.T) {
 		// The typed helper rejects a duplicate-named RR fallback
-		// child request-fatal (issue #237 PR 2 F1). The 4-tuple
-		// wrapper's hard-error → legacy demotion shim must catch
-		// that error and return the pre-PR-2 legacy classification
-		// shape, so codegen-driven dispatch keeps using the legacy
-		// callback regardless of whether the operator's chain
-		// contains the duplicate name. This test pins the demotion
-		// path for the F1 case specifically — without it, the
-		// 4-tuple wrapper would surface a centralized-shape mistake
-		// the moment codegen migrates partially.
+		// child request-fatal. The 4-tuple wrapper's hard-error →
+		// legacy demotion shim catches that error and returns the
+		// wrapper-keyed legacy classification shape so the metadata
+		// classifier still has a chain to enumerate even when the
+		// operator's chain is malformed. This test pins the
+		// demotion path for the duplicate-child case specifically.
 		fallbackChains := map[string][]string{
 			"MyFallback": {"InnerRR", "InnerRR", "C"},
 			"InnerRR":    {"A", "B"},

@@ -258,18 +258,17 @@ func TestRunCallOrchestration_NoMetadataPlanIsNoop(t *testing.T) {
 
 // TestRunStreamOrchestration_OutcomeClearsFallbackTargetFields pins
 // that the outcome event drops the planned-only fallback-target
-// vocabulary added in issue #237 PR 1 (FallbackTargets,
-// FallbackRoundRobin), alongside the existing Chain / LegacyChildren
-// clearing. Planned metadata describes intent (which RR-wrapper child
-// was unwrapped to which leaf, which RR decision was behind it); the
-// realised winner is already encoded in WinnerClient on outcome, so
-// duplicating the planned-shape on outcome only inflates the payload.
+// vocabulary (FallbackTargets, FallbackRoundRobin) alongside the
+// existing Chain / LegacyChildren clearing. Planned metadata describes
+// intent (which RR-wrapper child was unwrapped to which leaf, which
+// RR decision was behind it); the realised winner is already encoded
+// in WinnerClient on outcome, so duplicating the planned-shape on
+// outcome only inflates the payload.
 //
-// PR 1 never populates these fields, but the test seeds the plan with
-// representative values so the clearing logic is observable. PR 2 will
-// have the resolver actually populate them; this test pins the
-// contract before the producer lands so PR 2 cannot accidentally leak
-// planned-only intent into outcome.
+// The test seeds the plan with representative values so the clearing
+// logic is observable independent of whether a real resolver run
+// would have populated them — the outcome contract must hold whenever
+// the resolver does centralise an RR child.
 func TestRunStreamOrchestration_OutcomeClearsFallbackTargetFields(t *testing.T) {
 	server := makeOpenAIServer([]string{"hi"})
 	defer server.Close()

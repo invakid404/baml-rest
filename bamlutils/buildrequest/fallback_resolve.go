@@ -13,7 +13,7 @@ import (
 // subset of children that must dispatch through the legacy callback, and
 // — when an immediate baml-roundrobin fallback child is centrally
 // unwrapped to a leaf via BuildRequest — the per-child dispatch target
-// and RR decision (see issue #237 PR 2).
+// and RR decision.
 //
 // Shape contract:
 //
@@ -69,8 +69,7 @@ type FallbackChainResolution struct {
 // (ErrInvalidStrategyOverride / ErrInvalidStartOverride) are converted
 // to the existing PathReasonInvalid* values on the returned resolution
 // with Chain == nil, so the request falls through to top-level legacy
-// and BAML emits the canonical validation error. See section 4 of
-// issue #237 PR 2's brief for the full matrix.
+// and BAML emits the canonical validation error.
 func ResolveFallbackChainPlan(
 	adapter bamlutils.Adapter,
 	defaultClientName string,
@@ -168,9 +167,8 @@ func ResolveFallbackChainPlanForClient(
 			}
 		}
 
-		// Per #237 PR 2: attempt centralization for an immediate
-		// baml-roundrobin fallback child. Eligibility (see brief
-		// section 2):
+		// Attempt centralization for an immediate baml-roundrobin
+		// fallback child. Eligibility:
 		//   1. Resolved provider is RR (this branch).
 		//   2. Invalid-override preflight passed (handled above for
 		//      every strategy child).
@@ -361,7 +359,10 @@ func isCentralizationEligible(leaf, leafProvider string, isProviderSupported fun
 
 // ResolveFallbackChainWithReason wraps ResolveFallbackChain and returns
 // a classification alongside the usual (chain, providers, legacyChildren)
-// triple.
+// triple. The 4-tuple seam is consumed by the legacy-path metadata
+// classifier (BuildLegacyMetadataPlan / BuildLegacyMetadataPlanForClient)
+// for chain-shape enumeration; production routing decisions consume the
+// typed ResolveFallbackChainPlan{,ForClient} sibling instead.
 //
 // `chain == nil` is the hard-failure signal: BuildRequest cannot drive
 // the request and the caller must fall through to legacy. `chain != nil`
@@ -381,31 +382,28 @@ func isCentralizationEligible(leaf, leafProvider string, isProviderSupported fun
 //     PathReasonFallbackEmptyChildProvider, PathReasonFallbackAllLegacy.
 //   - chain != nil, reason == "": fully drivable chain.
 //   - chain != nil, reason == PathReasonFallbackRoundRobinChildLegacy:
-//     drivable chain containing a baml-roundrobin child that runs via
-//     the legacy callback. The 4-tuple seam surfaces this reason for
-//     EVERY immediate RR fallback child until PR 3 (#237) wires
-//     codegen to the typed helper — see the demotion note below.
+//     drivable chain containing a baml-roundrobin child whose
+//     centralization is deferred or not eligible — see the demotion
+//     note below.
 //
 // Callers gate on `len(chain) > 0` for the hard routing decision and
 // pass `reason` straight through to metadata.
 //
-// Centralization demotion (PR 2 codegen back-compat). The typed
-// ResolveFallbackChainPlan{,ForClient} sibling centralizes immediate
-// RR fallback children with a BR-supported leaf — but codegen-emitted
-// call sites consume the 4-tuple shape and have no path to populate
-// the orchestrator's FallbackTargets map. Surfacing the centralized
-// shape here would let BuildRequest dispatch fire against the RR
-// wrapper name (with FallbackTargets[child] empty), which is wrong-
-// client routing. Until PR 3 migrates codegen, this wrapper demotes
-// any centralized resolution back to the legacy classification, so
-// codegen-driven dispatch keeps using the legacy callback for nested
-// RR exactly as it did pre-PR-2. The typed helper continues to
-// centralize for future-codegen consumers and the existing PR 2
-// typed-helper tests cover that path end-to-end.
+// Centralization demotion. The 4-tuple seam exists so metadata-only
+// consumers see a stable legacy-shape regardless of whether the typed
+// resolver centralised a given immediate RR child. The typed helper
+// continues to centralise for routing-decision consumers (the codegen-
+// emitted router calls ResolveFallbackChainPlanForClient directly and
+// threads Targets / NestedRoundRobin through). Surfacing the
+// centralised shape at the 4-tuple seam would leak target identities
+// into the legacy metadata classifier, where they have no consumers
+// and would conflate metadata enumeration with dispatch identity.
+// Demote any centralised resolution back to the legacy classification
+// at this seam so the metadata classifier emits a wrapper-keyed shape.
 //
 // Hard errors from nested RR resolution (cycle, empty children,
 // advancer transport, out-of-range) are also swallowed by this
-// wrapper for the same compat reason — they demote to the same
+// wrapper for the same metadata-stability reason — they demote to the
 // legacy classification. Callers that need the request-fatal posture
 // must use ResolveFallbackChainPlanForClient directly.
 func ResolveFallbackChainWithReason(
@@ -435,20 +433,8 @@ func ResolveFallbackChainWithReason(
 // unwrap happens inside.
 //
 // Return contract matches the sibling — see
-// ResolveFallbackChainWithReason's doc for the full reason matrix.
-//
-// The 4-tuple seam intentionally DEMOTES centralization back to legacy
-// classification (see resolveFallbackChainForClientWithAdvancer). PR 2's
-// typed helper centralizes correctly, but codegen-emitted call sites
-// (`adapters/common/codegen/codegen_router.go:213, 294, 379`) cannot
-// thread Targets through to the orchestrator config until PR 3 wires
-// them to ResolveFallbackChainPlanForClient. Surfacing the centralized
-// shape here would let the orchestrator's BuildRequest dispatch fire
-// against the RR wrapper name (with FallbackTargets[child] empty),
-// which is wrong-client routing. Until codegen migrates, the wrapper
-// keeps the pre-PR-2 shape: every immediate RR fallback child lands on
-// legacyChildren with reason PathReasonFallbackRoundRobinChildLegacy,
-// and BAML's per-worker runtime drives rotation as before.
+// ResolveFallbackChainWithReason's doc for the full reason matrix and
+// the metadata-stability demotion contract.
 func ResolveFallbackChainForClientWithReason(
 	reg *bamlutils.ClientRegistry,
 	clientName string,
@@ -459,8 +445,8 @@ func ResolveFallbackChainForClientWithReason(
 	// No advancer at this seam — the 4-tuple wrapper is kept callable
 	// without an adapter. Nested RR resolution falls back to
 	// AdvanceDynamic for static clients, matching top-level RR's
-	// standalone-worker behaviour. Codegen call sites get this shape
-	// today; PR 3 will switch them to ResolveFallbackChainPlanForClient
+	// standalone-worker behaviour. Routing-decision consumers (the
+	// generated router) use ResolveFallbackChainPlanForClient directly
 	// so the request-scoped RemoteAdvancer threads through.
 	return resolveFallbackChainForClientWithAdvancer(
 		reg, clientName, fallbackChains, clientProviders, isProviderSupported, nil,
@@ -468,28 +454,27 @@ func ResolveFallbackChainForClientWithReason(
 }
 
 // resolveFallbackChainForClientWithAdvancer drives both 4-tuple wrappers
-// off the typed helper. The wrapper preserves pre-PR-2 shape for
-// codegen-driven dispatch by demoting any centralized resolution back
-// to the legacy classification — until PR 3 (#237) wires codegen to
-// the typed ResolveFallbackChainPlanForClient helper, the orchestrator
-// config emitted by codegen has no FallbackTargets entries, and a
-// "BR-drivable, leaf provider" 4-tuple shape would route BR against
-// the RR wrapper name (wrong-client dispatch).
+// off the typed helper. The 4-tuple shape exists for the legacy-path
+// metadata classifier — a stable wrapper-keyed enumeration of the chain
+// regardless of whether the typed resolver would have centralised a
+// given immediate RR child. Surfacing the centralised shape here would
+// leak target identities into a consumer that never dispatches on them
+// and would conflate metadata enumeration with routing decisions.
 //
 // Two demotion triggers, both routed through the same helper so the
 // 4-tuple seam returns identical shape regardless of which path the
 // typed helper would have taken:
 //
 //   - Hard error from nested RR (cycle / empty children / advancer
-//     transport / out-of-range): the 4-tuple compat contract does not
-//     surface errors. Demote to the pre-PR-2 classification so the
-//     request still resolves; the typed helper is the entry point
-//     that propagates request-fatal errors per top-level RR semantics.
+//     transport / out-of-range): the 4-tuple shape has no field for
+//     errors. Demote to the legacy classification so the metadata
+//     classifier still has a chain to enumerate; the typed helper
+//     remains the entry point that propagates request-fatal errors per
+//     top-level RR semantics.
 //   - Successful centralization (Targets / NestedRoundRobin populated):
-//     codegen call sites can't honour the centralization yet, so
-//     demote to legacy classification. The typed helper continues to
-//     centralize for future-codegen consumers and the existing PR 2
-//     typed-helper tests cover that path.
+//     demote to the legacy classification because the 4-tuple shape
+//     carries no field for per-child targets. The typed helper exposes
+//     the same centralisation to routing-decision consumers.
 //
 // Sentinel-class results (Chain == nil with a PathReasonInvalid* reason)
 // and "not a fallback client" results pass through verbatim — both
@@ -515,9 +500,9 @@ func resolveFallbackChainForClientWithAdvancer(
 		return nil, nil, nil, ""
 	}
 	if len(res.Targets) > 0 || len(res.NestedRoundRobin) > 0 {
-		// Centralized result — demote to pre-PR-2 legacy classification
-		// for the codegen-back-compat seam. See doc above for why this
-		// is required until PR 3 lands.
+		// Centralized result — demote to legacy classification for the
+		// 4-tuple metadata-stability seam. See doc above for why this
+		// demotion is required.
 		return resolveFallbackChainLegacyClassification(
 			reg, clientName, fallbackChains, clientProviders, isProviderSupported,
 		)
@@ -527,10 +512,9 @@ func resolveFallbackChainForClientWithAdvancer(
 
 // resolveFallbackChainLegacyClassification runs the chain resolution
 // without attempting RR-child centralization — used by the 4-tuple
-// wrapper as a safety net when the typed helper would otherwise return a
-// hard error. The output matches the pre-PR-2 classification: any
-// baml-roundrobin child lands on legacyChildren with reason
-// PathReasonFallbackRoundRobinChildLegacy.
+// wrapper to emit a stable wrapper-keyed enumeration for the legacy
+// metadata classifier. Any baml-roundrobin child lands on legacyChildren
+// with reason PathReasonFallbackRoundRobinChildLegacy.
 func resolveFallbackChainLegacyClassification(
 	reg *bamlutils.ClientRegistry,
 	clientName string,

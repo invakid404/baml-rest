@@ -227,3 +227,12 @@ function GetGreetingRoundRobinWithRetry(name: string) -> string {
     client TestRoundRobinWithRetry
     prompt #"Say hello to {{ name }}"#
 }
+
+// Fallback whose first child is a round-robin wrapper. Exercises
+// the centralised RR-child path: the dispatched leaf rotates
+// across the RR child's leaves while the fallback's sibling
+// (FallbackTertiary) only sees traffic if the RR child fails.
+function GetGreetingFallbackRoundRobinPair(name: string) -> string {
+    client TestFallbackRoundRobinPair
+    prompt #"Say hello to {{ name }}"#
+}

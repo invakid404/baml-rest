@@ -90,8 +90,7 @@ const (
 	// Distinct from PathReasonFallbackRoundRobinChildLegacy, which
 	// keeps describing nested RR children that remain on the legacy
 	// callback (deferred shapes, unsupported leaves, invalid
-	// `options.strategy` / `options.start` overrides). New in issue
-	// #237 PR 1 (vocabulary only); consumed starting in PR 2.
+	// `options.strategy` / `options.start` overrides).
 	PathReasonFallbackRoundRobinChildBuildRequest = "fallback-roundrobin-child-buildrequest"
 	// PathReasonBuildRequestDisabled: BAML_REST_USE_BUILD_REQUEST is off.
 	// Deliberate configuration — no operator alert.
@@ -436,15 +435,16 @@ func BuildFallbackChainPlan(
 // BuildFallbackChainPlanFromResolution constructs planned metadata for a
 // request routed through the BuildRequest path as a fallback strategy,
 // consuming the typed FallbackChainResolution produced by
-// ResolveFallbackChainPlanForClient. Distinct from the 4-tuple-input
-// sibling (BuildFallbackChainPlanForClient) so issue #237 PR 2's
-// per-child Targets and NestedRoundRobin information survives into the
-// planned metadata payload.
+// ResolveFallbackChainPlanForClient. The typed builder preserves
+// per-child Targets and NestedRoundRobin so the planned metadata
+// payload describes centralised RR-child dispatch end-to-end.
 //
-// Callers consuming the new typed resolver pass the resolution directly;
-// the 4-tuple plan builders stay as a compatibility surface for code
-// (notably the generated router) that hasn't migrated yet. PR 3 wires
-// the router through this typed builder.
+// Callers driving the typed resolver pass the resolution directly; the
+// 4-tuple BuildFallbackChainPlan / BuildFallbackChainPlanForClient
+// siblings stay as the metadata-classifier surface for legacy-path
+// plans (BuildLegacyMetadataPlanForClient calls
+// ResolveFallbackChainForClientWithReason to enumerate the chain for
+// observability on the legacy path, never to drive dispatch).
 //
 // Sparse-map contract:
 //   - FallbackTargets entries are omitted when target == child (the
