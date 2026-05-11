@@ -268,6 +268,62 @@ func TestBridgeStreamResultsForwardsFinalResult(t *testing.T) {
 	}
 }
 
+// TestBridgeStreamResultsFinalMarshalErrorClassifiedInternal pins
+// the wire code for the final-result marshal-failure path. The bridge
+// reclassifies the frame to StreamResultKindError when
+// json.Marshal(result.Final()) returns non-nil; the failure is
+// baml-rest-owned (we picked the JSON encoder; the adapter handed us a
+// value), so the wire code must be internal_error rather than the
+// default worker_error.
+//
+// Mirrors the marshal-failure trick from
+// TestBridgeStreamResultsMarshalErrorClearsRawAndReasoning — a channel
+// value is the simplest reliable way to make encoding/json fail.
+//
+// The metadata-marshal failure path (bamlutils.Metadata struct) is
+// covered by the same internal_error wiring but is effectively dead
+// under today's Metadata shape: every field marshals successfully, so
+// a direct test would need to synthesize a metadata value with an
+// unmarshalable field — not practical against the real struct.
+// Documented here rather than exercised so the code path's intent
+// stays visible.
+func TestBridgeStreamResultsFinalMarshalErrorClassifiedInternal(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindFinal)
+	fake.final = make(chan int) // unmarshalable — forces json.Marshal to fail
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged error result after final marshal failure")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.Kind != workerplugin.StreamResultKindError {
+			t.Fatalf("expected error kind after final marshal failure, got %v", got.Kind)
+		}
+		if got.Error == nil {
+			t.Fatal("expected non-nil error on final marshal failure")
+		}
+		if !strings.Contains(got.Error.Error(), "failed to marshal final result") {
+			t.Errorf("expected final-marshal-error message, got %v", got.Error)
+		}
+		if got.ErrorCode != "internal_error" {
+			t.Errorf("expected ErrorCode=internal_error on final marshal-failure frame, got %q", got.ErrorCode)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged final marshal-error result")
+	}
+}
+
 func TestBridgeStreamResultsForwardsStreamResult(t *testing.T) {
 	t.Parallel()
 
@@ -551,6 +607,14 @@ func TestBridgeStreamResultsErrorsOnNilMetadataPayload(t *testing.T) {
 		}
 		if got.Error == nil {
 			t.Fatal("expected non-nil error for nil-metadata payload")
+		}
+		// Nil-metadata is an orchestrator-side bug; the bridge owns the
+		// reclassification, so the wire code must be internal_error
+		// rather than the default worker_error. Pinned here so the
+		// classification stays in lockstep with the other bridge-owned
+		// reclassification paths (marshal failures).
+		if got.ErrorCode != "internal_error" {
+			t.Errorf("expected ErrorCode=internal_error on nil-metadata frame, got %q", got.ErrorCode)
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridged result")
