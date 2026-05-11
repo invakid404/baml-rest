@@ -836,15 +836,20 @@ func TestExtractResponseContent_GeminiThoughtAtIndexZero(t *testing.T) {
 				t.Errorf("reasoning = %q, want empty (flag off)", reasoning)
 			}
 
-			// Parseable must be byte-identical regardless of the
-			// includeReasoning flag. Raw is intentionally not compared across
-			// the flag — Phase 3 will diverge Gemini raw under opt-in.
-			parseableThinking, _, _, err := ExtractResponseContent(provider, body, true)
+			// Parseable and raw must both be byte-identical regardless of
+			// the includeReasoning flag — both are text-only by construction
+			// in all states. Reasoning is the only field that diverges
+			// under opt-in (covered by the dedicated Gemini reasoning test
+			// below).
+			parseableThinking, rawThinking, _, err := ExtractResponseContent(provider, body, true)
 			if err != nil {
 				t.Fatalf("unexpected error with includeReasoning=true: %v", err)
 			}
 			if parseableThinking != parseable {
 				t.Errorf("parseable diverged across includeReasoning: false=%q true=%q", parseable, parseableThinking)
+			}
+			if rawThinking != raw {
+				t.Errorf("raw diverged across includeReasoning: false=%q true=%q (raw is text-only by construction)", raw, rawThinking)
 			}
 		})
 	}

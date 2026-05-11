@@ -836,8 +836,19 @@ func buildRequestBody(input map[string]any, opts *BAMLOptions) ([]byte, error) {
 	return json.Marshal(body)
 }
 
-func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expectRawEnvelope bool) error {
+// newStreamScanner returns a bufio.Scanner configured with a 2 MiB max
+// token size (vs bufio's 64 KiB default) so a single SSE/NDJSON frame
+// carrying large reasoning text doesn't blow up the test client with
+// `bufio.Scanner: token too long`. Frames exceeding 2 MiB still fail
+// loudly through the scanner's error path — no silent truncation.
+func newStreamScanner(r io.Reader) *bufio.Scanner {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	return scanner
+}
+
+func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expectRawEnvelope bool) error {
+	scanner := newStreamScanner(r)
 	var currentEvent StreamEvent
 	var dataBuffer bytes.Buffer
 
@@ -925,7 +936,7 @@ type ndjsonEvent struct {
 }
 
 func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) error {
-	scanner := bufio.NewScanner(r)
+	scanner := newStreamScanner(r)
 
 	for scanner.Scan() {
 		select {

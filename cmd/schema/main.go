@@ -718,7 +718,7 @@ func generateOpenAPISchema() *openapi3.T {
 			},
 		})
 
-		rawResponsesDescription := fmt.Sprintf("Successful response for %s with raw LLM output", methodName)
+		rawResponsesDescription := fmt.Sprintf("Successful response for %s with raw LLM output, plus optional reasoning text when __baml_options__.include_reasoning is true", methodName)
 		rawResponses := openapi3.NewResponses()
 		rawResponses.Delete("default")
 		rawResponses.Set("200", &openapi3.ResponseRef{
@@ -872,8 +872,8 @@ func generateOpenAPISchema() *openapi3.T {
 			heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
 		)
 
-		streamWithRawDescription := fmt.Sprintf("Stream of partial and final results for %s with raw LLM output", methodName)
-		sseStreamWithRawDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON with 'data' and 'raw' fields, error/reset events use SSE event types."
+		streamWithRawDescription := fmt.Sprintf("Stream of partial and final results for %s with raw LLM output, plus optional reasoning text when __baml_options__.include_reasoning is true", methodName)
+		sseStreamWithRawDescription := "Server-Sent Events stream. Default format if Accept header is not set. Data events contain JSON with 'data' and 'raw' fields, plus an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true; error/reset events use SSE event types."
 		streamWithRawResponses := openapi3.NewResponses()
 		streamWithRawResponses.Delete("default")
 		streamWithRawResponses.Set("200", &openapi3.ResponseRef{
@@ -923,7 +923,7 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available. " +
 					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
-					"Events have type 'data' for partial results (fields may be null, includes 'raw' field), 'final' for the complete validated result, " +
+					"Events have type 'data' for partial results (fields may be null, includes 'raw' field and an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true), 'final' for the complete validated result, " +
 					"'heartbeat' for keepalive during idle periods (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
@@ -1637,7 +1637,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		},
 	})
 
-	callWithRawDescription := "Successful response for dynamic prompt with raw LLM output"
+	callWithRawDescription := "Successful response for dynamic prompt with raw LLM output, plus optional reasoning text when __baml_options__.include_reasoning is true"
 	callWithRawResponses := openapi3.NewResponses()
 	callWithRawResponses.Delete("default")
 	callWithRawResponses.Set("200", &openapi3.ResponseRef{
@@ -1675,7 +1675,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		Post: &openapi3.Operation{
 			OperationID: "dynamicCallWithRaw",
 			Summary:     "Call dynamic prompt with raw output",
-			Description: "Execute a dynamic prompt and return both the parsed result and raw LLM output.",
+			Description: "Execute a dynamic prompt and return both the parsed result and raw LLM output, plus an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true.",
 			RequestBody: &openapi3.RequestBodyRef{
 				Value: &openapi3.RequestBody{
 					Content: map[string]*openapi3.MediaType{
@@ -1784,8 +1784,8 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
 	)
 
-	streamWithRawDescription := "Stream of partial and final results for dynamic prompt with raw LLM output"
-	sseStreamWithRawDescription := "Server-Sent Events stream with raw LLM output."
+	streamWithRawDescription := "Stream of partial and final results for dynamic prompt with raw LLM output, plus optional reasoning text when __baml_options__.include_reasoning is true"
+	sseStreamWithRawDescription := "Server-Sent Events stream with raw LLM output, plus an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true."
 	streamWithRawResponses := openapi3.NewResponses()
 	streamWithRawResponses.Delete("default")
 	streamWithRawResponses.Set("200", &openapi3.ResponseRef{
@@ -1831,7 +1831,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		Post: &openapi3.Operation{
 			OperationID: "dynamicStreamWithRaw",
 			Summary:     "Stream dynamic prompt results with raw output",
-			Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available. " +
+			Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available, plus an optional 'reasoning' field on data/final events populated only when __baml_options__.include_reasoning is true. " +
 				"NDJSON may include 'heartbeat' events during idle periods (including before the first data event); clients should ignore them.",
 			RequestBody: &openapi3.RequestBodyRef{
 				Value: &openapi3.RequestBody{
@@ -2141,10 +2141,10 @@ func buildStreamEventUnion(
 	finalDesc := "Final data event containing the complete, validated result"
 	var dataRawDesc, finalRawDesc string
 	if includeRaw {
-		dataDesc = "Partial data event containing an intermediate parsed result with accumulated raw LLM output. Fields not yet parsed may be null."
-		dataRawDesc = "Accumulated raw LLM response text up to this point"
-		finalDesc = "Final data event containing the complete, validated result with full raw LLM output"
-		finalRawDesc = "Complete raw LLM response text"
+		dataDesc = "Partial data event containing an intermediate parsed result with accumulated raw LLM output (text-only), plus an optional accumulated 'reasoning' field populated only when __baml_options__.include_reasoning is true. Fields not yet parsed may be null."
+		dataRawDesc = "Accumulated raw LLM response text up to this point (always text-only by construction)"
+		finalDesc = "Final data event containing the complete, validated result with full raw LLM output, plus an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true"
+		finalRawDesc = "Complete raw LLM response text (always text-only by construction)"
 	}
 
 	dataEventName := namePrefix + "DataEvent__"
