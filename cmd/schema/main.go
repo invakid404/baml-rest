@@ -923,7 +923,8 @@ func generateOpenAPISchema() *openapi3.T {
 				Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available. " +
 					"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
-					"Events have type 'data' for partial results (fields may be null, includes 'raw' field and an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true), 'final' for the complete validated result, " +
+					"Events have type 'data' for partial results (fields may be null, includes 'raw' field and an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true), " +
+					"'final' for the complete validated result (also includes full 'raw' output and optional 'reasoning' when __baml_options__.include_reasoning is true), " +
 					"'heartbeat' for keepalive during idle periods (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
 				RequestBody: &openapi3.RequestBodyRef{
 					Value: &openapi3.RequestBody{
