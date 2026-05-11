@@ -133,9 +133,10 @@ func ResolveEffectiveClient(
 	// managed workers observe a single rotation across the fleet —
 	// without it, each worker would rotate off its own coordinator and
 	// round-robin would collapse into independent per-worker draws.
-	if reqAdvancer := adapter.RoundRobinAdvancer(); reqAdvancer != nil {
-		advancer = reqAdvancer
-	}
+	// PreferAdvancer is the shared seam top-level and fallback-RR
+	// resolution use; routing both through it keeps the precedence rule
+	// in one place.
+	advancer = PreferAdvancer(adapter, advancer)
 
 	res, err := roundrobin.Resolve(roundrobin.ResolveInput{
 		ClientName:      clientName,

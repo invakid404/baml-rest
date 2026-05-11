@@ -1998,6 +1998,116 @@ func parseRetryPolicyBlock(cfg *bamlConfig, name string, block []string) {
 
 // generateBamlConfigVars parses .baml source files and generates introspected
 // variables for provider detection and retry policy configuration.
+// emitFallbackRoundRobinDeferredWarnings logs a build-time warning per
+// (fallback parent, deferred-shape child) pair for compositions that
+// the BuildRequest resolver does NOT centralise — runtime rotation
+// still works, but it routes through BAML's per-worker runtime rather
+// than the cross-worker SharedState advancer. The static
+// `fallback[rr[A,B], C]` shape — RR child whose every leaf is a
+// non-strategy client — is centralised and does NOT warn.
+//
+// Deferred shapes statically introspectable from the chain map alone:
+//
+//  1. Immediate RR fallback child whose chain contains at least one
+//     strategy leaf (e.g. `fallback[rr[fallback[A,B], C], D]`).
+//     Recursive strategy planning inside a fallback child isn't
+//     modelled, so the RR child stays on the legacy callback path.
+//
+//  2. Nested fallback that reaches an RR descendant at any depth
+//     (e.g. `fallback[fallback[rr[A,B], C], D]` AND
+//     `fallback[fallback[fallback[rr[A,B], C], D], E]`).
+//     Centralisation only reaches IMMEDIATE fallback children of the
+//     outer fallback; any RR descendant reached through one or more
+//     nested fallback hops stays on the legacy per-worker path.
+//     A DFS over `cfg.fallbackChains` (following only fallback nodes,
+//     visited-set for cycle safety) finds the first reachable RR
+//     descendant; the loop stops on the first match per (parent,
+//     child) pair so a chain containing multiple paths to the same
+//     RR client emits exactly one warning.
+//
+// Out-of-scope shapes not detectable statically (unsupported leaf
+// providers like aws-bedrock, runtime overrides on options.strategy
+// or options.start) don't warn at introspect time — the runtime
+// resolver handles them via PathReasonFallbackRoundRobinChildLegacy.
+//
+// Keys are sorted so the warning order is stable across runs.
+// `logf` is the writer abstraction (production: log.Printf;
+// tests substitute a capture).
+func emitFallbackRoundRobinDeferredWarnings(cfg *bamlConfig, logf func(string, ...any)) {
+	parents := make([]string, 0, len(cfg.fallbackChains))
+	for parent := range cfg.fallbackChains {
+		parents = append(parents, parent)
+	}
+	sort.Strings(parents)
+	isStrategyProvider := func(p string) bool {
+		return p == "baml-roundrobin" || p == "baml-fallback"
+	}
+	for _, parent := range parents {
+		if cfg.clientProvider[parent] != "baml-fallback" {
+			continue
+		}
+		for _, child := range cfg.fallbackChains[parent] {
+			childProvider := cfg.clientProvider[child]
+			switch childProvider {
+			case "baml-roundrobin":
+				// Deferred shape 1: warn only when at least one RR
+				// leaf is itself a strategy wrapper. RR with purely
+				// non-strategy leaves is centralised.
+				rrHasStrategyLeaf := false
+				for _, leaf := range cfg.fallbackChains[child] {
+					if isStrategyProvider(cfg.clientProvider[leaf]) {
+						rrHasStrategyLeaf = true
+						break
+					}
+				}
+				if !rrHasStrategyLeaf {
+					continue
+				}
+				logf("baml-rest introspect: fallback client %q has round-robin child %q "+
+					"whose chain contains a strategy leaf; this composition stays on the "+
+					"legacy per-worker rotation path because recursive strategy planning "+
+					"inside a fallback child isn't modelled yet",
+					parent, child)
+			case "baml-fallback":
+				// Deferred shape 2: nested fallback containing RR at
+				// any depth. DFS through fallback nodes only; stop on
+				// the first RR descendant per (parent, child) pair.
+				// Visited-set guards against cycles in malformed
+				// configs and against duplicate logs when multiple
+				// paths converge on the same RR client.
+				visited := make(map[string]bool)
+				var findRoundRobinDescendant func(string) (string, bool)
+				findRoundRobinDescendant = func(node string) (string, bool) {
+					if visited[node] {
+						return "", false
+					}
+					visited[node] = true
+					if cfg.clientProvider[node] == "baml-roundrobin" {
+						return node, true
+					}
+					if cfg.clientProvider[node] != "baml-fallback" {
+						// Non-strategy leaf — no RR below this branch.
+						return "", false
+					}
+					for _, next := range cfg.fallbackChains[node] {
+						if rr, ok := findRoundRobinDescendant(next); ok {
+							return rr, true
+						}
+					}
+					return "", false
+				}
+				if rr, ok := findRoundRobinDescendant(child); ok {
+					logf("baml-rest introspect: fallback client %q has nested fallback "+
+						"child %q whose chain reaches round-robin descendant %q; this composition "+
+						"stays on the legacy per-worker rotation path because centralisation "+
+						"only reaches immediate fallback children",
+						parent, child, rr)
+				}
+			}
+		}
+	}
+}
+
 func generateBamlConfigVars(out *jen.File) {
 	retryPkg := "github.com/invakid404/baml-rest/bamlutils/retry"
 
@@ -2123,86 +2233,9 @@ func generateBamlConfigVars(out *jen.File) {
 
 	// Scan for fallback compositions whose RR-child centralisation is
 	// still deferred and emit a one-time build-log warning per (fallback,
-	// rr-child) pair. The static `fallback[rr[A,B], C]` shape — RR child
-	// whose every leaf is a non-strategy client — is centralised via the
-	// BuildRequest path and rotates cross-worker like top-level RR; that
-	// case no longer warns.
-	//
-	// The remaining deferred shapes are statically introspectable from
-	// the chain map alone:
-	//
-	//   1. Immediate RR fallback child whose selected leaf is itself a
-	//      strategy wrapper (e.g. fallback[rr[fallback[A,B], C], D]).
-	//      Recursive fallback planning inside a fallback child isn't
-	//      modelled yet; the RR child stays on the legacy callback so
-	//      BAML's per-worker runtime owns rotation.
-	//
-	//   2. Nested fallback containing an RR child (e.g.
-	//      fallback[fallback[rr[A,B], C], D]). The outer chain's
-	//      classification only inspects immediate children; an RR a level
-	//      deeper isn't reachable for centralisation and runs per-worker.
-	//
-	// Out-of-scope shapes not detectable statically (unsupported leaf
-	// providers like aws-bedrock, runtime overrides on options.strategy
-	// or options.start) don't warn at introspect time — the runtime
-	// resolver handles them via PathReasonFallbackRoundRobinChildLegacy.
-	//
-	// Keys are sorted so the build-log output is stable across runs.
-	{
-		parents := make([]string, 0, len(cfg.fallbackChains))
-		for parent := range cfg.fallbackChains {
-			parents = append(parents, parent)
-		}
-		sort.Strings(parents)
-		isStrategyProvider := func(p string) bool {
-			return p == "baml-roundrobin" || p == "baml-fallback"
-		}
-		for _, parent := range parents {
-			if cfg.clientProvider[parent] != "baml-fallback" {
-				continue
-			}
-			for _, child := range cfg.fallbackChains[parent] {
-				childProvider := cfg.clientProvider[child]
-				switch childProvider {
-				case "baml-roundrobin":
-					// Deferred shape 1: RR child whose every leaf is a
-					// non-strategy client is centralised — no warning.
-					// Warn only when at least one leaf is itself a
-					// strategy wrapper.
-					rrHasStrategyLeaf := false
-					for _, leaf := range cfg.fallbackChains[child] {
-						if isStrategyProvider(cfg.clientProvider[leaf]) {
-							rrHasStrategyLeaf = true
-							break
-						}
-					}
-					if !rrHasStrategyLeaf {
-						continue
-					}
-					log.Printf("baml-rest introspect: fallback client %q has round-robin child %q "+
-						"whose chain contains a strategy leaf; this composition stays on the "+
-						"legacy per-worker rotation path because recursive strategy planning "+
-						"inside a fallback child isn't modelled yet",
-						parent, child)
-				case "baml-fallback":
-					// Deferred shape 2: nested fallback containing RR.
-					// Warn per (parent, nested-fallback child) when the
-					// nested fallback has at least one immediate RR
-					// child; centralisation only reaches immediate
-					// fallback children.
-					for _, grandchild := range cfg.fallbackChains[child] {
-						if cfg.clientProvider[grandchild] == "baml-roundrobin" {
-							log.Printf("baml-rest introspect: fallback client %q has nested fallback "+
-								"child %q whose chain contains round-robin grandchild %q; this composition "+
-								"stays on the legacy per-worker rotation path because centralisation "+
-								"only reaches immediate fallback children",
-								parent, child, grandchild)
-						}
-					}
-				}
-			}
-		}
-	}
+	// rr-child) pair. See emitFallbackRoundRobinDeferredWarnings for the
+	// deferred-shape matrix.
+	emitFallbackRoundRobinDeferredWarnings(cfg, log.Printf)
 
 	// FallbackChains: maps strategy client names (baml-fallback, baml-roundrobin)
 	// to their ordered list of child client names from the strategy option.

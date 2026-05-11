@@ -139,95 +139,89 @@ func (me *methodEmitter) emitRouter() {
 		)
 	}
 
-	// fallbackChainConsumeCond builds the condition guarding the call-side
-	// fallback block. When a StreamRequest bridge exists downstream, the
-	// call block only consumes chains with no call-legacy children; mixed
-	// chains must fall through so the bridge can re-resolve them with
-	// IsProviderSupported and drive call-legacy-but-stream-supported
-	// children through the streaming path rather than legacyCallChildFn.
-	// Without a bridge, the call block is the only BuildRequest landing
-	// spot and accepts any non-empty chain, matching pre-bridge behaviour.
-	//
+	// fallbackChainConsumeCond builds the condition guarding a fallback-
+	// chain landing block: a non-nil resolution with a non-empty chain.
 	// Reads off __resolution (the typed FallbackChainResolution from
-	// ResolveFallbackChainPlanForClient); nil-checking guards against
+	// ResolveFallbackChainPlanForClient); the nil-check guards against
 	// the "not a fallback strategy" return shape.
-	fallbackChainConsumeCond := func(hasBridge bool) jen.Code {
-		nonEmpty := jen.Id("__resolution").Op("!=").Nil().
+	fallbackChainConsumeCond := func() jen.Code {
+		return jen.Id("__resolution").Op("!=").Nil().
 			Op("&&").Len(jen.Id("__resolution").Dot("Chain")).Op(">").Lit(0)
-		if !hasBridge {
-			return nonEmpty
-		}
-		return nonEmpty.Op("&&").Len(jen.Id("__resolution").Dot("LegacyChildren")).Op("==").Lit(0)
 	}
 
 	// Non-streaming BuildRequest path for /call and /call-with-raw.
 	// Uses Request (not StreamRequest) to build non-streaming HTTP requests.
 	// Checked before the streaming path since it's more efficient for call modes.
+	//
+	// When the StreamRequest bridge exists (hasBuildRequest=true) the
+	// call block emits only the single-provider arm and the bridge below
+	// owns ALL fallback-chain resolution for call modes. Two reasons:
+	//
+	//   1. Single resolver per request. If both blocks called the typed
+	//      resolver, a mixed chain (centralised RR child plus any
+	//      call-legacy sibling) would advance the SharedState advancer
+	//      in the call block and again in the bridge after falling
+	//      through — burning two idempotency-cache slots and skewing
+	//      rotation for that request shape.
+	//   2. Stream-side support is a superset of call-side support
+	//      (IsProviderSupported ⊇ IsCallProviderSupported), so the
+	//      bridge's stream-side classification covers every chain the
+	//      call block could have driven directly; the trade-off is SSE
+	//      accumulation overhead vs a unary HTTP attempt, which is
+	//      acceptable next to LLM call latency.
+	//
+	// When no bridge exists (hasBuildRequest=false) the call block is
+	// the sole BuildRequest landing spot for call modes and emits the
+	// fallback-chain arm itself.
 	if hasCallBuildRequest {
-		routerBody = append(routerBody,
-			jen.Comment("Try non-streaming BuildRequest path for /call and /call-with-raw"),
-			jen.If(
-				jen.Id("__useBuildRequest").
-					Op("&&").Qual(common.IntrospectedPkg, "Request").Op("!=").Nil().
-					Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
-					Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
-			).Block(
-				// Single-provider path — keyed off the effective (post-RR)
-				// client. ResolveClientProvider consults the runtime
-				// registry for a per-client provider override before
-				// falling back to the introspected default.
-				jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveClientProvider").Call(
-					jen.Id("__reg"),
+		callBlockBody := []jen.Code{
+			// Single-provider path — keyed off the effective (post-RR)
+			// client. ResolveClientProvider consults the runtime
+			// registry for a per-client provider override before
+			// falling back to the introspected default.
+			jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveClientProvider").Call(
+				jen.Id("__reg"),
+				jen.Id("__effective"),
+				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+			),
+			jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsCallProviderSupported").Call(jen.Id("provider"))).Block(
+				resolveRetryPolicy(),
+				jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
 					jen.Id("__effective"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+					jen.Id("provider"),
+					jen.Id("retryPolicy"),
+					jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
 				),
-				jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsCallProviderSupported").Call(jen.Id("provider"))).Block(
-					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
-						jen.Id("__effective"),
-						jen.Id("provider"),
-						jen.Id("retryPolicy"),
-						jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
-					),
-					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
-					jen.Id("err").Op("=").Id(me.buildCallRequestMethodName).Call(
-						jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
-						jen.Id("provider"), jen.Id("retryPolicy"),
-						jen.Nil(), jen.Nil(),
-						jen.Nil(),
-						jen.Nil(), jen.Nil(),
-						jen.Id("__planned"),
-						jen.Id("__effective"),
-					),
-					jen.If(jen.Id("err").Op("!=").Nil()).Block(
-						jen.Return(jen.Nil(), jen.Id("err")),
-					),
-					jen.Return(jen.Id("out"), jen.Nil()),
+				jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
+				jen.Id("err").Op("=").Id(me.buildCallRequestMethodName).Call(
+					jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
+					jen.Id("provider"), jen.Id("retryPolicy"),
+					jen.Nil(), jen.Nil(),
+					jen.Nil(),
+					jen.Nil(), jen.Nil(),
+					jen.Id("__planned"),
+					jen.Id("__effective"),
 				),
-				// Fallback chain path: if single-provider check failed,
-				// try resolving a fallback chain off the effective client.
-				// When a bridge block exists (hasBuildRequest), a mixed
-				// chain — one with any call-legacy children — must fall
-				// through so the bridge re-resolves it with
-				// IsProviderSupported; a child that is call-legacy may
-				// still be stream-supported, and the bridge's
-				// StreamRequest path drives such children better than
-				// legacyCallChildFn. This block therefore only takes
-				// chains that are fully call-supported. When no bridge
-				// exists (hasBuildRequest=false) mixed chains stay here,
-				// matching the pre-bridge behaviour.
-				//
-				// The typed resolver threads its per-child Targets +
-				// NestedRoundRobin onto the generated config so that
-				// centrally-unwrapped RR fallback children dispatch to
-				// the selected leaf via the BuildRequest path while
-				// rotation stays cross-worker. The advancer preference
-				// (PreferAdvancer) mirrors ResolveEffectiveClient so the
-				// SharedState idempotency key threads identically for
-				// top-level and nested RR. Hard errors from the resolver
-				// (cycle / empty children / advancer transport / duplicate
-				// RR child) propagate request-fatal — matching top-level
-				// RR semantics — rather than silently degrading.
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("err")),
+				),
+				jen.Return(jen.Id("out"), jen.Nil()),
+			),
+		}
+		if !hasBuildRequest {
+			// No bridge below — the call block must resolve and consume
+			// fallback chains itself. The typed resolver threads its
+			// per-child Targets + NestedRoundRobin onto the generated
+			// config so that centrally-unwrapped RR fallback children
+			// dispatch to the selected leaf via the BuildRequest path
+			// while rotation stays cross-worker. PreferAdvancer mirrors
+			// ResolveEffectiveClient's per-request RemoteAdvancer
+			// preference so the SharedState idempotency key threads
+			// identically for top-level and nested RR. Hard errors from
+			// the resolver (cycle / empty children / advancer transport /
+			// duplicate RR child) propagate request-fatal — matching
+			// top-level RR semantics — rather than silently degrading.
+			callBlockBody = append(callBlockBody,
 				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
@@ -242,7 +236,7 @@ func (me *methodEmitter) emitRouter() {
 				jen.If(jen.Id("__fbErr").Op("!=").Nil()).Block(
 					jen.Return(jen.Nil(), jen.Id("__fbErr")),
 				),
-				jen.If(fallbackChainConsumeCond(hasBuildRequest)).Block(
+				jen.If(fallbackChainConsumeCond()).Block(
 					resolveRetryPolicy(),
 					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
 						jen.Id("__effective"),
@@ -267,7 +261,16 @@ func (me *methodEmitter) emitRouter() {
 					),
 					jen.Return(jen.Id("out"), jen.Nil()),
 				),
-			),
+			)
+		}
+		routerBody = append(routerBody,
+			jen.Comment("Try non-streaming BuildRequest path for /call and /call-with-raw"),
+			jen.If(
+				jen.Id("__useBuildRequest").
+					Op("&&").Qual(common.IntrospectedPkg, "Request").Op("!=").Nil().
+					Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
+					Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
+			).Block(callBlockBody...),
 		)
 	}
 
@@ -337,7 +340,7 @@ func (me *methodEmitter) emitRouter() {
 				jen.If(jen.Id("__fbErr").Op("!=").Nil()).Block(
 					jen.Return(jen.Nil(), jen.Id("__fbErr")),
 				),
-				jen.If(jen.Id("__resolution").Op("!=").Nil().Op("&&").Len(jen.Id("__resolution").Dot("Chain")).Op(">").Lit(0)).Block(
+				jen.If(fallbackChainConsumeCond()).Block(
 					resolveRetryPolicy(),
 					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
 						jen.Id("__effective"),
@@ -434,7 +437,7 @@ func (me *methodEmitter) emitRouter() {
 				jen.If(jen.Id("__fbErr").Op("!=").Nil()).Block(
 					jen.Return(jen.Nil(), jen.Id("__fbErr")),
 				),
-				jen.If(jen.Id("__resolution").Op("!=").Nil().Op("&&").Len(jen.Id("__resolution").Dot("Chain")).Op(">").Lit(0)).Block(
+				jen.If(fallbackChainConsumeCond()).Block(
 					resolveRetryPolicy(),
 					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
 						jen.Id("__effective"),
