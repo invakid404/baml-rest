@@ -91,19 +91,37 @@ func isTransientConnError(err error) bool {
 }
 
 // errorResponse represents the JSON error response format from the server.
+//
+// Code mirrors apierror.Response.Code; exposing it on the test-side
+// envelope lets integration tests assert the machine-readable
+// classification (e.g. parse_error vs provider_error) without parsing
+// free-form error text. Kept as a plain string to match the wire
+// representation; testutil does not depend on the apierror package.
 type errorResponse struct {
 	Error     string `json:"error"`
+	Code      string `json:"code,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
 }
 
 // extractErrorMessage extracts the error message from a JSON error response body.
 // If the body is not valid JSON or doesn't have an error field, returns the raw body as string.
 func extractErrorMessage(body []byte) string {
+	msg, _ := extractErrorMessageAndCode(body)
+	return msg
+}
+
+// extractErrorMessageAndCode extracts both the error message and the
+// machine-readable code field from a JSON error response body. The code
+// is empty when the body is not valid JSON, has no code field, or the
+// server elected not to set one. Intentionally a separate helper so the
+// existing extractErrorMessage call sites (which discard the code) stay
+// unchanged.
+func extractErrorMessageAndCode(body []byte) (string, string) {
 	var errResp errorResponse
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
-		return errResp.Error
+		return errResp.Error, errResp.Code
 	}
-	return string(body)
+	return string(body), ""
 }
 
 // BAMLRestClient is an HTTP client for testing baml-rest endpoints.
@@ -247,14 +265,23 @@ type DynamicEnumValue struct {
 }
 
 // CallResponse represents a response from /call endpoint.
+//
+// ErrorCode mirrors apierror.Response.Code on error paths (StatusCode >=
+// 400); populated when the server's error envelope carries a
+// machine-readable classification. Empty on success and on errors that
+// the server didn't tag with a code.
 type CallResponse struct {
 	StatusCode int
 	Headers    http.Header // Response headers — used for X-BAML-* assertions
 	Body       json.RawMessage
 	Error      string
+	ErrorCode  string
 }
 
 // CallWithRawResponse represents a response from /call-with-raw endpoint.
+//
+// ErrorCode mirrors apierror.Response.Code on error paths; see
+// CallResponse.ErrorCode.
 type CallWithRawResponse struct {
 	StatusCode int
 	Headers    http.Header     // Response headers — used for X-BAML-* assertions
@@ -262,6 +289,7 @@ type CallWithRawResponse struct {
 	Raw        string          `json:"raw"`
 	Reasoning  string          `json:"reasoning,omitempty"`
 	Error      string
+	ErrorCode  string
 }
 
 // Call executes a /call/{method} request.
@@ -283,7 +311,7 @@ func (c *BAMLRestClient) Call(ctx context.Context, req CallRequest) (*CallRespon
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = extractErrorMessage(respBody)
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
 	} else {
 		result.Body = respBody
 	}
@@ -310,7 +338,7 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = extractErrorMessage(respBody)
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
 	} else {
 		if err := json.Unmarshal(respBody, result); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
@@ -548,10 +576,14 @@ type ParseRequest struct {
 }
 
 // ParseResponse represents a response from /parse endpoint.
+//
+// ErrorCode mirrors apierror.Response.Code on error paths; see
+// CallResponse.ErrorCode.
 type ParseResponse struct {
 	StatusCode int
 	Data       json.RawMessage
 	Error      string
+	ErrorCode  string
 }
 
 // Parse executes a /parse/{method} request.
@@ -573,7 +605,7 @@ func (c *BAMLRestClient) Parse(ctx context.Context, req ParseRequest) (*ParseRes
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = extractErrorMessage(respBody)
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
 	} else {
 		result.Data = respBody
 	}
@@ -1122,19 +1154,27 @@ type DynamicRequest struct {
 }
 
 // DynamicCallResponse represents a response from /call/_dynamic endpoint.
+//
+// ErrorCode mirrors apierror.Response.Code on error paths; see
+// CallResponse.ErrorCode.
 type DynamicCallResponse struct {
 	StatusCode int
 	Body       json.RawMessage
 	Error      string
+	ErrorCode  string
 }
 
 // DynamicCallWithRawResponse represents a response from /call-with-raw/_dynamic endpoint.
+//
+// ErrorCode mirrors apierror.Response.Code on error paths; see
+// CallResponse.ErrorCode.
 type DynamicCallWithRawResponse struct {
 	StatusCode int
 	Data       json.RawMessage `json:"data"`
 	Raw        string          `json:"raw"`
 	Reasoning  string          `json:"reasoning,omitempty"`
 	Error      string
+	ErrorCode  string
 }
 
 // DynamicParseRequest represents a request to /parse/_dynamic endpoint.
@@ -1145,10 +1185,14 @@ type DynamicParseRequest struct {
 }
 
 // DynamicParseResponse represents a response from /parse/_dynamic endpoint.
+//
+// ErrorCode mirrors apierror.Response.Code on error paths; see
+// CallResponse.ErrorCode.
 type DynamicParseResponse struct {
 	StatusCode int
 	Data       json.RawMessage
 	Error      string
+	ErrorCode  string
 }
 
 // DynamicCall executes a /call/_dynamic request.
@@ -1169,7 +1213,7 @@ func (c *BAMLRestClient) DynamicCall(ctx context.Context, req DynamicRequest) (*
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = extractErrorMessage(respBody)
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
 	} else {
 		result.Body = respBody
 	}
@@ -1195,7 +1239,7 @@ func (c *BAMLRestClient) DynamicCallWithRaw(ctx context.Context, req DynamicRequ
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = extractErrorMessage(respBody)
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
 	} else {
 		if err := json.Unmarshal(respBody, result); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
@@ -1329,7 +1373,7 @@ func (c *BAMLRestClient) DynamicParse(ctx context.Context, req DynamicParseReque
 	}
 
 	if resp.StatusCode >= 400 {
-		result.Error = extractErrorMessage(respBody)
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
 	} else {
 		result.Data = respBody
 	}

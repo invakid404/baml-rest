@@ -21,6 +21,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/clientdefaults"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
+	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/workerplugin"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
@@ -397,6 +398,17 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 			case bamlutils.StreamResultKindError:
 				pluginResult.Kind = workerplugin.StreamResultKindError
 				pluginResult.Error = result.Error()
+				// Classify typed BuildRequest / transport surfaces into a
+				// worker-facing apierror.Code (parse_error / provider_error)
+				// so the host's classifyWorkerError forwards it verbatim
+				// instead of defaulting to worker_error. classifyBAMLError
+				// returns ("", nil) for unrecognized errors, leaving
+				// pluginResult.ErrorCode / ErrorDetails at their zero
+				// values for host-side fallback.
+				if code, details := classifyBAMLError(result.Error()); code != "" {
+					pluginResult.ErrorCode = code
+					pluginResult.ErrorDetails = details
+				}
 			case bamlutils.StreamResultKindStream:
 				pluginResult.Kind = workerplugin.StreamResultKindStream
 				// Reset-only stream results intentionally carry no payload. If we
@@ -416,6 +428,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 						// guarantees this invariant.
 						pluginResult.Kind = workerplugin.StreamResultKindError
 						pluginResult.Error = fmt.Errorf("failed to marshal stream result: %w", err)
+						pluginResult.ErrorCode = string(apierror.CodeInternalError)
 					} else {
 						pluginResult.Data = data
 						pluginResult.Raw = result.Raw()
@@ -427,6 +440,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 				if err != nil {
 					pluginResult.Kind = workerplugin.StreamResultKindError
 					pluginResult.Error = fmt.Errorf("failed to marshal final result: %w", err)
+					pluginResult.ErrorCode = string(apierror.CodeInternalError)
 				} else {
 					pluginResult.Kind = workerplugin.StreamResultKindFinal
 					pluginResult.Data = data
@@ -441,12 +455,14 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 					// An orchestrator bug — drop the event rather than crashing the stream.
 					pluginResult.Kind = workerplugin.StreamResultKindError
 					pluginResult.Error = fmt.Errorf("metadata result without payload")
+					pluginResult.ErrorCode = string(apierror.CodeInternalError)
 					break
 				}
 				data, err := json.Marshal(md)
 				if err != nil {
 					pluginResult.Kind = workerplugin.StreamResultKindError
 					pluginResult.Error = fmt.Errorf("failed to marshal metadata result: %w", err)
+					pluginResult.ErrorCode = string(apierror.CodeInternalError)
 				} else {
 					pluginResult.Kind = workerplugin.StreamResultKindMetadata
 					pluginResult.Data = data
@@ -669,6 +685,17 @@ func (w *workerImpl) Parse(ctx context.Context, methodName string, inputJSON []b
 	// Call the parse method
 	result, err := method.Impl(adapter, input.Raw)
 	if err != nil {
+		// Wrap with any typed classification so the gRPC layer's
+		// errors.As against GetCode()/GetDetails() picks it up
+		// (workerplugin/grpc.go:220+). The /parse host endpoint also
+		// has a fallback rewrite from worker_error to parse_error, so
+		// leaving the code empty is safe; wrapping just lets typed
+		// surfaces (e.g. an underlying *llmhttp.HTTPError surfaced
+		// through a BAML adapter that propagates the wrap chain) land
+		// as the more specific code.
+		if code, details := classifyBAMLError(err); code != "" {
+			return nil, workerplugin.NewErrorWithMetadata(err, "", code, details)
+		}
 		return nil, err
 	}
 

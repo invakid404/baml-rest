@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -424,6 +426,14 @@ func TestBridgeStreamResultsMarshalErrorClearsRawAndReasoning(t *testing.T) {
 		if got.Reasoning != "" {
 			t.Errorf("expected empty reasoning on marshal-error frame (sentinel must not leak), got %q", got.Reasoning)
 		}
+		// Marshal failures are bridge-owned bugs (baml-rest's job to
+		// produce JSON-serializable stream payloads). They MUST surface
+		// as internal_error so consumers can branch on a bug here
+		// without parsing the message — Codex's scoping calls this out
+		// as the right code for Go-side bridge failures.
+		if got.ErrorCode != "internal_error" {
+			t.Errorf("expected ErrorCode=internal_error on marshal-failure frame, got %q", got.ErrorCode)
+		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridged marshal-error result")
 	}
@@ -573,10 +583,145 @@ func TestBridgeStreamResultsPropagatesErrors(t *testing.T) {
 		if got.Error == nil || got.Error.Error() != "boom" {
 			t.Fatalf("unexpected bridged error: %v", got.Error)
 		}
+		// Untyped errors must NOT have an ErrorCode set — the worker
+		// defers to the host's classifyWorkerError, which falls back to
+		// worker_error. Workers tagging untyped failures with a code
+		// would pollute the wire enum with whatever string the bridge
+		// invented.
+		if got.ErrorCode != "" {
+			t.Errorf("expected empty ErrorCode on untyped error, got %q", got.ErrorCode)
+		}
+		if got.ErrorDetails != nil {
+			t.Errorf("expected nil ErrorDetails on untyped error, got %q", string(got.ErrorDetails))
+		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridged error result")
 	}
 }
+
+// TestBridgeStreamResultsClassifiesOutputParseError pins that a typed
+// BuildRequest final-parse error surfaces as parse_error on the wire
+// (instead of falling back to worker_error). This is the load-bearing
+// behavior change for /call, /call-with-raw, and /stream on the
+// BuildRequest path.
+func TestBridgeStreamResultsClassifiesOutputParseError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindError)
+	fake.err = &buildrequest.OutputParseError{Err: errors.New("Parsing error: bad")}
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged error result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.Kind != workerplugin.StreamResultKindError {
+			t.Fatalf("expected error kind, got %v", got.Kind)
+		}
+		if got.ErrorCode != "parse_error" {
+			t.Errorf("expected ErrorCode=parse_error, got %q", got.ErrorCode)
+		}
+		if got.ErrorDetails != nil {
+			t.Errorf("expected nil ErrorDetails for parse_error, got %q", string(got.ErrorDetails))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged parse_error result")
+	}
+}
+
+// TestBridgeStreamResultsClassifiesHTTPError pins that an upstream
+// non-2xx response surfaces as provider_error with details.status_code,
+// so consumers can branch on the upstream HTTP status without parsing
+// free-form error text.
+func TestBridgeStreamResultsClassifiesHTTPError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindError)
+	fake.err = &llmhttp.HTTPError{StatusCode: 429, Body: "rate limit"}
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged error result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.ErrorCode != "provider_error" {
+			t.Errorf("expected ErrorCode=provider_error, got %q", got.ErrorCode)
+		}
+		if !strings.Contains(string(got.ErrorDetails), `"status_code":429`) {
+			t.Errorf("expected ErrorDetails to carry status_code=429, got %q", string(got.ErrorDetails))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged provider_error result")
+	}
+}
+
+// TestBridgeStreamResultsClassifiesTransportFlake pins that the
+// transport-flake umbrella sentinel surfaces as provider_error without
+// status_code details — there was no upstream HTTP response.
+func TestBridgeStreamResultsClassifiesTransportFlake(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindError)
+	// Wrap to mirror real call sites where transport errors are wrapped
+	// with context before bubbling to the bridge. The wrapper preserves
+	// errors.Is(err, ErrTransportFlake) so classifyBAMLError matches.
+	fake.err = &transportFlakeWrap{msg: "buildrequest: stream error", inner: llmhttp.ErrTransportFlake}
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged error result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.ErrorCode != "provider_error" {
+			t.Errorf("expected ErrorCode=provider_error, got %q", got.ErrorCode)
+		}
+		if got.ErrorDetails != nil {
+			t.Errorf("expected nil ErrorDetails for transport flake (no HTTP response), got %q", string(got.ErrorDetails))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged transport-flake result")
+	}
+}
+
+// transportFlakeWrap is a minimal error wrapper that preserves the
+// errors.Is chain through to llmhttp.ErrTransportFlake. Used by the
+// transport-flake bridge test so the wrap shape mirrors real call
+// sites (`fmt.Errorf("buildrequest: %w", err)`) without depending on
+// llmhttp's internal *TransportError constructor.
+type transportFlakeWrap struct {
+	msg   string
+	inner error
+}
+
+func (e *transportFlakeWrap) Error() string { return e.msg + ": " + e.inner.Error() }
+func (e *transportFlakeWrap) Unwrap() error { return e.inner }
 
 func TestBridgeStreamResultsCancelsDuringDownstreamSend(t *testing.T) {
 	t.Parallel()
