@@ -1500,6 +1500,32 @@ func TestParseShorthandClient(t *testing.T) {
 		{"baml-anthropic-chat legacy alias", "baml-anthropic-chat/claude-3", "baml-anthropic-chat", "claude-3", true},
 		{"fallback strategy shorthand canonicalised", "fallback/foo", "baml-fallback", "foo", true},
 		{"round-robin strategy shorthand canonicalised", "round-robin/foo", "baml-roundrobin", "foo", true},
+		// Negative: baml-rest's INTERNAL canonical spelling for the
+		// round-robin strategy is `baml-roundrobin` (no hyphen between
+		// "round" and "robin"). Upstream BAML's ClientProvider::from_str
+		// (clientspec.rs:119-143, v0.219.0) only accepts the hyphenated
+		// forms `round-robin` and `baml-round-robin` as shorthand input;
+		// the no-hyphen form is baml-rest's emit-side canonical
+		// (X-BAML-RoundRobin-* headers, downstream classification
+		// switches) and was never an upstream-recognized provider input.
+		//
+		// Adding `baml-roundrobin` to isKnownShorthandProvider would
+		// make the introspector recognize a shorthand that upstream
+		// BAML would reject at request time — silent introspect-vs-
+		// runtime divergence, the exact shape the upstream-parity
+		// allowlist is designed to prevent. This row pins that
+		// asymmetry so any future widening attempt (e.g. a code-review
+		// suggestion to "round out the canonical aliases") fails
+		// loudly with the explanation above.
+		//
+		// The fallback strategy is intentionally symmetric: upstream
+		// accepts both `fallback` and `baml-fallback`, and
+		// canonicaliseProvider folds them onto `baml-fallback` — so the
+		// canonical-output spelling happens to also be a valid
+		// upstream input. Only round-robin has the canonical-vs-input
+		// asymmetry; not coincidentally, only round-robin's canonical
+		// drops a hyphen that the upstream form keeps.
+		{"no-hyphen baml-roundrobin is canonical-only, not shorthand input", "baml-roundrobin/foo", "", "", false},
 		{"unknown provider rejected", "unknown/model", "", "", false},
 		{"empty string rejected", "", "", "", false},
 		{"no slash rejected", "openai", "", "", false},
