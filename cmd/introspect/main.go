@@ -1199,7 +1199,51 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 		return cfg
 	}
 
+	enrichShorthandClientProviders(cfg)
 	return cfg
+}
+
+// enrichShorthandClientProviders walks every client name referenced by a
+// function default or by a strategy chain and, for shorthand specs
+// (`<provider>/<model>` per upstream BAML's ClientSpec::Shorthand) that
+// have no entry in cfg.clientProvider yet, registers the parsed provider.
+//
+// Why this pass exists. BAML supports defaulting a function to a
+// shorthand client without declaring a named `client<llm>` block —
+// `function MyFunc { client "openai/gpt-4o" ... }`. The introspector
+// records the literal "openai/gpt-4o" as the function's client name, but
+// without this enrichment cfg.clientProvider has no entry for it, so the
+// FunctionProvider materialization at generateBamlConfigVars never sets
+// a provider, and the BuildRequest gate falls through to legacy via
+// PathReasonEmptyProvider for every function defaulting to shorthand.
+//
+// The same lookup is performed for strategy-wrapper children
+// (cfg.fallbackChains values) so a fallback or RR child written as a
+// shorthand spec also lights up the BuildRequest path.
+//
+// Already-registered names take precedence; this pass only fills holes.
+func enrichShorthandClientProviders(cfg *bamlConfig) {
+	register := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, exists := cfg.clientProvider[name]; exists {
+			return
+		}
+		provider, _, ok := parseShorthandClient(name)
+		if !ok {
+			return
+		}
+		cfg.clientProvider[name] = provider
+	}
+	for _, clientName := range cfg.functionClient {
+		register(clientName)
+	}
+	for _, chain := range cfg.fallbackChains {
+		for _, child := range chain {
+			register(child)
+		}
+	}
 }
 
 // parseBamlFile extracts client, function, and retry_policy blocks from a
@@ -1779,6 +1823,68 @@ func canonicaliseProvider(provider string) string {
 		return "baml-fallback"
 	}
 	return provider
+}
+
+// parseShorthandClient splits a BAML shorthand client spec ("<provider>/<model>")
+// into its provider and model parts and reports ok=true when the leading
+// segment is a provider string upstream's ClientSpec::new_from_id would
+// accept. The returned provider is already run through canonicaliseProvider
+// so callers see the same canonical spelling produced by parseClientBlock.
+//
+// Mirrors upstream BAML v0.219.0 clientspec.rs: ClientSpec::new_from_id
+// splits on the first '/' and parses the left side through
+// ClientProvider::from_str (clientspec.rs:28-36, :116-145). The allowlist
+// here is the exact set FromStr accepts, including the `baml-*` legacy
+// aliases — anything outside that set is treated as a non-shorthand
+// (named) client by upstream, and the introspector must agree so
+// FunctionProvider only gets populated for genuinely-shorthand defaults.
+//
+// Strategy providers (fallback, round-robin) are technically accepted by
+// upstream's FromStr and therefore by ClientSpec::new_from_id; we include
+// them for parser fidelity even though shorthand-as-strategy is
+// degenerate (strategies need a children list). After canonicalisation
+// they resolve to baml-fallback / baml-roundrobin and the downstream
+// classifier routes them through the existing strategy paths.
+func parseShorthandClient(spec string) (provider, model string, ok bool) {
+	idx := strings.Index(spec, "/")
+	if idx <= 0 || idx >= len(spec)-1 {
+		return "", "", false
+	}
+	p := spec[:idx]
+	m := spec[idx+1:]
+	if !isKnownShorthandProvider(p) {
+		return "", "", false
+	}
+	return canonicaliseProvider(p), m, true
+}
+
+// isKnownShorthandProvider reports whether p is a provider string that
+// BAML upstream's ClientProvider::from_str would accept. Source list:
+// clientspec.rs:119-144 (v0.219.0). Keep in lockstep with upstream — if
+// a future BAML release adds a provider, this allowlist must follow.
+func isKnownShorthandProvider(p string) bool {
+	switch p {
+	case "openai",
+		"baml-openai-chat",
+		"openai-generic",
+		"azure-openai",
+		"baml-azure-chat",
+		"openai-responses",
+		"ollama",
+		"baml-ollama-chat",
+		"openrouter",
+		"anthropic",
+		"baml-anthropic-chat",
+		"aws-bedrock",
+		"google-ai",
+		"vertex-ai",
+		"fallback",
+		"baml-fallback",
+		"round-robin",
+		"baml-round-robin":
+		return true
+	}
+	return false
 }
 
 func extractStrategyStatement(line string) string {

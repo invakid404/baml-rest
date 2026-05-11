@@ -1926,3 +1926,110 @@ func TestRebuildLegacyChainMetadata(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveClientProvider_ShorthandIntrospectedEntry pins the
+// routing contract for BAML shorthand client specs
+// (`<provider>/<model>`). The cmd/introspect enrichment populates
+// cfg.clientProvider with one entry per shorthand spec referenced by a
+// function default or strategy chain. ResolveClientProvider must
+// honour those entries the same way it honours regular `client<llm>`
+// names; the codegen-side gate keys off the returned provider string,
+// so a missing or misclassified entry sends shorthand-defaulted
+// functions to legacy via PathReasonEmptyProvider (the closed bug).
+//
+// The test simulates the post-enrichment introspected map and confirms
+// the resolver returns the provider component without help from the
+// runtime registry.
+func TestResolveClientProvider_ShorthandIntrospectedEntry(t *testing.T) {
+	// Simulated post-enrichment ClientProvider map: cmd/introspect
+	// populates the shorthand keys with the parsed provider.
+	intro := map[string]string{
+		"openai/gpt-4o":                        "openai",
+		"anthropic/claude-3-5-sonnet-20241022": "anthropic",
+		"openai-responses/gpt-4o":              "openai-responses",
+	}
+
+	cases := []struct {
+		name   string
+		client string
+		want   string
+	}{
+		{"openai shorthand", "openai/gpt-4o", "openai"},
+		{"anthropic shorthand", "anthropic/claude-3-5-sonnet-20241022", "anthropic"},
+		{"openai-responses shorthand", "openai-responses/gpt-4o", "openai-responses"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// No registry override — resolver must fall back to the
+			// introspected entry, the same path the BuildRequest gate
+			// uses for shorthand-defaulted functions at runtime.
+			got := ResolveClientProvider(nil, tc.client, intro)
+			if got != tc.want {
+				t.Errorf("ResolveClientProvider(%q): got %q, want %q", tc.client, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveProviderWithReason_ShorthandUnsupportedProvider pins the
+// negative case for shorthand resolution: a shorthand spec whose
+// provider is recognized by upstream BAML but NOT in baml-rest's
+// BuildRequest supported set (aws-bedrock is the canonical example —
+// upstream parses `aws-bedrock/foo` as a valid ClientSpec::Shorthand,
+// but its SSE/Request format isn't handled here).
+//
+// Pre-fix: this would land as PathReasonEmptyProvider because the
+// introspector left ClientProvider["aws-bedrock/foo"] empty.
+// Post-fix: it lands as PathReasonUnsupportedProvider — provider
+// resolution succeeds; the BuildRequest support gate rejects.
+// The distinction matters because the two reasons signal different
+// follow-up work (operator config fix vs. baml-rest provider-support
+// enhancement).
+func TestResolveProviderWithReason_ShorthandUnsupportedProvider(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+
+	res := ResolveProviderWithReason(adapter, "aws-bedrock/anthropic.claude-3", "aws-bedrock", IsProviderSupported)
+
+	if res.Path != "legacy" {
+		t.Errorf("path: got %q, want legacy — aws-bedrock not in BuildRequest supported set", res.Path)
+	}
+	if res.PathReason != PathReasonUnsupportedProvider {
+		t.Errorf("reason: got %q, want %q — shorthand with recognised-but-unsupported provider must classify as unsupported, not empty", res.PathReason, PathReasonUnsupportedProvider)
+	}
+	if res.Provider != "aws-bedrock" {
+		t.Errorf("provider: got %q, want aws-bedrock", res.Provider)
+	}
+}
+
+// TestResolveProviderWithReason_ShorthandFunctionDefault pins the
+// end-to-end routing decision for a function whose declared default
+// client is a shorthand spec. With cmd/introspect's enrichment in
+// place, the introspected provider passed in here is "openai" rather
+// than the empty string the pre-fix introspector emitted; the
+// classifier must therefore route the request through BuildRequest
+// rather than emit PathReasonEmptyProvider.
+//
+// The introspectedProvider parameter mirrors what the generated router
+// passes: introspected.ClientProvider[functionDefaultClient]. Pre-fix
+// that lookup returned "" for shorthand specs because the introspector
+// recorded the literal string as the function client name without
+// extracting the provider component. Post-fix the enrichment pass
+// populates the map so the lookup returns the provider.
+func TestResolveProviderWithReason_ShorthandFunctionDefault(t *testing.T) {
+	adapter := &mockAdapter{Context: context.Background()}
+
+	res := ResolveProviderWithReason(adapter, "openai/gpt-4o", "openai", IsProviderSupported)
+
+	if res.Path != "buildrequest" {
+		t.Errorf("path: got %q, want buildrequest — shorthand-defaulted function must reach BuildRequest after enrichment", res.Path)
+	}
+	if res.PathReason != "" {
+		t.Errorf("reason: got %q, want empty — BuildRequest path carries no reason; PathReasonEmptyProvider here would mean the introspector regression is back", res.PathReason)
+	}
+	if res.Provider != "openai" {
+		t.Errorf("provider: got %q, want openai", res.Provider)
+	}
+	if res.Client != "openai/gpt-4o" {
+		t.Errorf("client: got %q, want openai/gpt-4o — metadata should report the shorthand spec verbatim so operators see the declared default", res.Client)
+	}
+}
