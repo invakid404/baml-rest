@@ -399,22 +399,28 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 				pluginResult.Error = result.Error()
 			case bamlutils.StreamResultKindStream:
 				pluginResult.Kind = workerplugin.StreamResultKindStream
-				pluginResult.Raw = result.Raw()
-				pluginResult.Reasoning = result.Reasoning()
 				// Reset-only stream results intentionally carry no payload. If we
 				// marshal nil here, it becomes JSON `null`, which downstream would
 				// publish as a bogus partial frame in addition to the reset event.
+				// Raw and reasoning stay at their zero values for reset-only
+				// frames — the orchestrator clears the accumulators downstream.
 				if !(result.Reset() && result.Stream() == nil) {
 					data, err := json.Marshal(result.Stream())
 					if err != nil {
+						// Marshal failed: reclassify as an error frame. Raw/
+						// reasoning must stay unset — leaking stale values
+						// from the doomed stream frame onto an error frame
+						// would publish accumulated bytes alongside an error
+						// the client cannot pair them with. Assigning raw/
+						// reasoning only on the success branch below
+						// guarantees this invariant.
 						pluginResult.Kind = workerplugin.StreamResultKindError
 						pluginResult.Error = fmt.Errorf("failed to marshal stream result: %w", err)
 					} else {
 						pluginResult.Data = data
+						pluginResult.Raw = result.Raw()
+						pluginResult.Reasoning = result.Reasoning()
 					}
-				} else {
-					pluginResult.Raw = ""
-					pluginResult.Reasoning = ""
 				}
 			case bamlutils.StreamResultKindFinal:
 				data, err := json.Marshal(result.Final())

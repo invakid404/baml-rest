@@ -658,9 +658,11 @@ func TestDeltaProviderSupportMatchesExtractor(t *testing.T) {
 // Aligned with upstream BAML's text_content_part filter
 // (engine/baml-runtime/src/internal/llm_client/primitive/google/response_handler.rs).
 //
-// Parseable invariance across includeReasoning is asserted; Raw equality
-// across the flag is intentionally NOT asserted here — Phase 3 will diverge
-// Gemini Raw under opt-in, and locking it now would block that.
+// Parseable and Raw invariance across includeReasoning is asserted —
+// both are text-only by construction in all states. Reasoning is
+// intentionally allowed to diverge under opt-in; that divergence is
+// covered by the dedicated TestExtractDeltaPartsFromText_GeminiIncludeReasoning
+// table further down.
 func TestExtractDeltaPartsFromText_GeminiThoughtFiltering(t *testing.T) {
 	cases := []struct {
 		name string
