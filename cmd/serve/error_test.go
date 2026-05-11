@@ -491,15 +491,15 @@ func TestClassifyWorkerError_UnknownWorkerCodeFallsThrough(t *testing.T) {
 // TestClassifyWorkerError_NonWorkerFacingCodeRejected pins the
 // IsWorkerFacing whitelist: even when the worker emits a known
 // apierror.Code, the host honors it only for worker-facing classes
-// (worker_error / parse_error / internal_error). Request-layer codes
-// (request_canceled, invalid_json, ...) and pool-admission codes
-// (worker_unavailable) are owned by the host — honoring a worker
-// that claimed e.g. request_canceled would let worker text force
-// the 408 branch in writeFiberWorkerError and dictate HTTP status
-// semantics. The wrapped err here has gRPC code Internal (which
-// would normally classify as worker_error via the fall-through), so
-// rejection of the worker code surfaces worker_error, not the
-// claimed request_canceled.
+// (worker_error / provider_error / parse_error / internal_error).
+// Request-layer codes (request_canceled, invalid_json, ...) and
+// pool-admission codes (worker_unavailable) are owned by the host
+// — honoring a worker that claimed e.g. request_canceled would let
+// worker text force the 408 branch in writeFiberWorkerError and
+// dictate HTTP status semantics. The wrapped err here has gRPC code
+// Internal (which would normally classify as worker_error via the
+// fall-through), so rejection of the worker code surfaces
+// worker_error, not the claimed request_canceled.
 func TestClassifyWorkerError_NonWorkerFacingCodeRejected(t *testing.T) {
 	tests := []struct {
 		name     string
