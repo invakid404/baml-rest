@@ -25,6 +25,7 @@ var allCodes = []Code{
 	CodeRequestCanceled,
 	CodeWorkerUnavailable,
 	CodeWorkerError,
+	CodeProviderError,
 	CodeParseError,
 	CodeInternalError,
 }
@@ -64,14 +65,16 @@ func (c Code) IsKnown() bool {
 // request_canceled to force a 408 from the host's classifier).
 //
 // The allow-list is intentionally narrow: the worker-classified
-// outcomes the host trusts are exactly worker_error (BAML / LLM
-// application error), parse_error (BAML couldn't validate raw
-// output against the method schema), and internal_error (a Go-side
-// processing bug inside the worker). Unknown or non-worker-facing
-// codes fall back to host-side classification.
+// outcomes the host trusts are exactly worker_error (residual
+// BAML/worker failure), provider_error (upstream LLM provider
+// returned a non-2xx HTTP status or transport failed), parse_error
+// (BAML couldn't coerce raw text into the method schema), and
+// internal_error (a Go-side processing bug inside the worker).
+// Unknown or non-worker-facing codes fall back to host-side
+// classification.
 func (c Code) IsWorkerFacing() bool {
 	switch c {
-	case CodeWorkerError, CodeParseError, CodeInternalError:
+	case CodeWorkerError, CodeProviderError, CodeParseError, CodeInternalError:
 		return true
 	}
 	return false
@@ -97,14 +100,22 @@ const (
 	// retryable infrastructure failures (worker crash, gRPC Unavailable,
 	// transport reset). Retrying the request later may succeed.
 	CodeWorkerUnavailable Code = "worker_unavailable"
-	// CodeWorkerError: the BAML worker returned an application-level
-	// error — typically a BAML validation failure, a parse error against
-	// the BAML schema, or an upstream LLM provider error. The accompanying
-	// message comes verbatim from BAML / the LLM provider.
+	// CodeWorkerError: residual BAML/worker failure that doesn't fit a
+	// more specific code (parse, provider, internal, cancellation,
+	// pool-unavailable, etc.). Should be rare once the per-class codes
+	// are wired through both the BuildRequest and legacy paths; remains
+	// the catch-all for unclassified worker-side failures.
 	CodeWorkerError Code = "worker_error"
-	// CodeParseError: the /parse endpoint failed to parse raw LLM output
-	// against the BAML method's schema. Distinguished from CodeWorkerError
-	// because parse failures don't involve an LLM call.
+	// CodeProviderError: upstream LLM provider returned a non-2xx HTTP
+	// status or the transport failed before BAML could parse a
+	// response. Always carries details.status_code when the upstream
+	// produced an HTTP response; the field is absent when the failure
+	// was at the transport layer (DNS, TCP, TLS, mid-stream reset).
+	CodeProviderError Code = "provider_error"
+	// CodeParseError: BAML couldn't coerce or validate raw text into
+	// the method's schema. Applies to both /parse (raw input from the
+	// request body) and /call / /call-with-raw / /stream (raw LLM
+	// output that didn't conform to the method's return type).
 	CodeParseError Code = "parse_error"
 	// CodeInternalError: an internal Go-side processing error (output
 	// flattening, input conversion, panic). Indicates a bug in this

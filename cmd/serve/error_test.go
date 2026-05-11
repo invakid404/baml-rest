@@ -513,6 +513,7 @@ func TestClassifyWorkerError_NonWorkerFacingCodeRejected(t *testing.T) {
 		// Worker-facing codes still pass through.
 		{"worker claims worker_error", string(apierror.CodeWorkerError), apierror.CodeWorkerError},
 		{"worker claims parse_error", string(apierror.CodeParseError), apierror.CodeParseError},
+		{"worker claims provider_error", string(apierror.CodeProviderError), apierror.CodeProviderError},
 		{"worker claims internal_error", string(apierror.CodeInternalError), apierror.CodeInternalError},
 	}
 	for _, tt := range tests {
