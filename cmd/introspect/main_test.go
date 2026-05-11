@@ -88,32 +88,32 @@ func TestEmitFallbackRoundRobinDeferredWarnings_NestedFallbackContainingRoundRob
 				"InnerRR": {"A", "B"},
 			},
 		}
-		var cap captureLog
-		emitFallbackRoundRobinDeferredWarnings(cfg, cap.Logf)
+		var clog captureLog
+		emitFallbackRoundRobinDeferredWarnings(cfg, clog.Logf)
 
 		// The (Outer, Mid) pair is the regression case — the single-
 		// level loop walked only `cfg.fallbackChains[Mid]` (which is
 		// [Inner, D]) and never recursed into Inner to find InnerRR.
 		// The DFS must reach InnerRR through Mid → Inner → InnerRR
 		// and emit a warning naming Outer/Mid/InnerRR.
-		if n := countLinesMentioning(cap.lines, `"Outer"`, `"Mid"`, `"InnerRR"`, "nested fallback"); n != 1 {
+		if n := countLinesMentioning(clog.lines, `"Outer"`, `"Mid"`, `"InnerRR"`, "nested fallback"); n != 1 {
 			t.Errorf("expected exactly 1 warning for (Outer, Mid) naming InnerRR via DFS; got %d.\nall lines:\n%s",
-				n, strings.Join(cap.lines, "\n"))
+				n, strings.Join(clog.lines, "\n"))
 		}
 		// Sanity-check the intermediate pair too — (Mid, Inner) is
 		// also a valid deferred shape (Mid is itself a fallback whose
 		// nested child Inner reaches InnerRR). The single-level loop
 		// would already catch this one; DFS preserves it.
-		if n := countLinesMentioning(cap.lines, `"Mid"`, `"Inner"`, `"InnerRR"`); n != 1 {
+		if n := countLinesMentioning(clog.lines, `"Mid"`, `"Inner"`, `"InnerRR"`); n != 1 {
 			t.Errorf("expected exactly 1 warning for (Mid, Inner) naming InnerRR; got %d.\nall lines:\n%s",
-				n, strings.Join(cap.lines, "\n"))
+				n, strings.Join(clog.lines, "\n"))
 		}
 		// Negative pin: (Inner, InnerRR) is the centralised
 		// composition (immediate RR child with non-strategy leaves)
 		// and must NOT warn — that's shape 1's centralised case.
-		if n := countLinesMentioning(cap.lines, `"Inner"`, `"InnerRR"`, "round-robin child"); n != 0 {
+		if n := countLinesMentioning(clog.lines, `"Inner"`, `"InnerRR"`, "round-robin child"); n != 0 {
 			t.Errorf("centralised composition (Inner has immediate RR child with non-strategy leaves) must NOT emit a shape-1 warning; got %d.\nall lines:\n%s",
-				n, strings.Join(cap.lines, "\n"))
+				n, strings.Join(clog.lines, "\n"))
 		}
 	})
 
@@ -147,16 +147,16 @@ func TestEmitFallbackRoundRobinDeferredWarnings_NestedFallbackContainingRoundRob
 				"RR":     {"A", "B"},
 			},
 		}
-		var cap captureLog
-		emitFallbackRoundRobinDeferredWarnings(cfg, cap.Logf)
+		var clog captureLog
+		emitFallbackRoundRobinDeferredWarnings(cfg, clog.Logf)
 
 		// Pair (Outer, Mid) must appear exactly once regardless of
 		// which converging path the DFS took first. A regression
 		// that re-walked Mid's children after the first match would
 		// emit two warnings for (Outer, Mid) — one per path.
-		if n := countLinesMentioning(cap.lines, `"Outer"`, `"Mid"`, `"RR"`); n != 1 {
+		if n := countLinesMentioning(clog.lines, `"Outer"`, `"Mid"`, `"RR"`); n != 1 {
 			t.Errorf("expected exactly 1 warning for (Outer, Mid) even with converging paths to RR; got %d.\nall lines:\n%s",
-				n, strings.Join(cap.lines, "\n"))
+				n, strings.Join(clog.lines, "\n"))
 		}
 	})
 
@@ -181,11 +181,11 @@ func TestEmitFallbackRoundRobinDeferredWarnings_NestedFallbackContainingRoundRob
 				"Inner": {"A", "B"},
 			},
 		}
-		var cap captureLog
-		emitFallbackRoundRobinDeferredWarnings(cfg, cap.Logf)
-		if len(cap.lines) != 0 {
+		var clog captureLog
+		emitFallbackRoundRobinDeferredWarnings(cfg, clog.Logf)
+		if len(clog.lines) != 0 {
 			t.Errorf("non-strategy-only nested fallback must emit no warning, got %d:\n%s",
-				len(cap.lines), strings.Join(cap.lines, "\n"))
+				len(clog.lines), strings.Join(clog.lines, "\n"))
 		}
 	})
 
@@ -206,11 +206,11 @@ func TestEmitFallbackRoundRobinDeferredWarnings_NestedFallbackContainingRoundRob
 				"InnerRR": {"A", "B"},
 			},
 		}
-		var cap captureLog
-		emitFallbackRoundRobinDeferredWarnings(cfg, cap.Logf)
-		if len(cap.lines) != 0 {
+		var clog captureLog
+		emitFallbackRoundRobinDeferredWarnings(cfg, clog.Logf)
+		if len(clog.lines) != 0 {
 			t.Errorf("centralised composition must emit no warning, got %d:\n%s",
-				len(cap.lines), strings.Join(cap.lines, "\n"))
+				len(clog.lines), strings.Join(clog.lines, "\n"))
 		}
 	})
 
@@ -233,14 +233,14 @@ func TestEmitFallbackRoundRobinDeferredWarnings_NestedFallbackContainingRoundRob
 				"InnerFall": {"A"},
 			},
 		}
-		var cap captureLog
-		emitFallbackRoundRobinDeferredWarnings(cfg, cap.Logf)
-		if len(cap.lines) != 1 {
+		var clog captureLog
+		emitFallbackRoundRobinDeferredWarnings(cfg, clog.Logf)
+		if len(clog.lines) != 1 {
 			t.Fatalf("RR child with a strategy leaf must still emit a deferred-shape warning, got %d:\n%s",
-				len(cap.lines), strings.Join(cap.lines, "\n"))
+				len(clog.lines), strings.Join(clog.lines, "\n"))
 		}
-		if !strings.Contains(cap.lines[0], "round-robin child") {
-			t.Errorf("warning must classify as shape 1 (round-robin child …); got: %s", cap.lines[0])
+		if !strings.Contains(clog.lines[0], "round-robin child") {
+			t.Errorf("warning must classify as shape 1 (round-robin child …); got: %s", clog.lines[0])
 		}
 	})
 
@@ -260,11 +260,11 @@ func TestEmitFallbackRoundRobinDeferredWarnings_NestedFallbackContainingRoundRob
 				"Mid":   {"Mid", "A"},
 			},
 		}
-		var cap captureLog
-		emitFallbackRoundRobinDeferredWarnings(cfg, cap.Logf)
-		if len(cap.lines) != 0 {
+		var clog captureLog
+		emitFallbackRoundRobinDeferredWarnings(cfg, clog.Logf)
+		if len(clog.lines) != 0 {
 			t.Errorf("cycle without RR descendants must emit no warning, got %d:\n%s",
-				len(cap.lines), strings.Join(cap.lines, "\n"))
+				len(clog.lines), strings.Join(clog.lines, "\n"))
 		}
 	})
 }
