@@ -151,18 +151,24 @@ var supportedProviders = map[string]bool{
 	"aws-bedrock": true,
 }
 
-// IsProviderSupported returns true if the provider's SSE format is handled
-// by ExtractDeltaFromText and the provider supports BAML StreamRequest.
-// Unknown providers fall back to the legacy CallStream+OnTick path.
+// IsProviderSupported returns true if the provider's streaming transport
+// is handled by the BuildRequest orchestrator — SSE
+// (sse.ExtractDeltaPartsFromText on llmhttp.ExecuteStream events) for
+// every non-aws-bedrock entry, AWS event-stream
+// (extractBedrockStreamDelta on llmhttp.ExecuteAWSStream events) for
+// aws-bedrock. Unknown providers fall back to the legacy
+// CallStream+OnTick path.
 func IsProviderSupported(provider string) bool {
 	return supportedProviders[provider]
 }
 
 // callSupportedProviders is the set of providers whose non-streaming JSON
 // response format is handled by ExtractResponseContent. This is separate
-// from supportedProviders because the streaming path requires SSE format
-// compatibility while the non-streaming path requires JSON response format
-// compatibility — different constraints that may evolve independently.
+// from supportedProviders because the streaming path requires per-
+// provider streaming-transport compatibility (SSE for most, AWS
+// event-stream for aws-bedrock) while the non-streaming path requires
+// JSON response format compatibility — different constraints that may
+// evolve independently.
 var callSupportedProviders = map[string]bool{
 	"openai":           true,
 	"openai-generic":   true,
