@@ -326,7 +326,7 @@ func RunCallOrchestration(
 
 		finalResult, parseErr := parseFinal(ctx, parseable)
 		if parseErr != nil {
-			return nil, fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)
+			return nil, wrapOutputParse(fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr))
 		}
 
 		return &callAttemptResult{
