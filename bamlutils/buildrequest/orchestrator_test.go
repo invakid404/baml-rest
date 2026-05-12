@@ -2253,14 +2253,34 @@ func TestRunStreamOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
 		t.Fatalf("unexpected error from RunStreamOrchestration: %v", err)
 	}
 
+	// Track terminal-frame shape, not just "any error frame
+	// exists". A regression that emitted a Final frame alongside
+	// (or instead of) the error frame — or multiple terminal
+	// frames — would slip past a loose "find one error" check;
+	// pinning exactly one error, zero finals, and an error as the
+	// last frame catches those. Mirrors the
+	// _StreamError_CarriesRaw sibling's terminal-frame contract.
 	var errResult bamlutils.StreamResult
+	var lastFrame bamlutils.StreamResult
+	var errorCount, finalCount int
 	for r := range out {
-		if r.Kind() == bamlutils.StreamResultKindError {
+		lastFrame = r
+		switch r.Kind() {
+		case bamlutils.StreamResultKindError:
 			errResult = r
+			errorCount++
+		case bamlutils.StreamResultKindFinal:
+			finalCount++
 		}
 	}
-	if errResult == nil {
-		t.Fatal("expected an error result from final-parse failure")
+	if errorCount != 1 {
+		t.Fatalf("expected exactly 1 error frame from final-parse failure, got %d", errorCount)
+	}
+	if finalCount != 0 {
+		t.Fatalf("expected 0 Final frames on a final-parse failure, got %d", finalCount)
+	}
+	if lastFrame == nil || lastFrame.Kind() != bamlutils.StreamResultKindError {
+		t.Fatalf("expected last emitted frame to be an Error, got %v", lastFrame)
 	}
 	const wantRaw = "Sorry, I can't"
 	if errResult.Raw() != wantRaw {
@@ -2338,7 +2358,7 @@ func TestRunStreamOrchestration_StreamError_CarriesRaw(t *testing.T) {
 		return accumulated, nil
 	}
 
-	_ = RunStreamOrchestration(
+	err := RunStreamOrchestration(
 		context.Background(), out, config, client,
 		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
@@ -2347,6 +2367,14 @@ func TestRunStreamOrchestration_StreamError_CarriesRaw(t *testing.T) {
 		parseFinal,
 		newTestResult,
 	)
+	// RunStreamOrchestration's contract: after emitting an error frame
+	// on the channel, the function itself returns nil. Errors flow via
+	// the StreamResult, not the function return — pinning both keeps
+	// a regression that routes the failure through the wrong channel
+	// from slipping past the channel-only assertions below.
+	if err != nil {
+		t.Fatalf("unexpected error from RunStreamOrchestration: %v", err)
+	}
 	close(out)
 
 	var errResult bamlutils.StreamResult
