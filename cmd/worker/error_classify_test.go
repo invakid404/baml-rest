@@ -189,6 +189,49 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: "",
 		},
 		{
+			// Pins the post-quote-anchor contract: the status marker
+			// must begin immediately at the closing client-name quote,
+			// not anywhere within firstLine. Here the first `"` ends a
+			// weird client name ("weird-name") followed by extraneous
+			// text, and a LATER `"` happens to be followed by the
+			// marker. A whole-line Index search would classify this as
+			// provider_error with status_code=500; the anchored
+			// HasPrefix must reject it.
+			name:        "legacy status marker after extraneous post-quote text falls through",
+			err:         errors.New("LLM client \"weird-name\" extra stuff\" failed with status code: ServerError (500)\nMessage: not the real envelope"),
+			wantCode:    "",
+			wantDetails: "",
+		},
+		{
+			// Same contract for the timeout marker — extraneous text
+			// after the first closing quote must prevent classification
+			// even when a later embedded `"` is followed by the timeout
+			// marker substring.
+			name:        "legacy timeout marker after extraneous post-quote text falls through",
+			err:         errors.New("LLM client \"weird-name\" extra stuff\" timed out: 30s deadline"),
+			wantCode:    "",
+			wantDetails: "",
+		},
+		{
+			// Empty client name (a malformed BAML envelope) — even
+			// though the suffix immediately after the empty-name quote
+			// matches the status marker, the helper bails on q==0 so
+			// the classifier falls closed. Without this, baml-rest
+			// would emit provider_error with no client_name and a
+			// status pulled from an envelope shape that BAML doesn't
+			// actually produce.
+			name:        "legacy empty client name with status marker falls through",
+			err:         errors.New("LLM client \"\" failed with status code: ServerError (500)\nMessage: ..."),
+			wantCode:    "",
+			wantDetails: "",
+		},
+		{
+			name:        "legacy empty client name with timeout marker falls through",
+			err:         errors.New("LLM client \"\" timed out: 30s"),
+			wantCode:    "",
+			wantDetails: "",
+		},
+		{
 			// Timeout envelope is single-line per BAML's Display impl
 			// (errors.rs:114), so body is empty; client_name still
 			// surfaces. No status_code on timeout (no HTTP response).

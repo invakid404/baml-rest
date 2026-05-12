@@ -163,19 +163,26 @@ func classifyBAMLError(err error) (code string, details []byte) {
 		return string(apierror.CodeParseError), nil
 	}
 
-	if strings.HasPrefix(firstLine, legacyLLMClientPrefix) {
-		clientName := extractLegacyClientName(firstLine)
-		if idx := strings.Index(firstLine, legacyLLMClientStatusMarker); idx != -1 {
-			d := providerErrorDetails{Body: body, ClientName: clientName}
-			if status, ok := parseLegacyStatusCode(firstLine[idx+len(legacyLLMClientStatusMarker):]); ok {
+	if name, suffix, ok := splitLegacyLLMClientEnvelope(firstLine); ok {
+		// Markers must begin immediately at the closing client-name
+		// quote — both legacyLLMClientStatusMarker and
+		// legacyLLMClientTimeoutMarker start with `"`, and the suffix
+		// is sliced to include that quote. This forecloses an intra-
+		// line false positive where the marker text appears somewhere
+		// in firstLine but not at the post-quote anchor (e.g. a client
+		// name with embedded quotes whose later content happens to
+		// match the marker substring).
+		if strings.HasPrefix(suffix, legacyLLMClientStatusMarker) {
+			d := providerErrorDetails{Body: body, ClientName: name}
+			if status, ok := parseLegacyStatusCode(suffix[len(legacyLLMClientStatusMarker):]); ok {
 				d.StatusCode = status
 			}
 			return string(apierror.CodeProviderError), d.marshal()
 		}
-		if strings.Contains(firstLine, legacyLLMClientTimeoutMarker) {
+		if strings.HasPrefix(suffix, legacyLLMClientTimeoutMarker) {
 			return string(apierror.CodeProviderError), providerErrorDetails{
 				Body:       body,
-				ClientName: clientName,
+				ClientName: name,
 			}.marshal()
 		}
 	}
@@ -183,18 +190,38 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	return "", nil
 }
 
-// extractLegacyClientName returns the quoted client name from a BAML
-// envelope first line starting with `LLM client "`. Returns "" when
-// the closing quote is missing (a malformed envelope baml-rest can't
-// recover a meaningful name from). Callers must check the prefix
-// before calling.
-func extractLegacyClientName(firstLine string) string {
+// splitLegacyLLMClientEnvelope splits a BAML envelope first line into
+// the client name and the suffix that begins at the closing client-
+// name quote. The suffix includes that quote so it can be matched
+// directly against legacyLLMClientStatusMarker /
+// legacyLLMClientTimeoutMarker (both of which start with `"`).
+//
+// Returns ok=false when firstLine doesn't start with `LLM client "`,
+// has no closing quote, or has an empty client name — three malformed
+// envelope shapes baml-rest can't classify safely. The empty-name
+// case is gated here (rather than at the caller) so the marker check
+// only ever runs against a well-formed envelope.
+func splitLegacyLLMClientEnvelope(firstLine string) (name, suffix string, ok bool) {
+	if !strings.HasPrefix(firstLine, legacyLLMClientPrefix) {
+		return "", "", false
+	}
 	rest := firstLine[len(legacyLLMClientPrefix):]
 	q := strings.IndexByte(rest, '"')
-	if q == -1 {
-		return ""
+	if q <= 0 {
+		// q == -1: missing closing quote; q == 0: empty client name.
+		// Both are malformed envelopes — fail closed.
+		return "", "", false
 	}
-	return rest[:q]
+	return rest[:q], rest[q:], true
+}
+
+// extractLegacyClientName returns just the client-name part of a BAML
+// envelope first line. Thin wrapper around splitLegacyLLMClientEnvelope
+// for call sites that only need the name; the underlying helper also
+// produces the suffix the marker checks anchor against.
+func extractLegacyClientName(firstLine string) string {
+	name, _, _ := splitLegacyLLMClientEnvelope(firstLine)
+	return name
 }
 
 // parseLegacyStatusCode extracts the numeric status code from the
