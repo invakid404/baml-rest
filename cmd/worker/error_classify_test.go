@@ -77,10 +77,10 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: "",
 		},
 		{
-			// PR3-bedrock-stream (#243): AWS event-stream transport
-			// errors carry :error-code / :error-message headers; the
-			// arm forwards both into provider_error details so the
-			// AWS-side reason is observable upstream.
+			// AWS event-stream transport errors carry :error-code /
+			// :error-message headers; the arm forwards both into
+			// provider_error details so the AWS-side reason is
+			// observable upstream.
 			name:        "awsstream TransportError direct",
 			err:         &awsstream.TransportError{Code: "InternalServerError", Message: "service unavailable"},
 			wantCode:    string(apierror.CodeProviderError),
@@ -105,8 +105,8 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: `{"error_code":"InternalServerError"}`,
 		},
 		{
-			// PR3-bedrock-stream (#243): Bedrock modeled exceptions
-			// (in-band :message-type=exception frames) classify as
+			// Bedrock modeled exceptions (in-band
+			// :message-type=exception frames) classify as
 			// provider_error with exception_type + exception_message
 			// — distinct fields from error_code/error_message so
 			// consumers can tell a torn transport apart from a

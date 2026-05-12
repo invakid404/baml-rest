@@ -12,8 +12,9 @@ import (
 )
 
 // encodeBedrockEvent produces wire bytes for a single eventstream frame
-// using the SDK encoder. The PR 2 decoder is the production consumer
-// so round-tripping through it is the most reliable form of fixture.
+// using the SDK encoder. The awsstream decoder is the production
+// consumer so round-tripping through it is the most reliable form of
+// fixture.
 func encodeBedrockEvent(t *testing.T, headers map[string]string, payload []byte) []byte {
 	t.Helper()
 	var hs eventstream.Headers
@@ -111,9 +112,8 @@ func TestExtractBedrockStreamDelta_ReasoningDelta_OptIn(t *testing.T) {
 
 // TestExtractBedrockStreamDelta_NoOpEvents pins that the housekeeping
 // event types (messageStart/Stop, contentBlockStart/Stop, metadata)
-// produce no incremental content and no error in PR 3. PR 4 may
-// surface stopReason / usage on some of these — the test pins the
-// current PR 3 contract.
+// produce no incremental content and no error. Surfacing stopReason /
+// usage on some of these is deferred — see #254.
 func TestExtractBedrockStreamDelta_NoOpEvents(t *testing.T) {
 	cases := []struct {
 		eventType string
@@ -142,10 +142,11 @@ func TestExtractBedrockStreamDelta_NoOpEvents(t *testing.T) {
 
 // TestExtractBedrockStreamDelta_ToolUseSilentSkip pins that tool-use
 // streaming delta variants and citationsContent are silently dropped
-// in PR 3 (they land in PR 4). Failing here would mean a real PR-3
-// stream errors out on tool-use frames the moment a model emits them
-// — surfacing them as deltas would be worse because the orchestrator
-// would forward partial JSON the BAML parser can't make sense of.
+// (see #254 for the deferred tool-use surface). Failing here would
+// mean a real stream errors out on tool-use frames the moment a model
+// emits them — surfacing them as deltas would be worse because the
+// orchestrator would forward partial JSON the BAML parser can't make
+// sense of.
 func TestExtractBedrockStreamDelta_ToolUseSilentSkip(t *testing.T) {
 	payloads := [][]byte{
 		[]byte(`{"delta":{"toolUse":{"input":"{\"x\":1}"}},"contentBlockIndex":0}`),
@@ -169,10 +170,10 @@ func TestExtractBedrockStreamDelta_ToolUseSilentSkip(t *testing.T) {
 
 // TestExtractBedrockStreamDelta_ReasoningSignatureSkip pins that
 // `reasoningContent.signature` / `redactedContent` (encrypted-summary
-// variants) are silently skipped under IncludeReasoning=true. PR 4
-// will decide whether to pipe them through; the strict invariant here
-// is that parseable/raw stay empty AND no spurious reasoning string is
-// produced from these fields.
+// variants) are silently skipped under IncludeReasoning=true. Piping
+// these surfaces through is deferred — see #254; the strict invariant
+// here is that parseable/raw stay empty AND no spurious reasoning
+// string is produced from these fields.
 func TestExtractBedrockStreamDelta_ReasoningSignatureSkip(t *testing.T) {
 	payloads := [][]byte{
 		[]byte(`{"delta":{"reasoningContent":{"signature":"sigbytes"}},"contentBlockIndex":0}`),
@@ -213,7 +214,7 @@ func TestExtractBedrockStreamDelta_UnknownEventTypeSilentSkip(t *testing.T) {
 // TestExtractBedrockStreamDelta_ModeledException pins that an
 // exception event surfaces as *BedrockStreamException with the
 // :exception-type as the modeled name and the payload bytes preserved
-// verbatim for PR 4 to parse.
+// verbatim so downstream consumers can parse them.
 func TestExtractBedrockStreamDelta_ModeledException(t *testing.T) {
 	payload := []byte(`{"message":"the model refused"}`)
 	frame := encodeBedrockEvent(t, map[string]string{
@@ -235,7 +236,7 @@ func TestExtractBedrockStreamDelta_ModeledException(t *testing.T) {
 		t.Errorf("ExceptionType = %q, want modelStreamErrorException", be.ExceptionType)
 	}
 	if !bytes.Equal(be.Payload, payload) {
-		t.Errorf("Payload = %q, want %q (must preserve wire bytes verbatim for PR 4 to parse)", be.Payload, payload)
+		t.Errorf("Payload = %q, want %q (must preserve wire bytes verbatim)", be.Payload, payload)
 	}
 	if got := be.Error(); got == "" {
 		t.Errorf("Error() returned empty string")

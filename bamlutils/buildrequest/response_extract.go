@@ -59,13 +59,12 @@ func ExtractResponseContent(provider string, responseBody string, includeReasoni
 		return extractGeminiContent(provider, responseBody, includeReasoning)
 
 	case "aws-bedrock":
-		// PR1-bedrock breadcrumb: aws-bedrock non-streaming extractor
-		// for the Converse API. v0.219-only (v0.204 / v0.215 fall
-		// through to the legacy path because their codegen does not
-		// emit the BuildRequest call branch). Scope cuts documented at
-		// #243: default credential chain only, no static .baml creds
-		// (PR 4), no endpoint_url override (PR 4), reasoning block
-		// signature/redactedContent skipped (PR 4).
+		// aws-bedrock non-streaming extractor for the Converse API.
+		// v0.219-only (v0.204 / v0.215 fall through to the legacy path
+		// because their codegen does not emit the BuildRequest call
+		// branch). Current scope: default credential chain only (no
+		// static `.baml` creds), no endpoint_url override, reasoning
+		// block signature/redactedContent skipped (see #254).
 		return extractAWSBedrockContent(provider, responseBody, includeReasoning)
 
 	default:
@@ -459,13 +458,13 @@ func extractOpenAIResponsesContent(provider, responseBody string, includeReasoni
 // response with no text blocks AND no reasoning content surface as
 // errors so a corrupted 200 cannot masquerade as an empty success.
 //
-// PR1-bedrock breadcrumb: `signature` and `redactedContent` reasoning
-// surfaces are intentionally skipped here; PR 4 will decide whether to
-// pipe them through. Tool-use blocks (toolUse, toolResult) are out of
-// scope for this PR and are silently ignored — they do not contribute
-// to any output, which preserves the strict no-empty-success contract
-// because the extractor still errors when the message contains no
-// recognised content blocks at all.
+// `signature` and `redactedContent` reasoning surfaces are
+// intentionally skipped here — neither has an operator-actionable
+// interpretation today; see #254 for the deferred design call.
+// Tool-use blocks (toolUse, toolResult) are silently ignored — they do
+// not contribute to any output, which preserves the strict
+// no-empty-success contract because the extractor still errors when
+// the message contains no recognised content blocks at all.
 func extractAWSBedrockContent(provider, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
 	message := gjson.Get(responseBody, "output.message")
 	if !message.IsObject() {
@@ -502,10 +501,9 @@ func extractAWSBedrockContent(provider, responseBody string, includeReasoning bo
 			if !includeReasoning {
 				return true
 			}
-			// PR1-bedrock breadcrumb: only the human-readable
-			// reasoningText.text is surfaced. signature / redactedContent
-			// (encrypted-summary variants) are skipped pending the PR 4
-			// design decision.
+			// Only the human-readable reasoningText.text is surfaced;
+			// signature / redactedContent (encrypted-summary variants)
+			// are skipped — see #254.
 			if rt := reasoningContent.Get("reasoningText"); rt.IsObject() {
 				if t := rt.Get("text"); t.Type == gjson.String {
 					reasoningSB.WriteString(t.String())
@@ -513,11 +511,11 @@ func extractAWSBedrockContent(provider, responseBody string, includeReasoning bo
 			}
 			return true
 		}
-		// PR1-bedrock breadcrumb: toolUse / toolResult and other block
-		// shapes are silently skipped in PR 1. The strict
-		// no-recognised-content guard below still errors if EVERY block
-		// is one of these — so a tool-only Converse response surfaces as
-		// an error rather than an empty success.
+		// toolUse / toolResult and other block shapes are silently
+		// skipped. The strict no-recognised-content guard below still
+		// errors if EVERY block is one of these — so a tool-only
+		// Converse response surfaces as an error rather than an empty
+		// success.
 		return true
 	})
 	if iterErr != nil {

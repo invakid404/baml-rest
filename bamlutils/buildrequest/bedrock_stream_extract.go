@@ -6,8 +6,8 @@
 // response_extract.go; both surface text under Parseable+Raw and route
 // reasoning to Reasoning only when IncludeReasoning is set. The two
 // extractors share strictness invariants (parseable/raw text-only,
-// reasoning opt-in, tool-use / signature variants silently skipped per
-// the PR 3 scope cut).
+// reasoning opt-in, tool-use / signature variants silently skipped —
+// see #254).
 package buildrequest
 
 import (
@@ -30,8 +30,6 @@ import (
 // exception_message}. The raw payload bytes are preserved in Payload
 // so downstream consumers can parse additional fields without
 // revisiting the extractor.
-//
-// PR3-bedrock-stream breadcrumb (issue #243).
 type BedrockStreamException struct {
 	// ExceptionType is the value of the :exception-type header (the
 	// modeled shape name — e.g. "modelStreamErrorException",
@@ -84,16 +82,13 @@ func (e *BedrockStreamException) Message() string {
 //
 // Returns a zero DeltaParts for events that produce no incremental
 // content (messageStart, contentBlockStart/Stop, messageStop,
-// metadata, and tool-use / reasoning signature variants reserved for
-// PR 4). Returns a *BedrockStreamException for modeled exception
-// events so the orchestrator can surface them as provider_error.
+// metadata, and tool-use / reasoning signature variants — see #254).
+// Returns a *BedrockStreamException for modeled exception events so
+// the orchestrator can surface them as provider_error.
 //
-// PR3-bedrock-stream breadcrumb (issue #243): PR 4 will widen the
-// reasoning union (signature / redactedContent), surface tool-use
-// deltas, and pipe metadata.usage stats through the metadata channel.
-// Until then, the unknown-variant arms below stay defensive — silent
-// skip rather than error, so a future Bedrock event shape we haven't
-// modeled yet doesn't fail open requests.
+// The unknown-variant arms below stay defensive — silent skip rather
+// than error, so a future Bedrock event shape we haven't modeled yet
+// doesn't fail open requests.
 func extractBedrockStreamDelta(evt *awsstream.Event, includeReasoning bool) (sse.DeltaParts, error) {
 	if evt == nil {
 		return sse.DeltaParts{}, nil
@@ -134,9 +129,9 @@ func extractBedrockStreamDelta(evt *awsstream.Event, includeReasoning bool) (sse
 	case "contentBlockDelta":
 		return extractBedrockContentBlockDelta(evt.Payload, includeReasoning)
 	case "messageStart", "contentBlockStart", "contentBlockStop", "messageStop", "metadata":
-		// PR3-bedrock-stream breadcrumb: PR 4 surfaces stopReason on
-		// messageStop and usage metadata. For PR 3 these are no-op
-		// frames that produce no incremental DeltaParts content.
+		// No-op frames that produce no incremental DeltaParts content.
+		// Surfacing stopReason / usage from messageStop and metadata is
+		// deferred — see #254.
 		return sse.DeltaParts{}, nil
 	default:
 		// Forward-compat: an unknown event type (a future Bedrock
@@ -150,8 +145,8 @@ func extractBedrockStreamDelta(evt *awsstream.Event, includeReasoning bool) (sse
 // extractBedrockContentBlockDelta routes the contentBlockDelta payload
 // to the right output channel. The delta union (per the AWS
 // ContentBlockDelta spec) carries text, reasoningContent, toolUse,
-// toolResult, or citationsContent — only the first two are surfaced in
-// PR 3.
+// toolResult, or citationsContent — only the first two are surfaced
+// today (see #254 for the deferred tool-use deltas).
 func extractBedrockContentBlockDelta(payload []byte, includeReasoning bool) (sse.DeltaParts, error) {
 	if len(payload) == 0 {
 		return sse.DeltaParts{}, nil
@@ -179,9 +174,8 @@ func extractBedrockContentBlockDelta(payload []byte, includeReasoning bool) (sse
 	}
 
 	// `delta.reasoningContent.text` → Reasoning when opted in.
-	// `signature` and `redactedContent` are PR 4 territory: silently
-	// skip so the existing payload shapes don't accidentally fail
-	// open. Parseable/Raw invariance: reasoning never enters either
+	// `signature` and `redactedContent` are silently skipped — see
+	// #254. Parseable/Raw invariance: reasoning never enters either
 	// regardless of the flag.
 	if rc := delta.Get("reasoningContent"); rc.IsObject() {
 		if !includeReasoning {
@@ -197,12 +191,12 @@ func extractBedrockContentBlockDelta(payload []byte, includeReasoning bool) (sse
 			}
 			return sse.DeltaParts{Reasoning: t.String()}, nil
 		}
-		// `signature` / `redactedContent` — PR 4 territory.
+		// `signature` / `redactedContent` — silently skipped, see #254.
 		return sse.DeltaParts{}, nil
 	}
 
 	// tool-use streaming deltas (delta.toolUse.input, delta.toolResult),
-	// citationsContent, and any other future delta variant: silent
-	// skip per PR 3 scope cuts.
+	// citationsContent, and any other future delta variant: silently
+	// skipped (see #254).
 	return sse.DeltaParts{}, nil
 }

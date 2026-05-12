@@ -147,7 +147,6 @@ var supportedProviders = map[string]bool{
 	// mutates URL /converse → /converse-stream, signs SigV4 over
 	// the rewritten URL, executes via llmhttp.ExecuteAWSStream, and
 	// pipes decoded awsstream events through extractBedrockStreamDelta.
-	// PR3-bedrock-stream breadcrumb (issue #243).
 	"aws-bedrock": true,
 }
 
@@ -181,14 +180,14 @@ var callSupportedProviders = map[string]bool{
 	"vertex-ai":        true,
 	// aws-bedrock (v0.219+): both call and stream go through
 	// BuildRequest. See supportedProviders above for the streaming
-	// wire-path summary. Scope cuts: v0.204/v0.215 fall through to
-	// legacy (codegen's _buildCallRequest is gated on
+	// wire-path summary. Current scope: v0.204/v0.215 fall through
+	// to legacy (codegen's _buildCallRequest is gated on
 	// introspected.Request, which only resolves on v0.219); the
 	// default credential chain is used (no static .baml creds); the
 	// default Bedrock runtime endpoint is used (no endpoint_url
 	// override); reasoning signature/redactedContent and tool-use
-	// streaming deltas are silently skipped. PR1-bedrock /
-	// PR3-bedrock-stream breadcrumb (issue #243).
+	// streaming deltas are silently skipped — see #254 for the
+	// deferred parity items.
 	"aws-bedrock": true,
 }
 
@@ -324,9 +323,9 @@ type StreamConfig struct {
 	// The two distinct closures (BuildRequest for SSE providers,
 	// BuildBedrockStreamRequest for bedrock) are emitted side-by-side
 	// because BAML's StreamRequest API errors for aws-bedrock — there
-	// is no upstream-streaming builder we can call. PR3-bedrock-stream
-	// breadcrumb (issue #243): PR 4 will swap this to BAML's modular
-	// streaming builder if/when it lands.
+	// is no upstream-streaming builder we can call. If BAML's modular
+	// streaming builder gains aws-bedrock support, this can collapse
+	// back to a single BuildRequest path.
 	BuildBedrockStreamRequest BuildRequestFunc
 
 	// LegacyStreamChild runs a single child via BAML's Stream API. The
@@ -606,8 +605,6 @@ func RunStreamOrchestration(
 	// from a contentBlockDelta extractor surface as
 	// *BedrockStreamException — both routed through the worker
 	// classifier's typed-before-legacy ordering.
-	//
-	// PR3-bedrock-stream breadcrumb (issue #243).
 	tryOneBedrockStreamChild := func(clientOverride string) (any, string, string, error) {
 		if config.BuildBedrockStreamRequest == nil {
 			return nil, "", "", errors.New("buildrequest: aws-bedrock streaming requires StreamConfig.BuildBedrockStreamRequest to be set")
@@ -733,8 +730,7 @@ func RunStreamOrchestration(
 		// aws-bedrock streaming uses a separate transport (AWS
 		// event-stream) and request builder (Request.<Method>, not
 		// StreamRequest — see BuildBedrockStreamRequest doc).
-		// Dispatch to the dedicated bedrock closure. PR3-bedrock-
-		// stream breadcrumb (issue #243).
+		// Dispatch to the dedicated bedrock closure.
 		if provider == "aws-bedrock" {
 			return tryOneBedrockStreamChild(clientOverride)
 		}

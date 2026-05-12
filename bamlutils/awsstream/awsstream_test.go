@@ -72,7 +72,7 @@ func TestDecoder_ReasoningEvent(t *testing.T) {
 	// Bedrock surfaces reasoning content under
 	// contentBlockDelta.delta.reasoningContent.text. The decoder is
 	// payload-agnostic — this test just pins that the raw bytes survive
-	// intact so PR 3's extractor can parse them.
+	// intact so the bedrock extractor can parse them.
 	payload := []byte(`{"delta":{"reasoningContent":{"text":"thinking..."}},"contentBlockIndex":0}`)
 	frame := encode(t, eventHeaders("contentBlockDelta"), payload)
 
@@ -132,8 +132,8 @@ func TestDecoder_MultiEventStream(t *testing.T) {
 
 func TestDecoder_ModeledException(t *testing.T) {
 	// Modeled exceptions are protocol data, not transport failures — they
-	// must surface as ordinary Events so PR 3's extractor can route them
-	// through the same provider-error pipeline as JSON-body errors.
+	// must surface as ordinary Events so the bedrock extractor can route
+	// them through the same provider-error pipeline as JSON-body errors.
 	payload := []byte(`{"message":"the model refused"}`)
 	frame := encode(t, map[string]string{
 		":message-type":   "exception",

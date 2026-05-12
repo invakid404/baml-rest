@@ -462,8 +462,8 @@ func TestIsProviderSupported(t *testing.T) {
 		"openai", "openai-generic", "azure-openai", "anthropic",
 		"google-ai", "vertex-ai", "ollama", "openrouter",
 		"openai-responses",
-		// aws-bedrock streaming enabled in PR 3 of #243 — see
-		// supportedProviders doc-comment for the dispatch contract.
+		// aws-bedrock streaming — see supportedProviders doc-comment
+		// for the dispatch contract.
 		"aws-bedrock",
 	}
 	for _, p := range supported {
