@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -27,6 +28,27 @@ const (
 	legacyLLMClientPrefix        = `LLM client "`
 	legacyLLMClientStatusMarker  = `" failed with status code: `
 	legacyLLMClientTimeoutMarker = `" timed out:`
+)
+
+// legacyStatusCodeRE extracts the numeric status code from BAML
+// v0.219's ClientHttpError envelope. BAML renders the ErrorCode enum
+// via Display before the "\nMessage: " body, producing several shapes
+// the parser must cope with (engine/baml-runtime/.../internal/llm_client/mod.rs:249-259):
+//
+//	ServerError (500)            — named enum, parenthesized digits
+//	RateLimited (429)            — same shape (InvalidAuthentication,
+//	ServiceUnavailable (503)       NotSupported, Timeout follow the
+//	                               same pattern)
+//	BadResponse 418              — bare digits after literal "BadResponse "
+//	Unspecified error code: 418  — bare digits after the colon variant
+//
+// Earlier/future BAML versions could emit bare leading digits as well,
+// so the regex keeps that path as the first alternative for
+// compatibility. The alternatives are anchored on BAML's literal enum
+// names so a stray digit run inside the trailing message body can't
+// be misread as the status code.
+var legacyStatusCodeRE = regexp.MustCompile(
+	`^(\d+)|\((\d+)\)|(?:BadResponse|Unspecified error code:)\s+(\d+)`,
 )
 
 // classifyBAMLError inspects a worker-side error from a BAML call /
@@ -82,17 +104,8 @@ func classifyBAMLError(err error) (code string, details []byte) {
 
 	if strings.HasPrefix(msg, legacyLLMClientPrefix) {
 		if idx := strings.Index(msg, legacyLLMClientStatusMarker); idx != -1 {
-			tail := msg[idx+len(legacyLLMClientStatusMarker):]
-			// Trim everything past the status-code digits (BAML appends
-			// the response body and other context after the number).
-			end := 0
-			for end < len(tail) && tail[end] >= '0' && tail[end] <= '9' {
-				end++
-			}
-			if end > 0 {
-				if status, parseErr := strconv.Atoi(tail[:end]); parseErr == nil {
-					return string(apierror.CodeProviderError), statusCodeDetails(status)
-				}
+			if status, ok := parseLegacyStatusCode(msg[idx+len(legacyLLMClientStatusMarker):]); ok {
+				return string(apierror.CodeProviderError), statusCodeDetails(status)
 			}
 			// Status code couldn't be parsed — still a provider failure;
 			// emit the code without details rather than dropping the
@@ -123,4 +136,34 @@ func statusCodeDetails(status int) []byte {
 		return nil
 	}
 	return data
+}
+
+// parseLegacyStatusCode extracts the numeric status code from the
+// segment of a BAML ClientHttpError envelope that follows
+// `failed with status code: `. The segment is bounded to the first
+// newline (BAML appends "\nMessage: <body>") before scanning so a
+// digit run inside the trailing provider body can't be misread as the
+// status code. Returns (0, false) when no anchored form matches —
+// callers keep the provider_error classification and drop details.
+func parseLegacyStatusCode(segment string) (int, bool) {
+	if nl := strings.IndexByte(segment, '\n'); nl != -1 {
+		segment = segment[:nl]
+	}
+	matches := legacyStatusCodeRE.FindStringSubmatch(segment)
+	if matches == nil {
+		return 0, false
+	}
+	// Alternation captures land in different groups depending on which
+	// alternative matched; the first non-empty group is the digits.
+	for _, group := range matches[1:] {
+		if group == "" {
+			continue
+		}
+		status, err := strconv.Atoi(group)
+		if err != nil {
+			return 0, false
+		}
+		return status, true
+	}
+	return 0, false
 }

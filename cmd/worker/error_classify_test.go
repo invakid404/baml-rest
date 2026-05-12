@@ -68,20 +68,66 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: "",
 		},
 		{
-			name:        "legacy LLM client failed with status code parsed",
-			err:         errors.New(`LLM client "GPT4o" failed with status code: 503 (upstream body: <html>)`),
+			// BAML v0.219 ClientHttpError envelope (engine/baml-runtime/
+			// internal/llm_client/mod.rs ErrorCode::Display renders the
+			// named enum followed by parenthesized digits, with the
+			// provider body appended after "\nMessage:").
+			name:        "legacy v0.219 ServerError envelope",
+			err:         errors.New("LLM client \"GPT4o\" failed with status code: ServerError (500)\nMessage: Internal Server Error"),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":503}`,
+			wantDetails: `{"status_code":500}`,
 		},
 		{
-			name:        "legacy LLM client failed with status code 429",
-			err:         errors.New(`LLM client "Claude" failed with status code: 429`),
+			name:        "legacy v0.219 RateLimited envelope",
+			err:         errors.New("LLM client \"Claude\" failed with status code: RateLimited (429)\nMessage: Too Many Requests"),
 			wantCode:    string(apierror.CodeProviderError),
 			wantDetails: `{"status_code":429}`,
 		},
 		{
-			name:        "legacy LLM client failed with status code unparseable",
+			name:        "legacy v0.219 ServiceUnavailable envelope",
+			err:         errors.New("LLM client \"GPT4o\" failed with status code: ServiceUnavailable (503)\nMessage: upstream down"),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"status_code":503}`,
+		},
+		{
+			name:        "legacy v0.219 InvalidAuthentication envelope",
+			err:         errors.New("LLM client \"GPT4o\" failed with status code: InvalidAuthentication (401)\nMessage: bad api key"),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"status_code":401}`,
+		},
+		{
+			name:        "legacy v0.219 Unspecified error code envelope",
+			err:         errors.New("LLM client \"GPT4o\" failed with status code: Unspecified error code: 418\nMessage: I'm a teapot"),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"status_code":418}`,
+		},
+		{
+			name:        "legacy v0.219 BadResponse envelope",
+			err:         errors.New("LLM client \"GPT4o\" failed with status code: BadResponse 599\nMessage: garbled response"),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"status_code":599}`,
+		},
+		{
+			// Bare-leading-digits form is kept for compatibility with
+			// earlier BAML versions (and any future revert). Hand-built
+			// or wrapped messages that match this shape continue to parse.
+			name:        "legacy bare-digits compatibility form",
+			err:         errors.New(`LLM client "Old" failed with status code: 503 (upstream body: <html>)`),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"status_code":503}`,
+		},
+		{
+			name:        "legacy LLM client failed with unparseable status segment",
 			err:         errors.New(`LLM client "X" failed with status code: nope`),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: "",
+		},
+		{
+			// Digits inside the trailing Message body must NOT leak into
+			// the status_code detail when the enum segment itself has no
+			// recognized digits.
+			name:        "legacy unparseable enum segment ignores Message digits",
+			err:         errors.New("LLM client \"X\" failed with status code: SomeNewEnum\nMessage: error 12345 from upstream"),
 			wantCode:    string(apierror.CodeProviderError),
 			wantDetails: "",
 		},
@@ -164,9 +210,10 @@ func TestClassifyBAMLErrorTypedBeforeLegacy(t *testing.T) {
 	t.Parallel()
 
 	// fmt.Errorf's %w prepends to the chain's Error() string, so msg
-	// starts with the legacy LLM-client prefix and matches 599, but the
+	// starts with the legacy LLM-client prefix and would parse a 599
+	// from the parenthesized v0.219-shape enum segment, but the
 	// wrapped *HTTPError carries the authoritative 404.
-	err := fmt.Errorf(`LLM client "X" failed with status code: 599: %w`, &llmhttp.HTTPError{StatusCode: 404})
+	err := fmt.Errorf("LLM client \"X\" failed with status code: ServerError (599): %w", &llmhttp.HTTPError{StatusCode: 404})
 	code, details := classifyBAMLError(err)
 	if code != string(apierror.CodeProviderError) {
 		t.Fatalf("code: got %q, want provider_error", code)
