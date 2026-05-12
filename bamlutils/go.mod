@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	github.com/alecthomas/participle/v2 v2.1.4
 	github.com/aws/aws-sdk-go-v2 v1.41.7
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
 	github.com/goccy/go-json v0.10.6
 	github.com/tidwall/gjson v1.19.0
