@@ -374,53 +374,49 @@ func generateOpenAPISchema() *openapi3.T {
 					return err
 				}
 			} else {
-				// Handle required vs optional fields based on pointer types
+				// Honour json struct tags when computing required/nullable.
+				// The kin-openapi library parses tags internally, but this
+				// customizer overwrites its required-list, so we must
+				// reproduce the tag semantics here:
+				//   - json:"-"           → skip the field entirely.
+				//   - json:",omitempty"  → omit from required regardless of pointer-ness.
+				//   - pointer field      → optional + nullable at the property site.
+				//   - pointer slice elem → items nullable (runtime tolerates nil entries).
 				if t.Kind() == reflect.Struct {
-					var requiredFields []string
+					requiredFields := make([]string, 0)
 					for field := range t.Fields() {
-						// Skip unexported fields
 						if !field.IsExported() {
 							continue
 						}
 
-						// Get the JSON tag name, default to field name if no tag
-						jsonTag := field.Tag.Get("json")
-						fieldName := field.Name
-						if jsonTag != "" && jsonTag != "-" {
-							// Handle "name,omitempty" format
-							if parts := strings.Split(jsonTag, ","); len(parts) > 0 && parts[0] != "" {
-								fieldName = parts[0]
-							}
+						fieldName, omitEmpty, skip := parseJSONTag(field.Tag.Get("json"), field.Name)
+						if skip {
+							continue
 						}
 
-						// If field is not a pointer, it's required
-						if field.Type.Kind() != reflect.Ptr {
+						isPointer := field.Type.Kind() == reflect.Ptr
+						if !isPointer && !omitEmpty {
 							requiredFields = append(requiredFields, fieldName)
-						} else {
-							// Pointer fields are nullable - mark them in the schema
+						}
+
+						if isPointer {
 							if propSchema, ok := schema.Properties[fieldName]; ok {
-								if propSchema.Ref != "" && strings.HasPrefix(propSchema.Ref, "#/") {
-									// For proper $ref schemas (like #/components/schemas/Foo),
-									// wrap with allOf to add nullable without modifying the referenced schema
-									schema.Properties[fieldName] = &openapi3.SchemaRef{
-										Value: &openapi3.Schema{
-											Nullable: true,
-											AllOf: openapi3.SchemaRefs{
-												{Ref: propSchema.Ref},
-											},
-										},
-									}
-								} else if propSchema.Value != nil {
-									// For inline schemas, directly set nullable
-									propSchema.Value.Nullable = true
-								}
+								schema.Properties[fieldName] = makeNullableRef(propSchema)
+							}
+						}
+
+						// Pointer slice/array elements: []*T tolerates nil
+						// entries on the wire; reflect that in the schema.
+						if (field.Type.Kind() == reflect.Slice || field.Type.Kind() == reflect.Array) &&
+							field.Type.Elem().Kind() == reflect.Ptr {
+							if propSchema, ok := schema.Properties[fieldName]; ok &&
+								propSchema.Value != nil && propSchema.Value.Items != nil {
+								propSchema.Value.Items = makeNullableRef(propSchema.Value.Items)
 							}
 						}
 					}
 
-					if len(requiredFields) > 0 {
-						schema.Required = requiredFields
-					}
+					schema.Required = requiredFields
 				}
 
 				return nil
@@ -2112,6 +2108,56 @@ func boolPtr(b bool) *bool {
 
 func uint64Ptr(v uint64) *uint64 {
 	return &v
+}
+
+// parseJSONTag interprets a struct field's json tag and reports the
+// effective wire name, whether the `omitempty` option is set, and
+// whether the field should be skipped entirely (`json:"-"`). The tag
+// value `-,` (literal name "-") is treated as a normal name, matching
+// encoding/json semantics.
+func parseJSONTag(tag, fieldName string) (name string, omitEmpty, skip bool) {
+	if tag == "-" {
+		return "", false, true
+	}
+	name = fieldName
+	if tag == "" {
+		return
+	}
+	parts := strings.Split(tag, ",")
+	if parts[0] != "" {
+		name = parts[0]
+	}
+	for _, opt := range parts[1:] {
+		if opt == "omitempty" {
+			omitEmpty = true
+		}
+	}
+	return
+}
+
+// makeNullableRef returns a SchemaRef equivalent to ref but with
+// nullable semantics. For a $ref pointer this wraps the reference in
+// an `allOf` with `nullable: true` to avoid mutating the referenced
+// component; for an inline schema it sets Nullable on the inline value
+// in place. Idempotent when ref is already wrapped this way.
+func makeNullableRef(ref *openapi3.SchemaRef) *openapi3.SchemaRef {
+	if ref == nil {
+		return ref
+	}
+	if ref.Ref != "" && strings.HasPrefix(ref.Ref, "#/") {
+		return &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Nullable: true,
+				AllOf: openapi3.SchemaRefs{
+					{Ref: ref.Ref},
+				},
+			},
+		}
+	}
+	if ref.Value != nil {
+		ref.Value.Nullable = true
+	}
+	return ref
 }
 
 // registerSchema adds a schema to the schemas map and returns a $ref to it.
