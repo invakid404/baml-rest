@@ -263,6 +263,21 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: "",
 		},
 		{
+			// BAML v0.214's types/response.rs:159 emits this generic
+			// anyhow!() string for the LLMResponse::Success-with-no-
+			// parsed-result case. The underlying parse-failure details
+			// are already discarded by the time the FFI sees this, so
+			// there's no `Parsing error: ` substring to anchor on.
+			// Classifying this as parse_error would conflate baml-rest/
+			// BAML internal fallbacks with prompt-output parse failures
+			// (the #245 taxonomy goal explicitly separates the two), so
+			// it falls through to worker_error.
+			name:        "BAML v0.214 generic no-result fallback is not classified",
+			err:         errors.New("This should never happen - Please report this error to our team with BAML_LOG=info enabled so we can improve this error message"),
+			wantCode:    "",
+			wantDetails: "",
+		},
+		{
 			name:        "broad Failed to parse outside Parsing error envelope falls through",
 			err:         errors.New("Failed to parse LLM response: not a JSON envelope"),
 			wantCode:    "",

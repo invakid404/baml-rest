@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -37,6 +38,33 @@ func requireLegacyMode(t *testing.T) {
 	}
 }
 
+// requireLegacyParseEnvelope skips the calling test when BAML's
+// runtime loses successful-response parse failures behind a generic
+// no-result fallback. On BAML v0.214,
+// types/response.rs::result_with_constraints_content returns a
+// terminal `This should never happen - Please report this error to
+// our team with BAML_LOG=info enabled so we can improve this error
+// message` anyhow!() string for the LLMResponse::Success-with-no-
+// parsed-result case — the underlying `Parsing error: ...` envelope
+// is already discarded, so there's nothing for the legacy classifier
+// to anchor on. v0.218 and later surface the stable validation-error
+// envelope. Tests that assert end-to-end on parse_error from a live
+// LLM call therefore require >= 0.218.
+//
+// Provider-error tests (TestLegacyClassification_ProviderHTTPError)
+// and the /parse-endpoint test (TestLegacyClassification_
+// ParseEndpointGarbage) don't go through
+// result_with_constraints_content — the former hits the LLMFailure
+// branch which still surfaces ClientHttpError on 0.214, and /parse
+// invokes BAML's parser directly on raw text rather than processing
+// an LLMResponse. Both keep running across the whole BAML matrix.
+func requireLegacyParseEnvelope(t *testing.T) {
+	t.Helper()
+	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.218.0") {
+		t.Skipf("requires BAML >= 0.218 for the stable `Parsing error:` envelope; got %s", BAMLVersion)
+	}
+}
+
 // TestLegacyClassification_ParseErrorFromProse pins that when the LLM
 // returns prose with no parseable JSON envelope, the legacy path's
 // "Parsing error: " prefix is classified as parse_error rather than
@@ -45,6 +73,7 @@ func requireLegacyMode(t *testing.T) {
 // schema'd method.
 func TestLegacyClassification_ParseErrorFromProse(t *testing.T) {
 	requireLegacyMode(t)
+	requireLegacyParseEnvelope(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -85,6 +114,7 @@ func TestLegacyClassification_ParseErrorFromProse(t *testing.T) {
 // branch shares the classifier wiring.
 func TestLegacyClassification_ParseErrorFromProseCallWithRaw(t *testing.T) {
 	requireLegacyMode(t)
+	requireLegacyParseEnvelope(t)
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
