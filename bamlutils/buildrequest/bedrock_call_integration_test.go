@@ -34,7 +34,7 @@ func (bedrockStaticCreds) Retrieve(ctx context.Context) (aws.Credentials, error)
 // aws-bedrock call branch: build request with AWSAuth attached → SigV4
 // signing inside llmhttp → mock Converse server hit → response
 // extraction → final result with reasoning routed correctly under the
-// IncludeReasoning flag. PR1-bedrock breadcrumb (#243).
+// IncludeReasoning flag.
 func TestRunCallOrchestration_AWSBedrock(t *testing.T) {
 	pinnedTime := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 

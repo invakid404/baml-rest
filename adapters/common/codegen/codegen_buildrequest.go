@@ -8,14 +8,13 @@ import (
 
 // emitMaybeAttachBedrockAuth emits the call-branch postProcess block
 // that hands the freshly-built *llmhttp.Request to
-// llmhttp.MaybeAttachBedrockAuth, returning early on error. The
-// helper is the URL-pattern attach hook from #243 PR 1: it no-ops on
-// non-bedrock URLs, so the unconditional emit costs every other
-// provider nothing. Extracted as a named function so codegen tests
-// can pin the exact emitted shape AND assert it does not appear in
-// the streaming-path emission (which passes nil postProcess to
-// emitBAMLHTTPRequestConversion for non-bedrock providers).
-// PR1-bedrock breadcrumb.
+// llmhttp.MaybeAttachBedrockAuth, returning early on error. The helper
+// is a URL-pattern attach hook: it no-ops on non-bedrock URLs, so the
+// unconditional emit costs every other provider nothing. Extracted as
+// a named function so codegen tests can pin the exact emitted shape
+// AND assert it does not appear in the streaming-path emission (which
+// passes nil postProcess to emitBAMLHTTPRequestConversion for
+// non-bedrock providers).
 func emitMaybeAttachBedrockAuth(g *jen.Group) {
 	g.If(
 		jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "MaybeAttachBedrockAuth").Call(jen.Id("ctx"), jen.Id("req")),
@@ -30,7 +29,7 @@ func emitMaybeAttachBedrockAuth(g *jen.Group) {
 // Accept header injection, and SigV4 auth attach. BAML's non-streaming
 // modular AWS builder produces a /converse URL; baml-rest streams
 // against /converse-stream because BAML's StreamRequest path is
-// upstream-blocked for aws-bedrock (per the #243 scope cut).
+// upstream-blocked for aws-bedrock.
 //
 // Order matters:
 //  1. URL rewrite BEFORE auth attach so SigV4 signs over the
@@ -42,8 +41,7 @@ func emitMaybeAttachBedrockAuth(g *jen.Group) {
 //     URL.
 //
 // Emitted only on the bedrock streaming closure; the SSE-path
-// streaming closure still passes nil postProcess. PR3-bedrock-stream
-// breadcrumb (issue #243).
+// streaming closure still passes nil postProcess.
 func emitBedrockStreamPostProcess(g *jen.Group) {
 	// URL mutation: single replacement of /converse → /converse-stream.
 	// The Bedrock URL pattern is
@@ -73,7 +71,7 @@ func emitBedrockStreamPostProcess(g *jen.Group) {
 // emitBAMLHTTPRequestConversion generates the jen code that converts a
 // baml.HTTPRequest (stored in local variable "httpReq") into a
 // *llmhttp.Request stored in local variable "req", emits any postProcess
-// statements (e.g. PR1-bedrock SigV4 metadata attach), and returns
+// statements (e.g. SigV4 metadata attach for aws-bedrock), and returns
 // (req, nil). Shared by both the streaming _buildRequest and
 // non-streaming _buildCallRequest codegen paths so they stay in sync.
 //
@@ -145,13 +143,13 @@ func buildLegacyChildCallParams(args []string, argCallParam func(string) jen.Cod
 // (BAML >= 0.219.0); otherwise the symbol baml_client.StreamRequest
 // doesn't exist and the reference would fail to compile.
 //
-// PR3-bedrock-stream breadcrumb (issue #243): when introspected.Request
-// is also non-nil (v0.219), emit a sibling buildBedrockStreamRequestFn
-// closure that calls BAML's non-streaming Request.<Method> (because
-// BAML's StreamRequest errors for aws-bedrock), mutates the URL from
-// /converse to /converse-stream, sets the AWS event-stream Accept
-// header, and attaches AWSAuth. Wire it into StreamConfig as
-// BuildBedrockStreamRequest. The orchestrator dispatches on provider.
+// When introspected.Request is also non-nil (v0.219), emit a sibling
+// buildBedrockStreamRequestFn closure that calls BAML's non-streaming
+// Request.<Method> (because BAML's StreamRequest errors for
+// aws-bedrock), mutates the URL from /converse to /converse-stream,
+// sets the AWS event-stream Accept header, and attaches AWSAuth. Wire
+// it into StreamConfig as BuildBedrockStreamRequest. The orchestrator
+// dispatches on provider.
 func (me *methodEmitter) emitBuildRequest() {
 	if introspected.StreamRequest == nil {
 		return
@@ -169,11 +167,11 @@ func (me *methodEmitter) emitBuildRequest() {
 	}
 	buildRequestCallParams = append(buildRequestCallParams, jen.Id("callOpts").Op("..."))
 
-	// PR3-bedrock-stream breadcrumb: identical call-param shape for
-	// BAML's non-streaming Request.<Method>. Same args + opts as
-	// StreamRequest because both consume the per-method signature.
-	// Built unconditionally; only inlined into the closure when
-	// introspected.Request is non-nil (the v0.219 gate).
+	// Identical call-param shape for BAML's non-streaming
+	// Request.<Method>. Same args + opts as StreamRequest because both
+	// consume the per-method signature. Built unconditionally; only
+	// inlined into the closure when introspected.Request is non-nil
+	// (the v0.219 gate).
 	var bedrockStreamCallParams []jen.Code
 	bedrockStreamCallParams = append(bedrockStreamCallParams, jen.Id("ctx"))
 	for _, arg := range me.args {
@@ -218,13 +216,12 @@ func (me *methodEmitter) emitBuildRequest() {
 		}),
 	)
 
-	// PR3-bedrock-stream breadcrumb (issue #243): bedrock streaming
-	// uses BAML's non-streaming modular Request.<Method> as the body
-	// assembler (StreamRequest errors for aws-bedrock per upstream),
-	// then mutates URL /converse → /converse-stream, sets the AWS
-	// event-stream Accept header, and attaches AWSAuth. The
-	// orchestrator dispatches to this closure when the per-attempt
-	// provider is aws-bedrock.
+	// Bedrock streaming uses BAML's non-streaming modular
+	// Request.<Method> as the body assembler (StreamRequest errors for
+	// aws-bedrock per upstream), then mutates URL /converse →
+	// /converse-stream, sets the AWS event-stream Accept header, and
+	// attaches AWSAuth. The orchestrator dispatches to this closure
+	// when the per-attempt provider is aws-bedrock.
 	//
 	// Gated on introspected.Request being non-nil because the symbol
 	// baml_client.Request only exists on BAML v0.219+. For v0.204 /
@@ -453,11 +450,10 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("FallbackTargets"):    jen.Id("fallbackTargets"),
 			jen.Id("FallbackRoundRobin"): jen.Id("fallbackRoundRobin"),
 			jen.Id("LegacyStreamChild"):  jen.Id("legacyStreamChildFn"),
-			// PR3-bedrock-stream breadcrumb (issue #243): wired only
-			// when introspected.Request is non-nil (v0.219). For
-			// v0.204/v0.215 the field stays nil and the orchestrator's
-			// up-front validation rejects aws-bedrock provider
-			// configurations on those adapters — matching the
+			// Wired only when introspected.Request is non-nil (v0.219).
+			// For v0.204/v0.215 the field stays nil and the
+			// orchestrator's up-front validation rejects aws-bedrock
+			// provider configurations on those adapters — matching the
 			// codegen-time gating, since baml_client.Request doesn't
 			// exist there.
 			jen.Id("BuildBedrockStreamRequest"): func() jen.Code {
@@ -592,10 +588,9 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			// BAML-emitted URL looks like a Bedrock Converse endpoint.
 			// MaybeAttachBedrockAuth is a no-op on non-bedrock URLs,
 			// so the unconditional emit costs every other provider
-			// nothing. PR1-bedrock breadcrumb (issue #243). The
-			// streaming branch uses its own sibling closure
-			// (buildBedrockStreamRequestFn) with emitBedrockStreamPostProcess
-			// — see emitBuildRequest above.
+			// nothing. The streaming branch uses its own sibling
+			// closure (buildBedrockStreamRequestFn) with
+			// emitBedrockStreamPostProcess — see emitBuildRequest above.
 			emitBAMLHTTPRequestConversion(jg, emitMaybeAttachBedrockAuth)
 		}),
 

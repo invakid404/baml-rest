@@ -79,7 +79,6 @@ type providerErrorDetails struct {
 	// ErrorCode/ErrorMessage carry the AWS event-stream
 	// :error-code / :error-message header values when a Bedrock
 	// stream surfaces a transport-level error frame.
-	// PR3-bedrock-stream breadcrumb (issue #243).
 	ErrorCode    string `json:"error_code,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 	// ExceptionType / ExceptionMessage carry the modeled
@@ -91,7 +90,7 @@ type providerErrorDetails struct {
 	// ValidationException, etc.). Distinct from
 	// ErrorCode/ErrorMessage so wire consumers can tell a torn
 	// transport apart from a modeled exception even when both map
-	// to provider_error. PR3-bedrock-stream breadcrumb (issue #243).
+	// to provider_error.
 	ExceptionType    string `json:"exception_type,omitempty"`
 	ExceptionMessage string `json:"exception_message,omitempty"`
 }
@@ -164,7 +163,6 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	// taxonomy treats them the same as an HTTP-layer 5xx. The AWS
 	// codes (e.g. "InternalServerError", "ThrottlingException") and
 	// message ride along in details for caller diagnostics.
-	// PR3-bedrock-stream breadcrumb (issue #243).
 	var awsTransportErr *awsstream.TransportError
 	if errors.As(err, &awsTransportErr) {
 		return string(apierror.CodeProviderError), providerErrorDetails{
@@ -181,7 +179,7 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	// class — model refusal, throttling, validation — so they map
 	// to provider_error alongside transport errors but with their
 	// own detail fields so consumers can tell the two failure
-	// modes apart. PR3-bedrock-stream breadcrumb (issue #243).
+	// modes apart.
 	var bedrockExc *buildrequest.BedrockStreamException
 	if errors.As(err, &bedrockExc) {
 		return string(apierror.CodeProviderError), providerErrorDetails{

@@ -36,8 +36,7 @@ type Request struct {
 	// rewrite and before backend dispatch. nil leaves headers untouched
 	// — every non-bedrock provider hits that path. Used by both the
 	// call path (Execute) and the streaming path (ExecuteStream /
-	// ExecuteAWSStream). PR1-bedrock / PR3-bedrock-stream breadcrumb
-	// (issue #243).
+	// ExecuteAWSStream).
 	AWSAuth *AWSAuthConfig
 }
 
@@ -231,7 +230,7 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 	// SigV4 signing runs after URL rewrite (so the signature matches
 	// the host the request actually goes out with) and before either
 	// backend dispatch (so net/http and fasthttp see the same signed
-	// headers). PR1-bedrock breadcrumb.
+	// headers).
 	if err := signRequest(ctx, req, rewritten); err != nil {
 		return nil, err
 	}
@@ -363,7 +362,7 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 	// SigV4 signing runs after URL rewrite (so the signature matches
 	// the host the request actually goes out with) and before either
 	// backend dispatch (so net/http and fasthttp see the same signed
-	// headers). PR1-bedrock breadcrumb.
+	// headers).
 	if err := signRequest(ctx, req, rewritten); err != nil {
 		return nil, err
 	}

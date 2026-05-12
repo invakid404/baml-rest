@@ -20,7 +20,6 @@ import (
 // closure (buildBedrockStreamRequestFn) with
 // emitBedrockStreamPostProcess; this assertion guards the SSE
 // closure from accidentally inheriting AWS signing.
-// PR1-bedrock / PR3-bedrock-stream breadcrumb (#243).
 func TestEmitBAMLHTTPRequestConversion_NilPostProcess_NoBedrockAttach(t *testing.T) {
 	f := jen.NewFilePathName("github.com/example/test", "test")
 	f.Func().Id("emit").Params().Params(jen.Op("*").Id("Request"), jen.Error()).BlockFunc(func(g *jen.Group) {
@@ -47,7 +46,7 @@ func TestEmitBAMLHTTPRequestConversion_NilPostProcess_NoBedrockAttach(t *testing
 // with emitMaybeAttachBedrockAuth as postProcess (as the non-streaming
 // _buildCallRequest emit does), the generated body must contain the
 // MaybeAttachBedrockAuth call with the (ctx, req) argument shape and
-// must propagate any error returned by it. PR1-bedrock breadcrumb (#243).
+// must propagate any error returned by it.
 func TestEmitBAMLHTTPRequestConversion_BedrockPostProcess(t *testing.T) {
 	f := jen.NewFilePathName("github.com/example/test", "test")
 	f.Func().Id("emit").Params().Params(jen.Op("*").Id("Request"), jen.Error()).BlockFunc(func(g *jen.Group) {
@@ -165,9 +164,9 @@ func TestEmitBuildCallRequest_EmitsMaybeAttachBedrockAuth(t *testing.T) {
 	}
 }
 
-// TestEmitBuildRequest_EmitsBedrockStreamingClosure pins PR 3's
-// streaming-branch enablement (issue #243): when introspected.Request
-// is non-nil (v0.219), emitBuildRequest emits a
+// TestEmitBuildRequest_EmitsBedrockStreamingClosure pins the
+// streaming-branch enablement: when introspected.Request is non-nil
+// (v0.219), emitBuildRequest emits a
 // buildBedrockStreamRequestFn closure that calls BAML's non-streaming
 // Request.<Method>, mutates the URL to /converse-stream, sets the AWS
 // event-stream Accept header, and attaches AWSAuth. The closure is
@@ -198,8 +197,8 @@ func TestEmitBuildRequest_EmitsBedrockStreamingClosure(t *testing.T) {
 		t.Errorf("StreamConfig must wire BuildBedrockStreamRequest: buildBedrockStreamRequestFn; rendered:\n%s", rendered)
 	}
 	// The closure calls BAML's non-streaming Request.<Method>, not
-	// StreamRequest — BAML's StreamRequest errors for aws-bedrock per
-	// the upstream gate baml-rest works around with #243's scope cuts.
+	// StreamRequest — BAML's StreamRequest errors for aws-bedrock,
+	// which is the upstream gate baml-rest works around here.
 	// (jen renders the import as `bamlclient` — the imported package
 	// alias from GeneratedClientPkg.)
 	if !strings.Contains(rendered, "bamlclient.Request.GreetUser") {

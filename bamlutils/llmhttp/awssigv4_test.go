@@ -296,7 +296,7 @@ func TestSignRequest_MissingFields(t *testing.T) {
 // Scope note: only the default Bedrock runtime endpoint pattern
 // (bedrock-runtime.<region>.amazonaws.com) attaches. FIPS / China /
 // GovCloud / endpoint_url override shapes are intentionally not
-// covered here — that's #243 PR 4 territory.
+// covered here — see #254 for the endpoint_url deferral.
 func TestMaybeAttachBedrockAuth_Detection(t *testing.T) {
 	cases := []struct {
 		name       string

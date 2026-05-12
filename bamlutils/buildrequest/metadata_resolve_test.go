@@ -54,8 +54,7 @@ func TestResolveProviderWithReason_LegacyUnsupported(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
 	// "mistral" is a known-recognised-by-BAML provider that is NOT
 	// in baml-rest's BuildRequest supported set. Used as the stand-in
-	// for "unsupported provider" now that aws-bedrock has graduated to
-	// the supported set in PR 3 of #243.
+	// for "unsupported provider" (aws-bedrock is in the supported set).
 	res := ResolveProviderWithReason(adapter, "MyClient", "mistral", IsProviderSupported)
 	if res.Path != "legacy" {
 		t.Errorf("path: got %q, want legacy", res.Path)
@@ -99,9 +98,9 @@ func TestResolveFallbackChainWithReason_AllLegacy(t *testing.T) {
 		},
 	}
 	// Children use mistral — a BAML-recognised but baml-rest-
-	// unsupported provider — so the chain falls to all-legacy. PR 3
-	// of #243 graduated aws-bedrock to the supported set, so it can
-	// no longer stand in for "unsupported" here.
+	// unsupported provider — so the chain falls to all-legacy.
+	// aws-bedrock is in the supported set and can no longer stand in
+	// for "unsupported" here.
 	chains := map[string][]string{"Strategy": {"Leg1", "Leg2"}}
 	providers := map[string]string{
 		"Strategy": "baml-fallback",
@@ -130,10 +129,10 @@ func TestResolveFallbackChainWithReason_MixedDrivable(t *testing.T) {
 		"Strategy": "baml-fallback",
 		"Primary":  "openai",
 		// Backup is an unsupported-by-baml-rest provider so the chain
-		// drives mixed (BR for Primary, legacy for Backup). PR 3 of
-		// #243 graduated aws-bedrock — the previous stand-in — to the
-		// supported set, so a baml-rest-unsupported provider is
-		// needed to keep this test exercising the mixed-chain path.
+		// drives mixed (BR for Primary, legacy for Backup).
+		// aws-bedrock is in the supported set, so a baml-rest-
+		// unsupported provider is needed to keep this test exercising
+		// the mixed-chain path.
 		"Backup": "mistral",
 	}
 	chain, _, legacy, reason := ResolveFallbackChainWithReason(adapter, "Strategy", chains, providers, IsProviderSupported)
@@ -357,8 +356,8 @@ func TestBuildFallbackChainPlan_ReasonPlumbsFromResolver(t *testing.T) {
 
 func TestBuildLegacyMetadataPlan_UnsupportedProvider(t *testing.T) {
 	adapter := &mockAdapter{Context: context.Background()}
-	// "mistral" stands in for an unsupported provider after PR 3 of
-	// #243 graduated aws-bedrock to the BuildRequest supported set.
+	// "mistral" stands in for an unsupported provider (aws-bedrock is
+	// in the BuildRequest supported set).
 	plan := BuildLegacyMetadataPlan(adapter, "MyClient", "mistral", nil, nil, IsProviderSupported, nil)
 	if plan.Path != "legacy" {
 		t.Errorf("path: got %q, want legacy", plan.Path)
@@ -1989,10 +1988,9 @@ func TestResolveClientProvider_ShorthandIntrospectedEntry(t *testing.T) {
 // TestResolveProviderWithReason_ShorthandUnsupportedProvider pins the
 // negative case for shorthand resolution: a shorthand spec whose
 // provider is recognized by upstream BAML but NOT in baml-rest's
-// BuildRequest supported set. Pre-PR-3 (issue #243) this used
-// aws-bedrock as the canonical example; PR 3 graduated aws-bedrock to
-// the supported set, so the test now uses mistral — another upstream-
-// recognised provider that baml-rest doesn't handle.
+// BuildRequest supported set. The test uses mistral — an upstream-
+// recognised provider that baml-rest doesn't handle (aws-bedrock is
+// in the supported set, so it can't stand in here).
 //
 // Pre-fix: this would land as PathReasonEmptyProvider because the
 // introspector left ClientProvider["mistral/foo"] empty.

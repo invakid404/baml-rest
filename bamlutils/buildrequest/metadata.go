@@ -35,7 +35,6 @@ const (
 	// BuildRequest supported set (callSupportedProviders for the call
 	// path, supportedProviders for the streaming path). aws-bedrock is
 	// in both sets — see those vars for the per-version gating.
-	// PR1-bedrock / PR3-bedrock-stream breadcrumb (issue #243).
 	PathReasonUnsupportedProvider = "unsupported-provider"
 	// PathReasonFallbackEmptyChain: the resolved strategy client resolves
 	// to baml-fallback but has no children, so BuildRequest has nothing

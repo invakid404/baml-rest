@@ -6,8 +6,7 @@
 // alike).
 //
 // Used by both the call path (Execute) and the streaming paths
-// (ExecuteStream, ExecuteAWSStream). PR1-bedrock / PR3-bedrock-stream
-// breadcrumb (issue #243).
+// (ExecuteStream, ExecuteAWSStream).
 package llmhttp
 
 import (
@@ -178,9 +177,8 @@ var sigV4OwnedHeaders = []string{
 
 // parseBedrockRegion extracts the AWS region from a BAML-emitted
 // Bedrock URL whose host is bedrock-runtime.<region>.amazonaws.com.
-// PR1-bedrock breadcrumb: PR 4 may revisit this if an endpoint_url
-// override path lands, since custom endpoints break the
-// host-encoded-region assumption.
+// Custom endpoints (e.g. a future endpoint_url override path) would
+// break the host-encoded-region assumption.
 func parseBedrockRegion(rawURL string) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -237,10 +235,6 @@ var (
 // malformed shared config, IMDS timeout) would otherwise poison Bedrock
 // auth for the rest of the worker's life. Subsequent calls retry via
 // the loader.
-//
-// PR1-bedrock breadcrumb: PR 4 will introduce a path to override this
-// with static `.baml` credentials once the adapter exposes them
-// through a non-public surface.
 func DefaultAWSCredentialProvider(ctx context.Context) (aws.CredentialsProvider, error) {
 	defaultAWSCredsMu.Lock()
 	cached := defaultAWSCreds
@@ -274,7 +268,7 @@ func DefaultAWSCredentialProvider(ctx context.Context) (aws.CredentialsProvider,
 // Safe to call unconditionally from the generated call branch — the
 // URL-pattern check keeps non-bedrock providers untouched, so adding
 // the call to all generated _buildCallRequest implementations costs
-// nothing for openai/anthropic/etc. PR1-bedrock breadcrumb.
+// nothing for openai/anthropic/etc.
 func MaybeAttachBedrockAuth(ctx context.Context, req *Request) error {
 	if req == nil {
 		return nil
@@ -294,8 +288,7 @@ func MaybeAttachBedrockAuth(ctx context.Context, req *Request) error {
 // not match the BAML-emitted bedrock-runtime.<region>.amazonaws.com
 // pattern or if the default credential chain cannot be loaded.
 //
-// PR1-bedrock / PR3-bedrock-stream breadcrumb (issue #243): codegen
-// calls this from the aws-bedrock branch on both the call path
+// Codegen calls this from the aws-bedrock branch on both the call path
 // (Request.<Method>) and the streaming path
 // (Request.<Method> + /converse-stream URL rewrite).
 func AttachBedrockAuth(ctx context.Context, req *Request) error {

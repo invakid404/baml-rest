@@ -805,7 +805,6 @@ func (e *transportFlakeWrap) Unwrap() error { return e.inner }
 // "buildrequest: delta extraction failed: %w" envelope, and the
 // classifier must walk the chain via errors.As to produce
 // provider_error with exception_type + exception_message details.
-// PR3-bedrock-stream breadcrumb (issue #243).
 func TestBridgeStreamResultsClassifiesBedrockStreamException(t *testing.T) {
 	t.Parallel()
 

@@ -1460,10 +1460,10 @@ func TestExtractResponseContent_AWSBedrock_IncludeReasoning(t *testing.T) {
 		},
 		{
 			// Reasoning block with no reasoningText field — silently
-			// skipped on the reasoning channel (PR1-bedrock scope cut
-			// for signature/redactedContent), but the block is still
-			// recognised so the no-recognised-content guard does not
-			// fire.
+			// skipped on the reasoning channel (signature/redactedContent
+			// surfaces are not piped through; see #254), but the block
+			// is still recognised so the no-recognised-content guard
+			// does not fire.
 			name: "reasoning block with no text",
 			body: `{"output":{"message":{"role":"assistant","content":[
 				{"text":"Answer"},
@@ -1558,7 +1558,7 @@ func TestExtractResponseContent_AWSBedrock_EmptyContent(t *testing.T) {
 }
 
 func TestExtractResponseContent_AWSBedrock_ToolUseOnly(t *testing.T) {
-	// Tool-use blocks are out of scope for PR 1. A response that
+	// Tool-use blocks are not surfaced (see #254). A response that
 	// contains ONLY unrecognised blocks must error — silently
 	// returning "" would let a tool-call-only completion masquerade as
 	// an empty success.
@@ -1567,7 +1567,7 @@ func TestExtractResponseContent_AWSBedrock_ToolUseOnly(t *testing.T) {
 	]}}}`
 	_, _, _, err := ExtractResponseContent("aws-bedrock", body, false)
 	if err == nil {
-		t.Fatal("expected error when only tool-use blocks are present (PR 1 scope cut)")
+		t.Fatal("expected error when only tool-use blocks are present")
 	}
 }
 

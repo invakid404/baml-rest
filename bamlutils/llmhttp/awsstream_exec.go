@@ -5,13 +5,12 @@
 // different body content-type check and different return type
 // (an awsstream.Decoder instead of an SSE channel).
 //
-// PR3-bedrock-stream breadcrumb (issue #243): this lives in
-// llmhttp/ because the transport responsibilities (URL rewrite, SigV4,
-// HTTP error classification, body limit on error responses) are
-// identical to the rest of the package. The provider-specific event
-// decoding stays in bamlutils/awsstream so non-bedrock callers don't
-// pick up the AWS SDK dependency surface at the llmhttp boundary
-// for no reason.
+// Lives in llmhttp/ because the transport responsibilities (URL
+// rewrite, SigV4, HTTP error classification, body limit on error
+// responses) are identical to the rest of the package. The
+// provider-specific event decoding stays in bamlutils/awsstream so
+// non-bedrock callers don't pick up the AWS SDK dependency surface at
+// the llmhttp boundary for no reason.
 package llmhttp
 
 import (
@@ -43,10 +42,9 @@ const AWSStreamContentType = "application/vnd.amazon.eventstream"
 //   - Close releases the underlying connection. The caller is
 //     responsible for invoking it; idempotent.
 //
-// PR3-bedrock-stream breadcrumb: PR 4 may surface modeled
+// The body channel is the load-bearing contract; modeled
 // initial-response metadata (request id, model name from response
-// headers) on this type; the body channel stays the load-bearing
-// contract.
+// headers) is not surfaced here today.
 type AWSStreamResponse struct {
 	StatusCode int
 	Headers    http.Header
@@ -86,10 +84,10 @@ func (s *AWSStreamResponse) Close() {
 // negotiates HTTP/2 with ALPN, so production traffic always lands on
 // the stdlib HTTP/2 client anyway; the fasthttp branch's
 // SSE-tail-tracking machinery has no equivalent for AWS event-stream
-// framing (which has its own CRC + length-prefix terminator), and
-// duplicating it for PR 3 is out of scope. Mock servers (httptest.NewServer)
-// speak HTTP/1.1 over net/http, which works fine here. PR 4 may revisit
-// if a fasthttp-pinned origin shows up in production.
+// framing (which has its own CRC + length-prefix terminator), so a
+// fasthttp twin isn't worth maintaining. Mock servers
+// (httptest.NewServer) speak HTTP/1.1 over net/http, which works fine
+// here.
 func (c *Client) ExecuteAWSStream(ctx context.Context, req *Request) (*AWSStreamResponse, error) {
 	if c == nil || c.httpClient == nil {
 		return nil, fmt.Errorf("llmhttp: nil client")
@@ -102,8 +100,8 @@ func (c *Client) ExecuteAWSStream(ctx context.Context, req *Request) (*AWSStream
 
 	// SigV4 signing runs after URL rewrite (so the signature matches
 	// the host the request actually goes out with) and before backend
-	// dispatch — identical contract to ExecuteStream. PR3-bedrock-stream
-	// breadcrumb: re-uses the same hook PR 1 added.
+	// dispatch — identical contract to ExecuteStream, reusing the same
+	// signRequest hook.
 	if err := signRequest(ctx, req, rewritten); err != nil {
 		return nil, err
 	}
