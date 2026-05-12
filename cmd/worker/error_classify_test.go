@@ -132,6 +132,20 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: "",
 		},
 		{
+			// Pins the defensive contract: a future/unrecognized BAML
+			// enum display that happens to use the same `Name (NNN)`
+			// shape must NOT match the parenthesized branch and leak
+			// the wrong status code. Go regexp distributes `^` only to
+			// the first alternative; wrapping the alternation in a
+			// non-capturing group plus an explicit enum allowlist is
+			// what enforces this — without it, this case would parse
+			// 599 and mislabel an unknown variant.
+			name:        "legacy unrecognized enum name with parens does not leak status_code",
+			err:         errors.New("LLM client \"X\" failed with status code: SomeNewEnum (599)\nMessage: who knows"),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: "",
+		},
+		{
 			name:        "legacy LLM client timed out",
 			err:         errors.New(`LLM client "GPT4o" timed out: deadline exceeded after 30s`),
 			wantCode:    string(apierror.CodeProviderError),

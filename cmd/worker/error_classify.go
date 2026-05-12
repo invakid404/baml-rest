@@ -32,23 +32,34 @@ const (
 
 // legacyStatusCodeRE extracts the numeric status code from BAML
 // v0.219's ClientHttpError envelope. BAML renders the ErrorCode enum
-// via Display before the "\nMessage: " body, producing several shapes
-// the parser must cope with (engine/baml-runtime/.../internal/llm_client/mod.rs:249-259):
+// via Display before the "\nMessage: " body, producing one of these
+// shapes (engine/baml-runtime/.../internal/llm_client/mod.rs:249-259):
 //
-//	ServerError (500)            — named enum, parenthesized digits
-//	RateLimited (429)            — same shape (InvalidAuthentication,
-//	ServiceUnavailable (503)       NotSupported, Timeout follow the
-//	                               same pattern)
-//	BadResponse 418              — bare digits after literal "BadResponse "
-//	Unspecified error code: 418  — bare digits after the colon variant
+//	InvalidAuthentication (401)  — named enum, parenthesized digits
+//	NotSupported (403)             (same shape for all named variants:
+//	RateLimited (429)              from_status maps known HTTP codes
+//	ServerError (500)              into this allowlist)
+//	ServiceUnavailable (503)
+//	Timeout (408)
+//	BadResponse <code>           — UnsupportedResponse(u16) variant
+//	Unspecified error code: <N>  — Other(u16) variant for any code
+//	                               BAML didn't recognize
 //
-// Earlier/future BAML versions could emit bare leading digits as well,
-// so the regex keeps that path as the first alternative for
-// compatibility. The alternatives are anchored on BAML's literal enum
-// names so a stray digit run inside the trailing message body can't
-// be misread as the status code.
+// Earlier/future BAML versions could emit bare leading digits, so the
+// first alternative keeps that path for compatibility.
+//
+// The whole alternation is wrapped under a single `^` anchor — Go's
+// regexp distributes a top-level `^` only to the first alternative,
+// so without the non-capturing group an unrecognized future enum
+// display like `SomeNewEnum (599)` would match the parenthesized
+// branch mid-segment and leak the wrong number. Pinning the
+// parenthesized branch to BAML's exact enum spellings means any new
+// named variant added upstream falls through to provider_error with
+// nil details — under-classify rather than misclassify. Bumping the
+// BAML pin should re-check this allowlist against the current
+// ErrorCode Display impl.
 var legacyStatusCodeRE = regexp.MustCompile(
-	`^(\d+)|\((\d+)\)|(?:BadResponse|Unspecified error code:)\s+(\d+)`,
+	`^(?:(\d+)|(?:InvalidAuthentication|NotSupported|RateLimited|ServerError|ServiceUnavailable|Timeout) \((\d+)\)|(?:BadResponse|Unspecified error code:)\s+(\d+))`,
 )
 
 // classifyBAMLError inspects a worker-side error from a BAML call /
