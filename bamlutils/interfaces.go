@@ -283,8 +283,15 @@ func (r *ClientRegistry) Validate() error {
 }
 
 type ClientProperty struct {
-	Name        string         `json:"name"`
-	Provider    string         `json:"provider"`
+	Name string `json:"name"`
+	// Provider's wire-level optionality is enforced by ClientProperty.MarshalJSON
+	// (an outer *string field with omitempty shadows this tag during marshal)
+	// and consumed by ClientProperty.UnmarshalJSON via a raw-key probe that
+	// populates ProviderSet. The tag carries omitempty so the schema
+	// generator, which reads struct tags, agrees with the actual wire
+	// contract: provider may be absent. See the field's three-state contract
+	// documented on ProviderSet/IsProviderPresent.
+	Provider    string         `json:"provider,omitempty"`
 	RetryPolicy *string        `json:"retry_policy"`
 	Options     map[string]any `json:"options,omitempty"`
 
