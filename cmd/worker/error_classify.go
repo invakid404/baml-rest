@@ -8,6 +8,7 @@ import (
 
 	"github.com/goccy/go-json"
 
+	"github.com/invakid404/baml-rest/bamlutils/awsstream"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/apierror"
@@ -75,6 +76,14 @@ type providerErrorDetails struct {
 	StatusCode int    `json:"status_code,omitempty"`
 	Body       string `json:"body,omitempty"`
 	ClientName string `json:"client_name,omitempty"`
+	// ErrorCode/ErrorMessage carry the AWS event-stream
+	// :error-code / :error-message header values when a Bedrock
+	// stream surfaces a transport-level error frame (not a modeled
+	// exception — those are surfaced via the JSON body path
+	// upstream of the classifier). PR3-bedrock-stream breadcrumb
+	// (issue #243).
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // marshal returns the JSON-encoded bytes, or nil when every field is
@@ -83,7 +92,7 @@ type providerErrorDetails struct {
 // can't realistically fail; if it ever does, fall back to no details
 // rather than dropping the classification.
 func (d providerErrorDetails) marshal() []byte {
-	if d.StatusCode == 0 && d.Body == "" && d.ClientName == "" {
+	if d.StatusCode == 0 && d.Body == "" && d.ClientName == "" && d.ErrorCode == "" && d.ErrorMessage == "" {
 		return nil
 	}
 	data, err := json.Marshal(d)
@@ -134,6 +143,22 @@ func classifyBAMLError(err error) (code string, details []byte) {
 
 	if errors.Is(err, llmhttp.ErrTransportFlake) {
 		return string(apierror.CodeProviderError), nil
+	}
+
+	// AWS event-stream transport errors arrive in-band on the wire as
+	// :message-type=error frames. awsstream.Decoder surfaces these as
+	// *TransportError with the AWS-specific :error-code /
+	// :error-message header values; map them to provider_error so the
+	// taxonomy treats them the same as an HTTP-layer 5xx. The AWS
+	// codes (e.g. "InternalServerError", "ThrottlingException") and
+	// message ride along in details for caller diagnostics.
+	// PR3-bedrock-stream breadcrumb (issue #243).
+	var awsTransportErr *awsstream.TransportError
+	if errors.As(err, &awsTransportErr) {
+		return string(apierror.CodeProviderError), providerErrorDetails{
+			ErrorCode:    awsTransportErr.Code,
+			ErrorMessage: awsTransportErr.Message,
+		}.marshal()
 	}
 
 	// Legacy FFI string surfaces — checked only after every typed branch

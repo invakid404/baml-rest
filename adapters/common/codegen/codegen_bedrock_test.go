@@ -165,26 +165,87 @@ func TestEmitBuildCallRequest_EmitsMaybeAttachBedrockAuth(t *testing.T) {
 	}
 }
 
-// TestEmitBuildRequest_DoesNotEmitMaybeAttachBedrockAuth pins the
-// streaming-branch contract: the streaming codegen path
-// (emitBuildRequest) must NOT emit MaybeAttachBedrockAuth.
+// TestEmitBuildRequest_EmitsBedrockStreamingClosure pins PR 3's
+// streaming-branch enablement (issue #243): when introspected.Request
+// is non-nil (v0.219), emitBuildRequest emits a
+// buildBedrockStreamRequestFn closure that calls BAML's non-streaming
+// Request.<Method>, mutates the URL to /converse-stream, sets the AWS
+// event-stream Accept header, and attaches AWSAuth. The closure is
+// wired into StreamConfig.BuildBedrockStreamRequest so the
+// orchestrator dispatches to it for aws-bedrock providers.
 //
-// Bedrock streaming is gated by supportedProviders["aws-bedrock"]
-// (still false as of #243 PR 1) and lands in PR 3, where it will go
-// through a different codegen path (URL mutation /converse →
-// /converse-stream plus AWS event-stream decoding). Emitting the
-// attach on the streaming path now would silently sign requests that
-// can't yet handle the response.
-func TestEmitBuildRequest_DoesNotEmitMaybeAttachBedrockAuth(t *testing.T) {
+// Inverse test below pins that the bedrock streaming closure is NOT
+// emitted when introspected.Request is nil (the v0.204/v0.215 case).
+func TestEmitBuildRequest_EmitsBedrockStreamingClosure(t *testing.T) {
 	savedStreamRequest := introspected.StreamRequest
-	t.Cleanup(func() { introspected.StreamRequest = savedStreamRequest })
+	savedRequest := introspected.Request
+	t.Cleanup(func() {
+		introspected.StreamRequest = savedStreamRequest
+		introspected.Request = savedRequest
+	})
 	introspected.StreamRequest = struct{}{}
+	introspected.Request = struct{}{}
 
 	me := newBedrockTestMethodEmitter(t)
 	me.emitBuildRequest()
 	rendered := me.g.out.GoString()
 
-	if strings.Contains(rendered, "MaybeAttachBedrockAuth") {
-		t.Errorf("emitBuildRequest (streaming path) must not emit MaybeAttachBedrockAuth — streaming is PR 3 territory; rendered:\n%s", rendered)
+	// Closure exists and is wired into StreamConfig.
+	if !strings.Contains(rendered, "buildBedrockStreamRequestFn :=") {
+		t.Errorf("emitBuildRequest must declare buildBedrockStreamRequestFn; rendered:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "BuildBedrockStreamRequest: buildBedrockStreamRequestFn") {
+		t.Errorf("StreamConfig must wire BuildBedrockStreamRequest: buildBedrockStreamRequestFn; rendered:\n%s", rendered)
+	}
+	// The closure calls BAML's non-streaming Request.<Method>, not
+	// StreamRequest — BAML's StreamRequest errors for aws-bedrock per
+	// the upstream gate baml-rest works around with #243's scope cuts.
+	// (jen renders the import as `bamlclient` — the imported package
+	// alias from GeneratedClientPkg.)
+	if !strings.Contains(rendered, "bamlclient.Request.GreetUser") {
+		t.Errorf("bedrock streaming closure must call bamlclient.Request.<Method>; rendered:\n%s", rendered)
+	}
+	// URL mutation: /converse → /converse-stream via strings.Replace.
+	if !strings.Contains(rendered, `strings.Replace(req.URL, "/converse", "/converse-stream", 1)`) {
+		t.Errorf("bedrock streaming closure must mutate /converse → /converse-stream; rendered:\n%s", rendered)
+	}
+	// Accept header set to the AWS event-stream content type.
+	if !strings.Contains(rendered, `req.Headers["Accept"] = llmhttp.AWSStreamContentType`) {
+		t.Errorf("bedrock streaming closure must set req.Headers[\"Accept\"] = llmhttp.AWSStreamContentType; rendered:\n%s", rendered)
+	}
+	// Auth attach still uses MaybeAttachBedrockAuth so non-bedrock
+	// URLs no-op (defensive: production codegen only routes bedrock
+	// providers here, but the helper is the shared entry point).
+	if !strings.Contains(rendered, "llmhttp.MaybeAttachBedrockAuth(ctx, req)") {
+		t.Errorf("bedrock streaming closure must call MaybeAttachBedrockAuth; rendered:\n%s", rendered)
+	}
+}
+
+// TestEmitBuildRequest_NoBedrockClosureWithoutRequest pins the
+// v0.204/v0.215 gate: emitBuildRequest must NOT emit the bedrock
+// streaming closure when introspected.Request is nil — there's no
+// baml_client.Request symbol to call. StreamConfig's
+// BuildBedrockStreamRequest field stays nil; the orchestrator's
+// up-front validation then rejects aws-bedrock provider
+// configurations on those adapters.
+func TestEmitBuildRequest_NoBedrockClosureWithoutRequest(t *testing.T) {
+	savedStreamRequest := introspected.StreamRequest
+	savedRequest := introspected.Request
+	t.Cleanup(func() {
+		introspected.StreamRequest = savedStreamRequest
+		introspected.Request = savedRequest
+	})
+	introspected.StreamRequest = struct{}{}
+	introspected.Request = nil
+
+	me := newBedrockTestMethodEmitter(t)
+	me.emitBuildRequest()
+	rendered := me.g.out.GoString()
+
+	if strings.Contains(rendered, "buildBedrockStreamRequestFn") {
+		t.Errorf("emitBuildRequest must not declare buildBedrockStreamRequestFn when introspected.Request is nil; rendered:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "BuildBedrockStreamRequest: nil") {
+		t.Errorf("StreamConfig must wire BuildBedrockStreamRequest: nil when introspected.Request is nil; rendered:\n%s", rendered)
 	}
 }

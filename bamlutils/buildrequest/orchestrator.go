@@ -10,7 +10,9 @@ package buildrequest
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -127,8 +129,17 @@ var supportedProviders = map[string]bool{
 	"anthropic":        true,
 	"google-ai":        true,
 	"vertex-ai":        true,
-	// "aws-bedrock" is intentionally absent: BAML's StreamRequest errors for it,
-	// and its SSE format requires special handling not suited to BuildRequest.
+	// aws-bedrock (v0.219+): streaming uses Request.<Method> as a
+	// body assembler (BAML's StreamRequest errors for AWS), then
+	// mutates URL /converse → /converse-stream, signs SigV4 over
+	// the rewritten URL, executes via llmhttp.ExecuteAWSStream,
+	// and pipes decoded awsstream events through
+	// extractBedrockStreamDelta. PR3-bedrock-stream breadcrumb
+	// (issue #243): PR 4 scrubs breadcrumb comments and adds the
+	// remaining parity items (endpoint_url, static .baml creds,
+	// reasoning signature/redactedContent, tool-use streaming
+	// deltas, usage metadata).
+	"aws-bedrock": true,
 }
 
 // IsProviderSupported returns true if the provider's SSE format is handled
@@ -153,14 +164,17 @@ var callSupportedProviders = map[string]bool{
 	"anthropic":        true,
 	"google-ai":        true,
 	"vertex-ai":        true,
-	// aws-bedrock: call only (v0.219+). Streaming lands in #243 PR 3.
-	// See #243 for scope. PR1-bedrock breadcrumb: PR 4 scrubs comments.
-	// Scope cuts active in PR 1: v0.204/v0.215 fall through to legacy
-	// (codegen's _buildCallRequest is gated on introspected.Request,
-	// which only resolves on v0.219), default credential chain only
-	// (no static .baml creds), default Bedrock runtime endpoint only
-	// (no endpoint_url override). All three remaining items are
-	// tracked in #243 PR 4.
+	// aws-bedrock (v0.219+): both call and stream now go through
+	// BuildRequest (PR 1 added call, PR 3 added stream). See
+	// supportedProviders above for the streaming wire-path summary.
+	// Scope cuts active in PRs 1+3: v0.204/v0.215 fall through to
+	// legacy (codegen's _buildCallRequest is gated on
+	// introspected.Request, which only resolves on v0.219), default
+	// credential chain only (no static .baml creds), default Bedrock
+	// runtime endpoint only (no endpoint_url override), reasoning
+	// signature/redactedContent and tool-use streaming deltas
+	// silently skipped. Remaining items tracked in #243 PR 4.
+	// PR1-bedrock / PR3-bedrock-stream breadcrumb: PR 4 scrubs.
 	"aws-bedrock": true,
 }
 
@@ -283,6 +297,23 @@ type StreamConfig struct {
 	// NewMetadataResult constructs a pooled StreamResult wrapping a metadata
 	// payload. Required when MetadataPlan is non-nil.
 	NewMetadataResult NewMetadataResultFunc
+
+	// BuildBedrockStreamRequest, when non-nil, builds the
+	// non-streaming BAML Request.<Method> body and rewrites the URL
+	// from /converse to /converse-stream for aws-bedrock streaming.
+	// Required when the orchestrator is asked to stream against an
+	// aws-bedrock provider (single or fallback-chain child). The
+	// codegen-emitted closure also attaches the AWS event-stream
+	// Accept header and calls llmhttp.MaybeAttachBedrockAuth to wire
+	// the SigV4 signing hook.
+	//
+	// The two distinct closures (BuildRequest for SSE providers,
+	// BuildBedrockStreamRequest for bedrock) are emitted side-by-side
+	// because BAML's StreamRequest API errors for aws-bedrock — there
+	// is no upstream-streaming builder we can call. PR3-bedrock-stream
+	// breadcrumb (issue #243): PR 4 will swap this to BAML's modular
+	// streaming builder if/when it lands.
+	BuildBedrockStreamRequest BuildRequestFunc
 
 	// LegacyStreamChild runs a single child via BAML's Stream API. The
 	// orchestrator invokes it for children marked in LegacyChildren.
@@ -453,10 +484,18 @@ func RunStreamOrchestration(
 		if config.Provider == "" || !IsProviderSupported(config.Provider) {
 			return fmt.Errorf("buildrequest: unsupported or empty provider %q", config.Provider)
 		}
+		if config.Provider == "aws-bedrock" && config.BuildBedrockStreamRequest == nil {
+			return errors.New("buildrequest: aws-bedrock streaming requires StreamConfig.BuildBedrockStreamRequest to be set")
+		}
 	} else {
 		if len(config.LegacyChildren) > 0 && config.LegacyStreamChild == nil {
 			return fmt.Errorf("buildrequest: LegacyChildren set but LegacyStreamChild is nil")
 		}
+		// Track whether the chain contains an aws-bedrock leaf so we
+		// can require BuildBedrockStreamRequest up front rather than
+		// failing the first time a bedrock child runs (which would
+		// have already burned earlier non-bedrock retries).
+		bedrockInChain := false
 		for _, child := range config.FallbackChain {
 			if config.LegacyChildren[child] {
 				// Legacy children are driven via BAML's Stream API, which
@@ -472,6 +511,12 @@ func RunStreamOrchestration(
 			if provider == "" || !IsProviderSupported(provider) {
 				return fmt.Errorf("buildrequest: unsupported or empty provider %q for child %q", provider, child)
 			}
+			if provider == "aws-bedrock" {
+				bedrockInChain = true
+			}
+		}
+		if bedrockInChain && config.BuildBedrockStreamRequest == nil {
+			return errors.New("buildrequest: aws-bedrock child in fallback chain requires StreamConfig.BuildBedrockStreamRequest to be set")
 		}
 	}
 
@@ -509,6 +554,161 @@ func RunStreamOrchestration(
 		emitPlannedMetadata()
 	}
 
+	// trySendPartialShared is the common partial-emission helper for
+	// both the SSE-driven and AWS-event-stream-driven streaming
+	// paths. Centralising the send + sawStreamFrame book-keeping
+	// keeps the two paths' delta semantics identical (drop on
+	// buffer-full, mark sawStreamFrame only on successful send, ctx
+	// cancellation surfaces ctx.Err).
+	trySendPartialShared := func(parsed any, rawDelta, reasoningDelta string) error {
+		r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawDelta, reasoningDelta, nil, false)
+		select {
+		case out <- r:
+			sawStreamFrame.Store(true)
+		case <-ctx.Done():
+			r.Release()
+			return ctx.Err()
+		default:
+			r.Release()
+		}
+		return nil
+	}
+
+	// tryOneBedrockStreamChild runs a single aws-bedrock streaming
+	// attempt. Structurally parallel to tryOneStreamChild but uses:
+	//   - config.BuildBedrockStreamRequest (Request.<Method> +
+	//     /converse-stream URL rewrite + AWS event-stream Accept
+	//     header) instead of buildRequest (StreamRequest.<Method>).
+	//   - httpClient.ExecuteAWSStream (Content-Type:
+	//     application/vnd.amazon.eventstream) instead of
+	//     ExecuteStream.
+	//   - extractBedrockStreamDelta on awsstream.Decoder.Next()
+	//     events instead of sse.ExtractDeltaPartsFromText on SSE
+	//     events.
+	//
+	// Errors flow up the same way: transport drops (*HTTPError,
+	// transport-flake umbrella, *awsstream.TransportError) go to the
+	// orchestrator's retry/fallback loop, while modeled exceptions
+	// from a contentBlockDelta extractor surface as
+	// *BedrockStreamException — both routed through the worker
+	// classifier's typed-before-legacy ordering.
+	//
+	// PR3-bedrock-stream breadcrumb (issue #243).
+	tryOneBedrockStreamChild := func(clientOverride string) (any, string, string, error) {
+		if config.BuildBedrockStreamRequest == nil {
+			return nil, "", "", errors.New("buildrequest: aws-bedrock streaming requires StreamConfig.BuildBedrockStreamRequest to be set")
+		}
+		req, err := config.BuildBedrockStreamRequest(ctx, clientOverride)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("buildrequest: failed to build request: %w", err)
+		}
+
+		resp, err := httpClient.ExecuteAWSStream(ctx, req)
+		if err != nil {
+			return nil, "", "", err
+		}
+		defer resp.Close()
+
+		// Send heartbeat on connection success — matches the SSE
+		// path's "first byte from upstream = pool first-byte
+		// detection re-arms" contract.
+		sendHeartbeat()
+
+		var parseableAccumulated strings.Builder
+		var rawAccumulated strings.Builder
+		var reasoningAccumulated strings.Builder
+		var lastParseTime time.Time
+
+		for {
+			evt, nextErr := resp.Events.Next()
+			if nextErr == io.EOF {
+				break
+			}
+			if nextErr != nil {
+				// *awsstream.TransportError flows up verbatim: the
+				// worker classifier has a dedicated arm that maps it
+				// to provider_error with details.error_code /
+				// error_message. Generic framing errors (CRC,
+				// truncation, ErrUnexpectedEOF) wrap the same way
+				// the SSE path's stream-error wrap does so retry
+				// gating keeps treating them as transport-class
+				// failures.
+				return nil, "", "", fmt.Errorf("buildrequest: stream error: %w", nextErr)
+			}
+
+			delta, extractErr := extractBedrockStreamDelta(evt, config.IncludeReasoning)
+			if extractErr != nil {
+				// Modeled exception (*BedrockStreamException) or
+				// genuinely malformed payload — both fail the
+				// attempt so retry/fallback can take over. Same
+				// failure-fast contract as the SSE path's
+				// extraction error arm.
+				return nil, "", "", fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
+			}
+
+			// Skip frames with no incremental content on any
+			// channel — messageStart, contentBlockStart/Stop,
+			// messageStop, metadata, tool-use silent-skip
+			// variants. Reasoning-only frames under
+			// IncludeReasoning=false also land here (extractor
+			// returns a zero delta).
+			if delta.Raw == "" && delta.Parseable == "" && delta.Reasoning == "" {
+				continue
+			}
+
+			rawAccumulated.WriteString(delta.Raw)
+			if delta.Parseable != "" {
+				parseableAccumulated.WriteString(delta.Parseable)
+			}
+			if delta.Reasoning != "" {
+				reasoningAccumulated.WriteString(delta.Reasoning)
+			}
+
+			// Reasoning-only frame (delta.Parseable == ""): under
+			// NeedsRaw=true, push the reasoning/raw delta out as a
+			// partial. Matches the SSE path's "delta.Parseable ==
+			// '' && config.NeedsRaw" arm.
+			if config.NeedsPartials && delta.Parseable == "" {
+				if config.NeedsRaw {
+					if err := trySendPartialShared(nil, delta.Raw, delta.Reasoning); err != nil {
+						return nil, "", "", err
+					}
+				}
+				continue
+			}
+
+			if config.NeedsPartials && parseStream != nil {
+				shouldParse := config.ParseThrottleInterval == 0 ||
+					time.Since(lastParseTime) >= config.ParseThrottleInterval
+				if shouldParse {
+					lastParseTime = time.Now()
+					parsed, parseErr := parseStream(ctx, parseableAccumulated.String())
+					if parseErr == nil && parsed != nil {
+						rawForResult := ""
+						reasoningForResult := ""
+						if config.NeedsRaw {
+							rawForResult = delta.Raw
+							reasoningForResult = delta.Reasoning
+						}
+						if err := trySendPartialShared(parsed, rawForResult, reasoningForResult); err != nil {
+							return nil, "", "", err
+						}
+					}
+				}
+			}
+		}
+
+		fullRaw := rawAccumulated.String()
+		fullReasoning := reasoningAccumulated.String()
+
+		finalResult, parseErr := parseFinal(ctx, parseableAccumulated.String())
+		if parseErr != nil {
+			return nil, "", "", wrapOutputParse(fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr))
+		}
+
+		return finalResult, fullRaw, fullReasoning, nil
+	}
+
 	// tryOneStreamChild runs a single child's streaming attempt against the
 	// BuildRequest path. Returns the parsed final, the accumulated raw
 	// (text-only) text, and the accumulated reasoning text; the caller
@@ -516,6 +716,14 @@ func RunStreamOrchestration(
 	// output channel so supported and legacy children share a single
 	// emission path.
 	tryOneStreamChild := func(provider, clientOverride string) (any, string, string, error) {
+		// aws-bedrock streaming uses a separate transport (AWS
+		// event-stream) and request builder (Request.<Method>, not
+		// StreamRequest — see BuildBedrockStreamRequest doc).
+		// Dispatch to the dedicated bedrock closure. PR3-bedrock-
+		// stream breadcrumb (issue #243).
+		if provider == "aws-bedrock" {
+			return tryOneBedrockStreamChild(clientOverride)
+		}
 		req, err := buildRequest(ctx, clientOverride)
 		if err != nil {
 			return nil, "", "", fmt.Errorf("buildrequest: failed to build request: %w", err)
@@ -535,23 +743,10 @@ func RunStreamOrchestration(
 		var reasoningAccumulated strings.Builder
 		var lastParseTime time.Time
 
-		trySendPartial := func(parsed any, rawDelta, reasoningDelta string) error {
-			r := newResult(bamlutils.StreamResultKindStream, parsed, nil, rawDelta, reasoningDelta, nil, false)
-			select {
-			case out <- r:
-				// Mark only on successful send: ctx.Done and the
-				// drop-on-buffer-full branches did not actually
-				// deliver a frame to the client, so the reset-marker
-				// gate must stay armed.
-				sawStreamFrame.Store(true)
-			case <-ctx.Done():
-				r.Release()
-				return ctx.Err()
-			default:
-				r.Release() // Drop partial/raw delta — buffer full
-			}
-			return nil
-		}
+		// Share the partial-emission semantics with
+		// tryOneBedrockStreamChild — same drop-on-buffer-full /
+		// ctx-cancellation / sawStreamFrame contract.
+		trySendPartial := trySendPartialShared
 
 		for ev := range resp.Events {
 			// Extract parseable/raw/reasoning delta content from the SSE

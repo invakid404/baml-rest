@@ -249,8 +249,10 @@ func TestBuildLegacyMetadataPlan_RuntimeOverrideRespectedInLegacyChain(t *testin
 		originalRegistry: &bamlutils.ClientRegistry{
 			// Override the child's provider to one that's not supported by
 			// BuildRequest. The introspected static map still says openai.
+			// "mistral" stands in for an unsupported provider after PR 3
+			// of #243 graduated aws-bedrock to the supported set.
 			Clients: []*bamlutils.ClientProperty{
-				{Name: "Child", Provider: "aws-bedrock"},
+				{Name: "Child", Provider: "mistral"},
 			},
 		},
 	}
@@ -259,7 +261,7 @@ func TestBuildLegacyMetadataPlan_RuntimeOverrideRespectedInLegacyChain(t *testin
 	}
 	providers := map[string]string{
 		"Strategy": "baml-fallback",
-		"Child":    "openai", // static — but runtime says aws-bedrock
+		"Child":    "openai", // static — but runtime says mistral
 	}
 
 	plan := BuildLegacyMetadataPlan(adapter, "Strategy", "baml-fallback", chains, providers, IsProviderSupported, nil)
