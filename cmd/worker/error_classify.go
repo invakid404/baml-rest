@@ -109,13 +109,28 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	// we never use Contains for the prefix itself.
 	msg := err.Error()
 
-	if strings.HasPrefix(msg, legacyParseErrorPrefix) {
+	// Marker detection is scoped to the envelope's first line. BAML's
+	// ClientHttpError/TimeoutError Display impls put the recognized
+	// markers on the public envelope line and the upstream body after
+	// "\nMessage:" — so a malformed or future BAML string whose first
+	// line starts with `LLM client "...` but lacks the recognized
+	// marker must not be misclassified just because the message body
+	// happens to contain `failed with status code:` or `timed out:`
+	// verbatim. parseLegacyStatusCode already trims at the first
+	// newline, but doing the slice up front makes the boundary
+	// explicit and removes a hidden body-text dependency.
+	firstLine := msg
+	if nl := strings.IndexByte(msg, '\n'); nl != -1 {
+		firstLine = msg[:nl]
+	}
+
+	if strings.HasPrefix(firstLine, legacyParseErrorPrefix) {
 		return string(apierror.CodeParseError), nil
 	}
 
-	if strings.HasPrefix(msg, legacyLLMClientPrefix) {
-		if idx := strings.Index(msg, legacyLLMClientStatusMarker); idx != -1 {
-			if status, ok := parseLegacyStatusCode(msg[idx+len(legacyLLMClientStatusMarker):]); ok {
+	if strings.HasPrefix(firstLine, legacyLLMClientPrefix) {
+		if idx := strings.Index(firstLine, legacyLLMClientStatusMarker); idx != -1 {
+			if status, ok := parseLegacyStatusCode(firstLine[idx+len(legacyLLMClientStatusMarker):]); ok {
 				return string(apierror.CodeProviderError), statusCodeDetails(status)
 			}
 			// Status code couldn't be parsed — still a provider failure;
@@ -123,7 +138,7 @@ func classifyBAMLError(err error) (code string, details []byte) {
 			// classification altogether.
 			return string(apierror.CodeProviderError), nil
 		}
-		if strings.Contains(msg, legacyLLMClientTimeoutMarker) {
+		if strings.Contains(firstLine, legacyLLMClientTimeoutMarker) {
 			return string(apierror.CodeProviderError), nil
 		}
 	}

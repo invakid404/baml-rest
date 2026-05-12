@@ -146,6 +146,27 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: "",
 		},
 		{
+			// Pins the first-line-only marker contract: an LLM-client-
+			// prefixed envelope whose first line lacks the recognized
+			// status marker must NOT be classified just because the
+			// later message body happens to contain the marker phrase
+			// verbatim. Without first-line scoping, the body's
+			// "failed with status code: ServerError (500)" would
+			// satisfy the Index check and leak provider_error.
+			name:        "legacy unknown envelope with status marker in body falls through",
+			err:         errors.New("LLM client \"X\" generic-unknown-prefix\nMessage: failed with status code: ServerError (500)\nDetails: ..."),
+			wantCode:    "",
+			wantDetails: "",
+		},
+		{
+			// Same contract for the timeout marker — body text can't
+			// promote an unknown first-line envelope to provider_error.
+			name:        "legacy unknown envelope with timeout marker in body falls through",
+			err:         errors.New("LLM client \"X\" generic-unknown-prefix\nMessage: timed out: 30s elapsed before first byte"),
+			wantCode:    "",
+			wantDetails: "",
+		},
+		{
 			name:        "legacy LLM client timed out",
 			err:         errors.New(`LLM client "GPT4o" timed out: deadline exceeded after 30s`),
 			wantCode:    string(apierror.CodeProviderError),
