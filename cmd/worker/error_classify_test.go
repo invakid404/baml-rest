@@ -12,10 +12,10 @@ import (
 )
 
 // TestClassifyBAMLError pins the worker-side error → code mapping for
-// the typed BuildRequest surfaces this PR wires through. Untyped /
-// legacy errors must fall through to ("", nil) so the host's residual
-// classifyWorkerError keeps owning them; PR 3 of #245 adds conservative
-// string-prefix matching at the same boundary.
+// both typed BuildRequest surfaces and the legacy CallStream+OnTick
+// FFI strings. Unrecognized errors must fall through to ("", nil) so
+// the host's residual classifyWorkerError keeps owning them with the
+// worker_error default.
 func TestClassifyBAMLError(t *testing.T) {
 	t.Parallel()
 
@@ -62,14 +62,56 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: "",
 		},
 		{
-			name:        "untyped error",
+			name:        "legacy Parsing error prefix",
+			err:         errors.New("Parsing error: Failed to parse LLM response: missing field"),
+			wantCode:    string(apierror.CodeParseError),
+			wantDetails: "",
+		},
+		{
+			name:        "legacy LLM client failed with status code parsed",
+			err:         errors.New(`LLM client "GPT4o" failed with status code: 503 (upstream body: <html>)`),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"status_code":503}`,
+		},
+		{
+			name:        "legacy LLM client failed with status code 429",
+			err:         errors.New(`LLM client "Claude" failed with status code: 429`),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"status_code":429}`,
+		},
+		{
+			name:        "legacy LLM client failed with status code unparseable",
+			err:         errors.New(`LLM client "X" failed with status code: nope`),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: "",
+		},
+		{
+			name:        "legacy LLM client timed out",
+			err:         errors.New(`LLM client "GPT4o" timed out: deadline exceeded after 30s`),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: "",
+		},
+		{
+			name:        "untyped unrelated error falls through",
 			err:         errors.New("some other bug"),
 			wantCode:    "",
 			wantDetails: "",
 		},
 		{
-			name:        "untyped LLM-shaped string is not classified",
-			err:         errors.New(`LLM client "X" failed with status code: 500`),
+			name:        "BAML Internal Failure is not classified",
+			err:         errors.New("Internal Failure: BAML runtime panic"),
+			wantCode:    "",
+			wantDetails: "",
+		},
+		{
+			name:        "broad Failed to parse outside Parsing error envelope falls through",
+			err:         errors.New("Failed to parse LLM response: not a JSON envelope"),
+			wantCode:    "",
+			wantDetails: "",
+		},
+		{
+			name:        "LLM client prefix without recognized marker falls through",
+			err:         errors.New(`LLM client "X" exploded for unknown reasons`),
 			wantCode:    "",
 			wantDetails: "",
 		},
@@ -108,5 +150,28 @@ func TestClassifyBAMLErrorHTTPErrorPrefersInnermost(t *testing.T) {
 	}
 	if !strings.Contains(string(details), `"status_code":418`) {
 		t.Fatalf("details missing status_code 418: %s", string(details))
+	}
+}
+
+// TestClassifyBAMLErrorTypedBeforeLegacy pins the resolution order:
+// typed surfaces win over the legacy string classifier. A wrapper
+// chain whose top-level Error() matches the legacy prefix while
+// carrying a typed *llmhttp.HTTPError inside must emit the typed
+// StatusCode, not the prefix-parsed one — otherwise a future call site
+// that surfaces both shapes simultaneously would lose typed status_code
+// fidelity to a string scrape.
+func TestClassifyBAMLErrorTypedBeforeLegacy(t *testing.T) {
+	t.Parallel()
+
+	// fmt.Errorf's %w prepends to the chain's Error() string, so msg
+	// starts with the legacy LLM-client prefix and matches 599, but the
+	// wrapped *HTTPError carries the authoritative 404.
+	err := fmt.Errorf(`LLM client "X" failed with status code: 599: %w`, &llmhttp.HTTPError{StatusCode: 404})
+	code, details := classifyBAMLError(err)
+	if code != string(apierror.CodeProviderError) {
+		t.Fatalf("code: got %q, want provider_error", code)
+	}
+	if got := string(details); !strings.Contains(got, `"status_code":404`) {
+		t.Fatalf("typed status_code 404 must win over legacy-parsed 599; got %s", got)
 	}
 }
