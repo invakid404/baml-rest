@@ -2,6 +2,7 @@ package buildrequest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -2228,10 +2229,13 @@ func TestRunStreamOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
 	}
 
 	parseFinal := func(_ context.Context, s string) (any, error) {
-		// Wrap with the package's parse-error sentinel so the test
-		// also exercises rawCarryingError preserving errors.Is —
-		// matters because the worker bridge's classifyBAMLError
-		// branches on ErrOutputParse.
+		// Return a plain parse error. The production orchestrator
+		// applies wrapOutputParse() at the final-parse site, then
+		// newRawError wraps that with the accumulated raw. This test
+		// pins that the resulting chain still satisfies
+		// errors.Is(err, ErrOutputParse) — wrapping ErrOutputParse
+		// inside the fixture would short-circuit the assertion and
+		// hide a regression in the production sentinel wrap.
 		return nil, fmt.Errorf("Parsing error: bad field")
 	}
 
@@ -2262,11 +2266,14 @@ func TestRunStreamOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
 	if errResult.Raw() != wantRaw {
 		t.Fatalf("expected error.Raw() = %q (accumulated text), got %q", wantRaw, errResult.Raw())
 	}
-	// errors.Is must walk through the rawCarryingError wrap so the
-	// worker bridge's classifier still maps this to parse_error.
-	type unwrapper interface{ Unwrap() error }
-	if _, ok := errResult.Error().(unwrapper); !ok {
-		t.Fatal("expected wrapped error to expose Unwrap")
+	// errors.Is must walk through both production wraps
+	// (wrapOutputParse + rawCarryingError) so the worker bridge's
+	// classifyBAMLError still maps this to parse_error. The loose
+	// "has Unwrap" shape check this replaces would pass for any
+	// wrapped error — proving nothing about sentinel preservation.
+	if !errors.Is(errResult.Error(), ErrOutputParse) {
+		t.Fatalf("expected error to satisfy ErrOutputParse through the wrapOutputParse + rawCarryingError chain; got %v",
+			errResult.Error())
 	}
 }
 
