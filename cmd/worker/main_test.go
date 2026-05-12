@@ -702,28 +702,26 @@ func TestBridgeStreamResultsClassifiesOutputParseError(t *testing.T) {
 	}
 }
 
-// TestBridgeStreamResultsClassifiesHTTPError pins that an upstream
-// non-2xx response surfaces as provider_error with details.status_code,
-// so consumers can branch on the upstream HTTP status without parsing
-// free-form error text. Also pins the negative: the HTTP response body
-// (which can echo back partial prompts, PII, or large diagnostic
-// payloads) must NOT ride along in the structured details surface.
-// classifyBAMLError deliberately marshals only the status_code field;
-// this test fails closed if a future refactor widens that surface.
-func TestBridgeStreamResultsClassifiesHTTPError(t *testing.T) {
+// TestBridgeStreamResultsClassifiesHTTPError_ForwardsBody pins that an
+// upstream non-2xx response surfaces as provider_error with both
+// details.status_code (so consumers can branch without parsing free-
+// form error text) and details.body (so the operator running baml-rest
+// — who is the consumer of these details — has the upstream payload
+// for debugging). Body forwarding is policy-on-by-default: baml-rest is
+// a developer tool and the operator owns any downstream decisions
+// about the body.
+func TestBridgeStreamResultsClassifiesHTTPError_ForwardsBody(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	const bodySentinel = "rate limit: prompt echo sentinel"
+	const bodySentinel = "rate limit: distinctive body sentinel"
 
 	in := make(chan bamlutils.StreamResult, 1)
 	fake := newFakeStreamResult(bamlutils.StreamResultKindError)
-	// Non-empty Body so the omission assertion below actively proves
-	// the bridge dropped it, rather than passing vacuously on an empty
-	// body input. The sentinel string is distinctive enough that any
-	// accidental forwarding would be unambiguous.
+	// Distinctive sentinel proves the body specifically (not just any
+	// JSON field) survived the bridge.
 	fake.err = &llmhttp.HTTPError{StatusCode: 429, Body: bodySentinel}
 	in <- fake
 	close(in)
@@ -742,8 +740,8 @@ func TestBridgeStreamResultsClassifiesHTTPError(t *testing.T) {
 		if !strings.Contains(string(got.ErrorDetails), `"status_code":429`) {
 			t.Errorf("expected ErrorDetails to carry status_code=429, got %q", string(got.ErrorDetails))
 		}
-		if strings.Contains(string(got.ErrorDetails), bodySentinel) {
-			t.Errorf("ErrorDetails must not leak the upstream HTTP body; got %q", string(got.ErrorDetails))
+		if !strings.Contains(string(got.ErrorDetails), bodySentinel) {
+			t.Errorf("ErrorDetails must forward the upstream HTTP body; got %q", string(got.ErrorDetails))
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for bridged provider_error result")
