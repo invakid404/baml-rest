@@ -127,11 +127,13 @@ func extractErrorMessageAndCode(body []byte) (string, string) {
 
 // extractErrorMessageCodeAndDetails extracts the error message, the
 // machine-readable code, and the raw "details" envelope from a JSON
-// error response body. Returns ("", "", nil) when the body isn't a
-// JSON error envelope. Existing call sites that only need the message
-// or message+code keep using the narrower helpers; tests that branch
-// on structured provider context (e.g. provider_error status_code)
-// reach for this one.
+// error response body. When the body is not a JSON error envelope,
+// returns the raw body as the message with empty code and nil details
+// — mirrors extractErrorMessageAndCode's raw-body fallback so callers
+// still surface something useful for malformed/non-envelope responses.
+// Existing call sites that only need the message or message+code keep
+// using the narrower helpers; tests that branch on structured provider
+// context (e.g. provider_error status_code) reach for this one.
 func extractErrorMessageCodeAndDetails(body []byte) (string, string, json.RawMessage) {
 	var errResp errorResponse
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
