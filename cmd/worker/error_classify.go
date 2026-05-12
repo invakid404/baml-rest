@@ -113,6 +113,59 @@ func (d providerErrorDetails) marshal() []byte {
 	return data
 }
 
+// mergeRawDetail merges the accumulated raw text from a legacy
+// CallStream+OnTick failure (see #256) into the JSON-encoded details
+// object returned by classifyBAMLError. The forwarding is not gated on
+// classification: parse_error, provider_error, and unclassified errors
+// all get details.raw when the extractor accumulated bytes before the
+// failure. Consumers reading the apierror envelope no longer need to
+// regex-scrape "\nRaw Response: ..." out of BAML's free-form error
+// string — same posture as provider_error's details.body (#248).
+//
+// Behavior:
+//   - raw == "": returns details unchanged (the helper is a no-op so
+//     omitempty stays in force on the worker→host wire).
+//   - details == nil: returns {"raw": raw} as a fresh JSON object.
+//   - details is a JSON object: unmarshals, sets "raw", marshals back.
+//
+// All existing details fields (status_code, body, client_name, etc.)
+// are preserved. The marshal-back step uses map[string]any rather than
+// the typed struct so we don't drop unrecognized fields a future
+// classifier may add.
+//
+// Defensive fallback: if details is non-empty but isn't a JSON object,
+// the helper returns a fresh {"raw": raw} object rather than dropping
+// raw on the floor. Today every classifyBAMLError path returns either
+// nil or a marshalled providerErrorDetails (always object-shaped), so
+// this branch is dead — kept so a future classifier returning
+// non-object details doesn't silently lose the diagnostic.
+func mergeRawDetail(details []byte, raw string) []byte {
+	if raw == "" {
+		return details
+	}
+	if len(details) == 0 {
+		out, err := json.Marshal(map[string]any{"raw": raw})
+		if err != nil {
+			return details
+		}
+		return out
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(details, &obj); err != nil || obj == nil {
+		out, marshalErr := json.Marshal(map[string]any{"raw": raw})
+		if marshalErr != nil {
+			return details
+		}
+		return out
+	}
+	obj["raw"] = raw
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return details
+	}
+	return out
+}
+
 // classifyBAMLError inspects a worker-side error from a BAML call /
 // BuildRequest path and returns the apierror.Code that best fits, plus
 // optional JSON-encoded details. Returns ("", nil) when no surface

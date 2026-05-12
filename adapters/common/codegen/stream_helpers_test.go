@@ -109,6 +109,86 @@ func TestGenerateStreamHelpers_ContainsExpectedSymbols(t *testing.T) {
 	}
 }
 
+// TestRunFullOrchestration_NewErrorCarriesRaw pins #256 PR1's codegen
+// contract: runFullOrchestration's newError parameter widens to
+// (error, string) so the per-method closure (in codegen_legacy_stream.go)
+// can stamp the accumulator's raw text onto the error StreamResult.
+// The contract has three structural assertions:
+//
+//  1. The newError parameter type appears with the widened signature.
+//  2. Both error-emit sites in the stream-drain goroutine (fatalErrCopy,
+//     lastErr) thread the accumulator-derived raw via computeErrorRaw().
+//  3. The panic-recovery path passes "" (defensive: the extractor mutex
+//     may be held by the panicking goroutine — see the doc comment at
+//     the emit site).
+//
+// All three are textual checks against the rendered source. Brittle to
+// minor rewrites but cheap; the alternative (parse + AST inspection)
+// is over-engineered for a contract this narrow.
+func TestRunFullOrchestration_NewErrorCarriesRaw(t *testing.T) {
+	t.Parallel()
+
+	out := common.MakeFile()
+	generateStreamHelpers(out)
+	rendered := out.GoString()
+
+	// 1. Widened signature on runFullOrchestration. Use a substring that
+	// only matches the full path's newError (the noRaw path keeps the
+	// old func(error) shape).
+	if !strings.Contains(rendered, "newError func(error, string) bamlutils.StreamResult") {
+		t.Errorf("runFullOrchestration must accept newError func(error, string) bamlutils.StreamResult; rendered:\n%s",
+			snippet(rendered, 4000))
+	}
+
+	// 2. Both terminal error sites thread the accumulator via
+	// computeErrorRaw(). Search bounded to runFullOrchestration so a
+	// future addition of a newError call site in runNoRawOrchestration
+	// (which keeps the single-arg signature) cannot satisfy these
+	// assertions by accident.
+	fnStart := strings.Index(rendered, "func runFullOrchestration(")
+	if fnStart < 0 {
+		t.Fatal("could not locate runFullOrchestration in generated source")
+	}
+	nextFn := strings.Index(rendered[fnStart+1:], "\nfunc ")
+	end := len(rendered)
+	if nextFn >= 0 {
+		end = fnStart + 1 + nextFn
+	}
+	fullBody := rendered[fnStart:end]
+
+	if !strings.Contains(fullBody, "newError(fatalErrCopy, computeErrorRaw())") {
+		t.Errorf("fatalErrCopy emit must pass computeErrorRaw(); runFullOrchestration body:\n%s",
+			snippet(fullBody, 4000))
+	}
+	if !strings.Contains(fullBody, "newError(lastErr, computeErrorRaw())") {
+		t.Errorf("lastErr emit must pass computeErrorRaw(); runFullOrchestration body:\n%s",
+			snippet(fullBody, 4000))
+	}
+
+	// 3. The panic recovery handler emits newError(err, "") because the
+	// extractor mutex may be poisoned by the panicking goroutine.
+	if !strings.Contains(fullBody, `newError(err, "")`) {
+		t.Errorf("panic recovery must pass empty raw to newError; runFullOrchestration body:\n%s",
+			snippet(fullBody, 4000))
+	}
+
+	// reconcileRaw closure must be present so error frames pick up the
+	// authoritative RawLLMResponse splice (matches the success-final
+	// reconciliation). Without this, error raw could be truncated under
+	// the same stale-SSE-view race the success path defends against.
+	if !strings.Contains(fullBody, "reconcileRaw :=") {
+		t.Errorf("runFullOrchestration must declare a reconcileRaw closure; body:\n%s",
+			snippet(fullBody, 4000))
+	}
+	// reconcileRaw must still be used by the success-final path so a
+	// future refactor doesn't accidentally split the reconciliation
+	// between two codepaths and let error/success drift apart.
+	if !strings.Contains(fullBody, "finalRaw = reconcileRaw(finalRaw, parseableFull)") {
+		t.Errorf("success-final path must reuse reconcileRaw; body:\n%s",
+			snippet(fullBody, 4000))
+	}
+}
+
 func snippet(s string, n int) string {
 	if len(s) <= n {
 		return s
