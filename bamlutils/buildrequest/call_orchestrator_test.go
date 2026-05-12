@@ -1723,3 +1723,138 @@ func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 		t.Errorf("Final payload: got %v, want %q", finalVal, "ok")
 	}
 }
+
+// TestRunCallOrchestration_ParseFinalError_CarriesRaw pins #256 PR 2:
+// when the BuildRequest non-streaming path fails at the final-parse
+// step after a successful HTTP+extract, the emitted error StreamResult
+// must carry the extracted raw text via Raw() — that is what the worker
+// bridge's mergeRawDetail attaches to details.raw. Mirrors the
+// happy-path raw assertion in TestRunCallOrchestration_WithRaw.
+func TestRunCallOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
+	const rawText = "Sorry, I can't help with that."
+	server := makeJSONServer(200, fmt.Sprintf(`{"choices":[{"message":{"content":%q}}]}`, rawText))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &CallConfig{
+		Provider: "openai",
+		NeedsRaw: true,
+	}
+
+	_ = RunCallOrchestration(
+		context.Background(), out, config, client,
+		makeBuildCallRequest(server.URL),
+		func(_ context.Context, text string) (any, error) {
+			return nil, fmt.Errorf("Parsing error: bad field")
+		},
+		ExtractResponseContent,
+		newTestResult,
+	)
+	close(out)
+
+	var errResult bamlutils.StreamResult
+	for r := range out {
+		if r.Kind() == bamlutils.StreamResultKindError {
+			errResult = r
+			break
+		}
+	}
+	if errResult == nil {
+		t.Fatal("expected an error result from parseFinal failure")
+	}
+	if errResult.Raw() != rawText {
+		t.Fatalf("expected error.Raw() = %q (the extracted prose), got %q", rawText, errResult.Raw())
+	}
+	// Classification must survive the rawCarryingError wrap — the
+	// worker bridge calls classifyBAMLError on result.Error() and
+	// branches on errors.Is(err, ErrOutputParse).
+	if !errors.Is(errResult.Error(), ErrOutputParse) {
+		t.Fatalf("expected error to satisfy ErrOutputParse through wrappers; got %v", errResult.Error())
+	}
+}
+
+// TestRunCallOrchestration_ExtractError_CarriesBodyAsRaw pins #256 PR 2's
+// extraction-failure fallback: when extractResponse errors before
+// splitting raw out of the provider's 2xx body, the body itself is the
+// diagnostic. The orchestrator wraps with the raw body so the bridge can
+// surface it on details.raw. Pre-2xx provider errors don't reach this
+// path — they surface as *HTTPError from Execute and the existing
+// provider_error classifier maps HTTPError.Body to details.body.
+func TestRunCallOrchestration_ExtractError_CarriesBodyAsRaw(t *testing.T) {
+	const responseBody = `{"unexpected":"shape","missing":"fields"}`
+	server := makeJSONServer(200, responseBody)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &CallConfig{
+		Provider: "openai",
+		NeedsRaw: true,
+	}
+
+	// Custom extractor that always fails so we exercise the
+	// extract-error branch deterministically.
+	failingExtract := func(provider, body string, includeReasoning bool) (string, string, string, error) {
+		return "", "", "", fmt.Errorf("extractor: unrecognized shape")
+	}
+
+	_ = RunCallOrchestration(
+		context.Background(), out, config, client,
+		makeBuildCallRequest(server.URL),
+		identityParseFinal,
+		failingExtract,
+		newTestResult,
+	)
+	close(out)
+
+	var errResult bamlutils.StreamResult
+	for r := range out {
+		if r.Kind() == bamlutils.StreamResultKindError {
+			errResult = r
+		}
+	}
+	if errResult == nil {
+		t.Fatal("expected an error result from extract failure")
+	}
+	if errResult.Raw() != responseBody {
+		t.Fatalf("expected error.Raw() to carry the response body verbatim; got %q", errResult.Raw())
+	}
+}
+
+// TestRunCallOrchestration_HTTPError_NoRawWrap confirms the negative
+// case: pre-2xx provider failures don't reach the extract/parse seams,
+// so the error frame's Raw() stays empty. (The body is already exposed
+// via *HTTPError on details.body via the provider_error classifier —
+// duplicating into details.raw would be redundant.)
+func TestRunCallOrchestration_HTTPError_NoRawWrap(t *testing.T) {
+	server := makeJSONServer(503, `{"error":"upstream busy"}`)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	_ = RunCallOrchestration(
+		context.Background(), out, &CallConfig{Provider: "openai", NeedsRaw: true}, client,
+		makeBuildCallRequest(server.URL),
+		identityParseFinal,
+		ExtractResponseContent,
+		newTestResult,
+	)
+	close(out)
+
+	var errResult bamlutils.StreamResult
+	for r := range out {
+		if r.Kind() == bamlutils.StreamResultKindError {
+			errResult = r
+		}
+	}
+	if errResult == nil {
+		t.Fatal("expected an error result")
+	}
+	if errResult.Raw() != "" {
+		t.Fatalf("expected empty Raw() on pre-2xx HTTP error (body lives on details.body); got %q", errResult.Raw())
+	}
+}

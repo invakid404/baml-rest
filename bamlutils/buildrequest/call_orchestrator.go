@@ -321,12 +321,32 @@ func RunCallOrchestration(
 
 		parseable, raw, reasoning, extractErr := extractResponse(provider, resp.Body, config.IncludeReasoning)
 		if extractErr != nil {
-			return nil, fmt.Errorf("buildrequest: failed to extract response content: %w", extractErr)
+			// Extraction failed before raw could be split out of the
+			// provider's 2xx JSON body — but the body itself is the
+			// diagnostic input the user wants to inspect (refusal text,
+			// unexpected schema, etc.). Wrap with the raw body so the
+			// outer emission forwards it as details.raw (per #256).
+			// Pre-2xx provider errors don't reach this path — those
+			// surface as *HTTPError from Execute above and map to
+			// details.body via the existing provider_error classifier.
+			return nil, newRawError(
+				fmt.Errorf("buildrequest: failed to extract response content: %w", extractErr),
+				resp.Body,
+			)
 		}
 
 		finalResult, parseErr := parseFinal(ctx, parseable)
 		if parseErr != nil {
-			return nil, wrapOutputParse(fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr))
+			// Carry the extracted raw across the retry boundary so the
+			// outer emission can forward it as details.raw on the
+			// parse_error envelope (per #256). raw here is the
+			// already-split text-only return from extractResponse —
+			// not the full body — matching what success would have
+			// surfaced on /call-with-raw.
+			return nil, newRawError(
+				wrapOutputParse(fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)),
+				raw,
+			)
 		}
 
 		return &callAttemptResult{
@@ -423,7 +443,13 @@ func RunCallOrchestration(
 	result, err := retry.Execute(ctx, config.RetryPolicy, attemptFull, nil)
 
 	if err != nil {
-		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, "", "", err, false))
+		// Per #256: failing attempts wrap their error with raw via
+		// newRawError at the return site (extraction-failure carries
+		// resp.Body, final-parse carries the extracted raw). rawFromError
+		// walks the chain and returns "" when no wrapper is present —
+		// the worker bridge's mergeRawDetail no-ops on empty raw,
+		// matching the omitempty contract on details.raw.
+		trySend(newResult(bamlutils.StreamResultKindError, nil, nil, rawFromError(err), "", err, false))
 		return nil
 	}
 
