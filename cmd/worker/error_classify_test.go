@@ -16,6 +16,12 @@ import (
 // FFI strings. Unrecognized errors must fall through to ("", nil) so
 // the host's residual classifyWorkerError keeps owning them with the
 // worker_error default.
+//
+// provider_error details forward what baml-rest has from the failed
+// upstream: the HTTP status when known, the raw body, and the BAML
+// client name on legacy envelopes. Empty fields are omitted so the
+// envelope stays terse — assertions below use full-string equality
+// against the marshaled JSON to pin field ordering and omission.
 func TestClassifyBAMLError(t *testing.T) {
 	t.Parallel()
 
@@ -44,16 +50,24 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: "",
 		},
 		{
-			name:        "HTTPError 429",
+			name:        "HTTPError 429 forwards body",
 			err:         &llmhttp.HTTPError{StatusCode: 429, Body: "rate limit"},
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":429}`,
+			wantDetails: `{"status_code":429,"body":"rate limit"}`,
 		},
 		{
-			name:        "HTTPError 503 wrapped",
+			name:        "HTTPError 503 wrapped forwards body",
 			err:         fmt.Errorf("buildrequest: %w", &llmhttp.HTTPError{StatusCode: 503, Body: "upstream down"}),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":503}`,
+			wantDetails: `{"status_code":503,"body":"upstream down"}`,
+		},
+		{
+			// Pins the omitempty contract for the BuildRequest arm:
+			// callers with no body get just status_code.
+			name:        "HTTPError with empty body omits body field",
+			err:         &llmhttp.HTTPError{StatusCode: 418},
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"status_code":418}`,
 		},
 		{
 			name:        "transport flake wrapped",
@@ -71,65 +85,73 @@ func TestClassifyBAMLError(t *testing.T) {
 			// BAML v0.219 ClientHttpError envelope (engine/baml-runtime/
 			// internal/llm_client/mod.rs ErrorCode::Display renders the
 			// named enum followed by parenthesized digits, with the
-			// provider body appended after "\nMessage:").
-			name:        "legacy v0.219 ServerError envelope",
+			// provider body appended after "\nMessage:"). The full
+			// body and client name now ride along with status_code.
+			name:        "legacy v0.219 ServerError envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: ServerError (500)\nMessage: Internal Server Error"),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":500}`,
+			wantDetails: `{"status_code":500,"body":"Message: Internal Server Error","client_name":"GPT4o"}`,
 		},
 		{
-			name:        "legacy v0.219 RateLimited envelope",
+			name:        "legacy v0.219 RateLimited envelope forwards body and client_name",
 			err:         errors.New("LLM client \"Claude\" failed with status code: RateLimited (429)\nMessage: Too Many Requests"),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":429}`,
+			wantDetails: `{"status_code":429,"body":"Message: Too Many Requests","client_name":"Claude"}`,
 		},
 		{
-			name:        "legacy v0.219 ServiceUnavailable envelope",
+			name:        "legacy v0.219 ServiceUnavailable envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: ServiceUnavailable (503)\nMessage: upstream down"),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":503}`,
+			wantDetails: `{"status_code":503,"body":"Message: upstream down","client_name":"GPT4o"}`,
 		},
 		{
-			name:        "legacy v0.219 InvalidAuthentication envelope",
+			name:        "legacy v0.219 InvalidAuthentication envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: InvalidAuthentication (401)\nMessage: bad api key"),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":401}`,
+			wantDetails: `{"status_code":401,"body":"Message: bad api key","client_name":"GPT4o"}`,
 		},
 		{
-			name:        "legacy v0.219 Unspecified error code envelope",
+			name:        "legacy v0.219 Unspecified error code envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: Unspecified error code: 418\nMessage: I'm a teapot"),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":418}`,
+			wantDetails: `{"status_code":418,"body":"Message: I'm a teapot","client_name":"GPT4o"}`,
 		},
 		{
-			name:        "legacy v0.219 BadResponse envelope",
+			name:        "legacy v0.219 BadResponse envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: BadResponse 599\nMessage: garbled response"),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":599}`,
+			wantDetails: `{"status_code":599,"body":"Message: garbled response","client_name":"GPT4o"}`,
 		},
 		{
 			// Bare-leading-digits form is kept for compatibility with
 			// earlier BAML versions (and any future revert). Hand-built
 			// or wrapped messages that match this shape continue to parse.
-			name:        "legacy bare-digits compatibility form",
+			// No "\nMessage:" suffix here → body is omitted; client_name
+			// still rides along.
+			name:        "legacy bare-digits compatibility form omits empty body",
 			err:         errors.New(`LLM client "Old" failed with status code: 503 (upstream body: <html>)`),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: `{"status_code":503}`,
+			wantDetails: `{"status_code":503,"client_name":"Old"}`,
 		},
 		{
-			name:        "legacy LLM client failed with unparseable status segment",
+			// Status segment unparseable, single-line envelope → body
+			// stays omitted, status_code dropped, client_name preserved.
+			// Failed-closed: still provider_error, never falls through
+			// to worker_error.
+			name:        "legacy LLM client failed with unparseable status segment keeps client_name",
 			err:         errors.New(`LLM client "X" failed with status code: nope`),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: "",
+			wantDetails: `{"client_name":"X"}`,
 		},
 		{
 			// Digits inside the trailing Message body must NOT leak into
 			// the status_code detail when the enum segment itself has no
-			// recognized digits.
-			name:        "legacy unparseable enum segment ignores Message digits",
+			// recognized digits. The body and client_name still ride
+			// along as provider context.
+			name:        "legacy unparseable enum segment forwards body without status_code",
 			err:         errors.New("LLM client \"X\" failed with status code: SomeNewEnum\nMessage: error 12345 from upstream"),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: "",
+			wantDetails: `{"body":"Message: error 12345 from upstream","client_name":"X"}`,
 		},
 		{
 			// Pins the defensive contract: a future/unrecognized BAML
@@ -143,7 +165,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			name:        "legacy unrecognized enum name with parens does not leak status_code",
 			err:         errors.New("LLM client \"X\" failed with status code: SomeNewEnum (599)\nMessage: who knows"),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: "",
+			wantDetails: `{"body":"Message: who knows","client_name":"X"}`,
 		},
 		{
 			// Pins the first-line-only marker contract: an LLM-client-
@@ -167,10 +189,23 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: "",
 		},
 		{
-			name:        "legacy LLM client timed out",
+			// Timeout envelope is single-line per BAML's Display impl
+			// (errors.rs:114), so body is empty; client_name still
+			// surfaces. No status_code on timeout (no HTTP response).
+			name:        "legacy LLM client timed out forwards client_name",
 			err:         errors.New(`LLM client "GPT4o" timed out: deadline exceeded after 30s`),
 			wantCode:    string(apierror.CodeProviderError),
-			wantDetails: "",
+			wantDetails: `{"client_name":"GPT4o"}`,
+		},
+		{
+			// Multi-line future-shape timeout envelope: body forwarded
+			// alongside client_name even though BAML doesn't currently
+			// emit one. Mirrors the status-arm body extraction so the
+			// two arms stay symmetric.
+			name:        "legacy timeout with trailing body forwards both",
+			err:         errors.New("LLM client \"GPT4o\" timed out: deadline\nDetails: 30s deadline"),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"body":"Details: 30s deadline","client_name":"GPT4o"}`,
 		},
 		{
 			name:        "untyped unrelated error falls through",

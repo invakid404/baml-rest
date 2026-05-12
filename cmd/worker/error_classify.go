@@ -62,6 +62,37 @@ var legacyStatusCodeRE = regexp.MustCompile(
 	`^(?:(\d+)|(?:InvalidAuthentication|NotSupported|RateLimited|ServerError|ServiceUnavailable|Timeout) \((\d+)\)|(?:BadResponse|Unspecified error code:)\s+(\d+))`,
 )
 
+// providerErrorDetails is the structured payload attached to
+// provider_error responses. baml-rest is a developer tool — the
+// operator running it is the consumer of these details and is the
+// right place to decide what to do with upstream response bodies. So
+// we forward what we have: the HTTP status code when known, the raw
+// upstream body, and (on legacy envelopes) the BAML client name that
+// failed. Empty fields are omitted so the envelope stays terse for
+// arms that genuinely don't have that signal (e.g. transport flakes
+// carry neither status nor body).
+type providerErrorDetails struct {
+	StatusCode int    `json:"status_code,omitempty"`
+	Body       string `json:"body,omitempty"`
+	ClientName string `json:"client_name,omitempty"`
+}
+
+// marshal returns the JSON-encoded bytes, or nil when every field is
+// at its zero value (in which case the caller drops details entirely
+// rather than emitting a bare `{}`). Marshal of a fixed-shape struct
+// can't realistically fail; if it ever does, fall back to no details
+// rather than dropping the classification.
+func (d providerErrorDetails) marshal() []byte {
+	if d.StatusCode == 0 && d.Body == "" && d.ClientName == "" {
+		return nil
+	}
+	data, err := json.Marshal(d)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
 // classifyBAMLError inspects a worker-side error from a BAML call /
 // BuildRequest path and returns the apierror.Code that best fits, plus
 // optional JSON-encoded details. Returns ("", nil) when no surface
@@ -95,7 +126,10 @@ func classifyBAMLError(err error) (code string, details []byte) {
 
 	var httpErr *llmhttp.HTTPError
 	if errors.As(err, &httpErr) {
-		return string(apierror.CodeProviderError), statusCodeDetails(httpErr.StatusCode)
+		return string(apierror.CodeProviderError), providerErrorDetails{
+			StatusCode: httpErr.StatusCode,
+			Body:       httpErr.Body,
+		}.marshal()
 	}
 
 	if errors.Is(err, llmhttp.ErrTransportFlake) {
@@ -116,12 +150,13 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	// line starts with `LLM client "...` but lacks the recognized
 	// marker must not be misclassified just because the message body
 	// happens to contain `failed with status code:` or `timed out:`
-	// verbatim. parseLegacyStatusCode already trims at the first
-	// newline, but doing the slice up front makes the boundary
-	// explicit and removes a hidden body-text dependency.
+	// verbatim. The split here also yields the body forwarded to
+	// callers via providerErrorDetails.Body.
 	firstLine := msg
+	body := ""
 	if nl := strings.IndexByte(msg, '\n'); nl != -1 {
 		firstLine = msg[:nl]
+		body = msg[nl+1:]
 	}
 
 	if strings.HasPrefix(firstLine, legacyParseErrorPrefix) {
@@ -129,39 +164,37 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	}
 
 	if strings.HasPrefix(firstLine, legacyLLMClientPrefix) {
+		clientName := extractLegacyClientName(firstLine)
 		if idx := strings.Index(firstLine, legacyLLMClientStatusMarker); idx != -1 {
+			d := providerErrorDetails{Body: body, ClientName: clientName}
 			if status, ok := parseLegacyStatusCode(firstLine[idx+len(legacyLLMClientStatusMarker):]); ok {
-				return string(apierror.CodeProviderError), statusCodeDetails(status)
+				d.StatusCode = status
 			}
-			// Status code couldn't be parsed — still a provider failure;
-			// emit the code without details rather than dropping the
-			// classification altogether.
-			return string(apierror.CodeProviderError), nil
+			return string(apierror.CodeProviderError), d.marshal()
 		}
 		if strings.Contains(firstLine, legacyLLMClientTimeoutMarker) {
-			return string(apierror.CodeProviderError), nil
+			return string(apierror.CodeProviderError), providerErrorDetails{
+				Body:       body,
+				ClientName: clientName,
+			}.marshal()
 		}
 	}
 
 	return "", nil
 }
 
-// statusCodeDetails marshals a {"status_code": N} payload. The response
-// body and other provider context are deliberately not forwarded —
-// upstream bodies can contain partial PII, raw prompts echoed back, or
-// large diagnostic payloads, and the brief constrains baml-rest to a
-// minimal structured surface. Marshal of a single-int-field struct
-// can't realistically fail; if it ever does, fall back to no details
-// rather than dropping the classification.
-func statusCodeDetails(status int) []byte {
-	payload := struct {
-		StatusCode int `json:"status_code"`
-	}{StatusCode: status}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return nil
+// extractLegacyClientName returns the quoted client name from a BAML
+// envelope first line starting with `LLM client "`. Returns "" when
+// the closing quote is missing (a malformed envelope baml-rest can't
+// recover a meaningful name from). Callers must check the prefix
+// before calling.
+func extractLegacyClientName(firstLine string) string {
+	rest := firstLine[len(legacyLLMClientPrefix):]
+	q := strings.IndexByte(rest, '"')
+	if q == -1 {
+		return ""
 	}
-	return data
+	return rest[:q]
 }
 
 // parseLegacyStatusCode extracts the numeric status code from the
@@ -170,7 +203,8 @@ func statusCodeDetails(status int) []byte {
 // newline (BAML appends "\nMessage: <body>") before scanning so a
 // digit run inside the trailing provider body can't be misread as the
 // status code. Returns (0, false) when no anchored form matches —
-// callers keep the provider_error classification and drop details.
+// callers keep the provider_error classification with body/client_name
+// details but drop the status_code field.
 func parseLegacyStatusCode(segment string) (int, bool) {
 	if nl := strings.IndexByte(segment, '\n'); nl != -1 {
 		segment = segment[:nl]
