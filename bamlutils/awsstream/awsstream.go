@@ -123,9 +123,15 @@ func (d *Decoder) Next() (*Event, error) {
 		}
 	}
 
-	typeName := stringHeader(msg.Headers, HeaderEventType)
-	if typeName == "" && messageType == MessageTypeException {
+	// For modeled exceptions, :exception-type is the authoritative shape
+	// discriminator. :event-type may be set to a generic value or absent
+	// depending on the service, so prefer :exception-type unconditionally
+	// when MessageType is "exception".
+	var typeName string
+	if messageType == MessageTypeException {
 		typeName = stringHeader(msg.Headers, HeaderExceptionType)
+	} else {
+		typeName = stringHeader(msg.Headers, HeaderEventType)
 	}
 
 	evt := &Event{

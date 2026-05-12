@@ -157,6 +157,33 @@ func TestDecoder_ModeledException(t *testing.T) {
 	}
 }
 
+func TestDecoder_ExceptionPrefersExceptionType(t *testing.T) {
+	// AWS event-stream modeled exceptions use :exception-type as the
+	// authoritative shape discriminator. Some services also set
+	// :event-type to a generic fallback value. When both are present on
+	// an exception frame, Event.Type must equal :exception-type — the
+	// modeled shape — not :event-type.
+	payload := []byte(`{"message":"rate exceeded"}`)
+	frame := encode(t, map[string]string{
+		":message-type":   "exception",
+		":event-type":     "genericFallback",
+		":exception-type": "ThrottlingException",
+		":content-type":   "application/json",
+	}, payload)
+
+	dec := awsstream.NewDecoder(bytes.NewReader(frame))
+	evt, err := dec.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if evt.MessageType != "exception" {
+		t.Errorf("MessageType = %q, want exception", evt.MessageType)
+	}
+	if evt.Type != "ThrottlingException" {
+		t.Errorf("Type = %q, want ThrottlingException (must prefer :exception-type over :event-type)", evt.Type)
+	}
+}
+
 func TestDecoder_TransportError(t *testing.T) {
 	// :message-type=error frames carry no payload meaningful to the
 	// caller; they have :error-code and :error-message headers and signal
