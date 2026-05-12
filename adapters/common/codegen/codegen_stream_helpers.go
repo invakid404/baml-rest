@@ -242,7 +242,12 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("out").Chan().Add(streamResultIface.Clone()),
 			jen.Id("options").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
 			jen.Id("newHeartbeat").Func().Params().Add(streamResultIface.Clone()),
-			jen.Id("newError").Func().Params(jen.Error()).Add(streamResultIface.Clone()),
+			// newError carries the accumulated raw text seen up to the point of
+			// failure (per #256) so the worker bridge can attach it as
+			// details.raw on the apierror envelope. Pass "" when no raw is
+			// available (panic-before-any-tick); the bridge omits the detail
+			// when the string is empty.
+			jen.Id("newError").Func().Params(jen.Error(), jen.String()).Add(streamResultIface.Clone()),
 			jen.Id("release").Func().Params(streamResultIface.Clone()),
 			// plannedMetadata: pre-built planned-phase Metadata for this request,
 			// or nil to disable metadata emission entirely. The orchestrator
@@ -326,6 +331,51 @@ func generateStreamHelpers(out *jen.File) {
 			// final state — useful when the last onTick fires before the last
 			// SSE chunk arrives.
 			jen.Var().Id("lastFuncLog").Qual("sync/atomic", "Value"),
+
+			// reconcileRaw applies the same RawLLMResponse splice/fallback used
+			// by the success-final path, factored so error frames (#256) carry
+			// the most complete raw text available. See the success-final
+			// reconciliation block below for the splice rationale; here we just
+			// reuse it without the reasoning/parseable-side reads.
+			jen.Id("reconcileRaw").Op(":=").Func().Params(
+				jen.Id("finalRaw").String(),
+				jen.Id("parseableFull").String(),
+			).String().Block(
+				jen.If(
+					jen.List(jen.Id("fl"), jen.Id("flOk")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+					jen.Id("flOk"),
+				).Block(
+					jen.If(
+						jen.List(jen.Id("authRaw"), jen.Id("rawErr")).Op(":=").Id("fl").Dot("RawLLMResponse").Call(),
+						jen.Id("rawErr").Op("==").Nil(),
+					).Block(
+						jen.If(
+							jen.Len(jen.Id("authRaw")).Op(">").Len(jen.Id("parseableFull")).
+								Op("&&").
+								Qual("strings", "HasPrefix").Call(jen.Id("authRaw"), jen.Id("parseableFull")),
+						).Block(
+							jen.Id("finalRaw").Op("=").Id("finalRaw").Op("+").Id("authRaw").Index(jen.Len(jen.Id("parseableFull")), jen.Empty()),
+						).Else().If(
+							jen.Len(jen.Id("authRaw")).Op(">").Len(jen.Id("finalRaw")),
+						).Block(
+							jen.Id("finalRaw").Op("=").Id("authRaw"),
+						),
+					),
+				),
+				jen.Return(jen.Id("finalRaw")),
+			),
+
+			// computeErrorRaw reads the extractor's accumulator under
+			// extractorMu and applies reconcileRaw, returning the best raw
+			// text available for an error frame. Returns "" when neither the
+			// extractor nor lastFuncLog have content.
+			jen.Id("computeErrorRaw").Op(":=").Func().Params().String().Block(
+				jen.Id("extractorMu").Dot("Lock").Call(),
+				jen.Id("__raw").Op(":=").Id("extractor").Dot("RawFull").Call(),
+				jen.Id("__parseable").Op(":=").Id("extractor").Dot("ParseableFull").Call(),
+				jen.Id("extractorMu").Dot("Unlock").Call(),
+				jen.Return(jen.Id("reconcileRaw").Call(jen.Id("__raw"), jen.Id("__parseable"))),
+			),
 
 			// doShutdown
 			jen.Id("doShutdown").Op(":=").Func().Params().Block(
@@ -486,7 +536,12 @@ func generateStreamHelpers(out *jen.File) {
 				jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 					jen.Func().Params(jen.Id("err").Error()).Block(
 						jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
-						jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("err")),
+						// Panic recovery: a panic can leave extractorMu held by
+						// the panicking goroutine, so we do not call
+						// computeErrorRaw here — passing "" keeps the bridge
+						// from waiting on a poisoned mutex. The worker bridge
+						// omits details.raw when raw is empty.
+						jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("err"), jen.Lit("")),
 						jen.Select().Block(
 							jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
 							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__errR"))),
@@ -502,7 +557,7 @@ func generateStreamHelpers(out *jen.File) {
 						jen.Id("fatalErrCopy").Op(":=").Id("fatalErr"),
 						jen.Id("fatalMu").Dot("Unlock").Call(),
 						jen.If(jen.Id("fatalErrCopy").Op("!=").Nil()).Block(
-							jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("fatalErrCopy")),
+							jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("fatalErrCopy"), jen.Id("computeErrorRaw").Call()),
 							jen.Select().Block(
 								jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
 								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__errR"))),
@@ -512,7 +567,7 @@ func generateStreamHelpers(out *jen.File) {
 
 						// Check stream error
 						jen.If(jen.Id("lastErr").Op("!=").Nil()).Block(
-							jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("lastErr")),
+							jen.Id("__errR").Op(":=").Id("newError").Call(jen.Id("lastErr"), jen.Id("computeErrorRaw").Call()),
 							jen.Select().Block(
 								jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
 								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("release").Call(jen.Id("__errR"))),
@@ -560,24 +615,7 @@ func generateStreamHelpers(out *jen.File) {
 						jen.Id("parseableFull").Op(":=").Id("extractor").Dot("ParseableFull").Call(),
 						jen.Id("finalReasoning").Op(":=").Id("extractor").Dot("ReasoningFull").Call(),
 						jen.Id("extractorMu").Dot("Unlock").Call(),
-						jen.If(jen.Id("flOk")).Block(
-							jen.If(
-								jen.List(jen.Id("authRaw"), jen.Id("rawErr")).Op(":=").Id("fl").Dot("RawLLMResponse").Call(),
-								jen.Id("rawErr").Op("==").Nil(),
-							).Block(
-								jen.If(
-									jen.Len(jen.Id("authRaw")).Op(">").Len(jen.Id("parseableFull")).
-										Op("&&").
-										Qual("strings", "HasPrefix").Call(jen.Id("authRaw"), jen.Id("parseableFull")),
-								).Block(
-									jen.Id("finalRaw").Op("=").Id("finalRaw").Op("+").Id("authRaw").Index(jen.Len(jen.Id("parseableFull")), jen.Empty()),
-								).Else().If(
-									jen.Len(jen.Id("authRaw")).Op(">").Len(jen.Id("finalRaw")),
-								).Block(
-									jen.Id("finalRaw").Op("=").Id("authRaw"),
-								),
-							),
-						),
+						jen.Id("finalRaw").Op("=").Id("reconcileRaw").Call(jen.Id("finalRaw"), jen.Id("parseableFull")),
 
 						// Outcome metadata: build from the winning attempt's
 						// FunctionLog and emit just before the final, so clients

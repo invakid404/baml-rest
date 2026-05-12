@@ -111,7 +111,10 @@ func TestLegacyClassification_ParseErrorFromProse(t *testing.T) {
 // TestLegacyClassification_ParseErrorFromProseCallWithRaw mirrors the
 // /call case for /call-with-raw — same code path, but the response
 // envelope is otherwise different on success. Pins that the error
-// branch shares the classifier wiring.
+// branch shares the classifier wiring AND (per #256) that the
+// accumulated raw text flows through to ErrorDetails.raw so consumers
+// don't need to regex-scrape BAML's "Parsing error: ..." free-form
+// message.
 func TestLegacyClassification_ParseErrorFromProseCallWithRaw(t *testing.T) {
 	requireLegacyMode(t)
 	requireLegacyParseEnvelope(t)
@@ -119,8 +122,8 @@ func TestLegacyClassification_ParseErrorFromProseCallWithRaw(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		opts := setupNonStreamingScenario(t, "legacy-parse-error-prose-raw",
-			"Apologies — I cannot answer that without more context.")
+		const unparseable = "Apologies — I cannot answer that without more context."
+		opts := setupNonStreamingScenario(t, "legacy-parse-error-prose-raw", unparseable)
 
 		resp, err := client.CallWithRaw(ctx, testutil.CallRequest{
 			Method:  "GetPerson",
@@ -136,6 +139,28 @@ func TestLegacyClassification_ParseErrorFromProseCallWithRaw(t *testing.T) {
 		}
 		if resp.ErrorCode != "parse_error" {
 			t.Errorf("ErrorCode: got %q, want parse_error; body=%s", resp.ErrorCode, resp.Error)
+		}
+		// #256: legacy CallStream+OnTick error envelopes must carry
+		// details.raw with the accumulator's text at the time of
+		// failure. Without this, consumers have to regex BAML's
+		// free-form error string for "\nRaw Response: ..." to recover
+		// the same diagnostic.
+		if len(resp.ErrorDetails) == 0 {
+			t.Fatalf("ErrorDetails missing — expected details.raw with the unparseable prose")
+		}
+		var details struct {
+			Raw string `json:"raw"`
+		}
+		if err := json.Unmarshal(resp.ErrorDetails, &details); err != nil {
+			t.Fatalf("failed to unmarshal ErrorDetails %s: %v", resp.ErrorDetails, err)
+		}
+		if details.Raw == "" {
+			t.Fatalf("ErrorDetails.raw is empty; expected the unparseable prose (raw details=%s)",
+				resp.ErrorDetails)
+		}
+		if !strings.Contains(details.Raw, unparseable) {
+			t.Errorf("ErrorDetails.raw must contain the mock prose %q; got %q",
+				unparseable, details.Raw)
 		}
 	})
 }

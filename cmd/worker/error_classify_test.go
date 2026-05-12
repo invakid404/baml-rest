@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -396,6 +397,122 @@ func TestClassifyBAMLErrorHTTPErrorPrefersInnermost(t *testing.T) {
 	if !strings.Contains(string(details), `"status_code":418`) {
 		t.Fatalf("details missing status_code 418: %s", string(details))
 	}
+}
+
+// TestMergeRawDetail pins the helper's four cases: empty-raw no-op,
+// nil-details fresh object, object-details merge, and invalid-JSON
+// defensive fallback. The helper is the worker-side gate that
+// determines whether legacy CallStream+OnTick error envelopes carry
+// the accumulated raw text on the wire (per #256), so each branch is
+// load-bearing.
+func TestMergeRawDetail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		details []byte
+		raw     string
+		want    string
+	}{
+		{
+			name:    "empty raw and nil details is no-op",
+			details: nil,
+			raw:     "",
+			want:    "",
+		},
+		{
+			name:    "empty raw with object details is no-op",
+			details: []byte(`{"status_code":500}`),
+			raw:     "",
+			want:    `{"status_code":500}`,
+		},
+		{
+			name:    "nil details produces fresh raw object",
+			details: nil,
+			raw:     "unparseable prose",
+			want:    `{"raw":"unparseable prose"}`,
+		},
+		{
+			name:    "empty-bytes details produces fresh raw object",
+			details: []byte{},
+			raw:     "x",
+			want:    `{"raw":"x"}`,
+		},
+		{
+			name:    "object details get raw merged in",
+			details: []byte(`{"status_code":500,"body":"oops"}`),
+			raw:     "tail",
+			want:    `{"body":"oops","raw":"tail","status_code":500}`,
+		},
+		{
+			name:    "invalid JSON details fall back to fresh raw object",
+			details: []byte(`not json`),
+			raw:     "salvaged",
+			want:    `{"raw":"salvaged"}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := mergeRawDetail(tc.details, tc.raw)
+			gotStr := string(got)
+			// Object cases require key-set comparison rather than byte
+			// equality because Go's map iteration is unordered; the
+			// helper marshals from map[string]any so encoding/json's
+			// alphabetical key order applies but pre-existing details
+			// in the test case may not already be sorted.
+			if tc.raw != "" && len(tc.details) > 0 && isJSONObject(tc.details) {
+				wantSet := jsonObjectKeyset(t, []byte(tc.want))
+				gotSet := jsonObjectKeyset(t, got)
+				if !equalKeyset(wantSet, gotSet) {
+					t.Errorf("merged details mismatch:\n  got  %s\n  want %s", gotStr, tc.want)
+				}
+				return
+			}
+			if gotStr != tc.want {
+				t.Errorf("got %q, want %q", gotStr, tc.want)
+			}
+		})
+	}
+}
+
+// isJSONObject reports whether b begins (after any leading whitespace)
+// with '{'. Used by TestMergeRawDetail to pick between byte-equality
+// and key-set comparison for object-shaped inputs.
+func isJSONObject(b []byte) bool {
+	for _, c := range b {
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			continue
+		}
+		return c == '{'
+	}
+	return false
+}
+
+func jsonObjectKeyset(t *testing.T, b []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal %s: %v", string(b), err)
+	}
+	return m
+}
+
+func equalKeyset(a, b map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok {
+			return false
+		}
+		if fmt.Sprintf("%v", va) != fmt.Sprintf("%v", vb) {
+			return false
+		}
+	}
+	return true
 }
 
 // TestClassifyBAMLErrorTypedBeforeLegacy pins the resolution order:

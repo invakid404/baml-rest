@@ -480,9 +480,13 @@ func (me *methodEmitter) emitLegacyStream() {
 				jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
 				jen.Return(jen.Id("__r")),
 			),
-			// newError
-			jen.Func().Params(jen.Id("err").Error()).Qual(common.InterfacesPkg, "StreamResult").Block(
-				jen.Return(jen.Id(me.errorConstructorName).Call(jen.Id("err"))),
+			// newError: error envelope carries the accumulated raw text
+			// from runFullOrchestration (per #256) so the worker bridge
+			// can forward it as details.raw.
+			jen.Func().Params(jen.Id("err").Error(), jen.Id("raw").String()).Qual(common.InterfacesPkg, "StreamResult").Block(
+				jen.Id("__r").Op(":=").Id(me.errorConstructorName).Call(jen.Id("err")),
+				jen.Id("__r").Dot("raw").Op("=").Id("raw"),
+				jen.Return(jen.Id("__r")),
 			),
 			// release
 			jen.Func().Params(jen.Id("__r").Qual(common.InterfacesPkg, "StreamResult")).Block(

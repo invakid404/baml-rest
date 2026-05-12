@@ -1059,3 +1059,197 @@ func TestDrainStreamResultsNoWarningOnFastClose(t *testing.T) {
 		t.Fatalf("expected no warnings for fast drain, got: %v", warnings)
 	}
 }
+
+// TestBridgeStreamResultsForwardsRawOnParseError pins #256's contract
+// for the legacy parse_error arm: when the orchestrator emits an error
+// StreamResult whose Raw() carries the accumulated unparseable prose,
+// the bridge must attach it as ErrorDetails.raw alongside the
+// classifier's parse_error code. Without this, consumers reading
+// /call-with-raw error envelopes have to regex-scrape BAML's free-form
+// "Parsing error:" message to recover the same diagnostic.
+func TestBridgeStreamResultsForwardsRawOnParseError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const proseSentinel = "Apologies — I cannot answer that without more context."
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindError)
+	// Legacy parse-error envelope: BAML's runtime renders this exact
+	// "Parsing error: " prefix via ValidationError's Display impl
+	// (engine/baml-runtime/src/errors.rs).
+	fake.err = errors.New("Parsing error: Failed to parse LLM response: not a JSON envelope")
+	fake.raw = proseSentinel
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged parse_error result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.ErrorCode != "parse_error" {
+			t.Errorf("expected ErrorCode=parse_error, got %q", got.ErrorCode)
+		}
+		if !strings.Contains(string(got.ErrorDetails), `"raw":"`) {
+			t.Fatalf("ErrorDetails must carry the raw key; got %s", string(got.ErrorDetails))
+		}
+		// Match against the marshaled JSON; the sentinel contains "—"
+		// which Go's encoding/json passes through unescaped under the
+		// default settings used by mergeRawDetail.
+		if !strings.Contains(string(got.ErrorDetails), proseSentinel) {
+			t.Errorf("ErrorDetails.raw must contain the unparseable prose %q; got %s",
+				proseSentinel, string(got.ErrorDetails))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged parse_error result")
+	}
+}
+
+// TestBridgeStreamResultsForwardsRawOnProviderError pins that the raw
+// forwarding sits NEXT TO the existing provider_error details (not
+// replacing them): a typed *llmhttp.HTTPError still produces
+// details.status_code and details.body from the classifier, and #256
+// now adds details.raw from the accumulator.
+func TestBridgeStreamResultsForwardsRawOnProviderError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const bodySentinel = "rate limit: distinctive body sentinel"
+	const rawSentinel = "raw-from-extractor-sentinel"
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindError)
+	fake.err = &llmhttp.HTTPError{StatusCode: 429, Body: bodySentinel}
+	fake.raw = rawSentinel
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged provider_error result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.ErrorCode != "provider_error" {
+			t.Errorf("expected ErrorCode=provider_error, got %q", got.ErrorCode)
+		}
+		details := string(got.ErrorDetails)
+		// Three assertions on the same payload: existing typed details
+		// survive the merge AND the new raw key joins them.
+		if !strings.Contains(details, `"status_code":429`) {
+			t.Errorf("ErrorDetails missing status_code; got %s", details)
+		}
+		if !strings.Contains(details, bodySentinel) {
+			t.Errorf("ErrorDetails missing body sentinel; got %s", details)
+		}
+		if !strings.Contains(details, rawSentinel) {
+			t.Errorf("ErrorDetails missing raw sentinel; got %s", details)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged provider_error result")
+	}
+}
+
+// TestBridgeStreamResultsForwardsRawOnUnclassifiedError pins the
+// load-bearing #256 behavior: even when classifyBAMLError returns
+// ("", nil) — i.e. the error doesn't match any typed surface or
+// legacy prefix — the bridge MUST still set ErrorDetails when raw is
+// non-empty. The host's classifyWorkerError then defaults the wire
+// code to worker_error, and consumers still get details.raw for
+// diagnostics.
+//
+// This is the surprising arm of the contract: forwarding is not gated
+// on classification, only on raw non-emptiness.
+func TestBridgeStreamResultsForwardsRawOnUnclassifiedError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const rawSentinel = "unclassified-error-raw"
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindError)
+	fake.err = errors.New("boom") // no typed surface, no legacy prefix match
+	fake.raw = rawSentinel
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged unclassified error result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		// ErrorCode stays empty because the classifier didn't match;
+		// the host's worker_error default kicks in downstream.
+		if got.ErrorCode != "" {
+			t.Errorf("expected empty ErrorCode on unclassified error, got %q", got.ErrorCode)
+		}
+		// But ErrorDetails MUST still carry raw — that's the whole
+		// point of decoupling raw forwarding from classification.
+		if !strings.Contains(string(got.ErrorDetails), rawSentinel) {
+			t.Errorf("ErrorDetails must carry raw on unclassified error; got %s",
+				string(got.ErrorDetails))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged unclassified error result")
+	}
+}
+
+// TestBridgeStreamResultsOmitsDetailsWhenRawEmpty pins the
+// omitempty contract: when result.Raw() is empty AND the classifier
+// returns no details, the bridge must NOT synthesize a bare
+// `{"raw":""}` details object. Empty accumulator (e.g. provider
+// errored before any chunk arrived) keeps the wire frame's details
+// nil, preserving the existing wire-shape expectations for
+// no-context provider failures.
+func TestBridgeStreamResultsOmitsDetailsWhenRawEmpty(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindError)
+	fake.err = errors.New("Parsing error: garbage") // classifier returns parse_error + nil details
+	// fake.raw left empty — the surprise-flat-failure case where the
+	// orchestrator surfaces a parse error without any accumulator
+	// content (e.g. BAML pre-stream validation rejected the request).
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged parse_error result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.ErrorCode != "parse_error" {
+			t.Errorf("expected ErrorCode=parse_error, got %q", got.ErrorCode)
+		}
+		// ErrorDetails must stay nil: classifier returned nil details,
+		// raw is empty, mergeRawDetail is a no-op. A non-nil details
+		// here would mean the helper invented a `{"raw":""}` object.
+		if got.ErrorDetails != nil {
+			t.Errorf("expected nil ErrorDetails when raw is empty (omitempty contract); got %s",
+				string(got.ErrorDetails))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged parse_error result")
+	}
+}

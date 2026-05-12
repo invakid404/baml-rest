@@ -403,10 +403,22 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 				// so the host's classifyWorkerError forwards it verbatim
 				// instead of defaulting to worker_error. classifyBAMLError
 				// returns ("", nil) for unrecognized errors, leaving
-				// pluginResult.ErrorCode / ErrorDetails at their zero
-				// values for host-side fallback.
-				if code, details := classifyBAMLError(result.Error()); code != "" {
+				// pluginResult.ErrorCode at its zero value for host-side
+				// fallback.
+				//
+				// mergeRawDetail attaches the accumulator's text (per #256)
+				// to details regardless of classification arm: parse_error,
+				// provider_error, and unclassified errors all carry
+				// details.raw when result.Raw() is non-empty. Unclassified
+				// errors keep their empty worker code but gain details.raw
+				// via the host's worker_error fallback path. Empty raw
+				// leaves details untouched (omitempty contract).
+				code, details := classifyBAMLError(result.Error())
+				details = mergeRawDetail(details, result.Raw())
+				if code != "" {
 					pluginResult.ErrorCode = code
+				}
+				if details != nil {
 					pluginResult.ErrorDetails = details
 				}
 			case bamlutils.StreamResultKindStream:
