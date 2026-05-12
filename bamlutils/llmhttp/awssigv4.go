@@ -5,10 +5,9 @@
 // actually goes out with (mock/proxy hosts and production hosts
 // alike).
 //
-// PR1-bedrock breadcrumb: introduced as part of issue #243 PR 1 to
-// support aws-bedrock on the BuildRequest call path. PR 3 will reuse
-// this hook for the streaming path; PR 4 will scrub PR1-bedrock
-// breadcrumb comments.
+// Used by both the call path (Execute) and the streaming paths
+// (ExecuteStream, ExecuteAWSStream). PR1-bedrock / PR3-bedrock-stream
+// breadcrumb (issue #243).
 package llmhttp
 
 import (
@@ -295,9 +294,10 @@ func MaybeAttachBedrockAuth(ctx context.Context, req *Request) error {
 // not match the BAML-emitted bedrock-runtime.<region>.amazonaws.com
 // pattern or if the default credential chain cannot be loaded.
 //
-// PR1-bedrock breadcrumb: codegen calls this from the aws-bedrock
-// non-streaming branch only. PR 3 will reuse it for streaming once
-// the AWS event-stream decoder lands.
+// PR1-bedrock / PR3-bedrock-stream breadcrumb (issue #243): codegen
+// calls this from the aws-bedrock branch on both the call path
+// (Request.<Method>) and the streaming path
+// (Request.<Method> + /converse-stream URL rewrite).
 func AttachBedrockAuth(ctx context.Context, req *Request) error {
 	if req == nil {
 		return errors.New("llmhttp: AttachBedrockAuth: nil request")

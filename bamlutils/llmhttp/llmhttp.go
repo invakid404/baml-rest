@@ -34,10 +34,10 @@ type Request struct {
 
 	// AWSAuth, when non-nil, drives the SigV4 signing hook after URL
 	// rewrite and before backend dispatch. nil leaves headers untouched
-	// — every non-bedrock provider hits that path. PR1-bedrock
-	// breadcrumb: introduced for aws-bedrock on the BuildRequest path
-	// (see #243); PR 3 reuses this for streaming, PR 4 scrubs
-	// breadcrumb comments.
+	// — every non-bedrock provider hits that path. Used by both the
+	// call path (Execute) and the streaming path (ExecuteStream /
+	// ExecuteAWSStream). PR1-bedrock / PR3-bedrock-stream breadcrumb
+	// (issue #243).
 	AWSAuth *AWSAuthConfig
 }
 

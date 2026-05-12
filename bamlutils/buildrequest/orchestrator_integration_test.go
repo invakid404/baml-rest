@@ -703,9 +703,19 @@ func TestRawAccumulation(t *testing.T) {
 // Bedrock fallback test
 // ============================================================================
 
-func TestBedrock_NotSupported(t *testing.T) {
-	if IsProviderSupported("aws-bedrock") {
-		t.Error("aws-bedrock should NOT be supported by BuildRequest path")
+// TestBedrock_StreamingSupportedPR3 pins PR 3's enablement of
+// aws-bedrock on the streaming BuildRequest path. Streaming requires a
+// separate transport (AWS event-stream) and request builder
+// (Request.<Method> + URL rewrite to /converse-stream); the orchestrator
+// dispatches on provider so callers must wire
+// StreamConfig.BuildBedrockStreamRequest. The call path was enabled in
+// PR 1 (#244). PR3-bedrock-stream breadcrumb (issue #243).
+func TestBedrock_StreamingSupportedPR3(t *testing.T) {
+	if !IsProviderSupported("aws-bedrock") {
+		t.Error("aws-bedrock must be supported by the streaming BuildRequest path after PR 3")
+	}
+	if !IsCallProviderSupported("aws-bedrock") {
+		t.Error("aws-bedrock must remain supported on the call path (PR 1 enabled it)")
 	}
 }
 
@@ -732,6 +742,12 @@ func TestProvider_WhitelistMatchesExtractor(t *testing.T) {
 	supported := []string{
 		"openai", "openai-generic", "azure-openai", "ollama", "openrouter",
 		"openai-responses", "anthropic", "google-ai", "vertex-ai",
+		// aws-bedrock streaming uses the bedrock-specific extractor
+		// (extractBedrockStreamDelta on AWS event-stream frames),
+		// not sse.ExtractDeltaFromText, so the
+		// IsDeltaProviderSupported→ExtractDeltaFromText invariant
+		// below explicitly excludes it. PR3-bedrock-stream
+		// breadcrumb (issue #243).
 	}
 	for _, p := range supported {
 		if !IsProviderSupported(p) {

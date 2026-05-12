@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/invakid404/baml-rest/bamlutils/awsstream"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/apierror"
@@ -74,6 +75,76 @@ func TestClassifyBAMLError(t *testing.T) {
 			err:         fmt.Errorf("buildrequest: stream error: %w", llmhttp.ErrTransportFlake),
 			wantCode:    string(apierror.CodeProviderError),
 			wantDetails: "",
+		},
+		{
+			// PR3-bedrock-stream (#243): AWS event-stream transport
+			// errors carry :error-code / :error-message headers; the
+			// arm forwards both into provider_error details so the
+			// AWS-side reason is observable upstream.
+			name:        "awsstream TransportError direct",
+			err:         &awsstream.TransportError{Code: "InternalServerError", Message: "service unavailable"},
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"error_code":"InternalServerError","error_message":"service unavailable"}`,
+		},
+		{
+			// Wrappers (buildrequest: %w / orchestrator wrap) must not
+			// hide the typed transport error — errors.As walks the
+			// chain.
+			name:        "awsstream TransportError wrapped",
+			err:         fmt.Errorf("buildrequest: stream error: %w", &awsstream.TransportError{Code: "ThrottlingException", Message: "slow down"}),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"error_code":"ThrottlingException","error_message":"slow down"}`,
+		},
+		{
+			// A TransportError with only the code header populated
+			// keeps the message field omitted from JSON via
+			// omitempty.
+			name:        "awsstream TransportError code only",
+			err:         &awsstream.TransportError{Code: "InternalServerError"},
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"error_code":"InternalServerError"}`,
+		},
+		{
+			// PR3-bedrock-stream (#243): Bedrock modeled exceptions
+			// (in-band :message-type=exception frames) classify as
+			// provider_error with exception_type + exception_message
+			// — distinct fields from error_code/error_message so
+			// consumers can tell a torn transport apart from a
+			// modeled exception even though both share the same
+			// taxonomy code.
+			name: "BedrockStreamException direct",
+			err: &buildrequest.BedrockStreamException{
+				ExceptionType: "ModelStreamErrorException",
+				Payload:       []byte(`{"message":"the model refused"}`),
+			},
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"exception_type":"ModelStreamErrorException","exception_message":"the model refused"}`,
+		},
+		{
+			// Wrapper chains (orchestrator's "buildrequest: delta
+			// extraction failed: %w") must not hide the typed
+			// exception — errors.As walks the chain.
+			name: "BedrockStreamException wrapped",
+			err: fmt.Errorf("buildrequest: delta extraction failed: %w",
+				&buildrequest.BedrockStreamException{
+					ExceptionType: "ThrottlingException",
+					Payload:       []byte(`{"message":"slow down"}`),
+				}),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"exception_type":"ThrottlingException","exception_message":"slow down"}`,
+		},
+		{
+			// Payload without a recognised `message` field still
+			// classifies as provider_error but drops the
+			// exception_message detail via omitempty. The exception
+			// type alone is enough operator context to triage.
+			name: "BedrockStreamException no payload message",
+			err: &buildrequest.BedrockStreamException{
+				ExceptionType: "ValidationException",
+				Payload:       []byte(`{"other":"shape"}`),
+			},
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"exception_type":"ValidationException"}`,
 		},
 		{
 			name:        "legacy Parsing error prefix",

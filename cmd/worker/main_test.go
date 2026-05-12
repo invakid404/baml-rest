@@ -798,6 +798,74 @@ type transportFlakeWrap struct {
 func (e *transportFlakeWrap) Error() string { return e.msg + ": " + e.inner.Error() }
 func (e *transportFlakeWrap) Unwrap() error { return e.inner }
 
+// TestBridgeStreamResultsClassifiesBedrockStreamException pins the
+// wire surface for a Bedrock modeled-exception frame propagated
+// through the streaming bridge. The orchestrator wraps the
+// extractor's *buildrequest.BedrockStreamException with the standard
+// "buildrequest: delta extraction failed: %w" envelope, and the
+// classifier must walk the chain via errors.As to produce
+// provider_error with exception_type + exception_message details.
+// PR3-bedrock-stream breadcrumb (issue #243).
+func TestBridgeStreamResultsClassifiesBedrockStreamException(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan bamlutils.StreamResult, 1)
+	fake := newFakeStreamResult(bamlutils.StreamResultKindError)
+	// Mirror the orchestrator's wrap shape ("buildrequest: delta
+	// extraction failed: %w") via a tiny wrapper that preserves the
+	// errors.As chain — the classifier walks Unwrap to find the
+	// typed *BedrockStreamException.
+	fake.err = bedrockExcBridgeWrap{
+		msg: "buildrequest: delta extraction failed",
+		inner: &buildrequest.BedrockStreamException{
+			ExceptionType: "ThrottlingException",
+			Payload:       []byte(`{"message":"slow down"}`),
+		},
+	}
+	in <- fake
+	close(in)
+
+	out := bridgeStreamResults(ctx, in, nil)
+
+	select {
+	case got, ok := <-out:
+		if !ok {
+			t.Fatal("expected bridged error result")
+		}
+		defer workerplugin.ReleaseStreamResult(got)
+		if got.Kind != workerplugin.StreamResultKindError {
+			t.Fatalf("expected error kind, got %v", got.Kind)
+		}
+		if got.ErrorCode != "provider_error" {
+			t.Errorf("expected ErrorCode=provider_error, got %q", got.ErrorCode)
+		}
+		if !strings.Contains(string(got.ErrorDetails), `"exception_type":"ThrottlingException"`) {
+			t.Errorf("ErrorDetails missing exception_type=ThrottlingException; got %q", string(got.ErrorDetails))
+		}
+		if !strings.Contains(string(got.ErrorDetails), `"exception_message":"slow down"`) {
+			t.Errorf("ErrorDetails missing exception_message=slow down; got %q", string(got.ErrorDetails))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for bridged bedrock-exception result")
+	}
+}
+
+// bedrockExcBridgeWrap mirrors the orchestrator's
+// fmt.Errorf("buildrequest: delta extraction failed: %w", ...) so the
+// bridge test exercises a real wrap depth without depending on
+// fmt.Errorf's exact rendered string. errors.As walks Unwrap, which
+// is what classifyBAMLError uses for *BedrockStreamException.
+type bedrockExcBridgeWrap struct {
+	msg   string
+	inner error
+}
+
+func (e bedrockExcBridgeWrap) Error() string { return e.msg + ": " + e.inner.Error() }
+func (e bedrockExcBridgeWrap) Unwrap() error { return e.inner }
+
 func TestBridgeStreamResultsCancelsDuringDownstreamSend(t *testing.T) {
 	t.Parallel()
 

@@ -458,14 +458,22 @@ func TestParseBuildRequestEnv(t *testing.T) {
 }
 
 func TestIsProviderSupported(t *testing.T) {
-	supported := []string{"openai", "openai-generic", "azure-openai", "anthropic", "google-ai", "vertex-ai", "ollama", "openrouter", "openai-responses"}
+	supported := []string{
+		"openai", "openai-generic", "azure-openai", "anthropic",
+		"google-ai", "vertex-ai", "ollama", "openrouter",
+		"openai-responses",
+		// aws-bedrock streaming enabled in PR 3 of #243 — see
+		// supportedProviders doc-comment for the dispatch contract.
+		"aws-bedrock",
+	}
 	for _, p := range supported {
 		if !IsProviderSupported(p) {
 			t.Errorf("expected provider %q to be supported", p)
 		}
 	}
 
-	unsupported := []string{"aws-bedrock"}
+	// Future/unknown providers stay on the legacy path.
+	unsupported := []string{"some-future-provider", "custom-provider", ""}
 	for _, p := range unsupported {
 		if IsProviderSupported(p) {
 			t.Errorf("expected provider %q to be unsupported", p)
