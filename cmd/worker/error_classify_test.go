@@ -105,6 +105,48 @@ func TestClassifyBAMLError(t *testing.T) {
 			wantDetails: `{"error_code":"InternalServerError"}`,
 		},
 		{
+			// PR3-bedrock-stream (#243): Bedrock modeled exceptions
+			// (in-band :message-type=exception frames) classify as
+			// provider_error with exception_type + exception_message
+			// — distinct fields from error_code/error_message so
+			// consumers can tell a torn transport apart from a
+			// modeled exception even though both share the same
+			// taxonomy code.
+			name: "BedrockStreamException direct",
+			err: &buildrequest.BedrockStreamException{
+				ExceptionType: "ModelStreamErrorException",
+				Payload:       []byte(`{"message":"the model refused"}`),
+			},
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"exception_type":"ModelStreamErrorException","exception_message":"the model refused"}`,
+		},
+		{
+			// Wrapper chains (orchestrator's "buildrequest: delta
+			// extraction failed: %w") must not hide the typed
+			// exception — errors.As walks the chain.
+			name: "BedrockStreamException wrapped",
+			err: fmt.Errorf("buildrequest: delta extraction failed: %w",
+				&buildrequest.BedrockStreamException{
+					ExceptionType: "ThrottlingException",
+					Payload:       []byte(`{"message":"slow down"}`),
+				}),
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"exception_type":"ThrottlingException","exception_message":"slow down"}`,
+		},
+		{
+			// Payload without a recognised `message` field still
+			// classifies as provider_error but drops the
+			// exception_message detail via omitempty. The exception
+			// type alone is enough operator context to triage.
+			name: "BedrockStreamException no payload message",
+			err: &buildrequest.BedrockStreamException{
+				ExceptionType: "ValidationException",
+				Payload:       []byte(`{"other":"shape"}`),
+			},
+			wantCode:    string(apierror.CodeProviderError),
+			wantDetails: `{"exception_type":"ValidationException"}`,
+		},
+		{
 			name:        "legacy Parsing error prefix",
 			err:         errors.New("Parsing error: Failed to parse LLM response: missing field"),
 			wantCode:    string(apierror.CodeParseError),

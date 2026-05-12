@@ -3,6 +3,7 @@ package buildrequest
 import (
 	"bytes"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
@@ -304,8 +305,15 @@ func TestExtractBedrockStreamDelta_MultiEventStream(t *testing.T) {
 		var parseable, raw, reasoning string
 		for {
 			evt, err := dec.Next()
-			if err != nil {
+			if errors.Is(err, io.EOF) {
 				break
+			}
+			// Discriminate EOF from CRC / framing / truncation
+			// failures: the catch-all break would silently swallow a
+			// regression in the multi-event fixture, masking it as
+			// an accumulation mismatch (or missing it entirely).
+			if err != nil {
+				t.Fatalf("includeReasoning=%v: decode event: %v", includeReasoning, err)
 			}
 			parts, err := extractBedrockStreamDelta(evt, includeReasoning)
 			if err != nil {

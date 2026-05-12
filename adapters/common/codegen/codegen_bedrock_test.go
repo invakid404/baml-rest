@@ -13,14 +13,14 @@ import (
 )
 
 // TestEmitBAMLHTTPRequestConversion_NilPostProcess_NoBedrockAttach pins
-// the streaming-branch contract: when emitBAMLHTTPRequestConversion is
-// called with nil postProcess (as the streaming _buildRequest emit
-// does), the generated body must NOT contain MaybeAttachBedrockAuth.
-// PR1-bedrock breadcrumb (#243).
-//
-// PR 3 will wire streaming through the same SigV4 hook via a different
-// codegen path; until then, the streaming branch must stay untouched
-// because supportedProviders["aws-bedrock"] is still false.
+// the SSE-path contract: when emitBAMLHTTPRequestConversion is called
+// with nil postProcess (as the non-bedrock streaming buildRequestFn
+// emit does), the generated body must NOT contain
+// MaybeAttachBedrockAuth. The bedrock streaming path uses its own
+// closure (buildBedrockStreamRequestFn) with
+// emitBedrockStreamPostProcess; this assertion guards the SSE
+// closure from accidentally inheriting AWS signing.
+// PR1-bedrock / PR3-bedrock-stream breadcrumb (#243).
 func TestEmitBAMLHTTPRequestConversion_NilPostProcess_NoBedrockAttach(t *testing.T) {
 	f := jen.NewFilePathName("github.com/example/test", "test")
 	f.Func().Id("emit").Params().Params(jen.Op("*").Id("Request"), jen.Error()).BlockFunc(func(g *jen.Group) {

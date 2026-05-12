@@ -78,12 +78,22 @@ type providerErrorDetails struct {
 	ClientName string `json:"client_name,omitempty"`
 	// ErrorCode/ErrorMessage carry the AWS event-stream
 	// :error-code / :error-message header values when a Bedrock
-	// stream surfaces a transport-level error frame (not a modeled
-	// exception — those are surfaced via the JSON body path
-	// upstream of the classifier). PR3-bedrock-stream breadcrumb
-	// (issue #243).
+	// stream surfaces a transport-level error frame.
+	// PR3-bedrock-stream breadcrumb (issue #243).
 	ErrorCode    string `json:"error_code,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+	// ExceptionType / ExceptionMessage carry the modeled
+	// exception's :exception-type header value and the parsed
+	// `message` field from the exception payload — the in-band
+	// failure shape Bedrock uses when the model itself refuses or
+	// the service produces a domain-level error mid-stream
+	// (ModelStreamErrorException, ThrottlingException,
+	// ValidationException, etc.). Distinct from
+	// ErrorCode/ErrorMessage so wire consumers can tell a torn
+	// transport apart from a modeled exception even when both map
+	// to provider_error. PR3-bedrock-stream breadcrumb (issue #243).
+	ExceptionType    string `json:"exception_type,omitempty"`
+	ExceptionMessage string `json:"exception_message,omitempty"`
 }
 
 // marshal returns the JSON-encoded bytes, or nil when every field is
@@ -92,7 +102,9 @@ type providerErrorDetails struct {
 // can't realistically fail; if it ever does, fall back to no details
 // rather than dropping the classification.
 func (d providerErrorDetails) marshal() []byte {
-	if d.StatusCode == 0 && d.Body == "" && d.ClientName == "" && d.ErrorCode == "" && d.ErrorMessage == "" {
+	if d.StatusCode == 0 && d.Body == "" && d.ClientName == "" &&
+		d.ErrorCode == "" && d.ErrorMessage == "" &&
+		d.ExceptionType == "" && d.ExceptionMessage == "" {
 		return nil
 	}
 	data, err := json.Marshal(d)
@@ -158,6 +170,23 @@ func classifyBAMLError(err error) (code string, details []byte) {
 		return string(apierror.CodeProviderError), providerErrorDetails{
 			ErrorCode:    awsTransportErr.Code,
 			ErrorMessage: awsTransportErr.Message,
+		}.marshal()
+	}
+
+	// Bedrock modeled exceptions arrive in-band as
+	// :message-type=exception frames; the orchestrator wraps them
+	// as *buildrequest.BedrockStreamException with the modeled
+	// shape name in ExceptionType and the operator-facing message
+	// reachable via Message(). They're a provider-side failure
+	// class — model refusal, throttling, validation — so they map
+	// to provider_error alongside transport errors but with their
+	// own detail fields so consumers can tell the two failure
+	// modes apart. PR3-bedrock-stream breadcrumb (issue #243).
+	var bedrockExc *buildrequest.BedrockStreamException
+	if errors.As(err, &bedrockExc) {
+		return string(apierror.CodeProviderError), providerErrorDetails{
+			ExceptionType:    bedrockExc.ExceptionType,
+			ExceptionMessage: bedrockExc.Message(),
 		}.marshal()
 	}
 

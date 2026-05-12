@@ -116,9 +116,22 @@ func disableCallBuildRequest() bool {
 	return disableCallBuildRequestCached
 }
 
-// supportedProviders is the set of providers whose SSE format is handled by
-// ExtractDeltaFromText. This must match the switch cases in that function
-// exactly — any provider not in this set falls back to the legacy path.
+// supportedProviders is the set of providers whose streaming transport
+// is handled by the BuildRequest orchestrator. Providers absent from
+// the set fall back to the legacy CallStream+OnTick path.
+//
+// Two distinct transports live under this gate:
+//
+//   - SSE (text/event-stream) — every non-aws-bedrock entry. The
+//     orchestrator's default path consumes sse.ExtractDeltaPartsFromText
+//     on llmhttp.ExecuteStream events; the provider names below must
+//     match that function's switch cases exactly.
+//   - AWS event-stream (application/vnd.amazon.eventstream) —
+//     aws-bedrock only. The orchestrator dispatches on provider to
+//     llmhttp.ExecuteAWSStream + extractBedrockStreamDelta. The
+//     dispatch contract is encoded in StreamConfig.BuildBedrockStreamRequest
+//     and validated up-front; the SSE extractor is never consulted on
+//     this path.
 var supportedProviders = map[string]bool{
 	"openai":           true,
 	"openai-generic":   true,
@@ -132,13 +145,9 @@ var supportedProviders = map[string]bool{
 	// aws-bedrock (v0.219+): streaming uses Request.<Method> as a
 	// body assembler (BAML's StreamRequest errors for AWS), then
 	// mutates URL /converse → /converse-stream, signs SigV4 over
-	// the rewritten URL, executes via llmhttp.ExecuteAWSStream,
-	// and pipes decoded awsstream events through
-	// extractBedrockStreamDelta. PR3-bedrock-stream breadcrumb
-	// (issue #243): PR 4 scrubs breadcrumb comments and adds the
-	// remaining parity items (endpoint_url, static .baml creds,
-	// reasoning signature/redactedContent, tool-use streaming
-	// deltas, usage metadata).
+	// the rewritten URL, executes via llmhttp.ExecuteAWSStream, and
+	// pipes decoded awsstream events through extractBedrockStreamDelta.
+	// PR3-bedrock-stream breadcrumb (issue #243).
 	"aws-bedrock": true,
 }
 
@@ -164,17 +173,16 @@ var callSupportedProviders = map[string]bool{
 	"anthropic":        true,
 	"google-ai":        true,
 	"vertex-ai":        true,
-	// aws-bedrock (v0.219+): both call and stream now go through
-	// BuildRequest (PR 1 added call, PR 3 added stream). See
-	// supportedProviders above for the streaming wire-path summary.
-	// Scope cuts active in PRs 1+3: v0.204/v0.215 fall through to
+	// aws-bedrock (v0.219+): both call and stream go through
+	// BuildRequest. See supportedProviders above for the streaming
+	// wire-path summary. Scope cuts: v0.204/v0.215 fall through to
 	// legacy (codegen's _buildCallRequest is gated on
-	// introspected.Request, which only resolves on v0.219), default
-	// credential chain only (no static .baml creds), default Bedrock
-	// runtime endpoint only (no endpoint_url override), reasoning
-	// signature/redactedContent and tool-use streaming deltas
-	// silently skipped. Remaining items tracked in #243 PR 4.
-	// PR1-bedrock / PR3-bedrock-stream breadcrumb: PR 4 scrubs.
+	// introspected.Request, which only resolves on v0.219); the
+	// default credential chain is used (no static .baml creds); the
+	// default Bedrock runtime endpoint is used (no endpoint_url
+	// override); reasoning signature/redactedContent and tool-use
+	// streaming deltas are silently skipped. PR1-bedrock /
+	// PR3-bedrock-stream breadcrumb (issue #243).
 	"aws-bedrock": true,
 }
 

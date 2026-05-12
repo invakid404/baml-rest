@@ -588,13 +588,14 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jg.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
 			)
-			// PR1-bedrock breadcrumb (issue #243): the call branch
-			// attaches AWS SigV4 metadata when the BAML-emitted URL
-			// looks like a Bedrock Converse endpoint. Non-bedrock URLs
-			// are a no-op for MaybeAttachBedrockAuth, so this stays
-			// invisible to every other provider. Streaming codegen
-			// stays untouched in PR 1 — streaming is gated by
-			// supportedProviders["aws-bedrock"] which lands in PR 3.
+			// The call branch attaches AWS SigV4 metadata when the
+			// BAML-emitted URL looks like a Bedrock Converse endpoint.
+			// MaybeAttachBedrockAuth is a no-op on non-bedrock URLs,
+			// so the unconditional emit costs every other provider
+			// nothing. PR1-bedrock breadcrumb (issue #243). The
+			// streaming branch uses its own sibling closure
+			// (buildBedrockStreamRequestFn) with emitBedrockStreamPostProcess
+			// — see emitBuildRequest above.
 			emitBAMLHTTPRequestConversion(jg, emitMaybeAttachBedrockAuth)
 		}),
 

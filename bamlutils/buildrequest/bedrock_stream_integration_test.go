@@ -70,7 +70,17 @@ func bedrockStreamTransportErrorFrame(t *testing.T, code, message string) []byte
 // SigV4 headers are asserted to be present (codegen emits them via
 // MaybeAttachBedrockAuth) but the signature is not verified against
 // real IAM — same contract as the call-branch integration test.
-func newMockBedrockStreamServer(t *testing.T, frames []byte, sawHeaders *atomic.Int32, sawPath *atomic.Pointer[string]) *httptest.Server {
+//
+// All observability flows through the supplied atomic pointers — the
+// handler runs on a separate httptest goroutine where t.Fatalf is
+// unsafe, so the caller asserts after the request returns.
+func newMockBedrockStreamServer(
+	t *testing.T,
+	frames []byte,
+	sawHeaders *atomic.Int32,
+	sawPath *atomic.Pointer[string],
+	sawMethod *atomic.Pointer[string],
+) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if sawHeaders != nil {
@@ -92,6 +102,10 @@ func newMockBedrockStreamServer(t *testing.T, frames []byte, sawHeaders *atomic.
 		if sawPath != nil {
 			p := r.URL.Path
 			sawPath.Store(&p)
+		}
+		if sawMethod != nil {
+			m := r.Method
+			sawMethod.Store(&m)
 		}
 		w.Header().Set("Content-Type", llmhttp.AWSStreamContentType)
 		w.WriteHeader(200)
@@ -145,7 +159,8 @@ func TestRunStreamOrchestration_AWSBedrock_HappyPath(t *testing.T) {
 
 	var sawHeaders atomic.Int32
 	var sawPath atomic.Pointer[string]
-	server := newMockBedrockStreamServer(t, frames.Bytes(), &sawHeaders, &sawPath)
+	var sawMethod atomic.Pointer[string]
+	server := newMockBedrockStreamServer(t, frames.Bytes(), &sawHeaders, &sawPath, &sawMethod)
 	defer server.Close()
 
 	client := llmhttp.NewClient(server.Client())
@@ -185,6 +200,13 @@ func TestRunStreamOrchestration_AWSBedrock_HappyPath(t *testing.T) {
 	}
 	if p := sawPath.Load(); p == nil || !strings.HasSuffix(*p, "/converse-stream") {
 		t.Errorf("upstream path should end in /converse-stream; got %v", p)
+	}
+	// Bedrock ConverseStream is POST-only — pin the verb so a
+	// codegen regression that flipped the method (or a request-
+	// builder reshuffle) surfaces here rather than as a confusing
+	// upstream 4xx.
+	if m := sawMethod.Load(); m == nil || *m != http.MethodPost {
+		t.Errorf("expected upstream HTTP method POST; got %v", m)
 	}
 
 	var (
@@ -237,7 +259,7 @@ func TestRunStreamOrchestration_AWSBedrock_ReasoningOptIn(t *testing.T) {
 
 	for _, includeReasoning := range []bool{false, true} {
 		t.Run(fmt.Sprintf("includeReasoning=%v", includeReasoning), func(t *testing.T) {
-			server := newMockBedrockStreamServer(t, frames.Bytes(), nil, nil)
+			server := newMockBedrockStreamServer(t, frames.Bytes(), nil, nil, nil)
 			defer server.Close()
 
 			client := llmhttp.NewClient(server.Client())
@@ -301,7 +323,7 @@ func TestRunStreamOrchestration_AWSBedrock_ModeledException(t *testing.T) {
 	frames.Write(bedrockStreamFrame(t, "messageStart", []byte(`{"role":"assistant"}`)))
 	frames.Write(bedrockStreamExceptionFrame(t, "modelStreamErrorException", []byte(`{"message":"the model errored"}`)))
 
-	server := newMockBedrockStreamServer(t, frames.Bytes(), nil, nil)
+	server := newMockBedrockStreamServer(t, frames.Bytes(), nil, nil, nil)
 	defer server.Close()
 
 	client := llmhttp.NewClient(server.Client())
@@ -368,7 +390,7 @@ func TestRunStreamOrchestration_AWSBedrock_TransportError(t *testing.T) {
 	frames.Write(bedrockStreamFrame(t, "messageStart", []byte(`{"role":"assistant"}`)))
 	frames.Write(bedrockStreamTransportErrorFrame(t, "InternalServerError", "service unavailable"))
 
-	server := newMockBedrockStreamServer(t, frames.Bytes(), nil, nil)
+	server := newMockBedrockStreamServer(t, frames.Bytes(), nil, nil, nil)
 	defer server.Close()
 
 	client := llmhttp.NewClient(server.Client())
@@ -396,21 +418,33 @@ func TestRunStreamOrchestration_AWSBedrock_TransportError(t *testing.T) {
 
 	var (
 		sawError  bool
+		sawFinal  bool
 		errResult error
 		typedOK   bool
 	)
 	for r := range out {
-		if r.Kind() == bamlutils.StreamResultKindError {
+		switch r.Kind() {
+		case bamlutils.StreamResultKindError:
 			sawError = true
 			errResult = r.Error()
 			var te *awsstream.TransportError
 			if errors.As(errResult, &te) {
 				typedOK = te.Code == "InternalServerError" && te.Message == "service unavailable"
 			}
+		case bamlutils.StreamResultKindFinal:
+			sawFinal = true
 		}
 	}
 	if !sawError {
 		t.Fatalf("expected error result")
+	}
+	if sawFinal {
+		// Mirrors the modeled-exception test's contract: a terminal
+		// transport error must not be followed by a Final frame.
+		// Without this guard a regression that flushed the partial
+		// stream's accumulated state as a successful result could
+		// pass the error-side assertions silently.
+		t.Errorf("transport-error stream emitted a Final result after the error frame; must terminate")
 	}
 	if !typedOK {
 		t.Errorf("error chain must contain *awsstream.TransportError with the right code/message; got %v", errResult)

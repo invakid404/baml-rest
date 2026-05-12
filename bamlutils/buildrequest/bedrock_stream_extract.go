@@ -25,14 +25,14 @@ import (
 // Modeled exceptions are protocol data, not transport failures (those
 // surface as *awsstream.TransportError), so the streaming extractor
 // returns this type to keep the two failure classes distinguishable
-// upstream. The orchestrator wraps the error so the existing typed
-// classifier (cmd/worker/error_classify.go's *llmhttp.HTTPError /
-// transport-flake arms) can carry provider_error context.
+// upstream. The orchestrator wraps the error and the worker's
+// classifier (cmd/worker/error_classify.go's *BedrockStreamException
+// arm) routes it to provider_error with details.{exception_type,
+// exception_message}. The raw payload bytes are preserved in Payload
+// so downstream consumers can parse additional fields without
+// revisiting the extractor.
 //
-// PR3-bedrock-stream breadcrumb (issue #243): PR 4 may attach a richer
-// payload (parsed AWS exception JSON, retry hints) — the wire bytes
-// are preserved verbatim in Payload to keep that option open without
-// breaking the current Error() surface.
+// PR3-bedrock-stream breadcrumb (issue #243).
 type BedrockStreamException struct {
 	// ExceptionType is the value of the :exception-type header (the
 	// modeled shape name — e.g. "modelStreamErrorException",
@@ -42,21 +42,38 @@ type BedrockStreamException struct {
 	ExceptionType string
 	// Payload is the raw payload bytes from the exception frame —
 	// typically a JSON object like `{"message":"..."}`. Preserved
-	// verbatim so PR 4 can parse fields out without revisiting the
-	// extractor.
+	// verbatim; the Message() method parses the standard `message`
+	// field, and downstream consumers can extract additional fields
+	// directly from these bytes if needed.
 	Payload []byte
 }
 
 func (e *BedrockStreamException) Error() string {
-	// gjson.GetBytes is safe on a nil/empty payload — returns an empty
-	// Result and triggers the "no message" branch below.
-	if msg := gjson.GetBytes(e.Payload, "message"); msg.Type == gjson.String && msg.String() != "" {
-		return fmt.Sprintf("bedrock: stream exception %s: %s", e.ExceptionType, msg.String())
+	if msg := e.Message(); msg != "" {
+		return fmt.Sprintf("bedrock: stream exception %s: %s", e.ExceptionType, msg)
 	}
 	if e.ExceptionType != "" {
 		return fmt.Sprintf("bedrock: stream exception %s", e.ExceptionType)
 	}
 	return "bedrock: stream exception"
+}
+
+// Message returns the human-readable message string parsed from the
+// exception payload, or "" when the payload is absent or doesn't carry
+// a string `message` field. Bedrock's modeled exceptions encode the
+// operator-facing description under that key per the AWS
+// runtime_ConverseStream documentation; exposing it as a method lets
+// the worker error classifier surface it on the provider_error envelope
+// without re-parsing the payload bytes.
+func (e *BedrockStreamException) Message() string {
+	if e == nil || len(e.Payload) == 0 {
+		return ""
+	}
+	r := gjson.GetBytes(e.Payload, "message")
+	if r.Type != gjson.String {
+		return ""
+	}
+	return r.String()
 }
 
 // extractBedrockStreamDelta routes a single decoded awsstream event into
