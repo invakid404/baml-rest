@@ -2377,12 +2377,21 @@ func TestRunStreamOrchestration_StreamError_CarriesRaw(t *testing.T) {
 	}
 	close(out)
 
+	// Track terminal-frame shape symmetrically with the parse-final
+	// sibling: exactly one error, zero Final frames, and an Error as
+	// the last emitted frame. A regression that emitted a duplicate
+	// error or a Final-after-Error would slip past a loose "find an
+	// error frame" check.
 	var errResult bamlutils.StreamResult
+	var lastFrame bamlutils.StreamResult
+	var errorCount int
 	var sawFinal bool
 	for r := range out {
+		lastFrame = r
 		switch r.Kind() {
 		case bamlutils.StreamResultKindError:
 			errResult = r
+			errorCount++
 		case bamlutils.StreamResultKindFinal:
 			sawFinal = true
 		}
@@ -2390,8 +2399,11 @@ func TestRunStreamOrchestration_StreamError_CarriesRaw(t *testing.T) {
 	if sawFinal {
 		t.Fatal("unexpected Final frame — truncation should have terminated the attempt at the stream-error wrap, not parseFinal")
 	}
-	if errResult == nil {
-		t.Fatal("expected an error result from the truncated chunked response")
+	if errorCount != 1 {
+		t.Fatalf("expected exactly 1 error frame from the truncated chunked response, got %d", errorCount)
+	}
+	if lastFrame == nil || lastFrame.Kind() != bamlutils.StreamResultKindError {
+		t.Fatalf("expected last emitted frame to be an Error, got %v", lastFrame)
 	}
 	if !strings.Contains(errResult.Raw(), "Hello") {
 		t.Fatalf("expected error.Raw() to include the pre-truncation chunk %q; got %q",
