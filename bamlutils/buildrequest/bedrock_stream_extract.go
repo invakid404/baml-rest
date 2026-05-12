@@ -11,7 +11,6 @@
 package buildrequest
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/tidwall/gjson"
@@ -110,9 +109,23 @@ func extractBedrockStreamDelta(evt *awsstream.Event, includeReasoning bool) (sse
 		// awsstream.Decoder returns *TransportError directly from
 		// Next() for :message-type=error frames, so the extractor
 		// should never see one here. Defend against future decoder
-		// changes by treating it as a transport error verbatim — the
-		// orchestrator already classifies these via the worker arm.
-		return sse.DeltaParts{}, errors.New("bedrock: unexpected error message-type at extractor")
+		// changes by returning the same typed *awsstream.TransportError
+		// surface the production path produces — without this, an
+		// errors.New here would bypass the worker classifier's
+		// TransportError arm and downgrade the failure to
+		// worker_error. The Event shape doesn't carry :error-code /
+		// :error-message headers, so fall back to a synthetic code +
+		// the event Type (if any) for the message; this is purely
+		// defensive code and operator diagnostics here lean on the
+		// "decoder gave us an error frame we didn't expect" framing.
+		fallbackMessage := "bedrock: unexpected error message-type at extractor"
+		if evt.Type != "" {
+			fallbackMessage = fallbackMessage + ": " + evt.Type
+		}
+		return sse.DeltaParts{}, &awsstream.TransportError{
+			Code:    "UnexpectedErrorMessageType",
+			Message: fallbackMessage,
+		}
 	case awsstream.MessageTypeEvent, "":
 		// fall through
 	}

@@ -242,6 +242,56 @@ func TestExtractBedrockStreamDelta_ModeledException(t *testing.T) {
 	}
 }
 
+// TestExtractBedrockStreamDelta_DefensiveErrorMessageType pins that
+// the defensive MessageType==error branch surfaces a typed
+// *awsstream.TransportError, not a bare errors.New. The production
+// awsstream.Decoder intercepts :message-type=error frames before they
+// reach the extractor — it returns *TransportError directly from
+// Next() — so this branch is unreachable in practice. The test
+// synthesizes an Event with MessageType==MessageTypeError directly to
+// guard against a future decoder change that lets such events through:
+// without the typed surface, the worker classifier's TransportError
+// arm would miss the failure and downgrade it to worker_error.
+func TestExtractBedrockStreamDelta_DefensiveErrorMessageType(t *testing.T) {
+	// Synthesize the Event directly — the decoder won't produce one
+	// of this shape, so we bypass it to exercise the defensive branch.
+	evt := &awsstream.Event{
+		Type:        "InternalServerError",
+		MessageType: awsstream.MessageTypeError,
+	}
+	parts, err := extractBedrockStreamDelta(evt, false)
+	if err == nil {
+		t.Fatal("nil error on MessageTypeError event, want *awsstream.TransportError")
+	}
+	var transportErr *awsstream.TransportError
+	if !errors.As(err, &transportErr) {
+		t.Fatalf("error type = %T, want *awsstream.TransportError (worker classifier arm keys off this type)", err)
+	}
+	if transportErr.Code == "" {
+		t.Errorf("TransportError.Code = empty, want a synthetic non-empty code so classifier details omit-empty doesn't drop it")
+	}
+	if transportErr.Message == "" {
+		t.Errorf("TransportError.Message = empty, want a fallback message describing the defensive branch")
+	}
+	// Defensive branch must not surface incremental content alongside
+	// the error — the failure terminates the stream attempt.
+	if parts.Parseable != "" || parts.Raw != "" || parts.Reasoning != "" {
+		t.Errorf("non-empty delta on defensive error branch: %+v", parts)
+	}
+
+	// Empty-Type variant: defensive branch still produces a typed
+	// error, just without the Type tail in the message.
+	evtEmpty := &awsstream.Event{MessageType: awsstream.MessageTypeError}
+	_, err = extractBedrockStreamDelta(evtEmpty, false)
+	var emptyTypedErr *awsstream.TransportError
+	if !errors.As(err, &emptyTypedErr) {
+		t.Fatalf("empty-Type variant: error type = %T, want *awsstream.TransportError", err)
+	}
+	if emptyTypedErr.Code == "" || emptyTypedErr.Message == "" {
+		t.Errorf("empty-Type variant: typed surface still requires non-empty Code and Message; got %+v", emptyTypedErr)
+	}
+}
+
 // TestExtractBedrockStreamDelta_MalformedJSONErrors pins strict
 // behaviour for genuinely broken payloads. A non-JSON delta is a
 // transport-integrity problem (the SDK signed/decoded the frame OK
