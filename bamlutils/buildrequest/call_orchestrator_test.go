@@ -1724,12 +1724,13 @@ func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 	}
 }
 
-// TestRunCallOrchestration_ParseFinalError_CarriesRaw pins #256 PR 2:
-// when the BuildRequest non-streaming path fails at the final-parse
-// step after a successful HTTP+extract, the emitted error StreamResult
-// must carry the extracted raw text via Raw() — that is what the worker
-// bridge's mergeRawDetail attaches to details.raw. Mirrors the
-// happy-path raw assertion in TestRunCallOrchestration_WithRaw.
+// TestRunCallOrchestration_ParseFinalError_CarriesRaw pins the
+// details.raw contract from #256: when the BuildRequest non-streaming
+// path fails at the final-parse step after a successful HTTP+extract,
+// the emitted error StreamResult must carry the extracted raw text via
+// Raw() — that is what the worker bridge's mergeRawDetail attaches to
+// details.raw. Mirrors the happy-path raw assertion in
+// TestRunCallOrchestration_WithRaw.
 func TestRunCallOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
 	const rawText = "Sorry, I can't help with that."
 	server := makeJSONServer(200, fmt.Sprintf(`{"choices":[{"message":{"content":%q}}]}`, rawText))
@@ -1775,13 +1776,14 @@ func TestRunCallOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
 	}
 }
 
-// TestRunCallOrchestration_ExtractError_CarriesBodyAsRaw pins #256 PR 2's
-// extraction-failure fallback: when extractResponse errors before
-// splitting raw out of the provider's 2xx body, the body itself is the
-// diagnostic. The orchestrator wraps with the raw body so the bridge can
-// surface it on details.raw. Pre-2xx provider errors don't reach this
-// path — they surface as *HTTPError from Execute and the existing
-// provider_error classifier maps HTTPError.Body to details.body.
+// TestRunCallOrchestration_ExtractError_CarriesBodyAsRaw pins the
+// extraction-failure fallback for #256: when extractResponse errors
+// before splitting raw out of the provider's 2xx body, the body itself
+// is the diagnostic. The orchestrator wraps with the raw body so the
+// bridge can surface it on details.raw. Pre-2xx provider errors don't
+// reach this path — they surface as *HTTPError from Execute and the
+// existing provider_error classifier maps HTTPError.Body to
+// details.body.
 func TestRunCallOrchestration_ExtractError_CarriesBodyAsRaw(t *testing.T) {
 	const responseBody = `{"unexpected":"shape","missing":"fields"}`
 	server := makeJSONServer(200, responseBody)

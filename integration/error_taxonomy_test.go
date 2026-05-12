@@ -273,7 +273,8 @@ func TestLegacyClassification_ParseEndpointGarbage(t *testing.T) {
 // requireBuildRequestMode skips the calling test when the shared
 // TestEnv is NOT running BuildRequest. Inverse of requireLegacyMode —
 // pairs the legacy classifier coverage above with BuildRequest-path
-// coverage so #256 PR 2 has end-to-end pinning for both orchestrators.
+// coverage so the details.raw contract (#256) has end-to-end pinning
+// on both orchestrators.
 func requireBuildRequestMode(t *testing.T) {
 	t.Helper()
 	if !ActuallyBuildRequest() {
@@ -283,10 +284,9 @@ func requireBuildRequestMode(t *testing.T) {
 
 // TestBuildRequestClassification_ParseErrorFromProseCallWithRaw is the
 // BuildRequest analogue of TestLegacyClassification_ParseErrorFromProseCallWithRaw
-// (the PR 1 sibling above). PR 2 of #256 threads accumulated raw
-// through the BuildRequest non-streaming orchestrator's final-parse
-// failure site so /call-with-raw error envelopes carry details.raw
-// the same as the legacy path.
+// above. Per #256, accumulated raw is threaded through the BuildRequest
+// non-streaming orchestrator's final-parse failure site so /call-with-raw
+// error envelopes carry details.raw the same as the legacy path.
 //
 // Asserts the new contract: when the BuildRequest non-streaming path
 // fails at final-parse on prose that doesn't fit the schema, the error

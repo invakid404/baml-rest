@@ -109,10 +109,11 @@ func TestGenerateStreamHelpers_ContainsExpectedSymbols(t *testing.T) {
 	}
 }
 
-// TestRunFullOrchestration_NewErrorCarriesRaw pins #256 PR1's codegen
-// contract: runFullOrchestration's newError parameter widens to
-// (error, string) so the per-method closure (in codegen_legacy_stream.go)
-// can stamp the accumulator's raw text onto the error StreamResult.
+// TestRunFullOrchestration_NewErrorCarriesRaw pins the codegen
+// contract behind #256's details.raw forwarding on the legacy path:
+// runFullOrchestration's newError parameter widens to (error, string)
+// so the per-method closure (in codegen_legacy_stream.go) can stamp the
+// accumulator's raw text onto the error StreamResult.
 // The contract has three structural assertions:
 //
 //  1. The newError parameter type appears with the widened signature.

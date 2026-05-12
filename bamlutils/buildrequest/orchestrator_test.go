@@ -2207,11 +2207,12 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry(t *testing.T) {
 	}
 }
 
-// TestRunStreamOrchestration_ParseFinalError_CarriesRaw pins #256 PR 2:
-// when the streaming SSE path fails at final-parse after the stream
-// completed cleanly, the emitted error frame must carry the accumulated
-// raw text via Raw() so the worker bridge can surface it on
-// details.raw. Symmetric to the call-orchestrator parse-error test.
+// TestRunStreamOrchestration_ParseFinalError_CarriesRaw pins the
+// details.raw contract from #256 on the streaming SSE path: when the
+// path fails at final-parse after the stream completed cleanly, the
+// emitted error frame must carry the accumulated raw text via Raw() so
+// the worker bridge can surface it on details.raw. Symmetric to the
+// call-orchestrator parse-error test.
 func TestRunStreamOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
 	chunks := []string{"Sorry,", " I", " can't"}
 	server := makeOpenAIServer(chunks)
@@ -2270,11 +2271,11 @@ func TestRunStreamOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
 }
 
 // TestRunStreamOrchestration_StreamError_CarriesRaw pins the
-// mid-stream-failure variant of #256 PR 2: when the transport breaks
-// after partial accumulation, the error frame's Raw() carries whatever
-// bytes arrived before the failure. Models a half-broken stream by
-// closing the connection after one chunk; the SSE reader surfaces the
-// truncation as a stream error.
+// mid-stream-failure variant of the #256 details.raw contract: when
+// the transport breaks after partial accumulation, the error frame's
+// Raw() carries whatever bytes arrived before the failure. Models a
+// half-broken stream by closing the connection after one chunk; the
+// SSE reader surfaces the truncation as a stream error.
 func TestRunStreamOrchestration_StreamError_CarriesRaw(t *testing.T) {
 	// Server writes one chunk, then aborts the response — the SSE
 	// reader sees an unexpected EOF on the framing layer and surfaces
