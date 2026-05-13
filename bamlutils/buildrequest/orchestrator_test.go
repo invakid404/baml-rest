@@ -2,6 +2,7 @@ package buildrequest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -2204,5 +2205,216 @@ func TestRunStreamOrchestration_NoResetWhenNoStreamFrame_Retry(t *testing.T) {
 	// regression.
 	if errors != 0 {
 		t.Errorf("expected 0 error frames on a recovered retry; got %d", errors)
+	}
+}
+
+// TestRunStreamOrchestration_ParseFinalError_CarriesRaw pins the
+// details.raw contract from #256 on the streaming SSE path: when the
+// path fails at final-parse after the stream completed cleanly, the
+// emitted error frame must carry the accumulated raw text via Raw() so
+// the worker bridge can surface it on details.raw. Symmetric to the
+// call-orchestrator parse-error test.
+func TestRunStreamOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
+	chunks := []string{"Sorry,", " I", " can't"}
+	server := makeOpenAIServer(chunks)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "openai",
+		NeedsPartials: true,
+		NeedsRaw:      true,
+	}
+
+	parseFinal := func(_ context.Context, s string) (any, error) {
+		// Return a plain parse error. The production orchestrator
+		// applies wrapOutputParse() at the final-parse site, then
+		// newRawError wraps that with the accumulated raw. This test
+		// pins that the resulting chain still satisfies
+		// errors.Is(err, ErrOutputParse) — wrapping ErrOutputParse
+		// inside the fixture would short-circuit the assertion and
+		// hide a regression in the production sentinel wrap.
+		return nil, fmt.Errorf("Parsing error: bad field")
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
+		parseFinal,
+		newTestResult,
+	)
+	close(out)
+	if err != nil {
+		t.Fatalf("unexpected error from RunStreamOrchestration: %v", err)
+	}
+
+	// Track terminal-frame shape, not just "any error frame
+	// exists". A regression that emitted a Final frame alongside
+	// (or instead of) the error frame — or multiple terminal
+	// frames — would slip past a loose "find one error" check;
+	// pinning exactly one error, zero finals, and an error as the
+	// last frame catches those. Mirrors the
+	// _StreamError_CarriesRaw sibling's terminal-frame contract.
+	var errResult bamlutils.StreamResult
+	var lastFrame bamlutils.StreamResult
+	var errorCount, finalCount int
+	for r := range out {
+		lastFrame = r
+		switch r.Kind() {
+		case bamlutils.StreamResultKindError:
+			errResult = r
+			errorCount++
+		case bamlutils.StreamResultKindFinal:
+			finalCount++
+		}
+	}
+	if errorCount != 1 {
+		t.Fatalf("expected exactly 1 error frame from final-parse failure, got %d", errorCount)
+	}
+	if finalCount != 0 {
+		t.Fatalf("expected 0 Final frames on a final-parse failure, got %d", finalCount)
+	}
+	if lastFrame == nil || lastFrame.Kind() != bamlutils.StreamResultKindError {
+		t.Fatalf("expected last emitted frame to be an Error, got %v", lastFrame)
+	}
+	const wantRaw = "Sorry, I can't"
+	if errResult.Raw() != wantRaw {
+		t.Fatalf("expected error.Raw() = %q (accumulated text), got %q", wantRaw, errResult.Raw())
+	}
+	// errors.Is must walk through both production wraps
+	// (wrapOutputParse + rawCarryingError) so the worker bridge's
+	// classifyBAMLError still maps this to parse_error. The loose
+	// "has Unwrap" shape check this replaces would pass for any
+	// wrapped error — proving nothing about sentinel preservation.
+	if !errors.Is(errResult.Error(), ErrOutputParse) {
+		t.Fatalf("expected error to satisfy ErrOutputParse through the wrapOutputParse + rawCarryingError chain; got %v",
+			errResult.Error())
+	}
+}
+
+// TestRunStreamOrchestration_StreamError_CarriesRaw pins the
+// mid-stream-failure variant of the #256 details.raw contract: when
+// the transport breaks after partial accumulation, the error frame's
+// Raw() carries whatever bytes arrived before the failure.
+//
+// The test must pin specifically to the stream-error wrap site (where
+// resp.Errc is consumed and wrapped with `buildrequest: stream error:
+// %w`) rather than the final-parse wrap site that fires on the same
+// attempt. Two precautions make that pin sharp:
+//
+//   - parseFinal returns success on whatever accumulator content survives,
+//     so the test cannot escape into the final-parse wrap. If the stream
+//     error doesn't fire, the attempt would succeed and emit a Final
+//     frame — the assertion would then fail with "no error frame".
+//   - the server panics with http.ErrAbortHandler after one valid SSE
+//     event, leaving the chunked response without its zero-size
+//     terminator. Go's chunked reader surfaces io.ErrUnexpectedEOF on
+//     the SSE scanner, which propagates to resp.Errc — the deterministic
+//     trigger for the stream-error wrap. parseStream errors can't
+//     substitute here: production intentionally ignores partial parse
+//     failures (orchestrator.go's `if parseErr == nil && parsed != nil`
+//     guard), so a failing parseStream wouldn't terminate the attempt.
+//
+// Asserts: (1) an error frame is emitted, (2) errResult.Raw() carries
+// the pre-truncation accumulator, (3) errResult.Error() is the
+// stream-error wrap (not the final-parse wrap).
+func TestRunStreamOrchestration_StreamError_CarriesRaw(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// Drop the connection without writing the zero-size chunk
+		// terminator. Go's chunked reader surfaces this as
+		// io.ErrUnexpectedEOF — mirrors the
+		// fast_backend_test.go::truncatedChunkedHandler pattern.
+		panic(http.ErrAbortHandler)
+	}))
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:      "openai",
+		NeedsPartials: true,
+		NeedsRaw:      true,
+	}
+
+	// Success-shape parseFinal: if execution ever reaches the
+	// final-parse branch, the attempt succeeds — the test then fails
+	// at the "expected an error frame" assertion. This is what makes
+	// the test specifically pin the stream-error wrap rather than
+	// accidentally pass via the final-parse wrap.
+	parseFinal := func(_ context.Context, accumulated string) (any, error) {
+		return accumulated, nil
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		func(ctx context.Context, accumulated string) (any, error) { return accumulated, nil },
+		parseFinal,
+		newTestResult,
+	)
+	// RunStreamOrchestration's contract: after emitting an error frame
+	// on the channel, the function itself returns nil. Errors flow via
+	// the StreamResult, not the function return — pinning both keeps
+	// a regression that routes the failure through the wrong channel
+	// from slipping past the channel-only assertions below.
+	if err != nil {
+		t.Fatalf("unexpected error from RunStreamOrchestration: %v", err)
+	}
+	close(out)
+
+	// Track terminal-frame shape symmetrically with the parse-final
+	// sibling: exactly one error, zero Final frames, and an Error as
+	// the last emitted frame. A regression that emitted a duplicate
+	// error or a Final-after-Error would slip past a loose "find an
+	// error frame" check.
+	var errResult bamlutils.StreamResult
+	var lastFrame bamlutils.StreamResult
+	var errorCount int
+	var sawFinal bool
+	for r := range out {
+		lastFrame = r
+		switch r.Kind() {
+		case bamlutils.StreamResultKindError:
+			errResult = r
+			errorCount++
+		case bamlutils.StreamResultKindFinal:
+			sawFinal = true
+		}
+	}
+	if sawFinal {
+		t.Fatal("unexpected Final frame — truncation should have terminated the attempt at the stream-error wrap, not parseFinal")
+	}
+	if errorCount != 1 {
+		t.Fatalf("expected exactly 1 error frame from the truncated chunked response, got %d", errorCount)
+	}
+	if lastFrame == nil || lastFrame.Kind() != bamlutils.StreamResultKindError {
+		t.Fatalf("expected last emitted frame to be an Error, got %v", lastFrame)
+	}
+	if !strings.Contains(errResult.Raw(), "Hello") {
+		t.Fatalf("expected error.Raw() to include the pre-truncation chunk %q; got %q",
+			"Hello", errResult.Raw())
+	}
+	// Pin to the stream-error wrap (orchestrator.go's resp.Errc arm)
+	// specifically. A regression that routed the truncation through
+	// the final-parse wrap would carry a "failed to parse final
+	// result" message instead — same Raw, different prefix.
+	if !strings.Contains(errResult.Error().Error(), "buildrequest: stream error") {
+		t.Fatalf("expected error message to come from the stream-error wrap; got %q",
+			errResult.Error().Error())
 	}
 }

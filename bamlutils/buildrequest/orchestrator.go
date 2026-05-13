@@ -644,7 +644,16 @@ func RunStreamOrchestration(
 				// the SSE path's stream-error wrap does so retry
 				// gating keeps treating them as transport-class
 				// failures.
-				return nil, "", "", fmt.Errorf("buildrequest: stream error: %w", nextErr)
+				//
+				// Attach the accumulator's current contents via
+				// newRawError so the outer emission (see #256) can
+				// extract whatever raw text arrived before the
+				// failure and forward it as details.raw on the
+				// error envelope.
+				return nil, "", "", newRawError(
+					fmt.Errorf("buildrequest: stream error: %w", nextErr),
+					rawAccumulated.String(),
+				)
 			}
 
 			delta, extractErr := extractBedrockStreamDelta(evt, config.IncludeReasoning)
@@ -654,7 +663,10 @@ func RunStreamOrchestration(
 				// attempt so retry/fallback can take over. Same
 				// failure-fast contract as the SSE path's
 				// extraction error arm.
-				return nil, "", "", fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
+				return nil, "", "", newRawError(
+					fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr),
+					rawAccumulated.String(),
+				)
 			}
 
 			// Skip frames with no incremental content on any
@@ -714,7 +726,14 @@ func RunStreamOrchestration(
 
 		finalResult, parseErr := parseFinal(ctx, parseableAccumulated.String())
 		if parseErr != nil {
-			return nil, "", "", wrapOutputParse(fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr))
+			// Carry accumulated raw across the retry/fallback boundary
+			// so the outer error emission can forward it as
+			// details.raw (per #256). The wrap is no-op when fullRaw
+			// is empty.
+			return nil, "", "", newRawError(
+				wrapOutputParse(fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)),
+				fullRaw,
+			)
 		}
 
 		return finalResult, fullRaw, fullReasoning, nil
@@ -767,7 +786,15 @@ func RunStreamOrchestration(
 			if extractErr != nil {
 				// Extraction error — fail the attempt so retry logic can handle it
 				// rather than silently accumulating incomplete text.
-				return nil, "", "", fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr)
+				//
+				// Carry the accumulator's contents up to (but not
+				// including) the failing frame so the outer error
+				// emission can forward whatever raw arrived before
+				// the break (per #256).
+				return nil, "", "", newRawError(
+					fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr),
+					rawAccumulated.String(),
+				)
 			}
 			// Skip when nothing meaningful arrived on any channel. Under
 			// IncludeReasoning=true a reasoning-only event has empty Raw
@@ -832,7 +859,13 @@ func RunStreamOrchestration(
 
 		// Check for stream errors
 		if streamErr := <-resp.Errc; streamErr != nil {
-			return nil, "", "", fmt.Errorf("buildrequest: stream error: %w", streamErr)
+			// Per #256: forward accumulated raw alongside the
+			// transport error so the outer emission attaches it to
+			// details.raw.
+			return nil, "", "", newRawError(
+				fmt.Errorf("buildrequest: stream error: %w", streamErr),
+				rawAccumulated.String(),
+			)
 		}
 
 		// Parse the final result — let parseFinal decide whether an empty
@@ -842,7 +875,12 @@ func RunStreamOrchestration(
 
 		finalResult, parseErr := parseFinal(ctx, parseableAccumulated.String())
 		if parseErr != nil {
-			return nil, "", "", wrapOutputParse(fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr))
+			// Same raw-carrying wrap as the bedrock final-parse site
+			// — the outer emission extracts via rawFromError.
+			return nil, "", "", newRawError(
+				wrapOutputParse(fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)),
+				fullRaw,
+			)
 		}
 
 		return finalResult, fullRaw, fullReasoning, nil
@@ -1099,7 +1137,15 @@ func RunStreamOrchestration(
 
 	if err != nil && ctx.Err() == nil {
 		// Emit error result (skip if context was cancelled — cancellation is not an error)
-		r := newResult(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+		//
+		// Per #256: failing attempts wrap their error with
+		// newRawError(err, accumulator.String()) at the return site so
+		// the accumulator's raw text survives retry.Execute / fallback
+		// boundaries. rawFromError walks the chain (errors.As) and
+		// returns "" when no wrapper is present — the worker bridge's
+		// mergeRawDetail no-ops on empty raw, matching the omitempty
+		// contract on details.raw.
+		r := newResult(bamlutils.StreamResultKindError, nil, nil, rawFromError(err), "", err, false)
 		select {
 		case out <- r:
 		case <-ctx.Done():

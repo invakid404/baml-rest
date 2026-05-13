@@ -269,3 +269,162 @@ func TestLegacyClassification_ParseEndpointGarbage(t *testing.T) {
 		}
 	})
 }
+
+// requireBuildRequestMode skips the calling test when the shared
+// TestEnv is NOT running BuildRequest. Inverse of requireLegacyMode —
+// pairs the legacy classifier coverage above with BuildRequest-path
+// coverage so the details.raw contract (#256) has end-to-end pinning
+// on both orchestrators.
+func requireBuildRequestMode(t *testing.T) {
+	t.Helper()
+	if !ActuallyBuildRequest() {
+		t.Skip("BuildRequest classifier test; requires BAML_REST_USE_BUILD_REQUEST=true on BAML >= 0.219")
+	}
+}
+
+// TestBuildRequestClassification_ParseErrorFromProseCallWithRaw is the
+// BuildRequest analogue of TestLegacyClassification_ParseErrorFromProseCallWithRaw
+// above. Per #256, accumulated raw is threaded through the BuildRequest
+// non-streaming orchestrator's final-parse failure site so /call-with-raw
+// error envelopes carry details.raw the same as the legacy path.
+//
+// Asserts the new contract: when the BuildRequest non-streaming path
+// fails at final-parse on prose that doesn't fit the schema, the error
+// envelope carries ErrorCode=parse_error AND details.raw with the
+// unparseable prose verbatim — driven by the rawCarryingError wrap at
+// the parseFinal failure site in bamlutils/buildrequest/call_orchestrator.go.
+func TestBuildRequestClassification_ParseErrorFromProseCallWithRaw(t *testing.T) {
+	requireBuildRequestMode(t)
+	requireLegacyParseEnvelope(t)
+	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		const unparseable = "I'm sorry — I cannot satisfy that request."
+		opts := setupNonStreamingScenario(t, "buildrequest-parse-error-prose-raw", unparseable)
+
+		resp, err := client.CallWithRaw(ctx, testutil.CallRequest{
+			Method:  "GetPerson",
+			Input:   map[string]any{"description": "Some person"},
+			Options: opts,
+		})
+		if err != nil {
+			t.Fatalf("CallWithRaw failed: %v", err)
+		}
+
+		if resp.StatusCode != 500 {
+			t.Fatalf("expected status 500, got %d: %s", resp.StatusCode, resp.Error)
+		}
+		if resp.ErrorCode != "parse_error" {
+			t.Errorf("ErrorCode: got %q, want parse_error; body=%s", resp.ErrorCode, resp.Error)
+		}
+		if len(resp.ErrorDetails) == 0 {
+			t.Fatalf("ErrorDetails missing — expected details.raw with the unparseable prose")
+		}
+		var details struct {
+			Raw string `json:"raw"`
+		}
+		if err := json.Unmarshal(resp.ErrorDetails, &details); err != nil {
+			t.Fatalf("failed to unmarshal ErrorDetails %s: %v", resp.ErrorDetails, err)
+		}
+		if details.Raw == "" {
+			t.Fatalf("ErrorDetails.raw is empty; expected the unparseable prose (raw details=%s)",
+				resp.ErrorDetails)
+		}
+		if !strings.Contains(details.Raw, unparseable) {
+			t.Errorf("ErrorDetails.raw must contain the mock prose %q; got %q",
+				unparseable, details.Raw)
+		}
+	})
+}
+
+// TestBuildRequestClassification_ParseErrorFromProseStreamWithRaw pins
+// the streaming analogue of the call-with-raw test above. The
+// streaming BuildRequest orchestrator wraps its final-parse failure
+// with newRawError(parseErr, rawAccumulated.String()) at the
+// failure site so the worker bridge can attach details.raw to the
+// terminal error event the SSE/NDJSON client observes.
+//
+// The error event payload is {"error":..., "code":..., "details":...}
+// — same shape as the unary endpoint's body — so the assertion shape
+// matches the call-with-raw test above except we read it from a
+// stream event rather than an HTTP body.
+func TestBuildRequestClassification_ParseErrorFromProseStreamWithRaw(t *testing.T) {
+	requireBuildRequestMode(t)
+	requireLegacyParseEnvelope(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const unparseable = "Sorry — your question is outside my training."
+	opts := setupScenario(t, "buildrequest-parse-error-prose-stream-raw", unparseable)
+
+	events, errs := BAMLClient.StreamWithRaw(ctx, testutil.CallRequest{
+		Method:  "GetPerson",
+		Input:   map[string]any{"description": "Anyone"},
+		Options: opts,
+	})
+
+	// Collect events until the channel closes or an error arrives.
+	var errEvent *testutil.StreamEvent
+	for events != nil || errs != nil {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
+			if ev.IsError() {
+				// Copy so the value survives the loop iteration —
+				// IsError frames are terminal but the channel is
+				// drained until close.
+				e := ev
+				errEvent = &e
+			}
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+				continue
+			}
+			if err != nil {
+				t.Fatalf("stream errored: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("ctx cancelled before terminal error: %v", ctx.Err())
+		}
+	}
+
+	if errEvent == nil {
+		t.Fatal("expected a terminal error event from the parse failure")
+	}
+
+	// The error frame's Data field is the JSON envelope
+	// `{"error":..., "code":..., "details":...}` (see
+	// SSEStreamWriterPublisher.PublishError / NDJSONEvent).
+	var payload struct {
+		Error   string          `json:"error"`
+		Code    string          `json:"code"`
+		Details json.RawMessage `json:"details"`
+	}
+	if err := json.Unmarshal(errEvent.Data, &payload); err != nil {
+		t.Fatalf("failed to unmarshal error event Data %s: %v", errEvent.Data, err)
+	}
+	if payload.Code != "parse_error" {
+		t.Errorf("error event code: got %q, want parse_error; data=%s", payload.Code, errEvent.Data)
+	}
+	if len(payload.Details) == 0 {
+		t.Fatalf("error event missing details.raw; data=%s", errEvent.Data)
+	}
+	var details struct {
+		Raw string `json:"raw"`
+	}
+	if err := json.Unmarshal(payload.Details, &details); err != nil {
+		t.Fatalf("failed to unmarshal error event details %s: %v", payload.Details, err)
+	}
+	if details.Raw == "" {
+		t.Fatalf("error event details.raw is empty; details=%s", payload.Details)
+	}
+	if !strings.Contains(details.Raw, unparseable) {
+		t.Errorf("details.raw must contain the mock prose %q; got %q", unparseable, details.Raw)
+	}
+}
