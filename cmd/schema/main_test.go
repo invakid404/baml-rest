@@ -199,6 +199,80 @@ func TestPostRequestBodyRequired(t *testing.T) {
 	}
 }
 
+// TestErrorDetailsSchema pins #259: the apierror `details` field on
+// both __ErrorResponse__ and __StreamErrorEvent__ must resolve to a
+// named __ErrorDetails__ component declaring each known detail key as
+// a typed optional property, while retaining additionalProperties:true
+// for forward compatibility. Downstream codegen (Orval/etc.) relies on
+// this shape to produce typed access on details.raw, details.body,
+// details.status_code, ... instead of the prior {[k:string]:unknown}.
+func TestErrorDetailsSchema(t *testing.T) {
+	baml_rest.InitBamlRuntime()
+	doc := generateOpenAPISchema()
+	if doc == nil || doc.Components == nil {
+		t.Fatalf("generated schema has no components")
+	}
+	schemas := doc.Components.Schemas
+
+	ref, ok := schemas["__ErrorDetails__"]
+	if !ok || ref == nil || ref.Value == nil {
+		t.Fatalf("__ErrorDetails__ component not registered")
+	}
+	schema := ref.Value
+
+	if schema.Type == nil || !schema.Type.Is(openapi3.TypeObject) {
+		t.Errorf("__ErrorDetails__.type expected object, got %v", schema.Type)
+	}
+	if schema.AdditionalProperties.Has == nil || !*schema.AdditionalProperties.Has {
+		t.Errorf("__ErrorDetails__.additionalProperties expected true (forward compatibility), got %+v", schema.AdditionalProperties)
+	}
+	if len(schema.Required) != 0 {
+		t.Errorf("__ErrorDetails__.required expected empty (every detail field is optional), got %v", schema.Required)
+	}
+
+	expectedFields := map[string]string{
+		"raw":               openapi3.TypeString,
+		"body":              openapi3.TypeString,
+		"status_code":       openapi3.TypeInteger,
+		"client_name":       openapi3.TypeString,
+		"error_code":        openapi3.TypeString,
+		"error_message":     openapi3.TypeString,
+		"exception_type":    openapi3.TypeString,
+		"exception_message": openapi3.TypeString,
+		"stacktrace":        openapi3.TypeString,
+	}
+	for name, wantType := range expectedFields {
+		prop, ok := schema.Properties[name]
+		if !ok || prop == nil || prop.Value == nil {
+			t.Errorf("__ErrorDetails__.properties missing %q", name)
+			continue
+		}
+		if prop.Value.Type == nil || !prop.Value.Type.Is(wantType) {
+			t.Errorf("__ErrorDetails__.properties.%s expected type %s, got %v", name, wantType, prop.Value.Type)
+		}
+		if strings.TrimSpace(prop.Value.Description) == "" {
+			t.Errorf("__ErrorDetails__.properties.%s expected non-empty description", name)
+		}
+	}
+
+	const wantRef = "#/components/schemas/__ErrorDetails__"
+	for _, parent := range []string{"__ErrorResponse__", "__StreamErrorEvent__"} {
+		t.Run(parent+".details ref", func(t *testing.T) {
+			parentRef, ok := schemas[parent]
+			if !ok || parentRef == nil || parentRef.Value == nil {
+				t.Fatalf("%s component not registered", parent)
+			}
+			details, ok := parentRef.Value.Properties["details"]
+			if !ok || details == nil {
+				t.Fatalf("%s.properties.details missing", parent)
+			}
+			if details.Ref != wantRef {
+				t.Errorf("%s.properties.details expected $ref %q, got %q (value=%+v)", parent, wantRef, details.Ref, details.Value)
+			}
+		})
+	}
+}
+
 // isNullable reports whether a SchemaRef carries explicit nullability —
 // either inline Nullable=true on its value, or the allOf+nullable wrap
 // emitted for $ref pointers.

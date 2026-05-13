@@ -499,16 +499,46 @@ func generateOpenAPISchema() *openapi3.T {
 			},
 		}
 	}
-	errorDetailsSchema := func() *openapi3.SchemaRef {
+	stringDetail := func(desc string) *openapi3.SchemaRef {
 		return &openapi3.SchemaRef{
 			Value: &openapi3.Schema{
-				Type:        &openapi3.Types{openapi3.TypeObject},
-				Description: "Optional structured context. May carry {\"stacktrace\": \"...\"} on worker panics, or worker-supplied diagnostic fields when available. Absent when no structured details exist.",
-				AdditionalProperties: openapi3.AdditionalProperties{
-					Has: boolPtr(true),
-				},
+				Type:        &openapi3.Types{openapi3.TypeString},
+				Description: desc,
 			},
 		}
+	}
+	integerDetail := func(desc string) *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{
+			Value: &openapi3.Schema{
+				Type:        &openapi3.Types{openapi3.TypeInteger},
+				Description: desc,
+			},
+		}
+	}
+	errorDetailsSchemaName := "__ErrorDetails__"
+	schemas[errorDetailsSchemaName] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:        &openapi3.Types{openapi3.TypeObject},
+			Description: "Optional structured context for error responses. Known fields are typed; additional fields may appear for forward compatibility. May carry {\"stacktrace\": \"...\"} on worker panics, or worker-supplied diagnostic fields when available. Absent when no structured details exist.",
+			Properties: openapi3.Schemas{
+				"raw":               stringDetail("Accumulated raw model output available when a call/stream failed after receiving text."),
+				"body":              stringDetail("Upstream provider response body or legacy provider-error body."),
+				"status_code":       integerDetail("Upstream provider HTTP status code when known."),
+				"client_name":       stringDetail("Legacy BAML client name parsed from provider-error envelopes."),
+				"error_code":        stringDetail("AWS event-stream transport error code."),
+				"error_message":     stringDetail("AWS event-stream transport error message."),
+				"exception_type":    stringDetail("AWS Bedrock modeled exception type."),
+				"exception_message": stringDetail("AWS Bedrock modeled exception message."),
+				"stacktrace":        stringDetail("Worker panic stacktrace when no structured details payload was supplied."),
+			},
+			AdditionalProperties: openapi3.AdditionalProperties{
+				Has: boolPtr(true),
+			},
+		},
+	}
+	errorDetailsRefPath := fmt.Sprintf("#/components/schemas/%s", errorDetailsSchemaName)
+	errorDetailsSchema := func() *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{Ref: errorDetailsRefPath}
 	}
 
 	streamErrorEventSchemaName := "__StreamErrorEvent__"
