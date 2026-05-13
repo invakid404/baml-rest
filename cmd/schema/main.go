@@ -674,17 +674,9 @@ func generateOpenAPISchema() *openapi3.T {
 		paths.Set(path, &openapi3.PathItem{
 			Post: &openapi3.Operation{
 				OperationID: methodName,
-				RequestBody: &openapi3.RequestBodyRef{
-					Value: &openapi3.RequestBody{
-						Content: map[string]*openapi3.MediaType{
-							"application/json": {
-								Schema: &openapi3.SchemaRef{
-									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
-								},
-							},
-						},
-					},
-				},
+				RequestBody: jsonRequestBody(&openapi3.SchemaRef{
+					Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
+				}),
 				Responses: responses,
 			},
 		})
@@ -752,17 +744,9 @@ func generateOpenAPISchema() *openapi3.T {
 		paths.Set(rawPath, &openapi3.PathItem{
 			Post: &openapi3.Operation{
 				OperationID: fmt.Sprintf("%sWithRaw", methodName),
-				RequestBody: &openapi3.RequestBodyRef{
-					Value: &openapi3.RequestBody{
-						Content: map[string]*openapi3.MediaType{
-							"application/json": {
-								Schema: &openapi3.SchemaRef{
-									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
-								},
-							},
-						},
-					},
-				},
+				RequestBody: jsonRequestBody(&openapi3.SchemaRef{
+					Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
+				}),
 				Responses: rawResponses,
 			},
 		})
@@ -845,17 +829,9 @@ func generateOpenAPISchema() *openapi3.T {
 					"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
 					"Events have type 'data' for partial results (fields may be null), 'final' for the complete validated result, " +
 					"'heartbeat' for keepalive during idle periods (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
-				RequestBody: &openapi3.RequestBodyRef{
-					Value: &openapi3.RequestBody{
-						Content: map[string]*openapi3.MediaType{
-							"application/json": {
-								Schema: &openapi3.SchemaRef{
-									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
-								},
-							},
-						},
-					},
-				},
+				RequestBody: jsonRequestBody(&openapi3.SchemaRef{
+					Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
+				}),
 				Responses: streamResponses,
 			},
 		})
@@ -922,17 +898,9 @@ func generateOpenAPISchema() *openapi3.T {
 					"Events have type 'data' for partial results (fields may be null, includes 'raw' field and an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true), " +
 					"'final' for the complete validated result (also includes full 'raw' output and optional 'reasoning' when __baml_options__.include_reasoning is true), " +
 					"'heartbeat' for keepalive during idle periods (clients should ignore it), 'reset' if the stream restarts due to a retry, or 'error' for failures.",
-				RequestBody: &openapi3.RequestBodyRef{
-					Value: &openapi3.RequestBody{
-						Content: map[string]*openapi3.MediaType{
-							"application/json": {
-								Schema: &openapi3.SchemaRef{
-									Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
-								},
-							},
-						},
-					},
-				},
+				RequestBody: jsonRequestBody(&openapi3.SchemaRef{
+					Ref: fmt.Sprintf("#/components/schemas/%s", inputSchemaName),
+				}),
 				Responses: streamWithRawResponses,
 			},
 		})
@@ -1594,17 +1562,9 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				"The output_schema defines what fields the LLM should return. " +
 				"Messages support both plain text (with {output_format} placeholder) and " +
 				"multi-part content with media (images, audio, PDF, video) and explicit output_format parts.",
-			RequestBody: &openapi3.RequestBodyRef{
-				Value: &openapi3.RequestBody{
-					Content: map[string]*openapi3.MediaType{
-						"application/json": {
-							Schema: &openapi3.SchemaRef{
-								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
-							},
-						},
-					},
-				},
-			},
+			RequestBody: jsonRequestBody(&openapi3.SchemaRef{
+				Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
+			}),
 			Responses: callResponses,
 		},
 	})
@@ -1673,17 +1633,9 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			OperationID: "dynamicCallWithRaw",
 			Summary:     "Call dynamic prompt with raw output",
 			Description: "Execute a dynamic prompt and return both the parsed result and raw LLM output, plus an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true.",
-			RequestBody: &openapi3.RequestBodyRef{
-				Value: &openapi3.RequestBody{
-					Content: map[string]*openapi3.MediaType{
-						"application/json": {
-							Schema: &openapi3.SchemaRef{
-								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
-							},
-						},
-					},
-				},
-			},
+			RequestBody: jsonRequestBody(&openapi3.SchemaRef{
+				Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
+			}),
 			Responses: callWithRawResponses,
 		},
 	})
@@ -1759,17 +1711,9 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				"Use `Accept: application/x-ndjson` header for typed NDJSON responses (recommended for generated clients). " +
 				"Without an Accept header, returns Server-Sent Events (text/event-stream) by default. " +
 				"NDJSON may include 'heartbeat' events during idle periods (including before the first data event); clients should ignore them.",
-			RequestBody: &openapi3.RequestBodyRef{
-				Value: &openapi3.RequestBody{
-					Content: map[string]*openapi3.MediaType{
-						"application/json": {
-							Schema: &openapi3.SchemaRef{
-								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
-							},
-						},
-					},
-				},
-			},
+			RequestBody: jsonRequestBody(&openapi3.SchemaRef{
+				Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
+			}),
 			Responses: streamResponses,
 		},
 	})
@@ -1830,17 +1774,9 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			Summary:     "Stream dynamic prompt results with raw output",
 			Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available, plus an optional 'reasoning' field on data/final events populated only when __baml_options__.include_reasoning is true. " +
 				"NDJSON may include 'heartbeat' events during idle periods (including before the first data event); clients should ignore them.",
-			RequestBody: &openapi3.RequestBodyRef{
-				Value: &openapi3.RequestBody{
-					Content: map[string]*openapi3.MediaType{
-						"application/json": {
-							Schema: &openapi3.SchemaRef{
-								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
-							},
-						},
-					},
-				},
-			},
+			RequestBody: jsonRequestBody(&openapi3.SchemaRef{
+				Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
+			}),
 			Responses: streamWithRawResponses,
 		},
 	})
@@ -1887,17 +1823,9 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 			OperationID: "dynamicParse",
 			Summary:     "Parse raw LLM output with dynamic schema",
 			Description: "Parse raw LLM output text using the provided output schema definition.",
-			RequestBody: &openapi3.RequestBodyRef{
-				Value: &openapi3.RequestBody{
-					Content: map[string]*openapi3.MediaType{
-						"application/json": {
-							Schema: &openapi3.SchemaRef{
-								Ref: fmt.Sprintf("#/components/schemas/%s", dynamicParseInputSchemaName),
-							},
-						},
-					},
-				},
-			},
+			RequestBody: jsonRequestBody(&openapi3.SchemaRef{
+				Ref: fmt.Sprintf("#/components/schemas/%s", dynamicParseInputSchemaName),
+			}),
 			Responses: parseResponses,
 		},
 	})
@@ -2133,6 +2061,22 @@ func parseJSONTag(tag, fieldName string) (name string, omitEmpty, skip bool) {
 		}
 	}
 	return
+}
+
+// jsonRequestBody builds a RequestBodyRef for an application/json POST
+// body with Required:true. All generated POST endpoints take a body the
+// server semantically requires, but omitting Required:true would emit
+// requestBody.required = false (the OpenAPI 3.0 default), letting
+// downstream client generators mark the body parameter as optional.
+func jsonRequestBody(schemaRef *openapi3.SchemaRef) *openapi3.RequestBodyRef {
+	return &openapi3.RequestBodyRef{
+		Value: &openapi3.RequestBody{
+			Required: true,
+			Content: map[string]*openapi3.MediaType{
+				"application/json": {Schema: schemaRef},
+			},
+		},
+	}
 }
 
 // makeNullableRef returns a SchemaRef equivalent to ref but with
