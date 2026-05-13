@@ -2070,3 +2070,431 @@ func resolveBedrockOptionValueForTest(v bedrockOptionValue) (string, bool) {
 	}
 	return "", false
 }
+
+// isSetBedrockOptionValueForTest mirrors the runtime IsSet() method
+// shape emitBedrockOptionTypes generates: presence is decided by
+// Provenance alone, NOT by Resolve()'s second return. This pins the
+// declared-vs-resolved separation that the codegen relies on for
+// declared-but-env-unset credentials to enter the resolver's static
+// branch (and error there) rather than silently fall through to the
+// default AWS credential chain.
+func isSetBedrockOptionValueForTest(v bedrockOptionValue) bool {
+	return v.Provenance != ""
+}
+
+// TestBedrockOptionValue_IsSet pins the declared-vs-resolved boundary.
+// A declared env.X reference whose env var is unset at runtime must
+// still report IsSet()=true so the codegen-emitted Present flag enters
+// the resolver's static-branch validation. If a future refactor were
+// to fold IsSet into Resolve()'s ok, this test fails immediately.
+func TestBedrockOptionValue_IsSet(t *testing.T) {
+	cases := []struct {
+		name string
+		v    bedrockOptionValue
+		want bool
+	}{
+		{
+			name: "literal is declared",
+			v:    bedrockOptionValue{Literal: "x", Provenance: "literal"},
+			want: true,
+		},
+		{
+			name: "env ref is declared even when env var is unset",
+			v:    bedrockOptionValue{EnvVar: "NEVER_SET_DEFINITELY", Provenance: "env"},
+			want: true,
+		},
+		{
+			name: "empty literal is still declared (provenance != \"\")",
+			v:    bedrockOptionValue{Provenance: "literal"},
+			want: true,
+		},
+		{
+			name: "zero value is not declared",
+			v:    bedrockOptionValue{},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSetBedrockOptionValueForTest(tc.v); got != tc.want {
+				t.Errorf("IsSet(%+v) = %v, want %v", tc.v, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBedrockOptionValue_IsSetVsResolve_EnvUnset is the load-bearing
+// pin for the #263 sign-off fix. A declared env.X reference whose
+// env var is unset at runtime must report:
+//   - IsSet() == true   (the field was declared in .baml)
+//   - Resolve() == ("", false)  (the value did not resolve)
+//
+// Codegen drives Present from IsSet(), so the resolver's static branch
+// is entered (Present=true, Value=""); the existing "resolved to empty"
+// error then fires. Driving Present from Resolve()'s ok would collapse
+// declared-but-env-unset into never-declared and silently fall through
+// to the default AWS credential chain — a security-significant
+// regression. This test pins both halves of that distinction.
+func TestBedrockOptionValue_IsSetVsResolve_EnvUnset(t *testing.T) {
+	v := bedrockOptionValue{EnvVar: "BAML_REST_TEST_NEVER_SET_VAR", Provenance: "env"}
+
+	if !isSetBedrockOptionValueForTest(v) {
+		t.Error("IsSet() must be true for a declared env.X reference, regardless of env-var resolution")
+	}
+	value, ok := resolveBedrockOptionValueForTest(v)
+	if ok {
+		t.Errorf("Resolve() ok = true for unset env.X ref; want false (got value=%q)", value)
+	}
+	if value != "" {
+		t.Errorf("Resolve() value = %q for unset env.X ref; want empty", value)
+	}
+}
+
+// TestParseClientBlock_BedrockStaticCreds_Literal pins the parser
+// extension that captures literal-provenance values for the four
+// credential selector keys (#254 item 2). Asserts that all four
+// destination fields land under Credentials and preserve provenance.
+func TestParseClientBlock_BedrockStaticCreds_Literal(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> StaticCredsBedrock {
+    provider aws-bedrock
+    options {
+        access_key_id     "STATIC_TEST_ACCESS_KEY"
+        secret_access_key "STATIC_TEST_SECRET_KEY"
+        session_token     "STATIC_TEST_SESSION_TOKEN"
+        region            "us-east-1"
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	got, ok := cfg.bedrockClientOptions["StaticCredsBedrock"]
+	if !ok {
+		t.Fatalf("bedrockClientOptions[StaticCredsBedrock] missing")
+	}
+	if got.Credentials.AccessKeyID.Provenance != "literal" {
+		t.Errorf("AccessKeyID.Provenance = %q, want literal", got.Credentials.AccessKeyID.Provenance)
+	}
+	if got.Credentials.AccessKeyID.Literal != "STATIC_TEST_ACCESS_KEY" {
+		t.Errorf("AccessKeyID.Literal = %q, want STATIC_TEST_ACCESS_KEY", got.Credentials.AccessKeyID.Literal)
+	}
+	if got.Credentials.SecretAccessKey.Literal != "STATIC_TEST_SECRET_KEY" {
+		t.Errorf("SecretAccessKey.Literal = %q, want STATIC_TEST_SECRET_KEY", got.Credentials.SecretAccessKey.Literal)
+	}
+	if got.Credentials.SessionToken.Literal != "STATIC_TEST_SESSION_TOKEN" {
+		t.Errorf("SessionToken.Literal = %q, want STATIC_TEST_SESSION_TOKEN", got.Credentials.SessionToken.Literal)
+	}
+	if got.Credentials.Profile.Provenance != "" {
+		t.Errorf("Profile.Provenance = %q, want empty (only static keys set)", got.Credentials.Profile.Provenance)
+	}
+	if got.Region.Literal != "us-east-1" {
+		t.Errorf("Region.Literal = %q, want us-east-1 (sibling field must not be perturbed)", got.Region.Literal)
+	}
+}
+
+// TestParseClientBlock_BedrockStaticCreds_EnvRef pins the env-reference
+// provenance branch for credential selectors. Each env.X reference is
+// resolved at request-build time, not at parse, so the parser captures
+// the env var name.
+func TestParseClientBlock_BedrockStaticCreds_EnvRef(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> EnvCredsBedrock {
+    provider aws-bedrock
+    options {
+        access_key_id     env.AWS_ACCESS_KEY_ID
+        secret_access_key env.AWS_SECRET_ACCESS_KEY
+        session_token     env.AWS_SESSION_TOKEN
+        profile           env.AWS_PROFILE
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	got, ok := cfg.bedrockClientOptions["EnvCredsBedrock"]
+	if !ok {
+		t.Fatalf("bedrockClientOptions[EnvCredsBedrock] missing")
+	}
+	if got.Credentials.AccessKeyID.EnvVar != "AWS_ACCESS_KEY_ID" {
+		t.Errorf("AccessKeyID.EnvVar = %q, want AWS_ACCESS_KEY_ID", got.Credentials.AccessKeyID.EnvVar)
+	}
+	if got.Credentials.AccessKeyID.Provenance != "env" {
+		t.Errorf("AccessKeyID.Provenance = %q, want env", got.Credentials.AccessKeyID.Provenance)
+	}
+	if got.Credentials.SecretAccessKey.EnvVar != "AWS_SECRET_ACCESS_KEY" {
+		t.Errorf("SecretAccessKey.EnvVar = %q, want AWS_SECRET_ACCESS_KEY", got.Credentials.SecretAccessKey.EnvVar)
+	}
+	if got.Credentials.SessionToken.EnvVar != "AWS_SESSION_TOKEN" {
+		t.Errorf("SessionToken.EnvVar = %q, want AWS_SESSION_TOKEN", got.Credentials.SessionToken.EnvVar)
+	}
+	if got.Credentials.Profile.EnvVar != "AWS_PROFILE" {
+		t.Errorf("Profile.EnvVar = %q, want AWS_PROFILE", got.Credentials.Profile.EnvVar)
+	}
+}
+
+// TestParseClientBlock_BedrockStaticCreds_MixedLiteralAndEnv asserts a
+// realistic mixed shape: a literal access_key_id alongside an env-ref
+// secret_access_key (or vice versa). Each field's provenance must be
+// captured independently.
+func TestParseClientBlock_BedrockStaticCreds_MixedLiteralAndEnv(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> MixedCredsBedrock {
+    provider aws-bedrock
+    options {
+        access_key_id     "STATIC_TEST_ACCESS_KEY"
+        secret_access_key env.AWS_SECRET_ACCESS_KEY
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	got := cfg.bedrockClientOptions["MixedCredsBedrock"]
+	if got.Credentials.AccessKeyID.Provenance != "literal" {
+		t.Errorf("AccessKeyID.Provenance = %q, want literal", got.Credentials.AccessKeyID.Provenance)
+	}
+	if got.Credentials.AccessKeyID.Literal != "STATIC_TEST_ACCESS_KEY" {
+		t.Errorf("AccessKeyID.Literal = %q, want STATIC_TEST_ACCESS_KEY", got.Credentials.AccessKeyID.Literal)
+	}
+	if got.Credentials.SecretAccessKey.Provenance != "env" {
+		t.Errorf("SecretAccessKey.Provenance = %q, want env", got.Credentials.SecretAccessKey.Provenance)
+	}
+	if got.Credentials.SecretAccessKey.EnvVar != "AWS_SECRET_ACCESS_KEY" {
+		t.Errorf("SecretAccessKey.EnvVar = %q, want AWS_SECRET_ACCESS_KEY", got.Credentials.SecretAccessKey.EnvVar)
+	}
+}
+
+// TestParseClientBlock_BedrockStaticCreds_ProfileOnly pins that a
+// profile-only declaration produces an entry with only the Profile slot
+// populated; the static-key slots stay zero.
+func TestParseClientBlock_BedrockStaticCreds_ProfileOnly(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> ProfileBedrock {
+    provider aws-bedrock
+    options {
+        profile "ai-dev"
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	got, ok := cfg.bedrockClientOptions["ProfileBedrock"]
+	if !ok {
+		t.Fatalf("profile-only client must produce an entry")
+	}
+	if got.Credentials.Profile.Provenance != "literal" {
+		t.Errorf("Profile.Provenance = %q, want literal", got.Credentials.Profile.Provenance)
+	}
+	if got.Credentials.Profile.Literal != "ai-dev" {
+		t.Errorf("Profile.Literal = %q, want ai-dev", got.Credentials.Profile.Literal)
+	}
+	if got.Credentials.AccessKeyID.Provenance != "" {
+		t.Errorf("AccessKeyID.Provenance = %q, want empty (only profile declared)", got.Credentials.AccessKeyID.Provenance)
+	}
+}
+
+// TestParseClientBlock_BedrockStaticCreds_ProfilePlusStatic_BothCaptured
+// pins that the parser is permissive: a client declaring both profile
+// AND static keys captures both. Resolver picks static at runtime.
+// Keeping the parser permissive matches BAML's own posture
+// (engine/.../aws_client.rs:587-650) and avoids parser-level errors on
+// a configuration that is unambiguous at resolve time.
+func TestParseClientBlock_BedrockStaticCreds_ProfilePlusStatic_BothCaptured(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> BothCredsBedrock {
+    provider aws-bedrock
+    options {
+        access_key_id     "STATIC_TEST_ACCESS_KEY"
+        secret_access_key "STATIC_TEST_SECRET_KEY"
+        profile           "ai-dev"
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	got := cfg.bedrockClientOptions["BothCredsBedrock"]
+	if got.Credentials.AccessKeyID.Literal != "STATIC_TEST_ACCESS_KEY" {
+		t.Errorf("AccessKeyID.Literal = %q, want STATIC_TEST_ACCESS_KEY", got.Credentials.AccessKeyID.Literal)
+	}
+	if got.Credentials.Profile.Literal != "ai-dev" {
+		t.Errorf("Profile.Literal = %q, want ai-dev", got.Credentials.Profile.Literal)
+	}
+}
+
+// TestParseClientBlock_BedrockStaticCreds_NonBedrockClient_Recorded
+// pins that the provider-filter split applies to credential selectors
+// too: the parser records candidate entries for any client declaring
+// the keys; only the emission step filters to aws-bedrock. Mirrors the
+// existing endpoint_url/region parser-permissive behavior so a future
+// non-bedrock provider sharing a key cannot accidentally leak into the
+// generated BedrockClientOptionsByName map (the emission filter is the
+// boundary).
+func TestParseClientBlock_BedrockStaticCreds_NonBedrockClient_Recorded(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> NotBedrockCreds {
+    provider openai
+    options {
+        access_key_id     "should-not-emit"
+        secret_access_key "should-not-emit"
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	if _, ok := cfg.bedrockClientOptions["NotBedrockCreds"]; !ok {
+		t.Fatal("parser must record candidate entries regardless of provider; emission filter is downstream")
+	}
+}
+
+// TestParseClientBlock_BedrockStaticCreds_StaleEntryCleared pins that
+// removing all credential fields between regen runs clears the prior
+// entry. Mirrors the existing endpoint_url stale-state test for the
+// new credential slots.
+func TestParseClientBlock_BedrockStaticCreds_StaleEntryCleared(t *testing.T) {
+	cfg := newTestBamlConfig()
+	parseBamlFile(cfg, `
+client<llm> CredsBedrock {
+    provider aws-bedrock
+    options {
+        access_key_id     "STATIC_TEST_ACCESS_KEY"
+        secret_access_key "STATIC_TEST_SECRET_KEY"
+    }
+}
+`)
+	if _, ok := cfg.bedrockClientOptions["CredsBedrock"]; !ok {
+		t.Fatal("first parse must populate the entry")
+	}
+	parseBamlFile(cfg, `
+client<llm> CredsBedrock {
+    provider aws-bedrock
+    options {
+        model "anthropic.claude-3-sonnet-20240229-v1:0"
+    }
+}
+`)
+	if _, ok := cfg.bedrockClientOptions["CredsBedrock"]; ok {
+		t.Errorf("re-parse without credential fields must clear the stale entry; got %+v", cfg.bedrockClientOptions["CredsBedrock"])
+	}
+}
+
+// TestExtractBedrockOptionValue_CredentialKeys exercises the parser
+// helper for each new credential key in isolation, mirroring the
+// existing endpoint_url / region table test.
+func TestExtractBedrockOptionValue_CredentialKeys(t *testing.T) {
+	cases := []struct {
+		name     string
+		line     string
+		key      string
+		wantOK   bool
+		wantLit  string
+		wantEnv  string
+		wantProv string
+	}{
+		{
+			name:     "access_key_id literal",
+			line:     `access_key_id "STATIC_TEST_ACCESS_KEY"`,
+			key:      "access_key_id",
+			wantOK:   true,
+			wantLit:  "STATIC_TEST_ACCESS_KEY",
+			wantProv: "literal",
+		},
+		{
+			name:     "access_key_id env",
+			line:     `access_key_id env.AWS_ACCESS_KEY_ID`,
+			key:      "access_key_id",
+			wantOK:   true,
+			wantEnv:  "AWS_ACCESS_KEY_ID",
+			wantProv: "env",
+		},
+		{
+			name:     "secret_access_key literal",
+			line:     `secret_access_key "STATIC_TEST_SECRET_KEY"`,
+			key:      "secret_access_key",
+			wantOK:   true,
+			wantLit:  "STATIC_TEST_SECRET_KEY",
+			wantProv: "literal",
+		},
+		{
+			name:     "secret_access_key env",
+			line:     `secret_access_key env.AWS_SECRET_ACCESS_KEY`,
+			key:      "secret_access_key",
+			wantOK:   true,
+			wantEnv:  "AWS_SECRET_ACCESS_KEY",
+			wantProv: "env",
+		},
+		{
+			name:     "session_token literal",
+			line:     `session_token "STATIC_TEST_SESSION_TOKEN"`,
+			key:      "session_token",
+			wantOK:   true,
+			wantLit:  "STATIC_TEST_SESSION_TOKEN",
+			wantProv: "literal",
+		},
+		{
+			name:     "profile literal",
+			line:     `profile "ai-dev"`,
+			key:      "profile",
+			wantOK:   true,
+			wantLit:  "ai-dev",
+			wantProv: "literal",
+		},
+		{
+			name:     "profile env",
+			line:     `profile env.AWS_PROFILE`,
+			key:      "profile",
+			wantOK:   true,
+			wantEnv:  "AWS_PROFILE",
+			wantProv: "env",
+		},
+		{
+			name:   "absent credential key on this line",
+			line:   `region "us-east-1"`,
+			key:    "access_key_id",
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractBedrockOptionValue(tc.line, tc.key)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (got %+v)", ok, tc.wantOK, got)
+			}
+			if !tc.wantOK {
+				return
+			}
+			if got.Literal != tc.wantLit {
+				t.Errorf("Literal = %q, want %q", got.Literal, tc.wantLit)
+			}
+			if got.EnvVar != tc.wantEnv {
+				t.Errorf("EnvVar = %q, want %q", got.EnvVar, tc.wantEnv)
+			}
+			if got.Provenance != tc.wantProv {
+				t.Errorf("Provenance = %q, want %q", got.Provenance, tc.wantProv)
+			}
+		})
+	}
+}
+
+// TestParseClientBlock_BedrockStaticCreds_InlineSingleLine pins that
+// the inline compact options form captures credential keys correctly,
+// mirroring the existing endpoint_url inline test.
+func TestParseClientBlock_BedrockStaticCreds_InlineSingleLine(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `client<llm> InlineCreds { provider aws-bedrock options { access_key_id "STATIC_TEST_ACCESS_KEY" secret_access_key "STATIC_TEST_SECRET_KEY" } }`
+	parseBamlFile(cfg, content)
+
+	got, ok := cfg.bedrockClientOptions["InlineCreds"]
+	if !ok {
+		t.Fatalf("inline options block must produce an entry; got map: %+v", cfg.bedrockClientOptions)
+	}
+	if got.Credentials.AccessKeyID.Literal != "STATIC_TEST_ACCESS_KEY" {
+		t.Errorf("inline AccessKeyID.Literal = %q, want STATIC_TEST_ACCESS_KEY", got.Credentials.AccessKeyID.Literal)
+	}
+	if got.Credentials.SecretAccessKey.Literal != "STATIC_TEST_SECRET_KEY" {
+		t.Errorf("inline SecretAccessKey.Literal = %q, want STATIC_TEST_SECRET_KEY", got.Credentials.SecretAccessKey.Literal)
+	}
+}

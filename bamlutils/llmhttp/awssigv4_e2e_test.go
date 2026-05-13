@@ -62,7 +62,10 @@ func TestEndpointOverride_E2E_NonStreaming(t *testing.T) {
 	}
 
 	pinned := time.Date(2026, 5, 11, 12, 34, 56, 0, time.UTC)
-	if err := AttachBedrockAuthForClient(context.Background(), req, mock.URL, "us-east-1"); err != nil {
+	if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+		EndpointURL: mock.URL,
+		Region:      "us-east-1",
+	}); err != nil {
 		t.Fatalf("AttachBedrockAuthForClient: %v", err)
 	}
 	// Pin time + credentials onto the attached metadata so the
@@ -157,7 +160,10 @@ func TestEndpointOverride_E2E_Streaming(t *testing.T) {
 	req.Headers["Accept"] = AWSStreamContentType
 
 	pinned := time.Date(2026, 5, 11, 12, 34, 56, 0, time.UTC)
-	if err := AttachBedrockAuthForClient(context.Background(), req, mock.URL, "us-east-1"); err != nil {
+	if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+		EndpointURL: mock.URL,
+		Region:      "us-east-1",
+	}); err != nil {
 		t.Fatalf("AttachBedrockAuthForClient: %v", err)
 	}
 	req.AWSAuth.NowFunc = func() time.Time { return pinned }
@@ -220,7 +226,9 @@ func TestEndpointOverride_E2E_RegionFallback(t *testing.T) {
 		Headers: map[string]string{"Content-Type": "application/json"},
 		Body:    `{}`,
 	}
-	if err := AttachBedrockAuthForClient(context.Background(), req, mock.URL, ""); err != nil {
+	if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+		EndpointURL: mock.URL,
+	}); err != nil {
 		t.Fatalf("AttachBedrockAuthForClient: %v", err)
 	}
 	pinned := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
@@ -234,6 +242,150 @@ func TestEndpointOverride_E2E_RegionFallback(t *testing.T) {
 
 	if !strings.Contains(gotAuth, "/20260511/ap-southeast-2/bedrock/aws4_request") {
 		t.Errorf("Authorization scope did not pick up AWS_REGION fallback (ap-southeast-2); got: %s", gotAuth)
+	}
+}
+
+// TestStaticCreds_E2E_NonStreaming pins the full static-credentials
+// dispatch end-to-end on the non-streaming path. Mirror of
+// TestEndpointOverride_E2E_NonStreaming with one twist: credentials
+// flow from BedrockClientAuthOptions.Credentials through the resolver,
+// not via test-pinned overrides. The mock asserts the static AKID
+// appears in the wire-side Authorization credential scope AND the
+// configured session token appears in X-Amz-Security-Token — together
+// proving the resolver's static provider made it all the way to
+// signRequest and that the SDK signer's session-token copy-back hits
+// the wire.
+//
+// This is the canonical end-to-end pin for #254 item 2 (call path).
+// Mirror coverage for the streaming path lives in
+// TestStaticCreds_E2E_Streaming below.
+func TestStaticCreds_E2E_NonStreaming(t *testing.T) {
+	var (
+		gotAuth        string
+		gotSecurityTok string
+	)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotSecurityTok = r.Header.Get("X-Amz-Security-Token")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		io.WriteString(w, `{"output":{"message":{"content":[{"text":"ok"}]}}}`)
+	}))
+	defer mock.Close()
+
+	req := &Request{
+		URL:     "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-sonnet/converse",
+		Method:  "POST",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Body:    `{"messages":[{"role":"user","content":[{"text":"hi"}]}]}`,
+	}
+	if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+		ClientName:  "StaticE2EClient",
+		EndpointURL: mock.URL,
+		Region:      "us-east-1",
+		Credentials: BedrockCredentialSelector{
+			AccessKeyID:            "STATIC_TEST_ACCESS_KEY",
+			AccessKeyIDPresent:     true,
+			SecretAccessKey:        "STATIC_TEST_SECRET_KEY",
+			SecretAccessKeyPresent: true,
+			// Session token is configured here too so the
+			// non-streaming and streaming E2E tests pin the same
+			// header set — STS short-lived credentials are a
+			// realistic call-path shape, not a streaming-only
+			// shape.
+			SessionToken:        "STATIC_TEST_SESSION_TOKEN",
+			SessionTokenPresent: true,
+		},
+	}); err != nil {
+		t.Fatalf("AttachBedrockAuthForClient: %v", err)
+	}
+	pinned := time.Date(2026, 5, 11, 12, 34, 56, 0, time.UTC)
+	req.AWSAuth.NowFunc = func() time.Time { return pinned }
+
+	client := NewClient(mock.Client())
+	if _, err := client.Execute(context.Background(), req, nil); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if !strings.Contains(gotAuth, "Credential=STATIC_TEST_ACCESS_KEY/20260511/us-east-1/bedrock/aws4_request") {
+		t.Errorf("Authorization must carry static access key in credential scope; got: %s", gotAuth)
+	}
+	if gotSecurityTok != "STATIC_TEST_SESSION_TOKEN" {
+		t.Errorf("X-Amz-Security-Token on the wire = %q, want %q (session token must flow through resolver -> SigV4 -> Execute)", gotSecurityTok, "STATIC_TEST_SESSION_TOKEN")
+	}
+}
+
+// TestStaticCreds_E2E_Streaming pins the same static-credentials
+// dispatch end-to-end on the streaming path. Mirrors
+// TestEndpointOverride_E2E_Streaming but configures the credential
+// selector instead of supplying staticCreds via test-pinned override.
+// Asserts both the AKID-in-credential-scope and the session token on
+// the wire so the streaming path has call-path parity for session
+// token coverage.
+func TestStaticCreds_E2E_Streaming(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write(encodeAWSStreamFrame(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "messageStop",
+		":content-type": "application/json",
+	}, []byte(`{"stopReason":"end_turn"}`)))
+	wireBody := buf.Bytes()
+
+	var (
+		gotAuth        string
+		gotSecurityTok string
+	)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotSecurityTok = r.Header.Get("X-Amz-Security-Token")
+		w.Header().Set("Content-Type", AWSStreamContentType)
+		w.WriteHeader(200)
+		w.Write(wireBody)
+	}))
+	defer mock.Close()
+
+	req := &Request{
+		URL:     "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-sonnet/converse",
+		Method:  "POST",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Body:    `{"messages":[{"role":"user","content":[{"text":"hi"}]}]}`,
+	}
+	req.URL = strings.Replace(req.URL, "/converse", "/converse-stream", 1)
+	req.Headers["Accept"] = AWSStreamContentType
+
+	if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+		ClientName:  "StaticE2EStreamingClient",
+		EndpointURL: mock.URL,
+		Region:      "us-east-1",
+		Credentials: BedrockCredentialSelector{
+			AccessKeyID:            "STATIC_TEST_ACCESS_KEY",
+			AccessKeyIDPresent:     true,
+			SecretAccessKey:        "STATIC_TEST_SECRET_KEY",
+			SecretAccessKeyPresent: true,
+			SessionToken:           "STATIC_TEST_SESSION_TOKEN",
+			SessionTokenPresent:    true,
+		},
+	}); err != nil {
+		t.Fatalf("AttachBedrockAuthForClient: %v", err)
+	}
+	pinned := time.Date(2026, 5, 11, 12, 34, 56, 0, time.UTC)
+	req.AWSAuth.NowFunc = func() time.Time { return pinned }
+
+	client := NewClient(mock.Client())
+	resp, err := client.ExecuteAWSStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ExecuteAWSStream: %v", err)
+	}
+	defer resp.Close()
+	if _, err := resp.Events.Next(); err != nil && err != io.EOF {
+		t.Fatalf("Events.Next: %v", err)
+	}
+
+	if !strings.Contains(gotAuth, "Credential=STATIC_TEST_ACCESS_KEY/20260511/us-east-1/bedrock/aws4_request") {
+		t.Errorf("Authorization must carry static access key in credential scope on the streaming path; got: %s", gotAuth)
+	}
+	if gotSecurityTok != "STATIC_TEST_SESSION_TOKEN" {
+		t.Errorf("X-Amz-Security-Token on the streaming-path wire = %q, want %q (session token must flow through resolver -> SigV4 -> ExecuteAWSStream)", gotSecurityTok, "STATIC_TEST_SESSION_TOKEN")
 	}
 }
 
@@ -251,7 +403,7 @@ func TestEndpointOverride_E2E_DefaultEndpointFallthrough(t *testing.T) {
 		Method: "POST",
 		Body:   `{}`,
 	}
-	if err := AttachBedrockAuthForClient(context.Background(), req, "", ""); err != nil {
+	if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{}); err != nil {
 		t.Fatalf("AttachBedrockAuthForClient: %v", err)
 	}
 	if req.AWSAuth == nil {

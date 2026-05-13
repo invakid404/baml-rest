@@ -18,8 +18,9 @@ import (
 //
 // Kept as a callable target for the codegen-emission tests that pin
 // the simple URL-pattern shape; production codegen routes through
-// emitBedrockAuthDispatchFor so the explicit endpoint_url + region
-// override path is honoured when the operator has configured one.
+// emitBedrockAuthDispatchFor so the explicit endpoint_url, region, and
+// credential-selector override paths are honoured when the operator
+// has configured them.
 func emitMaybeAttachBedrockAuth(g *jen.Group) {
 	g.If(
 		jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "MaybeAttachBedrockAuth").Call(jen.Id("ctx"), jen.Id("req")),
@@ -39,23 +40,57 @@ func emitMaybeAttachBedrockAuth(g *jen.Group) {
 //	if selectedClient == "" {
 //	    selectedClient = introspected.FunctionClient["<methodName>"]
 //	}
-//	var bedrockEndpointURL, bedrockRegion string
+//	var bedrockEndpointURL string
+//	var bedrockEndpointURLPresent bool
+//	var bedrockRegion string
+//	var bedrockRegionPresent bool
+//	var bedrockCreds llmhttp.BedrockCredentialSelector
 //	if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
 //	    bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+//	    bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
 //	    bedrockRegion, _ = bedrockOpts.Region.Resolve()
+//	    bedrockRegionPresent = bedrockOpts.Region.IsSet()
+//	    bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+//	    bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+//	    // ...same shape for SecretAccessKey, SessionToken, Profile
 //	}
-//	if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, bedrockEndpointURL, bedrockRegion); authErr != nil {
+//	if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+//	    ClientName:         selectedClient,
+//	    EndpointURL:        bedrockEndpointURL,
+//	    EndpointURLPresent: bedrockEndpointURLPresent,
+//	    Region:             bedrockRegion,
+//	    RegionPresent:      bedrockRegionPresent,
+//	    Credentials:        bedrockCreds,
+//	}); authErr != nil {
 //	    return nil, authErr
 //	}
 //
-// Empty endpoint+region falls through to MaybeAttachBedrockAuth's URL-
-// pattern detection inside AttachBedrockAuthForClient, preserving the
-// default-endpoint contract for clients without an `.baml` override.
+// Nothing-declared (all Present flags false, all values empty,
+// credentials empty) falls through to MaybeAttachBedrockAuth's
+// URL-pattern detection inside AttachBedrockAuthForClient, preserving
+// the default-endpoint contract for clients without any `.baml`
+// override.
 //
 // The closure variable `clientOverride` is in scope at the postProcess
 // emission site (both buildRequestFn and buildBedrockStreamRequestFn
 // declare it as a parameter), so the resolve-name step does not need
 // any new closure plumbing.
+//
+// Presence semantics: BedrockOptionValue.IsSet() reports whether the
+// field was declared in .baml; BedrockOptionValue.Resolve() returns
+// the resolved value (which can be "" if an env.X reference does not
+// resolve). Driving the *Present flags from IsSet() — NOT from
+// Resolve()'s second return — is load-bearing for the
+// declared-but-env-unset error path: a declared env.X reference whose
+// env var is unset at runtime must enter the resolver's static branch
+// (Present=true, Value="") so the existing "resolved to empty"
+// error fires, rather than collapsing into the same shape as a
+// never-declared field which would silently fall through to the
+// default AWS chain. The same split applies to EndpointURL and
+// Region: a declared env.X for endpoint_url that resolves unset must
+// error (otherwise an operator routing to a proxy/LocalStack/VPC
+// endpoint via env.MY_PROXY would silently fall back to real AWS
+// Bedrock), not collapse into the no-override path.
 func emitBedrockAuthDispatchFor(methodName string) func(*jen.Group) {
 	return func(g *jen.Group) {
 		g.Id("selectedClient").Op(":=").Id("clientOverride")
@@ -64,21 +99,40 @@ func emitBedrockAuthDispatchFor(methodName string) func(*jen.Group) {
 		)
 		g.Var().Defs(
 			jen.Id("bedrockEndpointURL").String(),
+			jen.Id("bedrockEndpointURLPresent").Bool(),
 			jen.Id("bedrockRegion").String(),
+			jen.Id("bedrockRegionPresent").Bool(),
+			jen.Id("bedrockCreds").Qual(common.LLMHTTPPkg, "BedrockCredentialSelector"),
 		)
 		g.If(
 			jen.List(jen.Id("bedrockOpts"), jen.Id("ok")).Op(":=").Qual(common.IntrospectedPkg, "BedrockClientOptionsByName").Index(jen.Id("selectedClient")),
 			jen.Id("ok"),
 		).Block(
 			jen.List(jen.Id("bedrockEndpointURL"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("EndpointURL").Dot("Resolve").Call(),
+			jen.Id("bedrockEndpointURLPresent").Op("=").Id("bedrockOpts").Dot("EndpointURL").Dot("IsSet").Call(),
 			jen.List(jen.Id("bedrockRegion"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Region").Dot("Resolve").Call(),
+			jen.Id("bedrockRegionPresent").Op("=").Id("bedrockOpts").Dot("Region").Dot("IsSet").Call(),
+			jen.List(jen.Id("bedrockCreds").Dot("AccessKeyID"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("AccessKeyID").Dot("Resolve").Call(),
+			jen.Id("bedrockCreds").Dot("AccessKeyIDPresent").Op("=").Id("bedrockOpts").Dot("Credentials").Dot("AccessKeyID").Dot("IsSet").Call(),
+			jen.List(jen.Id("bedrockCreds").Dot("SecretAccessKey"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SecretAccessKey").Dot("Resolve").Call(),
+			jen.Id("bedrockCreds").Dot("SecretAccessKeyPresent").Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SecretAccessKey").Dot("IsSet").Call(),
+			jen.List(jen.Id("bedrockCreds").Dot("SessionToken"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SessionToken").Dot("Resolve").Call(),
+			jen.Id("bedrockCreds").Dot("SessionTokenPresent").Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SessionToken").Dot("IsSet").Call(),
+			jen.List(jen.Id("bedrockCreds").Dot("Profile"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("Profile").Dot("Resolve").Call(),
+			jen.Id("bedrockCreds").Dot("ProfilePresent").Op("=").Id("bedrockOpts").Dot("Credentials").Dot("Profile").Dot("IsSet").Call(),
 		)
 		g.If(
 			jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "AttachBedrockAuthForClient").Call(
 				jen.Id("ctx"),
 				jen.Id("req"),
-				jen.Id("bedrockEndpointURL"),
-				jen.Id("bedrockRegion"),
+				jen.Qual(common.LLMHTTPPkg, "BedrockClientAuthOptions").Values(jen.Dict{
+					jen.Id("ClientName"):         jen.Id("selectedClient"),
+					jen.Id("EndpointURL"):        jen.Id("bedrockEndpointURL"),
+					jen.Id("EndpointURLPresent"): jen.Id("bedrockEndpointURLPresent"),
+					jen.Id("Region"):             jen.Id("bedrockRegion"),
+					jen.Id("RegionPresent"):      jen.Id("bedrockRegionPresent"),
+					jen.Id("Credentials"):        jen.Id("bedrockCreds"),
+				}),
 			),
 			jen.Id("authErr").Op("!=").Nil(),
 		).Block(
@@ -132,9 +186,10 @@ func emitBedrockStreamPostProcessFor(methodName string) func(*jen.Group) {
 		)
 		g.Id("req").Dot("Headers").Index(jen.Lit("Accept")).Op("=").Qual(common.LLMHTTPPkg, "AWSStreamContentType")
 
-		// Bedrock auth dispatch: explicit endpoint_url + region override
-		// when configured for the selected client; URL-pattern fallback
-		// for the default-endpoint case.
+		// Bedrock auth dispatch: explicit endpoint_url, region, and/or
+		// credential-selector override when configured for the
+		// selected client; URL-pattern fallback for the
+		// default-endpoint case.
 		dispatch(g)
 	}
 }
