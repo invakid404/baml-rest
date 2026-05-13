@@ -18,8 +18,9 @@ import (
 //
 // Kept as a callable target for the codegen-emission tests that pin
 // the simple URL-pattern shape; production codegen routes through
-// emitBedrockAuthDispatchFor so the explicit endpoint_url + region
-// override path is honoured when the operator has configured one.
+// emitBedrockAuthDispatchFor so the explicit endpoint_url, region, and
+// credential-selector override paths are honoured when the operator
+// has configured them.
 func emitMaybeAttachBedrockAuth(g *jen.Group) {
 	g.If(
 		jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "MaybeAttachBedrockAuth").Call(jen.Id("ctx"), jen.Id("req")),
@@ -44,10 +45,9 @@ func emitMaybeAttachBedrockAuth(g *jen.Group) {
 //	if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
 //	    bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
 //	    bedrockRegion, _ = bedrockOpts.Region.Resolve()
-//	    bedrockCreds.AccessKeyID, bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.Resolve()
-//	    bedrockCreds.SecretAccessKey, bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.Resolve()
-//	    bedrockCreds.SessionToken, bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.Resolve()
-//	    bedrockCreds.Profile, bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.Resolve()
+//	    bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+//	    bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+//	    // ...same shape for SecretAccessKey, SessionToken, Profile
 //	}
 //	if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
 //	    ClientName:  selectedClient,
@@ -68,12 +68,17 @@ func emitMaybeAttachBedrockAuth(g *jen.Group) {
 // declare it as a parameter), so the resolve-name step does not need
 // any new closure plumbing.
 //
-// The credential selector preserves the Present flag from each
-// BedrockOptionValue.Resolve() pair — discarding it would collapse
-// "operator did not declare this field" into "operator declared an
-// empty literal", and the resolver in llmhttp must be able to
-// distinguish them (an empty literal is a configuration error; an
-// undeclared field falls through to the next precedence branch).
+// Presence semantics: BedrockOptionValue.IsSet() reports whether the
+// field was declared in .baml; BedrockOptionValue.Resolve() returns
+// the resolved value (which can be "" if an env.X reference does not
+// resolve). Driving the *Present flags from IsSet() — NOT from
+// Resolve()'s second return — is load-bearing for the
+// declared-but-env-unset error path: a declared env.X reference whose
+// env var is unset at runtime must enter the resolver's static branch
+// (Present=true, Value="") so the existing "resolved to empty"
+// error fires, rather than collapsing into the same shape as a
+// never-declared field which would silently fall through to the
+// default AWS chain.
 func emitBedrockAuthDispatchFor(methodName string) func(*jen.Group) {
 	return func(g *jen.Group) {
 		g.Id("selectedClient").Op(":=").Id("clientOverride")
@@ -91,22 +96,14 @@ func emitBedrockAuthDispatchFor(methodName string) func(*jen.Group) {
 		).Block(
 			jen.List(jen.Id("bedrockEndpointURL"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("EndpointURL").Dot("Resolve").Call(),
 			jen.List(jen.Id("bedrockRegion"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Region").Dot("Resolve").Call(),
-			jen.List(
-				jen.Id("bedrockCreds").Dot("AccessKeyID"),
-				jen.Id("bedrockCreds").Dot("AccessKeyIDPresent"),
-			).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("AccessKeyID").Dot("Resolve").Call(),
-			jen.List(
-				jen.Id("bedrockCreds").Dot("SecretAccessKey"),
-				jen.Id("bedrockCreds").Dot("SecretAccessKeyPresent"),
-			).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SecretAccessKey").Dot("Resolve").Call(),
-			jen.List(
-				jen.Id("bedrockCreds").Dot("SessionToken"),
-				jen.Id("bedrockCreds").Dot("SessionTokenPresent"),
-			).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SessionToken").Dot("Resolve").Call(),
-			jen.List(
-				jen.Id("bedrockCreds").Dot("Profile"),
-				jen.Id("bedrockCreds").Dot("ProfilePresent"),
-			).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("Profile").Dot("Resolve").Call(),
+			jen.List(jen.Id("bedrockCreds").Dot("AccessKeyID"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("AccessKeyID").Dot("Resolve").Call(),
+			jen.Id("bedrockCreds").Dot("AccessKeyIDPresent").Op("=").Id("bedrockOpts").Dot("Credentials").Dot("AccessKeyID").Dot("IsSet").Call(),
+			jen.List(jen.Id("bedrockCreds").Dot("SecretAccessKey"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SecretAccessKey").Dot("Resolve").Call(),
+			jen.Id("bedrockCreds").Dot("SecretAccessKeyPresent").Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SecretAccessKey").Dot("IsSet").Call(),
+			jen.List(jen.Id("bedrockCreds").Dot("SessionToken"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SessionToken").Dot("Resolve").Call(),
+			jen.Id("bedrockCreds").Dot("SessionTokenPresent").Op("=").Id("bedrockOpts").Dot("Credentials").Dot("SessionToken").Dot("IsSet").Call(),
+			jen.List(jen.Id("bedrockCreds").Dot("Profile"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Credentials").Dot("Profile").Dot("Resolve").Call(),
+			jen.Id("bedrockCreds").Dot("ProfilePresent").Op("=").Id("bedrockOpts").Dot("Credentials").Dot("Profile").Dot("IsSet").Call(),
 		)
 		g.If(
 			jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "AttachBedrockAuthForClient").Call(
@@ -171,9 +168,10 @@ func emitBedrockStreamPostProcessFor(methodName string) func(*jen.Group) {
 		)
 		g.Id("req").Dot("Headers").Index(jen.Lit("Accept")).Op("=").Qual(common.LLMHTTPPkg, "AWSStreamContentType")
 
-		// Bedrock auth dispatch: explicit endpoint_url + region override
-		// when configured for the selected client; URL-pattern fallback
-		// for the default-endpoint case.
+		// Bedrock auth dispatch: explicit endpoint_url, region, and/or
+		// credential-selector override when configured for the
+		// selected client; URL-pattern fallback for the
+		// default-endpoint case.
 		dispatch(g)
 	}
 }

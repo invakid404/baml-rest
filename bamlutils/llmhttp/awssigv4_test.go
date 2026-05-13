@@ -1232,7 +1232,7 @@ func TestAttachBedrockAuthWithOptions_NilCredentialsUsesDefaultChain(t *testing.
 }
 
 // Static credential fixture values for #254 item 2 tests. Use obvious
-// fakes (NOT AWS doc examples like AKIAIOSFODNN7EXAMPLE) so a security
+// fakes (NOT real-looking access-key examples) so a security
 // scanner cannot mistake them for compromised credentials.
 const (
 	staticCredsTestAccessKey    = "STATIC_TEST_ACCESS_KEY"
@@ -1516,16 +1516,20 @@ func TestResolveBedrockCredentials_InvalidPartialStates(t *testing.T) {
 // TestResolveBedrockCredentials_EnvRefUnsetIsRejected pins the
 // "unset env reference is an error, not silent fallback" branch.
 // The selector models the codegen output for an `env.UNSET_VAR`
-// reference: Present is preserved from BedrockOptionValue.Resolve()'s
-// (value, ok) shape — false here — even when the field itself was
-// declared in .baml. The resolver must reject this as a partial state
-// rather than silently fall through to profile / default chain.
+// reference: codegen drives Present from BedrockOptionValue.IsSet()
+// (declared-in-.baml), so a declared env.X with an unset env var
+// produces Present=true, Value="". The resolver must reject this as
+// a partial state rather than silently fall through to profile /
+// default chain.
 func TestResolveBedrockCredentials_EnvRefUnsetIsRejected(t *testing.T) {
-	// env.UNSET_AKID + literal secret. AccessKeyIDPresent = false
-	// because the env lookup failed, even though the field was
-	// declared.
+	// env.UNSET_AKID + literal secret. AccessKeyIDPresent = true
+	// because the field was declared in .baml; AccessKeyID = ""
+	// because the env lookup did not resolve. The resolver enters
+	// the static branch (any *Present is true) and rejects the
+	// empty AKID.
 	sel := BedrockCredentialSelector{
-		AccessKeyIDPresent:     false,
+		AccessKeyIDPresent:     true,
+		AccessKeyID:            "",
 		SecretAccessKey:        staticCredsTestSecretKey,
 		SecretAccessKeyPresent: true,
 	}
@@ -1535,6 +1539,62 @@ func TestResolveBedrockCredentials_EnvRefUnsetIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "access_key_id") {
 		t.Errorf("error must point to the missing field; got: %v", err)
+	}
+}
+
+// TestResolveBedrockCredentials_EnvRefAllUnset_Errors is the regression
+// pin for the #263 sign-off blocker. Scenario: operator declared
+// access_key_id AND secret_access_key as env.X refs in .baml, but both
+// env vars are unset at runtime. Codegen sets Present=true (from
+// IsSet()) and Value="" (from Resolve()) for both. The resolver MUST
+// error in the static branch rather than silently fall through to the
+// default AWS credential chain — that fallthrough would let a
+// misconfigured worker sign requests with whatever credentials happen
+// to be on the host, which is the original security-significant bug.
+func TestResolveBedrockCredentials_EnvRefAllUnset_Errors(t *testing.T) {
+	sel := BedrockCredentialSelector{
+		AccessKeyIDPresent:     true,
+		AccessKeyID:            "",
+		SecretAccessKeyPresent: true,
+		SecretAccessKey:        "",
+	}
+	_, err := ResolveBedrockCredentials(context.Background(), "EnvUnset", sel)
+	if err == nil {
+		t.Fatal("expected error when declared env.X access_key_id AND secret_access_key both resolve to empty; silent fallback to default chain is the #263 blocker")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "EnvUnset") {
+		t.Errorf("error must name the client; got: %s", msg)
+	}
+	// The static branch is entered because *Present flags are true.
+	// AccessKeyID is checked first, so that is the field the error
+	// must reference.
+	if !strings.Contains(msg, "access_key_id") {
+		t.Errorf("error must reference the empty static field; got: %s", msg)
+	}
+}
+
+// TestResolveBedrockCredentials_ProfileEnvUnset_Errors pins the same
+// declared-but-env-unset semantics for the profile branch. An operator
+// declaring `profile env.AWS_PROFILE` with AWS_PROFILE unset must get
+// a client-scoped error, not a silent fall-through to the default
+// chain. Codegen emits Present=true (from IsSet()), Value="" (from
+// Resolve()) for an unset env ref.
+func TestResolveBedrockCredentials_ProfileEnvUnset_Errors(t *testing.T) {
+	sel := BedrockCredentialSelector{
+		ProfilePresent: true,
+		Profile:        "",
+	}
+	_, err := ResolveBedrockCredentials(context.Background(), "ProfileEnvUnset", sel)
+	if err == nil {
+		t.Fatal("expected error when declared profile env.X resolves to empty")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ProfileEnvUnset") {
+		t.Errorf("error must name the client; got: %s", msg)
+	}
+	if !strings.Contains(msg, "profile") {
+		t.Errorf("error must reference the profile field; got: %s", msg)
 	}
 }
 

@@ -240,7 +240,8 @@ func TestEmitBuildRequest_EmitsBedrockStreamingClosure(t *testing.T) {
 	// Auth attach uses the client-aware dispatch (which internally
 	// falls through to MaybeAttachBedrockAuth for the default-endpoint
 	// case) — the streaming closure picks up the same per-client
-	// endpoint_url + region overrides as the call closure.
+	// endpoint_url, region, and credential-selector overrides as the
+	// call closure.
 	if !strings.Contains(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{") {
 		t.Errorf("bedrock streaming closure must call llmhttp.AttachBedrockAuthForClient with a BedrockClientAuthOptions struct; rendered:\n%s", rendered)
 	}
@@ -281,10 +282,27 @@ func TestEmitBedrockAuthDispatchFor_Shape(t *testing.T) {
 		"introspected.BedrockClientOptionsByName[selectedClient]",
 		"bedrockOpts.EndpointURL.Resolve()",
 		"bedrockOpts.Region.Resolve()",
+		// Credentials emit Resolve() for the value AND IsSet() for
+		// the presence flag — driving presence from Resolve()'s ok
+		// would conflate declared-but-env-unset with never-declared
+		// and silently fall through to the default AWS chain. See
+		// emitBedrockAuthDispatchFor's doc-comment for the
+		// security-significant invariant this pins.
 		"bedrockOpts.Credentials.AccessKeyID.Resolve()",
+		"bedrockOpts.Credentials.AccessKeyID.IsSet()",
 		"bedrockOpts.Credentials.SecretAccessKey.Resolve()",
+		"bedrockOpts.Credentials.SecretAccessKey.IsSet()",
 		"bedrockOpts.Credentials.SessionToken.Resolve()",
+		"bedrockOpts.Credentials.SessionToken.IsSet()",
 		"bedrockOpts.Credentials.Profile.Resolve()",
+		"bedrockOpts.Credentials.Profile.IsSet()",
+		// Per-flag assignment lines, pinned individually so a
+		// future refactor that drops one (or wires the IsSet call
+		// to the wrong selector field) surfaces immediately.
+		"bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()",
+		"bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()",
+		"bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()",
+		"bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()",
 		"llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{",
 		"ClientName:  selectedClient",
 		"EndpointURL: bedrockEndpointURL",

@@ -250,14 +250,23 @@ func TestEndpointOverride_E2E_RegionFallback(t *testing.T) {
 // TestEndpointOverride_E2E_NonStreaming with one twist: credentials
 // flow from BedrockClientAuthOptions.Credentials through the resolver,
 // not via test-pinned overrides. The mock asserts the static AKID
-// appears in the wire-side Authorization credential scope — proving
-// the resolver's static provider made it all the way to signRequest.
+// appears in the wire-side Authorization credential scope AND the
+// configured session token appears in X-Amz-Security-Token — together
+// proving the resolver's static provider made it all the way to
+// signRequest and that the SDK signer's session-token copy-back hits
+// the wire.
 //
-// This is the canonical end-to-end pin for #254 item 2.
+// This is the canonical end-to-end pin for #254 item 2 (call path).
+// Mirror coverage for the streaming path lives in
+// TestStaticCreds_E2E_Streaming below.
 func TestStaticCreds_E2E_NonStreaming(t *testing.T) {
-	var gotAuth string
+	var (
+		gotAuth        string
+		gotSecurityTok string
+	)
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		gotSecurityTok = r.Header.Get("X-Amz-Security-Token")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		io.WriteString(w, `{"output":{"message":{"content":[{"text":"ok"}]}}}`)
@@ -279,6 +288,13 @@ func TestStaticCreds_E2E_NonStreaming(t *testing.T) {
 			AccessKeyIDPresent:     true,
 			SecretAccessKey:        "STATIC_TEST_SECRET_KEY",
 			SecretAccessKeyPresent: true,
+			// Session token is configured here too so the
+			// non-streaming and streaming E2E tests pin the same
+			// header set — STS short-lived credentials are a
+			// realistic call-path shape, not a streaming-only
+			// shape.
+			SessionToken:        "STATIC_TEST_SESSION_TOKEN",
+			SessionTokenPresent: true,
 		},
 	}); err != nil {
 		t.Fatalf("AttachBedrockAuthForClient: %v", err)
@@ -294,12 +310,18 @@ func TestStaticCreds_E2E_NonStreaming(t *testing.T) {
 	if !strings.Contains(gotAuth, "Credential=STATIC_TEST_ACCESS_KEY/20260511/us-east-1/bedrock/aws4_request") {
 		t.Errorf("Authorization must carry static access key in credential scope; got: %s", gotAuth)
 	}
+	if gotSecurityTok != "STATIC_TEST_SESSION_TOKEN" {
+		t.Errorf("X-Amz-Security-Token on the wire = %q, want %q (session token must flow through resolver -> SigV4 -> Execute)", gotSecurityTok, "STATIC_TEST_SESSION_TOKEN")
+	}
 }
 
 // TestStaticCreds_E2E_Streaming pins the same static-credentials
 // dispatch end-to-end on the streaming path. Mirrors
 // TestEndpointOverride_E2E_Streaming but configures the credential
 // selector instead of supplying staticCreds via test-pinned override.
+// Asserts both the AKID-in-credential-scope and the session token on
+// the wire so the streaming path has call-path parity for session
+// token coverage.
 func TestStaticCreds_E2E_Streaming(t *testing.T) {
 	var buf bytes.Buffer
 	buf.Write(encodeAWSStreamFrame(t, map[string]string{
@@ -309,9 +331,13 @@ func TestStaticCreds_E2E_Streaming(t *testing.T) {
 	}, []byte(`{"stopReason":"end_turn"}`)))
 	wireBody := buf.Bytes()
 
-	var gotAuth string
+	var (
+		gotAuth        string
+		gotSecurityTok string
+	)
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		gotSecurityTok = r.Header.Get("X-Amz-Security-Token")
 		w.Header().Set("Content-Type", AWSStreamContentType)
 		w.WriteHeader(200)
 		w.Write(wireBody)
@@ -357,6 +383,9 @@ func TestStaticCreds_E2E_Streaming(t *testing.T) {
 
 	if !strings.Contains(gotAuth, "Credential=STATIC_TEST_ACCESS_KEY/20260511/us-east-1/bedrock/aws4_request") {
 		t.Errorf("Authorization must carry static access key in credential scope on the streaming path; got: %s", gotAuth)
+	}
+	if gotSecurityTok != "STATIC_TEST_SESSION_TOKEN" {
+		t.Errorf("X-Amz-Security-Token on the streaming-path wire = %q, want %q (session token must flow through resolver -> SigV4 -> ExecuteAWSStream)", gotSecurityTok, "STATIC_TEST_SESSION_TOKEN")
 	}
 }
 

@@ -2071,6 +2071,85 @@ func resolveBedrockOptionValueForTest(v bedrockOptionValue) (string, bool) {
 	return "", false
 }
 
+// isSetBedrockOptionValueForTest mirrors the runtime IsSet() method
+// shape emitBedrockOptionTypes generates: presence is decided by
+// Provenance alone, NOT by Resolve()'s second return. This pins the
+// declared-vs-resolved separation that the codegen relies on for
+// declared-but-env-unset credentials to enter the resolver's static
+// branch (and error there) rather than silently fall through to the
+// default AWS credential chain.
+func isSetBedrockOptionValueForTest(v bedrockOptionValue) bool {
+	return v.Provenance != ""
+}
+
+// TestBedrockOptionValue_IsSet pins the declared-vs-resolved boundary.
+// A declared env.X reference whose env var is unset at runtime must
+// still report IsSet()=true so the codegen-emitted Present flag enters
+// the resolver's static-branch validation. If a future refactor were
+// to fold IsSet into Resolve()'s ok, this test fails immediately.
+func TestBedrockOptionValue_IsSet(t *testing.T) {
+	cases := []struct {
+		name string
+		v    bedrockOptionValue
+		want bool
+	}{
+		{
+			name: "literal is declared",
+			v:    bedrockOptionValue{Literal: "x", Provenance: "literal"},
+			want: true,
+		},
+		{
+			name: "env ref is declared even when env var is unset",
+			v:    bedrockOptionValue{EnvVar: "NEVER_SET_DEFINITELY", Provenance: "env"},
+			want: true,
+		},
+		{
+			name: "empty literal is still declared (provenance != \"\")",
+			v:    bedrockOptionValue{Provenance: "literal"},
+			want: true,
+		},
+		{
+			name: "zero value is not declared",
+			v:    bedrockOptionValue{},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSetBedrockOptionValueForTest(tc.v); got != tc.want {
+				t.Errorf("IsSet(%+v) = %v, want %v", tc.v, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBedrockOptionValue_IsSetVsResolve_EnvUnset is the load-bearing
+// pin for the #263 sign-off fix. A declared env.X reference whose
+// env var is unset at runtime must report:
+//   - IsSet() == true   (the field was declared in .baml)
+//   - Resolve() == ("", false)  (the value did not resolve)
+//
+// Codegen drives Present from IsSet(), so the resolver's static branch
+// is entered (Present=true, Value=""); the existing "resolved to empty"
+// error then fires. Driving Present from Resolve()'s ok would collapse
+// declared-but-env-unset into never-declared and silently fall through
+// to the default AWS credential chain — a security-significant
+// regression. This test pins both halves of that distinction.
+func TestBedrockOptionValue_IsSetVsResolve_EnvUnset(t *testing.T) {
+	v := bedrockOptionValue{EnvVar: "BAML_REST_TEST_NEVER_SET_VAR", Provenance: "env"}
+
+	if !isSetBedrockOptionValueForTest(v) {
+		t.Error("IsSet() must be true for a declared env.X reference, regardless of env-var resolution")
+	}
+	value, ok := resolveBedrockOptionValueForTest(v)
+	if ok {
+		t.Errorf("Resolve() ok = true for unset env.X ref; want false (got value=%q)", value)
+	}
+	if value != "" {
+		t.Errorf("Resolve() value = %q for unset env.X ref; want empty", value)
+	}
+}
+
 // TestParseClientBlock_BedrockStaticCreds_Literal pins the parser
 // extension that captures literal-provenance values for the four
 // credential selector keys (#254 item 2). Asserts that all four
