@@ -191,9 +191,9 @@ func checkBehaviouralTestParity(repoRoot string, fa adapterversions.FrameworkAda
 }
 
 // goTestTimeout caps the per-adapter `go test ./adapter/` subprocess
-// at 5 minutes. The post-PR-3 shared driver runs sub-second per
-// adapter today; 5 minutes is the circuit-breaker for a hung test or
-// an unresponsive `go` toolchain.
+// at 5 minutes. The shared driver runs sub-second per adapter today;
+// 5 minutes is the circuit-breaker for a hung test or an unresponsive
+// `go` toolchain.
 const goTestTimeout = 5 * time.Minute
 
 func copyDir(src, dst string) error {
