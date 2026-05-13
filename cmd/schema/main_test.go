@@ -2,11 +2,26 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	baml_rest "github.com/invakid404/baml-rest"
+	"github.com/invakid404/baml-rest/bamlutils"
 )
+
+// SchemaPostRequiredStubInput is the input type wired into the stub
+// StreamingMethod injected by TestPostRequestBodyRequired. It must have a
+// stable, exported name because generateOpenAPISchema derives the component
+// schema name via reflect.Type.Name().
+type SchemaPostRequiredStubInput struct {
+	Foo string `json:"foo"`
+}
+
+// SchemaPostRequiredStubOutput is the final-output type for the stub method.
+type SchemaPostRequiredStubOutput struct {
+	Bar string `json:"bar"`
+}
 
 // TestSchemaRequiredAndNullability pins the contract the schema customizer
 // is expected to honour for `json:omitempty`, `json:"-"`, and pointer-slice
@@ -106,6 +121,82 @@ func TestSchemaRequiredAndNullability(t *testing.T) {
 			t.Errorf("ClientRegistry.clients.items expected nullable wrap (got %+v)", clients.Value.Items)
 		}
 	})
+}
+
+// TestPostRequestBodyRequired pins #252: every generated POST operation
+// must emit requestBody.required = true. The OpenAPI 3.0 default is
+// false, and an absent flag lets downstream client generators mark the
+// body parameter as optional even though every endpoint here
+// semantically requires a body. The test seeds baml_rest.Methods with
+// a stub static method and the dynamic-method sentinel so both static
+// and dynamic codepaths in generateOpenAPISchema fire.
+func TestPostRequestBodyRequired(t *testing.T) {
+	baml_rest.InitBamlRuntime()
+
+	origMethods := baml_rest.Methods
+	t.Cleanup(func() { baml_rest.Methods = origMethods })
+
+	baml_rest.Methods = map[string]bamlutils.StreamingMethod{
+		"StubMethod": {
+			MakeInput:        func() any { return &SchemaPostRequiredStubInput{} },
+			MakeOutput:       func() any { return &SchemaPostRequiredStubOutput{} },
+			MakeStreamOutput: func() any { return &SchemaPostRequiredStubOutput{} },
+		},
+		bamlutils.DynamicMethodName: {
+			MakeInput:        func() any { return &SchemaPostRequiredStubInput{} },
+			MakeOutput:       func() any { return &SchemaPostRequiredStubOutput{} },
+			MakeStreamOutput: func() any { return &SchemaPostRequiredStubOutput{} },
+		},
+	}
+
+	doc := generateOpenAPISchema()
+	if doc == nil || doc.Paths == nil {
+		t.Fatalf("generated schema has no paths")
+	}
+
+	dynamicPathPrefixes := []string{
+		"/call/_dynamic",
+		"/call-with-raw/_dynamic",
+		"/stream/_dynamic",
+		"/stream-with-raw/_dynamic",
+		"/parse/_dynamic",
+	}
+	seenDynamic := make(map[string]bool, len(dynamicPathPrefixes))
+
+	for _, path := range doc.Paths.InMatchingOrder() {
+		item := doc.Paths.Value(path)
+		if item == nil || item.Post == nil {
+			continue
+		}
+		op := item.Post
+		if op.RequestBody == nil || op.RequestBody.Value == nil {
+			t.Errorf("POST %s missing RequestBody value", path)
+			continue
+		}
+		if !op.RequestBody.Value.Required {
+			t.Errorf("POST %s requestBody.required = false (want true); downstream client generators will emit the body parameter as optional", path)
+		}
+		for _, prefix := range dynamicPathPrefixes {
+			if strings.HasPrefix(path, prefix) {
+				seenDynamic[prefix] = true
+			}
+		}
+	}
+
+	for _, prefix := range dynamicPathPrefixes {
+		if !seenDynamic[prefix] {
+			t.Errorf("dynamic operation %s missing from generated paths; test cannot cover the dynamic codepath", prefix)
+		}
+	}
+
+	staticSpot := "/call/StubMethod"
+	item := doc.Paths.Value(staticSpot)
+	if item == nil || item.Post == nil {
+		t.Fatalf("static spot-check %s not generated; static codepath uncovered", staticSpot)
+	}
+	if item.Post.RequestBody == nil || item.Post.RequestBody.Value == nil || !item.Post.RequestBody.Value.Required {
+		t.Errorf("static spot-check %s requestBody.required = false (want true)", staticSpot)
+	}
 }
 
 // isNullable reports whether a SchemaRef carries explicit nullability —
