@@ -9,3 +9,12 @@ integration
 
 # Test files
 **/*_test.go
+
+# Generated framework adapter files (emitted at build time by
+# adapters/adapter_v*/cmd/main.go and at customer-build time by
+# cmd/build/build.sh). Source of truth lives in
+# adapters/common/codegen. The pattern is module-root relative
+# because cmd/embed evaluates .embedignore patterns inside each
+# discovered module — only per-adapter modules have an
+# adapter/adapter.go to begin with.
+**/adapter/adapter.go

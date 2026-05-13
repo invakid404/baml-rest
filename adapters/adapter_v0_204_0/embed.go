@@ -4,7 +4,7 @@ import (
 	"embed"
 )
 
-//go:embed adapter/adapter.go adapter/dynamic_value.go cmd embed.go go.mod go.sum utils
+//go:embed adapter/dynamic_value.go cmd embed.go go.mod go.sum utils
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)

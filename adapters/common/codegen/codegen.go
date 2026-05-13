@@ -147,11 +147,10 @@ func (g *generator) withClientCloneAndAppend(dst, src string) jen.Code {
 // generate is the orchestrator: validates the SupportsWithClient
 // invariant, then delegates to per-concern emit methods on
 // generator. Emission order is load-bearing — Jen's *jen.File
-// preserves declaration order, and the file's tests pin
-// declaration ordering against the hand-written reference (for the
-// framework adapter) and per-adapter behavioural tests (for the
-// streaming/call routers). Reordering anything below changes the
-// generated file byte-for-byte.
+// preserves declaration order, and the per-adapter behavioural tests
+// (streaming/call routers) plus the framework-adapter deterministic-
+// emission check pin the file's shape. Reordering anything below
+// changes the generated file byte-for-byte.
 func generate(opts Options) {
 	g := newGenerator(opts)
 
