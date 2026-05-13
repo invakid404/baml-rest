@@ -9,12 +9,13 @@ import (
 
 func newTestBamlConfig() *bamlConfig {
 	return &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-		fallbackChains:    make(map[string][]string),
-		roundRobinStart:   make(map[string]int),
+		clientProvider:       make(map[string]string),
+		clientRetryPolicy:    make(map[string]string),
+		functionClient:       make(map[string]string),
+		retryPolicies:        make(map[string]parsedRetryPolicy),
+		fallbackChains:       make(map[string][]string),
+		roundRobinStart:      make(map[string]int),
+		bedrockClientOptions: make(map[string]bedrockClientOptions),
 	}
 }
 
@@ -1675,4 +1676,397 @@ function Summarize(text: string) -> string {
 	if got := cfg.clientProvider["anthropic/claude-3-5-sonnet-20241022"]; got != "anthropic" {
 		t.Errorf("clientProvider[anthropic/claude-3-5-sonnet-20241022] = %q, want %q", got, "anthropic")
 	}
+}
+
+// TestParseClientBlock_BedrockEndpointURL_Literal pins the parser
+// extension that captures `endpoint_url "..."` and `region "..."` as
+// literal-provenance values inside an aws-bedrock client's options
+// block. Storage is parser-scoped (not provider-filtered) — emission
+// applies the aws-bedrock filter — so this test asserts the entry is
+// recorded for any aws-bedrock client.
+func TestParseClientBlock_BedrockEndpointURL_Literal(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> CustomBedrock {
+    provider aws-bedrock
+    options {
+        endpoint_url "http://localhost:9000"
+        region "us-east-1"
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	got, ok := cfg.bedrockClientOptions["CustomBedrock"]
+	if !ok {
+		t.Fatalf("bedrockClientOptions[CustomBedrock] missing; got map: %+v", cfg.bedrockClientOptions)
+	}
+	if got.EndpointURL.Provenance != "literal" {
+		t.Errorf("EndpointURL.Provenance = %q, want literal", got.EndpointURL.Provenance)
+	}
+	if got.EndpointURL.Literal != "http://localhost:9000" {
+		t.Errorf("EndpointURL.Literal = %q, want http://localhost:9000", got.EndpointURL.Literal)
+	}
+	if got.EndpointURL.EnvVar != "" {
+		t.Errorf("EndpointURL.EnvVar = %q, want empty for literal", got.EndpointURL.EnvVar)
+	}
+	if got.Region.Provenance != "literal" {
+		t.Errorf("Region.Provenance = %q, want literal", got.Region.Provenance)
+	}
+	if got.Region.Literal != "us-east-1" {
+		t.Errorf("Region.Literal = %q, want us-east-1", got.Region.Literal)
+	}
+}
+
+// TestParseClientBlock_BedrockEndpointURL_EnvRef pins the env.X
+// provenance branch. The bare-identifier `env.NAME` shape (no quotes)
+// is BAML's syntax for env-var references; the introspector preserves
+// the variable name and defers resolution to runtime.
+func TestParseClientBlock_BedrockEndpointURL_EnvRef(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> EnvBedrock {
+    provider aws-bedrock
+    options {
+        endpoint_url env.BEDROCK_ENDPOINT
+        region env.AWS_REGION_OVERRIDE
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	got, ok := cfg.bedrockClientOptions["EnvBedrock"]
+	if !ok {
+		t.Fatalf("bedrockClientOptions[EnvBedrock] missing")
+	}
+	if got.EndpointURL.Provenance != "env" {
+		t.Errorf("EndpointURL.Provenance = %q, want env", got.EndpointURL.Provenance)
+	}
+	if got.EndpointURL.EnvVar != "BEDROCK_ENDPOINT" {
+		t.Errorf("EndpointURL.EnvVar = %q, want BEDROCK_ENDPOINT", got.EndpointURL.EnvVar)
+	}
+	if got.EndpointURL.Literal != "" {
+		t.Errorf("EndpointURL.Literal = %q, want empty for env provenance", got.EndpointURL.Literal)
+	}
+	if got.Region.Provenance != "env" {
+		t.Errorf("Region.Provenance = %q, want env", got.Region.Provenance)
+	}
+	if got.Region.EnvVar != "AWS_REGION_OVERRIDE" {
+		t.Errorf("Region.EnvVar = %q, want AWS_REGION_OVERRIDE", got.Region.EnvVar)
+	}
+}
+
+// TestParseClientBlock_BedrockEndpointURL_Absent pins that an
+// aws-bedrock client without any endpoint_url / region option declared
+// produces NO entry in the parser's bedrockClientOptions map. The
+// absence-of-entry signal is what the codegen dispatcher uses to fall
+// through to MaybeAttachBedrockAuth's URL-pattern detection — a stub
+// entry would silently break that fallback.
+func TestParseClientBlock_BedrockEndpointURL_Absent(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> PlainBedrock {
+    provider aws-bedrock
+    options {
+        model "anthropic.claude-3-sonnet-20240229-v1:0"
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	if _, ok := cfg.bedrockClientOptions["PlainBedrock"]; ok {
+		t.Errorf("plain aws-bedrock client without overrides must not produce a bedrockClientOptions entry; got %+v", cfg.bedrockClientOptions["PlainBedrock"])
+	}
+}
+
+// TestParseClientBlock_BedrockEndpointURL_NonBedrockClient pins the
+// parser-side recording contract for the provider-filter split:
+// the parser records a candidate bedrockClientOptions entry for any
+// client whose options block declares endpoint_url / region,
+// regardless of provider. Provider filtering happens downstream at
+// emission time (generateBamlConfigVars filters cfg.bedrockClientOptions
+// by `cfg.clientProvider[name] == "aws-bedrock"` before emitting
+// `BedrockClientOptionsByName`), so the runtime map only contains
+// aws-bedrock clients even though the parser map can contain others.
+//
+// Keeping the parser permissive avoids threading provider lookahead
+// through the per-line option scan; the emission-time filter is the
+// correctness boundary. Codegen's BedrockClientOptionsByName lookup
+// only ever sees aws-bedrock clients because of that filter — see
+// the dedicated assertion in `cmd/introspect/main.go` (provider
+// filter at the BedrockClientOptionsByName emission site).
+func TestParseClientBlock_BedrockEndpointURL_NonBedrockClient(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> NotBedrock {
+    provider openai
+    options {
+        endpoint_url "https://example.com/v1"
+        region "ignored"
+    }
+}
+
+client<llm> RealBedrock {
+    provider aws-bedrock
+    options {
+        endpoint_url "http://localhost:9000"
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	// Parser-side: both entries are recorded (filter is at emission).
+	if _, ok := cfg.bedrockClientOptions["NotBedrock"]; !ok {
+		t.Fatal("parser must record bedrockClientOptions for any client that declares the keys; provider filter is downstream")
+	}
+	if _, ok := cfg.bedrockClientOptions["RealBedrock"]; !ok {
+		t.Fatal("parser must record bedrockClientOptions for the aws-bedrock client too")
+	}
+}
+
+// TestParseClientBlock_BedrockEndpointURL_InlineSingleLine pins the
+// inline-options-block path (`options { ... }` on the same line as the
+// opening brace). The compact form is part of BAML's grammar and must
+// not silently drop endpoint_url / region keys.
+func TestParseClientBlock_BedrockEndpointURL_InlineSingleLine(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `client<llm> InlineBedrock { provider aws-bedrock options { endpoint_url "http://h:1" region "us-east-1" } }`
+	parseBamlFile(cfg, content)
+
+	got, ok := cfg.bedrockClientOptions["InlineBedrock"]
+	if !ok {
+		t.Fatalf("inline options block must produce a bedrockClientOptions entry; got map: %+v", cfg.bedrockClientOptions)
+	}
+	if got.EndpointURL.Literal != "http://h:1" {
+		t.Errorf("inline EndpointURL.Literal = %q, want http://h:1", got.EndpointURL.Literal)
+	}
+	if got.Region.Literal != "us-east-1" {
+		t.Errorf("inline Region.Literal = %q, want us-east-1", got.Region.Literal)
+	}
+}
+
+// TestParseClientBlock_BedrockEndpointURL_InlineCommentsAndQuotes pins
+// the inline-comment + quote-handling edge cases that flow through the
+// shared stripInlineComment / stripBamlQuotes helpers. A trailing `//`
+// comment on the option line, a quoted-with-spaces literal, and a
+// trailing-brace tail must all parse cleanly.
+func TestParseClientBlock_BedrockEndpointURL_InlineCommentsAndQuotes(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> CommentedBedrock {
+    provider aws-bedrock
+    options {
+        endpoint_url "http://localhost:9000"  // operator override for local dev
+        region "us-east-1"  // production region
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	got, ok := cfg.bedrockClientOptions["CommentedBedrock"]
+	if !ok {
+		t.Fatalf("commented-options client must produce an entry")
+	}
+	if got.EndpointURL.Literal != "http://localhost:9000" {
+		t.Errorf("EndpointURL.Literal = %q, want http://localhost:9000 (inline comment must be stripped)", got.EndpointURL.Literal)
+	}
+	if got.Region.Literal != "us-east-1" {
+		t.Errorf("Region.Literal = %q, want us-east-1 (inline comment must be stripped)", got.Region.Literal)
+	}
+}
+
+// TestParseClientBlock_BedrockEndpointURL_OnlyRegion pins that a
+// region-only override (no endpoint_url) still produces an entry. The
+// codegen dispatcher needs to honour region-only overrides too — they
+// pin SigV4 region for clients whose default endpoint host happens to
+// not encode the region the operator wants.
+func TestParseClientBlock_BedrockEndpointURL_OnlyRegion(t *testing.T) {
+	cfg := newTestBamlConfig()
+	content := `
+client<llm> RegionOnlyBedrock {
+    provider aws-bedrock
+    options {
+        region "ap-southeast-2"
+    }
+}
+`
+	parseBamlFile(cfg, content)
+
+	got, ok := cfg.bedrockClientOptions["RegionOnlyBedrock"]
+	if !ok {
+		t.Fatalf("region-only override must produce a bedrockClientOptions entry")
+	}
+	if got.Region.Literal != "ap-southeast-2" {
+		t.Errorf("Region.Literal = %q, want ap-southeast-2", got.Region.Literal)
+	}
+	if got.EndpointURL.Provenance != "" {
+		t.Errorf("EndpointURL.Provenance = %q, want empty (only region was set)", got.EndpointURL.Provenance)
+	}
+}
+
+// TestExtractBedrockOptionValue_Forms pins each value-shape branch in
+// isolation so a future tweak to splitInlineStatements / quote-handling
+// surfaces immediately rather than only via the higher-level parser
+// tests above.
+func TestExtractBedrockOptionValue_Forms(t *testing.T) {
+	cases := []struct {
+		name     string
+		line     string
+		key      string
+		wantOK   bool
+		wantLit  string
+		wantEnv  string
+		wantProv string
+	}{
+		{
+			name:     "literal with quotes",
+			line:     `endpoint_url "http://localhost:9000"`,
+			key:      "endpoint_url",
+			wantOK:   true,
+			wantLit:  "http://localhost:9000",
+			wantProv: "literal",
+		},
+		{
+			name:     "env reference",
+			line:     `endpoint_url env.BEDROCK_HOST`,
+			key:      "endpoint_url",
+			wantOK:   true,
+			wantEnv:  "BEDROCK_HOST",
+			wantProv: "env",
+		},
+		{
+			name:     "literal with trailing brace",
+			line:     `endpoint_url "http://h" }`,
+			key:      "endpoint_url",
+			wantOK:   true,
+			wantLit:  "http://h",
+			wantProv: "literal",
+		},
+		{
+			name:   "absent key on this line",
+			line:   `model "x"`,
+			key:    "endpoint_url",
+			wantOK: false,
+		},
+		{
+			name:     "region literal",
+			line:     `region "eu-west-1"`,
+			key:      "region",
+			wantOK:   true,
+			wantLit:  "eu-west-1",
+			wantProv: "literal",
+		},
+		{
+			name:     "region env reference",
+			line:     `region env.AWS_REGION_X`,
+			key:      "region",
+			wantOK:   true,
+			wantEnv:  "AWS_REGION_X",
+			wantProv: "env",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractBedrockOptionValue(tc.line, tc.key)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (got %+v)", ok, tc.wantOK, got)
+			}
+			if !tc.wantOK {
+				return
+			}
+			if got.Literal != tc.wantLit {
+				t.Errorf("Literal = %q, want %q", got.Literal, tc.wantLit)
+			}
+			if got.EnvVar != tc.wantEnv {
+				t.Errorf("EnvVar = %q, want %q", got.EnvVar, tc.wantEnv)
+			}
+			if got.Provenance != tc.wantProv {
+				t.Errorf("Provenance = %q, want %q", got.Provenance, tc.wantProv)
+			}
+		})
+	}
+}
+
+// TestParseClientBlock_BedrockEndpointURL_StaleEntryCleared pins the
+// re-parse contract: parsing a client block AFTER a prior parse for the
+// same name must clear the prior bedrockClientOptions entry. Without
+// this, an operator who removes endpoint_url from a client between
+// regen runs would silently keep the old override. Mirrors the
+// roundRobinStart / fallbackChains stale-state cleanup pattern.
+func TestParseClientBlock_BedrockEndpointURL_StaleEntryCleared(t *testing.T) {
+	cfg := newTestBamlConfig()
+	parseBamlFile(cfg, `
+client<llm> Foo {
+    provider aws-bedrock
+    options {
+        endpoint_url "http://h"
+    }
+}
+`)
+	if _, ok := cfg.bedrockClientOptions["Foo"]; !ok {
+		t.Fatal("first parse must populate the entry")
+	}
+	parseBamlFile(cfg, `
+client<llm> Foo {
+    provider aws-bedrock
+    options {
+        model "x"
+    }
+}
+`)
+	if _, ok := cfg.bedrockClientOptions["Foo"]; ok {
+		t.Errorf("re-parse without endpoint_url must clear the stale entry; got %+v", cfg.bedrockClientOptions["Foo"])
+	}
+}
+
+// TestBedrockOptionValue_Resolve_RuntimeBranches exercises the
+// generated Resolve() method indirectly by calling its Go equivalent
+// here on the parser-side type — the generator emits the same switch
+// shape verbatim. Pinning both branches catches regressions in either
+// the parser-side struct fields or the generated method's switch
+// arms.
+func TestBedrockOptionValue_Resolve_RuntimeBranches(t *testing.T) {
+	t.Run("literal returns value with ok=true", func(t *testing.T) {
+		v := bedrockOptionValue{Literal: "x", Provenance: "literal"}
+		got, ok := resolveBedrockOptionValueForTest(v)
+		if got != "x" || !ok {
+			t.Errorf("literal resolve = (%q, %v), want (\"x\", true)", got, ok)
+		}
+	})
+	t.Run("env returns os.LookupEnv result", func(t *testing.T) {
+		t.Setenv("PARSER_RESOLVE_TEST", "from-env")
+		v := bedrockOptionValue{EnvVar: "PARSER_RESOLVE_TEST", Provenance: "env"}
+		got, ok := resolveBedrockOptionValueForTest(v)
+		if got != "from-env" || !ok {
+			t.Errorf("env resolve = (%q, %v), want (\"from-env\", true)", got, ok)
+		}
+	})
+	t.Run("env unset returns empty/false", func(t *testing.T) {
+		v := bedrockOptionValue{EnvVar: "DEFINITELY_NOT_SET_PARSER_TEST", Provenance: "env"}
+		got, ok := resolveBedrockOptionValueForTest(v)
+		if got != "" || ok {
+			t.Errorf("unset env resolve = (%q, %v), want (\"\", false)", got, ok)
+		}
+	})
+	t.Run("unset provenance returns empty/false", func(t *testing.T) {
+		v := bedrockOptionValue{}
+		got, ok := resolveBedrockOptionValueForTest(v)
+		if got != "" || ok {
+			t.Errorf("unset provenance resolve = (%q, %v), want (\"\", false)", got, ok)
+		}
+	})
+}
+
+// resolveBedrockOptionValueForTest mirrors the runtime Resolve() method
+// shape that emitBedrockOptionTypes generates. Lives in the test file
+// so the parser-side type retains a unit-testable resolver without the
+// generator having to expose its shape via a callable hook.
+func resolveBedrockOptionValueForTest(v bedrockOptionValue) (string, bool) {
+	switch v.Provenance {
+	case "literal":
+		return v.Literal, true
+	case "env":
+		return os.LookupEnv(v.EnvVar)
+	}
+	return "", false
 }

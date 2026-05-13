@@ -1156,6 +1156,40 @@ type bamlConfig struct {
 	// parser records the value for any client whose options contain
 	// `start N`, regardless of provider.
 	roundRobinStart map[string]int
+	// bedrockClientOptions maps client name → parsed aws-bedrock
+	// options (endpoint_url + region). The parser records entries for
+	// every client whose options block declares either key (so the map
+	// can carry literal-vs-env provenance) regardless of provider; the
+	// emission step filters to provider == "aws-bedrock" so a non-bedrock
+	// client that happens to use the same option keys for an unrelated
+	// purpose can't leak into the runtime BedrockClientOptions map.
+	bedrockClientOptions map[string]bedrockClientOptions
+}
+
+// bedrockClientOptions captures the per-client aws-bedrock options that
+// codegen needs at request-build time to override BAML's hardcoded
+// modular Bedrock URL. BAML v0.219's HTTPRequest builder hardcodes
+// https://bedrock-runtime.<region>.amazonaws.com and the public Go
+// surface does not expose ClientDetails (see Codex's deep-dive Q1/Q2),
+// so baml-rest carries its own resolved options keyed on client name.
+type bedrockClientOptions struct {
+	EndpointURL bedrockOptionValue
+	Region      bedrockOptionValue
+}
+
+// bedrockOptionValue stores a single .baml option value with its
+// provenance preserved. Resolution to a final string happens at
+// request-build time so an env-var override picks up the worker's
+// current environment rather than the build-time snapshot.
+//
+// Provenance is the discriminator:
+//   - ""          → no value declared
+//   - "literal"   → Literal carries the bare string (quotes already stripped)
+//   - "env"       → EnvVar carries the env var name (no leading "env.")
+type bedrockOptionValue struct {
+	Literal    string
+	EnvVar     string
+	Provenance string
 }
 
 type parsedRetryPolicy struct {
@@ -1172,12 +1206,13 @@ type parsedRetryPolicy struct {
 // are included.
 func parseBamlSourceDir(dir string) *bamlConfig {
 	cfg := &bamlConfig{
-		clientProvider:    make(map[string]string),
-		clientRetryPolicy: make(map[string]string),
-		functionClient:    make(map[string]string),
-		retryPolicies:     make(map[string]parsedRetryPolicy),
-		fallbackChains:    make(map[string][]string),
-		roundRobinStart:   make(map[string]int),
+		clientProvider:       make(map[string]string),
+		clientRetryPolicy:    make(map[string]string),
+		functionClient:       make(map[string]string),
+		retryPolicies:        make(map[string]parsedRetryPolicy),
+		fallbackChains:       make(map[string][]string),
+		roundRobinStart:      make(map[string]int),
+		bedrockClientOptions: make(map[string]bedrockClientOptions),
 	}
 
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -1445,6 +1480,7 @@ func isNestedBlockStart(line string) bool {
 // key-value statements. Sorted longest-first so that `max_delay_ms` is matched
 // before the embedded `delay_ms` substring.
 var bamlConfigKeys = []string{
+	"endpoint_url ",
 	"retry_policy ",
 	"max_delay_ms ",
 	"max_retries ",
@@ -1455,6 +1491,7 @@ var bamlConfigKeys = []string{
 	"options ",
 	"client ",
 	"prompt ",
+	"region ",
 	"start ",
 	"type ",
 }
@@ -1650,6 +1687,7 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 	delete(cfg.fallbackChains, name)
 	delete(cfg.clientProvider, name)
 	delete(cfg.clientRetryPolicy, name)
+	delete(cfg.bedrockClientOptions, name)
 
 	nestedDepth := 0
 	inOptions := false
@@ -1737,6 +1775,12 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 				if startVal, ok := extractRoundRobinStart(line); ok {
 					cfg.roundRobinStart[name] = startVal
 				}
+				// Capture aws-bedrock options (endpoint_url + region)
+				// at the top-level options depth. Provider filtering
+				// happens at emission time so a non-bedrock client
+				// using the same keys for an unrelated purpose can't
+				// leak into the runtime BedrockClientOptions map.
+				updateBedrockClientOption(cfg, name, line)
 			}
 			stripped := stripInlineComment(stripStringLiterals(line))
 			optionsDepth += strings.Count(stripped, "{") - strings.Count(stripped, "}")
@@ -1779,6 +1823,7 @@ func parseClientBlock(cfg *bamlConfig, name string, block []string) {
 					if startVal, ok := extractRoundRobinStart(inner); ok {
 						cfg.roundRobinStart[name] = startVal
 					}
+					updateBedrockClientOption(cfg, name, inner)
 				}
 				if optionsDepth <= 0 {
 					inOptions = false
@@ -1945,6 +1990,72 @@ func extractRoundRobinStart(line string) (int, bool) {
 		return int(v), true
 	}
 	return 0, false
+}
+
+// updateBedrockClientOption extracts endpoint_url and region option
+// values from a single options-block line and merges them into the
+// per-client bedrockClientOptions entry. Each call is additive on the
+// keys actually present in `line`, so a multi-line options block whose
+// endpoint_url and region appear on separate lines accumulates both.
+//
+// Provider filtering happens at emission, not here — see the
+// bedrockClientOptions field doc on bamlConfig for the rationale.
+func updateBedrockClientOption(cfg *bamlConfig, clientName, line string) {
+	endpoint, hasEndpoint := extractBedrockOptionValue(line, "endpoint_url")
+	region, hasRegion := extractBedrockOptionValue(line, "region")
+	if !hasEndpoint && !hasRegion {
+		return
+	}
+	cur := cfg.bedrockClientOptions[clientName]
+	if hasEndpoint {
+		cur.EndpointURL = endpoint
+	}
+	if hasRegion {
+		cur.Region = region
+	}
+	cfg.bedrockClientOptions[clientName] = cur
+}
+
+// extractBedrockOptionValue scans a line (or split inline segment) for
+// a `<key> <value>` statement and returns the parsed bedrockOptionValue
+// with provenance set. Recognised value shapes:
+//
+//   - `<key> "literal"`      → Provenance = "literal", Literal = "literal"
+//   - `<key> env.NAME`       → Provenance = "env",     EnvVar  = "NAME"
+//
+// Returns ok=false when the key is absent or the value is empty.
+// Trailing block / list closers (`}`, `]`) are tolerated so a tail like
+// `endpoint_url "x" }` parses cleanly, mirroring extractRoundRobinStart.
+func extractBedrockOptionValue(line, key string) (bedrockOptionValue, bool) {
+	prefix := key + " "
+	for _, stmt := range splitInlineStatements(line) {
+		trimmed := strings.TrimSpace(stripInlineComment(stmt))
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		raw := strings.TrimPrefix(trimmed, prefix)
+		raw = strings.TrimRight(raw, " \t}]")
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		// env.X form: bare identifier reference, no quotes. BAML
+		// upstream parses these as EnvRef without quotes so the
+		// introspector matches.
+		if strings.HasPrefix(raw, "env.") {
+			envName := strings.TrimSpace(raw[len("env."):])
+			if envName == "" {
+				continue
+			}
+			return bedrockOptionValue{EnvVar: envName, Provenance: "env"}, true
+		}
+		lit := stripBamlQuotes(raw)
+		if lit == "" {
+			continue
+		}
+		return bedrockOptionValue{Literal: lit, Provenance: "literal"}, true
+	}
+	return bedrockOptionValue{}, false
 }
 
 // parseStrategyList extracts client names from a strategy line like
@@ -2419,4 +2530,113 @@ func generateBamlConfigVars(out *jen.File) {
 	// purely through client_registry overrides) bypass this coordinator.
 	out.Comment("RoundRobinCoordinator holds per-client round-robin counters shared across requests")
 	out.Var().Id("RoundRobinCoordinator").Op("=").Qual("github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin", "NewCoordinatorWithStarts").Call(jen.Id("RoundRobinStart"))
+
+	// BedrockOptionValue + BedrockClientOptions carry the parsed
+	// aws-bedrock client options (endpoint_url + region) that codegen
+	// reads at request-build time to override BAML v0.219's hardcoded
+	// modular Bedrock URL and pin SigV4 region. Resolution happens at
+	// runtime so env-var values reflect the worker's current
+	// environment rather than the build-time snapshot.
+	emitBedrockOptionTypes(out)
+
+	// BedrockClientOptionsByName: keyed by client name; only aws-bedrock
+	// clients are emitted. The codegen dispatcher in
+	// adapters/common/codegen treats absence-from-map as "no override
+	// configured" and falls through to MaybeAttachBedrockAuth's
+	// URL-pattern detection for the default-endpoint case.
+	//
+	// Variable name disambiguates from the struct type
+	// `BedrockClientOptions`: Go's package namespace would otherwise
+	// reject `var BedrockClientOptions = map[string]BedrockClientOptions{}`.
+	out.Comment("BedrockClientOptionsByName maps aws-bedrock client names to their parsed endpoint_url + region options.")
+	out.Comment("Codegen looks up the resolved client name here at request-build time and dispatches to")
+	out.Comment("llmhttp.AttachBedrockAuthForClient with the resolved values.")
+	{
+		entries := make([]jen.Code, 0, len(cfg.bedrockClientOptions))
+		keys := make([]string, 0, len(cfg.bedrockClientOptions))
+		for k := range cfg.bedrockClientOptions {
+			// Provider filter: a non-bedrock client that happens to
+			// declare endpoint_url / region (a typo, a future
+			// provider sharing the key) must NOT leak into the runtime
+			// map — codegen looks up by client name and would wire
+			// AttachBedrockAuthForClient against a non-Bedrock URL,
+			// silently changing behaviour. Filtering here keeps the
+			// generated map honest.
+			if cfg.clientProvider[k] != "aws-bedrock" {
+				continue
+			}
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, clientName := range keys {
+			opts := cfg.bedrockClientOptions[clientName]
+			entries = append(entries, jen.Lit(clientName).Op(":").Id("BedrockClientOptions").Values(jen.Dict{
+				jen.Id("EndpointURL"): bedrockOptionValueLit(opts.EndpointURL),
+				jen.Id("Region"):      bedrockOptionValueLit(opts.Region),
+			}))
+		}
+		out.Var().Id("BedrockClientOptionsByName").Op("=").Map(jen.String()).Id("BedrockClientOptions").Values(entries...)
+	}
+}
+
+// bedrockOptionValueLit renders a bedrockOptionValue as the
+// generated-Go literal for a BedrockOptionValue struct. Empty
+// (Provenance == "") values still render explicitly so the diff between
+// "EndpointURL set, Region unset" and "both set" is visually obvious in
+// the generated source.
+func bedrockOptionValueLit(v bedrockOptionValue) jen.Code {
+	return jen.Id("BedrockOptionValue").Values(jen.Dict{
+		jen.Id("Literal"):    jen.Lit(v.Literal),
+		jen.Id("EnvVar"):     jen.Lit(v.EnvVar),
+		jen.Id("Provenance"): jen.Lit(v.Provenance),
+	})
+}
+
+// emitBedrockOptionTypes emits the BedrockOptionValue struct, its
+// Resolve() method, and the BedrockClientOptions struct into the
+// generated introspected package. These types are part of the package's
+// stable surface so the codegen-emitted dispatch and the
+// runtime-emitted resolver agree on shape.
+//
+// Resolve() returns:
+//   - (Literal, true)            when Provenance == "literal"
+//   - (os.LookupEnv(EnvVar))     when Provenance == "env"
+//   - ("", false)                when Provenance == ""
+//
+// The runtime branch resolves env vars per-call so a worker that
+// reloads its environment between requests sees the new value.
+func emitBedrockOptionTypes(out *jen.File) {
+	out.Comment("BedrockOptionValue carries one parsed aws-bedrock option value with its provenance preserved.")
+	out.Comment("Provenance discriminates the value source: \"literal\" (Literal carries the bare string),")
+	out.Comment("\"env\" (EnvVar carries the env var name), or \"\" (no value declared).")
+	out.Type().Id("BedrockOptionValue").Struct(
+		jen.Id("Literal").String(),
+		jen.Id("EnvVar").String(),
+		jen.Id("Provenance").String(),
+	)
+
+	out.Comment("Resolve returns (value, ok) for this option:")
+	out.Comment("  - literal provenance: (Literal, true)")
+	out.Comment("  - env provenance:     os.LookupEnv(EnvVar)")
+	out.Comment("  - unset:              (\"\", false)")
+	out.Func().Params(jen.Id("v").Id("BedrockOptionValue")).Id("Resolve").Params().Params(jen.String(), jen.Bool()).Block(
+		jen.Switch(jen.Id("v").Dot("Provenance")).Block(
+			jen.Case(jen.Lit("literal")).Block(
+				jen.Return(jen.Id("v").Dot("Literal"), jen.True()),
+			),
+			jen.Case(jen.Lit("env")).Block(
+				jen.Return(jen.Qual("os", "LookupEnv").Call(jen.Id("v").Dot("EnvVar"))),
+			),
+		),
+		jen.Return(jen.Lit(""), jen.False()),
+	)
+
+	out.Comment("BedrockClientOptions carries the per-client aws-bedrock options that codegen needs at request-build time")
+	out.Comment("to override BAML's hardcoded modular Bedrock URL (BAML v0.219 hardcodes")
+	out.Comment("https://bedrock-runtime.<region>.amazonaws.com and the public Go HTTPRequest surface does not expose")
+	out.Comment("ClientDetails, so baml-rest carries its own resolved options keyed on client name).")
+	out.Type().Id("BedrockClientOptions").Struct(
+		jen.Id("EndpointURL").Id("BedrockOptionValue"),
+		jen.Id("Region").Id("BedrockOptionValue"),
+	)
 }

@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -309,4 +310,210 @@ func AttachBedrockAuth(ctx context.Context, req *Request) error {
 		Credentials: creds,
 	}
 	return nil
+}
+
+// BedrockAuthOptions carries the operator-configured aws-bedrock client
+// options that AttachBedrockAuthWithOptions needs to override the BAML-
+// emitted Bedrock URL and pin the SigV4 region. Populated by codegen
+// from the .baml `options { ... }` block via the introspected
+// BedrockClientOptions map.
+type BedrockAuthOptions struct {
+	// EndpointURL overrides the BAML-emitted Bedrock URL host (and
+	// scheme). Empty leaves req.URL untouched, so the existing
+	// bedrock-runtime.<region>.amazonaws.com value is signed as-is.
+	// The override preserves req.URL's path, query, and fragment so
+	// /model/<id>/converse and the streaming /converse-stream path
+	// mutation both flow through unchanged.
+	EndpointURL string
+
+	// Region is the AWS region SigV4 signs with. Empty falls back to
+	// the AWS_REGION env var; if that is also empty, the helper
+	// returns an error rather than guessing — custom endpoints (VPC,
+	// LocalStack, FIPS, China, GovCloud) break the host-based region
+	// extraction MaybeAttachBedrockAuth uses, so the region must come
+	// from config or env, never from URL parsing.
+	Region string
+
+	// Credentials is a forward-compat slot for the static-credentials
+	// follow-up (#254 item 2: access_key_id / secret_access_key /
+	// session_token / profile). Leave unset; nil means "use the default
+	// AWS credential chain" via DefaultAWSCredentialProvider. This PR
+	// does not populate the slot — wiring it is the static-creds PR's
+	// job. Documenting the field here keeps the API stable across the
+	// two PRs so the codegen call site doesn't change again when
+	// static creds land.
+	Credentials aws.CredentialsProvider
+}
+
+// AttachBedrockAuthWithOptions applies an explicit Bedrock endpoint
+// override (when opts.EndpointURL is set), validates region, and
+// attaches the SigV4 metadata so the downstream Execute / ExecuteAWS-
+// Stream path signs the final URL.
+//
+// Unlike MaybeAttachBedrockAuth, this helper does NOT infer "is this a
+// Bedrock request" from the URL host. Callers must only invoke it for
+// requests they have already identified as targeting aws-bedrock — the
+// codegen dispatch in adapters/common/codegen does this by gating on
+// the introspected BedrockClientOptions map (only aws-bedrock clients
+// land in that map). That separation is what lets the override safely
+// rewrite the URL to a non-AWS host (LocalStack, VPC endpoint, FIPS,
+// China, GovCloud) without first re-parsing the host to confirm it is
+// Bedrock.
+func AttachBedrockAuthWithOptions(ctx context.Context, req *Request, opts BedrockAuthOptions) error {
+	if req == nil {
+		return errors.New("llmhttp: AttachBedrockAuthWithOptions: nil request")
+	}
+
+	if opts.EndpointURL != "" {
+		rewritten, err := rewriteBedrockEndpoint(req.URL, opts.EndpointURL)
+		if err != nil {
+			return err
+		}
+		req.URL = rewritten
+	}
+
+	region := opts.Region
+	if region == "" {
+		region = os.Getenv("AWS_REGION")
+	}
+	if region == "" {
+		return errors.New("aws-bedrock: region is required (set via .baml options.region or AWS_REGION env)")
+	}
+
+	creds := opts.Credentials
+	if creds == nil {
+		// Default credential chain. Static credential plumbing is
+		// deferred — see the BedrockAuthOptions.Credentials doc.
+		c, err := DefaultAWSCredentialProvider(ctx)
+		if err != nil {
+			return fmt.Errorf("llmhttp: load AWS credentials: %w", err)
+		}
+		creds = c
+	}
+
+	req.AWSAuth = &AWSAuthConfig{
+		Region:      region,
+		Service:     "bedrock",
+		Credentials: creds,
+	}
+	return nil
+}
+
+// rewriteBedrockEndpoint replaces the scheme + host of originalURL with
+// the scheme + host of endpointURL, concatenates the endpoint's path
+// prefix with the original request's path, merges the endpoint's query
+// with the original request's query, and preserves the original
+// request's fragment. A trailing slash on endpointURL is tolerated so
+// operators don't have to remember to strip it from
+// `endpoint_url "http://localhost:9000/"` shaped configs.
+//
+// Path concatenation matches AWS SDK v2's ResolveEndpointV2 middleware
+// behavior: the endpoint's URI path acts as a prefix on every request
+// URI. Without this, a path-prefixed proxy
+// (`endpoint_url "https://my-proxy/v1/bedrock"`) would silently drop
+// the `/v1/bedrock` prefix and misroute every request.
+//
+// Query merge uses `&` join semantics so endpoint-set query knobs
+// (auth tokens, routing tags) and BAML-set query knobs (none today,
+// but the join is the right semantic) coexist on the wire.
+//
+// Endpoint fragments are rejected — fragments are client-side and
+// have no meaning combined with request routing. The original
+// request's fragment is preserved defensively; BAML's HTTPRequest
+// never sets one in practice.
+func rewriteBedrockEndpoint(originalURL, endpointURL string) (string, error) {
+	endpointParsed, err := url.Parse(endpointURL)
+	if err != nil {
+		return "", fmt.Errorf("aws-bedrock: parse endpoint_url %q: %w", endpointURL, err)
+	}
+	if endpointParsed.Scheme == "" {
+		return "", fmt.Errorf("aws-bedrock: endpoint_url %q is missing scheme", endpointURL)
+	}
+	if endpointParsed.Scheme != "http" && endpointParsed.Scheme != "https" {
+		return "", fmt.Errorf("aws-bedrock: endpoint_url %q has unsupported scheme %q (expected http or https)", endpointURL, endpointParsed.Scheme)
+	}
+	if endpointParsed.Host == "" {
+		return "", fmt.Errorf("aws-bedrock: endpoint_url %q is missing host", endpointURL)
+	}
+	if endpointParsed.Fragment != "" {
+		return "", fmt.Errorf("aws-bedrock: endpoint_url %q must not contain fragment", endpointURL)
+	}
+
+	originalParsed, err := url.Parse(originalURL)
+	if err != nil {
+		return "", fmt.Errorf("aws-bedrock: parse request URL %q: %w", originalURL, err)
+	}
+
+	rewritten := url.URL{
+		Scheme:   endpointParsed.Scheme,
+		Host:     endpointParsed.Host,
+		Path:     joinEndpointPath(endpointParsed.Path, originalParsed.Path),
+		RawQuery: joinEndpointRawQuery(endpointParsed.RawQuery, originalParsed.RawQuery),
+		Fragment: originalParsed.Fragment,
+	}
+	return rewritten.String(), nil
+}
+
+// joinEndpointPath joins an endpoint's path prefix with a request's
+// path. Mirrors smithy-go's transport/http.JoinPath: the endpoint
+// prefix's trailing slash and the path's leading slash are reconciled
+// so a single `/` separates them, never zero and never two.
+//
+// Empty / "/" prefix → return path unchanged. Empty path with a
+// non-empty prefix → return the prefix (defensive; in practice the
+// path is always the BAML-supplied `/model/.../converse[-stream]`).
+func joinEndpointPath(prefix, path string) string {
+	if prefix == "" || prefix == "/" {
+		return path
+	}
+	prefix = strings.TrimRight(prefix, "/")
+	if path == "" {
+		return prefix
+	}
+	if !strings.HasPrefix(path, "/") {
+		return prefix + "/" + path
+	}
+	return prefix + path
+}
+
+// joinEndpointRawQuery merges an endpoint's RawQuery with a request's
+// RawQuery using `&` as the joiner. Either side empty → use the other;
+// both empty → empty. Duplicate keys are preserved (the wire format
+// allows them and downstream parsers handle them per their own rules).
+func joinEndpointRawQuery(prefix, suffix string) string {
+	switch {
+	case prefix == "" && suffix == "":
+		return ""
+	case prefix == "":
+		return suffix
+	case suffix == "":
+		return prefix
+	default:
+		return prefix + "&" + suffix
+	}
+}
+
+// AttachBedrockAuthForClient is the codegen dispatch entry point for
+// the aws-bedrock provider. When endpointURL or region is non-empty
+// (i.e., the operator configured an override in `.baml options { ... }`
+// for the selected client), it routes to AttachBedrockAuthWithOptions
+// so the explicit endpoint and region are honored. When both are empty,
+// it falls through to MaybeAttachBedrockAuth's URL-pattern detection —
+// preserving the default-endpoint contract for clients that did not
+// declare an override.
+//
+// The split exists because custom endpoints (VPC, LocalStack, FIPS,
+// China, GovCloud) break the host-based region extraction
+// MaybeAttachBedrockAuth uses; once the operator supplies an override,
+// we must take the explicit path. Codegen looks up
+// `introspected.BedrockClientOptionsByName[selectedClient]` and resolves
+// the literal-vs-env values before calling this helper.
+func AttachBedrockAuthForClient(ctx context.Context, req *Request, endpointURL, region string) error {
+	if endpointURL == "" && region == "" {
+		return MaybeAttachBedrockAuth(ctx, req)
+	}
+	return AttachBedrockAuthWithOptions(ctx, req, BedrockAuthOptions{
+		EndpointURL: endpointURL,
+		Region:      region,
+	})
 }

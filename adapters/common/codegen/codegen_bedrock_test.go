@@ -128,19 +128,22 @@ func newBedrockTestMethodEmitter(t *testing.T) *methodEmitter {
 	}
 }
 
-// TestEmitBuildCallRequest_EmitsMaybeAttachBedrockAuth pins the
-// real call-branch emission (not just the helper): the generated
-// _buildCallRequest closure must invoke llmhttp.MaybeAttachBedrockAuth
-// after BAML's Request.<Method> builds the body. A regression that
-// dropped the postProcess argument from emitBuildCallRequest's
-// emitBAMLHTTPRequestConversion call would compile cleanly (the
-// parameter is variadic-shaped via nil-safety) and silently revert to
-// streaming-style "no attach". This test catches that.
+// TestEmitBuildCallRequest_EmitsBedrockAuthDispatch pins the real
+// call-branch emission (not just the helper): the generated
+// _buildCallRequest closure must invoke the client-aware Bedrock
+// dispatch — resolve the selected client name, look up
+// introspected.BedrockClientOptionsByName, then call
+// llmhttp.AttachBedrockAuthForClient with the resolved endpoint and
+// region values. A regression that dropped the postProcess argument
+// from emitBuildCallRequest's emitBAMLHTTPRequestConversion call would
+// compile cleanly (the parameter is variadic-shaped via nil-safety)
+// and silently revert to streaming-style "no attach". This test
+// catches that.
 //
 // Gated on introspected.Request being non-nil because emitBuildCallRequest
 // no-ops for adapters without the BAML Request API. The test restores
 // the singleton on cleanup so adjacent tests are not perturbed.
-func TestEmitBuildCallRequest_EmitsMaybeAttachBedrockAuth(t *testing.T) {
+func TestEmitBuildCallRequest_EmitsBedrockAuthDispatch(t *testing.T) {
 	savedRequest := introspected.Request
 	t.Cleanup(func() { introspected.Request = savedRequest })
 	introspected.Request = struct{}{}
@@ -149,18 +152,35 @@ func TestEmitBuildCallRequest_EmitsMaybeAttachBedrockAuth(t *testing.T) {
 	me.emitBuildCallRequest()
 	rendered := me.g.out.GoString()
 
-	if !strings.Contains(rendered, "llmhttp.MaybeAttachBedrockAuth(ctx, req)") {
-		t.Errorf("emitBuildCallRequest must emit llmhttp.MaybeAttachBedrockAuth(ctx, req); rendered:\n%s", rendered)
+	// Selected-client resolve: clientOverride first, then fall back to
+	// introspected.FunctionClient[<methodName>] for the default client.
+	if !strings.Contains(rendered, "selectedClient := clientOverride") {
+		t.Errorf("dispatch must resolve selectedClient from clientOverride; rendered:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, `introspected.FunctionClient["GreetUser"]`) {
+		t.Errorf("dispatch must fall back to introspected.FunctionClient[%q] when clientOverride is empty; rendered:\n%s", "GreetUser", rendered)
+	}
+	// BedrockClientOptionsByName lookup keyed on the resolved selected client.
+	if !strings.Contains(rendered, "introspected.BedrockClientOptionsByName[selectedClient]") {
+		t.Errorf("dispatch must look up introspected.BedrockClientOptionsByName[selectedClient]; rendered:\n%s", rendered)
+	}
+	// The dispatch must invoke AttachBedrockAuthForClient with the
+	// resolved endpoint and region locals. AttachBedrockAuthForClient
+	// internally falls through to MaybeAttachBedrockAuth when both
+	// values are empty, so the URL-pattern detection contract holds
+	// without re-emitting the helper here.
+	if !strings.Contains(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req, bedrockEndpointURL, bedrockRegion)") {
+		t.Errorf("dispatch must call llmhttp.AttachBedrockAuthForClient with resolved endpoint+region; rendered:\n%s", rendered)
 	}
 	// The attach lives inside the buildRequestFn closure, between the
 	// httpReq construction and the closure's final return. Pin both
 	// neighbours positionally so a refactor that moves the attach
 	// outside the closure (e.g. into the orchestrator) fails this
 	// test rather than silently changing semantics.
-	bedrockIdx := strings.Index(rendered, "llmhttp.MaybeAttachBedrockAuth(ctx, req)")
+	dispatchIdx := strings.Index(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req")
 	buildFnIdx := strings.Index(rendered, "buildRequestFn :=")
-	if buildFnIdx < 0 || bedrockIdx < 0 || !(buildFnIdx < bedrockIdx) {
-		t.Errorf("attach must sit inside the buildRequestFn closure; positions buildFn=%d attach=%d", buildFnIdx, bedrockIdx)
+	if buildFnIdx < 0 || dispatchIdx < 0 || !(buildFnIdx < dispatchIdx) {
+		t.Errorf("dispatch must sit inside the buildRequestFn closure; positions buildFn=%d dispatch=%d", buildFnIdx, dispatchIdx)
 	}
 }
 
@@ -212,11 +232,52 @@ func TestEmitBuildRequest_EmitsBedrockStreamingClosure(t *testing.T) {
 	if !strings.Contains(rendered, `req.Headers["Accept"] = llmhttp.AWSStreamContentType`) {
 		t.Errorf("bedrock streaming closure must set req.Headers[\"Accept\"] = llmhttp.AWSStreamContentType; rendered:\n%s", rendered)
 	}
-	// Auth attach still uses MaybeAttachBedrockAuth so non-bedrock
-	// URLs no-op (defensive: production codegen only routes bedrock
-	// providers here, but the helper is the shared entry point).
-	if !strings.Contains(rendered, "llmhttp.MaybeAttachBedrockAuth(ctx, req)") {
-		t.Errorf("bedrock streaming closure must call MaybeAttachBedrockAuth; rendered:\n%s", rendered)
+	// Auth attach uses the client-aware dispatch (which internally
+	// falls through to MaybeAttachBedrockAuth for the default-endpoint
+	// case) — the streaming closure picks up the same per-client
+	// endpoint_url + region overrides as the call closure.
+	if !strings.Contains(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req, bedrockEndpointURL, bedrockRegion)") {
+		t.Errorf("bedrock streaming closure must call llmhttp.AttachBedrockAuthForClient with resolved endpoint+region; rendered:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "introspected.BedrockClientOptionsByName[selectedClient]") {
+		t.Errorf("bedrock streaming closure must look up introspected.BedrockClientOptionsByName[selectedClient]; rendered:\n%s", rendered)
+	}
+	// Order invariant: URL mutation /converse → /converse-stream must
+	// emit BEFORE the dispatch so AttachBedrockAuthForClient (and any
+	// endpoint_url override it routes to) joins on the streaming path.
+	mutationIdx := strings.Index(rendered, `strings.Replace(req.URL, "/converse", "/converse-stream", 1)`)
+	dispatchIdx := strings.Index(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req")
+	if mutationIdx < 0 || dispatchIdx < 0 || !(mutationIdx < dispatchIdx) {
+		t.Errorf("URL mutation must precede the bedrock dispatch in the stream closure; positions mutation=%d dispatch=%d", mutationIdx, dispatchIdx)
+	}
+}
+
+// TestEmitBedrockAuthDispatchFor_Shape pins the standalone shape of
+// the dispatch helper so any future tweak to the resolve-name +
+// look-up + dispatch sequence surfaces immediately rather than only
+// via the closure-emission tests above. The shape is the load-bearing
+// contract that makes per-client `endpoint_url` parity work without
+// reading from BAML's HTTPRequest surface.
+func TestEmitBedrockAuthDispatchFor_Shape(t *testing.T) {
+	f := jen.NewFilePathName("github.com/example/test", "test")
+	f.Func().Id("emit").Params(jen.Id("clientOverride").String()).Params(jen.Op("*").Id("Request"), jen.Error()).BlockFunc(func(g *jen.Group) {
+		emitBedrockAuthDispatchFor("MyMethod")(g)
+	})
+	rendered := f.GoString()
+
+	wantSubstrings := []string{
+		"selectedClient := clientOverride",
+		`introspected.FunctionClient["MyMethod"]`,
+		"introspected.BedrockClientOptionsByName[selectedClient]",
+		"bedrockOpts.EndpointURL.Resolve()",
+		"bedrockOpts.Region.Resolve()",
+		"llmhttp.AttachBedrockAuthForClient(ctx, req, bedrockEndpointURL, bedrockRegion)",
+		"return nil, authErr",
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("dispatch emission missing %q; rendered:\n%s", want, rendered)
+		}
 	}
 }
 

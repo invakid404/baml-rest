@@ -6,6 +6,7 @@ import (
 	bamlutils "github.com/invakid404/baml-rest/bamlutils"
 	roundrobin "github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
 	retry "github.com/invakid404/baml-rest/bamlutils/retry"
+	"os"
 )
 
 // Stream is the BAML streaming client instance
@@ -64,26 +65,56 @@ var RetryPolicies = map[string]*retry.Policy{}
 // FunctionRetryPolicy maps BAML function names to their retry policy name
 var FunctionRetryPolicy = map[string]string{}
 
-// ClientRetryPolicy maps BAML client names to their declared retry policy name.
-// Used by the BuildRequest router (keyed on the effective client after any
-// baml-roundrobin unwrap) instead of FunctionRetryPolicy.
+// ClientRetryPolicy maps BAML client names to their declared retry policy name
 var ClientRetryPolicy = map[string]string{}
 
 // FallbackChains maps strategy client names to their ordered list of child client names
 var FallbackChains = map[string][]string{}
 
-// RoundRobinStart maps baml-roundrobin client names to their configured
-// start index. Nil by default so cmd/serve's nil-check on SharedStateSeeds
-// skips provisioning the host-side SharedState broker socket; the
-// generator replaces this stub with an initialised map only when the
-// .baml source defines at least one baml-roundrobin client.
+// RoundRobinStart maps baml-roundrobin client names to their configured start index
+// Nil when the source defines no baml-roundrobin clients; cmd/serve uses that as the gate
+// for provisioning the host-side SharedState server.
 var RoundRobinStart map[string]int
 
-// RoundRobinCoordinator holds the per-process, per-client round-robin
-// counters used by the BuildRequest path. Generated introspection emits
-// a freshly-constructed Coordinator here so static baml-roundrobin
-// clients keep contiguous counters across requests.
+// RoundRobinCoordinator holds per-client round-robin counters shared across requests
 var RoundRobinCoordinator = roundrobin.NewCoordinatorWithStarts(RoundRobinStart)
+
+// BedrockOptionValue carries one parsed aws-bedrock option value with its provenance preserved.
+// Provenance discriminates the value source: "literal" (Literal carries the bare string),
+// "env" (EnvVar carries the env var name), or "" (no value declared).
+type BedrockOptionValue struct {
+	Literal    string
+	EnvVar     string
+	Provenance string
+}
+
+// Resolve returns (value, ok) for this option:
+//   - literal provenance: (Literal, true)
+//   - env provenance:     os.LookupEnv(EnvVar)
+//   - unset:              ("", false)
+func (v BedrockOptionValue) Resolve() (string, bool) {
+	switch v.Provenance {
+	case "literal":
+		return v.Literal, true
+	case "env":
+		return os.LookupEnv(v.EnvVar)
+	}
+	return "", false
+}
+
+// BedrockClientOptions carries the per-client aws-bedrock options that codegen needs at request-build time
+// to override BAML's hardcoded modular Bedrock URL (BAML v0.219 hardcodes
+// https://bedrock-runtime.<region>.amazonaws.com and the public Go HTTPRequest surface does not expose
+// ClientDetails, so baml-rest carries its own resolved options keyed on client name).
+type BedrockClientOptions struct {
+	EndpointURL BedrockOptionValue
+	Region      BedrockOptionValue
+}
+
+// BedrockClientOptionsByName maps aws-bedrock client names to their parsed endpoint_url + region options.
+// Codegen looks up the resolved client name here at request-build time and dispatches to
+// llmhttp.AttachBedrockAuthForClient with the resolved values.
+var BedrockClientOptionsByName = map[string]BedrockClientOptions{}
 
 // TypeBuilder type
 type TypeBuilder struct{}
