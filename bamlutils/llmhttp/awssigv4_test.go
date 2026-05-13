@@ -822,6 +822,291 @@ func TestAttachBedrockAuthWithOptions_SigningCoversRewrittenURL(t *testing.T) {
 	}
 }
 
+// TestAttachBedrockAuthWithOptions_EndpointPathConcat pins the
+// path-concatenation contract for path-prefixed proxies.
+//
+// CR Round 1 (PR #262 finding 2) caught that the helper used to drop
+// the endpoint's path silently. Operators setting
+// `endpoint_url "https://my-proxy.example.com/v1/bedrock"` would have
+// requests misrouted to `https://my-proxy.example.com/model/.../converse`
+// without the `/v1/bedrock` prefix. This matches AWS SDK v2's
+// ResolveEndpointV2 middleware semantics: the endpoint URI path
+// prepends every request URI.
+//
+// The matrix here covers the trailing-slash / leading-slash join
+// permutations (Smithy JoinPath semantics) plus the streaming-path
+// preservation invariant — the codegen mutates /converse →
+// /converse-stream BEFORE this helper runs, so the helper sees the
+// already-mutated path and must concatenate against it intact.
+func TestAttachBedrockAuthWithOptions_EndpointPathConcat(t *testing.T) {
+	creds := staticCreds{cred: aws.Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}}
+	cases := []struct {
+		name        string
+		originalURL string
+		endpoint    string
+		wantURL     string
+	}{
+		{
+			name:        "no path on endpoint preserves original path",
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse",
+			endpoint:    "http://h",
+			wantURL:     "http://h/model/x/converse",
+		},
+		{
+			name:        "root-only path on endpoint preserves original path (no double slash)",
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse",
+			endpoint:    "http://h/",
+			wantURL:     "http://h/model/x/converse",
+		},
+		{
+			name:        "single-segment endpoint prefix concatenates",
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse",
+			endpoint:    "http://h/base",
+			wantURL:     "http://h/base/model/x/converse",
+		},
+		{
+			name:        "single-segment endpoint with trailing slash does not double-slash",
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse",
+			endpoint:    "http://h/base/",
+			wantURL:     "http://h/base/model/x/converse",
+		},
+		{
+			name:        "multi-segment endpoint prefix concatenates",
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse",
+			endpoint:    "http://h/base/sub",
+			wantURL:     "http://h/base/sub/model/x/converse",
+		},
+		{
+			name: "streaming path concatenates against /converse-stream",
+			// The codegen mutates /converse → /converse-stream BEFORE
+			// AttachBedrockAuthForClient runs (see emitBedrockStreamPostProcessFor),
+			// so this helper must see the already-mutated path and
+			// concatenate the prefix against it without further rewrite.
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse-stream",
+			endpoint:    "http://h/v1/bedrock",
+			wantURL:     "http://h/v1/bedrock/model/x/converse-stream",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &Request{
+				URL:     tc.originalURL,
+				Method:  "POST",
+				Headers: map[string]string{"Content-Type": "application/json"},
+				Body:    `{}`,
+			}
+			if err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+				EndpointURL: tc.endpoint,
+				Region:      "us-east-1",
+				Credentials: creds,
+			}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if req.URL != tc.wantURL {
+				t.Errorf("URL = %q, want %q", req.URL, tc.wantURL)
+			}
+		})
+	}
+}
+
+// TestAttachBedrockAuthWithOptions_EndpointQueryMerge pins the query
+// merge contract: endpoint-set query knobs and original query knobs
+// coexist on the wire, joined with `&` so the resulting query string
+// preserves both. Either side empty → use the other; both empty →
+// empty (no stray `?` or `&`).
+func TestAttachBedrockAuthWithOptions_EndpointQueryMerge(t *testing.T) {
+	creds := staticCreds{cred: aws.Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}}
+	cases := []struct {
+		name        string
+		originalURL string
+		endpoint    string
+		wantURL     string
+	}{
+		{
+			name:        "endpoint query + original query → joined with &",
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse?bar=2",
+			endpoint:    "http://h/?foo=1",
+			wantURL:     "http://h/model/x/converse?foo=1&bar=2",
+		},
+		{
+			name:        "endpoint-only query, original has no query",
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse",
+			endpoint:    "http://h?foo=1",
+			wantURL:     "http://h/model/x/converse?foo=1",
+		},
+		{
+			name:        "original-only query, endpoint has no query",
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse?bar=2",
+			endpoint:    "http://h",
+			wantURL:     "http://h/model/x/converse?bar=2",
+		},
+		{
+			name:        "no query on either side",
+			originalURL: "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse",
+			endpoint:    "http://h",
+			wantURL:     "http://h/model/x/converse",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &Request{
+				URL:    tc.originalURL,
+				Method: "POST",
+				Body:   `{}`,
+			}
+			if err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+				EndpointURL: tc.endpoint,
+				Region:      "us-east-1",
+				Credentials: creds,
+			}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if req.URL != tc.wantURL {
+				t.Errorf("URL = %q, want %q", req.URL, tc.wantURL)
+			}
+		})
+	}
+}
+
+// TestAttachBedrockAuthWithOptions_RejectsEndpointFragment pins the
+// fragment-rejection contract. Fragments are client-side identifiers
+// (RFC 3986 §3.5: not sent in HTTP requests) and have no meaning when
+// combined with request routing — silently dropping or concatenating
+// them would mask operator misconfiguration. The error message must
+// surface both the failing endpoint_url and the word "fragment" so
+// the diagnostic points operators at the actual problem.
+func TestAttachBedrockAuthWithOptions_RejectsEndpointFragment(t *testing.T) {
+	req := &Request{
+		URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse",
+		Method: "POST",
+		Body:   `{}`,
+	}
+	err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+		EndpointURL: "http://h#frag",
+		Region:      "us-east-1",
+		Credentials: staticCreds{cred: aws.Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for endpoint_url with fragment, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "endpoint_url") {
+		t.Errorf("error must mention endpoint_url; got: %v", err)
+	}
+	if !strings.Contains(msg, "fragment") {
+		t.Errorf("error must mention fragment; got: %v", err)
+	}
+}
+
+// TestAttachBedrockAuthWithOptions_SigningCoversConcatenatedPath pins
+// the post-fix invariant for path-prefixed proxies: SigV4 must sign
+// over the *concatenated* URL, not over the unprefixed one. Without
+// this, an operator routing through `https://proxy/v1/bedrock` would
+// see signature mismatches at the proxy because the canonical request
+// the signer hashed was `/model/.../converse` while the wire URI was
+// `/v1/bedrock/model/.../converse`.
+//
+// We assert two things: req.URL after attach is the concatenated form
+// (so a downstream signer hashing req.URL gets the right canonical
+// path), and signRequest over that req.URL produces the standard
+// SigV4 credential scope tying to the configured region.
+func TestAttachBedrockAuthWithOptions_SigningCoversConcatenatedPath(t *testing.T) {
+	pinned := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	req := &Request{
+		URL:     "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+		Method:  "POST",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Body:    `{"messages":[]}`,
+	}
+	if err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+		EndpointURL: "http://h/v1/bedrock",
+		Region:      "us-east-1",
+		Credentials: staticCreds{cred: aws.Credentials{
+			AccessKeyID:     "AKIDEXAMPLE",
+			SecretAccessKey: "SECRETEXAMPLE",
+		}},
+	}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	req.AWSAuth.NowFunc = func() time.Time { return pinned }
+
+	wantURL := "http://h/v1/bedrock/model/foo/converse"
+	if req.URL != wantURL {
+		t.Fatalf("post-attach URL = %q, want %q", req.URL, wantURL)
+	}
+
+	if err := signRequest(context.Background(), req, req.URL); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	auth := req.Headers["Authorization"]
+	if auth == "" {
+		t.Fatal("Authorization header missing")
+	}
+	if !strings.Contains(auth, "/20260511/us-east-1/bedrock/aws4_request") {
+		t.Errorf("credential scope must reference us-east-1/bedrock; got: %s", auth)
+	}
+}
+
+// TestJoinEndpointPath unit-tests the standalone path-join helper so
+// the trailing-slash / leading-slash join semantics are pinned in
+// isolation from the larger AttachBedrockAuthWithOptions plumbing.
+// Mirrors smithy-go's transport/http.JoinPath: a single `/` always
+// separates prefix from path, never zero, never two.
+func TestJoinEndpointPath(t *testing.T) {
+	cases := []struct {
+		name   string
+		prefix string
+		path   string
+		want   string
+	}{
+		{"empty prefix", "", "/model/x", "/model/x"},
+		{"root prefix", "/", "/model/x", "/model/x"},
+		{"prefix no trailing", "/base", "/model/x", "/base/model/x"},
+		{"prefix trailing slash", "/base/", "/model/x", "/base/model/x"},
+		{"prefix multi-segment", "/base/sub", "/model/x", "/base/sub/model/x"},
+		{"prefix multi-segment trailing slash", "/base/sub/", "/model/x", "/base/sub/model/x"},
+		{"prefix without leading slash + path with leading slash", "base", "/model/x", "base/model/x"},
+		{"empty path with non-empty prefix", "/base", "", "/base"},
+		{"empty path with prefix and trailing slash", "/base/", "", "/base"},
+		{"path without leading slash", "/base", "model/x", "/base/model/x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := joinEndpointPath(tc.prefix, tc.path); got != tc.want {
+				t.Errorf("joinEndpointPath(%q, %q) = %q, want %q", tc.prefix, tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestJoinEndpointRawQuery unit-tests the standalone query-merge
+// helper. Either side empty → use the other; both empty → empty;
+// otherwise join with `&`. Duplicate keys are preserved on the wire
+// (downstream parsers handle them per their own rules — typically
+// last-wins, but we don't enforce a policy here).
+func TestJoinEndpointRawQuery(t *testing.T) {
+	cases := []struct {
+		name   string
+		prefix string
+		suffix string
+		want   string
+	}{
+		{"both empty", "", "", ""},
+		{"prefix only", "foo=1", "", "foo=1"},
+		{"suffix only", "", "bar=2", "bar=2"},
+		{"both populated joined with &", "foo=1", "bar=2", "foo=1&bar=2"},
+		{"duplicate keys preserved", "foo=1", "foo=2", "foo=1&foo=2"},
+		{"multi-pair on each side", "a=1&b=2", "c=3&d=4", "a=1&b=2&c=3&d=4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := joinEndpointRawQuery(tc.prefix, tc.suffix); got != tc.want {
+				t.Errorf("joinEndpointRawQuery(%q, %q) = %q, want %q", tc.prefix, tc.suffix, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAttachBedrockAuthForClient_DispatchesByOptions pins the codegen
 // dispatch contract: empty endpoint+region falls through to URL-pattern
 // detection (so the default-endpoint case still attaches via

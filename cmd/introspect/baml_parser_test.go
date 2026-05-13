@@ -1780,11 +1780,21 @@ client<llm> PlainBedrock {
 }
 
 // TestParseClientBlock_BedrockEndpointURL_NonBedrockClient pins the
-// emission-time provider filter contract: even though the parser
-// records the option for any client that declares it, the eventual
-// emitted BedrockClientOptionsByName map must NOT contain non-bedrock
-// clients. This test runs through generateBamlConfigVars and inspects
-// the rendered Go output to confirm the filter.
+// parser-side recording contract for the provider-filter split:
+// the parser records a candidate bedrockClientOptions entry for any
+// client whose options block declares endpoint_url / region,
+// regardless of provider. Provider filtering happens downstream at
+// emission time (generateBamlConfigVars filters cfg.bedrockClientOptions
+// by `cfg.clientProvider[name] == "aws-bedrock"` before emitting
+// `BedrockClientOptionsByName`), so the runtime map only contains
+// aws-bedrock clients even though the parser map can contain others.
+//
+// Keeping the parser permissive avoids threading provider lookahead
+// through the per-line option scan; the emission-time filter is the
+// correctness boundary. Codegen's BedrockClientOptionsByName lookup
+// only ever sees aws-bedrock clients because of that filter — see
+// the dedicated assertion in `cmd/introspect/main.go` (provider
+// filter at the BedrockClientOptionsByName emission site).
 func TestParseClientBlock_BedrockEndpointURL_NonBedrockClient(t *testing.T) {
 	cfg := newTestBamlConfig()
 	content := `

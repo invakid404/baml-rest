@@ -400,10 +400,27 @@ func AttachBedrockAuthWithOptions(ctx context.Context, req *Request, opts Bedroc
 }
 
 // rewriteBedrockEndpoint replaces the scheme + host of originalURL with
-// the scheme + host of endpointURL while preserving the original
-// request's path, query, and fragment. A trailing slash on endpointURL
-// is tolerated so operators don't have to remember to strip it from
+// the scheme + host of endpointURL, concatenates the endpoint's path
+// prefix with the original request's path, merges the endpoint's query
+// with the original request's query, and preserves the original
+// request's fragment. A trailing slash on endpointURL is tolerated so
+// operators don't have to remember to strip it from
 // `endpoint_url "http://localhost:9000/"` shaped configs.
+//
+// Path concatenation matches AWS SDK v2's ResolveEndpointV2 middleware
+// behavior: the endpoint's URI path acts as a prefix on every request
+// URI. Without this, a path-prefixed proxy
+// (`endpoint_url "https://my-proxy/v1/bedrock"`) would silently drop
+// the `/v1/bedrock` prefix and misroute every request.
+//
+// Query merge uses `&` join semantics so endpoint-set query knobs
+// (auth tokens, routing tags) and BAML-set query knobs (none today,
+// but the join is the right semantic) coexist on the wire.
+//
+// Endpoint fragments are rejected — fragments are client-side and
+// have no meaning combined with request routing. The original
+// request's fragment is preserved defensively; BAML's HTTPRequest
+// never sets one in practice.
 func rewriteBedrockEndpoint(originalURL, endpointURL string) (string, error) {
 	endpointParsed, err := url.Parse(endpointURL)
 	if err != nil {
@@ -418,6 +435,9 @@ func rewriteBedrockEndpoint(originalURL, endpointURL string) (string, error) {
 	if endpointParsed.Host == "" {
 		return "", fmt.Errorf("aws-bedrock: endpoint_url %q is missing host", endpointURL)
 	}
+	if endpointParsed.Fragment != "" {
+		return "", fmt.Errorf("aws-bedrock: endpoint_url %q must not contain fragment", endpointURL)
+	}
 
 	originalParsed, err := url.Parse(originalURL)
 	if err != nil {
@@ -427,11 +447,50 @@ func rewriteBedrockEndpoint(originalURL, endpointURL string) (string, error) {
 	rewritten := url.URL{
 		Scheme:   endpointParsed.Scheme,
 		Host:     endpointParsed.Host,
-		Path:     originalParsed.Path,
-		RawQuery: originalParsed.RawQuery,
+		Path:     joinEndpointPath(endpointParsed.Path, originalParsed.Path),
+		RawQuery: joinEndpointRawQuery(endpointParsed.RawQuery, originalParsed.RawQuery),
 		Fragment: originalParsed.Fragment,
 	}
 	return rewritten.String(), nil
+}
+
+// joinEndpointPath joins an endpoint's path prefix with a request's
+// path. Mirrors smithy-go's transport/http.JoinPath: the endpoint
+// prefix's trailing slash and the path's leading slash are reconciled
+// so a single `/` separates them, never zero and never two.
+//
+// Empty / "/" prefix → return path unchanged. Empty path with a
+// non-empty prefix → return the prefix (defensive; in practice the
+// path is always the BAML-supplied `/model/.../converse[-stream]`).
+func joinEndpointPath(prefix, path string) string {
+	if prefix == "" || prefix == "/" {
+		return path
+	}
+	prefix = strings.TrimRight(prefix, "/")
+	if path == "" {
+		return prefix
+	}
+	if !strings.HasPrefix(path, "/") {
+		return prefix + "/" + path
+	}
+	return prefix + path
+}
+
+// joinEndpointRawQuery merges an endpoint's RawQuery with a request's
+// RawQuery using `&` as the joiner. Either side empty → use the other;
+// both empty → empty. Duplicate keys are preserved (the wire format
+// allows them and downstream parsers handle them per their own rules).
+func joinEndpointRawQuery(prefix, suffix string) string {
+	switch {
+	case prefix == "" && suffix == "":
+		return ""
+	case prefix == "":
+		return suffix
+	case suffix == "":
+		return prefix
+	default:
+		return prefix + "&" + suffix
+	}
 }
 
 // AttachBedrockAuthForClient is the codegen dispatch entry point for
@@ -447,8 +506,8 @@ func rewriteBedrockEndpoint(originalURL, endpointURL string) (string, error) {
 // China, GovCloud) break the host-based region extraction
 // MaybeAttachBedrockAuth uses; once the operator supplies an override,
 // we must take the explicit path. Codegen looks up
-// `introspected.BedrockClientOptions[selectedClient]` and resolves the
-// literal-vs-env values before calling this helper.
+// `introspected.BedrockClientOptionsByName[selectedClient]` and resolves
+// the literal-vs-env values before calling this helper.
 func AttachBedrockAuthForClient(ctx context.Context, req *Request, endpointURL, region string) error {
 	if endpointURL == "" && region == "" {
 		return MaybeAttachBedrockAuth(ctx, req)
