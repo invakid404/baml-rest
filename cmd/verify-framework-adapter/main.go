@@ -1,27 +1,21 @@
-// verify-framework-adapter is the CI-side gate for #199 item 1 / PR
-// 4a's verifier-only phase. It runs three independent checks against
-// the codegen-emitted framework adapter.go for every per-adapter
-// module:
+// verify-framework-adapter is the CI-side gate for the codegen-emit
+// framework adapter.go produced by adapters/common/codegen. It runs
+// two independent checks per adapter:
 //
-//  1. Structural equivalence: emit the framework adapter.go, gofmt
-//     it, parse with go/parser, and AST-diff against the source-
-//     tree's hand-written file (also gofmted). Tolerates comment-
-//     text differences; fails on any other AST-level divergence.
-//
-//  2. Deterministic emission: run the emitter twice and byte-diff the
+//  1. Deterministic emission: run the emitter twice and byte-diff the
 //     outputs. Fails if any map iteration in the new emit code or in
 //     a downstream jen helper is unsorted.
 //
-//  3. Behavioural test parity: copy the per-adapter module to a
-//     tempdir, replace adapter/adapter.go with the codegen-emitted
-//     candidate, rewrite the go.mod's relative `replace` directives
-//     to absolute paths so the tempdir copy compiles, and run
+//  2. Behavioural test parity: copy the per-adapter module to a
+//     tempdir, write the codegen-emitted adapter/adapter.go into it,
+//     rewrite the go.mod's relative `replace` directives to absolute
+//     paths so the tempdir copy compiles, and run
 //     `GOWORK=off go test ./adapter/`. Fails on any test failure.
 //
-// 4a leaves the hand-written adapter.go files in place. 4b removes
-// them once 4a's verifier has been green for N consecutive main-
-// branch runs covering at least one PR touching adapters/ or
-// adapters/common/codegen/.
+// The emitter (adapters/common/codegen) is the sole source of truth
+// for adapter/adapter.go; per-adapter adapter/ subtrees in the source
+// tree contain only the test harness (and, for v0.204,
+// dynamic_value.go).
 //
 // Exit codes: 0 = all checks pass for all adapters; 1 = any failure.
 //
@@ -32,6 +26,11 @@
 //
 // CI invokes the same command after a checkout-clean job. Output is
 // human-readable; CI greps for "FAIL" on non-zero exit.
+//
+// Local-dev note: running `go test ./adapter` inside a per-adapter
+// module from a fresh checkout requires emitting adapter.go first
+// via `go run ./cmd/main.go` in that module. The production build
+// flow (cmd/build/build.sh) runs the generator transparently.
 package main
 
 import (
@@ -39,14 +38,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/format"
-	"go/parser"
-	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -63,12 +57,14 @@ func main() {
 		fail("must be invoked from the repo root (no go.work in %s)", repoRoot)
 	}
 
+	const checksPerAdapter = 2
+	totalChecks := checksPerAdapter * len(adapterversions.FrameworkAdapters)
 	totalFailures := 0
 	for _, fa := range adapterversions.FrameworkAdapters {
 		fmt.Printf("=== %s ===\n", fa.DirName)
 		failures := runChecks(repoRoot, fa)
 		if failures == 0 {
-			fmt.Printf("    PASS: all 3 checks green\n")
+			fmt.Printf("    PASS: all %d checks green\n", checksPerAdapter)
 		} else {
 			fmt.Printf("    FAIL: %d check(s) failed\n", failures)
 		}
@@ -76,10 +72,10 @@ func main() {
 	}
 
 	if totalFailures > 0 {
-		fmt.Fprintf(os.Stderr, "\nFAIL: %d check failure(s) across all adapters\n", totalFailures)
+		fmt.Fprintf(os.Stderr, "\nFAIL: %d/%d framework-adapter codegen-emit checks failed\n", totalFailures, totalChecks)
 		os.Exit(1)
 	}
-	fmt.Println("\nAll framework-adapter codegen-emit checks passed.")
+	fmt.Printf("\nAll framework-adapter codegen-emit checks passed (%d/%d green).\n", totalChecks, totalChecks)
 }
 
 func runChecks(repoRoot string, fa adapterversions.FrameworkAdapter) int {
@@ -95,169 +91,25 @@ func runChecks(repoRoot string, fa adapterversions.FrameworkAdapter) int {
 
 	failures := 0
 
-	// Check 1: structural equivalence (AST diff after gofmt, ignoring
-	// comments).
-	handPath := filepath.Join(repoRoot, "adapters", fa.DirName, "adapter", "adapter.go")
-	if err := checkStructuralEquivalence(candidatePath, handPath); err != nil {
-		fmt.Printf("    Check 1 (structural equivalence): FAIL: %v\n", err)
-		failures++
-	} else {
-		fmt.Printf("    Check 1 (structural equivalence): PASS\n")
-	}
-
-	// Check 2: deterministic emission.
+	// Check 1: deterministic emission.
 	candidatePath2 := filepath.Join(tmp, "adapter_emitted_2.go")
 	codegen.GenerateFrameworkAdapter(fa.Options, candidatePath2)
 	if err := checkDeterministicEmission(candidatePath, candidatePath2); err != nil {
-		fmt.Printf("    Check 2 (deterministic emission): FAIL: %v\n", err)
+		fmt.Printf("    Check 1 (deterministic emission): FAIL: %v\n", err)
 		failures++
 	} else {
-		fmt.Printf("    Check 2 (deterministic emission): PASS\n")
+		fmt.Printf("    Check 1 (deterministic emission): PASS\n")
 	}
 
-	// Check 3: behavioural test parity.
+	// Check 2: behavioural test parity.
 	if err := checkBehaviouralTestParity(repoRoot, fa, candidatePath); err != nil {
-		fmt.Printf("    Check 3 (behavioural test parity): FAIL: %v\n", err)
+		fmt.Printf("    Check 2 (behavioural test parity): FAIL: %v\n", err)
 		failures++
 	} else {
-		fmt.Printf("    Check 3 (behavioural test parity): PASS\n")
+		fmt.Printf("    Check 2 (behavioural test parity): PASS\n")
 	}
 
 	return failures
-}
-
-// checkStructuralEquivalence verifies the codegen-emitted file and
-// the hand-written file are AST-equivalent after gofmt, ignoring
-// comments and node positions. Returns nil on equivalence; non-nil
-// error otherwise with a short description of the first divergence.
-func checkStructuralEquivalence(candidatePath, handPath string) error {
-	candData, err := gofmtFile(candidatePath)
-	if err != nil {
-		return fmt.Errorf("gofmt candidate: %w", err)
-	}
-	handData, err := gofmtFile(handPath)
-	if err != nil {
-		return fmt.Errorf("gofmt hand-written: %w", err)
-	}
-
-	fset := token.NewFileSet()
-	candFile, err := parser.ParseFile(fset, candidatePath, candData, parser.SkipObjectResolution)
-	if err != nil {
-		return fmt.Errorf("parse candidate: %w", err)
-	}
-	handFile, err := parser.ParseFile(fset, handPath, handData, parser.SkipObjectResolution)
-	if err != nil {
-		return fmt.Errorf("parse hand-written: %w", err)
-	}
-
-	candTokens := canonicalTokens(candFile)
-	handTokens := canonicalTokens(handFile)
-
-	if len(candTokens) != len(handTokens) {
-		// Surface the first divergence location for easier debugging.
-		return fmt.Errorf("AST shape differs: candidate has %d top-level decls, hand-written has %d", len(candTokens), len(handTokens))
-	}
-
-	for i := range candTokens {
-		if candTokens[i] != handTokens[i] {
-			return fmt.Errorf("decl #%d AST diverges:\n  candidate:    %s\n  hand-written: %s",
-				i, truncate(candTokens[i]), truncate(handTokens[i]))
-		}
-	}
-	return nil
-}
-
-// canonicalTokens walks the file's top-level declarations and reduces
-// each to a comment-stripped, normalised string suitable for
-// equivalence comparison. The transform: strip all comments, strip
-// line/column positions, normalise import-spec aliasing, then format
-// each decl back to source text.
-func canonicalTokens(f *ast.File) []string {
-	out := make([]string, 0, len(f.Decls))
-	stripCommentsFile(f)
-	for _, decl := range f.Decls {
-		out = append(out, normaliseDecl(decl))
-	}
-	return out
-}
-
-// stripCommentsFile clears comment groups attached to the file and
-// every node reachable from its declarations. We can't simply nil
-// f.Comments because the *ast.GenDecl/FuncDecl carry their own Doc /
-// inline-Comment fields that printer reattaches. Walk the tree and
-// nil them all.
-func stripCommentsFile(f *ast.File) {
-	f.Comments = nil
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch d := n.(type) {
-		case *ast.GenDecl:
-			d.Doc = nil
-		case *ast.FuncDecl:
-			d.Doc = nil
-		case *ast.Field:
-			d.Doc = nil
-			d.Comment = nil
-		case *ast.ImportSpec:
-			d.Doc = nil
-			d.Comment = nil
-		case *ast.ValueSpec:
-			d.Doc = nil
-			d.Comment = nil
-		case *ast.TypeSpec:
-			d.Doc = nil
-			d.Comment = nil
-		}
-		return true
-	})
-}
-
-func normaliseDecl(decl ast.Decl) string {
-	var buf bytes.Buffer
-	fset := token.NewFileSet()
-	if err := format.Node(&buf, fset, decl); err != nil {
-		return fmt.Sprintf("<format error: %v>", err)
-	}
-	// Collapse all whitespace runs to a single space so cosmetic line
-	// breaks in struct field initialisers / function bodies don't
-	// register as differences.
-	return collapseWhitespace(buf.String())
-}
-
-var wsRE = regexp.MustCompile(`\s+`)
-
-func collapseWhitespace(s string) string {
-	return strings.TrimSpace(wsRE.ReplaceAllString(s, " "))
-}
-
-func truncate(s string) string {
-	const max = 200
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "...[+" + fmt.Sprint(len(s)-max) + " bytes]"
-}
-
-// gofmtTimeout caps the gofmt subprocess at 30s. A single gofmted
-// adapter.go is sub-second on healthy CI; 30s is the "hung process"
-// circuit-breaker so the verifier fails fast with a specific timeout
-// error rather than burning the workflow's broad timeout budget.
-const gofmtTimeout = 30 * time.Second
-
-func gofmtFile(path string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gofmtTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "gofmt", path)
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	err := cmd.Run()
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("gofmt timed out after %s on %s: %s", gofmtTimeout, path, errb.String())
-	}
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", err, errb.String())
-	}
-	return out.Bytes(), nil
 }
 
 // checkDeterministicEmission byte-compares two consecutive emit
@@ -279,11 +131,11 @@ func checkDeterministicEmission(path1, path2 string) error {
 }
 
 // checkBehaviouralTestParity copies the per-adapter module to a
-// tempdir, replaces adapter/adapter.go with the codegen-emitted
-// candidate, rewrites go.mod's relative `replace` directives to
-// absolute paths (because the tempdir copy is one level removed from
-// the source-tree's siblings), and runs `GOWORK=off go test
-// ./adapter/`. The hand-written source-tree files are NEVER touched.
+// tempdir, writes the codegen-emitted candidate as adapter/adapter.go,
+// rewrites go.mod's relative `replace` directives to absolute paths
+// (because the tempdir copy is one level removed from the source-
+// tree's siblings), and runs `GOWORK=off go test ./adapter/`. The
+// source-tree files are NEVER touched.
 func checkBehaviouralTestParity(repoRoot string, fa adapterversions.FrameworkAdapter, candidatePath string) error {
 	srcDir := filepath.Join(repoRoot, "adapters", fa.DirName)
 	tmpDir, err := os.MkdirTemp("", "verify-fwadapter-test-"+fa.DirName+"-*")
@@ -296,13 +148,19 @@ func checkBehaviouralTestParity(repoRoot string, fa adapterversions.FrameworkAda
 		return fmt.Errorf("copy adapter dir: %w", err)
 	}
 
-	// Swap the hand-written adapter.go for the codegen-emitted
-	// candidate.
+	// Write the codegen-emitted candidate as adapter/adapter.go. The
+	// adapter/ directory may not exist in the copied tree if the source
+	// adapter/ subtree has no non-test files at all (v0.215, v0.219);
+	// create it explicitly so the test stays robust.
 	candData, err := os.ReadFile(candidatePath)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "adapter", "adapter.go"), candData, 0644); err != nil {
+	adapterDir := filepath.Join(tmpDir, "adapter")
+	if err := os.MkdirAll(adapterDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir adapter: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(adapterDir, "adapter.go"), candData, 0644); err != nil {
 		return err
 	}
 

@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -17,25 +18,31 @@ import (
 //
 // In customer builds the working directory is the per-customer
 // baml_rest source root, so the derived path resolves to that build's
-// copy of adapters/adapter_v*/adapter/adapter.go and the codegen
-// emit replaces it with semantically-equivalent content. The CI
-// verifier (cmd/verify-framework-adapter) is the load-bearing
-// equivalence check: it writes the emit to a tempdir and compares
-// against the source-tree's hand-written file. The hand-written
-// references remain authoritative until a later verified removal.
+// copy of adapters/adapter_v*/adapter/adapter.go. This emitter is the
+// sole source of truth for the framework adapter. The CI verifier
+// (cmd/verify-framework-adapter) keeps a deterministic-emission check
+// plus a temp-module behavioural test that compiles the emitted file
+// against the per-adapter test harness.
 func GenerateFrameworkAdapter(opts Options, outputPath string) {
 	if outputPath == "" {
 		rel := strings.TrimPrefix(opts.SelfPkg, common.RootPkg+"/")
 		outputPath = filepath.Join(rel, "adapter", "adapter.go")
 	}
+	// Ensure the adapter/ parent directory exists. The per-adapter
+	// adapter/ subtree may have no non-test files at all (v0.215,
+	// v0.219), so an extracted customer-build workdir won't contain
+	// the directory until something puts a file in it.
+	if dir := filepath.Dir(outputPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			panic(err)
+		}
+	}
 	out := jen.NewFilePathName(opts.SelfPkg+"/adapter", "adapter")
-	// Match the hand-written file's import aliases so the structural-
-	// equivalence verifier can compare normalised tokens directly. The
-	// BAML runtime package's actual package name is "pkg"; the hand-
-	// written file aliases it as "baml" everywhere. Use ImportAlias for
-	// the BAML pkg since we need an explicit `baml ...` clause in the
-	// import group; ImportName is sufficient for the others where the
-	// natural and desired aliases coincide.
+	// BAML runtime's actual package name is "pkg"; alias it as "baml"
+	// everywhere so the emitted file reads naturally. ImportAlias forces
+	// an explicit `baml ...` clause in the import group; ImportName is
+	// sufficient for the others where the natural and desired aliases
+	// coincide.
 	out.ImportAlias(BamlPkg, "baml")
 	out.ImportName(common.InterfacesPkg, "bamlutils")
 	out.ImportName(common.LLMHTTPPkg, "llmhttp")
@@ -52,15 +59,12 @@ func GenerateFrameworkAdapter(opts Options, outputPath string) {
 // requires. Per-version divergence (the v0.204 WrapMapValues call
 // inside SetClientRegistry, the v0.219 httpClient field +
 // SetHTTPClient method) is gated on opts.HasWrapMapValues /
-// opts.HasHTTPClient. Doc-comment text is intentionally lighter than
-// the canonical hand-written v0.219 reference because the structural-
-// equivalence verifier ignores comment content; only AST shape
-// matters.
+// opts.HasHTTPClient.
 //
 // Determinism: this emitter does NOT iterate any maps. Every field /
 // method is laid down in a fixed order so two consecutive calls
 // produce byte-identical output. The deterministic-emission CI check
-// (cmd/verify-framework-adapter Check 2) is the safety net.
+// (cmd/verify-framework-adapter Check 1) is the safety net.
 func emitFrameworkAdapter(out *jen.File, opts Options) {
 	bamlPkg := BamlPkg
 	bamlutilsPkg := common.InterfacesPkg
@@ -90,9 +94,8 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		Params(jen.Any(), jen.Error())
 
 	// BamlAdapter struct. Field order is fixed for deterministic
-	// emission and to match the hand-written reference closely (the
-	// structural-equivalence verifier tolerates comment-text differences
-	// but every field declaration must appear).
+	// emission; two consecutive emit calls must produce byte-identical
+	// output.
 	structFields := []jen.Code{
 		jen.Qual("context", "Context"),
 		jen.Line(),

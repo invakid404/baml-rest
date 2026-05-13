@@ -2,10 +2,9 @@
 // adapter versions baml-rest supports, plus the codegen.Options each
 // version requires. Three consumers share this list:
 //
-//   - cmd/verify-framework-adapter (the PR 4a CI verifier) iterates
-//     FrameworkAdapters to run the structural-equivalence /
-//     deterministic-emission / behavioural-test-parity checks against
-//     every adapter.
+//   - cmd/verify-framework-adapter iterates FrameworkAdapters to run
+//     the deterministic-emission and behavioural-test-parity checks
+//     against every adapter.
 //   - Each adapters/adapter_v0_<X>_0/cmd/main.go calls
 //     MustOptionsForSelfPkg to fetch its own options without
 //     re-declaring the matrix.
@@ -26,8 +25,8 @@ import (
 
 // FrameworkAdapter declares the codegen.Options for one pinned
 // adapter, plus the on-disk directory name (relative to adapters/)
-// the verifier needs to locate the hand-written adapter.go for the
-// structural-equivalence comparison.
+// the verifier needs to locate the per-adapter module that the
+// behavioural-test-parity check copies into a tempdir.
 type FrameworkAdapter struct {
 	// DirName is the per-adapter directory under adapters/, e.g.
 	// "adapter_v0_204_0". Consumed by the verifier to build paths

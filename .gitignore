@@ -2,3 +2,8 @@
 .claude/
 /introspect
 /schema
+
+# Generated framework adapter files — emitted in-place by each
+# per-adapter cmd/main.go (and during customer builds via
+# cmd/build/build.sh). Source of truth: adapters/common/codegen.
+adapters/adapter_v0_*_0/adapter/adapter.go

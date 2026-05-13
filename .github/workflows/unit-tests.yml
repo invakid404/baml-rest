@@ -55,14 +55,13 @@ jobs:
           done
 
       - name: Verify framework adapter codegen-emit
-        # PR 4a of #199 item 1 — verifier-only phase. Three independent
-        # checks per adapter (structural equivalence vs hand-written file,
-        # deterministic emission, behavioural test parity against the
-        # codegen-emitted candidate). The verifier writes only to tempdirs;
-        # the hand-written adapters/adapter_v*/adapter/adapter.go files are
-        # never touched. PR 4b removes the hand-written files once this
-        # check has been green for ≥N consecutive main-branch runs covering
-        # at least one PR touching adapters/ or adapters/common/codegen/.
+        # Two independent checks per adapter: deterministic emission
+        # (run the emitter twice, byte-compare) and behavioural test
+        # parity (copy the per-adapter module to a tempdir, write the
+        # emitted adapter.go into it, run GOWORK=off go test ./adapter/).
+        # The verifier writes only to tempdirs; the source-tree
+        # adapters/adapter_v*/adapter/ siblings (test harnesses,
+        # dynamic_value.go) are never touched.
         run: go run ./cmd/verify-framework-adapter
 
       - name: scripts/sync.sh fresh-tree gate
