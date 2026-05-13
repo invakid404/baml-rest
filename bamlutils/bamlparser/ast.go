@@ -9,10 +9,17 @@ type File struct {
 }
 
 // Item is a single top-level declaration. Exactly one of the typed pointers
-// is non-nil for any well-formed Item. Other is used for tolerated upstream
-// constructs the package doesn't model (class, enum, type alias, test, raw
-// top-level assignments, etc.) — its body is captured opaquely so it can be
-// skipped without leaking into the recognised-block walkers.
+// is non-nil for any well-formed Item. Items appear in source order so
+// duplicate-key semantics (later wins) are preserved end-to-end.
+//
+// Recognised semantic blocks (Generator, Client, Function, RetryPolicy)
+// carry their parsed Fields and are consumed by the semantic walker.
+// Tolerated declarations that baml-rest currently doesn't model are
+// represented by metadata-only nodes: class/enum/test → TypeBlock, type
+// aliases → TypeAlias, template_string → TemplateBlock, and anything else
+// → Other. Those nodes carry the declaration keyword/name only; the
+// brace body or expression right-hand-side is consumed during parsing
+// and not retained on the AST.
 type Item struct {
 	Generator   *GeneratorBlock
 	Client      *ClientBlock
@@ -65,29 +72,33 @@ type TemplateBlock struct {
 	Name string
 }
 
-// TypeBlock corresponds to `class Name { ... }`, `enum Name { ... }`, and the
-// `test Name { ... }` form — anything that has a leading keyword + name +
-// block body but isn't one of the recognised value-expression blocks. The
-// body is held opaquely so the parser can skip past it without erroring on
-// constructs it doesn't model. Keyword carries the leading word (e.g.
-// "class", "enum", "test") for callers that want to differentiate.
+// TypeBlock corresponds to `class Name { ... }`, `enum Name { ... }`, or
+// `test Name { ... }` declarations — leading keyword + name + brace body
+// shapes that baml-rest doesn't model semantically. Keyword carries the
+// leading word (e.g. "class", "enum", "test") for callers that want to
+// differentiate; Name carries the declaration name. The brace body is
+// consumed during parsing and not retained; consumers that need a
+// verbatim copy must read the source bytes directly.
 type TypeBlock struct {
 	Keyword string
 	Name    string
 }
 
-// TypeAlias corresponds to `type Name = expression`. The expression body is
-// not parsed; only the alias name is captured.
+// TypeAlias corresponds to `type Name = expression`. Name carries the alias
+// name; the right-hand-side expression is consumed during parsing and not
+// retained on the AST.
 type TypeAlias struct {
 	Name string
 }
 
-// Other captures a top-level construct that doesn't match any recognised
-// block shape. Keyword is the leading token's value (or empty when the item
-// began with something other than an identifier). The parser uses Other to
-// stay permissive: unknown top-level syntax is skipped rather than treated
-// as an error, mirroring the line-by-line introspect parser's behaviour of
-// ignoring any line that isn't a known prefix.
+// Other captures metadata for a top-level construct that doesn't match any
+// recognised declaration shape. Keyword is the leading token's value —
+// either the identifier text when the item began with a word, or the raw
+// token value when it began with punctuation. Any following balanced block
+// is consumed and not retained; Other is metadata-only so semantic walkers
+// can skip unknown declarations while preserving source order, mirroring
+// the line-by-line introspect parser's behaviour of ignoring any line
+// that isn't a known prefix.
 type Other struct {
 	Keyword string
 }

@@ -1,9 +1,13 @@
 // Package bamlparser provides a shared parser for the .baml configuration
 // surface that baml-rest consumes. It produces an AST from .baml source and
 // is intentionally permissive about top-level constructs it doesn't model
-// (class, enum, type alias, template_string, test, raw top-level
-// assignments): such constructs are captured opaquely as Other items so the
-// parser tolerates the full upstream BAML surface without erroring.
+// semantically: class/enum/test declarations are represented as TypeBlock,
+// type aliases as TypeAlias, template_string declarations as TemplateBlock,
+// and unknown leading-identifier or leading-punctuation forms as Other.
+// These metadata-only nodes preserve source order while their bodies
+// (brace bodies, expression right-hand-sides) are consumed and not
+// retained, so the parser tolerates the full upstream BAML surface
+// without erroring.
 //
 // The Value type encodes literal-vs-env.IDENT provenance at parse time as a
 // first-class node. Downstream code reads Value.Literal vs Value.EnvRef to
