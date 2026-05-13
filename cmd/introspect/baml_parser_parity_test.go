@@ -1140,7 +1140,7 @@ function Shortcut(x: string) -> string {
 `,
 		},
 
-		// ---- Codex sign-off Section 4 fills ----
+		// ---- Additional Q1 parity gaps ----
 		//
 		// Pin that a plain `client Name { ... }` block (no <llm> type
 		// param) is parsed by the new grammar but excluded by the
