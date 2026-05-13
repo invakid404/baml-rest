@@ -15,6 +15,11 @@ import (
 // AND assert it does not appear in the streaming-path emission (which
 // passes nil postProcess to emitBAMLHTTPRequestConversion for
 // non-bedrock providers).
+//
+// Kept as a callable target for the codegen-emission tests that pin
+// the simple URL-pattern shape; production codegen routes through
+// emitBedrockAuthDispatchFor so the explicit endpoint_url + region
+// override path is honoured when the operator has configured one.
 func emitMaybeAttachBedrockAuth(g *jen.Group) {
 	g.If(
 		jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "MaybeAttachBedrockAuth").Call(jen.Id("ctx"), jen.Id("req")),
@@ -24,48 +29,114 @@ func emitMaybeAttachBedrockAuth(g *jen.Group) {
 	)
 }
 
-// emitBedrockStreamPostProcess emits the streaming-side postProcess
-// block: URL mutation /converse → /converse-stream, AWS event-stream
-// Accept header injection, and SigV4 auth attach. BAML's non-streaming
-// modular AWS builder produces a /converse URL; baml-rest streams
-// against /converse-stream because BAML's StreamRequest path is
-// upstream-blocked for aws-bedrock.
+// emitBedrockAuthDispatchFor returns a postProcess emitter that, for
+// the given BAML method name, resolves the selected client at runtime
+// and dispatches Bedrock auth attachment.
+//
+// Generated body (per closure):
+//
+//	selectedClient := clientOverride
+//	if selectedClient == "" {
+//	    selectedClient = introspected.FunctionClient["<methodName>"]
+//	}
+//	var bedrockEndpointURL, bedrockRegion string
+//	if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+//	    bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+//	    bedrockRegion, _ = bedrockOpts.Region.Resolve()
+//	}
+//	if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, bedrockEndpointURL, bedrockRegion); authErr != nil {
+//	    return nil, authErr
+//	}
+//
+// Empty endpoint+region falls through to MaybeAttachBedrockAuth's URL-
+// pattern detection inside AttachBedrockAuthForClient, preserving the
+// default-endpoint contract for clients without an `.baml` override.
+//
+// The closure variable `clientOverride` is in scope at the postProcess
+// emission site (both buildRequestFn and buildBedrockStreamRequestFn
+// declare it as a parameter), so the resolve-name step does not need
+// any new closure plumbing.
+func emitBedrockAuthDispatchFor(methodName string) func(*jen.Group) {
+	return func(g *jen.Group) {
+		g.Id("selectedClient").Op(":=").Id("clientOverride")
+		g.If(jen.Id("selectedClient").Op("==").Lit("")).Block(
+			jen.Id("selectedClient").Op("=").Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+		)
+		g.Var().Defs(
+			jen.Id("bedrockEndpointURL").String(),
+			jen.Id("bedrockRegion").String(),
+		)
+		g.If(
+			jen.List(jen.Id("bedrockOpts"), jen.Id("ok")).Op(":=").Qual(common.IntrospectedPkg, "BedrockClientOptionsByName").Index(jen.Id("selectedClient")),
+			jen.Id("ok"),
+		).Block(
+			jen.List(jen.Id("bedrockEndpointURL"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("EndpointURL").Dot("Resolve").Call(),
+			jen.List(jen.Id("bedrockRegion"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("Region").Dot("Resolve").Call(),
+		)
+		g.If(
+			jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "AttachBedrockAuthForClient").Call(
+				jen.Id("ctx"),
+				jen.Id("req"),
+				jen.Id("bedrockEndpointURL"),
+				jen.Id("bedrockRegion"),
+			),
+			jen.Id("authErr").Op("!=").Nil(),
+		).Block(
+			jen.Return(jen.Nil(), jen.Id("authErr")),
+		)
+	}
+}
+
+// emitBedrockStreamPostProcessFor returns a postProcess emitter for
+// the streaming-side closure: URL mutation /converse → /converse-stream,
+// AWS event-stream Accept header injection, and Bedrock auth attach.
+// BAML's non-streaming modular AWS builder produces a /converse URL;
+// baml-rest streams against /converse-stream because BAML's
+// StreamRequest path is upstream-blocked for aws-bedrock.
 //
 // Order matters:
-//  1. URL rewrite BEFORE auth attach so SigV4 signs over the
+//  1. URL rewrite BEFORE auth attach so the endpoint override (when
+//     configured) and the SigV4 signature both run over the
 //     /converse-stream path.
 //  2. Accept header AFTER the conversion populates req.Headers from
 //     the BAML output (overwriting the Content-Type-only default
 //     headers BAML emits).
-//  3. MaybeAttachBedrockAuth last so the SigV4 hook reads the final
-//     URL.
+//  3. AttachBedrockAuthForClient last so the SigV4 hook reads the
+//     final URL — including any operator-configured `endpoint_url`
+//     override resolved through the introspected
+//     BedrockClientOptionsByName map.
 //
 // Emitted only on the bedrock streaming closure; the SSE-path
 // streaming closure still passes nil postProcess.
-func emitBedrockStreamPostProcess(g *jen.Group) {
-	// URL mutation: single replacement of /converse → /converse-stream.
-	// The Bedrock URL pattern is
-	// https://bedrock-runtime.<region>.amazonaws.com/model/<modelId>/converse,
-	// so a single-replacement pass is safe; double-replacement would
-	// be a problem only if a model id contained `/converse`, which
-	// AWS model id rules forbid.
-	g.Id("req").Dot("URL").Op("=").Qual("strings", "Replace").Call(
-		jen.Id("req").Dot("URL"),
-		jen.Lit("/converse"),
-		jen.Lit("/converse-stream"),
-		jen.Lit(1),
-	)
-	// Inject the AWS event-stream Accept header. BAML's modular AWS
-	// builder doesn't set Accept (it sets Content-Type only), and
-	// without this header the Bedrock service responds with JSON
-	// instead of the event-stream wire format.
-	g.If(jen.Id("req").Dot("Headers").Op("==").Nil()).Block(
-		jen.Id("req").Dot("Headers").Op("=").Make(jen.Map(jen.String()).String()),
-	)
-	g.Id("req").Dot("Headers").Index(jen.Lit("Accept")).Op("=").Qual(common.LLMHTTPPkg, "AWSStreamContentType")
+func emitBedrockStreamPostProcessFor(methodName string) func(*jen.Group) {
+	dispatch := emitBedrockAuthDispatchFor(methodName)
+	return func(g *jen.Group) {
+		// URL mutation: single replacement of /converse → /converse-stream.
+		// The Bedrock URL pattern is
+		// https://bedrock-runtime.<region>.amazonaws.com/model/<modelId>/converse,
+		// so a single-replacement pass is safe; double-replacement would
+		// be a problem only if a model id contained `/converse`, which
+		// AWS model id rules forbid.
+		g.Id("req").Dot("URL").Op("=").Qual("strings", "Replace").Call(
+			jen.Id("req").Dot("URL"),
+			jen.Lit("/converse"),
+			jen.Lit("/converse-stream"),
+			jen.Lit(1),
+		)
+		// Inject the AWS event-stream Accept header. BAML's modular AWS
+		// builder doesn't set Accept (it sets Content-Type only), and
+		// without this header the Bedrock service responds with JSON
+		// instead of the event-stream wire format.
+		g.If(jen.Id("req").Dot("Headers").Op("==").Nil()).Block(
+			jen.Id("req").Dot("Headers").Op("=").Make(jen.Map(jen.String()).String()),
+		)
+		g.Id("req").Dot("Headers").Index(jen.Lit("Accept")).Op("=").Qual(common.LLMHTTPPkg, "AWSStreamContentType")
 
-	// SigV4 attach last so it signs the rewritten URL.
-	emitMaybeAttachBedrockAuth(g)
+		// Bedrock auth dispatch: explicit endpoint_url + region override
+		// when configured for the selected client; URL-pattern fallback
+		// for the default-endpoint case.
+		dispatch(g)
+	}
 }
 
 // emitBAMLHTTPRequestConversion generates the jen code that converts a
@@ -247,7 +318,7 @@ func (me *methodEmitter) emitBuildRequest() {
 				jg.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Nil(), jen.Id("err")),
 				)
-				emitBAMLHTTPRequestConversion(jg, emitBedrockStreamPostProcess)
+				emitBAMLHTTPRequestConversion(jg, emitBedrockStreamPostProcessFor(me.methodName))
 			}),
 		)
 	}
@@ -584,14 +655,17 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jg.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
 			)
-			// The call branch attaches AWS SigV4 metadata when the
-			// BAML-emitted URL looks like a Bedrock Converse endpoint.
-			// MaybeAttachBedrockAuth is a no-op on non-bedrock URLs,
-			// so the unconditional emit costs every other provider
-			// nothing. The streaming branch uses its own sibling
-			// closure (buildBedrockStreamRequestFn) with
-			// emitBedrockStreamPostProcess — see emitBuildRequest above.
-			emitBAMLHTTPRequestConversion(jg, emitMaybeAttachBedrockAuth)
+			// The call branch attaches AWS SigV4 metadata via the
+			// client-aware dispatch. AttachBedrockAuthForClient
+			// honours per-client `endpoint_url` + `region` overrides
+			// (resolved through introspected.BedrockClientOptionsByName)
+			// and falls through to MaybeAttachBedrockAuth's URL-
+			// pattern detection for the default-endpoint case — so
+			// the unconditional emit still costs every non-bedrock
+			// provider nothing. The streaming branch uses its own
+			// sibling closure (buildBedrockStreamRequestFn) with
+			// emitBedrockStreamPostProcessFor — see emitBuildRequest above.
+			emitBAMLHTTPRequestConversion(jg, emitBedrockAuthDispatchFor(me.methodName))
 		}),
 
 		// parseFinalFn: calls Parse.Method(ctx, text, opts...)

@@ -523,6 +523,424 @@ func TestDefaultAWSCredentialProvider_RetriesAfterFailure(t *testing.T) {
 	}
 }
 
+// TestAttachBedrockAuthWithOptions_EndpointOverride pins the URL
+// rewrite contract for the new explicit attach helper. The endpoint
+// flavors (custom localhost, VPC, FIPS, China, GovCloud) cover the
+// matrix that the URL-pattern detection helper deliberately does not
+// touch — they are exactly the configs where operators need to set
+// `.baml options.endpoint_url` for the request to reach a real Bedrock
+// surface (or, in the localhost case, a LocalStack-style mock).
+func TestAttachBedrockAuthWithOptions_EndpointOverride(t *testing.T) {
+	const originalURL = "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-sonnet/converse"
+	cases := []struct {
+		name       string
+		endpoint   string
+		region     string
+		wantURL    string
+		wantRegion string
+	}{
+		{
+			name:       "default endpoint (no override) leaves URL unchanged",
+			endpoint:   "",
+			region:     "us-east-1",
+			wantURL:    originalURL,
+			wantRegion: "us-east-1",
+		},
+		{
+			name:       "custom localhost endpoint",
+			endpoint:   "http://localhost:9000",
+			region:     "us-east-1",
+			wantURL:    "http://localhost:9000/model/anthropic.claude-3-sonnet/converse",
+			wantRegion: "us-east-1",
+		},
+		{
+			name:       "VPC endpoint preserves path and region option",
+			endpoint:   "https://vpc-endpoint-id.bedrock-runtime.us-east-1.vpce.amazonaws.com",
+			region:     "us-east-1",
+			wantURL:    "https://vpc-endpoint-id.bedrock-runtime.us-east-1.vpce.amazonaws.com/model/anthropic.claude-3-sonnet/converse",
+			wantRegion: "us-east-1",
+		},
+		{
+			name:       "FIPS endpoint",
+			endpoint:   "https://bedrock-runtime-fips.us-east-1.amazonaws.com",
+			region:     "us-east-1",
+			wantURL:    "https://bedrock-runtime-fips.us-east-1.amazonaws.com/model/anthropic.claude-3-sonnet/converse",
+			wantRegion: "us-east-1",
+		},
+		{
+			name:       "China partition",
+			endpoint:   "https://bedrock-runtime.cn-north-1.amazonaws.com.cn",
+			region:     "cn-north-1",
+			wantURL:    "https://bedrock-runtime.cn-north-1.amazonaws.com.cn/model/anthropic.claude-3-sonnet/converse",
+			wantRegion: "cn-north-1",
+		},
+		{
+			name:       "GovCloud",
+			endpoint:   "https://bedrock-runtime.us-gov-west-1.amazonaws.com",
+			region:     "us-gov-west-1",
+			wantURL:    "https://bedrock-runtime.us-gov-west-1.amazonaws.com/model/anthropic.claude-3-sonnet/converse",
+			wantRegion: "us-gov-west-1",
+		},
+		{
+			name:       "trailing slash on endpoint_url tolerated",
+			endpoint:   "http://localhost:9000/",
+			region:     "us-east-1",
+			wantURL:    "http://localhost:9000/model/anthropic.claude-3-sonnet/converse",
+			wantRegion: "us-east-1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &Request{
+				URL:     originalURL,
+				Method:  "POST",
+				Headers: map[string]string{"Content-Type": "application/json"},
+				Body:    `{"messages":[]}`,
+			}
+			err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+				EndpointURL: tc.endpoint,
+				Region:      tc.region,
+				Credentials: staticCreds{cred: aws.Credentials{
+					AccessKeyID:     "AKIDEXAMPLE",
+					SecretAccessKey: "SECRETEXAMPLE",
+				}},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if req.URL != tc.wantURL {
+				t.Errorf("URL = %q, want %q", req.URL, tc.wantURL)
+			}
+			if req.AWSAuth == nil {
+				t.Fatal("expected AWSAuth attached")
+			}
+			if req.AWSAuth.Region != tc.wantRegion {
+				t.Errorf("Region = %q, want %q", req.AWSAuth.Region, tc.wantRegion)
+			}
+			if req.AWSAuth.Service != "bedrock" {
+				t.Errorf("Service = %q, want %q", req.AWSAuth.Service, "bedrock")
+			}
+			if req.AWSAuth.Credentials == nil {
+				t.Error("Credentials must not be nil")
+			}
+		})
+	}
+}
+
+// TestAttachBedrockAuthWithOptions_PreservesQueryAndFragment pins that
+// the override only rewrites scheme + host. Path, query, and fragment
+// must survive the rewrite so any auxiliary request shaping (an
+// upstream BAML signed-URL future, debug query knobs, etc.) is
+// preserved into the final request that gets signed.
+func TestAttachBedrockAuthWithOptions_PreservesQueryAndFragment(t *testing.T) {
+	req := &Request{
+		URL:     "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse?trace=1#frag",
+		Method:  "POST",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Body:    `{}`,
+	}
+	if err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+		EndpointURL: "http://localhost:9000",
+		Region:      "us-east-1",
+		Credentials: staticCreds{cred: aws.Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "http://localhost:9000/model/foo/converse?trace=1#frag"
+	if req.URL != want {
+		t.Errorf("URL = %q, want %q (path/query/fragment must flow through the rewrite)", req.URL, want)
+	}
+}
+
+// TestAttachBedrockAuthWithOptions_StreamingPathPreserved pins the
+// streaming-mode invariant: when codegen has already mutated /converse
+// → /converse-stream BEFORE auth attach (per
+// emitBedrockStreamPostProcess's documented order), the override join
+// must preserve that mutated path. Without this guarantee the URL
+// rewrite would silently revert to /converse and the SigV4 signature
+// would not match the wire request.
+func TestAttachBedrockAuthWithOptions_StreamingPathPreserved(t *testing.T) {
+	req := &Request{
+		URL:     "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse-stream",
+		Method:  "POST",
+		Headers: map[string]string{"Content-Type": "application/json", "Accept": AWSStreamContentType},
+		Body:    `{}`,
+	}
+	if err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+		EndpointURL: "http://localhost:9000",
+		Region:      "us-east-1",
+		Credentials: staticCreds{cred: aws.Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "http://localhost:9000/model/foo/converse-stream"
+	if req.URL != want {
+		t.Errorf("URL = %q, want %q (stream path must survive rewrite)", req.URL, want)
+	}
+}
+
+// TestAttachBedrockAuthWithOptions_RegionResolution pins the resolution
+// order documented on BedrockAuthOptions.Region: explicit option, then
+// AWS_REGION env, then error. Region MUST NOT be inferred from the URL
+// host — that is the contract that lets custom endpoints work safely.
+func TestAttachBedrockAuthWithOptions_RegionResolution(t *testing.T) {
+	mkReq := func() *Request {
+		return &Request{
+			URL:     "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+			Method:  "POST",
+			Headers: map[string]string{"Content-Type": "application/json"},
+			Body:    `{}`,
+		}
+	}
+	creds := staticCreds{cred: aws.Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}}
+
+	t.Run("explicit option wins", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "eu-west-1")
+		req := mkReq()
+		if err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+			Region:      "us-east-1",
+			Credentials: creds,
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.AWSAuth.Region != "us-east-1" {
+			t.Errorf("Region = %q, want us-east-1 (explicit option must win over env)", req.AWSAuth.Region)
+		}
+	})
+
+	t.Run("AWS_REGION env fallback", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "ap-southeast-2")
+		req := mkReq()
+		if err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+			Credentials: creds,
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.AWSAuth.Region != "ap-southeast-2" {
+			t.Errorf("Region = %q, want ap-southeast-2 (AWS_REGION fallback)", req.AWSAuth.Region)
+		}
+	})
+
+	t.Run("missing region with no env errors", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "")
+		req := mkReq()
+		err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+			Credentials: creds,
+		})
+		if err == nil {
+			t.Fatal("expected error when no region is configured")
+		}
+		if !strings.Contains(err.Error(), "region is required") {
+			t.Errorf("error message must mention region requirement; got: %v", err)
+		}
+	})
+
+	t.Run("region NOT inferred from URL host", func(t *testing.T) {
+		// Even though the URL host encodes "us-east-1", the helper
+		// must not pull region from it — this is the load-bearing
+		// invariant that lets the override safely target hosts that
+		// don't encode a region (LocalStack, VPC endpoints, etc.).
+		t.Setenv("AWS_REGION", "")
+		req := mkReq()
+		err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+			Credentials: creds,
+		})
+		if err == nil {
+			t.Fatal("expected error — region must not be inferred from URL host even when present")
+		}
+	})
+}
+
+// TestAttachBedrockAuthWithOptions_RejectsInvalidEndpoint pins the
+// scheme/host validation. A bare host with no scheme, an opaque URI,
+// or a non-http scheme is operator misconfiguration — surface it as an
+// error rather than silently signing a request that won't reach the
+// intended host.
+func TestAttachBedrockAuthWithOptions_RejectsInvalidEndpoint(t *testing.T) {
+	creds := staticCreds{cred: aws.Credentials{AccessKeyID: "AK", SecretAccessKey: "SK"}}
+	cases := []struct {
+		name     string
+		endpoint string
+	}{
+		{"missing scheme", "localhost:9000"},
+		{"non-http scheme", "ftp://localhost:9000"},
+		{"empty host", "http:///foo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &Request{
+				URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+				Method: "POST",
+				Body:   `{}`,
+			}
+			err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+				EndpointURL: tc.endpoint,
+				Region:      "us-east-1",
+				Credentials: creds,
+			})
+			if err == nil {
+				t.Fatalf("expected error for endpoint %q, got nil", tc.endpoint)
+			}
+		})
+	}
+}
+
+// TestAttachBedrockAuthWithOptions_SigningCoversRewrittenURL pins the
+// end-to-end invariant: the explicit-attach + rewrite combo must produce
+// a SigV4 Authorization whose signed Host header references the override
+// host, not the original BAML-emitted Bedrock host. Without this
+// invariant a localhost mock would reject the signature on host mismatch.
+func TestAttachBedrockAuthWithOptions_SigningCoversRewrittenURL(t *testing.T) {
+	pinned := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	req := &Request{
+		URL:     "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+		Method:  "POST",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Body:    `{"messages":[]}`,
+	}
+	if err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+		EndpointURL: "http://localhost:9000",
+		Region:      "us-east-1",
+		Credentials: staticCreds{cred: aws.Credentials{
+			AccessKeyID:     "AKIDEXAMPLE",
+			SecretAccessKey: "SECRETEXAMPLE",
+		}},
+	}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	req.AWSAuth.NowFunc = func() time.Time { return pinned }
+
+	if err := signRequest(context.Background(), req, req.URL); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	auth := req.Headers["Authorization"]
+	if auth == "" {
+		t.Fatal("Authorization header missing")
+	}
+	if !strings.Contains(auth, "/20260511/us-east-1/bedrock/aws4_request") {
+		t.Errorf("Authorization credential scope must reference us-east-1/bedrock; got: %s", auth)
+	}
+}
+
+// TestAttachBedrockAuthForClient_DispatchesByOptions pins the codegen
+// dispatch contract: empty endpoint+region falls through to URL-pattern
+// detection (so the default-endpoint case still attaches via
+// MaybeAttachBedrockAuth), and a non-empty endpoint or region routes to
+// the explicit override path (which rewrites the URL).
+func TestAttachBedrockAuthForClient_DispatchesByOptions(t *testing.T) {
+	t.Run("no override falls through to URL-pattern detection", func(t *testing.T) {
+		req := &Request{
+			URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+			Method: "POST",
+			Body:   `{}`,
+		}
+		if err := AttachBedrockAuthForClient(context.Background(), req, "", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.AWSAuth == nil {
+			t.Fatal("MaybeAttachBedrockAuth fallback must attach for default Bedrock URL")
+		}
+		if req.AWSAuth.Region != "us-east-1" {
+			t.Errorf("Region = %q, want us-east-1 (URL-pattern path)", req.AWSAuth.Region)
+		}
+		if req.URL != "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse" {
+			t.Errorf("URL must NOT be rewritten on the fallback path; got %q", req.URL)
+		}
+	})
+
+	t.Run("non-empty endpoint routes to explicit override", func(t *testing.T) {
+		req := &Request{
+			URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+			Method: "POST",
+			Body:   `{}`,
+		}
+		if err := AttachBedrockAuthForClient(context.Background(), req, "http://localhost:9000", "us-east-1"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.URL != "http://localhost:9000/model/foo/converse" {
+			t.Errorf("URL = %q, want override-rewritten", req.URL)
+		}
+	})
+
+	t.Run("non-empty region only still routes to explicit", func(t *testing.T) {
+		// region-only override (no endpoint) still must take the
+		// explicit path — the operator has set region in `.baml`,
+		// signaling they don't want the URL-host inference.
+		req := &Request{
+			URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+			Method: "POST",
+			Body:   `{}`,
+		}
+		if err := AttachBedrockAuthForClient(context.Background(), req, "", "eu-west-1"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.AWSAuth == nil {
+			t.Fatal("expected AWSAuth attached")
+		}
+		if req.AWSAuth.Region != "eu-west-1" {
+			t.Errorf("Region = %q, want eu-west-1 (explicit option)", req.AWSAuth.Region)
+		}
+		if req.URL != "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse" {
+			t.Errorf("URL must NOT be rewritten when only region is overridden; got %q", req.URL)
+		}
+	})
+
+	t.Run("non-bedrock URL with no override is a no-op", func(t *testing.T) {
+		req := &Request{
+			URL:    "https://api.openai.com/v1/chat/completions",
+			Method: "POST",
+			Body:   `{}`,
+		}
+		if err := AttachBedrockAuthForClient(context.Background(), req, "", ""); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.AWSAuth != nil {
+			t.Errorf("non-bedrock URL must not attach; got %+v", req.AWSAuth)
+		}
+	})
+}
+
+// TestAttachBedrockAuthWithOptions_NilCredentialsUsesDefaultChain pins
+// the documented Credentials slot contract: nil means "use the default
+// AWS credential chain", not "skip auth". The static-creds follow-up
+// will populate the slot; until then nil is the production codegen
+// path. The default chain may fail in CI without AWS creds set, so the
+// test substitutes the package-level loader with a deterministic
+// success.
+func TestAttachBedrockAuthWithOptions_NilCredentialsUsesDefaultChain(t *testing.T) {
+	savedLoader := defaultAWSConfigLoader
+	defaultAWSCredsMu.Lock()
+	savedCreds := defaultAWSCreds
+	defaultAWSCreds = nil
+	defaultAWSCredsMu.Unlock()
+	t.Cleanup(func() {
+		defaultAWSConfigLoader = savedLoader
+		defaultAWSCredsMu.Lock()
+		defaultAWSCreds = savedCreds
+		defaultAWSCredsMu.Unlock()
+	})
+	defaultAWSConfigLoader = func(ctx context.Context) (aws.Config, error) {
+		return aws.Config{Credentials: staticCreds{cred: aws.Credentials{
+			AccessKeyID: "AK", SecretAccessKey: "SK",
+		}}}, nil
+	}
+
+	req := &Request{
+		URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+		Method: "POST",
+		Body:   `{}`,
+	}
+	if err := AttachBedrockAuthWithOptions(context.Background(), req, BedrockAuthOptions{
+		Region: "us-east-1",
+		// Credentials intentionally left nil — should resolve via the default chain.
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.AWSAuth == nil || req.AWSAuth.Credentials == nil {
+		t.Fatal("expected default-chain credentials to be attached")
+	}
+}
+
 func TestParseBedrockRegion(t *testing.T) {
 	cases := []struct {
 		url     string
