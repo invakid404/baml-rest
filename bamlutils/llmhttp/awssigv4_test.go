@@ -1119,7 +1119,7 @@ func TestAttachBedrockAuthForClient_DispatchesByOptions(t *testing.T) {
 			Method: "POST",
 			Body:   `{}`,
 		}
-		if err := AttachBedrockAuthForClient(context.Background(), req, "", ""); err != nil {
+		if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if req.AWSAuth == nil {
@@ -1139,7 +1139,10 @@ func TestAttachBedrockAuthForClient_DispatchesByOptions(t *testing.T) {
 			Method: "POST",
 			Body:   `{}`,
 		}
-		if err := AttachBedrockAuthForClient(context.Background(), req, "http://localhost:9000", "us-east-1"); err != nil {
+		if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+			EndpointURL: "http://localhost:9000",
+			Region:      "us-east-1",
+		}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if req.URL != "http://localhost:9000/model/foo/converse" {
@@ -1156,7 +1159,9 @@ func TestAttachBedrockAuthForClient_DispatchesByOptions(t *testing.T) {
 			Method: "POST",
 			Body:   `{}`,
 		}
-		if err := AttachBedrockAuthForClient(context.Background(), req, "", "eu-west-1"); err != nil {
+		if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+			Region: "eu-west-1",
+		}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if req.AWSAuth == nil {
@@ -1176,7 +1181,7 @@ func TestAttachBedrockAuthForClient_DispatchesByOptions(t *testing.T) {
 			Method: "POST",
 			Body:   `{}`,
 		}
-		if err := AttachBedrockAuthForClient(context.Background(), req, "", ""); err != nil {
+		if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if req.AWSAuth != nil {
@@ -1223,6 +1228,441 @@ func TestAttachBedrockAuthWithOptions_NilCredentialsUsesDefaultChain(t *testing.
 	}
 	if req.AWSAuth == nil || req.AWSAuth.Credentials == nil {
 		t.Fatal("expected default-chain credentials to be attached")
+	}
+}
+
+// Static credential fixture values for #254 item 2 tests. Use obvious
+// fakes (NOT AWS doc examples like AKIAIOSFODNN7EXAMPLE) so a security
+// scanner cannot mistake them for compromised credentials.
+const (
+	staticCredsTestAccessKey    = "STATIC_TEST_ACCESS_KEY"
+	staticCredsTestSecretKey    = "STATIC_TEST_SECRET_KEY"
+	staticCredsTestSessionToken = "STATIC_TEST_SESSION_TOKEN"
+)
+
+// TestResolveBedrockCredentials_Static pins the static-credentials
+// branch: AccessKeyID + SecretAccessKey (+ optional SessionToken) →
+// credentials.NewStaticCredentialsProvider. The returned provider
+// must hand out exactly the values we configured.
+func TestResolveBedrockCredentials_Static(t *testing.T) {
+	t.Run("without session token", func(t *testing.T) {
+		sel := BedrockCredentialSelector{
+			AccessKeyID:            staticCredsTestAccessKey,
+			AccessKeyIDPresent:     true,
+			SecretAccessKey:        staticCredsTestSecretKey,
+			SecretAccessKeyPresent: true,
+		}
+		provider, err := ResolveBedrockCredentials(context.Background(), "TestClient", sel)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if provider == nil {
+			t.Fatal("expected non-nil provider for declared static credentials")
+		}
+		creds, err := provider.Retrieve(context.Background())
+		if err != nil {
+			t.Fatalf("Retrieve: %v", err)
+		}
+		if creds.AccessKeyID != staticCredsTestAccessKey {
+			t.Errorf("AccessKeyID = %q, want %q", creds.AccessKeyID, staticCredsTestAccessKey)
+		}
+		if creds.SecretAccessKey != staticCredsTestSecretKey {
+			t.Errorf("SecretAccessKey = %q, want %q", creds.SecretAccessKey, staticCredsTestSecretKey)
+		}
+		if creds.SessionToken != "" {
+			t.Errorf("SessionToken = %q, want empty for static pair without session token", creds.SessionToken)
+		}
+	})
+	t.Run("with session token", func(t *testing.T) {
+		sel := BedrockCredentialSelector{
+			AccessKeyID:            staticCredsTestAccessKey,
+			AccessKeyIDPresent:     true,
+			SecretAccessKey:        staticCredsTestSecretKey,
+			SecretAccessKeyPresent: true,
+			SessionToken:           staticCredsTestSessionToken,
+			SessionTokenPresent:    true,
+		}
+		provider, err := ResolveBedrockCredentials(context.Background(), "TestClient", sel)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		creds, err := provider.Retrieve(context.Background())
+		if err != nil {
+			t.Fatalf("Retrieve: %v", err)
+		}
+		if creds.SessionToken != staticCredsTestSessionToken {
+			t.Errorf("SessionToken = %q, want %q", creds.SessionToken, staticCredsTestSessionToken)
+		}
+	})
+}
+
+// TestResolveBedrockCredentials_Profile pins the profile-only branch:
+// the resolver delegates to profileAWSConfigLoader with the configured
+// profile name and returns cfg.Credentials. Indirected through the
+// test-seam loader so the test doesn't depend on ~/.aws/credentials.
+func TestResolveBedrockCredentials_Profile(t *testing.T) {
+	savedLoader := profileAWSConfigLoader
+	t.Cleanup(func() { profileAWSConfigLoader = savedLoader })
+
+	var seenProfile string
+	stubProvider := staticCreds{cred: aws.Credentials{
+		AccessKeyID:     "FROM_PROFILE_AK",
+		SecretAccessKey: "FROM_PROFILE_SK",
+	}}
+	profileAWSConfigLoader = func(ctx context.Context, profile string) (aws.Config, error) {
+		seenProfile = profile
+		return aws.Config{Credentials: stubProvider}, nil
+	}
+
+	sel := BedrockCredentialSelector{
+		Profile:        "ai-dev",
+		ProfilePresent: true,
+	}
+	provider, err := ResolveBedrockCredentials(context.Background(), "TestClient", sel)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if seenProfile != "ai-dev" {
+		t.Errorf("profile passed to loader = %q, want ai-dev", seenProfile)
+	}
+	creds, err := provider.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if creds.AccessKeyID != "FROM_PROFILE_AK" {
+		t.Errorf("AccessKeyID = %q, want FROM_PROFILE_AK (must come from loader-returned cfg.Credentials)", creds.AccessKeyID)
+	}
+}
+
+// TestResolveBedrockCredentials_ProfileLoaderError pins that a profile
+// load failure is wrapped with the client name and surfaced verbatim
+// (no swallowed errors, no silent fallback to the default chain).
+func TestResolveBedrockCredentials_ProfileLoaderError(t *testing.T) {
+	savedLoader := profileAWSConfigLoader
+	t.Cleanup(func() { profileAWSConfigLoader = savedLoader })
+	profileAWSConfigLoader = func(ctx context.Context, profile string) (aws.Config, error) {
+		return aws.Config{}, errors.New("synthetic load error")
+	}
+
+	_, err := ResolveBedrockCredentials(context.Background(), "ClientName", BedrockCredentialSelector{
+		Profile:        "ai-dev",
+		ProfilePresent: true,
+	})
+	if err == nil {
+		t.Fatal("expected error from synthetic profile load failure")
+	}
+	if !strings.Contains(err.Error(), "ClientName") {
+		t.Errorf("error must name the client; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "synthetic load error") {
+		t.Errorf("error must wrap loader error; got: %v", err)
+	}
+}
+
+// TestResolveBedrockCredentials_StaticWinsOverProfile pins the
+// BAML-parity precedence: when both static keys and profile are
+// declared, static credentials win without consulting the profile
+// loader. The test seam asserts profileAWSConfigLoader is NEVER called
+// in this case — an indirect way to prove static wins silently.
+func TestResolveBedrockCredentials_StaticWinsOverProfile(t *testing.T) {
+	savedLoader := profileAWSConfigLoader
+	t.Cleanup(func() { profileAWSConfigLoader = savedLoader })
+	profileAWSConfigLoader = func(ctx context.Context, profile string) (aws.Config, error) {
+		t.Fatalf("profileAWSConfigLoader must not be called when static creds are declared (got profile=%q)", profile)
+		return aws.Config{}, nil
+	}
+
+	sel := BedrockCredentialSelector{
+		AccessKeyID:            staticCredsTestAccessKey,
+		AccessKeyIDPresent:     true,
+		SecretAccessKey:        staticCredsTestSecretKey,
+		SecretAccessKeyPresent: true,
+		Profile:                "ignored",
+		ProfilePresent:         true,
+	}
+	provider, err := ResolveBedrockCredentials(context.Background(), "TestClient", sel)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	creds, err := provider.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if creds.AccessKeyID != staticCredsTestAccessKey {
+		t.Errorf("AccessKeyID = %q, want static (static must win over profile)", creds.AccessKeyID)
+	}
+}
+
+// TestResolveBedrockCredentials_Default pins that an empty selector
+// returns (nil, nil) — the caller is responsible for routing to the
+// default credential chain. Preserves #262's no-override fallthrough.
+func TestResolveBedrockCredentials_Default(t *testing.T) {
+	provider, err := ResolveBedrockCredentials(context.Background(), "TestClient", BedrockCredentialSelector{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider != nil {
+		t.Errorf("provider = %T, want nil (caller falls back to default chain)", provider)
+	}
+}
+
+// TestResolveBedrockCredentials_InvalidPartialStates pins each partial
+// static-credential configuration rejected by the resolver. Critical
+// invariants:
+//   - the error names the client and the missing field
+//   - the error string DOES NOT contain any configured credential value
+//
+// The security-pin assertion guards against future regressions that
+// would echo the configured AKID/secret/token in the error path —
+// silently breaking the "no secret leakage" contract documented on
+// ResolveBedrockCredentials.
+func TestResolveBedrockCredentials_InvalidPartialStates(t *testing.T) {
+	cases := []struct {
+		name      string
+		sel       BedrockCredentialSelector
+		wantField string
+	}{
+		{
+			name: "access_key_id without secret_access_key",
+			sel: BedrockCredentialSelector{
+				AccessKeyID:        staticCredsTestAccessKey,
+				AccessKeyIDPresent: true,
+			},
+			wantField: "secret_access_key",
+		},
+		{
+			name: "secret_access_key without access_key_id",
+			sel: BedrockCredentialSelector{
+				SecretAccessKey:        staticCredsTestSecretKey,
+				SecretAccessKeyPresent: true,
+			},
+			wantField: "access_key_id",
+		},
+		{
+			name: "session_token without key pair",
+			sel: BedrockCredentialSelector{
+				SessionToken:        staticCredsTestSessionToken,
+				SessionTokenPresent: true,
+			},
+			wantField: "access_key_id",
+		},
+		{
+			name: "access_key_id present but resolved empty",
+			sel: BedrockCredentialSelector{
+				AccessKeyIDPresent:     true,
+				SecretAccessKey:        staticCredsTestSecretKey,
+				SecretAccessKeyPresent: true,
+			},
+			wantField: "access_key_id",
+		},
+		{
+			name: "secret_access_key present but resolved empty",
+			sel: BedrockCredentialSelector{
+				AccessKeyID:            staticCredsTestAccessKey,
+				AccessKeyIDPresent:     true,
+				SecretAccessKeyPresent: true,
+			},
+			wantField: "secret_access_key",
+		},
+		{
+			name: "session_token present but resolved empty",
+			sel: BedrockCredentialSelector{
+				AccessKeyID:            staticCredsTestAccessKey,
+				AccessKeyIDPresent:     true,
+				SecretAccessKey:        staticCredsTestSecretKey,
+				SecretAccessKeyPresent: true,
+				SessionTokenPresent:    true,
+			},
+			wantField: "session_token",
+		},
+		{
+			name: "profile present but resolved empty",
+			sel: BedrockCredentialSelector{
+				ProfilePresent: true,
+			},
+			wantField: "profile",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ResolveBedrockCredentials(context.Background(), "BedrockA", tc.sel)
+			if err == nil {
+				t.Fatal("expected error for partial credential state")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "BedrockA") {
+				t.Errorf("error must name the client; got: %s", msg)
+			}
+			if !strings.Contains(msg, tc.wantField) {
+				t.Errorf("error must mention missing field %q; got: %s", tc.wantField, msg)
+			}
+			// Security pin: the error must NEVER echo a configured
+			// credential value. This is the load-bearing assertion
+			// for the doc-comment promise on
+			// ResolveBedrockCredentials.
+			for _, secret := range []string{
+				staticCredsTestAccessKey,
+				staticCredsTestSecretKey,
+				staticCredsTestSessionToken,
+			} {
+				if strings.Contains(msg, secret) {
+					t.Errorf("error leaked credential value %q; got: %s", secret, msg)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveBedrockCredentials_EnvRefUnsetIsRejected pins the
+// "unset env reference is an error, not silent fallback" branch.
+// The selector models the codegen output for an `env.UNSET_VAR`
+// reference: Present is preserved from BedrockOptionValue.Resolve()'s
+// (value, ok) shape — false here — even when the field itself was
+// declared in .baml. The resolver must reject this as a partial state
+// rather than silently fall through to profile / default chain.
+func TestResolveBedrockCredentials_EnvRefUnsetIsRejected(t *testing.T) {
+	// env.UNSET_AKID + literal secret. AccessKeyIDPresent = false
+	// because the env lookup failed, even though the field was
+	// declared.
+	sel := BedrockCredentialSelector{
+		AccessKeyIDPresent:     false,
+		SecretAccessKey:        staticCredsTestSecretKey,
+		SecretAccessKeyPresent: true,
+	}
+	_, err := ResolveBedrockCredentials(context.Background(), "ClientName", sel)
+	if err == nil {
+		t.Fatal("expected error when an env.X access_key_id is unset")
+	}
+	if !strings.Contains(err.Error(), "access_key_id") {
+		t.Errorf("error must point to the missing field; got: %v", err)
+	}
+}
+
+// TestAttachBedrockAuthForClient_StaticProviderUsedForSigning pins
+// that static credentials from .baml options flow all the way through
+// AttachBedrockAuthForClient -> AttachBedrockAuthWithOptions ->
+// AWSAuthConfig.Credentials, and that signRequest then uses them to
+// produce an Authorization header referencing the static access key.
+// Cross-checks the dispatch wiring against the resolver in isolation.
+func TestAttachBedrockAuthForClient_StaticProviderUsedForSigning(t *testing.T) {
+	req := &Request{
+		URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+		Method: "POST",
+		Body:   `{}`,
+	}
+	if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+		ClientName: "StaticClient",
+		Region:     "us-east-1",
+		Credentials: BedrockCredentialSelector{
+			AccessKeyID:            staticCredsTestAccessKey,
+			AccessKeyIDPresent:     true,
+			SecretAccessKey:        staticCredsTestSecretKey,
+			SecretAccessKeyPresent: true,
+		},
+	}); err != nil {
+		t.Fatalf("AttachBedrockAuthForClient: %v", err)
+	}
+	if req.AWSAuth == nil || req.AWSAuth.Credentials == nil {
+		t.Fatal("static credentials must flow through to AWSAuth.Credentials")
+	}
+
+	pinned := time.Date(2026, 5, 11, 12, 34, 56, 0, time.UTC)
+	req.AWSAuth.NowFunc = func() time.Time { return pinned }
+	if err := signRequest(context.Background(), req, req.URL); err != nil {
+		t.Fatalf("signRequest: %v", err)
+	}
+
+	auth := req.Headers["Authorization"]
+	if !strings.Contains(auth, "Credential="+staticCredsTestAccessKey+"/20260511/us-east-1/bedrock/aws4_request") {
+		t.Errorf("Authorization must reference the static access key in credential scope; got: %s", auth)
+	}
+}
+
+// TestAttachBedrockAuthForClient_StaticVsDefaultProducesDifferentSignatures
+// is the "did we actually plug the slot in" pin. A regression that
+// silently dropped the resolved provider and re-fetched the default
+// chain would still pass the earlier static-flow test (different
+// AKID would still produce *some* Authorization header) — but the
+// signature it produces would match the default-chain signature
+// instead of the static one. This test signs the same request body
+// twice, once with each provider, and asserts the two Authorization
+// headers differ.
+func TestAttachBedrockAuthForClient_StaticVsDefaultProducesDifferentSignatures(t *testing.T) {
+	// Swap the default-chain loader for a deterministic stub so the
+	// non-static signature is reproducible.
+	savedLoader := defaultAWSConfigLoader
+	defaultAWSCredsMu.Lock()
+	savedCreds := defaultAWSCreds
+	defaultAWSCreds = nil
+	defaultAWSCredsMu.Unlock()
+	t.Cleanup(func() {
+		defaultAWSConfigLoader = savedLoader
+		defaultAWSCredsMu.Lock()
+		defaultAWSCreds = savedCreds
+		defaultAWSCredsMu.Unlock()
+	})
+	defaultAWSConfigLoader = func(ctx context.Context) (aws.Config, error) {
+		return aws.Config{Credentials: staticCreds{cred: aws.Credentials{
+			AccessKeyID:     "DEFAULT_CHAIN_AK",
+			SecretAccessKey: "DEFAULT_CHAIN_SK",
+		}}}, nil
+	}
+
+	pinned := time.Date(2026, 5, 11, 12, 34, 56, 0, time.UTC)
+	makeReq := func() *Request {
+		return &Request{
+			URL:     "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+			Method:  "POST",
+			Headers: map[string]string{"Content-Type": "application/json"},
+			Body:    `{"messages":[]}`,
+		}
+	}
+
+	staticReq := makeReq()
+	if err := AttachBedrockAuthForClient(context.Background(), staticReq, BedrockClientAuthOptions{
+		ClientName: "StaticClient",
+		Region:     "us-east-1",
+		Credentials: BedrockCredentialSelector{
+			AccessKeyID:            staticCredsTestAccessKey,
+			AccessKeyIDPresent:     true,
+			SecretAccessKey:        staticCredsTestSecretKey,
+			SecretAccessKeyPresent: true,
+		},
+	}); err != nil {
+		t.Fatalf("static AttachBedrockAuthForClient: %v", err)
+	}
+	staticReq.AWSAuth.NowFunc = func() time.Time { return pinned }
+	if err := signRequest(context.Background(), staticReq, staticReq.URL); err != nil {
+		t.Fatalf("static signRequest: %v", err)
+	}
+
+	defaultReq := makeReq()
+	if err := AttachBedrockAuthForClient(context.Background(), defaultReq, BedrockClientAuthOptions{
+		ClientName: "DefaultClient",
+		Region:     "us-east-1",
+	}); err != nil {
+		t.Fatalf("default AttachBedrockAuthForClient: %v", err)
+	}
+	defaultReq.AWSAuth.NowFunc = func() time.Time { return pinned }
+	if err := signRequest(context.Background(), defaultReq, defaultReq.URL); err != nil {
+		t.Fatalf("default signRequest: %v", err)
+	}
+
+	staticAuth := staticReq.Headers["Authorization"]
+	defaultAuth := defaultReq.Headers["Authorization"]
+	if staticAuth == "" || defaultAuth == "" {
+		t.Fatalf("missing Authorization headers: static=%q default=%q", staticAuth, defaultAuth)
+	}
+	if staticAuth == defaultAuth {
+		t.Errorf("static and default-chain signatures must differ — the static provider slot is silently being dropped.\n  static:  %s\n  default: %s", staticAuth, defaultAuth)
+	}
+	// And specifically: each Authorization's Credential= prefix must
+	// reference the corresponding access key.
+	if !strings.Contains(staticAuth, "Credential="+staticCredsTestAccessKey+"/") {
+		t.Errorf("static Authorization missing static access key in Credential=; got: %s", staticAuth)
+	}
+	if !strings.Contains(defaultAuth, "Credential=DEFAULT_CHAIN_AK/") {
+		t.Errorf("default Authorization missing default-chain access key; got: %s", defaultAuth)
 	}
 }
 

@@ -1175,6 +1175,30 @@ type bamlConfig struct {
 type bedrockClientOptions struct {
 	EndpointURL bedrockOptionValue
 	Region      bedrockOptionValue
+	Credentials bedrockCredentialOptions
+}
+
+// bedrockCredentialOptions groups the per-client aws-bedrock credential
+// selectors (#254 item 2). Each field carries a literal-or-env
+// bedrockOptionValue resolved at request-build time. Provenance is
+// preserved so a generated literal stays a literal and an `env.X`
+// reference resolves against the worker's current environment.
+//
+// Resolution precedence (applied by bamlutils/llmhttp.ResolveBedrockCredentials):
+//  1. AccessKeyID + SecretAccessKey (+ optional SessionToken) → static.
+//  2. Profile → shared-config profile load.
+//  3. Default chain (none of the above declared).
+//
+// Security note: literal values declared inline (e.g.
+// `secret_access_key "AKIA..."`) land in generated introspected.go AND
+// the compiled worker binary — that is BAML-parity behavior, documented
+// as an operator footgun. Use `env.X` to keep secret material out of
+// generated artifacts.
+type bedrockCredentialOptions struct {
+	AccessKeyID     bedrockOptionValue
+	SecretAccessKey bedrockOptionValue
+	SessionToken    bedrockOptionValue
+	Profile         bedrockOptionValue
 }
 
 // bedrockOptionValue stores a single .baml option value with its
@@ -1480,6 +1504,9 @@ func isNestedBlockStart(line string) bool {
 // key-value statements. Sorted longest-first so that `max_delay_ms` is matched
 // before the embedded `delay_ms` substring.
 var bamlConfigKeys = []string{
+	"secret_access_key ",
+	"session_token ",
+	"access_key_id ",
 	"endpoint_url ",
 	"retry_policy ",
 	"max_delay_ms ",
@@ -1489,6 +1516,7 @@ var bamlConfigKeys = []string{
 	"provider ",
 	"delay_ms ",
 	"options ",
+	"profile ",
 	"client ",
 	"prompt ",
 	"region ",
@@ -1992,18 +2020,24 @@ func extractRoundRobinStart(line string) (int, bool) {
 	return 0, false
 }
 
-// updateBedrockClientOption extracts endpoint_url and region option
-// values from a single options-block line and merges them into the
-// per-client bedrockClientOptions entry. Each call is additive on the
-// keys actually present in `line`, so a multi-line options block whose
-// endpoint_url and region appear on separate lines accumulates both.
+// updateBedrockClientOption extracts the supported aws-bedrock option
+// values (endpoint_url, region, and the credential selectors
+// access_key_id / secret_access_key / session_token / profile) from a
+// single options-block line and merges them into the per-client
+// bedrockClientOptions entry. Each call is additive on the keys
+// actually present in `line`, so a multi-line options block whose
+// values appear on separate lines accumulates them.
 //
 // Provider filtering happens at emission, not here — see the
 // bedrockClientOptions field doc on bamlConfig for the rationale.
 func updateBedrockClientOption(cfg *bamlConfig, clientName, line string) {
 	endpoint, hasEndpoint := extractBedrockOptionValue(line, "endpoint_url")
 	region, hasRegion := extractBedrockOptionValue(line, "region")
-	if !hasEndpoint && !hasRegion {
+	accessKeyID, hasAccessKeyID := extractBedrockOptionValue(line, "access_key_id")
+	secretAccessKey, hasSecretAccessKey := extractBedrockOptionValue(line, "secret_access_key")
+	sessionToken, hasSessionToken := extractBedrockOptionValue(line, "session_token")
+	profile, hasProfile := extractBedrockOptionValue(line, "profile")
+	if !hasEndpoint && !hasRegion && !hasAccessKeyID && !hasSecretAccessKey && !hasSessionToken && !hasProfile {
 		return
 	}
 	cur := cfg.bedrockClientOptions[clientName]
@@ -2012,6 +2046,18 @@ func updateBedrockClientOption(cfg *bamlConfig, clientName, line string) {
 	}
 	if hasRegion {
 		cur.Region = region
+	}
+	if hasAccessKeyID {
+		cur.Credentials.AccessKeyID = accessKeyID
+	}
+	if hasSecretAccessKey {
+		cur.Credentials.SecretAccessKey = secretAccessKey
+	}
+	if hasSessionToken {
+		cur.Credentials.SessionToken = sessionToken
+	}
+	if hasProfile {
+		cur.Credentials.Profile = profile
 	}
 	cfg.bedrockClientOptions[clientName] = cur
 }
@@ -2573,6 +2619,12 @@ func generateBamlConfigVars(out *jen.File) {
 			entries = append(entries, jen.Lit(clientName).Op(":").Id("BedrockClientOptions").Values(jen.Dict{
 				jen.Id("EndpointURL"): bedrockOptionValueLit(opts.EndpointURL),
 				jen.Id("Region"):      bedrockOptionValueLit(opts.Region),
+				jen.Id("Credentials"): jen.Id("BedrockCredentialOptions").Values(jen.Dict{
+					jen.Id("AccessKeyID"):     bedrockOptionValueLit(opts.Credentials.AccessKeyID),
+					jen.Id("SecretAccessKey"): bedrockOptionValueLit(opts.Credentials.SecretAccessKey),
+					jen.Id("SessionToken"):    bedrockOptionValueLit(opts.Credentials.SessionToken),
+					jen.Id("Profile"):         bedrockOptionValueLit(opts.Credentials.Profile),
+				}),
 			}))
 		}
 		out.Var().Id("BedrockClientOptionsByName").Op("=").Map(jen.String()).Id("BedrockClientOptions").Values(entries...)
@@ -2631,6 +2683,22 @@ func emitBedrockOptionTypes(out *jen.File) {
 		jen.Return(jen.Lit(""), jen.False()),
 	)
 
+	out.Comment("BedrockCredentialOptions groups the per-client aws-bedrock credential selectors parsed from .baml")
+	out.Comment("options (#254 item 2). Resolution precedence (applied by bamlutils/llmhttp.ResolveBedrockCredentials):")
+	out.Comment("  1. AccessKeyID + SecretAccessKey (+ optional SessionToken) -> static credentials.")
+	out.Comment("  2. Profile -> shared-config profile load.")
+	out.Comment("  3. Default chain (none of the above declared).")
+	out.Comment("")
+	out.Comment("SECURITY: literal values (e.g. secret_access_key \"AKIA...\") land in this generated file AND the")
+	out.Comment("compiled worker binary. That is BAML-parity behavior, documented as an operator footgun. Prefer")
+	out.Comment("env.X references for any secret material so values stay out of generated artifacts.")
+	out.Type().Id("BedrockCredentialOptions").Struct(
+		jen.Id("AccessKeyID").Id("BedrockOptionValue"),
+		jen.Id("SecretAccessKey").Id("BedrockOptionValue"),
+		jen.Id("SessionToken").Id("BedrockOptionValue"),
+		jen.Id("Profile").Id("BedrockOptionValue"),
+	)
+
 	out.Comment("BedrockClientOptions carries the per-client aws-bedrock options that codegen needs at request-build time")
 	out.Comment("to override BAML's hardcoded modular Bedrock URL (BAML v0.219 hardcodes")
 	out.Comment("https://bedrock-runtime.<region>.amazonaws.com and the public Go HTTPRequest surface does not expose")
@@ -2638,5 +2706,6 @@ func emitBedrockOptionTypes(out *jen.File) {
 	out.Type().Id("BedrockClientOptions").Struct(
 		jen.Id("EndpointURL").Id("BedrockOptionValue"),
 		jen.Id("Region").Id("BedrockOptionValue"),
+		jen.Id("Credentials").Id("BedrockCredentialOptions"),
 	)
 }

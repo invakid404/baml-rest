@@ -102,6 +102,22 @@ func (v BedrockOptionValue) Resolve() (string, bool) {
 	return "", false
 }
 
+// BedrockCredentialOptions groups the per-client aws-bedrock credential selectors parsed from .baml
+// options (#254 item 2). Resolution precedence (applied by bamlutils/llmhttp.ResolveBedrockCredentials):
+//  1. AccessKeyID + SecretAccessKey (+ optional SessionToken) -> static credentials.
+//  2. Profile -> shared-config profile load.
+//  3. Default chain (none of the above declared).
+//
+// SECURITY: literal values (e.g. secret_access_key "AKIA...") land in this generated file AND the
+// compiled worker binary. That is BAML-parity behavior, documented as an operator footgun. Prefer
+// env.X references for any secret material so values stay out of generated artifacts.
+type BedrockCredentialOptions struct {
+	AccessKeyID     BedrockOptionValue
+	SecretAccessKey BedrockOptionValue
+	SessionToken    BedrockOptionValue
+	Profile         BedrockOptionValue
+}
+
 // BedrockClientOptions carries the per-client aws-bedrock options that codegen needs at request-build time
 // to override BAML's hardcoded modular Bedrock URL (BAML v0.219 hardcodes
 // https://bedrock-runtime.<region>.amazonaws.com and the public Go HTTPRequest surface does not expose
@@ -109,6 +125,7 @@ func (v BedrockOptionValue) Resolve() (string, bool) {
 type BedrockClientOptions struct {
 	EndpointURL BedrockOptionValue
 	Region      BedrockOptionValue
+	Credentials BedrockCredentialOptions
 }
 
 // BedrockClientOptionsByName maps aws-bedrock client names to their parsed endpoint_url + region options.

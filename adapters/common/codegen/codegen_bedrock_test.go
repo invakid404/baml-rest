@@ -169,8 +169,13 @@ func TestEmitBuildCallRequest_EmitsBedrockAuthDispatch(t *testing.T) {
 	// internally falls through to MaybeAttachBedrockAuth when both
 	// values are empty, so the URL-pattern detection contract holds
 	// without re-emitting the helper here.
-	if !strings.Contains(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req, bedrockEndpointURL, bedrockRegion)") {
-		t.Errorf("dispatch must call llmhttp.AttachBedrockAuthForClient with resolved endpoint+region; rendered:\n%s", rendered)
+	if !strings.Contains(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{") {
+		t.Errorf("dispatch must call llmhttp.AttachBedrockAuthForClient with a BedrockClientAuthOptions struct; rendered:\n%s", rendered)
+	}
+	for _, optField := range []string{"ClientName:  selectedClient", "EndpointURL: bedrockEndpointURL", "Region:      bedrockRegion", "Credentials: bedrockCreds"} {
+		if !strings.Contains(rendered, optField) {
+			t.Errorf("dispatch must populate BedrockClientAuthOptions.%s; rendered:\n%s", optField, rendered)
+		}
 	}
 	// The attach lives inside the buildRequestFn closure, between the
 	// httpReq construction and the closure's final return. Pin both
@@ -236,8 +241,13 @@ func TestEmitBuildRequest_EmitsBedrockStreamingClosure(t *testing.T) {
 	// falls through to MaybeAttachBedrockAuth for the default-endpoint
 	// case) — the streaming closure picks up the same per-client
 	// endpoint_url + region overrides as the call closure.
-	if !strings.Contains(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req, bedrockEndpointURL, bedrockRegion)") {
-		t.Errorf("bedrock streaming closure must call llmhttp.AttachBedrockAuthForClient with resolved endpoint+region; rendered:\n%s", rendered)
+	if !strings.Contains(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{") {
+		t.Errorf("bedrock streaming closure must call llmhttp.AttachBedrockAuthForClient with a BedrockClientAuthOptions struct; rendered:\n%s", rendered)
+	}
+	for _, optField := range []string{"ClientName:  selectedClient", "EndpointURL: bedrockEndpointURL", "Region:      bedrockRegion", "Credentials: bedrockCreds"} {
+		if !strings.Contains(rendered, optField) {
+			t.Errorf("bedrock streaming closure must populate BedrockClientAuthOptions.%s; rendered:\n%s", optField, rendered)
+		}
 	}
 	if !strings.Contains(rendered, "introspected.BedrockClientOptionsByName[selectedClient]") {
 		t.Errorf("bedrock streaming closure must look up introspected.BedrockClientOptionsByName[selectedClient]; rendered:\n%s", rendered)
@@ -271,7 +281,15 @@ func TestEmitBedrockAuthDispatchFor_Shape(t *testing.T) {
 		"introspected.BedrockClientOptionsByName[selectedClient]",
 		"bedrockOpts.EndpointURL.Resolve()",
 		"bedrockOpts.Region.Resolve()",
-		"llmhttp.AttachBedrockAuthForClient(ctx, req, bedrockEndpointURL, bedrockRegion)",
+		"bedrockOpts.Credentials.AccessKeyID.Resolve()",
+		"bedrockOpts.Credentials.SecretAccessKey.Resolve()",
+		"bedrockOpts.Credentials.SessionToken.Resolve()",
+		"bedrockOpts.Credentials.Profile.Resolve()",
+		"llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{",
+		"ClientName:  selectedClient",
+		"EndpointURL: bedrockEndpointURL",
+		"Region:      bedrockRegion",
+		"Credentials: bedrockCreds",
 		"return nil, authErr",
 	}
 	for _, want := range wantSubstrings {

@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 )
 
 // AWSAuthConfig carries the per-request information the SigV4 hook
@@ -334,14 +335,13 @@ type BedrockAuthOptions struct {
 	// from config or env, never from URL parsing.
 	Region string
 
-	// Credentials is a forward-compat slot for the static-credentials
-	// follow-up (#254 item 2: access_key_id / secret_access_key /
-	// session_token / profile). Leave unset; nil means "use the default
-	// AWS credential chain" via DefaultAWSCredentialProvider. This PR
-	// does not populate the slot — wiring it is the static-creds PR's
-	// job. Documenting the field here keeps the API stable across the
-	// two PRs so the codegen call site doesn't change again when
-	// static creds land.
+	// Credentials is the explicit aws.CredentialsProvider to sign
+	// with. nil means "use the default AWS credential chain" via
+	// DefaultAWSCredentialProvider. Populated by codegen from the
+	// resolver in ResolveBedrockCredentials when an aws-bedrock client
+	// declares static credentials or a profile in .baml options
+	// (#254 item 2: access_key_id / secret_access_key / session_token
+	// / profile).
 	Credentials aws.CredentialsProvider
 }
 
@@ -493,14 +493,160 @@ func joinEndpointRawQuery(prefix, suffix string) string {
 	}
 }
 
+// BedrockCredentialSelector carries the resolved per-field selector
+// values that codegen lifts from introspected.BedrockClientOptions.
+// Credentials at request-build time. Each pair is the (value, present)
+// result of BedrockOptionValue.Resolve(): Present=false means the field
+// is unset (either no declaration at all, or an `env.X` reference that
+// did not resolve at runtime). Storing the presence flag separately
+// from the value lets the resolver distinguish "operator did not
+// declare this field" from "operator declared an empty literal" — only
+// the latter is a configuration error.
+//
+// The type intentionally does not depend on the AWS SDK so codegen-
+// emitted call sites can populate it without pulling the SDK into the
+// generated adapter packages. ResolveBedrockCredentials is the
+// translation seam to aws.CredentialsProvider.
+type BedrockCredentialSelector struct {
+	AccessKeyID            string
+	AccessKeyIDPresent     bool
+	SecretAccessKey        string
+	SecretAccessKeyPresent bool
+	SessionToken           string
+	SessionTokenPresent    bool
+	Profile                string
+	ProfilePresent         bool
+}
+
+// isEmpty reports whether the selector declares no credential source.
+// True means the caller should fall back to the default AWS credential
+// chain — preserving the no-override default-endpoint contract from
+// #262.
+func (s BedrockCredentialSelector) isEmpty() bool {
+	return !s.AccessKeyIDPresent && !s.SecretAccessKeyPresent && !s.SessionTokenPresent && !s.ProfilePresent
+}
+
+// profileAWSConfigLoader loads an aws.Config bound to a specific
+// shared-config profile. Indirected through a package-level var so
+// tests can substitute a deterministic loader (e.g. one that records
+// the requested profile name without driving the real AWS SDK chain).
+// Mirrors the defaultAWSConfigLoader test-seam pattern above.
+var profileAWSConfigLoader = func(ctx context.Context, profile string) (aws.Config, error) {
+	return config.LoadDefaultConfig(ctx, config.WithSharedConfigProfile(profile))
+}
+
+// ResolveBedrockCredentials applies the BAML-parity credential
+// resolution precedence to a BedrockCredentialSelector and returns the
+// resulting aws.CredentialsProvider — or (nil, nil) when the caller
+// should fall back to the default AWS credential chain.
+//
+// Precedence matches BAML's upstream runtime
+// (engine/baml-runtime/.../aws_client.rs:587-650):
+//
+//  1. STATIC. If any of AccessKeyID / SecretAccessKey / SessionToken is
+//     declared, AccessKeyID + SecretAccessKey are required (and a bare
+//     SessionToken without the key pair is rejected).
+//  2. PROFILE. If only Profile is declared, the shared-config profile
+//     is loaded via profileAWSConfigLoader and cfg.Credentials is
+//     returned.
+//  3. DEFAULT CHAIN. Nothing declared → return (nil, nil) and let the
+//     caller fall through to DefaultAWSCredentialProvider.
+//
+// Static wins over profile silently when both are declared; that
+// matches BAML's runtime shape and avoids a parser-level error on a
+// configuration that is unambiguous at resolve time.
+//
+// SECURITY: invalid-partial-state errors include clientName and the
+// missing field name, never the configured credential values. Callers
+// that surface these errors must not log the configured selector
+// values either — keep them on the stack as long as possible.
+func ResolveBedrockCredentials(ctx context.Context, clientName string, sel BedrockCredentialSelector) (aws.CredentialsProvider, error) {
+	// Branch 1: any explicit static-field declaration locks us out of
+	// the profile and default branches. A partial static state (e.g.
+	// access_key_id without secret_access_key) is a configuration
+	// error: silently falling through to profile or default could let
+	// a typo escalate to using whatever credentials happen to be on
+	// the host.
+	if sel.AccessKeyIDPresent || sel.SecretAccessKeyPresent || sel.SessionTokenPresent {
+		if !sel.AccessKeyIDPresent {
+			return nil, fmt.Errorf("aws-bedrock: invalid credentials for client %q: access_key_id is required when secret_access_key or session_token is set", clientName)
+		}
+		if !sel.SecretAccessKeyPresent {
+			return nil, fmt.Errorf("aws-bedrock: invalid credentials for client %q: secret_access_key is required when access_key_id is set", clientName)
+		}
+		if sel.AccessKeyID == "" {
+			return nil, fmt.Errorf("aws-bedrock: invalid credentials for client %q: access_key_id resolved to empty", clientName)
+		}
+		if sel.SecretAccessKey == "" {
+			return nil, fmt.Errorf("aws-bedrock: invalid credentials for client %q: secret_access_key resolved to empty", clientName)
+		}
+		// SessionToken is optional. When present but empty (e.g. a
+		// declared env.X that does not exist), reject it — silently
+		// dropping a configured session token would let an STS
+		// short-lived credential silently degrade to long-lived
+		// signing.
+		if sel.SessionTokenPresent && sel.SessionToken == "" {
+			return nil, fmt.Errorf("aws-bedrock: invalid credentials for client %q: session_token resolved to empty", clientName)
+		}
+		return credentials.NewStaticCredentialsProvider(sel.AccessKeyID, sel.SecretAccessKey, sel.SessionToken), nil
+	}
+
+	// Branch 2: profile-only. The shared-config profile loader resolves
+	// against ~/.aws/credentials and ~/.aws/config; the SDK's own cred
+	// cache handles refresh for SSO / IAM-role profiles from there.
+	if sel.ProfilePresent {
+		if sel.Profile == "" {
+			return nil, fmt.Errorf("aws-bedrock: invalid credentials for client %q: profile resolved to empty", clientName)
+		}
+		cfg, err := profileAWSConfigLoader(ctx, sel.Profile)
+		if err != nil {
+			return nil, fmt.Errorf("aws-bedrock: load profile for client %q: %w", clientName, err)
+		}
+		return cfg.Credentials, nil
+	}
+
+	// Branch 3: nothing declared. Caller falls back to the default
+	// chain (DefaultAWSCredentialProvider). nil is a valid sentinel —
+	// AttachBedrockAuthForClient interprets it as "use default".
+	return nil, nil
+}
+
+// BedrockClientAuthOptions is the options-struct form of the codegen
+// dispatch entry point. Codegen builds this from the introspected
+// per-client BedrockClientOptions (endpoint_url, region, and the
+// credential selectors under .Credentials) and hands it to
+// AttachBedrockAuthForClient. The struct shape keeps the call site
+// stable across future #254 follow-ups that need to thread more
+// per-client state without growing a positional argument list.
+type BedrockClientAuthOptions struct {
+	// ClientName is the .baml client name (e.g. "BedrockA"). Used in
+	// error messages from the credential resolver so operators can
+	// pin the misconfiguration to a specific client. Never echoed
+	// with credential values.
+	ClientName string
+
+	// EndpointURL mirrors BedrockAuthOptions.EndpointURL — empty leaves
+	// req.URL untouched.
+	EndpointURL string
+
+	// Region mirrors BedrockAuthOptions.Region — empty falls back to
+	// AWS_REGION env, then errors.
+	Region string
+
+	// Credentials is the resolved-but-not-yet-translated credential
+	// selector. ResolveBedrockCredentials converts it to an
+	// aws.CredentialsProvider applying static > profile > default
+	// chain precedence.
+	Credentials BedrockCredentialSelector
+}
+
 // AttachBedrockAuthForClient is the codegen dispatch entry point for
-// the aws-bedrock provider. When endpointURL or region is non-empty
-// (i.e., the operator configured an override in `.baml options { ... }`
-// for the selected client), it routes to AttachBedrockAuthWithOptions
-// so the explicit endpoint and region are honored. When both are empty,
-// it falls through to MaybeAttachBedrockAuth's URL-pattern detection —
-// preserving the default-endpoint contract for clients that did not
-// declare an override.
+// the aws-bedrock provider. When the options struct declares any
+// override (endpoint_url, region, or a credential selector), it routes
+// to AttachBedrockAuthWithOptions so the explicit values are honored.
+// When all three are empty, it falls through to MaybeAttachBedrockAuth's
+// URL-pattern detection — preserving the default-endpoint contract for
+// clients that did not declare any override.
 //
 // The split exists because custom endpoints (VPC, LocalStack, FIPS,
 // China, GovCloud) break the host-based region extraction
@@ -508,12 +654,17 @@ func joinEndpointRawQuery(prefix, suffix string) string {
 // we must take the explicit path. Codegen looks up
 // `introspected.BedrockClientOptionsByName[selectedClient]` and resolves
 // the literal-vs-env values before calling this helper.
-func AttachBedrockAuthForClient(ctx context.Context, req *Request, endpointURL, region string) error {
-	if endpointURL == "" && region == "" {
+func AttachBedrockAuthForClient(ctx context.Context, req *Request, opts BedrockClientAuthOptions) error {
+	if opts.EndpointURL == "" && opts.Region == "" && opts.Credentials.isEmpty() {
 		return MaybeAttachBedrockAuth(ctx, req)
 	}
+	creds, err := ResolveBedrockCredentials(ctx, opts.ClientName, opts.Credentials)
+	if err != nil {
+		return err
+	}
 	return AttachBedrockAuthWithOptions(ctx, req, BedrockAuthOptions{
-		EndpointURL: endpointURL,
-		Region:      region,
+		EndpointURL: opts.EndpointURL,
+		Region:      opts.Region,
+		Credentials: creds,
 	})
 }
