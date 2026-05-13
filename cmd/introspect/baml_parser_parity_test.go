@@ -1248,6 +1248,14 @@ function Foo(x: string) -> string {
 }
 
 func TestParity_OldVsNewParser_Fixtures(t *testing.T) {
+	// Fail-fast guard: the harness's whole purpose is to assert
+	// byte-for-byte parity between the old and new parsers on the
+	// documented surface. Adding an entry to knownParityDivergences would
+	// silently t.Skipf the corresponding case below, masking a regression.
+	// Any divergence must be fixed in the parser, not allowed-listed here.
+	if len(knownParityDivergences) > 0 {
+		t.Fatalf("knownParityDivergences must remain empty; parity divergences must be resolved in the parser, not skipped: %#v", knownParityDivergences)
+	}
 	for _, tc := range parityCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			if reason, divergent := knownParityDivergences[tc.name]; divergent {
