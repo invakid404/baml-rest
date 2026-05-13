@@ -618,6 +618,25 @@ func ResolveBedrockCredentials(ctx context.Context, clientName string, sel Bedro
 // AttachBedrockAuthForClient. The struct shape keeps the call site
 // stable across future #254 follow-ups that need to thread more
 // per-client state without growing a positional argument list.
+//
+// Presence flags. EndpointURL and Region carry a sibling
+// EndpointURLPresent / RegionPresent bool, populated by codegen from
+// BedrockOptionValue.IsSet(). The flag means "declared in .baml" and
+// is independent of whether the value resolves to a non-empty string
+// at runtime — exactly the same declared-vs-resolved split the
+// credential selector uses. Without that split, a declared `env.X`
+// reference whose env var is unset would collapse into the same
+// empty-string shape as a never-declared field, and an operator who
+// declared `endpoint_url env.MY_PROXY` and forgot to set MY_PROXY
+// would silently fall back to the default Bedrock host instead of
+// failing. AttachBedrockAuthForClient errors when Present is true
+// and the value is empty.
+//
+// Compatibility: a non-empty raw EndpointURL / Region string is also
+// treated as present even when its Present flag is false, so direct
+// helper callers (existing tests, future ad-hoc dispatches) can keep
+// constructing BedrockClientAuthOptions{EndpointURL: "http://h"}
+// without setting the flag explicitly.
 type BedrockClientAuthOptions struct {
 	// ClientName is the .baml client name (e.g. "BedrockA"). Used in
 	// error messages from the credential resolver so operators can
@@ -625,13 +644,30 @@ type BedrockClientAuthOptions struct {
 	// with credential values.
 	ClientName string
 
-	// EndpointURL mirrors BedrockAuthOptions.EndpointURL — empty leaves
-	// req.URL untouched.
+	// EndpointURL mirrors BedrockAuthOptions.EndpointURL. Empty leaves
+	// req.URL untouched when EndpointURLPresent is false; when
+	// EndpointURLPresent is true, an empty EndpointURL is a
+	// declared-but-env-unset reference and produces an error.
 	EndpointURL string
 
-	// Region mirrors BedrockAuthOptions.Region — empty falls back to
-	// AWS_REGION env, then errors.
+	// EndpointURLPresent reports whether .baml declared endpoint_url
+	// (literal or env.X) for this client. Codegen sets it from
+	// BedrockOptionValue.IsSet(). Direct callers that just want the
+	// non-presence-aware behaviour can leave it false and rely on the
+	// non-empty-string-is-present compatibility shim.
+	EndpointURLPresent bool
+
+	// Region mirrors BedrockAuthOptions.Region. Empty + Present=false
+	// falls back to AWS_REGION env inside AttachBedrockAuthWithOptions
+	// (the legacy contract from #262). Empty + Present=true is a
+	// declared-but-env-unset reference and produces an error before
+	// reaching the AWS_REGION fallback.
 	Region string
+
+	// RegionPresent reports whether .baml declared region (literal or
+	// env.X) for this client. See EndpointURLPresent for the
+	// rationale.
+	RegionPresent bool
 
 	// Credentials is the resolved-but-not-yet-translated credential
 	// selector. ResolveBedrockCredentials converts it to an
@@ -644,7 +680,7 @@ type BedrockClientAuthOptions struct {
 // the aws-bedrock provider. When the options struct declares any
 // override (endpoint_url, region, or a credential selector), it routes
 // to AttachBedrockAuthWithOptions so the explicit values are honored.
-// When all three are empty, it falls through to MaybeAttachBedrockAuth's
+// When nothing is declared, it falls through to MaybeAttachBedrockAuth's
 // URL-pattern detection — preserving the default-endpoint contract for
 // clients that did not declare any override.
 //
@@ -654,8 +690,41 @@ type BedrockClientAuthOptions struct {
 // we must take the explicit path. Codegen looks up
 // `introspected.BedrockClientOptionsByName[selectedClient]` and resolves
 // the literal-vs-env values before calling this helper.
+//
+// Declared-vs-resolved validation. When endpoint_url or region is
+// declared in .baml but resolves to "" at runtime (env.X reference
+// whose env var is unset, or an empty literal), this helper returns a
+// client-scoped error before reaching AttachBedrockAuthWithOptions —
+// silent fallback would let a misconfigured worker route requests to
+// the default Bedrock host or pick up an ambient AWS_REGION instead
+// of the operator-declared override. Same shape as the credential
+// resolver's invalid-state errors; never echoes the resolved (empty)
+// value.
 func AttachBedrockAuthForClient(ctx context.Context, req *Request, opts BedrockClientAuthOptions) error {
-	if opts.EndpointURL == "" && opts.Region == "" && opts.Credentials.isEmpty() {
+	// Validate declared-but-empty endpoint_url and region before
+	// anything else. The Present flag is the load-bearing signal:
+	// without it we cannot tell "operator declared env.X and X is
+	// unset" from "operator declared nothing", and the latter is the
+	// no-override default-endpoint case that MUST fall through.
+	if opts.EndpointURLPresent && opts.EndpointURL == "" {
+		return fmt.Errorf("aws-bedrock: invalid endpoint_url for client %q: endpoint_url resolved to empty", opts.ClientName)
+	}
+	if opts.RegionPresent && opts.Region == "" {
+		return fmt.Errorf("aws-bedrock: invalid region for client %q: region resolved to empty", opts.ClientName)
+	}
+
+	// Compatibility shim: a non-empty raw EndpointURL/Region string is
+	// also "present" for routing purposes. Lets direct callers
+	// (existing tests, future ad-hoc dispatches) keep constructing
+	// BedrockClientAuthOptions{EndpointURL: "http://h"} without
+	// having to also set EndpointURLPresent. The Present flag is
+	// still the only thing that triggers the declared-empty error
+	// above — a never-set Present + empty string is the no-override
+	// case, not an error.
+	endpointDeclared := opts.EndpointURLPresent || opts.EndpointURL != ""
+	regionDeclared := opts.RegionPresent || opts.Region != ""
+
+	if !endpointDeclared && !regionDeclared && opts.Credentials.isEmpty() {
 		return MaybeAttachBedrockAuth(ctx, req)
 	}
 	creds, err := ResolveBedrockCredentials(ctx, opts.ClientName, opts.Credentials)

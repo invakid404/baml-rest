@@ -172,7 +172,14 @@ func TestEmitBuildCallRequest_EmitsBedrockAuthDispatch(t *testing.T) {
 	if !strings.Contains(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{") {
 		t.Errorf("dispatch must call llmhttp.AttachBedrockAuthForClient with a BedrockClientAuthOptions struct; rendered:\n%s", rendered)
 	}
-	for _, optField := range []string{"ClientName:  selectedClient", "EndpointURL: bedrockEndpointURL", "Region:      bedrockRegion", "Credentials: bedrockCreds"} {
+	for _, optField := range []string{
+		"ClientName:         selectedClient",
+		"EndpointURL:        bedrockEndpointURL",
+		"EndpointURLPresent: bedrockEndpointURLPresent",
+		"Region:             bedrockRegion",
+		"RegionPresent:      bedrockRegionPresent",
+		"Credentials:        bedrockCreds",
+	} {
 		if !strings.Contains(rendered, optField) {
 			t.Errorf("dispatch must populate BedrockClientAuthOptions.%s; rendered:\n%s", optField, rendered)
 		}
@@ -245,7 +252,14 @@ func TestEmitBuildRequest_EmitsBedrockStreamingClosure(t *testing.T) {
 	if !strings.Contains(rendered, "llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{") {
 		t.Errorf("bedrock streaming closure must call llmhttp.AttachBedrockAuthForClient with a BedrockClientAuthOptions struct; rendered:\n%s", rendered)
 	}
-	for _, optField := range []string{"ClientName:  selectedClient", "EndpointURL: bedrockEndpointURL", "Region:      bedrockRegion", "Credentials: bedrockCreds"} {
+	for _, optField := range []string{
+		"ClientName:         selectedClient",
+		"EndpointURL:        bedrockEndpointURL",
+		"EndpointURLPresent: bedrockEndpointURLPresent",
+		"Region:             bedrockRegion",
+		"RegionPresent:      bedrockRegionPresent",
+		"Credentials:        bedrockCreds",
+	} {
 		if !strings.Contains(rendered, optField) {
 			t.Errorf("bedrock streaming closure must populate BedrockClientAuthOptions.%s; rendered:\n%s", optField, rendered)
 		}
@@ -280,8 +294,20 @@ func TestEmitBedrockAuthDispatchFor_Shape(t *testing.T) {
 		"selectedClient := clientOverride",
 		`introspected.FunctionClient["MyMethod"]`,
 		"introspected.BedrockClientOptionsByName[selectedClient]",
+		// EndpointURL and Region get the same IsSet/Resolve split
+		// as credentials. Driving the *Present flags from IsSet()
+		// (declared-in-.baml) rather than Resolve()'s second return
+		// (resolved-to-non-empty) is the load-bearing contract that
+		// makes a declared `endpoint_url env.X` with X unset error
+		// rather than silently fall back to the default Bedrock
+		// host. Same security-significant invariant the credentials
+		// pins below depend on.
 		"bedrockOpts.EndpointURL.Resolve()",
+		"bedrockOpts.EndpointURL.IsSet()",
 		"bedrockOpts.Region.Resolve()",
+		"bedrockOpts.Region.IsSet()",
+		"bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()",
+		"bedrockRegionPresent = bedrockOpts.Region.IsSet()",
 		// Credentials emit Resolve() for the value AND IsSet() for
 		// the presence flag — driving presence from Resolve()'s ok
 		// would conflate declared-but-env-unset with never-declared
@@ -304,10 +330,12 @@ func TestEmitBedrockAuthDispatchFor_Shape(t *testing.T) {
 		"bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()",
 		"bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()",
 		"llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{",
-		"ClientName:  selectedClient",
-		"EndpointURL: bedrockEndpointURL",
-		"Region:      bedrockRegion",
-		"Credentials: bedrockCreds",
+		"ClientName:         selectedClient",
+		"EndpointURL:        bedrockEndpointURL",
+		"EndpointURLPresent: bedrockEndpointURLPresent",
+		"Region:             bedrockRegion",
+		"RegionPresent:      bedrockRegionPresent",
+		"Credentials:        bedrockCreds",
 		"return nil, authErr",
 	}
 	for _, want := range wantSubstrings {

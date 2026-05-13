@@ -1598,6 +1598,184 @@ func TestResolveBedrockCredentials_ProfileEnvUnset_Errors(t *testing.T) {
 	}
 }
 
+// TestAttachBedrockAuthForClient_EndpointURLEnvUnset_Errors pins the
+// declared-vs-resolved fix for endpoint_url (CR Round 2). Scenario:
+// operator declared `endpoint_url env.MY_PROXY` in .baml and forgot
+// to set MY_PROXY at runtime. Codegen emits EndpointURLPresent=true
+// (from IsSet()), EndpointURL="" (from Resolve()). The helper MUST
+// error before reaching AttachBedrockAuthWithOptions — silent
+// fallthrough to MaybeAttachBedrockAuth would route traffic to the
+// real default Bedrock host instead of the operator-declared proxy.
+// Error must be client-scoped and must NOT echo any resolved value
+// (no env-var name, no URL fragment), mirroring the credential
+// resolver's error hygiene.
+func TestAttachBedrockAuthForClient_EndpointURLEnvUnset_Errors(t *testing.T) {
+	req := &Request{
+		URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+		Method: "POST",
+		Body:   `{}`,
+	}
+	err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+		ClientName:         "EnvUnsetEndpoint",
+		EndpointURLPresent: true,
+		EndpointURL:        "",
+	})
+	if err == nil {
+		t.Fatal("expected error when declared endpoint_url env.X resolves to empty; silent fallback to MaybeAttachBedrockAuth is the CR Round 2 blocker")
+	}
+	if req.AWSAuth != nil {
+		t.Errorf("declared-empty endpoint_url must not attach AWSAuth; got %+v", req.AWSAuth)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "EnvUnsetEndpoint") {
+		t.Errorf("error must name the client; got: %s", msg)
+	}
+	if !strings.Contains(msg, "endpoint_url") {
+		t.Errorf("error must reference the endpoint_url field; got: %s", msg)
+	}
+}
+
+// TestAttachBedrockAuthForClient_RegionEnvUnset_Errors pins the same
+// declared-but-empty error path for region (CR Round 2). Without this
+// check, a declared `region env.X` with X unset would reach
+// AttachBedrockAuthWithOptions's AWS_REGION env fallback and silently
+// pick up an ambient host region — the operator's broken env ref
+// would be invisible.
+func TestAttachBedrockAuthForClient_RegionEnvUnset_Errors(t *testing.T) {
+	// Force AWS_REGION to a known value so this test would visibly
+	// pick it up if the fallback ran. After the fix, the helper
+	// errors before reaching AttachBedrockAuthWithOptions, so the
+	// env value never gets a chance to win.
+	t.Setenv("AWS_REGION", "ap-southeast-2")
+
+	req := &Request{
+		URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+		Method: "POST",
+		Body:   `{}`,
+	}
+	err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+		ClientName:    "EnvUnsetRegion",
+		RegionPresent: true,
+		Region:        "",
+	})
+	if err == nil {
+		t.Fatal("expected error when declared region env.X resolves to empty; silent fallback to AWS_REGION is the CR Round 2 blocker")
+	}
+	if req.AWSAuth != nil {
+		t.Errorf("declared-empty region must not attach AWSAuth; got %+v", req.AWSAuth)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "EnvUnsetRegion") {
+		t.Errorf("error must name the client; got: %s", msg)
+	}
+	if !strings.Contains(msg, "region") {
+		t.Errorf("error must reference the region field; got: %s", msg)
+	}
+}
+
+// TestAttachBedrockAuthForClient_EndpointURLDeclaredEmptyBeforeRegionFallback
+// pins precedence on a mixed shape: endpoint_url declared-unset +
+// region literal set. The endpoint validation MUST fire first — a
+// regression that re-ordered the checks to validate region first (and
+// happily accept the literal) would lose the endpoint-error signal
+// even when the endpoint env ref is broken.
+func TestAttachBedrockAuthForClient_EndpointURLDeclaredEmptyBeforeRegionFallback(t *testing.T) {
+	req := &Request{
+		URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+		Method: "POST",
+		Body:   `{}`,
+	}
+	err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+		ClientName:         "MixedClient",
+		EndpointURLPresent: true,
+		EndpointURL:        "",
+		Region:             "us-east-1",
+	})
+	if err == nil {
+		t.Fatal("declared-empty endpoint_url must error even when region is set")
+	}
+	if !strings.Contains(err.Error(), "endpoint_url") {
+		t.Errorf("endpoint check must fire before region/credential paths; got: %v", err)
+	}
+}
+
+// TestAttachBedrockAuthForClient_NeitherDeclared_FallsThrough pins
+// the no-override default-endpoint contract from #262: when nothing
+// is declared (all Present flags false, all values empty,
+// credentials empty), the helper must fall through to
+// MaybeAttachBedrockAuth's URL-pattern detection. A regression here
+// would break every aws-bedrock client that did not declare any
+// override.
+func TestAttachBedrockAuthForClient_NeitherDeclared_FallsThrough(t *testing.T) {
+	req := &Request{
+		URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+		Method: "POST",
+		Body:   `{}`,
+	}
+	if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{}); err != nil {
+		t.Fatalf("no-override case must not error: %v", err)
+	}
+	if req.AWSAuth == nil {
+		t.Fatal("no-override case must fall through to MaybeAttachBedrockAuth and attach AWSAuth from URL host")
+	}
+	if req.AWSAuth.Region != "us-east-1" {
+		t.Errorf("Region must be parsed from URL host on fallthrough; got %q", req.AWSAuth.Region)
+	}
+	if req.URL != "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse" {
+		t.Errorf("URL must NOT be rewritten on the fallthrough path; got %q", req.URL)
+	}
+}
+
+// TestAttachBedrockAuthForClient_NonEmptyRawStringTreatedAsPresent
+// pins the compatibility shim: callers that construct
+// BedrockClientAuthOptions{EndpointURL: "http://h"} WITHOUT setting
+// EndpointURLPresent must still take the explicit override path.
+// Production codegen always sets the Present flag, but direct test
+// callers (and any future ad-hoc dispatch) rely on the
+// non-empty-string-is-present shorthand. Same shim applies to
+// Region.
+func TestAttachBedrockAuthForClient_NonEmptyRawStringTreatedAsPresent(t *testing.T) {
+	t.Run("endpoint url only", func(t *testing.T) {
+		req := &Request{
+			URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+			Method: "POST",
+			Body:   `{}`,
+		}
+		if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+			EndpointURL: "http://127.0.0.1:9000",
+			Region:      "us-east-1",
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Explicit endpoint path was taken: URL rewritten to the
+		// override host. A regression that ignored the non-empty
+		// raw string (because EndpointURLPresent is false) would
+		// instead route to MaybeAttachBedrockAuth and leave req.URL
+		// untouched.
+		if req.URL != "http://127.0.0.1:9000/model/foo/converse" {
+			t.Errorf("explicit endpoint override path was not taken; URL = %q", req.URL)
+		}
+	})
+	t.Run("region only", func(t *testing.T) {
+		req := &Request{
+			URL:    "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse",
+			Method: "POST",
+			Body:   `{}`,
+		}
+		if err := AttachBedrockAuthForClient(context.Background(), req, BedrockClientAuthOptions{
+			Region: "eu-west-1",
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.AWSAuth == nil {
+			t.Fatal("expected AWSAuth attached via explicit-region path")
+		}
+		if req.AWSAuth.Region != "eu-west-1" {
+			t.Errorf("explicit region override was not honoured; got %q", req.AWSAuth.Region)
+		}
+	})
+}
+
 // TestAttachBedrockAuthForClient_StaticProviderUsedForSigning pins
 // that static credentials from .baml options flow all the way through
 // AttachBedrockAuthForClient -> AttachBedrockAuthWithOptions ->
