@@ -110,6 +110,14 @@ type Field struct {
 // preserved in source order — downstream walkers depend on the order for
 // duplicate-key behaviour (later wins, except where the introspect walker
 // explicitly clears stale state).
+//
+// Unknown nested content (raw punctuation between fields, malformed
+// statements that don't match the Field shape) is skipped during parsing
+// rather than retained on Block; the parser advances past unrecognised
+// tokens defensively so a single malformed line cannot abort the whole
+// parse. Consumers that need a verbatim copy of an unknown block body
+// should read it directly from the source bytes; the AST is designed
+// around the recognised-shape contract.
 type Block struct {
 	Fields []*Field
 }
@@ -149,6 +157,18 @@ type Block struct {
 //     surrounding brackets are consumed; List is the slice of element
 //     values. Element separators (commas and/or whitespace) are
 //     consumed during parsing and not preserved.
+//
+// Map-shape design choice. Upstream BAML's grammar allows a value to be a
+// map literal (e.g. config-map expressions inside `options { ... }`).
+// This package intentionally does NOT model maps as a distinct Value
+// variant. Brace-delimited bodies are represented one level up — as
+// Field.Block rather than Value.Map — because every map-shaped consumer
+// in baml-rest treats the body as a named child block (options, strategy,
+// nested credentials) and benefits from uniform Block iteration. Adding
+// a Value.Map variant would force every walker to branch on
+// Value.Map-vs-Field.Block for what is, in practice, the same shape.
+// Future consumers that need value-position map literals (e.g. on the
+// right-hand side of `=`) should extend Value rather than reshape Block.
 type Value struct {
 	Literal *string
 	EnvRef  *string

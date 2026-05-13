@@ -226,13 +226,18 @@ func parityBedrockOptionValue(v *bamlparser.Value) (bedrockOptionValue, bool) {
 // `client VALUE` field. Matches parseFunctionBlock — every other field is
 // ignored (prompt body is a Raw value or a nested block, options are
 // ignored).
+//
+// Last-wins on duplicates: the production loop at
+// cmd/introspect/main.go:2143-2174 keeps scanning every top-level line in
+// the function body, so a later `client` field overwrites an earlier one.
+// The walker iterates all matching fields rather than stopping at the
+// first, mirroring that semantics exactly.
 func parityProcessFunction(cfg *bamlConfig, fn *bamlparser.FunctionBlock) {
 	for _, f := range fn.Fields {
 		if f.Key != "client" || f.Value == nil {
 			continue
 		}
 		cfg.functionClient[fn.Name] = asScalarString(f.Value)
-		break
 	}
 }
 
@@ -1131,6 +1136,111 @@ client<llm> AwsBR {
 
 function Shortcut(x: string) -> string {
     client "openai/gpt-4o"
+}
+`,
+		},
+
+		// ---- Codex sign-off Section 4 fills ----
+		//
+		// Pin that a plain `client Name { ... }` block (no <llm> type
+		// param) is parsed by the new grammar but excluded by the
+		// walker's TypeParam == "llm" gate — matches the old parser's
+		// `client<llm>`-only consumption posture at
+		// cmd/introspect/main.go:1324-1325. PR 4 / #268 may widen this
+		// to consume plain `client` blocks; until then, the gate is
+		// part of the contract.
+		//
+		// The Foo block deliberately contains only fields whose keys
+		// are NOT top-level dispatch prefixes in the old parser
+		// (`client<llm>`, `function `, `retry_policy `). Embedding a
+		// `retry_policy NAME` inner field would trigger the old
+		// line-based parser's greedy outer-scope re-scan of Foo's
+		// body and produce a spurious top-level retry policy entry —
+		// an orthogonal quirk that this case is not pinning. The
+		// shape used here isolates the TypeParam gate cleanly.
+		{
+			name: "PlainClientWithoutLLMIgnored",
+			src: `
+client Foo {
+    provider openai
+}
+
+client<llm> Bar {
+    provider anthropic
+    retry_policy Slow
+}
+`,
+		},
+		// Pin the depth-gating contract for options-block fields:
+		//   - strategy   → captured at ANY depth inside options { } (not
+		//     gated; the old parser's extractStrategyStatement runs on
+		//     every line while inOptions is true — see
+		//     cmd/introspect/main.go:1778-1794).
+		//   - start      → captured ONLY at the immediate options depth
+		//     (optionsDepth == 1; cmd/introspect/main.go:1804-1807).
+		//   - Bedrock keys → captured ONLY at the immediate options
+		//     depth (cmd/introspect/main.go:1808-1815).
+		//
+		// The fixture nests a `custom_subblock` inside options. The
+		// nested `start 99` and `endpoint_url "x"` must NOT leak; the
+		// nested `strategy [C, D]` SHOULD override the outer
+		// `strategy [A, B]` (last-write-wins). `region "us-east-1"`
+		// sits at the top options depth so it is captured normally.
+		{
+			name: "OptionsNestedDepthGating",
+			src: `
+client<llm> NestedDepth {
+    provider baml-fallback
+    options {
+        strategy [A, B]
+        start 1
+        custom_subblock {
+            start 99
+            endpoint_url "x"
+            strategy [C, D]
+        }
+        region "us-east-1"
+    }
+}
+`,
+		},
+		// Pin that a quoted "env.X" string is a Literal Bedrock value,
+		// NOT an env reference. The old parser's
+		// extractBedrockOptionValue (cmd/introspect/main.go:2068-2108)
+		// only treats bare `env.NAME` as env provenance; the surrounding
+		// quotes are stripped by stripBamlQuotes and the result becomes
+		// Literal provenance. Mirrors the parser-standalone unit test
+		// at bamlutils/bamlparser/bamlparser_test.go:TestParse_QuotedEnvNameIsLiteralNotEnvRef
+		// but pins the end-to-end bedrockOptionValue shape.
+		{
+			name: "BedrockQuotedEnvIsLiteral",
+			src: `
+client<llm> QuotedEnvBedrock {
+    provider aws-bedrock
+    options {
+        endpoint_url env.MY_HOST
+        region       "env.US_EAST_1"
+    }
+}
+`,
+		},
+		// Pin that duplicate top-level `client` fields inside a
+		// function block resolve last-wins. The old parser's
+		// parseFunctionBlock (cmd/introspect/main.go:2143-2174) keeps
+		// scanning every line and overwrites functionClient[name] on
+		// each `client VALUE` match. The walker fix at
+		// parityProcessFunction (this file, above) removed an early
+		// `break` to mirror that semantics.
+		{
+			name: "DuplicateFunctionClientLastWins",
+			src: `
+client<llm> First { provider openai }
+client<llm> Second { provider anthropic }
+
+function Foo(x: string) -> string {
+    client First
+    prompt #"{{ x }}"#
+    client Second
 }
 `,
 		},
