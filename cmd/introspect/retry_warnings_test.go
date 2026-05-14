@@ -46,15 +46,31 @@ retry_policy BadNums {
 		"invalid multiplier value in retry_policy BadNums",
 		"invalid max_delay_ms value in retry_policy BadNums",
 	}
+
+	// Total-count check: catches both duplicates (same warning fires twice
+	// for one bad field) and extras (a new spurious warning gets emitted by
+	// future code). The walker uses a common "warning: invalid " prefix
+	// for every numeric-field warning, so counting that prefix gives an
+	// upper bound on the number of warning lines.
+	const warningPrefix = "warning: invalid "
+	if got := strings.Count(captured, warningPrefix); got != len(wantSubstrings) {
+		t.Fatalf("warning count = %d, want %d\n--- captured stderr ---\n%s",
+			got, len(wantSubstrings), captured)
+	}
 	for _, want := range wantSubstrings {
-		if !strings.Contains(captured, want) {
-			t.Errorf("stderr missing %q\n--- captured stderr ---\n%s", want, captured)
+		if got := strings.Count(captured, want); got != 1 {
+			t.Errorf("warning %q count = %d, want 1\n--- captured stderr ---\n%s",
+				want, got, captured)
 		}
 	}
 }
 
 // captureStderr redirects os.Stderr to a pipe for the duration of fn and
-// returns whatever fn wrote.
+// returns whatever fn wrote. Both pipe ends are closed before returning,
+// and os.Stderr is restored to its original value immediately after fn
+// runs (the t.Cleanup is kept as a safety net for the rare panic-mid-fn
+// case so the rest of the test suite isn't left writing into a closed
+// pipe).
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -72,6 +88,13 @@ func captureStderr(t *testing.T, fn func()) string {
 	}()
 
 	fn()
-	w.Close()
-	return <-done
+	os.Stderr = orig
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	captured := <-done
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stderr reader: %v", err)
+	}
+	return captured
 }
