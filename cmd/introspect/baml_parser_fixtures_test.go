@@ -830,21 +830,15 @@ function Shortcut(x: string) -> string {
 
 		// ---- Additional Q1 parity gaps ----
 		//
-		// Pin that a plain `client Name { ... }` block (no <llm> type
-		// param) is parsed by the grammar but excluded by the walker's
-		// TypeParam == "llm" gate — preserves introspect's `client<llm>`-only
-		// consumption posture. #268 may widen this to consume plain
-		// `client` blocks; until then, the gate is part of the contract.
-		//
-		// The Foo block deliberately contains only fields whose keys
-		// are NOT top-level dispatch keywords (`client`, `function`,
-		// `retry_policy`). Pre-PR-3 the line-based parser had a
-		// greedy outer-scope re-scan quirk that would consume an inner
-		// `retry_policy NAME` as a top-level declaration; that quirk
-		// is gone with the line parser, but the fixture keeps the
-		// minimal shape so it isolates the TypeParam gate cleanly.
+		// Pin that the walker's client-dispatch gate accepts BOTH
+		// `client<llm> Name { ... }` (TypeParam == "llm") AND plain
+		// `client Name { ... }` (TypeParam == ""), aligning with upstream
+		// BAML. Upstream grammar's CLIENT_KEYWORD rule
+		// (engine/baml-lib/ast/src/parser/datamodel.pest) accepts both
+		// spellings and dispatches both through the same visit_client
+		// path without distinguishing the source keyword. Refs #268.
 		{
-			name: "PlainClientWithoutLLMIgnored",
+			name: "PlainClientConsumedSameAsLLMTyped",
 			src: `
 client Foo {
     provider openai
@@ -853,6 +847,43 @@ client Foo {
 client<llm> Bar {
     provider anthropic
     retry_policy Slow
+}
+`,
+		},
+		// Pin duplicate-name last-wins when the same client name is
+		// declared with BOTH a plain `client` and a `client<llm>` keyword
+		// in the same source. processBAMLClientBlock deletes stale per-
+		// client state before re-populating, so the textually later
+		// declaration overwrites the earlier one regardless of spelling.
+		// Plain `client Foo` first, `client<llm> Foo` second: the <llm>
+		// variant wins.
+		{
+			name: "DuplicateClientPlainAndLLMTypedLastWins",
+			src: `
+client Foo {
+    provider openai
+}
+
+client<llm> Foo {
+    provider anthropic
+    retry_policy Slow
+}
+`,
+		},
+		// Mirror of DuplicateClientPlainAndLLMTypedLastWins with the
+		// source order reversed: `client<llm> Foo` first, plain
+		// `client Foo` second. The plain variant wins, pinning that the
+		// last-wins rule is symmetric and not biased by spelling.
+		{
+			name: "DuplicateClientLLMTypedThenPlainLastWins",
+			src: `
+client<llm> Foo {
+    provider anthropic
+    retry_policy Slow
+}
+
+client Foo {
+    provider openai
 }
 `,
 		},

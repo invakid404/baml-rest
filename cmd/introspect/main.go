@@ -1408,14 +1408,26 @@ func isKnownShorthandProvider(p string) bool {
 
 // processBAMLFile dispatches the parsed AST's top-level items in source
 // order, mirroring parseBamlFile's top-level top-down posture: only
-// client<llm>, function (with named signature), and retry_policy blocks
-// contribute to *bamlConfig. Every other top-level shape — generators,
-// classes, enums, type aliases, template_strings, tests, plain `client`
-// blocks without the <llm> type param — is intentionally ignored.
+// client (both `client<llm> Name { ... }` and plain `client Name { ... }`),
+// function (with named signature), and retry_policy blocks contribute to
+// *bamlConfig. Every other top-level shape — generators, classes, enums,
+// type aliases, template_strings, tests, and clients with an unknown
+// non-empty TypeParam — is intentionally ignored.
+//
+// Consume both `client<llm> Foo { ... }` and plain `client Foo { ... }`:
+// upstream BAML's grammar accepts both spellings (CLIENT_KEYWORD =
+// "client<llm>" | "client" in engine/baml-lib/ast/src/parser/datamodel.pest)
+// and the parser-database walks them through the same visit_client path
+// without distinguishing the source keyword (engine/baml-lib/parser-database
+// /src/types/mod.rs visit_client). Our walker has no LLM-specific behavior
+// gated on TypeParam after dispatch, so both spellings produce the same
+// *bamlConfig shape. Refs #268. Future non-LLM type params (e.g. a
+// hypothetical `client<openapi> Foo`) are intentionally NOT accepted here
+// — we have no semantics for them yet.
 func processBAMLFile(cfg *bamlConfig, f *bamlparser.File) {
 	for _, it := range f.Items {
 		switch {
-		case it.Client != nil && it.Client.TypeParam == "llm" && it.Client.Name != "":
+		case it.Client != nil && (it.Client.TypeParam == "llm" || it.Client.TypeParam == "") && it.Client.Name != "":
 			processBAMLClientBlock(cfg, it.Client)
 		case it.Function != nil && it.Function.Name != "":
 			processBAMLFunctionBlock(cfg, it.Function)
@@ -1425,9 +1437,12 @@ func processBAMLFile(cfg *bamlConfig, f *bamlparser.File) {
 	}
 }
 
-// processBAMLClientBlock walks a parsed client<llm> block, mirroring
+// processBAMLClientBlock walks a parsed client block — either
+// `client<llm> Name { ... }` or plain `client Name { ... }` — mirroring
 // parseClientBlock's behaviour: stale-state cleanup for the client name,
-// ordered top-level provider / retry_policy / options handling.
+// ordered top-level provider / retry_policy / options handling. Both
+// spellings produce identical output; the source keyword is not encoded
+// after dispatch (see processBAMLFile).
 func processBAMLClientBlock(cfg *bamlConfig, c *bamlparser.ClientBlock) {
 	name := c.Name
 	delete(cfg.roundRobinStart, name)

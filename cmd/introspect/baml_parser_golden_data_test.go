@@ -437,6 +437,30 @@ var bamlConfigGoldens = map[string]bamlConfigSnapshot{
 		RoundRobinStart:      map[string]int{},
 		BedrockClientOptions: map[string]bedrockClientOptionsSnapshot{},
 	},
+	"DuplicateClientLLMTypedThenPlainLastWins": {
+		ClientProvider: map[string]string{
+			"Foo": "openai",
+		},
+		ClientRetryPolicy:    map[string]string{},
+		FunctionClient:       map[string]string{},
+		RetryPolicies:        map[string]retryPolicySnapshot{},
+		FallbackChains:       map[string][]string{},
+		RoundRobinStart:      map[string]int{},
+		BedrockClientOptions: map[string]bedrockClientOptionsSnapshot{},
+	},
+	"DuplicateClientPlainAndLLMTypedLastWins": {
+		ClientProvider: map[string]string{
+			"Foo": "anthropic",
+		},
+		ClientRetryPolicy: map[string]string{
+			"Foo": "Slow",
+		},
+		FunctionClient:       map[string]string{},
+		RetryPolicies:        map[string]retryPolicySnapshot{},
+		FallbackChains:       map[string][]string{},
+		RoundRobinStart:      map[string]int{},
+		BedrockClientOptions: map[string]bedrockClientOptionsSnapshot{},
+	},
 	"DuplicateClientStaleClearing_BedrockCreds": {
 		ClientProvider: map[string]string{
 			"CredsBedrock": "aws-bedrock",
@@ -867,9 +891,10 @@ var bamlConfigGoldens = map[string]bamlConfigSnapshot{
 		RoundRobinStart:      map[string]int{},
 		BedrockClientOptions: map[string]bedrockClientOptionsSnapshot{},
 	},
-	"PlainClientWithoutLLMIgnored": {
+	"PlainClientConsumedSameAsLLMTyped": {
 		ClientProvider: map[string]string{
 			"Bar": "anthropic",
+			"Foo": "openai",
 		},
 		ClientRetryPolicy: map[string]string{
 			"Bar": "Slow",
