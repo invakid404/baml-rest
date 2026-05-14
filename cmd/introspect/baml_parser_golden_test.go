@@ -210,6 +210,10 @@ func TestBamlConfigGoldens(t *testing.T) {
 				t.Fatalf("no golden entry for fixture %q; rerun with -update-baml-config-goldens", tc.name)
 			}
 			cfg := runProductionParser(t, tc.src)
+			if len(cfg.validationErrors) > 0 {
+				t.Fatalf("fixture %q accumulated unexpected validation errors: %v",
+					tc.name, cfg.validationErrors)
+			}
 			got := snapshotBamlConfig(cfg)
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("snapshot mismatch for %s\n got: %#v\nwant: %#v", tc.name, got, want)
