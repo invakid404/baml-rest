@@ -1,82 +1,44 @@
-// Package introspect parity tests.
+// BAML parser fixture corpus for the golden snapshot suite.
 //
-// This file is the load-bearing safety mechanism for the BAML parser
-// unification refactor: it feeds every fixture the existing line-based
-// parser handles (plus a hand-built edge-case table) through BOTH the
-// existing parser and the new shared bamlutils/bamlparser-based AST
-// walker, then asserts the two produce byte-identical *bamlConfig
-// values.
+// This file holds the canonical fixture table for the BAML config
+// surface — every fixture #265 PR 1 / PR 2 used to assert old/new
+// parser parity, plus #265 PR 3's additions for the gaps Codex's
+// scoping identified (comment-with-`]` variants, duplicate-client
+// stale clearing, empty strategy list). The shapes pinned here cover
+// every documented quirk from the migration sequence: TypeParam
+// gating, function-without-parens, options depth asymmetry, retry
+// precedence, env provenance, duplicate last-wins, malformed nested
+// tokens, compact forms, and Bedrock credential provenance.
 //
-// As of #265 PR 2, the AST walker lives in production code
-// (processBAMLFile + friends in main.go) and runNewParser below calls
-// it directly — so this harness verifies the EXACT production
-// implementation rather than a test-local copy.
-//
-// The knownParityDivergences list is expected to remain EMPTY: any
-// divergence surfaced by this test is either a correctness issue in the
-// new parser/walker or a quirk of the old parser the new code is widening
-// — both cases require explicit attention rather than silent acceptance.
+// Pre-#265 PR 3, the file fed each fixture through BOTH the old
+// line-based parser AND the production AST walker and asserted byte-
+// identical *bamlConfig output. Post-PR 3 the old parser is gone, so
+// the fixtures are exercised by TestBamlConfigGoldens
+// (baml_parser_golden_test.go), which compares the production
+// walker's *bamlConfig snapshot against a stored expected snapshot in
+// baml_parser_golden_data_test.go. Regenerate that data file with
+// -update-baml-config-goldens after intentional fixture changes.
 
 package main
 
-import (
-	"reflect"
-	"sort"
-	"testing"
-
-	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
-)
-
-// knownParityDivergences enumerates fixtures whose old-parser and
-// new-parser output are not expected to match. Each entry is a fixture
-// name from the parity tables below. The list must remain empty: PR 1
-// asserts the new parser is byte-for-byte equivalent on the documented
-// surface, so any divergence is a regression to escalate.
-var knownParityDivergences = map[string]string{}
-
-// parityCase is a single fixture exercised against both parsers.
+// parityCase is a single fixture in the BAML config corpus. The name
+// "parity" is preserved from the #265 PR 1 origin; the fixtures now
+// drive a golden snapshot harness rather than an old/new parity
+// comparison, but renaming would obscure the migration provenance for
+// readers tracing back to the PR sequence.
 type parityCase struct {
 	name string
 	src  string
 }
 
-// runOldParser builds a fresh *bamlConfig and runs the in-tree line-based
-// parser plus enrichShorthandClientProviders, matching parseBamlSourceDir's
-// production pipeline (except for the FS walk, which is irrelevant for
-// content-only fixtures).
-func runOldParser(src string) *bamlConfig {
-	cfg := newTestBamlConfig()
-	parseBamlFile(cfg, src)
-	enrichShorthandClientProviders(cfg)
-	return cfg
-}
-
-// runNewParser builds a fresh *bamlConfig and runs the production AST
-// walker (processBAMLFile) + enrichShorthandClientProviders. By calling
-// the actual production walker (rather than a test-local copy), this
-// harness verifies the exact production implementation.
-func runNewParser(t *testing.T, src string) *bamlConfig {
-	t.Helper()
-	f, err := bamlparser.ParseString("parity.baml", src)
-	if err != nil {
-		t.Fatalf("new parser failed: %v", err)
-	}
-	cfg := newTestBamlConfig()
-	processBAMLFile(cfg, f)
-	enrichShorthandClientProviders(cfg)
-	return cfg
-}
-
 // ----------------------------------------------------------------------------
-// Parity fixtures: every fixture from baml_parser_test.go shaped into a
-// content-only string, plus hand-built edge cases enumerated during
-// scoping (Codex doc Q1). Each case feeds both parsers; outputs must be
-// byte-identical post-normalisation.
+// BAML config fixture corpus. Each case feeds the production walker via
+// TestBamlConfigGoldens and is compared against a stored snapshot.
 // ----------------------------------------------------------------------------
 
 func parityCases() []parityCase {
 	return []parityCase{
-		// ---- Mirrors of baml_parser_test.go fixtures ----
+		// ---- Fixtures mirrored from baml_parser_test.go in #265 PR 1 ----
 		{
 			name: "ClientAndFunction",
 			src: `
@@ -869,21 +831,18 @@ function Shortcut(x: string) -> string {
 		// ---- Additional Q1 parity gaps ----
 		//
 		// Pin that a plain `client Name { ... }` block (no <llm> type
-		// param) is parsed by the new grammar but excluded by the
-		// walker's TypeParam == "llm" gate — matches the old parser's
-		// `client<llm>`-only consumption posture at
-		// cmd/introspect/main.go:1324-1325. PR 4 / #268 may widen this
-		// to consume plain `client` blocks; until then, the gate is
-		// part of the contract.
+		// param) is parsed by the grammar but excluded by the walker's
+		// TypeParam == "llm" gate — preserves introspect's `client<llm>`-only
+		// consumption posture. #268 may widen this to consume plain
+		// `client` blocks; until then, the gate is part of the contract.
 		//
 		// The Foo block deliberately contains only fields whose keys
-		// are NOT top-level dispatch prefixes in the old parser
-		// (`client<llm>`, `function `, `retry_policy `). Embedding a
-		// `retry_policy NAME` inner field would trigger the old
-		// line-based parser's greedy outer-scope re-scan of Foo's
-		// body and produce a spurious top-level retry policy entry —
-		// an orthogonal quirk that this case is not pinning. The
-		// shape used here isolates the TypeParam gate cleanly.
+		// are NOT top-level dispatch keywords (`client`, `function`,
+		// `retry_policy`). Pre-PR-3 the line-based parser had a
+		// greedy outer-scope re-scan quirk that would consume an inner
+		// `retry_policy NAME` as a top-level declaration; that quirk
+		// is gone with the line parser, but the fixture keeps the
+		// minimal shape so it isolates the TypeParam gate cleanly.
 		{
 			name: "PlainClientWithoutLLMIgnored",
 			src: `
@@ -899,13 +858,11 @@ client<llm> Bar {
 		},
 		// Pin the depth-gating contract for options-block fields:
 		//   - strategy   → captured at ANY depth inside options { } (not
-		//     gated; the old parser's extractStrategyStatement runs on
-		//     every line while inOptions is true — see
-		//     cmd/introspect/main.go:1778-1794).
-		//   - start      → captured ONLY at the immediate options depth
-		//     (optionsDepth == 1; cmd/introspect/main.go:1804-1807).
-		//   - Bedrock keys → captured ONLY at the immediate options
-		//     depth (cmd/introspect/main.go:1808-1815).
+		//     gated; the walker recurses into nested sub-blocks for the
+		//     strategy key specifically, matching pre-PR-3 line-parser
+		//     behaviour).
+		//   - start      → captured ONLY at the immediate options depth.
+		//   - Bedrock keys → captured ONLY at the immediate options depth.
 		//
 		// The fixture nests a `custom_subblock` inside options. The
 		// nested `start 99` and `endpoint_url "x"` must NOT leak; the
@@ -931,13 +888,13 @@ client<llm> NestedDepth {
 `,
 		},
 		// Pin that a quoted "env.X" string is a Literal Bedrock value,
-		// NOT an env reference. The old parser's
-		// extractBedrockOptionValue (cmd/introspect/main.go:2068-2108)
-		// only treats bare `env.NAME` as env provenance; the surrounding
-		// quotes are stripped by stripBamlQuotes and the result becomes
-		// Literal provenance. Mirrors the parser-standalone unit test
-		// at bamlutils/bamlparser/bamlparser_test.go:TestParse_QuotedEnvNameIsLiteralNotEnvRef
-		// but pins the end-to-end bedrockOptionValue shape.
+		// NOT an env reference. Only bare `env.NAME` carries env
+		// provenance; surrounding quotes make the value a string
+		// literal at the lexer/grammar level, and the walker maps it
+		// to bedrockOptionValue Literal provenance accordingly.
+		// Mirrors the parser-standalone unit test
+		// TestParse_QuotedEnvNameIsLiteralNotEnvRef but pins the
+		// end-to-end bedrockOptionValue shape.
 		{
 			name: "BedrockQuotedEnvIsLiteral",
 			src: `
@@ -951,12 +908,10 @@ client<llm> QuotedEnvBedrock {
 `,
 		},
 		// Pin that duplicate top-level `client` fields inside a
-		// function block resolve last-wins. The old parser's
-		// parseFunctionBlock (cmd/introspect/main.go:2143-2174) keeps
-		// scanning every line and overwrites functionClient[name] on
-		// each `client VALUE` match. The production processBAMLFunctionBlock
-		// walker in main.go iterates every top-level `client` field for
-		// the same last-wins semantics.
+		// function block resolve last-wins. The production
+		// processBAMLFunctionBlock walker iterates every top-level
+		// `client` field and overwrites functionClient[name] on each
+		// match, matching pre-PR-3 line-parser semantics.
 		{
 			name: "DuplicateFunctionClientLastWins",
 			src: `
@@ -979,106 +934,225 @@ function Foo(x: string) -> string {
 		// non-Ident token and leaked the rest of the body to the outer
 		// scope as `Other` items.
 		//
-		// Only the leading-garbage shape is pinned at the parity level —
-		// both parsers happen to drop the leading `@` cleanly. The
-		// between-fields-garbage shapes (`provider openai @
-		// retry_policy ...`) inherently diverge between the production
-		// line-based parser and the bamlparser AST walker (the production
-		// parser's `splitInlineStatements` keyword-boundary split
-		// includes the trailing `@` in the preceding field's value,
-		// producing `provider="openai @"`; the bamlparser drops the
-		// stray token instead). That divergence pre-dates PR 1.5; the
-		// bamlparser side of it is pinned in the standalone parser
-		// tests (TestParse_MalformedNestedTokenBetweenFieldsSkipped /
-		// TestParse_MalformedNestedTokenSequenceSkipped in
-		// bamlutils/bamlparser/bamlparser_test.go) rather than here.
+		// Only the leading-garbage shape needed to live in the
+		// regression corpus — both pre-PR-3 line parser and bamlparser
+		// dropped the leading `@` cleanly. Between-fields-garbage
+		// shapes (`provider openai @ retry_policy ...`) used to
+		// diverge between the two parsers (the line parser's keyword-
+		// boundary split captured the trailing `@` in the preceding
+		// field's value, producing `provider="openai @"`; the
+		// bamlparser drops the stray token). With the line parser
+		// gone, the bamlparser side of that contract is pinned by the
+		// standalone parser tests (TestParse_MalformedNestedTokenBetweenFieldsSkipped
+		// / TestParse_MalformedNestedTokenSequenceSkipped in
+		// bamlutils/bamlparser/bamlparser_test.go) instead of here.
 		{
 			name: "MalformedNestedTokenAtStart",
 			src:  `client<llm> X { @ provider openai }`,
 		},
-	}
+
+		// ---- #265 PR 3 additions: coverage the direct old-helper tests
+		// pinned and the original 66-case corpus did not. ----
+
+		// Comment containing `]` mid-strategy-continuation. Pins that the
+		// production walker (and bamlparser's lexer) treat `// ] not done
+		// yet` as a comment and do not close the strategy list early.
+		// Replaces the direct
+		// TestParseClientBlock_MultilineStrategyContinuationCommentWithClosingBracket
+		// test at baml_parser_test.go.
+		{
+			name: "MultilineStrategyContinuationCommentWithClosingBracket",
+			src: `
+client<llm> ContinuationCommentBracket {
+    provider baml-fallback
+    options {
+        strategy [
+            ClientA, // ] not done yet
+            ClientB,
+        ]
+    }
+}
+`,
+		},
+		// Comment with `]` on the inline `options { strategy [` opening
+		// line. Pins the same comment-stripping invariant on the inline
+		// shape. Replaces the direct
+		// TestParseClientBlock_OptionsOpeningLineStrategyCommentWithClosingBracket
+		// test at baml_parser_test.go.
+		{
+			name: "OptionsOpeningLineStrategyCommentWithClosingBracket",
+			src: `
+client<llm> InlineOptionsOpenLineBracket {
+    provider baml-fallback
+    options { strategy [ // ] opening comment
+        ClientA,
+        ClientB,
+    ] }
+}
+`,
+		},
+		// Post-`]` `start N }` suffix on the closing line of a multiline
+		// strategy list. The existing RoundRobinStartTrailingCloseBrace
+		// fixture covers `start 1 }` on a non-list-close line; this case
+		// pins the harder shape `] start 1 }` where the close-bracket of
+		// the strategy list and the start declaration co-occupy the same
+		// line. Replaces a subcase of
+		// TestParseClientBlock_RoundRobinStart_TrailingCloseBrace at
+		// baml_parser_test.go.
+		{
+			name: "RoundRobinStartTrailingCloseBraceSuffix",
+			src: `
+client<llm> RR {
+    provider baml-roundrobin
+    options {
+        strategy [
+            A,
+            B,
+        ] start 1 }
+}
+`,
+		},
+		// Duplicate-client stale clearing for round-robin start (absent).
+		// First declaration populates start=5; second declaration omits
+		// start. The stale entry must be cleared. Pins the parser's
+		// per-block delete-then-rewrite contract that the coordinator's
+		// "absent start ⇒ random seed" fallback depends on. Replaces
+		// TestParseClientBlock_RoundRobinStart_Absent at
+		// baml_parser_test.go.
+		{
+			name: "DuplicateClientStaleClearing_RoundRobinStartAbsent",
+			src: `
+client<llm> RR {
+    provider baml-roundrobin
+    options {
+        strategy [A, B]
+        start 5
+    }
 }
 
-func TestParity_OldVsNewParser_Fixtures(t *testing.T) {
-	// Fail-fast guard: the harness's whole purpose is to assert
-	// byte-for-byte parity between the old and new parsers on the
-	// documented surface. Adding an entry to knownParityDivergences would
-	// silently t.Skipf the corresponding case below, masking a regression.
-	// Any divergence must be fixed in the parser, not allowed-listed here.
-	if len(knownParityDivergences) > 0 {
-		t.Fatalf("knownParityDivergences must remain empty; parity divergences must be resolved in the parser, not skipped: %#v", knownParityDivergences)
-	}
-	for _, tc := range parityCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			if reason, divergent := knownParityDivergences[tc.name]; divergent {
-				t.Skipf("known divergence: %s", reason)
-			}
-			oldCfg := runOldParser(tc.src)
-			newCfg := runNewParser(t, tc.src)
-			assertBamlConfigEqual(t, oldCfg, newCfg)
-		})
-	}
+client<llm> RR {
+    provider baml-roundrobin
+    options {
+        strategy [A, B]
+    }
+}
+`,
+		},
+		// Duplicate-client stale clearing for round-robin start (invalid
+		// second value). Replaces
+		// TestParseClientBlock_RoundRobinStart_InvalidIgnored at
+		// baml_parser_test.go.
+		{
+			name: "DuplicateClientStaleClearing_RoundRobinStartInvalid",
+			src: `
+client<llm> RR {
+    provider baml-roundrobin
+    options {
+        strategy [A, B]
+        start 5
+    }
 }
 
-// assertBamlConfigEqual deep-compares two bamlConfig values, reporting the
-// specific map that diverged so failures point at the precise data shape
-// out of alignment rather than dumping the entire config.
-func assertBamlConfigEqual(t *testing.T, want, got *bamlConfig) {
-	t.Helper()
-	if !reflect.DeepEqual(normaliseStringMap(want.clientProvider), normaliseStringMap(got.clientProvider)) {
-		t.Errorf("clientProvider mismatch:\nold: %#v\nnew: %#v",
-			normaliseStringMap(want.clientProvider), normaliseStringMap(got.clientProvider))
-	}
-	if !reflect.DeepEqual(normaliseStringMap(want.clientRetryPolicy), normaliseStringMap(got.clientRetryPolicy)) {
-		t.Errorf("clientRetryPolicy mismatch:\nold: %#v\nnew: %#v",
-			normaliseStringMap(want.clientRetryPolicy), normaliseStringMap(got.clientRetryPolicy))
-	}
-	if !reflect.DeepEqual(normaliseStringMap(want.functionClient), normaliseStringMap(got.functionClient)) {
-		t.Errorf("functionClient mismatch:\nold: %#v\nnew: %#v",
-			normaliseStringMap(want.functionClient), normaliseStringMap(got.functionClient))
-	}
-	if !reflect.DeepEqual(want.retryPolicies, got.retryPolicies) {
-		t.Errorf("retryPolicies mismatch:\nold: %#v\nnew: %#v", want.retryPolicies, got.retryPolicies)
-	}
-	if !reflect.DeepEqual(normaliseStringSliceMap(want.fallbackChains), normaliseStringSliceMap(got.fallbackChains)) {
-		t.Errorf("fallbackChains mismatch:\nold: %#v\nnew: %#v",
-			normaliseStringSliceMap(want.fallbackChains), normaliseStringSliceMap(got.fallbackChains))
-	}
-	if !reflect.DeepEqual(want.roundRobinStart, got.roundRobinStart) {
-		t.Errorf("roundRobinStart mismatch:\nold: %#v\nnew: %#v", want.roundRobinStart, got.roundRobinStart)
-	}
-	if !reflect.DeepEqual(want.bedrockClientOptions, got.bedrockClientOptions) {
-		t.Errorf("bedrockClientOptions mismatch:\nold: %#v\nnew: %#v", want.bedrockClientOptions, got.bedrockClientOptions)
-	}
+client<llm> RR {
+    provider baml-roundrobin
+    options {
+        strategy [A, B]
+        start oops
+    }
+}
+`,
+		},
+		// Duplicate-client stale clearing for round-robin start (out-of-i32
+		// second value). Pins that the i32 ParseInt width clamps even
+		// when an earlier valid value already lives in the map. Replaces
+		// TestParseClientBlock_RoundRobinStart_OutOfI32Ignored at
+		// baml_parser_test.go.
+		{
+			name: "DuplicateClientStaleClearing_RoundRobinStartOutOfI32",
+			src: `
+client<llm> RR {
+    provider baml-roundrobin
+    options {
+        strategy [A, B]
+        start 5
+    }
 }
 
-// normaliseStringMap replaces a nil map with an empty one so reflect.DeepEqual
-// reports parity between configs that left a map untouched vs. those that
-// created one with no entries — both are semantically equivalent.
-func normaliseStringMap(m map[string]string) map[string]string {
-	if m == nil {
-		return map[string]string{}
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
+client<llm> RR {
+    provider baml-roundrobin
+    options {
+        strategy [A, B]
+        start 2147483648
+    }
+}
+`,
+		},
+		// Duplicate-client stale clearing for Bedrock endpoint_url. First
+		// declaration sets endpoint_url; second declaration omits it and
+		// the bedrockClientOptions entry must be cleared rather than left
+		// stale. Replaces
+		// TestParseClientBlock_BedrockEndpointURL_StaleEntryCleared at
+		// baml_parser_test.go.
+		{
+			name: "DuplicateClientStaleClearing_BedrockEndpoint",
+			src: `
+client<llm> Foo {
+    provider aws-bedrock
+    options {
+        endpoint_url "http://h"
+    }
 }
 
-func normaliseStringSliceMap(m map[string][]string) map[string][]string {
-	if m == nil {
-		return map[string][]string{}
+client<llm> Foo {
+    provider aws-bedrock
+    options {
+        model "x"
+    }
+}
+`,
+		},
+		// Duplicate-client stale clearing for Bedrock static credentials.
+		// First declaration populates access_key_id / secret_access_key;
+		// second declaration omits both and the bedrockClientOptions
+		// entry must be cleared. Replaces
+		// TestParseClientBlock_BedrockStaticCreds_StaleEntryCleared at
+		// baml_parser_test.go.
+		{
+			name: "DuplicateClientStaleClearing_BedrockCreds",
+			src: `
+client<llm> CredsBedrock {
+    provider aws-bedrock
+    options {
+        access_key_id     "STATIC_TEST_ACCESS_KEY"
+        secret_access_key "STATIC_TEST_SECRET_KEY"
+    }
+}
+
+client<llm> CredsBedrock {
+    provider aws-bedrock
+    options {
+        model "anthropic.claude-3-sonnet-20240229-v1:0"
+    }
+}
+`,
+		},
+		// Empty strategy list produces no fallback chain entry. Pins the
+		// processBAMLOptionsBlock `if len(chain) > 0` guard so a
+		// fallback-provider client with an empty `strategy []` does not
+		// leave a zero-length chain in the map (the runtime classifier
+		// distinguishes "no chain" from "empty chain"). Replaces the
+		// pre-PR-3 direct `parseStrategyList("strategy [])` row in the
+		// deleted helper-internal TestParseStrategyList.
+		{
+			name: "EmptyStrategyListNoFallbackChain",
+			src: `
+client<llm> EmptyStrategy {
+    provider baml-fallback
+    options {
+        strategy []
+    }
+}
+`,
+		},
 	}
-	out := make(map[string][]string, len(m))
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		// Copy slice to avoid aliasing surprises in DeepEqual.
-		out[k] = append([]string(nil), m[k]...)
-	}
-	return out
 }
