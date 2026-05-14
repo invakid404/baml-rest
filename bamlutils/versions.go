@@ -1,82 +1,72 @@
 package bamlutils
 
 import (
+	"fmt"
 	"io/fs"
 	"path/filepath"
-	"strings"
 
-	"github.com/alecthomas/participle/v2"
-	"github.com/alecthomas/participle/v2/lexer"
+	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 )
 
-var configLexer = lexer.MustSimple([]lexer.SimpleRule{
-	{"Comment", `//.*`},
-	{"Whitespace", `\s+`},
-	{"Keyword", `(?i)generator`},
-	{"String", `"[^"]*"`},
-	{"Ident", `[a-zA-Z_][a-zA-Z0-9_/-]*`},
-	{"LBrace", `\{`},
-	{"RBrace", `\}`},
-	{"LAngle", `<`},
-	{"RAngle", `>`},
-	{"Other", `.`},
-})
-
-type Config struct {
-	Items []Item `@@*`
-}
-
-type Item struct {
-	Generator *Generator `@@`
-	Other     *Other     `| @@`
-}
-
-type Generator struct {
-	Keyword string   `@Keyword`
-	Name    string   `@Ident`
-	Fields  []*Field `{ LBrace @@* RBrace }`
-}
-
-type Field struct {
-	Key   string `@Ident`
-	Value string `( @String | @Ident )`
-}
-
-type Other struct {
-	Token string `@( Ident | String | LBrace | RBrace | LAngle | RAngle | Other )`
-}
-
+// ExtractVersions scans a single .baml file for `generator NAME { version V }`
+// declarations and returns the value of every `version` field, in source order.
+//
+// Value shapes accepted (matching the prior narrow grammar's `@String | @Ident`
+// whitelist): quoted strings and bare identifiers. Number, env-ref, raw-string,
+// and list values return an error — the prior participle grammar failed to
+// parse them as a Field value, and we preserve that posture rather than widen
+// via bamlparser.Value.String().
+//
+// Keyword matching is case-sensitive on both the `generator` block keyword
+// and the `version` field key, matching upstream BAML's grammar. The old
+// parser was case-insensitive on both via `(?i)generator` in its lexer and
+// strings.EqualFold on the field name; that was an artifact of how participle's
+// CaseInsensitive lexer interacted with EqualFold rather than a designed
+// feature (versions.go had no tests). This refactor closes that divergence.
 func ExtractVersions(filePath string, file fs.File) ([]string, error) {
-	// Build the parser.
-	parser, err := participle.Build[Config](
-		participle.Lexer(configLexer),
-		participle.Elide("Comment", "Whitespace"),
-		participle.CaseInsensitive("Ident"),
-	)
+	parsed, err := bamlparser.ParseReader(filePath, file)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse the entire file content.
-	config, err := parser.Parse(filePath, file)
-	if err != nil {
-		return nil, err
-	}
-
-	// Collect versions from all generators.
 	var versions []string
-	for _, item := range config.Items {
-		if item.Generator != nil {
-			generator := item.Generator
-			for _, field := range generator.Fields {
-				if strings.EqualFold(field.Key, "version") {
-					value := strings.Trim(field.Value, `"`)
-					versions = append(versions, value)
-				}
+	for _, item := range parsed.Items {
+		if item == nil || item.Generator == nil {
+			continue
+		}
+		for _, field := range item.Generator.Fields {
+			if field == nil || field.Key != "version" {
+				continue
 			}
+			value, err := versionFieldValue(filePath, field.Value)
+			if err != nil {
+				return nil, err
+			}
+			versions = append(versions, value)
 		}
 	}
 	return versions, nil
+}
+
+// versionFieldValue extracts the version string from a `version` field's
+// Value, preserving the prior grammar's narrow `String | Ident` whitelist.
+// Number / EnvRef / Raw / List values return an error — those shapes would
+// not have parsed as a Field value under the old grammar at all, so callers
+// see the same failure mode (an error instead of a silently widened value).
+//
+// An empty quoted value (`version ""`) returns the empty string and no error,
+// matching the prior parser which appended strings.Trim's result regardless.
+func versionFieldValue(filePath string, v *bamlparser.Value) (string, error) {
+	if v == nil {
+		return "", fmt.Errorf("%s: version field has no value", filePath)
+	}
+	if s, ok := v.LiteralValue(); ok {
+		return s, nil
+	}
+	if s, ok := v.IdentValue(); ok {
+		return s, nil
+	}
+	return "", fmt.Errorf("%s: version field value must be a string or identifier", filePath)
 }
 
 func ParseVersions(target fs.FS) (versions []string, err error) {
