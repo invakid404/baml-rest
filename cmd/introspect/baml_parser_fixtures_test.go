@@ -959,7 +959,7 @@ function Foo(x: string) -> string {
 		// yet` as a comment and do not close the strategy list early.
 		// Replaces the direct
 		// TestParseClientBlock_MultilineStrategyContinuationCommentWithClosingBracket
-		// test at baml_parser_test.go:1173.
+		// test at baml_parser_test.go.
 		{
 			name: "MultilineStrategyContinuationCommentWithClosingBracket",
 			src: `
@@ -978,7 +978,7 @@ client<llm> ContinuationCommentBracket {
 		// line. Pins the same comment-stripping invariant on the inline
 		// shape. Replaces the direct
 		// TestParseClientBlock_OptionsOpeningLineStrategyCommentWithClosingBracket
-		// test at baml_parser_test.go:1197.
+		// test at baml_parser_test.go.
 		{
 			name: "OptionsOpeningLineStrategyCommentWithClosingBracket",
 			src: `
@@ -998,7 +998,7 @@ client<llm> InlineOptionsOpenLineBracket {
 		// the strategy list and the start declaration co-occupy the same
 		// line. Replaces a subcase of
 		// TestParseClientBlock_RoundRobinStart_TrailingCloseBrace at
-		// baml_parser_test.go:1292.
+		// baml_parser_test.go.
 		{
 			name: "RoundRobinStartTrailingCloseBraceSuffix",
 			src: `
@@ -1018,7 +1018,7 @@ client<llm> RR {
 		// per-block delete-then-rewrite contract that the coordinator's
 		// "absent start ⇒ random seed" fallback depends on. Replaces
 		// TestParseClientBlock_RoundRobinStart_Absent at
-		// baml_parser_test.go:1246.
+		// baml_parser_test.go.
 		{
 			name: "DuplicateClientStaleClearing_RoundRobinStartAbsent",
 			src: `
@@ -1041,7 +1041,7 @@ client<llm> RR {
 		// Duplicate-client stale clearing for round-robin start (invalid
 		// second value). Replaces
 		// TestParseClientBlock_RoundRobinStart_InvalidIgnored at
-		// baml_parser_test.go:1265.
+		// baml_parser_test.go.
 		{
 			name: "DuplicateClientStaleClearing_RoundRobinStartInvalid",
 			src: `
@@ -1066,7 +1066,7 @@ client<llm> RR {
 		// second value). Pins that the i32 ParseInt width clamps even
 		// when an earlier valid value already lives in the map. Replaces
 		// TestParseClientBlock_RoundRobinStart_OutOfI32Ignored at
-		// baml_parser_test.go:1360.
+		// baml_parser_test.go.
 		{
 			name: "DuplicateClientStaleClearing_RoundRobinStartOutOfI32",
 			src: `
@@ -1092,7 +1092,7 @@ client<llm> RR {
 		// the bedrockClientOptions entry must be cleared rather than left
 		// stale. Replaces
 		// TestParseClientBlock_BedrockEndpointURL_StaleEntryCleared at
-		// baml_parser_test.go:1996.
+		// baml_parser_test.go.
 		{
 			name: "DuplicateClientStaleClearing_BedrockEndpoint",
 			src: `
@@ -1116,7 +1116,7 @@ client<llm> Foo {
 		// second declaration omits both and the bedrockClientOptions
 		// entry must be cleared. Replaces
 		// TestParseClientBlock_BedrockStaticCreds_StaleEntryCleared at
-		// baml_parser_test.go:2357.
+		// baml_parser_test.go.
 		{
 			name: "DuplicateClientStaleClearing_BedrockCreds",
 			src: `

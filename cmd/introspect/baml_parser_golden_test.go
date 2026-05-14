@@ -151,6 +151,23 @@ func copyStringSliceMap(m map[string][]string) map[string][]string {
 	return out
 }
 
+// assertUniqueParityCaseNames fails the test fast if two fixtures share
+// a name. Without this guard, a duplicate would silently overwrite the
+// earlier entry in bamlConfigGoldens during -update-baml-config-goldens
+// regeneration (Go map semantics), losing that fixture's coverage on
+// disk. The regular-run size guard at TestBamlConfigGoldens cannot
+// catch this because the regenerate branch returns early.
+func assertUniqueParityCaseNames(t *testing.T, cases []parityCase) {
+	t.Helper()
+	seen := make(map[string]struct{}, len(cases))
+	for _, tc := range cases {
+		if _, ok := seen[tc.name]; ok {
+			t.Fatalf("duplicate parity fixture name %q; each fixture name must be unique", tc.name)
+		}
+		seen[tc.name] = struct{}{}
+	}
+}
+
 // runProductionParser parses src through bamlparser + processBAMLFile +
 // enrichShorthandClientProviders, matching parseBamlSourceDir's pipeline
 // (minus the FS walk).
@@ -175,6 +192,7 @@ func runProductionParser(t *testing.T, src string) *bamlConfig {
 // captures whatever the production walker currently produces.
 func TestBamlConfigGoldens(t *testing.T) {
 	cases := parityCases()
+	assertUniqueParityCaseNames(t, cases)
 	if *updateBamlConfigGoldens {
 		regenerateBamlConfigGoldens(t, cases)
 		return
