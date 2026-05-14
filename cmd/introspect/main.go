@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/dave/jennifer/jen"
+
+	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 )
 
 const (
@@ -1252,7 +1254,15 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 		if readErr != nil {
 			return nil // skip unreadable files
 		}
-		parseBamlFile(cfg, string(data))
+		file, parseErr := bamlparser.ParseBytes(path, data)
+		if parseErr != nil {
+			// The new parser is intentionally permissive (Codex scoping Q2/Q6);
+			// any real-world parse error is a parser bug to be fixed by adding
+			// a fixture rather than swallowing here. Match the old line walker's
+			// silent-on-unreadable posture so generation stays best-effort.
+			return nil
+		}
+		processBAMLFile(cfg, file)
 		return nil
 	})
 	if err != nil {
@@ -2260,6 +2270,281 @@ func parseRetryPolicyBlock(cfg *bamlConfig, name string, block []string) {
 		}
 	}
 	cfg.retryPolicies[name] = p
+}
+
+// processBAMLFile dispatches the parsed AST's top-level items in source
+// order, mirroring parseBamlFile's top-level top-down posture: only
+// client<llm>, function (with named signature), and retry_policy blocks
+// contribute to *bamlConfig. Every other top-level shape — generators,
+// classes, enums, type aliases, template_strings, tests, plain `client`
+// blocks without the <llm> type param — is intentionally ignored.
+func processBAMLFile(cfg *bamlConfig, f *bamlparser.File) {
+	for _, it := range f.Items {
+		switch {
+		case it.Client != nil && it.Client.TypeParam == "llm" && it.Client.Name != "":
+			processBAMLClientBlock(cfg, it.Client)
+		case it.Function != nil && it.Function.Name != "":
+			processBAMLFunctionBlock(cfg, it.Function)
+		case it.RetryPolicy != nil && it.RetryPolicy.Name != "":
+			processBAMLRetryPolicyBlock(cfg, it.RetryPolicy)
+		}
+	}
+}
+
+// processBAMLClientBlock walks a parsed client<llm> block, mirroring
+// parseClientBlock's behaviour: stale-state cleanup for the client name,
+// ordered top-level provider / retry_policy / options handling.
+func processBAMLClientBlock(cfg *bamlConfig, c *bamlparser.ClientBlock) {
+	name := c.Name
+	delete(cfg.roundRobinStart, name)
+	delete(cfg.fallbackChains, name)
+	delete(cfg.clientProvider, name)
+	delete(cfg.clientRetryPolicy, name)
+	delete(cfg.bedrockClientOptions, name)
+
+	for _, f := range c.Fields {
+		switch f.Key {
+		case "provider":
+			if f.Value != nil {
+				cfg.clientProvider[name] = canonicaliseProvider(bamlValueScalar(f.Value))
+			}
+		case "retry_policy":
+			if f.Value != nil {
+				cfg.clientRetryPolicy[name] = bamlValueScalar(f.Value)
+			}
+		case "options":
+			if f.Block != nil {
+				processBAMLOptionsBlock(cfg, name, f.Block)
+			}
+		}
+	}
+}
+
+// processBAMLOptionsBlock walks an options block. Strategy is captured
+// at ANY depth (matching the old parser's depth-agnostic strategy
+// extraction in extractStrategyStatement); start and Bedrock keys are
+// honoured ONLY at the immediate options depth, matching
+// extractRoundRobinStart's and updateBedrockClientOption's
+// optionsDepth == 1 guard.
+func processBAMLOptionsBlock(cfg *bamlConfig, name string, opts *bamlparser.Block) {
+	for _, f := range opts.Fields {
+		switch f.Key {
+		case "strategy":
+			if f.Value != nil && f.Value.List != nil {
+				chain := bamlValueStrategyList(f.Value)
+				if len(chain) > 0 {
+					cfg.fallbackChains[name] = chain
+				}
+			}
+		case "start":
+			if f.Value != nil && f.Value.Number != nil {
+				if n, err := strconv.ParseInt(*f.Value.Number, 10, 32); err == nil {
+					cfg.roundRobinStart[name] = int(n)
+				}
+			}
+		case "endpoint_url", "region",
+			"access_key_id", "secret_access_key", "session_token", "profile":
+			if val, ok := bamlValueBedrockOption(f.Value); ok {
+				cur := cfg.bedrockClientOptions[name]
+				switch f.Key {
+				case "endpoint_url":
+					cur.EndpointURL = val
+				case "region":
+					cur.Region = val
+				case "access_key_id":
+					cur.Credentials.AccessKeyID = val
+				case "secret_access_key":
+					cur.Credentials.SecretAccessKey = val
+				case "session_token":
+					cur.Credentials.SessionToken = val
+				case "profile":
+					cur.Credentials.Profile = val
+				}
+				cfg.bedrockClientOptions[name] = cur
+			}
+		}
+		if f.Block != nil {
+			processBAMLOptionsStrategyRecursive(cfg, name, f.Block)
+		}
+	}
+}
+
+// processBAMLOptionsStrategyRecursive walks block-valued option fields
+// looking for nested `strategy [...]` lists. Only strategy is captured;
+// `start` and Bedrock keys are gated to depth==1 by the caller.
+func processBAMLOptionsStrategyRecursive(cfg *bamlConfig, name string, blk *bamlparser.Block) {
+	for _, f := range blk.Fields {
+		if f.Key == "strategy" && f.Value != nil && f.Value.List != nil {
+			chain := bamlValueStrategyList(f.Value)
+			if len(chain) > 0 {
+				cfg.fallbackChains[name] = chain
+			}
+		}
+		if f.Block != nil {
+			processBAMLOptionsStrategyRecursive(cfg, name, f.Block)
+		}
+	}
+}
+
+// processBAMLFunctionBlock walks a function block, capturing every
+// top-level `client VALUE` field. Last-wins on duplicates: the old
+// parseFunctionBlock loop scans every line and overwrites
+// functionClient[name] on each `client VALUE` match, so the walker
+// iterates all matching fields rather than stopping at the first.
+func processBAMLFunctionBlock(cfg *bamlConfig, fn *bamlparser.FunctionBlock) {
+	for _, f := range fn.Fields {
+		if f.Key != "client" || f.Value == nil {
+			continue
+		}
+		cfg.functionClient[fn.Name] = bamlValueScalar(f.Value)
+	}
+}
+
+// processBAMLRetryPolicyBlock walks a retry_policy block. Direct
+// top-level fields (max_retries, type, delay_ms, multiplier,
+// max_delay_ms) are applied first; nested `strategy { ... }` fields
+// override them, mirroring the old expandStrategyBlock + allLines
+// append precedence (strategy nested values win).
+//
+// Production-only behaviour preserved here: stderr warnings for invalid
+// numeric values on max_retries / delay_ms / multiplier / max_delay_ms.
+// The parity harness compares *bamlConfig and cannot observe stderr, so
+// the warning emission is verified by inspection rather than by parity.
+// The warning strings match parseRetryPolicyBlock byte-for-byte so
+// anyone grep'ing logs for the old warning text still finds it.
+func processBAMLRetryPolicyBlock(cfg *bamlConfig, r *bamlparser.RetryPolicyBlock) {
+	p := parsedRetryPolicy{}
+	apply := func(key string, v *bamlparser.Value) {
+		switch key {
+		case "max_retries":
+			if v == nil {
+				return
+			}
+			if n, err := strconv.Atoi(bamlValueScalar(v)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: invalid max_retries value in retry_policy %s: %v\n", r.Name, err)
+			} else {
+				p.maxRetries = n
+			}
+		case "type":
+			p.strategy = bamlValueScalar(v)
+		case "delay_ms":
+			if v == nil {
+				return
+			}
+			if n, err := strconv.Atoi(bamlValueScalar(v)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: invalid delay_ms value in retry_policy %s: %v\n", r.Name, err)
+			} else {
+				p.delayMs = n
+			}
+		case "multiplier":
+			if v == nil {
+				return
+			}
+			if fl, err := strconv.ParseFloat(bamlValueScalar(v), 64); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: invalid multiplier value in retry_policy %s: %v\n", r.Name, err)
+			} else {
+				p.multiplier = fl
+			}
+		case "max_delay_ms":
+			if v == nil {
+				return
+			}
+			if n, err := strconv.Atoi(bamlValueScalar(v)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: invalid max_delay_ms value in retry_policy %s: %v\n", r.Name, err)
+			} else {
+				p.maxDelayMs = n
+			}
+		}
+	}
+	// Pass 1: direct top-level fields (excluding nested blocks).
+	for _, f := range r.Fields {
+		if f.Block != nil {
+			continue
+		}
+		apply(f.Key, f.Value)
+	}
+	// Pass 2: nested strategy block — overrides direct values, mirroring
+	// the old parser's allLines = expanded + strategyLines precedence.
+	for _, f := range r.Fields {
+		if f.Key != "strategy" || f.Block == nil {
+			continue
+		}
+		for _, sf := range f.Block.Fields {
+			apply(sf.Key, sf.Value)
+		}
+	}
+	cfg.retryPolicies[r.Name] = p
+}
+
+// bamlValueScalar reconstructs the string the old parser would have
+// produced from a Value after cleanBamlValue: quotes stripped from a
+// Literal, env.X reassembled for an EnvRef so downstream consumers see
+// the same "env.X" lexeme the line-based parser produced.
+func bamlValueScalar(v *bamlparser.Value) string {
+	if v == nil {
+		return ""
+	}
+	switch {
+	case v.IsLiteral():
+		s, _ := v.LiteralValue()
+		return s
+	case v.IsIdent():
+		s, _ := v.IdentValue()
+		return s
+	case v.IsNumber():
+		s, _ := v.NumberValue()
+		return s
+	case v.IsRaw():
+		s, _ := v.RawValue()
+		return s
+	case v.IsEnvRef():
+		name, _ := v.EnvName()
+		return "env." + name
+	}
+	return ""
+}
+
+// bamlValueStrategyList converts a List Value into a slice of client
+// names, mirroring parseStrategyList's whitespace/comma splitting and
+// quote stripping (the latter handled inside Value.String for literals).
+func bamlValueStrategyList(v *bamlparser.Value) []string {
+	if v == nil || v.List == nil {
+		return nil
+	}
+	var out []string
+	for _, e := range v.List {
+		s, ok := e.String()
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// bamlValueBedrockOption mirrors extractBedrockOptionValue: a bare
+// `env.IDENT` becomes Provenance=env (EnvVar=IDENT); anything else with
+// a non-empty string representation becomes Provenance=literal
+// (Literal=that string). An empty literal yields ok=false so the field
+// is not recorded — matches the old line walker's empty-literal skip.
+func bamlValueBedrockOption(v *bamlparser.Value) (bedrockOptionValue, bool) {
+	if v == nil {
+		return bedrockOptionValue{}, false
+	}
+	if name, ok := v.EnvName(); ok {
+		if name == "" {
+			return bedrockOptionValue{}, false
+		}
+		return bedrockOptionValue{EnvVar: name, Provenance: "env"}, true
+	}
+	s, ok := v.String()
+	if !ok || s == "" {
+		return bedrockOptionValue{}, false
+	}
+	return bedrockOptionValue{Literal: s, Provenance: "literal"}, true
 }
 
 // generateBamlConfigVars parses .baml source files and generates introspected

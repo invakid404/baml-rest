@@ -3,14 +3,14 @@
 // This file is the load-bearing safety mechanism for the BAML parser
 // unification refactor: it feeds every fixture the existing line-based
 // parser handles (plus a hand-built edge-case table) through BOTH the
-// existing parser and the new shared bamlutils/bamlparser-based AST walker,
-// then asserts the two produce byte-identical *bamlConfig values.
+// existing parser and the new shared bamlutils/bamlparser-based AST
+// walker, then asserts the two produce byte-identical *bamlConfig
+// values.
 //
-// The AST walker (`parityProcessFile` and friends below) is intentionally
-// scoped to this test file — production code still calls parseBamlFile in
-// main.go. The walker exists here so the parity assertion is meaningful
-// today; a subsequent PR promotes it into production after this parity
-// surface is green.
+// As of #265 PR 2, the AST walker lives in production code
+// (processBAMLFile + friends in main.go) and runNewParser below calls
+// it directly — so this harness verifies the EXACT production
+// implementation rather than a test-local copy.
 //
 // The knownParityDivergences list is expected to remain EMPTY: any
 // divergence surfaced by this test is either a correctness issue in the
@@ -22,8 +22,6 @@ package main
 import (
 	"reflect"
 	"sort"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
@@ -53,9 +51,10 @@ func runOldParser(src string) *bamlConfig {
 	return cfg
 }
 
-// runNewParser builds a fresh *bamlConfig and runs the new AST-based
-// walker (parityProcessFile) + enrichShorthandClientProviders. Output is
-// structurally compatible with runOldParser.
+// runNewParser builds a fresh *bamlConfig and runs the production AST
+// walker (processBAMLFile) + enrichShorthandClientProviders. By calling
+// the actual production walker (rather than a test-local copy), this
+// harness verifies the exact production implementation.
 func runNewParser(t *testing.T, src string) *bamlConfig {
 	t.Helper()
 	f, err := bamlparser.ParseString("parity.baml", src)
@@ -63,282 +62,9 @@ func runNewParser(t *testing.T, src string) *bamlConfig {
 		t.Fatalf("new parser failed: %v", err)
 	}
 	cfg := newTestBamlConfig()
-	parityProcessFile(cfg, f)
+	processBAMLFile(cfg, f)
 	enrichShorthandClientProviders(cfg)
 	return cfg
-}
-
-// parityProcessFile dispatches over the new parser's top-level items in
-// source order. Only client<llm>, function (with parenthesised signature),
-// and retry_policy blocks contribute to *bamlConfig — every other top-level
-// shape is intentionally ignored, mirroring parseBamlFile in main.go.
-func parityProcessFile(cfg *bamlConfig, f *bamlparser.File) {
-	for _, it := range f.Items {
-		switch {
-		case it.Client != nil && it.Client.TypeParam == "llm" && it.Client.Name != "":
-			parityProcessClient(cfg, it.Client)
-		case it.Function != nil && it.Function.Name != "":
-			parityProcessFunction(cfg, it.Function)
-		case it.RetryPolicy != nil && it.RetryPolicy.Name != "":
-			parityProcessRetryPolicy(cfg, it.RetryPolicy)
-		}
-	}
-}
-
-// parityProcessClient walks a parsed client block, mirroring
-// parseClientBlock's behavior: stale-state cleanup, ordered field
-// processing, options-block dive for strategy / start / Bedrock keys.
-func parityProcessClient(cfg *bamlConfig, c *bamlparser.ClientBlock) {
-	name := c.Name
-	delete(cfg.roundRobinStart, name)
-	delete(cfg.fallbackChains, name)
-	delete(cfg.clientProvider, name)
-	delete(cfg.clientRetryPolicy, name)
-	delete(cfg.bedrockClientOptions, name)
-
-	for _, f := range c.Fields {
-		switch f.Key {
-		case "provider":
-			if f.Value != nil {
-				cfg.clientProvider[name] = canonicaliseProvider(asScalarString(f.Value))
-			}
-		case "retry_policy":
-			if f.Value != nil {
-				cfg.clientRetryPolicy[name] = asScalarString(f.Value)
-			}
-		case "options":
-			if f.Block != nil {
-				parityProcessOptions(cfg, name, f.Block)
-			}
-		}
-	}
-}
-
-// parityProcessOptions walks an options block. Strategy is captured at any
-// depth (matching the old parser's depth-agnostic strategy extraction);
-// start and Bedrock keys are only honoured at the top level of the
-// options block (depth == 1), matching extractRoundRobinStart's and
-// updateBedrockClientOption's guard.
-func parityProcessOptions(cfg *bamlConfig, name string, opts *bamlparser.Block) {
-	for _, f := range opts.Fields {
-		switch f.Key {
-		case "strategy":
-			if f.Value != nil && f.Value.List != nil {
-				chain := parityStrategyList(f.Value)
-				if len(chain) > 0 {
-					cfg.fallbackChains[name] = chain
-				}
-			}
-		case "start":
-			if f.Value != nil && f.Value.Number != nil {
-				if n, err := strconv.ParseInt(*f.Value.Number, 10, 32); err == nil {
-					cfg.roundRobinStart[name] = int(n)
-				}
-			}
-		case "endpoint_url", "region",
-			"access_key_id", "secret_access_key", "session_token", "profile":
-			if val, ok := parityBedrockOptionValue(f.Value); ok {
-				cur := cfg.bedrockClientOptions[name]
-				switch f.Key {
-				case "endpoint_url":
-					cur.EndpointURL = val
-				case "region":
-					cur.Region = val
-				case "access_key_id":
-					cur.Credentials.AccessKeyID = val
-				case "secret_access_key":
-					cur.Credentials.SecretAccessKey = val
-				case "session_token":
-					cur.Credentials.SessionToken = val
-				case "profile":
-					cur.Credentials.Profile = val
-				}
-				cfg.bedrockClientOptions[name] = cur
-			}
-		}
-		// Strategy at any nested depth: recurse into block-shaped option
-		// fields and capture a strategy list if present. The old parser's
-		// in-options strategy extraction is not depth-gated (see Codex's
-		// scoping doc Q1) so the AST walker mirrors that posture.
-		if f.Block != nil {
-			parityProcessOptionsStrategyRecursive(cfg, name, f.Block)
-		}
-	}
-}
-
-func parityProcessOptionsStrategyRecursive(cfg *bamlConfig, name string, blk *bamlparser.Block) {
-	for _, f := range blk.Fields {
-		if f.Key == "strategy" && f.Value != nil && f.Value.List != nil {
-			chain := parityStrategyList(f.Value)
-			if len(chain) > 0 {
-				cfg.fallbackChains[name] = chain
-			}
-		}
-		if f.Block != nil {
-			parityProcessOptionsStrategyRecursive(cfg, name, f.Block)
-		}
-	}
-}
-
-// parityStrategyList converts a List Value to a slice of client names,
-// matching parseStrategyList's whitespace/comma splitting and quote
-// stripping.
-func parityStrategyList(v *bamlparser.Value) []string {
-	if v == nil || v.List == nil {
-		return nil
-	}
-	var out []string
-	for _, e := range v.List {
-		s, ok := e.String()
-		if !ok {
-			continue
-		}
-		s = strings.TrimSpace(s)
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// parityBedrockOptionValue mirrors extractBedrockOptionValue: a bare
-// env.IDENT becomes Provenance=env (EnvVar=IDENT); anything else with a
-// non-empty string representation becomes Provenance=literal (Literal=that
-// string). An empty literal yields ok=false so the field is not recorded.
-func parityBedrockOptionValue(v *bamlparser.Value) (bedrockOptionValue, bool) {
-	if v == nil {
-		return bedrockOptionValue{}, false
-	}
-	if name, ok := v.EnvName(); ok {
-		if name == "" {
-			return bedrockOptionValue{}, false
-		}
-		return bedrockOptionValue{EnvVar: name, Provenance: "env"}, true
-	}
-	s, ok := v.String()
-	if !ok || s == "" {
-		return bedrockOptionValue{}, false
-	}
-	return bedrockOptionValue{Literal: s, Provenance: "literal"}, true
-}
-
-// parityProcessFunction walks a function block, capturing the top-level
-// `client VALUE` field. Matches parseFunctionBlock — every other field is
-// ignored (prompt body is a Raw value or a nested block, options are
-// ignored).
-//
-// Last-wins on duplicates: the production loop at
-// cmd/introspect/main.go:2143-2174 keeps scanning every top-level line in
-// the function body, so a later `client` field overwrites an earlier one.
-// The walker iterates all matching fields rather than stopping at the
-// first, mirroring that semantics exactly.
-func parityProcessFunction(cfg *bamlConfig, fn *bamlparser.FunctionBlock) {
-	for _, f := range fn.Fields {
-		if f.Key != "client" || f.Value == nil {
-			continue
-		}
-		cfg.functionClient[fn.Name] = asScalarString(f.Value)
-	}
-}
-
-// parityProcessRetryPolicy walks a retry_policy block. Direct top-level
-// fields (max_retries, type, delay_ms, multiplier, max_delay_ms) are
-// applied first; nested `strategy { ... }` fields override them, matching
-// the old expandStrategyBlock + allLines append precedence.
-func parityProcessRetryPolicy(cfg *bamlConfig, r *bamlparser.RetryPolicyBlock) {
-	p := parsedRetryPolicy{}
-	apply := func(key string, v *bamlparser.Value) {
-		switch key {
-		case "max_retries":
-			if n, ok := atoiValue(v); ok {
-				p.maxRetries = n
-			}
-		case "type":
-			p.strategy = asScalarString(v)
-		case "delay_ms":
-			if n, ok := atoiValue(v); ok {
-				p.delayMs = n
-			}
-		case "multiplier":
-			if fl, ok := parseFloatValue(v); ok {
-				p.multiplier = fl
-			}
-		case "max_delay_ms":
-			if n, ok := atoiValue(v); ok {
-				p.maxDelayMs = n
-			}
-		}
-	}
-	// Pass 1: direct top-level fields (excluding nested blocks).
-	for _, f := range r.Fields {
-		if f.Block != nil {
-			continue
-		}
-		apply(f.Key, f.Value)
-	}
-	// Pass 2: nested strategy block — overrides direct values, mirroring
-	// the old parser's allLines = expanded + strategyLines precedence.
-	for _, f := range r.Fields {
-		if f.Key != "strategy" || f.Block == nil {
-			continue
-		}
-		for _, sf := range f.Block.Fields {
-			apply(sf.Key, sf.Value)
-		}
-	}
-	cfg.retryPolicies[r.Name] = p
-}
-
-// asScalarString reconstructs the string the old parser would have seen
-// after cleanBamlValue: quotes stripped from a Literal, env.X reassembled
-// for an EnvRef so semantic consumers see the same "env.X" lexeme the
-// line-based parser produced.
-func asScalarString(v *bamlparser.Value) string {
-	if v == nil {
-		return ""
-	}
-	switch {
-	case v.IsLiteral():
-		s, _ := v.LiteralValue()
-		return s
-	case v.IsIdent():
-		s, _ := v.IdentValue()
-		return s
-	case v.IsNumber():
-		s, _ := v.NumberValue()
-		return s
-	case v.IsRaw():
-		s, _ := v.RawValue()
-		return s
-	case v.IsEnvRef():
-		name, _ := v.EnvName()
-		return "env." + name
-	}
-	return ""
-}
-
-func atoiValue(v *bamlparser.Value) (int, bool) {
-	s := asScalarString(v)
-	if s == "" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return 0, false
-	}
-	return n, true
-}
-
-func parseFloatValue(v *bamlparser.Value) (float64, bool) {
-	s := asScalarString(v)
-	if s == "" {
-		return 0, false
-	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0, false
-	}
-	return f, true
 }
 
 // ----------------------------------------------------------------------------
