@@ -80,9 +80,13 @@ var bamlLexer = lexer.MustSimple([]lexer.SimpleRule{
 })
 
 // bamlParser is the participle-built parser that drives the File grammar.
-// Grammar tags on File / Item / GeneratorBlock / RetryPolicyBlock / Block /
-// Field / Value declare the parts of the surface participle can handle
-// directly; the Parseable hooks defined below cover the rest.
+// Grammar tags on File, Item, Field, and Value declare the parts of the
+// surface participle can handle directly. Body-bearing block types
+// (Block, GeneratorBlock, RetryPolicyBlock, ClientBlock, FunctionBlock,
+// TemplateBlock, TypeBlock, TypeAlias, Other) are Parseable hooks
+// instead, because field-body iteration needs to leniently skip
+// un-Field-shaped tokens and metadata-only nodes need balanced-skip
+// over content the grammar otherwise can't express.
 var bamlParser = participle.MustBuild[File](
 	participle.Lexer(bamlLexer),
 	participle.Elide(tokComment, tokWS),
@@ -92,8 +96,10 @@ var bamlParser = participle.MustBuild[File](
 // ClientBlock and FunctionBlock delegate brace-body parsing to this
 // sub-parser, which in turn invokes Block.Parse (since Block is itself
 // Parseable). The indirection keeps brace-body parsing routed through a
-// single Block.Parse implementation regardless of whether the body is
-// being parsed from a top-level keyword block or a nested Field.Block.
+// single Block.Parse implementation for client/function/nested-Field
+// bodies. GeneratorBlock and RetryPolicyBlock call parseBlockFieldsUntilClose
+// directly rather than going through blockSubParser — both routes converge
+// on the same skip-garbage helper regardless.
 var blockSubParser = participle.MustBuild[Block](
 	participle.Lexer(bamlLexer),
 	participle.Elide(tokComment, tokWS),
