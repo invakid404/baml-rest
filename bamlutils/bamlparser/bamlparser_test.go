@@ -649,3 +649,90 @@ function F(x: string) -> string {
 		t.Errorf("expected baml-fallback ident, got %q", *a.Fields[0].Value.Ident)
 	}
 }
+
+// TestParse_MalformedNestedTokenAtStartSkipped pins that an un-Field-shaped
+// token at the start of a brace body is skipped and the subsequent fields
+// parse normally — mirroring the prior hand-rolled parseField's
+// non-ident-skip-and-continue behaviour. Caught by Codex's sign-off on
+// PR #270: the previous declarative `"{" @@* "}"?` Block grammar
+// terminated the block at `@` and leaked the rest of the body to the outer
+// scope.
+func TestParse_MalformedNestedTokenAtStartSkipped(t *testing.T) {
+	src := `client<llm> X { @ provider openai }`
+	f := mustParse(t, src)
+	c := findClient(f, "X")
+	if c == nil {
+		t.Fatalf("client X missing; items: %+v", f.Items)
+	}
+	if len(c.Fields) != 1 {
+		t.Fatalf("want 1 field, got %d: %+v", len(c.Fields), c.Fields)
+	}
+	prov := fieldByKey(c.Fields, "provider")
+	if prov == nil || prov.Value == nil || prov.Value.Ident == nil || *prov.Value.Ident != "openai" {
+		t.Errorf("provider missing/wrong: %+v", prov)
+	}
+}
+
+// TestParse_MalformedNestedTokenBetweenFieldsSkipped pins that a garbage
+// token between two well-formed fields does not terminate the block — the
+// `@` is skipped and `retry_policy Fast` is captured as the second field.
+//
+// Note: this is intentionally a standalone parser test rather than a parity
+// case because the production line-based parser's splitInlineStatements
+// includes the trailing `@` in the preceding field's value (so its
+// clientProvider["X"] is "openai @", not "openai"). The bamlparser
+// AST walker drops stray non-Ident tokens, matching the prior PR #269
+// standalone bamlparser. That divergence between line-based and AST
+// parsers on garbage input pre-dates PR 1.5 and is out of scope for
+// the parity invariant.
+func TestParse_MalformedNestedTokenBetweenFieldsSkipped(t *testing.T) {
+	src := `client<llm> X { provider openai @ retry_policy Fast }`
+	f := mustParse(t, src)
+	c := findClient(f, "X")
+	if c == nil {
+		t.Fatalf("client X missing; items: %+v", f.Items)
+	}
+	if len(c.Fields) != 2 {
+		t.Fatalf("want 2 fields, got %d: %+v", len(c.Fields), c.Fields)
+	}
+	prov := fieldByKey(c.Fields, "provider")
+	if prov == nil || prov.Value == nil || prov.Value.Ident == nil || *prov.Value.Ident != "openai" {
+		t.Errorf("provider missing/wrong: %+v", prov)
+	}
+	rp := fieldByKey(c.Fields, "retry_policy")
+	if rp == nil || rp.Value == nil || rp.Value.Ident == nil || *rp.Value.Ident != "Fast" {
+		t.Errorf("retry_policy missing/wrong: %+v", rp)
+	}
+	// Crucially: nothing leaks to top level. The previous declarative
+	// `@@* "}"?` Block grammar produced a spurious top-level Item from
+	// the leaked `retry_policy Fast` tokens.
+	for _, it := range f.Items {
+		if it.RetryPolicy != nil {
+			t.Errorf("retry_policy leaked to top level: %+v", it.RetryPolicy)
+		}
+	}
+}
+
+// TestParse_MalformedNestedTokenSequenceSkipped pins that consecutive
+// garbage tokens (`@ !`) between two fields are all skipped — the loop's
+// "advance one token and re-try Field" invariant must hold even when the
+// stray-token run is longer than one.
+func TestParse_MalformedNestedTokenSequenceSkipped(t *testing.T) {
+	src := `client<llm> X { provider openai @ ! retry_policy Fast }`
+	f := mustParse(t, src)
+	c := findClient(f, "X")
+	if c == nil {
+		t.Fatalf("client X missing; items: %+v", f.Items)
+	}
+	if len(c.Fields) != 2 {
+		t.Fatalf("want 2 fields, got %d: %+v", len(c.Fields), c.Fields)
+	}
+	prov := fieldByKey(c.Fields, "provider")
+	if prov == nil || prov.Value == nil || prov.Value.Ident == nil || *prov.Value.Ident != "openai" {
+		t.Errorf("provider missing/wrong: %+v", prov)
+	}
+	rp := fieldByKey(c.Fields, "retry_policy")
+	if rp == nil || rp.Value == nil || rp.Value.Ident == nil || *rp.Value.Ident != "Fast" {
+		t.Errorf("retry_policy missing/wrong: %+v", rp)
+	}
+}

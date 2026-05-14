@@ -167,8 +167,14 @@ type Field struct {
 // parse. Consumers that need a verbatim copy of an unknown block body
 // should read it directly from the source bytes; the AST is designed
 // around the recognised-shape contract.
+//
+// Parsing is implemented via Parseable in bamlparser.go because the
+// declarative `"{" @@* "}"?` form terminated the block early on the first
+// non-Ident token and let the rest of the block leak to the outer scope,
+// regressing the prior parser's "skip garbage, keep parsing later fields"
+// semantics.
 type Block struct {
-	Fields []*Field `"{" @@* "}"?`
+	Fields []*Field
 }
 
 // Value carries a parsed right-hand-side. Exactly one of the typed pointers

@@ -22,13 +22,14 @@
 // converting AST values to concrete config.
 //
 // Implementation: a participle-built parser drives the top-level grammar
-// declaratively via struct tags on the AST nodes; five irregular shapes
-// (ClientBlock, FunctionBlock, TemplateBlock, TypeBlock, TypeAlias, Other)
-// supply narrow Parseable hooks for behaviour that grammar tags cannot
-// express cleanly (field-order mismatch, same-line `(` requirement after
-// `function`, metadata-only body skipping, catch-all token consumption).
-// Post-parse normalisation strips string / env-ref / raw-string delimiters
-// so the AST contract matches the prior hand-rolled parser byte-for-byte.
+// declaratively via struct tags on the AST nodes; seven irregular shapes
+// (ClientBlock, FunctionBlock, TemplateBlock, TypeBlock, TypeAlias, Other,
+// Block) supply narrow Parseable hooks for behaviour that grammar tags
+// cannot express cleanly (field-order mismatch, same-line `(` requirement
+// after `function`, metadata-only body skipping, catch-all token
+// consumption, garbage-token-skip-inside-block). Post-parse normalisation
+// strips string / env-ref / raw-string delimiters so the AST contract
+// matches the prior hand-rolled parser byte-for-byte.
 package bamlparser
 
 import (
@@ -87,10 +88,23 @@ var bamlParser = participle.MustBuild[File](
 
 // blockSubParser parses just a Block body. The Parseable hooks for
 // ClientBlock and FunctionBlock delegate brace-body parsing to this
-// sub-parser so the inside-block grammar stays declarative (defined on
-// Block / Field / Value via struct tags) without duplicating its
-// implementation inside the custom Parse methods.
+// sub-parser, which in turn invokes Block.Parse (since Block is itself
+// Parseable). The indirection keeps brace-body parsing routed through a
+// single Block.Parse implementation regardless of whether the body is
+// being parsed from a top-level keyword block or a nested Field.Block.
 var blockSubParser = participle.MustBuild[Block](
+	participle.Lexer(bamlLexer),
+	participle.Elide(tokComment, tokWS),
+)
+
+// fieldSubParser parses a single Field. Block.Parse uses it to consume one
+// Field at a time so the inside-block grammar (`Field = @Ident (Value |
+// Block)?` on the AST type) stays declarative, while Block.Parse retains
+// imperative control over what happens between fields — specifically, the
+// "skip an un-Field-shaped token and keep going" behaviour that the prior
+// hand-rolled parser provided and that the previous declarative `@@*`
+// grammar lost.
+var fieldSubParser = participle.MustBuild[Field](
 	participle.Lexer(bamlLexer),
 	participle.Elide(tokComment, tokWS),
 )
@@ -303,8 +317,11 @@ func (ta *TypeAlias) Parse(lex *lexer.PeekingLexer) error {
 
 // Parse implements participle.Parseable for Other, the catch-all alternative.
 // Consumes exactly one token (capturing its value as Keyword) and, if the
-// next token is `{`, the balanced body that follows. Returns NextMatch at
-// EOF so the outer Items repetition terminates cleanly.
+// leading token is an identifier and is immediately followed by `{`, the
+// balanced block body that follows. Punctuation-led Others consume just the
+// single token — matching the prior parser's behaviour so a stray `}` does
+// not gobble a subsequent valid block. Returns NextMatch at EOF so the
+// outer Items repetition terminates cleanly.
 func (o *Other) Parse(lex *lexer.PeekingLexer) error {
 	t := lex.Peek()
 	if t.EOF() {
@@ -312,13 +329,59 @@ func (o *Other) Parse(lex *lexer.PeekingLexer) error {
 	}
 	tok := lex.Next()
 	o.Keyword = tok.Value
-	// Only Ident-led items trigger balanced-block skipping, mirroring the
-	// prior parser's behaviour: punctuation-led Others consume just the
-	// single token so a stray `}` doesn't gobble a subsequent valid block.
 	if tok.Type == identType && peekPunct(lex, "{") {
 		skipBalanced(lex, "{", "}")
 	}
 	return nil
+}
+
+// Parse implements participle.Parseable for Block. The block body is parsed
+// imperatively so the loop between fields can skip un-Field-shaped tokens
+// (matching the prior hand-rolled parseField's "advance one token, keep
+// looping" semantics). A purely declarative `"{" @@* "}"?` grammar would
+// terminate the block at the first non-Ident token and leak the rest of
+// the body to the outer scope — caught by Codex's sign-off on PR #270.
+//
+// Individual Field parsing stays declarative: each iteration delegates to
+// fieldSubParser, so the `@Ident (Value | Block)?` grammar lives on the
+// Field type itself. The loop's only responsibility is brace-bounded
+// iteration plus garbage-token skip.
+//
+// Missing-close-brace handling matches the prior parser: reaching EOF
+// before `}` is not an error (the explicit brace-eating-comment fixture
+// and bare-`{ key value` cases both depend on this).
+func (b *Block) Parse(lex *lexer.PeekingLexer) error {
+	if !peekPunct(lex, "{") {
+		return participle.NextMatch
+	}
+	lex.Next() // consume "{"
+	for {
+		t := lex.Peek()
+		if t.EOF() {
+			return nil
+		}
+		if isPunctTok(t, "}") {
+			lex.Next()
+			return nil
+		}
+		cp := lex.MakeCheckpoint()
+		f, err := fieldSubParser.ParseFromLexer(lex, participle.AllowTrailing(true))
+		if err != nil || f == nil {
+			// Field didn't match here; restore lex to its pre-attempt
+			// position so the sub-parser's partial consumption (if any)
+			// doesn't compound with the one-token advance below.
+			lex.LoadCheckpoint(cp)
+			lex.Next()
+			continue
+		}
+		// Defensive against a degenerate sub-parser success that
+		// consumed nothing — would otherwise infinite-loop.
+		if lex.RawCursor() == cp.RawCursor() {
+			lex.Next()
+			continue
+		}
+		b.Fields = append(b.Fields, f)
+	}
 }
 
 // -----------------------------------------------------------------------
