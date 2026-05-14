@@ -736,3 +736,90 @@ func TestParse_MalformedNestedTokenSequenceSkipped(t *testing.T) {
 		t.Errorf("retry_policy missing/wrong: %+v", rp)
 	}
 }
+
+// TestParse_GeneratorMalformedNestedTokenAtStartSkipped pins the
+// skip-garbage-token semantics for GeneratorBlock bodies. The prior
+// declarative `( "{" @@* "}"? )?` grammar terminated the body at the
+// leading `@` and leaked the rest to file scope. The fix routes the
+// generator body through the same parseBlockFieldsUntilClose helper
+// that Block / RetryPolicy / Client / Function bodies use.
+func TestParse_GeneratorMalformedNestedTokenAtStartSkipped(t *testing.T) {
+	src := `generator g { @ version "1.0.0" }`
+	f := mustParse(t, src)
+	g := findGenerator(f, "g")
+	if g == nil {
+		t.Fatalf("generator g missing; items: %+v", f.Items)
+	}
+	if len(g.Fields) != 1 {
+		t.Fatalf("want 1 field, got %d: %+v", len(g.Fields), g.Fields)
+	}
+	ver := fieldByKey(g.Fields, "version")
+	if ver == nil || ver.Value == nil || ver.Value.Literal == nil || *ver.Value.Literal != "1.0.0" {
+		t.Errorf("version missing/wrong: %+v", ver)
+	}
+}
+
+// TestParse_GeneratorMalformedNestedTokenBetweenFieldsSkipped pins that a
+// garbage token between two well-formed generator fields does not
+// terminate the body early.
+func TestParse_GeneratorMalformedNestedTokenBetweenFieldsSkipped(t *testing.T) {
+	src := `generator g { version "1.0.0" @ output_type "rest/go" }`
+	f := mustParse(t, src)
+	g := findGenerator(f, "g")
+	if g == nil {
+		t.Fatalf("generator g missing; items: %+v", f.Items)
+	}
+	if len(g.Fields) != 2 {
+		t.Fatalf("want 2 fields, got %d: %+v", len(g.Fields), g.Fields)
+	}
+	ver := fieldByKey(g.Fields, "version")
+	if ver == nil || ver.Value == nil || ver.Value.Literal == nil || *ver.Value.Literal != "1.0.0" {
+		t.Errorf("version missing/wrong: %+v", ver)
+	}
+	ot := fieldByKey(g.Fields, "output_type")
+	if ot == nil || ot.Value == nil || ot.Value.Literal == nil || *ot.Value.Literal != "rest/go" {
+		t.Errorf("output_type missing/wrong: %+v", ot)
+	}
+}
+
+// TestParse_RetryPolicyMalformedNestedTokenAtStartSkipped pins the
+// skip-garbage-token semantics for RetryPolicyBlock bodies. Same rationale
+// as TestParse_GeneratorMalformedNestedTokenAtStartSkipped.
+func TestParse_RetryPolicyMalformedNestedTokenAtStartSkipped(t *testing.T) {
+	src := `retry_policy R { @ max_retries 3 }`
+	f := mustParse(t, src)
+	rp := findRetryPolicy(f, "R")
+	if rp == nil {
+		t.Fatalf("retry_policy R missing; items: %+v", f.Items)
+	}
+	if len(rp.Fields) != 1 {
+		t.Fatalf("want 1 field, got %d: %+v", len(rp.Fields), rp.Fields)
+	}
+	mr := fieldByKey(rp.Fields, "max_retries")
+	if mr == nil || mr.Value == nil || mr.Value.Number == nil || *mr.Value.Number != "3" {
+		t.Errorf("max_retries missing/wrong: %+v", mr)
+	}
+}
+
+// TestParse_RetryPolicyMalformedNestedTokenBetweenFieldsSkipped pins that
+// a garbage token between two well-formed retry_policy fields does not
+// terminate the body early.
+func TestParse_RetryPolicyMalformedNestedTokenBetweenFieldsSkipped(t *testing.T) {
+	src := `retry_policy R { max_retries 3 @ delay_ms 100 }`
+	f := mustParse(t, src)
+	rp := findRetryPolicy(f, "R")
+	if rp == nil {
+		t.Fatalf("retry_policy R missing; items: %+v", f.Items)
+	}
+	if len(rp.Fields) != 2 {
+		t.Fatalf("want 2 fields, got %d: %+v", len(rp.Fields), rp.Fields)
+	}
+	mr := fieldByKey(rp.Fields, "max_retries")
+	if mr == nil || mr.Value == nil || mr.Value.Number == nil || *mr.Value.Number != "3" {
+		t.Errorf("max_retries missing/wrong: %+v", mr)
+	}
+	dm := fieldByKey(rp.Fields, "delay_ms")
+	if dm == nil || dm.Value == nil || dm.Value.Number == nil || *dm.Value.Number != "100" {
+		t.Errorf("delay_ms missing/wrong: %+v", dm)
+	}
+}

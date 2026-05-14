@@ -37,13 +37,17 @@ type Item struct {
 
 // GeneratorBlock corresponds to `generator Name { key value ... }`.
 //
-// The closing `}` is optional in the grammar to match the prior parser's
-// lenient handling of brace-missing inputs (an inline `// ... }` line
-// comment elides the closing brace because the comment lexer rule
-// consumes everything up to the next newline, including the trailing `}`).
+// Parsing is implemented via Parseable in bamlparser.go so the body
+// shares parseBlockFieldsUntilClose with Block — the prior declarative
+// `"{" @@* "}"?` grammar terminated the body at the first non-Ident
+// token, regressing the prior hand-rolled parser's "skip garbage,
+// keep parsing later fields" semantics. The closing `}` is also
+// optional to preserve lenient handling of brace-eating inline
+// comments (an inline `// ... }` consumes the trailing `}` because
+// the comment lexer rule runs to EOL/EOF).
 type GeneratorBlock struct {
-	Name   string   `"generator" @Ident`
-	Fields []*Field `( "{" @@* "}"? )?`
+	Name   string
+	Fields []*Field
 }
 
 // ClientBlock corresponds to `client[<type>] Name { key value ... }`.
@@ -76,12 +80,14 @@ type FunctionBlock struct {
 	Fields []*Field
 }
 
-// RetryPolicyBlock corresponds to `retry_policy Name { ... }`. The closing
-// `}` is optional for the same brace-eating-comment reason described on
-// GeneratorBlock.
+// RetryPolicyBlock corresponds to `retry_policy Name { ... }`.
+//
+// Parsing is implemented via Parseable in bamlparser.go so the body
+// shares parseBlockFieldsUntilClose with Block and GeneratorBlock for
+// the skip-garbage-token loop. See GeneratorBlock for the rationale.
 type RetryPolicyBlock struct {
-	Name   string   `"retry_policy" @Ident`
-	Fields []*Field `( "{" @@* "}"? )?`
+	Name   string
+	Fields []*Field
 }
 
 // TemplateBlock corresponds to `template_string Name(...) #"..."#` and the
@@ -128,15 +134,17 @@ type TypeAlias struct {
 // Other captures metadata for a top-level construct that doesn't match any
 // recognised declaration shape. Keyword is the leading token's value —
 // either the identifier text when the item began with a word, or the raw
-// token value when it began with punctuation. Any following balanced block
-// is consumed and not retained; Other is metadata-only so semantic walkers
-// can skip unknown declarations while preserving source order, mirroring
-// the line-by-line introspect parser's behaviour of ignoring any line
-// that isn't a known prefix.
+// token value when it began with punctuation. If the leading token is an
+// identifier AND the very next token is `{`, the balanced block that
+// follows is consumed and not retained. Punctuation-led tokens (a stray
+// `}`, `]`, `)`, `@`, etc.) consume just the single token so an unrelated
+// trailing block is not accidentally swallowed. Other is metadata-only so
+// semantic walkers can skip unknown declarations while preserving source
+// order, mirroring the line-by-line introspect parser's behaviour of
+// ignoring any line that isn't a known prefix.
 //
 // Parsing is implemented via Parseable in bamlparser.go because Other is
-// the catch-all alternative: it consumes one token plus, if immediately
-// followed by `{`, a balanced brace block, with no further structure.
+// the catch-all alternative.
 type Other struct {
 	Keyword string
 }

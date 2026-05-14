@@ -22,14 +22,16 @@
 // converting AST values to concrete config.
 //
 // Implementation: a participle-built parser drives the top-level grammar
-// declaratively via struct tags on the AST nodes; seven irregular shapes
-// (ClientBlock, FunctionBlock, TemplateBlock, TypeBlock, TypeAlias, Other,
-// Block) supply narrow Parseable hooks for behaviour that grammar tags
-// cannot express cleanly (field-order mismatch, same-line `(` requirement
-// after `function`, metadata-only body skipping, catch-all token
-// consumption, garbage-token-skip-inside-block). Post-parse normalisation
-// strips string / env-ref / raw-string delimiters so the AST contract
-// matches the prior hand-rolled parser byte-for-byte.
+// declaratively via struct tags on the AST nodes; nine irregular shapes
+// (GeneratorBlock, ClientBlock, FunctionBlock, RetryPolicyBlock,
+// TemplateBlock, TypeBlock, TypeAlias, Other, Block) supply narrow
+// Parseable hooks for behaviour that grammar tags cannot express cleanly
+// (field-order mismatch, same-line `(` requirement after `function`,
+// metadata-only body skipping, catch-all token consumption, and the
+// garbage-token-skip-inside-block loop that all four block-body-bearing
+// keyword nodes share via parseBlockFieldsUntilClose). Post-parse
+// normalisation strips string / env-ref / raw-string delimiters so the
+// AST contract matches the prior hand-rolled parser byte-for-byte.
 package bamlparser
 
 import (
@@ -156,6 +158,49 @@ func ParseFile(path string) (*File, error) {
 // -----------------------------------------------------------------------
 // Parseable hooks for the irregular nodes.
 // -----------------------------------------------------------------------
+
+// Parse implements participle.Parseable for GeneratorBlock. Matches the
+// literal `generator` token, the required name (Ident), and an optional
+// brace body whose fields are iterated via parseBlockFieldsUntilClose —
+// the same helper Block.Parse uses, so a top-level generator body
+// tolerates un-Field-shaped tokens with the same skip-and-continue
+// semantics. A pure `( "{" @@* "}"? )?` grammar terminated the body at
+// the first non-Ident token and leaked the rest to file scope.
+func (g *GeneratorBlock) Parse(lex *lexer.PeekingLexer) error {
+	if !peekIdentLiteral(lex, "generator") {
+		return participle.NextMatch
+	}
+	lex.Next() // consume "generator"
+
+	if t := lex.Peek(); t.Type == identType {
+		g.Name = lex.Next().Value
+	}
+	if peekPunct(lex, "{") {
+		lex.Next()
+		g.Fields = parseBlockFieldsUntilClose(lex)
+	}
+	return nil
+}
+
+// Parse implements participle.Parseable for RetryPolicyBlock. Mirrors
+// GeneratorBlock.Parse — body iteration goes through
+// parseBlockFieldsUntilClose so the skip-garbage-token semantics match
+// the prior parser exactly.
+func (r *RetryPolicyBlock) Parse(lex *lexer.PeekingLexer) error {
+	if !peekIdentLiteral(lex, "retry_policy") {
+		return participle.NextMatch
+	}
+	lex.Next() // consume "retry_policy"
+
+	if t := lex.Peek(); t.Type == identType {
+		r.Name = lex.Next().Value
+	}
+	if peekPunct(lex, "{") {
+		lex.Next()
+		r.Fields = parseBlockFieldsUntilClose(lex)
+	}
+	return nil
+}
 
 // Parse implements participle.Parseable for ClientBlock. The grammar order
 // is `client <TypeParam>? Name { Fields }`, but the struct's field order is
@@ -335,41 +380,57 @@ func (o *Other) Parse(lex *lexer.PeekingLexer) error {
 	return nil
 }
 
-// Parse implements participle.Parseable for Block. The block body is parsed
-// imperatively so the loop between fields can skip un-Field-shaped tokens
-// (matching the prior hand-rolled parseField's "advance one token, keep
-// looping" semantics). A purely declarative `"{" @@* "}"?` grammar would
-// terminate the block at the first non-Ident token and leak the rest of
-// the body to the outer scope — caught by Codex's sign-off on PR #270.
-//
-// Individual Field parsing stays declarative: each iteration delegates to
-// fieldSubParser, so the `@Ident (Value | Block)?` grammar lives on the
-// Field type itself. The loop's only responsibility is brace-bounded
-// iteration plus garbage-token skip.
-//
-// Missing-close-brace handling matches the prior parser: reaching EOF
-// before `}` is not an error (the explicit brace-eating-comment fixture
-// and bare-`{ key value` cases both depend on this).
+// Parse implements participle.Parseable for Block. Matches the opening
+// `{`, delegates body iteration to parseBlockFieldsUntilClose, and returns
+// NextMatch when the next token isn't `{` so the outer alternation can try
+// other arms. Block.Parse itself is intentionally thin: all the
+// skip-garbage-token semantics live in the shared helper so GeneratorBlock
+// and RetryPolicyBlock get the same behaviour for their top-level bodies.
 func (b *Block) Parse(lex *lexer.PeekingLexer) error {
 	if !peekPunct(lex, "{") {
 		return participle.NextMatch
 	}
 	lex.Next() // consume "{"
+	b.Fields = parseBlockFieldsUntilClose(lex)
+	return nil
+}
+
+// parseBlockFieldsUntilClose iterates field declarations from inside an
+// already-opened brace body until it reaches the matching `}` or EOF.
+// Mirrors the prior hand-rolled parseField's "advance one token, keep
+// looping" tolerance for un-Field-shaped tokens — a purely declarative
+// `@@* "}"?` grammar terminated the block at the first non-Ident token
+// and leaked the rest of the body to the outer scope (caught by Codex
+// across both rounds of PR #270 sign-off).
+//
+// Behaviour invariants preserved from the prior parser:
+//
+//   - At the matching `}`: consume it and return.
+//   - At EOF before `}`: return cleanly without erroring. The explicit
+//     brace-eating-comment fixture and the bare-`{ key value` case both
+//     rely on this.
+//   - Each iteration delegates Field parsing to fieldSubParser so the
+//     `@Ident (Value | Block)?` grammar stays declarative on the Field
+//     type itself. On Field-NextMatch (un-Field-shaped position), the
+//     lexer is rolled back to the pre-attempt checkpoint (so partial
+//     consumption doesn't compound with the one-token advance) and the
+//     loop advances one token before retrying.
+//
+// The caller is expected to have already consumed the opening `{`.
+func parseBlockFieldsUntilClose(lex *lexer.PeekingLexer) []*Field {
+	var fields []*Field
 	for {
 		t := lex.Peek()
 		if t.EOF() {
-			return nil
+			return fields
 		}
 		if isPunctTok(t, "}") {
 			lex.Next()
-			return nil
+			return fields
 		}
 		cp := lex.MakeCheckpoint()
 		f, err := fieldSubParser.ParseFromLexer(lex, participle.AllowTrailing(true))
 		if err != nil || f == nil {
-			// Field didn't match here; restore lex to its pre-attempt
-			// position so the sub-parser's partial consumption (if any)
-			// doesn't compound with the one-token advance below.
 			lex.LoadCheckpoint(cp)
 			lex.Next()
 			continue
@@ -380,7 +441,7 @@ func (b *Block) Parse(lex *lexer.PeekingLexer) error {
 			lex.Next()
 			continue
 		}
-		b.Fields = append(b.Fields, f)
+		fields = append(fields, f)
 	}
 }
 
