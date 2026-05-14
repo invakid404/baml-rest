@@ -1731,14 +1731,27 @@ func bamlValueStrategyList(v *bamlparser.Value) []string {
 // anything else with a non-empty string representation becomes
 // Provenance=literal (Literal=that string).
 //
-// For `region` on aws-bedrock clients, a declared-empty literal returns
-// (zero, false, validationError) — the empty literal is invalid per
-// upstream BAML semantics (engine/baml-lib/llm-client/src/clients
-// /aws_bedrock.rs:256-261, "region cannot be empty"). For all other
-// key/provider combinations, an empty literal continues to return
-// (zero, false, nil) — the historical empty-as-absent behaviour
-// preserved for parity with upstream's own resolver behaviour and for
-// non-Bedrock clients that happen to use the same option keys.
+// For aws-bedrock clients, a declared-empty literal on one of the
+// validated keys returns (zero, false, validationError):
+//   - `region` — invalid per upstream BAML semantics (engine/baml-lib
+//     /llm-client/src/clients/aws_bedrock.rs:256-261, "region cannot be
+//     empty"); upstream errors directly.
+//   - `access_key_id` / `secret_access_key` — upstream BAML accepts the
+//     empty literal and signs the actual Bedrock request with literally
+//     empty SigV4 credentials (Credential=/<date>/<region>/bedrock/
+//     aws4_request), so AWS rejects at request time with a confusing
+//     AWS-side error. Failing at parse time gives operators the
+//     clearest signal ("you wrote an empty access_key_id, fix your
+//     .baml") rather than letting the silent skip fall through to the
+//     default credential chain and accidentally "work" with ambient
+//     env creds. See #268 for the per-key actual-BAML-behaviour
+//     verification.
+//
+// Other keys (`session_token`, `profile`, `endpoint_url`) continue to
+// return (zero, false, nil) on empty literals — equivalent to upstream
+// BAML's effective behaviour (session_token/endpoint_url collapse to
+// None; profile routes to the default credential chain), and preserved
+// for non-Bedrock clients that happen to use the same option keys.
 //
 // The error is returned as *bamlValidationError (nil-means-no-error) to
 // keep the helper's hot path branch-light.
@@ -1757,11 +1770,26 @@ func bamlValueBedrockOption(clientName, key string, isBedrockClient bool, v *bam
 		return bedrockOptionValue{}, false, nil
 	}
 	if s == "" {
-		if key == "region" && isBedrockClient {
-			return bedrockOptionValue{}, false, &bamlValidationError{
-				Client: clientName,
-				Key:    key,
-				Reason: "region cannot be empty",
+		if isBedrockClient {
+			switch key {
+			case "region":
+				return bedrockOptionValue{}, false, &bamlValidationError{
+					Client: clientName,
+					Key:    key,
+					Reason: "region cannot be empty",
+				}
+			case "access_key_id":
+				return bedrockOptionValue{}, false, &bamlValidationError{
+					Client: clientName,
+					Key:    key,
+					Reason: "access_key_id cannot be empty",
+				}
+			case "secret_access_key":
+				return bedrockOptionValue{}, false, &bamlValidationError{
+					Client: clientName,
+					Key:    key,
+					Reason: "secret_access_key cannot be empty",
+				}
 			}
 		}
 		return bedrockOptionValue{}, false, nil
