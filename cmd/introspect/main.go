@@ -1171,11 +1171,13 @@ type bamlConfig struct {
 	// validationErrors accumulates config-validation errors discovered
 	// during walking. Generation fails (log.Fatalf at the start of
 	// generateBamlConfigVars) if non-empty so that a misconfigured
-	// project — for example aws-bedrock client with declared-empty
-	// `region ""` — cannot silently produce an introspected.go that
-	// would fail later at request-build time. Mirrors upstream BAML's
-	// semantic-validation errors (engine/baml-lib/llm-client/src/clients
-	// /aws_bedrock.rs:256-261 "region cannot be empty").
+	// project — for example an aws-bedrock client with a declared-empty
+	// bedrock option like `region ""`, `access_key_id ""`, or
+	// `secret_access_key ""` — cannot silently produce an introspected.go
+	// that would later either fail at request-build time (region) or
+	// silently fall through to the default credential chain and mask
+	// the config bug (credentials). See bamlValueBedrockOption for the
+	// per-key rationale and the corresponding upstream-BAML behaviours.
 	validationErrors []bamlValidationError
 }
 
@@ -1472,7 +1474,8 @@ func processBAMLFile(cfg *bamlConfig, f *bamlparser.File) {
 // duplicate `provider` fields), then walk fields in source order to
 // apply side effects with correct provider-gated validation. The
 // final-provider pre-pass is needed because options can appear before
-// provider in the same block, and Bedrock-key validation (region "")
+// provider in the same block, and Bedrock-key validation
+// (declared-empty `region`, `access_key_id`, `secret_access_key`)
 // must only fire when the final provider is aws-bedrock.
 func processBAMLClientBlock(cfg *bamlConfig, c *bamlparser.ClientBlock) {
 	name := c.Name
@@ -1517,11 +1520,11 @@ func processBAMLClientBlock(cfg *bamlConfig, c *bamlparser.ClientBlock) {
 //
 // isBedrockClient is the per-client gate computed by
 // processBAMLClientBlock's first pass; it controls whether
-// declared-empty Bedrock-key literals (currently: `region ""`) are
-// rejected as validation errors. A non-Bedrock client with the same
-// option keys is recorded into bedrockClientOptions for parser fidelity
-// (codegen filters by provider) and is NEVER subject to the empty-region
-// validation.
+// declared-empty Bedrock-key literals (currently: `region`,
+// `access_key_id`, `secret_access_key`) are rejected as validation
+// errors. A non-Bedrock client with the same option keys is recorded
+// into bedrockClientOptions for parser fidelity (codegen filters by
+// provider) and is NEVER subject to the empty-literal validation.
 func processBAMLOptionsBlock(cfg *bamlConfig, name string, isBedrockClient bool, opts *bamlparser.Block) {
 	for _, f := range opts.Fields {
 		switch f.Key {
@@ -1731,14 +1734,27 @@ func bamlValueStrategyList(v *bamlparser.Value) []string {
 // anything else with a non-empty string representation becomes
 // Provenance=literal (Literal=that string).
 //
-// For `region` on aws-bedrock clients, a declared-empty literal returns
-// (zero, false, validationError) — the empty literal is invalid per
-// upstream BAML semantics (engine/baml-lib/llm-client/src/clients
-// /aws_bedrock.rs:256-261, "region cannot be empty"). For all other
-// key/provider combinations, an empty literal continues to return
-// (zero, false, nil) — the historical empty-as-absent behaviour
-// preserved for parity with upstream's own resolver behaviour and for
-// non-Bedrock clients that happen to use the same option keys.
+// For aws-bedrock clients, a declared-empty literal on one of the
+// validated keys returns (zero, false, validationError):
+//   - `region` — invalid per upstream BAML semantics (engine/baml-lib
+//     /llm-client/src/clients/aws_bedrock.rs:256-261, "region cannot be
+//     empty"); upstream errors directly.
+//   - `access_key_id` / `secret_access_key` — upstream BAML accepts the
+//     empty literal and signs the actual Bedrock request with literally
+//     empty SigV4 credentials (Credential=/<date>/<region>/bedrock/
+//     aws4_request), so AWS rejects at request time with a confusing
+//     AWS-side error. Failing at parse time gives operators the
+//     clearest signal ("you wrote an empty access_key_id, fix your
+//     .baml") rather than letting the silent skip fall through to the
+//     default credential chain and accidentally "work" with ambient
+//     env creds. See #268 for the per-key actual-BAML-behaviour
+//     verification.
+//
+// Other keys (`session_token`, `profile`, `endpoint_url`) continue to
+// return (zero, false, nil) on empty literals — equivalent to upstream
+// BAML's effective behaviour (session_token/endpoint_url collapse to
+// None; profile routes to the default credential chain), and preserved
+// for non-Bedrock clients that happen to use the same option keys.
 //
 // The error is returned as *bamlValidationError (nil-means-no-error) to
 // keep the helper's hot path branch-light.
@@ -1757,11 +1773,26 @@ func bamlValueBedrockOption(clientName, key string, isBedrockClient bool, v *bam
 		return bedrockOptionValue{}, false, nil
 	}
 	if s == "" {
-		if key == "region" && isBedrockClient {
-			return bedrockOptionValue{}, false, &bamlValidationError{
-				Client: clientName,
-				Key:    key,
-				Reason: "region cannot be empty",
+		if isBedrockClient {
+			switch key {
+			case "region":
+				return bedrockOptionValue{}, false, &bamlValidationError{
+					Client: clientName,
+					Key:    key,
+					Reason: "region cannot be empty",
+				}
+			case "access_key_id":
+				return bedrockOptionValue{}, false, &bamlValidationError{
+					Client: clientName,
+					Key:    key,
+					Reason: "access_key_id cannot be empty",
+				}
+			case "secret_access_key":
+				return bedrockOptionValue{}, false, &bamlValidationError{
+					Client: clientName,
+					Key:    key,
+					Reason: "secret_access_key cannot be empty",
+				}
 			}
 		}
 		return bedrockOptionValue{}, false, nil
@@ -1888,12 +1919,14 @@ func generateBamlConfigVars(out *jen.File) {
 	cfg := parseBamlSourceDir("baml_src")
 
 	// Stop generation if the walker accumulated any semantic-validation
-	// errors (e.g. aws-bedrock `region ""`). log.Fatalf prevents
-	// out.Save from running so introspected.go is not written with a
-	// half-resolved config that would fail downstream at request-build
-	// time with a confusing region-resolution error. Matches the
-	// existing panic-on-Save-error posture for fatal generation
-	// failures elsewhere in this file.
+	// errors (e.g. an aws-bedrock client with a declared-empty bedrock
+	// option like `region`, `access_key_id`, or `secret_access_key`).
+	// log.Fatalf prevents out.Save from running so introspected.go is
+	// not written with a half-resolved config that would later either
+	// fail at request-build time (region) or silently fall through to
+	// the default credential chain and mask the config bug
+	// (credentials). Matches the existing panic-on-Save-error posture
+	// for fatal generation failures elsewhere in this file.
 	if len(cfg.validationErrors) > 0 {
 		msgs := make([]string, 0, len(cfg.validationErrors))
 		for _, e := range cfg.validationErrors {
