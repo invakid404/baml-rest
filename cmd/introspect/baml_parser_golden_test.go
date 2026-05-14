@@ -120,11 +120,11 @@ func snapshotBamlConfig(cfg *bamlConfig) bamlConfigSnapshot {
 }
 
 func snapshotBedrockOptionValue(v bedrockOptionValue) bedrockOptionValueSnapshot {
-	return bedrockOptionValueSnapshot{
-		Literal:    v.Literal,
-		EnvVar:     v.EnvVar,
-		Provenance: v.Provenance,
-	}
+	// bedrockOptionValue and bedrockOptionValueSnapshot are structurally
+	// identical (same field names, types, and order, no tags), so a direct
+	// type conversion is valid and avoids manual field-by-field mapping
+	// that drifts if a field is added without updating both sides.
+	return bedrockOptionValueSnapshot(v)
 }
 
 func copyStringMap(m map[string]string) map[string]string {
@@ -372,7 +372,7 @@ func formatBedrockOptionsMap(m map[string]bedrockClientOptionsSnapshot) string {
 	b.WriteString("map[string]bedrockClientOptionsSnapshot{\n")
 	for _, k := range keys {
 		opts := m[k]
-		b.WriteString(fmt.Sprintf("%q: {\n", k))
+		fmt.Fprintf(&b, "%q: {\n", k)
 		b.WriteString("EndpointURL: " + formatBedrockOptionValue(opts.EndpointURL) + ",\n")
 		b.WriteString("Region: " + formatBedrockOptionValue(opts.Region) + ",\n")
 		b.WriteString("Credentials: bedrockCredentialOptionsSnapshot{\n")
