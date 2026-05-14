@@ -1244,6 +1244,32 @@ function Foo(x: string) -> string {
 }
 `,
 		},
+		// Pin the "skip garbage tokens inside a block, keep parsing later
+		// fields" semantics that the prior hand-rolled parser provided
+		// via parseField's non-ident bail-and-advance fallback
+		// (master:bamlutils/bamlparser/bamlparser.go:398-408 pre-refactor).
+		// Caught by Codex's sign-off on PR #270: the declarative
+		// `"{" @@* "}"?` Block grammar terminated the body at the first
+		// non-Ident token and leaked the rest of the body to the outer
+		// scope as `Other` items.
+		//
+		// Only the leading-garbage shape is pinned at the parity level —
+		// both parsers happen to drop the leading `@` cleanly. The
+		// between-fields-garbage shapes (`provider openai @
+		// retry_policy ...`) inherently diverge between the production
+		// line-based parser and the bamlparser AST walker (the production
+		// parser's `splitInlineStatements` keyword-boundary split
+		// includes the trailing `@` in the preceding field's value,
+		// producing `provider="openai @"`; the bamlparser drops the
+		// stray token instead). That divergence pre-dates PR 1.5; the
+		// bamlparser side of it is pinned in the standalone parser
+		// tests (TestParse_MalformedNestedTokenBetweenFieldsSkipped /
+		// TestParse_MalformedNestedTokenSequenceSkipped in
+		// bamlutils/bamlparser/bamlparser_test.go) rather than here.
+		{
+			name: "MalformedNestedTokenAtStart",
+			src:  `client<llm> X { @ provider openai }`,
+		},
 	}
 }
 

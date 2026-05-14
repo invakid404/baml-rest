@@ -5,7 +5,7 @@ package bamlparser
 // rest (Other items capture unknown or unsupported top-level shapes so the
 // parser tolerates the full upstream BAML surface without erroring).
 type File struct {
-	Items []*Item
+	Items []*Item `@@*`
 }
 
 // Item is a single top-level declaration. Exactly one of the typed pointers
@@ -20,18 +20,31 @@ type File struct {
 // → Other. Those nodes carry the declaration keyword/name only; the
 // brace body or expression right-hand-side is consumed during parsing
 // and not retained on the AST.
+//
+// The alternative order is load-bearing: keyword-shaped declarations are
+// tried first, with Other last as the catch-all so unknown punctuation /
+// stray identifiers don't get swallowed by a more specific arm.
 type Item struct {
-	Generator   *GeneratorBlock
-	Client      *ClientBlock
-	Function    *FunctionBlock
-	RetryPolicy *RetryPolicyBlock
-	Template    *TemplateBlock
-	TypeBlock   *TypeBlock
-	TypeAlias   *TypeAlias
-	Other       *Other
+	Generator   *GeneratorBlock   `  @@`
+	Client      *ClientBlock      `| @@`
+	Function    *FunctionBlock    `| @@`
+	RetryPolicy *RetryPolicyBlock `| @@`
+	Template    *TemplateBlock    `| @@`
+	TypeBlock   *TypeBlock        `| @@`
+	TypeAlias   *TypeAlias        `| @@`
+	Other       *Other            `| @@`
 }
 
 // GeneratorBlock corresponds to `generator Name { key value ... }`.
+//
+// Parsing is implemented via Parseable in bamlparser.go so the body
+// shares parseBlockFieldsUntilClose with Block — the prior declarative
+// `"{" @@* "}"?` grammar terminated the body at the first non-Ident
+// token, regressing the prior hand-rolled parser's "skip garbage,
+// keep parsing later fields" semantics. The closing `}` is also
+// optional to preserve lenient handling of brace-eating inline
+// comments (an inline `// ... }` consumes the trailing `}` because
+// the comment lexer rule runs to EOL/EOF).
 type GeneratorBlock struct {
 	Name   string
 	Fields []*Field
@@ -43,6 +56,10 @@ type GeneratorBlock struct {
 // parameter. Preserving the raw form lets the introspect-side walker keep its
 // current client<llm>-only gate without losing the ability to see plain
 // `client Name { ... }` blocks for future widening.
+//
+// Grammar-tag form would force a public field reorder (the source order is
+// `client <TypeParam>? Name`, struct order is `Name, TypeParam, Fields`),
+// so the parsing is implemented via Parseable in bamlparser.go.
 type ClientBlock struct {
 	Name      string
 	TypeParam string
@@ -53,12 +70,21 @@ type ClientBlock struct {
 // declared name is preserved; the signature between the parentheses and the
 // return type are discarded by the parser because no downstream consumer in
 // baml-rest depends on them.
+//
+// Parsing is implemented via Parseable in bamlparser.go because grammar
+// tags cannot express the same-line `(` requirement that distinguishes
+// signed functions from unsigned function declarations (the latter drop
+// to Item.Other to match the introspect line-walker's posture).
 type FunctionBlock struct {
 	Name   string
 	Fields []*Field
 }
 
 // RetryPolicyBlock corresponds to `retry_policy Name { ... }`.
+//
+// Parsing is implemented via Parseable in bamlparser.go so the body
+// shares parseBlockFieldsUntilClose with Block and GeneratorBlock for
+// the skip-garbage-token loop. See GeneratorBlock for the rationale.
 type RetryPolicyBlock struct {
 	Name   string
 	Fields []*Field
@@ -68,6 +94,11 @@ type RetryPolicyBlock struct {
 // `template_string Name { ... }` form. The body is intentionally not parsed;
 // callers either ignore TemplateBlock entirely (introspect's posture today)
 // or read Name for documentation/index purposes.
+//
+// Parsing is implemented via Parseable in bamlparser.go because the body
+// is discarded — there is no AST field to hold the parsed parameter list
+// or body — and the body alternates between a raw string token and a
+// balanced brace block.
 type TemplateBlock struct {
 	Name string
 }
@@ -79,6 +110,10 @@ type TemplateBlock struct {
 // differentiate; Name carries the declaration name. The brace body is
 // consumed during parsing and not retained; consumers that need a
 // verbatim copy must read the source bytes directly.
+//
+// Parsing is implemented via Parseable in bamlparser.go because the body
+// is discarded — there is no AST field to hold the captured fields, so
+// declarative tags cannot express the metadata-only contract.
 type TypeBlock struct {
 	Keyword string
 	Name    string
@@ -87,6 +122,11 @@ type TypeBlock struct {
 // TypeAlias corresponds to `type Name = expression`. Name carries the alias
 // name; the right-hand-side expression is consumed during parsing and not
 // retained on the AST.
+//
+// Parsing is implemented via Parseable in bamlparser.go: the right-hand
+// side is line-position-terminated (continues until the next line begins
+// with a top-level keyword), which grammar tags cannot express without
+// keeping newline tokens in the grammar.
 type TypeAlias struct {
 	Name string
 }
@@ -94,11 +134,17 @@ type TypeAlias struct {
 // Other captures metadata for a top-level construct that doesn't match any
 // recognised declaration shape. Keyword is the leading token's value —
 // either the identifier text when the item began with a word, or the raw
-// token value when it began with punctuation. Any following balanced block
-// is consumed and not retained; Other is metadata-only so semantic walkers
-// can skip unknown declarations while preserving source order, mirroring
-// the line-by-line introspect parser's behaviour of ignoring any line
-// that isn't a known prefix.
+// token value when it began with punctuation. If the leading token is an
+// identifier AND the very next token is `{`, the balanced block that
+// follows is consumed and not retained. Punctuation-led tokens (a stray
+// `}`, `]`, `)`, `@`, etc.) consume just the single token so an unrelated
+// trailing block is not accidentally swallowed. Other is metadata-only so
+// semantic walkers can skip unknown declarations while preserving source
+// order, mirroring the line-by-line introspect parser's behaviour of
+// ignoring any line that isn't a known prefix.
+//
+// Parsing is implemented via Parseable in bamlparser.go because Other is
+// the catch-all alternative.
 type Other struct {
 	Keyword string
 }
@@ -112,9 +158,9 @@ type Other struct {
 // The parser does not look up Key against a schema; it captures every key it
 // sees so the semantic walker can decide what to do per-block-type.
 type Field struct {
-	Key   string
-	Value *Value
-	Block *Block
+	Key   string `@Ident`
+	Value *Value `(   @@`
+	Block *Block `  | @@ )?`
 }
 
 // Block is a brace-delimited body containing zero or more fields. Fields are
@@ -129,6 +175,12 @@ type Field struct {
 // parse. Consumers that need a verbatim copy of an unknown block body
 // should read it directly from the source bytes; the AST is designed
 // around the recognised-shape contract.
+//
+// Parsing is implemented via Parseable in bamlparser.go because the
+// declarative `"{" @@* "}"?` form terminated the block early on the first
+// non-Ident token and let the rest of the block leak to the outer scope,
+// regressing the prior parser's "skip garbage, keep parsing later fields"
+// semantics.
 type Block struct {
 	Fields []*Field
 }
@@ -180,11 +232,16 @@ type Block struct {
 // Value.Map-vs-Field.Block for what is, in practice, the same shape.
 // Future consumers that need value-position map literals (e.g. on the
 // right-hand side of `=`) should extend Value rather than reshape Block.
+//
+// Grammar tags capture the raw token values (delimiters included); the
+// surrounding quotes / raw delimiters / `env.` prefix are stripped by
+// normalizeValue after participle returns so the AST contract matches
+// the prior hand-rolled parser byte-for-byte.
 type Value struct {
-	Literal *string
-	EnvRef  *string
-	Ident   *string
-	Number  *string
-	Raw     *string
-	List    []*Value
+	Literal *string  `  @String`
+	EnvRef  *string  `| @EnvRef`
+	Ident   *string  `| @Ident`
+	Number  *string  `| @Number`
+	Raw     *string  `| @RawString`
+	List    []*Value `| "[" ( @@ ","? )* "]"`
 }
