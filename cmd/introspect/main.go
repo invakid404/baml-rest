@@ -1168,6 +1168,30 @@ type bamlConfig struct {
 	// happens to use the same option keys for an unrelated purpose
 	// can't leak into the runtime BedrockClientOptions map.
 	bedrockClientOptions map[string]bedrockClientOptions
+	// validationErrors accumulates config-validation errors discovered
+	// during walking. Generation fails (log.Fatalf at the start of
+	// generateBamlConfigVars) if non-empty so that a misconfigured
+	// project — for example aws-bedrock client with declared-empty
+	// `region ""` — cannot silently produce an introspected.go that
+	// would fail later at request-build time. Mirrors upstream BAML's
+	// semantic-validation errors (engine/baml-lib/llm-client/src/clients
+	// /aws_bedrock.rs:256-261 "region cannot be empty").
+	validationErrors []bamlValidationError
+}
+
+// bamlValidationError captures a single semantic-validation failure
+// surfaced during client-block walking. Field-scoped and client-scoped
+// so the operator can locate the offending block at a glance.
+type bamlValidationError struct {
+	Client string
+	Key    string
+	Reason string
+}
+
+// Message formats the error for stderr / the combined generation error
+// per the existing client-scoped error patterns elsewhere in introspect.
+func (e bamlValidationError) Message() string {
+	return fmt.Sprintf("aws-bedrock: invalid %s for client %q: %s", e.Key, e.Client, e.Reason)
 }
 
 // bedrockClientOptions captures the per-client aws-bedrock options that
@@ -1443,6 +1467,13 @@ func processBAMLFile(cfg *bamlConfig, f *bamlparser.File) {
 // ordered top-level provider / retry_policy / options handling. Both
 // spellings produce identical output; the source keyword is not encoded
 // after dispatch (see processBAMLFile).
+//
+// Two-pass: first resolve the client's final provider (last-wins on
+// duplicate `provider` fields), then walk fields in source order to
+// apply side effects with correct provider-gated validation. The
+// final-provider pre-pass is needed because options can appear before
+// provider in the same block, and Bedrock-key validation (region "")
+// must only fire when the final provider is aws-bedrock.
 func processBAMLClientBlock(cfg *bamlConfig, c *bamlparser.ClientBlock) {
 	name := c.Name
 	delete(cfg.roundRobinStart, name)
@@ -1450,6 +1481,14 @@ func processBAMLClientBlock(cfg *bamlConfig, c *bamlparser.ClientBlock) {
 	delete(cfg.clientProvider, name)
 	delete(cfg.clientRetryPolicy, name)
 	delete(cfg.bedrockClientOptions, name)
+
+	finalProvider := ""
+	for _, f := range c.Fields {
+		if f.Key == "provider" && f.Value != nil {
+			finalProvider = canonicaliseProvider(bamlValueScalar(f.Value))
+		}
+	}
+	isBedrockClient := finalProvider == "aws-bedrock"
 
 	for _, f := range c.Fields {
 		switch f.Key {
@@ -1463,7 +1502,7 @@ func processBAMLClientBlock(cfg *bamlConfig, c *bamlparser.ClientBlock) {
 			}
 		case "options":
 			if f.Block != nil {
-				processBAMLOptionsBlock(cfg, name, f.Block)
+				processBAMLOptionsBlock(cfg, name, isBedrockClient, f.Block)
 			}
 		}
 	}
@@ -1475,7 +1514,15 @@ func processBAMLClientBlock(cfg *bamlConfig, c *bamlparser.ClientBlock) {
 // honoured ONLY at the immediate options depth, matching
 // extractRoundRobinStart's and updateBedrockClientOption's
 // optionsDepth == 1 guard.
-func processBAMLOptionsBlock(cfg *bamlConfig, name string, opts *bamlparser.Block) {
+//
+// isBedrockClient is the per-client gate computed by
+// processBAMLClientBlock's first pass; it controls whether
+// declared-empty Bedrock-key literals (currently: `region ""`) are
+// rejected as validation errors. A non-Bedrock client with the same
+// option keys is recorded into bedrockClientOptions for parser fidelity
+// (codegen filters by provider) and is NEVER subject to the empty-region
+// validation.
+func processBAMLOptionsBlock(cfg *bamlConfig, name string, isBedrockClient bool, opts *bamlparser.Block) {
 	for _, f := range opts.Fields {
 		switch f.Key {
 		case "strategy":
@@ -1493,7 +1540,12 @@ func processBAMLOptionsBlock(cfg *bamlConfig, name string, opts *bamlparser.Bloc
 			}
 		case "endpoint_url", "region",
 			"access_key_id", "secret_access_key", "session_token", "profile":
-			if val, ok := bamlValueBedrockOption(f.Value); ok {
+			val, ok, verr := bamlValueBedrockOption(name, f.Key, isBedrockClient, f.Value)
+			if verr != nil {
+				cfg.validationErrors = append(cfg.validationErrors, *verr)
+				continue
+			}
+			if ok {
 				cur := cfg.bedrockClientOptions[name]
 				switch f.Key {
 				case "endpoint_url":
@@ -1674,26 +1726,47 @@ func bamlValueStrategyList(v *bamlparser.Value) []string {
 	return out
 }
 
-// bamlValueBedrockOption mirrors extractBedrockOptionValue: a bare
-// `env.IDENT` becomes Provenance=env (EnvVar=IDENT); anything else with
-// a non-empty string representation becomes Provenance=literal
-// (Literal=that string). An empty literal yields ok=false so the field
-// is not recorded — matches the old line walker's empty-literal skip.
-func bamlValueBedrockOption(v *bamlparser.Value) (bedrockOptionValue, bool) {
+// bamlValueBedrockOption extracts a Bedrock option value with key-aware
+// validation. A bare `env.IDENT` becomes Provenance=env (EnvVar=IDENT);
+// anything else with a non-empty string representation becomes
+// Provenance=literal (Literal=that string).
+//
+// For `region` on aws-bedrock clients, a declared-empty literal returns
+// (zero, false, validationError) — the empty literal is invalid per
+// upstream BAML semantics (engine/baml-lib/llm-client/src/clients
+// /aws_bedrock.rs:256-261, "region cannot be empty"). For all other
+// key/provider combinations, an empty literal continues to return
+// (zero, false, nil) — the historical empty-as-absent behaviour
+// preserved for parity with upstream's own resolver behaviour and for
+// non-Bedrock clients that happen to use the same option keys.
+//
+// The error is returned as *bamlValidationError (nil-means-no-error) to
+// keep the helper's hot path branch-light.
+func bamlValueBedrockOption(clientName, key string, isBedrockClient bool, v *bamlparser.Value) (bedrockOptionValue, bool, *bamlValidationError) {
 	if v == nil {
-		return bedrockOptionValue{}, false
+		return bedrockOptionValue{}, false, nil
 	}
 	if name, ok := v.EnvName(); ok {
 		if name == "" {
-			return bedrockOptionValue{}, false
+			return bedrockOptionValue{}, false, nil
 		}
-		return bedrockOptionValue{EnvVar: name, Provenance: "env"}, true
+		return bedrockOptionValue{EnvVar: name, Provenance: "env"}, true, nil
 	}
 	s, ok := v.String()
-	if !ok || s == "" {
-		return bedrockOptionValue{}, false
+	if !ok {
+		return bedrockOptionValue{}, false, nil
 	}
-	return bedrockOptionValue{Literal: s, Provenance: "literal"}, true
+	if s == "" {
+		if key == "region" && isBedrockClient {
+			return bedrockOptionValue{}, false, &bamlValidationError{
+				Client: clientName,
+				Key:    key,
+				Reason: "region cannot be empty",
+			}
+		}
+		return bedrockOptionValue{}, false, nil
+	}
+	return bedrockOptionValue{Literal: s, Provenance: "literal"}, true, nil
 }
 
 // generateBamlConfigVars parses .baml source files and generates introspected
@@ -1813,6 +1886,22 @@ func generateBamlConfigVars(out *jen.File) {
 
 	// Parse .baml source files from baml_src/ directory
 	cfg := parseBamlSourceDir("baml_src")
+
+	// Stop generation if the walker accumulated any semantic-validation
+	// errors (e.g. aws-bedrock `region ""`). log.Fatalf prevents
+	// out.Save from running so introspected.go is not written with a
+	// half-resolved config that would fail downstream at request-build
+	// time with a confusing region-resolution error. Matches the
+	// existing panic-on-Save-error posture for fatal generation
+	// failures elsewhere in this file.
+	if len(cfg.validationErrors) > 0 {
+		msgs := make([]string, 0, len(cfg.validationErrors))
+		for _, e := range cfg.validationErrors {
+			msgs = append(msgs, e.Message())
+		}
+		log.Fatalf("introspect: %d config validation error(s):\n  %s",
+			len(cfg.validationErrors), strings.Join(msgs, "\n  "))
+	}
 
 	// Build FunctionClient: function → client name
 	out.Comment("FunctionClient maps BAML function names to their default client name")
