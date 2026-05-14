@@ -5,7 +5,7 @@ package bamlparser
 // rest (Other items capture unknown or unsupported top-level shapes so the
 // parser tolerates the full upstream BAML surface without erroring).
 type File struct {
-	Items []*Item
+	Items []*Item `@@*`
 }
 
 // Item is a single top-level declaration. Exactly one of the typed pointers
@@ -20,21 +20,30 @@ type File struct {
 // → Other. Those nodes carry the declaration keyword/name only; the
 // brace body or expression right-hand-side is consumed during parsing
 // and not retained on the AST.
+//
+// The alternative order is load-bearing: keyword-shaped declarations are
+// tried first, with Other last as the catch-all so unknown punctuation /
+// stray identifiers don't get swallowed by a more specific arm.
 type Item struct {
-	Generator   *GeneratorBlock
-	Client      *ClientBlock
-	Function    *FunctionBlock
-	RetryPolicy *RetryPolicyBlock
-	Template    *TemplateBlock
-	TypeBlock   *TypeBlock
-	TypeAlias   *TypeAlias
-	Other       *Other
+	Generator   *GeneratorBlock   `  @@`
+	Client      *ClientBlock      `| @@`
+	Function    *FunctionBlock    `| @@`
+	RetryPolicy *RetryPolicyBlock `| @@`
+	Template    *TemplateBlock    `| @@`
+	TypeBlock   *TypeBlock        `| @@`
+	TypeAlias   *TypeAlias        `| @@`
+	Other       *Other            `| @@`
 }
 
 // GeneratorBlock corresponds to `generator Name { key value ... }`.
+//
+// The closing `}` is optional in the grammar to match the prior parser's
+// lenient handling of brace-missing inputs (an inline `// ... }` line
+// comment elides the closing brace because the comment lexer rule
+// consumes everything up to the next newline, including the trailing `}`).
 type GeneratorBlock struct {
-	Name   string
-	Fields []*Field
+	Name   string   `"generator" @Ident`
+	Fields []*Field `( "{" @@* "}"? )?`
 }
 
 // ClientBlock corresponds to `client[<type>] Name { key value ... }`.
@@ -43,6 +52,10 @@ type GeneratorBlock struct {
 // parameter. Preserving the raw form lets the introspect-side walker keep its
 // current client<llm>-only gate without losing the ability to see plain
 // `client Name { ... }` blocks for future widening.
+//
+// Grammar-tag form would force a public field reorder (the source order is
+// `client <TypeParam>? Name`, struct order is `Name, TypeParam, Fields`),
+// so the parsing is implemented via Parseable in bamlparser.go.
 type ClientBlock struct {
 	Name      string
 	TypeParam string
@@ -53,21 +66,33 @@ type ClientBlock struct {
 // declared name is preserved; the signature between the parentheses and the
 // return type are discarded by the parser because no downstream consumer in
 // baml-rest depends on them.
+//
+// Parsing is implemented via Parseable in bamlparser.go because grammar
+// tags cannot express the same-line `(` requirement that distinguishes
+// signed functions from unsigned function declarations (the latter drop
+// to Item.Other to match the introspect line-walker's posture).
 type FunctionBlock struct {
 	Name   string
 	Fields []*Field
 }
 
-// RetryPolicyBlock corresponds to `retry_policy Name { ... }`.
+// RetryPolicyBlock corresponds to `retry_policy Name { ... }`. The closing
+// `}` is optional for the same brace-eating-comment reason described on
+// GeneratorBlock.
 type RetryPolicyBlock struct {
-	Name   string
-	Fields []*Field
+	Name   string   `"retry_policy" @Ident`
+	Fields []*Field `( "{" @@* "}"? )?`
 }
 
 // TemplateBlock corresponds to `template_string Name(...) #"..."#` and the
 // `template_string Name { ... }` form. The body is intentionally not parsed;
 // callers either ignore TemplateBlock entirely (introspect's posture today)
 // or read Name for documentation/index purposes.
+//
+// Parsing is implemented via Parseable in bamlparser.go because the body
+// is discarded — there is no AST field to hold the parsed parameter list
+// or body — and the body alternates between a raw string token and a
+// balanced brace block.
 type TemplateBlock struct {
 	Name string
 }
@@ -79,6 +104,10 @@ type TemplateBlock struct {
 // differentiate; Name carries the declaration name. The brace body is
 // consumed during parsing and not retained; consumers that need a
 // verbatim copy must read the source bytes directly.
+//
+// Parsing is implemented via Parseable in bamlparser.go because the body
+// is discarded — there is no AST field to hold the captured fields, so
+// declarative tags cannot express the metadata-only contract.
 type TypeBlock struct {
 	Keyword string
 	Name    string
@@ -87,6 +116,11 @@ type TypeBlock struct {
 // TypeAlias corresponds to `type Name = expression`. Name carries the alias
 // name; the right-hand-side expression is consumed during parsing and not
 // retained on the AST.
+//
+// Parsing is implemented via Parseable in bamlparser.go: the right-hand
+// side is line-position-terminated (continues until the next line begins
+// with a top-level keyword), which grammar tags cannot express without
+// keeping newline tokens in the grammar.
 type TypeAlias struct {
 	Name string
 }
@@ -99,6 +133,10 @@ type TypeAlias struct {
 // can skip unknown declarations while preserving source order, mirroring
 // the line-by-line introspect parser's behaviour of ignoring any line
 // that isn't a known prefix.
+//
+// Parsing is implemented via Parseable in bamlparser.go because Other is
+// the catch-all alternative: it consumes one token plus, if immediately
+// followed by `{`, a balanced brace block, with no further structure.
 type Other struct {
 	Keyword string
 }
@@ -112,9 +150,9 @@ type Other struct {
 // The parser does not look up Key against a schema; it captures every key it
 // sees so the semantic walker can decide what to do per-block-type.
 type Field struct {
-	Key   string
-	Value *Value
-	Block *Block
+	Key   string `@Ident`
+	Value *Value `(   @@`
+	Block *Block `  | @@ )?`
 }
 
 // Block is a brace-delimited body containing zero or more fields. Fields are
@@ -130,7 +168,7 @@ type Field struct {
 // should read it directly from the source bytes; the AST is designed
 // around the recognised-shape contract.
 type Block struct {
-	Fields []*Field
+	Fields []*Field `"{" @@* "}"?`
 }
 
 // Value carries a parsed right-hand-side. Exactly one of the typed pointers
@@ -180,11 +218,16 @@ type Block struct {
 // Value.Map-vs-Field.Block for what is, in practice, the same shape.
 // Future consumers that need value-position map literals (e.g. on the
 // right-hand side of `=`) should extend Value rather than reshape Block.
+//
+// Grammar tags capture the raw token values (delimiters included); the
+// surrounding quotes / raw delimiters / `env.` prefix are stripped by
+// normalizeValue after participle returns so the AST contract matches
+// the prior hand-rolled parser byte-for-byte.
 type Value struct {
-	Literal *string
-	EnvRef  *string
-	Ident   *string
-	Number  *string
-	Raw     *string
-	List    []*Value
+	Literal *string  `  @String`
+	EnvRef  *string  `| @EnvRef`
+	Ident   *string  `| @Ident`
+	Number  *string  `| @Number`
+	Raw     *string  `| @RawString`
+	List    []*Value `| "[" ( @@ ","? )* "]"`
 }
