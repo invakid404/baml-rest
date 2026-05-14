@@ -15,10 +15,16 @@ import (
 
 // updateBamlConfigGoldens, when true, regenerates
 // cmd/introspect/baml_parser_golden_data_test.go from the current production
-// walker output. The generator asserts the old parser and the production
-// walker still agree on every fixture (parity invariant); only then are
-// the snapshots written out. Ordinary test runs leave the flag unset and
-// compare production walker output to the committed goldens.
+// walker output. Ordinary test runs leave the flag unset and compare
+// production walker output to the committed goldens.
+//
+// The committed goldens were originally anchored to old-parser-verified
+// output: while both parsers coexisted, every fixture was asserted
+// byte-identical via parity before the goldens were generated and the old
+// parser was removed. Regenerations from here on capture whatever the
+// production walker currently produces, so this flag should only be used
+// when an intentional behaviour change has just landed alongside fixture
+// edits.
 //
 // To regenerate after intentional fixture or production-walker changes:
 //
@@ -163,9 +169,10 @@ func runProductionParser(t *testing.T, src string) *bamlConfig {
 // TestBamlConfigGoldens compares production walker output against the
 // committed golden snapshots for every fixture in parityCases(). With
 // -update-baml-config-goldens it instead regenerates
-// baml_parser_golden_data_test.go from the production walker, after
-// asserting the old parser and the production walker still agree
-// byte-for-byte on every fixture (parity invariant).
+// baml_parser_golden_data_test.go from the production walker. The
+// committed corpus was originally anchored to old-parser-verified
+// output (see updateBamlConfigGoldens doc-comment); regeneration here
+// captures whatever the production walker currently produces.
 func TestBamlConfigGoldens(t *testing.T) {
 	cases := parityCases()
 	if *updateBamlConfigGoldens {

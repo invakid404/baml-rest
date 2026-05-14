@@ -831,21 +831,18 @@ function Shortcut(x: string) -> string {
 		// ---- Additional Q1 parity gaps ----
 		//
 		// Pin that a plain `client Name { ... }` block (no <llm> type
-		// param) is parsed by the new grammar but excluded by the
-		// walker's TypeParam == "llm" gate — matches the old parser's
-		// `client<llm>`-only consumption posture at
-		// cmd/introspect/main.go:1324-1325. PR 4 / #268 may widen this
-		// to consume plain `client` blocks; until then, the gate is
-		// part of the contract.
+		// param) is parsed by the grammar but excluded by the walker's
+		// TypeParam == "llm" gate — preserves introspect's `client<llm>`-only
+		// consumption posture. #268 may widen this to consume plain
+		// `client` blocks; until then, the gate is part of the contract.
 		//
 		// The Foo block deliberately contains only fields whose keys
-		// are NOT top-level dispatch prefixes in the old parser
-		// (`client<llm>`, `function `, `retry_policy `). Embedding a
-		// `retry_policy NAME` inner field would trigger the old
-		// line-based parser's greedy outer-scope re-scan of Foo's
-		// body and produce a spurious top-level retry policy entry —
-		// an orthogonal quirk that this case is not pinning. The
-		// shape used here isolates the TypeParam gate cleanly.
+		// are NOT top-level dispatch keywords (`client`, `function`,
+		// `retry_policy`). Pre-PR-3 the line-based parser had a
+		// greedy outer-scope re-scan quirk that would consume an inner
+		// `retry_policy NAME` as a top-level declaration; that quirk
+		// is gone with the line parser, but the fixture keeps the
+		// minimal shape so it isolates the TypeParam gate cleanly.
 		{
 			name: "PlainClientWithoutLLMIgnored",
 			src: `
@@ -861,13 +858,11 @@ client<llm> Bar {
 		},
 		// Pin the depth-gating contract for options-block fields:
 		//   - strategy   → captured at ANY depth inside options { } (not
-		//     gated; the old parser's extractStrategyStatement runs on
-		//     every line while inOptions is true — see
-		//     cmd/introspect/main.go:1778-1794).
-		//   - start      → captured ONLY at the immediate options depth
-		//     (optionsDepth == 1; cmd/introspect/main.go:1804-1807).
-		//   - Bedrock keys → captured ONLY at the immediate options
-		//     depth (cmd/introspect/main.go:1808-1815).
+		//     gated; the walker recurses into nested sub-blocks for the
+		//     strategy key specifically, matching pre-PR-3 line-parser
+		//     behaviour).
+		//   - start      → captured ONLY at the immediate options depth.
+		//   - Bedrock keys → captured ONLY at the immediate options depth.
 		//
 		// The fixture nests a `custom_subblock` inside options. The
 		// nested `start 99` and `endpoint_url "x"` must NOT leak; the
@@ -893,13 +888,13 @@ client<llm> NestedDepth {
 `,
 		},
 		// Pin that a quoted "env.X" string is a Literal Bedrock value,
-		// NOT an env reference. The old parser's
-		// extractBedrockOptionValue (cmd/introspect/main.go:2068-2108)
-		// only treats bare `env.NAME` as env provenance; the surrounding
-		// quotes are stripped by stripBamlQuotes and the result becomes
-		// Literal provenance. Mirrors the parser-standalone unit test
-		// at bamlutils/bamlparser/bamlparser_test.go:TestParse_QuotedEnvNameIsLiteralNotEnvRef
-		// but pins the end-to-end bedrockOptionValue shape.
+		// NOT an env reference. Only bare `env.NAME` carries env
+		// provenance; surrounding quotes make the value a string
+		// literal at the lexer/grammar level, and the walker maps it
+		// to bedrockOptionValue Literal provenance accordingly.
+		// Mirrors the parser-standalone unit test
+		// TestParse_QuotedEnvNameIsLiteralNotEnvRef but pins the
+		// end-to-end bedrockOptionValue shape.
 		{
 			name: "BedrockQuotedEnvIsLiteral",
 			src: `
@@ -913,12 +908,10 @@ client<llm> QuotedEnvBedrock {
 `,
 		},
 		// Pin that duplicate top-level `client` fields inside a
-		// function block resolve last-wins. The old parser's
-		// parseFunctionBlock (cmd/introspect/main.go:2143-2174) keeps
-		// scanning every line and overwrites functionClient[name] on
-		// each `client VALUE` match. The production processBAMLFunctionBlock
-		// walker in main.go iterates every top-level `client` field for
-		// the same last-wins semantics.
+		// function block resolve last-wins. The production
+		// processBAMLFunctionBlock walker iterates every top-level
+		// `client` field and overwrites functionClient[name] on each
+		// match, matching pre-PR-3 line-parser semantics.
 		{
 			name: "DuplicateFunctionClientLastWins",
 			src: `
@@ -941,19 +934,18 @@ function Foo(x: string) -> string {
 		// non-Ident token and leaked the rest of the body to the outer
 		// scope as `Other` items.
 		//
-		// Only the leading-garbage shape is pinned at the parity level —
-		// both parsers happen to drop the leading `@` cleanly. The
-		// between-fields-garbage shapes (`provider openai @
-		// retry_policy ...`) inherently diverge between the production
-		// line-based parser and the bamlparser AST walker (the production
-		// parser's `splitInlineStatements` keyword-boundary split
-		// includes the trailing `@` in the preceding field's value,
-		// producing `provider="openai @"`; the bamlparser drops the
-		// stray token instead). That divergence pre-dates PR 1.5; the
-		// bamlparser side of it is pinned in the standalone parser
-		// tests (TestParse_MalformedNestedTokenBetweenFieldsSkipped /
-		// TestParse_MalformedNestedTokenSequenceSkipped in
-		// bamlutils/bamlparser/bamlparser_test.go) rather than here.
+		// Only the leading-garbage shape needed to live in the
+		// regression corpus — both pre-PR-3 line parser and bamlparser
+		// dropped the leading `@` cleanly. Between-fields-garbage
+		// shapes (`provider openai @ retry_policy ...`) used to
+		// diverge between the two parsers (the line parser's keyword-
+		// boundary split captured the trailing `@` in the preceding
+		// field's value, producing `provider="openai @"`; the
+		// bamlparser drops the stray token). With the line parser
+		// gone, the bamlparser side of that contract is pinned by the
+		// standalone parser tests (TestParse_MalformedNestedTokenBetweenFieldsSkipped
+		// / TestParse_MalformedNestedTokenSequenceSkipped in
+		// bamlutils/bamlparser/bamlparser_test.go) instead of here.
 		{
 			name: "MalformedNestedTokenAtStart",
 			src:  `client<llm> X { @ provider openai }`,
@@ -1149,8 +1141,8 @@ client<llm> CredsBedrock {
 		// fallback-provider client with an empty `strategy []` does not
 		// leave a zero-length chain in the map (the runtime classifier
 		// distinguishes "no chain" from "empty chain"). Replaces the
-		// direct `parseStrategyList("strategy [])` row in
-		// TestParseStrategyList at baml_parser_test.go:1050.
+		// pre-PR-3 direct `parseStrategyList("strategy [])` row in the
+		// deleted helper-internal TestParseStrategyList.
 		{
 			name: "EmptyStrategyListNoFallbackChain",
 			src: `
