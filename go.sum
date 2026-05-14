@@ -112,6 +112,8 @@ github.com/dlclark/regexp2 v1.11.0 h1:G/nrcoOa7ZXlpoa/91N3X7mM3r8eIlMBBJZvsz/mxK
 github.com/dlclark/regexp2 v1.11.0/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
 github.com/docker/buildx v0.33.0 h1:xuZeuQe/C/2tvLDgiIA6+Ynq3FFWSfsGNWIHM3q1hD8=
 github.com/docker/buildx v0.33.0/go.mod h1:7JVma62htERKE5iy5YD1q64PKiAHUzXuhSBd4oq3I74=
+github.com/docker/buildx v0.34.0 h1:ivBYUNCMKMOwqCziC66p79dNkd8mv+DSrnyrY9PY9vQ=
+github.com/docker/buildx v0.34.0/go.mod h1:RG8352TWR2gg8P7uqu1ZvlSpqxUcnVvGfjqQsKpmSAY=
 github.com/docker/cli v29.3.1+incompatible h1:M04FDj2TRehDacrosh7Vlkgc7AuQoWloQkf1PA5hmoI=
 github.com/docker/cli v29.3.1+incompatible/go.mod h1:JLrzqnKDaYBop7H2jaqPtU4hHvMKP+vjCwu2uszcLI8=
 github.com/docker/docker-credential-helpers v0.9.5 h1:EFNN8DHvaiK8zVqFA2DT6BjXE0GzfLOZ38ggPTKePkY=
