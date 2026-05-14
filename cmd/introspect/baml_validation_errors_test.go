@@ -100,6 +100,18 @@ func TestBamlValidationErrors(t *testing.T) {
 					t.Errorf("validation error %q missing substring %q", got, want)
 				}
 			}
+			// Pin the no-value-leak invariant: validation messages
+			// must mention the field name + client name without
+			// echoing the configured value. For the region cases
+			// the configured value is `""`, so the literal `""`
+			// substring is a sentinel for accidental value-echoing.
+			// Same shape as #263's no-secret-leak credential checks.
+			for _, leaky := range []string{`""`, `value=`, `got=`} {
+				if strings.Contains(got, leaky) {
+					t.Errorf("validation error must not echo configured value; found %q in %q",
+						leaky, got)
+				}
+			}
 		})
 	}
 }
