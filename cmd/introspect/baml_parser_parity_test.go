@@ -954,9 +954,9 @@ client<llm> QuotedEnvBedrock {
 		// function block resolve last-wins. The old parser's
 		// parseFunctionBlock (cmd/introspect/main.go:2143-2174) keeps
 		// scanning every line and overwrites functionClient[name] on
-		// each `client VALUE` match. The walker fix at
-		// parityProcessFunction (this file, above) removed an early
-		// `break` to mirror that semantics.
+		// each `client VALUE` match. The production processBAMLFunctionBlock
+		// walker in main.go iterates every top-level `client` field for
+		// the same last-wins semantics.
 		{
 			name: "DuplicateFunctionClientLastWins",
 			src: `
