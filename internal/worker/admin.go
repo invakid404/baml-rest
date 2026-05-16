@@ -103,8 +103,11 @@ func (h *Handler) GetGoroutines(ctx context.Context, filter string) (*workerplug
 		}
 	}
 
-	// If include patterns provided, count matching goroutines (case-insensitive)
-	if len(includePatterns) > 0 {
+	// If any patterns were parsed, count matching goroutines
+	// (case-insensitive). An empty includePatterns set means "match all
+	// stacks before applying exclusions", so exclude-only filters like
+	// "-runtime." still run the exclude loop instead of short-circuiting.
+	if len(includePatterns) > 0 || len(excludePatterns) > 0 {
 		goroutineStacks := strings.Split(stacks, "goroutine ")
 		for _, stack := range goroutineStacks {
 			if stack == "" {
@@ -112,8 +115,10 @@ func (h *Handler) GetGoroutines(ctx context.Context, filter string) (*workerplug
 			}
 			stackLower := strings.ToLower(stack)
 
-			// Check if stack matches any include pattern
-			matched := false
+			// Check if stack matches any include pattern. With no include
+			// patterns, the default is "match" so the exclude pass below
+			// still filters down from the full goroutine set.
+			matched := len(includePatterns) == 0
 			for _, pattern := range includePatterns {
 				if strings.Contains(stackLower, pattern) {
 					matched = true
