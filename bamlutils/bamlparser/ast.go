@@ -219,7 +219,15 @@ type Block struct {
 //   - List:    a `[ ... ]` literal containing zero or more values. The
 //     surrounding brackets are consumed; List is the slice of element
 //     values. Element separators (commas and/or whitespace) are
-//     consumed during parsing and not preserved.
+//     consumed during parsing and not preserved. This grammar is
+//     deliberately looser than upstream BAML's, which permits only
+//     commas and newlines as separators (see upstream BAML's grammar
+//     `splitter` production). The looseness is safe to
+//     keep because baml-rest invokes the real BAML compiler against
+//     the same source as part of the build, and any bare-whitespace
+//     list such as `[A B C]` is rejected upstream as a malformed
+//     identifier reference before our walker would observe a
+//     divergent element count.
 //
 // Map-shape design choice. Upstream BAML's grammar allows a value to be a
 // map literal (e.g. config-map expressions inside `options { ... }`).
