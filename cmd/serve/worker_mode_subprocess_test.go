@@ -106,8 +106,9 @@ func TestExtractWorkerReusesValidCache(t *testing.T) {
 }
 
 // redirectUserCacheDir points os.UserCacheDir at a t.TempDir for the
-// duration of the test. Both HOME (macOS) and XDG_CACHE_HOME (Linux)
-// are set so the redirection works across platforms.
+// duration of the test. HOME (macOS), XDG_CACHE_HOME (Linux/Unix),
+// and LOCALAPPDATA (Windows) are set so the redirection works across
+// platforms — os.UserCacheDir consults a different variable on each.
 func redirectUserCacheDir(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -115,6 +116,10 @@ func redirectUserCacheDir(t *testing.T) string {
 	case "darwin":
 		t.Setenv("HOME", root)
 		return filepath.Join(root, "Library", "Caches")
+	case "windows":
+		t.Setenv("LOCALAPPDATA", root)
+		t.Setenv("USERPROFILE", root)
+		return root
 	default:
 		t.Setenv("XDG_CACHE_HOME", root)
 		t.Setenv("HOME", root)
