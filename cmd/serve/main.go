@@ -3,16 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,9 +39,6 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
-
-//go:embed worker
-var workerBinary []byte
 
 //go:embed openapi.json
 var openapiJSON []byte
@@ -140,57 +134,6 @@ func httpMetricsMiddleware(c fiber.Ctx) error {
 	return err
 }
 
-// extractWorker extracts the embedded worker binary to a cache location
-// Returns the path to the extracted binary
-func extractWorker(logger zerolog.Logger) (string, error) {
-	// Use a hash-based filename to detect changes
-	hash := sha256.Sum256(workerBinary)
-	hashStr := hex.EncodeToString(hash[:8]) // First 8 bytes is enough
-
-	// Use system cache directory
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		// Fallback to temp directory
-		cacheDir = os.TempDir()
-	}
-	cacheDir = filepath.Join(cacheDir, "baml-rest")
-
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create cache directory: %w", err)
-	}
-
-	workerFilename := fmt.Sprintf("worker-%s", hashStr)
-	workerPath := filepath.Join(cacheDir, workerFilename)
-
-	// Check if worker already exists with correct hash
-	if _, err := os.Stat(workerPath); err == nil {
-		return workerPath, nil
-	}
-
-	// Extract worker binary
-	if err := os.WriteFile(workerPath, workerBinary, 0755); err != nil {
-		return "", fmt.Errorf("failed to write worker binary: %w", err)
-	}
-
-	// Clean up old worker versions
-	entries, err := os.ReadDir(cacheDir)
-	if err == nil {
-		for _, entry := range entries {
-			name := entry.Name()
-			if strings.HasPrefix(name, "worker-") && name != workerFilename {
-				oldPath := filepath.Join(cacheDir, name)
-				if err := os.Remove(oldPath); err != nil {
-					logger.Debug().Str("path", oldPath).Err(err).Msg("Failed to remove old worker binary")
-				} else {
-					logger.Debug().Str("path", oldPath).Msg("Removed old worker binary")
-				}
-			}
-		}
-	}
-
-	return workerPath, nil
-}
-
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the BAML REST API server",
@@ -216,7 +159,13 @@ var serveCmd = &cobra.Command{
 			logger.Warn().Msg("No BuildRequest surface available (neither Request nor StreamRequest exposed): all requests will use the CallStream+OnTick path. Upgrade BAML or check the generated baml_client to enable the BuildRequest code path.")
 		}
 
-		// Configure memory limits
+		// Configure memory limits. effectivePoolSizeForMemory is
+		// tag-split so the budget split and the per_worker log
+		// reflect the actual layout (inprocess collapses to 1
+		// regardless of the requested pool-size).
+		warnPoolSizeOverride(logger, poolSize, cmd.Flags().Changed("pool-size"))
+		effectivePoolSize := effectivePoolSizeForMemory(poolSize)
+
 		totalMem := memLimit
 		if totalMem == 0 {
 			totalMem = memlimit.DetectAvailable()
@@ -224,7 +173,7 @@ var serveCmd = &cobra.Command{
 
 		var workerMemLimit int64
 		if totalMem > 0 {
-			serverMem, workerMem := memlimit.CalculateLimits(totalMem, poolSize)
+			serverMem, workerMem := memlimit.CalculateLimits(totalMem, effectivePoolSize)
 			workerMemLimit = workerMem
 
 			memlimit.SetGOMEMLIMIT(serverMem)
@@ -250,7 +199,7 @@ var serveCmd = &cobra.Command{
 				Str("total", memlimit.FormatBytes(totalMem)).
 				Str("server", memlimit.FormatBytes(serverMem)).
 				Str("per_worker", memlimit.FormatBytes(workerMem)).
-				Int("workers", poolSize).
+				Int("workers", effectivePoolSize).
 				Msg("Memory limits configured")
 		} else {
 			logger.Warn().Msg("Could not detect memory limit, GOMEMLIMIT not set")
@@ -278,21 +227,19 @@ var serveCmd = &cobra.Command{
 		}
 		slices.Sort(methodNames)
 
-		// Extract worker binary
-		workerPath, err := extractWorker(logger)
-		if err != nil {
-			return fmt.Errorf("failed to extract worker binary: %w", err)
-		}
-		logger.Info().Str("path", workerPath).Msg("Worker binary extracted")
-
-		// Initialize worker pool with external worker binary
+		// Initialize worker pool. configureWorkerMode is tag-split:
+		// subprocess extracts the embedded worker binary and sets
+		// WorkerPath; inprocess initialises the BAML runtime in
+		// this process and installs a WorkerFactory.
 		poolConfig := pool.DefaultConfig()
 		poolConfig.PoolSize = poolSize
 		poolConfig.FirstByteTimeout = firstByteTimeout
 		poolConfig.LogOutput = os.Stdout
 		poolConfig.PrettyLogs = prettyLogs
-		poolConfig.WorkerPath = workerPath
 		poolConfig.WorkerMemLimit = workerMemLimit
+		if err := configureWorkerMode(logger, poolConfig); err != nil {
+			return err
+		}
 		// Host the shared-state round-robin counters. Passing a non-nil
 		// seeds map enables the reverse broker channel between host and
 		// each worker — without it every worker rotates off an in-process
@@ -330,7 +277,7 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("failed to create worker pool: %w", err)
 		}
 
-		logger.Info().Int("size", poolSize).Msg("Worker pool initialized")
+		logger.Info().Int("size", workerPool.Stats().TotalWorkers).Msg("Worker pool initialized")
 
 		// Create Fiber app
 		//
