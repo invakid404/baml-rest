@@ -66,14 +66,15 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config) error {
 // requested-but-discarded value.
 func effectivePoolSizeForMemory(_ int) int { return 1 }
 
-// warnPoolSizeOverride logs a one-shot warning when the operator
-// asked for a multi-worker pool but the inprocess build will collapse
-// it to a single handler. Hits the same warning surface a future
-// --pool-size deprecation would use, so operators get the same
-// message regardless of how the value was supplied (CLI flag,
-// BAML_REST_POOL_SIZE, etc.).
-func warnPoolSizeOverride(logger zerolog.Logger, requested int) {
-	if requested <= 1 {
+// warnPoolSizeOverride logs a warning when the operator explicitly
+// set --pool-size to a value > 1 but the inprocess build will
+// collapse it to a single handler. The explicit gate matters because
+// --pool-size has a non-zero default (4) inherited from the
+// subprocess design — warning on every default startup would be
+// noise. The cobra Changed() bit lets the helper distinguish "the
+// operator typed this number" from "this is just the flag default".
+func warnPoolSizeOverride(logger zerolog.Logger, requested int, explicit bool) {
+	if !explicit || requested <= 1 {
 		return
 	}
 	logger.Warn().

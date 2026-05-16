@@ -61,7 +61,7 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 		}
 		h.restartCond = sync.NewCond(&h.restartMu)
 		h.healthy.Store(true)
-		workerLogger.Info().Msg("Started inprocess worker")
+		workerLogger.Info().Msg("Started in-process worker")
 		resultCh <- workerStartResult{handle: h}
 	}()
 

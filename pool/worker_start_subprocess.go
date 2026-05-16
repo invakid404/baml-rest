@@ -16,9 +16,14 @@ import (
 )
 
 // tokioWorkerThreads pins the spawned worker's tokio runtime to a
-// reasonable thread count for the host. Set once at package init —
-// runtime.NumCPU is stable for the lifetime of the process.
-var tokioWorkerThreads = fmt.Sprintf("TOKIO_WORKER_THREADS=%d", runtime.NumCPU()*2)
+// reasonable thread count for the host. Derived from GOMAXPROCS so
+// the worker honours the Go scheduler's effective parallelism —
+// recent Go versions auto-tune GOMAXPROCS from cgroup CPU quota,
+// while runtime.NumCPU() reports physical host CPUs and would
+// over-provision tokio threads inside a CPU-limited container.
+// Worker subprocesses share the server's cgroup, so the budget is
+// shared too.
+var tokioWorkerThreads = fmt.Sprintf("TOKIO_WORKER_THREADS=%d", runtime.GOMAXPROCS(0)*2)
 
 // pluginMap returns the go-plugin dispenser map for this pool. A fresh
 // WorkerPlugin is constructed per call so each worker connection carries

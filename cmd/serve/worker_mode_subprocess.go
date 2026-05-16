@@ -19,12 +19,22 @@ import (
 //go:embed worker
 var workerBinary []byte
 
-// extractWorker extracts the embedded worker binary to a cache location.
-// Returns the path to the extracted binary.
+// extractWorker materialises the embedded worker binary into a
+// cache file and returns its path. The path is keyed by the first 8
+// bytes of the SHA-256 (short enough for a tidy filename, long
+// enough to make collisions practically impossible across builds),
+// but reuse of an existing cache entry is gated on a full-SHA-256
+// match against the embedded bytes — a half-written file from an
+// earlier interrupted extraction has the right name but the wrong
+// content, and silently exec'ing it would crash the worker process.
+//
+// New writes go through a temp-file + fsync + rename so the
+// hash-named path either does not exist or contains a fully-written,
+// fsynced binary. Readers (the pool's exec.Command) cannot observe a
+// torn intermediate state.
 func extractWorker(logger zerolog.Logger) (string, error) {
-	// Use a hash-based filename to detect changes
-	hash := sha256.Sum256(workerBinary)
-	hashStr := hex.EncodeToString(hash[:8]) // First 8 bytes is enough
+	expectedHash := sha256.Sum256(workerBinary)
+	hashStr := hex.EncodeToString(expectedHash[:8])
 
 	// Use system cache directory
 	cacheDir, err := os.UserCacheDir()
@@ -41,14 +51,18 @@ func extractWorker(logger zerolog.Logger) (string, error) {
 	workerFilename := fmt.Sprintf("worker-%s", hashStr)
 	workerPath := filepath.Join(cacheDir, workerFilename)
 
-	// Check if worker already exists with correct hash
-	if _, err := os.Stat(workerPath); err == nil {
-		return workerPath, nil
+	// Verify the cached binary's full SHA-256 before reusing it. A
+	// stat-only short-circuit would happily return a corrupt file
+	// left behind by an interrupted previous extraction.
+	if existing, err := os.ReadFile(workerPath); err == nil {
+		if sha256.Sum256(existing) == expectedHash {
+			return workerPath, nil
+		}
+		logger.Warn().Str("path", workerPath).Msg("Cached worker binary failed integrity check, re-extracting")
 	}
 
-	// Extract worker binary
-	if err := os.WriteFile(workerPath, workerBinary, 0755); err != nil {
-		return "", fmt.Errorf("failed to write worker binary: %w", err)
+	if err := writeWorkerAtomic(workerPath, workerFilename, cacheDir); err != nil {
+		return "", err
 	}
 
 	// Clean up old worker versions
@@ -68,6 +82,42 @@ func extractWorker(logger zerolog.Logger) (string, error) {
 	}
 
 	return workerPath, nil
+}
+
+// writeWorkerAtomic writes workerBinary to dst via a temp file in
+// the same directory followed by os.Rename. Rename is atomic within
+// a filesystem on POSIX, so concurrent readers see either the old
+// file or the fully-written new one — never a torn write. The temp
+// file is removed on every error path; on success the deferred
+// remove targets the original (now-renamed) name and is a harmless
+// no-op.
+func writeWorkerAtomic(dst, workerFilename, cacheDir string) error {
+	tmp, err := os.CreateTemp(cacheDir, workerFilename+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp worker file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(workerBinary); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp worker file: %w", err)
+	}
+	if err := tmp.Chmod(0755); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp worker file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp worker file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp worker file: %w", err)
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return fmt.Errorf("rename worker into place: %w", err)
+	}
+	return nil
 }
 
 // configureWorkerMode prepares the pool config for subprocess worker
@@ -93,5 +143,6 @@ func effectivePoolSizeForMemory(poolSize int) int { return poolSize }
 
 // warnPoolSizeOverride is a no-op in subprocess builds — multiple
 // workers are the design center. The inprocess variant logs a
-// warning when the operator requests >1, since the pool clamps to 1.
-func warnPoolSizeOverride(_ zerolog.Logger, _ int) {}
+// warning when the operator explicitly requests >1, since the pool
+// clamps to 1.
+func warnPoolSizeOverride(_ zerolog.Logger, _ int, _ bool) {}

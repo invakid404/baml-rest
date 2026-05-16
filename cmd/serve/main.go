@@ -163,7 +163,7 @@ var serveCmd = &cobra.Command{
 		// tag-split so the budget split and the per_worker log
 		// reflect the actual layout (inprocess collapses to 1
 		// regardless of the requested pool-size).
-		warnPoolSizeOverride(logger, poolSize)
+		warnPoolSizeOverride(logger, poolSize, cmd.Flags().Changed("pool-size"))
 		effectivePoolSize := effectivePoolSizeForMemory(poolSize)
 
 		totalMem := memLimit
