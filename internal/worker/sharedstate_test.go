@@ -36,7 +36,7 @@ func (stubAdvancer) Advance(string, int) (int, error) { return 0, nil }
 // roundRobinAdvancerFor delegates to the installed hook when the
 // inbound context carries a non-empty request id. This is the load-
 // bearing seam: subprocess builds wire grpcSharedStateHook through
-// here, and PR 2's in-process build will swap in a direct-call store
+// here, and the in-process build swaps in a direct-call store
 // adapter — both depend on the request id being threaded through.
 func TestHandlerSharedStateHook_UsesRequestID(t *testing.T) {
 	t.Parallel()
@@ -130,7 +130,7 @@ func (s *fakeFetchAddStore) FetchAdd(key string, delta uint64, operationID strin
 // TestStoreSharedStateHook_AdvanceUsesFetchAddIdempotency asserts that
 // the direct-call adapter forwards the operation id to FetchAdd
 // (idempotency cache key on the store side) and applies the modulus
-// locally, matching workerplugin.RemoteAdvancer's contract. PR 2's
+// locally, matching workerplugin.RemoteAdvancer's contract. The
 // in-process build relies on this surface — without operation id
 // forwarding, retries of the same logical request would re-advance
 // the counter.

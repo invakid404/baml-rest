@@ -52,10 +52,23 @@ func (h *Handler) TriggerGC(ctx context.Context) (*workerplugin.GCResult, error)
 	var memAfter runtime.MemStats
 	runtime.ReadMemStats(&memAfter)
 
+	// runtime.MemStats.HeapReleased is *current* bytes returned to the OS,
+	// not a cumulative counter — it can decrease between snapshots when the
+	// runtime reacquires previously-released memory. A naive subtraction
+	// underflows the uint64 delta to ~18 EB in that case. Clamp to zero so
+	// metrics/logs report a sane "no bytes released" rather than a wildly
+	// wrong magnitude. workerplugin.GCResult.HeapReleased and its protobuf
+	// are uint64 by wire contract, so saturating clamp here rather than
+	// widening the field is the in-scope fix.
+	var heapReleased uint64
+	if memAfter.HeapReleased >= memBefore.HeapReleased {
+		heapReleased = memAfter.HeapReleased - memBefore.HeapReleased
+	}
+
 	return &workerplugin.GCResult{
 		HeapAllocBefore: memBefore.HeapAlloc,
 		HeapAllocAfter:  memAfter.HeapAlloc,
-		HeapReleased:    memAfter.HeapReleased - memBefore.HeapReleased,
+		HeapReleased:    heapReleased,
 	}, nil
 }
 

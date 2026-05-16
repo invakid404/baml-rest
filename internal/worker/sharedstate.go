@@ -17,7 +17,7 @@ import (
 //
 // The shape is intentionally narrow — Advance is the only round-robin
 // operation the handler needs, and DropScope remains the pool's
-// responsibility. Returning a *bamlutils.RoundRobinAdvancer rather than
+// responsibility. Returning a bamlutils.RoundRobinAdvancer rather than
 // the underlying client keeps protobuf/gRPC types out of internal/worker.
 type SharedStateHook interface {
 	// NewRoundRobinAdvancer returns the Advancer the generated dispatch
