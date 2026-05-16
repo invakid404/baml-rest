@@ -10,10 +10,11 @@ import (
 )
 
 // SharedStateHook is the worker-facing seam that produces a per-request
-// round-robin advancer. The default subprocess binary wraps the existing
+// round-robin advancer. The subprocess binary wraps the existing
 // pb.SharedStateClient (which talks to the host over the go-plugin broker
-// socket); future in-process callers will plug in a non-gRPC adapter that
-// calls SharedStateStore.FetchAdd directly.
+// socket); the inprocess server wiring in cmd/serve installs the
+// store-backed hook returned by NewStoreSharedStateHook so the worker
+// reaches the host's SharedStateStore directly without crossing gRPC.
 //
 // The shape is intentionally narrow — Advance is the only round-robin
 // operation the handler needs, and DropScope remains the pool's
@@ -35,12 +36,12 @@ type FetchAddStore interface {
 }
 
 // NewStoreSharedStateHook returns a SharedStateHook backed by an
-// in-memory FetchAdd store. Used by future in-process builds where the
-// worker shares the host's SharedStateStore directly rather than going
-// through the brokered gRPC client. The default subprocess binary does
-// not invoke this — the wire layer continues to use
-// workerplugin.NewRemoteAdvancer via the cmd/worker grpcSharedStateHook
-// wrapper, preserving byte-identical IPC behavior.
+// in-memory FetchAdd store. Used by inprocess builds where the worker
+// shares the host's SharedStateStore directly rather than going through
+// the brokered gRPC client. The subprocess binary does not invoke this —
+// the wire layer continues to use workerplugin.NewRemoteAdvancer via
+// the cmd/worker grpcSharedStateHook wrapper, preserving byte-identical
+// IPC behavior.
 func NewStoreSharedStateHook(store FetchAddStore) SharedStateHook {
 	return &storeSharedStateHook{store: store}
 }

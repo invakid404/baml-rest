@@ -52,6 +52,18 @@ func ActuallyBuildRequest() bool {
 	return UseBuildRequest && bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0")
 }
 
+// skipIfInProcess short-circuits a test that depends on subprocess-only
+// semantics — chiefly OS process death, signal delivery, and gRPC
+// Unavailable on worker kill — when the binary was built with the
+// `inprocess` tag. Reason is included in the t.Skipf message so logs
+// make the skip cause obvious.
+func skipIfInProcess(t *testing.T, reason string) {
+	t.Helper()
+	if inProcessBuild {
+		t.Skipf("inprocess build: %s", reason)
+	}
+}
+
 // parseBoolEnv parses a boolean environment variable using the same accepted
 // literals as the server's UseBuildRequest parser: 1/true/yes/on → true,
 // everything else (including empty) → false.
@@ -169,6 +181,7 @@ func TestMain(m *testing.M) {
 		BAMLSource:      BAMLSourcePath,
 		UnaryServer:     unaryServer,
 		UseBuildRequest: UseBuildRequest,
+		InProcess:       inProcessBuild,
 	})
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
@@ -181,6 +194,7 @@ func TestMain(m *testing.M) {
 	println("  BAML REST URL:", TestEnv.BAMLRestURL)
 	println("  Unary URL:", TestEnv.BAMLRestUnaryURL)
 	println("  UseBuildRequest:", strconv.FormatBool(UseBuildRequest))
+	println("  InProcess:", strconv.FormatBool(inProcessBuild))
 
 	// Create clients
 	MockClient = mockllm.NewClient(TestEnv.MockLLMURL)

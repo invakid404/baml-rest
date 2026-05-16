@@ -53,6 +53,12 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 			resultCh <- workerStartResult{err: fmt.Errorf("inprocess worker factory returned nil worker")}
 			return
 		}
+		// Wrap before storing so every code path that reaches into
+		// workerHandle.worker (per-request RPC, admin, restart probes)
+		// goes through the recover boundary. The wrapper is method-
+		// dispatch transparent; the inner worker only sees calls that
+		// pass through recovery.Call*.
+		worker = newRecoveringWorker(worker, workerLogger)
 		h := &workerHandle{
 			id:          id,
 			logger:      workerLogger,

@@ -35,6 +35,75 @@ baml-rest reads the following environment variables at startup:
   the merge contract, supported opt-outs, and BuildRequest caveat.
 - `BAML_LOG` — BAML internal log level (`debug`, `info`, `warn`, `error`).
 
+## In-process build mode
+
+The default deployment runs baml-rest as a server process that supervises one
+or more BAML worker subprocesses over `go-plugin` gRPC. The `inprocess` Go
+build tag collapses that pair into a single OS process: the worker handler is
+linked directly into the server, and the embedded worker binary is neither
+shipped nor extracted at startup. This is opt-in.
+
+### Building
+
+- `go build -tags=inprocess ./cmd/serve`
+- `go run ./cmd/build --inprocess …` (or `BAML_REST_INPROCESS=true` for the
+  project build wrapper) drives the same tag through the Dockerfile.
+
+### What changes
+
+- The server and the worker handler run in one address space; there is no
+  child process and no plugin handshake.
+- The pool is force-collapsed to a single worker. `--pool-size > 1` logs a
+  warning and has no effect — multiple in-process handlers would share the
+  same FFI surface, defeating any isolation a larger pool implies.
+- Round-robin state still uses the same `SharedStateStore`, but the worker
+  reads it through an in-process hook instead of dialling the host's
+  shared-state gRPC broker.
+- Pool-side panic recovery (`pool/recover_inprocess.go`) converts Go panics
+  at every worker method boundary into structured `internal_error` responses
+  with the original stack attached, so a recoverable panic surfaces as a
+  normal error envelope rather than crashing the server.
+
+### Surrendered guarantees
+
+The supervision boundary is gone, so several behaviours that the
+default build inherits from process isolation no longer apply:
+
+- Rust/native aborts, segfaults, fatal runtime throws, and OOMs terminate
+  the whole server. The orchestrator must restart it.
+- Go panics on the direct worker method boundary are caught and returned as
+  errors, but panics inside unrelated goroutines spawned by BAML or generated
+  code can still crash the server.
+- Native memory growth, goroutine leaks, OS-thread leaks, and FD leaks
+  accumulate in the server process.
+- Hung native calls cannot be killed independently of the request; a request
+  timeout returns to the caller while the stuck work persists until the
+  server is restarted.
+- Per-worker `GOMEMLIMIT` and RSS monitoring no longer isolate a child.
+- `/_debug/kill-worker` cannot terminate the server-side worker; the debug
+  endpoint is degraded. `/_debug/native-stacks` reports
+  `native worker stacks are unavailable in inprocess builds`.
+
+### When to use it
+
+Memory-constrained deployments where running two Go runtimes (server +
+worker) is the dominant overhead, the workload tolerates whole-process
+restarts on FFI failure, and an orchestrator (Kubernetes, systemd, etc.)
+already restarts the container on crash.
+
+### When NOT to use it
+
+Deployments that rely on BAML FFI panic/crash isolation, that need a
+worker to die and be replaced without dropping unrelated in-flight
+requests, or that drive `/_debug/kill-worker` and `/_debug/native-stacks`
+as part of their operational toolkit.
+
+### Operator requirements
+
+A container restart policy, a memory limit sized for the merged process,
+liveness/readiness probes that actually exercise the request path, and
+tolerance for losing in-flight requests when the process crashes.
+
 ## Known bugs/limitations
 
 ### Upstream

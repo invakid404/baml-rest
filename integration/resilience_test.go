@@ -19,6 +19,7 @@ import (
 // and kills a worker mid-flight. All requests should complete successfully
 // thanks to the pool's hot-swap restart and retry logic.
 func TestConcurrentCallsDuringWorkerDeath(t *testing.T) {
+	skipIfInProcess(t, "kill-worker terminates the whole server process when worker and server share an address space")
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		waitForHealthy(t, 30*time.Second)
 
@@ -103,6 +104,7 @@ func TestConcurrentCallsDuringWorkerDeath(t *testing.T) {
 // requests and kills a worker mid-flight. All requests should complete
 // (possibly with a reset event mid-stream).
 func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
+	skipIfInProcess(t, "kill-worker terminates the whole server process when worker and server share an address space")
 	waitForHealthy(t, 30*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -213,6 +215,7 @@ func TestConcurrentStreamsDuringWorkerDeath(t *testing.T) {
 // requests to verify it works, then kills again. Verifies the pool can
 // recover from repeated failures.
 func TestSequentialWorkerDeaths(t *testing.T) {
+	skipIfInProcess(t, "kill-worker terminates the whole server process when worker and server share an address space")
 	waitForHealthy(t, 30*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -352,6 +355,7 @@ func TestSequentialWorkerDeaths(t *testing.T) {
 // requests and kills a worker. Parse uses a simpler retry path (no
 // streaming), so this tests the Parse-specific retry logic.
 func TestConcurrentParsesDuringWorkerDeath(t *testing.T) {
+	skipIfInProcess(t, "kill-worker terminates the whole server process when worker and server share an address space")
 	waitForHealthy(t, 30*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -446,6 +450,7 @@ func TestConcurrentParsesDuringWorkerDeath(t *testing.T) {
 // Parse requests concurrently, then kills a worker. Verifies that all
 // three request types recover.
 func TestMixedRequestsDuringWorkerDeath(t *testing.T) {
+	skipIfInProcess(t, "kill-worker terminates the whole server process when worker and server share an address space")
 	waitForHealthy(t, 30*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

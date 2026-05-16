@@ -52,7 +52,13 @@ func ActiveDrainGoroutines() int64 {
 func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.StreamResult, logger bamlutils.Logger) <-chan *workerplugin.StreamResult {
 	out := make(chan *workerplugin.StreamResult)
 	go func() {
+		// Defer order is load-bearing: close(out) is registered first
+		// so it fires LAST and the recover defer (registered after,
+		// fires first) can publish a terminal error frame onto an
+		// open channel before close releases it. recoverBridgePanic
+		// is a no-op in subprocess builds.
 		defer close(out)
+		defer recoverBridgePanic(ctx, out, logger)
 		for {
 			select {
 			case <-ctx.Done():
