@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -82,6 +83,16 @@ func TestExtractWorkerReusesValidCache(t *testing.T) {
 	if err := os.WriteFile(dst, workerBinary, 0755); err != nil {
 		t.Fatalf("seed valid cache: %v", err)
 	}
+
+	// Pin the seeded file's mtime far in the past so any rewrite is
+	// detectable even on coarse-mtime filesystems (FAT, older HFS+,
+	// some NFS configurations) where the seed write and a same-
+	// second rewrite would otherwise share a timestamp.
+	oldTime := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(dst, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes seed: %v", err)
+	}
+
 	info, err := os.Stat(dst)
 	if err != nil {
 		t.Fatalf("stat seeded cache: %v", err)
