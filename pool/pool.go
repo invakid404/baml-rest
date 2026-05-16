@@ -7,7 +7,6 @@ import (
 	"io"
 	"math/rand/v2"
 	"os"
-	"os/exec"
 	"reflect"
 	"runtime"
 	"sort"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/google/uuid"
-	"github.com/hashicorp/go-plugin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
@@ -27,8 +25,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
-
-var tokioWorkerThreads = fmt.Sprintf("TOKIO_WORKER_THREADS=%d", runtime.NumCPU()*2)
 
 // WorkerRestartReason represents why a worker was restarted
 type WorkerRestartReason string
@@ -127,6 +123,43 @@ type Config struct {
 	// coordinators. Intended for tests and single-worker configurations
 	// where per-worker counters are acceptable.
 	SharedStateSeeds map[string]int
+
+	// WorkerFactory constructs a workerplugin.Worker for a given pool
+	// slot. Invoked at initial startup AND on restart, so the factory
+	// must be idempotent — it is called every time the pool needs to
+	// (re-)populate slot N. Required for builds that supply workers
+	// directly (e.g. -tags=inprocess); ignored by the subprocess
+	// path, which spawns a worker binary via go-plugin instead.
+	//
+	// The returned Worker may also implement io.Closer; if so, the
+	// pool calls Close on teardown and restart.
+	WorkerFactory WorkerFactory
+}
+
+// WorkerFactory constructs a workerplugin.Worker for the pool. The
+// factory is the seam non-subprocess builds use to plug in directly-
+// constructed workers without pool importing concrete handler
+// packages. See Config.WorkerFactory.
+type WorkerFactory func(WorkerFactoryConfig) (workerplugin.Worker, error)
+
+// WorkerFactoryConfig is the narrow value the pool passes to a
+// WorkerFactory. The factory should not need anything beyond an id,
+// a per-worker logger, and the optional shared-state store the pool
+// owns. Adding more here couples worker construction to unrelated
+// pool settings — prefer threading those through the caller's own
+// closures.
+type WorkerFactoryConfig struct {
+	// ID is the pool slot index this worker will occupy.
+	ID int
+	// Logger is the per-worker logger the pool already binds with
+	// the worker id, surfaced as bamlutils.Logger so factories do
+	// not need to import zerolog or hclog directly.
+	Logger bamlutils.Logger
+	// SharedStateStore is the pool-owned per-key counter store. Nil
+	// when Config.SharedStateSeeds was not set. Factories that need
+	// host-side round-robin should wrap this into the worker's
+	// shared-state hook surface.
+	SharedStateStore *workerplugin.SharedStateStore
 }
 
 // DefaultConfig returns a default configuration
@@ -258,9 +291,18 @@ type Pool struct {
 }
 
 type workerHandle struct {
-	id             int
-	logger         zerolog.Logger // pre-bound with worker id
-	client         *plugin.Client
+	id     int
+	logger zerolog.Logger // pre-bound with worker id
+	// killFn is the build-mode-specific teardown for this handle's
+	// worker resources (subprocess: go-plugin client.Kill;
+	// inprocess: nil since the handler shares the server process).
+	// io.Closer on the worker is invoked independently in kill(),
+	// so factories that only need the closer can leave this nil.
+	killFn func()
+	// nativePid is the OS pid of the worker process for native-
+	// stack capture. Populated by subprocess startup; 0 in
+	// inprocess builds since there is no separate process.
+	nativePid      int
 	worker         workerplugin.Worker
 	healthy        atomic.Bool
 	restartPending atomic.Int32  // async restart dispatches published before restartDone is visible
@@ -272,13 +314,16 @@ type workerHandle struct {
 	inFlightReq    map[uint64]*inFlightRequest
 }
 
-// kill closes brokered gRPC connections and kills the plugin process.
+// kill releases worker-side resources and tears down build-mode-
+// specific transport. Order: io.Closer first (so workers that hold
+// transient resources can release them cleanly), then the build-mode
+// teardown hook (subprocess kills the plugin process).
 func (h *workerHandle) kill() {
 	if closer, ok := h.worker.(io.Closer); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
-	if h.client != nil {
-		h.client.Kill()
+	if h.killFn != nil {
+		h.killFn()
 	}
 }
 
@@ -330,11 +375,8 @@ func snapshotRestartState(h *workerHandle) (chan struct{}, bool) {
 
 // New creates a new worker pool
 func New(config *Config) (*Pool, error) {
-	if config.WorkerPath == "" {
-		return nil, fmt.Errorf("WorkerPath is required")
-	}
-	if config.PoolSize <= 0 {
-		config.PoolSize = 4 // match DefaultConfig
+	if err := normalizeConfig(config); err != nil {
+		return nil, err
 	}
 	if config.LogOutput == nil {
 		config.LogOutput = os.Stdout
@@ -400,180 +442,6 @@ func New(config *Config) (*Pool, error) {
 	}
 
 	return p, nil
-}
-
-// pluginMap returns the go-plugin dispenser map for this pool. A fresh
-// WorkerPlugin is constructed per call so each worker connection carries
-// a plugin instance whose SharedStateImpl points at this pool's store —
-// tests that spin up multiple pools in the same process would otherwise
-// share the package-level workerplugin.PluginMap and bleed state.
-func (p *Pool) pluginMap() map[string]plugin.Plugin {
-	wp := &workerplugin.WorkerPlugin{}
-	if p.sharedStateStore != nil {
-		wp.SharedStateImpl = workerplugin.NewSharedStateServer(p.sharedStateStore)
-	}
-	return map[string]plugin.Plugin{"worker": wp}
-}
-
-var errWorkerStartAborted = fmt.Errorf("worker startup aborted")
-
-type workerStartResult struct {
-	handle *workerHandle
-	err    error
-}
-
-func (p *Pool) startWorker(id int) (*workerHandle, error) {
-	return p.startWorkerWithStop(id, nil)
-}
-
-func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle, error) {
-	select {
-	case <-stop:
-		return nil, errWorkerStartAborted
-	default:
-	}
-
-	if p.newWorker != nil {
-		return p.startTestWorker(id, stop)
-	}
-
-	cmd := exec.Command(p.config.WorkerPath)
-
-	cmd.Env = append(os.Environ(), tokioWorkerThreads)
-
-	// Set GOMEMLIMIT for worker if configured
-	if p.config.WorkerMemLimit > 0 {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("GOMEMLIMIT=%d", p.config.WorkerMemLimit))
-	}
-
-	// If BAML logging is enabled (not "off"), configure LSP mode so logs go through
-	// go-plugin's hclog instead of stdout (which would corrupt the gRPC protocol)
-	if bamlLog := os.Getenv("BAML_LOG"); bamlLog != "" && bamlLog != "off" {
-		cmd.Env = append(cmd.Env, "BAML_LOG_LSP=true", "BAML_INTERNAL_LOG=info")
-	}
-
-	// Create a zerolog-backed hclog for plugin communication
-	pluginLogger := newHclogZerolog(p.logger.With().Int("worker", id).Logger())
-
-	client := plugin.NewClient(&plugin.ClientConfig{
-		HandshakeConfig: workerplugin.Handshake,
-		Plugins:         p.pluginMap(),
-		Cmd:             cmd,
-		AllowedProtocols: []plugin.Protocol{
-			plugin.ProtocolGRPC,
-		},
-		Logger:          pluginLogger,
-		GRPCDialOptions: workerplugin.GRPCDialOptions(),
-	})
-
-	select {
-	case <-stop:
-		client.Kill()
-		return nil, errWorkerStartAborted
-	default:
-	}
-
-	resultCh := make(chan workerStartResult, 1)
-	go func() {
-		handle, err := p.finishWorkerStartup(id, client)
-		resultCh <- workerStartResult{handle: handle, err: err}
-	}()
-
-	if p.config.WorkerStartTimeout > 0 {
-		timer := time.NewTimer(p.config.WorkerStartTimeout)
-		defer timer.Stop()
-
-		select {
-		case result := <-resultCh:
-			return result.handle, result.err
-		case <-timer.C:
-			client.Kill()
-			go reapWorkerStartResult(resultCh)
-			return nil, fmt.Errorf("worker startup timed out after %s", p.config.WorkerStartTimeout)
-		case <-stop:
-			client.Kill()
-			go reapWorkerStartResult(resultCh)
-			return nil, errWorkerStartAborted
-		}
-	}
-
-	select {
-	case result := <-resultCh:
-		return result.handle, result.err
-	case <-stop:
-		client.Kill()
-		go reapWorkerStartResult(resultCh)
-		return nil, errWorkerStartAborted
-	}
-}
-
-func (p *Pool) startTestWorker(id int, stop <-chan struct{}) (*workerHandle, error) {
-	select {
-	case <-stop:
-		return nil, errWorkerStartAborted
-	default:
-	}
-
-	resultCh := make(chan workerStartResult, 1)
-	go func() {
-		handle, err := p.newWorker(id)
-		resultCh <- workerStartResult{handle: handle, err: err}
-	}()
-
-	select {
-	case result := <-resultCh:
-		return result.handle, result.err
-	case <-stop:
-		go reapWorkerStartResult(resultCh)
-		return nil, errWorkerStartAborted
-	}
-}
-
-func reapWorkerStartResult(resultCh <-chan workerStartResult) {
-	result := <-resultCh
-	if result.handle != nil {
-		result.handle.kill()
-	}
-}
-
-func (p *Pool) finishWorkerStartup(id int, client *plugin.Client) (*workerHandle, error) {
-
-	rpcClient, err := client.Client()
-	if err != nil {
-		client.Kill()
-		return nil, fmt.Errorf("failed to create RPC client: %w", err)
-	}
-
-	// Dispense returns a multiConnWorker (via GRPCClient) that distributes
-	// RPCs across 1 primary + N brokered gRPC connections, preventing
-	// HTTP/2 head-of-line blocking at high concurrency.
-	raw, err := rpcClient.Dispense("worker")
-	if err != nil {
-		client.Kill()
-		return nil, fmt.Errorf("failed to dispense worker plugin: %w", err)
-	}
-
-	worker, ok := raw.(workerplugin.Worker)
-	if !ok {
-		client.Kill()
-		return nil, fmt.Errorf("unexpected plugin type: %T", raw)
-	}
-
-	workerLogger := p.logger.With().Int("worker", id).Logger()
-	workerLogger.Info().
-		Int("grpc_conns_target", 1+workerplugin.ExtraGRPCConns).
-		Msg("Started worker")
-
-	h := &workerHandle{
-		id:          id,
-		logger:      workerLogger,
-		client:      client,
-		worker:      worker,
-		inFlightReq: make(map[uint64]*inFlightRequest),
-	}
-	h.restartCond = sync.NewCond(&h.restartMu)
-	h.healthy.Store(true)
-	return h, nil
 }
 
 func (p *Pool) healthChecker() {
@@ -2539,61 +2407,4 @@ type WorkerNativeStacksResult struct {
 	Pid      int
 	Output   string // gdb output (thread backtraces)
 	Error    error
-}
-
-// GetAllWorkersNativeStacks uses gdb to capture native thread backtraces from all
-// worker processes. This reveals where Rust/C threads are blocked — information
-// that Go's pprof goroutine dump cannot provide.
-//
-// Requires: gdb installed in the container, SYS_PTRACE capability.
-func (p *Pool) GetAllWorkersNativeStacks(ctx context.Context) []WorkerNativeStacksResult {
-	var results []WorkerNativeStacksResult
-
-	for _, handle := range p.workerSnapshot() {
-		result := WorkerNativeStacksResult{WorkerID: handle.id}
-
-		// Get PID from go-plugin's ReattachConfig
-		reattach := handle.client.ReattachConfig()
-		if reattach == nil || reattach.Pid == 0 {
-			result.Error = fmt.Errorf("could not determine worker PID")
-			results = append(results, result)
-			continue
-		}
-		result.Pid = reattach.Pid
-
-		// Run gdb with a short timeout to avoid blocking if gdb hangs
-		gdbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		cmd := exec.CommandContext(gdbCtx, "gdb",
-			"-batch",
-			"-ex", "set pagination off",
-			"-ex", "set print thread-events off",
-			"-ex", "thread apply all bt",
-			"-p", fmt.Sprintf("%d", reattach.Pid),
-		)
-
-		var stdout, stderr strings.Builder
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		err := cmd.Run()
-		cancel()
-
-		if err != nil {
-			// gdb often exits non-zero even on success (e.g. detach warnings).
-			// If we got stdout output, treat it as success with a warning.
-			if stdout.Len() > 0 {
-				result.Output = stdout.String()
-				p.logger.Warn().Int("worker", handle.id).Err(err).
-					Msg("gdb exited non-zero but produced output")
-			} else {
-				result.Error = fmt.Errorf("gdb failed: %w (stderr: %s)", err, stderr.String())
-			}
-		} else {
-			result.Output = stdout.String()
-		}
-
-		results = append(results, result)
-	}
-
-	return results
 }

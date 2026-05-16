@@ -170,6 +170,7 @@ var (
 	bamlSource      string
 	debugBuild      bool
 	unaryServer     bool
+	inProcess       bool
 	prettyLogs      bool
 	baseURLRewrites []string
 )
@@ -205,6 +206,7 @@ func init() {
 	rootCmd.Flags().StringVar(&customBamlGoLib, "custom-baml-go-lib", "", "Path to custom BAML Go library folder (replaces github.com/boundaryml/baml)")
 	rootCmd.Flags().BoolVar(&debugBuild, "debug", false, "Enable debug endpoints in the built binary (/_debug/gc)")
 	rootCmd.Flags().BoolVar(&unaryServer, "unary-server", false, "Enable the chi-based unary HTTP server for client-disconnect cancellation")
+	rootCmd.Flags().BoolVar(&inProcess, "inprocess", false, "Build a single-process server with the BAML worker linked in (no go-plugin subprocess)")
 	rootCmd.Flags().StringVar(&bamlSource, "baml-source", "", "Path to local BAML source repository for building from unreleased versions")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 	rootCmd.Flags().StringArrayVar(&baseURLRewrites, "base-url-rewrite", nil, "Rewrite base URLs in .baml files (format: from=to, repeatable). Also reads BAML_REST_BASE_URL_REWRITES env var (semicolon-separated)")
@@ -219,6 +221,7 @@ func init() {
 	_ = viper.BindPFlag("custom-baml-go-lib", rootCmd.Flags().Lookup("custom-baml-go-lib"))
 	_ = viper.BindPFlag("debug", rootCmd.Flags().Lookup("debug"))
 	_ = viper.BindPFlag("unary-server", rootCmd.Flags().Lookup("unary-server"))
+	_ = viper.BindPFlag("inprocess", rootCmd.Flags().Lookup("inprocess"))
 	_ = viper.BindPFlag("baml-source", rootCmd.Flags().Lookup("baml-source"))
 }
 
@@ -238,6 +241,7 @@ var rootCmd = &cobra.Command{
 		customBamlGoLib = viper.GetString("custom-baml-go-lib")
 		debugBuild = viper.GetBool("debug")
 		unaryServer = viper.GetBool("unary-server")
+		inProcess = viper.GetBool("inprocess")
 		bamlSource = viper.GetString("baml-source")
 
 		// Validate mode
@@ -466,14 +470,14 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild, unaryServer, bamlSource, rewriteRules)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild, unaryServer, inProcess, bamlSource, rewriteRules)
 		} else {
-			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild, unaryServer, bamlLibraryPath, bamlCliPath, rewriteRules)
+			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild, unaryServer, inProcess, bamlLibraryPath, bamlCliPath, rewriteRules)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, bamlSource string, rewriteRules []urlrewrite.Rule) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, inProcess bool, bamlSource string, rewriteRules []urlrewrite.Rule) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	if platform != nil {
@@ -505,6 +509,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		"keepSource":      keepSource,
 		"debugBuild":      debugBuild,
 		"unaryServer":     unaryServer,
+		"inProcess":       inProcess,
 		"bamlSource":      bamlSource != "",
 		"baseURLRewrites": formatRewriteRulesForEnv(rewriteRules),
 	}
@@ -807,7 +812,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	return nil
 }
 
-func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, bamlLibraryPath string, bamlCliPath string, rewriteRules []urlrewrite.Rule) error {
+func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, inProcess bool, bamlLibraryPath string, bamlCliPath string, rewriteRules []urlrewrite.Rule) error {
 	fmt.Printf("\n=== Native Build Mode ===\n\n")
 
 	// Check prerequisites
@@ -940,6 +945,9 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	}
 	if unaryServer {
 		env = append(env, "UNARY_SERVER=true")
+	}
+	if inProcess {
+		env = append(env, "INPROCESS=true")
 	}
 	if bamlLibraryPath != "" {
 		env = append(env, fmt.Sprintf("BAML_LIBRARY_PATH=%s", bamlLibraryPath))
