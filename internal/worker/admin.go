@@ -96,7 +96,11 @@ func (h *Handler) GetGoroutines(ctx context.Context, filter string) (*workerplug
 				continue
 			}
 			if strings.HasPrefix(pattern, "-") {
-				excludePatterns = append(excludePatterns, strings.ToLower(strings.TrimPrefix(pattern, "-")))
+				exclude := strings.ToLower(strings.TrimPrefix(pattern, "-"))
+				if exclude == "" {
+					continue
+				}
+				excludePatterns = append(excludePatterns, exclude)
 			} else {
 				includePatterns = append(includePatterns, strings.ToLower(pattern))
 			}

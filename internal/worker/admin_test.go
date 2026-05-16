@@ -70,6 +70,46 @@ func TestGetGoroutinesFilterBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("bare dash exclude token returns no matched stacks", func(t *testing.T) {
+		// A "-" token strips to an empty exclude pattern. Without the
+		// empty-guard, strings.Contains(stack, "") matches every stack
+		// and the goroutine set is silently dropped. The dropped pattern
+		// leaves the parsed set empty, so the outer gate returns no
+		// stacks — same shape as filter="".
+		got, err := h.GetGoroutines(ctx, "-")
+		if err != nil {
+			t.Fatalf("GetGoroutines: %v", err)
+		}
+		if got.MatchCount != 0 || len(got.MatchedStacks) != 0 {
+			t.Fatalf("filter=\"-\" must drop the empty exclude and return no matched stacks; got MatchCount=%d, len(MatchedStacks)=%d",
+				got.MatchCount, len(got.MatchedStacks))
+		}
+	})
+
+	t.Run("multiple empty exclude tokens collapse to no-op", func(t *testing.T) {
+		got, err := h.GetGoroutines(ctx, "-,-,-")
+		if err != nil {
+			t.Fatalf("GetGoroutines: %v", err)
+		}
+		if got.MatchCount != 0 || len(got.MatchedStacks) != 0 {
+			t.Fatalf("filter=\"-,-,-\" must drop all empty excludes and return no matched stacks; got MatchCount=%d, len(MatchedStacks)=%d",
+				got.MatchCount, len(got.MatchedStacks))
+		}
+	})
+
+	t.Run("empty exclude alongside real include still applies include", func(t *testing.T) {
+		// Sanity check: dropping the bare-dash exclude must not affect
+		// adjacent include patterns. "testing." reliably hits the test
+		// runner stack, so the include side should still produce matches.
+		got, err := h.GetGoroutines(ctx, "testing.,-")
+		if err != nil {
+			t.Fatalf("GetGoroutines: %v", err)
+		}
+		if got.MatchCount == 0 || len(got.MatchedStacks) == 0 {
+			t.Fatalf("real include alongside empty exclude must still match stacks; got MatchCount=%d", got.MatchCount)
+		}
+	})
+
 	t.Run("include-only testing pattern hits the test runner", func(t *testing.T) {
 		// "testing." appears in every Go test process (the test runner
 		// goroutine itself), so an include-only filter on it must
