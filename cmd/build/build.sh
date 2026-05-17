@@ -158,8 +158,10 @@ fi
 if [ "${UNARY_SERVER:-false}" = "true" ]; then
     echo "Unary Server: enabled"
 fi
-if [ "${INPROCESS:-false}" = "true" ]; then
-    echo "Inprocess Build: enabled"
+if [ "${SUBPROCESS:-true}" = "true" ]; then
+    echo "Subprocess Build: enabled"
+else
+    echo "In-process Build: enabled"
 fi
 echo "============================================"
 
@@ -171,8 +173,8 @@ fi
 if [ "${UNARY_SERVER:-false}" = "true" ]; then
     BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}unaryserver"
 fi
-if [ "${INPROCESS:-false}" = "true" ]; then
-    BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}inprocess"
+if [ "${SUBPROCESS:-true}" = "true" ]; then
+    BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}subprocess"
 fi
 GO_BUILD_TAGS=""
 if [ -n "${BUILD_TAGS}" ]; then
@@ -527,25 +529,25 @@ go run "${ADAPTER_VERSION}/cmd/main.go"
 
 # URL-rewrite ldflag goes onto whichever binary actually links the
 # BAML call path. Subprocess builds bake it into cmd/worker;
-# inprocess builds bake it into cmd/serve because cmd/worker is not
+# in-process builds bake it into cmd/serve because cmd/worker is not
 # built at all.
 WORKER_LDFLAGS=""
 SERVE_LDFLAGS=""
 if [ -n "${BAML_REST_BASE_URL_REWRITES:-}" ]; then
     echo "Baking in base URL rewrites: ${BAML_REST_BASE_URL_REWRITES}"
-    if [ "${INPROCESS:-false}" = "true" ]; then
-        SERVE_LDFLAGS="-X 'github.com/invakid404/baml-rest/bamlutils/urlrewrite.builtinRules=${BAML_REST_BASE_URL_REWRITES}'"
-    else
+    if [ "${SUBPROCESS:-true}" = "true" ]; then
         WORKER_LDFLAGS="-X 'github.com/invakid404/baml-rest/bamlutils/urlrewrite.builtinRules=${BAML_REST_BASE_URL_REWRITES}'"
+    else
+        SERVE_LDFLAGS="-X 'github.com/invakid404/baml-rest/bamlutils/urlrewrite.builtinRules=${BAML_REST_BASE_URL_REWRITES}'"
     fi
 fi
 
-if [ "${INPROCESS:-false}" = "true" ]; then
-    echo "Skipping worker binary build (inprocess mode)..."
-else
+if [ "${SUBPROCESS:-true}" = "true" ]; then
     # Build worker binary first (this imports baml and loads the shared library)
     echo "Building worker binary..."
     go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o cmd/serve/worker ./cmd/worker/
+else
+    echo "Skipping worker binary build (in-process mode)..."
 fi
 
 # Generate OpenAPI schema (this also imports baml)
@@ -553,7 +555,7 @@ echo "Generating OpenAPI schema..."
 go run cmd/schema/main.go cmd/serve/openapi.json
 
 # Build final binary (embeds worker and schema, doesn't import baml directly
-# in subprocess builds; in inprocess builds the worker handler is linked in)
+# in subprocess builds; in in-process builds the worker handler is linked in)
 echo "Building final binary${GO_BUILD_TAGS:+ with tags: ${GO_BUILD_TAGS#-tags=}}..."
 go build ${GO_BUILD_TAGS} ${SERVE_LDFLAGS:+-ldflags "${SERVE_LDFLAGS}"} -o baml-rest ./cmd/serve/
 

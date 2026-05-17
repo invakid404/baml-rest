@@ -128,7 +128,7 @@ type Config struct {
 	// slot. Invoked at initial startup AND on restart, so the factory
 	// must be idempotent — it is called every time the pool needs to
 	// (re-)populate slot N. Required for builds that supply workers
-	// directly (e.g. -tags=inprocess); ignored by the subprocess
+	// directly (the default no-tag build); ignored by the subprocess
 	// path, which spawns a worker binary via go-plugin instead.
 	//
 	// The returned Worker may also implement io.Closer; if so, the
@@ -295,13 +295,13 @@ type workerHandle struct {
 	logger zerolog.Logger // pre-bound with worker id
 	// killFn is the build-mode-specific teardown for this handle's
 	// worker resources (subprocess: go-plugin client.Kill;
-	// inprocess: nil since the handler shares the server process).
+	// in-process: nil since the handler shares the server process).
 	// io.Closer on the worker is invoked independently in kill(),
 	// so factories that only need the closer can leave this nil.
 	killFn func()
 	// nativePid is the OS pid of the worker process for native-
 	// stack capture. Populated by subprocess startup; 0 in
-	// inprocess builds since there is no separate process.
+	// in-process builds since there is no separate process.
 	nativePid      int
 	worker         workerplugin.Worker
 	healthy        atomic.Bool

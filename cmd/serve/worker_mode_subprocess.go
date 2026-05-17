@@ -1,4 +1,4 @@
-//go:build !inprocess
+//go:build subprocess
 
 package main
 
@@ -125,11 +125,11 @@ func writeWorkerAtomic(dst, workerFilename, cacheDir string) error {
 // wires it into Config.WorkerPath. The in-process WorkerFactory seam
 // is unused in subprocess builds.
 //
-// runtimeCfg matches the inprocess signature for build-tag symmetry
+// runtimeCfg matches the in-process signature for build-tag symmetry
 // but is unused on this build: subprocess workers resolve env state
 // themselves inside cmd/worker/main.go at process startup. There is
 // no host→worker config RPC; programmatic config flows only through
-// the inprocess WorkerFactory seam.
+// the in-process WorkerFactory seam.
 func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg workerModeRuntimeConfig) error {
 	_ = runtimeCfg
 	workerPath, err := extractWorker(logger)
@@ -144,12 +144,12 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 // effectivePoolSizeForMemory is the pool size memlimit.CalculateLimits
 // uses to split the total memory budget between server and workers.
 // Subprocess builds run one process per slot, so the requested
-// PoolSize is honest. The inprocess variant returns 1 because every
+// PoolSize is honest. The in-process variant returns 1 because every
 // slot collapses onto the same address space.
 func effectivePoolSizeForMemory(poolSize int) int { return poolSize }
 
 // warnPoolSizeOverride is a no-op in subprocess builds — multiple
-// workers are the design center. The inprocess variant logs a
+// workers are the design center. The in-process variant logs a
 // warning when the operator explicitly requests >1, since the pool
 // clamps to 1.
 func warnPoolSizeOverride(_ zerolog.Logger, _ int, _ bool) {}

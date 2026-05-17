@@ -88,8 +88,10 @@ jobs:
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
-        # share state (server config, worker pool) that could cause flakiness if parallel
-        run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
+        # share state (server config, worker pool) that could cause flakiness if parallel.
+        # `subprocess` matches the normal server deployment path (server +
+        # cmd/worker go-plugin) the default `go build` no longer compiles.
+        run: go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 40m ./integration/...
 
   get-latest-version:
     runs-on: ubuntu-latest
@@ -101,7 +103,7 @@ jobs:
 
       - name: Read latest BAML version
         id: read
-        # The inprocess job only covers the latest BAML version. Older
+        # The in-process job only covers the latest BAML version. Older
         # versions exercise the same recover wrappers and pool shape;
         # the latest entry catches tag rot and single-process deployment
         # regressions without the cost of the full version cross-product.
@@ -126,10 +128,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Bounded inprocess matrix: latest BAML only, both unary-server
+        # Bounded in-process matrix: latest BAML only, both unary-server
         # values and both use-build-request values. http-client stays at
         # `auto` because the subprocess job already covers the full
-        # http-client spread and inprocess does not change request dispatch.
+        # http-client spread and in-process does not change request dispatch.
         unary-server: [false, true]
         use-build-request: [false, true]
 
@@ -142,13 +144,15 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run Integration Tests (inprocess, BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }})
+      - name: Run Integration Tests (in-process, BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }})
         env:
           BAML_VERSION: ${{ needs.get-latest-version.outputs.latest }}
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: auto
-        run: go test -tags=integration,inprocess -v -count=1 -p 1 -timeout 40m ./integration/...
+        # No `subprocess` tag — the default no-tag build compiles the
+        # direct in-process worker path.
+        run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
 
   integration-tests-baml-source:
     runs-on: ubuntu-latest
@@ -195,4 +199,6 @@ jobs:
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
-        run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
+        # `subprocess` matches the normal server deployment path used
+        # by the versioned integration job above.
+        run: go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 40m ./integration/...

@@ -70,6 +70,20 @@ func main() {
 
 		for _, otherRoot := range tree[root] {
 			currentImport, err := func() (*ImportEntry, error) {
+				relativePath, err := filepath.Rel(root, otherRoot)
+				if err != nil {
+					return nil, err
+				}
+				// Skip nested modules whose path matches an ignore
+				// pattern in the parent's .embedignore so subtrees
+				// excluded from the file walk are also excluded from
+				// the import / Sources merge. Without this guard the
+				// parent embed.go would import a nested module that
+				// has no content to forward.
+				if isIgnoredPath(relativePath, patterns) {
+					return nil, nil
+				}
+
 				nestedModuleFile, err := os.Open(filepath.Join(otherRoot, "go.mod"))
 				if err != nil {
 					return nil, err
@@ -89,18 +103,9 @@ func main() {
 					return nil, err
 				}
 
-				relativePath, err := filepath.Rel(root, otherRoot)
-				if err != nil {
-					return nil, err
-				}
-
 				return &ImportEntry{
-					Module: strconv.Quote(parsedModule.Module.Mod.Path),
-					PkgName: strings.ReplaceAll(
-						filepath.Base(parsedModule.Module.Mod.Path),
-						".",
-						"_",
-					),
+					Module:       strconv.Quote(parsedModule.Module.Mod.Path),
+					PkgName:      sanitizePkgName(filepath.Base(parsedModule.Module.Mod.Path)),
 					RelativePath: strconv.Quote(relativePath),
 				}, nil
 			}()
@@ -109,6 +114,9 @@ func main() {
 				panic(err)
 			}
 
+			if currentImport == nil {
+				continue
+			}
 			imports = append(imports, currentImport)
 		}
 
@@ -362,4 +370,50 @@ func isIgnored(path string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// isIgnoredPath tests every prefix of path against the ignore
+// patterns, matching how collectEmbedPaths drops a whole entry when
+// its base name matches. Used for nested module roots, whose
+// filesystem layout is "<parent>/<rel>" rather than a single entry —
+// a `dynclient` pattern in .embedignore should still suppress the
+// nested module at `dynclient/internal/baml-patched`.
+func isIgnoredPath(path string, patterns []string) bool {
+	cleaned := filepath.ToSlash(filepath.Clean(path))
+	if cleaned == "." || cleaned == "" {
+		return false
+	}
+	segments := strings.Split(cleaned, "/")
+	for i := range segments {
+		prefix := strings.Join(segments[:i+1], "/")
+		if isIgnored(prefix, patterns) {
+			return true
+		}
+		base := segments[i]
+		if isIgnored(base, patterns) {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizePkgName converts a module base name (e.g. "baml-patched")
+// into a valid Go identifier. Replaces every separator with `_`. Used
+// for the package alias the embed.go init() loop ranges over.
+func sanitizePkgName(name string) string {
+	var b strings.Builder
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9' && i > 0:
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "_"
+	}
+	return b.String()
 }

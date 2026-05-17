@@ -78,13 +78,13 @@ func ActuallyBuildRequest() bool {
 
 // skipIfInProcess short-circuits a test that depends on subprocess-only
 // semantics — chiefly OS process death, signal delivery, and gRPC
-// Unavailable on worker kill — when the binary was built with the
-// `inprocess` tag. Reason is included in the t.Skipf message so logs
+// Unavailable on worker kill — when the binary was built without the
+// `subprocess` tag. Reason is included in the t.Skipf message so logs
 // make the skip cause obvious.
 func skipIfInProcess(t *testing.T, reason string) {
 	t.Helper()
 	if inProcessBuild {
-		t.Skipf("inprocess build: %s", reason)
+		t.Skipf("in-process build: %s", reason)
 	}
 }
 

@@ -39,7 +39,7 @@ func (p *Pool) startWorker(id int) (*workerHandle, error) {
 }
 
 // startTestWorker is the shared test-injection codepath. Both
-// subprocess and inprocess builds short-circuit through here when
+// subprocess and in-process builds short-circuit through here when
 // Pool.newWorker is non-nil so pool tests can stay independent of the
 // real worker construction path. Kept in the common file so the test
 // seam exists regardless of build tag.

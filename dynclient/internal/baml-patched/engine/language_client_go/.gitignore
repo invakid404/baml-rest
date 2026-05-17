@@ -1,0 +1,11 @@
+main
+*.dylib
+*.so
+*.dll
+*.lib
+*.exp
+*.def
+*.res
+
+# Generated checksum files
+checksums/

@@ -1,4 +1,4 @@
-//go:build integration && inprocess
+//go:build integration && !subprocess
 
 package integration
 
@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-// TestInProcessDebugSurface asserts the inprocess-build contract for the
-// two /_debug endpoints whose semantics change in single-process mode.
+// TestInProcessDebugSurface asserts the in-process build contract for
+// the two /_debug endpoints whose semantics change in single-process
+// mode.
 //
 // /_debug/in-flight: the pool is force-collapsed to one worker, so a
 // healthy server reports exactly one entry. This guards against the
@@ -31,10 +32,10 @@ func TestInProcessDebugSurface(t *testing.T) {
 		t.Fatalf("GetInFlightStatus failed: %v", err)
 	}
 	if got := len(inFlight.Workers); got != 1 {
-		t.Errorf("expected exactly 1 worker in inprocess mode, got %d (workers=%+v)", got, inFlight.Workers)
+		t.Errorf("expected exactly 1 worker in in-process mode, got %d (workers=%+v)", got, inFlight.Workers)
 	}
 	if len(inFlight.Workers) > 0 && !inFlight.Workers[0].Healthy {
-		t.Errorf("expected the single inprocess worker to be healthy, got %+v", inFlight.Workers[0])
+		t.Errorf("expected the single in-process worker to be healthy, got %+v", inFlight.Workers[0])
 	}
 
 	native, err := BAMLClient.GetNativeStacks(ctx)
@@ -42,9 +43,9 @@ func TestInProcessDebugSurface(t *testing.T) {
 		t.Fatalf("GetNativeStacks failed: %v", err)
 	}
 	if got := len(native.Workers); got != 1 {
-		t.Fatalf("expected exactly 1 worker result from native-stacks in inprocess mode, got %d (result=%+v)", got, native)
+		t.Fatalf("expected exactly 1 worker result from native-stacks in in-process mode, got %d (result=%+v)", got, native)
 	}
-	const wantSubstr = "native worker stacks are unavailable in inprocess builds"
+	const wantSubstr = "native worker stacks are unavailable in in-process builds"
 	if !strings.Contains(native.Workers[0].Error, wantSubstr) {
 		t.Errorf("native-stacks worker error = %q, want substring %q", native.Workers[0].Error, wantSubstr)
 	}

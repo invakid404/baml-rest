@@ -1,4 +1,4 @@
-//go:build inprocess
+//go:build !subprocess
 
 package pool
 
@@ -21,7 +21,7 @@ type inprocessFactoryCall struct {
 // captureFactory returns a WorkerFactory that appends each invocation
 // to calls and produces fresh mock workers. The handler swap is
 // driven entirely through the factory — no mockHandle / newWorker
-// injection — so the test exercises the real inprocess startup path.
+// injection — so the test exercises the real in-process startup path.
 func captureFactory(calls *[]inprocessFactoryCall, mu *sync.Mutex) WorkerFactory {
 	return func(cfg WorkerFactoryConfig) (workerplugin.Worker, error) {
 		mu.Lock()
@@ -32,9 +32,9 @@ func captureFactory(calls *[]inprocessFactoryCall, mu *sync.Mutex) WorkerFactory
 }
 
 // TestInProcessPoolDoesNotRequireWorkerPath verifies that an
-// inprocess pool starts cleanly with WorkerPath unset as long as
+// in-process pool starts cleanly with WorkerPath unset as long as
 // WorkerFactory is supplied. Subprocess builds reject this; the
-// inprocess normalizeConfig is the only build-mode-specific
+// in-process normalizeConfig is the only build-mode-specific
 // validation difference.
 func TestInProcessPoolDoesNotRequireWorkerPath(t *testing.T) {
 	var calls []inprocessFactoryCall

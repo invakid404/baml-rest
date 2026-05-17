@@ -18,3 +18,12 @@ integration
 # discovered module — only per-adapter modules have an
 # adapter/adapter.go to begin with.
 **/adapter/adapter.go
+
+# Dynclient subtree (patched-BAML fork + generated dynamic-only
+# client + regeneration tooling). Excluded from the server-side
+# embed because the customer-build pipeline embeds repo sources
+# to drive its own server codegen, and the dynclient artifacts
+# are independent — they ship as a separate Go package to
+# downstream consumers, not through the customer build path.
+dynclient
+cmd/regenerate-dynclient

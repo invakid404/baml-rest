@@ -1,9 +1,9 @@
-//go:build integration && inprocess
+//go:build integration && !subprocess
 
 package integration
 
-// inProcessBuild reports whether the test binary was compiled with the
-// `inprocess` tag. Inprocess builds set it to true so tests that
-// depend on subprocess-only semantics (kill-worker process death,
-// independent worker restart) can skip themselves.
+// inProcessBuild reports whether the test binary was compiled without
+// the `subprocess` tag. Direct in-process builds set it to true so
+// tests that depend on subprocess-only semantics (kill-worker process
+// death, independent worker restart) can skip themselves.
 const inProcessBuild = true

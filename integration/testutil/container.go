@@ -107,10 +107,10 @@ type SetupOptions struct {
 	// so that the CI matrix leg actually toggles the code path under test.
 	UseBuildRequest bool
 
-	// InProcess builds the baml-rest binary with the `inprocess` build
-	// tag so the server and worker handler share one OS process.
-	// The Dockerfile template forwards this to build.sh which adds the
-	// tag to the go build invocation.
+	// InProcess builds the baml-rest binary without the `subprocess`
+	// build tag so the server and worker handler share one OS process.
+	// The Dockerfile template forwards this to build.sh which drops
+	// SUBPROCESS from the go build invocation.
 	InProcess bool
 
 	// RuntimeEnv adds arbitrary environment variables to the baml-rest
@@ -325,7 +325,7 @@ type dockerfileTemplateData struct {
 	bamlSource         bool   // Build from BAML source (enables cffi-builder stage)
 	protocGenGoVersion string // protoc-gen-go version for BAML source builds
 	unaryServer        bool   // Build with unaryserver tag for chi unary server
-	inProcess          bool   // Build with inprocess tag (single-process server+worker)
+	inProcess          bool   // Build single-process server+worker (drops subprocess tag)
 }
 
 // MarshalMap converts the template data to a map for template execution

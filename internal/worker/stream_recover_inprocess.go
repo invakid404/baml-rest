@@ -1,4 +1,4 @@
-//go:build inprocess
+//go:build !subprocess
 
 package worker
 
@@ -13,7 +13,7 @@ import (
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
-// streamPanicErrorCode mirrors pool.panicErrorCode for inprocess
+// streamPanicErrorCode mirrors pool.panicErrorCode for in-process
 // builds. Duplicated rather than imported so this package does not
 // gain a dependency on pool just for one string constant.
 const streamPanicErrorCode = "internal_error"
@@ -21,7 +21,7 @@ const streamPanicErrorCode = "internal_error"
 // recoverBridgePanic recovers a panic in bridgeStreamResults' producer
 // goroutine and surfaces it as one terminal stream error frame on out
 // (unless the caller has already gone away). The companion
-// !inprocess variant is empty: subprocess builds let bridge-goroutine
+// subprocess variant is empty: subprocess builds let bridge-goroutine
 // panics terminate the worker process so the host pool restarts it.
 //
 // This uses a deferred recover() rather than wrapping the goroutine

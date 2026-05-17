@@ -1,4 +1,4 @@
-//go:build inprocess
+//go:build !subprocess
 
 package pool
 
@@ -9,7 +9,7 @@ import (
 )
 
 // startWorkerWithStop calls the configured WorkerFactory to populate
-// a slot in inprocess builds. The factory may be invoked at initial
+// a slot in in-process builds. The factory may be invoked at initial
 // pool fill or on restart, so it must be idempotent — the pool
 // reuses the same SharedStateStore across restarts (it is owned by
 // pool.New, not by individual handler instances) but lets the
@@ -31,7 +31,7 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 	}
 
 	if p.config.WorkerFactory == nil {
-		return nil, fmt.Errorf("inprocess pool: WorkerFactory is nil")
+		return nil, fmt.Errorf("in-process pool: WorkerFactory is nil")
 	}
 
 	workerLogger := p.logger.With().Int("worker", id).Logger()
@@ -46,11 +46,11 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 	go func() {
 		worker, err := p.config.WorkerFactory(factoryCfg)
 		if err != nil {
-			resultCh <- workerStartResult{err: fmt.Errorf("inprocess worker factory: %w", err)}
+			resultCh <- workerStartResult{err: fmt.Errorf("in-process worker factory: %w", err)}
 			return
 		}
 		if worker == nil {
-			resultCh <- workerStartResult{err: fmt.Errorf("inprocess worker factory returned nil worker")}
+			resultCh <- workerStartResult{err: fmt.Errorf("in-process worker factory returned nil worker")}
 			return
 		}
 		// Wrap before storing so every code path that reaches into

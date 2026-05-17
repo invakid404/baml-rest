@@ -10,7 +10,7 @@ import (
 // workerModeRuntimeConfig is the resolved runtime configuration
 // cmd/serve threads into configureWorkerMode. Lives in a shared
 // (non-tag-split) file so both worker_mode_inprocess.go and
-// worker_mode_subprocess.go can name the type; the inprocess build
+// worker_mode_subprocess.go can name the type; the in-process build
 // reads every field, and the subprocess build accepts (and ignores)
 // it so the two builds share a signature.
 //

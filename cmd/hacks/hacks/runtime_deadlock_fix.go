@@ -28,6 +28,11 @@ const (
 	pr3185PatchV218BackportPath = "patches/pr3185_backport_v218.diff"
 	pr3185PatchV218Checksum     = "fc234a28025f8b2d7cd807dfd898f0b026c07801321bb8d59ce1ed21956c68df"
 	pr3185PatchV218Provenance   = "baml-rest backport aligned to BoundaryML/baml PR #3185"
+	// pr3185UpstreamMergedFloor is the first BAML release that ships the
+	// runtime-deadlock fix (BoundaryML/baml PR #3185) upstream rather
+	// than requiring our embedded patch. Versions at or above this
+	// floor no-op the deadlock-fix step.
+	pr3185UpstreamMergedFloor   = "v0.220.0"
 	patchedModuleCopyMarkerName = ".patched_copy_complete"
 	execTimeout                 = 30 * time.Second
 	patchExecTimeout            = 2 * time.Minute
@@ -141,6 +146,10 @@ func ApplyRuntimeDeadlockFixToDir(bamlVersion, moduleDir string) error {
 
 	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
 		fmt.Printf("Skipping runtime-deadlock-fix (effective version %s is below v0.218.0)\n", version)
+		return nil
+	}
+	if bamlutils.CompareVersions(version, pr3185UpstreamMergedFloor) >= 0 {
+		fmt.Printf("Skipping runtime-deadlock-fix (effective version %s is at or above %s where PR #3185 is merged upstream)\n", version, pr3185UpstreamMergedFloor)
 		return nil
 	}
 
