@@ -222,8 +222,8 @@ func IsCallProviderSupported(provider string) bool {
 // helper costs the same as the older form on the hot path.
 //
 // Used by cmd/worker and cmd/serve at startup to populate per-handler
-// worker.Config.BuildRequest; programmatic callers (future dynclient)
-// can supply a literal bamlutils.BuildRequestConfig instead.
+// worker.Config.BuildRequest; programmatic callers can supply a literal
+// bamlutils.BuildRequestConfig instead.
 func EnvConfig() bamlutils.BuildRequestConfig {
 	return bamlutils.BuildRequestConfig{
 		UseBuildRequest:         UseBuildRequest(),

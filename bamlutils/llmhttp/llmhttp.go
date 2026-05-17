@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -105,10 +106,20 @@ const MaxErrorBodyBytes = 4096
 // resolveRequestURL — supplied at construction so two Clients in the
 // same process can route to different upstream endpoints without
 // going through urlrewrite.GlobalRules.
+//
+// useGlobalRewriteRules distinguishes the legacy NewClient(...) seam
+// (which falls back to urlrewrite.GlobalRules when rewriteRules is
+// nil, preserving env-driven behaviour for non-migrated callers) from
+// the explicit NewClientWithOptions seam (where nil rules mean "no
+// rewrites" — programmatic callers opt into env/builtin by passing
+// urlrewrite.LoadDefaultRules()). Without this split, an options
+// client constructed with no rules would silently inherit process-
+// global state at request time.
 type Client struct {
-	httpClient   *http.Client
-	cache        *protocolCache
-	rewriteRules []urlrewrite.Rule
+	httpClient            *http.Client
+	cache                 *protocolCache
+	rewriteRules          []urlrewrite.Rule
+	useGlobalRewriteRules bool
 }
 
 // ClientOptions configures NewClientWithOptions / NewDefaultClientWithOptions.
@@ -125,9 +136,23 @@ type ClientOptions struct {
 	// NetHTTP). Defaults to ClientModeAuto when zero.
 	Mode ClientMode
 	// RewriteRules apply to every outbound request URL via
-	// resolveRequestURL. Pass urlrewrite.LoadDefaultRules() to
-	// reproduce the env-driven default. nil disables rewriting on
-	// this Client.
+	// resolveRequestURL. The Client takes a defensive copy at
+	// construction time, so mutating the supplied slice afterwards
+	// has no effect on dispatched requests.
+	//
+	// Per-constructor semantics for the nil case:
+	//   - NewClientWithOptions / NewDefaultClientWithOptions with
+	//     RewriteRules == nil → no rewrites applied to this Client
+	//     at request time. Explicit construction implies explicit
+	//     rules; the Client does not silently inherit
+	//     urlrewrite.GlobalRules.
+	//   - The legacy NewClient(httpClient) path still falls back to
+	//     urlrewrite.GlobalRules when no rules are installed, so
+	//     existing env-driven call sites keep their behaviour
+	//     unchanged.
+	//
+	// To opt into the env-driven defaults under the options
+	// constructors, pass urlrewrite.LoadDefaultRules().
 	RewriteRules []urlrewrite.Rule
 }
 
@@ -166,8 +191,9 @@ func NewClient(httpClient *http.Client) *Client {
 		httpClient = http.DefaultClient
 	}
 	return &Client{
-		httpClient: httpClient,
-		cache:      newProtocolCache(loadClientMode(), tlsConfigFromHTTPClient(httpClient), proxyFuncFromHTTPClient(httpClient)),
+		httpClient:            httpClient,
+		cache:                 newProtocolCache(loadClientMode(), tlsConfigFromHTTPClient(httpClient), proxyFuncFromHTTPClient(httpClient)),
+		useGlobalRewriteRules: true,
 	}
 }
 
@@ -175,6 +201,11 @@ func NewClient(httpClient *http.Client) *Client {
 // ClientOptions value. Unlike NewClient, the backend mode and URL
 // rewrite rules are passed in rather than read from process env, so
 // two Clients in the same process can route requests differently.
+//
+// RewriteRules is defensively cloned so a library caller mutating
+// the supplied slice afterwards cannot race with concurrent
+// Execute / ExecuteStream / ExecuteAWSStream calls reading
+// c.rewriteRules at request time.
 //
 // HTTPClient nil falls back to http.DefaultClient (matching NewClient).
 // For the tuned LLM transport, use NewDefaultClientWithOptions.
@@ -186,7 +217,7 @@ func NewClientWithOptions(opts ClientOptions) *Client {
 	return &Client{
 		httpClient:   httpClient,
 		cache:        newProtocolCache(opts.Mode, tlsConfigFromHTTPClient(httpClient), proxyFuncFromHTTPClient(httpClient)),
-		rewriteRules: opts.RewriteRules,
+		rewriteRules: slices.Clone(opts.RewriteRules),
 	}
 }
 
@@ -508,15 +539,20 @@ func (e *HTTPError) Error() string {
 // resolveRequestURL applies the per-Client URL rewrite rules to the
 // request URL. Exposed as a method so the dispatcher can rewrite
 // exactly once and feed the result to both the cache key resolver and
-// whichever backend handles the request. Clients constructed via
-// NewClient (compatibility path) fall back to urlrewrite.GlobalRules
-// so existing env-driven setups keep their behaviour unchanged.
+// whichever backend handles the request.
+//
+// The urlrewrite.GlobalRules fallback fires ONLY for Clients
+// constructed via the legacy NewClient seam (useGlobalRewriteRules =
+// true). Clients built through NewClientWithOptions /
+// NewDefaultClientWithOptions never consult package globals — nil
+// rules on those paths mean "no rewrites", as documented on
+// ClientOptions.RewriteRules.
 func (c *Client) resolveRequestURL(req *Request) string {
 	if req == nil {
 		return ""
 	}
 	rules := c.rewriteRules
-	if rules == nil {
+	if rules == nil && c.useGlobalRewriteRules {
 		rules = urlrewrite.GlobalRules()
 	}
 	if len(rules) > 0 {

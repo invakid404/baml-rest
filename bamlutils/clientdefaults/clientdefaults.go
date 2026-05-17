@@ -104,9 +104,9 @@ func Load() (*Config, error) {
 }
 
 // Parse builds a Config from a raw JSON string in the same shape as
-// BAML_REST_CLIENT_DEFAULTS. Exposes the parser so programmatic callers
-// (future dynclient) can supply a literal config without going through
-// the env var.
+// BAML_REST_CLIENT_DEFAULTS. Exposes the parser so programmatic
+// callers can supply a literal config without going through the env
+// var.
 //
 // An empty string returns a Config whose Apply is a no-op, matching
 // Load() behaviour for unset env.

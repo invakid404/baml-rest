@@ -146,8 +146,8 @@ var (
 // without affecting subsequent calls.
 //
 // Used by cmd/worker and cmd/serve at startup to populate per-handler
-// worker.Config.BaseURLRewrites. Programmatic callers (future
-// dynclient) can supply an arbitrary []Rule directly.
+// worker.Config.BaseURLRewrites. Programmatic callers can supply an
+// arbitrary []Rule directly without going through the env.
 func LoadDefaultRules() []Rule {
 	if envVal := os.Getenv("BAML_REST_BASE_URL_REWRITES"); envVal != "" {
 		return ParseRules(envVal)

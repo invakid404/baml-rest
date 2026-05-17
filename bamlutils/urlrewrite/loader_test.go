@@ -41,10 +41,15 @@ func TestLoadDefaultRulesEnvOverridesBuiltin(t *testing.T) {
 
 // TestLoadDefaultRulesIsUncached pins that consecutive calls don't
 // cache. Operators relying on cached GlobalRules behaviour stay on
-// that helper; the new explicit loader must re-read every time so
-// programmatic callers (future dynclient) can swap rules between
-// constructions without poking package state.
+// that helper; the explicit loader must re-read every time so
+// programmatic callers can swap rules between constructions without
+// poking package state.
 func TestLoadDefaultRulesIsUncached(t *testing.T) {
+	// Clear BAML_REST_BASE_URL_REWRITES so a developer-local env
+	// value doesn't shadow the builtinRules under test. t.Setenv
+	// restores the prior value on cleanup.
+	t.Setenv("BAML_REST_BASE_URL_REWRITES", "")
+
 	prev := builtinRules
 	defer func() { builtinRules = prev }()
 

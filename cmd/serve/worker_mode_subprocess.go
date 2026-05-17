@@ -127,9 +127,9 @@ func writeWorkerAtomic(dst, workerFilename, cacheDir string) error {
 //
 // runtimeCfg matches the inprocess signature for build-tag symmetry
 // but is unused on this build: subprocess workers resolve env state
-// themselves inside cmd/worker/main.go at process startup. PR 1
-// ships no host→worker config RPC; programmatic config flows only
-// through the inprocess WorkerFactory seam.
+// themselves inside cmd/worker/main.go at process startup. There is
+// no host→worker config RPC; programmatic config flows only through
+// the inprocess WorkerFactory seam.
 func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg workerModeRuntimeConfig) error {
 	_ = runtimeCfg
 	workerPath, err := extractWorker(logger)

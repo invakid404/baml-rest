@@ -38,8 +38,9 @@ func main() {
 	// Resolve env-driven config once at startup. The resulting values
 	// are passed into worker.New so the handler never reads env state
 	// at request time. Subprocess workers stay env-based by design —
-	// the host doesn't ship programmatic config across go-plugin in
-	// PR 1.
+	// the host does not ship programmatic config across the go-plugin
+	// boundary; library-mode callers wire their own config inside the
+	// host process instead.
 	buildRequestConfig := buildrequest.EnvConfig()
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
 	httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{

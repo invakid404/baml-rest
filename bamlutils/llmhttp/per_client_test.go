@@ -14,9 +14,9 @@ import (
 
 // TestClientPerInstanceRewriteRules pins that two Clients with
 // different RewriteRules slices resolve the same request URL
-// differently. This is the load-bearing per-instance assertion: the
-// dynclient seam relies on each Client carrying its own rewrite
-// ruleset rather than reaching into urlrewrite.GlobalRules.
+// differently. This is the load-bearing per-instance assertion:
+// each options-constructed Client carries its own rewrite ruleset
+// rather than reaching into urlrewrite.GlobalRules.
 func TestClientPerInstanceRewriteRules(t *testing.T) {
 	t.Parallel()
 
@@ -86,8 +86,8 @@ func TestNewDefaultClientWithOptionsUsesTunedTransport(t *testing.T) {
 // TestNewClientWithOptionsForcesModeWithoutEnv pins that Mode is
 // honoured from the options struct regardless of the env. Without
 // the explicit-mode path, two Clients in the same process would
-// share the env-driven mode and dynclient couldn't dictate its own
-// backend.
+// share the env-driven mode and a library caller could not dictate
+// its own backend.
 func TestNewClientWithOptionsForcesModeWithoutEnv(t *testing.T) {
 	// Not parallel: sets env to prove the override.
 
@@ -190,6 +190,74 @@ func TestExecuteStreamUsesPerClientRewrites(t *testing.T) {
 	// labels appear exactly once.
 	if !reflect.DeepEqual(sortedCopy(got), sortedCopy(want)) {
 		t.Errorf("expected hits = %v (any order), got %v", want, got)
+	}
+}
+
+// TestClientWithOptionsIgnoresGlobalRewritesWhenRulesNil is the
+// regression pin for the bug where NewClientWithOptions /
+// NewDefaultClientWithOptions silently fell back to
+// urlrewrite.GlobalRules when RewriteRules was nil. The contract
+// documented on ClientOptions.RewriteRules is "nil = no rewrites"
+// for the options constructors; the runtime now matches the doc.
+//
+// Without the useGlobalRewriteRules gate, this test would fail —
+// an explicit options Client would inherit the process-wide
+// BAML_REST_BASE_URL_REWRITES value and surprise programmatic
+// callers who passed no rules on purpose.
+func TestClientWithOptionsIgnoresGlobalRewritesWhenRulesNil(t *testing.T) {
+	// Not parallel: mutates the urlrewrite global cache via env.
+	t.Setenv("BAML_REST_BASE_URL_REWRITES", "https://upstream.example/=http://global-leak.local:9999/")
+	urlrewrite.ResetGlobalRules()
+	t.Cleanup(func() {
+		urlrewrite.ResetGlobalRules()
+	})
+
+	client := NewClientWithOptions(ClientOptions{
+		Mode: ClientModeNetHTTP,
+		// RewriteRules deliberately omitted (nil) — must NOT pick
+		// up the env value above.
+	})
+
+	const orig = "https://upstream.example/v1/chat"
+	got := client.resolveRequestURL(&Request{URL: orig})
+	if got != orig {
+		t.Errorf("expected options client with nil rules to skip global rewrites; got %q, want %q",
+			got, orig)
+	}
+
+	// NewDefaultClientWithOptions shares the constructor — same
+	// guarantee. Pinning it independently catches a future
+	// refactor that diverges the two paths.
+	def := NewDefaultClientWithOptions(ClientOptions{Mode: ClientModeNetHTTP})
+	if gotDef := def.resolveRequestURL(&Request{URL: orig}); gotDef != orig {
+		t.Errorf("expected NewDefaultClientWithOptions with nil rules to skip global rewrites; got %q, want %q",
+			gotDef, orig)
+	}
+}
+
+// TestClientWithOptionsDefensiveCopiesRewriteRules pins that the
+// constructor takes a snapshot of opts.RewriteRules. A library
+// caller mutating the slice after Client construction must not
+// affect rewrites applied at request time — otherwise concurrent
+// Execute / ExecuteStream calls reading c.rewriteRules race with
+// caller-side mutation.
+func TestClientWithOptionsDefensiveCopiesRewriteRules(t *testing.T) {
+	t.Parallel()
+
+	rules := []urlrewrite.Rule{{From: "https://upstream.example/", To: "http://snapshot.local:8080/"}}
+	client := NewClientWithOptions(ClientOptions{
+		Mode:         ClientModeNetHTTP,
+		RewriteRules: rules,
+	})
+
+	// Mutate the caller-side slice after construction. The Client
+	// must keep dispatching against the snapshot it took at
+	// construction time.
+	rules[0] = urlrewrite.Rule{From: "https://upstream.example/", To: "http://post-mutation.local:1111/"}
+
+	got := client.resolveRequestURL(&Request{URL: "https://upstream.example/v1/chat"})
+	if want := "http://snapshot.local:8080/v1/chat"; got != want {
+		t.Errorf("expected snapshot rule to survive caller-side mutation; got %q, want %q", got, want)
 	}
 }
 
