@@ -6,10 +6,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"runtime/debug"
 
-	"github.com/gregwebs/go-recovery"
+	recovery "github.com/gregwebs/go-recovery"
 	"github.com/rs/zerolog"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -21,6 +22,23 @@ import (
 // than imported from internal/apierror so the pool module does not gain
 // a dependency on the root module just for one string.
 const panicErrorCode = "internal_error"
+
+// isRecoveredPanic reports whether err originated from a recovered panic
+// captured by recovery.Call*, as opposed to an ordinary error returned by
+// the wrapped function. go-recovery wraps recovered panics as
+// recovery.PanicError; normal errors pass through the same return slot
+// unwrapped. Without this distinction the wrapper would rewrite any
+// structured worker error (e.g. parse_error from Parse) as internal_error.
+//
+// Only PanicError is matched here. recovery.ThrownError represents
+// go-recovery's intentional throw-as-error escape hatch (recovery.Throw);
+// treating it as a recovered panic would override that semantic. The repo
+// does not use recovery.Throw today, but matching only PanicError keeps
+// the contract honest if it ever appears.
+func isRecoveredPanic(err error) bool {
+	var panicErr recovery.PanicError
+	return errors.As(err, &panicErr)
+}
 
 // recoveringWorker wraps a workerplugin.Worker and turns Go panics in
 // the inner worker's methods into structured error returns. It exists
@@ -74,6 +92,9 @@ func (r *recoveringWorker) CallStream(ctx context.Context, methodName string, in
 	if err == nil {
 		return ch, nil
 	}
+	if !isRecoveredPanic(err) {
+		return ch, err
+	}
 	stack := debug.Stack()
 	r.logPanic("CallStream", err, stack)
 	// Surface the panic as a normal terminal error frame rather than a
@@ -98,6 +119,9 @@ func (r *recoveringWorker) Health(ctx context.Context) (bool, error) {
 	if err == nil {
 		return ok, nil
 	}
+	if !isRecoveredPanic(err) {
+		return ok, err
+	}
 	stack := debug.Stack()
 	r.logPanic("Health", err, stack)
 	return false, r.panicError("Health", err, stack)
@@ -109,6 +133,9 @@ func (r *recoveringWorker) GetMetrics(ctx context.Context) ([][]byte, error) {
 	})
 	if err == nil {
 		return res, nil
+	}
+	if !isRecoveredPanic(err) {
+		return res, err
 	}
 	stack := debug.Stack()
 	r.logPanic("GetMetrics", err, stack)
@@ -122,6 +149,9 @@ func (r *recoveringWorker) TriggerGC(ctx context.Context) (*workerplugin.GCResul
 	if err == nil {
 		return res, nil
 	}
+	if !isRecoveredPanic(err) {
+		return res, err
+	}
 	stack := debug.Stack()
 	r.logPanic("TriggerGC", err, stack)
 	return nil, r.panicError("TriggerGC", err, stack)
@@ -134,6 +164,9 @@ func (r *recoveringWorker) Parse(ctx context.Context, methodName string, inputJS
 	if err == nil {
 		return res, nil
 	}
+	if !isRecoveredPanic(err) {
+		return res, err
+	}
 	stack := debug.Stack()
 	r.logPanic("Parse", err, stack)
 	return nil, r.panicError("Parse", err, stack)
@@ -145,6 +178,9 @@ func (r *recoveringWorker) GetGoroutines(ctx context.Context, filter string) (*w
 	})
 	if err == nil {
 		return res, nil
+	}
+	if !isRecoveredPanic(err) {
+		return res, err
 	}
 	stack := debug.Stack()
 	r.logPanic("GetGoroutines", err, stack)

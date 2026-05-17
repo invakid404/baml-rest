@@ -170,6 +170,121 @@ func TestRecoveringWorkerAdminMethodsRecoverPanics(t *testing.T) {
 	}
 }
 
+// errorWorker implements workerplugin.Worker by returning a
+// pre-configured error from every method. Used to assert the recover
+// wrapper passes ordinary worker errors through untouched: recovery.Call*
+// returns both panic-derived and ordinary errors through the same slot,
+// so the wrapper must distinguish them before rewriting as internal_error.
+type errorWorker struct {
+	err error
+}
+
+func (e errorWorker) CallStream(context.Context, string, []byte, bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+	return nil, e.err
+}
+
+func (e errorWorker) Health(context.Context) (bool, error) {
+	return false, e.err
+}
+
+func (e errorWorker) GetMetrics(context.Context) ([][]byte, error) {
+	return nil, e.err
+}
+
+func (e errorWorker) TriggerGC(context.Context) (*workerplugin.GCResult, error) {
+	return nil, e.err
+}
+
+func (e errorWorker) Parse(context.Context, string, []byte) (*workerplugin.ParseResult, error) {
+	return nil, e.err
+}
+
+func (e errorWorker) GetGoroutines(context.Context, string) (*workerplugin.GoroutinesResult, error) {
+	return nil, e.err
+}
+
+// TestRecoveringWorkerCallStreamPassesNormalErrorThrough verifies that
+// a normal (non-panic) error returned by the inner CallStream surfaces
+// unchanged: same error identity, no rewrite to internal_error, no
+// synthesized terminal stream frame. A previous version of the wrapper
+// rewrote every non-nil err from recovery.Call1 as a panic, masking
+// structured worker errors like parse_error.
+func TestRecoveringWorkerCallStreamPassesNormalErrorThrough(t *testing.T) {
+	sentinel := errors.New("upstream transport failure")
+	w := newRecoveringWorker(errorWorker{err: sentinel}, zerolog.Nop())
+
+	ch, err := w.CallStream(context.Background(), "Foo", []byte(`{}`), bamlutils.StreamModeCall)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("CallStream err = %v, want %v (sentinel passed through)", err, sentinel)
+	}
+	if ch != nil {
+		// Inner returned nil channel; wrapper must not synthesize a
+		// terminal error frame for ordinary errors. If a non-nil
+		// channel ever becomes a valid pass-through (inner returning
+		// (ch, err)), keep the assertion: there must be no error
+		// frame coded internal_error on it.
+		t.Fatalf("CallStream returned non-nil channel for ordinary error; got %v", ch)
+	}
+	var ews *workerplugin.ErrorWithStack
+	if errors.As(err, &ews) && ews.GetCode() == panicErrorCode {
+		t.Fatalf("ordinary error rewritten as internal_error: %+v", ews)
+	}
+}
+
+// TestRecoveringWorkerParsePassesStructuredErrorThrough verifies the
+// specific regression that motivated isRecoveredPanic: a structured
+// *workerplugin.ErrorWithStack returned by inner Parse must keep its
+// original ErrorCode (e.g. parse_error) instead of being rewritten as
+// internal_error.
+func TestRecoveringWorkerParsePassesStructuredErrorThrough(t *testing.T) {
+	structured := workerplugin.NewErrorWithMetadata(
+		errors.New("Failed to coerce value: ParsingError"),
+		"original-stack",
+		"parse_error",
+		[]byte(`{"field":"x"}`),
+	)
+	w := newRecoveringWorker(errorWorker{err: structured}, zerolog.Nop())
+
+	res, err := w.Parse(context.Background(), "Foo", []byte(`{}`))
+	if res != nil {
+		t.Errorf("Parse returned non-nil result alongside structured error: %+v", res)
+	}
+	if !errors.Is(err, structured) {
+		t.Fatalf("Parse err identity changed: got %v, want %v", err, structured)
+	}
+	var ews *workerplugin.ErrorWithStack
+	if !errors.As(err, &ews) {
+		t.Fatalf("expected *workerplugin.ErrorWithStack, got %T", err)
+	}
+	if ews.GetCode() != "parse_error" {
+		t.Errorf("ErrorCode rewritten: got %q, want %q", ews.GetCode(), "parse_error")
+	}
+	if ews.GetStacktrace() != "original-stack" {
+		t.Errorf("Stacktrace replaced: got %q, want %q", ews.GetStacktrace(), "original-stack")
+	}
+}
+
+// TestRecoveringWorkerAdminPassesNormalErrorThrough exercises the same
+// pass-through guarantee for admin methods. Health is the simplest
+// signature; the other admin methods follow the identical
+// if-not-panic-return-err shape so one method covers the contract.
+func TestRecoveringWorkerAdminPassesNormalErrorThrough(t *testing.T) {
+	sentinel := errors.New("health probe failure")
+	w := newRecoveringWorker(errorWorker{err: sentinel}, zerolog.Nop())
+
+	ok, err := w.Health(context.Background())
+	if ok {
+		t.Errorf("Health returned ok=true on error")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Health err = %v, want %v (sentinel passed through)", err, sentinel)
+	}
+	var ews *workerplugin.ErrorWithStack
+	if errors.As(err, &ews) && ews.GetCode() == panicErrorCode {
+		t.Fatalf("ordinary error rewritten as internal_error: %+v", ews)
+	}
+}
+
 // TestInProcessPoolWrapsFactoryWorkerWithRecover constructs a real
 // inprocess pool whose factory hands back a panicking worker, then
 // drives Parse through the pool to confirm the recover wrapper is

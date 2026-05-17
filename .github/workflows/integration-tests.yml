@@ -105,7 +105,19 @@ jobs:
         # versions exercise the same recover wrappers and pool shape;
         # the latest entry catches tag rot and single-process deployment
         # regressions without the cost of the full version cross-product.
-        run: echo "latest=$(jq -r '.latest' integration/baml_versions.json)" >> "$GITHUB_OUTPUT"
+        #
+        # The `.latest // empty` filter handles both missing keys and JSON
+        # null; the explicit "null" string check rejects an accidental
+        # literal string value. Without the guard, a missing entry would
+        # propagate BAML_VERSION=null into Go module resolution and surface
+        # as an opaque "module not found" deep in the test run.
+        run: |
+          latest=$(jq -r '.latest // empty' integration/baml_versions.json)
+          if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+            echo "::error file=integration/baml_versions.json::missing non-empty .latest BAML version"
+            exit 1
+          fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
 
   integration-tests-inprocess:
     needs: get-latest-version
