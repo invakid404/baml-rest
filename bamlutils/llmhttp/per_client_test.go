@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"sync"
 	"testing"
@@ -120,8 +119,7 @@ func TestClientModeFromEnv(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			os.Setenv(EnvVarClientMode, tc.raw)
-			defer os.Unsetenv(EnvVarClientMode)
+			t.Setenv(EnvVarClientMode, tc.raw)
 			if got := ClientModeFromEnv(); got != tc.want {
 				t.Errorf("ClientModeFromEnv with %q: got %v, want %v", tc.raw, got, tc.want)
 			}
