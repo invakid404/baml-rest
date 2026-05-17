@@ -36,28 +36,7 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer setupCancel()
 
-	// Match the outer matrix leg's unary-server setting. UnaryClient is
-	// non-nil iff TestMain enabled the chi server for this run.
-	unaryEnabled := UnaryClient != nil
-
-	adapterVersion, err := testutil.GetAdapterVersionForBAML(BAMLVersion)
-	if err != nil {
-		t.Fatalf("Failed to get adapter version: %v", err)
-	}
-	bamlSrcPath, err := findTestdataPath()
-	if err != nil {
-		t.Fatalf("Failed to find testdata: %v", err)
-	}
-
-	env, err := testutil.Setup(setupCtx, testutil.SetupOptions{
-		BAMLSrcPath:     bamlSrcPath,
-		BAMLVersion:     BAMLVersion,
-		AdapterVersion:  adapterVersion,
-		BAMLSource:      BAMLSourcePath,
-		UnaryServer:     unaryEnabled,
-		UseBuildRequest: UseBuildRequest,
-		InProcess:       inProcessBuild,
-	})
+	env, err := testutil.Setup(setupCtx, matrixSetupOptions())
 	if err != nil {
 		t.Fatalf("Failed to setup dedicated shutdown env: %v", err)
 	}
@@ -81,7 +60,7 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 	clients := []namedClient{
 		{Name: "fiber", Client: fiberClient},
 	}
-	if unaryEnabled {
+	if unaryServer {
 		clients = append(clients, namedClient{
 			Name:   "chi",
 			Client: testutil.NewBAMLRestClient(env.BAMLRestUnaryURL),

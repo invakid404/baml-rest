@@ -43,6 +43,30 @@ var BAMLSourcePath string
 // Set in TestMain from the BAML_REST_USE_BUILD_REQUEST env var.
 var UseBuildRequest bool
 
+// Matrix-derived setup inputs populated by TestMain before m.Run. Dedicated
+// tests read these via matrixSetupOptions so a new axis added to TestMain
+// propagates without each callsite needing to be updated.
+var (
+	bamlSrcPath    string
+	adapterVersion string
+	unaryServer    bool
+)
+
+// matrixSetupOptions returns SetupOptions pre-populated from the matrix
+// axes (build mode, unary server, build-request, BAML version) so dedicated
+// envs inherit them by default; tests override only what they pin.
+func matrixSetupOptions() testutil.SetupOptions {
+	return testutil.SetupOptions{
+		BAMLSrcPath:     bamlSrcPath,
+		BAMLVersion:     BAMLVersion,
+		AdapterVersion:  adapterVersion,
+		BAMLSource:      BAMLSourcePath,
+		UnaryServer:     unaryServer,
+		UseBuildRequest: UseBuildRequest,
+		InProcess:       inProcessBuild,
+	}
+}
+
 // ActuallyBuildRequest reports whether a request is genuinely routed through
 // the BuildRequest orchestrator given both the runtime env gate and the BAML
 // runtime version. BuildRequest requires the Request / StreamRequest APIs
@@ -142,14 +166,15 @@ func TestMain(m *testing.M) {
 	defer cancel()
 
 	// Find the testdata directory
-	bamlSrcPath, err := findTestdataPath()
+	var err error
+	bamlSrcPath, err = findTestdataPath()
 	if err != nil {
 		println("Failed to find testdata:", err.Error())
 		os.Exit(1)
 	}
 
 	// Get the appropriate adapter version
-	adapterVersion, err := testutil.GetAdapterVersionForBAML(BAMLVersion)
+	adapterVersion, err = testutil.GetAdapterVersionForBAML(BAMLVersion)
 	if err != nil {
 		println("Failed to get adapter version:", err.Error())
 		os.Exit(1)
@@ -164,9 +189,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// Setup test environment
-	unaryServer := false
 	if v := os.Getenv("UNARY_SERVER"); v != "" {
-		var err error
 		unaryServer, err = strconv.ParseBool(v)
 		if err != nil {
 			println("Invalid UNARY_SERVER value:", v, "(expected true/false)")
@@ -174,15 +197,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 	UseBuildRequest = parseBoolEnv(os.Getenv("BAML_REST_USE_BUILD_REQUEST"))
-	TestEnv, err = testutil.Setup(ctx, testutil.SetupOptions{
-		BAMLSrcPath:     bamlSrcPath,
-		BAMLVersion:     BAMLVersion,
-		AdapterVersion:  adapterVersion,
-		BAMLSource:      BAMLSourcePath,
-		UnaryServer:     unaryServer,
-		UseBuildRequest: UseBuildRequest,
-		InProcess:       inProcessBuild,
-	})
+	TestEnv, err = testutil.Setup(ctx, matrixSetupOptions())
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
 		os.Exit(1)

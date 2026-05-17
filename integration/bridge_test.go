@@ -39,29 +39,15 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer setupCancel()
 
-	adapterVersion, err := testutil.GetAdapterVersionForBAML(BAMLVersion)
-	if err != nil {
-		t.Fatalf("Failed to get adapter version: %v", err)
+	opts := matrixSetupOptions()
+	opts.UseBuildRequest = true
+	opts.RuntimeEnv = map[string]string{
+		// Forces IsCallProviderSupported to return false for every
+		// provider, routing /call{,-with-raw} through the stream-
+		// accumulation bridge.
+		"BAML_REST_DISABLE_CALL_BUILD_REQUEST": "true",
 	}
-	bamlSrcPath, err := findTestdataPath()
-	if err != nil {
-		t.Fatalf("Failed to find testdata: %v", err)
-	}
-
-	env, err := testutil.Setup(setupCtx, testutil.SetupOptions{
-		BAMLSrcPath:     bamlSrcPath,
-		BAMLVersion:     BAMLVersion,
-		AdapterVersion:  adapterVersion,
-		BAMLSource:      BAMLSourcePath,
-		UseBuildRequest: true,
-		InProcess:       inProcessBuild,
-		RuntimeEnv: map[string]string{
-			// Forces IsCallProviderSupported to return false for every
-			// provider, routing /call{,-with-raw} through the stream-
-			// accumulation bridge.
-			"BAML_REST_DISABLE_CALL_BUILD_REQUEST": "true",
-		},
-	})
+	env, err := testutil.Setup(setupCtx, opts)
 	if err != nil {
 		t.Fatalf("Failed to setup dedicated env: %v", err)
 	}
@@ -280,28 +266,14 @@ func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer setupCancel()
 
-	adapterVersion, err := testutil.GetAdapterVersionForBAML(BAMLVersion)
-	if err != nil {
-		t.Fatalf("Failed to get adapter version: %v", err)
+	opts := matrixSetupOptions()
+	opts.UseBuildRequest = true
+	opts.RuntimeEnv = map[string]string{
+		// Mark openai-generic as call-unsupported (but still stream-
+		// supported). Debug-tag only — no effect on release builds.
+		"BAML_REST_CALL_UNSUPPORTED_PROVIDERS": "openai-generic",
 	}
-	bamlSrcPath, err := findTestdataPath()
-	if err != nil {
-		t.Fatalf("Failed to find testdata: %v", err)
-	}
-
-	env, err := testutil.Setup(setupCtx, testutil.SetupOptions{
-		BAMLSrcPath:     bamlSrcPath,
-		BAMLVersion:     BAMLVersion,
-		AdapterVersion:  adapterVersion,
-		BAMLSource:      BAMLSourcePath,
-		UseBuildRequest: true,
-		InProcess:       inProcessBuild,
-		RuntimeEnv: map[string]string{
-			// Mark openai-generic as call-unsupported (but still stream-
-			// supported). Debug-tag only — no effect on release builds.
-			"BAML_REST_CALL_UNSUPPORTED_PROVIDERS": "openai-generic",
-		},
-	})
+	env, err := testutil.Setup(setupCtx, opts)
 	if err != nil {
 		t.Fatalf("Failed to setup dedicated env: %v", err)
 	}

@@ -43,26 +43,11 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 		setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer setupCancel()
 
-		adapterVersion, err := testutil.GetAdapterVersionForBAML(BAMLVersion)
-		if err != nil {
-			t.Fatalf("Failed to get adapter version: %v", err)
+		opts := matrixSetupOptions()
+		opts.RuntimeEnv = map[string]string{
+			"BAML_REST_CLIENT_DEFAULTS": `{"client_defaults":{"options":{"allowed_role_metadata":["cache_control"]}}}`,
 		}
-		bamlSrcPath, err := findTestdataPath()
-		if err != nil {
-			t.Fatalf("Failed to find testdata: %v", err)
-		}
-
-		env, err := testutil.Setup(setupCtx, testutil.SetupOptions{
-			BAMLSrcPath:     bamlSrcPath,
-			BAMLVersion:     BAMLVersion,
-			AdapterVersion:  adapterVersion,
-			BAMLSource:      BAMLSourcePath,
-			UseBuildRequest: UseBuildRequest,
-			InProcess:       inProcessBuild,
-			RuntimeEnv: map[string]string{
-				"BAML_REST_CLIENT_DEFAULTS": `{"client_defaults":{"options":{"allowed_role_metadata":["cache_control"]}}}`,
-			},
-		})
+		env, err := testutil.Setup(setupCtx, opts)
 		if err != nil {
 			t.Fatalf("Failed to setup dedicated env: %v", err)
 		}
