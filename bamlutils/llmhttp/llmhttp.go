@@ -99,10 +99,36 @@ const MaxErrorBodyBytes = 4096
 // upstreams) and a fasthttp backend (for HTTP/1.1 upstreams). Per-origin
 // routing is selected by an ALPN probe on first request and cached for the
 // process lifetime. Use DefaultClient for a pre-configured instance or
-// NewClient for custom settings.
+// NewClient / NewClientWithOptions for custom settings.
+//
+// Per-Client URL rewrite rules apply to every outbound request via
+// resolveRequestURL — supplied at construction so two Clients in the
+// same process can route to different upstream endpoints without
+// going through urlrewrite.GlobalRules.
 type Client struct {
-	httpClient *http.Client
-	cache      *protocolCache
+	httpClient   *http.Client
+	cache        *protocolCache
+	rewriteRules []urlrewrite.Rule
+}
+
+// ClientOptions configures NewClientWithOptions / NewDefaultClientWithOptions.
+// All fields are optional; the constructors apply sensible defaults
+// matching the legacy env-driven NewClient(nil) shape when the
+// corresponding field is zero.
+type ClientOptions struct {
+	// HTTPClient is the underlying *http.Client. When nil, the
+	// constructor's default is used: http.DefaultClient for
+	// NewClientWithOptions; the tuned defaultLLMTransport-backed
+	// client for NewDefaultClientWithOptions.
+	HTTPClient *http.Client
+	// Mode forces a specific backend selection (Auto / FastHTTP /
+	// NetHTTP). Defaults to ClientModeAuto when zero.
+	Mode ClientMode
+	// RewriteRules apply to every outbound request URL via
+	// resolveRequestURL. Pass urlrewrite.LoadDefaultRules() to
+	// reproduce the env-driven default. nil disables rewriting on
+	// this Client.
+	RewriteRules []urlrewrite.Rule
 }
 
 // NewClient creates a new LLM HTTP client with the given http.Client.
@@ -110,6 +136,9 @@ type Client struct {
 //
 // The client mode (auto / fasthttp / nethttp) is read from the
 // BAML_REST_HTTP_CLIENT environment variable at construction time.
+// URL rewrites resolve through urlrewrite.GlobalRules at request
+// time — compatibility shape for callers that haven't migrated to
+// NewClientWithOptions.
 //
 // # Injected http.Client scope
 //
@@ -140,6 +169,39 @@ func NewClient(httpClient *http.Client) *Client {
 		httpClient: httpClient,
 		cache:      newProtocolCache(loadClientMode(), tlsConfigFromHTTPClient(httpClient), proxyFuncFromHTTPClient(httpClient)),
 	}
+}
+
+// NewClientWithOptions constructs a Client from an explicit
+// ClientOptions value. Unlike NewClient, the backend mode and URL
+// rewrite rules are passed in rather than read from process env, so
+// two Clients in the same process can route requests differently.
+//
+// HTTPClient nil falls back to http.DefaultClient (matching NewClient).
+// For the tuned LLM transport, use NewDefaultClientWithOptions.
+func NewClientWithOptions(opts ClientOptions) *Client {
+	httpClient := opts.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	return &Client{
+		httpClient:   httpClient,
+		cache:        newProtocolCache(opts.Mode, tlsConfigFromHTTPClient(httpClient), proxyFuncFromHTTPClient(httpClient)),
+		rewriteRules: opts.RewriteRules,
+	}
+}
+
+// NewDefaultClientWithOptions builds a Client whose underlying
+// *http.Client uses defaultLLMTransport — the tuned LLM-traffic
+// transport that backs the package-level DefaultClient. opts.HTTPClient
+// is ignored.
+//
+// Use this when constructing a per-process LLM client at startup so
+// the same connection-pool sizing the legacy DefaultClient relied on
+// applies to the new explicit client.
+func NewDefaultClientWithOptions(opts ClientOptions) *Client {
+	httpClient := &http.Client{Transport: defaultLLMTransport}
+	opts.HTTPClient = httpClient
+	return NewClientWithOptions(opts)
 }
 
 // tlsConfigFromHTTPClient returns the TLSClientConfig of the supplied
@@ -225,7 +287,7 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 		return nil, fmt.Errorf("llmhttp: nil request")
 	}
 
-	rewritten := resolveRequestURL(req)
+	rewritten := c.resolveRequestURL(req)
 
 	// SigV4 signing runs after URL rewrite (so the signature matches
 	// the host the request actually goes out with) and before either
@@ -357,7 +419,7 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 		defer cancel()
 	}
 
-	rewritten := resolveRequestURL(req)
+	rewritten := c.resolveRequestURL(req)
 
 	// SigV4 signing runs after URL rewrite (so the signature matches
 	// the host the request actually goes out with) and before either
@@ -443,15 +505,21 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("llmhttp: HTTP %d", e.StatusCode)
 }
 
-// resolveRequestURL applies URL rewrite rules (BAML_REST_BASE_URL_REWRITES)
-// to the request URL. Exposed as a dedicated helper so the dispatcher can
-// rewrite exactly once and feed the result to both the cache key resolver
-// and whichever backend handles the request.
-func resolveRequestURL(req *Request) string {
+// resolveRequestURL applies the per-Client URL rewrite rules to the
+// request URL. Exposed as a method so the dispatcher can rewrite
+// exactly once and feed the result to both the cache key resolver and
+// whichever backend handles the request. Clients constructed via
+// NewClient (compatibility path) fall back to urlrewrite.GlobalRules
+// so existing env-driven setups keep their behaviour unchanged.
+func (c *Client) resolveRequestURL(req *Request) string {
 	if req == nil {
 		return ""
 	}
-	if rules := urlrewrite.GlobalRules(); len(rules) > 0 {
+	rules := c.rewriteRules
+	if rules == nil {
+		rules = urlrewrite.GlobalRules()
+	}
+	if len(rules) > 0 {
 		return urlrewrite.ApplyToURL(req.URL, rules)
 	}
 	return req.URL

@@ -124,7 +124,14 @@ func writeWorkerAtomic(dst, workerFilename, cacheDir string) error {
 // execution: extracts the embedded worker binary to a cache path and
 // wires it into Config.WorkerPath. The in-process WorkerFactory seam
 // is unused in subprocess builds.
-func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config) error {
+//
+// runtimeCfg matches the inprocess signature for build-tag symmetry
+// but is unused on this build: subprocess workers resolve env state
+// themselves inside cmd/worker/main.go at process startup. PR 1
+// ships no host→worker config RPC; programmatic config flows only
+// through the inprocess WorkerFactory seam.
+func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg workerModeRuntimeConfig) error {
+	_ = runtimeCfg
 	workerPath, err := extractWorker(logger)
 	if err != nil {
 		return fmt.Errorf("failed to extract worker binary: %w", err)

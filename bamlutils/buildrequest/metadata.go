@@ -544,6 +544,32 @@ func BuildLegacyMetadataPlan(
 	isProviderSupported func(string) bool,
 	retryPolicy *retry.Policy,
 ) *bamlutils.Metadata {
+	return BuildLegacyMetadataPlanWithConfig(
+		adapter, defaultClientName, introspectedProvider,
+		fallbackChains, clientProviders, isProviderSupported, retryPolicy,
+		EnvConfig(),
+	)
+}
+
+// BuildLegacyMetadataPlanWithConfig is the config-aware sibling of
+// BuildLegacyMetadataPlan. cfg.UseBuildRequest drives the
+// PathReasonBuildRequestDisabled classification at the bottom of the
+// plan-building flow — when false (and no earlier reason fired) the
+// plan reports the kill-switch as the legacy-path reason.
+//
+// Generated routers pass the per-handler config so per-request
+// metadata reflects this handler's settings rather than process-wide
+// env state.
+func BuildLegacyMetadataPlanWithConfig(
+	adapter bamlutils.Adapter,
+	defaultClientName string,
+	introspectedProvider string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+	retryPolicy *retry.Policy,
+	cfg bamlutils.BuildRequestConfig,
+) *bamlutils.Metadata {
 	resolution := ResolveProviderWithReason(adapter, defaultClientName, introspectedProvider, isProviderSupported)
 
 	plan := newPlanBase("legacy", resolution.Client, retryPolicy, "")
@@ -608,7 +634,7 @@ func BuildLegacyMetadataPlan(
 	// BAML_REST_USE_BUILD_REQUEST being off is never surfaced by the per-
 	// request resolution helpers; encode it here since a legacy-path
 	// execution with a supported single provider otherwise looks empty.
-	if plan.PathReason == "" && !UseBuildRequest() {
+	if plan.PathReason == "" && !cfg.UseBuildRequest {
 		plan.PathReason = PathReasonBuildRequestDisabled
 	}
 
@@ -632,6 +658,27 @@ func BuildLegacyMetadataPlanForClient(
 	clientProviders map[string]string,
 	isProviderSupported func(string) bool,
 	retryPolicy *retry.Policy,
+) *bamlutils.Metadata {
+	return BuildLegacyMetadataPlanForClientWithConfig(
+		reg, clientName, introspectedProvider,
+		fallbackChains, clientProviders, isProviderSupported, retryPolicy,
+		EnvConfig(),
+	)
+}
+
+// BuildLegacyMetadataPlanForClientWithConfig is the config-aware
+// sibling of BuildLegacyMetadataPlanForClient. cfg.UseBuildRequest
+// drives the PathReasonBuildRequestDisabled classification — see
+// BuildLegacyMetadataPlanWithConfig for the broader contract.
+func BuildLegacyMetadataPlanForClientWithConfig(
+	reg *bamlutils.ClientRegistry,
+	clientName string,
+	introspectedProvider string,
+	fallbackChains map[string][]string,
+	clientProviders map[string]string,
+	isProviderSupported func(string) bool,
+	retryPolicy *retry.Policy,
+	cfg bamlutils.BuildRequestConfig,
 ) *bamlutils.Metadata {
 	provider := ResolveClientProvider(reg, clientName, clientProviders)
 	// ResolveClientProvider returns "" both for "no provider configured"
@@ -737,7 +784,7 @@ func BuildLegacyMetadataPlanForClient(
 		}
 	}
 
-	if plan.PathReason == "" && !UseBuildRequest() {
+	if plan.PathReason == "" && !cfg.UseBuildRequest {
 		plan.PathReason = PathReasonBuildRequestDisabled
 	}
 

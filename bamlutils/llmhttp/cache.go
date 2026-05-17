@@ -17,39 +17,65 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// clientMode selects how requests are dispatched between the net/http and
-// fasthttp backends. Read once from BAML_REST_HTTP_CLIENT on Client
-// construction.
-type clientMode int
+// ClientMode selects how requests are dispatched between the net/http
+// and fasthttp backends. Constructed via NewClient (env-driven) or
+// NewClientWithOptions (caller-supplied) and frozen on the Client for
+// its lifetime.
+type ClientMode int
 
 const (
-	// modeAuto: per-origin ALPN probe on first request, then cache the
-	// decision for the process lifetime.
-	modeAuto clientMode = iota
-	// modeFast: every request goes through fasthttp. The probe is skipped.
-	// Callers who know their upstreams speak HTTP/1.1 avoid the cold-start
-	// probe latency entirely.
-	modeFast
-	// modeNet: every request goes through net/http. Reproduces the behaviour
-	// that shipped before the fasthttp backend existed; intended as an
-	// emergency rollback switch.
-	modeNet
+	// ClientModeAuto: per-origin ALPN probe on first request, then
+	// cache the decision for the process lifetime.
+	ClientModeAuto ClientMode = iota
+	// ClientModeFastHTTP: every request goes through fasthttp. The
+	// probe is skipped. Callers who know their upstreams speak HTTP/1.1
+	// avoid the cold-start probe latency entirely.
+	ClientModeFastHTTP
+	// ClientModeNetHTTP: every request goes through net/http.
+	// Reproduces the behaviour that shipped before the fasthttp backend
+	// existed; intended as an emergency rollback switch.
+	ClientModeNetHTTP
 )
+
+// Internal aliases preserve the older spelling used by the protocol
+// cache and tests.
+const (
+	modeAuto = ClientModeAuto
+	modeFast = ClientModeFastHTTP
+	modeNet  = ClientModeNetHTTP
+)
+
+type clientMode = ClientMode
 
 // EnvVarClientMode is the environment variable that selects the client mode.
 // Values: "auto" (default), "fasthttp", "nethttp". Unrecognised values fall
 // back to "auto" so a typo never silently disables a backend.
 const EnvVarClientMode = "BAML_REST_HTTP_CLIENT"
 
-func loadClientMode() clientMode {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvVarClientMode))) {
+// ParseClientMode interprets a raw env-style string into a ClientMode.
+// Unrecognised input collapses to ClientModeAuto so a typo never
+// silently disables a backend.
+func ParseClientMode(raw string) ClientMode {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "fasthttp":
-		return modeFast
+		return ClientModeFastHTTP
 	case "nethttp":
-		return modeNet
+		return ClientModeNetHTTP
 	default:
-		return modeAuto
+		return ClientModeAuto
 	}
+}
+
+// ClientModeFromEnv resolves the ClientMode from BAML_REST_HTTP_CLIENT.
+// Used by cmd/worker and cmd/serve at startup so the per-handler
+// llmhttp.Client matches what the env-driven NewClient(nil) path would
+// have produced.
+func ClientModeFromEnv() ClientMode {
+	return ParseClientMode(os.Getenv(EnvVarClientMode))
+}
+
+func loadClientMode() clientMode {
+	return ClientModeFromEnv()
 }
 
 // decision is the cached routing outcome for a single origin. "unknown" is
@@ -93,7 +119,7 @@ type protocolCache struct {
 	// relevant addr/TLS fields are overridden per origin at construction.
 	fastClientTemplate *fasthttp.HostClient
 
-	entries atomic.Pointer[map[string]*hostEntry]
+	entries   atomic.Pointer[map[string]*hostEntry]
 	installMu sync.Mutex
 	sf        singleflight.Group
 }

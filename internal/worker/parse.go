@@ -6,7 +6,6 @@ import (
 
 	"github.com/goccy/go-json"
 
-	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
@@ -22,7 +21,7 @@ type workerParseInput struct {
 // is a local CPU operation and never dispatches against a baml-roundrobin
 // client.
 func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
-	method, ok := baml_rest.ParseMethods[methodName]
+	method, ok := h.runtime.ParseMethod(methodName)
 	if !ok {
 		return nil, fmt.Errorf("parse method %q not found", methodName)
 	}
@@ -38,11 +37,12 @@ func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte
 	}
 
 	// Create adapter and apply options
-	adapter := baml_rest.MakeAdapter(ctx)
+	adapter := h.runtime.MakeAdapter(ctx)
+	h.configureAdapter(adapter)
 	adapter.SetLogger(h.logger)
 	if input.Options != nil {
 		opts := workerBamlOptions{Options: input.Options}
-		if err := opts.apply(adapter, h.clientDefaults); err != nil {
+		if err := opts.apply(adapter, h.clientDefaults, h.baseURLRewrites); err != nil {
 			return nil, fmt.Errorf("failed to apply options: %w", err)
 		}
 	}

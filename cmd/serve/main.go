@@ -26,8 +26,11 @@ import (
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/internal/memlimit"
+	"github.com/invakid404/baml-rest/internal/rootruntime"
 	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -227,6 +230,24 @@ var serveCmd = &cobra.Command{
 		}
 		slices.Sort(methodNames)
 
+		// Resolve env-driven runtime config once at startup. The
+		// resulting values are threaded into the in-process worker
+		// factory so every handler in the pool observes the same
+		// configuration the subprocess build's cmd/worker would
+		// produce on its own at process startup.
+		buildRequestConfig := buildrequest.EnvConfig()
+		baseURLRewrites := urlrewrite.LoadDefaultRules()
+		httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{
+			Mode:         llmhttp.ClientModeFromEnv(),
+			RewriteRules: baseURLRewrites,
+		})
+		runtimeCfg := workerModeRuntimeConfig{
+			Runtime:         rootruntime.Runtime{},
+			BuildRequest:    buildRequestConfig,
+			BaseURLRewrites: baseURLRewrites,
+			HTTPClient:      httpClient,
+		}
+
 		// Initialize worker pool. configureWorkerMode is tag-split:
 		// subprocess extracts the embedded worker binary and sets
 		// WorkerPath; inprocess initialises the BAML runtime in
@@ -237,7 +258,7 @@ var serveCmd = &cobra.Command{
 		poolConfig.LogOutput = os.Stdout
 		poolConfig.PrettyLogs = prettyLogs
 		poolConfig.WorkerMemLimit = workerMemLimit
-		if err := configureWorkerMode(logger, poolConfig); err != nil {
+		if err := configureWorkerMode(logger, poolConfig, runtimeCfg); err != nil {
 			return err
 		}
 		// Host the shared-state round-robin counters. Passing a non-nil
@@ -268,7 +289,7 @@ var serveCmd = &cobra.Command{
 		// Request is nil. Only when neither surface exists does the
 		// BuildRequest path become unexercisable — wiring SharedState
 		// in that case would be pure dead weight.
-		if buildrequest.UseBuildRequest() && (introspected.Request != nil || introspected.StreamRequest != nil) {
+		if buildRequestConfig.UseBuildRequest && (introspected.Request != nil || introspected.StreamRequest != nil) {
 			poolConfig.SharedStateSeeds = introspected.RoundRobinStart
 		}
 

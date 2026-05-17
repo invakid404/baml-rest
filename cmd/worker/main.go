@@ -11,15 +11,21 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/memlimit"
+	"github.com/invakid404/baml-rest/internal/rootruntime"
 	"github.com/invakid404/baml-rest/internal/worker"
 	"github.com/invakid404/baml-rest/workerplugin"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 )
 
 func main() {
-	// Initialize BAML runtime - this loads the shared library.
-	worker.InitRuntime()
+	// Initialize BAML runtime via the rootruntime wrapper — internal/worker
+	// no longer imports the root generated package directly, so the
+	// runtime touch point lives here at the binary entry point.
+	rt := rootruntime.Runtime{}
+	rt.InitRuntime()
 
 	// Create hclog logger for go-plugin communication.
 	// Logs are routed back to the main process via go-plugin's protocol.
@@ -27,6 +33,18 @@ func main() {
 		Level:      hclog.Debug,
 		Output:     os.Stderr,
 		JSONFormat: true,
+	})
+
+	// Resolve env-driven config once at startup. The resulting values
+	// are passed into worker.New so the handler never reads env state
+	// at request time. Subprocess workers stay env-based by design —
+	// the host doesn't ship programmatic config across go-plugin in
+	// PR 1.
+	buildRequestConfig := buildrequest.EnvConfig()
+	baseURLRewrites := urlrewrite.LoadDefaultRules()
+	httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{
+		Mode:         llmhttp.ClientModeFromEnv(),
+		RewriteRules: baseURLRewrites,
 	})
 
 	// Load deployment-wide ClientRegistry defaults. A parse failure here is
@@ -42,7 +60,7 @@ func main() {
 		logger.Error("invalid BAML_REST_CLIENT_DEFAULTS", "err", err.Error())
 		os.Exit(1)
 	}
-	if clientDefaults.HasKey("allowed_role_metadata") && buildrequest.UseBuildRequest() {
+	if clientDefaults.HasKey("allowed_role_metadata") && buildRequestConfig.UseBuildRequest {
 		logger.Warn(
 			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata but " +
 				"BAML_REST_USE_BUILD_REQUEST=true; message-level metadata " +
@@ -78,9 +96,13 @@ func main() {
 	}
 
 	handler, err := worker.New(worker.Config{
-		Logger:         logger,
-		Metrics:        worker.NewMetricsRegistry(),
-		ClientDefaults: clientDefaults,
+		Runtime:         rt,
+		Logger:          logger,
+		Metrics:         worker.NewMetricsRegistry(),
+		ClientDefaults:  clientDefaults,
+		BuildRequest:    buildRequestConfig,
+		BaseURLRewrites: baseURLRewrites,
+		HTTPClient:      httpClient,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())

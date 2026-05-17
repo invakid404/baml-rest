@@ -207,8 +207,39 @@ var callSupportedProviders = map[string]bool{
 // fall-through gate to fire without waiting for callSupportedProviders and
 // supportedProviders to diverge organically. See debugFilterCallSupported
 // in call_support_debug.go / call_support_stub.go.
+//
+// The env-cached helper remains as a compatibility wrapper for callers
+// that haven't migrated to the config-aware IsCallProviderSupportedWithConfig.
+// Per-handler dispatch paths read from EnvConfig() through the same path
+// so behaviour is identical for env-driven setups.
 func IsCallProviderSupported(provider string) bool {
-	if disableCallBuildRequest() {
+	return IsCallProviderSupportedWithConfig(provider, EnvConfig())
+}
+
+// EnvConfig returns the BuildRequestConfig parsed from the process env.
+// The values are read through the same sync.Once-backed caches as the
+// legacy helpers (UseBuildRequest / disableCallBuildRequest) so this
+// helper costs the same as the older form on the hot path.
+//
+// Used by cmd/worker and cmd/serve at startup to populate per-handler
+// worker.Config.BuildRequest; programmatic callers (future dynclient)
+// can supply a literal bamlutils.BuildRequestConfig instead.
+func EnvConfig() bamlutils.BuildRequestConfig {
+	return bamlutils.BuildRequestConfig{
+		UseBuildRequest:         UseBuildRequest(),
+		DisableCallBuildRequest: disableCallBuildRequest(),
+	}
+}
+
+// IsCallProviderSupportedWithConfig is the config-aware variant of
+// IsCallProviderSupported. It consults the supplied per-handler config
+// for DisableCallBuildRequest rather than the process-global env cache.
+//
+// The debug-only BAML_REST_CALL_UNSUPPORTED_PROVIDERS filter stays
+// process-global — it's integration-test infrastructure, not a per-
+// instance knob.
+func IsCallProviderSupportedWithConfig(provider string, cfg bamlutils.BuildRequestConfig) bool {
+	if cfg.DisableCallBuildRequest {
 		return false
 	}
 	return debugFilterCallSupported(provider, callSupportedProviders[provider])

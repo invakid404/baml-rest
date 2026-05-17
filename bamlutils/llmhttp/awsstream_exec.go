@@ -96,7 +96,7 @@ func (c *Client) ExecuteAWSStream(ctx context.Context, req *Request) (*AWSStream
 		return nil, fmt.Errorf("llmhttp: nil request")
 	}
 
-	rewritten := resolveRequestURL(req)
+	rewritten := c.resolveRequestURL(req)
 
 	// SigV4 signing runs after URL rewrite (so the signature matches
 	// the host the request actually goes out with) and before backend
