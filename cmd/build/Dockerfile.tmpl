@@ -109,7 +109,9 @@ ENV DEBUG_BUILD="true"
 {{- if .unaryServer }}
 ENV UNARY_SERVER="true"
 {{- end }}
-{{- if not .inProcess }}
+{{- if .inProcess }}
+ENV SUBPROCESS="false"
+{{- else }}
 ENV SUBPROCESS="true"
 {{- end }}
 {{- if .baseURLRewrites }}
