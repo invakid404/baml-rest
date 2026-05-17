@@ -2,21 +2,27 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/goccy/go-json"
 	"github.com/prometheus/client_golang/prometheus"
 
-	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/clientdefaults"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
-// Config carries the construction-time dependencies for a Handler. Any
-// field may be left at its zero value:
+// Config carries the construction-time dependencies for a Handler.
+// Runtime is the only required field; the rest have nil-tolerant
+// contracts described per-field below.
 //
+//   - Runtime is required. New returns an error when it is nil so a
+//     misconfiguration surfaces at construction rather than at first
+//     request.
 //   - Logger nil: bridge/drain paths and the round-robin warnings become
 //     silent for that handler instance.
 //   - Metrics nil: New constructs a default registry with the same Go +
@@ -26,12 +32,34 @@ import (
 //   - SharedState nil: the handler logs the existing once-per-process
 //     warning the first time a request tries to use round-robin shared
 //     state, then falls back to the in-process Coordinator.
+//   - BuildRequest: zero value disables the BuildRequest path on this
+//     handler and propagates to the generated router via the adapter's
+//     BuildRequestConfig() accessor.
+//   - BaseURLRewrites nil: no per-handler URL rewrites — the worker
+//     skips the rewrite pass before SetClientRegistry; the per-handler
+//     HTTPClient still owns outbound rewrites if it was constructed
+//     with rules.
+//   - HTTPClient nil: generated BuildRequest code uses
+//     llmhttp.DefaultClient as the fallback (the codegen-emitted gate
+//     reads adapter.HTTPClient() at dispatch time).
 type Config struct {
+	Runtime Runtime
+
 	Logger         bamlutils.Logger
 	Metrics        *prometheus.Registry
 	ClientDefaults *clientdefaults.Config
 	SharedState    SharedStateHook
+
+	BuildRequest    bamlutils.BuildRequestConfig
+	BaseURLRewrites []urlrewrite.Rule
+	HTTPClient      *llmhttp.Client
 }
+
+// ErrRuntimeRequired is returned by New when Config.Runtime is nil.
+// Surfaced as a sentinel so callers (subprocess startup, in-process
+// WorkerFactory) can distinguish the misconfiguration from runtime
+// errors raised later.
+var ErrRuntimeRequired = errors.New("worker: Config.Runtime is required")
 
 // Handler is the worker-side request handler extracted from
 // cmd/worker/main.go. It satisfies workerplugin.Worker so the subprocess
@@ -40,9 +68,14 @@ type Config struct {
 // shared-state client, logger, warning sync.Once values) now lives on
 // the Handler so the type is constructible without hidden initialization.
 type Handler struct {
+	runtime        Runtime
 	logger         bamlutils.Logger
 	metricsReg     *prometheus.Registry
 	clientDefaults *clientdefaults.Config
+
+	buildRequest    bamlutils.BuildRequestConfig
+	baseURLRewrites []urlrewrite.Rule
+	httpClient      *llmhttp.Client
 
 	sharedStateHook hookStorage
 
@@ -58,14 +91,21 @@ var _ workerplugin.Worker = (*Handler)(nil)
 // New constructs a Handler from the supplied configuration. See Config
 // for the nil-tolerance contract.
 func New(cfg Config) (*Handler, error) {
+	if cfg.Runtime == nil {
+		return nil, ErrRuntimeRequired
+	}
 	metricsReg := cfg.Metrics
 	if metricsReg == nil {
 		metricsReg = NewMetricsRegistry()
 	}
 	h := &Handler{
-		logger:         cfg.Logger,
-		metricsReg:     metricsReg,
-		clientDefaults: cfg.ClientDefaults,
+		runtime:         cfg.Runtime,
+		logger:          cfg.Logger,
+		metricsReg:      metricsReg,
+		clientDefaults:  cfg.ClientDefaults,
+		buildRequest:    cfg.BuildRequest,
+		baseURLRewrites: cfg.BaseURLRewrites,
+		httpClient:      cfg.HTTPClient,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
@@ -73,10 +113,20 @@ func New(cfg Config) (*Handler, error) {
 	return h, nil
 }
 
+// configureAdapter installs the per-handler BuildRequest config and
+// HTTP client on a freshly-minted adapter. Both setters are part of
+// the bamlutils.Adapter interface and are no-ops on adapter versions
+// that don't honour them (HasHTTPClient=false in codegen options
+// emits a no-op SetHTTPClient).
+func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
+	adapter.SetBuildRequestConfig(h.buildRequest)
+	adapter.SetHTTPClient(h.httpClient)
+}
+
 // CallStream executes a streaming BAML method and bridges its results
 // onto the worker plugin's stream channel.
 func (h *Handler) CallStream(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
-	method, ok := baml_rest.Methods[methodName]
+	method, ok := h.runtime.Method(methodName)
 	if !ok {
 		return nil, fmt.Errorf("method %q not found", methodName)
 	}
@@ -97,7 +147,8 @@ func (h *Handler) CallStream(ctx context.Context, methodName string, inputJSON [
 	}
 
 	// Create adapter and apply options
-	adapter := baml_rest.MakeAdapter(ctx)
+	adapter := h.runtime.MakeAdapter(ctx)
+	h.configureAdapter(adapter)
 	adapter.SetLogger(h.logger)
 	adapter.SetStreamMode(streamMode)
 	// Install a per-request round-robin Advancer that delegates to the
@@ -105,7 +156,7 @@ func (h *Handler) CallStream(ctx context.Context, methodName string, inputJSON [
 	// nil when no shared-state hook is attached, and the adapter treats
 	// nil as "fall back to the introspected default Coordinator".
 	adapter.SetRoundRobinAdvancer(h.roundRobinAdvancerFor(ctx))
-	if err := options.apply(adapter, h.clientDefaults); err != nil {
+	if err := options.apply(adapter, h.clientDefaults, h.baseURLRewrites); err != nil {
 		return nil, fmt.Errorf("failed to apply options: %w", err)
 	}
 

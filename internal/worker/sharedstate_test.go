@@ -43,10 +43,7 @@ func TestHandlerSharedStateHook_UsesRequestID(t *testing.T) {
 
 	expected := stubAdvancer{}
 	hook := &fakeSharedStateHook{returnValue: expected}
-	h, err := New(Config{SharedState: hook})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	h := newTestHandler(t, Config{SharedState: hook})
 
 	const reqID = "test-request-id"
 	ctx := workerplugin.WithRequestID(context.Background(), reqID)
@@ -73,10 +70,7 @@ func TestHandlerSharedStateHook_MissingRequestIDFallsBack(t *testing.T) {
 	t.Parallel()
 
 	hook := &fakeSharedStateHook{returnValue: stubAdvancer{}}
-	h, err := New(Config{SharedState: hook})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	h := newTestHandler(t, Config{SharedState: hook})
 
 	got := h.roundRobinAdvancerFor(context.Background())
 	if got != nil {
@@ -95,10 +89,7 @@ func TestHandlerSharedStateHook_MissingRequestIDFallsBack(t *testing.T) {
 func TestHandlerSharedStateHook_NilHookFallsBack(t *testing.T) {
 	t.Parallel()
 
-	h, err := New(Config{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	h := newTestHandler(t, Config{})
 
 	ctx := workerplugin.WithRequestID(context.Background(), "req-id")
 	got := h.roundRobinAdvancerFor(ctx)

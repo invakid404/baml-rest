@@ -102,6 +102,13 @@ type CallConfig struct {
 	// Stream.Method + FunctionLog capture identically to the streaming
 	// callback — raw comes from FunctionLog.RawLLMResponse().
 	LegacyCallChild LegacyCallChildFunc
+
+	// BuildRequestConfig carries the per-handler BuildRequest knobs.
+	// RunCallOrchestration consults DisableCallBuildRequest through
+	// IsCallProviderSupportedWithConfig instead of the env-cached
+	// global IsCallProviderSupported. Zero value is fine — it matches
+	// the env-default shape.
+	BuildRequestConfig bamlutils.BuildRequestConfig
 }
 
 // LegacyCallChildFunc runs one child of a mixed-mode fallback chain via
@@ -234,7 +241,7 @@ func RunCallOrchestration(
 	// which allowed a mixed-shaped chain with a valid first but broken
 	// later child to start retrying before surfacing the error.
 	if len(config.FallbackChain) == 0 {
-		if config.Provider == "" || !IsCallProviderSupported(config.Provider) {
+		if config.Provider == "" || !IsCallProviderSupportedWithConfig(config.Provider, config.BuildRequestConfig) {
 			return fmt.Errorf("buildrequest: unsupported or empty provider %q for non-streaming call", config.Provider)
 		}
 	} else {
@@ -253,7 +260,7 @@ func RunCallOrchestration(
 				continue
 			}
 			provider := config.ClientProviders[child]
-			if provider == "" || !IsCallProviderSupported(provider) {
+			if provider == "" || !IsCallProviderSupportedWithConfig(provider, config.BuildRequestConfig) {
 				return fmt.Errorf("buildrequest: unsupported or empty provider %q for child %q", provider, child)
 			}
 		}

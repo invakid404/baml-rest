@@ -78,7 +78,8 @@ func (me *methodEmitter) emitRouter() {
 		// v0.204 / v0.215 adapters where every consumer is
 		// filtered out.
 		routerBody = append(routerBody,
-			jen.Id("__useBuildRequest").Op(":=").Qual(common.BuildRequestPkg, "UseBuildRequest").Call(),
+			jen.Id("__brCfg").Op(":=").Id("adapter").Dot("BuildRequestConfig").Call(),
+			jen.Id("__useBuildRequest").Op(":=").Id("__brCfg").Dot("UseBuildRequest"),
 		)
 
 		// Full RR resolution upgrade: apply the runtime primary
@@ -184,7 +185,7 @@ func (me *methodEmitter) emitRouter() {
 				jen.Id("__effective"),
 				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
 			),
-			jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsCallProviderSupported").Call(jen.Id("provider"))).Block(
+			jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("provider"), jen.Id("__brCfg"))).Block(
 				resolveRetryPolicy(),
 				jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
 					jen.Id("__effective"),
@@ -227,7 +228,9 @@ func (me *methodEmitter) emitRouter() {
 					jen.Id("__effective"),
 					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
 					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-					jen.Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
+					jen.Func().Params(jen.Id("p").String()).Bool().Block(
+						jen.Return(jen.Qual(common.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("p"), jen.Id("__brCfg"))),
+					),
 					jen.Qual(common.BuildRequestPkg, "PreferAdvancer").Call(
 						jen.Id("adapter"),
 						jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
@@ -544,27 +547,61 @@ func (me *methodEmitter) emitRouter() {
 		func() jen.Code {
 			callModeCond := jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
 				Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")
+			// callPredicate names the call-side predicate the legacy
+			// classification swaps in for call-mode requests. On
+			// supportsWithClient adapters (where __brCfg is in scope)
+			// it threads the per-handler config so the metadata reason
+			// reflects this handler's DisableCallBuildRequest knob;
+			// older adapters keep the env-cached IsCallProviderSupported
+			// because they have no BR runtime to honour the override.
+			var callPredicate jen.Code
+			if g.supportsWithClient {
+				callPredicate = jen.Func().Params(jen.Id("p").String()).Bool().Block(
+					jen.Return(jen.Qual(common.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("p"), jen.Id("__brCfg"))),
+				)
+			} else {
+				callPredicate = jen.Qual(common.BuildRequestPkg, "IsCallProviderSupported")
+			}
 			if hasBuildRequest {
 				return jen.If(
 					jen.Parens(callModeCond).
 						Op("&&").Op("!").Id("__useBuildRequest"),
 				).Block(
-					jen.Id("__legacyPredicate").Op("=").Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
+					jen.Id("__legacyPredicate").Op("=").Add(callPredicate),
 				)
 			}
 			return jen.If(callModeCond).Block(
-				jen.Id("__legacyPredicate").Op("=").Qual(common.BuildRequestPkg, "IsCallProviderSupported"),
+				jen.Id("__legacyPredicate").Op("=").Add(callPredicate),
 			)
 		}(),
-		jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
-			jen.Id("__reg"),
-			jen.Id("__effective"),
-			jen.Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("__effective")),
-			jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-			jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-			jen.Id("__legacyPredicate"),
-			jen.Id("__legacyRetryPolicy"),
-		),
+		// Use the config-aware sibling on adapters where __brCfg is
+		// in scope (supportsWithClient=true) so legacy plans surface
+		// PathReasonBuildRequestDisabled based on this handler's
+		// BuildRequest config rather than process-wide env state.
+		// Older adapters keep the env-cached entry point.
+		func() jen.Code {
+			if g.supportsWithClient {
+				return jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClientWithConfig").Call(
+					jen.Id("__reg"),
+					jen.Id("__effective"),
+					jen.Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("__effective")),
+					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+					jen.Id("__legacyPredicate"),
+					jen.Id("__legacyRetryPolicy"),
+					jen.Id("__brCfg"),
+				)
+			}
+			return jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
+				jen.Id("__reg"),
+				jen.Id("__effective"),
+				jen.Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("__effective")),
+				jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+				jen.Id("__legacyPredicate"),
+				jen.Id("__legacyRetryPolicy"),
+			)
+		}(),
 		jen.Id("__plannedLegacy").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 		// __legacyClientOverride is always __effective. On 0.219+
 		// the legacy dispatcher uses it both for WithClient

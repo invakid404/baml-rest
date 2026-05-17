@@ -18,10 +18,7 @@ func TestGetGoroutinesFilterBranches(t *testing.T) {
 
 	const sentinel = "baml-rest-pr280-filter-sentinel-xyz"
 
-	h, err := New(Config{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	h := newTestHandler(t, Config{})
 	ctx := context.Background()
 
 	t.Run("empty filter returns no matched stacks", func(t *testing.T) {

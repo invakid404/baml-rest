@@ -147,6 +147,13 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 
 	structFields = append(structFields,
 		jen.Line(),
+		jen.Comment("buildRequestConfig carries the per-handler BuildRequest knobs"),
+		jen.Comment("(UseBuildRequest, DisableCallBuildRequest). The generated"),
+		jen.Comment("router reads this via BuildRequestConfig() instead of the"),
+		jen.Comment("env-cached buildrequest.UseBuildRequest helper so two handlers"),
+		jen.Comment("in the same process can carry distinct configurations."),
+		jen.Id("buildRequestConfig").Qual(bamlutilsPkg, "BuildRequestConfig"),
+		jen.Line(),
 		jen.Comment("rrAdvancer is the per-request round-robin Advancer installed by the"),
 		jen.Comment("worker; nil falls back to the introspected Coordinator."),
 		jen.Id("rrAdvancer").Qual(bamlutilsPkg, "RoundRobinAdvancer"),
@@ -177,6 +184,7 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 	emitFrameworkAdapterStreamModeAndLogger(out, bamlutilsPkg)
 	emitFrameworkAdapterMediaConstructors(out, bamlutilsPkg)
 	emitFrameworkAdapterHTTPClient(out, opts, llmhttpPkg)
+	emitFrameworkAdapterBuildRequestConfig(out, bamlutilsPkg)
 	emitFrameworkAdapterRoundRobinAdvancer(out, bamlutilsPkg)
 
 	// Compile-time interface conformance check. Catches drift if the
@@ -468,10 +476,41 @@ func emitFrameworkAdapterHTTPClient(out *jen.File, opts Options, llmhttpPkg stri
 		return
 	}
 
+	// Adapter versions without HTTPClient injection still emit a
+	// SetHTTPClient method so the worker's construction-time
+	// configureAdapter call compiles against every adapter. The setter
+	// is a no-op: there's no per-handler httpClient field on the
+	// struct, and HTTPClient() always returns nil so the BuildRequest
+	// dispatch path falls back to llmhttp.DefaultClient.
+	out.Comment("SetHTTPClient is a no-op on this adapter version (HasHTTPClient=false in codegen).")
+	out.Comment("The setter exists so the worker's construction-time wiring can install a Client")
+	out.Comment("unconditionally regardless of adapter version; the BuildRequest dispatch path")
+	out.Comment("falls back to llmhttp.DefaultClient because HTTPClient() returns nil.")
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetHTTPClient").Params(jen.Op("*").Qual(llmhttpPkg, "Client")).
+		Block()
+
 	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
 		Id("HTTPClient").Params().Op("*").Qual(llmhttpPkg, "Client").
 		Block(
 			jen.Return(jen.Nil()),
+		)
+}
+
+// emitFrameworkAdapterBuildRequestConfig emits the per-handler
+// BuildRequestConfig setter/getter pair the generated router consults
+// instead of buildrequest.UseBuildRequest() globals.
+func emitFrameworkAdapterBuildRequestConfig(out *jen.File, bamlutilsPkg string) {
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetBuildRequestConfig").Params(jen.Id("cfg").Qual(bamlutilsPkg, "BuildRequestConfig")).
+		Block(
+			jen.Id("b").Dot("buildRequestConfig").Op("=").Id("cfg"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("BuildRequestConfig").Params().Qual(bamlutilsPkg, "BuildRequestConfig").
+		Block(
+			jen.Return(jen.Id("b").Dot("buildRequestConfig")),
 		)
 }
 

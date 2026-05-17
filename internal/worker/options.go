@@ -14,18 +14,19 @@ type workerBamlOptions struct {
 }
 
 // apply installs the request-level option overrides on adapter. The
-// deployment-wide client defaults are passed in so the handler owns the
-// merged config rather than reaching into a package global. Nil defaults
-// is fine — clientdefaults.Config.Apply is nil-safe.
-func (o *workerBamlOptions) apply(adapter bamlutils.Adapter, defaults *clientdefaults.Config) error {
+// deployment-wide client defaults and base-URL rewrites are passed in
+// so the handler owns the merged config rather than reaching into
+// package globals. Nil defaults is fine — clientdefaults.Config.Apply
+// is nil-safe; nil baseURLRewrites skips the rewrite pass.
+func (o *workerBamlOptions) apply(adapter bamlutils.Adapter, defaults *clientdefaults.Config, baseURLRewrites []urlrewrite.Rule) error {
 	if o.Options == nil {
 		return nil
 	}
 
 	if o.Options.ClientRegistry != nil {
 		// Apply URL rewrite rules to custom client base_url options
-		if rules := urlrewrite.GlobalRules(); len(rules) > 0 {
-			rewriteClientBaseURLs(o.Options.ClientRegistry, rules)
+		if len(baseURLRewrites) > 0 {
+			rewriteClientBaseURLs(o.Options.ClientRegistry, baseURLRewrites)
 		}
 		// Merge deployment-wide defaults *after* URL rewrites (so injected
 		// values aren't accidentally URL-rewritten) and *before*

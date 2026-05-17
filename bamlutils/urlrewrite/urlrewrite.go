@@ -134,18 +134,39 @@ var (
 	globalRules     []Rule
 )
 
+// LoadDefaultRules resolves the active URL rewrite rules from the
+// process environment exactly once per call, with no caching. Same
+// precedence as GlobalRules:
+//
+//  1. BAML_REST_BASE_URL_REWRITES env var (when set, fully overrides
+//     builtin rules)
+//  2. Builtin rules baked in at compile time via -ldflags
+//
+// Returned slice is a freshly-parsed value; callers may mutate it
+// without affecting subsequent calls.
+//
+// Used by cmd/worker and cmd/serve at startup to populate per-handler
+// worker.Config.BaseURLRewrites. Programmatic callers can supply an
+// arbitrary []Rule directly without going through the env.
+func LoadDefaultRules() []Rule {
+	if envVal := os.Getenv("BAML_REST_BASE_URL_REWRITES"); envVal != "" {
+		return ParseRules(envVal)
+	}
+	return ParseRules(builtinRules)
+}
+
 // GlobalRules returns the active URL rewrite rules. Resolution order:
 //  1. BAML_REST_BASE_URL_REWRITES env var (if set, fully overrides builtin rules)
 //  2. Builtin rules baked in at compile time via -ldflags
 //
-// Parsed once and cached for the process lifetime.
+// Parsed once and cached for the process lifetime. Kept as a
+// compatibility wrapper around LoadDefaultRules so existing callers
+// (including tests) keep their cached-once semantics; new code should
+// prefer LoadDefaultRules and pass the resolved slice through
+// worker.Config.BaseURLRewrites.
 func GlobalRules() []Rule {
 	globalRulesOnce.Do(func() {
-		if envVal := os.Getenv("BAML_REST_BASE_URL_REWRITES"); envVal != "" {
-			globalRules = ParseRules(envVal)
-		} else {
-			globalRules = ParseRules(builtinRules)
-		}
+		globalRules = LoadDefaultRules()
 	})
 	return globalRules
 }

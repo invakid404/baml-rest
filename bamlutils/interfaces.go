@@ -87,13 +87,13 @@ type Metadata struct {
 	BuildRequestAPI string `json:"build_request_api,omitempty"`
 
 	// Planned fields
-	Client         string   `json:"client,omitempty"`           // resolved runtime client name (strategy or single)
-	Provider       string   `json:"provider,omitempty"`         // provider of resolved single client; empty for strategies
-	Strategy       string   `json:"strategy,omitempty"`         // e.g. "baml-fallback", "baml-roundrobin"
-	Chain          []string `json:"chain,omitempty"`            // child client names for fallback chains
-	LegacyChildren []string `json:"legacy_children,omitempty"`  // child names that must go through legacy dispatch
-	RetryMax       *int     `json:"retry_max,omitempty"`        // configured max retries
-	RetryPolicy    string   `json:"retry_policy,omitempty"`     // compact encoding (e.g. "exp:200ms:1.5:10s")
+	Client         string   `json:"client,omitempty"`          // resolved runtime client name (strategy or single)
+	Provider       string   `json:"provider,omitempty"`        // provider of resolved single client; empty for strategies
+	Strategy       string   `json:"strategy,omitempty"`        // e.g. "baml-fallback", "baml-roundrobin"
+	Chain          []string `json:"chain,omitempty"`           // child client names for fallback chains
+	LegacyChildren []string `json:"legacy_children,omitempty"` // child names that must go through legacy dispatch
+	RetryMax       *int     `json:"retry_max,omitempty"`       // configured max retries
+	RetryPolicy    string   `json:"retry_policy,omitempty"`    // compact encoding (e.g. "exp:200ms:1.5:10s")
 
 	// Outcome fields — populated only on the outcome event.
 	// RetryCount counts retries consumed by the BuildRequest orchestrator
@@ -536,7 +536,6 @@ func isStrategyProviderName(p string) bool {
 // classifier, the options.start parser) continue to read from the
 // adapter's OriginalClientRegistry, which preserves the operator's
 // exact input verbatim.
-//
 func UpstreamClientRegistryProvider(client *ClientProperty, introspectedProviders map[string]string) string {
 	if client == nil {
 		return ""
@@ -911,6 +910,31 @@ type RoundRobinAdvancer interface {
 	Advance(clientName string, childCount int) (int, error)
 }
 
+// BuildRequestConfig carries the per-handler settings that drove the
+// codegen-emitted BuildRequest gates. Adapters expose the typed shape
+// so generated routers can read `adapter.BuildRequestConfig().UseBuildRequest`
+// instead of reaching into the buildrequest package's env-cached
+// globals — every handler in a single process can carry a distinct
+// configuration without leaking through process-wide state.
+//
+// Operators running the standard cmd/serve binaries see no behaviour
+// change: cmd/worker and cmd/serve resolve the env vars once at
+// startup and populate this struct identically across every handler
+// in the pool.
+type BuildRequestConfig struct {
+	// UseBuildRequest mirrors BAML_REST_USE_BUILD_REQUEST. When false,
+	// every BuildRequest landing gate in the generated router declines
+	// and dispatch falls through to the legacy CallStream+OnTick path.
+	UseBuildRequest bool
+
+	// DisableCallBuildRequest mirrors BAML_REST_DISABLE_CALL_BUILD_REQUEST.
+	// When true, the non-streaming Request API is treated as unsupported
+	// for every provider on this handler — /call{,-with-raw} fall through
+	// to the stream-accumulation bridge (when StreamRequest is available)
+	// or to legacy.
+	DisableCallBuildRequest bool
+}
+
 type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
@@ -955,6 +979,21 @@ type Adapter interface {
 	// or nil to use llmhttp.DefaultClient. This allows injecting a custom
 	// HTTP client (e.g., for testing or proxy support).
 	HTTPClient() *llmhttp.Client
+	// SetHTTPClient installs the per-handler llmhttp.Client used by the
+	// BuildRequest path. Generated adapters that lack HTTP-client
+	// injection (HasHTTPClient=false in codegen Options) emit a no-op
+	// setter so the worker's construction-time wiring can call this
+	// unconditionally regardless of adapter version.
+	SetHTTPClient(*llmhttp.Client)
+	// SetBuildRequestConfig stores the per-handler BuildRequestConfig.
+	// The generated router consults BuildRequestConfig() for the
+	// per-request UseBuildRequest / DisableCallBuildRequest decision
+	// rather than the buildrequest package's env-cached helpers.
+	SetBuildRequestConfig(BuildRequestConfig)
+	// BuildRequestConfig returns the per-handler BuildRequestConfig
+	// installed via SetBuildRequestConfig. Zero value when unset —
+	// the codegen-emitted router treats both fields as false.
+	BuildRequestConfig() BuildRequestConfig
 	// SetRoundRobinAdvancer installs the per-request Advancer used by the
 	// BuildRequest path to resolve baml-roundrobin strategy clients. Pool-
 	// managed workers set this to a RemoteAdvancer that talks to the host

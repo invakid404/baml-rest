@@ -7,7 +7,6 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/internal/worker"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -25,14 +24,20 @@ import (
 // not call InitRuntime — re-initialising BAML on every handler
 // rebuild would be wrong. InitRuntime fires exactly once here at
 // server startup.
-func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config) error {
-	worker.InitRuntime()
+//
+// runtimeCfg carries the env-resolved runtime values cmd/serve's main
+// resolves once at startup: the rootruntime wrapper, BuildRequest
+// config, base-URL rewrites, and the per-handler llmhttp.Client. Every
+// in-process handler is constructed with the same values so behaviour
+// across the pool is identical to the subprocess build.
+func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg workerModeRuntimeConfig) error {
+	runtimeCfg.Runtime.InitRuntime()
 
 	clientDefaults, err := worker.LoadClientDefaults()
 	if err != nil {
 		return fmt.Errorf("invalid BAML_REST_CLIENT_DEFAULTS: %w", err)
 	}
-	if clientDefaults.HasKey("allowed_role_metadata") && buildrequest.UseBuildRequest() {
+	if clientDefaults.HasKey("allowed_role_metadata") && runtimeCfg.BuildRequest.UseBuildRequest {
 		logger.Warn().Msg(
 			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata but " +
 				"BAML_REST_USE_BUILD_REQUEST=true; message-level metadata " +
@@ -51,10 +56,14 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config) error {
 		// rebuilds the registry cleanly rather than reusing the
 		// previous instance's counters.
 		return worker.New(worker.Config{
-			Logger:         wcfg.Logger,
-			Metrics:        worker.NewMetricsRegistry(),
-			ClientDefaults: clientDefaults,
-			SharedState:    hook,
+			Runtime:         runtimeCfg.Runtime,
+			Logger:          wcfg.Logger,
+			Metrics:         worker.NewMetricsRegistry(),
+			ClientDefaults:  clientDefaults,
+			SharedState:     hook,
+			BuildRequest:    runtimeCfg.BuildRequest,
+			BaseURLRewrites: runtimeCfg.BaseURLRewrites,
+			HTTPClient:      runtimeCfg.HTTPClient,
 		})
 	}
 	return nil
