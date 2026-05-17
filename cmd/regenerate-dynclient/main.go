@@ -40,35 +40,34 @@ const (
 	bamlVersionsManifest  = "integration/baml_versions.json"
 	// outputRoot pins the on-disk layout the genadapter command and
 	// the generator block's client_package_name compile against. The
-	// orchestrator does not expose this as a flag because three call
-	// sites bake the same path into source — materializeBAMLProject's
-	// BAML generator block, runIntrospect's --module-path, and
+	// orchestrator does not expose this (or patchedBAMLOut) as a flag
+	// because multiple call sites bake the paths into source —
+	// materializeBAMLProject's BAML generator block, runIntrospect's
+	// --module-path, the rewrite target threaded into
+	// hacks.RewriteGeneratedClientBAMLImports, and
 	// dynclient/cmd/genadapter's package-level constants. A
 	// non-default value would silently produce a tree the genadapter
 	// run cannot import.
-	outputRoot            = "dynclient/internal/generated"
-	defaultPatchedBAMLOut = "dynclient/baml-patched"
-	npxBAMLPackage        = "@boundaryml/baml"
-	genadapterPackage     = "./dynclient/cmd/genadapter"
-	bamlCLIGenTimeout     = 10 * time.Minute
-	provenanceFileName    = "BAML_REST_SOURCE_VERSION"
-	generatorIdentity     = "cmd/regenerate-dynclient"
+	outputRoot          = "dynclient/internal/generated"
+	patchedBAMLOut      = "dynclient/baml-patched"
+	generatedModulePath = rootModulePath + "/" + outputRoot
+	npxBAMLPackage      = "@boundaryml/baml"
+	genadapterPackage   = "./dynclient/cmd/genadapter"
+	bamlCLIGenTimeout   = 10 * time.Minute
+	provenanceFileName  = "BAML_REST_SOURCE_VERSION"
+	generatorIdentity   = "cmd/regenerate-dynclient"
 )
 
 type config struct {
-	BAMLVersion    string
-	BAMLCLI        string
-	PatchedBAMLOut string
-	KeepTemp       bool
+	BAMLVersion string
+	BAMLCLI     string
+	KeepTemp    bool
 }
 
 func main() {
-	cfg := config{
-		PatchedBAMLOut: defaultPatchedBAMLOut,
-	}
+	var cfg config
 	flag.StringVar(&cfg.BAMLVersion, "baml-version", "", "BAML version to pin (defaults to integration/baml_versions.json `.latest`)")
 	flag.StringVar(&cfg.BAMLCLI, "baml-cli", os.Getenv("BAML_CLI_PATH"), "Path to baml-cli (defaults to $BAML_CLI_PATH; npx fallback when empty)")
-	flag.StringVar(&cfg.PatchedBAMLOut, "patched-baml-out", cfg.PatchedBAMLOut, "Output directory for the patched BAML fork")
 	flag.BoolVar(&cfg.KeepTemp, "keep-temp", false, "Preserve the temp BAML project under the working directory for debugging")
 	flag.Parse()
 
@@ -99,8 +98,8 @@ func run(cfg config) error {
 	}
 	fmt.Printf("==> Patched BAML source: %s\n", bamlSrcDir)
 
-	fmt.Printf("==> Generating patched BAML module under %s\n", cfg.PatchedBAMLOut)
-	if err := hacks.GeneratePatchedBAMLModule(bamlSrcDir, cfg.PatchedBAMLOut, patchedBAMLModulePath, version); err != nil {
+	fmt.Printf("==> Generating patched BAML module under %s\n", patchedBAMLOut)
+	if err := hacks.GeneratePatchedBAMLModule(bamlSrcDir, patchedBAMLOut, patchedBAMLModulePath, version); err != nil {
 		return fmt.Errorf("generating patched BAML module: %w", err)
 	}
 	// cmd/hacks writes BAML_REST_SOURCE_VERSION with the patch shape
@@ -108,7 +107,7 @@ func run(cfg config) error {
 	// generator-identity stamp live in the orchestrator — append them
 	// so future readers can verify the fork against `go mod download`
 	// without rerunning the regen.
-	if err := appendProvenance(cfg.PatchedBAMLOut, bamlSum); err != nil {
+	if err := appendProvenance(patchedBAMLOut, bamlSum); err != nil {
 		return fmt.Errorf("recording provenance: %w", err)
 	}
 
@@ -348,9 +347,9 @@ func materializeBAMLProject(version string) (string, error) {
   output_type "go"
   output_dir "../generated"
   version "%s"
-  client_package_name "github.com/invakid404/baml-rest/dynclient/internal/generated"
+  client_package_name "%s"
 }
-`, semver)
+`, semver, generatedModulePath)
 	if err := os.WriteFile(filepath.Join(bamlSrc, "generators.baml"), []byte(generatorBody), 0o644); err != nil {
 		return "", fmt.Errorf("writing generators.baml: %w", err)
 	}
@@ -397,7 +396,7 @@ func runIntrospect(outputRoot, clientDir string) error {
 		"--input-dir", clientDir,
 		"--baml-src-dir", filepath.Join(outputRoot, "baml_src"),
 		"--output-dir", filepath.Join(outputRoot, "introspected"),
-		"--module-path", "github.com/invakid404/baml-rest/dynclient/internal/generated",
+		"--module-path", generatedModulePath,
 		"--interfaces-pkg", "github.com/invakid404/baml-rest/bamlutils",
 		"--baml-module-path", patchedBAMLModulePath,
 	}
