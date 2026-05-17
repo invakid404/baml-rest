@@ -54,6 +54,12 @@ const (
 	npxBAMLPackage      = "@boundaryml/baml"
 	genadapterPackage   = "./dynclient/cmd/genadapter"
 	bamlCLIGenTimeout   = 10 * time.Minute
+	// regenCommandTimeout caps the fast Go-tooling helpers
+	// (introspect, genadapter, gofmt, embed, goimports) so a wedged
+	// subprocess surfaces as a labeled timeout instead of hanging the
+	// regen indefinitely. Longer than any of these should plausibly
+	// take so it does not fire under load.
+	regenCommandTimeout = 10 * time.Minute
 	provenanceFileName  = "BAML_REST_SOURCE_VERSION"
 	generatorIdentity   = "cmd/regenerate-dynclient"
 )
@@ -111,7 +117,7 @@ func run(cfg config) error {
 		return fmt.Errorf("recording provenance: %w", err)
 	}
 
-	tempProject, err := materializeBAMLProject(version)
+	tempProject, err := materializeBAMLProject(version, cfg.KeepTemp)
 	if err != nil {
 		return err
 	}
@@ -330,11 +336,26 @@ func appendProvenance(patchedBAMLOut, upstreamSum string) error {
 // dynamic.baml plus a generator block whose `client_package_name`
 // resolves to the parent module's dynclient subtree. baml-cli /
 // npx is then invoked in this directory.
-func materializeBAMLProject(version string) (string, error) {
+//
+// A failure between MkdirTemp and the final return would otherwise
+// leak the temp dir — the caller never gets the path, so the
+// run-scoped cleanup defer never registers. The cleanupOnError
+// flag flips off only on success so the function-scoped defer
+// covers every error path. keepTemp suppresses the cleanup the same
+// way the caller's defer is gated, so a debugger can inspect a
+// partial project after a mid-setup failure.
+func materializeBAMLProject(version string, keepTemp bool) (string, error) {
 	dir, err := os.MkdirTemp("", "baml-rest-dynclient-")
 	if err != nil {
 		return "", fmt.Errorf("creating temp BAML project dir: %w", err)
 	}
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError && !keepTemp {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
 	bamlSrc := filepath.Join(dir, "baml_src")
 	if err := os.MkdirAll(bamlSrc, 0o755); err != nil {
 		return "", err
@@ -353,6 +374,7 @@ func materializeBAMLProject(version string) (string, error) {
 	if err := os.WriteFile(filepath.Join(bamlSrc, "generators.baml"), []byte(generatorBody), 0o644); err != nil {
 		return "", fmt.Errorf("writing generators.baml: %w", err)
 	}
+	cleanupOnError = false
 	return dir, nil
 }
 
@@ -390,27 +412,44 @@ func runBAMLGenerate(bamlCLI, version, projectDir string) error {
 	return nil
 }
 
+// runCommandWithTimeout is the shared exec wrapper the fast Go-tooling
+// helpers below use. The label appears in both the timeout message and
+// the wrapped error so a failure points at the step that produced it
+// without the caller needing to add an extra fmt.Errorf wrapper.
+//
+// runBAMLGenerate has its own timeout (bamlCLIGenTimeout) and stays
+// outside this path because BAML codegen is meaningfully slower than
+// the Go tools and warrants a different deadline.
+func runCommandWithTimeout(label, name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), regenCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("%s timed out after %s", label, regenCommandTimeout)
+		}
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	return nil
+}
+
 // runIntrospect drives cmd/introspect via `go run` so the
 // parameterized flags PR 2a landed populate the dynclient introspected
 // package against the freshly generated client.
 func runIntrospect(outputRoot, clientDir string) error {
-	args := []string{
-		"run",
-		"./cmd/introspect",
+	return runCommandWithTimeout(
+		"cmd/introspect",
+		"go", "run", "./cmd/introspect",
 		"--input-dir", clientDir,
 		"--baml-src-dir", filepath.Join(outputRoot, "baml_src"),
 		"--output-dir", filepath.Join(outputRoot, "introspected"),
 		"--module-path", generatedModulePath,
 		"--interfaces-pkg", "github.com/invakid404/baml-rest/bamlutils",
 		"--baml-module-path", patchedBAMLModulePath,
-	}
-	cmd := exec.Command("go", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("cmd/introspect: %w", err)
-	}
-	return nil
+	)
 }
 
 // runGenadapter invokes dynclient/cmd/genadapter via `go run` so it
@@ -419,23 +458,14 @@ func runIntrospect(outputRoot, clientDir string) error {
 // orchestrator would fix the package at build time, defeating the
 // regen.
 func runGenadapter() error {
-	cmd := exec.Command("go", "run", genadapterPackage)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("dynclient/cmd/genadapter: %w", err)
-	}
-	return nil
+	return runCommandWithTimeout("dynclient/cmd/genadapter", "go", "run", genadapterPackage)
 }
 
 // runGofmt formats the generated tree in place. The codegen emitters
 // already produce gofmt-clean output, but a final pass keeps the
 // committed artifacts stable across goimports/jen version bumps.
 func runGofmt(dir string) error {
-	cmd := exec.Command("gofmt", "-w", dir)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return runCommandWithTimeout("gofmt", "gofmt", "-w", dir)
 }
 
 // runEmbed re-runs cmd/embed at the repo root so the parent embed.go
@@ -444,10 +474,7 @@ func runGofmt(dir string) error {
 // wipes its output dir each run; cmd/embed restores the per-module
 // embed.go that the parent's Sources merge depends on.
 func runEmbed() error {
-	cmd := exec.Command("go", "run", "./cmd/embed")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return runCommandWithTimeout("cmd/embed", "go", "run", "./cmd/embed")
 }
 
 // runGoimports prunes unused imports the BAML generator leaves behind
@@ -468,16 +495,14 @@ func runGoimports(dir string) error {
 	if bin == "" {
 		return fmt.Errorf("goimports not found on PATH or $GOPATH/bin; install with `go install golang.org/x/tools/cmd/goimports@latest`")
 	}
-	cmd := exec.Command(bin, "-w", dir)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return runCommandWithTimeout("goimports", bin, "-w", dir)
 }
 
 // copyTree mirrors src into dst, preserving file modes for regular
 // files. Used for the BAML-generated baml_client tree where any
-// special-mode files (executables, symlinks) would be a generator bug
-// worth surfacing later.
+// non-regular entry (symlink, FIFO, device) would be a generator bug
+// worth surfacing. The current v0.222.0 subtree has none; the guard
+// is defensive against future generator changes.
 func copyTree(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -494,6 +519,9 @@ func copyTree(src, dst string) error {
 		info, infoErr := d.Info()
 		if infoErr != nil {
 			return infoErr
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("copyTree: unsupported non-regular file %s with mode %s", path, info.Mode())
 		}
 		return copyFileMode(path, target, info.Mode())
 	})
