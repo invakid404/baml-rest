@@ -21,9 +21,10 @@ import (
 // emitBedrockStreamPostProcess; this assertion guards the SSE
 // closure from accidentally inheriting AWS signing.
 func TestEmitBAMLHTTPRequestConversion_NilPostProcess_NoBedrockAttach(t *testing.T) {
+	pkgs := DefaultPackageConfig()
 	f := jen.NewFilePathName("github.com/example/test", "test")
 	f.Func().Id("emit").Params().Params(jen.Op("*").Id("Request"), jen.Error()).BlockFunc(func(g *jen.Group) {
-		emitBAMLHTTPRequestConversion(g, nil)
+		emitBAMLHTTPRequestConversion(g, pkgs, nil)
 	})
 	rendered := f.GoString()
 
@@ -48,9 +49,12 @@ func TestEmitBAMLHTTPRequestConversion_NilPostProcess_NoBedrockAttach(t *testing
 // MaybeAttachBedrockAuth call with the (ctx, req) argument shape and
 // must propagate any error returned by it.
 func TestEmitBAMLHTTPRequestConversion_BedrockPostProcess(t *testing.T) {
+	pkgs := DefaultPackageConfig()
 	f := jen.NewFilePathName("github.com/example/test", "test")
 	f.Func().Id("emit").Params().Params(jen.Op("*").Id("Request"), jen.Error()).BlockFunc(func(g *jen.Group) {
-		emitBAMLHTTPRequestConversion(g, emitMaybeAttachBedrockAuth)
+		emitBAMLHTTPRequestConversion(g, pkgs, func(jg *jen.Group) {
+			emitMaybeAttachBedrockAuth(jg, pkgs)
+		})
 	})
 	rendered := f.GoString()
 
@@ -98,8 +102,11 @@ func bedrockTestSyncFunc(_ context.Context, _ ...string) (string, error) {
 // so the newResultFn type-assertion emits compile.
 func newBedrockTestMethodEmitter(t *testing.T) *methodEmitter {
 	t.Helper()
+	pkgs := DefaultPackageConfig()
 	g := &generator{
-		opts:               Options{SupportsWithClient: true},
+		opts:               Options{SupportsWithClient: true, Packages: pkgs, Introspection: RootIntrospection()},
+		pkgs:               pkgs,
+		intro:              RootIntrospection(),
 		out:                common.MakeFile(),
 		supportsWithClient: true,
 	}
@@ -284,9 +291,10 @@ func TestEmitBuildRequest_EmitsBedrockStreamingClosure(t *testing.T) {
 // contract that makes per-client `endpoint_url` parity work without
 // reading from BAML's HTTPRequest surface.
 func TestEmitBedrockAuthDispatchFor_Shape(t *testing.T) {
+	pkgs := DefaultPackageConfig()
 	f := jen.NewFilePathName("github.com/example/test", "test")
 	f.Func().Id("emit").Params(jen.Id("clientOverride").String()).Params(jen.Op("*").Id("Request"), jen.Error()).BlockFunc(func(g *jen.Group) {
-		emitBedrockAuthDispatchFor("MyMethod")(g)
+		emitBedrockAuthDispatchFor("MyMethod", pkgs)(g)
 	})
 	rendered := f.GoString()
 

@@ -2,24 +2,35 @@ package codegen
 
 import (
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest/adapters/common"
 )
 
+// streamHelperCtx carries the package-config dependency through the
+// stream-helper emitters as if it were the generator's `g` receiver.
+// Keeping the dotted reads (`g.pkgs.X`) makes the helpers structurally
+// identical to the methodEmitter sites that consume them.
+type streamHelperCtx struct {
+	pkgs PackageConfig
+}
+
 // onTickType returns the jen type for the BAML OnTick callback signature.
-func onTickType() *jen.Statement {
+// bamlPkg is the import path of the BAML Go runtime package (whatever the
+// caller's PackageConfig.BamlPkg resolves to); threading it through keeps
+// the shared streaming helpers usable for a non-default BAML runtime.
+func onTickType(bamlPkg string) *jen.Statement {
 	return jen.Func().Params(
 		jen.Qual("context", "Context"),
-		jen.Qual(BamlPkg, "TickReason"),
-		jen.Qual(BamlPkg, "FunctionLog"),
-	).Qual(BamlPkg, "FunctionSignal")
+		jen.Qual(bamlPkg, "TickReason"),
+		jen.Qual(bamlPkg, "FunctionLog"),
+	).Qual(bamlPkg, "FunctionSignal")
 }
 
 // generateStreamHelpers emits shared orchestration functions that encapsulate
 // the goroutine management, heartbeat tracking, panic recovery, and shutdown
 // state machine common to all streaming methods. Per-method code supplies
 // only the method-specific closures.
-func generateStreamHelpers(out *jen.File) {
-	streamResultIface := jen.Qual(common.InterfacesPkg, "StreamResult")
+func generateStreamHelpers(out *jen.File, pkgs PackageConfig) {
+	g := streamHelperCtx{pkgs: pkgs}
+	streamResultIface := jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")
 
 	// emitPlannedPieces returns the two Jen nodes shared by
 	// runNoRawOrchestration and runFullOrchestration for emitting
@@ -42,7 +53,7 @@ func generateStreamHelpers(out *jen.File) {
 			jen.If(jen.Id("plannedMetadata").Op("==").Nil().Op("||").Id("newMetadataResult").Op("==").Nil()).Block(jen.Return()),
 			jen.If(jen.Op("!").Id("plannedSent").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(jen.Return()),
 			jen.Id("__plan").Op(":=").Op("*").Id("plannedMetadata"),
-			jen.Id("__plan").Dot("Phase").Op("=").Qual(common.InterfacesPkg, "MetadataPhasePlanned"),
+			jen.Id("__plan").Dot("Phase").Op("=").Qual(g.pkgs.InterfacesPkg, "MetadataPhasePlanned"),
 			jen.Id("__m").Op(":=").Id("newMetadataResult").Call(jen.Op("&").Id("__plan")),
 			jen.If(jen.Id("__m").Op("==").Nil()).Block(jen.Return()),
 			// Non-blocking emit: release on full / shutdown so a busy
@@ -66,7 +77,7 @@ func generateStreamHelpers(out *jen.File) {
 	plannedSentDeclA, emitPlannedDeclA := emitPlannedPieces()
 	out.Func().Id("runNoRawOrchestration").
 		Params(
-			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("out").Chan().Add(streamResultIface.Clone()),
 			jen.Id("newHeartbeat").Func().Params().Add(streamResultIface.Clone()),
 			jen.Id("newError").Func().Params(jen.Error()).Add(streamResultIface.Clone()),
@@ -79,16 +90,16 @@ func generateStreamHelpers(out *jen.File) {
 			// starts — so routing observability does not depend on BAML
 			// firing onTick. The outcome event is emitted later via the
 			// body's beforeFinal callback.
-			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+			jen.Id("plannedMetadata").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
 			// newMetadataResult: pool-wraps a Metadata payload as a StreamResult.
 			// Required when plannedMetadata is non-nil.
-			jen.Id("newMetadataResult").Func().Params(jen.Op("*").Qual(common.InterfacesPkg, "Metadata")).Add(streamResultIface.Clone()),
+			jen.Id("newMetadataResult").Func().Params(jen.Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata")).Add(streamResultIface.Clone()),
 			// body receives a beforeFinal callback that the body MUST invoke
 			// before sending the final StreamResult, and an onTick callback
 			// that body MUST install on the BAML stream. beforeFinal builds
 			// and emits the outcome metadata event so it lands between the
 			// last partial and the final.
-			jen.Id("body").Func().Params(jen.Func().Params(), jen.Add(onTickType())).Error(),
+			jen.Id("body").Func().Params(jen.Func().Params(), jen.Add(onTickType(g.pkgs.BamlPkg))).Error(),
 		).
 		Error().
 		Block(
@@ -160,7 +171,7 @@ func generateStreamHelpers(out *jen.File) {
 				jen.Var().Id("__winnerProvider").String(),
 				jen.Var().Id("__bamlCallCount").Op("*").Int(),
 				jen.If(
-					jen.List(jen.Id("fl"), jen.Id("flOk")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+					jen.List(jen.Id("fl"), jen.Id("flOk")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(g.pkgs.BamlPkg, "FunctionLog")),
 					jen.Id("flOk"),
 				).Block(
 					jen.If(
@@ -185,7 +196,7 @@ func generateStreamHelpers(out *jen.File) {
 						jen.Id("__bamlCallCount").Op("=").Op("&").Id("__n"),
 					),
 				),
-				jen.Id("__outcome").Op(":=").Qual(common.InterfacesPkg, "BuildLegacyOutcome").Call(
+				jen.Id("__outcome").Op(":=").Qual(g.pkgs.InterfacesPkg, "BuildLegacyOutcome").Call(
 					jen.Id("plannedMetadata"),
 					jen.Qual("time", "Since").Call(jen.Id("startTime")).Dot("Milliseconds").Call(),
 					jen.Id("__winnerClient"),
@@ -238,9 +249,9 @@ func generateStreamHelpers(out *jen.File) {
 	plannedSentDeclB, emitPlannedDeclB := emitPlannedPieces()
 	out.Func().Id("runFullOrchestration").
 		Params(
-			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("out").Chan().Add(streamResultIface.Clone()),
-			jen.Id("options").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Id("options").Op("[]").Qual(g.pkgs.GeneratedClientPkg, "CallOptionFunc"),
 			jen.Id("newHeartbeat").Func().Params().Add(streamResultIface.Clone()),
 			// newError carries the accumulated raw text seen up to the point of
 			// failure (per #256) so the worker bridge can attach it as
@@ -256,20 +267,20 @@ func generateStreamHelpers(out *jen.File) {
 			// observability does not depend on BAML firing onTick. The
 			// outcome event is emitted just before the final result. Both
 			// events are constructed from this seed via newMetadataResult.
-			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+			jen.Id("plannedMetadata").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
 			// newMetadataResult: pool-wraps a Metadata payload as a StreamResult.
 			// Required when plannedMetadata is non-nil.
-			jen.Id("newMetadataResult").Func().Params(jen.Op("*").Qual(common.InterfacesPkg, "Metadata")).Add(streamResultIface.Clone()),
+			jen.Id("newMetadataResult").Func().Params(jen.Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata")).Add(streamResultIface.Clone()),
 			// processTick: handle one FunctionLog tick (extract chunks, parse, emit partial).
 			// Receives the shared extractor + mutex.
 			jen.Id("processTick").Func().Params(
-				jen.Qual(BamlPkg, "FunctionLog"),
-				jen.Op("*").Qual(common.SSEPkg, "IncrementalExtractor"),
+				jen.Qual(g.pkgs.BamlPkg, "FunctionLog"),
+				jen.Op("*").Qual(g.pkgs.SSEPkg, "IncrementalExtractor"),
 				jen.Op("*").Qual("sync", "Mutex"),
 			).Error(),
 			// driveStream: create the BAML stream and iterate it, returning (finalResult, lastError).
 			jen.Id("driveStream").Func().Params(
-				jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+				jen.Op("[]").Qual(g.pkgs.GeneratedClientPkg, "CallOptionFunc"),
 			).Params(jen.Any(), jen.Error()),
 			// emitFinal: wrap and emit the final result.
 			// Signature is (result, raw, reasoning) — raw is text-only, reasoning
@@ -284,7 +295,7 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("startTime").Op(":=").Qual("time", "Now").Call(),
 
 			// Queue + context
-			jen.Id("funcLogQueue").Op(":=").Qual(common.GoConcurrentQueuePkg, "NewFIFO").Call(),
+			jen.Id("funcLogQueue").Op(":=").Qual(g.pkgs.QueuePkg, "NewFIFO").Call(),
 			jen.List(jen.Id("queueCtx"), jen.Id("queueCancel")).Op(":=").Qual("context", "WithCancel").Call(jen.Qual("context", "Background").Call()),
 
 			// Shutdown state
@@ -321,7 +332,7 @@ func generateStreamHelpers(out *jen.File) {
 			// reasoning buffer; when false (default), the reasoning
 			// buffer stays empty. Parseable and raw buffers are
 			// text-only by construction regardless of this flag.
-			jen.Id("extractor").Op(":=").Qual(common.SSEPkg, "NewIncrementalExtractor").Call(
+			jen.Id("extractor").Op(":=").Qual(g.pkgs.SSEPkg, "NewIncrementalExtractor").Call(
 				jen.Id("adapter").Dot("IncludeReasoning").Call(),
 			),
 			jen.Var().Id("extractorMu").Qual("sync", "Mutex"),
@@ -342,7 +353,7 @@ func generateStreamHelpers(out *jen.File) {
 				jen.Id("parseableFull").String(),
 			).String().Block(
 				jen.If(
-					jen.List(jen.Id("fl"), jen.Id("flOk")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+					jen.List(jen.Id("fl"), jen.Id("flOk")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(g.pkgs.BamlPkg, "FunctionLog")),
 					jen.Id("flOk"),
 				).Block(
 					jen.If(
@@ -495,7 +506,7 @@ func generateStreamHelpers(out *jen.File) {
 					),
 					jen.List(jen.Id("remaining"), jen.Id("drainErr")).Op(":=").Id("funcLogQueue").Dot("Dequeue").Call(),
 					jen.If(jen.Id("drainErr").Op("!=").Nil()).Block(jen.Return()),
-					jen.List(jen.Id("funcLog"), jen.Id("ok")).Op(":=").Id("remaining").Assert(jen.Qual(BamlPkg, "FunctionLog")),
+					jen.List(jen.Id("funcLog"), jen.Id("ok")).Op(":=").Id("remaining").Assert(jen.Qual(g.pkgs.BamlPkg, "FunctionLog")),
 					jen.If(jen.Op("!").Id("ok")).Block(jen.Id("decrementPending").Call(), jen.Continue()),
 					jen.Id("processItem").Call(jen.Id("funcLog")),
 				),
@@ -511,7 +522,7 @@ func generateStreamHelpers(out *jen.File) {
 								jen.Func().Params().Params(jen.Bool(), jen.Error()).Block(
 									jen.List(jen.Id("item"), jen.Id("err")).Op(":=").Id("funcLogQueue").Dot("DequeueOrWaitForNextElementContext").Call(jen.Id("queueCtx")),
 									jen.If(jen.Id("err").Op("!=").Nil()).Block(jen.Id("drain").Call(), jen.Return(jen.True(), jen.Nil())),
-									jen.List(jen.Id("funcLog"), jen.Id("ok")).Op(":=").Id("item").Assert(jen.Qual(BamlPkg, "FunctionLog")),
+									jen.List(jen.Id("funcLog"), jen.Id("ok")).Op(":=").Id("item").Assert(jen.Qual(g.pkgs.BamlPkg, "FunctionLog")),
 									jen.If(jen.Op("!").Id("ok")).Block(jen.Id("decrementPending").Call(), jen.Return(jen.False(), jen.Nil())),
 									jen.Id("processItem").Call(jen.Id("funcLog")),
 									jen.Return(jen.False(), jen.Nil()),
@@ -548,7 +559,7 @@ func generateStreamHelpers(out *jen.File) {
 						),
 					),
 					jen.Func().Params().Error().Block(
-						jen.Id("opts").Op(":=").Append(jen.Id("options"), jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick"))),
+						jen.Id("opts").Op(":=").Append(jen.Id("options"), jen.Qual(g.pkgs.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick"))),
 						jen.List(jen.Id("finalResult"), jen.Id("lastErr")).Op(":=").Id("driveStream").Call(jen.Id("opts")),
 						jen.Id("shutdownOnce").Dot("Do").Call(jen.Id("doShutdown")),
 
@@ -581,7 +592,7 @@ func generateStreamHelpers(out *jen.File) {
 						// additional chunks that became visible after driveStream
 						// returned. This is best-effort — a length-based cross-check
 						// against RawLLMResponse below catches remaining gaps.
-						jen.Id("fl").Op(",").Id("flOk").Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+						jen.Id("fl").Op(",").Id("flOk").Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(g.pkgs.BamlPkg, "FunctionLog")),
 						jen.If(jen.Id("flOk")).Block(
 							jen.Id("_").Op("=").Id("processTick").Call(jen.Id("fl"), jen.Id("extractor"), jen.Op("&").Id("extractorMu")),
 						),
@@ -649,7 +660,7 @@ func generateStreamHelpers(out *jen.File) {
 									jen.Id("__bamlCallCount").Op("=").Op("&").Id("__n"),
 								),
 							),
-							jen.Id("__outcome").Op(":=").Qual(common.InterfacesPkg, "BuildLegacyOutcome").Call(
+							jen.Id("__outcome").Op(":=").Qual(g.pkgs.InterfacesPkg, "BuildLegacyOutcome").Call(
 								jen.Id("plannedMetadata"),
 								jen.Qual("time", "Since").Call(jen.Id("startTime")).Dot("Milliseconds").Call(),
 								jen.Id("__winnerClient"),
@@ -705,7 +716,7 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Id("needsRaw").Bool(),
 			jen.Id("sendHeartbeat").Func().Params(),
 			jen.Id("driveStream").Func().Params(
-				jen.Add(onTickType()),
+				jen.Add(onTickType(g.pkgs.BamlPkg)),
 			).Params(jen.Any(), jen.Error()),
 		).
 		Params(jen.Any(), jen.String(), jen.String(), jen.Error()).
@@ -741,7 +752,7 @@ func generateStreamHelpers(out *jen.File) {
 			jen.Var().Id("raw").String(),
 			jen.If(jen.Id("needsRaw")).Block(
 				jen.If(
-					jen.List(jen.Id("fl"), jen.Id("ok")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(BamlPkg, "FunctionLog")),
+					jen.List(jen.Id("fl"), jen.Id("ok")).Op(":=").Id("lastFuncLog").Dot("Load").Call().Assert(jen.Qual(g.pkgs.BamlPkg, "FunctionLog")),
 					jen.Id("ok"),
 				).Block(
 					jen.If(

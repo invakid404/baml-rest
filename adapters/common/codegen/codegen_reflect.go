@@ -7,7 +7,6 @@ import (
 	"unicode"
 
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest/adapters/common"
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
@@ -105,7 +104,7 @@ func mirrorInputName(typ reflect.Type) string {
 
 // ensureMirrorStruct generates a mirror struct and conversion function for a BAML struct
 // that contains media fields. Returns the mirror struct name. Skips generation if already done.
-func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type) string {
+func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type, pkgs PackageConfig) string {
 	// Unwrap pointer/slice to get to the struct
 	inner := typ
 	for inner.Kind() == reflect.Ptr || inner.Kind() == reflect.Slice {
@@ -129,7 +128,7 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 			fieldInner = fieldInner.Elem()
 		}
 		if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type) {
-			m.ensureMirrorStruct(out, field.Type)
+			m.ensureMirrorStruct(out, field.Type, pkgs)
 		}
 	}
 
@@ -149,7 +148,7 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 		var fieldCode *jen.Statement
 		if _, isMedia := isMediaReflectType(field.Type); isMedia {
 			// Replace media type with MediaInput, preserving ptr/slice wrapping
-			fieldCode = jen.Id(field.Name).Add(mediaFieldType(field.Type))
+			fieldCode = jen.Id(field.Name).Add(mediaFieldType(field.Type, pkgs.InterfacesPkg))
 		} else {
 			fieldInner := field.Type
 			for fieldInner.Kind() == reflect.Ptr || fieldInner.Kind() == reflect.Slice {
@@ -169,14 +168,14 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 	out.Type().Id(mirrorName).Struct(fields...)
 
 	// Generate the conversion function: convert<MirrorName>(adapter, input) -> (bamlType, error)
-	m.generateConversionFunc(out, inner, mirrorName)
+	m.generateConversionFunc(out, inner, mirrorName, pkgs)
 
 	return mirrorName
 }
 
 // generateConversionFunc generates a function that converts a mirror input struct
 // to the real BAML struct, handling media field conversion.
-func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType reflect.Type, mirrorName string) {
+func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType reflect.Type, mirrorName string, pkgs PackageConfig) {
 	funcName := "convert" + mirrorName
 	bamlTypeExpr := parseReflectType(bamlType).statement
 
@@ -192,7 +191,7 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 		srcExpr := jen.Id("input").Dot(fieldName)
 
 		if mediaKind, isMedia := isMediaReflectType(field.Type); isMedia {
-			bodyCode = append(bodyCode, mediaFieldConversion(fieldName, srcExpr, field.Type, mediaKind)...)
+			bodyCode = append(bodyCode, mediaFieldConversion(fieldName, srcExpr, field.Type, mediaKind, pkgs)...)
 		} else {
 			fieldInner := field.Type
 			for fieldInner.Kind() == reflect.Ptr || fieldInner.Kind() == reflect.Slice {
@@ -211,7 +210,7 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 
 	out.Func().Id(funcName).
 		Params(
-			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapter").Qual(pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("input").Op("*").Id(mirrorName),
 		).
 		Params(bamlTypeExpr.Clone(), jen.Error()).
@@ -220,8 +219,8 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 
 // mediaFieldConversion generates code to convert a MediaInput field to a BAML media type.
 // Handles direct, pointer, and slice wrapping.
-func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType reflect.Type, mediaKind bamlutils.MediaKind) []jen.Code {
-	kindExpr := jen.Qual(common.InterfacesPkg, mediaKind.ConstName())
+func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType reflect.Type, mediaKind bamlutils.MediaKind, pkgs PackageConfig) []jen.Code {
+	kindExpr := jen.Qual(pkgs.InterfacesPkg, mediaKind.ConstName())
 
 	isPtr := fieldType.Kind() == reflect.Ptr
 	isSlice := fieldType.Kind() == reflect.Slice
@@ -265,7 +264,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 		}
 
 		conversionBlock := append([]jen.Code{
-			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(pkgs.InterfacesPkg, "ConvertMedia").Call(
 				jen.Id("adapter"),
 				kindExpr.Clone(),
 				miArg,
@@ -331,7 +330,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 			}
 
 			innerConvBlock := append([]jen.Code{
-				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(pkgs.InterfacesPkg, "ConvertMedia").Call(
 					jen.Id("adapter"),
 					kindExpr.Clone(),
 					miArg,
@@ -371,7 +370,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 		// *MediaInput -> *baml.Image (optional single value)
 		return []jen.Code{
 			jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
-				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(pkgs.InterfacesPkg, "ConvertMedia").Call(
 					jen.Id("adapter"),
 					kindExpr.Clone(),
 					srcExpr.Clone(),
@@ -391,7 +390,7 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 	// Direct
 	return []jen.Code{
 		jen.Block(
-			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(pkgs.InterfacesPkg, "ConvertMedia").Call(
 				jen.Id("adapter"),
 				kindExpr,
 				jen.Op("&").Add(srcExpr.Clone()),
@@ -596,7 +595,7 @@ type parsedReflectType struct {
 // mediaConversionCode generates code that converts a MediaInput field to the
 // opaque BAML media type via bamlutils.ConvertMedia + a type assertion.
 // Handles direct, pointer (optional), and slice (list) media types.
-func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type, mediaKind bamlutils.MediaKind) []jen.Code {
+func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type, mediaKind bamlutils.MediaKind, pkgs PackageConfig) []jen.Code {
 	// Determine the wrapping: direct, pointer, or slice
 	isPtr := paramType.Kind() == reflect.Ptr
 	isSlice := paramType.Kind() == reflect.Slice
@@ -608,7 +607,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 	}
 	bamlType := parseReflectType(innerType).statement
 
-	kindExpr := jen.Qual(common.InterfacesPkg, mediaKind.ConstName())
+	kindExpr := jen.Qual(pkgs.InterfacesPkg, mediaKind.ConstName())
 
 	if isSlice {
 		// []MediaInput -> []baml.Image
@@ -647,7 +646,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 		}
 
 		conversionBlock := append([]jen.Code{
-			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+			jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(pkgs.InterfacesPkg, "ConvertMedia").Call(
 				jen.Id("adapter"),
 				kindExpr.Clone(),
 				miArg,
@@ -717,7 +716,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 			}
 
 			ptrSliceConv := append([]jen.Code{
-				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(pkgs.InterfacesPkg, "ConvertMedia").Call(
 					jen.Id("adapter"),
 					kindExpr.Clone(),
 					miArg,
@@ -756,7 +755,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 		return []jen.Code{
 			jen.Var().Id(convertedVar).Add(parseReflectType(paramType).statement),
 			jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
-				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+				jen.List(jen.Id("__raw"), jen.Id("__err")).Op(":=").Qual(pkgs.InterfacesPkg, "ConvertMedia").Call(
 					jen.Id("adapter"),
 					kindExpr.Clone(),
 					jen.Id("input").Dot(fieldName),
@@ -775,7 +774,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 
 	// Direct: MediaInput -> baml.Image
 	return []jen.Code{
-		jen.List(jen.Id("__raw_"+convertedVar), jen.Id("__err_"+convertedVar)).Op(":=").Qual(common.InterfacesPkg, "ConvertMedia").Call(
+		jen.List(jen.Id("__raw_"+convertedVar), jen.Id("__err_"+convertedVar)).Op(":=").Qual(pkgs.InterfacesPkg, "ConvertMedia").Call(
 			jen.Id("adapter"),
 			kindExpr,
 			jen.Op("&").Id("input").Dot(fieldName),
@@ -793,7 +792,7 @@ func mediaConversionCode(convertedVar, fieldName string, paramType reflect.Type,
 // mediaFieldType returns a jen statement for a MediaInput field type,
 // preserving any pointer/slice wrapping from the original reflected type.
 // e.g., *baml.Image -> *bamlutils.MediaInput, []baml.Image -> []bamlutils.MediaInput
-func mediaFieldType(typ reflect.Type) *jen.Statement {
+func mediaFieldType(typ reflect.Type, interfacesPkg string) *jen.Statement {
 	var ops []string
 	for {
 		if typ.Kind() == reflect.Ptr {
@@ -807,7 +806,7 @@ func mediaFieldType(typ reflect.Type) *jen.Statement {
 		}
 	}
 
-	statement := jen.Qual(common.InterfacesPkg, "MediaInput")
+	statement := jen.Qual(interfacesPkg, "MediaInput")
 
 	for _, op := range slices.Backward(ops) {
 		statement = jen.Op(op).Add(statement)

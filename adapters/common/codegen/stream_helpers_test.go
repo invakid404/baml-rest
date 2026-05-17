@@ -18,7 +18,7 @@ func TestGenerateStreamHelpers_ParsesAsValidGo(t *testing.T) {
 	t.Parallel()
 
 	out := common.MakeFile()
-	generateStreamHelpers(out)
+	generateStreamHelpers(out, DefaultPackageConfig())
 
 	rendered := out.GoString()
 	if rendered == "" {
@@ -41,7 +41,7 @@ func TestGenerateStreamHelpers_ContainsExpectedSymbols(t *testing.T) {
 	t.Parallel()
 
 	out := common.MakeFile()
-	generateStreamHelpers(out)
+	generateStreamHelpers(out, DefaultPackageConfig())
 	rendered := out.GoString()
 
 	wantSubstrings := []string{
@@ -130,7 +130,7 @@ func TestRunFullOrchestration_NewErrorCarriesRaw(t *testing.T) {
 	t.Parallel()
 
 	out := common.MakeFile()
-	generateStreamHelpers(out)
+	generateStreamHelpers(out, DefaultPackageConfig())
 	rendered := out.GoString()
 
 	// 1. Widened signature on runFullOrchestration. Use a substring that

@@ -176,7 +176,7 @@ func TestStructContainsMediaVisited_SharedVisitedAcrossFields(t *testing.T) {
 // child-callback fix already closed at the per-callback layer.
 func TestEmitMakeLegacyStreamOptionsFromAdapter_PinsPrimaryToClientOverride(t *testing.T) {
 	out := jen.NewFilePathName("github.com/example/test", "test")
-	emitMakeLegacyStreamOptionsFromAdapter(out, "github.com/example/test/adapter")
+	emitMakeLegacyStreamOptionsFromAdapter(out, "github.com/example/test/adapter", DefaultPackageConfig())
 	rendered := out.GoString()
 
 	// Positive: the registry-creation gate must include the
@@ -354,7 +354,7 @@ func TestEmitMakeLegacyStreamOptionsFromAdapter_PinsPrimaryToClientOverride(t *t
 // has no client_registry — this assertion catches that.
 func TestEmitMakeLegacyChildOptionsFromAdapter_StaticMixedModeEmitsRegistry(t *testing.T) {
 	out := jen.NewFilePathName("github.com/example/test", "test")
-	emitMakeLegacyChildOptionsFromAdapter(out, "github.com/example/test/adapter")
+	emitMakeLegacyChildOptionsFromAdapter(out, "github.com/example/test/adapter", DefaultPackageConfig())
 	rendered := out.GoString()
 
 	// Positive: the emit must conditionally create a registry on
@@ -659,7 +659,11 @@ func TestEmitRouter_RetryResolutionUsesStrategyAwareHelper(t *testing.T) {
 	introspected.StreamRequest = struct{}{}
 
 	// Minimal generator: only fields emitRouter reads.
+	pkgs := DefaultPackageConfig()
 	g := &generator{
+		opts:               Options{SupportsWithClient: true, Packages: pkgs, Introspection: RootIntrospection()},
+		pkgs:               pkgs,
+		intro:              RootIntrospection(),
 		out:                common.MakeFile(),
 		supportsWithClient: true,
 	}
@@ -778,9 +782,13 @@ func TestEmitRouter_CallModeFallbackDefersToBridgeWhenAvailable(t *testing.T) {
 		introspected.StreamRequest = savedStreamRequest
 	})
 
+	pkgs := DefaultPackageConfig()
 	renderRouter := func(t *testing.T) string {
 		t.Helper()
 		g := &generator{
+			opts:               Options{SupportsWithClient: true, Packages: pkgs, Introspection: RootIntrospection()},
+			pkgs:               pkgs,
+			intro:              RootIntrospection(),
 			out:                common.MakeFile(),
 			supportsWithClient: true,
 		}

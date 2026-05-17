@@ -59,6 +59,12 @@ var (
 // BoundaryML/baml to installed Go runtime sources.
 //
 // This patch also improves stream cancellation callback cleanup behavior.
+//
+// Server-build wrapper: resolves the BAML module via `go list`, copies it
+// out of GOMODCACHE into a writable cache dir when needed, installs a
+// go.work replace directive, and then delegates the actual patching to
+// ApplyRuntimeDeadlockFixToDir. Callers regenerating a checked-in
+// patched fork should use ApplyRuntimeDeadlockFixToDir directly.
 func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 	requestedVersion := strings.TrimSpace(bamlVersion)
 	if requestedVersion != "" {
@@ -91,14 +97,51 @@ func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 		}
 	}
 
-	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
-		fmt.Printf("Skipping runtime-deadlock-fix (effective version %s is below v0.218.0)\n", version)
-		return nil
-	}
-
 	moduleDir, usingPatchedCopy, err := preparePatchedBamlModuleDir(moduleDir, version)
 	if err != nil {
 		return err
+	}
+
+	if err := ApplyRuntimeDeadlockFixToDir(version, moduleDir); err != nil {
+		return err
+	}
+
+	if usingPatchedCopy {
+		if err := setGoWorkReplace("github.com/boundaryml/baml", moduleDir); err != nil {
+			return err
+		}
+		fmt.Printf("  Using patched BAML module copy: %s\n", moduleDir)
+	}
+	return nil
+}
+
+// ApplyRuntimeDeadlockFixToDir applies the embedded PR #3185 deadlock-fix
+// patch to a BAML module rooted at moduleDir. The patch contents and
+// version-gate semantics match ApplyRuntimeDeadlockFix's: versions below
+// v0.218.0 are skipped, v0.218.x uses the backport, and v0.219.0+ uses
+// the upstream form. The forward / reverse dry-run dance keeps the call
+// idempotent across reruns.
+//
+// Unlike [ApplyRuntimeDeadlockFix], no module resolution, copy-from-cache,
+// or go.work editing is performed; moduleDir must already point at a
+// writable BAML source tree. The function is the building block used
+// both by the server-build wrapper and by checked-in patched-fork
+// regeneration paths.
+func ApplyRuntimeDeadlockFixToDir(bamlVersion, moduleDir string) error {
+	version := strings.TrimSpace(bamlVersion)
+	if version != "" {
+		version = bamlutils.NormalizeVersion(version)
+	}
+	if version == "" {
+		return fmt.Errorf("baml version is required to select the deadlock-fix patch")
+	}
+	if moduleDir == "" {
+		return fmt.Errorf("module directory is required to apply the deadlock-fix patch")
+	}
+
+	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
+		fmt.Printf("Skipping runtime-deadlock-fix (effective version %s is below v0.218.0)\n", version)
+		return nil
 	}
 
 	patchPath := pr3185PatchV218BackportPath
@@ -114,12 +157,6 @@ func ApplyRuntimeDeadlockFix(bamlVersion string) error {
 	applied, _, err := applyPatch(moduleDir, patchData)
 	if err != nil {
 		return fmt.Errorf("applying %s in %s: %w", filepath.Base(patchPath), moduleDir, err)
-	}
-	if usingPatchedCopy {
-		if err := setGoWorkReplace("github.com/boundaryml/baml", moduleDir); err != nil {
-			return err
-		}
-		fmt.Printf("  Using patched BAML module copy: %s\n", moduleDir)
 	}
 
 	if applied {

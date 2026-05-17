@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest/adapters/common"
 )
 
 // emitLegacyStream emits the legacy CallStream+OnTick streaming
@@ -13,7 +12,7 @@ import (
 func (me *methodEmitter) emitLegacyStream() {
 	g := me.g
 	out := g.out
-	streamResultInterface := jen.Qual(common.InterfacesPkg, "StreamResult")
+	streamResultInterface := jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")
 
 	// Build call parameters for Stream method
 	// ====== SIMPLIFIED IMPLEMENTATION: methodName_noRaw ======
@@ -45,12 +44,12 @@ func (me *methodEmitter) emitLegacyStream() {
 		// backing array.
 		jen.Id("streamOpts").Op(":=").Append(
 			jen.Id("options"),
-			jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
+			jen.Qual(g.pkgs.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
 		),
 		g.withClientCloneAndAppend("streamOpts", "streamOpts"),
 		// Call Stream WITH OnTick for heartbeat tracking, but still use native streaming for data
 		jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
-			Qual(common.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(noRawStreamCallParams...),
+			Qual(g.pkgs.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(noRawStreamCallParams...),
 
 		// If stream creation failed, emit error
 		jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
@@ -91,7 +90,7 @@ func (me *methodEmitter) emitLegacyStream() {
 			// Final() already returns *TFinal from the BAML generated client — assign directly.
 			jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
 				jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-				jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindFinal"),
+				jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindFinal"),
 				jen.Id("__r").Dot("finalParsed").Op("=").Id("streamVal").Dot("Final").Call(),
 				func() jen.Code {
 					if me.isDynamicFinal {
@@ -124,7 +123,7 @@ func (me *methodEmitter) emitLegacyStream() {
 						return jen.Null()
 					}(),
 					jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-					jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+					jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindStream"),
 					jen.Id("__r").Dot("streamParsed").Op("=").Id("__partial"),
 					jen.Select().Block(
 						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
@@ -155,28 +154,28 @@ func (me *methodEmitter) emitLegacyStream() {
 			jen.Id("adapter"),
 			jen.Id("out"),
 			// newHeartbeat
-			jen.Func().Params().Qual(common.InterfacesPkg, "StreamResult").Block(
+			jen.Func().Params().Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
 				jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-				jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
+				jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindHeartbeat"),
 				jen.Return(jen.Id("__r")),
 			),
 			// newError
-			jen.Func().Params(jen.Id("err").Error()).Qual(common.InterfacesPkg, "StreamResult").Block(
+			jen.Func().Params(jen.Id("err").Error()).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
 				jen.Return(jen.Id(me.errorConstructorName).Call(jen.Id("err"))),
 			),
 			// release
-			jen.Func().Params(jen.Id("__r").Qual(common.InterfacesPkg, "StreamResult")).Block(
+			jen.Func().Params(jen.Id("__r").Qual(g.pkgs.InterfacesPkg, "StreamResult")).Block(
 				jen.Id("__r").Dot("Release").Call(),
 			),
 			// plannedMetadata: passed straight through; orchestrator
 			// builds both planned and outcome events from this seed.
 			jen.Id("plannedMetadata"),
 			// newMetadataResult: pool-wraps a Metadata payload.
-			jen.Func().Params(jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata")).Qual(common.InterfacesPkg, "StreamResult").Block(
+			jen.Func().Params(jen.Id("md").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata")).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
 				jen.Return(jen.Id(me.metadataConstructorName).Call(jen.Id("md"))),
 			),
 			// body - receives beforeFinal + onTick, handles stream creation and iteration
-			jen.Func().Params(jen.Id("beforeFinal").Func().Params(), jen.Id("onTick").Add(onTickType())).Error().Block(noRawGoroutineBody...),
+			jen.Func().Params(jen.Id("beforeFinal").Func().Params(), jen.Id("onTick").Add(onTickType(g.pkgs.BamlPkg))).Error().Block(noRawGoroutineBody...),
 		)),
 	)
 
@@ -185,11 +184,11 @@ func (me *methodEmitter) emitLegacyStream() {
 	out.Func().
 		Id(me.noRawMethodName).
 		Params(
-			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("rawInput").Any(),
 			jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 			jen.Id("skipPartials").Bool(),
-			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+			jen.Id("plannedMetadata").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
 			jen.Id("clientOverride").String(),
 		).
 		Error().
@@ -206,7 +205,7 @@ func (me *methodEmitter) emitLegacyStream() {
 		jen.Id("callCount").Op(":=").Len(jen.Id("calls")),
 		jen.If(jen.Id("callCount").Op("==").Lit(0)).Block(jen.Return(jen.Nil())),
 		jen.Id("lastCall").Op(":=").Id("calls").Index(jen.Id("callCount").Op("-").Lit(1)),
-		jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("lastCall").Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
+		jen.Id("streamCall").Op(",").Id("ok").Op(":=").Id("lastCall").Assert(jen.Qual(g.pkgs.BamlPkg, "LLMStreamCall")),
 		jen.If(jen.Op("!").Id("ok")).Block(jen.Return(jen.Nil())),
 		jen.Id("provider").Op(",").Id("provErr").Op(":=").Id("streamCall").Dot("Provider").Call(),
 		jen.If(jen.Id("provErr").Op("!=").Nil()).Block(jen.Return(jen.Nil())),
@@ -215,21 +214,21 @@ func (me *methodEmitter) emitLegacyStream() {
 		// the same precedence as BuildRequest's resolveChildProvider:
 		//   1. Scan child calls for a supported runtime-reported provider
 		//   2. Runtime client_registry override for the selected child
-		//   3. Static introspected.ClientProvider map (only if supported)
+		//   3. Static g.intro.ClientProvider map (only if supported)
 		// If none match, leave `provider` unchanged (ExtractDeltaFromText
 		// will fail the unsupported-provider check and skip extraction
 		// rather than using a stale or unsupported value).
-		jen.If(jen.Op("!").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("provider"))).Block(
+		jen.If(jen.Op("!").Qual(g.pkgs.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("provider"))).Block(
 			jen.Id("resolved").Op(":=").Lit(false),
 			// 1. Prefer the runtime-reported provider from a child call.
 			jen.For(jen.Id("i").Op(":=").Id("callCount").Op("-").Lit(1), jen.Id("i").Op(">=").Lit(0).Op("&&").Op("!").Id("resolved"), jen.Id("i").Op("--")).Block(
 				jen.If(
-					jen.List(jen.Id("sc"), jen.Id("scOk")).Op(":=").Id("calls").Index(jen.Id("i")).Assert(jen.Qual(BamlPkg, "LLMStreamCall")),
+					jen.List(jen.Id("sc"), jen.Id("scOk")).Op(":=").Id("calls").Index(jen.Id("i")).Assert(jen.Qual(g.pkgs.BamlPkg, "LLMStreamCall")),
 					jen.Id("scOk"),
 				).Block(
 					jen.If(
 						jen.List(jen.Id("cp"), jen.Id("cpErr")).Op(":=").Id("sc").Dot("Provider").Call(),
-						jen.Id("cpErr").Op("==").Nil().Op("&&").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("cp")),
+						jen.Id("cpErr").Op("==").Nil().Op("&&").Qual(g.pkgs.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("cp")),
 					).Block(
 						jen.Id("provider").Op("=").Id("cp"),
 						jen.Id("resolved").Op("=").Lit(true),
@@ -248,7 +247,7 @@ func (me *methodEmitter) emitLegacyStream() {
 					).Block(
 						jen.For(jen.Id("_").Op(",").Id("rc").Op(":=").Range().Id("reg").Dot("Clients")).Block(
 							jen.If(
-								jen.Id("rc").Op("!=").Nil().Op("&&").Id("rc").Dot("Name").Op("==").Id("clientName").Op("&&").Id("rc").Dot("Provider").Op("!=").Lit("").Op("&&").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("rc").Dot("Provider")),
+								jen.Id("rc").Op("!=").Nil().Op("&&").Id("rc").Dot("Name").Op("==").Id("clientName").Op("&&").Id("rc").Dot("Provider").Op("!=").Lit("").Op("&&").Qual(g.pkgs.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("rc").Dot("Provider")),
 							).Block(
 								jen.Id("provider").Op("=").Id("rc").Dot("Provider"),
 								jen.Id("resolved").Op("=").Lit(true),
@@ -256,11 +255,11 @@ func (me *methodEmitter) emitLegacyStream() {
 							),
 						),
 					),
-					// 3. Static introspected.ClientProvider (only if supported).
+					// 3. Static g.intro.ClientProvider (only if supported).
 					jen.If(jen.Op("!").Id("resolved")).Block(
 						jen.If(
-							jen.List(jen.Id("sp"), jen.Id("spOk")).Op(":=").Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("clientName")),
-							jen.Id("spOk").Op("&&").Qual(common.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("sp")),
+							jen.List(jen.Id("sp"), jen.Id("spOk")).Op(":=").Qual(g.pkgs.IntrospectedPkg, "ClientProvider").Index(jen.Id("clientName")),
+							jen.Id("spOk").Op("&&").Qual(g.pkgs.SSEPkg, "IsDeltaProviderSupported").Call(jen.Id("sp")),
 						).Block(
 							jen.Id("provider").Op("=").Id("sp"),
 						),
@@ -274,7 +273,7 @@ func (me *methodEmitter) emitLegacyStream() {
 		// Defer unlock so a panic in ExtractFrom does not leave the mutex held.
 		jen.Id("extractorMu").Dot("Lock").Call(),
 		jen.Defer().Id("extractorMu").Dot("Unlock").Call(),
-		jen.Id("extractResult").Op(":=").Qual(common.SSEPkg, "ExtractFrom").Call(
+		jen.Id("extractResult").Op(":=").Qual(g.pkgs.SSEPkg, "ExtractFrom").Call(
 			jen.Id("extractor"), jen.Id("callCount"), jen.Id("provider"), jen.Id("chunks"),
 		),
 		jen.If(jen.Id("skipIntermediateParsing")).Block(jen.Return(jen.Nil())),
@@ -318,7 +317,7 @@ func (me *methodEmitter) emitLegacyStream() {
 				jen.Default().Block(),
 			),
 			jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-			jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+			jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindStream"),
 			jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
 			jen.Id("__r").Dot("reasoning").Op("=").Id("reasoningDelta"),
 			jen.Id("__r").Dot("reset").Op("=").Id("extractResult").Dot("Reset"),
@@ -340,7 +339,7 @@ func (me *methodEmitter) emitLegacyStream() {
 		),
 		// Call ParseStream on the cumulative parseable buffer.
 		jen.List(jen.Id("parsed"), jen.Id("parseErr")).Op(":=").
-			Qual(common.GeneratedClientPkg, "ParseStream").Dot(me.methodName).Call(
+			Qual(g.pkgs.GeneratedClientPkg, "ParseStream").Dot(me.methodName).Call(
 			jen.Id("adapter"), jen.Id("parseable"), jen.Id("options").Op("..."),
 		),
 		jen.If(jen.Id("parseErr").Op("==").Nil()).Block(
@@ -356,7 +355,7 @@ func (me *methodEmitter) emitLegacyStream() {
 				return jen.Null()
 			}(),
 			jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-			jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+			jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindStream"),
 			jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
 			jen.Id("__r").Dot("reasoning").Op("=").Id("reasoningDelta"),
 			jen.Id("__r").Dot("streamParsed").Op("=").Id("parsedPtr"),
@@ -384,7 +383,7 @@ func (me *methodEmitter) emitLegacyStream() {
 				jen.Default().Block(),
 			),
 			jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-			jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindStream"),
+			jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindStream"),
 			jen.Id("__r").Dot("raw").Op("=").Id("rawDelta"),
 			jen.Id("__r").Dot("reasoning").Op("=").Id("reasoningDelta"),
 			jen.Id("__r").Dot("reset").Op("=").Lit(true),
@@ -414,7 +413,7 @@ func (me *methodEmitter) emitLegacyStream() {
 		jen.Id("driveOpts").Op(":=").Id("opts"),
 		g.withClientCloneAndAppend("driveOpts", "opts"),
 		jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
-			Qual(common.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(driveStreamCallParams...),
+			Qual(g.pkgs.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(driveStreamCallParams...),
 		jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
 			jen.Return(jen.Nil(), jen.Id("streamErr")),
 		),
@@ -431,7 +430,7 @@ func (me *methodEmitter) emitLegacyStream() {
 	// Sets the typed finalParsed field directly — no interface boxing.
 	emitFinalBody := []jen.Code{
 		jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-		jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindFinal"),
+		jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindFinal"),
 		jen.Id("__r").Dot("raw").Op("=").Id("raw"),
 		jen.Id("__r").Dot("reasoning").Op("=").Id("reasoning"),
 		jen.If(jen.Id("result").Op("!=").Nil()).Block(
@@ -475,42 +474,42 @@ func (me *methodEmitter) emitLegacyStream() {
 			jen.Id("out"),
 			jen.Id("options"),
 			// newHeartbeat
-			jen.Func().Params().Qual(common.InterfacesPkg, "StreamResult").Block(
+			jen.Func().Params().Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
 				jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-				jen.Id("__r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindHeartbeat"),
+				jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindHeartbeat"),
 				jen.Return(jen.Id("__r")),
 			),
 			// newError: error envelope carries the accumulated raw text
 			// from runFullOrchestration (per #256) so the worker bridge
 			// can forward it as details.raw.
-			jen.Func().Params(jen.Id("err").Error(), jen.Id("raw").String()).Qual(common.InterfacesPkg, "StreamResult").Block(
+			jen.Func().Params(jen.Id("err").Error(), jen.Id("raw").String()).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
 				jen.Id("__r").Op(":=").Id(me.errorConstructorName).Call(jen.Id("err")),
 				jen.Id("__r").Dot("raw").Op("=").Id("raw"),
 				jen.Return(jen.Id("__r")),
 			),
 			// release
-			jen.Func().Params(jen.Id("__r").Qual(common.InterfacesPkg, "StreamResult")).Block(
+			jen.Func().Params(jen.Id("__r").Qual(g.pkgs.InterfacesPkg, "StreamResult")).Block(
 				jen.Id("__r").Dot("Release").Call(),
 			),
 			// plannedMetadata: passed straight through; orchestrator
 			// builds both planned and outcome events from this seed.
 			jen.Id("plannedMetadata"),
 			// newMetadataResult: pool-wraps a Metadata payload.
-			jen.Func().Params(jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata")).Qual(common.InterfacesPkg, "StreamResult").Block(
+			jen.Func().Params(jen.Id("md").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata")).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
 				jen.Return(jen.Id(me.metadataConstructorName).Call(jen.Id("md"))),
 			),
 			// processTick
 			jen.Func().Params(
 				jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
-				jen.Id("extractor").Op("*").Qual(common.SSEPkg, "IncrementalExtractor"),
+				jen.Id("extractor").Op("*").Qual(g.pkgs.SSEPkg, "IncrementalExtractor"),
 				jen.Id("extractorMu").Op("*").Qual("sync", "Mutex"),
 			).Error().Block(processTickBody...),
 			// driveStream
 			jen.Func().Params(
-				jen.Id("opts").Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+				jen.Id("opts").Op("[]").Qual(g.pkgs.GeneratedClientPkg, "CallOptionFunc"),
 			).Params(jen.Any(), jen.Error()).Block(driveStreamBody...),
 			// emitFinal
-			jen.Func().Params(jen.Id("result").Any(), jen.Id("raw").String(), jen.Id("reasoning").String()).Qual(common.InterfacesPkg, "StreamResult").Block(emitFinalBody...),
+			jen.Func().Params(jen.Id("result").Any(), jen.Id("raw").String(), jen.Id("reasoning").String()).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(emitFinalBody...),
 		)),
 	)
 
@@ -519,11 +518,11 @@ func (me *methodEmitter) emitLegacyStream() {
 	out.Func().
 		Id(me.fullMethodName).
 		Params(
-			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("rawInput").Any(),
 			jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 			jen.Id("skipIntermediateParsing").Bool(),
-			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+			jen.Id("plannedMetadata").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
 			jen.Id("clientOverride").String(),
 		).
 		Error().
