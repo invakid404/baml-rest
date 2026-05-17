@@ -60,8 +60,13 @@ const (
 	// regen indefinitely. Longer than any of these should plausibly
 	// take so it does not fire under load.
 	regenCommandTimeout = 10 * time.Minute
-	provenanceFileName  = "BAML_REST_SOURCE_VERSION"
-	generatorIdentity   = "cmd/regenerate-dynclient"
+	// goModDownloadTimeout caps the BAML module fetch in
+	// resolveBAMLModule. Long enough that a cold module cache behind a
+	// slow network can complete; the labeled timeout error fires only
+	// on a genuine stall.
+	goModDownloadTimeout = 5 * time.Minute
+	provenanceFileName   = "BAML_REST_SOURCE_VERSION"
+	generatorIdentity    = "cmd/regenerate-dynclient"
 )
 
 type config struct {
@@ -272,12 +277,15 @@ func resolveBAMLVersion(override string) (string, error) {
 // the fork's source against `go mod download` without rerunning the
 // regen.
 func resolveBAMLModule(version string) (dir, sum string, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), goModDownloadTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "mod", "download", "-x", "-json", "github.com/boundaryml/baml@"+version)
 	cmd.Stderr = os.Stderr
 	out, runErr := cmd.Output()
 	if runErr != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", "", fmt.Errorf("go mod download github.com/boundaryml/baml@%s timed out after %s", version, goModDownloadTimeout)
+		}
 		return "", "", fmt.Errorf("downloading github.com/boundaryml/baml@%s: %w", version, runErr)
 	}
 	var info struct {
@@ -477,23 +485,50 @@ func runEmbed() error {
 	return runCommandWithTimeout("cmd/embed", "go", "run", "./cmd/embed")
 }
 
+// goimportsFileExists reports whether path names a regular file the
+// orchestrator can plausibly exec. Helper for the runGoimports
+// lookup chain so each fallback branch reads as one expression.
+func goimportsFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 // runGoimports prunes unused imports the BAML generator leaves behind
-// on dynamic-only clients. The orchestrator finds goimports on PATH or
-// under $GOPATH/bin; the parent build pipeline (cmd/build/build.sh)
-// already requires it for the same reason, so the dependency is
-// reused.
+// on dynamic-only clients. The orchestrator probes PATH first, then
+// $GOBIN, then $GOPATH/bin, then `go env GOPATH`/bin — the last
+// branch covers machines where GOPATH is unset in the environment but
+// the Go toolchain defaults it (e.g. $HOME/go). The parent build
+// pipeline (cmd/build/build.sh) requires goimports for the same
+// reason, so the dependency is reused.
 func runGoimports(dir string) error {
 	bin, err := exec.LookPath("goimports")
 	if err != nil {
-		if gopath := os.Getenv("GOPATH"); gopath != "" {
-			candidate := filepath.Join(gopath, "bin", "goimports")
-			if _, statErr := os.Stat(candidate); statErr == nil {
+		if gobin := os.Getenv("GOBIN"); gobin != "" {
+			if candidate := filepath.Join(gobin, "goimports"); goimportsFileExists(candidate) {
 				bin = candidate
 			}
 		}
 	}
 	if bin == "" {
-		return fmt.Errorf("goimports not found on PATH or $GOPATH/bin; install with `go install golang.org/x/tools/cmd/goimports@latest`")
+		if gopath := os.Getenv("GOPATH"); gopath != "" {
+			if candidate := filepath.Join(gopath, "bin", "goimports"); goimportsFileExists(candidate) {
+				bin = candidate
+			}
+		}
+	}
+	if bin == "" {
+		out, envErr := exec.Command("go", "env", "GOPATH").Output()
+		if envErr == nil {
+			gopath := strings.TrimSpace(string(out))
+			if gopath != "" {
+				if candidate := filepath.Join(gopath, "bin", "goimports"); goimportsFileExists(candidate) {
+					bin = candidate
+				}
+			}
+		}
+	}
+	if bin == "" {
+		return fmt.Errorf("goimports not found on PATH, $GOBIN, $GOPATH/bin, or `go env GOPATH`/bin; install with `go install golang.org/x/tools/cmd/goimports@latest`")
 	}
 	return runCommandWithTimeout("goimports", bin, "-w", dir)
 }
