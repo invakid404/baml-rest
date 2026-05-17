@@ -27,37 +27,47 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/cmd/hacks/hacks"
 )
 
 const (
-	patchedBAMLModulePath = "github.com/invakid404/baml-rest/dynclient/baml-patched"
+	rootModulePath        = "github.com/invakid404/baml-rest"
+	patchedBAMLModulePath = rootModulePath + "/dynclient/baml-patched"
 	dynamicBAMLSource     = "cmd/build/dynamic.baml"
 	bamlVersionsManifest  = "integration/baml_versions.json"
-	defaultOutputRoot     = "dynclient/internal/generated"
+	// outputRoot pins the on-disk layout the genadapter command and
+	// the generator block's client_package_name compile against. The
+	// orchestrator does not expose this as a flag because three call
+	// sites bake the same path into source — materializeBAMLProject's
+	// BAML generator block, runIntrospect's --module-path, and
+	// dynclient/cmd/genadapter's package-level constants. A
+	// non-default value would silently produce a tree the genadapter
+	// run cannot import.
+	outputRoot            = "dynclient/internal/generated"
 	defaultPatchedBAMLOut = "dynclient/baml-patched"
 	npxBAMLPackage        = "@boundaryml/baml"
 	genadapterPackage     = "./dynclient/cmd/genadapter"
 	bamlCLIGenTimeout     = 10 * time.Minute
+	provenanceFileName    = "BAML_REST_SOURCE_VERSION"
+	generatorIdentity     = "cmd/regenerate-dynclient"
 )
 
 type config struct {
 	BAMLVersion    string
 	BAMLCLI        string
-	OutputRoot     string
 	PatchedBAMLOut string
 	KeepTemp       bool
 }
 
 func main() {
 	cfg := config{
-		OutputRoot:     defaultOutputRoot,
 		PatchedBAMLOut: defaultPatchedBAMLOut,
 	}
 	flag.StringVar(&cfg.BAMLVersion, "baml-version", "", "BAML version to pin (defaults to integration/baml_versions.json `.latest`)")
 	flag.StringVar(&cfg.BAMLCLI, "baml-cli", os.Getenv("BAML_CLI_PATH"), "Path to baml-cli (defaults to $BAML_CLI_PATH; npx fallback when empty)")
-	flag.StringVar(&cfg.OutputRoot, "output-root", cfg.OutputRoot, "Output root for the generated dynclient tree")
 	flag.StringVar(&cfg.PatchedBAMLOut, "patched-baml-out", cfg.PatchedBAMLOut, "Output directory for the patched BAML fork")
 	flag.BoolVar(&cfg.KeepTemp, "keep-temp", false, "Preserve the temp BAML project under the working directory for debugging")
 	flag.Parse()
@@ -83,7 +93,7 @@ func run(cfg config) error {
 	}
 	fmt.Printf("==> Regenerating dynclient for BAML %s\n", version)
 
-	bamlSrcDir, err := resolveBAMLModuleSourceDir(version)
+	bamlSrcDir, bamlSum, err := resolveBAMLModule(version)
 	if err != nil {
 		return err
 	}
@@ -92,6 +102,14 @@ func run(cfg config) error {
 	fmt.Printf("==> Generating patched BAML module under %s\n", cfg.PatchedBAMLOut)
 	if err := hacks.GeneratePatchedBAMLModule(bamlSrcDir, cfg.PatchedBAMLOut, patchedBAMLModulePath, version); err != nil {
 		return fmt.Errorf("generating patched BAML module: %w", err)
+	}
+	// cmd/hacks writes BAML_REST_SOURCE_VERSION with the patch shape
+	// it controls (path + sha256). The upstream module sum and the
+	// generator-identity stamp live in the orchestrator — append them
+	// so future readers can verify the fork against `go mod download`
+	// without rerunning the regen.
+	if err := appendProvenance(cfg.PatchedBAMLOut, bamlSum); err != nil {
+		return fmt.Errorf("recording provenance: %w", err)
 	}
 
 	tempProject, err := materializeBAMLProject(version)
@@ -113,7 +131,7 @@ func run(cfg config) error {
 
 	generatedRoot := filepath.Join(tempProject, "generated")
 	srcClient := filepath.Join(generatedRoot, "baml_client")
-	dstClient := filepath.Join(cfg.OutputRoot, "baml_client")
+	dstClient := filepath.Join(outputRoot, "baml_client")
 	fmt.Printf("==> Copying generated baml_client into %s\n", dstClient)
 	if err := os.RemoveAll(dstClient); err != nil {
 		return fmt.Errorf("removing stale baml_client: %w", err)
@@ -142,7 +160,7 @@ func run(cfg config) error {
 		return err
 	}
 
-	dstBAMLSrc := filepath.Join(cfg.OutputRoot, "baml_src", "dynamic.baml")
+	dstBAMLSrc := filepath.Join(outputRoot, "baml_src", "dynamic.baml")
 	fmt.Printf("==> Copying dynamic.baml into %s\n", dstBAMLSrc)
 	if err := os.MkdirAll(filepath.Dir(dstBAMLSrc), 0o755); err != nil {
 		return fmt.Errorf("creating baml_src dir: %w", err)
@@ -151,7 +169,7 @@ func run(cfg config) error {
 		return fmt.Errorf("copying dynamic.baml: %w", err)
 	}
 
-	introspectedDir := filepath.Join(cfg.OutputRoot, "introspected")
+	introspectedDir := filepath.Join(outputRoot, "introspected")
 	fmt.Printf("==> Running parameterized introspection into %s\n", introspectedDir)
 	if err := os.RemoveAll(introspectedDir); err != nil {
 		return fmt.Errorf("removing stale introspected dir: %w", err)
@@ -159,7 +177,7 @@ func run(cfg config) error {
 	if err := os.MkdirAll(introspectedDir, 0o755); err != nil {
 		return fmt.Errorf("creating introspected dir: %w", err)
 	}
-	if err := runIntrospect(cfg.OutputRoot, dstClient); err != nil {
+	if err := runIntrospect(outputRoot, dstClient); err != nil {
 		return err
 	}
 
@@ -168,8 +186,8 @@ func run(cfg config) error {
 		return err
 	}
 
-	fmt.Printf("==> Running gofmt -w on %s\n", cfg.OutputRoot)
-	if err := runGofmt(cfg.OutputRoot); err != nil {
+	fmt.Printf("==> Running gofmt -w on %s\n", outputRoot)
+	if err := runGofmt(outputRoot); err != nil {
 		return err
 	}
 
@@ -187,10 +205,12 @@ func run(cfg config) error {
 	return nil
 }
 
-// findRepoRoot walks upward from the executable's runtime caller path
-// to locate the repo root by go.mod. The orchestrator is run via
-// `go run ./cmd/regenerate-dynclient`, so the working directory and
-// the executable path both land somewhere under the repo tree.
+// findRepoRoot walks upward from the working directory looking for a
+// go.mod whose `module` directive matches rootModulePath. Unreadable
+// or unparseable go.mod files are treated as "not the root" and the
+// walk continues — substring matching against the raw bytes would
+// miss CRLF-encoded go.mod files and false-positive on substrings
+// inside replace directives.
 func findRepoRoot() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -198,9 +218,11 @@ func findRepoRoot() (string, error) {
 	}
 	dir := cwd
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			data, readErr := os.ReadFile(filepath.Join(dir, "go.mod"))
-			if readErr == nil && strings.Contains(string(data), "module github.com/invakid404/baml-rest\n") {
+		goModPath := filepath.Join(dir, "go.mod")
+		data, readErr := os.ReadFile(goModPath)
+		if readErr == nil {
+			parsed, parseErr := modfile.Parse(goModPath, data, nil)
+			if parseErr == nil && parsed.Module != nil && parsed.Module.Mod.Path == rootModulePath {
 				return dir, nil
 			}
 		}
@@ -236,30 +258,73 @@ func resolveBAMLVersion(override string) (string, error) {
 	return bamlutils.NormalizeVersion(manifest.Latest), nil
 }
 
-// resolveBAMLModuleSourceDir asks the Go toolchain for the on-disk
-// path of `github.com/boundaryml/baml@<version>`. The orchestrator
-// requires the module to already be in the GOMODCACHE; downstream
-// builds bring it in via the parent go.mod, so this is true in
-// practice for any version the matrix has built against.
-func resolveBAMLModuleSourceDir(version string) (string, error) {
+// resolveBAMLModule asks the Go toolchain for the on-disk path AND
+// the canonical h1 sum of `github.com/boundaryml/baml@<version>`. The
+// orchestrator requires the module to already be in the GOMODCACHE;
+// downstream builds bring it in via the parent go.mod, so this is
+// true in practice for any version the matrix has built against. The
+// sum is recorded in BAML_REST_SOURCE_VERSION so readers can verify
+// the fork's source against `go mod download` without rerunning the
+// regen.
+func resolveBAMLModule(version string) (dir, sum string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "mod", "download", "-x", "-json", "github.com/boundaryml/baml@"+version)
 	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("downloading github.com/boundaryml/baml@%s: %w", version, err)
+	out, runErr := cmd.Output()
+	if runErr != nil {
+		return "", "", fmt.Errorf("downloading github.com/boundaryml/baml@%s: %w", version, runErr)
 	}
 	var info struct {
 		Dir string `json:"Dir"`
+		Sum string `json:"Sum"`
 	}
-	if err := json.Unmarshal(out, &info); err != nil {
-		return "", fmt.Errorf("parsing go mod download output: %w", err)
+	if jsonErr := json.Unmarshal(out, &info); jsonErr != nil {
+		return "", "", fmt.Errorf("parsing go mod download output: %w", jsonErr)
 	}
 	if info.Dir == "" {
-		return "", fmt.Errorf("go mod download returned empty Dir for github.com/boundaryml/baml@%s", version)
+		return "", "", fmt.Errorf("go mod download returned empty Dir for github.com/boundaryml/baml@%s", version)
 	}
-	return info.Dir, nil
+	return info.Dir, info.Sum, nil
+}
+
+// appendProvenance augments the BAML_REST_SOURCE_VERSION file
+// cmd/hacks/hacks.GeneratePatchedBAMLModule writes with the upstream
+// module sum (so future readers can cross-check against `go mod
+// download`) and the generator identity (so it is obvious which tool
+// rebuilds the fork). Re-runs replace the file rather than appending
+// duplicate lines.
+func appendProvenance(patchedBAMLOut, upstreamSum string) error {
+	versionPath := filepath.Join(patchedBAMLOut, provenanceFileName)
+	existing, err := os.ReadFile(versionPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", versionPath, err)
+	}
+	var rebuilt strings.Builder
+	dropPrefixes := []string{"upstream_sum=", "generated_by="}
+	for _, line := range strings.Split(string(existing), "\n") {
+		drop := false
+		for _, prefix := range dropPrefixes {
+			if strings.HasPrefix(line, prefix) {
+				drop = true
+				break
+			}
+		}
+		if drop {
+			continue
+		}
+		rebuilt.WriteString(line)
+		rebuilt.WriteString("\n")
+	}
+	body := strings.TrimRight(rebuilt.String(), "\n")
+	if body != "" {
+		body += "\n"
+	}
+	if upstreamSum != "" {
+		body += fmt.Sprintf("upstream_sum=%s\n", upstreamSum)
+	}
+	body += fmt.Sprintf("generated_by=%s\n", generatorIdentity)
+	return os.WriteFile(versionPath, []byte(body), 0o644)
 }
 
 // materializeBAMLProject writes a temp BAML project that contains

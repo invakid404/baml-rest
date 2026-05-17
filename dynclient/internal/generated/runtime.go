@@ -13,7 +13,15 @@ import (
 	"context"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/worker"
 )
+
+// Compile-time guard that Runtime satisfies the worker.Runtime
+// contract dynclient consumers wire through worker.New. Lives in
+// production code so a non-test build of this package still fails
+// to link if internal/worker drifts; the test file alone would only
+// fail under `go test`.
+var _ worker.Runtime = (*Runtime)(nil)
 
 // Runtime is the worker-facing entry point. State lives in the
 // generated package globals (Methods, ParseMethods, MakeAdapter,

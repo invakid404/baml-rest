@@ -2,18 +2,12 @@ package generated
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/internal/worker"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 )
-
-// Compile-time assertion: Runtime satisfies the worker.Runtime
-// contract dynclient consumers wire through worker.New. Without this
-// the package would still build (the dispatch surface is reflective)
-// but a contract drift in internal/worker would only surface inside
-// the dynclient consumer, after the public package has shipped.
-var _ worker.Runtime = (*Runtime)(nil)
 
 // TestRuntimeWiring verifies the Method / ParseMethod / MakeAdapter
 // seams the worker handler consumes. No live LLM call — just the
@@ -39,10 +33,10 @@ func TestRuntimeWiring(t *testing.T) {
 }
 
 // TestRuntimeMakeAdapter constructs the framework adapter and round-
-// trips the per-handler BuildRequestConfig knob. Confirms the codegen-
-// emitted MakeAdapter wired the setter/getter the worker pool relies
-// on, without touching any BAML runtime that requires the native
-// library.
+// trips the per-handler BuildRequestConfig and HTTPClient knobs.
+// Confirms the codegen-emitted MakeAdapter wired the setters/getters
+// the worker pool relies on, without touching any BAML runtime that
+// requires the native library.
 func TestRuntimeMakeAdapter(t *testing.T) {
 	rt := Runtime{}
 	adapter := rt.MakeAdapter(context.Background())
@@ -50,13 +44,18 @@ func TestRuntimeMakeAdapter(t *testing.T) {
 		t.Fatal("Runtime.MakeAdapter returned nil")
 	}
 
-	want := bamlutils.BuildRequestConfig{
+	wantBR := bamlutils.BuildRequestConfig{
 		UseBuildRequest:         true,
 		DisableCallBuildRequest: true,
 	}
-	adapter.SetBuildRequestConfig(want)
-	got := adapter.BuildRequestConfig()
-	if got != want {
-		t.Fatalf("BuildRequestConfig round-trip mismatch: got %+v, want %+v", got, want)
+	adapter.SetBuildRequestConfig(wantBR)
+	if got := adapter.BuildRequestConfig(); got != wantBR {
+		t.Fatalf("BuildRequestConfig round-trip mismatch: got %+v, want %+v", got, wantBR)
+	}
+
+	httpClient := llmhttp.NewClient(&http.Client{})
+	adapter.SetHTTPClient(httpClient)
+	if got := adapter.HTTPClient(); got != httpClient {
+		t.Fatalf("HTTPClient round-trip mismatch: got %p, want %p", got, httpClient)
 	}
 }

@@ -3,3 +3,5 @@ upstream_version=v0.222.0
 module_path=github.com/invakid404/baml-rest/dynclient/baml-patched
 patch=none (PR #3185 merged upstream)
 patch_sha256=none
+upstream_sum=h1:m0GrGCN/gYPdj3UPArXwzO3gkwjH8qBahD83kyJYC40=
+generated_by=cmd/regenerate-dynclient
