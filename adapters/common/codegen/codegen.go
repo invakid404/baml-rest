@@ -231,6 +231,16 @@ func newGenerator(opts Options) *generator {
 // The Introspection presence is detected via SyncMethods — every
 // usable introspected output emits a non-nil SyncMethods map, even
 // when the project has zero sync functions.
+//
+// Options carries SupportsWithClient at both the top level (the
+// adapter-author-supplied feature flag) and inside Introspection (the
+// AST-detected mirror emitted by cmd/introspect). The generator
+// dispatches off the top-level field, so a caller setting only
+// Introspection.SupportsWithClient would silently get unsupported-mode
+// emission. Treating either source as authoritative and assigning the
+// fold back to both keeps the two fields in lockstep; the existing
+// (Request|StreamRequest) != nil ∧ SupportsWithClient == false guard
+// still fires when shape and flag genuinely disagree.
 func resolveOptions(opts Options) Options {
 	if opts.Packages == (PackageConfig{}) {
 		opts.Packages = DefaultPackageConfig()
@@ -238,6 +248,9 @@ func resolveOptions(opts Options) Options {
 	if opts.Introspection.SyncMethods == nil {
 		opts.Introspection = RootIntrospection()
 	}
+	supportsWithClient := opts.SupportsWithClient || opts.Introspection.SupportsWithClient
+	opts.SupportsWithClient = supportsWithClient
+	opts.Introspection.SupportsWithClient = supportsWithClient
 	return opts
 }
 

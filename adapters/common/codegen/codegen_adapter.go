@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,17 @@ import (
 func GenerateFrameworkAdapter(opts Options, outputPath string) {
 	opts = resolveOptions(opts)
 	if outputPath == "" {
-		rel := strings.TrimPrefix(opts.SelfPkg, opts.Packages.OutputPkg+"/")
+		// SelfPkg must live under Packages.OutputPkg for the derived
+		// "<rel>/adapter/adapter.go" path to land inside the configured
+		// module tree. Bare TrimPrefix would return the input unchanged
+		// on a mismatch and silently produce a garbage nested
+		// github.com/... directory relative to CWD; failing fast keeps
+		// the contract observable.
+		prefix := opts.Packages.OutputPkg + "/"
+		if !strings.HasPrefix(opts.SelfPkg, prefix) {
+			panic(fmt.Sprintf("codegen: SelfPkg %q is not under Packages.OutputPkg %q", opts.SelfPkg, opts.Packages.OutputPkg))
+		}
+		rel := strings.TrimPrefix(opts.SelfPkg, prefix)
 		outputPath = filepath.Join(rel, "adapter", "adapter.go")
 	}
 	// Ensure the adapter/ parent directory exists. The per-adapter

@@ -121,7 +121,7 @@ func TestStructContainsMedia_SelfReferentialTypes(t *testing.T) {
 			// The primary assertion: this must terminate (not stack overflow).
 			// We call it in a goroutine-safe way; if cycle detection is broken,
 			// this will stack overflow and crash the test process.
-			result := structContainsMedia(tt.typ)
+			result := structContainsMedia(tt.typ, DefaultPackageConfig())
 			if result != tt.expected {
 				t.Errorf("structContainsMedia(%v) = %v, want %v", tt.typ, result, tt.expected)
 			}
@@ -135,7 +135,7 @@ func TestStructContainsMediaVisited_CycleBreaks(t *testing.T) {
 	typ := reflect.TypeOf(selfRefDirect{})
 	visited := map[reflect.Type]bool{typ: true}
 
-	if structContainsMediaVisited(typ, visited) {
+	if structContainsMediaVisited(typ, visited, DefaultPackageConfig()) {
 		t.Error("structContainsMediaVisited should return false for already-visited type")
 	}
 }
@@ -144,7 +144,7 @@ func TestStructContainsMediaVisited_SharedVisitedAcrossFields(t *testing.T) {
 	// When scanning mutualA, visiting mutualB should add it to visited,
 	// so if mutualB references mutualA again, it doesn't re-enter.
 	visited := make(map[reflect.Type]bool)
-	structContainsMediaVisited(reflect.TypeOf(mutualA{}), visited)
+	structContainsMediaVisited(reflect.TypeOf(mutualA{}), visited, DefaultPackageConfig())
 
 	// Both types should now be in visited
 	if !visited[reflect.TypeOf(mutualA{})] {

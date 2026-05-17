@@ -30,31 +30,56 @@ var mediaTypeNames = map[string]bamlutils.MediaKind{
 }
 
 // isMediaReflectType checks whether a type (after unwrapping ptr/slice) is a known
-// BAML media type. Detection is by type name (Image, Audio, PDF, Video) from any
-// BAML-related package (runtime or generated client).
-func isMediaReflectType(typ reflect.Type) (bamlutils.MediaKind, bool) {
+// BAML media type. Detection is by type name (Image, Audio, PDF, Video) and by an
+// exact-or-prefix match of the type's reflected PkgPath against the configured
+// BAML runtime and generated-client module paths. Threading the PackageConfig
+// here matters because a non-default runtime (e.g. a forked patched-BAML module)
+// reflects PkgPath values that the legacy substring-match heuristic would miss
+// silently — every media field would round-trip as a plain struct.
+func isMediaReflectType(typ reflect.Type, pkgs PackageConfig) (bamlutils.MediaKind, bool) {
 	// Unwrap pointer and slice layers
 	for typ.Kind() == reflect.Ptr || typ.Kind() == reflect.Slice {
 		typ = typ.Elem()
 	}
-	// Check if the type name matches a known media type and comes from a BAML package
 	if kind, ok := mediaTypeNames[typ.Name()]; ok {
-		pkgPath := typ.PkgPath()
-		if strings.Contains(pkgPath, "boundaryml/baml") || strings.Contains(pkgPath, "baml_client") {
+		if pkgPathMatchesBAML(typ.PkgPath(), pkgs) {
 			return kind, true
 		}
 	}
 	return 0, false
 }
 
+// pkgPathMatchesBAML reports whether pkgPath is the configured BAML runtime
+// module, the configured generated-client root, or a subpackage of either.
+// Exact-and-prefix matching avoids the cross-module false positives a bare
+// substring search would let through (any path containing the bytes
+// "boundaryml/baml" or "baml_client" anywhere — including under a non-BAML
+// vendored dependency).
+func pkgPathMatchesBAML(pkgPath string, pkgs PackageConfig) bool {
+	if pkgPath == "" {
+		return false
+	}
+	if pkgs.BamlPkg != "" {
+		if pkgPath == pkgs.BamlPkg || strings.HasPrefix(pkgPath, pkgs.BamlPkg+"/") {
+			return true
+		}
+	}
+	if pkgs.GeneratedClientPkg != "" {
+		if pkgPath == pkgs.GeneratedClientPkg || strings.HasPrefix(pkgPath, pkgs.GeneratedClientPkg+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // structContainsMedia recursively checks whether a struct type (or any nested struct)
 // contains BAML media-typed fields (Image, Audio, PDF, Video).
 // Uses a visited set to break cycles from self-referential or mutually recursive types.
-func structContainsMedia(typ reflect.Type) bool {
-	return structContainsMediaVisited(typ, make(map[reflect.Type]bool))
+func structContainsMedia(typ reflect.Type, pkgs PackageConfig) bool {
+	return structContainsMediaVisited(typ, make(map[reflect.Type]bool), pkgs)
 }
 
-func structContainsMediaVisited(typ reflect.Type, visited map[reflect.Type]bool) bool {
+func structContainsMediaVisited(typ reflect.Type, visited map[reflect.Type]bool, pkgs PackageConfig) bool {
 	// Unwrap pointer and slice layers
 	for typ.Kind() == reflect.Ptr || typ.Kind() == reflect.Slice {
 		typ = typ.Elem()
@@ -76,10 +101,10 @@ func structContainsMediaVisited(typ reflect.Type, visited map[reflect.Type]bool)
 		for inner.Kind() == reflect.Ptr || inner.Kind() == reflect.Slice {
 			inner = inner.Elem()
 		}
-		if _, ok := isMediaReflectType(ft); ok {
+		if _, ok := isMediaReflectType(ft, pkgs); ok {
 			return true
 		}
-		if inner.Kind() == reflect.Struct && structContainsMediaVisited(ft, visited) {
+		if inner.Kind() == reflect.Struct && structContainsMediaVisited(ft, visited, pkgs) {
 			return true
 		}
 	}
@@ -127,7 +152,7 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 		for fieldInner.Kind() == reflect.Ptr || fieldInner.Kind() == reflect.Slice {
 			fieldInner = fieldInner.Elem()
 		}
-		if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type) {
+		if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type, pkgs) {
 			m.ensureMirrorStruct(out, field.Type, pkgs)
 		}
 	}
@@ -146,7 +171,7 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 		}
 
 		var fieldCode *jen.Statement
-		if _, isMedia := isMediaReflectType(field.Type); isMedia {
+		if _, isMedia := isMediaReflectType(field.Type, pkgs); isMedia {
 			// Replace media type with MediaInput, preserving ptr/slice wrapping
 			fieldCode = jen.Id(field.Name).Add(mediaFieldType(field.Type, pkgs.InterfacesPkg))
 		} else {
@@ -154,7 +179,7 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 			for fieldInner.Kind() == reflect.Ptr || fieldInner.Kind() == reflect.Slice {
 				fieldInner = fieldInner.Elem()
 			}
-			if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type) {
+			if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type, pkgs) {
 				// Nested struct with media: use its mirror type, preserving wrapping
 				nestedMirrorName := mirrorInputName(fieldInner)
 				fieldCode = jen.Id(field.Name).Add(mirrorFieldType(field.Type, nestedMirrorName))
@@ -190,14 +215,14 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 		fieldName := field.Name
 		srcExpr := jen.Id("input").Dot(fieldName)
 
-		if mediaKind, isMedia := isMediaReflectType(field.Type); isMedia {
+		if mediaKind, isMedia := isMediaReflectType(field.Type, pkgs); isMedia {
 			bodyCode = append(bodyCode, mediaFieldConversion(fieldName, srcExpr, field.Type, mediaKind, pkgs)...)
 		} else {
 			fieldInner := field.Type
 			for fieldInner.Kind() == reflect.Ptr || fieldInner.Kind() == reflect.Slice {
 				fieldInner = fieldInner.Elem()
 			}
-			if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type) {
+			if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type, pkgs) {
 				bodyCode = append(bodyCode, nestedStructConversion(fieldName, srcExpr, field.Type, m)...)
 			} else {
 				// Direct copy

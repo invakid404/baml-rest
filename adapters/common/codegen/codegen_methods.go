@@ -153,7 +153,7 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 		if _, isMedia := me.methodMediaParams[paramName]; isMedia {
 			// Direct media-typed param: use MediaInput with the same pointer/slice wrapping
 			fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mediaFieldType(paramType, g.pkgs.InterfacesPkg))
-		} else if structContainsMedia(paramType) {
+		} else if structContainsMedia(paramType, g.pkgs) {
 			// Struct param containing nested media: use mirror struct
 			mirrorName := g.mirrors.ensureMirrorStruct(out, paramType, g.pkgs)
 			fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mirrorFieldType(paramType, mirrorName))

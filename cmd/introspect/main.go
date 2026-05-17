@@ -18,11 +18,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 )
 
-const (
-	// bamlPkgPath is the import path for the BAML Go runtime package.
-	bamlPkgPath = "github.com/boundaryml/baml/engine/language_client_go/pkg"
-)
-
 // config carries the per-invocation paths and import roots that
 // generateStub / generateFull thread through every emitter. The
 // defaults reproduce the server build's root layout

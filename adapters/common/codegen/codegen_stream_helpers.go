@@ -137,9 +137,9 @@ func generateStreamHelpers(out *jen.File, pkgs PackageConfig) {
 
 			jen.Id("onTick").Op(":=").Func().Params(
 				jen.Id("_").Qual("context", "Context"),
-				jen.Id("_").Qual(BamlPkg, "TickReason"),
-				jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
-			).Qual(BamlPkg, "FunctionSignal").Block(
+				jen.Id("_").Qual(g.pkgs.BamlPkg, "TickReason"),
+				jen.Id("funcLog").Qual(g.pkgs.BamlPkg, "FunctionLog"),
+			).Qual(g.pkgs.BamlPkg, "FunctionSignal").Block(
 				// Store the latest FunctionLog on every tick (not just the
 				// first) so the outcome event reflects the post-stream
 				// state, not the pre-stream state.
@@ -433,9 +433,9 @@ func generateStreamHelpers(out *jen.File, pkgs PackageConfig) {
 			// onTick callback
 			jen.Id("onTick").Op(":=").Func().Params(
 				jen.Id("_").Qual("context", "Context"),
-				jen.Id("_").Qual(BamlPkg, "TickReason"),
-				jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
-			).Qual(BamlPkg, "FunctionSignal").Block(
+				jen.Id("_").Qual(g.pkgs.BamlPkg, "TickReason"),
+				jen.Id("funcLog").Qual(g.pkgs.BamlPkg, "FunctionLog"),
+			).Qual(g.pkgs.BamlPkg, "FunctionSignal").Block(
 				jen.If(
 					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
 						jen.Func().Params().Error().Block(
@@ -480,7 +480,7 @@ func generateStreamHelpers(out *jen.File, pkgs PackageConfig) {
 			),
 
 			// Partials goroutine: process function + drain + main loop
-			jen.Id("processItem").Op(":=").Func().Params(jen.Id("funcLog").Qual(BamlPkg, "FunctionLog")).Block(
+			jen.Id("processItem").Op(":=").Func().Params(jen.Id("funcLog").Qual(g.pkgs.BamlPkg, "FunctionLog")).Block(
 				jen.Defer().Id("decrementPending").Call(),
 				jen.If(
 					jen.Id("err").Op(":=").Qual("github.com/gregwebs/go-recovery", "Call").Call(
@@ -732,9 +732,9 @@ func generateStreamHelpers(out *jen.File, pkgs PackageConfig) {
 
 			jen.Id("onTick").Op(":=").Func().Params(
 				jen.Id("_").Qual("context", "Context"),
-				jen.Id("_").Qual(BamlPkg, "TickReason"),
-				jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
-			).Qual(BamlPkg, "FunctionSignal").Block(
+				jen.Id("_").Qual(g.pkgs.BamlPkg, "TickReason"),
+				jen.Id("funcLog").Qual(g.pkgs.BamlPkg, "FunctionLog"),
+			).Qual(g.pkgs.BamlPkg, "FunctionSignal").Block(
 				jen.If(jen.Id("heartbeatFired").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
 					jen.Id("sendHeartbeat").Call(),
 				),

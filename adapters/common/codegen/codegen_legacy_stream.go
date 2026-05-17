@@ -500,7 +500,7 @@ func (me *methodEmitter) emitLegacyStream() {
 			),
 			// processTick
 			jen.Func().Params(
-				jen.Id("funcLog").Qual(BamlPkg, "FunctionLog"),
+				jen.Id("funcLog").Qual(g.pkgs.BamlPkg, "FunctionLog"),
 				jen.Id("extractor").Op("*").Qual(g.pkgs.SSEPkg, "IncrementalExtractor"),
 				jen.Id("extractorMu").Op("*").Qual("sync", "Mutex"),
 			).Error().Block(processTickBody...),
