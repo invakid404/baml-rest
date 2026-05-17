@@ -107,6 +107,12 @@ type SetupOptions struct {
 	// so that the CI matrix leg actually toggles the code path under test.
 	UseBuildRequest bool
 
+	// InProcess builds the baml-rest binary with the `inprocess` build
+	// tag so the server and worker handler share one OS process.
+	// The Dockerfile template forwards this to build.sh which adds the
+	// tag to the go build invocation.
+	InProcess bool
+
 	// RuntimeEnv adds arbitrary environment variables to the baml-rest
 	// container. Used by tests that need to configure runtime-only features
 	// (e.g. BAML_REST_CLIENT_DEFAULTS) that the shared test env does not set.
@@ -319,6 +325,7 @@ type dockerfileTemplateData struct {
 	bamlSource         bool   // Build from BAML source (enables cffi-builder stage)
 	protocGenGoVersion string // protoc-gen-go version for BAML source builds
 	unaryServer        bool   // Build with unaryserver tag for chi unary server
+	inProcess          bool   // Build with inprocess tag (single-process server+worker)
 }
 
 // MarshalMap converts the template data to a map for template execution
@@ -334,6 +341,7 @@ func (d dockerfileTemplateData) toMap() map[string]any {
 		"bamlSource":         d.bamlSource,
 		"protocGenGoVersion": d.protocGenGoVersion,
 		"unaryServer":        d.unaryServer,
+		"inProcess":          d.inProcess,
 	}
 }
 
@@ -363,6 +371,7 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		noCacheMount:      true,            // testcontainers doesn't reliably support BuildKit
 		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
 		unaryServer:       opts.UnaryServer,
+		inProcess:         opts.InProcess,
 	}
 
 	if opts.BAMLSource != "" {

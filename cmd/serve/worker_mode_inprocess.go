@@ -67,8 +67,8 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config) error {
 func effectivePoolSizeForMemory(_ int) int { return 1 }
 
 // warnPoolSizeOverride logs a warning when the operator explicitly
-// set --pool-size to a value > 1 but the inprocess build will
-// collapse it to a single handler. The explicit gate matters because
+// set --pool-size to a value > 1 but this build collapses it to a
+// single in-process handler. The explicit gate matters because
 // --pool-size has a non-zero default (4) inherited from the
 // subprocess design — warning on every default startup would be
 // noise. The cobra Changed() bit lets the helper distinguish "the

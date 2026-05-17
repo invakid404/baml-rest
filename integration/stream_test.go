@@ -343,6 +343,7 @@ func TestStreamMidStreamFailure(t *testing.T) {
 }
 
 func TestWorkerDeathMidStream(t *testing.T) {
+	skipIfInProcess(t, "kill-worker terminates the whole server process when worker and server share an address space")
 	waitForHealthy(t, 30*time.Second)
 
 	// This test verifies what happens when a WORKER PROCESS dies mid-stream,
@@ -1508,6 +1509,7 @@ func TestStreamNDJSONMidStreamFailure(t *testing.T) {
 }
 
 func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
+	skipIfInProcess(t, "kill-worker terminates the whole server process when worker and server share an address space")
 	waitForHealthy(t, 30*time.Second)
 
 	t.Run("worker_killed_after_first_byte_retries_with_reset_ndjson", func(t *testing.T) {
