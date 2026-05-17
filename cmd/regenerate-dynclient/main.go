@@ -68,7 +68,7 @@ func main() {
 	var cfg config
 	flag.StringVar(&cfg.BAMLVersion, "baml-version", "", "BAML version to pin (defaults to integration/baml_versions.json `.latest`)")
 	flag.StringVar(&cfg.BAMLCLI, "baml-cli", os.Getenv("BAML_CLI_PATH"), "Path to baml-cli (defaults to $BAML_CLI_PATH; npx fallback when empty)")
-	flag.BoolVar(&cfg.KeepTemp, "keep-temp", false, "Preserve the temp BAML project under the working directory for debugging")
+	flag.BoolVar(&cfg.KeepTemp, "keep-temp", false, "Preserve the temp BAML project under the OS temp dir for debugging")
 	flag.Parse()
 
 	if err := run(cfg); err != nil {
@@ -372,7 +372,11 @@ func runBAMLGenerate(bamlCLI, version, projectDir string) error {
 			return fmt.Errorf("no --baml-cli provided and npx not on PATH: %w", err)
 		}
 		semver := strings.TrimPrefix(version, "v")
-		cmd = exec.CommandContext(ctx, npxPath, npxBAMLPackage+"@"+semver, "generate")
+		// -y is consumed by npx (auto-confirm the package install so a
+		// cold cache doesn't hang on an interactive prompt);
+		// --no-version-check is passed through to baml-cli to match the
+		// direct branch above.
+		cmd = exec.CommandContext(ctx, npxPath, "-y", npxBAMLPackage+"@"+semver, "generate", "--no-version-check")
 	}
 	cmd.Dir = projectDir
 	cmd.Stdout = os.Stdout
