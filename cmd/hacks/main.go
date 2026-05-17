@@ -18,7 +18,7 @@ const (
 	// patched fork declares in its go.mod. cmd/hacks treats it as the
 	// rewrite target for `--rewrite-baml-imports-to` when the operator
 	// supplies `--patched-baml-out` without a custom path.
-	defaultPatchedBAMLModulePath = "github.com/invakid404/baml-rest/dynclient/internal/baml-patched"
+	defaultPatchedBAMLModulePath = "github.com/invakid404/baml-rest/dynclient/baml-patched"
 	// resolveModuleSrcTimeout caps `go list -m -f {{.Dir}} ...` when
 	// resolving an upstream BAML source directory from `--baml-version`.
 	resolveModuleSrcTimeout = 30 * time.Second

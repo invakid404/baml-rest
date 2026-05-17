@@ -1,5 +1,7 @@
 reviews:
   profile: assertive
   request_changes_workflow: true
+  path_filters:
+    - "!dynclient/baml-patched/**"
   auto_review:
     auto_pause_after_reviewed_commits: 0

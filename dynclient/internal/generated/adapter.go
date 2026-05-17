@@ -10,7 +10,7 @@ import (
 	llmhttp "github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	retry "github.com/invakid404/baml-rest/bamlutils/retry"
 	sse "github.com/invakid404/baml-rest/bamlutils/sse"
-	pkg "github.com/invakid404/baml-rest/dynclient/internal/baml-patched/engine/language_client_go/pkg"
+	pkg "github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg"
 	adapter "github.com/invakid404/baml-rest/dynclient/internal/generated/adapter"
 	bamlclient "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client"
 	streamtypes "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/stream_types"

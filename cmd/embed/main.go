@@ -376,8 +376,8 @@ func isIgnored(path string, patterns []string) bool {
 // patterns, matching how collectEmbedPaths drops a whole entry when
 // its base name matches. Used for nested module roots, whose
 // filesystem layout is "<parent>/<rel>" rather than a single entry —
-// a `dynclient` pattern in .embedignore should still suppress the
-// nested module at `dynclient/internal/baml-patched`.
+// a `dynclient` pattern in .embedignore should still suppress a
+// nested module at `dynclient/baml-patched` or deeper.
 func isIgnoredPath(path string, patterns []string) bool {
 	cleaned := filepath.ToSlash(filepath.Clean(path))
 	if cleaned == "." || cleaned == "" {

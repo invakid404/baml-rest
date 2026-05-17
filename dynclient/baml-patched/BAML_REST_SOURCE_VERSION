@@ -1,0 +1,5 @@
+upstream_module=github.com/boundaryml/baml
+upstream_version=v0.222.0
+module_path=github.com/invakid404/baml-rest/dynclient/baml-patched
+patch=none (PR #3185 merged upstream)
+patch_sha256=none

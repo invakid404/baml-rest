@@ -14,7 +14,7 @@
 package types
 
 import (
-	baml "github.com/invakid404/baml-rest/dynclient/internal/baml-patched/engine/language_client_go/pkg"
+	baml "github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg"
 )
 
 type Checked[T any] = baml.Checked[T]

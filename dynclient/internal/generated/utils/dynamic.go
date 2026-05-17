@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/invakid404/baml-rest/dynclient/internal/baml-patched/engine/language_client_go/baml_go/serde"
+	"github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/baml_go/serde"
 )
 
 // UnwrapDynamicValue collapses BAML's serde wrapper types (DynamicClass /

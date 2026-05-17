@@ -32,11 +32,11 @@ import (
 )
 
 const (
-	patchedBAMLModulePath = "github.com/invakid404/baml-rest/dynclient/internal/baml-patched"
+	patchedBAMLModulePath = "github.com/invakid404/baml-rest/dynclient/baml-patched"
 	dynamicBAMLSource     = "cmd/build/dynamic.baml"
 	bamlVersionsManifest  = "integration/baml_versions.json"
 	defaultOutputRoot     = "dynclient/internal/generated"
-	defaultPatchedBAMLOut = "dynclient/internal/baml-patched"
+	defaultPatchedBAMLOut = "dynclient/baml-patched"
 	npxBAMLPackage        = "@boundaryml/baml"
 	genadapterPackage     = "./dynclient/cmd/genadapter"
 	bamlCLIGenTimeout     = 10 * time.Minute
@@ -170,6 +170,16 @@ func run(cfg config) error {
 
 	fmt.Printf("==> Running gofmt -w on %s\n", cfg.OutputRoot)
 	if err := runGofmt(cfg.OutputRoot); err != nil {
+		return err
+	}
+
+	// GeneratePatchedBAMLModule wipes the patched-baml output dir each
+	// run, which removes the embed.go cmd/embed had written there.
+	// Re-run cmd/embed so the parent's source-FS view of the patched
+	// fork stays in sync — `go build ./...` would otherwise fail to
+	// resolve `import "<patched>"` from the parent embed.go.
+	fmt.Println("==> Running cmd/embed")
+	if err := runEmbed(); err != nil {
 		return err
 	}
 
@@ -355,6 +365,18 @@ func runGenadapter() error {
 // committed artifacts stable across goimports/jen version bumps.
 func runGofmt(dir string) error {
 	cmd := exec.Command("gofmt", "-w", dir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// runEmbed re-runs cmd/embed at the repo root so the parent embed.go
+// (and the embed.go inside the freshly regenerated patched-baml
+// module) reflect the regenerated tree. The patched-module generator
+// wipes its output dir each run; cmd/embed restores the per-module
+// embed.go that the parent's Sources merge depends on.
+func runEmbed() error {
+	cmd := exec.Command("go", "run", "./cmd/embed")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

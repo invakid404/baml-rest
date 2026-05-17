@@ -13,7 +13,7 @@
 
 package type_builder
 
-import baml "github.com/invakid404/baml-rest/dynclient/internal/baml-patched/engine/language_client_go/pkg"
+import baml "github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg"
 
 type Baml_Rest_CacheControlClassView struct {
 	inner baml.ClassBuilder

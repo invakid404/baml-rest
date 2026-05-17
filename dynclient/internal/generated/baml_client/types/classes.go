@@ -16,8 +16,8 @@ package types
 import (
 	"fmt"
 
-	baml "github.com/invakid404/baml-rest/dynclient/internal/baml-patched/engine/language_client_go/pkg"
-	"github.com/invakid404/baml-rest/dynclient/internal/baml-patched/engine/language_client_go/pkg/cffi"
+	baml "github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg"
+	"github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg/cffi"
 )
 
 type Baml_Rest_CacheControl struct {

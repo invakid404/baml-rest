@@ -22,7 +22,7 @@ const (
 	generatedClientPkg = selfPkg + "/baml_client"
 	introspectedPkg    = selfPkg + "/introspected"
 	bamlutilsPkg       = "github.com/invakid404/baml-rest/bamlutils"
-	bamlPatchedPkg     = "github.com/invakid404/baml-rest/dynclient/internal/baml-patched/engine/language_client_go/pkg"
+	bamlPatchedPkg     = "github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg"
 
 	adapterOutputPath          = "dynclient/internal/generated/adapter.go"
 	frameworkAdapterOutputPath = "dynclient/internal/generated/adapter/adapter.go"

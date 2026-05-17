@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	baml "github.com/invakid404/baml-rest/dynclient/internal/baml-patched/engine/language_client_go/pkg"
+	baml "github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg"
 	"github.com/invakid404/baml-rest/dynclient/internal/generated/introspected"
 )
 
