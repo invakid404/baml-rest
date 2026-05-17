@@ -56,6 +56,7 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 		BAMLSource:      BAMLSourcePath,
 		UnaryServer:     unaryEnabled,
 		UseBuildRequest: UseBuildRequest,
+		InProcess:       inProcessBuild,
 	})
 	if err != nil {
 		t.Fatalf("Failed to setup dedicated shutdown env: %v", err)

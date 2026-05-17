@@ -58,6 +58,7 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 			AdapterVersion:  adapterVersion,
 			BAMLSource:      BAMLSourcePath,
 			UseBuildRequest: UseBuildRequest,
+			InProcess:       inProcessBuild,
 			RuntimeEnv: map[string]string{
 				"BAML_REST_CLIENT_DEFAULTS": `{"client_defaults":{"options":{"allowed_role_metadata":["cache_control"]}}}`,
 			},

@@ -54,6 +54,7 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 		AdapterVersion:  adapterVersion,
 		BAMLSource:      BAMLSourcePath,
 		UseBuildRequest: true,
+		InProcess:       inProcessBuild,
 		RuntimeEnv: map[string]string{
 			// Forces IsCallProviderSupported to return false for every
 			// provider, routing /call{,-with-raw} through the stream-
@@ -294,6 +295,7 @@ func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
 		AdapterVersion:  adapterVersion,
 		BAMLSource:      BAMLSourcePath,
 		UseBuildRequest: true,
+		InProcess:       inProcessBuild,
 		RuntimeEnv: map[string]string{
 			// Mark openai-generic as call-unsupported (but still stream-
 			// supported). Debug-tag only — no effect on release builds.
