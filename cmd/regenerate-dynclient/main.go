@@ -485,12 +485,20 @@ func runEmbed() error {
 	return runCommandWithTimeout("cmd/embed", "go", "run", "./cmd/embed")
 }
 
-// goimportsFileExists reports whether path names a regular file the
-// orchestrator can plausibly exec. Helper for the runGoimports
-// lookup chain so each fallback branch reads as one expression.
-func goimportsFileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+// goimportsExecutable resolves path with exec.LookPath so each
+// fallback branch only sets bin to a runnable file. Returning the
+// resolved path lets the caller capture any platform-specific
+// canonicalisation (e.g. PATHEXT on Windows) rather than discarding
+// it. A non-executable file (stale install, partial write) returns
+// ok=false so the lookup chain continues instead of selecting an
+// unrunnable candidate and surfacing a low-signal "permission denied"
+// later inside runCommandWithTimeout.
+func goimportsExecutable(path string) (string, bool) {
+	resolved, err := exec.LookPath(path)
+	if err != nil {
+		return "", false
+	}
+	return resolved, true
 }
 
 // runGoimports prunes unused imports the BAML generator leaves behind
@@ -504,15 +512,19 @@ func runGoimports(dir string) error {
 	bin, err := exec.LookPath("goimports")
 	if err != nil {
 		if gobin := os.Getenv("GOBIN"); gobin != "" {
-			if candidate := filepath.Join(gobin, "goimports"); goimportsFileExists(candidate) {
-				bin = candidate
+			if candidate := filepath.Join(gobin, "goimports"); candidate != "" {
+				if resolved, ok := goimportsExecutable(candidate); ok {
+					bin = resolved
+				}
 			}
 		}
 	}
 	if bin == "" {
 		if gopath := os.Getenv("GOPATH"); gopath != "" {
-			if candidate := filepath.Join(gopath, "bin", "goimports"); goimportsFileExists(candidate) {
-				bin = candidate
+			if candidate := filepath.Join(gopath, "bin", "goimports"); candidate != "" {
+				if resolved, ok := goimportsExecutable(candidate); ok {
+					bin = resolved
+				}
 			}
 		}
 	}
@@ -521,8 +533,10 @@ func runGoimports(dir string) error {
 		if envErr == nil {
 			gopath := strings.TrimSpace(string(out))
 			if gopath != "" {
-				if candidate := filepath.Join(gopath, "bin", "goimports"); goimportsFileExists(candidate) {
-					bin = candidate
+				if candidate := filepath.Join(gopath, "bin", "goimports"); candidate != "" {
+					if resolved, ok := goimportsExecutable(candidate); ok {
+						bin = resolved
+					}
 				}
 			}
 		}
