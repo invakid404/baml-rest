@@ -1,20 +1,20 @@
 package codegen
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest/adapters/common"
 )
 
 // GenerateFrameworkAdapter emits the per-adapter framework
 // `adapter/adapter.go` for the supplied opts and writes it to
 // outputPath. When outputPath is empty the path is derived from
 // opts.SelfPkg as "<rel>/adapter/adapter.go" relative to the current
-// working directory, where <rel> is opts.SelfPkg with the repository
-// root prefix stripped.
+// working directory, where <rel> is opts.SelfPkg with the
+// opts.Packages.OutputPkg prefix stripped.
 //
 // In customer builds the working directory is the per-customer
 // baml_rest source root, so the derived path resolves to that build's
@@ -24,8 +24,19 @@ import (
 // plus a temp-module behavioural test that compiles the emitted file
 // against the per-adapter test harness.
 func GenerateFrameworkAdapter(opts Options, outputPath string) {
+	opts = resolveOptions(opts)
 	if outputPath == "" {
-		rel := strings.TrimPrefix(opts.SelfPkg, common.RootPkg+"/")
+		// SelfPkg must live under Packages.OutputPkg for the derived
+		// "<rel>/adapter/adapter.go" path to land inside the configured
+		// module tree. Bare TrimPrefix would return the input unchanged
+		// on a mismatch and silently produce a garbage nested
+		// github.com/... directory relative to CWD; failing fast keeps
+		// the contract observable.
+		prefix := opts.Packages.OutputPkg + "/"
+		if !strings.HasPrefix(opts.SelfPkg, prefix) {
+			panic(fmt.Sprintf("codegen: SelfPkg %q is not under Packages.OutputPkg %q", opts.SelfPkg, opts.Packages.OutputPkg))
+		}
+		rel := strings.TrimPrefix(opts.SelfPkg, prefix)
 		outputPath = filepath.Join(rel, "adapter", "adapter.go")
 	}
 	// Ensure the adapter/ parent directory exists. The per-adapter
@@ -43,10 +54,10 @@ func GenerateFrameworkAdapter(opts Options, outputPath string) {
 	// an explicit `baml ...` clause in the import group; ImportName is
 	// sufficient for the others where the natural and desired aliases
 	// coincide.
-	out.ImportAlias(BamlPkg, "baml")
-	out.ImportName(common.InterfacesPkg, "bamlutils")
-	out.ImportName(common.LLMHTTPPkg, "llmhttp")
-	out.ImportName(common.IntrospectedPkg, "introspected")
+	out.ImportAlias(opts.Packages.BamlPkg, "baml")
+	out.ImportName(opts.Packages.InterfacesPkg, "bamlutils")
+	out.ImportName(opts.Packages.LLMHTTPPkg, "llmhttp")
+	out.ImportName(opts.Packages.IntrospectedPkg, "introspected")
 	emitFrameworkAdapter(out, opts)
 	if err := out.Save(outputPath); err != nil {
 		panic(err)
@@ -66,10 +77,10 @@ func GenerateFrameworkAdapter(opts Options, outputPath string) {
 // produce byte-identical output. The deterministic-emission CI check
 // (cmd/verify-framework-adapter Check 1) is the safety net.
 func emitFrameworkAdapter(out *jen.File, opts Options) {
-	bamlPkg := BamlPkg
-	bamlutilsPkg := common.InterfacesPkg
-	llmhttpPkg := common.LLMHTTPPkg
-	introspectedPkg := common.IntrospectedPkg
+	bamlPkg := opts.Packages.BamlPkg
+	bamlutilsPkg := opts.Packages.InterfacesPkg
+	llmhttpPkg := opts.Packages.LLMHTTPPkg
+	introspectedPkg := opts.Packages.IntrospectedPkg
 
 	// TypeBuilderFactory creates a TypeBuilder via the per-adapter
 	// generated code (which has direct access to the baml_client

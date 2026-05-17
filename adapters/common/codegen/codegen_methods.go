@@ -6,9 +6,7 @@ import (
 	"slices"
 
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest/adapters/common"
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/introspected"
 	"github.com/stoewer/go-strcase"
 )
 
@@ -76,11 +74,11 @@ type methodEmitter struct {
 // SyncFuncs entry, non-function value, or non-context first param);
 // callers continue past it without emitting anything.
 func (g *generator) newMethodEmitter(methodName string, args []string) (*methodEmitter, bool) {
-	if _, hasParseStream := introspected.ParseStreamMethods[methodName]; !hasParseStream {
+	if _, hasParseStream := g.intro.ParseStreamMethods[methodName]; !hasParseStream {
 		return nil, false
 	}
 
-	syncFuncValue, ok := introspected.SyncFuncs[methodName]
+	syncFuncValue, ok := g.intro.SyncFuncs[methodName]
 	if !ok {
 		return nil, false
 	}
@@ -101,7 +99,7 @@ func (g *generator) newMethodEmitter(methodName string, args []string) (*methodE
 		methodName:        methodName,
 		args:              args,
 		syncFuncType:      syncFuncType,
-		methodMediaParams: introspected.MediaParams[methodName],
+		methodMediaParams: g.intro.MediaParams[methodName],
 	}
 	me.inputStructName = strcase.UpperCamelCase(fmt.Sprintf("%sInput", methodName))
 	me.outputStructName = strcase.UpperCamelCase(fmt.Sprintf("%sOutput", methodName))
@@ -154,10 +152,10 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 		var fieldType *jen.Statement
 		if _, isMedia := me.methodMediaParams[paramName]; isMedia {
 			// Direct media-typed param: use MediaInput with the same pointer/slice wrapping
-			fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mediaFieldType(paramType))
-		} else if structContainsMedia(paramType) {
+			fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mediaFieldType(paramType, g.pkgs.InterfacesPkg))
+		} else if structContainsMedia(paramType, g.pkgs) {
 			// Struct param containing nested media: use mirror struct
-			mirrorName := g.mirrors.ensureMirrorStruct(out, paramType)
+			mirrorName := g.mirrors.ensureMirrorStruct(out, paramType, g.pkgs)
 			fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mirrorFieldType(paramType, mirrorName))
 
 			// Unwrap to get the inner type for the convert function name
@@ -192,7 +190,7 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 	}
 
 	// Get the ParseStream function for stream type reflection
-	parseStreamFuncValue, hasParseStreamFunc := introspected.ParseStreamFuncs[me.methodName]
+	parseStreamFuncValue, hasParseStreamFunc := g.intro.ParseStreamFuncs[me.methodName]
 
 	// Final type (from sync function return)
 	me.finalType = parseReflectType(me.syncFuncType.Out(0))
@@ -221,14 +219,14 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 	// interface boxing and runtime type assertions of a single `parsed any` field.
 	// metadata is populated only when kind==StreamResultKindMetadata.
 	out.Type().Id(me.outputStructName).Struct(
-		jen.Id("kind").Qual(common.InterfacesPkg, "StreamResultKind"),
+		jen.Id("kind").Qual(g.pkgs.InterfacesPkg, "StreamResultKind"),
 		jen.Id("raw").String(),
 		jen.Id("reasoning").String(),
 		jen.Id("streamParsed").Add(me.streamTypePtr.Clone()),
 		jen.Id("finalParsed").Add(me.finalTypePtr.Clone()),
 		jen.Id("err").Error(),
 		jen.Id("reset").Bool(), // true when client should discard accumulated state (retry occurred)
-		jen.Id("metadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+		jen.Id("metadata").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
 	)
 
 	// Implement `StreamResult` interface for the output struct
@@ -239,7 +237,7 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 	out.Func().
 		Params(selfParam.Clone()).
 		Id("Kind").Params().
-		Qual(common.InterfacesPkg, "StreamResultKind").
+		Qual(g.pkgs.InterfacesPkg, "StreamResultKind").
 		Block(
 			jen.Return(selfName.Clone().Dot("kind")),
 		)
@@ -312,13 +310,13 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 	out.Func().
 		Params(selfParam.Clone()).
 		Id("Metadata").Params().
-		Op("*").Qual(common.InterfacesPkg, "Metadata").
+		Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata").
 		Block(
 			jen.Return(selfName.Clone().Dot("metadata")),
 		)
 
 	// Generate pool for output struct reuse
-	out.Var().Id(me.poolVarName).Op("=").Qual(common.InterfacesPkg, "NewPool").Call(
+	out.Var().Id(me.poolVarName).Op("=").Qual(g.pkgs.InterfacesPkg, "NewPool").Call(
 		jen.Func().Params().Op("*").Id(me.outputStructName).Block(
 			jen.Return(jen.Op("&").Id(me.outputStructName).Values()),
 		),
@@ -354,7 +352,7 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 		Op("*").Id(me.outputStructName).
 		Block(
 			jen.Id("r").Op(":=").Id(me.getterFuncName).Call(),
-			jen.Id("r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindError"),
+			jen.Id("r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindError"),
 			jen.Id("r").Dot("err").Op("=").Id("err"),
 			jen.Return(jen.Id("r")),
 		)
@@ -364,11 +362,11 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 	// supplied payload. Uses the same pool as the regular result path.
 	out.Func().
 		Id(me.metadataConstructorName).
-		Params(jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata")).
+		Params(jen.Id("md").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata")).
 		Op("*").Id(me.outputStructName).
 		Block(
 			jen.Id("r").Op(":=").Id(me.getterFuncName).Call(),
-			jen.Id("r").Dot("kind").Op("=").Qual(common.InterfacesPkg, "StreamResultKindMetadata"),
+			jen.Id("r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindMetadata"),
 			jen.Id("r").Dot("metadata").Op("=").Id("md"),
 			jen.Return(jen.Id("r")),
 		)
@@ -442,7 +440,7 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 			convertedVar := "__media_" + paramName
 			paramType := me.syncFuncType.In(paramIdx)
 
-			preamble = append(preamble, mediaConversionCode(convertedVar, fieldName, paramType, mediaKind)...)
+			preamble = append(preamble, mediaConversionCode(convertedVar, fieldName, paramType, mediaKind, me.g.pkgs)...)
 		}
 
 		// Generate struct conversion code for params with nested media.
@@ -656,14 +654,14 @@ func (g *generator) emitMethods() []methodOut {
 	// positions. The framework adapter emitter's CI determinism check
 	// caught a similar drift; this is the same fix for the streaming
 	// router half.
-	methodNames := make([]string, 0, len(introspected.SyncMethods))
-	for k := range introspected.SyncMethods {
+	methodNames := make([]string, 0, len(g.intro.SyncMethods))
+	for k := range g.intro.SyncMethods {
 		methodNames = append(methodNames, k)
 	}
 	slices.Sort(methodNames)
 
 	for _, methodName := range methodNames {
-		args := introspected.SyncMethods[methodName]
+		args := g.intro.SyncMethods[methodName]
 		me, ok := g.newMethodEmitter(methodName, args)
 		if !ok {
 			continue
@@ -684,7 +682,7 @@ func (g *generator) emitMethods() []methodOut {
 // implementation triple (MakeInput / MakeOutput / MakeStreamOutput
 // pool factories plus the router function value).
 func (g *generator) emitMethodsMap(methods []methodOut) {
-	streamingFunctionInterface := jen.Qual(common.InterfacesPkg, "StreamingMethod")
+	streamingFunctionInterface := jen.Qual(g.pkgs.InterfacesPkg, "StreamingMethod")
 
 	mapElements := make(jen.Dict)
 	for _, method := range methods {
@@ -729,15 +727,15 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 	// parse-method names so emitted parse_<Method> functions and the
 	// resulting ParseMethods map appear in a stable order across
 	// runs.
-	parseMethodNames := make([]string, 0, len(introspected.ParseMethods))
-	for k := range introspected.ParseMethods {
+	parseMethodNames := make([]string, 0, len(g.intro.ParseMethods))
+	for k := range g.intro.ParseMethods {
 		parseMethodNames = append(parseMethodNames, k)
 	}
 	slices.Sort(parseMethodNames)
 
 	for _, methodName := range parseMethodNames {
 		// Get the sync function to determine return type
-		syncFuncValue, ok := introspected.SyncFuncs[methodName]
+		syncFuncValue, ok := g.intro.SyncFuncs[methodName]
 		if !ok {
 			continue
 		}
@@ -770,7 +768,7 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 				jen.Return(jen.Nil(), jen.Id("err")),
 			),
 			jen.List(jen.Id("result"), jen.Id("parseErr")).Op(":=").
-				Qual(common.GeneratedClientPkg, "Parse").Dot(methodName).Call(parseCallParams...),
+				Qual(g.pkgs.GeneratedClientPkg, "Parse").Dot(methodName).Call(parseCallParams...),
 			jen.If(jen.Id("parseErr").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("parseErr")),
 			),
@@ -797,7 +795,7 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 		g.out.Func().
 			Id(parseFuncName).
 			Params(
-				jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+				jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
 				jen.Id("raw").String(),
 			).
 			Params(jen.Any(), jen.Error()).
@@ -817,7 +815,7 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 // implementation pair (MakeOutput pool factory + the parse_<Method>
 // function value).
 func (g *generator) emitParseMethodsMap(parseMethods []parseMethodOut) {
-	parseMethodInterface := jen.Qual(common.InterfacesPkg, "ParseMethod")
+	parseMethodInterface := jen.Qual(g.pkgs.InterfacesPkg, "ParseMethod")
 
 	parseMapElements := make(jen.Dict)
 	for _, method := range parseMethods {
@@ -848,11 +846,11 @@ func (g *generator) emitFactories() {
 	// Generate `createTypeBuilder` - creates TypeBuilder and applies config
 	out.Func().Id("createTypeBuilder").
 		Params(
-			jen.Id("config").Op("*").Qual(common.InterfacesPkg, "TypeBuilder"),
+			jen.Id("config").Op("*").Qual(g.pkgs.InterfacesPkg, "TypeBuilder"),
 		).
-		Params(jen.Op("*").Qual(common.IntrospectedPkg, "TypeBuilder"), jen.Error()).
+		Params(jen.Op("*").Qual(g.pkgs.IntrospectedPkg, "TypeBuilder"), jen.Error()).
 		Block(
-			jen.List(jen.Id("tb"), jen.Id("err")).Op(":=").Qual(common.IntrospectedPkg, "NewTypeBuilder").Call(),
+			jen.List(jen.Id("tb"), jen.Id("err")).Op(":=").Qual(g.pkgs.IntrospectedPkg, "NewTypeBuilder").Call(),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
 			),
@@ -885,7 +883,7 @@ func (g *generator) emitFactories() {
 	// kills the request before WithClient(leaf) resolves anything.
 	out.Func().Id("MakeAdapter").
 		Params(jen.Id("ctx").Qual("context", "Context")).
-		Qual(common.InterfacesPkg, "Adapter").
+		Qual(g.pkgs.InterfacesPkg, "Adapter").
 		Block(
 			jen.Return(
 				jen.Op("&").Qual(g.selfAdapterPkg, "BamlAdapter").
@@ -893,14 +891,14 @@ func (g *generator) emitFactories() {
 						jen.Id("Context"): jen.Id("ctx"),
 						jen.Id("TypeBuilderFactory"): jen.Func().
 							Params(
-								jen.Id("config").Op("*").Qual(common.InterfacesPkg, "TypeBuilder"),
+								jen.Id("config").Op("*").Qual(g.pkgs.InterfacesPkg, "TypeBuilder"),
 							).
-							Params(jen.Op("*").Qual(common.IntrospectedPkg, "TypeBuilder"), jen.Error()).
+							Params(jen.Op("*").Qual(g.pkgs.IntrospectedPkg, "TypeBuilder"), jen.Error()).
 							Block(
 								jen.Return(jen.Id("createTypeBuilder").Call(jen.Id("config"))),
 							),
 						jen.Id("MediaFactory"):               jen.Id("createMedia"),
-						jen.Id("IntrospectedClientProvider"): jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+						jen.Id("IntrospectedClientProvider"): jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
 					}),
 			),
 		)
@@ -908,7 +906,7 @@ func (g *generator) emitFactories() {
 	// Generate `createMedia` - dispatches to baml_client's media constructors
 	out.Func().Id("createMedia").
 		Params(
-			jen.Id("kind").Qual(common.InterfacesPkg, "MediaKind"),
+			jen.Id("kind").Qual(g.pkgs.InterfacesPkg, "MediaKind"),
 			jen.Id("url").Op("*").String(),
 			jen.Id("base64").Op("*").String(),
 			jen.Id("mimeType").Op("*").String(),
@@ -917,33 +915,33 @@ func (g *generator) emitFactories() {
 		Block(
 			jen.If(jen.Id("url").Op("!=").Nil()).Block(
 				jen.Switch(jen.Id("kind")).Block(
-					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindImage")).Block(
-						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewImageFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
+					jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "MediaKindImage")).Block(
+						jen.Return(jen.Qual(g.pkgs.GeneratedClientPkg, "NewImageFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
 					),
-					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindAudio")).Block(
-						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewAudioFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
+					jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "MediaKindAudio")).Block(
+						jen.Return(jen.Qual(g.pkgs.GeneratedClientPkg, "NewAudioFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
 					),
-					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindPDF")).Block(
-						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewPDFFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
+					jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "MediaKindPDF")).Block(
+						jen.Return(jen.Qual(g.pkgs.GeneratedClientPkg, "NewPDFFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
 					),
-					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindVideo")).Block(
-						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewVideoFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
+					jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "MediaKindVideo")).Block(
+						jen.Return(jen.Qual(g.pkgs.GeneratedClientPkg, "NewVideoFromUrl").Call(jen.Op("*").Id("url"), jen.Id("mimeType"))),
 					),
 				),
 			),
 			jen.If(jen.Id("base64").Op("!=").Nil()).Block(
 				jen.Switch(jen.Id("kind")).Block(
-					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindImage")).Block(
-						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewImageFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
+					jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "MediaKindImage")).Block(
+						jen.Return(jen.Qual(g.pkgs.GeneratedClientPkg, "NewImageFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
 					),
-					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindAudio")).Block(
-						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewAudioFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
+					jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "MediaKindAudio")).Block(
+						jen.Return(jen.Qual(g.pkgs.GeneratedClientPkg, "NewAudioFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
 					),
-					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindPDF")).Block(
-						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewPDFFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
+					jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "MediaKindPDF")).Block(
+						jen.Return(jen.Qual(g.pkgs.GeneratedClientPkg, "NewPDFFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
 					),
-					jen.Case(jen.Qual(common.InterfacesPkg, "MediaKindVideo")).Block(
-						jen.Return(jen.Qual(common.GeneratedClientPkg, "NewVideoFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
+					jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "MediaKindVideo")).Block(
+						jen.Return(jen.Qual(g.pkgs.GeneratedClientPkg, "NewVideoFromBase64").Call(jen.Op("*").Id("base64"), jen.Id("mimeType"))),
 					),
 				),
 			),
@@ -959,6 +957,6 @@ func (g *generator) emitInitBamlRuntime() {
 	g.out.Func().Id("InitBamlRuntime").
 		Params().
 		Block(
-			jen.Qual(common.GeneratedClientPkg, "InitRuntime").Call(),
+			jen.Qual(g.pkgs.GeneratedClientPkg, "InitRuntime").Call(),
 		)
 }

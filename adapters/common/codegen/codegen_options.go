@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest/adapters/common"
 )
 
 // emitMakeLegacyChildOptionsFromAdapter writes the
@@ -61,14 +60,14 @@ import (
 // Extracted as a top-level function so the emit can be unit-tested
 // against rendered output without running the full generate()
 // pipeline (which writes adapter.go to disk and pollutes the repo).
-func emitMakeLegacyChildOptionsFromAdapter(out *jen.File, selfAdapterPkg string) {
+func emitMakeLegacyChildOptionsFromAdapter(out *jen.File, selfAdapterPkg string, pkgs PackageConfig) {
 	out.Func().Id("makeLegacyChildOptionsFromAdapter").
 		Params(
-			jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapterIn").Qual(pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("clientOverride").String(),
 		).
 		Params(
-			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Op("[]").Qual(pkgs.GeneratedClientPkg, "CallOptionFunc"),
 			jen.Error(),
 		).
 		Block(
@@ -80,7 +79,7 @@ func emitMakeLegacyChildOptionsFromAdapter(out *jen.File, selfAdapterPkg string)
 				)),
 			),
 			jen.Id("result").Op(":=").Make(
-				jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+				jen.Op("[]").Qual(pkgs.GeneratedClientPkg, "CallOptionFunc"),
 				jen.Lit(0), jen.Lit(3),
 			),
 			jen.Id("original").Op(":=").Id("adapter").Dot("OriginalClientRegistry").Call(),
@@ -96,7 +95,7 @@ func emitMakeLegacyChildOptionsFromAdapter(out *jen.File, selfAdapterPkg string)
 			// itself) and silently re-run the whole chain instead of
 			// the targeted child.
 			jen.If(jen.Id("original").Op("!=").Nil().Op("||").Id("clientOverride").Op("!=").Lit("")).Block(
-				jen.Id("registry").Op(":=").Qual(BamlPkg, "NewClientRegistry").Call(),
+				jen.Id("registry").Op(":=").Qual(pkgs.BamlPkg, "NewClientRegistry").Call(),
 				// Runtime overrides only when there's an original
 				// registry to scope from. BuildLegacyChildRegistry-
 				// Entries already filters to non-strategy leaves plus
@@ -104,11 +103,11 @@ func emitMakeLegacyChildOptionsFromAdapter(out *jen.File, selfAdapterPkg string)
 				// clientOverride; an empty clientOverride yields an
 				// empty reachable set so only leaves survive.
 				jen.If(jen.Id("original").Op("!=").Nil()).Block(
-					jen.Id("entries").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyChildRegistryEntries").Call(
+					jen.Id("entries").Op(":=").Qual(pkgs.BuildRequestPkg, "BuildLegacyChildRegistryEntries").Call(
 						jen.Id("original"),
 						jen.Id("clientOverride"),
 						jen.Id("adapter").Dot("IntrospectedClientProvider"),
-						jen.Qual(common.IntrospectedPkg, "FallbackChains"),
+						jen.Qual(pkgs.IntrospectedPkg, "FallbackChains"),
 					),
 					jen.For(jen.List(jen.Id("_"), jen.Id("e")).Op(":=").Range().Id("entries")).Block(
 						jen.Id("registry").Dot("AddLlmClient").Call(
@@ -134,13 +133,13 @@ func emitMakeLegacyChildOptionsFromAdapter(out *jen.File, selfAdapterPkg string)
 				),
 				jen.Id("result").Op("=").Append(
 					jen.Id("result"),
-					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").Call(jen.Id("registry")),
+					jen.Qual(pkgs.GeneratedClientPkg, "WithClientRegistry").Call(jen.Id("registry")),
 				),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(
 					jen.Id("result"),
-					jen.Qual(common.GeneratedClientPkg, "WithTypeBuilder").Call(jen.Id("adapter").Dot("TypeBuilder")),
+					jen.Qual(pkgs.GeneratedClientPkg, "WithTypeBuilder").Call(jen.Id("adapter").Dot("TypeBuilder")),
 				),
 			),
 			jen.Return(jen.Id("result"), jen.Nil()),
@@ -194,14 +193,14 @@ func emitMakeLegacyChildOptionsFromAdapter(out *jen.File, selfAdapterPkg string)
 // Extracted as a top-level function so the emit can be unit-tested
 // against rendered output without running the full generate()
 // pipeline (which writes adapter.go to disk).
-func emitMakeLegacyStreamOptionsFromAdapter(out *jen.File, selfAdapterPkg string) {
+func emitMakeLegacyStreamOptionsFromAdapter(out *jen.File, selfAdapterPkg string, pkgs PackageConfig) {
 	out.Func().Id("makeLegacyStreamOptionsFromAdapter").
 		Params(
-			jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapterIn").Qual(pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("clientOverride").String(),
 		).
 		Params(
-			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Op("[]").Qual(pkgs.GeneratedClientPkg, "CallOptionFunc"),
 			jen.Error(),
 		).
 		Block(
@@ -213,7 +212,7 @@ func emitMakeLegacyStreamOptionsFromAdapter(out *jen.File, selfAdapterPkg string
 				)),
 			),
 			jen.Id("result").Op(":=").Make(
-				jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+				jen.Op("[]").Qual(pkgs.GeneratedClientPkg, "CallOptionFunc"),
 				jen.Lit(0), jen.Lit(3),
 			),
 			jen.Id("registry").Op(":=").Id("adapter").Dot("LegacyClientRegistry"),
@@ -230,7 +229,7 @@ func emitMakeLegacyStreamOptionsFromAdapter(out *jen.File, selfAdapterPkg string
 				// LegacyClientRegistry preserves the keep-strategy-
 				// parent semantics SetClientRegistry built into it.
 				jen.If(jen.Id("registry").Op("==").Nil()).Block(
-					jen.Id("registry").Op("=").Qual(BamlPkg, "NewClientRegistry").Call(),
+					jen.Id("registry").Op("=").Qual(pkgs.BamlPkg, "NewClientRegistry").Call(),
 				),
 				// SetPrimaryClient is the seam BAML's streaming path
 				// actually reads. WithClient(clientOverride) at the
@@ -244,13 +243,13 @@ func emitMakeLegacyStreamOptionsFromAdapter(out *jen.File, selfAdapterPkg string
 				),
 				jen.Id("result").Op("=").Append(
 					jen.Id("result"),
-					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").Call(jen.Id("registry")),
+					jen.Qual(pkgs.GeneratedClientPkg, "WithClientRegistry").Call(jen.Id("registry")),
 				),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(
 					jen.Id("result"),
-					jen.Qual(common.GeneratedClientPkg, "WithTypeBuilder").Call(jen.Id("adapter").Dot("TypeBuilder")),
+					jen.Qual(pkgs.GeneratedClientPkg, "WithTypeBuilder").Call(jen.Id("adapter").Dot("TypeBuilder")),
 				),
 			),
 			jen.Return(jen.Id("result"), jen.Nil()),
@@ -283,11 +282,11 @@ func (g *generator) emitOptionsHelpers() {
 	// strategy-parent overrides).
 	out.Func().Id("makeOptionsFromAdapterInternal").
 		Params(
-			jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapterIn").Qual(g.pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("legacy").Bool(),
 		).
 		Params(
-			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Op("[]").Qual(g.pkgs.GeneratedClientPkg, "CallOptionFunc"),
 			jen.Error(),
 		).
 		Block(
@@ -307,15 +306,15 @@ func (g *generator) emitOptionsHelpers() {
 				jen.Id("registry").Op("=").Id("adapter").Dot("LegacyClientRegistry"),
 			),
 			// Pre-size with capacity 3: room for ClientRegistry + TypeBuilder + WithOnTick
-			jen.Id("result").Op(":=").Make(jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"), jen.Lit(0), jen.Lit(3)),
+			jen.Id("result").Op(":=").Make(jen.Op("[]").Qual(g.pkgs.GeneratedClientPkg, "CallOptionFunc"), jen.Lit(0), jen.Lit(3)),
 			jen.If(jen.Id("registry").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),
-					jen.Qual(common.GeneratedClientPkg, "WithClientRegistry").
+					jen.Qual(g.pkgs.GeneratedClientPkg, "WithClientRegistry").
 						Call(jen.Id("registry"))),
 			),
 			jen.If(jen.Id("adapter").Dot("TypeBuilder").Op("!=").Nil()).Block(
 				jen.Id("result").Op("=").Append(jen.Id("result"),
-					jen.Qual(common.GeneratedClientPkg, "WithTypeBuilder").
+					jen.Qual(g.pkgs.GeneratedClientPkg, "WithTypeBuilder").
 						Call(jen.Id("adapter").Dot("TypeBuilder"))),
 			),
 			jen.Return(jen.Id("result"), jen.Nil()),
@@ -330,9 +329,9 @@ func (g *generator) emitOptionsHelpers() {
 	// own per-callback scoped registry via
 	// makeLegacyChildOptionsFromAdapter rather than reusing this view.
 	out.Func().Id("makeOptionsFromAdapter").
-		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
+		Params(jen.Id("adapterIn").Qual(g.pkgs.InterfacesPkg, "Adapter")).
 		Params(
-			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Op("[]").Qual(g.pkgs.GeneratedClientPkg, "CallOptionFunc"),
 			jen.Error(),
 		).
 		Block(
@@ -344,9 +343,9 @@ func (g *generator) emitOptionsHelpers() {
 	// invoked via __legacyClientOverride) so BAML can honour runtime
 	// strategy-parent overrides or emit canonical errors.
 	out.Func().Id("makeLegacyOptionsFromAdapter").
-		Params(jen.Id("adapterIn").Qual(common.InterfacesPkg, "Adapter")).
+		Params(jen.Id("adapterIn").Qual(g.pkgs.InterfacesPkg, "Adapter")).
 		Params(
-			jen.Op("[]").Qual(common.GeneratedClientPkg, "CallOptionFunc"),
+			jen.Op("[]").Qual(g.pkgs.GeneratedClientPkg, "CallOptionFunc"),
 			jen.Error(),
 		).
 		Block(

@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest/adapters/common"
 )
 
 // enumValueAttrsCode returns jen.Code statements for setting Description, Alias, and Skip
@@ -24,16 +23,17 @@ func enumValueAttrsCode() []jen.Code {
 // generateApplyDynamicTypes generates the applyDynamicTypes function that translates
 // DynamicTypes JSON schema to imperative TypeBuilder calls.
 // Uses the introspected package for type lookups instead of reflection.
-func generateApplyDynamicTypes(out *jen.File) {
-	// Use introspected.Type to be consistent with introspected.TypeBuilder
-	// (both come from the generated client, not the runtime library directly)
-	introspectedPkg := common.IntrospectedPkg
+func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
+	// Use the configured introspected.Type to be consistent with
+	// the introspected TypeBuilder (both come from the generated
+	// client, not the runtime library directly).
+	introspectedPkg := pkgs.IntrospectedPkg
 	typeAlias := jen.Qual(introspectedPkg, "Type")
 	// Generate applyDynamicTypes function
 	out.Func().Id("applyDynamicTypes").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
-			jen.Id("dt").Op("*").Qual(common.InterfacesPkg, "DynamicTypes"),
+			jen.Id("dt").Op("*").Qual(pkgs.InterfacesPkg, "DynamicTypes"),
 		).
 		Error().
 		Block(
@@ -104,7 +104,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
-			jen.Id("enum").Op("*").Qual(common.InterfacesPkg, "DynamicEnum"),
+			jen.Id("enum").Op("*").Qual(pkgs.InterfacesPkg, "DynamicEnum"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 		).
 		Error().
@@ -147,7 +147,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
-			jen.Id("enum").Op("*").Qual(common.InterfacesPkg, "DynamicEnum"),
+			jen.Id("enum").Op("*").Qual(pkgs.InterfacesPkg, "DynamicEnum"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 		).
 		Error().
@@ -220,7 +220,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
-			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
+			jen.Id("class").Op("*").Qual(pkgs.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
 		).
@@ -261,7 +261,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
 			jen.Id("name").String(),
-			jen.Id("class").Op("*").Qual(common.InterfacesPkg, "DynamicClass"),
+			jen.Id("class").Op("*").Qual(pkgs.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
 		).
@@ -309,7 +309,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 	out.Func().Id("resolvePropertyType").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
-			jen.Id("prop").Op("*").Qual(common.InterfacesPkg, "DynamicProperty"),
+			jen.Id("prop").Op("*").Qual(pkgs.InterfacesPkg, "DynamicProperty"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
 		).
@@ -323,7 +323,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 			// Convert to DynamicTypeSpec and resolve
 			jen.Return(jen.Id("resolveTypeRef").Call(
 				jen.Id("tb"),
-				jen.Op("&").Qual(common.InterfacesPkg, "DynamicTypeSpec").Values(jen.Dict{
+				jen.Op("&").Qual(pkgs.InterfacesPkg, "DynamicTypeSpec").Values(jen.Dict{
 					jen.Id("Type"):   jen.Id("prop").Dot("Type"),
 					jen.Id("Items"):  jen.Id("prop").Dot("Items"),
 					jen.Id("Inner"):  jen.Id("prop").Dot("Inner"),
@@ -341,7 +341,7 @@ func generateApplyDynamicTypes(out *jen.File) {
 	out.Func().Id("resolveTypeRef").
 		Params(
 			jen.Id("tb").Op("*").Qual(introspectedPkg, "TypeBuilder"),
-			jen.Id("ref").Op("*").Qual(common.InterfacesPkg, "DynamicTypeSpec"),
+			jen.Id("ref").Op("*").Qual(pkgs.InterfacesPkg, "DynamicTypeSpec"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
 		).

@@ -2,8 +2,6 @@ package codegen
 
 import (
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest/adapters/common"
-	"github.com/invakid404/baml-rest/introspected"
 )
 
 // emitMaybeAttachBedrockAuth emits the call-branch postProcess block
@@ -21,9 +19,9 @@ import (
 // emitBedrockAuthDispatchFor so the explicit endpoint_url, region, and
 // credential-selector override paths are honoured when the operator
 // has configured them.
-func emitMaybeAttachBedrockAuth(g *jen.Group) {
+func emitMaybeAttachBedrockAuth(g *jen.Group, pkgs PackageConfig) {
 	g.If(
-		jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "MaybeAttachBedrockAuth").Call(jen.Id("ctx"), jen.Id("req")),
+		jen.Id("authErr").Op(":=").Qual(pkgs.LLMHTTPPkg, "MaybeAttachBedrockAuth").Call(jen.Id("ctx"), jen.Id("req")),
 		jen.Id("authErr").Op("!=").Nil(),
 	).Block(
 		jen.Return(jen.Nil(), jen.Id("authErr")),
@@ -91,21 +89,21 @@ func emitMaybeAttachBedrockAuth(g *jen.Group) {
 // error (otherwise an operator routing to a proxy/LocalStack/VPC
 // endpoint via env.MY_PROXY would silently fall back to real AWS
 // Bedrock), not collapse into the no-override path.
-func emitBedrockAuthDispatchFor(methodName string) func(*jen.Group) {
+func emitBedrockAuthDispatchFor(methodName string, pkgs PackageConfig) func(*jen.Group) {
 	return func(g *jen.Group) {
 		g.Id("selectedClient").Op(":=").Id("clientOverride")
 		g.If(jen.Id("selectedClient").Op("==").Lit("")).Block(
-			jen.Id("selectedClient").Op("=").Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
+			jen.Id("selectedClient").Op("=").Qual(pkgs.IntrospectedPkg, "FunctionClient").Index(jen.Lit(methodName)),
 		)
 		g.Var().Defs(
 			jen.Id("bedrockEndpointURL").String(),
 			jen.Id("bedrockEndpointURLPresent").Bool(),
 			jen.Id("bedrockRegion").String(),
 			jen.Id("bedrockRegionPresent").Bool(),
-			jen.Id("bedrockCreds").Qual(common.LLMHTTPPkg, "BedrockCredentialSelector"),
+			jen.Id("bedrockCreds").Qual(pkgs.LLMHTTPPkg, "BedrockCredentialSelector"),
 		)
 		g.If(
-			jen.List(jen.Id("bedrockOpts"), jen.Id("ok")).Op(":=").Qual(common.IntrospectedPkg, "BedrockClientOptionsByName").Index(jen.Id("selectedClient")),
+			jen.List(jen.Id("bedrockOpts"), jen.Id("ok")).Op(":=").Qual(pkgs.IntrospectedPkg, "BedrockClientOptionsByName").Index(jen.Id("selectedClient")),
 			jen.Id("ok"),
 		).Block(
 			jen.List(jen.Id("bedrockEndpointURL"), jen.Id("_")).Op("=").Id("bedrockOpts").Dot("EndpointURL").Dot("Resolve").Call(),
@@ -122,10 +120,10 @@ func emitBedrockAuthDispatchFor(methodName string) func(*jen.Group) {
 			jen.Id("bedrockCreds").Dot("ProfilePresent").Op("=").Id("bedrockOpts").Dot("Credentials").Dot("Profile").Dot("IsSet").Call(),
 		)
 		g.If(
-			jen.Id("authErr").Op(":=").Qual(common.LLMHTTPPkg, "AttachBedrockAuthForClient").Call(
+			jen.Id("authErr").Op(":=").Qual(pkgs.LLMHTTPPkg, "AttachBedrockAuthForClient").Call(
 				jen.Id("ctx"),
 				jen.Id("req"),
-				jen.Qual(common.LLMHTTPPkg, "BedrockClientAuthOptions").Values(jen.Dict{
+				jen.Qual(pkgs.LLMHTTPPkg, "BedrockClientAuthOptions").Values(jen.Dict{
 					jen.Id("ClientName"):         jen.Id("selectedClient"),
 					jen.Id("EndpointURL"):        jen.Id("bedrockEndpointURL"),
 					jen.Id("EndpointURLPresent"): jen.Id("bedrockEndpointURLPresent"),
@@ -162,8 +160,8 @@ func emitBedrockAuthDispatchFor(methodName string) func(*jen.Group) {
 //
 // Emitted only on the bedrock streaming closure; the SSE-path
 // streaming closure still passes nil postProcess.
-func emitBedrockStreamPostProcessFor(methodName string) func(*jen.Group) {
-	dispatch := emitBedrockAuthDispatchFor(methodName)
+func emitBedrockStreamPostProcessFor(methodName string, pkgs PackageConfig) func(*jen.Group) {
+	dispatch := emitBedrockAuthDispatchFor(methodName, pkgs)
 	return func(g *jen.Group) {
 		// URL mutation: single replacement of /converse → /converse-stream.
 		// The Bedrock URL pattern is
@@ -184,7 +182,7 @@ func emitBedrockStreamPostProcessFor(methodName string) func(*jen.Group) {
 		g.If(jen.Id("req").Dot("Headers").Op("==").Nil()).Block(
 			jen.Id("req").Dot("Headers").Op("=").Make(jen.Map(jen.String()).String()),
 		)
-		g.Id("req").Dot("Headers").Index(jen.Lit("Accept")).Op("=").Qual(common.LLMHTTPPkg, "AWSStreamContentType")
+		g.Id("req").Dot("Headers").Index(jen.Lit("Accept")).Op("=").Qual(pkgs.LLMHTTPPkg, "AWSStreamContentType")
 
 		// Bedrock auth dispatch: explicit endpoint_url, region, and/or
 		// credential-selector override when configured for the
@@ -204,7 +202,7 @@ func emitBedrockStreamPostProcessFor(methodName string) func(*jen.Group) {
 // postProcess receives the closure scope so callers can add side
 // effects (header rewrites, auth attachment) after `req` is built but
 // before the closure returns. nil is fine.
-func emitBAMLHTTPRequestConversion(g *jen.Group, postProcess func(*jen.Group)) {
+func emitBAMLHTTPRequestConversion(g *jen.Group, pkgs PackageConfig, postProcess func(*jen.Group)) {
 	g.List(jen.Id("url"), jen.Id("urlErr")).Op(":=").Id("httpReq").Dot("Url").Call()
 	g.If(jen.Id("urlErr").Op("!=").Nil()).Block(
 		jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get URL: %w"), jen.Id("urlErr"))),
@@ -225,7 +223,7 @@ func emitBAMLHTTPRequestConversion(g *jen.Group, postProcess func(*jen.Group)) {
 	g.If(jen.Id("bodyTextErr").Op("!=").Nil()).Block(
 		jen.Return(jen.Nil(), jen.Qual("fmt", "Errorf").Call(jen.Lit("failed to get body text: %w"), jen.Id("bodyTextErr"))),
 	)
-	g.Id("req").Op(":=").Op("&").Qual(common.LLMHTTPPkg, "Request").Values(jen.Dict{
+	g.Id("req").Op(":=").Op("&").Qual(pkgs.LLMHTTPPkg, "Request").Values(jen.Dict{
 		jen.Id("URL"):     jen.Id("url"),
 		jen.Id("Method"):  jen.Id("method"),
 		jen.Id("Headers"): jen.Id("headers"),
@@ -265,11 +263,11 @@ func buildLegacyChildCallParams(args []string, argCallParam func(string) jen.Cod
 // emitBuildRequest emits the streaming BuildRequest impl for this
 // method (<method>_buildRequest) using BAML's StreamRequest API to
 // produce a BAML HTTPRequest, execute it, and parse SSE events
-// directly. Only emitted when introspected.StreamRequest is non-nil
+// directly. Only emitted when g.intro.StreamRequest is non-nil
 // (BAML >= 0.219.0); otherwise the symbol baml_client.StreamRequest
 // doesn't exist and the reference would fail to compile.
 //
-// When introspected.Request is also non-nil (v0.219), emit a sibling
+// When g.intro.Request is also non-nil (v0.219), emit a sibling
 // buildBedrockStreamRequestFn closure that calls BAML's non-streaming
 // Request.<Method> (because BAML's StreamRequest errors for
 // aws-bedrock), mutates the URL from /converse to /converse-stream,
@@ -277,12 +275,12 @@ func buildLegacyChildCallParams(args []string, argCallParam func(string) jen.Cod
 // it into StreamConfig as BuildBedrockStreamRequest. The orchestrator
 // dispatches on provider.
 func (me *methodEmitter) emitBuildRequest() {
-	if introspected.StreamRequest == nil {
+	g := me.g
+	if g.intro.StreamRequest == nil {
 		return
 	}
-	g := me.g
 	out := g.out
-	streamResultInterface := jen.Qual(common.InterfacesPkg, "StreamResult")
+	streamResultInterface := jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")
 
 	// Build the StreamRequest call params using callOpts (which may
 	// include a WithClient override for fallback chains).
@@ -296,7 +294,7 @@ func (me *methodEmitter) emitBuildRequest() {
 	// Identical call-param shape for BAML's non-streaming
 	// Request.<Method>. Same args + opts as StreamRequest because both
 	// consume the per-method signature. Built unconditionally; only
-	// inlined into the closure when introspected.Request is non-nil
+	// inlined into the closure when g.intro.Request is non-nil
 	// (the v0.219 gate).
 	var bedrockStreamCallParams []jen.Code
 	bedrockStreamCallParams = append(bedrockStreamCallParams, jen.Id("ctx"))
@@ -326,7 +324,7 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("ctx").Qual("context", "Context"),
 			jen.Id("clientOverride").String(),
 		).Params(
-			jen.Op("*").Qual(common.LLMHTTPPkg, "Request"),
+			jen.Op("*").Qual(g.pkgs.LLMHTTPPkg, "Request"),
 			jen.Error(),
 		).BlockFunc(func(jg *jen.Group) {
 			// Build callOpts: clone options and append WithClient if override is set
@@ -334,11 +332,11 @@ func (me *methodEmitter) emitBuildRequest() {
 			jg.Add(g.withClientCloneAndAppend("callOpts", "options"))
 			// Call StreamRequest.Method(ctx, args..., callOpts...)
 			jg.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
-				Qual(common.GeneratedClientPkg, "StreamRequest").Dot(me.methodName).Call(buildRequestCallParams...)
+				Qual(g.pkgs.GeneratedClientPkg, "StreamRequest").Dot(me.methodName).Call(buildRequestCallParams...)
 			jg.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
 			)
-			emitBAMLHTTPRequestConversion(jg, nil)
+			emitBAMLHTTPRequestConversion(jg, g.pkgs, nil)
 		}),
 	)
 
@@ -349,19 +347,19 @@ func (me *methodEmitter) emitBuildRequest() {
 	// attaches AWSAuth. The orchestrator dispatches to this closure
 	// when the per-attempt provider is aws-bedrock.
 	//
-	// Gated on introspected.Request being non-nil because the symbol
+	// Gated on g.intro.Request being non-nil because the symbol
 	// baml_client.Request only exists on BAML v0.219+. For v0.204 /
 	// v0.215 the streaming bedrock path falls through to legacy via
 	// the codegen-time gating elsewhere (callSupportedProviders /
 	// supportedProviders are still consulted at runtime, but
 	// resolution treats unsupported codegen as legacy).
-	if introspected.Request != nil {
+	if g.intro.Request != nil {
 		buildRequestBody = append(buildRequestBody,
 			jen.Id("buildBedrockStreamRequestFn").Op(":=").Func().Params(
 				jen.Id("ctx").Qual("context", "Context"),
 				jen.Id("clientOverride").String(),
 			).Params(
-				jen.Op("*").Qual(common.LLMHTTPPkg, "Request"),
+				jen.Op("*").Qual(g.pkgs.LLMHTTPPkg, "Request"),
 				jen.Error(),
 			).BlockFunc(func(jg *jen.Group) {
 				jg.Id("callOpts").Op(":=").Id("options")
@@ -369,11 +367,11 @@ func (me *methodEmitter) emitBuildRequest() {
 				// Call Request.Method(ctx, args..., callOpts...) —
 				// the non-streaming body assembler.
 				jg.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
-					Qual(common.GeneratedClientPkg, "Request").Dot(me.methodName).Call(bedrockStreamCallParams...)
+					Qual(g.pkgs.GeneratedClientPkg, "Request").Dot(me.methodName).Call(bedrockStreamCallParams...)
 				jg.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Nil(), jen.Id("err")),
 				)
-				emitBAMLHTTPRequestConversion(jg, emitBedrockStreamPostProcessFor(me.methodName))
+				emitBAMLHTTPRequestConversion(jg, g.pkgs, emitBedrockStreamPostProcessFor(me.methodName, g.pkgs))
 			}),
 		)
 	}
@@ -387,7 +385,7 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("accumulated").String(),
 		).Params(jen.Any(), jen.Error()).Block(
 			jen.Return(
-				jen.Qual(common.GeneratedClientPkg, "ParseStream").Dot(me.methodName).Call(
+				jen.Qual(g.pkgs.GeneratedClientPkg, "ParseStream").Dot(me.methodName).Call(
 					jen.Id("ctx"),
 					jen.Id("accumulated"),
 					jen.Id("options").Op("..."),
@@ -402,7 +400,7 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("accumulated").String(),
 		).Params(jen.Any(), jen.Error()).Block(
 			jen.Return(
-				jen.Qual(common.GeneratedClientPkg, "Parse").Dot(me.methodName).Call(
+				jen.Qual(g.pkgs.GeneratedClientPkg, "Parse").Dot(me.methodName).Call(
 					jen.Id("ctx"),
 					jen.Id("accumulated"),
 					jen.Id("options").Op("..."),
@@ -417,14 +415,14 @@ func (me *methodEmitter) emitBuildRequest() {
 		// Dynamic unwrap helpers are called when applicable, matching the
 		// legacy _full path's behavior for DynamicProperties outputs.
 		jen.Id("newResultFn").Op(":=").Func().Params(
-			jen.Id("kind").Qual(common.InterfacesPkg, "StreamResultKind"),
+			jen.Id("kind").Qual(g.pkgs.InterfacesPkg, "StreamResultKind"),
 			jen.Id("stream").Any(),
 			jen.Id("final").Any(),
 			jen.Id("raw").String(),
 			jen.Id("reasoning").String(),
 			jen.Id("err").Error(),
 			jen.Id("reset").Bool(),
-		).Params(jen.Qual(common.InterfacesPkg, "StreamResult")).Block(
+		).Params(jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")).Block(
 			jen.Id("r").Op(":=").Id(me.getterFuncName).Call(),
 			jen.Id("r").Dot("kind").Op("=").Id("kind"),
 			jen.Id("r").Dot("raw").Op("=").Id("raw"),
@@ -526,13 +524,13 @@ func (me *methodEmitter) emitBuildRequest() {
 				jen.Id("ctx"),
 				jen.Id("needsRaw"),
 				jen.Id("sendHeartbeat"),
-				jen.Func().Params(jen.Id("onTick").Add(onTickType())).Params(jen.Any(), jen.Error()).Block(
+				jen.Func().Params(jen.Id("onTick").Add(onTickType(g.pkgs.BamlPkg))).Params(jen.Any(), jen.Error()).Block(
 					jen.Id("opts").Op(":=").Append(
 						jen.Id("callOpts"),
-						jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
+						jen.Qual(g.pkgs.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
 					),
 					jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
-						Qual(common.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(legacyStreamCallParams...),
+						Qual(g.pkgs.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(legacyStreamCallParams...),
 					jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
 						jen.Return(jen.Nil(), jen.Id("streamErr")),
 					),
@@ -563,7 +561,7 @@ func (me *methodEmitter) emitBuildRequest() {
 		// dispatch loop consults FallbackTargets[child] when computing
 		// the WithClient target so a centrally-unwrapped RR child
 		// routes to the selected leaf rather than the RR wrapper name.
-		jen.Id("streamConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
+		jen.Id("streamConfig").Op(":=").Op("&").Qual(g.pkgs.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
 			jen.Id("Provider"):           jen.Id("provider"),
 			jen.Id("RetryPolicy"):        jen.Id("retryPolicy"),
 			jen.Id("NeedsPartials"):      jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
@@ -576,22 +574,22 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("FallbackTargets"):    jen.Id("fallbackTargets"),
 			jen.Id("FallbackRoundRobin"): jen.Id("fallbackRoundRobin"),
 			jen.Id("LegacyStreamChild"):  jen.Id("legacyStreamChildFn"),
-			// Wired only when introspected.Request is non-nil (v0.219).
+			// Wired only when g.intro.Request is non-nil (v0.219).
 			// For v0.204/v0.215 the field stays nil and the
 			// orchestrator's up-front validation rejects aws-bedrock
 			// provider configurations on those adapters — matching the
 			// codegen-time gating, since baml_client.Request doesn't
 			// exist there.
 			jen.Id("BuildBedrockStreamRequest"): func() jen.Code {
-				if introspected.Request != nil {
+				if g.intro.Request != nil {
 					return jen.Id("buildBedrockStreamRequestFn")
 				}
 				return jen.Nil()
 			}(),
 			jen.Id("MetadataPlan"): jen.Id("plannedMetadata"),
 			jen.Id("NewMetadataResult"): jen.Func().Params(
-				jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
-			).Qual(common.InterfacesPkg, "StreamResult").Block(
+				jen.Id("md").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
+			).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
 				jen.Return(jen.Id(me.metadataConstructorName).Call(jen.Id("md"))),
 			),
 		}),
@@ -600,7 +598,7 @@ func (me *methodEmitter) emitBuildRequest() {
 		// the _noRaw/_full pattern. On panic, an error result is emitted so
 		// the worker can surface it instead of crashing.
 		// Resolve HTTP client: use adapter override if provided, else default
-		jen.Id("__httpClient").Op(":=").Qual(common.LLMHTTPPkg, "DefaultClient"),
+		jen.Id("__httpClient").Op(":=").Qual(g.pkgs.LLMHTTPPkg, "DefaultClient"),
 		jen.If(
 			jen.Id("__c").Op(":=").Id("adapter").Dot("HTTPClient").Call(),
 			jen.Id("__c").Op("!=").Nil(),
@@ -613,7 +611,7 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 				jen.Func().Params(jen.Id("err").Error()).Block(
 					jen.Id("__errR").Op(":=").Id("newResultFn").Call(
-						jen.Qual(common.InterfacesPkg, "StreamResultKindError"),
+						jen.Qual(g.pkgs.InterfacesPkg, "StreamResultKindError"),
 						jen.Nil(), jen.Nil(), jen.Lit(""), jen.Lit(""), jen.Id("err"), jen.False(),
 					),
 					jen.Select().Block(
@@ -624,7 +622,7 @@ func (me *methodEmitter) emitBuildRequest() {
 					),
 				),
 				jen.Func().Params().Error().Block(
-					jen.Return(jen.Qual(common.BuildRequestPkg, "RunStreamOrchestration").Call(
+					jen.Return(jen.Qual(g.pkgs.BuildRequestPkg, "RunStreamOrchestration").Call(
 						jen.Id("adapter"),
 						jen.Id("out"),
 						jen.Id("streamConfig"),
@@ -643,17 +641,17 @@ func (me *methodEmitter) emitBuildRequest() {
 	out.Func().
 		Id(me.buildRequestMethodName).
 		Params(
-			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("rawInput").Any(),
 			jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 			jen.Id("provider").String(),
-			jen.Id("retryPolicy").Op("*").Qual(common.RetryPkg, "Policy"),
+			jen.Id("retryPolicy").Op("*").Qual(g.pkgs.RetryPkg, "Policy"),
 			jen.Id("fallbackChain").Index().String(),
 			jen.Id("clientProviders").Map(jen.String()).String(),
 			jen.Id("legacyChildren").Map(jen.String()).Bool(),
 			jen.Id("fallbackTargets").Map(jen.String()).String(),
-			jen.Id("fallbackRoundRobin").Map(jen.String()).Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
-			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+			jen.Id("fallbackRoundRobin").Map(jen.String()).Op("*").Qual(g.pkgs.InterfacesPkg, "RoundRobinInfo"),
+			jen.Id("plannedMetadata").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
 			jen.Id("clientOverride").String(),
 		).
 		Error().
@@ -664,14 +662,14 @@ func (me *methodEmitter) emitBuildRequest() {
 // for this method (<method>_buildCallRequest) using BAML's Request
 // API to build a non-streaming HTTP request, execute it, extract
 // the LLM text from the JSON response, and parse. Only emitted when
-// introspected.Request is non-nil (BAML >= 0.219.0).
+// g.intro.Request is non-nil (BAML >= 0.219.0).
 func (me *methodEmitter) emitBuildCallRequest() {
-	if introspected.Request == nil {
+	g := me.g
+	if g.intro.Request == nil {
 		return
 	}
-	g := me.g
 	out := g.out
-	streamResultInterface := jen.Qual(common.InterfacesPkg, "StreamResult")
+	streamResultInterface := jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")
 
 	// Build the Request call params using callOpts (which may
 	// include a WithClient override for fallback chains).
@@ -698,7 +696,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jen.Id("ctx").Qual("context", "Context"),
 			jen.Id("clientOverride").String(),
 		).Params(
-			jen.Op("*").Qual(common.LLMHTTPPkg, "Request"),
+			jen.Op("*").Qual(g.pkgs.LLMHTTPPkg, "Request"),
 			jen.Error(),
 		).BlockFunc(func(jg *jen.Group) {
 			// Build callOpts: clone options and append WithClient if override is set
@@ -706,7 +704,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jg.Add(g.withClientCloneAndAppend("callOpts", "options"))
 			// Call Request.Method(ctx, args..., callOpts...) — non-streaming
 			jg.List(jen.Id("httpReq"), jen.Id("err")).Op(":=").
-				Qual(common.GeneratedClientPkg, "Request").Dot(me.methodName).Call(callRequestCallParams...)
+				Qual(g.pkgs.GeneratedClientPkg, "Request").Dot(me.methodName).Call(callRequestCallParams...)
 			jg.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
 			)
@@ -720,7 +718,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			// provider nothing. The streaming branch uses its own
 			// sibling closure (buildBedrockStreamRequestFn) with
 			// emitBedrockStreamPostProcessFor — see emitBuildRequest above.
-			emitBAMLHTTPRequestConversion(jg, emitBedrockAuthDispatchFor(me.methodName))
+			emitBAMLHTTPRequestConversion(jg, g.pkgs, emitBedrockAuthDispatchFor(me.methodName, g.pkgs))
 		}),
 
 		// parseFinalFn: calls Parse.Method(ctx, text, opts...)
@@ -729,7 +727,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jen.Id("text").String(),
 		).Params(jen.Any(), jen.Error()).Block(
 			jen.Return(
-				jen.Qual(common.GeneratedClientPkg, "Parse").Dot(me.methodName).Call(
+				jen.Qual(g.pkgs.GeneratedClientPkg, "Parse").Dot(me.methodName).Call(
 					jen.Id("ctx"),
 					jen.Id("text"),
 					jen.Id("options").Op("..."),
@@ -742,14 +740,14 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		// "stream" parameter) so both paths satisfy the same NewResultFunc
 		// type. The non-streaming call path never passes stream data.
 		jen.Id("newResultFn").Op(":=").Func().Params(
-			jen.Id("kind").Qual(common.InterfacesPkg, "StreamResultKind"),
+			jen.Id("kind").Qual(g.pkgs.InterfacesPkg, "StreamResultKind"),
 			jen.Id("stream").Any(), // unused in non-streaming path; kept for signature parity
 			jen.Id("final").Any(),
 			jen.Id("raw").String(),
 			jen.Id("reasoning").String(),
 			jen.Id("err").Error(),
 			jen.Id("reset").Bool(),
-		).Params(jen.Qual(common.InterfacesPkg, "StreamResult")).Block(
+		).Params(jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")).Block(
 			jen.Id("r").Op(":=").Id(me.getterFuncName).Call(),
 			jen.Id("r").Dot("kind").Op("=").Id("kind"),
 			jen.Id("r").Dot("raw").Op("=").Id("raw"),
@@ -812,13 +810,13 @@ func (me *methodEmitter) emitBuildCallRequest() {
 				jen.Id("ctx"),
 				jen.Id("needsRaw"),
 				jen.Id("sendHeartbeat"),
-				jen.Func().Params(jen.Id("onTick").Add(onTickType())).Params(jen.Any(), jen.Error()).Block(
+				jen.Func().Params(jen.Id("onTick").Add(onTickType(g.pkgs.BamlPkg))).Params(jen.Any(), jen.Error()).Block(
 					jen.Id("opts").Op(":=").Append(
 						jen.Id("callOpts"),
-						jen.Qual(common.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
+						jen.Qual(g.pkgs.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
 					),
 					jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
-						Qual(common.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(legacyCallStreamCallParams...),
+						Qual(g.pkgs.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(legacyCallStreamCallParams...),
 					jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
 						jen.Return(jen.Nil(), jen.Id("streamErr")),
 					),
@@ -845,7 +843,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		// also honours FallbackTargets[child] when computing the
 		// per-attempt WithClient target so centralized RR fallback
 		// children dispatch to the leaf rather than the wrapper.
-		jen.Id("callConfig").Op(":=").Op("&").Qual(common.BuildRequestPkg, "CallConfig").Values(jen.Dict{
+		jen.Id("callConfig").Op(":=").Op("&").Qual(g.pkgs.BuildRequestPkg, "CallConfig").Values(jen.Dict{
 			jen.Id("Provider"):           jen.Id("provider"),
 			jen.Id("RetryPolicy"):        jen.Id("retryPolicy"),
 			jen.Id("NeedsRaw"):           jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
@@ -864,14 +862,14 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			// going through the env-cached global.
 			jen.Id("BuildRequestConfig"): jen.Id("adapter").Dot("BuildRequestConfig").Call(),
 			jen.Id("NewMetadataResult"): jen.Func().Params(
-				jen.Id("md").Op("*").Qual(common.InterfacesPkg, "Metadata"),
-			).Qual(common.InterfacesPkg, "StreamResult").Block(
+				jen.Id("md").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
+			).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
 				jen.Return(jen.Id(me.metadataConstructorName).Call(jen.Id("md"))),
 			),
 		}),
 
 		// Resolve HTTP client
-		jen.Id("__httpClient").Op(":=").Qual(common.LLMHTTPPkg, "DefaultClient"),
+		jen.Id("__httpClient").Op(":=").Qual(g.pkgs.LLMHTTPPkg, "DefaultClient"),
 		jen.If(
 			jen.Id("__c").Op(":=").Id("adapter").Dot("HTTPClient").Call(),
 			jen.Id("__c").Op("!=").Nil(),
@@ -885,7 +883,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 				jen.Func().Params(jen.Id("err").Error()).Block(
 					jen.Id("__errR").Op(":=").Id("newResultFn").Call(
-						jen.Qual(common.InterfacesPkg, "StreamResultKindError"),
+						jen.Qual(g.pkgs.InterfacesPkg, "StreamResultKindError"),
 						jen.Nil(), jen.Nil(), jen.Lit(""), jen.Lit(""), jen.Id("err"), jen.False(),
 					),
 					jen.Select().Block(
@@ -896,14 +894,14 @@ func (me *methodEmitter) emitBuildCallRequest() {
 					),
 				),
 				jen.Func().Params().Error().Block(
-					jen.Return(jen.Qual(common.BuildRequestPkg, "RunCallOrchestration").Call(
+					jen.Return(jen.Qual(g.pkgs.BuildRequestPkg, "RunCallOrchestration").Call(
 						jen.Id("adapter"),
 						jen.Id("out"),
 						jen.Id("callConfig"),
 						jen.Id("__httpClient"),
 						jen.Id("buildRequestFn"),
 						jen.Id("parseFinalFn"),
-						jen.Qual(common.BuildRequestPkg, "ExtractResponseContent"),
+						jen.Qual(g.pkgs.BuildRequestPkg, "ExtractResponseContent"),
 						jen.Id("newResultFn"),
 					)),
 				),
@@ -915,17 +913,17 @@ func (me *methodEmitter) emitBuildCallRequest() {
 	out.Func().
 		Id(me.buildCallRequestMethodName).
 		Params(
-			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("rawInput").Any(),
 			jen.Id("out").Chan().Add(streamResultInterface.Clone()),
 			jen.Id("provider").String(),
-			jen.Id("retryPolicy").Op("*").Qual(common.RetryPkg, "Policy"),
+			jen.Id("retryPolicy").Op("*").Qual(g.pkgs.RetryPkg, "Policy"),
 			jen.Id("fallbackChain").Index().String(),
 			jen.Id("clientProviders").Map(jen.String()).String(),
 			jen.Id("legacyChildren").Map(jen.String()).Bool(),
 			jen.Id("fallbackTargets").Map(jen.String()).String(),
-			jen.Id("fallbackRoundRobin").Map(jen.String()).Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
-			jen.Id("plannedMetadata").Op("*").Qual(common.InterfacesPkg, "Metadata"),
+			jen.Id("fallbackRoundRobin").Map(jen.String()).Op("*").Qual(g.pkgs.InterfacesPkg, "RoundRobinInfo"),
+			jen.Id("plannedMetadata").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
 			jen.Id("clientOverride").String(),
 		).
 		Error().

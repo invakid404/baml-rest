@@ -2,8 +2,6 @@ package codegen
 
 import (
 	"github.com/dave/jennifer/jen"
-	"github.com/invakid404/baml-rest/adapters/common"
-	"github.com/invakid404/baml-rest/introspected"
 )
 
 // emitRouter emits the public per-method router function. The
@@ -16,10 +14,10 @@ import (
 func (me *methodEmitter) emitRouter() {
 	g := me.g
 	out := g.out
-	streamResultInterface := jen.Qual(common.InterfacesPkg, "StreamResult")
+	streamResultInterface := jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")
 
-	hasBuildRequest := introspected.StreamRequest != nil
-	hasCallBuildRequest := introspected.Request != nil
+	hasBuildRequest := g.intro.StreamRequest != nil
+	hasCallBuildRequest := g.intro.Request != nil
 
 	// Generate the public router function that dispatches based on StreamMode()
 	// Creates the output channel and passes it to the inner implementation.
@@ -48,12 +46,12 @@ func (me *methodEmitter) emitRouter() {
 	// fallback wrapper carries its own retry_policy, BAML applies it
 	// AROUND the strategy iteration rather than per-leaf.
 	routerBody = append(routerBody,
-		jen.Id("__retryClient").Op(":=").Qual(common.BuildRequestPkg, "ResolvePrimaryClient").Call(
+		jen.Id("__retryClient").Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolvePrimaryClient").Call(
 			jen.Id("adapter"),
-			jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(me.methodName)),
+			jen.Qual(g.pkgs.IntrospectedPkg, "FunctionClient").Index(jen.Lit(me.methodName)),
 		),
 		jen.Id("__effective").Op(":=").Id("__retryClient"),
-		jen.Var().Id("__rrInfo").Op("*").Qual(common.InterfacesPkg, "RoundRobinInfo"),
+		jen.Var().Id("__rrInfo").Op("*").Qual(g.pkgs.InterfacesPkg, "RoundRobinInfo"),
 	)
 	if g.supportsWithClient {
 		// Cache UseBuildRequest() once per request so every gate
@@ -95,12 +93,12 @@ func (me *methodEmitter) emitRouter() {
 		routerBody = append(routerBody,
 			jen.If(jen.Id("__useBuildRequest")).Block(
 				jen.List(jen.Id("__rrEffective"), jen.Id("__rrInfoUpgrade"), jen.Id("__rrErr")).Op(":=").
-					Qual(common.BuildRequestPkg, "ResolveEffectiveClient").Call(
+					Qual(g.pkgs.BuildRequestPkg, "ResolveEffectiveClient").Call(
 					jen.Id("adapter"),
-					jen.Qual(common.IntrospectedPkg, "FunctionClient").Index(jen.Lit(me.methodName)),
-					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-					jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "FunctionClient").Index(jen.Lit(me.methodName)),
+					jen.Qual(g.pkgs.IntrospectedPkg, "FallbackChains"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "RoundRobinCoordinator"),
 				),
 				jen.If(jen.Id("__rrErr").Op("!=").Nil()).Block(
 					jen.Return(jen.Nil(), jen.Id("__rrErr")),
@@ -130,13 +128,13 @@ func (me *methodEmitter) emitRouter() {
 	// client name. The per-request __baml_options__.retry override
 	// remains highest priority via the underlying ResolveRetryPolicy.
 	resolveRetryPolicy := func() jen.Code {
-		return jen.Id("retryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveStrategyAwareRetryPolicy").Call(
+		return jen.Id("retryPolicy").Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveStrategyAwareRetryPolicy").Call(
 			jen.Id("adapter"),
 			jen.Id("__retryClient"),
 			jen.Id("__effective"),
-			jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__retryClient")),
-			jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
-			jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
+			jen.Qual(g.pkgs.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__retryClient")),
+			jen.Qual(g.pkgs.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
+			jen.Qual(g.pkgs.IntrospectedPkg, "RetryPolicies"),
 		)
 	}
 
@@ -180,18 +178,18 @@ func (me *methodEmitter) emitRouter() {
 			// client. ResolveClientProvider consults the runtime
 			// registry for a per-client provider override before
 			// falling back to the introspected default.
-			jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveClientProvider").Call(
+			jen.Id("provider").Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveClientProvider").Call(
 				jen.Id("__reg"),
 				jen.Id("__effective"),
-				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+				jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
 			),
-			jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("provider"), jen.Id("__brCfg"))).Block(
+			jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("provider"), jen.Id("__brCfg"))).Block(
 				resolveRetryPolicy(),
-				jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
+				jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
 					jen.Id("__effective"),
 					jen.Id("provider"),
 					jen.Id("retryPolicy"),
-					jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
+					jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIRequest"),
 				),
 				jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 				jen.Id("err").Op("=").Id(me.buildCallRequestMethodName).Call(
@@ -223,17 +221,17 @@ func (me *methodEmitter) emitRouter() {
 			// duplicate RR child) propagate request-fatal — matching
 			// top-level RR semantics — rather than silently degrading.
 			callBlockBody = append(callBlockBody,
-				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
+				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
-					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "FallbackChains"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
 					jen.Func().Params(jen.Id("p").String()).Bool().Block(
-						jen.Return(jen.Qual(common.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("p"), jen.Id("__brCfg"))),
+						jen.Return(jen.Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("p"), jen.Id("__brCfg"))),
 					),
-					jen.Qual(common.BuildRequestPkg, "PreferAdvancer").Call(
+					jen.Qual(g.pkgs.BuildRequestPkg, "PreferAdvancer").Call(
 						jen.Id("adapter"),
-						jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+						jen.Qual(g.pkgs.IntrospectedPkg, "RoundRobinCoordinator"),
 					),
 				),
 				jen.If(jen.Id("__fbErr").Op("!=").Nil()).Block(
@@ -241,11 +239,11 @@ func (me *methodEmitter) emitRouter() {
 				),
 				jen.If(fallbackChainConsumeCond()).Block(
 					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
+					jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
 						jen.Id("__effective"),
 						jen.Id("__resolution"),
 						jen.Id("retryPolicy"),
-						jen.Qual(common.BuildRequestPkg, "BuildRequestAPIRequest"),
+						jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIRequest"),
 					),
 					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 					jen.Id("err").Op("=").Id(me.buildCallRequestMethodName).Call(
@@ -270,9 +268,9 @@ func (me *methodEmitter) emitRouter() {
 			jen.Comment("Try non-streaming BuildRequest path for /call and /call-with-raw"),
 			jen.If(
 				jen.Id("__useBuildRequest").
-					Op("&&").Qual(common.IntrospectedPkg, "Request").Op("!=").Nil().
-					Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
-					Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
+					Op("&&").Qual(g.pkgs.IntrospectedPkg, "Request").Op("!=").Nil().
+					Op("&&").Parens(jen.Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeCall").
+					Op("||").Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeCallWithRaw")),
 			).Block(callBlockBody...),
 		)
 	}
@@ -286,23 +284,23 @@ func (me *methodEmitter) emitRouter() {
 			jen.Comment("Try streaming BuildRequest path for /stream and /stream-with-raw"),
 			jen.If(
 				jen.Id("__useBuildRequest").
-					Op("&&").Qual(common.IntrospectedPkg, "StreamRequest").Op("!=").Nil().
-					Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeStream").
-					Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeStreamWithRaw")),
+					Op("&&").Qual(g.pkgs.IntrospectedPkg, "StreamRequest").Op("!=").Nil().
+					Op("&&").Parens(jen.Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeStream").
+					Op("||").Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeStreamWithRaw")),
 			).Block(
 				// Single-provider path keyed off the effective client.
-				jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveClientProvider").Call(
+				jen.Id("provider").Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveClientProvider").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
 				),
-				jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
+				jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(g.pkgs.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
 					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
+					jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
 						jen.Id("__effective"),
 						jen.Id("provider"),
 						jen.Id("retryPolicy"),
-						jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+						jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
 					),
 					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 					jen.Id("err").Op("=").Id(me.buildRequestMethodName).Call(
@@ -329,15 +327,15 @@ func (me *methodEmitter) emitRouter() {
 				// via the same advancer top-level RR uses; ineligible RR
 				// children stay on the legacy callback path. Hard
 				// resolver errors propagate request-fatal.
-				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
+				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
-					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-					jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
-					jen.Qual(common.BuildRequestPkg, "PreferAdvancer").Call(
+					jen.Qual(g.pkgs.IntrospectedPkg, "FallbackChains"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
+					jen.Qual(g.pkgs.BuildRequestPkg, "IsProviderSupported"),
+					jen.Qual(g.pkgs.BuildRequestPkg, "PreferAdvancer").Call(
 						jen.Id("adapter"),
-						jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+						jen.Qual(g.pkgs.IntrospectedPkg, "RoundRobinCoordinator"),
 					),
 				),
 				jen.If(jen.Id("__fbErr").Op("!=").Nil()).Block(
@@ -345,11 +343,11 @@ func (me *methodEmitter) emitRouter() {
 				),
 				jen.If(fallbackChainConsumeCond()).Block(
 					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
+					jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
 						jen.Id("__effective"),
 						jen.Id("__resolution"),
 						jen.Id("retryPolicy"),
-						jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+						jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
 					),
 					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 					jen.Id("err").Op("=").Id(me.buildRequestMethodName).Call(
@@ -375,7 +373,7 @@ func (me *methodEmitter) emitRouter() {
 	// Bridge: /call and /call-with-raw that the non-streaming block
 	// declined fall through to the streaming BuildRequest path, which
 	// accumulates SSE deltas into a unary response. Triggered when the
-	// non-streaming Request API is unavailable (introspected.Request==nil
+	// non-streaming Request API is unavailable (g.intro.Request==nil
 	// or the call-side support gate rejected the provider/chain) but the
 	// StreamRequest API can drive it. StreamMode is StreamModeCall or
 	// StreamModeCallWithRaw, so NeedsPartials is false inside the
@@ -386,23 +384,23 @@ func (me *methodEmitter) emitRouter() {
 			jen.Comment("Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable"),
 			jen.If(
 				jen.Id("__useBuildRequest").
-					Op("&&").Qual(common.IntrospectedPkg, "StreamRequest").Op("!=").Nil().
-					Op("&&").Parens(jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
-					Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")),
+					Op("&&").Qual(g.pkgs.IntrospectedPkg, "StreamRequest").Op("!=").Nil().
+					Op("&&").Parens(jen.Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeCall").
+					Op("||").Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeCallWithRaw")),
 			).Block(
 				// Single-provider path
-				jen.Id("provider").Op(":=").Qual(common.BuildRequestPkg, "ResolveClientProvider").Call(
+				jen.Id("provider").Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveClientProvider").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
 				),
-				jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(common.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
+				jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(g.pkgs.BuildRequestPkg, "IsProviderSupported").Call(jen.Id("provider"))).Block(
 					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
+					jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
 						jen.Id("__effective"),
 						jen.Id("provider"),
 						jen.Id("retryPolicy"),
-						jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+						jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
 					),
 					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 					jen.Id("err").Op("=").Id(me.buildRequestMethodName).Call(
@@ -426,15 +424,15 @@ func (me *methodEmitter) emitRouter() {
 				// NestedRoundRobin through to orchestrator dispatch so
 				// centralized RR fallback children rotate cross-worker
 				// even on the bridge path.
-				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(common.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
+				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
-					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
-					jen.Qual(common.BuildRequestPkg, "IsProviderSupported"),
-					jen.Qual(common.BuildRequestPkg, "PreferAdvancer").Call(
+					jen.Qual(g.pkgs.IntrospectedPkg, "FallbackChains"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
+					jen.Qual(g.pkgs.BuildRequestPkg, "IsProviderSupported"),
+					jen.Qual(g.pkgs.BuildRequestPkg, "PreferAdvancer").Call(
 						jen.Id("adapter"),
-						jen.Qual(common.IntrospectedPkg, "RoundRobinCoordinator"),
+						jen.Qual(g.pkgs.IntrospectedPkg, "RoundRobinCoordinator"),
 					),
 				),
 				jen.If(jen.Id("__fbErr").Op("!=").Nil()).Block(
@@ -442,11 +440,11 @@ func (me *methodEmitter) emitRouter() {
 				),
 				jen.If(fallbackChainConsumeCond()).Block(
 					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(common.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
+					jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
 						jen.Id("__effective"),
 						jen.Id("__resolution"),
 						jen.Id("retryPolicy"),
-						jen.Qual(common.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+						jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
 					),
 					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
 					jen.Id("err").Op("=").Id(me.buildRequestMethodName).Call(
@@ -492,13 +490,13 @@ func (me *methodEmitter) emitRouter() {
 		// leaf alone cannot see the wrapper's introspected entry,
 		// since ClientRetryPolicy is keyed by client name and the
 		// wrapper's name was thrown away at __effective assignment.
-		jen.Id("__legacyRetryPolicy").Op(":=").Qual(common.BuildRequestPkg, "ResolveStrategyAwareRetryPolicy").Call(
+		jen.Id("__legacyRetryPolicy").Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveStrategyAwareRetryPolicy").Call(
 			jen.Id("adapter"),
 			jen.Id("__retryClient"),
 			jen.Id("__effective"),
-			jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__retryClient")),
-			jen.Qual(common.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
-			jen.Qual(common.IntrospectedPkg, "RetryPolicies"),
+			jen.Qual(g.pkgs.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__retryClient")),
+			jen.Qual(g.pkgs.IntrospectedPkg, "ClientRetryPolicy").Index(jen.Id("__effective")),
+			jen.Qual(g.pkgs.IntrospectedPkg, "RetryPolicies"),
 		),
 		// Build the legacy metadata plan keyed on __effective in
 		// every case — RR, primary override, or neither. Previously
@@ -543,10 +541,10 @@ func (me *methodEmitter) emitRouter() {
 		// no-hasBuildRequest arm keeps its original
 		// compile-time-only override since there is no stream
 		// bridge to re-resolve in any case.
-		jen.Id("__legacyPredicate").Op(":=").Qual(common.BuildRequestPkg, "IsProviderSupported"),
+		jen.Id("__legacyPredicate").Op(":=").Qual(g.pkgs.BuildRequestPkg, "IsProviderSupported"),
 		func() jen.Code {
-			callModeCond := jen.Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCall").
-				Op("||").Id("mode").Op("==").Qual(common.InterfacesPkg, "StreamModeCallWithRaw")
+			callModeCond := jen.Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeCall").
+				Op("||").Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeCallWithRaw")
 			// callPredicate names the call-side predicate the legacy
 			// classification swaps in for call-mode requests. On
 			// supportsWithClient adapters (where __brCfg is in scope)
@@ -557,10 +555,10 @@ func (me *methodEmitter) emitRouter() {
 			var callPredicate jen.Code
 			if g.supportsWithClient {
 				callPredicate = jen.Func().Params(jen.Id("p").String()).Bool().Block(
-					jen.Return(jen.Qual(common.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("p"), jen.Id("__brCfg"))),
+					jen.Return(jen.Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("p"), jen.Id("__brCfg"))),
 				)
 			} else {
-				callPredicate = jen.Qual(common.BuildRequestPkg, "IsCallProviderSupported")
+				callPredicate = jen.Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupported")
 			}
 			if hasBuildRequest {
 				return jen.If(
@@ -581,23 +579,23 @@ func (me *methodEmitter) emitRouter() {
 		// Older adapters keep the env-cached entry point.
 		func() jen.Code {
 			if g.supportsWithClient {
-				return jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClientWithConfig").Call(
+				return jen.Id("__plannedLegacy").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildLegacyMetadataPlanForClientWithConfig").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("__effective")),
-					jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-					jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider").Index(jen.Id("__effective")),
+					jen.Qual(g.pkgs.IntrospectedPkg, "FallbackChains"),
+					jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
 					jen.Id("__legacyPredicate"),
 					jen.Id("__legacyRetryPolicy"),
 					jen.Id("__brCfg"),
 				)
 			}
-			return jen.Id("__plannedLegacy").Op(":=").Qual(common.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
+			return jen.Id("__plannedLegacy").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
 				jen.Id("__reg"),
 				jen.Id("__effective"),
-				jen.Qual(common.IntrospectedPkg, "ClientProvider").Index(jen.Id("__effective")),
-				jen.Qual(common.IntrospectedPkg, "FallbackChains"),
-				jen.Qual(common.IntrospectedPkg, "ClientProvider"),
+				jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider").Index(jen.Id("__effective")),
+				jen.Qual(g.pkgs.IntrospectedPkg, "FallbackChains"),
+				jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
 				jen.Id("__legacyPredicate"),
 				jen.Id("__legacyRetryPolicy"),
 			)
@@ -615,26 +613,26 @@ func (me *methodEmitter) emitRouter() {
 		// the registry's primary, so the override survives that
 		// seam regardless of runtime version).
 		jen.Id("__legacyClientOverride").Op(":=").Id("__effective"),
-		jen.Qual(common.BuildRequestPkg, "LogLegacyClassification").Call(
+		jen.Qual(g.pkgs.BuildRequestPkg, "LogLegacyClassification").Call(
 			jen.Id("adapter"),
 			jen.Lit(me.methodName),
 			jen.Id("__plannedLegacy"),
 		),
 		jen.Switch(jen.Id("mode")).Block(
 			// StreamModeCall: final only, no raw, skip partials
-			jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCall")).Block(
+			jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "StreamModeCall")).Block(
 				jen.Id("err").Op("=").Id(me.noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True(), jen.Id("__plannedLegacy"), jen.Id("__legacyClientOverride")),
 			),
 			// StreamModeStream: partials + final, no raw
-			jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeStream")).Block(
+			jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "StreamModeStream")).Block(
 				jen.Id("err").Op("=").Id(me.noRawMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False(), jen.Id("__plannedLegacy"), jen.Id("__legacyClientOverride")),
 			),
 			// StreamModeCallWithRaw: final + raw, skip intermediate parsing
-			jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeCallWithRaw")).Block(
+			jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "StreamModeCallWithRaw")).Block(
 				jen.Id("err").Op("=").Id(me.fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.True(), jen.Id("__plannedLegacy"), jen.Id("__legacyClientOverride")),
 			),
 			// StreamModeStreamWithRaw: partials + final + raw
-			jen.Case(jen.Qual(common.InterfacesPkg, "StreamModeStreamWithRaw")).Block(
+			jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "StreamModeStreamWithRaw")).Block(
 				jen.Id("err").Op("=").Id(me.fullMethodName).Call(jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"), jen.False(), jen.Id("__plannedLegacy"), jen.Id("__legacyClientOverride")),
 			),
 			// Default case to prevent silent hangs if unknown mode
@@ -654,7 +652,7 @@ func (me *methodEmitter) emitRouter() {
 	out.Func().
 		Id(me.methodName).
 		Params(
-			jen.Id("adapter").Qual(common.InterfacesPkg, "Adapter"),
+			jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
 			jen.Id("rawInput").Any(),
 		).
 		Call(

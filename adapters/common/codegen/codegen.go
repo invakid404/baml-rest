@@ -12,13 +12,120 @@ import (
 
 	"github.com/dave/jennifer/jen"
 	"github.com/invakid404/baml-rest/adapters/common"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/introspected"
 )
 
 const (
-	// BamlPkg is the path to the BAML Go runtime package
+	// BamlPkg is the path to the BAML Go runtime package as built into
+	// the server (github.com/boundaryml/baml/...). Kept as a package
+	// constant so legacy callers that consume the symbol directly still
+	// resolve; new code should prefer Options.Packages.BamlPkg so a
+	// non-default runtime module (a vendored or forked BAML) can be
+	// substituted without touching this file.
 	BamlPkg = "github.com/boundaryml/baml/engine/language_client_go/pkg"
 )
+
+// PackageConfig collects every import path the generated adapter
+// touches plus the output file's own package identity. The default
+// configuration ([DefaultPackageConfig]) reproduces the server's
+// root build layout; alternate layouts (e.g. an embedded dynamic
+// client living under a sub-tree of this module) supply their own.
+type PackageConfig struct {
+	// OutputPkg is the full import path of the generated adapter.go's
+	// home package, e.g. github.com/invakid404/baml-rest.
+	OutputPkg string
+	// OutputPkgName is the Go package identifier for the generated
+	// adapter.go (the `package X` clause).
+	OutputPkgName string
+	// OutputPath is the filesystem path the generated adapter.go is
+	// written to, resolved relative to the current working directory.
+	OutputPath string
+	// GeneratedClientPkg is the import path of the BAML-generated
+	// client package (`baml_client/`) whose Stream / Parse / sync
+	// functions the adapter dispatches into.
+	GeneratedClientPkg string
+	// IntrospectedPkg is the import path of the cmd/introspect-emitted
+	// introspected package whose maps / singletons the adapter reads
+	// at request time.
+	IntrospectedPkg string
+	// InterfacesPkg is the import path of the bamlutils interfaces
+	// package (StreamResult, Metadata, Adapter, MediaKind, etc.).
+	InterfacesPkg string
+	// SSEPkg is the import path of bamlutils/sse.
+	SSEPkg string
+	// BuildRequestPkg is the import path of bamlutils/buildrequest.
+	BuildRequestPkg string
+	// LLMHTTPPkg is the import path of bamlutils/llmhttp.
+	LLMHTTPPkg string
+	// RetryPkg is the import path of bamlutils/retry.
+	RetryPkg string
+	// BamlPkg is the import path of the BAML Go runtime
+	// (engine/language_client_go/pkg). A forked / vendored runtime
+	// overrides this with its own module prefix.
+	BamlPkg string
+	// QueuePkg is the import path of the go-concurrent-queue dependency
+	// used by the streaming helpers.
+	QueuePkg string
+}
+
+// DefaultPackageConfig returns the PackageConfig that reproduces the
+// server build's current import layout. Used by the legacy
+// [Generate](selfPkg) wrapper to keep existing call sites working
+// without an explicit Options struct.
+func DefaultPackageConfig() PackageConfig {
+	return PackageConfig{
+		OutputPkg:          common.RootPkg,
+		OutputPkgName:      common.RootPkgName,
+		OutputPath:         common.OutputPath,
+		GeneratedClientPkg: common.GeneratedClientPkg,
+		IntrospectedPkg:    common.IntrospectedPkg,
+		InterfacesPkg:      common.InterfacesPkg,
+		SSEPkg:             common.SSEPkg,
+		BuildRequestPkg:    common.BuildRequestPkg,
+		LLMHTTPPkg:         common.LLMHTTPPkg,
+		RetryPkg:           common.RetryPkg,
+		BamlPkg:            BamlPkg,
+		QueuePkg:           common.GoConcurrentQueuePkg,
+	}
+}
+
+// Introspection mirrors the public surface of the root introspected
+// package — the singletons, method maps, and reflection handles the
+// generator reads to decide what to emit. It exists so callers can
+// supply an alternate introspected package (rooted at a different
+// import path) without the codegen package importing it directly.
+type Introspection struct {
+	SupportsWithClient bool
+	Request            any
+	StreamRequest      any
+	StreamMethods      map[string][]string
+	SyncMethods        map[string][]string
+	SyncFuncs          map[string]any
+	ParseMethods       map[string]struct{}
+	ParseStreamMethods map[string]struct{}
+	ParseStreamFuncs   map[string]any
+	MediaParams        map[string]map[string]bamlutils.MediaKind
+}
+
+// RootIntrospection returns the Introspection populated from the
+// root introspected package. The server build's [Generate] wrapper
+// uses this so existing callers keep their behaviour without
+// constructing a struct.
+func RootIntrospection() Introspection {
+	return Introspection{
+		SupportsWithClient: introspected.SupportsWithClient,
+		Request:            introspected.Request,
+		StreamRequest:      introspected.StreamRequest,
+		StreamMethods:      introspected.StreamMethods,
+		SyncMethods:        introspected.SyncMethods,
+		SyncFuncs:          introspected.SyncFuncs,
+		ParseMethods:       introspected.ParseMethods,
+		ParseStreamMethods: introspected.ParseStreamMethods,
+		ParseStreamFuncs:   introspected.ParseStreamFuncs,
+		MediaParams:        introspected.MediaParams,
+	}
+}
 
 // Options configures code generation per adapter. Each adapter's
 // cmd/main.go populates this with its BAML-version-specific feature
@@ -49,6 +156,17 @@ type Options struct {
 	// override is the only consumer; v0.204/v0.215 lack BuildRequest
 	// support and their HTTPClient() unconditionally returns nil.
 	HasHTTPClient bool
+	// Packages collects every import path the generated adapter
+	// references. An empty Packages is filled from
+	// [DefaultPackageConfig] before generation.
+	Packages PackageConfig
+	// Introspection carries the runtime-detected facts the generator
+	// reads from the introspected package (SupportsWithClient mirror,
+	// Request / StreamRequest singletons, sync / parse method maps,
+	// media-param map). An empty Introspection.SyncMethods is treated
+	// as "use the root introspected package" for backwards
+	// compatibility with [Generate].
+	Introspection Introspection
 }
 
 // Generate generates the adapter.go file for the given adapter
@@ -80,6 +198,8 @@ func GenerateWithOptions(opts Options) {
 // methodEmitter sub-context (codegen_methods.go).
 type generator struct {
 	opts                 Options
+	pkgs                 PackageConfig
+	intro                Introspection
 	out                  *jen.File
 	selfPkg              string
 	selfAdapterPkg       string
@@ -90,16 +210,48 @@ type generator struct {
 }
 
 func newGenerator(opts Options) *generator {
+	resolved := resolveOptions(opts)
 	return &generator{
-		opts:                 opts,
-		out:                  common.MakeFile(),
-		selfPkg:              opts.SelfPkg,
-		selfAdapterPkg:       opts.SelfPkg + "/adapter",
-		selfUtilsPkg:         opts.SelfPkg + "/utils",
-		supportsWithClient:   opts.SupportsWithClient,
+		opts:                 resolved,
+		pkgs:                 resolved.Packages,
+		intro:                resolved.Introspection,
+		out:                  jen.NewFilePathName(resolved.Packages.OutputPkg, resolved.Packages.OutputPkgName),
+		selfPkg:              resolved.SelfPkg,
+		selfAdapterPkg:       resolved.SelfPkg + "/adapter",
+		selfUtilsPkg:         resolved.SelfPkg + "/utils",
+		supportsWithClient:   resolved.SupportsWithClient,
 		mirrors:              newMirrorStructTracker(),
 		emittedUnwrapHelpers: make(map[string]bool),
 	}
+}
+
+// resolveOptions fills any unset fields on Options from the server
+// build defaults so existing callers ([Generate], adapter binaries
+// that build only an Options{SelfPkg, ...} value) keep working.
+// The Introspection presence is detected via SyncMethods — every
+// usable introspected output emits a non-nil SyncMethods map, even
+// when the project has zero sync functions.
+//
+// Options carries SupportsWithClient at both the top level (the
+// adapter-author-supplied feature flag) and inside Introspection (the
+// AST-detected mirror emitted by cmd/introspect). The generator
+// dispatches off the top-level field, so a caller setting only
+// Introspection.SupportsWithClient would silently get unsupported-mode
+// emission. Treating either source as authoritative and assigning the
+// fold back to both keeps the two fields in lockstep; the existing
+// (Request|StreamRequest) != nil ∧ SupportsWithClient == false guard
+// still fires when shape and flag genuinely disagree.
+func resolveOptions(opts Options) Options {
+	if opts.Packages == (PackageConfig{}) {
+		opts.Packages = DefaultPackageConfig()
+	}
+	if opts.Introspection.SyncMethods == nil {
+		opts.Introspection = RootIntrospection()
+	}
+	supportsWithClient := opts.SupportsWithClient || opts.Introspection.SupportsWithClient
+	opts.SupportsWithClient = supportsWithClient
+	opts.Introspection.SupportsWithClient = supportsWithClient
+	return opts
 }
 
 // withClientOverrideBlock wraps a `clientOverride != ""` guard around
@@ -139,7 +291,7 @@ func (g *generator) withClientCloneAndAppend(dst, src string) jen.Code {
 	return g.withClientOverrideBlock(
 		jen.Id(dst).Op("=").Append(
 			jen.Qual("slices", "Clone").Call(jen.Id(src)),
-			jen.Qual(common.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
+			jen.Qual(g.pkgs.GeneratedClientPkg, "WithClient").Call(jen.Id("clientOverride")),
 		),
 	)
 }
@@ -171,28 +323,28 @@ func generate(opts Options) {
 	// libraries, future partial API shapes, and direct
 	// GenerateWithOptions misuse — all paths where the configuration
 	// can drift out of sync without anyone noticing until production.
-	if !g.supportsWithClient && (introspected.Request != nil || introspected.StreamRequest != nil) {
+	if !g.supportsWithClient && (g.intro.Request != nil || g.intro.StreamRequest != nil) {
 		// Include the per-singleton presence flags so the panic
 		// uniquely identifies which API surface is missing — a
 		// substring match on "Request" alone can't distinguish a
 		// Request-only-set case from a StreamRequest-only-set one.
 		panic(fmt.Sprintf("codegen: SupportsWithClient=false is incompatible with introspected Request/StreamRequest (Request=%v, StreamRequest=%v); BuildRequest emission requires WithClient to honor per-attempt client overrides",
-			introspected.Request != nil, introspected.StreamRequest != nil))
+			g.intro.Request != nil, g.intro.StreamRequest != nil))
 	}
 
 	methods := g.emitMethods()
 	g.emitMethodsMap(methods)
 	parseMethods := g.emitParseMethods()
 	g.emitParseMethodsMap(parseMethods)
-	generateApplyDynamicTypes(g.out)
+	generateApplyDynamicTypes(g.out, g.pkgs)
 	g.emitFactories()
 	g.emitOptionsHelpers()
-	emitMakeLegacyChildOptionsFromAdapter(g.out, g.selfAdapterPkg)
-	emitMakeLegacyStreamOptionsFromAdapter(g.out, g.selfAdapterPkg)
+	emitMakeLegacyChildOptionsFromAdapter(g.out, g.selfAdapterPkg, g.pkgs)
+	emitMakeLegacyStreamOptionsFromAdapter(g.out, g.selfAdapterPkg, g.pkgs)
 	g.emitInitBamlRuntime()
-	generateStreamHelpers(g.out)
+	generateStreamHelpers(g.out, g.pkgs)
 
-	if err := common.Commit(g.out); err != nil {
+	if err := g.out.Save(g.pkgs.OutputPath); err != nil {
 		panic(err)
 	}
 }
