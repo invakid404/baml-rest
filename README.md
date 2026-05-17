@@ -37,17 +37,23 @@ baml-rest reads the following environment variables at startup:
 
 ## In-process build mode
 
-The default deployment runs baml-rest as a server process that supervises one
-or more BAML worker subprocesses over `go-plugin` gRPC. The `inprocess` Go
-build tag collapses that pair into a single OS process: the worker handler is
-linked directly into the server, and the embedded worker binary is neither
-shipped nor extracted at startup. This is opt-in.
+By default, a from-source `go build` of `./cmd/serve` produces a single-process
+binary with the BAML worker handler linked directly into the server. The
+`subprocess` Go build tag opts back into the supervised pair of server +
+`go-plugin` gRPC worker subprocesses; the embedded worker binary is then
+extracted at startup. The project build wrapper (`cmd/build`) still defaults
+to subprocess output for distributed deployments and exposes `--inprocess` to
+flip back to the single-process layout.
 
 ### Building
 
-- `go build -tags=inprocess ./cmd/serve`
+- `go build ./cmd/serve` — default, single-process (in-process handler).
+- `go build -tags=subprocess ./cmd/serve` — supervised pair, requires a
+  prebuilt `cmd/worker` to embed.
+- `go run ./cmd/build …` — distributed default; produces subprocess output.
 - `go run ./cmd/build --inprocess …` (or `BAML_REST_INPROCESS=true` for the
-  project build wrapper) drives the same tag through the Dockerfile.
+  project build wrapper) drives the in-process collapse through the
+  Dockerfile.
 
 ### What changes
 
@@ -82,7 +88,7 @@ default build inherits from process isolation no longer apply:
 - Per-worker `GOMEMLIMIT` and RSS monitoring no longer isolate a child.
 - `/_debug/kill-worker` cannot terminate the server-side worker; the debug
   endpoint is degraded. `/_debug/native-stacks` reports
-  `native worker stacks are unavailable in inprocess builds`.
+  `native worker stacks are unavailable in in-process builds`.
 
 ### When to use it
 

@@ -531,7 +531,6 @@ func generateStreamHelpers(out *jen.File, pkgs PackageConfig) {
 							jen.If(jen.Id("err").Op("!=").Nil()).Block(jen.Id("errHandler").Call(jen.Id("err")), jen.Continue()),
 							jen.If(jen.Id("shouldExit")).Block(jen.Return(jen.Nil())),
 						),
-						jen.Return(jen.Nil()),
 					),
 				),
 			).Call(),

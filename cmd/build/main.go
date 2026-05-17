@@ -947,7 +947,9 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		env = append(env, "UNARY_SERVER=true")
 	}
 	if inProcess {
-		env = append(env, "INPROCESS=true")
+		env = append(env, "SUBPROCESS=false")
+	} else {
+		env = append(env, "SUBPROCESS=true")
 	}
 	if bamlLibraryPath != "" {
 		env = append(env, fmt.Sprintf("BAML_LIBRARY_PATH=%s", bamlLibraryPath))

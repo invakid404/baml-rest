@@ -12,7 +12,7 @@ import (
 // SharedStateHook is the worker-facing seam that produces a per-request
 // round-robin advancer. The subprocess binary wraps the existing
 // pb.SharedStateClient (which talks to the host over the go-plugin broker
-// socket); the inprocess server wiring in cmd/serve installs the
+// socket); the in-process server wiring in cmd/serve installs the
 // store-backed hook returned by NewStoreSharedStateHook so the worker
 // reaches the host's SharedStateStore directly without crossing gRPC.
 //
@@ -36,7 +36,7 @@ type FetchAddStore interface {
 }
 
 // NewStoreSharedStateHook returns a SharedStateHook backed by an
-// in-memory FetchAdd store. Used by inprocess builds where the worker
+// in-memory FetchAdd store. Used by in-process builds where the worker
 // shares the host's SharedStateStore directly rather than going through
 // the brokered gRPC client. The subprocess binary does not invoke this —
 // the wire layer continues to use workerplugin.NewRemoteAdvancer via

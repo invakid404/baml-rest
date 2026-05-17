@@ -1,5 +1,12 @@
 reviews:
   profile: assertive
   request_changes_workflow: true
+  path_filters:
+    - "!dynclient/baml-patched/**"
+    - "!dynclient/internal/generated/baml_client/**"
+    - "!dynclient/internal/generated/baml_src/**"
+    - "!dynclient/internal/generated/introspected/**"
+    - "!dynclient/internal/generated/adapter.go"
+    - "!dynclient/internal/generated/adapter/**"
   auto_review:
     auto_pause_after_reviewed_commits: 0

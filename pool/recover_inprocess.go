@@ -1,4 +1,4 @@
-//go:build inprocess
+//go:build !subprocess
 
 package pool
 
@@ -42,7 +42,7 @@ func isRecoveredPanic(err error) bool {
 
 // recoveringWorker wraps a workerplugin.Worker and turns Go panics in
 // the inner worker's methods into structured error returns. It exists
-// only in inprocess builds; subprocess builds run the worker out of
+// only in in-process builds; subprocess builds run the worker out of
 // process where panics already terminate the child cleanly and the
 // pool restart loop handles recovery.
 //

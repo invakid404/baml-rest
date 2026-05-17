@@ -22,6 +22,7 @@ require (
 	github.com/invakid404/baml-rest/adapters/adapter_v0_219_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/common v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/workerplugin v0.0.0-00010101000000-000000000000
@@ -193,6 +194,7 @@ replace (
 	github.com/invakid404/baml-rest/adapters/common => ./adapters/common
 	github.com/invakid404/baml-rest/bamlutils => ./bamlutils
 	github.com/invakid404/baml-rest/bamlutils/sse => ./bamlutils/sse
+	github.com/invakid404/baml-rest/dynclient/baml-patched => ./dynclient/baml-patched
 	github.com/invakid404/baml-rest/introspected => ./introspected
 	github.com/invakid404/baml-rest/pool => ./pool
 	github.com/invakid404/baml-rest/workerplugin => ./workerplugin

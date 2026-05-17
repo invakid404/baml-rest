@@ -1,4 +1,4 @@
-//go:build !inprocess
+//go:build subprocess
 
 package pool
 

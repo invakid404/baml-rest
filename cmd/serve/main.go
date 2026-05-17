@@ -164,7 +164,7 @@ var serveCmd = &cobra.Command{
 
 		// Configure memory limits. effectivePoolSizeForMemory is
 		// tag-split so the budget split and the per_worker log
-		// reflect the actual layout (inprocess collapses to 1
+		// reflect the actual layout (in-process collapses to 1
 		// regardless of the requested pool-size).
 		warnPoolSizeOverride(logger, poolSize, cmd.Flags().Changed("pool-size"))
 		effectivePoolSize := effectivePoolSizeForMemory(poolSize)
@@ -250,7 +250,7 @@ var serveCmd = &cobra.Command{
 
 		// Initialize worker pool. configureWorkerMode is tag-split:
 		// subprocess extracts the embedded worker binary and sets
-		// WorkerPath; inprocess initialises the BAML runtime in
+		// WorkerPath; in-process initialises the BAML runtime in
 		// this process and installs a WorkerFactory.
 		poolConfig := pool.DefaultConfig()
 		poolConfig.PoolSize = poolSize

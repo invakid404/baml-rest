@@ -54,20 +54,20 @@ jobs:
             fi
           done
 
-      - name: Inprocess build + test sanity
-        # The default loop above runs everything under the subprocess
-        # build (default tag set). The inprocess build flips a few key
-        # call sites and adds the recover wrappers in pool +
-        # internal/worker; this step exercises that the tag still
-        # compiles cleanly and the inprocess-only tests pass. Kept
-        # narrow on purpose — running -race -count=100 across every
-        # module under inprocess would roughly double CI wallclock for
-        # marginal additional coverage.
+      - name: Subprocess build + test sanity
+        # The default loop above runs everything under the no-tag build
+        # (which is now the direct in-process worker path). The
+        # `subprocess` tag flips a few key call sites and removes the
+        # recover wrappers in pool + internal/worker; this step
+        # exercises that the tag still compiles cleanly and the
+        # subprocess-only tests pass. Kept narrow on purpose — running
+        # -race -count=100 across every module under subprocess would
+        # roughly double CI wallclock for marginal additional coverage.
         run: |
           go build ./...
-          go build -tags=inprocess ./cmd/serve
-          go test -tags=inprocess -count=1 ./pool ./internal/worker ./cmd/serve
-          go test -race -tags=inprocess -count=1 ./pool ./internal/worker
+          go build -tags=subprocess ./cmd/serve
+          go test -tags=subprocess -count=1 ./pool ./internal/worker ./cmd/serve
+          go test -race -tags=subprocess -count=1 ./pool ./internal/worker
 
       - name: Verify framework adapter codegen-emit
         # Two independent checks per adapter: deterministic emission

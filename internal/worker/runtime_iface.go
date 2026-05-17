@@ -8,7 +8,7 @@ import (
 
 // Runtime is the small surface of the generated baml_rest package the
 // handler depends on for dispatch. Decoupling these calls from a direct
-// root-package import lets cmd/worker and the inprocess cmd/serve build
+// root-package import lets cmd/worker and the in-process cmd/serve build
 // supply the default rootruntime wrapper while leaving room for
 // alternative providers to be plugged in by other entry points.
 //

@@ -1,4 +1,4 @@
-//go:build inprocess
+//go:build !subprocess
 
 package pool
 
@@ -286,7 +286,7 @@ func TestRecoveringWorkerAdminPassesNormalErrorThrough(t *testing.T) {
 }
 
 // TestInProcessPoolWrapsFactoryWorkerWithRecover constructs a real
-// inprocess pool whose factory hands back a panicking worker, then
+// in-process pool whose factory hands back a panicking worker, then
 // drives Parse through the pool to confirm the recover wrapper is
 // installed on the factory path (not just exercised in isolation).
 // Without the wrapper, p.Parse would propagate the goroutine panic

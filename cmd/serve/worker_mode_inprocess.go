@@ -1,4 +1,4 @@
-//go:build inprocess
+//go:build !subprocess
 
 package main
 
@@ -88,5 +88,5 @@ func warnPoolSizeOverride(logger zerolog.Logger, requested int, explicit bool) {
 	}
 	logger.Warn().
 		Int("requested", requested).
-		Msg("--pool-size > 1 has no effect in inprocess builds; running a single in-process handler")
+		Msg("--pool-size > 1 has no effect in in-process builds; running a single in-process handler")
 }

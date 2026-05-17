@@ -10,12 +10,13 @@ import (
 	"github.com/invakid404/baml-rest/adapters/adapter_v0_219_0"
 	"github.com/invakid404/baml-rest/adapters/common"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/dynclient/baml-patched"
 	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
-//go:embed adapter.go adapters cmd/build cmd/embed cmd/hacks cmd/introspect/main.go cmd/schema/main.go cmd/serve/debug.go cmd/serve/debug_stub.go cmd/serve/error.go cmd/serve/headers.go cmd/serve/main.go cmd/serve/openapi.json cmd/serve/streamwriter.go cmd/serve/unary.go cmd/serve/unary_handlers.go cmd/serve/unary_stub.go cmd/serve/worker cmd/serve/worker_mode.go cmd/serve/worker_mode_inprocess.go cmd/serve/worker_mode_subprocess.go cmd/verify-adapter-pins cmd/verify-framework-adapter/main.go cmd/worker embed.go go.mod go.sum go.work go.work.sum internal/apierror/error.go internal/httplogger internal/memlimit/memlimit.go internal/rootruntime internal/unsafeutil internal/worker/admin.go internal/worker/defaults.go internal/worker/errors.go internal/worker/handler.go internal/worker/metrics.go internal/worker/options.go internal/worker/parse.go internal/worker/runtime_iface.go internal/worker/sharedstate.go internal/worker/stream.go internal/worker/stream_recover_inprocess.go internal/worker/stream_recover_subprocess.go renovate.json scripts
+//go:embed adapter.go adapters cmd/build cmd/embed cmd/hacks cmd/introspect/main.go cmd/regenerate-dynclient cmd/schema/main.go cmd/serve/debug.go cmd/serve/debug_stub.go cmd/serve/error.go cmd/serve/headers.go cmd/serve/main.go cmd/serve/openapi.json cmd/serve/streamwriter.go cmd/serve/unary.go cmd/serve/unary_handlers.go cmd/serve/unary_stub.go cmd/serve/worker cmd/serve/worker_mode.go cmd/serve/worker_mode_inprocess.go cmd/serve/worker_mode_subprocess.go cmd/verify-adapter-pins cmd/verify-framework-adapter/main.go cmd/worker dynclient/cmd dynclient/internal/generated/adapter.go dynclient/internal/generated/baml_client dynclient/internal/generated/baml_src dynclient/internal/generated/introspected dynclient/internal/generated/runtime.go dynclient/internal/generated/utils embed.go go.mod go.sum go.work go.work.sum internal/apierror/error.go internal/httplogger internal/memlimit/memlimit.go internal/rootruntime internal/unsafeutil internal/worker/admin.go internal/worker/defaults.go internal/worker/errors.go internal/worker/handler.go internal/worker/metrics.go internal/worker/options.go internal/worker/parse.go internal/worker/runtime_iface.go internal/worker/sharedstate.go internal/worker/stream.go internal/worker/stream_recover_inprocess.go internal/worker/stream_recover_subprocess.go renovate.json scripts
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)
@@ -40,6 +41,10 @@ func init() {
 	}
 	for key, value := range bamlutils.Sources {
 		path := filepath.Clean(fmt.Sprintf("./%s/%s", "bamlutils", key))
+		Sources[path] = value
+	}
+	for key, value := range baml_patched.Sources {
+		path := filepath.Clean(fmt.Sprintf("./%s/%s", "dynclient/baml-patched", key))
 		Sources[path] = value
 	}
 	for key, value := range introspected.Sources {

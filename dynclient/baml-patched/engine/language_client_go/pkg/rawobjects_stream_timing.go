@@ -1,0 +1,24 @@
+package baml
+
+import (
+	"unsafe"
+
+	"github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/baml_go/raw_objects"
+	"github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg/cffi"
+)
+
+type streamTiming struct {
+	*timing
+}
+
+func newStreamTiming(ptr int64, rt unsafe.Pointer) StreamTiming {
+	return &streamTiming{&timing{raw_objects.FromPointer(ptr, rt)}}
+}
+
+func (s *streamTiming) objectType() cffi.BamlObjectType {
+	return cffi.BamlObjectType_OBJECT_STREAM_TIMING
+}
+
+func (s *streamTiming) pointer() int64 {
+	return s.timing.RawObject.Pointer()
+}

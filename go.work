@@ -33,6 +33,7 @@ go 1.26.2
 use (
 	.
 	./bamlutils
+	./dynclient/baml-patched
 	./introspected
 	./pool
 	./workerplugin
