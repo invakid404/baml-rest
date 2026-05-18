@@ -1,0 +1,24 @@
+baml-rest
+=========
+
+baml-rest itself is released into the public domain under the Unlicense.
+See LICENSE for the full text.
+
+Third-party code
+----------------
+
+dynclient/baml-patched/ contains a copied-and-patched fork of the
+upstream BAML Go runtime (github.com/boundaryml/baml). That subtree is
+licensed under the Apache License, Version 2.0; its license text is
+preserved verbatim at:
+
+    dynclient/baml-patched/LICENSE
+
+The exact upstream BAML version the subtree was generated from is
+recorded at:
+
+    dynclient/baml-patched/BAML_REST_SOURCE_VERSION
+
+Patches applied on top of the upstream source are summarized in:
+
+    dynclient/baml-patched/PATCHES.md
