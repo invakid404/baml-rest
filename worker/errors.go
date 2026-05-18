@@ -11,7 +11,18 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/awsstream"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	"github.com/invakid404/baml-rest/internal/apierror"
+)
+
+// Worker-facing apierror code strings, duplicated as unexported
+// constants so this nested module does not need to import the parent
+// root module's internal/apierror package just to spell the values.
+// These mirror the public apierror.Code constants the host serializes
+// onto the wire (parse_error / provider_error / internal_error); they
+// must stay in sync with internal/apierror/error.go.
+const (
+	workerCodeParseError    = "parse_error"
+	workerCodeProviderError = "provider_error"
+	workerCodeInternalError = "internal_error"
 )
 
 // Legacy CallStream+OnTick BAML errors arrive across the Go FFI as plain
@@ -194,19 +205,19 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	}
 
 	if errors.Is(err, buildrequest.ErrOutputParse) {
-		return string(apierror.CodeParseError), nil
+		return workerCodeParseError, nil
 	}
 
 	var httpErr *llmhttp.HTTPError
 	if errors.As(err, &httpErr) {
-		return string(apierror.CodeProviderError), providerErrorDetails{
+		return workerCodeProviderError, providerErrorDetails{
 			StatusCode: httpErr.StatusCode,
 			Body:       httpErr.Body,
 		}.marshal()
 	}
 
 	if errors.Is(err, llmhttp.ErrTransportFlake) {
-		return string(apierror.CodeProviderError), nil
+		return workerCodeProviderError, nil
 	}
 
 	// AWS event-stream transport errors arrive in-band on the wire as
@@ -218,7 +229,7 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	// message ride along in details for caller diagnostics.
 	var awsTransportErr *awsstream.TransportError
 	if errors.As(err, &awsTransportErr) {
-		return string(apierror.CodeProviderError), providerErrorDetails{
+		return workerCodeProviderError, providerErrorDetails{
 			ErrorCode:    awsTransportErr.Code,
 			ErrorMessage: awsTransportErr.Message,
 		}.marshal()
@@ -235,7 +246,7 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	// modes apart.
 	var bedrockExc *buildrequest.BedrockStreamException
 	if errors.As(err, &bedrockExc) {
-		return string(apierror.CodeProviderError), providerErrorDetails{
+		return workerCodeProviderError, providerErrorDetails{
 			ExceptionType:    bedrockExc.ExceptionType,
 			ExceptionMessage: bedrockExc.Message(),
 		}.marshal()
@@ -265,7 +276,7 @@ func classifyBAMLError(err error) (code string, details []byte) {
 	}
 
 	if strings.HasPrefix(firstLine, legacyParseErrorPrefix) {
-		return string(apierror.CodeParseError), nil
+		return workerCodeParseError, nil
 	}
 
 	if name, suffix, ok := splitLegacyLLMClientEnvelope(firstLine); ok {
@@ -282,10 +293,10 @@ func classifyBAMLError(err error) (code string, details []byte) {
 			if status, ok := parseLegacyStatusCode(suffix[len(legacyLLMClientStatusMarker):]); ok {
 				d.StatusCode = status
 			}
-			return string(apierror.CodeProviderError), d.marshal()
+			return workerCodeProviderError, d.marshal()
 		}
 		if strings.HasPrefix(suffix, legacyLLMClientTimeoutMarker) {
-			return string(apierror.CodeProviderError), providerErrorDetails{
+			return workerCodeProviderError, providerErrorDetails{
 				Body:       body,
 				ClientName: name,
 			}.marshal()
