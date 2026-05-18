@@ -4,8 +4,8 @@
 // the framework adapter under adapter/, and the top-level adapter.go.
 //
 // This file is hand-written. It exposes Runtime, the zero-state
-// implementation of internal/worker.Runtime that bridges between the
-// worker dispatch loop and the generated dispatcher above. The dynclient
+// implementation of worker.Runtime that bridges between the worker
+// dispatch loop and the generated dispatcher above. The dynclient
 // regen pipeline must not overwrite it.
 package generated
 
@@ -13,14 +13,14 @@ import (
 	"context"
 
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/internal/worker"
+	"github.com/invakid404/baml-rest/worker"
 )
 
 // Compile-time guard that Runtime satisfies the worker.Runtime
 // contract dynclient consumers wire through worker.New. Lives in
 // production code so a non-test build of this package still fails
-// to link if internal/worker drifts; the test file alone would only
-// fail under `go test`.
+// to link if the worker package drifts; the test file alone would
+// only fail under `go test`.
 var _ worker.Runtime = (*Runtime)(nil)
 
 // Runtime is the worker-facing entry point. State lives in the

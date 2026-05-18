@@ -640,7 +640,7 @@ func TestInvalidRequestWrapsValidationError(t *testing.T) {
 // directStream wires a Stream straight on top of a hand-fed
 // *workerplugin.StreamResult channel, bypassing the worker bridge so
 // tests can pin Data/Raw/Reasoning values exactly. The real bridge in
-// internal/worker rewrites these fields (e.g. marshals a nil
+// the worker package rewrites these fields (e.g. marshals a nil
 // Stream() to JSON "null"), which would hide the precise code paths
 // the CR fix targets.
 func directStream(t *testing.T, needRaw bool, frames ...*workerplugin.StreamResult) *Stream {

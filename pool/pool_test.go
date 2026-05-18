@@ -2858,7 +2858,7 @@ func TestCallStreamSerializedCanceledErrorTriggersRestart(t *testing.T) {
 	}
 	defer p.Close()
 
-	// Caller context is NOT cancelled — this is an internal/worker
+	// Caller context is NOT cancelled — this is a worker-internal
 	// cancellation, not a caller cancellation.
 	results, err := p.CallStream(context.Background(), "Test", []byte(`{}`), bamlutils.StreamModeStream)
 	if err != nil {
