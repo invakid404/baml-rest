@@ -1,6 +1,13 @@
 README.md
 Dockerfile.builder
 
+# Public dynclient module is distributed as its own Go module and is
+# fetched independently by external consumers via `go get`. It does not
+# need to be bundled into the server's embed.FS — and embedding the
+# whole dynclient subtree would also pull in dynclient/baml-patched,
+# which carries a vendored BAML runtime fork.
+dynclient
+
 # Monitoring/observability config (not needed at runtime)
 monitoring
 

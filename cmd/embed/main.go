@@ -64,6 +64,18 @@ func main() {
 			patterns = append(rootPatterns, modulePatterns...)
 		}
 
+		// Skip the whole module root when any ancestor's
+		// .embedignore excludes this root's relative path. The
+		// parent's import / Sources merge is already skipped via the
+		// isIgnoredPath check below, but without this guard cmd/embed
+		// would still write an embed.go inside the nested module that
+		// the parent never references — leaving a stale, never-loaded
+		// embed bundle inside a module distributed as its own
+		// independent artifact.
+		if isRootIgnoredByAncestor(root, roots, cwd) {
+			continue
+		}
+
 		paths := collectEmbedPaths(root, patterns, roots)
 
 		var imports []*ImportEntry
@@ -366,6 +378,45 @@ func isIgnored(path string, patterns []string) bool {
 	for _, pattern := range patterns {
 		matched, err := doublestar.Match(pattern, path)
 		if err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
+// isRootIgnoredByAncestor reports whether any module root that is an
+// ancestor of root has an .embedignore pattern that matches root's
+// path relative to that ancestor. Used to skip embed.go generation
+// for a nested module the parent has excluded — without it, every
+// ancestor-ignored nested module would still get its own embed.go
+// that nothing imports.
+//
+// cwd is the discovery root; patterns from cwd's .embedignore are
+// inherited by every module root via the rootPatterns prepend, so an
+// ancestor at cwd is always evaluated.
+func isRootIgnoredByAncestor(root string, roots []string, cwd string) bool {
+	for _, ancestor := range roots {
+		if ancestor == root {
+			continue
+		}
+		rel, err := filepath.Rel(ancestor, root)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." || strings.HasPrefix(rel, "../") {
+			continue
+		}
+		patterns := loadIgnorePatterns(ancestor)
+		// Root patterns are inherited downward by the per-root
+		// processing in main; mirror that here so a `dynclient`
+		// entry in the discovery root's .embedignore also
+		// suppresses generation when evaluated against an
+		// intermediate ancestor between cwd and root.
+		if ancestor != cwd {
+			patterns = append(loadIgnorePatterns(cwd), patterns...)
+		}
+		if isIgnoredPath(rel, patterns) {
 			return true
 		}
 	}
