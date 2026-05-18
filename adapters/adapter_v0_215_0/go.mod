@@ -27,8 +27,8 @@ require (
 	github.com/aws/smithy-go v1.25.1 // indirect
 	github.com/dave/jennifer v1.7.1 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
-	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000 // indirect
-	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000 // indirect
+	github.com/invakid404/baml-rest/bamlutils v0.0.42 // indirect
+	github.com/invakid404/baml-rest/introspected v0.0.42 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/stoewer/go-strcase v1.3.1 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect

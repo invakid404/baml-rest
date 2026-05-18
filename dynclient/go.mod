@@ -7,11 +7,11 @@ require (
 	github.com/goccy/go-json v0.10.6
 	github.com/google/uuid v1.6.0
 	github.com/gregwebs/go-recovery v0.4.1
-	github.com/invakid404/baml-rest/adapters/common v0.0.0-20260518112657-a042afdd4284
-	github.com/invakid404/baml-rest/bamlutils v0.0.0-20260518112657-a042afdd4284
-	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.0-20260518112657-a042afdd4284
-	github.com/invakid404/baml-rest/worker v0.0.0-20260518112657-a042afdd4284
-	github.com/invakid404/baml-rest/workerplugin v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/adapters/common v0.0.42
+	github.com/invakid404/baml-rest/bamlutils v0.0.42
+	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.42
+	github.com/invakid404/baml-rest/worker v0.0.42
+	github.com/invakid404/baml-rest/workerplugin v0.0.42
 	github.com/prometheus/client_golang v1.23.2
 )
 
@@ -42,7 +42,7 @@ require (
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.8.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
-	github.com/invakid404/baml-rest/introspected v0.0.0-20260518112657-a042afdd4284 // indirect
+	github.com/invakid404/baml-rest/introspected v0.0.42 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
