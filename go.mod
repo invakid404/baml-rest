@@ -14,20 +14,19 @@ require (
 	github.com/goccy/go-json v0.10.6
 	github.com/gofiber/contrib/v3/zerolog v1.0.6
 	github.com/gofiber/fiber/v3 v3.2.0
-	github.com/google/uuid v1.6.0
 	github.com/gregwebs/go-recovery v0.4.1
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_219_0 v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/adapters/common v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/adapters/common v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/bamlutils v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/introspected v0.0.0-20260518112657-a042afdd4284
 	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/workerplugin v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/worker v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/workerplugin v0.0.0-20260518112657-a042afdd4284
 	github.com/moby/buildkit v0.30.0
 	github.com/moby/moby/api v1.54.2
 	github.com/moby/moby/client v0.4.1
@@ -101,6 +100,7 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.0 // indirect
 	github.com/gregwebs/stackfmt v0.1.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
@@ -108,6 +108,7 @@ require (
 	github.com/in-toto/attestation v1.1.2 // indirect
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.0-20260518112657-a042afdd4284 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
@@ -195,7 +196,7 @@ replace (
 	github.com/invakid404/baml-rest/adapters/common => ./adapters/common
 	github.com/invakid404/baml-rest/bamlutils => ./bamlutils
 	github.com/invakid404/baml-rest/bamlutils/sse => ./bamlutils/sse
-	github.com/invakid404/baml-rest/dynclient/baml-patched => ./dynclient/baml-patched
+	github.com/invakid404/baml-rest/dynclient => ./dynclient
 	github.com/invakid404/baml-rest/introspected => ./introspected
 	github.com/invakid404/baml-rest/pool => ./pool
 	github.com/invakid404/baml-rest/worker => ./worker
