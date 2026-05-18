@@ -256,8 +256,8 @@ func (s *Stream) cleanup() {
 	})
 }
 
-// Compile-time assertion that StreamMode values used in this file
-// continue to expose NeedsRaw / NeedsPartials. A signature change in
-// bamlutils would break the streaming wiring loudly here rather than at
-// runtime.
+// Compile-time check that the StreamModeStream constant used by the
+// public streaming entrypoint still exists in bamlutils. The
+// NeedsRaw method is exercised by the real call in client.go, which
+// catches any signature change on that method.
 var _ = bamlutils.StreamModeStream
