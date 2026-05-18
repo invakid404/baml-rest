@@ -15,15 +15,15 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/internal/rootruntime"
-	"github.com/invakid404/baml-rest/internal/worker"
+	"github.com/invakid404/baml-rest/worker"
 	"github.com/invakid404/baml-rest/workerplugin"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
 )
 
 func main() {
-	// Initialize BAML runtime via the rootruntime wrapper — internal/worker
-	// no longer imports the root generated package directly, so the
-	// runtime touch point lives here at the binary entry point.
+	// Initialize BAML runtime via the rootruntime wrapper — the worker
+	// package no longer imports the root generated package directly, so
+	// the runtime touch point lives here at the binary entry point.
 	rt := rootruntime.Runtime{}
 	rt.InitRuntime()
 
@@ -136,8 +136,8 @@ func main() {
 
 // grpcSharedStateHook adapts the brokered pb.SharedStateClient to the
 // worker package's SharedStateHook seam. Lives in cmd/worker rather
-// than internal/worker so the protobuf/gRPC client type does not leak
-// into the handler package; the wire layer continues to use
+// than the worker package so the protobuf/gRPC client type does not
+// leak into the handler package; the wire layer continues to use
 // workerplugin.NewRemoteAdvancer so request handling stays
 // byte-identical to the pre-extraction subprocess build.
 type grpcSharedStateHook struct {

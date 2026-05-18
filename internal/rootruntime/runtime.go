@@ -1,7 +1,8 @@
 // Package rootruntime adapts the root baml_rest generated package to
-// the small Runtime interface internal/worker depends on for dispatch.
+// the small Runtime interface the worker package depends on for
+// dispatch.
 //
-// Lives outside internal/worker so the worker package itself never
+// Lives outside the worker package so that package itself never
 // imports the root generated package: cmd/worker and the in-process
 // cmd/serve build construct a Runtime{} here and pass it into
 // worker.New, keeping the dependency direction one-way.

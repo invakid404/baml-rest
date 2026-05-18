@@ -9,7 +9,6 @@ import (
 	"github.com/goccy/go-json"
 
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -131,7 +130,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 						// guarantees this invariant.
 						pluginResult.Kind = workerplugin.StreamResultKindError
 						pluginResult.Error = fmt.Errorf("failed to marshal stream result: %w", err)
-						pluginResult.ErrorCode = string(apierror.CodeInternalError)
+						pluginResult.ErrorCode = workerCodeInternalError
 					} else {
 						pluginResult.Data = data
 						pluginResult.Raw = result.Raw()
@@ -143,7 +142,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 				if err != nil {
 					pluginResult.Kind = workerplugin.StreamResultKindError
 					pluginResult.Error = fmt.Errorf("failed to marshal final result: %w", err)
-					pluginResult.ErrorCode = string(apierror.CodeInternalError)
+					pluginResult.ErrorCode = workerCodeInternalError
 				} else {
 					pluginResult.Kind = workerplugin.StreamResultKindFinal
 					pluginResult.Data = data
@@ -158,14 +157,14 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 					// An orchestrator bug — drop the event rather than crashing the stream.
 					pluginResult.Kind = workerplugin.StreamResultKindError
 					pluginResult.Error = fmt.Errorf("metadata result without payload")
-					pluginResult.ErrorCode = string(apierror.CodeInternalError)
+					pluginResult.ErrorCode = workerCodeInternalError
 					break
 				}
 				data, err := json.Marshal(md)
 				if err != nil {
 					pluginResult.Kind = workerplugin.StreamResultKindError
 					pluginResult.Error = fmt.Errorf("failed to marshal metadata result: %w", err)
-					pluginResult.ErrorCode = string(apierror.CodeInternalError)
+					pluginResult.ErrorCode = workerCodeInternalError
 				} else {
 					pluginResult.Kind = workerplugin.StreamResultKindMetadata
 					pluginResult.Data = data

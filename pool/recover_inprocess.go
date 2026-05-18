@@ -48,7 +48,7 @@ func isRecoveredPanic(err error) bool {
 //
 // CallStream's recovery covers the synchronous call only — panics in
 // the bridge goroutine that produces stream frames are caught by
-// internal/worker.recoverBridgePanic inside that goroutine.
+// worker.recoverBridgePanic inside that goroutine.
 type recoveringWorker struct {
 	inner  workerplugin.Worker
 	logger zerolog.Logger

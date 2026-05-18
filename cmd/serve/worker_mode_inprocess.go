@@ -7,7 +7,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/invakid404/baml-rest/internal/worker"
+	"github.com/invakid404/baml-rest/worker"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
@@ -17,7 +17,7 @@ import (
 // subprocess build does it inside cmd/worker; without a worker
 // process we have to do it here), parses deployment-wide client
 // defaults with the same fail-loud contract cmd/worker enforces, and
-// installs a WorkerFactory that constructs internal/worker.Handler
+// installs a WorkerFactory that constructs worker.Handler
 // directly.
 //
 // The factory runs at initial pool fill AND on restart, so it must

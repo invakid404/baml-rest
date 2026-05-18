@@ -10,7 +10,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/awsstream"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	"github.com/invakid404/baml-rest/internal/apierror"
 )
 
 // TestClassifyBAMLError pins the worker-side error → code mapping for
@@ -42,25 +41,25 @@ func TestClassifyBAMLError(t *testing.T) {
 		{
 			name:        "ErrOutputParse direct",
 			err:         &buildrequest.OutputParseError{Err: errors.New("Parsing error: bad")},
-			wantCode:    string(apierror.CodeParseError),
+			wantCode:    workerCodeParseError,
 			wantDetails: "",
 		},
 		{
 			name:        "ErrOutputParse wrapped",
 			err:         fmt.Errorf("worker: %w", &buildrequest.OutputParseError{Err: errors.New("Parsing error: bad")}),
-			wantCode:    string(apierror.CodeParseError),
+			wantCode:    workerCodeParseError,
 			wantDetails: "",
 		},
 		{
 			name:        "HTTPError 429 forwards body",
 			err:         &llmhttp.HTTPError{StatusCode: 429, Body: "rate limit"},
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":429,"body":"rate limit"}`,
 		},
 		{
 			name:        "HTTPError 503 wrapped forwards body",
 			err:         fmt.Errorf("buildrequest: %w", &llmhttp.HTTPError{StatusCode: 503, Body: "upstream down"}),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":503,"body":"upstream down"}`,
 		},
 		{
@@ -68,13 +67,13 @@ func TestClassifyBAMLError(t *testing.T) {
 			// callers with no body get just status_code.
 			name:        "HTTPError with empty body omits body field",
 			err:         &llmhttp.HTTPError{StatusCode: 418},
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":418}`,
 		},
 		{
 			name:        "transport flake wrapped",
 			err:         fmt.Errorf("buildrequest: stream error: %w", llmhttp.ErrTransportFlake),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: "",
 		},
 		{
@@ -84,7 +83,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			// observable upstream.
 			name:        "awsstream TransportError direct",
 			err:         &awsstream.TransportError{Code: "InternalServerError", Message: "service unavailable"},
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"error_code":"InternalServerError","error_message":"service unavailable"}`,
 		},
 		{
@@ -93,7 +92,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			// chain.
 			name:        "awsstream TransportError wrapped",
 			err:         fmt.Errorf("buildrequest: stream error: %w", &awsstream.TransportError{Code: "ThrottlingException", Message: "slow down"}),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"error_code":"ThrottlingException","error_message":"slow down"}`,
 		},
 		{
@@ -102,7 +101,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			// omitempty.
 			name:        "awsstream TransportError code only",
 			err:         &awsstream.TransportError{Code: "InternalServerError"},
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"error_code":"InternalServerError"}`,
 		},
 		{
@@ -118,7 +117,7 @@ func TestClassifyBAMLError(t *testing.T) {
 				ExceptionType: "ModelStreamErrorException",
 				Payload:       []byte(`{"message":"the model refused"}`),
 			},
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"exception_type":"ModelStreamErrorException","exception_message":"the model refused"}`,
 		},
 		{
@@ -131,7 +130,7 @@ func TestClassifyBAMLError(t *testing.T) {
 					ExceptionType: "ThrottlingException",
 					Payload:       []byte(`{"message":"slow down"}`),
 				}),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"exception_type":"ThrottlingException","exception_message":"slow down"}`,
 		},
 		{
@@ -144,13 +143,13 @@ func TestClassifyBAMLError(t *testing.T) {
 				ExceptionType: "ValidationException",
 				Payload:       []byte(`{"other":"shape"}`),
 			},
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"exception_type":"ValidationException"}`,
 		},
 		{
 			name:        "legacy Parsing error prefix",
 			err:         errors.New("Parsing error: Failed to parse LLM response: missing field"),
-			wantCode:    string(apierror.CodeParseError),
+			wantCode:    workerCodeParseError,
 			wantDetails: "",
 		},
 		{
@@ -161,37 +160,37 @@ func TestClassifyBAMLError(t *testing.T) {
 			// body and client name now ride along with status_code.
 			name:        "legacy v0.219 ServerError envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: ServerError (500)\nMessage: Internal Server Error"),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":500,"body":"Message: Internal Server Error","client_name":"GPT4o"}`,
 		},
 		{
 			name:        "legacy v0.219 RateLimited envelope forwards body and client_name",
 			err:         errors.New("LLM client \"Claude\" failed with status code: RateLimited (429)\nMessage: Too Many Requests"),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":429,"body":"Message: Too Many Requests","client_name":"Claude"}`,
 		},
 		{
 			name:        "legacy v0.219 ServiceUnavailable envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: ServiceUnavailable (503)\nMessage: upstream down"),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":503,"body":"Message: upstream down","client_name":"GPT4o"}`,
 		},
 		{
 			name:        "legacy v0.219 InvalidAuthentication envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: InvalidAuthentication (401)\nMessage: bad api key"),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":401,"body":"Message: bad api key","client_name":"GPT4o"}`,
 		},
 		{
 			name:        "legacy v0.219 Unspecified error code envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: Unspecified error code: 418\nMessage: I'm a teapot"),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":418,"body":"Message: I'm a teapot","client_name":"GPT4o"}`,
 		},
 		{
 			name:        "legacy v0.219 BadResponse envelope forwards body and client_name",
 			err:         errors.New("LLM client \"GPT4o\" failed with status code: BadResponse 599\nMessage: garbled response"),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":599,"body":"Message: garbled response","client_name":"GPT4o"}`,
 		},
 		{
@@ -202,7 +201,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			// still rides along.
 			name:        "legacy bare-digits compatibility form omits empty body",
 			err:         errors.New(`LLM client "Old" failed with status code: 503 (upstream body: <html>)`),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"status_code":503,"client_name":"Old"}`,
 		},
 		{
@@ -212,7 +211,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			// to worker_error.
 			name:        "legacy LLM client failed with unparseable status segment keeps client_name",
 			err:         errors.New(`LLM client "X" failed with status code: nope`),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"client_name":"X"}`,
 		},
 		{
@@ -222,7 +221,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			// along as provider context.
 			name:        "legacy unparseable enum segment forwards body without status_code",
 			err:         errors.New("LLM client \"X\" failed with status code: SomeNewEnum\nMessage: error 12345 from upstream"),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"body":"Message: error 12345 from upstream","client_name":"X"}`,
 		},
 		{
@@ -236,7 +235,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			// 599 and mislabel an unknown variant.
 			name:        "legacy unrecognized enum name with parens does not leak status_code",
 			err:         errors.New("LLM client \"X\" failed with status code: SomeNewEnum (599)\nMessage: who knows"),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"body":"Message: who knows","client_name":"X"}`,
 		},
 		{
@@ -309,7 +308,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			// surfaces. No status_code on timeout (no HTTP response).
 			name:        "legacy LLM client timed out forwards client_name",
 			err:         errors.New(`LLM client "GPT4o" timed out: deadline exceeded after 30s`),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"client_name":"GPT4o"}`,
 		},
 		{
@@ -319,7 +318,7 @@ func TestClassifyBAMLError(t *testing.T) {
 			// two arms stay symmetric.
 			name:        "legacy timeout with trailing body forwards both",
 			err:         errors.New("LLM client \"GPT4o\" timed out: deadline\nDetails: 30s deadline"),
-			wantCode:    string(apierror.CodeProviderError),
+			wantCode:    workerCodeProviderError,
 			wantDetails: `{"body":"Details: 30s deadline","client_name":"GPT4o"}`,
 		},
 		{
@@ -391,7 +390,7 @@ func TestClassifyBAMLErrorHTTPErrorPrefersInnermost(t *testing.T) {
 	err := fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", &llmhttp.HTTPError{StatusCode: 418}))
 
 	code, details := classifyBAMLError(err)
-	if code != string(apierror.CodeProviderError) {
+	if code != workerCodeProviderError {
 		t.Fatalf("code: got %q, want provider_error", code)
 	}
 	if !strings.Contains(string(details), `"status_code":418`) {
@@ -531,7 +530,7 @@ func TestClassifyBAMLErrorTypedBeforeLegacy(t *testing.T) {
 	// wrapped *HTTPError carries the authoritative 404.
 	err := fmt.Errorf("LLM client \"X\" failed with status code: ServerError (599): %w", &llmhttp.HTTPError{StatusCode: 404})
 	code, details := classifyBAMLError(err)
-	if code != string(apierror.CodeProviderError) {
+	if code != workerCodeProviderError {
 		t.Fatalf("code: got %q, want provider_error", code)
 	}
 	if got := string(details); !strings.Contains(got, `"status_code":404`) {

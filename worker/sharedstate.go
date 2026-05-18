@@ -19,7 +19,7 @@ import (
 // The shape is intentionally narrow — Advance is the only round-robin
 // operation the handler needs, and DropScope remains the pool's
 // responsibility. Returning a bamlutils.RoundRobinAdvancer rather than
-// the underlying client keeps protobuf/gRPC types out of internal/worker.
+// the underlying client keeps protobuf/gRPC types out of the worker package.
 type SharedStateHook interface {
 	// NewRoundRobinAdvancer returns the Advancer the generated dispatch
 	// path should use for the given request. Implementations may return
@@ -30,7 +30,7 @@ type SharedStateHook interface {
 
 // FetchAddStore is the minimal store-side surface a direct-call
 // SharedStateHook needs. *workerplugin.SharedStateStore satisfies this
-// without importing protobuf or gRPC types into internal/worker.
+// without importing protobuf or gRPC types into the worker package.
 type FetchAddStore interface {
 	FetchAdd(key string, delta uint64, operationID string) uint64
 }

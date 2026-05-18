@@ -4,7 +4,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
-	"github.com/invakid404/baml-rest/internal/worker"
+	"github.com/invakid404/baml-rest/worker"
 )
 
 // workerModeRuntimeConfig is the resolved runtime configuration
