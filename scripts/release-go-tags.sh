@@ -140,20 +140,27 @@ validate_module_requires() {
     local first_party_lines
     first_party_lines="$(
         printf '%s\n' "$gomod" |
-            awk '
+            awk -v prefix="$first_party_prefix" '
+                function is_first_party(path) {
+                    return path == prefix || index(path, prefix "/") == 1
+                }
                 /^[[:space:]]*require[[:space:]]*\(/ { block = "require"; next }
                 /^[[:space:]]*replace[[:space:]]*\(/ { block = "replace"; next }
                 /^[[:space:]]*exclude[[:space:]]*\(/ { block = "exclude"; next }
                 /^[[:space:]]*retract[[:space:]]*\(/ { block = "retract"; next }
                 /^[[:space:]]*\)/ { block = ""; next }
-                /^[[:space:]]*require[[:space:]]+github\.com\/invakid404\/baml-rest/ {
-                    sub(/^[[:space:]]*require[[:space:]]+/, "")
-                    print
+                /^[[:space:]]*require[[:space:]]+/ {
+                    line = $0
+                    sub(/^[[:space:]]*require[[:space:]]+/, "", line)
+                    split(line, fields, /[[:space:]]+/)
+                    if (is_first_party(fields[1])) print line
                     next
                 }
-                block == "require" && /^[[:space:]]*github\.com\/invakid404\/baml-rest/ {
-                    sub(/^[[:space:]]*/, "")
-                    print
+                block == "require" {
+                    line = $0
+                    sub(/^[[:space:]]*/, "", line)
+                    split(line, fields, /[[:space:]]+/)
+                    if (is_first_party(fields[1])) print line
                 }
             '
     )"
@@ -307,5 +314,5 @@ if [ "${#skipped[@]}" -gt 0 ]; then
     for tag in "${skipped[@]}"; do echo "    ${tag}"; done
 fi
 if [ "${#created[@]}" -eq 0 ] && [ "${#to_create[@]}" -eq 0 ]; then
-    echo "  no-op: all 7 Go module tags already point at ${release_sha}"
+    echo "  no-op: all ${#required_modules[@]} Go module tags already point at ${release_sha}"
 fi
