@@ -13,6 +13,12 @@ import (
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
+// errUninitializedStream is returned by Stream.Next when called on a
+// zero-value or partially-initialised Stream. Distinct from errNilClient
+// because the failure mode is structural (missing channel/cancel), not
+// a nil *Client receiver.
+var errUninitializedStream = errors.New("dynclient: uninitialized Stream")
+
 // EventKind identifies the variant of a streaming event delivered by
 // Stream.Next.
 type EventKind string
@@ -82,8 +88,8 @@ func newStream(ctx context.Context, cancel context.CancelFunc, dropScope func(),
 // EventKind values. Calling Next after EOF or an error returns the same
 // terminal value and runs cleanup at most once.
 func (s *Stream) Next() (*Event, error) {
-	if s == nil {
-		return nil, errNilClient
+	if s == nil || s.results == nil || s.cancel == nil {
+		return nil, errUninitializedStream
 	}
 	if s.terminated {
 		if s.terminatedErr != nil {
@@ -122,7 +128,7 @@ func (s *Stream) Next() (*Event, error) {
 // results, and drops the shared-state scope. Safe to call multiple
 // times and from any goroutine.
 func (s *Stream) Close() error {
-	if s == nil {
+	if s == nil || s.results == nil || s.cancel == nil {
 		return nil
 	}
 	s.closeOnce.Do(func() {
@@ -192,6 +198,10 @@ func (s *Stream) partialEvent(result *workerplugin.StreamResult) (*Event, error)
 	if err != nil {
 		return nil, err
 	}
+	if flattened == nil && (!s.needRaw || (result.Raw == "" && result.Reasoning == "")) {
+		return nil, nil
+	}
+
 	ev := &Event{Kind: EventPartial, Data: flattened}
 	if s.needRaw {
 		s.rawAccum += result.Raw

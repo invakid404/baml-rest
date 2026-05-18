@@ -637,6 +637,136 @@ func TestInvalidRequestWrapsValidationError(t *testing.T) {
 	}
 }
 
+// directStream wires a Stream straight on top of a hand-fed
+// *workerplugin.StreamResult channel, bypassing the worker bridge so
+// tests can pin Data/Raw/Reasoning values exactly. The real bridge in
+// internal/worker rewrites these fields (e.g. marshals a nil
+// Stream() to JSON "null"), which would hide the precise code paths
+// the CR fix targets.
+func directStream(t *testing.T, needRaw bool, frames ...*workerplugin.StreamResult) *Stream {
+	t.Helper()
+	ch := make(chan *workerplugin.StreamResult, len(frames))
+	for _, f := range frames {
+		ch <- f
+	}
+	close(ch)
+	ctx, cancel := context.WithCancel(context.Background())
+	s := newStream(ctx, cancel, func() {}, ch, needRaw, "dynamic stream")
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func TestStreamSuppressesEmptyPartial_NonRaw(t *testing.T) {
+	stream := directStream(t, false,
+		// Empty-data stream frame — should be suppressed in non-raw mode.
+		&workerplugin.StreamResult{Kind: workerplugin.StreamResultKindStream},
+		// Real partial with structured data.
+		&workerplugin.StreamResult{
+			Kind: workerplugin.StreamResultKindStream,
+			Data: []byte(`{"answer":"x"}`),
+		},
+		&workerplugin.StreamResult{
+			Kind: workerplugin.StreamResultKindFinal,
+			Data: []byte(`{"answer":"x"}`),
+		},
+	)
+
+	events := drainStreamFull(t, stream)
+	partials := 0
+	for _, ev := range events {
+		if ev.Kind == EventPartial {
+			partials++
+		}
+	}
+	if partials != 1 {
+		t.Errorf("EventPartial count = %d, want 1 (empty-data partial should be suppressed)", partials)
+	}
+}
+
+func TestStreamSuppressesEmptyPartial_Raw_NoText(t *testing.T) {
+	stream := directStream(t, true,
+		// Reset-only stream frame with no data, no raw, no reasoning.
+		// Should produce only EventReset, not an EventPartial.
+		&workerplugin.StreamResult{Kind: workerplugin.StreamResultKindStream, Reset: true},
+		&workerplugin.StreamResult{
+			Kind: workerplugin.StreamResultKindFinal,
+			Data: []byte(`{"answer":"x"}`),
+			Raw:  "x",
+		},
+	)
+
+	events := drainStreamFull(t, stream)
+	for _, ev := range events {
+		if ev.Kind == EventPartial {
+			t.Errorf("unexpected EventPartial for reset-only frame: %+v", ev)
+		}
+	}
+	sawReset := false
+	for _, ev := range events {
+		if ev.Kind == EventReset {
+			sawReset = true
+		}
+	}
+	if !sawReset {
+		t.Error("expected EventReset to be emitted for reset-only frame")
+	}
+}
+
+func TestStreamRawEmitsOnTextOnly(t *testing.T) {
+	// Text-only raw delta: no structured Data but a non-empty Raw. The
+	// library should surface an EventPartial so raw consumers see the
+	// accumulated upstream text mid-stream.
+	stream := directStream(t, true,
+		&workerplugin.StreamResult{Kind: workerplugin.StreamResultKindStream, Raw: "hi"},
+		&workerplugin.StreamResult{
+			Kind: workerplugin.StreamResultKindFinal,
+			Data: []byte(`{"answer":"hi"}`),
+			Raw:  "hi",
+		},
+	)
+
+	events := drainStreamFull(t, stream)
+	var partial *Event
+	for _, ev := range events {
+		if ev.Kind == EventPartial {
+			partial = ev
+			break
+		}
+	}
+	if partial == nil {
+		t.Fatal("expected an EventPartial for a text-only raw delta")
+	}
+	if partial.Raw != "hi" {
+		t.Errorf("partial.Raw = %q, want %q", partial.Raw, "hi")
+	}
+	if partial.Data != nil {
+		t.Errorf("partial.Data = %s, want nil (no structured payload)", string(partial.Data))
+	}
+}
+
+func TestStream_ZeroValue_NextReturnsError(t *testing.T) {
+	var s Stream
+	_, err := s.Next()
+	if err == nil {
+		t.Fatal("expected zero-value Stream.Next to return an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "uninitialized Stream") {
+		t.Errorf("error = %q, want it to mention %q", err.Error(), "uninitialized Stream")
+	}
+}
+
+func TestStream_ZeroValue_CloseNoOp(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("zero-value Stream.Close panicked: %v", r)
+		}
+	}()
+	var s Stream
+	if err := s.Close(); err != nil {
+		t.Errorf("zero-value Stream.Close err = %v, want nil", err)
+	}
+}
+
 // -- Helpers --------------------------------------------------------
 
 func drainStreamFull(t *testing.T, s *Stream) []*Event {
