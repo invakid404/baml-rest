@@ -5,8 +5,8 @@ go 1.26.2
 require (
 	github.com/boundaryml/baml v0.204.0
 	github.com/dave/jennifer v1.7.1
-	github.com/invakid404/baml-rest/bamlutils v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/introspected v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/bamlutils v0.0.42
+	github.com/invakid404/baml-rest/introspected v0.0.42
 	github.com/stoewer/go-strcase v1.3.1
 )
 
