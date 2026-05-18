@@ -328,6 +328,25 @@ pushd baml_client
 go mod init github.com/invakid404/baml-rest/baml_client
 popd
 
+# The embedded customer-build source bundle intentionally excludes the
+# public dynclient module (added in #289 PR B). Strip dev-workspace
+# references before the first `go work` command validates all use
+# entries — Go errors on missing use targets before applying the new
+# `go work use ./baml_client` below. Guarded on the absence of
+# `dynclient/` so a dev checkout (where the module is present) is
+# untouched.
+if [ ! -d dynclient ]; then
+    echo "Removing dynclient workspace/module entries from server-only build tree..."
+    go work edit \
+        -dropuse=./dynclient \
+        -dropuse=./dynclient/baml-patched
+    go mod edit \
+        -droprequire github.com/invakid404/baml-rest/dynclient \
+        -droprequire github.com/invakid404/baml-rest/dynclient/baml-patched \
+        -dropreplace github.com/invakid404/baml-rest/dynclient \
+        -dropreplace github.com/invakid404/baml-rest/dynclient/baml-patched
+fi
+
 # Add generated client to Go workspace
 echo "Adding BAML client to Go workspace..."
 go work use ./baml_client
