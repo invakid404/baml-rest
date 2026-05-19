@@ -30,11 +30,20 @@ go 1.26.3
 // members, then `GOWORK=off go mod tidy` in adapters/common and each
 // adapter_v* directory, and finally asserts the BAML pin matrix via
 // cmd/verify-adapter-pins.
+//
+// ./dynclient/baml-patched is intentionally NOT a workspace member either.
+// No root-module Go code imports it directly; the public dynclient module
+// (./dynclient) has its own `replace github.com/invakid404/baml-rest/dynclient/baml-patched
+// => ./baml-patched` directive so module resolution from inside dynclient/
+// still works. Including baml-patched as a workspace member confused
+// CodeRabbit's golangci-lint sidecar — its filtered sandbox excludes
+// dynclient/baml-patched/** (per .coderabbit.yaml path_filters), so workspace
+// member resolution failed with `go: open dynclient/baml-patched/go.mod:
+// no such file or directory` on every PR review (#292).
 use (
 	.
 	./bamlutils
 	./dynclient
-	./dynclient/baml-patched
 	./introspected
 	./pool
 	./worker
