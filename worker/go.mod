@@ -4,8 +4,8 @@ go 1.26.3
 
 require (
 	github.com/goccy/go-json v0.10.6
-	github.com/invakid404/baml-rest/bamlutils v0.0.43
-	github.com/invakid404/baml-rest/workerplugin v0.0.43
+	github.com/invakid404/baml-rest/bamlutils v0.0.44
+	github.com/invakid404/baml-rest/workerplugin v0.0.44
 	github.com/prometheus/client_golang v1.23.2
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
