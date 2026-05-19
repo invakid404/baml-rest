@@ -367,12 +367,12 @@ func (s *Server) handleAnthropicMessages(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
 	}
 
-	// Capture the request body for test inspection BEFORE rejecting on a
-	// validation failure — tests that detect the rejection class still
-	// need to see the wire shape that triggered it.
-	s.store.CaptureRequest(req.Model, body)
-
 	if vErr := validateAnthropicCacheControl(body); vErr != nil {
+		// Capture the body on the failure path so the test can inspect
+		// the wire shape that triggered the rejection. The success path
+		// goes through dispatchScenario which performs its own capture,
+		// so doing it here too would double-capture.
+		s.store.CaptureRequest(req.Model, body)
 		s.log("anthropic messages validation failure: %s", vErr.Error.Message)
 		return c.Status(fiber.StatusBadRequest).JSON(vErr)
 	}

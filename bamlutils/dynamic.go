@@ -2,6 +2,7 @@ package bamlutils
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/goccy/go-json"
 	"github.com/tidwall/gjson"
@@ -374,6 +375,9 @@ func (d *DynamicInput) Validate() error {
 					return err
 				}
 			}
+		}
+		if m.Metadata != nil && m.Metadata.CacheControl != nil && strings.TrimSpace(m.Metadata.CacheControl.Type) == "" {
+			return fmt.Errorf("messages[%d].metadata.cache_control.type is required", i)
 		}
 	}
 	return nil

@@ -2,6 +2,7 @@ package bamlutils
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/goccy/go-json"
@@ -198,5 +199,72 @@ func TestDynamicMessage_PublicJSON_StillUsesType(t *testing.T) {
 	}
 	if !bytes.Contains(out, []byte(`"cache_control":{"type":"ephemeral"}`)) {
 		t.Errorf("public DynamicMessage marshal lost the type key; got:\n%s", out)
+	}
+}
+
+// TestDynamicInputValidate_RejectsEmptyCacheControlType pins the contract
+// chosen by the #304 CR verdict: callers that intend "no cache control"
+// must leave Metadata.CacheControl nil rather than zeroing Type. Without
+// this guard, the bridge would pass `cache_type:""` to BAML, which
+// already round-trips through the alias-bypass template in dynamic.baml
+// and lands on the wire as `cache_control:{"type":""}` — accepted by
+// the Go boundary but rejected by Anthropic with the same
+// `cache_control.type: Field required` error from issue #304. The
+// rejection here makes the failure obvious at the API boundary instead
+// of buried in the provider response.
+func TestDynamicInputValidate_RejectsEmptyCacheControlType(t *testing.T) {
+	t.Parallel()
+
+	prompt := "hi"
+	primary := "TestClient"
+	provider := "anthropic"
+	input := &DynamicInput{
+		Messages: []DynamicMessage{
+			{Role: "system", TextContent: &prompt},
+			{
+				Role:        "user",
+				TextContent: &prompt,
+				Metadata: &MessageMetadata{
+					CacheControl: &CacheControl{Type: ""},
+				},
+			},
+		},
+		ClientRegistry: &ClientRegistry{
+			Primary: &primary,
+			Clients: []*ClientProperty{
+				{Name: primary, Provider: provider, Options: map[string]any{"model": "test-model", "api_key": "test-key"}},
+			},
+		},
+		OutputSchema: &DynamicOutputSchema{
+			Properties: map[string]*DynamicProperty{"answer": {Type: "string"}},
+		},
+	}
+
+	err := input.Validate()
+	if err == nil {
+		t.Fatal("expected Validate() to reject empty cache_control.type; got nil")
+	}
+	const want = "messages[1].metadata.cache_control.type is required"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("Validate() error %q does not contain %q", err.Error(), want)
+	}
+
+	// Whitespace-only counts as empty.
+	input.Messages[1].Metadata.CacheControl.Type = "   "
+	if err := input.Validate(); err == nil {
+		t.Error("expected Validate() to reject whitespace-only cache_control.type; got nil")
+	}
+
+	// A nil Metadata.CacheControl on the same message must pass — that is
+	// the "no cache control" sentinel callers should use.
+	input.Messages[1].Metadata.CacheControl = nil
+	if err := input.Validate(); err != nil {
+		t.Errorf("Validate() rejected nil CacheControl: %v", err)
+	}
+
+	// A nil Metadata altogether must also pass.
+	input.Messages[1].Metadata = nil
+	if err := input.Validate(); err != nil {
+		t.Errorf("Validate() rejected nil Metadata: %v", err)
 	}
 }

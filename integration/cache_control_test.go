@@ -146,11 +146,14 @@ func TestDynclientCacheControlMessageMetadataRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal captured body: %v", err)
 	}
 
-	// Walk every content block in every message and assert the only
-	// cache_control objects we see are well-formed ephemeral payloads.
-	// Tolerant about which message Anthropic ends up tagging — BAML may
-	// reorder system text or coalesce adjacent user blocks, but every
-	// surviving cache_control object must be valid.
+	// Walk every content block in every message and count both total
+	// cache_control objects and well-formed ephemeral payloads. The
+	// fixture tags exactly one message; the exact-count assertions below
+	// catch (a) missing-tagged-message regressions, (b) extra
+	// cache_control objects injected on other messages, and (c) malformed
+	// cache_control on the tagged message (via the per-object t.Errorf
+	// lines alongside the total/well-formed delta).
+	totalCount := 0
 	wellFormedCount := 0
 	for mi, m := range upstream.Messages {
 		for bi, blk := range m.Content {
@@ -162,6 +165,7 @@ func TestDynclientCacheControlMessageMetadataRoundTrip(t *testing.T) {
 			if !ok {
 				continue
 			}
+			totalCount++
 			var cc map[string]any
 			if err := json.Unmarshal(ccRaw, &cc); err != nil {
 				t.Errorf("messages[%d].content[%d].cache_control is not an object: %s", mi, bi, ccRaw)
@@ -184,7 +188,10 @@ func TestDynclientCacheControlMessageMetadataRoundTrip(t *testing.T) {
 			wellFormedCount++
 		}
 	}
-	if wellFormedCount == 0 {
-		t.Errorf("expected at least one well-formed cache_control:{type:ephemeral} on the upstream body; got none.\ncaptured=%s", string(captured))
+	if totalCount != 1 {
+		t.Errorf("expected exactly 1 cache_control object on the upstream body; got %d.\ncaptured=%s", totalCount, string(captured))
+	}
+	if wellFormedCount != 1 {
+		t.Errorf("expected exactly 1 well-formed cache_control:{type:ephemeral} on the upstream body; got %d well-formed of %d total.\ncaptured=%s", wellFormedCount, totalCount, string(captured))
 	}
 }
