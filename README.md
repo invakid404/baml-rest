@@ -1,3 +1,5 @@
+# baml-rest
+
 ## Embedding via `dynclient`
 
 The dynamic endpoints (`/call/_dynamic`, `/stream/_dynamic`, etc.) are also
