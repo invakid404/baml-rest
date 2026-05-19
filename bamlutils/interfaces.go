@@ -647,6 +647,29 @@ func (b *TypeBuilder) Add(input string) {
 type DynamicTypes struct {
 	Classes map[string]*DynamicClass `json:"classes,omitempty"`
 	Enums   map[string]*DynamicEnum  `json:"enums,omitempty"`
+
+	// PreserveOrder, when true, instructs the codegen-emitted
+	// applyDynamicTypes to populate TypeBuilder following the explicit
+	// Order metadata instead of sorting map keys alphabetically. Set by
+	// the public dynamic endpoints when their caller opts in via
+	// DynamicInput.PreserveSchemaOrder.
+	PreserveOrder bool `json:"preserve_order,omitempty"`
+	// Order carries the desired population order for Classes, Enums,
+	// and per-class Properties when PreserveOrder is true. nil or
+	// empty slices fall back to alphabetical sorting for that
+	// dimension via the schemaMapKeys helper.
+	Order *DynamicTypesOrder `json:"order,omitempty"`
+}
+
+// DynamicTypesOrder is the cross-boundary order payload that captures
+// the schema's first-party map insertion order. Classes lists the
+// synthetic Baml_Rest_DynamicOutput class first followed by user
+// classes; Enums lists user enums; Properties maps each class name
+// to its per-property order.
+type DynamicTypesOrder struct {
+	Classes    []string            `json:"classes,omitempty"`
+	Enums      []string            `json:"enums,omitempty"`
+	Properties map[string][]string `json:"properties,omitempty"`
 }
 
 // maxTypeDepth is the maximum nesting depth for type references.
@@ -810,6 +833,11 @@ type DynamicClass struct {
 	Description string                      `json:"description,omitempty"`
 	Alias       string                      `json:"alias,omitempty"`
 	Properties  map[string]*DynamicProperty `json:"properties,omitempty"`
+	// PropertiesOrder records the JSON wire order of Properties for
+	// preserve_schema_order callers. Populated by DynamicClass.UnmarshalJSON;
+	// Go callers must set it explicitly when constructing the class
+	// programmatically.
+	PropertiesOrder []string `json:"-"`
 }
 
 // DynamicProperty defines a property on a class.

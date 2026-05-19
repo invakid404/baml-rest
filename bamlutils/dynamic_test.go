@@ -8,6 +8,308 @@ import (
 	"github.com/goccy/go-json"
 )
 
+// TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder pins #313: raw
+// JSON callers of /call/_dynamic should get the wire-order of
+// properties/classes/enums and nested class properties captured into
+// the matching *Order slices, so the worker boundary can ship the
+// order across to TypeBuilder population without a round-trip through
+// Go map iteration.
+func TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{
+      "properties": {
+        "delta": {"type": "string"},
+        "alpha": {"type": "int"},
+        "charlie": {"ref": "Address"},
+        "bravo": {"type": "string"}
+      },
+      "classes": {
+        "Profile": {"properties": {"zulu": {"type": "string"}, "alpha": {"type": "int"}}},
+        "Address": {"properties": {"zip": {"type": "string"}, "city": {"type": "string"}, "street": {"type": "string"}}}
+      },
+      "enums": {
+        "Status": {"values": [{"name": "PENDING"}, {"name": "ACTIVE"}]},
+        "Preference": {"values": [{"name": "LOW"}, {"name": "HIGH"}]}
+      }
+    }`)
+	var s DynamicOutputSchema
+	if err := json.Unmarshal(body, &s); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got, want := s.PropertiesOrder, []string{"delta", "alpha", "charlie", "bravo"}; !equalStrings(got, want) {
+		t.Errorf("PropertiesOrder: got %v want %v", got, want)
+	}
+	if got, want := s.ClassesOrder, []string{"Profile", "Address"}; !equalStrings(got, want) {
+		t.Errorf("ClassesOrder: got %v want %v", got, want)
+	}
+	if got, want := s.EnumsOrder, []string{"Status", "Preference"}; !equalStrings(got, want) {
+		t.Errorf("EnumsOrder: got %v want %v", got, want)
+	}
+	if got, want := s.Classes["Profile"].PropertiesOrder, []string{"zulu", "alpha"}; !equalStrings(got, want) {
+		t.Errorf("Profile.PropertiesOrder: got %v want %v", got, want)
+	}
+	if got, want := s.Classes["Address"].PropertiesOrder, []string{"zip", "city", "street"}; !equalStrings(got, want) {
+		t.Errorf("Address.PropertiesOrder: got %v want %v", got, want)
+	}
+}
+
+func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateKey(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "duplicate property",
+			body: `{"properties":{"a":{"type":"string"},"a":{"type":"int"}}}`,
+			want: `output_schema.properties: duplicate key "a"`,
+		},
+		{
+			name: "duplicate class",
+			body: `{"properties":{"x":{"type":"string"}},"classes":{"C":{"properties":{}},"C":{"properties":{}}}}`,
+			want: `output_schema.classes: duplicate key "C"`,
+		},
+		{
+			name: "duplicate enum",
+			body: `{"properties":{"x":{"type":"string"}},"enums":{"E":{"values":[{"name":"A"}]},"E":{"values":[{"name":"B"}]}}}`,
+			want: `output_schema.enums: duplicate key "E"`,
+		},
+		{
+			name: "duplicate nested class property",
+			body: `{"properties":{"x":{"type":"string"}},"classes":{"C":{"properties":{"a":{"type":"string"},"a":{"type":"int"}}}}}`,
+			want: `class.properties: duplicate key "a"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var s DynamicOutputSchema
+			err := json.Unmarshal([]byte(tc.body), &s)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestDynamicInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *testing.T) {
+	t.Parallel()
+	prompt := "hi"
+	primary := "TestClient"
+	provider := "anthropic"
+
+	mkInput := func() *DynamicInput {
+		return &DynamicInput{
+			Messages: []DynamicMessage{{Role: "user", TextContent: &prompt}},
+			ClientRegistry: &ClientRegistry{
+				Primary: &primary,
+				Clients: []*ClientProperty{{Name: primary, Provider: provider, Options: map[string]any{"model": "x", "api_key": "k"}}},
+			},
+			OutputSchema: &DynamicOutputSchema{
+				Properties: map[string]*DynamicProperty{
+					"alpha": {Type: "string"},
+					"bravo": {Type: "int"},
+				},
+				Classes: map[string]*DynamicClass{
+					"C1": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
+					"C2": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
+				},
+				Enums: map[string]*DynamicEnum{
+					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
+					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
+				},
+			},
+			PreserveSchemaOrder: true,
+		}
+	}
+
+	t.Run("missing properties order", func(t *testing.T) {
+		in := mkInput()
+		err := in.Validate()
+		if err == nil || !strings.Contains(err.Error(), "output_schema.properties") {
+			t.Fatalf("expected missing properties order, got %v", err)
+		}
+	})
+
+	t.Run("missing classes order", func(t *testing.T) {
+		in := mkInput()
+		in.OutputSchema.PropertiesOrder = []string{"alpha", "bravo"}
+		err := in.Validate()
+		if err == nil || !strings.Contains(err.Error(), "output_schema.classes") {
+			t.Fatalf("expected missing classes order, got %v", err)
+		}
+	})
+
+	t.Run("missing enums order", func(t *testing.T) {
+		in := mkInput()
+		in.OutputSchema.PropertiesOrder = []string{"alpha", "bravo"}
+		in.OutputSchema.ClassesOrder = []string{"C1", "C2"}
+		err := in.Validate()
+		if err == nil || !strings.Contains(err.Error(), "output_schema.enums") {
+			t.Fatalf("expected missing enums order, got %v", err)
+		}
+	})
+
+	t.Run("positive with all order set", func(t *testing.T) {
+		in := mkInput()
+		in.OutputSchema.PropertiesOrder = []string{"alpha", "bravo"}
+		in.OutputSchema.ClassesOrder = []string{"C1", "C2"}
+		in.OutputSchema.EnumsOrder = []string{"E1", "E2"}
+		// Nested classes carry only 1 property — order required when len>=2,
+		// so single-property classes need no order. Set anyway for clarity.
+		in.OutputSchema.Classes["C1"].PropertiesOrder = []string{"p"}
+		in.OutputSchema.Classes["C2"].PropertiesOrder = []string{"q"}
+		if err := in.Validate(); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+	})
+
+	t.Run("duplicate order entry rejected", func(t *testing.T) {
+		in := mkInput()
+		in.OutputSchema.PropertiesOrder = []string{"alpha", "alpha"}
+		err := in.Validate()
+		if err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Fatalf("expected duplicate error, got %v", err)
+		}
+	})
+
+	t.Run("unknown order entry rejected", func(t *testing.T) {
+		in := mkInput()
+		in.OutputSchema.PropertiesOrder = []string{"alpha", "zzz"}
+		err := in.Validate()
+		if err == nil || !strings.Contains(err.Error(), "unknown") {
+			t.Fatalf("expected unknown error, got %v", err)
+		}
+	})
+}
+
+func TestDynamicParseInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *testing.T) {
+	t.Parallel()
+	in := &DynamicParseInput{
+		Raw: "{\"alpha\":\"x\"}",
+		OutputSchema: &DynamicOutputSchema{
+			Properties: map[string]*DynamicProperty{
+				"alpha": {Type: "string"},
+				"bravo": {Type: "int"},
+			},
+		},
+		PreserveSchemaOrder: true,
+	}
+	err := in.Validate()
+	if err == nil || !strings.Contains(err.Error(), "output_schema.properties") {
+		t.Fatalf("expected missing properties order error, got %v", err)
+	}
+	in.OutputSchema.PropertiesOrder = []string{"alpha", "bravo"}
+	if err := in.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{
+      "preserve_schema_order": true,
+      "messages": [{"role": "user", "content": "go"}],
+      "client_registry": {"primary": "X", "clients": [{"name": "X", "provider": "anthropic", "retry_policy": null, "options": {"model": "m", "api_key": "k"}}]},
+      "output_schema": {
+        "properties": {
+          "delta": {"type": "string"},
+          "alpha": {"type": "int"},
+          "charlie": {"ref": "Address"}
+        },
+        "classes": {
+          "Profile": {"properties": {"zulu": {"type": "string"}, "alpha": {"type": "int"}}},
+          "Address": {"properties": {"zip": {"type": "string"}, "city": {"type": "string"}}}
+        },
+        "enums": {
+          "Status": {"values": [{"name": "PENDING"}, {"name": "ACTIVE"}]},
+          "Preference": {"values": [{"name": "LOW"}, {"name": "HIGH"}]}
+        }
+      }
+    }`)
+	var in DynamicInput
+	if err := json.Unmarshal(body, &in); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if err := in.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	data, err := in.ToWorkerInput()
+	if err != nil {
+		t.Fatalf("ToWorkerInput: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
+	}
+	opts := decoded["__baml_options__"].(map[string]any)
+	tb := opts["type_builder"].(map[string]any)
+	dt := tb["dynamic_types"].(map[string]any)
+	if got := dt["preserve_order"]; got != true {
+		t.Errorf("preserve_order: got %v want true", got)
+	}
+	order := dt["order"].(map[string]any)
+	classes := toStringSlice(t, order["classes"])
+	wantClasses := []string{"Baml_Rest_DynamicOutput", "Profile", "Address"}
+	if !equalStrings(classes, wantClasses) {
+		t.Errorf("order.classes: got %v want %v", classes, wantClasses)
+	}
+	enums := toStringSlice(t, order["enums"])
+	wantEnums := []string{"Status", "Preference"}
+	if !equalStrings(enums, wantEnums) {
+		t.Errorf("order.enums: got %v want %v", enums, wantEnums)
+	}
+	props := order["properties"].(map[string]any)
+	dynOut := toStringSlice(t, props["Baml_Rest_DynamicOutput"])
+	wantDynOut := []string{"delta", "alpha", "charlie"}
+	if !equalStrings(dynOut, wantDynOut) {
+		t.Errorf("order.properties.Baml_Rest_DynamicOutput: got %v want %v", dynOut, wantDynOut)
+	}
+	profile := toStringSlice(t, props["Profile"])
+	wantProfile := []string{"zulu", "alpha"}
+	if !equalStrings(profile, wantProfile) {
+		t.Errorf("order.properties.Profile: got %v want %v", profile, wantProfile)
+	}
+	address := toStringSlice(t, props["Address"])
+	wantAddress := []string{"zip", "city"}
+	if !equalStrings(address, wantAddress) {
+		t.Errorf("order.properties.Address: got %v want %v", address, wantAddress)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func toStringSlice(t *testing.T, v any) []string {
+	t.Helper()
+	arr, ok := v.([]any)
+	if !ok {
+		t.Fatalf("expected []any, got %T", v)
+	}
+	out := make([]string, 0, len(arr))
+	for _, x := range arr {
+		s, ok := x.(string)
+		if !ok {
+			t.Fatalf("expected string, got %T", x)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // TestDynamicInput_ToWorkerInput_CacheControlBridge pins the bridge from
 // the public CacheControl{Type: ...} shape to the generated dynamic BAML
 // input's `cache_control.cache_type` shape. The previous wire reused the

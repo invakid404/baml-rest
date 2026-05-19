@@ -1,6 +1,8 @@
 package bamlutils
 
 import (
+	"bytes"
+	encjson "encoding/json"
 	"fmt"
 	"strings"
 
@@ -336,13 +338,148 @@ type DynamicOutputSchema struct {
 	Classes map[string]*DynamicClass `json:"classes,omitempty"`
 	// Enums defines enum types that can be referenced via ref (optional)
 	Enums map[string]*DynamicEnum `json:"enums,omitempty"`
+
+	// PropertiesOrder records the insertion order of Properties as it
+	// appeared on the JSON wire. Populated by UnmarshalJSON for raw-JSON
+	// callers; Go callers that set PreserveSchemaOrder must fill this
+	// slice explicitly (Go map literals do not carry order).
+	PropertiesOrder []string `json:"-"`
+	// ClassesOrder mirrors PropertiesOrder for the Classes map.
+	ClassesOrder []string `json:"-"`
+	// EnumsOrder mirrors PropertiesOrder for the Enums map.
+	EnumsOrder []string `json:"-"`
+}
+
+// UnmarshalJSON decodes a DynamicOutputSchema while capturing the JSON
+// key insertion order of properties/classes/enums into the matching
+// *Order slices. Duplicate keys in any of these objects are rejected
+// with a path-qualified error.
+//
+// Implementation note: this uses encoding/json's streaming decoder to
+// read tokens in source order; goccy/go-json's Decoder.Token is API-
+// compatible but its behaviour around RawMessage decoding inside a
+// streaming token loop has historically diverged. encoding/json is
+// only used here for the ordered top-level scan — nested values are
+// still decoded through json.Unmarshal which routes through goccy.
+func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Properties json.RawMessage `json:"properties"`
+		Classes    json.RawMessage `json:"classes"`
+		Enums      json.RawMessage `json:"enums"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if isJSONObject(raw.Properties) {
+		props, order, err := unmarshalOrderedObject[*DynamicProperty](raw.Properties, "output_schema.properties")
+		if err != nil {
+			return err
+		}
+		s.Properties = props
+		s.PropertiesOrder = order
+	}
+	if isJSONObject(raw.Classes) {
+		classes, order, err := unmarshalOrderedObject[*DynamicClass](raw.Classes, "output_schema.classes")
+		if err != nil {
+			return err
+		}
+		s.Classes = classes
+		s.ClassesOrder = order
+	}
+	if isJSONObject(raw.Enums) {
+		enums, order, err := unmarshalOrderedObject[*DynamicEnum](raw.Enums, "output_schema.enums")
+		if err != nil {
+			return err
+		}
+		s.Enums = enums
+		s.EnumsOrder = order
+	}
+	return nil
+}
+
+// UnmarshalJSON decodes a DynamicClass while capturing the JSON key
+// insertion order of its properties object into PropertiesOrder. The
+// description and alias fields decode through the normal route.
+// Duplicate property keys are rejected.
+func (c *DynamicClass) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Description string          `json:"description,omitempty"`
+		Alias       string          `json:"alias,omitempty"`
+		Properties  json.RawMessage `json:"properties,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Description = raw.Description
+	c.Alias = raw.Alias
+	if isJSONObject(raw.Properties) {
+		props, order, err := unmarshalOrderedObject[*DynamicProperty](raw.Properties, "class.properties")
+		if err != nil {
+			return err
+		}
+		c.Properties = props
+		c.PropertiesOrder = order
+	}
+	return nil
+}
+
+func isJSONObject(b []byte) bool {
+	t := bytes.TrimSpace(b)
+	return len(t) > 0 && t[0] == '{'
+}
+
+// unmarshalOrderedObject decodes a JSON object into a map[string]V while
+// recording the appearance order of keys. Duplicate keys produce a
+// path-qualified error so callers cannot smuggle in ambiguous schemas.
+func unmarshalOrderedObject[V any](data []byte, path string) (map[string]V, []string, error) {
+	dec := encjson.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if delim, ok := tok.(encjson.Delim); !ok || delim != '{' {
+		return nil, nil, fmt.Errorf("%s: expected object", path)
+	}
+
+	values := make(map[string]V)
+	order := make([]string, 0)
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", path, err)
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, nil, fmt.Errorf("%s: expected object key", path)
+		}
+		if _, exists := values[key]; exists {
+			return nil, nil, fmt.Errorf("%s: duplicate key %q", path, key)
+		}
+		var rawVal encjson.RawMessage
+		if err := dec.Decode(&rawVal); err != nil {
+			return nil, nil, fmt.Errorf("%s.%s: %w", path, key, err)
+		}
+		var value V
+		if err := json.Unmarshal(rawVal, &value); err != nil {
+			return nil, nil, fmt.Errorf("%s.%s: %w", path, key, err)
+		}
+		values[key] = value
+		order = append(order, key)
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return values, order, nil
 }
 
 // DynamicInput is the request body for dynamic endpoints
 type DynamicInput struct {
-	Messages       []DynamicMessage     `json:"messages"`
-	ClientRegistry *ClientRegistry      `json:"client_registry"`
-	OutputSchema   *DynamicOutputSchema `json:"output_schema"`
+	Messages            []DynamicMessage     `json:"messages"`
+	ClientRegistry      *ClientRegistry      `json:"client_registry"`
+	OutputSchema        *DynamicOutputSchema `json:"output_schema"`
+	PreserveSchemaOrder bool                 `json:"preserve_schema_order,omitempty"`
 }
 
 // Validate checks that required fields are present
@@ -355,6 +492,11 @@ func (d *DynamicInput) Validate() error {
 	}
 	if d.OutputSchema == nil || len(d.OutputSchema.Properties) == 0 {
 		return fmt.Errorf("output_schema with at least one property is required")
+	}
+	if d.PreserveSchemaOrder {
+		if err := validatePreserveSchemaOrder(d.OutputSchema); err != nil {
+			return err
+		}
 	}
 	for i, m := range d.Messages {
 		if m.Role == "" {
@@ -383,17 +525,82 @@ func (d *DynamicInput) Validate() error {
 	return nil
 }
 
+// validatePreserveSchemaOrder enforces the contract that
+// PreserveSchemaOrder=true requires explicit order metadata for every
+// multi-key first-party map in the schema. Raw JSON callers get this
+// automatically through DynamicOutputSchema.UnmarshalJSON; Go callers
+// must set the *Order slices themselves because map literals do not
+// carry order. Also catches duplicate or unknown names in order slices.
+func validatePreserveSchemaOrder(s *DynamicOutputSchema) error {
+	if s == nil {
+		return nil
+	}
+	if len(s.Properties) >= 2 && len(s.PropertiesOrder) == 0 {
+		return fmt.Errorf("preserve_schema_order=true but output_schema.properties has no captured order; send the request via JSON or set OutputSchema.PropertiesOrder explicitly")
+	}
+	if err := checkOrderSlice("output_schema.properties", s.PropertiesOrder, mapKeySet(s.Properties)); err != nil {
+		return err
+	}
+	if len(s.Classes) >= 2 && len(s.ClassesOrder) == 0 {
+		return fmt.Errorf("preserve_schema_order=true but output_schema.classes has no captured order; send the request via JSON or set OutputSchema.ClassesOrder explicitly")
+	}
+	if err := checkOrderSlice("output_schema.classes", s.ClassesOrder, mapKeySet(s.Classes)); err != nil {
+		return err
+	}
+	if len(s.Enums) >= 2 && len(s.EnumsOrder) == 0 {
+		return fmt.Errorf("preserve_schema_order=true but output_schema.enums has no captured order; send the request via JSON or set OutputSchema.EnumsOrder explicitly")
+	}
+	if err := checkOrderSlice("output_schema.enums", s.EnumsOrder, mapKeySet(s.Enums)); err != nil {
+		return err
+	}
+	for name, cls := range s.Classes {
+		if cls == nil {
+			continue
+		}
+		path := fmt.Sprintf("output_schema.classes[%q].properties", name)
+		if len(cls.Properties) >= 2 && len(cls.PropertiesOrder) == 0 {
+			return fmt.Errorf("preserve_schema_order=true but %s has no captured order; send the request via JSON or set DynamicClass.PropertiesOrder explicitly", path)
+		}
+		if err := checkOrderSlice(path, cls.PropertiesOrder, mapKeySet(cls.Properties)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mapKeySet[V any](m map[string]V) map[string]struct{} {
+	set := make(map[string]struct{}, len(m))
+	for k := range m {
+		set[k] = struct{}{}
+	}
+	return set
+}
+
+func checkOrderSlice(path string, order []string, known map[string]struct{}) error {
+	if len(order) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(order))
+	for _, name := range order {
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("%s order: duplicate name %q", path, name)
+		}
+		seen[name] = struct{}{}
+		if _, ok := known[name]; !ok {
+			return fmt.Errorf("%s order: unknown name %q", path, name)
+		}
+	}
+	for name := range known {
+		if _, ok := seen[name]; !ok {
+			return fmt.Errorf("%s order: missing name %q", path, name)
+		}
+	}
+	return nil
+}
+
 // ToWorkerInput converts to the internal format for worker processing
 func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
-	// Build classes map: start with user-defined classes, then add the output class
-	classes := make(map[string]*DynamicClass)
-	for name, class := range d.OutputSchema.Classes {
-		classes[name] = class
-	}
-	// Add the output class with the top-level properties
-	classes["Baml_Rest_DynamicOutput"] = &DynamicClass{
-		Properties: d.OutputSchema.Properties,
-	}
+	classes := buildWorkerClassMap(d.OutputSchema)
 
 	// Convert messages to internal format
 	internalMessages := make([]internalMessage, 0, len(d.Messages))
@@ -401,15 +608,21 @@ func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
 		internalMessages = append(internalMessages, m.toInternalMessage())
 	}
 
+	dynamicTypes := &DynamicTypes{
+		Classes: classes,
+		Enums:   d.OutputSchema.Enums,
+	}
+	if d.PreserveSchemaOrder {
+		dynamicTypes.PreserveOrder = true
+		dynamicTypes.Order = dynamicTypesOrderFromOutputSchema(d.OutputSchema)
+	}
+
 	internal := map[string]any{
 		"messages": internalMessages,
 		"__baml_options__": &BamlOptions{
 			ClientRegistry: d.ClientRegistry,
 			TypeBuilder: &TypeBuilder{
-				DynamicTypes: &DynamicTypes{
-					Classes: classes,
-					Enums:   d.OutputSchema.Enums,
-				},
+				DynamicTypes: dynamicTypes,
 			},
 		},
 	}
@@ -418,8 +631,9 @@ func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
 
 // DynamicParseInput is the request body for dynamic parse endpoint
 type DynamicParseInput struct {
-	Raw          string               `json:"raw"`
-	OutputSchema *DynamicOutputSchema `json:"output_schema"`
+	Raw                 string               `json:"raw"`
+	OutputSchema        *DynamicOutputSchema `json:"output_schema"`
+	PreserveSchemaOrder bool                 `json:"preserve_schema_order,omitempty"`
 }
 
 // Validate checks that required fields are present for parse
@@ -430,33 +644,80 @@ func (d *DynamicParseInput) Validate() error {
 	if d.OutputSchema == nil || len(d.OutputSchema.Properties) == 0 {
 		return fmt.Errorf("output_schema with at least one property is required")
 	}
+	if d.PreserveSchemaOrder {
+		if err := validatePreserveSchemaOrder(d.OutputSchema); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // ToWorkerInput converts to the internal format for worker processing
 func (d *DynamicParseInput) ToWorkerInput() ([]byte, error) {
-	// Build classes map: start with user-defined classes, then add the output class
-	classes := make(map[string]*DynamicClass)
-	for name, class := range d.OutputSchema.Classes {
-		classes[name] = class
+	classes := buildWorkerClassMap(d.OutputSchema)
+
+	dynamicTypes := &DynamicTypes{
+		Classes: classes,
+		Enums:   d.OutputSchema.Enums,
 	}
-	// Add the output class with the top-level properties
-	classes["Baml_Rest_DynamicOutput"] = &DynamicClass{
-		Properties: d.OutputSchema.Properties,
+	if d.PreserveSchemaOrder {
+		dynamicTypes.PreserveOrder = true
+		dynamicTypes.Order = dynamicTypesOrderFromOutputSchema(d.OutputSchema)
 	}
 
 	internal := map[string]any{
 		"raw": d.Raw,
 		"__baml_options__": &BamlOptions{
 			TypeBuilder: &TypeBuilder{
-				DynamicTypes: &DynamicTypes{
-					Classes: classes,
-					Enums:   d.OutputSchema.Enums,
-				},
+				DynamicTypes: dynamicTypes,
 			},
 		},
 	}
 	return json.Marshal(internal)
+}
+
+// dynamicOutputClassName is the synthetic class name baml-rest assigns
+// to the top-level dynamic output. Surfaced as a constant so codegen
+// and the order helper agree on where the synthetic class lives in the
+// preserved class order.
+const dynamicOutputClassName = "Baml_Rest_DynamicOutput"
+
+// buildWorkerClassMap collects user-defined classes and injects the
+// synthetic Baml_Rest_DynamicOutput class whose Properties mirror the
+// top-level output_schema.properties.
+func buildWorkerClassMap(schema *DynamicOutputSchema) map[string]*DynamicClass {
+	classes := make(map[string]*DynamicClass)
+	for name, class := range schema.Classes {
+		classes[name] = class
+	}
+	classes[dynamicOutputClassName] = &DynamicClass{
+		Properties:      schema.Properties,
+		PropertiesOrder: append([]string(nil), schema.PropertiesOrder...),
+	}
+	return classes
+}
+
+// dynamicTypesOrderFromOutputSchema assembles the DynamicTypesOrder
+// shipped across the worker boundary when PreserveSchemaOrder=true.
+// The synthetic Baml_Rest_DynamicOutput class is placed first in
+// Classes per the Q3 contract; user classes follow in the order the
+// caller supplied. Per-class property orders are copied from
+// DynamicClass.PropertiesOrder when present.
+func dynamicTypesOrderFromOutputSchema(schema *DynamicOutputSchema) *DynamicTypesOrder {
+	order := &DynamicTypesOrder{
+		Classes:    make([]string, 0, 1+len(schema.ClassesOrder)),
+		Enums:      append([]string(nil), schema.EnumsOrder...),
+		Properties: make(map[string][]string),
+	}
+	order.Classes = append(order.Classes, dynamicOutputClassName)
+	order.Classes = append(order.Classes, schema.ClassesOrder...)
+	order.Properties[dynamicOutputClassName] = append([]string(nil), schema.PropertiesOrder...)
+	for _, className := range schema.ClassesOrder {
+		if cls := schema.Classes[className]; cls != nil {
+			order.Properties[className] = append([]string(nil), cls.PropertiesOrder...)
+		}
+	}
+	return order
 }
 
 // FlattenDynamicOutput extracts the DynamicProperties field from a dynamic endpoint response.
