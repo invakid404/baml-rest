@@ -28,6 +28,14 @@ import (
 // The request body is built as a raw JSON string so the JSON object
 // order capture path is exercised end-to-end. Go map literals would
 // not carry order and would defeat the whole invariant.
+//
+// The nested class is named "Mailbox" rather than "Address" because
+// integration/baml_src/types.baml already declares a static (non-@@dynamic)
+// `class Address`. When a dynamic schema reuses that name, the generated
+// applyDynamicTypes short-circuits via ClassExists("Address") and the
+// static class's source order wins for that class — masking the
+// order-fidelity invariant we're trying to pin here. Mailbox sidesteps
+// the collision and exercises the user-defined-class path cleanly.
 func TestDynamicOutputFormatPreserveSchemaOrder(t *testing.T) {
 	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
 		t.Skip("dynamic endpoints require BAML >= 0.215.0")
