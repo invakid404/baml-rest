@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest/dynclient
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/enriquebris/goconcurrentqueue v0.7.0

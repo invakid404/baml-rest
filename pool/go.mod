@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest/pool
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/goccy/go-json v0.10.6

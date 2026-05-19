@@ -1,4 +1,4 @@
-go 1.26.2
+go 1.26.3
 
 // NOTE: ./adapters/adapter_v* and ./adapters/common are intentionally NOT
 // included in this workspace. Each adapter pins a specific
