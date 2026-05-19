@@ -1055,31 +1055,35 @@ func applyDynamicTypes(tb *introspected.TypeBuilder, dt *bamlutils.DynamicTypes)
 	typeCache := make(map[string]introspected.Type)
 	classBuilderCache := make(map[string]introspected.DynamicClassBuilder)
 
-	for name, enum := range dt.Enums {
+	for _, name := range sortedMapKeys(dt.Enums) {
+		enum := dt.Enums[name]
 		if err := createEnumShell(tb, name, enum, typeCache); err != nil {
 			return fmt.Errorf("enum %q: %w", name, err)
 		}
 	}
 
-	for name, enum := range dt.Enums {
+	for _, name := range sortedMapKeys(dt.Enums) {
+		enum := dt.Enums[name]
 		if err := addEnumValues(tb, name, enum, typeCache); err != nil {
 			return fmt.Errorf("enum %q values: %w", name, err)
 		}
 	}
 
-	for name, _ := range dt.Classes {
+	for _, name := range sortedMapKeys(dt.Classes) {
 		if err := createClassShell(tb, name, typeCache, classBuilderCache); err != nil {
 			return fmt.Errorf("class %q: %w", name, err)
 		}
 	}
 
-	for name, class := range dt.Classes {
+	for _, name := range sortedMapKeys(dt.Classes) {
+		class := dt.Classes[name]
 		if err := addNewClassProperties(tb, name, class, typeCache, classBuilderCache); err != nil {
 			return fmt.Errorf("class %q properties: %w", name, err)
 		}
 	}
 
-	for name, cb := range classBuilderCache {
+	for _, name := range sortedMapKeys(classBuilderCache) {
+		cb := classBuilderCache[name]
 		typ, err := cb.Type()
 		if err != nil {
 			return fmt.Errorf("class %q type: %w", name, err)
@@ -1087,12 +1091,21 @@ func applyDynamicTypes(tb *introspected.TypeBuilder, dt *bamlutils.DynamicTypes)
 		typeCache[name] = typ
 	}
 
-	for name, class := range dt.Classes {
+	for _, name := range sortedMapKeys(dt.Classes) {
+		class := dt.Classes[name]
 		if err := addExistingClassProperties(tb, name, class, typeCache, classBuilderCache); err != nil {
 			return fmt.Errorf("class %q properties: %w", name, err)
 		}
 	}
 	return nil
+}
+func sortedMapKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 func createEnumShell(tb *introspected.TypeBuilder, name string, enum *bamlutils.DynamicEnum, typeCache map[string]introspected.Type) error {
 	if introspected.EnumExists(name) {
@@ -1176,7 +1189,8 @@ func addNewClassProperties(tb *introspected.TypeBuilder, name string, class *bam
 		return nil
 	}
 
-	for propName, prop := range class.Properties {
+	for _, propName := range sortedMapKeys(class.Properties) {
+		prop := class.Properties[propName]
 		typ, err := resolvePropertyType(tb, prop, typeCache, classBuilderCache)
 		if err != nil {
 			if strings.Contains(err.Error(), "unresolved reference") {
@@ -1207,7 +1221,8 @@ func addExistingClassProperties(tb *introspected.TypeBuilder, name string, class
 		return fmt.Errorf("get class builder: %w", err)
 	}
 
-	for propName, prop := range class.Properties {
+	for _, propName := range sortedMapKeys(class.Properties) {
+		prop := class.Properties[propName]
 		typ, err := resolvePropertyType(tb, prop, typeCache, classBuilderCache)
 		if err != nil {
 			if strings.Contains(err.Error(), "unresolved reference") {
