@@ -241,12 +241,140 @@ type anthropicMessagesRequest struct {
 	Stream bool   `json:"stream"`
 }
 
+// anthropicValidationError is the Anthropic-shaped error payload returned
+// when the mock detects a malformed request the real provider would reject
+// at validation time. Currently only emitted for missing/empty
+// `cache_control.type` on content-block cache_control objects.
+type anthropicValidationError struct {
+	Type  string                       `json:"type"`
+	Error anthropicValidationErrorBody `json:"error"`
+}
+
+type anthropicValidationErrorBody struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// validateAnthropicCacheControl scans an Anthropic /v1/messages request
+// body for malformed content-block `cache_control` objects. The bug in
+// #304 produces `cache_control: {}` (or missing/empty `type`) on
+// `messages[].content[]` text blocks; the real Anthropic API rejects
+// that shape with a recognizable validation error. We mirror that
+// rejection here so integration tests can detect the regression.
+//
+// Returns nil for any valid shape (including the absent case, string
+// content, and a well-formed `{"type":"ephemeral"}`). Returns a
+// provider-shaped error payload when the bug pattern is present.
+func validateAnthropicCacheControl(body []byte) *anthropicValidationError {
+	var req struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+
+	for msgIdx, m := range req.Messages {
+		if len(m.Content) == 0 {
+			continue
+		}
+		// Only content-block arrays carry per-block cache_control. String
+		// content has no place for it and is always valid here.
+		if m.Content[0] != '[' {
+			continue
+		}
+		var blocks []map[string]json.RawMessage
+		if err := json.Unmarshal(m.Content, &blocks); err != nil {
+			continue
+		}
+		for blockIdx, block := range blocks {
+			cc, ok := block["cache_control"]
+			if !ok {
+				continue
+			}
+			if err := validateCacheControlObject(cc, msgIdx, blockIdx, block["type"]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateCacheControlObject checks a single cache_control raw JSON value
+// for the missing/empty/non-string `type` cases. The block's outer
+// `type` (e.g. "text") is used to shape the error path so the message
+// matches what real Anthropic returns for text blocks. blockType may be
+// nil; we default to "text" because that's the shape the #304 bug hits.
+func validateCacheControlObject(cc json.RawMessage, msgIdx, blockIdx int, blockType json.RawMessage) *anthropicValidationError {
+	blockKind := "text"
+	if len(blockType) > 0 {
+		var bt string
+		if err := json.Unmarshal(blockType, &bt); err == nil && bt != "" {
+			blockKind = bt
+		}
+	}
+
+	pathPrefix := fmt.Sprintf("messages.%d.content.%d.%s.cache_control", msgIdx, blockIdx, blockKind)
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(cc, &obj); err != nil {
+		return &anthropicValidationError{
+			Type: "error",
+			Error: anthropicValidationErrorBody{
+				Type:    "invalid_request_error",
+				Message: fmt.Sprintf("%s: Input should be a valid dictionary", pathPrefix),
+			},
+		}
+	}
+	typeRaw, hasType := obj["type"]
+	if !hasType {
+		return &anthropicValidationError{
+			Type: "error",
+			Error: anthropicValidationErrorBody{
+				Type:    "invalid_request_error",
+				Message: fmt.Sprintf("%s.type: Field required", pathPrefix),
+			},
+		}
+	}
+	var typeStr string
+	if err := json.Unmarshal(typeRaw, &typeStr); err != nil {
+		return &anthropicValidationError{
+			Type: "error",
+			Error: anthropicValidationErrorBody{
+				Type:    "invalid_request_error",
+				Message: fmt.Sprintf("%s.type: Input should be a valid string", pathPrefix),
+			},
+		}
+	}
+	if typeStr == "" {
+		return &anthropicValidationError{
+			Type: "error",
+			Error: anthropicValidationErrorBody{
+				Type:    "invalid_request_error",
+				Message: fmt.Sprintf("%s.type: Field required", pathPrefix),
+			},
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleAnthropicMessages(c fiber.Ctx) error {
 	body := append([]byte(nil), c.Body()...)
 
 	var req anthropicMessagesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
+	}
+
+	// Capture the request body for test inspection BEFORE rejecting on a
+	// validation failure — tests that detect the rejection class still
+	// need to see the wire shape that triggered it.
+	s.store.CaptureRequest(req.Model, body)
+
+	if vErr := validateAnthropicCacheControl(body); vErr != nil {
+		s.log("anthropic messages validation failure: %s", vErr.Error.Message)
+		return c.Status(fiber.StatusBadRequest).JSON(vErr)
 	}
 
 	s.log("anthropic messages request: model=%s, stream=%v", req.Model, req.Stream)
