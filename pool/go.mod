@@ -8,8 +8,8 @@ require (
 	github.com/gregwebs/go-recovery v0.4.1
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0
-	github.com/invakid404/baml-rest/bamlutils v0.0.43
-	github.com/invakid404/baml-rest/workerplugin v0.0.43
+	github.com/invakid404/baml-rest/bamlutils v0.0.44
+	github.com/invakid404/baml-rest/workerplugin v0.0.44
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rs/zerolog v1.35.1
 	google.golang.org/grpc v1.81.1
