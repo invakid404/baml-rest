@@ -80,7 +80,11 @@ jobs:
         # roughly double CI wallclock for marginal additional coverage.
         run: |
           go build ./...
-          go build -tags=subprocess ./cmd/serve
+          # Route the subprocess-tag sanity build artifact to $RUNNER_TEMP so
+          # it doesn't leave an untracked `serve` binary in the repo root
+          # that would trip the `cmd/regenerate-dynclient fresh-tree gate`
+          # below.
+          go build -tags=subprocess -o "$RUNNER_TEMP/serve-build-sanity" ./cmd/serve
           go test -tags=subprocess -count=1 ./pool ./worker ./cmd/serve
           go test -race -tags=subprocess -count=1 ./pool ./worker
 
