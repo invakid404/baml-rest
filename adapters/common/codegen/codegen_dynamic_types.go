@@ -49,21 +49,26 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			jen.Id("classBuilderCache").Op(":=").Make(jen.Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder")),
 			jen.Line(),
 			// Phase 1: Create all enum shells (for NEW enums only, with values since we have builder)
-			jen.For(jen.List(jen.Id("name"), jen.Id("enum")).Op(":=").Range().Id("dt").Dot("Enums")).Block(
+			// Iterate sorted keys so TypeBuilder population order is deterministic: Go map
+			// iteration is intentionally randomised, and BAML preserves the order it receives,
+			// so unsorted ranging produces non-deterministic rendered output_format text.
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("sortedMapKeys").Call(jen.Id("dt").Dot("Enums"))).Block(
+				jen.Id("enum").Op(":=").Id("dt").Dot("Enums").Index(jen.Id("name")),
 				jen.If(jen.Id("err").Op(":=").Id("createEnumShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("enum %q: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
 			// Phase 2: Add values to EXISTING enums
-			jen.For(jen.List(jen.Id("name"), jen.Id("enum")).Op(":=").Range().Id("dt").Dot("Enums")).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("sortedMapKeys").Call(jen.Id("dt").Dot("Enums"))).Block(
+				jen.Id("enum").Op(":=").Id("dt").Dot("Enums").Index(jen.Id("name")),
 				jen.If(jen.Id("err").Op(":=").Id("addEnumValues").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("enum %q values: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
 			// Phase 3: Create all NEW class shells (no properties yet - just register the type)
-			jen.For(jen.List(jen.Id("name"), jen.Id("_")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("sortedMapKeys").Call(jen.Id("dt").Dot("Classes"))).Block(
 				jen.If(jen.Id("err").Op(":=").Id("createClassShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("typeCache"), jen.Id("classBuilderCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q: %w"), jen.Id("name"), jen.Id("err"))),
 				),
@@ -71,14 +76,16 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			jen.Line(),
 			// Phase 4a: Add properties to NEW classes only (from classBuilderCache)
 			// These classes only have primitive types or reference other new classes
-			jen.For(jen.List(jen.Id("name"), jen.Id("class")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("sortedMapKeys").Call(jen.Id("dt").Dot("Classes"))).Block(
+				jen.Id("class").Op(":=").Id("dt").Dot("Classes").Index(jen.Id("name")),
 				jen.If(jen.Id("err").Op(":=").Id("addNewClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q properties: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
 			// Phase 4b: Cache types for all NEW classes (now that properties are added)
-			jen.For(jen.List(jen.Id("name"), jen.Id("cb")).Op(":=").Range().Id("classBuilderCache")).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("sortedMapKeys").Call(jen.Id("classBuilderCache"))).Block(
+				jen.Id("cb").Op(":=").Id("classBuilderCache").Index(jen.Id("name")),
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("cb").Dot("Type").Call(),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q type: %w"), jen.Id("name"), jen.Id("err"))),
@@ -87,12 +94,28 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			),
 			jen.Line(),
 			// Phase 4c: Add properties to EXISTING dynamic classes (refs can now be resolved)
-			jen.For(jen.List(jen.Id("name"), jen.Id("class")).Op(":=").Range().Id("dt").Dot("Classes")).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("sortedMapKeys").Call(jen.Id("dt").Dot("Classes"))).Block(
+				jen.Id("class").Op(":=").Id("dt").Dot("Classes").Index(jen.Id("name")),
 				jen.If(jen.Id("err").Op(":=").Id("addExistingClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q properties: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Return(jen.Nil()),
+		)
+
+	// Generate sortedMapKeys helper - returns map keys sorted alphabetically.
+	// Used by applyDynamicTypes to make TypeBuilder population deterministic.
+	out.Func().Id("sortedMapKeys").
+		Types(jen.Id("V").Any()).
+		Params(jen.Id("m").Map(jen.String()).Id("V")).
+		Index().String().
+		Block(
+			jen.Id("keys").Op(":=").Make(jen.Index().String(), jen.Lit(0), jen.Len(jen.Id("m"))),
+			jen.For(jen.Id("k").Op(":=").Range().Id("m")).Block(
+				jen.Id("keys").Op("=").Append(jen.Id("keys"), jen.Id("k")),
+			),
+			jen.Qual("slices", "Sort").Call(jen.Id("keys")),
+			jen.Return(jen.Id("keys")),
 		)
 
 	// Generate createEnumShell helper - creates enum with values (new) or skips existing
@@ -234,7 +257,8 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			),
 			jen.Line(),
 			// Add properties to the new class builder
-			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("propName")).Op(":=").Range().Id("sortedMapKeys").Call(jen.Id("class").Dot("Properties"))).Block(
+				jen.Id("prop").Op(":=").Id("class").Dot("Properties").Index(jen.Id("propName")),
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					// Skip unresolved refs - they may reference existing types in baml_src
@@ -286,7 +310,8 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			),
 			jen.Line(),
 			// Add properties to the existing class builder
-			jen.For(jen.List(jen.Id("propName"), jen.Id("prop")).Op(":=").Range().Id("class").Dot("Properties")).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("propName")).Op(":=").Range().Id("sortedMapKeys").Call(jen.Id("class").Dot("Properties"))).Block(
+				jen.Id("prop").Op(":=").Id("class").Dot("Properties").Index(jen.Id("propName")),
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					// Skip unresolved refs - they may reference types in baml_src
