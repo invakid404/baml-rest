@@ -18,8 +18,10 @@ import (
 //
 //  1. positive: a dedicated container with the env var set. The caller's
 //     ClientRegistry deliberately omits allowed_role_metadata; we verify the
-//     deployment default lets cache_control survive into the outbound body.
-//     Skipped on the BuildRequest leg — see the skip message for rationale.
+//     deployment default lets cache_control survive into the outbound body on
+//     both runtime paths (classic CallStream/OnTick and BuildRequest). The
+//     recursive helper validates the captured wire body so alias-leak shapes
+//     such as cache_control.cache_type do not pass.
 //
 //  2. negative: reuses the shared TestEnv (no BAML_REST_CLIENT_DEFAULTS).
 //     Same request shape; asserts cache_control is dropped. Reproduces the
@@ -31,14 +33,15 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 	}
 
 	t.Run("positive_default_preserves_cache_control", func(t *testing.T) {
-		if UseBuildRequest {
-			t.Skip("cache_control survives BAML's allowed_role_metadata filter on " +
-				"the classic runtime path but is dropped by the BuildRequest " +
-				"serializer. Upstream TODOs: " +
-				"baml_language/crates/sys_llm/src/build_request/openai.rs:100 and " +
-				"baml_language/crates/sys_llm/src/build_request/anthropic.rs:91. " +
-				"Remove this skip when those TODOs are resolved.")
-		}
+		// Older BAML BuildRequest serializers dropped message-level
+		// metadata for some providers. BAML v0.222 preserves
+		// cache_control for the dynamic template shape used here after
+		// the class-free literal alias-bypass landed for #304, so this
+		// leg runs against both runtime paths. If a future supported
+		// BAML version regresses, narrow the skip to that version
+		// rather than reinstating a blanket UseBuildRequest skip — the
+		// blanket form would mask the openai-generic BuildRequest path
+		// the user originally reported on.
 
 		setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer setupCancel()
@@ -115,9 +118,13 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetLastRequest failed: %v", err)
 		}
-		if !strings.Contains(string(body), `"cache_control"`) {
-			t.Fatalf("expected cache_control in outbound body, got:\n%s", body)
-		}
+		// Recursive validation: exactly one well-formed
+		// cache_control:{type:ephemeral} on the outbound body. The
+		// previous strings.Contains gate accepted the
+		// `cache_control:{"cache_type":"ephemeral"}` shape from the
+		// upstream BAML jinja-runtime alias bug — the recursive helper
+		// catches that and other leak variants.
+		assertExactlyOneEphemeralCacheControl(t, body)
 	})
 
 	t.Run("negative_no_default_drops_cache_control", func(t *testing.T) {

@@ -227,6 +227,15 @@ func (s *Server) handleChatCompletions(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
 	}
 
+	if vErr := validateCacheControlObjectsRecursive(body); vErr != nil {
+		// Capture before returning so failing regression tests can
+		// inspect the wire shape that triggered the rejection. The
+		// success path captures via dispatchScenario.
+		s.store.CaptureRequest(req.Model, body)
+		s.log("chat completions validation failure: %s", vErr.Error.Message)
+		return c.Status(fiber.StatusBadRequest).JSON(vErr)
+	}
+
 	s.log("chat completions request: model=%s, stream=%v", req.Model, req.Stream)
 
 	return s.dispatchScenario(c, body, req.Model, req.Stream)
@@ -241,12 +250,175 @@ type anthropicMessagesRequest struct {
 	Stream bool   `json:"stream"`
 }
 
+// anthropicValidationError is the Anthropic-shaped error payload returned
+// when the mock detects a malformed request the real provider would reject
+// at validation time. Currently only emitted for missing/empty
+// `cache_control.type` on content-block cache_control objects.
+type anthropicValidationError struct {
+	Type  string                       `json:"type"`
+	Error anthropicValidationErrorBody `json:"error"`
+}
+
+type anthropicValidationErrorBody struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// validateCacheControlObjectsRecursive walks any JSON request body and
+// rejects malformed `cache_control` objects regardless of which
+// endpoint shape carries them. Issue #304 first surfaced on the
+// Anthropic `messages[].content[]` shape, but the same wire-shape bug
+// reaches OpenAI-compatible endpoints when callers route Anthropic
+// metadata through openai-generic providers (LiteLLM and similar).
+// Body-shape gating keeps the mock provider-agnostic — we look for the
+// key, not the URL.
+//
+// Returns nil for valid bodies (cache_control absent OR `{"type":"X"}`
+// with non-empty X). Returns an Anthropic-shaped error payload when any
+// reachable cache_control object is malformed; the error message names
+// the JSON path of the first offender for diagnostic clarity.
+func validateCacheControlObjectsRecursive(body []byte) *anthropicValidationError {
+	var raw any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	return walkForCacheControl(raw, "")
+}
+
+// walkForCacheControl recursively descends maps and arrays. When it
+// finds an entry whose key is `cache_control`, it validates the value
+// as a cache-control object (via validateCacheControlObjectAtPath) and
+// returns on the first failure. It also keeps descending into the
+// cache_control value's siblings so nested content trees are covered.
+func walkForCacheControl(node any, path string) *anthropicValidationError {
+	switch v := node.(type) {
+	case map[string]any:
+		if cc, ok := v["cache_control"]; ok {
+			ccPath := joinPath(path, "cache_control")
+			if err := validateCacheControlObjectAtPath(cc, ccPath, lookupBlockKind(v)); err != nil {
+				return err
+			}
+		}
+		for k, child := range v {
+			if k == "cache_control" {
+				// Already validated above; do not recurse into the
+				// cache_control value itself — it is a leaf object
+				// whose only meaningful field is `type`.
+				continue
+			}
+			if err := walkForCacheControl(child, joinPath(path, k)); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, child := range v {
+			if err := walkForCacheControl(child, fmt.Sprintf("%s.%d", path, i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// lookupBlockKind inspects the enclosing content block to recover its
+// `type` discriminator (e.g. "text") so the error message matches what
+// real Anthropic emits for text blocks. Returns "" when the enclosing
+// node isn't an Anthropic-style content block — in that case the path
+// is left endpoint-neutral (e.g. messages.0.content.0.cache_control).
+func lookupBlockKind(block map[string]any) string {
+	t, ok := block["type"].(string)
+	if !ok {
+		return ""
+	}
+	switch t {
+	case "text", "image", "document", "tool_use", "tool_result":
+		return t
+	}
+	return ""
+}
+
+func joinPath(parent, child string) string {
+	if parent == "" {
+		return child
+	}
+	return parent + "." + child
+}
+
+// validateCacheControlObjectAtPath checks a single cache_control value
+// at the supplied JSON path. The path prefix lets the recursive walker
+// keep error messages diagnostic across endpoint shapes. blockKind is
+// the enclosing block's `type` for Anthropic-style content blocks (e.g.
+// "text"); when set, it's spliced into the path before the
+// `cache_control` segment to match the wire shape real Anthropic
+// returns. Pass "" to skip that segment.
+func validateCacheControlObjectAtPath(cc any, path, blockKind string) *anthropicValidationError {
+	if blockKind != "" {
+		// Splice the block kind segment in before the final
+		// `cache_control` segment, mirroring the provider-shaped error
+		// path Anthropic emits for content-block validation failures.
+		path = strings.TrimSuffix(path, ".cache_control")
+		path = joinPath(path, blockKind)
+		path = joinPath(path, "cache_control")
+	}
+
+	obj, ok := cc.(map[string]any)
+	if !ok {
+		return &anthropicValidationError{
+			Type: "error",
+			Error: anthropicValidationErrorBody{
+				Type:    "invalid_request_error",
+				Message: fmt.Sprintf("%s: Input should be a valid dictionary", path),
+			},
+		}
+	}
+	typVal, hasType := obj["type"]
+	if !hasType {
+		return &anthropicValidationError{
+			Type: "error",
+			Error: anthropicValidationErrorBody{
+				Type:    "invalid_request_error",
+				Message: fmt.Sprintf("%s.type: Field required", path),
+			},
+		}
+	}
+	typStr, ok := typVal.(string)
+	if !ok {
+		return &anthropicValidationError{
+			Type: "error",
+			Error: anthropicValidationErrorBody{
+				Type:    "invalid_request_error",
+				Message: fmt.Sprintf("%s.type: Input should be a valid string", path),
+			},
+		}
+	}
+	if typStr == "" {
+		return &anthropicValidationError{
+			Type: "error",
+			Error: anthropicValidationErrorBody{
+				Type:    "invalid_request_error",
+				Message: fmt.Sprintf("%s.type: Field required", path),
+			},
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleAnthropicMessages(c fiber.Ctx) error {
 	body := append([]byte(nil), c.Body()...)
 
 	var req anthropicMessagesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
+	}
+
+	if vErr := validateCacheControlObjectsRecursive(body); vErr != nil {
+		// Capture the body on the failure path so the test can inspect
+		// the wire shape that triggered the rejection. The success path
+		// goes through dispatchScenario which performs its own capture,
+		// so doing it here too would double-capture.
+		s.store.CaptureRequest(req.Model, body)
+		s.log("anthropic messages validation failure: %s", vErr.Error.Message)
+		return c.Status(fiber.StatusBadRequest).JSON(vErr)
 	}
 
 	s.log("anthropic messages request: model=%s, stream=%v", req.Model, req.Stream)

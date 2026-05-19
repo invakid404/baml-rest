@@ -50,7 +50,7 @@ function Baml_Rest_Dynamic(messages: Baml_Rest_Message[]) -> Baml_Rest_DynamicOu
   // control flow from injecting blank lines into the rendered prompt.
   prompt #"
     {%- for m in messages %}
-      {%- if m.metadata and m.metadata.cache_control %}{{ _.role(m.role, cache_control=m.metadata.cache_control) }}{% else %}{{ _.role(m.role) }}{% endif -%}
+      {%- if m.metadata and m.metadata.cache_control %}{{ _.role(m.role, cache_control={"type": m.metadata.cache_control.cache_type}) }}{% else %}{{ _.role(m.role) }}{% endif -%}
       {%- if m.parts -%}
         {%- for p in m.parts -%}
           {%- if p.text %}{{ p.text }}{% elif p.img %}{{ p.img }}{% elif p.aud %}{{ p.aud }}{% elif p.doc %}{{ p.doc }}{% elif p.vid %}{{ p.vid }}{% elif p.output_format %}{{ ctx.output_format }}{% endif -%}

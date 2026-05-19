@@ -65,7 +65,7 @@ baml-rest reads the following environment variables at startup:
 
   v1 recognizes `allowed_role_metadata` only. See
   [bamlutils/clientdefaults](bamlutils/clientdefaults/clientdefaults.go) for
-  the merge contract, supported opt-outs, and BuildRequest caveat.
+  the merge contract, supported opt-outs, and supported-version caveats.
 - `BAML_LOG` — BAML internal log level (`debug`, `info`, `warn`, `error`).
 
 ## In-process build mode

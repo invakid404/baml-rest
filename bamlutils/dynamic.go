@@ -2,6 +2,7 @@ package bamlutils
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/goccy/go-json"
 	"github.com/tidwall/gjson"
@@ -229,20 +230,40 @@ type internalContentPart struct {
 	OutputFormat *bool       `json:"output_format,omitempty"`
 }
 
+// internalCacheControl is the BAML-facing cache-control struct. The
+// generated dynamic BAML input type uses the field name `cache_type`
+// (because `type` collides with the BAML type keyword), so we cannot
+// reuse the public CacheControl struct here — its `type` JSON tag would
+// be dropped when Go JSON unmarshals into the generated input. See #304.
+type internalCacheControl struct {
+	CacheType string `json:"cache_type"`
+}
+
+// internalMessageMetadata is the BAML-facing per-message metadata struct.
+// Wire shape matches the generated dynamic input type so JSON round-trips
+// preserve cache_control.
+type internalMessageMetadata struct {
+	CacheControl *internalCacheControl `json:"cache_control,omitempty"`
+}
+
 // internalMessage is the BAML-facing format for messages.
 // This maps to the Baml_Rest_Message class in dynamic.baml.
 type internalMessage struct {
-	Role     string                `json:"role"`
-	Content  *string               `json:"content,omitempty"`
-	Parts    []internalContentPart `json:"parts,omitempty"`
-	Metadata *MessageMetadata      `json:"metadata,omitempty"`
+	Role     string                   `json:"role"`
+	Content  *string                  `json:"content,omitempty"`
+	Parts    []internalContentPart    `json:"parts,omitempty"`
+	Metadata *internalMessageMetadata `json:"metadata,omitempty"`
 }
 
 // toInternalMessage converts a user-facing DynamicMessage to the internal format.
 func (m *DynamicMessage) toInternalMessage() internalMessage {
-	msg := internalMessage{
-		Role:     m.Role,
-		Metadata: m.Metadata,
+	msg := internalMessage{Role: m.Role}
+	if m.Metadata != nil && m.Metadata.CacheControl != nil {
+		msg.Metadata = &internalMessageMetadata{
+			CacheControl: &internalCacheControl{
+				CacheType: m.Metadata.CacheControl.Type,
+			},
+		}
 	}
 
 	if m.PartsContent != nil {
@@ -354,6 +375,9 @@ func (d *DynamicInput) Validate() error {
 					return err
 				}
 			}
+		}
+		if m.Metadata != nil && m.Metadata.CacheControl != nil && strings.TrimSpace(m.Metadata.CacheControl.Type) == "" {
+			return fmt.Errorf("messages[%d].metadata.cache_control.type is required", i)
 		}
 	}
 	return nil

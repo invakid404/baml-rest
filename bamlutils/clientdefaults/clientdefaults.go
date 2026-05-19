@@ -46,10 +46,18 @@
 //
 // # BuildRequest caveat
 //
-// When BAML_REST_USE_BUILD_REQUEST=true, message-level metadata (including
-// cache_control) is dropped by BAML's BuildRequest serializer regardless of
-// the allowed_role_metadata default configured here. The worker emits a
-// startup warning when both conditions hold.
+// Older BAML BuildRequest serializers dropped message-level metadata
+// (e.g. cache_control) for some providers regardless of the
+// allowed_role_metadata default configured here. BAML v0.222 preserves
+// cache_control for the dynamic template shape used by baml-rest after
+// the alias-bypass template fix in #304; the cache_control round-trip
+// is covered by integration tests on both Anthropic and
+// OpenAI-compatible providers. When changing supported BAML versions,
+// re-run those tests to confirm the current runtime still preserves
+// message-level metadata through BuildRequest. The worker emits a
+// startup advisory when BAML_REST_CLIENT_DEFAULTS sets
+// allowed_role_metadata and BAML_REST_USE_BUILD_REQUEST=true so
+// operators have a pointer to those tests.
 package clientdefaults
 
 import (
