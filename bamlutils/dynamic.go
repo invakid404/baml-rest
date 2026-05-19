@@ -2,6 +2,9 @@ package bamlutils
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/goccy/go-json"
 	"github.com/tidwall/gjson"
@@ -361,14 +364,9 @@ func (d *DynamicInput) Validate() error {
 
 // ToWorkerInput converts to the internal format for worker processing
 func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
-	// Build classes map: start with user-defined classes, then add the output class
-	classes := make(map[string]*DynamicClass)
-	for name, class := range d.OutputSchema.Classes {
-		classes[name] = class
-	}
-	// Add the output class with the top-level properties
-	classes["Baml_Rest_DynamicOutput"] = &DynamicClass{
-		Properties: d.OutputSchema.Properties,
+	tb, err := buildDynamicTypeBuilder(d.OutputSchema)
+	if err != nil {
+		return nil, err
 	}
 
 	// Convert messages to internal format
@@ -381,12 +379,7 @@ func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
 		"messages": internalMessages,
 		"__baml_options__": &BamlOptions{
 			ClientRegistry: d.ClientRegistry,
-			TypeBuilder: &TypeBuilder{
-				DynamicTypes: &DynamicTypes{
-					Classes: classes,
-					Enums:   d.OutputSchema.Enums,
-				},
-			},
+			TypeBuilder:    tb,
 		},
 	}
 	return json.Marshal(internal)
@@ -411,28 +404,299 @@ func (d *DynamicParseInput) Validate() error {
 
 // ToWorkerInput converts to the internal format for worker processing
 func (d *DynamicParseInput) ToWorkerInput() ([]byte, error) {
-	// Build classes map: start with user-defined classes, then add the output class
-	classes := make(map[string]*DynamicClass)
-	for name, class := range d.OutputSchema.Classes {
-		classes[name] = class
-	}
-	// Add the output class with the top-level properties
-	classes["Baml_Rest_DynamicOutput"] = &DynamicClass{
-		Properties: d.OutputSchema.Properties,
+	tb, err := buildDynamicTypeBuilder(d.OutputSchema)
+	if err != nil {
+		return nil, err
 	}
 
 	internal := map[string]any{
 		"raw": d.Raw,
 		"__baml_options__": &BamlOptions{
-			TypeBuilder: &TypeBuilder{
-				DynamicTypes: &DynamicTypes{
-					Classes: classes,
-					Enums:   d.OutputSchema.Enums,
-				},
-			},
+			TypeBuilder: tb,
 		},
 	}
 	return json.Marshal(internal)
+}
+
+// buildDynamicTypeBuilder converts a DynamicOutputSchema into a TypeBuilder for
+// the worker. When the user's classes contain a self-referential cycle, the
+// classes (and the dynamic output entry point) are emitted as BAML source via
+// BamlSnippets instead of the imperative DynamicTypes API. This works around a
+// BAML runtime segfault that occurs when ctx.output_format renders a dynamic
+// class with cycles built through the imperative TypeBuilder. Statically
+// defined recursive classes — and the same shape declared through tb.AddBaml —
+// render correctly, so we feed the cyclic case through that path. Enums always
+// stay in DynamicTypes; they're applied first by the codegen so snippets can
+// reference them by name.
+func buildDynamicTypeBuilder(schema *DynamicOutputSchema) (*TypeBuilder, error) {
+	if hasClassCycles(schema.Classes) {
+		snippet, err := dynamicSchemaToBamlSource(schema)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert recursive dynamic schema to BAML source: %w", err)
+		}
+		return &TypeBuilder{
+			BamlSnippets: []string{snippet},
+			DynamicTypes: &DynamicTypes{
+				Enums: schema.Enums,
+			},
+		}, nil
+	}
+
+	classes := make(map[string]*DynamicClass, len(schema.Classes)+1)
+	for name, class := range schema.Classes {
+		classes[name] = class
+	}
+	classes["Baml_Rest_DynamicOutput"] = &DynamicClass{
+		Properties: schema.Properties,
+	}
+	return &TypeBuilder{
+		DynamicTypes: &DynamicTypes{
+			Classes: classes,
+			Enums:   schema.Enums,
+		},
+	}, nil
+}
+
+// hasClassCycles returns true if any user-defined dynamic class transitively
+// references itself through its property types.
+func hasClassCycles(classes map[string]*DynamicClass) bool {
+	for start, cls := range classes {
+		if cls == nil {
+			continue
+		}
+		toVisit := classDirectRefs(cls)
+		visited := make(map[string]bool, len(classes))
+		for len(toVisit) > 0 {
+			cur := toVisit[len(toVisit)-1]
+			toVisit = toVisit[:len(toVisit)-1]
+			if cur == start {
+				return true
+			}
+			if visited[cur] {
+				continue
+			}
+			visited[cur] = true
+			if c, ok := classes[cur]; ok {
+				toVisit = append(toVisit, classDirectRefs(c)...)
+			}
+		}
+	}
+	return false
+}
+
+func classDirectRefs(cls *DynamicClass) []string {
+	if cls == nil {
+		return nil
+	}
+	var refs []string
+	for _, prop := range cls.Properties {
+		if prop == nil {
+			continue
+		}
+		if prop.Ref != "" {
+			refs = append(refs, prop.Ref)
+		}
+		refs = appendTypeSpecRefs(refs, prop.Items)
+		refs = appendTypeSpecRefs(refs, prop.Inner)
+		refs = appendTypeSpecRefs(refs, prop.Keys)
+		refs = appendTypeSpecRefs(refs, prop.Values)
+		for _, t := range prop.OneOf {
+			refs = appendTypeSpecRefs(refs, t)
+		}
+	}
+	return refs
+}
+
+func appendTypeSpecRefs(refs []string, t *DynamicTypeSpec) []string {
+	if t == nil {
+		return refs
+	}
+	if t.Ref != "" {
+		refs = append(refs, t.Ref)
+	}
+	refs = appendTypeSpecRefs(refs, t.Items)
+	refs = appendTypeSpecRefs(refs, t.Inner)
+	refs = appendTypeSpecRefs(refs, t.Keys)
+	refs = appendTypeSpecRefs(refs, t.Values)
+	for _, sub := range t.OneOf {
+		refs = appendTypeSpecRefs(refs, sub)
+	}
+	return refs
+}
+
+// dynamicSchemaToBamlSource emits a BAML source snippet that defines all
+// user-supplied classes plus a `dynamic class Baml_Rest_DynamicOutput { ... }`
+// block adding the schema's top-level properties.
+func dynamicSchemaToBamlSource(schema *DynamicOutputSchema) (string, error) {
+	var sb strings.Builder
+
+	classNames := make([]string, 0, len(schema.Classes))
+	for name := range schema.Classes {
+		classNames = append(classNames, name)
+	}
+	sort.Strings(classNames)
+	for _, name := range classNames {
+		cls := schema.Classes[name]
+		if cls == nil {
+			continue
+		}
+		if err := writeBamlClass(&sb, "class "+name, cls.Properties); err != nil {
+			return "", fmt.Errorf("class %q: %w", name, err)
+		}
+	}
+
+	if err := writeBamlClass(&sb, "dynamic class Baml_Rest_DynamicOutput", schema.Properties); err != nil {
+		return "", fmt.Errorf("dynamic output: %w", err)
+	}
+
+	return sb.String(), nil
+}
+
+func writeBamlClass(sb *strings.Builder, header string, props map[string]*DynamicProperty) error {
+	sb.WriteString(header)
+	sb.WriteString(" {\n")
+	propNames := make([]string, 0, len(props))
+	for n := range props {
+		propNames = append(propNames, n)
+	}
+	sort.Strings(propNames)
+	for _, n := range propNames {
+		prop := props[n]
+		if prop == nil {
+			continue
+		}
+		typStr, err := propertyToBamlType(prop)
+		if err != nil {
+			return fmt.Errorf("property %q: %w", n, err)
+		}
+		sb.WriteString("  ")
+		sb.WriteString(n)
+		sb.WriteString(" ")
+		sb.WriteString(typStr)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("}\n\n")
+	return nil
+}
+
+func propertyToBamlType(prop *DynamicProperty) (string, error) {
+	if prop.Ref != "" {
+		return prop.Ref, nil
+	}
+	return typeSpecToBamlType(&DynamicTypeSpec{
+		Type:   prop.Type,
+		Items:  prop.Items,
+		Inner:  prop.Inner,
+		OneOf:  prop.OneOf,
+		Keys:   prop.Keys,
+		Values: prop.Values,
+		Value:  prop.Value,
+	})
+}
+
+func typeSpecToBamlType(t *DynamicTypeSpec) (string, error) {
+	if t == nil {
+		return "", fmt.Errorf("nil type spec")
+	}
+	if t.Ref != "" {
+		return t.Ref, nil
+	}
+	switch t.Type {
+	case "string", "int", "float", "bool", "null":
+		return t.Type, nil
+	case "list":
+		if t.Items == nil {
+			return "", fmt.Errorf("list requires 'items'")
+		}
+		inner, err := typeSpecToBamlType(t.Items)
+		if err != nil {
+			return "", fmt.Errorf("list items: %w", err)
+		}
+		if needsParens(t.Items) {
+			inner = "(" + inner + ")"
+		}
+		return inner + "[]", nil
+	case "optional":
+		if t.Inner == nil {
+			return "", fmt.Errorf("optional requires 'inner'")
+		}
+		inner, err := typeSpecToBamlType(t.Inner)
+		if err != nil {
+			return "", fmt.Errorf("optional inner: %w", err)
+		}
+		if needsParens(t.Inner) {
+			inner = "(" + inner + ")"
+		}
+		return inner + "?", nil
+	case "map":
+		if t.Keys == nil || t.Values == nil {
+			return "", fmt.Errorf("map requires 'keys' and 'values'")
+		}
+		k, err := typeSpecToBamlType(t.Keys)
+		if err != nil {
+			return "", fmt.Errorf("map keys: %w", err)
+		}
+		v, err := typeSpecToBamlType(t.Values)
+		if err != nil {
+			return "", fmt.Errorf("map values: %w", err)
+		}
+		return "map<" + k + ", " + v + ">", nil
+	case "union":
+		if len(t.OneOf) == 0 {
+			return "", fmt.Errorf("union requires 'oneOf' with at least one type")
+		}
+		parts := make([]string, len(t.OneOf))
+		for i, v := range t.OneOf {
+			s, err := typeSpecToBamlType(v)
+			if err != nil {
+				return "", fmt.Errorf("union[%d]: %w", i, err)
+			}
+			parts[i] = s
+		}
+		return strings.Join(parts, " | "), nil
+	case "literal_string":
+		s, ok := t.Value.(string)
+		if !ok {
+			return "", fmt.Errorf("literal_string value must be a string, got %T", t.Value)
+		}
+		return strconv.Quote(s), nil
+	case "literal_int":
+		switch v := t.Value.(type) {
+		case float64:
+			return strconv.FormatInt(int64(v), 10), nil
+		case int:
+			return strconv.Itoa(v), nil
+		case int64:
+			return strconv.FormatInt(v, 10), nil
+		default:
+			return "", fmt.Errorf("literal_int value must be a number, got %T", v)
+		}
+	case "literal_bool":
+		b, ok := t.Value.(bool)
+		if !ok {
+			return "", fmt.Errorf("literal_bool value must be a bool, got %T", t.Value)
+		}
+		if b {
+			return "true", nil
+		}
+		return "false", nil
+	default:
+		return "", fmt.Errorf("unknown type %q", t.Type)
+	}
+}
+
+// needsParens reports whether a sub-type must be parenthesized when used as
+// the inner of a list or optional, to disambiguate against BAML's parse rules
+// (e.g. `string | int[]` would otherwise mean `string | (int[])`).
+func needsParens(t *DynamicTypeSpec) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Type {
+	case "union", "optional":
+		return true
+	}
+	return false
 }
 
 // FlattenDynamicOutput extracts the DynamicProperties field from a dynamic endpoint response.
