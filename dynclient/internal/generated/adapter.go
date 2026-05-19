@@ -1054,35 +1054,37 @@ func applyDynamicTypes(tb *introspected.TypeBuilder, dt *bamlutils.DynamicTypes)
 	}
 	typeCache := make(map[string]introspected.Type)
 	classBuilderCache := make(map[string]introspected.DynamicClassBuilder)
+	preserveOrder := dt.PreserveOrder
+	order := dt.Order
 
-	for _, name := range sortedMapKeys(dt.Enums) {
+	for _, name := range schemaMapKeys(dt.Enums, enumOrder(order), preserveOrder) {
 		enum := dt.Enums[name]
 		if err := createEnumShell(tb, name, enum, typeCache); err != nil {
 			return fmt.Errorf("enum %q: %w", name, err)
 		}
 	}
 
-	for _, name := range sortedMapKeys(dt.Enums) {
+	for _, name := range schemaMapKeys(dt.Enums, enumOrder(order), preserveOrder) {
 		enum := dt.Enums[name]
 		if err := addEnumValues(tb, name, enum, typeCache); err != nil {
 			return fmt.Errorf("enum %q values: %w", name, err)
 		}
 	}
 
-	for _, name := range sortedMapKeys(dt.Classes) {
+	for _, name := range schemaMapKeys(dt.Classes, classOrder(order), preserveOrder) {
 		if err := createClassShell(tb, name, typeCache, classBuilderCache); err != nil {
 			return fmt.Errorf("class %q: %w", name, err)
 		}
 	}
 
-	for _, name := range sortedMapKeys(dt.Classes) {
+	for _, name := range schemaMapKeys(dt.Classes, classOrder(order), preserveOrder) {
 		class := dt.Classes[name]
-		if err := addNewClassProperties(tb, name, class, typeCache, classBuilderCache); err != nil {
+		if err := addNewClassProperties(tb, name, class, typeCache, classBuilderCache, order, preserveOrder); err != nil {
 			return fmt.Errorf("class %q properties: %w", name, err)
 		}
 	}
 
-	for _, name := range sortedMapKeys(classBuilderCache) {
+	for _, name := range schemaMapKeys(classBuilderCache, classOrder(order), preserveOrder) {
 		cb := classBuilderCache[name]
 		typ, err := cb.Type()
 		if err != nil {
@@ -1091,9 +1093,9 @@ func applyDynamicTypes(tb *introspected.TypeBuilder, dt *bamlutils.DynamicTypes)
 		typeCache[name] = typ
 	}
 
-	for _, name := range sortedMapKeys(dt.Classes) {
+	for _, name := range schemaMapKeys(dt.Classes, classOrder(order), preserveOrder) {
 		class := dt.Classes[name]
-		if err := addExistingClassProperties(tb, name, class, typeCache, classBuilderCache); err != nil {
+		if err := addExistingClassProperties(tb, name, class, typeCache, classBuilderCache, order, preserveOrder); err != nil {
 			return fmt.Errorf("class %q properties: %w", name, err)
 		}
 	}
@@ -1106,6 +1108,47 @@ func sortedMapKeys[V any](m map[string]V) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+func schemaMapKeys[V any](m map[string]V, order []string, preserve bool) []string {
+	if !preserve || len(order) == 0 {
+		return sortedMapKeys(m)
+	}
+	keys := make([]string, 0, len(m))
+	seen := make(map[string]struct{}, len(order))
+	for _, k := range order {
+		if _, ok := m[k]; !ok {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+	for _, k := range sortedMapKeys(m) {
+		if _, ok := seen[k]; !ok {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+func enumOrder(o *bamlutils.DynamicTypesOrder) []string {
+	if o == nil {
+		return nil
+	}
+	return o.Enums
+}
+func classOrder(o *bamlutils.DynamicTypesOrder) []string {
+	if o == nil {
+		return nil
+	}
+	return o.Classes
+}
+func propertyOrder(o *bamlutils.DynamicTypesOrder, className string) []string {
+	if o == nil || o.Properties == nil {
+		return nil
+	}
+	return o.Properties[className]
 }
 func createEnumShell(tb *introspected.TypeBuilder, name string, enum *bamlutils.DynamicEnum, typeCache map[string]introspected.Type) error {
 	if introspected.EnumExists(name) {
@@ -1183,13 +1226,13 @@ func createClassShell(tb *introspected.TypeBuilder, name string, typeCache map[s
 	classBuilderCache[name] = cb
 	return nil
 }
-func addNewClassProperties(tb *introspected.TypeBuilder, name string, class *bamlutils.DynamicClass, typeCache map[string]introspected.Type, classBuilderCache map[string]introspected.DynamicClassBuilder) error {
+func addNewClassProperties(tb *introspected.TypeBuilder, name string, class *bamlutils.DynamicClass, typeCache map[string]introspected.Type, classBuilderCache map[string]introspected.DynamicClassBuilder, order *bamlutils.DynamicTypesOrder, preserveOrder bool) error {
 	cb, ok := classBuilderCache[name]
 	if !ok {
 		return nil
 	}
 
-	for _, propName := range sortedMapKeys(class.Properties) {
+	for _, propName := range schemaMapKeys(class.Properties, propertyOrder(order, name), preserveOrder) {
 		prop := class.Properties[propName]
 		typ, err := resolvePropertyType(tb, prop, typeCache, classBuilderCache)
 		if err != nil {
@@ -1206,7 +1249,7 @@ func addNewClassProperties(tb *introspected.TypeBuilder, name string, class *bam
 	}
 	return nil
 }
-func addExistingClassProperties(tb *introspected.TypeBuilder, name string, class *bamlutils.DynamicClass, typeCache map[string]introspected.Type, classBuilderCache map[string]introspected.DynamicClassBuilder) error {
+func addExistingClassProperties(tb *introspected.TypeBuilder, name string, class *bamlutils.DynamicClass, typeCache map[string]introspected.Type, classBuilderCache map[string]introspected.DynamicClassBuilder, order *bamlutils.DynamicTypesOrder, preserveOrder bool) error {
 	if _, ok := classBuilderCache[name]; ok {
 		return nil
 	}
@@ -1221,7 +1264,7 @@ func addExistingClassProperties(tb *introspected.TypeBuilder, name string, class
 		return fmt.Errorf("get class builder: %w", err)
 	}
 
-	for _, propName := range sortedMapKeys(class.Properties) {
+	for _, propName := range schemaMapKeys(class.Properties, propertyOrder(order, name), preserveOrder) {
 		prop := class.Properties[propName]
 		typ, err := resolvePropertyType(tb, prop, typeCache, classBuilderCache)
 		if err != nil {
