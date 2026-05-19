@@ -2,7 +2,7 @@ module github.com/invakid404/baml-rest/introspected
 
 go 1.26.3
 
-require github.com/invakid404/baml-rest/bamlutils v0.0.42
+require github.com/invakid404/baml-rest/bamlutils v0.0.43
 
 require (
 	github.com/alecthomas/participle/v2 v2.1.4 // indirect
