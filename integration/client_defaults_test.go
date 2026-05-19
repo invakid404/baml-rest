@@ -18,8 +18,10 @@ import (
 //
 //  1. positive: a dedicated container with the env var set. The caller's
 //     ClientRegistry deliberately omits allowed_role_metadata; we verify the
-//     deployment default lets cache_control survive into the outbound body.
-//     Skipped on the BuildRequest leg — see the skip message for rationale.
+//     deployment default lets cache_control survive into the outbound body on
+//     both runtime paths (classic CallStream/OnTick and BuildRequest). The
+//     recursive helper validates the captured wire body so alias-leak shapes
+//     such as cache_control.cache_type do not pass.
 //
 //  2. negative: reuses the shared TestEnv (no BAML_REST_CLIENT_DEFAULTS).
 //     Same request shape; asserts cache_control is dropped. Reproduces the
