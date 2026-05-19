@@ -63,12 +63,11 @@ func main() {
 	}
 	if clientDefaults.HasKey("allowed_role_metadata") && buildRequestConfig.UseBuildRequest {
 		logger.Warn(
-			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata but " +
-				"BAML_REST_USE_BUILD_REQUEST=true; message-level metadata " +
-				"(e.g. cache_control) is dropped by the BuildRequest serializer " +
-				"until the upstream TODOs are resolved: " +
-				"baml_language/crates/sys_llm/src/build_request/openai.rs:100 and " +
-				"baml_language/crates/sys_llm/src/build_request/anthropic.rs:91")
+			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and " +
+				"BAML_REST_USE_BUILD_REQUEST=true; older BAML BuildRequest " +
+				"serializers may drop message-level metadata (e.g. cache_control). " +
+				"Keep this covered by integration tests when changing supported " +
+				"BAML versions.")
 	}
 
 	// Start RSS monitor to trigger GC when native memory pressure is high.
