@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0

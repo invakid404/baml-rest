@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest/workerplugin
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/hashicorp/go-plugin v1.8.0
