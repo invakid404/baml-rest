@@ -1,3 +1,34 @@
+## Embedding via `dynclient`
+
+The dynamic endpoints (`/call/_dynamic`, `/stream/_dynamic`, etc.) are also
+available as an in-process Go library at
+`github.com/invakid404/baml-rest/dynclient` for projects that want to call
+LLMs through baml-rest's BuildRequest pipeline without running a separate
+server.
+
+Install:
+
+```sh
+go get github.com/invakid404/baml-rest/dynclient@latest
+```
+
+Quickstart:
+
+```go
+import "github.com/invakid404/baml-rest/dynclient"
+
+c, err := dynclient.New(
+    dynclient.WithLogger(logger),
+    dynclient.WithMetricsRegistry(reg),
+)
+// c.DynamicCall(ctx, req)
+// c.DynamicStream(ctx, req)
+```
+
+See [`dynclient/`](dynclient/) for the full surface (8 options, 5 endpoint
+methods, iterator-style streaming). The patched-BAML CFFI library is
+bundled as a nested module — no separate setup required.
+
 ## Runtime configuration
 
 baml-rest reads the following environment variables at startup:
