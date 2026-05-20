@@ -1489,9 +1489,10 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	preserveSchemaOrderDescription := "Optional tri-state: true preserves the JSON key order of " +
 		"output_schema.{properties,classes,enums} and each class's properties in the rendered " +
 		"output_format, false forces the alphabetical default, and omitted/null inherits the server " +
-		"default configured by BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT. Multi-key maps must carry a " +
-		"captured order — raw-JSON callers get this for free; programmatic Go callers using the dynclient " +
-		"module must set the matching *Order slices."
+		"default configured by BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT. Order is captured intrinsically: " +
+		"raw-JSON callers get key order from the JSON object on the wire, and programmatic Go callers " +
+		"using the dynclient module get the insertion order of their OrderedMap literals (preserved by " +
+		"default unless WithPreserveSchemaOrderDefault flips the client-wide default)."
 
 	// Dynamic input schema
 	dynamicInputSchemaName := "__DynamicInput__"

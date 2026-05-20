@@ -286,11 +286,13 @@ func isNullable(ref *openapi3.SchemaRef) bool {
 	return false
 }
 
-// TestSchemaPreserveOrderExposure pins #313: the public OpenAPI surface
-// must surface the preserve-order opt-in on both __DynamicInput__ and
-// __DynamicParseInput__, and the worker-bound TypeBuilder.dynamic_types
-// shape must expose the matching preserve_order/order keys so generated
-// clients can use the feature.
+// TestSchemaPreserveOrderExposure pins #313 / #318: the public OpenAPI
+// surface must surface the preserve-order opt-in on both
+// __DynamicInput__ and __DynamicParseInput__, and the worker-bound
+// TypeBuilder.dynamic_types shape must expose the preserve_order
+// boolean. The legacy `order` side-channel was removed when the schema
+// types migrated to OrderedMap (#318) — the assertion below pins its
+// absence.
 func TestSchemaPreserveOrderExposure(t *testing.T) {
 	baml_rest.InitBamlRuntime()
 
