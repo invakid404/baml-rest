@@ -71,6 +71,33 @@ type TypeBuilder = bamlutils.TypeBuilder
 // DynamicTypes groups dynamic class and enum definitions.
 type DynamicTypes = bamlutils.DynamicTypes
 
+// OrderedMap is the insertion-ordered map type used by Property /
+// Class / Enum maps inside an OutputSchema. Re-exported from bamlutils
+// so dynclient callers do not need a second import.
+type OrderedMap[V any] = bamlutils.OrderedMap[V]
+
+// OrderedEntry is the (key, value) pair type accepted by NewOrderedMap
+// and MustOrderedMap.
+type OrderedEntry[V any] = bamlutils.OrderedEntry[V]
+
+// OrderedKV constructs an OrderedEntry for use in NewOrderedMap /
+// MustOrderedMap argument lists.
+func OrderedKV[V any](key string, value V) OrderedEntry[V] {
+	return bamlutils.OrderedKV(key, value)
+}
+
+// NewOrderedMap builds an insertion-ordered map from entries; duplicate
+// keys are rejected.
+func NewOrderedMap[V any](entries ...OrderedEntry[V]) (OrderedMap[V], error) {
+	return bamlutils.NewOrderedMap(entries...)
+}
+
+// MustOrderedMap is the panicking variant of NewOrderedMap intended for
+// tests and trusted package-local construction.
+func MustOrderedMap[V any](entries ...OrderedEntry[V]) OrderedMap[V] {
+	return bamlutils.MustOrderedMap(entries...)
+}
+
 // RetryConfig provides explicit per-request retry configuration.
 type RetryConfig = bamlutils.RetryConfig
 

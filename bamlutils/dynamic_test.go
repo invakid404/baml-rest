@@ -9,9 +9,9 @@ import (
 )
 
 // TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder pins #313: raw
-// JSON callers of /call/_dynamic should get the wire-order of
+// JSON callers of /call/_dynamic get the wire-order of
 // properties/classes/enums and nested class properties captured into
-// the matching *Order slices, so the worker boundary can ship the
+// the OrderedMap insertion order, so the worker boundary can ship the
 // order across to TypeBuilder population without a round-trip through
 // Go map iteration.
 func TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder(t *testing.T) {
@@ -36,33 +36,32 @@ func TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder(t *testing.T) {
 	if err := json.Unmarshal(body, &s); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if got, want := s.PropertiesOrder, []string{"delta", "alpha", "charlie", "bravo"}; !equalStrings(got, want) {
-		t.Errorf("PropertiesOrder: got %v want %v", got, want)
+	if got, want := s.Properties.Keys(), []string{"delta", "alpha", "charlie", "bravo"}; !equalStrings(got, want) {
+		t.Errorf("Properties order: got %v want %v", got, want)
 	}
-	if got, want := s.ClassesOrder, []string{"Profile", "Address"}; !equalStrings(got, want) {
-		t.Errorf("ClassesOrder: got %v want %v", got, want)
+	if got, want := s.Classes.Keys(), []string{"Profile", "Address"}; !equalStrings(got, want) {
+		t.Errorf("Classes order: got %v want %v", got, want)
 	}
-	if got, want := s.EnumsOrder, []string{"Status", "Preference"}; !equalStrings(got, want) {
-		t.Errorf("EnumsOrder: got %v want %v", got, want)
+	if got, want := s.Enums.Keys(), []string{"Status", "Preference"}; !equalStrings(got, want) {
+		t.Errorf("Enums order: got %v want %v", got, want)
 	}
-	if got, want := s.Classes["Profile"].PropertiesOrder, []string{"zulu", "alpha"}; !equalStrings(got, want) {
-		t.Errorf("Profile.PropertiesOrder: got %v want %v", got, want)
+	profile, _ := s.Classes.Get("Profile")
+	if got, want := profile.Properties.Keys(), []string{"zulu", "alpha"}; !equalStrings(got, want) {
+		t.Errorf("Profile.Properties order: got %v want %v", got, want)
 	}
-	if got, want := s.Classes["Address"].PropertiesOrder, []string{"zip", "city", "street"}; !equalStrings(got, want) {
-		t.Errorf("Address.PropertiesOrder: got %v want %v", got, want)
+	address, _ := s.Classes.Get("Address")
+	if got, want := address.Properties.Keys(), []string{"zip", "city", "street"}; !equalStrings(got, want) {
+		t.Errorf("Address.Properties order: got %v want %v", got, want)
 	}
 }
 
-// TestUnmarshalOrderedObject_NestedRawMessage pins the goccy/go-json
+// TestUnmarshalOrderedMap_NestedRawMessage pins the goccy/go-json
 // streaming-decoder contract that the order-capture path depends on:
 // Token() must surface object delimiters and string keys, and a
 // subsequent Decode(&json.RawMessage) on the value position must hand
 // back the raw bytes of nested objects/arrays/primitives intact so the
-// downstream goccy Unmarshal can decode them. Exercised through
-// DynamicOutputSchema.UnmarshalJSON since unmarshalOrderedObject is
-// package-private; if goccy ever diverges from stdlib here the order
-// capture would silently break and this test should fail first.
-func TestUnmarshalOrderedObject_NestedRawMessage(t *testing.T) {
+// downstream goccy Unmarshal can decode them.
+func TestUnmarshalOrderedMap_NestedRawMessage(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{
       "properties": {
@@ -79,39 +78,31 @@ func TestUnmarshalOrderedObject_NestedRawMessage(t *testing.T) {
 	if err := json.Unmarshal(body, &s); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if got, want := s.PropertiesOrder, []string{"obj", "lit", "ref", "primitive"}; !equalStrings(got, want) {
-		t.Errorf("PropertiesOrder: got %v want %v", got, want)
+	if got, want := s.Properties.Keys(), []string{"obj", "lit", "ref", "primitive"}; !equalStrings(got, want) {
+		t.Errorf("Properties order: got %v want %v", got, want)
 	}
 
-	// Nested object value: items must round-trip through the goccy
-	// Decode(&RawMessage) -> json.Unmarshal path.
-	objProp := s.Properties["obj"]
+	objProp, _ := s.Properties.Get("obj")
 	if objProp == nil || objProp.Type != "list" || objProp.Items == nil || objProp.Items.Type != "string" {
 		t.Errorf("nested list property lost its items spec: %+v", objProp)
 	}
 
-	// Literal value (a JSON number) round-trips as expected. Goccy's
-	// streaming decoder accepts UseNumber on the outer scan, but the
-	// inner Decode(&RawMessage) -> Unmarshal must still surface the
-	// value through the DynamicProperty.Value any field.
-	litProp := s.Properties["lit"]
+	litProp, _ := s.Properties.Get("lit")
 	if litProp == nil || litProp.Type != "literal_int" || litProp.Value == nil {
 		t.Errorf("literal_int property missing value: %+v", litProp)
 	}
 
-	// Ref-only property: the inner Decode shouldn't strip the ref key.
-	refProp := s.Properties["ref"]
+	refProp, _ := s.Properties.Get("ref")
 	if refProp == nil || refProp.Ref != "Other" {
 		t.Errorf("ref property dropped: %+v", refProp)
 	}
 
-	// Nested class round-trips with description + ordered properties.
-	other := s.Classes["Other"]
+	other, _ := s.Classes.Get("Other")
 	if other == nil || other.Description != "nested with array of values" {
 		t.Errorf("nested class lost description: %+v", other)
 	}
-	if got, want := other.PropertiesOrder, []string{"a"}; !equalStrings(got, want) {
-		t.Errorf("nested class PropertiesOrder: got %v want %v", got, want)
+	if got, want := other.Properties.Keys(), []string{"a"}; !equalStrings(got, want) {
+		t.Errorf("nested class Properties order: got %v want %v", got, want)
 	}
 }
 
@@ -160,9 +151,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateKey(t *testing.T) {
 
 // TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateTopLevelKey
 // pins the strict-duplicate rule at the OUTER level of the schema
-// payload. The inner schema objects (properties/classes/enums) already
-// reject duplicate keys via the token-walking unmarshalOrderedObject
-// path; the struct-tag decode on the outer object would silently
+// payload. The struct-tag decode on the outer object would silently
 // accept last-wins, so the pre-check helper restores symmetry.
 func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testing.T) {
 	t.Parallel()
@@ -202,10 +191,6 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testin
 	}
 }
 
-// TestDynamicClass_UnmarshalJSON_RejectsDuplicateTopLevelKey pins the
-// same outer-level duplicate-key rejection on the nested class type.
-// description/alias/properties are all rejected — the helper is
-// strict-all rather than allow-listed.
 func TestDynamicClass_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testing.T) {
 	t.Parallel()
 
@@ -243,13 +228,12 @@ func TestDynamicClass_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testing.T) {
 		})
 	}
 
-	// Negative control — a well-formed class still parses cleanly.
 	body := []byte(`{"description":"only","alias":"once","properties":{"p":{"type":"string"}}}`)
 	var c DynamicClass
 	if err := json.Unmarshal(body, &c); err != nil {
 		t.Errorf("well-formed class rejected: %v", err)
 	}
-	if c.Description != "only" || c.Alias != "once" || len(c.Properties) != 1 {
+	if c.Description != "only" || c.Alias != "once" || c.Properties.Len() != 1 {
 		t.Errorf("well-formed class decoded incorrectly: %+v", c)
 	}
 }
@@ -295,9 +279,8 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsNonObject(t *testing.T) {
 
 // TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull pins the
 // nil-map convention: null on any schema-object field is accepted
-// and leaves the corresponding map / order slice nil, so callers can
-// explicitly opt out of classes or enums via `null` without tripping
-// the non-object guard.
+// and leaves the corresponding OrderedMap at its zero value, so
+// callers can opt out of classes or enums via `null`.
 func TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{
@@ -309,20 +292,16 @@ func TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull(t *testing.T) {
 	if err := json.Unmarshal(body, &s); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if s.Properties != nil {
-		t.Errorf("Properties: got %v want nil", s.Properties)
+	if !s.Properties.IsZero() {
+		t.Errorf("Properties: got %v want zero", s.Properties.Keys())
 	}
-	if s.Classes != nil {
-		t.Errorf("Classes: got %v want nil", s.Classes)
+	if !s.Classes.IsZero() {
+		t.Errorf("Classes: got %v want zero", s.Classes.Keys())
 	}
-	if s.Enums != nil {
-		t.Errorf("Enums: got %v want nil", s.Enums)
-	}
-	if len(s.PropertiesOrder) != 0 || len(s.ClassesOrder) != 0 || len(s.EnumsOrder) != 0 {
-		t.Errorf("order slices should be empty; got props=%v classes=%v enums=%v", s.PropertiesOrder, s.ClassesOrder, s.EnumsOrder)
+	if !s.Enums.IsZero() {
+		t.Errorf("Enums: got %v want zero", s.Enums.Keys())
 	}
 
-	// Nested null on a class's properties is also accepted.
 	nested := []byte(`{
       "properties": {"x": {"type": "string"}},
       "classes": {"C": {"properties": null}}
@@ -331,20 +310,14 @@ func TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull(t *testing.T) {
 	if err := json.Unmarshal(nested, &s2); err != nil {
 		t.Fatalf("Unmarshal nested: %v", err)
 	}
-	if s2.Classes["C"].Properties != nil {
-		t.Errorf("class C properties: got %v want nil", s2.Classes["C"].Properties)
-	}
-	if len(s2.Classes["C"].PropertiesOrder) != 0 {
-		t.Errorf("class C PropertiesOrder: got %v want empty", s2.Classes["C"].PropertiesOrder)
+	cls, _ := s2.Classes.Get("C")
+	if !cls.Properties.IsZero() {
+		t.Errorf("class C properties: got %v want zero", cls.Properties.Keys())
 	}
 }
 
 // TestDynamicOutputSchema_UnmarshalJSON_ResetsOnReuse pins that
-// decoding into an already-populated receiver clears stale maps and
-// *Order slices, instead of merging or retaining the previous values.
-// json.Unmarshal into a non-zero target is valid Go usage; the prior
-// implementation silently kept stale fields when the new payload
-// omitted or nulled a section.
+// decoding into an already-populated receiver clears stale maps.
 func TestDynamicOutputSchema_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
 	t.Parallel()
 	first := []byte(`{
@@ -356,40 +329,28 @@ func TestDynamicOutputSchema_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
 	if err := json.Unmarshal(first, &s); err != nil {
 		t.Fatalf("first Unmarshal: %v", err)
 	}
-	if len(s.Properties) == 0 || len(s.Classes) == 0 || len(s.Enums) == 0 {
+	if s.Properties.Len() == 0 || s.Classes.Len() == 0 || s.Enums.Len() == 0 {
 		t.Fatalf("first decode left maps empty: %+v", s)
 	}
 
-	// Empty object — every section absent. Reuse must clear all
-	// previously populated fields.
 	if err := json.Unmarshal([]byte(`{}`), &s); err != nil {
 		t.Fatalf("reuse Unmarshal {}: %v", err)
 	}
-	if s.Properties != nil || s.Classes != nil || s.Enums != nil {
+	if !s.Properties.IsZero() || !s.Classes.IsZero() || !s.Enums.IsZero() {
 		t.Errorf("maps not cleared after empty reuse: %+v", s)
 	}
-	if len(s.PropertiesOrder) != 0 || len(s.ClassesOrder) != 0 || len(s.EnumsOrder) != 0 {
-		t.Errorf("order slices not cleared after empty reuse: props=%v classes=%v enums=%v", s.PropertiesOrder, s.ClassesOrder, s.EnumsOrder)
-	}
 
-	// Re-populate then null every section. null is accepted as the
-	// nil-map sentinel, so the same clearing contract applies.
 	if err := json.Unmarshal(first, &s); err != nil {
 		t.Fatalf("re-populate Unmarshal: %v", err)
 	}
 	if err := json.Unmarshal([]byte(`{"properties":null,"classes":null,"enums":null}`), &s); err != nil {
 		t.Fatalf("reuse Unmarshal null: %v", err)
 	}
-	if s.Properties != nil || s.Classes != nil || s.Enums != nil {
+	if !s.Properties.IsZero() || !s.Classes.IsZero() || !s.Enums.IsZero() {
 		t.Errorf("maps not cleared after null reuse: %+v", s)
-	}
-	if len(s.PropertiesOrder) != 0 || len(s.ClassesOrder) != 0 || len(s.EnumsOrder) != 0 {
-		t.Errorf("order slices not cleared after null reuse: props=%v classes=%v enums=%v", s.PropertiesOrder, s.ClassesOrder, s.EnumsOrder)
 	}
 }
 
-// TestDynamicClass_UnmarshalJSON_ResetsOnReuse mirrors the
-// DynamicOutputSchema reuse-reset contract on the nested class type.
 func TestDynamicClass_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
 	t.Parallel()
 	first := []byte(`{"description": "old", "alias": "old-alias", "properties": {"p": {"type": "string"}, "q": {"type": "int"}}}`)
@@ -397,22 +358,20 @@ func TestDynamicClass_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
 	if err := json.Unmarshal(first, &c); err != nil {
 		t.Fatalf("first Unmarshal: %v", err)
 	}
-	if c.Description == "" || c.Alias == "" || len(c.Properties) == 0 || len(c.PropertiesOrder) == 0 {
+	if c.Description == "" || c.Alias == "" || c.Properties.Len() == 0 {
 		t.Fatalf("first decode left fields empty: %+v", c)
 	}
 	if err := json.Unmarshal([]byte(`{}`), &c); err != nil {
 		t.Fatalf("reuse Unmarshal: %v", err)
 	}
-	if c.Description != "" || c.Alias != "" || c.Properties != nil || len(c.PropertiesOrder) != 0 {
+	if c.Description != "" || c.Alias != "" || !c.Properties.IsZero() {
 		t.Errorf("fields not cleared after empty reuse: %+v", c)
 	}
 }
 
 // TestDynamicInput_Validate_RejectsReservedClassName pins that a
 // user class named Baml_Rest_DynamicOutput is rejected at validation
-// rather than silently overwritten by buildWorkerClassMap. The name
-// is the synthetic top-level class baml-rest writes into the worker
-// payload.
+// rather than silently overwritten by buildWorkerClassMap.
 func TestDynamicInput_Validate_RejectsReservedClassName(t *testing.T) {
 	t.Parallel()
 	prompt := "hi"
@@ -425,12 +384,12 @@ func TestDynamicInput_Validate_RejectsReservedClassName(t *testing.T) {
 			Clients: []*ClientProperty{{Name: primary, Provider: provider, Options: map[string]any{"model": "m", "api_key": "k"}}},
 		},
 		OutputSchema: &DynamicOutputSchema{
-			Properties: map[string]*DynamicProperty{"x": {Type: "string"}},
-			Classes: map[string]*DynamicClass{
-				"Baml_Rest_DynamicOutput": {
-					Properties: map[string]*DynamicProperty{"sneaky": {Type: "string"}},
-				},
-			},
+			Properties: MustOrderedMap(OrderedKV("x", &DynamicProperty{Type: "string"})),
+			Classes: MustOrderedMap(
+				OrderedKV("Baml_Rest_DynamicOutput", &DynamicClass{
+					Properties: MustOrderedMap(OrderedKV("sneaky", &DynamicProperty{Type: "string"})),
+				}),
+			),
 		},
 	}
 	err := in.Validate()
@@ -452,12 +411,12 @@ func TestDynamicParseInput_Validate_RejectsReservedClassName(t *testing.T) {
 	in := &DynamicParseInput{
 		Raw: `{"x":"y"}`,
 		OutputSchema: &DynamicOutputSchema{
-			Properties: map[string]*DynamicProperty{"x": {Type: "string"}},
-			Classes: map[string]*DynamicClass{
-				"Baml_Rest_DynamicOutput": {
-					Properties: map[string]*DynamicProperty{"sneaky": {Type: "string"}},
-				},
-			},
+			Properties: MustOrderedMap(OrderedKV("x", &DynamicProperty{Type: "string"})),
+			Classes: MustOrderedMap(
+				OrderedKV("Baml_Rest_DynamicOutput", &DynamicClass{
+					Properties: MustOrderedMap(OrderedKV("sneaky", &DynamicProperty{Type: "string"})),
+				}),
+			),
 		},
 	}
 	err := in.Validate()
@@ -472,127 +431,12 @@ func TestDynamicParseInput_Validate_RejectsReservedClassName(t *testing.T) {
 	}
 }
 
-func TestDynamicInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *testing.T) {
-	t.Parallel()
-	prompt := "hi"
-	primary := "TestClient"
-	provider := "anthropic"
-
-	mkInput := func() *DynamicInput {
-		return &DynamicInput{
-			Messages: []DynamicMessage{{Role: "user", TextContent: &prompt}},
-			ClientRegistry: &ClientRegistry{
-				Primary: &primary,
-				Clients: []*ClientProperty{{Name: primary, Provider: provider, Options: map[string]any{"model": "x", "api_key": "k"}}},
-			},
-			OutputSchema: &DynamicOutputSchema{
-				Properties: map[string]*DynamicProperty{
-					"alpha": {Type: "string"},
-					"bravo": {Type: "int"},
-				},
-				Classes: map[string]*DynamicClass{
-					"C1": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
-					"C2": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
-				},
-				Enums: map[string]*DynamicEnum{
-					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
-					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
-				},
-			},
-			PreserveSchemaOrder: boolPtr(true),
-		}
-	}
-
-	t.Run("missing properties order", func(t *testing.T) {
-		in := mkInput()
-		err := in.Validate()
-		if err == nil || !strings.Contains(err.Error(), "output_schema.properties") {
-			t.Fatalf("expected missing properties order, got %v", err)
-		}
-	})
-
-	t.Run("missing classes order", func(t *testing.T) {
-		in := mkInput()
-		in.OutputSchema.PropertiesOrder = []string{"alpha", "bravo"}
-		err := in.Validate()
-		if err == nil || !strings.Contains(err.Error(), "output_schema.classes") {
-			t.Fatalf("expected missing classes order, got %v", err)
-		}
-	})
-
-	t.Run("missing enums order", func(t *testing.T) {
-		in := mkInput()
-		in.OutputSchema.PropertiesOrder = []string{"alpha", "bravo"}
-		in.OutputSchema.ClassesOrder = []string{"C1", "C2"}
-		err := in.Validate()
-		if err == nil || !strings.Contains(err.Error(), "output_schema.enums") {
-			t.Fatalf("expected missing enums order, got %v", err)
-		}
-	})
-
-	t.Run("positive with all order set", func(t *testing.T) {
-		in := mkInput()
-		in.OutputSchema.PropertiesOrder = []string{"alpha", "bravo"}
-		in.OutputSchema.ClassesOrder = []string{"C1", "C2"}
-		in.OutputSchema.EnumsOrder = []string{"E1", "E2"}
-		// Nested classes carry only 1 property — order required when len>=2,
-		// so single-property classes need no order. Set anyway for clarity.
-		in.OutputSchema.Classes["C1"].PropertiesOrder = []string{"p"}
-		in.OutputSchema.Classes["C2"].PropertiesOrder = []string{"q"}
-		if err := in.Validate(); err != nil {
-			t.Fatalf("Validate: %v", err)
-		}
-	})
-
-	t.Run("duplicate order entry rejected", func(t *testing.T) {
-		in := mkInput()
-		in.OutputSchema.PropertiesOrder = []string{"alpha", "alpha"}
-		err := in.Validate()
-		if err == nil || !strings.Contains(err.Error(), "duplicate") {
-			t.Fatalf("expected duplicate error, got %v", err)
-		}
-	})
-
-	t.Run("unknown order entry rejected", func(t *testing.T) {
-		in := mkInput()
-		in.OutputSchema.PropertiesOrder = []string{"alpha", "zzz"}
-		err := in.Validate()
-		if err == nil || !strings.Contains(err.Error(), "unknown") {
-			t.Fatalf("expected unknown error, got %v", err)
-		}
-	})
-}
-
-func TestDynamicParseInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *testing.T) {
-	t.Parallel()
-	in := &DynamicParseInput{
-		Raw: "{\"alpha\":\"x\"}",
-		OutputSchema: &DynamicOutputSchema{
-			Properties: map[string]*DynamicProperty{
-				"alpha": {Type: "string"},
-				"bravo": {Type: "int"},
-			},
-		},
-		PreserveSchemaOrder: boolPtr(true),
-	}
-	err := in.Validate()
-	if err == nil || !strings.Contains(err.Error(), "output_schema.properties") {
-		t.Fatalf("expected missing properties order error, got %v", err)
-	}
-	in.OutputSchema.PropertiesOrder = []string{"alpha", "bravo"}
-	if err := in.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
-	}
-}
-
 // TestDynamicInput_Validate_PreserveSchemaOrderTriState pins the *bool
-// contract on the DynamicInput call path. nil and *false both behave
-// like "no opt-in" — preserve-order validation is skipped, so a
-// multi-key schema with no captured order metadata still passes. Only
-// *true engages validatePreserveSchemaOrder. The JSON `null` row
-// exercises Go's stdlib pointer unmarshal (a `null` literal decodes a
-// *bool field back to nil), confirming we don't need a custom
-// UnmarshalJSON for the absent/inherit-default semantics.
+// contract. With OrderedMap end-to-end, preserve-order no longer
+// requires order-metadata validation, so the tri-state only governs
+// whether the worker payload sets dynamic_types.preserve_order=true.
+// nil/JSON-null inherit the server default; *true and *false win
+// outright.
 func TestDynamicInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
 	t.Parallel()
 	prompt := "hi"
@@ -607,35 +451,20 @@ func TestDynamicInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
 				Clients: []*ClientProperty{{Name: primary, Provider: provider, Options: map[string]any{"model": "m", "api_key": "k"}}},
 			},
 			OutputSchema: &DynamicOutputSchema{
-				Properties: map[string]*DynamicProperty{
-					"alpha": {Type: "string"},
-					"bravo": {Type: "int"},
-				},
-				// Intentionally no PropertiesOrder — preserve-order validation
-				// would reject this, while nil/*false must skip the check.
+				Properties: MustOrderedMap(
+					OrderedKV("alpha", &DynamicProperty{Type: "string"}),
+					OrderedKV("bravo", &DynamicProperty{Type: "int"}),
+				),
 			},
 			PreserveSchemaOrder: preserve,
 		}
 	}
 
-	t.Run("nil opts out", func(t *testing.T) {
-		if err := mkInput(nil).Validate(); err != nil {
-			t.Errorf("nil PreserveSchemaOrder must not trip preserve-order validation: %v", err)
+	for _, p := range []*bool{nil, boolPtr(false), boolPtr(true)} {
+		if err := mkInput(p).Validate(); err != nil {
+			t.Errorf("Validate(%v): %v", p, err)
 		}
-	})
-
-	t.Run("false opts out", func(t *testing.T) {
-		if err := mkInput(boolPtr(false)).Validate(); err != nil {
-			t.Errorf("*false PreserveSchemaOrder must not trip preserve-order validation: %v", err)
-		}
-	})
-
-	t.Run("true engages validation", func(t *testing.T) {
-		err := mkInput(boolPtr(true)).Validate()
-		if err == nil || !strings.Contains(err.Error(), "output_schema.properties") {
-			t.Fatalf("expected missing properties order error, got %v", err)
-		}
-	})
+	}
 
 	t.Run("JSON null decodes to nil and inherits default", func(t *testing.T) {
 		body := []byte(`{
@@ -666,33 +495,20 @@ func TestDynamicParseInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
 		return &DynamicParseInput{
 			Raw: `{"alpha":"x"}`,
 			OutputSchema: &DynamicOutputSchema{
-				Properties: map[string]*DynamicProperty{
-					"alpha": {Type: "string"},
-					"bravo": {Type: "int"},
-				},
+				Properties: MustOrderedMap(
+					OrderedKV("alpha", &DynamicProperty{Type: "string"}),
+					OrderedKV("bravo", &DynamicProperty{Type: "int"}),
+				),
 			},
 			PreserveSchemaOrder: preserve,
 		}
 	}
 
-	t.Run("nil opts out", func(t *testing.T) {
-		if err := mkInput(nil).Validate(); err != nil {
-			t.Errorf("nil PreserveSchemaOrder must not trip preserve-order validation: %v", err)
+	for _, p := range []*bool{nil, boolPtr(false), boolPtr(true)} {
+		if err := mkInput(p).Validate(); err != nil {
+			t.Errorf("Validate(%v): %v", p, err)
 		}
-	})
-
-	t.Run("false opts out", func(t *testing.T) {
-		if err := mkInput(boolPtr(false)).Validate(); err != nil {
-			t.Errorf("*false PreserveSchemaOrder must not trip preserve-order validation: %v", err)
-		}
-	})
-
-	t.Run("true engages validation", func(t *testing.T) {
-		err := mkInput(boolPtr(true)).Validate()
-		if err == nil || !strings.Contains(err.Error(), "output_schema.properties") {
-			t.Fatalf("expected missing properties order error, got %v", err)
-		}
-	})
+	}
 
 	t.Run("JSON null decodes to nil and inherits default", func(t *testing.T) {
 		body := []byte(`{
@@ -713,6 +529,11 @@ func TestDynamicParseInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
 	})
 }
 
+// TestDynamicInput_ToWorkerInput_PropagatesOrder pins that
+// preserve_schema_order=true on the public input lands on the worker
+// boundary as dynamic_types.preserve_order=true, with the OrderedMap
+// classes/enums carrying the wire order intrinsically — no side-channel
+// "order" key required.
 func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{
@@ -746,53 +567,58 @@ func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ToWorkerInput: %v", err)
 	}
-	var decoded map[string]any
+
+	// Parse the worker payload preserving key order so we can verify the
+	// classes/enums objects survived as ordered objects on the wire.
+	type dyn struct {
+		PreserveOrder bool                         `json:"preserve_order"`
+		Classes       OrderedMap[*DynamicClass]    `json:"classes"`
+		Enums         OrderedMap[*DynamicEnum]     `json:"enums"`
+	}
+	type tb struct {
+		DynamicTypes dyn `json:"dynamic_types"`
+	}
+	type opts struct {
+		TypeBuilder tb `json:"type_builder"`
+	}
+	type payload struct {
+		Opts opts `json:"__baml_options__"`
+	}
+	var decoded payload
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
 	}
-	opts := decoded["__baml_options__"].(map[string]any)
-	tb := opts["type_builder"].(map[string]any)
-	dt := tb["dynamic_types"].(map[string]any)
-	if got := dt["preserve_order"]; got != true {
-		t.Errorf("preserve_order: got %v want true", got)
+	if !decoded.Opts.TypeBuilder.DynamicTypes.PreserveOrder {
+		t.Errorf("preserve_order: got false want true")
 	}
-	order := dt["order"].(map[string]any)
-	classes := toStringSlice(t, order["classes"])
+	gotClasses := decoded.Opts.TypeBuilder.DynamicTypes.Classes.Keys()
 	wantClasses := []string{"Baml_Rest_DynamicOutput", "Profile", "Address"}
-	if !equalStrings(classes, wantClasses) {
-		t.Errorf("order.classes: got %v want %v", classes, wantClasses)
+	if !equalStrings(gotClasses, wantClasses) {
+		t.Errorf("classes order: got %v want %v", gotClasses, wantClasses)
 	}
-	enums := toStringSlice(t, order["enums"])
+	gotEnums := decoded.Opts.TypeBuilder.DynamicTypes.Enums.Keys()
 	wantEnums := []string{"Status", "Preference"}
-	if !equalStrings(enums, wantEnums) {
-		t.Errorf("order.enums: got %v want %v", enums, wantEnums)
+	if !equalStrings(gotEnums, wantEnums) {
+		t.Errorf("enums order: got %v want %v", gotEnums, wantEnums)
 	}
-	props := order["properties"].(map[string]any)
-	dynOut := toStringSlice(t, props["Baml_Rest_DynamicOutput"])
-	wantDynOut := []string{"delta", "alpha", "charlie"}
-	if !equalStrings(dynOut, wantDynOut) {
-		t.Errorf("order.properties.Baml_Rest_DynamicOutput: got %v want %v", dynOut, wantDynOut)
+	dynOut, _ := decoded.Opts.TypeBuilder.DynamicTypes.Classes.Get("Baml_Rest_DynamicOutput")
+	if got, want := dynOut.Properties.Keys(), []string{"delta", "alpha", "charlie"}; !equalStrings(got, want) {
+		t.Errorf("Baml_Rest_DynamicOutput.Properties order: got %v want %v", got, want)
 	}
-	profile := toStringSlice(t, props["Profile"])
-	wantProfile := []string{"zulu", "alpha"}
-	if !equalStrings(profile, wantProfile) {
-		t.Errorf("order.properties.Profile: got %v want %v", profile, wantProfile)
+	profile, _ := decoded.Opts.TypeBuilder.DynamicTypes.Classes.Get("Profile")
+	if got, want := profile.Properties.Keys(), []string{"zulu", "alpha"}; !equalStrings(got, want) {
+		t.Errorf("Profile.Properties order: got %v want %v", got, want)
 	}
-	address := toStringSlice(t, props["Address"])
-	wantAddress := []string{"zip", "city"}
-	if !equalStrings(address, wantAddress) {
-		t.Errorf("order.properties.Address: got %v want %v", address, wantAddress)
+	address, _ := decoded.Opts.TypeBuilder.DynamicTypes.Classes.Get("Address")
+	if got, want := address.Properties.Keys(), []string{"zip", "city"}; !equalStrings(got, want) {
+		t.Errorf("Address.Properties order: got %v want %v", got, want)
 	}
 }
 
-// TestDynamicInput_ToWorkerInput_SingleClassPropertyOrder pins the
-// reachable single-class case: validation legally allows empty
-// ClassesOrder when there is exactly one class, so the worker-bound
-// DynamicTypesOrder.Properties[<className>] must still carry that
-// class's PropertiesOrder. Earlier code only copied per-class order
-// for names listed in ClassesOrder, silently dropping nested order
-// on single-class schemas.
-func TestDynamicInput_ToWorkerInput_SingleClassPropertyOrder(t *testing.T) {
+// TestDynamicInput_ToWorkerInput_SyntheticClassFirst pins that
+// the synthetic Baml_Rest_DynamicOutput class is always emitted at the
+// front of the worker-bound Classes regardless of input order.
+func TestDynamicInput_ToWorkerInput_SyntheticClassFirst(t *testing.T) {
 	t.Parallel()
 	primary := "TestClient"
 	provider := "anthropic"
@@ -804,21 +630,16 @@ func TestDynamicInput_ToWorkerInput_SingleClassPropertyOrder(t *testing.T) {
 			Clients: []*ClientProperty{{Name: primary, Provider: provider, Options: map[string]any{"model": "m", "api_key": "k"}}},
 		},
 		OutputSchema: &DynamicOutputSchema{
-			Properties: map[string]*DynamicProperty{
-				"only": {Ref: "Solo"},
-			},
-			PropertiesOrder: []string{"only"},
-			Classes: map[string]*DynamicClass{
-				"Solo": {
-					Properties: map[string]*DynamicProperty{
-						"zulu":  {Type: "string"},
-						"alpha": {Type: "int"},
-						"mike":  {Type: "bool"},
-					},
-					PropertiesOrder: []string{"zulu", "alpha", "mike"},
-				},
-			},
-			// ClassesOrder intentionally empty — legal because Classes has one key.
+			Properties: MustOrderedMap(OrderedKV("only", &DynamicProperty{Ref: "Solo"})),
+			Classes: MustOrderedMap(
+				OrderedKV("Solo", &DynamicClass{
+					Properties: MustOrderedMap(
+						OrderedKV("zulu", &DynamicProperty{Type: "string"}),
+						OrderedKV("alpha", &DynamicProperty{Type: "int"}),
+						OrderedKV("mike", &DynamicProperty{Type: "bool"}),
+					),
+				}),
+			),
 		},
 		PreserveSchemaOrder: boolPtr(true),
 	}
@@ -829,28 +650,31 @@ func TestDynamicInput_ToWorkerInput_SingleClassPropertyOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ToWorkerInput: %v", err)
 	}
-	var decoded map[string]any
+
+	type dyn struct {
+		Classes OrderedMap[*DynamicClass] `json:"classes"`
+	}
+	type tb struct {
+		DynamicTypes dyn `json:"dynamic_types"`
+	}
+	type opts struct {
+		TypeBuilder tb `json:"type_builder"`
+	}
+	type payload struct {
+		Opts opts `json:"__baml_options__"`
+	}
+	var decoded payload
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
 	}
-	opts := decoded["__baml_options__"].(map[string]any)
-	tb := opts["type_builder"].(map[string]any)
-	dt := tb["dynamic_types"].(map[string]any)
-	order := dt["order"].(map[string]any)
-	props := order["properties"].(map[string]any)
-	got := toStringSlice(t, props["Solo"])
-	want := []string{"zulu", "alpha", "mike"}
-	if !equalStrings(got, want) {
-		t.Errorf("order.properties.Solo: got %v want %v", got, want)
-	}
-	// Order.Classes must also cover the user class (single-class case
-	// where ClassesOrder was legally empty). dt.Classes carries the
-	// synthetic + user class on the worker side, so the worker-side
-	// DynamicTypes.Validate requires both names in Order.Classes.
-	classes := toStringSlice(t, order["classes"])
+	gotClasses := decoded.Opts.TypeBuilder.DynamicTypes.Classes.Keys()
 	wantClasses := []string{"Baml_Rest_DynamicOutput", "Solo"}
-	if !equalStrings(classes, wantClasses) {
-		t.Errorf("order.classes: got %v want %v", classes, wantClasses)
+	if !equalStrings(gotClasses, wantClasses) {
+		t.Errorf("classes order: got %v want %v", gotClasses, wantClasses)
+	}
+	solo, _ := decoded.Opts.TypeBuilder.DynamicTypes.Classes.Get("Solo")
+	if got, want := solo.Properties.Keys(), []string{"zulu", "alpha", "mike"}; !equalStrings(got, want) {
+		t.Errorf("Solo.Properties order: got %v want %v", got, want)
 	}
 }
 
@@ -871,36 +695,9 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-func toStringSlice(t *testing.T, v any) []string {
-	t.Helper()
-	arr, ok := v.([]any)
-	if !ok {
-		t.Fatalf("expected []any, got %T", v)
-	}
-	out := make([]string, 0, len(arr))
-	for _, x := range arr {
-		s, ok := x.(string)
-		if !ok {
-			t.Fatalf("expected string, got %T", x)
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
 // TestDynamicInput_ToWorkerInput_CacheControlBridge pins the bridge from
 // the public CacheControl{Type: ...} shape to the generated dynamic BAML
-// input's `cache_control.cache_type` shape. The previous wire reused the
-// public MessageMetadata struct directly, so the generated input dropped
-// the `type` value and forwarded `cache_control: {}` to Anthropic
-// once `allowed_role_metadata: ["cache_control"]` enabled the field
-// (issue #304).
-//
-// Asserts:
-//   - the tagged message's metadata contains `cache_control.cache_type:"ephemeral"`,
-//   - no message carries the public `cache_control.type` JSON key,
-//   - no message carries an empty `cache_control:{}` object,
-//   - untagged messages emit no `metadata` key at all.
+// input's `cache_control.cache_type` shape (issue #304).
 func TestDynamicInput_ToWorkerInput_CacheControlBridge(t *testing.T) {
 	t.Parallel()
 
@@ -934,17 +731,15 @@ func TestDynamicInput_ToWorkerInput_CacheControlBridge(t *testing.T) {
 					Name:     primary,
 					Provider: provider,
 					Options: map[string]any{
-						"model":                "test-model",
-						"api_key":              "test-key",
+						"model":                 "test-model",
+						"api_key":               "test-key",
 						"allowed_role_metadata": []any{"cache_control"},
 					},
 				},
 			},
 		},
 		OutputSchema: &DynamicOutputSchema{
-			Properties: map[string]*DynamicProperty{
-				"answer": {Type: "string"},
-			},
+			Properties: MustOrderedMap(OrderedKV("answer", &DynamicProperty{Type: "string"})),
 		},
 	}
 
@@ -956,18 +751,12 @@ func TestDynamicInput_ToWorkerInput_CacheControlBridge(t *testing.T) {
 		t.Fatalf("ToWorkerInput: %v", err)
 	}
 
-	// The public `type` JSON key must never leak into the BAML-facing
-	// payload; the generated input names the field `cache_type`.
 	if bytes.Contains(data, []byte(`"cache_control":{"type":`)) {
 		t.Errorf("worker payload still carries public cache_control.type shape:\n%s", data)
 	}
-	// An empty cache_control object is the exact bug shape from #304;
-	// the bridge must never emit it.
 	if bytes.Contains(data, []byte(`"cache_control":{}`)) {
 		t.Errorf("worker payload carries empty cache_control object:\n%s", data)
 	}
-	// Spot the empty cache_type case too — the generated decoder treats
-	// missing and empty alike, and both are invalid.
 	if bytes.Contains(data, []byte(`"cache_type":""`)) {
 		t.Errorf("worker payload carries empty cache_type string:\n%s", data)
 	}
@@ -982,12 +771,10 @@ func TestDynamicInput_ToWorkerInput_CacheControlBridge(t *testing.T) {
 		t.Fatalf("expected 4 messages in worker payload, got %d\n%s", len(decoded.Messages), data)
 	}
 
-	// Index 0: system text — no metadata.
 	if md, ok := decoded.Messages[0]["metadata"]; ok && md != nil {
 		t.Errorf("system message must not carry metadata; got %v", md)
 	}
 
-	// Index 1: user parts with cache_control.
 	msg := decoded.Messages[1]
 	mdRaw, ok := msg["metadata"]
 	if !ok {
@@ -1012,19 +799,14 @@ func TestDynamicInput_ToWorkerInput_CacheControlBridge(t *testing.T) {
 		t.Errorf("cache_control still carries public `type` key: %v", cc)
 	}
 
-	// Index 2: assistant text — no metadata.
 	if md, ok := decoded.Messages[2]["metadata"]; ok && md != nil {
 		t.Errorf("assistant message must not carry metadata; got %v", md)
 	}
-	// Index 3: second user text — no metadata.
 	if md, ok := decoded.Messages[3]["metadata"]; ok && md != nil {
 		t.Errorf("follow-up user message must not carry metadata; got %v", md)
 	}
 }
 
-// TestDynamicInput_ToWorkerInput_NoCacheControl_NoMetadata pins the
-// omitempty contract: when no message carries metadata, the worker
-// payload must not contain any `metadata` key at all.
 func TestDynamicInput_ToWorkerInput_NoCacheControl_NoMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -1042,7 +824,7 @@ func TestDynamicInput_ToWorkerInput_NoCacheControl_NoMetadata(t *testing.T) {
 			},
 		},
 		OutputSchema: &DynamicOutputSchema{
-			Properties: map[string]*DynamicProperty{"answer": {Type: "string"}},
+			Properties: MustOrderedMap(OrderedKV("answer", &DynamicProperty{Type: "string"})),
 		},
 	}
 
@@ -1055,11 +837,6 @@ func TestDynamicInput_ToWorkerInput_NoCacheControl_NoMetadata(t *testing.T) {
 	}
 }
 
-// TestDynamicMessage_PublicJSON_StillUsesType locks the public API in.
-// Callers of the dynamic endpoint pass `cache_control.type`; the bridge
-// rewrites it internally. A regression that flipped the public shape
-// would break every existing caller, so the public marshalled form is
-// asserted here alongside the internal rewrite test above.
 func TestDynamicMessage_PublicJSON_StillUsesType(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"role":"user","content":"hi","metadata":{"cache_control":{"type":"ephemeral"}}}`)
@@ -1082,16 +859,6 @@ func TestDynamicMessage_PublicJSON_StillUsesType(t *testing.T) {
 	}
 }
 
-// TestDynamicInputValidate_RejectsEmptyCacheControlType pins the contract
-// chosen by the #304 CR verdict: callers that intend "no cache control"
-// must leave Metadata.CacheControl nil rather than zeroing Type. Without
-// this guard, the bridge would pass `cache_type:""` to BAML, which
-// already round-trips through the alias-bypass template in dynamic.baml
-// and lands on the wire as `cache_control:{"type":""}` — accepted by
-// the Go boundary but rejected by Anthropic with the same
-// `cache_control.type: Field required` error from issue #304. The
-// rejection here makes the failure obvious at the API boundary instead
-// of buried in the provider response.
 func TestDynamicInputValidate_RejectsEmptyCacheControlType(t *testing.T) {
 	t.Parallel()
 
@@ -1116,7 +883,7 @@ func TestDynamicInputValidate_RejectsEmptyCacheControlType(t *testing.T) {
 			},
 		},
 		OutputSchema: &DynamicOutputSchema{
-			Properties: map[string]*DynamicProperty{"answer": {Type: "string"}},
+			Properties: MustOrderedMap(OrderedKV("answer", &DynamicProperty{Type: "string"})),
 		},
 	}
 
@@ -1129,20 +896,16 @@ func TestDynamicInputValidate_RejectsEmptyCacheControlType(t *testing.T) {
 		t.Errorf("Validate() error %q does not contain %q", err.Error(), want)
 	}
 
-	// Whitespace-only counts as empty.
 	input.Messages[1].Metadata.CacheControl.Type = "   "
 	if err := input.Validate(); err == nil {
 		t.Error("expected Validate() to reject whitespace-only cache_control.type; got nil")
 	}
 
-	// A nil Metadata.CacheControl on the same message must pass — that is
-	// the "no cache control" sentinel callers should use.
 	input.Messages[1].Metadata.CacheControl = nil
 	if err := input.Validate(); err != nil {
 		t.Errorf("Validate() rejected nil CacheControl: %v", err)
 	}
 
-	// A nil Metadata altogether must also pass.
 	input.Messages[1].Metadata = nil
 	if err := input.Validate(); err != nil {
 		t.Errorf("Validate() rejected nil Metadata: %v", err)

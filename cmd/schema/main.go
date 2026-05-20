@@ -989,60 +989,10 @@ func generateOpenAPISchema() *openapi3.T {
 							"preserve_order": &openapi3.SchemaRef{
 								Value: &openapi3.Schema{
 									Type: &openapi3.Types{openapi3.TypeBoolean},
-									Description: "Opt-in: when true, TypeBuilder population follows the explicit 'order' " +
-										"metadata rather than alphabetical key sorting. Direct callers must supply a " +
-										"complete 'order' covering every multi-key map (classes, enums, per-class " +
-										"properties); incomplete order is rejected by validation.",
-								},
-							},
-							"order": &openapi3.SchemaRef{
-								Value: &openapi3.Schema{
-									Type: &openapi3.Types{openapi3.TypeObject},
-									Description: "Explicit class/enum/property population order, consumed when " +
-										"preserve_order is true.",
-									Nullable: true,
-									Properties: openapi3.Schemas{
-										"classes": &openapi3.SchemaRef{
-											Value: &openapi3.Schema{
-												Type:        &openapi3.Types{openapi3.TypeArray},
-												Description: "Class names in the order they should be populated.",
-												Items: &openapi3.SchemaRef{
-													Value: &openapi3.Schema{
-														Type: &openapi3.Types{openapi3.TypeString},
-													},
-												},
-											},
-										},
-										"enums": &openapi3.SchemaRef{
-											Value: &openapi3.Schema{
-												Type:        &openapi3.Types{openapi3.TypeArray},
-												Description: "Enum names in the order they should be populated.",
-												Items: &openapi3.SchemaRef{
-													Value: &openapi3.Schema{
-														Type: &openapi3.Types{openapi3.TypeString},
-													},
-												},
-											},
-										},
-										"properties": &openapi3.SchemaRef{
-											Value: &openapi3.Schema{
-												Type:        &openapi3.Types{openapi3.TypeObject},
-												Description: "Map of class name to the order its properties should be populated in.",
-												AdditionalProperties: openapi3.AdditionalProperties{
-													Schema: &openapi3.SchemaRef{
-														Value: &openapi3.Schema{
-															Type: &openapi3.Types{openapi3.TypeArray},
-															Items: &openapi3.SchemaRef{
-																Value: &openapi3.Schema{
-																	Type: &openapi3.Types{openapi3.TypeString},
-																},
-															},
-														},
-													},
-												},
-											},
-										},
-									},
+									Description: "Opt-in: when true, TypeBuilder population follows the insertion order " +
+										"of the classes / enums / per-class properties objects rather than alphabetical " +
+										"key sorting. Order is carried intrinsically by the JSON object on the wire — " +
+										"there is no separate 'order' side-channel.",
 								},
 							},
 						},
@@ -1539,9 +1489,10 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	preserveSchemaOrderDescription := "Optional tri-state: true preserves the JSON key order of " +
 		"output_schema.{properties,classes,enums} and each class's properties in the rendered " +
 		"output_format, false forces the alphabetical default, and omitted/null inherits the server " +
-		"default configured by BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT. Multi-key maps must carry a " +
-		"captured order — raw-JSON callers get this for free; programmatic Go callers using the dynclient " +
-		"module must set the matching *Order slices."
+		"default configured by BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT. Order is captured intrinsically: " +
+		"raw-JSON callers get key order from the JSON object on the wire, and programmatic Go callers " +
+		"using the dynclient module get the insertion order of their OrderedMap literals (preserved by " +
+		"default unless WithPreserveSchemaOrderDefault flips the client-wide default)."
 
 	// Dynamic input schema
 	dynamicInputSchemaName := "__DynamicInput__"

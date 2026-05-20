@@ -29,6 +29,14 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 	// client, not the runtime library directly).
 	introspectedPkg := pkgs.IntrospectedPkg
 	typeAlias := jen.Qual(introspectedPkg, "Type")
+
+	enumLookup := func() jen.Code {
+		return jen.Id("enum").Op(",").Id("_").Op(":=").Id("dt").Dot("Enums").Dot("Get").Call(jen.Id("name"))
+	}
+	classLookup := func() jen.Code {
+		return jen.Id("class").Op(",").Id("_").Op(":=").Id("dt").Dot("Classes").Dot("Get").Call(jen.Id("name"))
+	}
+
 	// Generate applyDynamicTypes function
 	out.Func().Id("applyDynamicTypes").
 		Params(
@@ -47,33 +55,29 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			// Create caches
 			jen.Id("typeCache").Op(":=").Make(jen.Map(jen.String()).Add(typeAlias)),
 			jen.Id("classBuilderCache").Op(":=").Make(jen.Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder")),
-			// preserveOrder and order drive schemaMapKeys: when both are
-			// set, TypeBuilder population follows the caller's wire order;
-			// otherwise the canonical sorted fallback applies.
+			// preserveOrder picks insertion order vs alphabetical sort
+			// when iterating dt.Classes / dt.Enums; the OrderedMap
+			// carries the order intrinsically.
 			jen.Id("preserveOrder").Op(":=").Id("dt").Dot("PreserveOrder"),
-			jen.Id("order").Op(":=").Id("dt").Dot("Order"),
 			jen.Line(),
 			// Phase 1: Create all enum shells (for NEW enums only, with values since we have builder)
-			// Iterate sorted keys so TypeBuilder population order is deterministic: Go map
-			// iteration is intentionally randomised, and BAML preserves the order it receives,
-			// so unsorted ranging produces non-deterministic rendered output_format text.
-			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaMapKeys").Call(jen.Id("dt").Dot("Enums"), jen.Id("enumOrder").Call(jen.Id("order")), jen.Id("preserveOrder"))).Block(
-				jen.Id("enum").Op(":=").Id("dt").Dot("Enums").Index(jen.Id("name")),
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaKeys").Call(jen.Id("dt").Dot("Enums"), jen.Id("preserveOrder"))).Block(
+				enumLookup(),
 				jen.If(jen.Id("err").Op(":=").Id("createEnumShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("enum %q: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
 			// Phase 2: Add values to EXISTING enums
-			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaMapKeys").Call(jen.Id("dt").Dot("Enums"), jen.Id("enumOrder").Call(jen.Id("order")), jen.Id("preserveOrder"))).Block(
-				jen.Id("enum").Op(":=").Id("dt").Dot("Enums").Index(jen.Id("name")),
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaKeys").Call(jen.Id("dt").Dot("Enums"), jen.Id("preserveOrder"))).Block(
+				enumLookup(),
 				jen.If(jen.Id("err").Op(":=").Id("addEnumValues").Call(jen.Id("tb"), jen.Id("name"), jen.Id("enum"), jen.Id("typeCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("enum %q values: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
 			// Phase 3: Create all NEW class shells (no properties yet - just register the type)
-			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaMapKeys").Call(jen.Id("dt").Dot("Classes"), jen.Id("classOrder").Call(jen.Id("order")), jen.Id("preserveOrder"))).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaKeys").Call(jen.Id("dt").Dot("Classes"), jen.Id("preserveOrder"))).Block(
 				jen.If(jen.Id("err").Op(":=").Id("createClassShell").Call(jen.Id("tb"), jen.Id("name"), jen.Id("typeCache"), jen.Id("classBuilderCache")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q: %w"), jen.Id("name"), jen.Id("err"))),
 				),
@@ -81,16 +85,20 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			jen.Line(),
 			// Phase 4a: Add properties to NEW classes only (from classBuilderCache)
 			// These classes only have primitive types or reference other new classes
-			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaMapKeys").Call(jen.Id("dt").Dot("Classes"), jen.Id("classOrder").Call(jen.Id("order")), jen.Id("preserveOrder"))).Block(
-				jen.Id("class").Op(":=").Id("dt").Dot("Classes").Index(jen.Id("name")),
-				jen.If(jen.Id("err").Op(":=").Id("addNewClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("order"), jen.Id("preserveOrder")), jen.Id("err").Op("!=").Nil()).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaKeys").Call(jen.Id("dt").Dot("Classes"), jen.Id("preserveOrder"))).Block(
+				classLookup(),
+				jen.If(jen.Id("err").Op(":=").Id("addNewClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("preserveOrder")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q properties: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Line(),
-			// Phase 4b: Cache types for all NEW classes (now that properties are added)
-			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaMapKeys").Call(jen.Id("classBuilderCache"), jen.Id("classOrder").Call(jen.Id("order")), jen.Id("preserveOrder"))).Block(
-				jen.Id("cb").Op(":=").Id("classBuilderCache").Index(jen.Id("name")),
+			// Phase 4b: Cache types for all NEW classes (now that properties are added).
+			// Iterate dt.Classes order (not the cache map) so caller-supplied insertion
+			// order drives type caching when preserveOrder is on; process only names
+			// that survived Phase 3 into classBuilderCache.
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaKeys").Call(jen.Id("dt").Dot("Classes"), jen.Id("preserveOrder"))).Block(
+				jen.List(jen.Id("cb"), jen.Id("ok")).Op(":=").Id("classBuilderCache").Index(jen.Id("name")),
+				jen.If(jen.Op("!").Id("ok")).Block(jen.Continue()),
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("cb").Dot("Type").Call(),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q type: %w"), jen.Id("name"), jen.Id("err"))),
@@ -99,98 +107,31 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			),
 			jen.Line(),
 			// Phase 4c: Add properties to EXISTING dynamic classes (refs can now be resolved)
-			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaMapKeys").Call(jen.Id("dt").Dot("Classes"), jen.Id("classOrder").Call(jen.Id("order")), jen.Id("preserveOrder"))).Block(
-				jen.Id("class").Op(":=").Id("dt").Dot("Classes").Index(jen.Id("name")),
-				jen.If(jen.Id("err").Op(":=").Id("addExistingClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("order"), jen.Id("preserveOrder")), jen.Id("err").Op("!=").Nil()).Block(
+			jen.For(jen.List(jen.Id("_"), jen.Id("name")).Op(":=").Range().Id("schemaKeys").Call(jen.Id("dt").Dot("Classes"), jen.Id("preserveOrder"))).Block(
+				classLookup(),
+				jen.If(jen.Id("err").Op(":=").Id("addExistingClassProperties").Call(jen.Id("tb"), jen.Id("name"), jen.Id("class"), jen.Id("typeCache"), jen.Id("classBuilderCache"), jen.Id("preserveOrder")), jen.Id("err").Op("!=").Nil()).Block(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(jen.Lit("class %q properties: %w"), jen.Id("name"), jen.Id("err"))),
 				),
 			),
 			jen.Return(jen.Nil()),
 		)
 
-	// Generate sortedMapKeys helper - returns map keys sorted alphabetically.
-	// Used as the canonical fallback by schemaMapKeys when preserve_order
-	// is off or no explicit order slice is supplied for a dimension.
-	out.Func().Id("sortedMapKeys").
-		Types(jen.Id("V").Any()).
-		Params(jen.Id("m").Map(jen.String()).Id("V")).
-		Index().String().
-		Block(
-			jen.Id("keys").Op(":=").Make(jen.Index().String(), jen.Lit(0), jen.Len(jen.Id("m"))),
-			jen.For(jen.Id("k").Op(":=").Range().Id("m")).Block(
-				jen.Id("keys").Op("=").Append(jen.Id("keys"), jen.Id("k")),
-			),
-			jen.Qual("slices", "Sort").Call(jen.Id("keys")),
-			jen.Return(jen.Id("keys")),
-		)
-
-	// schemaMapKeys: order-aware key list. When preserve is true and a
-	// non-empty order slice was supplied, return keys in that order
-	// (intersected with the live map, dropping unknown names). Keys
-	// absent from the order slice are appended in sorted order so the
-	// caller's partial ordering still drives deterministic placement
-	// for everything they listed. When preserve is false or no order
-	// is supplied, fall back to sortedMapKeys.
-	out.Func().Id("schemaMapKeys").
+	// schemaKeys: order-aware key list over a bamlutils.OrderedMap[V].
+	// When preserve is true, returns insertion order; otherwise sorts
+	// alphabetically for the canonical #309 byte-stability fallback.
+	out.Func().Id("schemaKeys").
 		Types(jen.Id("V").Any()).
 		Params(
-			jen.Id("m").Map(jen.String()).Id("V"),
-			jen.Id("order").Index().String(),
+			jen.Id("m").Qual(pkgs.InterfacesPkg, "OrderedMap").Types(jen.Id("V")),
 			jen.Id("preserve").Bool(),
 		).
 		Index().String().
 		Block(
-			jen.If(jen.Op("!").Id("preserve").Op("||").Len(jen.Id("order")).Op("==").Lit(0)).Block(
-				jen.Return(jen.Id("sortedMapKeys").Call(jen.Id("m"))),
-			),
-			jen.Id("keys").Op(":=").Make(jen.Index().String(), jen.Lit(0), jen.Len(jen.Id("m"))),
-			jen.Id("seen").Op(":=").Make(jen.Map(jen.String()).Struct(), jen.Len(jen.Id("order"))),
-			jen.For(jen.List(jen.Id("_"), jen.Id("k")).Op(":=").Range().Id("order")).Block(
-				jen.If(jen.List(jen.Id("_"), jen.Id("ok")).Op(":=").Id("m").Index(jen.Id("k")), jen.Op("!").Id("ok")).Block(
-					jen.Continue(),
-				),
-				jen.If(jen.List(jen.Id("_"), jen.Id("dup")).Op(":=").Id("seen").Index(jen.Id("k")), jen.Id("dup")).Block(
-					jen.Continue(),
-				),
-				jen.Id("seen").Index(jen.Id("k")).Op("=").Struct().Values(),
-				jen.Id("keys").Op("=").Append(jen.Id("keys"), jen.Id("k")),
-			),
-			jen.For(jen.List(jen.Id("_"), jen.Id("k")).Op(":=").Range().Id("sortedMapKeys").Call(jen.Id("m"))).Block(
-				jen.If(jen.List(jen.Id("_"), jen.Id("ok")).Op(":=").Id("seen").Index(jen.Id("k")), jen.Op("!").Id("ok")).Block(
-					jen.Id("keys").Op("=").Append(jen.Id("keys"), jen.Id("k")),
-				),
+			jen.Id("keys").Op(":=").Id("m").Dot("Keys").Call(),
+			jen.If(jen.Op("!").Id("preserve")).Block(
+				jen.Qual("slices", "Sort").Call(jen.Id("keys")),
 			),
 			jen.Return(jen.Id("keys")),
-		)
-
-	// enumOrder/classOrder/propertyOrder are nil-safe accessors into
-	// *DynamicTypesOrder so schemaMapKeys callers can pass an explicit
-	// order slice without rechecking the parent for nil.
-	out.Func().Id("enumOrder").
-		Params(jen.Id("o").Op("*").Qual(pkgs.InterfacesPkg, "DynamicTypesOrder")).
-		Index().String().
-		Block(
-			jen.If(jen.Id("o").Op("==").Nil()).Block(jen.Return(jen.Nil())),
-			jen.Return(jen.Id("o").Dot("Enums")),
-		)
-
-	out.Func().Id("classOrder").
-		Params(jen.Id("o").Op("*").Qual(pkgs.InterfacesPkg, "DynamicTypesOrder")).
-		Index().String().
-		Block(
-			jen.If(jen.Id("o").Op("==").Nil()).Block(jen.Return(jen.Nil())),
-			jen.Return(jen.Id("o").Dot("Classes")),
-		)
-
-	out.Func().Id("propertyOrder").
-		Params(
-			jen.Id("o").Op("*").Qual(pkgs.InterfacesPkg, "DynamicTypesOrder"),
-			jen.Id("className").String(),
-		).
-		Index().String().
-		Block(
-			jen.If(jen.Id("o").Op("==").Nil().Op("||").Id("o").Dot("Properties").Op("==").Nil()).Block(jen.Return(jen.Nil())),
-			jen.Return(jen.Id("o").Dot("Properties").Index(jen.Id("className"))),
 		)
 
 	// Generate createEnumShell helper - creates enum with values (new) or skips existing
@@ -321,7 +262,6 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			jen.Id("class").Op("*").Qual(pkgs.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
-			jen.Id("order").Op("*").Qual(pkgs.InterfacesPkg, "DynamicTypesOrder"),
 			jen.Id("preserveOrder").Bool(),
 		).
 		Error().
@@ -334,8 +274,8 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			),
 			jen.Line(),
 			// Add properties to the new class builder
-			jen.For(jen.List(jen.Id("_"), jen.Id("propName")).Op(":=").Range().Id("schemaMapKeys").Call(jen.Id("class").Dot("Properties"), jen.Id("propertyOrder").Call(jen.Id("order"), jen.Id("name")), jen.Id("preserveOrder"))).Block(
-				jen.Id("prop").Op(":=").Id("class").Dot("Properties").Index(jen.Id("propName")),
+			jen.For(jen.List(jen.Id("_"), jen.Id("propName")).Op(":=").Range().Id("schemaKeys").Call(jen.Id("class").Dot("Properties"), jen.Id("preserveOrder"))).Block(
+				jen.Id("prop").Op(",").Id("_").Op(":=").Id("class").Dot("Properties").Dot("Get").Call(jen.Id("propName")),
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					// Skip unresolved refs - they may reference existing types in baml_src
@@ -365,7 +305,6 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			jen.Id("class").Op("*").Qual(pkgs.InterfacesPkg, "DynamicClass"),
 			jen.Id("typeCache").Map(jen.String()).Add(typeAlias),
 			jen.Id("classBuilderCache").Map(jen.String()).Qual(introspectedPkg, "DynamicClassBuilder"),
-			jen.Id("order").Op("*").Qual(pkgs.InterfacesPkg, "DynamicTypesOrder"),
 			jen.Id("preserveOrder").Bool(),
 		).
 		Error().
@@ -389,8 +328,8 @@ func generateApplyDynamicTypes(out *jen.File, pkgs PackageConfig) {
 			),
 			jen.Line(),
 			// Add properties to the existing class builder
-			jen.For(jen.List(jen.Id("_"), jen.Id("propName")).Op(":=").Range().Id("schemaMapKeys").Call(jen.Id("class").Dot("Properties"), jen.Id("propertyOrder").Call(jen.Id("order"), jen.Id("name")), jen.Id("preserveOrder"))).Block(
-				jen.Id("prop").Op(":=").Id("class").Dot("Properties").Index(jen.Id("propName")),
+			jen.For(jen.List(jen.Id("_"), jen.Id("propName")).Op(":=").Range().Id("schemaKeys").Call(jen.Id("class").Dot("Properties"), jen.Id("preserveOrder"))).Block(
+				jen.Id("prop").Op(",").Id("_").Op(":=").Id("class").Dot("Properties").Dot("Get").Call(jen.Id("propName")),
 				jen.List(jen.Id("typ"), jen.Id("err")).Op(":=").Id("resolvePropertyType").Call(jen.Id("tb"), jen.Id("prop"), jen.Id("typeCache"), jen.Id("classBuilderCache")),
 				jen.If(jen.Id("err").Op("!=").Nil()).Block(
 					// Skip unresolved refs - they may reference types in baml_src

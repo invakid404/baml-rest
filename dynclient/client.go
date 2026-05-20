@@ -50,6 +50,12 @@ type Client struct {
 	handler *worker.Handler
 	store   *workerplugin.SharedStateStore
 	logger  bamlutils.Logger
+	// preserveSchemaOrderDefault is the resolved default for
+	// per-request preserve_schema_order — captured from config at
+	// construction time so request paths do not need to consult the
+	// config again. Defaults to true; WithPreserveSchemaOrderDefault
+	// flips it.
+	preserveSchemaOrderDefault bool
 }
 
 // errNilClient is returned by Client methods when called on a nil
@@ -81,7 +87,13 @@ func New(opts ...Option) (*Client, error) {
 // this ordering to assert that error paths leave the init counter at
 // zero.
 func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, error) {
-	cfg := &config{}
+	cfg := &config{
+		// dynclient defaults preserve_schema_order to true so direct
+		// Go callers using OrderedMap literals get their construction
+		// order rendered into the output_format prompt without needing
+		// to set PreserveSchemaOrder on every request.
+		preserveSchemaOrderDefault: true,
+	}
 	for _, opt := range opts {
 		if opt == nil {
 			continue
@@ -120,10 +132,22 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 	}
 
 	return &Client{
-		handler: handler,
-		store:   cfg.sharedState,
-		logger:  cfg.logger,
+		handler:                    handler,
+		store:                      cfg.sharedState,
+		logger:                     cfg.logger,
+		preserveSchemaOrderDefault: cfg.preserveSchemaOrderDefault,
 	}, nil
+}
+
+// applyPreserveSchemaOrderDefault resolves a request's nil
+// PreserveSchemaOrder to the client default. Request / ParseRequest
+// are passed by value into the public Dynamic* methods, so mutating
+// the local copy here cannot leak back to the caller.
+func (c *Client) applyPreserveSchemaOrderDefault(p **bool) {
+	if *p == nil {
+		v := c.preserveSchemaOrderDefault
+		*p = &v
+	}
 }
 
 // newLLMHTTPClient builds the per-handler llmhttp.Client. The backend
@@ -156,6 +180,7 @@ func (c *Client) DynamicCall(ctx context.Context, req Request) (*CallResult, err
 	if c == nil {
 		return nil, errNilClient
 	}
+	c.applyPreserveSchemaOrderDefault(&req.PreserveSchemaOrder)
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic call: %w", err)
 	}
@@ -189,6 +214,7 @@ func (c *Client) DynamicCallRaw(ctx context.Context, req Request) (*CallRawResul
 	if c == nil {
 		return nil, errNilClient
 	}
+	c.applyPreserveSchemaOrderDefault(&req.PreserveSchemaOrder)
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic call raw: %w", err)
 	}
@@ -227,6 +253,7 @@ func (c *Client) DynamicParse(ctx context.Context, req ParseRequest) (*ParseResu
 	if c == nil {
 		return nil, errNilClient
 	}
+	c.applyPreserveSchemaOrderDefault(&req.PreserveSchemaOrder)
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic parse: %w", err)
 	}
@@ -267,6 +294,7 @@ func (c *Client) openStream(ctx context.Context, req Request, mode bamlutils.Str
 	if c == nil {
 		return nil, errNilClient
 	}
+	c.applyPreserveSchemaOrderDefault(&req.PreserveSchemaOrder)
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("dynclient: %s: %w", errLabel, err)
 	}

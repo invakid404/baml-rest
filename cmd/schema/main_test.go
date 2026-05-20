@@ -286,11 +286,13 @@ func isNullable(ref *openapi3.SchemaRef) bool {
 	return false
 }
 
-// TestSchemaPreserveOrderExposure pins #313: the public OpenAPI surface
-// must surface the preserve-order opt-in on both __DynamicInput__ and
-// __DynamicParseInput__, and the worker-bound TypeBuilder.dynamic_types
-// shape must expose the matching preserve_order/order keys so generated
-// clients can use the feature.
+// TestSchemaPreserveOrderExposure pins #313 / #318: the public OpenAPI
+// surface must surface the preserve-order opt-in on both
+// __DynamicInput__ and __DynamicParseInput__, and the worker-bound
+// TypeBuilder.dynamic_types shape must expose the preserve_order
+// boolean. The legacy `order` side-channel was removed when the schema
+// types migrated to OrderedMap (#318) — the assertion below pins its
+// absence.
 func TestSchemaPreserveOrderExposure(t *testing.T) {
 	baml_rest.InitBamlRuntime()
 
@@ -356,43 +358,10 @@ func TestSchemaPreserveOrderExposure(t *testing.T) {
 		t.Errorf("dynamic_types.preserve_order expected boolean, got %v", preserveOrder.Value.Type)
 	}
 
-	order, ok := dt.Value.Properties["order"]
-	if !ok || order == nil || order.Value == nil {
-		t.Fatalf("dynamic_types missing order")
-	}
-	if !order.Value.Type.Is(openapi3.TypeObject) {
-		t.Errorf("dynamic_types.order expected object, got %v", order.Value.Type)
-	}
-	// classes/enums are string arrays; properties is map<string, []string>.
-	for _, sub := range []string{"classes", "enums"} {
-		p, ok := order.Value.Properties[sub]
-		if !ok || p == nil || p.Value == nil {
-			t.Errorf("dynamic_types.order missing %q", sub)
-			continue
-		}
-		if !p.Value.Type.Is(openapi3.TypeArray) {
-			t.Errorf("dynamic_types.order.%s expected array, got %v", sub, p.Value.Type)
-			continue
-		}
-		if p.Value.Items == nil || p.Value.Items.Value == nil || !p.Value.Items.Value.Type.Is(openapi3.TypeString) {
-			t.Errorf("dynamic_types.order.%s items expected string", sub)
-		}
-	}
-	props, ok := order.Value.Properties["properties"]
-	if !ok || props == nil || props.Value == nil {
-		t.Fatalf("dynamic_types.order missing properties")
-	}
-	if !props.Value.Type.Is(openapi3.TypeObject) {
-		t.Errorf("dynamic_types.order.properties expected object, got %v", props.Value.Type)
-	}
-	addl := props.Value.AdditionalProperties.Schema
-	if addl == nil || addl.Value == nil {
-		t.Fatalf("dynamic_types.order.properties missing additionalProperties schema")
-	}
-	if !addl.Value.Type.Is(openapi3.TypeArray) {
-		t.Errorf("dynamic_types.order.properties additionalProperties expected array, got %v", addl.Value.Type)
-	}
-	if addl.Value.Items == nil || addl.Value.Items.Value == nil || !addl.Value.Items.Value.Type.Is(openapi3.TypeString) {
-		t.Errorf("dynamic_types.order.properties additionalProperties items expected string")
+	// The legacy 'order' side-channel was removed when DynamicOutputSchema /
+	// DynamicTypes migrated to ordered maps (#318). The wire shape now
+	// carries order intrinsically via the JSON object key order.
+	if _, present := dt.Value.Properties["order"]; present {
+		t.Errorf("dynamic_types.order must be removed; OrderedMap carries order intrinsically")
 	}
 }

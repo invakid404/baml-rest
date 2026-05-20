@@ -143,9 +143,9 @@ func TestDynclientCacheControlMessageMetadataRoundTrip(t *testing.T) {
 				},
 				ClientRegistry: registry,
 				OutputSchema: &dynclient.OutputSchema{
-					Properties: map[string]*dynclient.Property{
+					Properties: dynclientFromMap(map[string]*dynclient.Property{
 						"answer": {Type: "string"},
-					},
+					}),
 				},
 			}
 

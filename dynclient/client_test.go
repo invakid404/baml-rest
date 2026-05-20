@@ -194,9 +194,7 @@ func validRequest() Request {
 			},
 		},
 		OutputSchema: &OutputSchema{
-			Properties: map[string]*Property{
-				"answer": {Type: "string"},
-			},
+			Properties: MustOrderedMap(OrderedKV("answer", &Property{Type: "string"})),
 		},
 	}
 }
@@ -272,6 +270,12 @@ func TestNewAppliesOptions(t *testing.T) {
 func TestNewDoesNotReadEnv(t *testing.T) {
 	t.Setenv("BAML_REST_BASE_URL_REWRITES", "https://upstream.example/=http://env.local:9090/")
 	t.Setenv("BAML_REST_CLIENT_DEFAULTS", `{"api_key":"env-key"}`)
+	// dynclient defaults preserve_schema_order to true at New() and
+	// must not consult the cmd/serve-side server-default env var.
+	// TestNewDoesNotReadPreserveOrderEnv covers the preserve-order
+	// resolution path explicitly; the env setting here ensures other
+	// option wiring is also unaffected by the env presence.
+	t.Setenv("BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT", "false")
 
 	rt := &fakeRuntime{}
 	c := newClient(t, rt)
@@ -393,7 +397,7 @@ func TestDynamicParseFlattensData(t *testing.T) {
 	parseReq := ParseRequest{
 		Raw: "4",
 		OutputSchema: &OutputSchema{
-			Properties: map[string]*Property{"answer": {Type: "string"}},
+			Properties: MustOrderedMap(OrderedKV("answer", &Property{Type: "string"})),
 		},
 	}
 	result, err := c.DynamicParse(context.Background(), parseReq)
@@ -613,7 +617,7 @@ func TestNilReceiverReturnsError(t *testing.T) {
 	if _, err := c.DynamicCallRaw(context.Background(), validRequest()); err == nil {
 		t.Error("expected DynamicCallRaw on nil receiver to return error")
 	}
-	if _, err := c.DynamicParse(context.Background(), ParseRequest{Raw: "x", OutputSchema: &OutputSchema{Properties: map[string]*Property{"a": {Type: "string"}}}}); err == nil {
+	if _, err := c.DynamicParse(context.Background(), ParseRequest{Raw: "x", OutputSchema: &OutputSchema{Properties: MustOrderedMap(OrderedKV("a", &Property{Type: "string"}))}}); err == nil {
 		t.Error("expected DynamicParse on nil receiver to return error")
 	}
 	if _, err := c.DynamicStream(context.Background(), validRequest()); err == nil {
@@ -995,3 +999,117 @@ func TestBackendOptions_LastWins(t *testing.T) {
 		t.Errorf("WithFastHTTPClient is not last-wins: MaxConns = %d, want 20", cfg.fastHTTPOptions.MaxConns)
 	}
 }
+
+// capturePreserveOrder runs req through the supplied client and returns
+// the value of dynamic_types.preserve_order observed on the worker
+// payload. Streaming and call paths route through the same
+// ToWorkerInput, so a single capture is sufficient to assert resolution
+// behaviour for every public method.
+func capturePreserveOrder(t *testing.T, c *Client, rt *fakeRuntime, req Request) bool {
+	t.Helper()
+	var got bool
+	rt.streamingImpl = func(_ bamlutils.Adapter, input any) (<-chan bamlutils.StreamResult, error) {
+		// MakeInput hands the handler a *map[string]any; the worker
+		// unmarshals our bytes into it before invoking Impl.
+		ptr, ok := input.(*map[string]any)
+		if !ok || ptr == nil {
+			t.Fatalf("unexpected input shape %T", input)
+		}
+		opts, _ := (*ptr)["__baml_options__"].(map[string]any)
+		typeBuilder, _ := opts["type_builder"].(map[string]any)
+		dt, _ := typeBuilder["dynamic_types"].(map[string]any)
+		if v, ok := dt["preserve_order"].(bool); ok {
+			got = v
+		}
+		ch := make(chan bamlutils.StreamResult, 1)
+		ch <- &fakeStreamResult{kind: bamlutils.StreamResultKindFinal, final: map[string]any{"DynamicProperties": map[string]any{"answer": "ok"}}}
+		close(ch)
+		return ch, nil
+	}
+	if _, err := c.DynamicCall(context.Background(), req); err != nil {
+		t.Fatalf("DynamicCall: %v", err)
+	}
+	return got
+}
+
+// TestPreserveSchemaOrderDefaultTruthTable pins the four-way resolution
+// table for the dynclient default plus per-request override:
+//
+//   - dynclient.New()           + nil request   => preserve (default true)
+//   - WithPreserveSchemaOrderDefault(false) + nil request => sorted
+//   - request *true   always preserves (regardless of client default)
+//   - request *false  always sorts (regardless of client default)
+func TestPreserveSchemaOrderDefaultTruthTable(t *testing.T) {
+	cases := []struct {
+		name          string
+		opts          []Option
+		preserve      *bool
+		wantPreserved bool
+	}{
+		{name: "default client + nil request => preserved", opts: nil, preserve: nil, wantPreserved: true},
+		{name: "WithPreserveSchemaOrderDefault(false) + nil request => sorted", opts: []Option{WithPreserveSchemaOrderDefault(false)}, preserve: nil, wantPreserved: false},
+		{name: "default client + request *true => preserved", opts: nil, preserve: boolPtr(true), wantPreserved: true},
+		{name: "default client + request *false => sorted", opts: nil, preserve: boolPtr(false), wantPreserved: false},
+		{name: "WithPreserveSchemaOrderDefault(false) + request *true => preserved", opts: []Option{WithPreserveSchemaOrderDefault(false)}, preserve: boolPtr(true), wantPreserved: true},
+		{name: "WithPreserveSchemaOrderDefault(true) + request *false => sorted", opts: []Option{WithPreserveSchemaOrderDefault(true)}, preserve: boolPtr(false), wantPreserved: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &fakeRuntime{}
+			c := newClient(t, rt, tc.opts...)
+			req := validRequest()
+			req.PreserveSchemaOrder = tc.preserve
+			got := capturePreserveOrder(t, c, rt, req)
+			if got != tc.wantPreserved {
+				t.Errorf("preserve_order: got %v want %v", got, tc.wantPreserved)
+			}
+		})
+	}
+}
+
+// TestNewDoesNotReadPreserveOrderEnv pins that the preserve-order
+// default does not silently read process env vars at New() — the only
+// way to flip the dynclient default is through
+// WithPreserveSchemaOrderDefault.
+func TestNewDoesNotReadPreserveOrderEnv(t *testing.T) {
+	t.Setenv("BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT", "false")
+
+	rt := &fakeRuntime{}
+	c := newClient(t, rt)
+	if got := capturePreserveOrder(t, c, rt, validRequest()); got != true {
+		t.Errorf("env-driven default leaked: preserve_order = %v, want true (dynclient default)", got)
+	}
+
+	rt2 := &fakeRuntime{}
+	c2 := newClient(t, rt2, WithPreserveSchemaOrderDefault(false))
+	if got := capturePreserveOrder(t, c2, rt2, validRequest()); got != false {
+		t.Errorf("explicit WithPreserveSchemaOrderDefault(false) ignored: preserve_order = %v, want false", got)
+	}
+}
+
+// TestPreserveSchemaOrderDefault_DoesNotMutateCallerRequest pins that
+// the in-method default resolution operates on the by-value copy of
+// Request / ParseRequest, so the caller's PreserveSchemaOrder pointer
+// is not silently filled in.
+func TestPreserveSchemaOrderDefault_DoesNotMutateCallerRequest(t *testing.T) {
+	rt := &fakeRuntime{}
+	c := newClient(t, rt)
+	rt.streamingImpl = func(_ bamlutils.Adapter, _ any) (<-chan bamlutils.StreamResult, error) {
+		ch := make(chan bamlutils.StreamResult, 1)
+		ch <- &fakeStreamResult{kind: bamlutils.StreamResultKindFinal, final: map[string]any{"DynamicProperties": map[string]any{"answer": "ok"}}}
+		close(ch)
+		return ch, nil
+	}
+	req := validRequest()
+	if req.PreserveSchemaOrder != nil {
+		t.Fatalf("validRequest must start with nil PreserveSchemaOrder; got %v", req.PreserveSchemaOrder)
+	}
+	if _, err := c.DynamicCall(context.Background(), req); err != nil {
+		t.Fatalf("DynamicCall: %v", err)
+	}
+	if req.PreserveSchemaOrder != nil {
+		t.Errorf("PreserveSchemaOrder mutated through the by-value call: got %v want nil", req.PreserveSchemaOrder)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
