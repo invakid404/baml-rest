@@ -1,6 +1,7 @@
 package dynclient
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 
@@ -8,6 +9,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/clientdefaults"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
@@ -19,14 +21,31 @@ type Option func(*config) error
 // config is the internal, mutable view of a client's configuration. It
 // is populated from Options and read once by New when wiring the
 // underlying worker handler.
+//
+// HTTP backend selection and tuning are split across three orthogonal
+// fields. clientMode (WithClientMode) selects which backend handles a
+// request. netHTTPClient (WithNetHTTPClient) tunes net/http only.
+// fastHTTPOptions (WithFastHTTPClient) tunes fasthttp only. The *Set
+// companion booleans record whether the caller invoked the
+// corresponding option at all — required so validate() can reject
+// configurations like "forced net/http with fasthttp tuning" even when
+// the tuning value would otherwise look like a zero value.
 type config struct {
 	buildRequest    bamlutils.BuildRequestConfig
 	baseURLRewrites []urlrewrite.Rule
 	logger          bamlutils.Logger
 	metrics         *prometheus.Registry
 	clientDefaults  *clientdefaults.Config
-	httpClient      *http.Client
 	sharedState     *workerplugin.SharedStateStore
+
+	clientMode    llmhttp.ClientMode
+	clientModeSet bool
+
+	netHTTPClient    *http.Client
+	netHTTPClientSet bool
+
+	fastHTTPOptions llmhttp.FastHTTPClientOptions
+	fastHTTPSet     bool
 }
 
 // WithUseBuildRequest mirrors the BAML_REST_USE_BUILD_REQUEST gate for a
@@ -95,12 +114,68 @@ func WithClientDefaults(cfg *clientdefaults.Config) Option {
 	}
 }
 
-// WithHTTPClient installs the underlying *http.Client used for outbound
-// LLM traffic on the BuildRequest path. Passing nil resets to the
-// library default and does not panic.
-func WithHTTPClient(client *http.Client) Option {
+// WithClientMode selects which HTTP backend handles outbound LLM
+// traffic. Backend selection and backend tuning are orthogonal axes:
+// this option is the only one that picks a backend. WithNetHTTPClient
+// and WithFastHTTPClient configure their respective backends without
+// implying a mode.
+//
+// The default mode (zero value) is llmhttp.ClientModeAuto, which routes
+// each origin to net/http or fasthttp based on a per-origin ALPN probe.
+// Under Auto, both backends can be tuned simultaneously and each
+// applies to the origins it actually serves.
+//
+// Forced modes reject tuning aimed at the unused backend: combining
+// ClientModeNetHTTP with WithFastHTTPClient (or ClientModeFastHTTP with
+// WithNetHTTPClient) is a hard error from New so the misconfiguration
+// surfaces at startup rather than silently no-op'ing at request time.
+// Invalid llmhttp.ClientMode values are also rejected.
+//
+// Repeated calls are last-wins.
+func WithClientMode(mode llmhttp.ClientMode) Option {
 	return func(c *config) error {
-		c.httpClient = client
+		c.clientMode = mode
+		c.clientModeSet = true
+		return nil
+	}
+}
+
+// WithNetHTTPClient supplies a custom *http.Client for the net/http
+// backend. Passing nil records that net/http tuning was requested but
+// supplies no replacement: the default tuned net/http transport (via
+// llmhttp.NewDefaultClientWithOptions) still applies. The nil case
+// still counts as "net/http tuning supplied" for validation purposes,
+// so combining WithClientMode(ClientModeFastHTTP) with
+// WithNetHTTPClient(nil) is a hard error.
+//
+// This option tunes only the net/http backend. It does not select a
+// mode; under the default Auto mode the supplied client governs
+// origins routed to net/http while fasthttp-routed origins are
+// unaffected. Use WithClientMode to force a specific backend.
+//
+// Repeated calls are last-wins.
+func WithNetHTTPClient(client *http.Client) Option {
+	return func(c *config) error {
+		c.netHTTPClient = client
+		c.netHTTPClientSet = true
+		return nil
+	}
+}
+
+// WithFastHTTPClient tunes the fasthttp backend (MaxConns,
+// MaxConnWaitTimeout, MaxIdleConnDuration, TLSConfig). The options
+// apply only to origins that route through fasthttp.
+//
+// This option tunes only the fasthttp backend. It does not select a
+// mode; under the default Auto mode the values apply to fasthttp-routed
+// origins while net/http-routed origins are unaffected. Use
+// WithClientMode to force a specific backend.
+//
+// Repeated calls are last-wins.
+func WithFastHTTPClient(opts llmhttp.FastHTTPClientOptions) Option {
+	return func(c *config) error {
+		c.fastHTTPOptions = opts
+		c.fastHTTPSet = true
 		return nil
 	}
 }
@@ -112,5 +187,50 @@ func WithSharedStateStore(store *SharedStateStore) Option {
 	return func(c *config) error {
 		c.sharedState = store
 		return nil
+	}
+}
+
+// validate enforces the interaction rules between WithClientMode,
+// WithNetHTTPClient, and WithFastHTTPClient. Selection and tuning are
+// orthogonal under Auto mode, but forced modes reject tuning for the
+// unused backend so misconfiguration surfaces at New() rather than as
+// silent no-ops at request time.
+//
+// Runs on the final config so option order doesn't matter — repeated
+// WithClientMode calls are last-wins.
+func (c *config) validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.clientModeSet && !validClientMode(c.clientMode) {
+		return fmt.Errorf("WithClientMode: invalid llmhttp.ClientMode %d", c.clientMode)
+	}
+	if !c.clientModeSet || c.clientMode == llmhttp.ClientModeAuto {
+		return nil
+	}
+
+	switch c.clientMode {
+	case llmhttp.ClientModeNetHTTP:
+		if c.fastHTTPSet {
+			return fmt.Errorf("WithClientMode(llmhttp.ClientModeNetHTTP) conflicts with WithFastHTTPClient: fasthttp tuning has no effect when the backend is forced to net/http")
+		}
+	case llmhttp.ClientModeFastHTTP:
+		if c.netHTTPClientSet {
+			return fmt.Errorf("WithClientMode(llmhttp.ClientModeFastHTTP) conflicts with WithNetHTTPClient: net/http tuning has no effect when the backend is forced to fasthttp")
+		}
+	}
+	return nil
+}
+
+// validClientMode reports whether the supplied ClientMode is a known
+// enum value. The llmhttp package treats unknown raw values from env as
+// Auto, but for an explicit programmatic option a typo is a bug, not a
+// silent fallback.
+func validClientMode(mode llmhttp.ClientMode) bool {
+	switch mode {
+	case llmhttp.ClientModeAuto, llmhttp.ClientModeFastHTTP, llmhttp.ClientModeNetHTTP:
+		return true
+	default:
+		return false
 	}
 }
