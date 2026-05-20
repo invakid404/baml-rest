@@ -42,14 +42,20 @@ tuning option can apply in parallel.
 
 ```go
 import (
+    "net/http"
+
     "github.com/invakid404/baml-rest/bamlutils/llmhttp"
     "github.com/invakid404/baml-rest/dynclient"
 )
 
+netClient := &http.Client{
+    Transport: http.DefaultTransport.(*http.Transport).Clone(),
+}
+
 // Force net/http with a custom *http.Client:
 dynclient.New(
     dynclient.WithClientMode(llmhttp.ClientModeNetHTTP),
-    dynclient.WithNetHTTPClient(client),
+    dynclient.WithNetHTTPClient(netClient),
 )
 
 // Force net/http with the package's tuned default transport
@@ -63,7 +69,7 @@ dynclient.New(
 
 // Keep Auto mode and tune both backend families:
 dynclient.New(
-    dynclient.WithNetHTTPClient(client),
+    dynclient.WithNetHTTPClient(netClient),
     dynclient.WithFastHTTPClient(llmhttp.FastHTTPClientOptions{MaxConns: 1024}),
 )
 ```

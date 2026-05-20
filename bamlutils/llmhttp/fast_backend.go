@@ -166,10 +166,18 @@ func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenU
 	var doErr error
 	select {
 	case <-ctx.Done():
+		// Severing the captured conn via slot.shutdown should unblock
+		// hc.Do promptly, but hand off the wait so ctx.Err() reaches
+		// the caller without blocking on Do's wind-down. Mirrors the
+		// non-streaming executeFast cleanup. Any error from the orphan
+		// Do is intentionally unsurfaced — the caller has already seen
+		// ctx.Err().
 		slot.shutdown()
-		<-doneCh
-		fasthttp.ReleaseRequest(fReq)
-		fasthttp.ReleaseResponse(fResp)
+		go func() {
+			<-doneCh
+			fasthttp.ReleaseRequest(fReq)
+			fasthttp.ReleaseResponse(fResp)
+		}()
 		return nil, ctx.Err()
 	case doErr = <-doneCh:
 	}
