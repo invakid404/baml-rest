@@ -53,6 +53,68 @@ func TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder(t *testing.T) {
 	}
 }
 
+// TestUnmarshalOrderedObject_NestedRawMessage pins the goccy/go-json
+// streaming-decoder contract that the order-capture path depends on:
+// Token() must surface object delimiters and string keys, and a
+// subsequent Decode(&json.RawMessage) on the value position must hand
+// back the raw bytes of nested objects/arrays/primitives intact so the
+// downstream goccy Unmarshal can decode them. Exercised through
+// DynamicOutputSchema.UnmarshalJSON since unmarshalOrderedObject is
+// package-private; if goccy ever diverges from stdlib here the order
+// capture would silently break and this test should fail first.
+func TestUnmarshalOrderedObject_NestedRawMessage(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{
+      "properties": {
+        "obj": {"type": "list", "items": {"type": "string"}},
+        "lit": {"type": "literal_int", "value": 42},
+        "ref": {"ref": "Other"},
+        "primitive": {"type": "string"}
+      },
+      "classes": {
+        "Other": {"description": "nested with array of values", "properties": {"a": {"type": "string"}}}
+      }
+    }`)
+	var s DynamicOutputSchema
+	if err := json.Unmarshal(body, &s); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got, want := s.PropertiesOrder, []string{"obj", "lit", "ref", "primitive"}; !equalStrings(got, want) {
+		t.Errorf("PropertiesOrder: got %v want %v", got, want)
+	}
+
+	// Nested object value: items must round-trip through the goccy
+	// Decode(&RawMessage) -> json.Unmarshal path.
+	objProp := s.Properties["obj"]
+	if objProp == nil || objProp.Type != "list" || objProp.Items == nil || objProp.Items.Type != "string" {
+		t.Errorf("nested list property lost its items spec: %+v", objProp)
+	}
+
+	// Literal value (a JSON number) round-trips as expected. Goccy's
+	// streaming decoder accepts UseNumber on the outer scan, but the
+	// inner Decode(&RawMessage) -> Unmarshal must still surface the
+	// value through the DynamicProperty.Value any field.
+	litProp := s.Properties["lit"]
+	if litProp == nil || litProp.Type != "literal_int" || litProp.Value == nil {
+		t.Errorf("literal_int property missing value: %+v", litProp)
+	}
+
+	// Ref-only property: the inner Decode shouldn't strip the ref key.
+	refProp := s.Properties["ref"]
+	if refProp == nil || refProp.Ref != "Other" {
+		t.Errorf("ref property dropped: %+v", refProp)
+	}
+
+	// Nested class round-trips with description + ordered properties.
+	other := s.Classes["Other"]
+	if other == nil || other.Description != "nested with array of values" {
+		t.Errorf("nested class lost description: %+v", other)
+	}
+	if got, want := other.PropertiesOrder, []string{"a"}; !equalStrings(got, want) {
+		t.Errorf("nested class PropertiesOrder: got %v want %v", got, want)
+	}
+}
+
 func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateKey(t *testing.T) {
 	t.Parallel()
 

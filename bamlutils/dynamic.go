@@ -2,7 +2,6 @@ package bamlutils
 
 import (
 	"bytes"
-	encjson "encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -354,14 +353,8 @@ type DynamicOutputSchema struct {
 // UnmarshalJSON decodes a DynamicOutputSchema while capturing the JSON
 // key insertion order of properties/classes/enums into the matching
 // *Order slices. Duplicate keys in any of these objects are rejected
-// with a path-qualified error.
-//
-// Implementation note: this uses encoding/json's streaming decoder to
-// read tokens in source order; goccy/go-json's Decoder.Token is API-
-// compatible but its behaviour around RawMessage decoding inside a
-// streaming token loop has historically diverged. encoding/json is
-// only used here for the ordered top-level scan — nested values are
-// still decoded through json.Unmarshal which routes through goccy.
+// with a path-qualified error. The ordered scan and nested decode both
+// route through goccy/go-json for consistency with the rest of bamlutils.
 func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 	// Reset on reuse: json.Unmarshal into a previously-populated
 	// receiver is valid Go usage, and the wire shape carries no
@@ -467,13 +460,13 @@ func rejectNonObject(path string, b []byte) error {
 // recording the appearance order of keys. Duplicate keys produce a
 // path-qualified error so callers cannot smuggle in ambiguous schemas.
 func unmarshalOrderedObject[V any](data []byte, path string) (map[string]V, []string, error) {
-	dec := encjson.NewDecoder(bytes.NewReader(data))
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if delim, ok := tok.(encjson.Delim); !ok || delim != '{' {
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
 		return nil, nil, fmt.Errorf("%s: expected object", path)
 	}
 
@@ -491,7 +484,7 @@ func unmarshalOrderedObject[V any](data []byte, path string) (map[string]V, []st
 		if _, exists := values[key]; exists {
 			return nil, nil, fmt.Errorf("%s: duplicate key %q", path, key)
 		}
-		var rawVal encjson.RawMessage
+		var rawVal json.RawMessage
 		if err := dec.Decode(&rawVal); err != nil {
 			return nil, nil, fmt.Errorf("%s.%s: %w", path, key, err)
 		}
