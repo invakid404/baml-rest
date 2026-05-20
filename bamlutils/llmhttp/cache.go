@@ -338,7 +338,15 @@ func (c *protocolCache) probe(origin originURL) decision {
 	}
 
 	cfg := c.probeTLS.Clone()
-	cfg.ServerName = origin.hostname
+	// Preserve a caller-supplied ServerName (FastHTTPClientOptions.TLSConfig
+	// or NewClient's injected http.Client.Transport.TLSClientConfig). The
+	// pooled and streaming HostClients use the same "fill if empty" rule,
+	// so an origin that needs a custom SNI for fasthttp would otherwise
+	// probe with the URL hostname, fail ALPN against the real server, and
+	// pin to net/http even though fasthttp was explicitly configured.
+	if cfg.ServerName == "" {
+		cfg.ServerName = origin.hostname
+	}
 	cfg.NextProtos = []string{"h2", "http/1.1"}
 
 	probeCtx, cancel := context.WithTimeout(context.Background(), c.probeTimeout)
