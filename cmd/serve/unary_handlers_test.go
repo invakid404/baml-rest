@@ -410,10 +410,12 @@ func TestMakeChiDynamicParseHandler_PreserveSchemaOrderDefault(t *testing.T) {
 }
 
 // preserveSchemaOrderTruthTable is the shared 5-cell matrix used by
-// every Fiber/chi handler test that exercises the server-default x
-// per-request-field interaction. Defined once so the chi call/parse
-// and Fiber call/parse/stream coverage stays in lockstep — a new row
-// added here is picked up by all consumers.
+// the Fiber helper tests that exercise the server-default x
+// per-request-field interaction. The chi call/parse handler tests
+// keep their own local case tables because they thread the truth
+// table through handler-specific setup (fake caller/parser, header
+// emitter, http.Request construction) rather than calling a helper
+// directly.
 var preserveSchemaOrderTruthTable = []struct {
 	name          string
 	serverDefault bool
