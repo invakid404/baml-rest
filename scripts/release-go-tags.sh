@@ -115,25 +115,108 @@ release_sha="$(git rev-parse "${version}^{commit}")"
 # Phase 1: validate every required module at the product-tag commit.
 # We accumulate failures so the operator sees every broken module in
 # one pass rather than re-running the script after each fix.
+#
+# Failure-kind tallies feed the recovery hint at the bottom of the
+# phase. The most common failure shape is "release-prep was skipped"
+# — every offending require lines up at the *previous* release tag —
+# and that case warrants a different recovery path than a one-off
+# bad require, so we surface it explicitly.
 echo "Validating release-prep state at ${version} (${release_sha})..."
 validation_failed=0
+# Per-failure-kind counters. Plain integers instead of an associative
+# array because macOS still ships bash 3.2, which lacks `declare -A`.
+stale_count=0
+pseudo_count=0
+malformed_count=0
+unparseable_count=0
+missing_count=0
+stale_versions=()
 for module_path in "${required_modules[@]}"; do
     if ! git cat-file -e "${version}:${module_path}/go.mod" 2>/dev/null; then
         echo "ERROR: product tag ${version} does not contain required module ${module_path}/go.mod" >&2
         validation_failed=1
+        missing_count=$(( missing_count + 1 ))
         continue
     fi
     echo "  ${module_path}/go.mod"
-    # Process substitution (not a pipe) so the validator runs in the
-    # current shell — required for any state it sets to persist.
+    release_last_failure_kind=""
+    # Process substitution (not a pipe) so the function runs in the
+    # current shell — the failure-kind assignment relies on that.
     if ! release_validate_module_requires "$module_path" "$expected_version" \
             < <(git show "${version}:${module_path}/go.mod"); then
         echo "ERROR: ${module_path}/go.mod has first-party requires that must be rewritten to ${expected_version} before tagging" >&2
         validation_failed=1
+        case "${release_last_failure_kind:-unknown}" in
+            stale)       stale_count=$(( stale_count + 1 )) ;;
+            pseudo)      pseudo_count=$(( pseudo_count + 1 )) ;;
+            malformed)   malformed_count=$(( malformed_count + 1 )) ;;
+            unparseable) unparseable_count=$(( unparseable_count + 1 )) ;;
+            *)           unparseable_count=$(( unparseable_count + 1 )) ;;
+        esac
+        if [ "${release_last_failure_kind:-}" = "stale" ]; then
+            # Collect every stale require's actual version so the
+            # recovery hint can confirm "they're all at v0.0.<N-1>"
+            # vs "there's a mix of stale versions".
+            while IFS= read -r stale_line; do
+                stripped="${stale_line%%//*}"
+                # shellcheck disable=SC2206
+                stale_fields=($stripped)
+                [ "${#stale_fields[@]}" -ge 2 ] || continue
+                sv="${stale_fields[1]}"
+                if [[ "$sv" =~ ^v0\.0\.[1-9][0-9]*$ ]] && [ "$sv" != "$expected_version" ]; then
+                    stale_versions+=("$sv")
+                fi
+            done < <(git show "${version}:${module_path}/go.mod" \
+                | release_extract_first_party_requires)
+        fi
     fi
 done
 if [ "$validation_failed" -ne 0 ]; then
     echo "ERROR: release-prep validation failed; fix the modules above, retag, and re-run" >&2
+
+    # Self-documenting failure: when EVERY offending line is a stale
+    # `v0.0.<previous-release>` require — the canonical
+    # "release-prep was skipped" footprint — print a tailored
+    # recovery hint instead of leaving the operator to figure out
+    # whether to force-move the tag or skip the release. A pseudo
+    # version, malformed require, or unparseable line falls through
+    # to the generic message above because the fix isn't a
+    # release-prep PR — it's a hand-fix to the offending module.
+    other_count=$(( pseudo_count + malformed_count + unparseable_count + missing_count ))
+
+    if [ "$stale_count" -gt 0 ] && [ "$other_count" -eq 0 ]; then
+        # Find the single stale version if every offending require
+        # lines up there. `sort -u` collapses duplicates.
+        uniq_stale="$(printf '%s\n' "${stale_versions[@]}" | sort -u)"
+        echo >&2
+        echo "Diagnostic: every offending require is a stale v0.0.<N> tag, not a pseudo-" >&2
+        echo "version. This is the canonical 'release-prep was skipped' shape — the" >&2
+        echo "product tag was created from a commit whose go.mods still point at the" >&2
+        echo "previous release." >&2
+        if [ "$(printf '%s\n' "$uniq_stale" | wc -l)" -eq 1 ]; then
+            echo "All offending requires point at: ${uniq_stale}" >&2
+        else
+            echo "Stale versions found across modules:" >&2
+            while IFS= read -r v; do
+                echo "  ${v}" >&2
+            done <<< "$uniq_stale"
+        fi
+        echo >&2
+        echo "Recovery options:" >&2
+        echo "  (a) Land a release-prep commit on master, then force-move ${version}:" >&2
+        echo "        ./scripts/release-prep.sh ${version}" >&2
+        echo "        # review + commit + push" >&2
+        echo "        git tag -f ${version} <release-prep-sha>" >&2
+        echo "        git push --force origin ${version}" >&2
+        echo "      This rewrites the published product tag — destructive, requires" >&2
+        echo "      explicit maintainer authorization, and any GitHub Release attached" >&2
+        echo "      to ${version} will need to be re-pointed." >&2
+        echo "  (b) Skip ${version} and prep the next release cleanly. This is the" >&2
+        echo "      safer option when ${version} hasn't yet been advertised:" >&2
+        echo "        ./scripts/release-prep.sh <next-version>" >&2
+        echo "      Then tag <next-version> from the resulting commit and re-run this" >&2
+        echo "      script with that version." >&2
+    fi
     exit 1
 fi
 echo "Validation OK."
