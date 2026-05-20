@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -333,7 +333,7 @@ func TestDynamicCallFlattensAndCopiesData(t *testing.T) {
 	}
 
 	var decoded map[string]any
-	if err := json.Unmarshal(result.Data, &decoded); err != nil {
+	if err := sonic.Unmarshal(result.Data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, ok := decoded["DynamicProperties"]; ok {
@@ -378,7 +378,7 @@ func TestDynamicCallRawSeparatesRawAndReasoning(t *testing.T) {
 		t.Errorf("Reasoning = %q, want %q", result.Reasoning, "because reasons")
 	}
 	var decoded map[string]any
-	if err := json.Unmarshal(result.Data, &decoded); err != nil {
+	if err := sonic.Unmarshal(result.Data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if decoded["answer"] != "4" {
@@ -405,7 +405,7 @@ func TestDynamicParseFlattensData(t *testing.T) {
 		t.Fatalf("DynamicParse: %v", err)
 	}
 	var decoded map[string]any
-	if err := json.Unmarshal(result.Data, &decoded); err != nil {
+	if err := sonic.Unmarshal(result.Data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, ok := decoded["DynamicProperties"]; ok {
