@@ -911,3 +911,212 @@ func TestDynamicInputValidate_RejectsEmptyCacheControlType(t *testing.T) {
 		t.Errorf("Validate() rejected nil Metadata: %v", err)
 	}
 }
+
+// TestIssue324_DynamicInput_ToWorkerInput_NoPanic pins the #324
+// regression: a DynamicInput shape that includes nested-embedded
+// structs reached through a DynamicProperty.Value (any) and slice
+// fields with omitempty must NOT panic the worker-boundary marshal.
+// Viktor's original repro panicked inside goccy/go-json's encoder VM
+// when goccy walked the nested chain. After the sonic migration the
+// reachable encoders (DynamicTypes.MarshalJSON, DynamicClass.MarshalJSON,
+// OrderedMap.MarshalJSON) all run through sonic, and ToWorkerInput
+// additionally wraps the marshal in a defer-recover.
+//
+// The test asserts the public contract: ToWorkerInput returns a normal
+// (nil-error, valid JSON) pair instead of crashing the host process.
+// Wire-shape details (key order, exact JSON bytes) are intentionally not
+// asserted — the OrderedMap-protected ordering is covered by the
+// pre-existing TestDynamicInput_ToWorkerInput_* suite. The contract
+// being pinned here is "no panic; result is valid JSON; expected top-
+// level keys present", and that contract is what #324 broke.
+func TestIssue324_DynamicInput_ToWorkerInput_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	primary := "TestClient"
+	hello := "hello"
+
+	// Build the shape Viktor's repro produced — a literal_string
+	// property whose Value carries a nested anonymous-embedded struct
+	// containing a slice field. That slice + the embedding are what
+	// drove goccy's encoder VM into the nil-pointer dereference
+	// originally surfaced as #324.
+	type Inner struct {
+		B string   `json:"b"`
+		C string   `json:"c"`
+		D []string `json:"d,omitempty"` // omitempty slice — Viktor's trigger shape
+	}
+	type Outer struct {
+		Inner // anonymous embedded struct
+	}
+	panicTrigger := &DynamicProperty{
+		Type:  "literal_string",
+		Value: Outer{},
+	}
+
+	input := &DynamicInput{
+		Messages: []DynamicMessage{
+			{Role: "user", TextContent: &hello},
+		},
+		ClientRegistry: &ClientRegistry{
+			Primary: &primary,
+			Clients: []*ClientProperty{
+				{
+					Name:     primary,
+					Provider: "anthropic",
+					Options:  map[string]any{"model": "test-model", "api_key": "test-key"},
+				},
+			},
+		},
+		OutputSchema: &DynamicOutputSchema{
+			Properties: MustOrderedMap(
+				OrderedKV("answer", &DynamicProperty{Type: "string"}),
+				OrderedKV("panic_trigger", panicTrigger),
+			),
+		},
+	}
+
+	data, err := input.ToWorkerInput()
+	if err != nil {
+		t.Fatalf("ToWorkerInput returned an error (must not panic and must return valid JSON): %v", err)
+	}
+	if !sonic.Valid(data) {
+		t.Fatalf("ToWorkerInput produced invalid JSON; bytes=%s", string(data))
+	}
+
+	// Expected top-level keys: the worker payload is {"messages": ...,
+	// "__baml_options__": ...}. Decode into a map[string]any and assert
+	// presence — order across the top-level object is not contractual
+	// for the worker boundary.
+	var decoded map[string]any
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("worker payload unmarshal failed: %v", err)
+	}
+	if _, ok := decoded["messages"]; !ok {
+		t.Errorf("worker payload missing required 'messages' key; got keys=%v", keysOf(decoded))
+	}
+	if _, ok := decoded["__baml_options__"]; !ok {
+		t.Errorf("worker payload missing required '__baml_options__' key; got keys=%v", keysOf(decoded))
+	}
+}
+
+// TestIssue324_DynamicParseInput_ToWorkerInput_NoPanic mirrors the
+// regression for the parse path. The parse worker payload's top-level
+// keys are {"raw", "__baml_options__"} — Validate doesn't require raw
+// to be JSON, just non-empty, so we exercise the panic-trigger shape
+// against a stub raw string.
+func TestIssue324_DynamicParseInput_ToWorkerInput_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	type Inner struct {
+		B string   `json:"b"`
+		C string   `json:"c"`
+		D []string `json:"d,omitempty"`
+	}
+	type Outer struct {
+		Inner
+	}
+
+	input := &DynamicParseInput{
+		Raw: `{"answer":"x"}`,
+		OutputSchema: &DynamicOutputSchema{
+			Properties: MustOrderedMap(
+				OrderedKV("answer", &DynamicProperty{Type: "string"}),
+				OrderedKV("panic_trigger", &DynamicProperty{
+					Type:  "literal_string",
+					Value: Outer{},
+				}),
+			),
+		},
+	}
+
+	data, err := input.ToWorkerInput()
+	if err != nil {
+		t.Fatalf("ToWorkerInput returned an error (must not panic and must return valid JSON): %v", err)
+	}
+	if !sonic.Valid(data) {
+		t.Fatalf("ToWorkerInput produced invalid JSON; bytes=%s", string(data))
+	}
+
+	var decoded map[string]any
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("worker payload unmarshal failed: %v", err)
+	}
+	if _, ok := decoded["raw"]; !ok {
+		t.Errorf("worker payload missing required 'raw' key; got keys=%v", keysOf(decoded))
+	}
+	if _, ok := decoded["__baml_options__"]; !ok {
+		t.Errorf("worker payload missing required '__baml_options__' key; got keys=%v", keysOf(decoded))
+	}
+}
+
+// TestIssue324_ToWorkerInput_RecoverGuard pins the defer-recover
+// behaviour of the worker-boundary marshal: the recover converts any
+// downstream panic into a normal error rather than tearing down the
+// host. Currently the sonic-driven encoder chain never reaches this
+// rung for well-formed inputs, so we exercise the seam by injecting a
+// MarshalJSON implementation that panics directly. Without the
+// recover, this test would crash the process.
+func TestIssue324_ToWorkerInput_RecoverGuard(t *testing.T) {
+	t.Parallel()
+
+	primary := "TestClient"
+	hello := "hello"
+	input := &DynamicInput{
+		Messages: []DynamicMessage{
+			{Role: "user", TextContent: &hello},
+		},
+		ClientRegistry: &ClientRegistry{
+			Primary: &primary,
+			Clients: []*ClientProperty{
+				{
+					Name:     primary,
+					Provider: "anthropic",
+					Options: map[string]any{
+						"model":   "test-model",
+						"api_key": "test-key",
+						// panicMarshaler.MarshalJSON panics — the recover
+						// inside ToWorkerInput should convert this into a
+						// normal error.
+						"trigger": &panicMarshaler{},
+					},
+				},
+			},
+		},
+		OutputSchema: &DynamicOutputSchema{
+			Properties: MustOrderedMap(OrderedKV("answer", &DynamicProperty{Type: "string"})),
+		},
+	}
+
+	data, err := input.ToWorkerInput()
+	if err == nil {
+		t.Fatalf("expected ToWorkerInput to surface a normal error after a marshal panic; got data=%s", string(data))
+	}
+	if data != nil {
+		t.Errorf("expected nil data on recover branch; got %d bytes", len(data))
+	}
+	if !strings.Contains(err.Error(), "dynamic input marshal panic") {
+		t.Errorf("expected recover error to mention 'dynamic input marshal panic'; got %q", err.Error())
+	}
+}
+
+// panicMarshaler is a test helper whose MarshalJSON method always
+// panics. Used by TestIssue324_ToWorkerInput_RecoverGuard to exercise
+// the worker-boundary defer-recover without needing to find a real
+// encoder-level crash.
+type panicMarshaler struct{}
+
+func (panicMarshaler) MarshalJSON() ([]byte, error) {
+	panic("synthetic marshal panic for #324 regression test")
+}
+
+// keysOf returns the keys of m in any order — convenience for assertion
+// error messages. Defined here rather than imported because slices.Sorted
+// + maps.Keys requires importing two more packages just for one t.Errorf
+// formatter.
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
