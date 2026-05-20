@@ -20,13 +20,13 @@ require (
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_219_0 v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/adapters/common v0.0.46
-	github.com/invakid404/baml-rest/bamlutils v0.0.46
+	github.com/invakid404/baml-rest/adapters/common v0.0.47
+	github.com/invakid404/baml-rest/bamlutils v0.0.47
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/introspected v0.0.46
+	github.com/invakid404/baml-rest/introspected v0.0.47
 	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.46
-	github.com/invakid404/baml-rest/workerplugin v0.0.46
+	github.com/invakid404/baml-rest/worker v0.0.47
+	github.com/invakid404/baml-rest/workerplugin v0.0.47
 	github.com/moby/buildkit v0.30.0
 	github.com/moby/moby/api v1.54.2
 	github.com/moby/moby/client v0.4.1
@@ -112,7 +112,7 @@ require (
 	github.com/in-toto/attestation v1.1.2 // indirect
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.46 // indirect
+	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.47 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
