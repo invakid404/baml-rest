@@ -187,14 +187,23 @@ go build ./...
 go vet ./...
 go test ./... -count=1
 (cd dynclient && GOWORK=off go test ./... -count=1)
-git status
-git commit -am "chore(release): prepare Go module versions for 0.0.N"
 ```
 
 The extra `GOWORK=off` step inside `dynclient/` verifies that the
 module also builds and tests against the rewritten requires when the
 workspace is not in play — which is the configuration downstream
 consumers will see.
+
+Then use the `git diff --cached -- <paths>` and `git commit -m
+"..." -- <paths>` lines that `release-prep.sh` printed at the end
+of Step 1 to review and commit. Those commands are the single
+source of truth for the release-prep commit shape; both restrict
+their pathspec to the rewritten go.mod files so that any unrelated
+work you happened to have staged in the same checkout is left out
+of the release commit. **Don't substitute `git commit -am ...`
+for the printed line** — `-a` would sweep up every modified
+tracked file, including any WIP the script intentionally left
+alone.
 
 ## Step 3 — Push to master
 

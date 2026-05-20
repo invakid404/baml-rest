@@ -215,11 +215,19 @@ if [ "$validation_failed" -ne 0 ]; then
 fi
 echo "Validation OK."
 
-# Phase 2: figure out which tags need to be created / pushed.
-# `to_create` holds tags we'll create locally then push, `skipped`
-# holds tags that already point at release_sha somewhere (local or
-# remote). Anything pointing at a *different* SHA aborts immediately.
+# Phase 2: figure out which tags need to be created and / or pushed.
+# Both the local refs and origin are inspected before each tag is
+# classified so a partial-push recovery (local refs exist, origin
+# lost the tags) doesn't silently report everything as a no-op —
+# in that case the script should push the existing local tags.
+#
+#   - `to_create` — neither side has the tag; create local + push.
+#   - `to_push`   — local at release_sha, origin missing; push only.
+#   - `skipped`   — both sides at release_sha; nothing to do.
+#
+# A tag at the *wrong* SHA on either side still aborts immediately.
 to_create=()
+to_push=()
 skipped=()
 
 for module_path in "${required_modules[@]}"; do
@@ -236,13 +244,9 @@ for module_path in "${required_modules[@]}"; do
         local_sha=""
     fi
 
-    if [ -n "$local_sha" ]; then
-        if [ "$local_sha" != "$release_sha" ]; then
-            echo "ERROR: local tag ${tag} points at ${local_sha}, expected ${release_sha}" >&2
-            exit 1
-        fi
-        skipped+=("$tag")
-        continue
+    if [ -n "$local_sha" ] && [ "$local_sha" != "$release_sha" ]; then
+        echo "ERROR: local tag ${tag} points at ${local_sha}, expected ${release_sha}" >&2
+        exit 1
     fi
 
     # `git ls-remote` exits 0 with empty stdout when the ref doesn't
@@ -253,6 +257,7 @@ for module_path in "${required_modules[@]}"; do
     # raw lookup first to detect existence, then peel only when the
     # raw SHA doesn't match — that handles annotated tags whose raw
     # ref SHA is the tag-object SHA rather than the target commit.
+    remote_sha=""
     remote_line="$(git ls-remote --tags origin "refs/tags/${tag}" || true)"
     if [ -n "$remote_line" ]; then
         remote_sha="${remote_line%%[[:space:]]*}"
@@ -262,34 +267,73 @@ for module_path in "${required_modules[@]}"; do
                 remote_sha="${peeled_line%%[[:space:]]*}"
             fi
         fi
-        if [ "$remote_sha" != "$release_sha" ]; then
-            echo "ERROR: origin tag ${tag} points at ${remote_sha}, expected ${release_sha}" >&2
-            exit 1
-        fi
-        skipped+=("$tag")
-        continue
     fi
 
-    to_create+=("$tag")
+    if [ -n "$remote_sha" ] && [ "$remote_sha" != "$release_sha" ]; then
+        echo "ERROR: origin tag ${tag} points at ${remote_sha}, expected ${release_sha}" >&2
+        exit 1
+    fi
+
+    # Classify. The L✗ R✓ case (remote already at release_sha, no
+    # local ref) is treated as skipped — origin is the source of
+    # truth and the script's job here is to make origin match. A
+    # maintainer who wants the local ref can `git fetch origin
+    # --tags` themselves.
+    if [ -n "$local_sha" ] && [ -n "$remote_sha" ]; then
+        skipped+=("$tag")
+    elif [ -n "$local_sha" ] && [ -z "$remote_sha" ]; then
+        to_push+=("$tag")
+    elif [ -z "$local_sha" ] && [ -n "$remote_sha" ]; then
+        skipped+=("$tag")
+    else
+        to_create+=("$tag")
+    fi
 done
 
 # Phase 3: act (or pretend to, in dry-run).
+#
+# Tags in to_create get a local ref AND a push. Tags in to_push are
+# already at release_sha locally — only the push is missing (the
+# partial-push recovery path), so we skip the `git tag` invocation
+# and feed them straight into the same `git push origin <refs>`
+# call as anything we just created. Combining them keeps the push
+# atomic on origin's side.
 created=()
-if [ "${#to_create[@]}" -gt 0 ]; then
+push_args=()
+if [ "${#to_create[@]}" -gt 0 ] || [ "${#to_push[@]}" -gt 0 ]; then
     if $dry_run; then
         echo
-        echo "[dry-run] would create and push:"
-        for tag in "${to_create[@]}"; do
-            echo "  ${tag} -> ${release_sha}"
-        done
+        if [ "${#to_create[@]}" -gt 0 ]; then
+            echo "[dry-run] would create and push:"
+            for tag in "${to_create[@]}"; do
+                echo "  ${tag} -> ${release_sha}"
+            done
+        fi
+        if [ "${#to_push[@]}" -gt 0 ]; then
+            echo "[dry-run] would push existing local tag(s) to origin:"
+            for tag in "${to_push[@]}"; do
+                echo "  ${tag} -> ${release_sha}"
+            done
+        fi
     else
-        for tag in "${to_create[@]}"; do
-            echo "Creating ${tag} -> ${release_sha}"
-            git tag "${tag}" "${release_sha}"
-            created+=("$tag")
-        done
-        echo "Pushing ${#created[@]} tag(s) to origin..."
-        git push origin "${created[@]}"
+        if [ "${#to_create[@]}" -gt 0 ]; then
+            for tag in "${to_create[@]}"; do
+                echo "Creating ${tag} -> ${release_sha}"
+                git tag "${tag}" "${release_sha}"
+                created+=("$tag")
+                push_args+=("$tag")
+            done
+        fi
+        if [ "${#to_push[@]}" -gt 0 ]; then
+            for tag in "${to_push[@]}"; do
+                echo "Re-pushing existing local ${tag} -> ${release_sha}"
+                push_args+=("$tag")
+            done
+        fi
+        if [ "${#push_args[@]}" -gt 0 ]; then
+            echo "Pushing ${#push_args[@]} tag(s) to origin..."
+            git push origin "${push_args[@]}"
+        fi
     fi
 fi
 
@@ -308,10 +352,18 @@ if [ "${#to_create[@]}" -gt 0 ] && $dry_run; then
     echo "  would create: ${#to_create[@]}"
     for tag in "${to_create[@]}"; do echo "    ${tag}"; done
 fi
+if [ "${#to_push[@]}" -gt 0 ]; then
+    if $dry_run; then
+        echo "  would push (existing local): ${#to_push[@]}"
+    else
+        echo "  pushed (existing local): ${#to_push[@]}"
+    fi
+    for tag in "${to_push[@]}"; do echo "    ${tag}"; done
+fi
 if [ "${#skipped[@]}" -gt 0 ]; then
     echo "  skipped (already at ${release_sha}): ${#skipped[@]}"
     for tag in "${skipped[@]}"; do echo "    ${tag}"; done
 fi
-if [ "${#created[@]}" -eq 0 ] && [ "${#to_create[@]}" -eq 0 ]; then
+if [ "${#created[@]}" -eq 0 ] && [ "${#to_create[@]}" -eq 0 ] && [ "${#to_push[@]}" -eq 0 ]; then
     echo "  no-op: all ${#required_modules[@]} Go module tags already point at ${release_sha}"
 fi
