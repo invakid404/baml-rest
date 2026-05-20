@@ -112,6 +112,8 @@ github.com/dlclark/regexp2 v1.11.0 h1:G/nrcoOa7ZXlpoa/91N3X7mM3r8eIlMBBJZvsz/mxK
 github.com/dlclark/regexp2 v1.11.0/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
 github.com/docker/buildx v0.34.0 h1:ivBYUNCMKMOwqCziC66p79dNkd8mv+DSrnyrY9PY9vQ=
 github.com/docker/buildx v0.34.0/go.mod h1:RG8352TWR2gg8P7uqu1ZvlSpqxUcnVvGfjqQsKpmSAY=
+github.com/docker/buildx v0.34.1 h1:gDnnCPmnbPt/5FTABZIhTlBc6kYibWNyVJzE29Mb5yM=
+github.com/docker/buildx v0.34.1/go.mod h1:RG8352TWR2gg8P7uqu1ZvlSpqxUcnVvGfjqQsKpmSAY=
 github.com/docker/cli v29.4.3+incompatible h1:u+UliYm2J/rYrIh2FqHQg32neRG8GjbvNuwQRTzGspU=
 github.com/docker/cli v29.4.3+incompatible/go.mod h1:JLrzqnKDaYBop7H2jaqPtU4hHvMKP+vjCwu2uszcLI8=
 github.com/docker/docker-credential-helpers v0.9.5 h1:EFNN8DHvaiK8zVqFA2DT6BjXE0GzfLOZ38ggPTKePkY=
@@ -207,6 +209,7 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.0-20260518112657-a042afdd4284 h1:Bs+u4XTWtasutKn+haBu52IYqhTn/i/uImdbs8n0APw=
 github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.0-20260518112657-a042afdd4284/go.mod h1:09EQxuxAj8iLp3pYRa+4LbEd11siyt/UhoIYD4aJ950=
+github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.44/go.mod h1:ykjc7qQ+4LAEJ9tf0+MbJ9pVwRiUiBmracb/XukpRdg=
 github.com/jhump/protoreflect v1.17.0 h1:qOEr613fac2lOuTgWN4tPAtLL7fUSbuJL5X5XumQh94=
 github.com/jhump/protoreflect v1.17.0/go.mod h1:h9+vUUL38jiBzck8ck+6G/aeMX8Z4QUY/NiJPwPNi+8=
 github.com/josharian/intern v1.0.0 h1:vlS4z54oSdjm0bgjRigI+G1HpF+tI+9rE5LLzOg8HmY=
