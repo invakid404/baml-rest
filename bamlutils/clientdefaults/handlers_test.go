@@ -1,9 +1,8 @@
 package clientdefaults
 
 import (
+	"encoding/json"
 	"testing"
-
-	"github.com/goccy/go-json"
 )
 
 func TestAllowedRoleMetadataHandler_ParseAccepts(t *testing.T) {

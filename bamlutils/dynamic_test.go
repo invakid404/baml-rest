@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 )
 
 // TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder pins #313: raw
@@ -33,7 +33,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder(t *testing.T) {
       }
     }`)
 	var s DynamicOutputSchema
-	if err := json.Unmarshal(body, &s); err != nil {
+	if err := sonic.Unmarshal(body, &s); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if got, want := s.Properties.Keys(), []string{"delta", "alpha", "charlie", "bravo"}; !equalStrings(got, want) {
@@ -75,7 +75,7 @@ func TestUnmarshalOrderedMap_NestedRawMessage(t *testing.T) {
       }
     }`)
 	var s DynamicOutputSchema
-	if err := json.Unmarshal(body, &s); err != nil {
+	if err := sonic.Unmarshal(body, &s); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if got, want := s.Properties.Keys(), []string{"obj", "lit", "ref", "primitive"}; !equalStrings(got, want) {
@@ -138,7 +138,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateKey(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var s DynamicOutputSchema
-			err := json.Unmarshal([]byte(tc.body), &s)
+			err := sonic.Unmarshal([]byte(tc.body), &s)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -180,7 +180,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testin
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var s DynamicOutputSchema
-			err := json.Unmarshal([]byte(tc.body), &s)
+			err := sonic.Unmarshal([]byte(tc.body), &s)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -218,7 +218,7 @@ func TestDynamicClass_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var c DynamicClass
-			err := json.Unmarshal([]byte(tc.body), &c)
+			err := sonic.Unmarshal([]byte(tc.body), &c)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -230,7 +230,7 @@ func TestDynamicClass_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testing.T) {
 
 	body := []byte(`{"description":"only","alias":"once","properties":{"p":{"type":"string"}}}`)
 	var c DynamicClass
-	if err := json.Unmarshal(body, &c); err != nil {
+	if err := sonic.Unmarshal(body, &c); err != nil {
 		t.Errorf("well-formed class rejected: %v", err)
 	}
 	if c.Description != "only" || c.Alias != "once" || c.Properties.Len() != 1 {
@@ -266,7 +266,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsNonObject(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var s DynamicOutputSchema
-			err := json.Unmarshal([]byte(tc.body), &s)
+			err := sonic.Unmarshal([]byte(tc.body), &s)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -289,7 +289,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull(t *testing.T) {
       "enums": null
     }`)
 	var s DynamicOutputSchema
-	if err := json.Unmarshal(body, &s); err != nil {
+	if err := sonic.Unmarshal(body, &s); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if !s.Properties.IsZero() {
@@ -307,7 +307,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull(t *testing.T) {
       "classes": {"C": {"properties": null}}
     }`)
 	var s2 DynamicOutputSchema
-	if err := json.Unmarshal(nested, &s2); err != nil {
+	if err := sonic.Unmarshal(nested, &s2); err != nil {
 		t.Fatalf("Unmarshal nested: %v", err)
 	}
 	cls, _ := s2.Classes.Get("C")
@@ -326,24 +326,24 @@ func TestDynamicOutputSchema_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
       "enums": {"E": {"values": [{"name": "A"}]}}
     }`)
 	var s DynamicOutputSchema
-	if err := json.Unmarshal(first, &s); err != nil {
+	if err := sonic.Unmarshal(first, &s); err != nil {
 		t.Fatalf("first Unmarshal: %v", err)
 	}
 	if s.Properties.Len() == 0 || s.Classes.Len() == 0 || s.Enums.Len() == 0 {
 		t.Fatalf("first decode left maps empty: %+v", s)
 	}
 
-	if err := json.Unmarshal([]byte(`{}`), &s); err != nil {
+	if err := sonic.Unmarshal([]byte(`{}`), &s); err != nil {
 		t.Fatalf("reuse Unmarshal {}: %v", err)
 	}
 	if !s.Properties.IsZero() || !s.Classes.IsZero() || !s.Enums.IsZero() {
 		t.Errorf("maps not cleared after empty reuse: %+v", s)
 	}
 
-	if err := json.Unmarshal(first, &s); err != nil {
+	if err := sonic.Unmarshal(first, &s); err != nil {
 		t.Fatalf("re-populate Unmarshal: %v", err)
 	}
-	if err := json.Unmarshal([]byte(`{"properties":null,"classes":null,"enums":null}`), &s); err != nil {
+	if err := sonic.Unmarshal([]byte(`{"properties":null,"classes":null,"enums":null}`), &s); err != nil {
 		t.Fatalf("reuse Unmarshal null: %v", err)
 	}
 	if !s.Properties.IsZero() || !s.Classes.IsZero() || !s.Enums.IsZero() {
@@ -355,13 +355,13 @@ func TestDynamicClass_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
 	t.Parallel()
 	first := []byte(`{"description": "old", "alias": "old-alias", "properties": {"p": {"type": "string"}, "q": {"type": "int"}}}`)
 	var c DynamicClass
-	if err := json.Unmarshal(first, &c); err != nil {
+	if err := sonic.Unmarshal(first, &c); err != nil {
 		t.Fatalf("first Unmarshal: %v", err)
 	}
 	if c.Description == "" || c.Alias == "" || c.Properties.Len() == 0 {
 		t.Fatalf("first decode left fields empty: %+v", c)
 	}
-	if err := json.Unmarshal([]byte(`{}`), &c); err != nil {
+	if err := sonic.Unmarshal([]byte(`{}`), &c); err != nil {
 		t.Fatalf("reuse Unmarshal: %v", err)
 	}
 	if c.Description != "" || c.Alias != "" || !c.Properties.IsZero() {
@@ -474,7 +474,7 @@ func TestDynamicInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
           "output_schema": {"properties": {"alpha": {"type": "string"}, "bravo": {"type": "int"}}}
         }`)
 		var in DynamicInput
-		if err := json.Unmarshal(body, &in); err != nil {
+		if err := sonic.Unmarshal(body, &in); err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
 		if in.PreserveSchemaOrder != nil {
@@ -517,7 +517,7 @@ func TestDynamicParseInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
           "output_schema": {"properties": {"alpha": {"type": "string"}, "bravo": {"type": "int"}}}
         }`)
 		var in DynamicParseInput
-		if err := json.Unmarshal(body, &in); err != nil {
+		if err := sonic.Unmarshal(body, &in); err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
 		if in.PreserveSchemaOrder != nil {
@@ -557,7 +557,7 @@ func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
       }
     }`)
 	var in DynamicInput
-	if err := json.Unmarshal(body, &in); err != nil {
+	if err := sonic.Unmarshal(body, &in); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if err := in.Validate(); err != nil {
@@ -585,7 +585,7 @@ func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
 		Opts opts `json:"__baml_options__"`
 	}
 	var decoded payload
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
 	}
 	if !decoded.Opts.TypeBuilder.DynamicTypes.PreserveOrder {
@@ -664,7 +664,7 @@ func TestDynamicInput_ToWorkerInput_SyntheticClassFirst(t *testing.T) {
 		Opts opts `json:"__baml_options__"`
 	}
 	var decoded payload
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
 	}
 	gotClasses := decoded.Opts.TypeBuilder.DynamicTypes.Classes.Keys()
@@ -764,7 +764,7 @@ func TestDynamicInput_ToWorkerInput_CacheControlBridge(t *testing.T) {
 	var decoded struct {
 		Messages []map[string]any `json:"messages"`
 	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
 	}
 	if len(decoded.Messages) != 4 {
@@ -841,7 +841,7 @@ func TestDynamicMessage_PublicJSON_StillUsesType(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"role":"user","content":"hi","metadata":{"cache_control":{"type":"ephemeral"}}}`)
 	var msg DynamicMessage
-	if err := json.Unmarshal(body, &msg); err != nil {
+	if err := sonic.Unmarshal(body, &msg); err != nil {
 		t.Fatalf("unmarshal public DynamicMessage: %v", err)
 	}
 	if msg.Metadata == nil || msg.Metadata.CacheControl == nil {
@@ -850,7 +850,7 @@ func TestDynamicMessage_PublicJSON_StillUsesType(t *testing.T) {
 	if msg.Metadata.CacheControl.Type != "ephemeral" {
 		t.Errorf("CacheControl.Type: got %q, want %q", msg.Metadata.CacheControl.Type, "ephemeral")
 	}
-	out, err := json.Marshal(&msg)
+	out, err := sonic.Marshal(&msg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

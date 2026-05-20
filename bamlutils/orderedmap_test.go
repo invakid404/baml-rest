@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 )
 
 func TestNewOrderedMap_PreservesEntryOrder(t *testing.T) {
@@ -197,7 +197,7 @@ func TestOrderedMap_MarshalJSON_PreservesOrder(t *testing.T) {
 		OrderedKV("alpha", 2),
 		OrderedKV("charlie", 3),
 	)
-	data, err := json.Marshal(m)
+	data, err := sonic.Marshal(m)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestOrderedMap_MarshalJSON_PreservesOrder(t *testing.T) {
 
 func TestOrderedMap_MarshalJSON_Empty(t *testing.T) {
 	var m OrderedMap[int]
-	data, err := json.Marshal(m)
+	data, err := sonic.Marshal(m)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestOrderedMap_MarshalJSON_Empty(t *testing.T) {
 func TestOrderedMap_UnmarshalJSON_PreservesOrder(t *testing.T) {
 	var m OrderedMap[int]
 	input := []byte(`{"delta":1,"alpha":2,"charlie":3,"bravo":4}`)
-	if err := json.Unmarshal(input, &m); err != nil {
+	if err := sonic.Unmarshal(input, &m); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	want := []string{"delta", "alpha", "charlie", "bravo"}
@@ -232,7 +232,7 @@ func TestOrderedMap_UnmarshalJSON_PreservesOrder(t *testing.T) {
 
 func TestOrderedMap_UnmarshalJSON_RejectsDuplicate(t *testing.T) {
 	var m OrderedMap[int]
-	err := json.Unmarshal([]byte(`{"a":1,"a":2}`), &m)
+	err := sonic.Unmarshal([]byte(`{"a":1,"a":2}`), &m)
 	if err == nil {
 		t.Fatalf("expected duplicate error")
 	}
@@ -243,7 +243,7 @@ func TestOrderedMap_UnmarshalJSON_RejectsDuplicate(t *testing.T) {
 
 func TestOrderedMap_UnmarshalJSON_NullResetsToZero(t *testing.T) {
 	m := MustOrderedMap(OrderedKV("a", 1))
-	if err := json.Unmarshal([]byte(`null`), &m); err != nil {
+	if err := sonic.Unmarshal([]byte(`null`), &m); err != nil {
 		t.Fatalf("Unmarshal null: %v", err)
 	}
 	if !m.IsZero() {
@@ -253,13 +253,13 @@ func TestOrderedMap_UnmarshalJSON_NullResetsToZero(t *testing.T) {
 
 func TestOrderedMap_UnmarshalJSON_EmptyObject(t *testing.T) {
 	var m OrderedMap[int]
-	if err := json.Unmarshal([]byte(`{}`), &m); err != nil {
+	if err := sonic.Unmarshal([]byte(`{}`), &m); err != nil {
 		t.Fatalf("Unmarshal {}: %v", err)
 	}
 	if !m.IsZero() {
 		t.Errorf("empty object: IsZero must be true")
 	}
-	data, err := json.Marshal(m)
+	data, err := sonic.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestOrderedMap_UnmarshalJSON_EmptyObject(t *testing.T) {
 
 func TestOrderedMap_UnmarshalJSON_SingleEntry(t *testing.T) {
 	var m OrderedMap[string]
-	if err := json.Unmarshal([]byte(`{"only":"value"}`), &m); err != nil {
+	if err := sonic.Unmarshal([]byte(`{"only":"value"}`), &m); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(m.Keys(), []string{"only"}) {
@@ -300,7 +300,7 @@ func TestOrderedMap_MixedValueRoundtrip(t *testing.T) {
 		OrderedKV("first", &Inner{Name: "one"}),
 		OrderedKV("second", &Inner{Name: "two"}),
 	)
-	data, err := json.Marshal(m)
+	data, err := sonic.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestOrderedMap_MixedValueRoundtrip(t *testing.T) {
 	}
 
 	var rt OrderedMap[*Inner]
-	if err := json.Unmarshal(data, &rt); err != nil {
+	if err := sonic.Unmarshal(data, &rt); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if !reflect.DeepEqual(rt.Keys(), []string{"first", "second"}) {
@@ -358,7 +358,7 @@ func TestUnmarshalOrderedMap_PathQualifiedDuplicateSentinel(t *testing.T) {
 //
 // goccy/go-json's outer Unmarshal layer also rejects trailing top-level
 // bytes (with its own "after top-level value" wording) when this decode
-// is reached through json.Unmarshal(&m). We exercise the helper
+// is reached through sonic.Unmarshal(&m). We exercise the helper
 // directly so the strict-input contract is pinned at the function
 // boundary regardless of whether the outer encoder enforces it too.
 func TestUnmarshalOrderedMap_RejectsTrailingBytes(t *testing.T) {
@@ -415,7 +415,7 @@ func TestUnmarshalOrderedMap_AcceptsTrailingWhitespace(t *testing.T) {
 		"{\"a\":1}\r\n\t  ",
 	} {
 		var m OrderedMap[int]
-		if err := json.Unmarshal([]byte(body), &m); err != nil {
+		if err := sonic.Unmarshal([]byte(body), &m); err != nil {
 			t.Errorf("unexpected error for %q: %v", body, err)
 		}
 	}
