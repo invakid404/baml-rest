@@ -1,9 +1,10 @@
 # Release Procedure
 
-> **DO NOT SKIP RELEASE-PREP.** Tagging before the first-party `v0.0.X` requires
-> are in the merged commit will cause `scripts/release-go-tags.sh` to reject the
-> Go module tags, and recovery requires force-moving the product tag (already
-> pushed and possibly already attached to a GitHub Release) — see #308.
+> **DO NOT SKIP RELEASE-PREP.** Tagging before the first-party `require`
+> statements have been bumped to `v0.0.X` in the merged commit will cause
+> `scripts/release-go-tags.sh` to reject the Go module tags, and recovery
+> requires force-moving the product tag (already pushed and possibly already
+> attached to a GitHub Release) — see #308.
 
 This document is the maintainer-facing guide for cutting a baml-rest
 release. It covers both the existing product release (binary + Docker)
