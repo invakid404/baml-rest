@@ -27,9 +27,54 @@ c, err := dynclient.New(
 // c.DynamicStream(ctx, req)
 ```
 
-See [`dynclient/`](dynclient/) for the full surface (8 options, 5 endpoint
+See [`dynclient/`](dynclient/) for the full surface (10 options, 5 endpoint
 methods, iterator-style streaming). The patched-BAML CFFI library is
 bundled as a nested module — no separate setup required.
+
+### HTTP backend selection and tuning
+
+The underlying HTTP backend (net/http vs fasthttp) is chosen by
+`WithClientMode` and tuned independently by `WithNetHTTPClient`
+(net/http only) and `WithFastHTTPClient` (fasthttp only). Selection and
+tuning are orthogonal axes: the default `llmhttp.ClientModeAuto` routes
+each origin to the appropriate backend via an ALPN probe, and either
+tuning option can apply in parallel.
+
+```go
+import (
+    "github.com/invakid404/baml-rest/bamlutils/llmhttp"
+    "github.com/invakid404/baml-rest/dynclient"
+)
+
+// Force net/http with a custom *http.Client:
+dynclient.New(
+    dynclient.WithClientMode(llmhttp.ClientModeNetHTTP),
+    dynclient.WithNetHTTPClient(client),
+)
+
+// Force net/http with the package's tuned default transport
+// (no custom client needed):
+dynclient.New(dynclient.WithClientMode(llmhttp.ClientModeNetHTTP))
+
+// Keep Auto mode and tune fasthttp routes only:
+dynclient.New(
+    dynclient.WithFastHTTPClient(llmhttp.FastHTTPClientOptions{MaxConns: 1024}),
+)
+
+// Keep Auto mode and tune both backend families:
+dynclient.New(
+    dynclient.WithNetHTTPClient(client),
+    dynclient.WithFastHTTPClient(llmhttp.FastHTTPClientOptions{MaxConns: 1024}),
+)
+```
+
+Forced modes reject tuning aimed at the unused backend — e.g.
+`WithClientMode(ClientModeNetHTTP)` combined with `WithFastHTTPClient`
+is a hard error from `New` so the misconfiguration surfaces at startup
+rather than as a silent no-op at request time.
+
+`BAML_REST_HTTP_CLIENT` (`auto`/`fasthttp`/`nethttp`) is a server/worker
+env var only; dynclient stays explicit-only and never reads it.
 
 ## Runtime configuration
 
