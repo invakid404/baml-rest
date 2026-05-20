@@ -8,7 +8,7 @@ require (
 	github.com/containerd/containerd/v2 v2.3.0
 	github.com/containerd/platforms v1.0.0-rc.4
 	github.com/dave/jennifer v1.7.1
-	github.com/docker/buildx v0.34.0
+	github.com/docker/buildx v0.34.1
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.138.0
 	github.com/go-chi/chi/v5 v5.2.5
