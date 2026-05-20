@@ -372,6 +372,9 @@ func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
+	if err := rejectNonObject("output_schema.properties", raw.Properties); err != nil {
+		return err
+	}
 	if isJSONObject(raw.Properties) {
 		props, order, err := unmarshalOrderedObject[*DynamicProperty](raw.Properties, "output_schema.properties")
 		if err != nil {
@@ -380,6 +383,9 @@ func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 		s.Properties = props
 		s.PropertiesOrder = order
 	}
+	if err := rejectNonObject("output_schema.classes", raw.Classes); err != nil {
+		return err
+	}
 	if isJSONObject(raw.Classes) {
 		classes, order, err := unmarshalOrderedObject[*DynamicClass](raw.Classes, "output_schema.classes")
 		if err != nil {
@@ -387,6 +393,9 @@ func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 		}
 		s.Classes = classes
 		s.ClassesOrder = order
+	}
+	if err := rejectNonObject("output_schema.enums", raw.Enums); err != nil {
+		return err
 	}
 	if isJSONObject(raw.Enums) {
 		enums, order, err := unmarshalOrderedObject[*DynamicEnum](raw.Enums, "output_schema.enums")
@@ -414,6 +423,9 @@ func (c *DynamicClass) UnmarshalJSON(data []byte) error {
 	}
 	c.Description = raw.Description
 	c.Alias = raw.Alias
+	if err := rejectNonObject("class.properties", raw.Properties); err != nil {
+		return err
+	}
 	if isJSONObject(raw.Properties) {
 		props, order, err := unmarshalOrderedObject[*DynamicProperty](raw.Properties, "class.properties")
 		if err != nil {
@@ -428,6 +440,18 @@ func (c *DynamicClass) UnmarshalJSON(data []byte) error {
 func isJSONObject(b []byte) bool {
 	t := bytes.TrimSpace(b)
 	return len(t) > 0 && t[0] == '{'
+}
+
+// rejectNonObject returns a path-qualified error when b carries a
+// present-but-not-object JSON value. Absent (empty RawMessage) and
+// explicit null are accepted to match standard map decoding (an
+// absent key or null is the conventional nil-map sentinel).
+func rejectNonObject(path string, b []byte) error {
+	t := bytes.TrimSpace(b)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) || t[0] == '{' {
+		return nil
+	}
+	return fmt.Errorf("%s: must be a JSON object", path)
 }
 
 // unmarshalOrderedObject decodes a JSON object into a map[string]V while

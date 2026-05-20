@@ -96,6 +96,85 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateKey(t *testing.T) {
 	}
 }
 
+func TestDynamicOutputSchema_UnmarshalJSON_RejectsNonObject(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "properties as array", body: `{"properties":[]}`, want: `output_schema.properties: must be a JSON object`},
+		{name: "properties as string", body: `{"properties":"x"}`, want: `output_schema.properties: must be a JSON object`},
+		{name: "properties as number", body: `{"properties":123}`, want: `output_schema.properties: must be a JSON object`},
+		{name: "properties as bool", body: `{"properties":true}`, want: `output_schema.properties: must be a JSON object`},
+		{name: "classes as array", body: `{"properties":{"x":{"type":"string"}},"classes":[]}`, want: `output_schema.classes: must be a JSON object`},
+		{name: "classes as string", body: `{"properties":{"x":{"type":"string"}},"classes":"x"}`, want: `output_schema.classes: must be a JSON object`},
+		{name: "enums as array", body: `{"properties":{"x":{"type":"string"}},"enums":[]}`, want: `output_schema.enums: must be a JSON object`},
+		{name: "enums as number", body: `{"properties":{"x":{"type":"string"}},"enums":7}`, want: `output_schema.enums: must be a JSON object`},
+		{name: "class properties as array", body: `{"properties":{"x":{"type":"string"}},"classes":{"C":{"properties":[]}}}`, want: `class.properties: must be a JSON object`},
+		{name: "class properties as bool", body: `{"properties":{"x":{"type":"string"}},"classes":{"C":{"properties":false}}}`, want: `class.properties: must be a JSON object`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var s DynamicOutputSchema
+			err := json.Unmarshal([]byte(tc.body), &s)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull pins the
+// nil-map convention: null on any schema-object field is accepted
+// and leaves the corresponding map / order slice nil, so callers can
+// explicitly opt out of classes or enums via `null` without tripping
+// the non-object guard.
+func TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{
+      "properties": null,
+      "classes": null,
+      "enums": null
+    }`)
+	var s DynamicOutputSchema
+	if err := json.Unmarshal(body, &s); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if s.Properties != nil {
+		t.Errorf("Properties: got %v want nil", s.Properties)
+	}
+	if s.Classes != nil {
+		t.Errorf("Classes: got %v want nil", s.Classes)
+	}
+	if s.Enums != nil {
+		t.Errorf("Enums: got %v want nil", s.Enums)
+	}
+	if len(s.PropertiesOrder) != 0 || len(s.ClassesOrder) != 0 || len(s.EnumsOrder) != 0 {
+		t.Errorf("order slices should be empty; got props=%v classes=%v enums=%v", s.PropertiesOrder, s.ClassesOrder, s.EnumsOrder)
+	}
+
+	// Nested null on a class's properties is also accepted.
+	nested := []byte(`{
+      "properties": {"x": {"type": "string"}},
+      "classes": {"C": {"properties": null}}
+    }`)
+	var s2 DynamicOutputSchema
+	if err := json.Unmarshal(nested, &s2); err != nil {
+		t.Fatalf("Unmarshal nested: %v", err)
+	}
+	if s2.Classes["C"].Properties != nil {
+		t.Errorf("class C properties: got %v want nil", s2.Classes["C"].Properties)
+	}
+	if len(s2.Classes["C"].PropertiesOrder) != 0 {
+		t.Errorf("class C PropertiesOrder: got %v want empty", s2.Classes["C"].PropertiesOrder)
+	}
+}
+
 func TestDynamicInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *testing.T) {
 	t.Parallel()
 	prompt := "hi"
