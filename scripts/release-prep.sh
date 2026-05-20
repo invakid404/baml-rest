@@ -263,12 +263,22 @@ fi
 
 echo
 echo "Staged files:"
-git diff --cached --name-only | sed 's/^/  /'
+# Scope the summary to candidate paths so any pre-existing staged
+# work the maintainer had before running release-prep isn't listed
+# under our header (and, more importantly, isn't mistaken as part
+# of the release-prep commit by a copy-paste of the commit line
+# below).
+git diff --cached --name-only -- "${candidate_paths[@]}" | sed 's/^/  /'
 
 echo
 echo "Next steps (per RELEASE.md):"
 echo "  1. Verify the build:  go build ./... && go vet ./... && go test ./... -count=1"
 echo "                        (cd dynclient && GOWORK=off go test ./... -count=1)"
-echo "  2. Review the diff:   git diff --cached"
-echo "  3. Commit:            git commit -m \"chore(release): prepare Go module versions for ${version}\""
+echo "  2. Review the diff:   git diff --cached -- ${candidate_paths[*]}"
+# The `-- <paths>` pathspec on the commit line tells git to commit
+# the working-tree content of those paths only, ignoring any
+# unrelated changes the maintainer may have staged separately. The
+# commit is safe to copy-paste even when other staged work exists.
+echo "  3. Commit:            git commit -m \"chore(release): prepare Go module versions for ${version}\" \\"
+echo "                            -- ${candidate_paths[*]}"
 echo "  4. Push to master and continue from RELEASE.md Step 3."
