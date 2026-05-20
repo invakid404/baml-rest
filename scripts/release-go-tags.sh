@@ -82,31 +82,20 @@ fi
 # same way scripts/sync.sh does, so this script can be invoked from
 # anywhere without callers worrying about the working directory.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$script_dir"
-while [ "$repo_root" != "/" ] && [ ! -d "$repo_root/.git" ] && [ ! -f "$repo_root/.git" ]; do
-    repo_root="$(dirname "$repo_root")"
-done
-if [ ! -e "$repo_root/.git" ]; then
+# shellcheck source=./release-lib.sh
+source "$script_dir/release-lib.sh"
+
+repo_root="$(release_find_repo_root "$script_dir" ".git")" || {
     echo "ERROR: no .git found above $script_dir" >&2
     exit 1
-fi
+}
 cd "$repo_root"
 
-# Required module set. Edit here if a future release adds or removes a
-# published Go module. The root module, pool, and the server-only
-# adapters/adapter_v* modules are deliberately excluded — see PR #289
-# discussion and RELEASE.md.
-required_modules=(
-    "adapters/common"
-    "bamlutils"
-    "dynclient"
-    "dynclient/baml-patched"
-    "introspected"
-    "worker"
-    "workerplugin"
-)
-
-first_party_prefix="github.com/invakid404/baml-rest"
+# Required module set + first-party prefix come from release-lib.sh
+# so the two release scripts can't drift apart on which modules are
+# in the published tag set.
+required_modules=("${release_required_modules[@]}")
+first_party_prefix="$release_first_party_prefix"
 expected_version="v${version}"
 
 # Validate that the product tag exists both locally and on origin
@@ -123,92 +112,6 @@ if ! git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null; 
 fi
 release_sha="$(git rev-parse "${version}^{commit}")"
 
-# validate_module_requires reads <module>/go.mod at the product tag
-# commit and emits offending require lines on stderr. Returns 0 if the
-# module is clean, 1 otherwise. The function intentionally collects all
-# bad lines for one module before returning so the operator sees every
-# fix needed in one pass rather than fixing them one error at a time.
-validate_module_requires() {
-    local module_path="$1"
-    local gomod
-    gomod="$(git show "${version}:${module_path}/go.mod")"
-
-    # Track which directive block we're in so a first-party module
-    # listed in a `replace (...)` block isn't misread as a `require`.
-    # Local `replace ../../bamlutils` directives are expected during
-    # release-prep (see RELEASE.md) and must not fail validation.
-    local first_party_lines
-    first_party_lines="$(
-        printf '%s\n' "$gomod" |
-            awk -v prefix="$first_party_prefix" '
-                function is_first_party(path) {
-                    return path == prefix || index(path, prefix "/") == 1
-                }
-                /^[[:space:]]*require[[:space:]]*\(/ { block = "require"; next }
-                /^[[:space:]]*replace[[:space:]]*\(/ { block = "replace"; next }
-                /^[[:space:]]*exclude[[:space:]]*\(/ { block = "exclude"; next }
-                /^[[:space:]]*retract[[:space:]]*\(/ { block = "retract"; next }
-                /^[[:space:]]*\)/ { block = ""; next }
-                /^[[:space:]]*require[[:space:]]+/ {
-                    line = $0
-                    sub(/^[[:space:]]*require[[:space:]]+/, "", line)
-                    split(line, fields, /[[:space:]]+/)
-                    if (is_first_party(fields[1])) print line
-                    next
-                }
-                block == "require" {
-                    line = $0
-                    sub(/^[[:space:]]*/, "", line)
-                    split(line, fields, /[[:space:]]+/)
-                    if (is_first_party(fields[1])) print line
-                }
-            '
-    )"
-
-    if [ -z "$first_party_lines" ]; then
-        return 0
-    fi
-
-    local bad=0
-    local line dep dep_version
-    while IFS= read -r line; do
-        # Strip any trailing `// indirect` (or other) comment so the
-        # version field is the last whitespace-separated token.
-        local stripped="${line%%//*}"
-        # shellcheck disable=SC2206
-        local fields=($stripped)
-        if [ "${#fields[@]}" -lt 2 ]; then
-            echo "  bad require line (cannot parse): ${line}" >&2
-            bad=1
-            continue
-        fi
-        dep="${fields[0]}"
-        dep_version="${fields[1]}"
-
-        # Pseudo-versions and any non-`v0.0.<positive-int>` require are
-        # rejected. We then narrow further to the exact `v${version}`
-        # we're releasing so a stale `v0.0.40` require during a 0.0.42
-        # cut also fails.
-        if [[ "$dep_version" == v0.0.0-* ]]; then
-            echo "  pseudo-version not allowed: ${dep} ${dep_version}" >&2
-            bad=1
-            continue
-        fi
-        if [[ ! "$dep_version" =~ ^v0\.0\.[1-9][0-9]*$ ]]; then
-            echo "  version must match v0.0.<positive-integer>: ${dep} ${dep_version}" >&2
-            bad=1
-            continue
-        fi
-        if [ "$dep_version" != "$expected_version" ]; then
-            echo "  expected ${expected_version}, got: ${dep} ${dep_version}" >&2
-            bad=1
-            continue
-        fi
-    done <<< "$first_party_lines"
-
-    return "$bad"
-}
-
 # Phase 1: validate every required module at the product-tag commit.
 # We accumulate failures so the operator sees every broken module in
 # one pass rather than re-running the script after each fix.
@@ -221,7 +124,10 @@ for module_path in "${required_modules[@]}"; do
         continue
     fi
     echo "  ${module_path}/go.mod"
-    if ! validate_module_requires "$module_path"; then
+    # Process substitution (not a pipe) so the validator runs in the
+    # current shell — required for any state it sets to persist.
+    if ! release_validate_module_requires "$module_path" "$expected_version" \
+            < <(git show "${version}:${module_path}/go.mod"); then
         echo "ERROR: ${module_path}/go.mod has first-party requires that must be rewritten to ${expected_version} before tagging" >&2
         validation_failed=1
     fi
