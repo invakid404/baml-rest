@@ -3,12 +3,11 @@ package bamlutils
 import (
 	"bytes"
 	stdjson "encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/bytedance/sonic"
-	"github.com/bytedance/sonic/ast"
+	"github.com/cloudwego/gjson"
 )
 
 // Dynamic endpoint constants
@@ -736,20 +735,10 @@ func buildWorkerClassMap(schema *DynamicOutputSchema) (OrderedMap[*DynamicClass]
 // Output: {"name": "John", "age": 30}
 //
 // If the input doesn't have a DynamicProperties field, it's returned as-is.
-// Malformed JSON (parse errors other than not-exist) is also returned as-is
-// to preserve the pre-migration gjson behaviour where a non-existent field
-// surfaced an empty Result that callers treated as "leave untouched".
 func FlattenDynamicOutput(data []byte) ([]byte, error) {
-	node, err := sonic.Get(data, "DynamicProperties")
-	if err != nil {
-		if errors.Is(err, ast.ErrNotExist) {
-			return data, nil
-		}
+	dynProps := gjson.GetBytes(data, "DynamicProperties")
+	if !dynProps.Exists() {
 		return data, nil
 	}
-	raw, err := node.Raw()
-	if err != nil {
-		return data, nil
-	}
-	return []byte(raw), nil
+	return []byte(dynProps.Raw), nil
 }

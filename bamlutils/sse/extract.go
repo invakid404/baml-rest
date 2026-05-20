@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/cloudwego/gjson"
 )
 
 // DeltaParts contains the per-event split for a single SSE event.
