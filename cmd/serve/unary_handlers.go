@@ -22,6 +22,14 @@ type unaryCaller interface {
 	Call(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (*workerplugin.CallResult, error)
 }
 
+// unaryParser is the parse-side analog of unaryCaller for the dynamic
+// /parse/_dynamic chi handler. Declared so tests can record the worker
+// input the handler routed without depending on *pool.Pool; *pool.Pool
+// satisfies the interface structurally via Pool.Parse.
+type unaryParser interface {
+	Parse(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error)
+}
+
 // chiHeadersEmitter is the function-typed seam the chi dynamic call
 // handler uses to publish BAML observability headers from a CallResult's
 // planned/outcome JSON. Extracted so tests can substitute a counting
@@ -117,15 +125,20 @@ func makeChiParseHandler(p *pool.Pool, methodName string) http.HandlerFunc {
 	}
 }
 
-func makeChiDynamicCallHandler(p unaryCaller, streamMode bamlutils.StreamMode) http.HandlerFunc {
-	return makeChiDynamicCallHandlerWithEmitter(p, streamMode, defaultChiHeadersEmitter)
+func makeChiDynamicCallHandler(p unaryCaller, streamMode bamlutils.StreamMode, preserveSchemaOrderDefault bool) http.HandlerFunc {
+	return makeChiDynamicCallHandlerWithEmitter(p, streamMode, preserveSchemaOrderDefault, defaultChiHeadersEmitter)
 }
 
 // makeChiDynamicCallHandlerWithEmitter is the test-injectable form of
 // makeChiDynamicCallHandler. Production callers go through the
 // default-emitter wrapper above; tests pass a counting wrapper so they
 // can assert how many times the headers seam was invoked.
-func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.StreamMode, emit chiHeadersEmitter) http.HandlerFunc {
+//
+// preserveSchemaOrderDefault is the server-level fallback for the
+// dynamic preserve_schema_order opt-in (#316). It is applied via
+// applyPreserveSchemaOrderDefault after Unmarshal and before Validate
+// so per-request true/false always wins over the server default.
+func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.StreamMode, preserveSchemaOrderDefault bool, emit chiHeadersEmitter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
@@ -141,6 +154,7 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidJSON, nil, http.StatusBadRequest)
 			return
 		}
+		applyPreserveSchemaOrderDefault(&input, preserveSchemaOrderDefault)
 		if err := input.Validate(); err != nil {
 			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidRequest, nil, http.StatusBadRequest)
 			return
@@ -186,7 +200,7 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 	}
 }
 
-func makeChiDynamicParseHandler(p *pool.Pool) http.HandlerFunc {
+func makeChiDynamicParseHandler(p unaryParser, preserveSchemaOrderDefault bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
@@ -202,6 +216,7 @@ func makeChiDynamicParseHandler(p *pool.Pool) http.HandlerFunc {
 			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidJSON, nil, http.StatusBadRequest)
 			return
 		}
+		applyParsePreserveSchemaOrderDefault(&input, preserveSchemaOrderDefault)
 		if err := input.Validate(); err != nil {
 			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidRequest, nil, http.StatusBadRequest)
 			return

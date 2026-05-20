@@ -15,13 +15,40 @@ import (
 )
 
 // fakeUnaryCaller satisfies unaryCaller and lets tests stub Pool.Call's
-// return values without spinning up a real worker pool.
+// return values without spinning up a real worker pool. Also records
+// the most recent (methodName, inputJSON, streamMode) tuple so tests
+// can assert what the handler routed to the worker layer — in
+// particular, whether the worker-bound payload preserves order.
 type fakeUnaryCaller struct {
 	result *workerplugin.CallResult
 	err    error
+
+	gotMethod     string
+	gotInputJSON  []byte
+	gotStreamMode bamlutils.StreamMode
 }
 
-func (f *fakeUnaryCaller) Call(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (*workerplugin.CallResult, error) {
+func (f *fakeUnaryCaller) Call(_ context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (*workerplugin.CallResult, error) {
+	f.gotMethod = methodName
+	// Copy the slice — the caller may reuse the buffer after returning.
+	f.gotInputJSON = append([]byte(nil), inputJSON...)
+	f.gotStreamMode = streamMode
+	return f.result, f.err
+}
+
+// fakeUnaryParser satisfies unaryParser for parse-handler tests.
+// Mirrors fakeUnaryCaller's record-then-replay shape.
+type fakeUnaryParser struct {
+	result *workerplugin.ParseResult
+	err    error
+
+	gotMethod    string
+	gotInputJSON []byte
+}
+
+func (f *fakeUnaryParser) Parse(_ context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error) {
+	f.gotMethod = methodName
+	f.gotInputJSON = append([]byte(nil), inputJSON...)
 	return f.result, f.err
 }
 
@@ -107,7 +134,7 @@ func TestMakeChiDynamicCallHandler_EmitsHeadersOnError(t *testing.T) {
 	}
 
 	emitter := &countingHeadersEmitter{delegate: defaultChiHeadersEmitter}
-	handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, emitter.emit)
+	handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, false, emitter.emit)
 	req := httptest.NewRequest(http.MethodPost, "/call/dynamic", bytes.NewReader(minimalDynamicInputJSON(t)))
 	rec := httptest.NewRecorder()
 	handler(rec, req)
@@ -155,7 +182,7 @@ func TestMakeChiDynamicCallHandler_EmitsHeadersOnSuccess(t *testing.T) {
 	}
 
 	emitter := &countingHeadersEmitter{delegate: defaultChiHeadersEmitter}
-	handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, emitter.emit)
+	handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, false, emitter.emit)
 	req := httptest.NewRequest(http.MethodPost, "/call/dynamic", bytes.NewReader(minimalDynamicInputJSON(t)))
 	rec := httptest.NewRecorder()
 	handler(rec, req)
@@ -188,7 +215,7 @@ func TestMakeChiDynamicCallHandler_NoMetadataNoHeaders(t *testing.T) {
 	}
 
 	emitter := &countingHeadersEmitter{delegate: defaultChiHeadersEmitter}
-	handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, emitter.emit)
+	handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, false, emitter.emit)
 	req := httptest.NewRequest(http.MethodPost, "/call/dynamic", bytes.NewReader(minimalDynamicInputJSON(t)))
 	rec := httptest.NewRecorder()
 	handler(rec, req)
@@ -204,5 +231,237 @@ func TestMakeChiDynamicCallHandler_NoMetadataNoHeaders(t *testing.T) {
 	}
 	if got := rec.Header().Get(HeaderBAMLPathReason); got != "" {
 		t.Errorf("X-BAML-Path-Reason: got %q, want empty when result is nil", got)
+	}
+}
+
+// orderedDynamicInputJSON returns a /call/_dynamic body with at least
+// two top-level properties so preserve-order behavior is observable in
+// the worker payload (single-property schemas never need an order
+// slice). Includes the requested preserve_schema_order raw fragment
+// inline so callers can probe the omitted/null/true/false matrix.
+func orderedDynamicInputJSON(preserveField string) []byte {
+	body := `{
+      ` + preserveField + `
+      "messages": [{"role": "user", "content": "go"}],
+      "client_registry": {"primary": "X", "clients": [{"name": "X", "provider": "anthropic", "options": {"model": "m", "api_key": "k"}}]},
+      "output_schema": {
+        "properties": {
+          "zulu": {"type": "string"},
+          "alpha": {"type": "string"}
+        }
+      }
+    }`
+	return []byte(body)
+}
+
+// workerPayloadPreserveOrder decodes the worker-bound JSON and reports
+// whether __baml_options__.type_builder.dynamic_types.preserve_order
+// is the boolean true. Missing keys or non-true values all read as
+// false — matches the worker's view of "no preserve-order opt-in".
+func workerPayloadPreserveOrder(t *testing.T, data []byte) bool {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
+	}
+	opts, _ := decoded["__baml_options__"].(map[string]any)
+	if opts == nil {
+		return false
+	}
+	tb, _ := opts["type_builder"].(map[string]any)
+	if tb == nil {
+		return false
+	}
+	dt, _ := tb["dynamic_types"].(map[string]any)
+	if dt == nil {
+		return false
+	}
+	got, _ := dt["preserve_order"].(bool)
+	return got
+}
+
+// TestMakeChiDynamicCallHandler_PreserveSchemaOrderDefault walks the
+// #316 truth table at the chi handler boundary: server default × per-
+// request field => worker preserve_order. The handler must defer to
+// the explicit per-request value when present (true or false) and only
+// fall back to the server default when the field is absent / null.
+func TestMakeChiDynamicCallHandler_PreserveSchemaOrderDefault(t *testing.T) {
+	cases := []struct {
+		name           string
+		serverDefault  bool
+		preserveField  string // exact JSON fragment for preserve_schema_order
+		wantPreserve   bool
+	}{
+		{
+			name:          "default off, field omitted -> off",
+			serverDefault: false,
+			preserveField: ``,
+			wantPreserve:  false,
+		},
+		{
+			name:          "default off, field true -> on",
+			serverDefault: false,
+			preserveField: `"preserve_schema_order": true,`,
+			wantPreserve:  true,
+		},
+		{
+			name:          "default on, field omitted -> on",
+			serverDefault: true,
+			preserveField: ``,
+			wantPreserve:  true,
+		},
+		{
+			name:          "default on, field false -> off",
+			serverDefault: true,
+			preserveField: `"preserve_schema_order": false,`,
+			wantPreserve:  false,
+		},
+		{
+			name:          "default on, field null -> on (null is inherit)",
+			serverDefault: true,
+			preserveField: `"preserve_schema_order": null,`,
+			wantPreserve:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caller := &fakeUnaryCaller{
+				result: &workerplugin.CallResult{Data: []byte(`{"zulu":"x","alpha":"y"}`)},
+			}
+			emitter := &countingHeadersEmitter{delegate: defaultChiHeadersEmitter}
+			handler := makeChiDynamicCallHandlerWithEmitter(caller, bamlutils.StreamModeCall, tc.serverDefault, emitter.emit)
+			req := httptest.NewRequest(http.MethodPost, "/call/_dynamic", bytes.NewReader(orderedDynamicInputJSON(tc.preserveField)))
+			rec := httptest.NewRecorder()
+			handler(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status: got %d body=%s", rec.Code, rec.Body.String())
+			}
+			if got := workerPayloadPreserveOrder(t, caller.gotInputJSON); got != tc.wantPreserve {
+				t.Errorf("preserve_order: got %v want %v\nworker payload:\n%s", got, tc.wantPreserve, caller.gotInputJSON)
+			}
+		})
+	}
+}
+
+// TestMakeChiDynamicParseHandler_PreserveSchemaOrderDefault mirrors
+// the call-side truth table on the parse handler. The fakeUnaryParser
+// records the routed worker input so the test can assert preserve_order
+// the same way as the call-side check.
+func TestMakeChiDynamicParseHandler_PreserveSchemaOrderDefault(t *testing.T) {
+	cases := []struct {
+		name          string
+		serverDefault bool
+		preserveField string
+		wantPreserve  bool
+	}{
+		{
+			name:          "default off, field omitted -> off",
+			serverDefault: false,
+			preserveField: ``,
+			wantPreserve:  false,
+		},
+		{
+			name:          "default off, field true -> on",
+			serverDefault: false,
+			preserveField: `"preserve_schema_order": true,`,
+			wantPreserve:  true,
+		},
+		{
+			name:          "default on, field omitted -> on",
+			serverDefault: true,
+			preserveField: ``,
+			wantPreserve:  true,
+		},
+		{
+			name:          "default on, field false -> off",
+			serverDefault: true,
+			preserveField: `"preserve_schema_order": false,`,
+			wantPreserve:  false,
+		},
+		{
+			name:          "default on, field null -> on (null is inherit)",
+			serverDefault: true,
+			preserveField: `"preserve_schema_order": null,`,
+			wantPreserve:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := &fakeUnaryParser{result: &workerplugin.ParseResult{Data: []byte(`{"zulu":"x","alpha":"y"}`)}}
+			body := []byte(`{
+              ` + tc.preserveField + `
+              "raw": "{\"zulu\":\"x\",\"alpha\":\"y\"}",
+              "output_schema": {"properties": {"zulu": {"type": "string"}, "alpha": {"type": "string"}}}
+            }`)
+			handler := makeChiDynamicParseHandler(parser, tc.serverDefault)
+			req := httptest.NewRequest(http.MethodPost, "/parse/_dynamic", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			handler(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status: got %d body=%s", rec.Code, rec.Body.String())
+			}
+			if got := workerPayloadPreserveOrder(t, parser.gotInputJSON); got != tc.wantPreserve {
+				t.Errorf("preserve_order: got %v want %v\nworker payload:\n%s", got, tc.wantPreserve, parser.gotInputJSON)
+			}
+		})
+	}
+}
+
+// TestParseDynamicStreamInput_PreserveSchemaOrderDefault covers the
+// Fiber stream-input helper directly. parseDynamicStreamInput is the
+// only piece of Fiber-side dynamic plumbing that holds the
+// decode->default->validate->ToWorkerInput sequence in one function,
+// so testing it without a live Fiber server still exercises the
+// stream path's exact code.
+func TestParseDynamicStreamInput_PreserveSchemaOrderDefault(t *testing.T) {
+	cases := []struct {
+		name          string
+		serverDefault bool
+		preserveField string
+		wantPreserve  bool
+	}{
+		{
+			name:          "default off, field omitted -> off",
+			serverDefault: false,
+			preserveField: ``,
+			wantPreserve:  false,
+		},
+		{
+			name:          "default off, field true -> on",
+			serverDefault: false,
+			preserveField: `"preserve_schema_order": true,`,
+			wantPreserve:  true,
+		},
+		{
+			name:          "default on, field omitted -> on",
+			serverDefault: true,
+			preserveField: ``,
+			wantPreserve:  true,
+		},
+		{
+			name:          "default on, field false -> off",
+			serverDefault: true,
+			preserveField: `"preserve_schema_order": false,`,
+			wantPreserve:  false,
+		},
+		{
+			name:          "default on, field null -> on (null is inherit)",
+			serverDefault: true,
+			preserveField: `"preserve_schema_order": null,`,
+			wantPreserve:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workerInput, statusCode, code, err := parseDynamicStreamInput(orderedDynamicInputJSON(tc.preserveField), tc.serverDefault)
+			if err != nil {
+				t.Fatalf("parseDynamicStreamInput: status=%d code=%q err=%v", statusCode, code, err)
+			}
+			if got := workerPayloadPreserveOrder(t, workerInput); got != tc.wantPreserve {
+				t.Errorf("preserve_order: got %v want %v\nworker payload:\n%s", got, tc.wantPreserve, workerInput)
+			}
+		})
 	}
 }

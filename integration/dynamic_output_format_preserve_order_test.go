@@ -16,6 +16,8 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/integration/mockllm"
+	"github.com/invakid404/baml-rest/integration/testutil"
 )
 
 // TestDynamicOutputFormatPreserveSchemaOrder pins #313: when a caller
@@ -171,6 +173,192 @@ func TestDynamicOutputFormatPreserveSchemaOrder(t *testing.T) {
 	// charlie -> Mailbox.
 	assertOrderIn(t, "Profile", prompt, "golf: {", []string{"zulu", "alpha", "status", "preference"})
 	assertOrderIn(t, "Mailbox", prompt, "charlie: {", []string{"zip", "city", "street"})
+}
+
+// TestDynamicOutputFormatPreserveSchemaOrder_ServerDefault pins #316:
+// when the server is started with BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT
+// truthy, dynamic requests that omit preserve_schema_order must inherit
+// the default and render the output_format in JSON wire order. A
+// per-request `preserve_schema_order: false` overrides the server
+// default back to the alphabetical fallback. The test boots a
+// dedicated env (the shared TestEnv container has no such env var)
+// and exercises both legs against the same /call/_dynamic endpoint.
+func TestDynamicOutputFormatPreserveSchemaOrder_ServerDefault(t *testing.T) {
+	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+		t.Skip("dynamic endpoints require BAML >= 0.215.0")
+	}
+	if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+		t.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+	}
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer setupCancel()
+
+	opts := matrixSetupOptions()
+	opts.RuntimeEnv = map[string]string{
+		"BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT": "true",
+	}
+	env, err := testutil.Setup(setupCtx, opts)
+	if err != nil {
+		t.Fatalf("Failed to setup dedicated env: %v", err)
+	}
+	defer func() {
+		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer termCancel()
+		if err := env.Terminate(termCtx); err != nil {
+			t.Logf("dedicated env Terminate: %v", err)
+		}
+	}()
+
+	mockClient := mockllm.NewClient(env.MockLLMURL)
+
+	// Helper: register a non-streaming scenario on the dedicated mock and
+	// return a ClientRegistry that targets it. The shared
+	// setupNonStreamingScenario uses TestEnv / MockClient — we need the
+	// dedicated env's clients instead.
+	registerScenario := func(t *testing.T, scenarioID, content string) *testutil.ClientRegistry {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		scenario := &mockllm.Scenario{
+			ID:             scenarioID,
+			Provider:       "openai",
+			Content:        content,
+			ChunkSize:      0,
+			InitialDelayMs: 50,
+		}
+		if err := mockClient.RegisterScenario(ctx, scenario); err != nil {
+			t.Fatalf("RegisterScenario: %v", err)
+		}
+		return testutil.CreateTestClient(env.MockLLMInternal, scenarioID)
+	}
+
+	responseContent := `{
+  "alpha": 1,
+  "bravo": "b",
+  "charlie": {"city": "Sofia", "street": "Main", "zip": "1000"},
+  "delta": "d",
+  "echo": true,
+  "foxtrot": "ACTIVE",
+  "golf": {"alpha": 7, "preference": "HIGH", "status": "PENDING", "zulu": "z"},
+  "hotel": ["x", "y"]
+}`
+
+	// Build a raw JSON request body with the same schema as the #313
+	// preserve-order test, but parameterized on the preserve_schema_order
+	// field so we can exercise omitted vs. false in the same env.
+	buildReq := func(t *testing.T, registry *testutil.ClientRegistry, preserveField string) string {
+		t.Helper()
+		registryJSON, err := json.Marshal(registry)
+		if err != nil {
+			t.Fatalf("marshal client_registry: %v", err)
+		}
+		return fmt.Sprintf(`{
+  %s
+  "messages": [
+    {
+      "role": "system",
+      "content": [
+        {"type": "text", "text": "Return only JSON matching the requested schema."},
+        {"type": "output_format"}
+      ]
+    },
+    {"role": "user", "content": "Build a sample record."}
+  ],
+  "client_registry": %s,
+  "output_schema": {
+    "properties": {
+      "delta": {"type": "string"},
+      "alpha": {"type": "int"},
+      "hotel": {"type": "list", "items": {"type": "string"}},
+      "charlie": {"ref": "Mailbox"},
+      "bravo": {"type": "string"},
+      "foxtrot": {"ref": "Status"},
+      "echo": {"type": "bool"},
+      "golf": {"ref": "Profile"}
+    },
+    "classes": {
+      "Profile": {
+        "properties": {
+          "zulu": {"type": "string"},
+          "alpha": {"type": "int"},
+          "status": {"ref": "Status"},
+          "preference": {"ref": "Preference"}
+        }
+      },
+      "Mailbox": {
+        "properties": {
+          "zip": {"type": "string"},
+          "city": {"type": "string"},
+          "street": {"type": "string"}
+        }
+      }
+    },
+    "enums": {
+      "Status": {"values": [{"name": "PENDING"}, {"name": "ACTIVE"}, {"name": "ARCHIVED"}]},
+      "Preference": {"values": [{"name": "LOW"}, {"name": "MEDIUM"}, {"name": "HIGH"}]}
+    }
+  }
+}`, preserveField, string(registryJSON))
+	}
+
+	url := fmt.Sprintf("%s/call/_dynamic", env.BAMLRestURL)
+
+	t.Run("omitted_inherits_server_default_true", func(t *testing.T) {
+		scenarioID := "test-server-default-omitted"
+		registry := registerScenario(t, scenarioID, responseContent)
+		req := buildReq(t, registry, "")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := postRaw(ctx, url, req); err != nil {
+			t.Fatalf("POST failed: %v", err)
+		}
+
+		inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer inspectCancel()
+		capturedBody, err := mockClient.GetLastRequest(inspectCtx, scenarioID)
+		if err != nil {
+			t.Fatalf("GetLastRequest: %v", err)
+		}
+		prompt, err := extractFirstMessageText(capturedBody)
+		if err != nil {
+			t.Fatalf("extractFirstMessageText: %v\ncaptured: %s", err, string(capturedBody))
+		}
+
+		assertOrderIn(t, "top-level (wire order)", prompt, "", []string{"delta", "alpha", "hotel", "charlie", "bravo", "foxtrot", "echo", "golf"})
+		assertOrderIn(t, "Profile (wire order)", prompt, "golf: {", []string{"zulu", "alpha", "status", "preference"})
+		assertOrderIn(t, "Mailbox (wire order)", prompt, "charlie: {", []string{"zip", "city", "street"})
+	})
+
+	t.Run("explicit_false_overrides_server_default", func(t *testing.T) {
+		scenarioID := "test-server-default-explicit-false"
+		registry := registerScenario(t, scenarioID, responseContent)
+		req := buildReq(t, registry, `"preserve_schema_order": false,`)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := postRaw(ctx, url, req); err != nil {
+			t.Fatalf("POST failed: %v", err)
+		}
+
+		inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer inspectCancel()
+		capturedBody, err := mockClient.GetLastRequest(inspectCtx, scenarioID)
+		if err != nil {
+			t.Fatalf("GetLastRequest: %v", err)
+		}
+		prompt, err := extractFirstMessageText(capturedBody)
+		if err != nil {
+			t.Fatalf("extractFirstMessageText: %v\ncaptured: %s", err, string(capturedBody))
+		}
+
+		// Alphabetical fallback — same schema, but the renderer must sort
+		// each block lexicographically.
+		assertOrderIn(t, "top-level (alphabetical)", prompt, "", []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"})
+		assertOrderIn(t, "Profile (alphabetical)", prompt, "golf: {", []string{"alpha", "preference", "status", "zulu"})
+		assertOrderIn(t, "Mailbox (alphabetical)", prompt, "charlie: {", []string{"city", "street", "zip"})
+	})
 }
 
 // assertOrderIn checks that the listed field names appear in the

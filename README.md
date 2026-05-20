@@ -66,6 +66,13 @@ baml-rest reads the following environment variables at startup:
   v1 recognizes `allowed_role_metadata` only. See
   [bamlutils/clientdefaults](bamlutils/clientdefaults/clientdefaults.go) for
   the merge contract, supported opt-outs, and supported-version caveats.
+- `BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT` — when truthy
+  (`1`/`true`/`yes`/`on`), dynamic requests that omit or set
+  `preserve_schema_order: null` inherit `true`, so the rendered
+  `output_format` follows the JSON key order captured from `output_schema`.
+  Per-request `preserve_schema_order: true` or `false` always wins. Default
+  unset/false keeps the alphabetical ordering introduced for deterministic
+  prompts.
 - `BAML_LOG` — BAML internal log level (`debug`, `info`, `warn`, `error`).
 
 ## In-process build mode

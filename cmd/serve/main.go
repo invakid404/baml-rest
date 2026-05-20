@@ -236,6 +236,7 @@ var serveCmd = &cobra.Command{
 		// configuration the subprocess build's cmd/worker would
 		// produce on its own at process startup.
 		buildRequestConfig := buildrequest.EnvConfig()
+		preserveSchemaOrderDefault := preserveSchemaOrderDefaultFromEnv()
 		baseURLRewrites := urlrewrite.LoadDefaultRules()
 		httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{
 			Mode:         llmhttp.ClientModeFromEnv(),
@@ -495,6 +496,8 @@ var serveCmd = &cobra.Command{
 						return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidJSON, nil, fiber.StatusBadRequest)
 					}
 
+					applyPreserveSchemaOrderDefault(&input, preserveSchemaOrderDefault)
+
 					if err := input.Validate(); err != nil {
 						return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidRequest, nil, fiber.StatusBadRequest)
 					}
@@ -541,7 +544,7 @@ var serveCmd = &cobra.Command{
 
 			makeDynamicStreamHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
-					workerInput, statusCode, code, err := parseDynamicStreamInput(c.Body())
+					workerInput, statusCode, code, err := parseDynamicStreamInput(c.Body(), preserveSchemaOrderDefault)
 					if err != nil {
 						if statusCode >= fiber.StatusInternalServerError {
 							logger.Error().Err(err).Msg("dynamic stream input parsing failed")
@@ -584,6 +587,7 @@ var serveCmd = &cobra.Command{
 				if err := json.Unmarshal(rawBody, &input); err != nil {
 					return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidJSON, nil, fiber.StatusBadRequest)
 				}
+				applyParsePreserveSchemaOrderDefault(&input, preserveSchemaOrderDefault)
 				if err := input.Validate(); err != nil {
 					return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidRequest, nil, fiber.StatusBadRequest)
 				}
@@ -616,7 +620,7 @@ var serveCmd = &cobra.Command{
 		// Optionally start the chi-based unary server on a separate port.
 		// newUnaryServer returns nil when the unaryserver build tag is absent
 		// or when --unary-port is set to 0.
-		unaryServer := newUnaryServer(logger, workerPool, methodNames, hasDynamicMethod)
+		unaryServer := newUnaryServer(logger, workerPool, methodNames, hasDynamicMethod, preserveSchemaOrderDefault)
 
 		// Start Fiber server in a goroutine.
 		serverErr := make(chan error, 1)
@@ -698,11 +702,17 @@ var serveCmd = &cobra.Command{
 // alongside the apierror.Code that classifies any failure (so callers
 // preserve machine-readable codes instead of collapsing every 4xx into
 // invalid_request). On success: code is "" and statusCode is 0.
-func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int, code apierror.Code, err error) {
+//
+// preserveSchemaOrderDefault is the server-level default for the
+// dynamic preserve_schema_order opt-in (#316). It is applied only when
+// the request omits / nulls the field; per-request true/false wins.
+func parseDynamicStreamInput(rawBody []byte, preserveSchemaOrderDefault bool) (workerInput []byte, statusCode int, code apierror.Code, err error) {
 	var input bamlutils.DynamicInput
 	if err := json.Unmarshal(rawBody, &input); err != nil {
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidJSON, fmt.Errorf("invalid JSON: %w", err)
 	}
+
+	applyPreserveSchemaOrderDefault(&input, preserveSchemaOrderDefault)
 
 	if err := input.Validate(); err != nil {
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidRequest, err
