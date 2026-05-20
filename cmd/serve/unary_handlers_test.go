@@ -409,55 +409,97 @@ func TestMakeChiDynamicParseHandler_PreserveSchemaOrderDefault(t *testing.T) {
 	}
 }
 
-// TestParseDynamicStreamInput_PreserveSchemaOrderDefault covers the
-// Fiber stream-input helper directly. parseDynamicStreamInput is the
-// only piece of Fiber-side dynamic plumbing that holds the
-// decode->default->validate->ToWorkerInput sequence in one function,
-// so testing it without a live Fiber server still exercises the
-// stream path's exact code.
-func TestParseDynamicStreamInput_PreserveSchemaOrderDefault(t *testing.T) {
-	cases := []struct {
-		name          string
-		serverDefault bool
-		preserveField string
-		wantPreserve  bool
-	}{
-		{
-			name:          "default off, field omitted -> off",
-			serverDefault: false,
-			preserveField: ``,
-			wantPreserve:  false,
-		},
-		{
-			name:          "default off, field true -> on",
-			serverDefault: false,
-			preserveField: `"preserve_schema_order": true,`,
-			wantPreserve:  true,
-		},
-		{
-			name:          "default on, field omitted -> on",
-			serverDefault: true,
-			preserveField: ``,
-			wantPreserve:  true,
-		},
-		{
-			name:          "default on, field false -> off",
-			serverDefault: true,
-			preserveField: `"preserve_schema_order": false,`,
-			wantPreserve:  false,
-		},
-		{
-			name:          "default on, field null -> on (null is inherit)",
-			serverDefault: true,
-			preserveField: `"preserve_schema_order": null,`,
-			wantPreserve:  true,
-		},
-	}
-	for _, tc := range cases {
+// preserveSchemaOrderTruthTable is the shared 5-cell matrix used by
+// every Fiber/chi handler test that exercises the server-default x
+// per-request-field interaction. Defined once so the chi call/parse
+// and Fiber call/parse/stream coverage stays in lockstep — a new row
+// added here is picked up by all consumers.
+var preserveSchemaOrderTruthTable = []struct {
+	name          string
+	serverDefault bool
+	preserveField string
+	wantPreserve  bool
+}{
+	{
+		name:          "default off, field omitted -> off",
+		serverDefault: false,
+		preserveField: ``,
+		wantPreserve:  false,
+	},
+	{
+		name:          "default off, field true -> on",
+		serverDefault: false,
+		preserveField: `"preserve_schema_order": true,`,
+		wantPreserve:  true,
+	},
+	{
+		name:          "default on, field omitted -> on",
+		serverDefault: true,
+		preserveField: ``,
+		wantPreserve:  true,
+	},
+	{
+		name:          "default on, field false -> off",
+		serverDefault: true,
+		preserveField: `"preserve_schema_order": false,`,
+		wantPreserve:  false,
+	},
+	{
+		name:          "default on, field null -> on (null is inherit)",
+		serverDefault: true,
+		preserveField: `"preserve_schema_order": null,`,
+		wantPreserve:  true,
+	},
+}
+
+// orderedDynamicParseInputJSON mirrors orderedDynamicInputJSON for the
+// /parse/_dynamic body shape. At least two top-level properties so
+// preserve-order behavior is observable in the worker payload.
+func orderedDynamicParseInputJSON(preserveField string) []byte {
+	body := `{
+      ` + preserveField + `
+      "raw": "{\"zulu\":\"x\",\"alpha\":\"y\"}",
+      "output_schema": {
+        "properties": {
+          "zulu": {"type": "string"},
+          "alpha": {"type": "string"}
+        }
+      }
+    }`
+	return []byte(body)
+}
+
+// TestParseDynamicCallBody_PreserveSchemaOrderDefault covers the
+// Fiber-side decode/default/validate/ToWorkerInput helper used by both
+// /call/_dynamic and /stream/_dynamic. The Fiber call and stream
+// handlers do not own a fakeUnaryCaller-style seam, so the helper is
+// the smallest unit that captures the wire-visible behavior end-to-end
+// without spinning up a Fiber app and a worker pool.
+func TestParseDynamicCallBody_PreserveSchemaOrderDefault(t *testing.T) {
+	for _, tc := range preserveSchemaOrderTruthTable {
 		t.Run(tc.name, func(t *testing.T) {
-			workerInput, statusCode, code, err := parseDynamicStreamInput(orderedDynamicInputJSON(tc.preserveField), tc.serverDefault)
+			workerInput, statusCode, code, err := parseDynamicCallBody(orderedDynamicInputJSON(tc.preserveField), tc.serverDefault)
 			if err != nil {
-				t.Fatalf("parseDynamicStreamInput: status=%d code=%q err=%v", statusCode, code, err)
+				t.Fatalf("parseDynamicCallBody: status=%d code=%q err=%v", statusCode, code, err)
+			}
+			if got := workerPayloadPreserveOrder(t, workerInput); got != tc.wantPreserve {
+				t.Errorf("preserve_order: got %v want %v\nworker payload:\n%s", got, tc.wantPreserve, workerInput)
+			}
+		})
+	}
+}
+
+// TestParseDynamicParseBody_PreserveSchemaOrderDefault covers the
+// Fiber-side decode/default/validate/ToWorkerInput helper used by
+// /parse/_dynamic. Mirrors TestParseDynamicCallBody but routes through
+// the DynamicParseInput shape (raw + output_schema, no messages or
+// client_registry).
+func TestParseDynamicParseBody_PreserveSchemaOrderDefault(t *testing.T) {
+	for _, tc := range preserveSchemaOrderTruthTable {
+		t.Run(tc.name, func(t *testing.T) {
+			workerInput, statusCode, code, err := parseDynamicParseBody(orderedDynamicParseInputJSON(tc.preserveField), tc.serverDefault)
+			if err != nil {
+				t.Fatalf("parseDynamicParseBody: status=%d code=%q err=%v", statusCode, code, err)
 			}
 			if got := workerPayloadPreserveOrder(t, workerInput); got != tc.wantPreserve {
 				t.Errorf("preserve_order: got %v want %v\nworker payload:\n%s", got, tc.wantPreserve, workerInput)
