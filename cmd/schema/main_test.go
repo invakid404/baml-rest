@@ -331,6 +331,13 @@ func TestSchemaPreserveOrderExposure(t *testing.T) {
 		if slices.Contains(ref.Value.Required, "preserve_schema_order") {
 			t.Errorf("%s.required must not include preserve_schema_order (it's an opt-in)", name)
 		}
+		// Tri-state contract (#316): JSON null is accepted as the
+		// "inherit server default" sentinel, so the schema must mark
+		// the field nullable. Without Nullable=true the OpenAPI surface
+		// would lie about the wire shape.
+		if !isNullable(prop) {
+			t.Errorf("%s.preserve_schema_order: expected Nullable=true for tri-state inherit-default contract", name)
+		}
 	}
 
 	tb, ok := schemas["TypeBuilder"]

@@ -1535,11 +1535,13 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 	}
 
 	// preserve_schema_order is shared between the call/stream and parse
-	// input schemas: both expose the same opt-in.
-	preserveSchemaOrderDescription := "Opt-in: when true, the rendered output_format follows the JSON key " +
-		"order of output_schema.{properties,classes,enums} and each class's properties, rather than the " +
-		"alphabetical default. Multi-key maps must carry a captured order — raw-JSON callers get this for " +
-		"free; programmatic Go callers using the dynclient module must set the matching *Order slices."
+	// input schemas: both expose the same tri-state opt-in.
+	preserveSchemaOrderDescription := "Optional tri-state: true preserves the JSON key order of " +
+		"output_schema.{properties,classes,enums} and each class's properties in the rendered " +
+		"output_format, false forces the alphabetical default, and omitted/null inherits the server " +
+		"default configured by BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT. Multi-key maps must carry a " +
+		"captured order — raw-JSON callers get this for free; programmatic Go callers using the dynclient " +
+		"module must set the matching *Order slices."
 
 	// Dynamic input schema
 	dynamicInputSchemaName := "__DynamicInput__"
@@ -1566,6 +1568,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				"preserve_schema_order": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeBoolean},
+						Nullable:    true,
 						Description: preserveSchemaOrderDescription,
 					},
 				},
@@ -1593,6 +1596,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				"preserve_schema_order": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeBoolean},
+						Nullable:    true,
 						Description: preserveSchemaOrderDescription,
 					},
 				},
