@@ -557,6 +557,15 @@ func TestDynamicInput_ToWorkerInput_SingleClassPropertyOrder(t *testing.T) {
 	if !equalStrings(got, want) {
 		t.Errorf("order.properties.Solo: got %v want %v", got, want)
 	}
+	// Order.Classes must also cover the user class (single-class case
+	// where ClassesOrder was legally empty). dt.Classes carries the
+	// synthetic + user class on the worker side, so the worker-side
+	// DynamicTypes.Validate requires both names in Order.Classes.
+	classes := toStringSlice(t, order["classes"])
+	wantClasses := []string{"Baml_Rest_DynamicOutput", "Solo"}
+	if !equalStrings(classes, wantClasses) {
+		t.Errorf("order.classes: got %v want %v", classes, wantClasses)
+	}
 }
 
 func equalStrings(a, b []string) bool {

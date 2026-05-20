@@ -761,39 +761,60 @@ func buildWorkerClassMap(schema *DynamicOutputSchema) map[string]*DynamicClass {
 // DynamicClass.PropertiesOrder when present.
 func dynamicTypesOrderFromOutputSchema(schema *DynamicOutputSchema) *DynamicTypesOrder {
 	order := &DynamicTypesOrder{
-		Classes:    make([]string, 0, 1+len(schema.ClassesOrder)),
-		Enums:      append([]string(nil), schema.EnumsOrder...),
+		Classes:    make([]string, 0, 1+len(schema.Classes)),
+		Enums:      make([]string, 0, len(schema.Enums)),
 		Properties: make(map[string][]string),
 	}
 	order.Classes = append(order.Classes, dynamicOutputClassName)
 	order.Classes = append(order.Classes, schema.ClassesOrder...)
 	order.Properties[dynamicOutputClassName] = append([]string(nil), schema.PropertiesOrder...)
 
-	seen := make(map[string]struct{}, len(schema.Classes))
+	seenClasses := map[string]struct{}{dynamicOutputClassName: {}}
 	for _, className := range schema.ClassesOrder {
 		if cls := schema.Classes[className]; cls != nil {
 			order.Properties[className] = append([]string(nil), cls.PropertiesOrder...)
 		}
-		seen[className] = struct{}{}
+		seenClasses[className] = struct{}{}
 	}
 	// Cover classes absent from ClassesOrder. Single-class schemas
 	// can legally have empty ClassesOrder while still carrying a
-	// multi-key Properties order on the class — without this pass
-	// that nested order would be dropped on the wire. Sort the
-	// remaining names so the worker payload stays deterministic.
-	remaining := make([]string, 0, len(schema.Classes))
+	// multi-key Properties order on the class. The worker-side
+	// DynamicTypes.Validate also requires Order.Classes to cover
+	// every entry in dt.Classes (which always includes the synthetic
+	// top-level class), so we fill in remaining user classes here
+	// rather than leaving the order incomplete.
+	remainingClasses := make([]string, 0, len(schema.Classes))
 	for className := range schema.Classes {
-		if _, ok := seen[className]; ok {
+		if _, ok := seenClasses[className]; ok {
 			continue
 		}
-		remaining = append(remaining, className)
+		remainingClasses = append(remainingClasses, className)
 	}
-	slices.Sort(remaining)
-	for _, className := range remaining {
+	slices.Sort(remainingClasses)
+	for _, className := range remainingClasses {
+		order.Classes = append(order.Classes, className)
 		if cls := schema.Classes[className]; cls != nil {
 			order.Properties[className] = append([]string(nil), cls.PropertiesOrder...)
 		}
 	}
+
+	// Enums mirror the Classes pattern: fill in any names missing
+	// from EnumsOrder so direct DynamicTypes validation downstream
+	// sees a complete cover.
+	order.Enums = append(order.Enums, schema.EnumsOrder...)
+	seenEnums := make(map[string]struct{}, len(schema.EnumsOrder))
+	for _, n := range schema.EnumsOrder {
+		seenEnums[n] = struct{}{}
+	}
+	remainingEnums := make([]string, 0, len(schema.Enums))
+	for enumName := range schema.Enums {
+		if _, ok := seenEnums[enumName]; ok {
+			continue
+		}
+		remainingEnums = append(remainingEnums, enumName)
+	}
+	slices.Sort(remainingEnums)
+	order.Enums = append(order.Enums, remainingEnums...)
 	return order
 }
 
