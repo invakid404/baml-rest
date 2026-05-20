@@ -1,10 +1,13 @@
 # Release Procedure
 
-> **DO NOT SKIP RELEASE-PREP.** Tagging before the first-party `require`
-> statements have been bumped to `v0.0.X` in the merged commit will cause
-> `scripts/release-go-tags.sh` to reject the Go module tags, and recovery
-> requires force-moving the product tag (already pushed and possibly already
-> attached to a GitHub Release) — see #308.
+> **DO NOT SKIP RELEASE-PREP (Step 1).** The product tag MUST be created from
+> a commit where every first-party `require` statement in the published Go
+> modules has already been rewritten to `v0.0.X`. Tagging before that point
+> causes `scripts/release-go-tags.sh` to reject the tag set, and the only
+> recovery paths are destructive (force-moving an already-pushed tag, possibly
+> already attached to a GitHub Release) or skipping the broken version
+> entirely. See [What goes wrong if you skip Step 1](#what-goes-wrong-if-you-skip-step-1)
+> and #308.
 
 This document is the maintainer-facing guide for cutting a baml-rest
 release. It covers both the existing product release (binary + Docker)
@@ -31,6 +34,11 @@ the other published nested modules at a stable version.
 
 ## Step 1 — Release-prep require rewrites
 
+**This is the first numbered step on purpose.** The product tag in
+Step 4 MUST point at a commit where this step has already landed.
+Tagging before the rewrites have merged is the failure mode #308
+captures — see [What goes wrong if you skip Step 1](#what-goes-wrong-if-you-skip-step-1).
+
 The seven published modules have first-party `require` edges between
 each other. During day-to-day development they point at
 `v0.0.0-00010101000000-000000000000` placeholders and resolve through
@@ -39,7 +47,32 @@ is cut, those placeholders must be rewritten to the actual `v0.0.N`
 that is about to be released, so that `go get` from a downstream
 consumer resolves through real tags rather than pseudo-versions.
 
-Affected files and edges:
+Run the helper:
+
+```sh
+./scripts/release-prep.sh 0.0.N
+```
+
+This:
+
+1. Validates `0.0.N` is well-formed and not already tagged.
+2. Rewrites all eleven first-party `require` edges across the five
+   published modules listed below.
+3. Runs `scripts/sync.sh` to refresh the workspace and the
+   per-adapter pin matrix.
+4. Bumps `pool/go.mod`'s first-party requires explicitly — `go work
+   sync` propagates `bamlutils` to `pool` but does not propagate
+   `workerplugin` for the same release, a quirk both #319 and #321
+   had to fix by hand.
+5. Re-validates the worktree against the same first-party-requires
+   check `scripts/release-go-tags.sh` runs at tag time, so a botched
+   prep fails BEFORE the tag exists rather than after.
+6. Leaves the changes staged but uncommitted and prints a suggested
+   commit message. The maintainer reviews and commits manually — see
+   [Step 2](#step-2--verify-and-commit).
+
+Affected files and edges (the script edits these for you; the list
+is here for reference if you need to audit the diff):
 
 - `dynclient/go.mod`
   - `adapters/common`
@@ -59,8 +92,10 @@ Affected files and edges:
 - `workerplugin/go.mod`
   - `bamlutils`
 
-Copy-pasteable rewrite (substitute the release number into `VERSION`
-before running):
+The script's behavior matches the manual rewrite that #319 and #321
+used. If you need to perform the edits by hand for any reason (e.g.
+the helper is broken on your platform), substitute the release
+number into `VERSION` and run:
 
 ```sh
 VERSION=0.0.N
@@ -91,6 +126,13 @@ VERSION=0.0.N
 (cd workerplugin && \
   go mod edit \
     -require=github.com/invakid404/baml-rest/bamlutils@v${VERSION})
+
+./scripts/sync.sh
+
+(cd pool && \
+  go mod edit \
+    -require=github.com/invakid404/baml-rest/bamlutils@v${VERSION} \
+    -require=github.com/invakid404/baml-rest/workerplugin@v${VERSION})
 ```
 
 Notes:
@@ -100,10 +142,43 @@ Notes:
   dependencies, and they keep local development ergonomic (the
   workspace builds without needing tags to exist first). Keeping
   them in the release commit is intentional.
-- **Do not rewrite the server-only `adapters/adapter_v*` modules.**
-  They are not part of the dynclient release graph and are not in
-  PR C's tag set. Their existing pins are managed by `scripts/sync.sh`
-  and the BAML pin-matrix verifier.
+- **Do not rewrite the server-only `adapters/adapter_v*` modules
+  by hand.** They are not part of the dynclient release graph and
+  are not in the published tag set. Their indirect first-party
+  requires are managed by `scripts/sync.sh` and the BAML pin-matrix
+  verifier — `release-prep.sh` invokes both for you.
+
+### What goes wrong if you skip Step 1
+
+Tagging the product version on a commit that still has stale
+first-party requires is the documented failure mode behind #308.
+The symptom and recovery cost are worth spelling out because the
+recovery is destructive:
+
+- **Symptom.** `scripts/release-go-tags.sh 0.0.N` fails Phase 1
+  validation against the freshly-pushed product tag. Every
+  first-party `require` line in the published modules is still at
+  `v0.0.<N-1>` (or further back). The script prints the offending
+  lines per module and emits a recovery hint identifying the shape
+  as "release-prep was skipped".
+- **Recovery option (a) — force-move the tag.** Create the
+  release-prep commit on master, then `git tag -f 0.0.N
+  <new-sha>` and `git push --force origin 0.0.N`. This rewrites
+  published release history: any GitHub Release attached to the
+  tag is silently re-pointed (or worse, orphaned), downstream
+  consumers who already cached the original SHA see a divergent
+  history, and any external automation watching the `0.0.*` tag
+  stream may double-fire. This option is destructive and requires
+  explicit maintainer authorization each time.
+- **Recovery option (b) — skip the version.** Land the release-prep
+  commit on master and tag `0.0.N+1` from it instead, leaving the
+  broken `0.0.N` tag in place (or deleting it cleanly before anyone
+  consumes it). This burns a version number but avoids touching
+  published history.
+
+The whole point of Step 1 being mechanical (one script invocation)
+and Step 4 having its "DO NOT tag before Step 1 has merged" guard
+is to make this failure mode unreachable in the normal flow.
 
 ## Step 2 — Verify and commit
 
@@ -112,14 +187,23 @@ go build ./...
 go vet ./...
 go test ./... -count=1
 (cd dynclient && GOWORK=off go test ./... -count=1)
-git status
-git commit -am "chore(release): prepare Go module versions for 0.0.N"
 ```
 
 The extra `GOWORK=off` step inside `dynclient/` verifies that the
 module also builds and tests against the rewritten requires when the
 workspace is not in play — which is the configuration downstream
 consumers will see.
+
+Then use the `git diff --cached -- <paths>` and `git commit -m
+"..." -- <paths>` lines that `release-prep.sh` printed at the end
+of Step 1 to review and commit. Those commands are the single
+source of truth for the release-prep commit shape; both restrict
+their pathspec to the rewritten go.mod files so that any unrelated
+work you happened to have staged in the same checkout is left out
+of the release commit. **Don't substitute `git commit -am ...`
+for the printed line** — `-a` would sweep up every modified
+tracked file, including any WIP the script intentionally left
+alone.
 
 ## Step 3 — Push to master
 
@@ -130,6 +214,14 @@ git push origin master
 ```
 
 ## Step 4 — Create and push the product tag
+
+> **DO NOT tag the product version until the release-prep commit
+> from Step 1 has merged to `master`.** The Go module tag set
+> created in Step 6 must point at a commit where every first-party
+> `require` is already at `v0.0.N`. If you tag from an earlier
+> commit, Step 6 will reject the tag set and the only recoveries
+> are destructive — see
+> [What goes wrong if you skip Step 1](#what-goes-wrong-if-you-skip-step-1).
 
 ```sh
 git tag 0.0.N

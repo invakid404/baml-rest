@@ -82,31 +82,20 @@ fi
 # same way scripts/sync.sh does, so this script can be invoked from
 # anywhere without callers worrying about the working directory.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$script_dir"
-while [ "$repo_root" != "/" ] && [ ! -d "$repo_root/.git" ] && [ ! -f "$repo_root/.git" ]; do
-    repo_root="$(dirname "$repo_root")"
-done
-if [ ! -e "$repo_root/.git" ]; then
+# shellcheck source=./release-lib.sh
+source "$script_dir/release-lib.sh"
+
+repo_root="$(release_find_repo_root "$script_dir" ".git")" || {
     echo "ERROR: no .git found above $script_dir" >&2
     exit 1
-fi
+}
 cd "$repo_root"
 
-# Required module set. Edit here if a future release adds or removes a
-# published Go module. The root module, pool, and the server-only
-# adapters/adapter_v* modules are deliberately excluded — see PR #289
-# discussion and RELEASE.md.
-required_modules=(
-    "adapters/common"
-    "bamlutils"
-    "dynclient"
-    "dynclient/baml-patched"
-    "introspected"
-    "worker"
-    "workerplugin"
-)
-
-first_party_prefix="github.com/invakid404/baml-rest"
+# Required module set + first-party prefix come from release-lib.sh
+# so the two release scripts can't drift apart on which modules are
+# in the published tag set.
+required_modules=("${release_required_modules[@]}")
+first_party_prefix="$release_first_party_prefix"
 expected_version="v${version}"
 
 # Validate that the product tag exists both locally and on origin
@@ -123,174 +112,228 @@ if ! git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null; 
 fi
 release_sha="$(git rev-parse "${version}^{commit}")"
 
-# validate_module_requires reads <module>/go.mod at the product tag
-# commit and emits offending require lines on stderr. Returns 0 if the
-# module is clean, 1 otherwise. The function intentionally collects all
-# bad lines for one module before returning so the operator sees every
-# fix needed in one pass rather than fixing them one error at a time.
-validate_module_requires() {
-    local module_path="$1"
-    local gomod
-    gomod="$(git show "${version}:${module_path}/go.mod")"
-
-    # Track which directive block we're in so a first-party module
-    # listed in a `replace (...)` block isn't misread as a `require`.
-    # Local `replace ../../bamlutils` directives are expected during
-    # release-prep (see RELEASE.md) and must not fail validation.
-    local first_party_lines
-    first_party_lines="$(
-        printf '%s\n' "$gomod" |
-            awk -v prefix="$first_party_prefix" '
-                function is_first_party(path) {
-                    return path == prefix || index(path, prefix "/") == 1
-                }
-                /^[[:space:]]*require[[:space:]]*\(/ { block = "require"; next }
-                /^[[:space:]]*replace[[:space:]]*\(/ { block = "replace"; next }
-                /^[[:space:]]*exclude[[:space:]]*\(/ { block = "exclude"; next }
-                /^[[:space:]]*retract[[:space:]]*\(/ { block = "retract"; next }
-                /^[[:space:]]*\)/ { block = ""; next }
-                /^[[:space:]]*require[[:space:]]+/ {
-                    line = $0
-                    sub(/^[[:space:]]*require[[:space:]]+/, "", line)
-                    split(line, fields, /[[:space:]]+/)
-                    if (is_first_party(fields[1])) print line
-                    next
-                }
-                block == "require" {
-                    line = $0
-                    sub(/^[[:space:]]*/, "", line)
-                    split(line, fields, /[[:space:]]+/)
-                    if (is_first_party(fields[1])) print line
-                }
-            '
-    )"
-
-    if [ -z "$first_party_lines" ]; then
-        return 0
-    fi
-
-    local bad=0
-    local line dep dep_version
-    while IFS= read -r line; do
-        # Strip any trailing `// indirect` (or other) comment so the
-        # version field is the last whitespace-separated token.
-        local stripped="${line%%//*}"
-        # shellcheck disable=SC2206
-        local fields=($stripped)
-        if [ "${#fields[@]}" -lt 2 ]; then
-            echo "  bad require line (cannot parse): ${line}" >&2
-            bad=1
-            continue
-        fi
-        dep="${fields[0]}"
-        dep_version="${fields[1]}"
-
-        # Pseudo-versions and any non-`v0.0.<positive-int>` require are
-        # rejected. We then narrow further to the exact `v${version}`
-        # we're releasing so a stale `v0.0.40` require during a 0.0.42
-        # cut also fails.
-        if [[ "$dep_version" == v0.0.0-* ]]; then
-            echo "  pseudo-version not allowed: ${dep} ${dep_version}" >&2
-            bad=1
-            continue
-        fi
-        if [[ ! "$dep_version" =~ ^v0\.0\.[1-9][0-9]*$ ]]; then
-            echo "  version must match v0.0.<positive-integer>: ${dep} ${dep_version}" >&2
-            bad=1
-            continue
-        fi
-        if [ "$dep_version" != "$expected_version" ]; then
-            echo "  expected ${expected_version}, got: ${dep} ${dep_version}" >&2
-            bad=1
-            continue
-        fi
-    done <<< "$first_party_lines"
-
-    return "$bad"
-}
-
 # Phase 1: validate every required module at the product-tag commit.
 # We accumulate failures so the operator sees every broken module in
 # one pass rather than re-running the script after each fix.
+#
+# Failure-kind tallies feed the recovery hint at the bottom of the
+# phase. The most common failure shape is "release-prep was skipped"
+# — every offending require lines up at the *previous* release tag —
+# and that case warrants a different recovery path than a one-off
+# bad require, so we surface it explicitly.
 echo "Validating release-prep state at ${version} (${release_sha})..."
 validation_failed=0
+# Per-failure-kind counters. Plain integers instead of an associative
+# array because macOS still ships bash 3.2, which lacks `declare -A`.
+stale_count=0
+pseudo_count=0
+malformed_count=0
+unparseable_count=0
+missing_count=0
+stale_versions=()
 for module_path in "${required_modules[@]}"; do
     if ! git cat-file -e "${version}:${module_path}/go.mod" 2>/dev/null; then
         echo "ERROR: product tag ${version} does not contain required module ${module_path}/go.mod" >&2
         validation_failed=1
+        missing_count=$(( missing_count + 1 ))
         continue
     fi
     echo "  ${module_path}/go.mod"
-    if ! validate_module_requires "$module_path"; then
+    release_last_failure_lines=""
+    # Process substitution (not a pipe) so the function runs in the
+    # current shell — the accumulator assignment relies on that.
+    if ! release_validate_module_requires "$module_path" "$expected_version" \
+            < <(git show "${version}:${module_path}/go.mod"); then
         echo "ERROR: ${module_path}/go.mod has first-party requires that must be rewritten to ${expected_version} before tagging" >&2
         validation_failed=1
+        # Tally every emitted failure line, not just the first per
+        # module. A single go.mod can mix kinds (e.g. one stale
+        # require + one pseudo-version) and the recovery hint below
+        # needs accurate per-kind counts to gate correctly.
+        while IFS=$'\t' read -r kind value; do
+            [ -n "$kind" ] || continue
+            case "$kind" in
+                stale)
+                    stale_count=$(( stale_count + 1 ))
+                    stale_versions+=("$value")
+                    ;;
+                pseudo)      pseudo_count=$(( pseudo_count + 1 )) ;;
+                malformed)   malformed_count=$(( malformed_count + 1 )) ;;
+                unparseable) unparseable_count=$(( unparseable_count + 1 )) ;;
+                *)           unparseable_count=$(( unparseable_count + 1 )) ;;
+            esac
+        done <<< "$release_last_failure_lines"
     fi
 done
 if [ "$validation_failed" -ne 0 ]; then
     echo "ERROR: release-prep validation failed; fix the modules above, retag, and re-run" >&2
+
+    # Self-documenting failure: when EVERY offending line is a stale
+    # `v0.0.<previous-release>` require — the canonical
+    # "release-prep was skipped" footprint — print a tailored
+    # recovery hint instead of leaving the operator to figure out
+    # whether to force-move the tag or skip the release. A pseudo
+    # version, malformed require, or unparseable line falls through
+    # to the generic message above because the fix isn't a
+    # release-prep PR — it's a hand-fix to the offending module.
+    other_count=$(( pseudo_count + malformed_count + unparseable_count + missing_count ))
+
+    if [ "$stale_count" -gt 0 ] && [ "$other_count" -eq 0 ]; then
+        # Find the single stale version if every offending require
+        # lines up there. `sort -u` collapses duplicates.
+        uniq_stale="$(printf '%s\n' "${stale_versions[@]}" | sort -u)"
+        echo >&2
+        echo "Diagnostic: every offending require is a stale v0.0.<N> tag, not a pseudo-" >&2
+        echo "version. This is the canonical 'release-prep was skipped' shape — the" >&2
+        echo "product tag was created from a commit whose go.mods still point at the" >&2
+        echo "previous release." >&2
+        if [ "$(printf '%s\n' "$uniq_stale" | wc -l)" -eq 1 ]; then
+            echo "All offending requires point at: ${uniq_stale}" >&2
+        else
+            echo "Stale versions found across modules:" >&2
+            while IFS= read -r v; do
+                echo "  ${v}" >&2
+            done <<< "$uniq_stale"
+        fi
+        echo >&2
+        echo "Recovery options:" >&2
+        echo "  (a) Land a release-prep commit on master, then force-move ${version}:" >&2
+        echo "        ./scripts/release-prep.sh ${version}" >&2
+        echo "        # review + commit + push" >&2
+        echo "        git tag -f ${version} <release-prep-sha>" >&2
+        echo "        git push --force origin ${version}" >&2
+        echo "      This rewrites the published product tag — destructive, requires" >&2
+        echo "      explicit maintainer authorization, and any GitHub Release attached" >&2
+        echo "      to ${version} will need to be re-pointed." >&2
+        echo "  (b) Skip ${version} and prep the next release cleanly. This is the" >&2
+        echo "      safer option when ${version} hasn't yet been advertised:" >&2
+        echo "        ./scripts/release-prep.sh <next-version>" >&2
+        echo "      Then tag <next-version> from the resulting commit and re-run this" >&2
+        echo "      script with that version." >&2
+    fi
     exit 1
 fi
 echo "Validation OK."
 
-# Phase 2: figure out which tags need to be created / pushed.
-# `to_create` holds tags we'll create locally then push, `skipped`
-# holds tags that already point at release_sha somewhere (local or
-# remote). Anything pointing at a *different* SHA aborts immediately.
+# Phase 2: figure out which tags need to be created and / or pushed.
+# Both the local refs and origin are inspected before each tag is
+# classified so a partial-push recovery (local refs exist, origin
+# lost the tags) doesn't silently report everything as a no-op —
+# in that case the script should push the existing local tags.
+#
+#   - `to_create` — neither side has the tag; create local + push.
+#   - `to_push`   — local at release_sha, origin missing; push only.
+#   - `skipped`   — both sides at release_sha; nothing to do.
+#
+# A tag at the *wrong* SHA on either side still aborts immediately.
 to_create=()
+to_push=()
 skipped=()
 
 for module_path in "${required_modules[@]}"; do
     tag="${module_path}/${expected_version}"
 
+    # Peel to the commit so an annotated tag pointing at the right
+    # release commit isn't misread as pointing at the tag-object SHA.
+    # `^{commit}` resolves both lightweight and annotated tags to a
+    # commit SHA, the same shape as $release_sha above.
     local_sha=""
-    if local_sha="$(git rev-parse --verify --quiet "refs/tags/${tag}")"; then
+    if local_sha="$(git rev-parse --verify --quiet "refs/tags/${tag}^{commit}")"; then
         :
     else
         local_sha=""
     fi
 
-    if [ -n "$local_sha" ]; then
-        if [ "$local_sha" != "$release_sha" ]; then
-            echo "ERROR: local tag ${tag} points at ${local_sha}, expected ${release_sha}" >&2
-            exit 1
-        fi
-        skipped+=("$tag")
-        continue
+    if [ -n "$local_sha" ] && [ "$local_sha" != "$release_sha" ]; then
+        echo "ERROR: local tag ${tag} points at ${local_sha}, expected ${release_sha}" >&2
+        exit 1
     fi
 
     # `git ls-remote` exits 0 with empty stdout when the ref doesn't
     # exist, so we can't rely on the exit code alone — check stdout.
+    # We can't peel preemptively here: `git ls-remote --tags origin
+    # "refs/tags/<lightweight>^{}"` returns no row, so a naive peel
+    # would treat existing lightweight tags as missing. Instead do a
+    # raw lookup first to detect existence, then peel only when the
+    # raw SHA doesn't match — that handles annotated tags whose raw
+    # ref SHA is the tag-object SHA rather than the target commit.
+    remote_sha=""
     remote_line="$(git ls-remote --tags origin "refs/tags/${tag}" || true)"
     if [ -n "$remote_line" ]; then
         remote_sha="${remote_line%%[[:space:]]*}"
         if [ "$remote_sha" != "$release_sha" ]; then
-            echo "ERROR: origin tag ${tag} points at ${remote_sha}, expected ${release_sha}" >&2
-            exit 1
+            peeled_line="$(git ls-remote --tags origin "refs/tags/${tag}^{}" || true)"
+            if [ -n "$peeled_line" ]; then
+                remote_sha="${peeled_line%%[[:space:]]*}"
+            fi
         fi
-        skipped+=("$tag")
-        continue
     fi
 
-    to_create+=("$tag")
+    if [ -n "$remote_sha" ] && [ "$remote_sha" != "$release_sha" ]; then
+        echo "ERROR: origin tag ${tag} points at ${remote_sha}, expected ${release_sha}" >&2
+        exit 1
+    fi
+
+    # Classify. The L✗ R✓ case (remote already at release_sha, no
+    # local ref) is treated as skipped — origin is the source of
+    # truth and the script's job here is to make origin match. A
+    # maintainer who wants the local ref can `git fetch origin
+    # --tags` themselves.
+    if [ -n "$local_sha" ] && [ -n "$remote_sha" ]; then
+        skipped+=("$tag")
+    elif [ -n "$local_sha" ] && [ -z "$remote_sha" ]; then
+        to_push+=("$tag")
+    elif [ -z "$local_sha" ] && [ -n "$remote_sha" ]; then
+        skipped+=("$tag")
+    else
+        to_create+=("$tag")
+    fi
 done
 
 # Phase 3: act (or pretend to, in dry-run).
+#
+# Tags in to_create get a local ref AND a push. Tags in to_push are
+# already at release_sha locally — only the push is missing (the
+# partial-push recovery path), so we skip the `git tag` invocation
+# and feed them straight into the same `git push origin <refs>`
+# call as anything we just created. Combining them keeps the push
+# atomic on origin's side.
 created=()
-if [ "${#to_create[@]}" -gt 0 ]; then
+push_args=()
+if [ "${#to_create[@]}" -gt 0 ] || [ "${#to_push[@]}" -gt 0 ]; then
     if $dry_run; then
         echo
-        echo "[dry-run] would create and push:"
-        for tag in "${to_create[@]}"; do
-            echo "  ${tag} -> ${release_sha}"
-        done
+        if [ "${#to_create[@]}" -gt 0 ]; then
+            echo "[dry-run] would create and push:"
+            for tag in "${to_create[@]}"; do
+                echo "  ${tag} -> ${release_sha}"
+            done
+        fi
+        if [ "${#to_push[@]}" -gt 0 ]; then
+            echo "[dry-run] would push existing local tag(s) to origin:"
+            for tag in "${to_push[@]}"; do
+                echo "  ${tag} -> ${release_sha}"
+            done
+        fi
     else
-        for tag in "${to_create[@]}"; do
-            echo "Creating ${tag} -> ${release_sha}"
-            git tag "${tag}" "${release_sha}"
-            created+=("$tag")
-        done
-        echo "Pushing ${#created[@]} tag(s) to origin..."
-        git push origin "${created[@]}"
+        if [ "${#to_create[@]}" -gt 0 ]; then
+            for tag in "${to_create[@]}"; do
+                echo "Creating ${tag} -> ${release_sha}"
+                git tag "${tag}" "${release_sha}"
+                created+=("$tag")
+                push_args+=("$tag")
+            done
+        fi
+        if [ "${#to_push[@]}" -gt 0 ]; then
+            for tag in "${to_push[@]}"; do
+                echo "Re-pushing existing local ${tag} -> ${release_sha}"
+                push_args+=("$tag")
+            done
+        fi
+        if [ "${#push_args[@]}" -gt 0 ]; then
+            echo "Pushing ${#push_args[@]} tag(s) to origin..."
+            git push origin "${push_args[@]}"
+        fi
     fi
 fi
 
@@ -309,10 +352,18 @@ if [ "${#to_create[@]}" -gt 0 ] && $dry_run; then
     echo "  would create: ${#to_create[@]}"
     for tag in "${to_create[@]}"; do echo "    ${tag}"; done
 fi
+if [ "${#to_push[@]}" -gt 0 ]; then
+    if $dry_run; then
+        echo "  would push (existing local): ${#to_push[@]}"
+    else
+        echo "  pushed (existing local): ${#to_push[@]}"
+    fi
+    for tag in "${to_push[@]}"; do echo "    ${tag}"; done
+fi
 if [ "${#skipped[@]}" -gt 0 ]; then
     echo "  skipped (already at ${release_sha}): ${#skipped[@]}"
     for tag in "${skipped[@]}"; do echo "    ${tag}"; done
 fi
-if [ "${#created[@]}" -eq 0 ] && [ "${#to_create[@]}" -eq 0 ]; then
+if [ "${#created[@]}" -eq 0 ] && [ "${#to_create[@]}" -eq 0 ] && [ "${#to_push[@]}" -eq 0 ]; then
     echo "  no-op: all ${#required_modules[@]} Go module tags already point at ${release_sha}"
 fi
