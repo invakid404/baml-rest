@@ -285,3 +285,107 @@ func isNullable(ref *openapi3.SchemaRef) bool {
 	}
 	return false
 }
+
+// TestSchemaPreserveOrderExposure pins #313: the public OpenAPI surface
+// must surface the preserve-order opt-in on both __DynamicInput__ and
+// __DynamicParseInput__, and the worker-bound TypeBuilder.dynamic_types
+// shape must expose the matching preserve_order/order keys so generated
+// clients can use the feature.
+func TestSchemaPreserveOrderExposure(t *testing.T) {
+	baml_rest.InitBamlRuntime()
+
+	// The dynamic-input/parse schemas are only registered when Methods
+	// carries the dynamic-method sentinel — mirror the seeding done by
+	// TestPostRequestBodyRequired so this test exercises the dynamic
+	// codepath.
+	origMethods := baml_rest.Methods
+	t.Cleanup(func() { baml_rest.Methods = origMethods })
+	baml_rest.Methods = map[string]bamlutils.StreamingMethod{
+		bamlutils.DynamicMethodName: {
+			MakeInput:        func() any { return &SchemaPostRequiredStubInput{} },
+			MakeOutput:       func() any { return &SchemaPostRequiredStubOutput{} },
+			MakeStreamOutput: func() any { return &SchemaPostRequiredStubOutput{} },
+		},
+	}
+
+	doc := generateOpenAPISchema()
+	if doc == nil || doc.Components == nil {
+		t.Fatalf("generated schema has no components")
+	}
+	schemas := doc.Components.Schemas
+
+	for _, name := range []string{"__DynamicInput__", "__DynamicParseInput__"} {
+		ref, ok := schemas[name]
+		if !ok || ref == nil || ref.Value == nil {
+			t.Fatalf("schema %q not registered", name)
+		}
+		prop, ok := ref.Value.Properties["preserve_schema_order"]
+		if !ok || prop == nil || prop.Value == nil {
+			t.Errorf("%s.properties missing preserve_schema_order", name)
+			continue
+		}
+		if !prop.Value.Type.Is(openapi3.TypeBoolean) {
+			t.Errorf("%s.preserve_schema_order: expected boolean, got %v", name, prop.Value.Type)
+		}
+		// Opt-in: must not be in required.
+		if slices.Contains(ref.Value.Required, "preserve_schema_order") {
+			t.Errorf("%s.required must not include preserve_schema_order (it's an opt-in)", name)
+		}
+	}
+
+	tb, ok := schemas["TypeBuilder"]
+	if !ok || tb == nil || tb.Value == nil {
+		t.Fatalf("TypeBuilder schema not registered")
+	}
+	dt, ok := tb.Value.Properties["dynamic_types"]
+	if !ok || dt == nil || dt.Value == nil {
+		t.Fatalf("TypeBuilder.dynamic_types not present")
+	}
+
+	preserveOrder, ok := dt.Value.Properties["preserve_order"]
+	if !ok || preserveOrder == nil || preserveOrder.Value == nil {
+		t.Errorf("dynamic_types missing preserve_order")
+	} else if !preserveOrder.Value.Type.Is(openapi3.TypeBoolean) {
+		t.Errorf("dynamic_types.preserve_order expected boolean, got %v", preserveOrder.Value.Type)
+	}
+
+	order, ok := dt.Value.Properties["order"]
+	if !ok || order == nil || order.Value == nil {
+		t.Fatalf("dynamic_types missing order")
+	}
+	if !order.Value.Type.Is(openapi3.TypeObject) {
+		t.Errorf("dynamic_types.order expected object, got %v", order.Value.Type)
+	}
+	// classes/enums are string arrays; properties is map<string, []string>.
+	for _, sub := range []string{"classes", "enums"} {
+		p, ok := order.Value.Properties[sub]
+		if !ok || p == nil || p.Value == nil {
+			t.Errorf("dynamic_types.order missing %q", sub)
+			continue
+		}
+		if !p.Value.Type.Is(openapi3.TypeArray) {
+			t.Errorf("dynamic_types.order.%s expected array, got %v", sub, p.Value.Type)
+			continue
+		}
+		if p.Value.Items == nil || p.Value.Items.Value == nil || !p.Value.Items.Value.Type.Is(openapi3.TypeString) {
+			t.Errorf("dynamic_types.order.%s items expected string", sub)
+		}
+	}
+	props, ok := order.Value.Properties["properties"]
+	if !ok || props == nil || props.Value == nil {
+		t.Fatalf("dynamic_types.order missing properties")
+	}
+	if !props.Value.Type.Is(openapi3.TypeObject) {
+		t.Errorf("dynamic_types.order.properties expected object, got %v", props.Value.Type)
+	}
+	addl := props.Value.AdditionalProperties.Schema
+	if addl == nil || addl.Value == nil {
+		t.Fatalf("dynamic_types.order.properties missing additionalProperties schema")
+	}
+	if !addl.Value.Type.Is(openapi3.TypeArray) {
+		t.Errorf("dynamic_types.order.properties additionalProperties expected array, got %v", addl.Value.Type)
+	}
+	if addl.Value.Items == nil || addl.Value.Items.Value == nil || !addl.Value.Items.Value.Type.Is(openapi3.TypeString) {
+		t.Errorf("dynamic_types.order.properties additionalProperties items expected string")
+	}
+}
