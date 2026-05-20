@@ -37,8 +37,8 @@ func parseTruthyEnvBool(v string) bool {
 // tri-state from the server default when the caller omitted the field
 // (or sent JSON null, which decodes to nil). A non-nil pointer is left
 // untouched so per-request true/false always wins over the server
-// default. Must be called after json.Unmarshal and before Validate so
-// validatePreserveSchemaOrder sees the resolved state.
+// default. Must be called after json.Unmarshal and before ToWorkerInput
+// so the resolved value drives dynamic_types.preserve_order downstream.
 func applyPreserveSchemaOrderDefault(in *bamlutils.DynamicInput, defaultValue bool) {
 	if in != nil && in.PreserveSchemaOrder == nil {
 		in.PreserveSchemaOrder = &defaultValue

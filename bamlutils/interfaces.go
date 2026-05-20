@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+
+	goccyjson "github.com/goccy/go-json"
 
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 )
@@ -576,24 +577,24 @@ func (b *TypeBuilder) Add(input string) {
 //
 //	typeBuilder := &bamlutils.TypeBuilder{
 //	    DynamicTypes: &bamlutils.DynamicTypes{
-//	        Classes: map[string]*bamlutils.DynamicClass{
-//	            "DynamicOutput": {
-//	                Properties: map[string]*bamlutils.DynamicProperty{
-//	                    "name":   {Type: "string"},
-//	                    "age":    {Type: "int"},
-//	                    "active": {Type: "bool"},
-//	                },
-//	            },
-//	        },
-//	        Enums: map[string]*bamlutils.DynamicEnum{
-//	            "Priority": {
+//	        Classes: bamlutils.MustOrderedMap(
+//	            bamlutils.OrderedKV("DynamicOutput", &bamlutils.DynamicClass{
+//	                Properties: bamlutils.MustOrderedMap(
+//	                    bamlutils.OrderedKV("name", &bamlutils.DynamicProperty{Type: "string"}),
+//	                    bamlutils.OrderedKV("age", &bamlutils.DynamicProperty{Type: "int"}),
+//	                    bamlutils.OrderedKV("active", &bamlutils.DynamicProperty{Type: "bool"}),
+//	                ),
+//	            }),
+//	        ),
+//	        Enums: bamlutils.MustOrderedMap(
+//	            bamlutils.OrderedKV("Priority", &bamlutils.DynamicEnum{
 //	                Values: []*bamlutils.DynamicEnumValue{
 //	                    {Name: "HIGH", Alias: "high priority"},
 //	                    {Name: "MEDIUM"},
 //	                    {Name: "LOW"},
 //	                },
-//	            },
-//	        },
+//	            }),
+//	        ),
 //	    },
 //	}
 //
@@ -646,31 +647,37 @@ func (b *TypeBuilder) Add(input string) {
 //	  }
 //	}
 type DynamicTypes struct {
-	Classes map[string]*DynamicClass `json:"classes,omitempty"`
-	Enums   map[string]*DynamicEnum  `json:"enums,omitempty"`
+	Classes OrderedMap[*DynamicClass] `json:"classes,omitempty,omitzero"`
+	Enums   OrderedMap[*DynamicEnum]  `json:"enums,omitempty,omitzero"`
 
 	// PreserveOrder, when true, instructs the codegen-emitted
-	// applyDynamicTypes to populate TypeBuilder following the explicit
-	// Order metadata instead of sorting map keys alphabetically. Set by
-	// the public dynamic endpoints when their caller opts in via
-	// DynamicInput.PreserveSchemaOrder.
+	// applyDynamicTypes to populate TypeBuilder following the Classes /
+	// Enums / per-class Properties insertion order rather than sorting
+	// map keys alphabetically. Set by the public dynamic endpoints when
+	// their caller opts in via DynamicInput.PreserveSchemaOrder.
 	PreserveOrder bool `json:"preserve_order,omitempty"`
-	// Order carries the desired population order for Classes, Enums,
-	// and per-class Properties when PreserveOrder is true. nil or
-	// empty slices fall back to alphabetical sorting for that
-	// dimension via the schemaMapKeys helper.
-	Order *DynamicTypesOrder `json:"order,omitempty"`
 }
 
-// DynamicTypesOrder is the cross-boundary order payload that captures
-// the schema's first-party map insertion order. Classes lists the
-// synthetic Baml_Rest_DynamicOutput class first followed by user
-// classes; Enums lists user enums; Properties maps each class name
-// to its per-property order.
-type DynamicTypesOrder struct {
-	Classes    []string            `json:"classes,omitempty"`
-	Enums      []string            `json:"enums,omitempty"`
-	Properties map[string][]string `json:"properties,omitempty"`
+// MarshalJSON emits the dynamic-types object, omitting Classes / Enums
+// when empty. goccy/go-json does not honor `json:",omitzero"`, so the
+// field tag alone is not enough to suppress empty entries under that
+// encoder.
+func (dt DynamicTypes) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Classes       *OrderedMap[*DynamicClass] `json:"classes,omitempty"`
+		Enums         *OrderedMap[*DynamicEnum]  `json:"enums,omitempty"`
+		PreserveOrder bool                       `json:"preserve_order,omitempty"`
+	}
+	a := alias{PreserveOrder: dt.PreserveOrder}
+	if dt.Classes.Len() > 0 {
+		c := dt.Classes
+		a.Classes = &c
+	}
+	if dt.Enums.Len() > 0 {
+		e := dt.Enums
+		a.Enums = &e
+	}
+	return goccyjson.Marshal(a)
 }
 
 // maxTypeDepth is the maximum nesting depth for type references.
@@ -684,152 +691,55 @@ func (dt *DynamicTypes) Validate() error {
 		return nil
 	}
 
-	// Collect all defined type names for reference validation
 	definedTypes := make(map[string]bool)
-	for name := range dt.Classes {
+	for _, name := range dt.Classes.Keys() {
 		definedTypes[name] = true
 	}
-	for name := range dt.Enums {
+	for _, name := range dt.Enums.Keys() {
 		definedTypes[name] = true
 	}
 
-	// Validate enums
-	for name, enum := range dt.Enums {
+	var firstErr error
+	dt.Enums.Range(func(name string, enum *DynamicEnum) bool {
 		if enum == nil {
-			return fmt.Errorf("enum %q: definition is nil", name)
+			firstErr = fmt.Errorf("enum %q: definition is nil", name)
+			return false
 		}
 		for i, v := range enum.Values {
 			if v == nil {
-				return fmt.Errorf("enum %q: value at index %d is nil", name, i)
+				firstErr = fmt.Errorf("enum %q: value at index %d is nil", name, i)
+				return false
 			}
 			if v.Name == "" {
-				return fmt.Errorf("enum %q: value at index %d has empty name", name, i)
+				firstErr = fmt.Errorf("enum %q: value at index %d has empty name", name, i)
+				return false
 			}
 		}
+		return true
+	})
+	if firstErr != nil {
+		return firstErr
 	}
 
-	// Validate classes
-	for name, class := range dt.Classes {
+	dt.Classes.Range(func(name string, class *DynamicClass) bool {
 		if class == nil {
-			return fmt.Errorf("class %q: definition is nil", name)
+			firstErr = fmt.Errorf("class %q: definition is nil", name)
+			return false
 		}
-		for propName, prop := range class.Properties {
+		class.Properties.Range(func(propName string, prop *DynamicProperty) bool {
 			if prop == nil {
-				return fmt.Errorf("class %q: property %q is nil", name, propName)
+				firstErr = fmt.Errorf("class %q: property %q is nil", name, propName)
+				return false
 			}
 			if err := validateTypeRef(prop.Type, prop.Ref, prop.Items, prop.Inner, prop.OneOf, prop.Keys, prop.Values, prop.Value, definedTypes, fmt.Sprintf("class %q property %q", name, propName), 0); err != nil {
-				return err
+				firstErr = err
+				return false
 			}
-		}
-	}
-
-	if dt.PreserveOrder {
-		if err := dt.validatePreserveOrder(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// validatePreserveOrder enforces the same locked contract that the
-// public DynamicInput/DynamicParseInput validators enforce at the HTTP
-// boundary, but on the worker-bound DynamicTypes shape itself. Direct
-// `__baml_options__.type_builder.dynamic_types` callers bypass the
-// input validators; without this pass they could set PreserveOrder=true
-// with missing or malformed Order metadata and silently fall back to
-// the sorted iteration in the generated schemaMapKeys helper.
-//
-// Mirrors validatePreserveSchemaOrder in dynamic.go: each multi-key
-// map dimension (Classes, Enums, per-class Properties) requires a
-// non-empty matching order slice with no duplicates, no unknown names,
-// and full coverage of the map's keys.
-func (dt *DynamicTypes) validatePreserveOrder() error {
-	var orderClasses, orderEnums []string
-	var orderProps map[string][]string
-	if dt.Order != nil {
-		orderClasses = dt.Order.Classes
-		orderEnums = dt.Order.Enums
-		orderProps = dt.Order.Properties
-	}
-
-	classKeys := make(map[string]struct{}, len(dt.Classes))
-	for n := range dt.Classes {
-		classKeys[n] = struct{}{}
-	}
-	if len(dt.Classes) >= 2 && len(orderClasses) == 0 {
-		return fmt.Errorf("dynamic_types.preserve_order=true but classes has no captured order")
-	}
-	if err := checkDynamicTypesOrderSlice("dynamic_types.classes", orderClasses, classKeys); err != nil {
-		return err
-	}
-
-	enumKeys := make(map[string]struct{}, len(dt.Enums))
-	for n := range dt.Enums {
-		enumKeys[n] = struct{}{}
-	}
-	if len(dt.Enums) >= 2 && len(orderEnums) == 0 {
-		return fmt.Errorf("dynamic_types.preserve_order=true but enums has no captured order")
-	}
-	if err := checkDynamicTypesOrderSlice("dynamic_types.enums", orderEnums, enumKeys); err != nil {
-		return err
-	}
-
-	// Iterate per-class property order in deterministic (sorted) order
-	// so error messages are stable across runs.
-	classNames := make([]string, 0, len(dt.Classes))
-	for name := range dt.Classes {
-		classNames = append(classNames, name)
-	}
-	sort.Strings(classNames)
-	for _, className := range classNames {
-		cls := dt.Classes[className]
-		if cls == nil {
-			continue
-		}
-		path := fmt.Sprintf("dynamic_types.classes[%q].properties", className)
-		var classOrder []string
-		if orderProps != nil {
-			classOrder = orderProps[className]
-		}
-		propKeys := make(map[string]struct{}, len(cls.Properties))
-		for n := range cls.Properties {
-			propKeys[n] = struct{}{}
-		}
-		if len(cls.Properties) >= 2 && len(classOrder) == 0 {
-			return fmt.Errorf("dynamic_types.preserve_order=true but %s has no captured order", path)
-		}
-		if err := checkDynamicTypesOrderSlice(path, classOrder, propKeys); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// checkDynamicTypesOrderSlice mirrors checkOrderSlice in dynamic.go
-// (kept local here to avoid a package-level cycle and to keep the
-// worker-side validator self-contained). Reports the first duplicate,
-// unknown, or missing name as a path-qualified error.
-func checkDynamicTypesOrderSlice(path string, order []string, known map[string]struct{}) error {
-	if len(order) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(order))
-	for _, name := range order {
-		if _, dup := seen[name]; dup {
-			return fmt.Errorf("%s order: duplicate name %q", path, name)
-		}
-		seen[name] = struct{}{}
-		if _, ok := known[name]; !ok {
-			return fmt.Errorf("%s order: unknown name %q", path, name)
-		}
-	}
-	for name := range known {
-		if _, ok := seen[name]; !ok {
-			return fmt.Errorf("%s order: missing name %q", path, name)
-		}
-	}
-	return nil
+			return true
+		})
+		return firstErr == nil
+	})
+	return firstErr
 }
 
 // validateTypeRef validates a type reference structure
@@ -937,14 +847,27 @@ func validateDynamicTypeSpec(ref *DynamicTypeSpec, definedTypes map[string]bool,
 
 // DynamicClass defines a class with properties.
 type DynamicClass struct {
-	Description string                      `json:"description,omitempty"`
-	Alias       string                      `json:"alias,omitempty"`
-	Properties  map[string]*DynamicProperty `json:"properties,omitempty"`
-	// PropertiesOrder records the JSON wire order of Properties for
-	// preserve_schema_order callers. Populated by DynamicClass.UnmarshalJSON;
-	// Go callers must set it explicitly when constructing the class
-	// programmatically.
-	PropertiesOrder []string `json:"-"`
+	Description string                       `json:"description,omitempty"`
+	Alias       string                       `json:"alias,omitempty"`
+	Properties  OrderedMap[*DynamicProperty] `json:"properties,omitempty,omitzero"`
+}
+
+// MarshalJSON emits the class as a JSON object, omitting an empty
+// Properties map. goccy/go-json does not honor `json:",omitzero"`, so
+// the field tag alone is not enough to suppress empty entries under
+// that encoder.
+func (c DynamicClass) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Description string                        `json:"description,omitempty"`
+		Alias       string                        `json:"alias,omitempty"`
+		Properties  *OrderedMap[*DynamicProperty] `json:"properties,omitempty"`
+	}
+	a := alias{Description: c.Description, Alias: c.Alias}
+	if c.Properties.Len() > 0 {
+		p := c.Properties
+		a.Properties = &p
+	}
+	return goccyjson.Marshal(a)
 }
 
 // DynamicProperty defines a property on a class.

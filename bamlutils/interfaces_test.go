@@ -3,9 +3,30 @@ package bamlutils
 import (
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 )
+
+// fromMap is a test helper that builds an OrderedMap from a plain Go
+// map. Keys are inserted in lexical order. Suitable for tests whose
+// assertions do not depend on insertion order — preserve-order
+// concerns are now intrinsic to OrderedMap and exercised separately
+// in dynamic_test.go and the dynclient/codegen integration tests.
+func fromMap[V any](m map[string]V) OrderedMap[V] {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var om OrderedMap[V]
+	for _, k := range keys {
+		if err := om.Set(k, m[k]); err != nil {
+			panic(err)
+		}
+	}
+	return om
+}
 
 // TestClientProperty_ProviderPresenceFromJSON pins the JSON-decoded
 // provider-presence semantics. The struct-tag-driven decoder
@@ -590,277 +611,277 @@ func TestDynamicTypes_Validate(t *testing.T) {
 		{
 			name: "empty class is valid",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"EmptyClass": {},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "empty enum is valid",
 			dt: &DynamicTypes{
-				Enums: map[string]*DynamicEnum{
+				Enums: fromMap(map[string]*DynamicEnum{
 					"EmptyEnum": {},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "nil class definition",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"NilClass": nil,
-				},
+				}),
 			},
 			wantErr: `class "NilClass": definition is nil`,
 		},
 		{
 			name: "nil enum definition",
 			dt: &DynamicTypes{
-				Enums: map[string]*DynamicEnum{
+				Enums: fromMap(map[string]*DynamicEnum{
 					"NilEnum": nil,
-				},
+				}),
 			},
 			wantErr: `enum "NilEnum": definition is nil`,
 		},
 		{
 			name: "nil property",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"nilProp": nil,
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `class "TestClass": property "nilProp" is nil`,
 		},
 		{
 			name: "nil enum value",
 			dt: &DynamicTypes{
-				Enums: map[string]*DynamicEnum{
+				Enums: fromMap(map[string]*DynamicEnum{
 					"TestEnum": {
 						Values: []*DynamicEnumValue{nil},
 					},
-				},
+				}),
 			},
 			wantErr: `enum "TestEnum": value at index 0 is nil`,
 		},
 		{
 			name: "enum value with empty name",
 			dt: &DynamicTypes{
-				Enums: map[string]*DynamicEnum{
+				Enums: fromMap(map[string]*DynamicEnum{
 					"TestEnum": {
 						Values: []*DynamicEnumValue{
 							{Name: ""},
 						},
 					},
-				},
+				}),
 			},
 			wantErr: `enum "TestEnum": value at index 0 has empty name`,
 		},
 		{
 			name: "property missing type and ref",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"badProp": {},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `must have 'type' or 'ref'`,
 		},
 		{
 			name: "property with both type and ref",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"badProp": {
 								Type: "string",
 								Ref:  "OtherClass",
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `cannot have both 'type' and 'ref'`,
 		},
 		{
 			name: "valid primitive types",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"strProp":   {Type: "string"},
 							"intProp":   {Type: "int"},
 							"floatProp": {Type: "float"},
 							"boolProp":  {Type: "bool"},
 							"nullProp":  {Type: "null"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "unknown type",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"badProp": {Type: "unknown_type"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `unknown type "unknown_type"`,
 		},
 		{
 			name: "list without items",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"listProp": {Type: "list"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'list' type requires 'items'`,
 		},
 		{
 			name: "valid list",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"listProp": {
 								Type:  "list",
 								Items: &DynamicTypeSpec{Type: "string"},
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "optional without inner",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"optProp": {Type: "optional"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'optional' type requires 'inner'`,
 		},
 		{
 			name: "valid optional",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"optProp": {
 								Type:  "optional",
 								Inner: &DynamicTypeSpec{Type: "string"},
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "map without keys",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"mapProp": {
 								Type:   "map",
 								Values: &DynamicTypeSpec{Type: "string"},
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'map' type requires 'keys' and 'values'`,
 		},
 		{
 			name: "map without values",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"mapProp": {
 								Type: "map",
 								Keys: &DynamicTypeSpec{Type: "string"},
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'map' type requires 'keys' and 'values'`,
 		},
 		{
 			name: "valid map",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"mapProp": {
 								Type:   "map",
 								Keys:   &DynamicTypeSpec{Type: "string"},
 								Values: &DynamicTypeSpec{Type: "int"},
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "union without oneOf",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"unionProp": {Type: "union"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'union' type requires 'oneOf' with at least one type`,
 		},
 		{
 			name: "union with nil variant",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"unionProp": {
 								Type:  "union",
 								OneOf: []*DynamicTypeSpec{nil},
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'oneOf[0]' is nil`,
 		},
 		{
 			name: "valid union",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"unionProp": {
 								Type: "union",
 								OneOf: []*DynamicTypeSpec{
@@ -868,196 +889,196 @@ func TestDynamicTypes_Validate(t *testing.T) {
 									{Type: "int"},
 								},
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "literal_string without value",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_string"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'literal_string' type requires 'value'`,
 		},
 		{
 			name: "literal_string with wrong value type",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_string", Value: 123},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'literal_string' value must be a string`,
 		},
 		{
 			name: "valid literal_string",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_string", Value: "hello"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "literal_int without value",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_int"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'literal_int' type requires 'value'`,
 		},
 		{
 			name: "literal_int with wrong value type",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_int", Value: "not an int"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'literal_int' value must be an integer`,
 		},
 		{
 			name: "valid literal_int with int",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_int", Value: 42},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "valid literal_int with float64 (JSON unmarshaling)",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_int", Value: float64(42)},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "literal_bool without value",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_bool"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'literal_bool' type requires 'value'`,
 		},
 		{
 			name: "literal_bool with wrong value type",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_bool", Value: "true"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'literal_bool' value must be a boolean`,
 		},
 		{
 			name: "valid literal_bool",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"litProp": {Type: "literal_bool", Value: true},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "valid ref to class",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"refProp": {Ref: "OtherClass"},
-						},
+						}),
 					},
 					"OtherClass": {},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "valid ref to enum",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"refProp": {Ref: "Status"},
-						},
+						}),
 					},
-				},
-				Enums: map[string]*DynamicEnum{
+				}),
+				Enums: fromMap(map[string]*DynamicEnum{
 					"Status": {
 						Values: []*DynamicEnumValue{
 							{Name: "ACTIVE"},
 							{Name: "INACTIVE"},
 						},
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "ref to undefined type is allowed (may exist in baml_src)",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"refProp": {Ref: "ExternalType"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "deeply nested valid types",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"deepProp": {
 								Type: "optional",
 								Inner: &DynamicTypeSpec{
@@ -1076,19 +1097,19 @@ func TestDynamicTypes_Validate(t *testing.T) {
 									},
 								},
 							},
-						},
+						}),
 					},
 					"OtherClass": {},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "nested type with error",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TestClass": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"deepProp": {
 								Type: "list",
 								Items: &DynamicTypeSpec{
@@ -1096,16 +1117,16 @@ func TestDynamicTypes_Validate(t *testing.T) {
 									// Missing Inner
 								},
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: `'optional' type requires 'inner'`,
 		},
 		{
 			name: "enum with all features",
 			dt: &DynamicTypes{
-				Enums: map[string]*DynamicEnum{
+				Enums: fromMap(map[string]*DynamicEnum{
 					"Status": {
 						Description: "Status enum",
 						Alias:       "UserStatus",
@@ -1114,32 +1135,32 @@ func TestDynamicTypes_Validate(t *testing.T) {
 							{Name: "INACTIVE", Skip: true},
 						},
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "class with all features",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"User": {
 						Description: "User class",
 						Alias:       "UserModel",
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"name": {Type: "string", Description: "User name", Alias: "userName"},
 							"age":  {Type: "int"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "self-referential class",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"TreeNode": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"value": {Type: "string"},
 							"children": {
 								Type: "list",
@@ -1147,206 +1168,44 @@ func TestDynamicTypes_Validate(t *testing.T) {
 									Ref: "TreeNode",
 								},
 							},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
 			name: "mutually referential classes",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
+				Classes: fromMap(map[string]*DynamicClass{
 					"ClassA": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"b": {Ref: "ClassB"},
-						},
+						}),
 					},
 					"ClassB": {
-						Properties: map[string]*DynamicProperty{
+						Properties: fromMap(map[string]*DynamicProperty{
 							"a": {Ref: "ClassA"},
-						},
+						}),
 					},
-				},
+				}),
 			},
 			wantErr: "",
 		},
 		{
-			name: "preserve_order with no order and multi-key classes",
+			// PreserveOrder is a boolean flag on the wire shape now —
+			// order is carried intrinsically by OrderedMap, so no
+			// order-metadata validation runs on the worker side.
+			name: "preserve_order flag with multi-key classes is valid",
 			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
-					"B": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
-				},
-				PreserveOrder: true,
-			},
-			wantErr: "classes has no captured order",
-		},
-		{
-			name: "preserve_order with incomplete classes order",
-			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
-					"B": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
-				},
-				PreserveOrder: true,
-				Order:         &DynamicTypesOrder{Classes: []string{"A"}},
-			},
-			wantErr: `dynamic_types.classes order: missing name "B"`,
-		},
-		{
-			name: "preserve_order with duplicate class entry",
-			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
-					"B": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
-				},
-				PreserveOrder: true,
-				Order:         &DynamicTypesOrder{Classes: []string{"A", "A", "B"}},
-			},
-			wantErr: `dynamic_types.classes order: duplicate name "A"`,
-		},
-		{
-			name: "preserve_order with unknown class entry",
-			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
-					"B": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
-				},
-				PreserveOrder: true,
-				Order:         &DynamicTypesOrder{Classes: []string{"A", "B", "Z"}},
-			},
-			wantErr: `dynamic_types.classes order: unknown name "Z"`,
-		},
-		{
-			name: "preserve_order with no order and multi-key enums",
-			dt: &DynamicTypes{
-				Enums: map[string]*DynamicEnum{
+				Classes: fromMap(map[string]*DynamicClass{
+					"A": {Properties: fromMap(map[string]*DynamicProperty{"p": {Type: "string"}})},
+					"B": {Properties: fromMap(map[string]*DynamicProperty{"q": {Type: "string"}})},
+				}),
+				Enums: fromMap(map[string]*DynamicEnum{
 					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
 					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
-				},
-				PreserveOrder: true,
-			},
-			wantErr: "enums has no captured order",
-		},
-		{
-			name: "preserve_order with incomplete enums order",
-			dt: &DynamicTypes{
-				Enums: map[string]*DynamicEnum{
-					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
-					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
-				},
-				PreserveOrder: true,
-				Order:         &DynamicTypesOrder{Enums: []string{"E1"}},
-			},
-			wantErr: `dynamic_types.enums order: missing name "E2"`,
-		},
-		{
-			name: "preserve_order with duplicate enum entry",
-			dt: &DynamicTypes{
-				Enums: map[string]*DynamicEnum{
-					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
-					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
-				},
-				PreserveOrder: true,
-				Order:         &DynamicTypesOrder{Enums: []string{"E1", "E1", "E2"}},
-			},
-			wantErr: `dynamic_types.enums order: duplicate name "E1"`,
-		},
-		{
-			name: "preserve_order with unknown enum entry",
-			dt: &DynamicTypes{
-				Enums: map[string]*DynamicEnum{
-					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
-					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
-				},
-				PreserveOrder: true,
-				Order:         &DynamicTypesOrder{Enums: []string{"E1", "E2", "Z"}},
-			},
-			wantErr: `dynamic_types.enums order: unknown name "Z"`,
-		},
-		{
-			name: "preserve_order with no per-class property order on multi-key class",
-			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
-				},
-				PreserveOrder: true,
-				Order:         &DynamicTypesOrder{Classes: []string{"A"}},
-			},
-			wantErr: `dynamic_types.classes["A"].properties has no captured order`,
-		},
-		{
-			name: "preserve_order with unknown nested property name",
-			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
-				},
-				PreserveOrder: true,
-				Order: &DynamicTypesOrder{
-					Classes:    []string{"A"},
-					Properties: map[string][]string{"A": {"p", "q", "zzz"}},
-				},
-			},
-			wantErr: `dynamic_types.classes["A"].properties order: unknown name "zzz"`,
-		},
-		{
-			name: "preserve_order with duplicate nested property entry",
-			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
-				},
-				PreserveOrder: true,
-				Order: &DynamicTypesOrder{
-					Classes:    []string{"A"},
-					Properties: map[string][]string{"A": {"p", "p", "q"}},
-				},
-			},
-			wantErr: `dynamic_types.classes["A"].properties order: duplicate name "p"`,
-		},
-		{
-			name: "preserve_order with missing nested property entry",
-			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
-				},
-				PreserveOrder: true,
-				Order: &DynamicTypesOrder{
-					Classes:    []string{"A"},
-					Properties: map[string][]string{"A": {"p"}},
-				},
-			},
-			wantErr: `dynamic_types.classes["A"].properties order: missing name "q"`,
-		},
-		{
-			name: "preserve_order accepts complete order across all dimensions",
-			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
-					"B": {Properties: map[string]*DynamicProperty{"r": {Type: "string"}}},
-				},
-				Enums: map[string]*DynamicEnum{
-					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
-					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
-				},
-				PreserveOrder: true,
-				Order: &DynamicTypesOrder{
-					Classes: []string{"A", "B"},
-					Enums:   []string{"E1", "E2"},
-					Properties: map[string][]string{
-						"A": {"p", "q"},
-						// B has a single property — order optional.
-					},
-				},
-			},
-			wantErr: "",
-		},
-		{
-			name: "preserve_order with single-key classes and no order is allowed",
-			dt: &DynamicTypes{
-				Classes: map[string]*DynamicClass{
-					"Solo": {Properties: map[string]*DynamicProperty{"only": {Type: "string"}}},
-				},
+				}),
 				PreserveOrder: true,
 			},
 			wantErr: "",
@@ -1386,16 +1245,16 @@ func TestDynamicTypes_Validate_MaxDepth(t *testing.T) {
 
 	t.Run("type at max depth is valid", func(t *testing.T) {
 		dt := &DynamicTypes{
-			Classes: map[string]*DynamicClass{
+			Classes: fromMap(map[string]*DynamicClass{
 				"TestClass": {
-					Properties: map[string]*DynamicProperty{
+					Properties: fromMap(map[string]*DynamicProperty{
 						"deepProp": {
 							Type:  "optional",
 							Inner: buildDeepType(maxTypeDepth - 2), // -2 because: property itself is depth 0, outer optional is depth 1
 						},
-					},
+					}),
 				},
-			},
+			}),
 		}
 		if err := dt.Validate(); err != nil {
 			t.Errorf("Validate() at max depth should not error, got: %v", err)
@@ -1404,16 +1263,16 @@ func TestDynamicTypes_Validate_MaxDepth(t *testing.T) {
 
 	t.Run("type exceeding max depth returns error", func(t *testing.T) {
 		dt := &DynamicTypes{
-			Classes: map[string]*DynamicClass{
+			Classes: fromMap(map[string]*DynamicClass{
 				"TestClass": {
-					Properties: map[string]*DynamicProperty{
+					Properties: fromMap(map[string]*DynamicProperty{
 						"tooDeepProp": {
 							Type:  "optional",
 							Inner: buildDeepType(maxTypeDepth + 10),
 						},
-					},
+					}),
 				},
-			},
+			}),
 		}
 		err := dt.Validate()
 		if err == nil {

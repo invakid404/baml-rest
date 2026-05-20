@@ -1055,37 +1055,39 @@ func applyDynamicTypes(tb *introspected.TypeBuilder, dt *bamlutils.DynamicTypes)
 	typeCache := make(map[string]introspected.Type)
 	classBuilderCache := make(map[string]introspected.DynamicClassBuilder)
 	preserveOrder := dt.PreserveOrder
-	order := dt.Order
 
-	for _, name := range schemaMapKeys(dt.Enums, enumOrder(order), preserveOrder) {
-		enum := dt.Enums[name]
+	for _, name := range schemaKeys(dt.Enums, preserveOrder) {
+		enum, _ := dt.Enums.Get(name)
 		if err := createEnumShell(tb, name, enum, typeCache); err != nil {
 			return fmt.Errorf("enum %q: %w", name, err)
 		}
 	}
 
-	for _, name := range schemaMapKeys(dt.Enums, enumOrder(order), preserveOrder) {
-		enum := dt.Enums[name]
+	for _, name := range schemaKeys(dt.Enums, preserveOrder) {
+		enum, _ := dt.Enums.Get(name)
 		if err := addEnumValues(tb, name, enum, typeCache); err != nil {
 			return fmt.Errorf("enum %q values: %w", name, err)
 		}
 	}
 
-	for _, name := range schemaMapKeys(dt.Classes, classOrder(order), preserveOrder) {
+	for _, name := range schemaKeys(dt.Classes, preserveOrder) {
 		if err := createClassShell(tb, name, typeCache, classBuilderCache); err != nil {
 			return fmt.Errorf("class %q: %w", name, err)
 		}
 	}
 
-	for _, name := range schemaMapKeys(dt.Classes, classOrder(order), preserveOrder) {
-		class := dt.Classes[name]
-		if err := addNewClassProperties(tb, name, class, typeCache, classBuilderCache, order, preserveOrder); err != nil {
+	for _, name := range schemaKeys(dt.Classes, preserveOrder) {
+		class, _ := dt.Classes.Get(name)
+		if err := addNewClassProperties(tb, name, class, typeCache, classBuilderCache, preserveOrder); err != nil {
 			return fmt.Errorf("class %q properties: %w", name, err)
 		}
 	}
 
-	for _, name := range schemaMapKeys(classBuilderCache, classOrder(order), preserveOrder) {
-		cb := classBuilderCache[name]
+	for _, name := range schemaKeys(dt.Classes, preserveOrder) {
+		cb, ok := classBuilderCache[name]
+		if !ok {
+			continue
+		}
 		typ, err := cb.Type()
 		if err != nil {
 			return fmt.Errorf("class %q type: %w", name, err)
@@ -1093,62 +1095,20 @@ func applyDynamicTypes(tb *introspected.TypeBuilder, dt *bamlutils.DynamicTypes)
 		typeCache[name] = typ
 	}
 
-	for _, name := range schemaMapKeys(dt.Classes, classOrder(order), preserveOrder) {
-		class := dt.Classes[name]
-		if err := addExistingClassProperties(tb, name, class, typeCache, classBuilderCache, order, preserveOrder); err != nil {
+	for _, name := range schemaKeys(dt.Classes, preserveOrder) {
+		class, _ := dt.Classes.Get(name)
+		if err := addExistingClassProperties(tb, name, class, typeCache, classBuilderCache, preserveOrder); err != nil {
 			return fmt.Errorf("class %q properties: %w", name, err)
 		}
 	}
 	return nil
 }
-func sortedMapKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
-}
-func schemaMapKeys[V any](m map[string]V, order []string, preserve bool) []string {
-	if !preserve || len(order) == 0 {
-		return sortedMapKeys(m)
-	}
-	keys := make([]string, 0, len(m))
-	seen := make(map[string]struct{}, len(order))
-	for _, k := range order {
-		if _, ok := m[k]; !ok {
-			continue
-		}
-		if _, dup := seen[k]; dup {
-			continue
-		}
-		seen[k] = struct{}{}
-		keys = append(keys, k)
-	}
-	for _, k := range sortedMapKeys(m) {
-		if _, ok := seen[k]; !ok {
-			keys = append(keys, k)
-		}
+func schemaKeys[V any](m bamlutils.OrderedMap[V], preserve bool) []string {
+	keys := m.Keys()
+	if !preserve {
+		slices.Sort(keys)
 	}
 	return keys
-}
-func enumOrder(o *bamlutils.DynamicTypesOrder) []string {
-	if o == nil {
-		return nil
-	}
-	return o.Enums
-}
-func classOrder(o *bamlutils.DynamicTypesOrder) []string {
-	if o == nil {
-		return nil
-	}
-	return o.Classes
-}
-func propertyOrder(o *bamlutils.DynamicTypesOrder, className string) []string {
-	if o == nil || o.Properties == nil {
-		return nil
-	}
-	return o.Properties[className]
 }
 func createEnumShell(tb *introspected.TypeBuilder, name string, enum *bamlutils.DynamicEnum, typeCache map[string]introspected.Type) error {
 	if introspected.EnumExists(name) {
@@ -1226,14 +1186,14 @@ func createClassShell(tb *introspected.TypeBuilder, name string, typeCache map[s
 	classBuilderCache[name] = cb
 	return nil
 }
-func addNewClassProperties(tb *introspected.TypeBuilder, name string, class *bamlutils.DynamicClass, typeCache map[string]introspected.Type, classBuilderCache map[string]introspected.DynamicClassBuilder, order *bamlutils.DynamicTypesOrder, preserveOrder bool) error {
+func addNewClassProperties(tb *introspected.TypeBuilder, name string, class *bamlutils.DynamicClass, typeCache map[string]introspected.Type, classBuilderCache map[string]introspected.DynamicClassBuilder, preserveOrder bool) error {
 	cb, ok := classBuilderCache[name]
 	if !ok {
 		return nil
 	}
 
-	for _, propName := range schemaMapKeys(class.Properties, propertyOrder(order, name), preserveOrder) {
-		prop := class.Properties[propName]
+	for _, propName := range schemaKeys(class.Properties, preserveOrder) {
+		prop, _ := class.Properties.Get(propName)
 		typ, err := resolvePropertyType(tb, prop, typeCache, classBuilderCache)
 		if err != nil {
 			if strings.Contains(err.Error(), "unresolved reference") {
@@ -1249,7 +1209,7 @@ func addNewClassProperties(tb *introspected.TypeBuilder, name string, class *bam
 	}
 	return nil
 }
-func addExistingClassProperties(tb *introspected.TypeBuilder, name string, class *bamlutils.DynamicClass, typeCache map[string]introspected.Type, classBuilderCache map[string]introspected.DynamicClassBuilder, order *bamlutils.DynamicTypesOrder, preserveOrder bool) error {
+func addExistingClassProperties(tb *introspected.TypeBuilder, name string, class *bamlutils.DynamicClass, typeCache map[string]introspected.Type, classBuilderCache map[string]introspected.DynamicClassBuilder, preserveOrder bool) error {
 	if _, ok := classBuilderCache[name]; ok {
 		return nil
 	}
@@ -1264,8 +1224,8 @@ func addExistingClassProperties(tb *introspected.TypeBuilder, name string, class
 		return fmt.Errorf("get class builder: %w", err)
 	}
 
-	for _, propName := range schemaMapKeys(class.Properties, propertyOrder(order, name), preserveOrder) {
-		prop := class.Properties[propName]
+	for _, propName := range schemaKeys(class.Properties, preserveOrder) {
+		prop, _ := class.Properties.Get(propName)
 		typ, err := resolvePropertyType(tb, prop, typeCache, classBuilderCache)
 		if err != nil {
 			if strings.Contains(err.Error(), "unresolved reference") {

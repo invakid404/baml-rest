@@ -194,9 +194,7 @@ func validRequest() Request {
 			},
 		},
 		OutputSchema: &OutputSchema{
-			Properties: map[string]*Property{
-				"answer": {Type: "string"},
-			},
+			Properties: MustOrderedMap(OrderedKV("answer", &Property{Type: "string"})),
 		},
 	}
 }
@@ -393,7 +391,7 @@ func TestDynamicParseFlattensData(t *testing.T) {
 	parseReq := ParseRequest{
 		Raw: "4",
 		OutputSchema: &OutputSchema{
-			Properties: map[string]*Property{"answer": {Type: "string"}},
+			Properties: MustOrderedMap(OrderedKV("answer", &Property{Type: "string"})),
 		},
 	}
 	result, err := c.DynamicParse(context.Background(), parseReq)
@@ -613,7 +611,7 @@ func TestNilReceiverReturnsError(t *testing.T) {
 	if _, err := c.DynamicCallRaw(context.Background(), validRequest()); err == nil {
 		t.Error("expected DynamicCallRaw on nil receiver to return error")
 	}
-	if _, err := c.DynamicParse(context.Background(), ParseRequest{Raw: "x", OutputSchema: &OutputSchema{Properties: map[string]*Property{"a": {Type: "string"}}}}); err == nil {
+	if _, err := c.DynamicParse(context.Background(), ParseRequest{Raw: "x", OutputSchema: &OutputSchema{Properties: MustOrderedMap(OrderedKV("a", &Property{Type: "string"}))}}); err == nil {
 		t.Error("expected DynamicParse on nil receiver to return error")
 	}
 	if _, err := c.DynamicStream(context.Background(), validRequest()); err == nil {

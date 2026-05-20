@@ -100,9 +100,9 @@ func simpleAnswerSchema() (*testutil.DynamicOutputSchema, *dynclient.OutputSchem
 		},
 	}
 	libSchema := &dynclient.OutputSchema{
-		Properties: map[string]*dynclient.Property{
+		Properties: dynclientFromMap(map[string]*dynclient.Property{
 			"answer": {Type: "string"},
-		},
+		}),
 	}
 	return httpSchema, libSchema
 }
@@ -425,24 +425,24 @@ func TestDynclientNestedDynamicTypesUnwrapped(t *testing.T) {
 		},
 	}
 	libSchema := &dynclient.OutputSchema{
-		Classes: map[string]*dynclient.Class{
+		Classes: dynclientFromMap(map[string]*dynclient.Class{
 			"DynclientLocation": {
-				Properties: map[string]*dynclient.Property{
+				Properties: dynclientFromMap(map[string]*dynclient.Property{
 					"street": {Type: "string"},
 					"city":   {Type: "string"},
-				},
+				}),
 			},
-		},
-		Enums: map[string]*dynclient.Enum{
+		}),
+		Enums: dynclientFromMap(map[string]*dynclient.Enum{
 			"DynclientStatus": {
 				Values: []*dynclient.EnumValue{{Name: "ACTIVE"}, {Name: "INACTIVE"}},
 			},
-		},
-		Properties: map[string]*dynclient.Property{
+		}),
+		Properties: dynclientFromMap(map[string]*dynclient.Property{
 			"name":     {Type: "string"},
 			"location": {Ref: "DynclientLocation"},
 			"status":   {Ref: "DynclientStatus"},
-		},
+		}),
 	}
 
 	httpResp, err := BAMLClient.DynamicParse(ctx, testutil.DynamicParseRequest{Raw: raw, OutputSchema: httpSchema})

@@ -89,9 +89,9 @@ func minimalDynamicInputJSON(t *testing.T) []byte {
 			},
 		},
 		OutputSchema: &bamlutils.DynamicOutputSchema{
-			Properties: map[string]*bamlutils.DynamicProperty{
-				"answer": {Type: "string"},
-			},
+			Properties: bamlutils.MustOrderedMap(
+				bamlutils.OrderedKV("answer", &bamlutils.DynamicProperty{Type: "string"}),
+			),
 		},
 	}
 	body, err := json.Marshal(input)

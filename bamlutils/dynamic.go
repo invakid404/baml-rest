@@ -3,7 +3,6 @@ package bamlutils
 import (
 	"bytes"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/goccy/go-json"
@@ -332,35 +331,46 @@ func (m *DynamicMessage) toInternalMessage() internalMessage {
 //	  }
 //	}
 type DynamicOutputSchema struct {
-	// Properties defines the fields of the output object (required)
-	Properties map[string]*DynamicProperty `json:"properties"`
+	// Properties defines the fields of the output object (required).
+	// Insertion order is preserved end-to-end so preserve_schema_order
+	// callers do not need a side-channel order slice.
+	Properties OrderedMap[*DynamicProperty] `json:"properties"`
 	// Classes defines additional class types that can be referenced via ref (optional)
-	Classes map[string]*DynamicClass `json:"classes,omitempty"`
+	Classes OrderedMap[*DynamicClass] `json:"classes,omitempty,omitzero"`
 	// Enums defines enum types that can be referenced via ref (optional)
-	Enums map[string]*DynamicEnum `json:"enums,omitempty"`
-
-	// PropertiesOrder records the insertion order of Properties as it
-	// appeared on the JSON wire. Populated by UnmarshalJSON for raw-JSON
-	// callers; Go callers that set PreserveSchemaOrder must fill this
-	// slice explicitly (Go map literals do not carry order).
-	PropertiesOrder []string `json:"-"`
-	// ClassesOrder mirrors PropertiesOrder for the Classes map.
-	ClassesOrder []string `json:"-"`
-	// EnumsOrder mirrors PropertiesOrder for the Enums map.
-	EnumsOrder []string `json:"-"`
+	Enums OrderedMap[*DynamicEnum] `json:"enums,omitempty,omitzero"`
 }
 
-// UnmarshalJSON decodes a DynamicOutputSchema while capturing the JSON
-// key insertion order of properties/classes/enums into the matching
-// *Order slices. Duplicate keys in any of these objects are rejected
-// with a path-qualified error. The ordered scan and nested decode both
-// route through goccy/go-json for consistency with the rest of bamlutils.
+// MarshalJSON emits the schema as a JSON object, including Classes and
+// Enums only when non-empty. goccy/go-json does not honor
+// `json:",omitzero"`, so the field tag alone is not enough to suppress
+// an empty `"classes":{}` / `"enums":{}` under that encoder; this
+// explicit method does the omission.
+func (s DynamicOutputSchema) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Properties OrderedMap[*DynamicProperty] `json:"properties"`
+		Classes    *OrderedMap[*DynamicClass]   `json:"classes,omitempty"`
+		Enums      *OrderedMap[*DynamicEnum]    `json:"enums,omitempty"`
+	}
+	a := alias{Properties: s.Properties}
+	if s.Classes.Len() > 0 {
+		c := s.Classes
+		a.Classes = &c
+	}
+	if s.Enums.Len() > 0 {
+		e := s.Enums
+		a.Enums = &e
+	}
+	return json.Marshal(a)
+}
+
+// UnmarshalJSON decodes a DynamicOutputSchema. Wire-order is preserved
+// via OrderedMap. Duplicate keys in any of the inner objects are
+// rejected with a path-qualified error.
 func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 	// Reset on reuse: json.Unmarshal into a previously-populated
 	// receiver is valid Go usage, and the wire shape carries no
-	// caller-managed state we'd need to merge. Zeroing here avoids
-	// stale maps/order slices leaking across decode calls when the
-	// new payload omits or nulls a section.
+	// caller-managed state we'd need to merge.
 	*s = DynamicOutputSchema{}
 	if err := checkUniqueTopLevelKeys(data, "output_schema"); err != nil {
 		return err
@@ -378,45 +388,38 @@ func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if isJSONObject(raw.Properties) {
-		props, order, err := unmarshalOrderedObject[*DynamicProperty](raw.Properties, "output_schema.properties")
+		props, err := unmarshalOrderedMap[*DynamicProperty](raw.Properties, "output_schema.properties")
 		if err != nil {
 			return err
 		}
 		s.Properties = props
-		s.PropertiesOrder = order
 	}
 	if err := rejectNonObject("output_schema.classes", raw.Classes); err != nil {
 		return err
 	}
 	if isJSONObject(raw.Classes) {
-		classes, order, err := unmarshalOrderedObject[*DynamicClass](raw.Classes, "output_schema.classes")
+		classes, err := unmarshalOrderedMap[*DynamicClass](raw.Classes, "output_schema.classes")
 		if err != nil {
 			return err
 		}
 		s.Classes = classes
-		s.ClassesOrder = order
 	}
 	if err := rejectNonObject("output_schema.enums", raw.Enums); err != nil {
 		return err
 	}
 	if isJSONObject(raw.Enums) {
-		enums, order, err := unmarshalOrderedObject[*DynamicEnum](raw.Enums, "output_schema.enums")
+		enums, err := unmarshalOrderedMap[*DynamicEnum](raw.Enums, "output_schema.enums")
 		if err != nil {
 			return err
 		}
 		s.Enums = enums
-		s.EnumsOrder = order
 	}
 	return nil
 }
 
-// UnmarshalJSON decodes a DynamicClass while capturing the JSON key
-// insertion order of its properties object into PropertiesOrder. The
-// description and alias fields decode through the normal route.
-// Duplicate property keys are rejected.
+// UnmarshalJSON decodes a DynamicClass preserving the JSON key order of
+// its Properties map. Duplicate property keys are rejected.
 func (c *DynamicClass) UnmarshalJSON(data []byte) error {
-	// Reset on reuse — see DynamicOutputSchema.UnmarshalJSON for
-	// rationale. The struct is wholly decoded from input.
 	*c = DynamicClass{}
 	if err := checkUniqueTopLevelKeys(data, "class"); err != nil {
 		return err
@@ -435,12 +438,11 @@ func (c *DynamicClass) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if isJSONObject(raw.Properties) {
-		props, order, err := unmarshalOrderedObject[*DynamicProperty](raw.Properties, "class.properties")
+		props, err := unmarshalOrderedMap[*DynamicProperty](raw.Properties, "class.properties")
 		if err != nil {
 			return err
 		}
 		c.Properties = props
-		c.PropertiesOrder = order
 	}
 	return nil
 }
@@ -507,51 +509,6 @@ func checkUniqueTopLevelKeys(data []byte, path string) error {
 	return nil
 }
 
-// unmarshalOrderedObject decodes a JSON object into a map[string]V while
-// recording the appearance order of keys. Duplicate keys produce a
-// path-qualified error so callers cannot smuggle in ambiguous schemas.
-func unmarshalOrderedObject[V any](data []byte, path string) (map[string]V, []string, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	tok, err := dec.Token()
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
-		return nil, nil, fmt.Errorf("%s: expected object", path)
-	}
-
-	values := make(map[string]V)
-	order := make([]string, 0)
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", path, err)
-		}
-		key, ok := keyTok.(string)
-		if !ok {
-			return nil, nil, fmt.Errorf("%s: expected object key", path)
-		}
-		if _, exists := values[key]; exists {
-			return nil, nil, fmt.Errorf("%s: duplicate key %q", path, key)
-		}
-		var rawVal json.RawMessage
-		if err := dec.Decode(&rawVal); err != nil {
-			return nil, nil, fmt.Errorf("%s.%s: %w", path, key, err)
-		}
-		var value V
-		if err := json.Unmarshal(rawVal, &value); err != nil {
-			return nil, nil, fmt.Errorf("%s.%s: %w", path, key, err)
-		}
-		values[key] = value
-		order = append(order, key)
-	}
-	if _, err := dec.Token(); err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return values, order, nil
-}
-
 // DynamicInput is the request body for dynamic endpoints
 type DynamicInput struct {
 	Messages       []DynamicMessage     `json:"messages"`
@@ -579,16 +536,11 @@ func (d *DynamicInput) Validate() error {
 	if d.ClientRegistry == nil || d.ClientRegistry.Primary == nil {
 		return fmt.Errorf("client_registry with primary is required")
 	}
-	if d.OutputSchema == nil || len(d.OutputSchema.Properties) == 0 {
+	if d.OutputSchema == nil || d.OutputSchema.Properties.Len() == 0 {
 		return fmt.Errorf("output_schema with at least one property is required")
 	}
 	if err := validateReservedClassNames(d.OutputSchema); err != nil {
 		return err
-	}
-	if preserveSchemaOrderEnabled(d.PreserveSchemaOrder) {
-		if err := validatePreserveSchemaOrder(d.OutputSchema); err != nil {
-			return err
-		}
 	}
 	for i, m := range d.Messages {
 		if m.Role == "" {
@@ -617,84 +569,13 @@ func (d *DynamicInput) Validate() error {
 	return nil
 }
 
-// validatePreserveSchemaOrder enforces the contract that
-// PreserveSchemaOrder=true requires explicit order metadata for every
-// multi-key first-party map in the schema. Raw JSON callers get this
-// automatically through DynamicOutputSchema.UnmarshalJSON; Go callers
-// must set the *Order slices themselves because map literals do not
-// carry order. Also catches duplicate or unknown names in order slices.
-func validatePreserveSchemaOrder(s *DynamicOutputSchema) error {
-	if s == nil {
-		return nil
-	}
-	if len(s.Properties) >= 2 && len(s.PropertiesOrder) == 0 {
-		return fmt.Errorf("preserve_schema_order=true but output_schema.properties has no captured order; send the request via JSON or set OutputSchema.PropertiesOrder explicitly")
-	}
-	if err := checkOrderSlice("output_schema.properties", s.PropertiesOrder, mapKeySet(s.Properties)); err != nil {
-		return err
-	}
-	if len(s.Classes) >= 2 && len(s.ClassesOrder) == 0 {
-		return fmt.Errorf("preserve_schema_order=true but output_schema.classes has no captured order; send the request via JSON or set OutputSchema.ClassesOrder explicitly")
-	}
-	if err := checkOrderSlice("output_schema.classes", s.ClassesOrder, mapKeySet(s.Classes)); err != nil {
-		return err
-	}
-	if len(s.Enums) >= 2 && len(s.EnumsOrder) == 0 {
-		return fmt.Errorf("preserve_schema_order=true but output_schema.enums has no captured order; send the request via JSON or set OutputSchema.EnumsOrder explicitly")
-	}
-	if err := checkOrderSlice("output_schema.enums", s.EnumsOrder, mapKeySet(s.Enums)); err != nil {
-		return err
-	}
-	for name, cls := range s.Classes {
-		if cls == nil {
-			continue
-		}
-		path := fmt.Sprintf("output_schema.classes[%q].properties", name)
-		if len(cls.Properties) >= 2 && len(cls.PropertiesOrder) == 0 {
-			return fmt.Errorf("preserve_schema_order=true but %s has no captured order; send the request via JSON or set DynamicClass.PropertiesOrder explicitly", path)
-		}
-		if err := checkOrderSlice(path, cls.PropertiesOrder, mapKeySet(cls.Properties)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func mapKeySet[V any](m map[string]V) map[string]struct{} {
-	set := make(map[string]struct{}, len(m))
-	for k := range m {
-		set[k] = struct{}{}
-	}
-	return set
-}
-
-func checkOrderSlice(path string, order []string, known map[string]struct{}) error {
-	if len(order) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(order))
-	for _, name := range order {
-		if _, dup := seen[name]; dup {
-			return fmt.Errorf("%s order: duplicate name %q", path, name)
-		}
-		seen[name] = struct{}{}
-		if _, ok := known[name]; !ok {
-			return fmt.Errorf("%s order: unknown name %q", path, name)
-		}
-	}
-	for name := range known {
-		if _, ok := seen[name]; !ok {
-			return fmt.Errorf("%s order: missing name %q", path, name)
-		}
-	}
-	return nil
-}
-
 // ToWorkerInput converts to the internal format for worker processing
 func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
-	classes := buildWorkerClassMap(d.OutputSchema)
+	classes, err := buildWorkerClassMap(d.OutputSchema)
+	if err != nil {
+		return nil, err
+	}
 
-	// Convert messages to internal format
 	internalMessages := make([]internalMessage, 0, len(d.Messages))
 	for _, m := range d.Messages {
 		internalMessages = append(internalMessages, m.toInternalMessage())
@@ -702,11 +583,10 @@ func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
 
 	dynamicTypes := &DynamicTypes{
 		Classes: classes,
-		Enums:   d.OutputSchema.Enums,
+		Enums:   d.OutputSchema.Enums.Clone(),
 	}
 	if preserveSchemaOrderEnabled(d.PreserveSchemaOrder) {
 		dynamicTypes.PreserveOrder = true
-		dynamicTypes.Order = dynamicTypesOrderFromOutputSchema(d.OutputSchema)
 	}
 
 	internal := map[string]any{
@@ -736,16 +616,11 @@ func (d *DynamicParseInput) Validate() error {
 	if d.Raw == "" {
 		return fmt.Errorf("raw is required and cannot be empty")
 	}
-	if d.OutputSchema == nil || len(d.OutputSchema.Properties) == 0 {
+	if d.OutputSchema == nil || d.OutputSchema.Properties.Len() == 0 {
 		return fmt.Errorf("output_schema with at least one property is required")
 	}
 	if err := validateReservedClassNames(d.OutputSchema); err != nil {
 		return err
-	}
-	if preserveSchemaOrderEnabled(d.PreserveSchemaOrder) {
-		if err := validatePreserveSchemaOrder(d.OutputSchema); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -760,7 +635,7 @@ func validateReservedClassNames(s *DynamicOutputSchema) error {
 	if s == nil {
 		return nil
 	}
-	if _, ok := s.Classes[dynamicOutputClassName]; ok {
+	if s.Classes.Has(dynamicOutputClassName) {
 		return fmt.Errorf("output_schema.classes: %q is reserved by baml-rest", dynamicOutputClassName)
 	}
 	return nil
@@ -768,15 +643,17 @@ func validateReservedClassNames(s *DynamicOutputSchema) error {
 
 // ToWorkerInput converts to the internal format for worker processing
 func (d *DynamicParseInput) ToWorkerInput() ([]byte, error) {
-	classes := buildWorkerClassMap(d.OutputSchema)
+	classes, err := buildWorkerClassMap(d.OutputSchema)
+	if err != nil {
+		return nil, err
+	}
 
 	dynamicTypes := &DynamicTypes{
 		Classes: classes,
-		Enums:   d.OutputSchema.Enums,
+		Enums:   d.OutputSchema.Enums.Clone(),
 	}
 	if preserveSchemaOrderEnabled(d.PreserveSchemaOrder) {
 		dynamicTypes.PreserveOrder = true
-		dynamicTypes.Order = dynamicTypesOrderFromOutputSchema(d.OutputSchema)
 	}
 
 	internal := map[string]any{
@@ -797,83 +674,32 @@ func (d *DynamicParseInput) ToWorkerInput() ([]byte, error) {
 const dynamicOutputClassName = "Baml_Rest_DynamicOutput"
 
 // buildWorkerClassMap collects user-defined classes and injects the
-// synthetic Baml_Rest_DynamicOutput class whose Properties mirror the
-// top-level output_schema.properties.
-func buildWorkerClassMap(schema *DynamicOutputSchema) map[string]*DynamicClass {
-	classes := make(map[string]*DynamicClass)
-	for name, class := range schema.Classes {
-		classes[name] = class
+// synthetic Baml_Rest_DynamicOutput class first, mirroring the top-level
+// output_schema.properties. The synthetic class is placed at the front
+// so preserve_order callers see it ahead of user classes regardless of
+// alphabetical ordering. Reserved-name overlap is rejected upstream by
+// validateReservedClassNames; if a programming error slips through (or
+// a caller hand-builds the worker payload), the duplicate Set surfaces
+// here as an error rather than a silent overwrite.
+func buildWorkerClassMap(schema *DynamicOutputSchema) (OrderedMap[*DynamicClass], error) {
+	var classes OrderedMap[*DynamicClass]
+	if err := classes.Set(dynamicOutputClassName, &DynamicClass{
+		Properties: schema.Properties.Clone(),
+	}); err != nil {
+		return OrderedMap[*DynamicClass]{}, err
 	}
-	classes[dynamicOutputClassName] = &DynamicClass{
-		Properties:      schema.Properties,
-		PropertiesOrder: append([]string(nil), schema.PropertiesOrder...),
-	}
-	return classes
-}
-
-// dynamicTypesOrderFromOutputSchema assembles the DynamicTypesOrder
-// shipped across the worker boundary when PreserveSchemaOrder=true.
-// The synthetic Baml_Rest_DynamicOutput class is placed first in
-// Classes per the Q3 contract; user classes follow in the order the
-// caller supplied. Per-class property orders are copied from
-// DynamicClass.PropertiesOrder when present.
-func dynamicTypesOrderFromOutputSchema(schema *DynamicOutputSchema) *DynamicTypesOrder {
-	order := &DynamicTypesOrder{
-		Classes:    make([]string, 0, 1+len(schema.Classes)),
-		Enums:      make([]string, 0, len(schema.Enums)),
-		Properties: make(map[string][]string),
-	}
-	order.Classes = append(order.Classes, dynamicOutputClassName)
-	order.Classes = append(order.Classes, schema.ClassesOrder...)
-	order.Properties[dynamicOutputClassName] = append([]string(nil), schema.PropertiesOrder...)
-
-	seenClasses := map[string]struct{}{dynamicOutputClassName: {}}
-	for _, className := range schema.ClassesOrder {
-		if cls := schema.Classes[className]; cls != nil {
-			order.Properties[className] = append([]string(nil), cls.PropertiesOrder...)
+	var outErr error
+	schema.Classes.Range(func(name string, class *DynamicClass) bool {
+		if err := classes.Set(name, class); err != nil {
+			outErr = err
+			return false
 		}
-		seenClasses[className] = struct{}{}
+		return true
+	})
+	if outErr != nil {
+		return OrderedMap[*DynamicClass]{}, outErr
 	}
-	// Cover classes absent from ClassesOrder. Single-class schemas
-	// can legally have empty ClassesOrder while still carrying a
-	// multi-key Properties order on the class. The worker-side
-	// DynamicTypes.Validate also requires Order.Classes to cover
-	// every entry in dt.Classes (which always includes the synthetic
-	// top-level class), so we fill in remaining user classes here
-	// rather than leaving the order incomplete.
-	remainingClasses := make([]string, 0, len(schema.Classes))
-	for className := range schema.Classes {
-		if _, ok := seenClasses[className]; ok {
-			continue
-		}
-		remainingClasses = append(remainingClasses, className)
-	}
-	slices.Sort(remainingClasses)
-	for _, className := range remainingClasses {
-		order.Classes = append(order.Classes, className)
-		if cls := schema.Classes[className]; cls != nil {
-			order.Properties[className] = append([]string(nil), cls.PropertiesOrder...)
-		}
-	}
-
-	// Enums mirror the Classes pattern: fill in any names missing
-	// from EnumsOrder so direct DynamicTypes validation downstream
-	// sees a complete cover.
-	order.Enums = append(order.Enums, schema.EnumsOrder...)
-	seenEnums := make(map[string]struct{}, len(schema.EnumsOrder))
-	for _, n := range schema.EnumsOrder {
-		seenEnums[n] = struct{}{}
-	}
-	remainingEnums := make([]string, 0, len(schema.Enums))
-	for enumName := range schema.Enums {
-		if _, ok := seenEnums[enumName]; ok {
-			continue
-		}
-		remainingEnums = append(remainingEnums, enumName)
-	}
-	slices.Sort(remainingEnums)
-	order.Enums = append(order.Enums, remainingEnums...)
-	return order
+	return classes, nil
 }
 
 // FlattenDynamicOutput extracts the DynamicProperties field from a dynamic endpoint response.
