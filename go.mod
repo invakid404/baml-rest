@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/bytedance/sonic v1.15.1
 	github.com/containerd/containerd/v2 v2.3.0
 	github.com/containerd/platforms v1.0.0-rc.4
 	github.com/dave/jennifer v1.7.1
@@ -11,7 +12,6 @@ require (
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.138.0
 	github.com/go-chi/chi/v5 v5.2.5
-	github.com/goccy/go-json v0.10.6
 	github.com/gofiber/contrib/v3/zerolog v1.0.6
 	github.com/gofiber/fiber/v3 v3.2.0
 	github.com/gregwebs/go-recovery v0.4.1
@@ -20,13 +20,13 @@ require (
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_219_0 v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/adapters/common v0.0.0-20260518112657-a042afdd4284
-	github.com/invakid404/baml-rest/bamlutils v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/adapters/common v0.0.46
+	github.com/invakid404/baml-rest/bamlutils v0.0.46
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/introspected v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/introspected v0.0.46
 	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.0-20260518112657-a042afdd4284
-	github.com/invakid404/baml-rest/workerplugin v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/worker v0.0.46
+	github.com/invakid404/baml-rest/workerplugin v0.0.46
 	github.com/moby/buildkit v0.30.0
 	github.com/moby/moby/api v1.54.2
 	github.com/moby/moby/client v0.4.1
@@ -69,8 +69,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.1 // indirect
 	github.com/aws/smithy-go v1.25.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/bytedance/gopkg v0.1.3 // indirect
+	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cloudwego/base64x v0.1.6 // indirect
+	github.com/cloudwego/gjson v0.1.1 // indirect
 	github.com/containerd/console v1.0.5 // indirect
 	github.com/containerd/containerd/api v1.11.0 // indirect
 	github.com/containerd/continuity v0.5.0 // indirect
@@ -108,9 +112,10 @@ require (
 	github.com/in-toto/attestation v1.1.2 // indirect
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.0-20260518112657-a042afdd4284 // indirect
+	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.46 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
@@ -151,7 +156,6 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
-	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
@@ -161,6 +165,7 @@ require (
 	github.com/tonistiigi/go-csvvalue v0.0.0-20240814133006-030d3b2625d0 // indirect
 	github.com/tonistiigi/units v0.0.0-20180711220420-6950e57a87ea // indirect
 	github.com/tonistiigi/vt100 v0.0.0-20240514184818-90bafcd6abab // indirect
+	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.71.0 // indirect
 	github.com/woodsbury/decimal128 v1.3.0 // indirect
@@ -177,6 +182,7 @@ require (
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
+	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
