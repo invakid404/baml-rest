@@ -25,13 +25,13 @@ func init() {
 
 // newUnaryServer creates the chi-based unary HTTP server if unaryPort > 0.
 // Returns nil when the unary server is disabled.
-func newUnaryServer(logger zerolog.Logger, workerPool *pool.Pool, methodNames []string, hasDynamicMethod bool) *http.Server {
+func newUnaryServer(logger zerolog.Logger, workerPool *pool.Pool, methodNames []string, hasDynamicMethod bool, preserveSchemaOrderDefault bool) *http.Server {
 	if unaryPort <= 0 {
 		return nil
 	}
 	return &http.Server{
 		Addr:              fmt.Sprintf(":%d", unaryPort),
-		Handler:           newUnaryRouter(logger, workerPool, methodNames, hasDynamicMethod),
+		Handler:           newUnaryRouter(logger, workerPool, methodNames, hasDynamicMethod, preserveSchemaOrderDefault),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      5 * time.Minute,
@@ -48,6 +48,7 @@ func newUnaryRouter(
 	workerPool *pool.Pool,
 	methodNames []string,
 	hasDynamicMethod bool,
+	preserveSchemaOrderDefault bool,
 ) http.Handler {
 	r := chi.NewRouter()
 
@@ -95,9 +96,9 @@ func newUnaryRouter(
 
 	// Register dynamic endpoints.
 	if hasDynamicMethod {
-		r.Post(fmt.Sprintf("/call/%s", bamlutils.DynamicEndpointName), makeChiDynamicCallHandler(workerPool, bamlutils.StreamModeCall))
-		r.Post(fmt.Sprintf("/call-with-raw/%s", bamlutils.DynamicEndpointName), makeChiDynamicCallHandler(workerPool, bamlutils.StreamModeCallWithRaw))
-		r.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), makeChiDynamicParseHandler(workerPool))
+		r.Post(fmt.Sprintf("/call/%s", bamlutils.DynamicEndpointName), makeChiDynamicCallHandler(workerPool, bamlutils.StreamModeCall, preserveSchemaOrderDefault))
+		r.Post(fmt.Sprintf("/call-with-raw/%s", bamlutils.DynamicEndpointName), makeChiDynamicCallHandler(workerPool, bamlutils.StreamModeCallWithRaw, preserveSchemaOrderDefault))
+		r.Post(fmt.Sprintf("/parse/%s", bamlutils.DynamicEndpointName), makeChiDynamicParseHandler(workerPool, preserveSchemaOrderDefault))
 	}
 
 	return r

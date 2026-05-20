@@ -10,6 +10,6 @@ import (
 )
 
 // newUnaryServer is a no-op when the unaryserver build tag is not set.
-func newUnaryServer(_ zerolog.Logger, _ *pool.Pool, _ []string, _ bool) *http.Server {
+func newUnaryServer(_ zerolog.Logger, _ *pool.Pool, _ []string, _ bool, _ bool) *http.Server {
 	return nil
 }

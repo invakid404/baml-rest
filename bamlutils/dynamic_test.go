@@ -499,7 +499,7 @@ func TestDynamicInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *testi
 					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
 				},
 			},
-			PreserveSchemaOrder: true,
+			PreserveSchemaOrder: boolPtr(true),
 		}
 	}
 
@@ -573,7 +573,7 @@ func TestDynamicParseInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *
 				"bravo": {Type: "int"},
 			},
 		},
-		PreserveSchemaOrder: true,
+		PreserveSchemaOrder: boolPtr(true),
 	}
 	err := in.Validate()
 	if err == nil || !strings.Contains(err.Error(), "output_schema.properties") {
@@ -583,6 +583,134 @@ func TestDynamicParseInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *
 	if err := in.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
+}
+
+// TestDynamicInput_Validate_PreserveSchemaOrderTriState pins the *bool
+// contract on the DynamicInput call path. nil and *false both behave
+// like "no opt-in" — preserve-order validation is skipped, so a
+// multi-key schema with no captured order metadata still passes. Only
+// *true engages validatePreserveSchemaOrder. The JSON `null` row
+// exercises Go's stdlib pointer unmarshal (a `null` literal decodes a
+// *bool field back to nil), confirming we don't need a custom
+// UnmarshalJSON for the absent/inherit-default semantics.
+func TestDynamicInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
+	t.Parallel()
+	prompt := "hi"
+	primary := "TestClient"
+	provider := "anthropic"
+
+	mkInput := func(preserve *bool) *DynamicInput {
+		return &DynamicInput{
+			Messages: []DynamicMessage{{Role: "user", TextContent: &prompt}},
+			ClientRegistry: &ClientRegistry{
+				Primary: &primary,
+				Clients: []*ClientProperty{{Name: primary, Provider: provider, Options: map[string]any{"model": "m", "api_key": "k"}}},
+			},
+			OutputSchema: &DynamicOutputSchema{
+				Properties: map[string]*DynamicProperty{
+					"alpha": {Type: "string"},
+					"bravo": {Type: "int"},
+				},
+				// Intentionally no PropertiesOrder — preserve-order validation
+				// would reject this, while nil/*false must skip the check.
+			},
+			PreserveSchemaOrder: preserve,
+		}
+	}
+
+	t.Run("nil opts out", func(t *testing.T) {
+		if err := mkInput(nil).Validate(); err != nil {
+			t.Errorf("nil PreserveSchemaOrder must not trip preserve-order validation: %v", err)
+		}
+	})
+
+	t.Run("false opts out", func(t *testing.T) {
+		if err := mkInput(boolPtr(false)).Validate(); err != nil {
+			t.Errorf("*false PreserveSchemaOrder must not trip preserve-order validation: %v", err)
+		}
+	})
+
+	t.Run("true engages validation", func(t *testing.T) {
+		err := mkInput(boolPtr(true)).Validate()
+		if err == nil || !strings.Contains(err.Error(), "output_schema.properties") {
+			t.Fatalf("expected missing properties order error, got %v", err)
+		}
+	})
+
+	t.Run("JSON null decodes to nil and inherits default", func(t *testing.T) {
+		body := []byte(`{
+          "preserve_schema_order": null,
+          "messages": [{"role": "user", "content": "hi"}],
+          "client_registry": {"primary": "TestClient", "clients": [{"name": "TestClient", "provider": "anthropic", "options": {"model": "m", "api_key": "k"}}]},
+          "output_schema": {"properties": {"alpha": {"type": "string"}, "bravo": {"type": "int"}}}
+        }`)
+		var in DynamicInput
+		if err := json.Unmarshal(body, &in); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if in.PreserveSchemaOrder != nil {
+			t.Errorf("JSON null must decode *bool to nil; got %v", *in.PreserveSchemaOrder)
+		}
+		if err := in.Validate(); err != nil {
+			t.Errorf("null/absent must inherit absence: %v", err)
+		}
+	})
+}
+
+// TestDynamicParseInput_Validate_PreserveSchemaOrderTriState mirrors the
+// tri-state contract on the parse-input path.
+func TestDynamicParseInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
+	t.Parallel()
+
+	mkInput := func(preserve *bool) *DynamicParseInput {
+		return &DynamicParseInput{
+			Raw: `{"alpha":"x"}`,
+			OutputSchema: &DynamicOutputSchema{
+				Properties: map[string]*DynamicProperty{
+					"alpha": {Type: "string"},
+					"bravo": {Type: "int"},
+				},
+			},
+			PreserveSchemaOrder: preserve,
+		}
+	}
+
+	t.Run("nil opts out", func(t *testing.T) {
+		if err := mkInput(nil).Validate(); err != nil {
+			t.Errorf("nil PreserveSchemaOrder must not trip preserve-order validation: %v", err)
+		}
+	})
+
+	t.Run("false opts out", func(t *testing.T) {
+		if err := mkInput(boolPtr(false)).Validate(); err != nil {
+			t.Errorf("*false PreserveSchemaOrder must not trip preserve-order validation: %v", err)
+		}
+	})
+
+	t.Run("true engages validation", func(t *testing.T) {
+		err := mkInput(boolPtr(true)).Validate()
+		if err == nil || !strings.Contains(err.Error(), "output_schema.properties") {
+			t.Fatalf("expected missing properties order error, got %v", err)
+		}
+	})
+
+	t.Run("JSON null decodes to nil and inherits default", func(t *testing.T) {
+		body := []byte(`{
+          "preserve_schema_order": null,
+          "raw": "{\"alpha\":\"x\"}",
+          "output_schema": {"properties": {"alpha": {"type": "string"}, "bravo": {"type": "int"}}}
+        }`)
+		var in DynamicParseInput
+		if err := json.Unmarshal(body, &in); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if in.PreserveSchemaOrder != nil {
+			t.Errorf("JSON null must decode *bool to nil; got %v", *in.PreserveSchemaOrder)
+		}
+		if err := in.Validate(); err != nil {
+			t.Errorf("null/absent must inherit absence: %v", err)
+		}
+	})
 }
 
 func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
@@ -692,7 +820,7 @@ func TestDynamicInput_ToWorkerInput_SingleClassPropertyOrder(t *testing.T) {
 			},
 			// ClassesOrder intentionally empty — legal because Classes has one key.
 		},
-		PreserveSchemaOrder: true,
+		PreserveSchemaOrder: boolPtr(true),
 	}
 	if err := in.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
@@ -725,6 +853,11 @@ func TestDynamicInput_ToWorkerInput_SingleClassPropertyOrder(t *testing.T) {
 		t.Errorf("order.classes: got %v want %v", classes, wantClasses)
 	}
 }
+
+// boolPtr returns a pointer to v. Used to construct the *bool tri-state
+// PreserveSchemaOrder field in tests where the Go literal `true`/`false`
+// would not be addressable inline.
+func boolPtr(v bool) *bool { return &v }
 
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {

@@ -236,6 +236,7 @@ var serveCmd = &cobra.Command{
 		// configuration the subprocess build's cmd/worker would
 		// produce on its own at process startup.
 		buildRequestConfig := buildrequest.EnvConfig()
+		preserveSchemaOrderDefault := preserveSchemaOrderDefaultFromEnv()
 		baseURLRewrites := urlrewrite.LoadDefaultRules()
 		httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{
 			Mode:         llmhttp.ClientModeFromEnv(),
@@ -487,23 +488,13 @@ var serveCmd = &cobra.Command{
 					ctx, cancel := context.WithCancel(c.Context())
 					defer cancel()
 
-					rawBody := c.Body()
-
-					// Parse and validate dynamic input
-					var input bamlutils.DynamicInput
-					if err := json.Unmarshal(rawBody, &input); err != nil {
-						return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidJSON, nil, fiber.StatusBadRequest)
-					}
-
-					if err := input.Validate(); err != nil {
-						return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidRequest, nil, fiber.StatusBadRequest)
-					}
-
-					// Convert to internal format
-					workerInput, err := input.ToWorkerInput()
+					workerInput, statusCode, code, err := parseDynamicCallBody(c.Body(), preserveSchemaOrderDefault)
 					if err != nil {
-						logger.Error().Err(err).Msg("dynamic input conversion failed")
-						return writeFiberInternalError(c, err)
+						if statusCode >= fiber.StatusInternalServerError {
+							logger.Error().Err(err).Msg("dynamic input conversion failed")
+							return writeFiberInternalError(c, err)
+						}
+						return writeFiberJSONErrorWithCode(c, err.Error(), code, nil, statusCode)
 					}
 
 					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
@@ -541,7 +532,7 @@ var serveCmd = &cobra.Command{
 
 			makeDynamicStreamHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
-					workerInput, statusCode, code, err := parseDynamicStreamInput(c.Body())
+					workerInput, statusCode, code, err := parseDynamicCallBody(c.Body(), preserveSchemaOrderDefault)
 					if err != nil {
 						if statusCode >= fiber.StatusInternalServerError {
 							logger.Error().Err(err).Msg("dynamic stream input parsing failed")
@@ -549,7 +540,7 @@ var serveCmd = &cobra.Command{
 							// httplogger.SetError attaches the error to the request-
 							// scoped structured log alongside the discrete logger
 							// line above. Wire shape is unchanged —
-							// parseDynamicStreamInput only returns statusCode>=500
+							// parseDynamicCallBody only returns statusCode>=500
 							// from the ToWorkerInput path, which already classifies
 							// as CodeInternalError, so the helper produces an
 							// identical envelope.
@@ -577,22 +568,13 @@ var serveCmd = &cobra.Command{
 				ctx, cancel := context.WithCancel(c.Context())
 				defer cancel()
 
-				rawBody := c.Body()
-
-				// Parse and validate dynamic parse input
-				var input bamlutils.DynamicParseInput
-				if err := json.Unmarshal(rawBody, &input); err != nil {
-					return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidJSON, nil, fiber.StatusBadRequest)
-				}
-				if err := input.Validate(); err != nil {
-					return writeFiberJSONErrorWithCode(c, err.Error(), apierror.CodeInvalidRequest, nil, fiber.StatusBadRequest)
-				}
-
-				// Convert to internal format
-				workerInput, err := input.ToWorkerInput()
+				workerInput, statusCode, code, err := parseDynamicParseBody(c.Body(), preserveSchemaOrderDefault)
 				if err != nil {
-					logger.Error().Err(err).Msg("dynamic parse input conversion failed")
-					return writeFiberInternalError(c, err)
+					if statusCode >= fiber.StatusInternalServerError {
+						logger.Error().Err(err).Msg("dynamic parse input conversion failed")
+						return writeFiberInternalError(c, err)
+					}
+					return writeFiberJSONErrorWithCode(c, err.Error(), code, nil, statusCode)
 				}
 
 				result, err := workerPool.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
@@ -616,7 +598,7 @@ var serveCmd = &cobra.Command{
 		// Optionally start the chi-based unary server on a separate port.
 		// newUnaryServer returns nil when the unaryserver build tag is absent
 		// or when --unary-port is set to 0.
-		unaryServer := newUnaryServer(logger, workerPool, methodNames, hasDynamicMethod)
+		unaryServer := newUnaryServer(logger, workerPool, methodNames, hasDynamicMethod, preserveSchemaOrderDefault)
 
 		// Start Fiber server in a goroutine.
 		serverErr := make(chan error, 1)
@@ -693,16 +675,47 @@ var serveCmd = &cobra.Command{
 	},
 }
 
-// parseDynamicStreamInput parses + validates the JSON body for a
-// dynamic streaming endpoint and returns the worker-shaped input
-// alongside the apierror.Code that classifies any failure (so callers
-// preserve machine-readable codes instead of collapsing every 4xx into
-// invalid_request). On success: code is "" and statusCode is 0.
-func parseDynamicStreamInput(rawBody []byte) (workerInput []byte, statusCode int, code apierror.Code, err error) {
+// parseDynamicCallBody parses + validates the JSON body for any
+// dynamic call/stream endpoint (/call/_dynamic, /call-with-raw/_dynamic,
+// /stream/_dynamic, /stream-with-raw/_dynamic) and returns the
+// worker-shaped input alongside the apierror.Code that classifies any
+// failure (so callers preserve machine-readable codes instead of
+// collapsing every 4xx into invalid_request). On success: code is ""
+// and statusCode is 0.
+//
+// preserveSchemaOrderDefault is the server-level default for the
+// dynamic preserve_schema_order opt-in. It is applied only when
+// the request omits / nulls the field; per-request true/false wins.
+func parseDynamicCallBody(rawBody []byte, preserveSchemaOrderDefault bool) (workerInput []byte, statusCode int, code apierror.Code, err error) {
 	var input bamlutils.DynamicInput
 	if err := json.Unmarshal(rawBody, &input); err != nil {
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidJSON, fmt.Errorf("invalid JSON: %w", err)
 	}
+
+	applyPreserveSchemaOrderDefault(&input, preserveSchemaOrderDefault)
+
+	if err := input.Validate(); err != nil {
+		return nil, fiber.StatusBadRequest, apierror.CodeInvalidRequest, err
+	}
+
+	workerInput, err = input.ToWorkerInput()
+	if err != nil {
+		return nil, fiber.StatusInternalServerError, apierror.CodeInternalError, fmt.Errorf("failed to convert input: %w", err)
+	}
+
+	return workerInput, 0, "", nil
+}
+
+// parseDynamicParseBody mirrors parseDynamicCallBody for the
+// /parse/_dynamic endpoint, decoding into the DynamicParseInput shape
+// rather than DynamicInput.
+func parseDynamicParseBody(rawBody []byte, preserveSchemaOrderDefault bool) (workerInput []byte, statusCode int, code apierror.Code, err error) {
+	var input bamlutils.DynamicParseInput
+	if err := json.Unmarshal(rawBody, &input); err != nil {
+		return nil, fiber.StatusBadRequest, apierror.CodeInvalidJSON, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	applyParsePreserveSchemaOrderDefault(&input, preserveSchemaOrderDefault)
 
 	if err := input.Validate(); err != nil {
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidRequest, err

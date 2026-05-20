@@ -554,10 +554,21 @@ func unmarshalOrderedObject[V any](data []byte, path string) (map[string]V, []st
 
 // DynamicInput is the request body for dynamic endpoints
 type DynamicInput struct {
-	Messages            []DynamicMessage     `json:"messages"`
-	ClientRegistry      *ClientRegistry      `json:"client_registry"`
-	OutputSchema        *DynamicOutputSchema `json:"output_schema"`
-	PreserveSchemaOrder bool                 `json:"preserve_schema_order,omitempty"`
+	Messages       []DynamicMessage     `json:"messages"`
+	ClientRegistry *ClientRegistry      `json:"client_registry"`
+	OutputSchema   *DynamicOutputSchema `json:"output_schema"`
+	// PreserveSchemaOrder is a tri-state opt-in: nil means "inherit the
+	// server default" (BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT on the
+	// serve host), while a non-nil pointer wins over any server default.
+	// JSON null decodes to nil through standard Go pointer unmarshal
+	// behavior, matching the absent/inherit semantics.
+	PreserveSchemaOrder *bool `json:"preserve_schema_order,omitempty"`
+}
+
+// preserveSchemaOrderEnabled resolves the *bool tri-state to a concrete
+// boolean for internal use. nil and *false both mean "do not preserve".
+func preserveSchemaOrderEnabled(p *bool) bool {
+	return p != nil && *p
 }
 
 // Validate checks that required fields are present
@@ -574,7 +585,7 @@ func (d *DynamicInput) Validate() error {
 	if err := validateReservedClassNames(d.OutputSchema); err != nil {
 		return err
 	}
-	if d.PreserveSchemaOrder {
+	if preserveSchemaOrderEnabled(d.PreserveSchemaOrder) {
 		if err := validatePreserveSchemaOrder(d.OutputSchema); err != nil {
 			return err
 		}
@@ -693,7 +704,7 @@ func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
 		Classes: classes,
 		Enums:   d.OutputSchema.Enums,
 	}
-	if d.PreserveSchemaOrder {
+	if preserveSchemaOrderEnabled(d.PreserveSchemaOrder) {
 		dynamicTypes.PreserveOrder = true
 		dynamicTypes.Order = dynamicTypesOrderFromOutputSchema(d.OutputSchema)
 	}
@@ -712,9 +723,12 @@ func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
 
 // DynamicParseInput is the request body for dynamic parse endpoint
 type DynamicParseInput struct {
-	Raw                 string               `json:"raw"`
-	OutputSchema        *DynamicOutputSchema `json:"output_schema"`
-	PreserveSchemaOrder bool                 `json:"preserve_schema_order,omitempty"`
+	Raw          string               `json:"raw"`
+	OutputSchema *DynamicOutputSchema `json:"output_schema"`
+	// PreserveSchemaOrder mirrors DynamicInput.PreserveSchemaOrder —
+	// nil inherits the server default, non-nil wins. See that field's
+	// doc comment for the full tri-state contract.
+	PreserveSchemaOrder *bool `json:"preserve_schema_order,omitempty"`
 }
 
 // Validate checks that required fields are present for parse
@@ -728,7 +742,7 @@ func (d *DynamicParseInput) Validate() error {
 	if err := validateReservedClassNames(d.OutputSchema); err != nil {
 		return err
 	}
-	if d.PreserveSchemaOrder {
+	if preserveSchemaOrderEnabled(d.PreserveSchemaOrder) {
 		if err := validatePreserveSchemaOrder(d.OutputSchema); err != nil {
 			return err
 		}
@@ -760,7 +774,7 @@ func (d *DynamicParseInput) ToWorkerInput() ([]byte, error) {
 		Classes: classes,
 		Enums:   d.OutputSchema.Enums,
 	}
-	if d.PreserveSchemaOrder {
+	if preserveSchemaOrderEnabled(d.PreserveSchemaOrder) {
 		dynamicTypes.PreserveOrder = true
 		dynamicTypes.Order = dynamicTypesOrderFromOutputSchema(d.OutputSchema)
 	}
