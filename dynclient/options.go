@@ -46,6 +46,14 @@ type config struct {
 
 	fastHTTPOptions llmhttp.FastHTTPClientOptions
 	fastHTTPSet     bool
+
+	// preserveSchemaOrderDefault is the default value used to resolve
+	// a Request / ParseRequest with a nil PreserveSchemaOrder. dynclient
+	// defaults this to true at New() time so direct Go callers get the
+	// ordered output_format render they almost always want; the option
+	// flips it back to false for callers who prefer alphabetical sort.
+	// Per-request non-nil pointers always win over this default.
+	preserveSchemaOrderDefault bool
 }
 
 // WithUseBuildRequest mirrors the BAML_REST_USE_BUILD_REQUEST gate for a
@@ -176,6 +184,24 @@ func WithFastHTTPClient(opts llmhttp.FastHTTPClientOptions) Option {
 	return func(c *config) error {
 		c.fastHTTPOptions = opts
 		c.fastHTTPSet = true
+		return nil
+	}
+}
+
+// WithPreserveSchemaOrderDefault overrides the dynclient default for
+// per-request preserve_schema_order resolution. dynclient defaults to
+// true at New() — direct Go callers using OrderedMap literals get the
+// rendered output_format following their construction order without
+// extra opt-in. Pass false to flip the default to alphabetical sort.
+//
+// Per-request non-nil PreserveSchemaOrder values always win over this
+// default: a request explicitly setting *true preserves order even
+// under WithPreserveSchemaOrderDefault(false), and a request setting
+// *false sorts even under the default true. Only nil/absent requests
+// inherit.
+func WithPreserveSchemaOrderDefault(enabled bool) Option {
+	return func(c *config) error {
+		c.preserveSchemaOrderDefault = enabled
 		return nil
 	}
 }
