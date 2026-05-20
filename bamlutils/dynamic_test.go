@@ -181,6 +181,139 @@ func TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull(t *testing.T) {
 	}
 }
 
+// TestDynamicOutputSchema_UnmarshalJSON_ResetsOnReuse pins that
+// decoding into an already-populated receiver clears stale maps and
+// *Order slices, instead of merging or retaining the previous values.
+// json.Unmarshal into a non-zero target is valid Go usage; the prior
+// implementation silently kept stale fields when the new payload
+// omitted or nulled a section.
+func TestDynamicOutputSchema_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
+	t.Parallel()
+	first := []byte(`{
+      "properties": {"a": {"type": "string"}, "b": {"type": "int"}},
+      "classes": {"C": {"properties": {"p": {"type": "string"}, "q": {"type": "int"}}}},
+      "enums": {"E": {"values": [{"name": "A"}]}}
+    }`)
+	var s DynamicOutputSchema
+	if err := json.Unmarshal(first, &s); err != nil {
+		t.Fatalf("first Unmarshal: %v", err)
+	}
+	if len(s.Properties) == 0 || len(s.Classes) == 0 || len(s.Enums) == 0 {
+		t.Fatalf("first decode left maps empty: %+v", s)
+	}
+
+	// Empty object — every section absent. Reuse must clear all
+	// previously populated fields.
+	if err := json.Unmarshal([]byte(`{}`), &s); err != nil {
+		t.Fatalf("reuse Unmarshal {}: %v", err)
+	}
+	if s.Properties != nil || s.Classes != nil || s.Enums != nil {
+		t.Errorf("maps not cleared after empty reuse: %+v", s)
+	}
+	if len(s.PropertiesOrder) != 0 || len(s.ClassesOrder) != 0 || len(s.EnumsOrder) != 0 {
+		t.Errorf("order slices not cleared after empty reuse: props=%v classes=%v enums=%v", s.PropertiesOrder, s.ClassesOrder, s.EnumsOrder)
+	}
+
+	// Re-populate then null every section. null is accepted as the
+	// nil-map sentinel, so the same clearing contract applies.
+	if err := json.Unmarshal(first, &s); err != nil {
+		t.Fatalf("re-populate Unmarshal: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"properties":null,"classes":null,"enums":null}`), &s); err != nil {
+		t.Fatalf("reuse Unmarshal null: %v", err)
+	}
+	if s.Properties != nil || s.Classes != nil || s.Enums != nil {
+		t.Errorf("maps not cleared after null reuse: %+v", s)
+	}
+	if len(s.PropertiesOrder) != 0 || len(s.ClassesOrder) != 0 || len(s.EnumsOrder) != 0 {
+		t.Errorf("order slices not cleared after null reuse: props=%v classes=%v enums=%v", s.PropertiesOrder, s.ClassesOrder, s.EnumsOrder)
+	}
+}
+
+// TestDynamicClass_UnmarshalJSON_ResetsOnReuse mirrors the
+// DynamicOutputSchema reuse-reset contract on the nested class type.
+func TestDynamicClass_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
+	t.Parallel()
+	first := []byte(`{"description": "old", "alias": "old-alias", "properties": {"p": {"type": "string"}, "q": {"type": "int"}}}`)
+	var c DynamicClass
+	if err := json.Unmarshal(first, &c); err != nil {
+		t.Fatalf("first Unmarshal: %v", err)
+	}
+	if c.Description == "" || c.Alias == "" || len(c.Properties) == 0 || len(c.PropertiesOrder) == 0 {
+		t.Fatalf("first decode left fields empty: %+v", c)
+	}
+	if err := json.Unmarshal([]byte(`{}`), &c); err != nil {
+		t.Fatalf("reuse Unmarshal: %v", err)
+	}
+	if c.Description != "" || c.Alias != "" || c.Properties != nil || len(c.PropertiesOrder) != 0 {
+		t.Errorf("fields not cleared after empty reuse: %+v", c)
+	}
+}
+
+// TestDynamicInput_Validate_RejectsReservedClassName pins that a
+// user class named Baml_Rest_DynamicOutput is rejected at validation
+// rather than silently overwritten by buildWorkerClassMap. The name
+// is the synthetic top-level class baml-rest writes into the worker
+// payload.
+func TestDynamicInput_Validate_RejectsReservedClassName(t *testing.T) {
+	t.Parallel()
+	prompt := "hi"
+	primary := "TestClient"
+	provider := "anthropic"
+	in := &DynamicInput{
+		Messages: []DynamicMessage{{Role: "user", TextContent: &prompt}},
+		ClientRegistry: &ClientRegistry{
+			Primary: &primary,
+			Clients: []*ClientProperty{{Name: primary, Provider: provider, Options: map[string]any{"model": "m", "api_key": "k"}}},
+		},
+		OutputSchema: &DynamicOutputSchema{
+			Properties: map[string]*DynamicProperty{"x": {Type: "string"}},
+			Classes: map[string]*DynamicClass{
+				"Baml_Rest_DynamicOutput": {
+					Properties: map[string]*DynamicProperty{"sneaky": {Type: "string"}},
+				},
+			},
+		},
+	}
+	err := in.Validate()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Errorf("error %q should mention 'reserved'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Baml_Rest_DynamicOutput") {
+		t.Errorf("error %q should name the reserved class", err.Error())
+	}
+}
+
+// TestDynamicParseInput_Validate_RejectsReservedClassName mirrors
+// the reserved-name validation on the parse-input path.
+func TestDynamicParseInput_Validate_RejectsReservedClassName(t *testing.T) {
+	t.Parallel()
+	in := &DynamicParseInput{
+		Raw: `{"x":"y"}`,
+		OutputSchema: &DynamicOutputSchema{
+			Properties: map[string]*DynamicProperty{"x": {Type: "string"}},
+			Classes: map[string]*DynamicClass{
+				"Baml_Rest_DynamicOutput": {
+					Properties: map[string]*DynamicProperty{"sneaky": {Type: "string"}},
+				},
+			},
+		},
+	}
+	err := in.Validate()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Errorf("error %q should mention 'reserved'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Baml_Rest_DynamicOutput") {
+		t.Errorf("error %q should name the reserved class", err.Error())
+	}
+}
+
 func TestDynamicInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *testing.T) {
 	t.Parallel()
 	prompt := "hi"

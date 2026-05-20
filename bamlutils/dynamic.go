@@ -363,6 +363,12 @@ type DynamicOutputSchema struct {
 // only used here for the ordered top-level scan — nested values are
 // still decoded through json.Unmarshal which routes through goccy.
 func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
+	// Reset on reuse: json.Unmarshal into a previously-populated
+	// receiver is valid Go usage, and the wire shape carries no
+	// caller-managed state we'd need to merge. Zeroing here avoids
+	// stale maps/order slices leaking across decode calls when the
+	// new payload omits or nulls a section.
+	*s = DynamicOutputSchema{}
 	var raw struct {
 		Properties json.RawMessage `json:"properties"`
 		Classes    json.RawMessage `json:"classes"`
@@ -413,6 +419,9 @@ func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 // description and alias fields decode through the normal route.
 // Duplicate property keys are rejected.
 func (c *DynamicClass) UnmarshalJSON(data []byte) error {
+	// Reset on reuse — see DynamicOutputSchema.UnmarshalJSON for
+	// rationale. The struct is wholly decoded from input.
+	*c = DynamicClass{}
 	var raw struct {
 		Description string          `json:"description,omitempty"`
 		Alias       string          `json:"alias,omitempty"`
@@ -517,6 +526,9 @@ func (d *DynamicInput) Validate() error {
 	}
 	if d.OutputSchema == nil || len(d.OutputSchema.Properties) == 0 {
 		return fmt.Errorf("output_schema with at least one property is required")
+	}
+	if err := validateReservedClassNames(d.OutputSchema); err != nil {
+		return err
 	}
 	if d.PreserveSchemaOrder {
 		if err := validatePreserveSchemaOrder(d.OutputSchema); err != nil {
@@ -669,10 +681,29 @@ func (d *DynamicParseInput) Validate() error {
 	if d.OutputSchema == nil || len(d.OutputSchema.Properties) == 0 {
 		return fmt.Errorf("output_schema with at least one property is required")
 	}
+	if err := validateReservedClassNames(d.OutputSchema); err != nil {
+		return err
+	}
 	if d.PreserveSchemaOrder {
 		if err := validatePreserveSchemaOrder(d.OutputSchema); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateReservedClassNames rejects user-supplied class names that
+// collide with synthetic names baml-rest writes into the worker
+// payload. buildWorkerClassMap unconditionally overwrites the entry
+// at dynamicOutputClassName with the synthetic top-level class, so
+// without this guard a user class with that exact name would be
+// silently dropped.
+func validateReservedClassNames(s *DynamicOutputSchema) error {
+	if s == nil {
+		return nil
+	}
+	if _, ok := s.Classes[dynamicOutputClassName]; ok {
+		return fmt.Errorf("output_schema.classes: %q is reserved by baml-rest", dynamicOutputClassName)
 	}
 	return nil
 }
