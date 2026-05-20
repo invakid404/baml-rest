@@ -4,6 +4,7 @@ import (
 	"bytes"
 	encjson "encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/goccy/go-json"
@@ -712,7 +713,28 @@ func dynamicTypesOrderFromOutputSchema(schema *DynamicOutputSchema) *DynamicType
 	order.Classes = append(order.Classes, dynamicOutputClassName)
 	order.Classes = append(order.Classes, schema.ClassesOrder...)
 	order.Properties[dynamicOutputClassName] = append([]string(nil), schema.PropertiesOrder...)
+
+	seen := make(map[string]struct{}, len(schema.Classes))
 	for _, className := range schema.ClassesOrder {
+		if cls := schema.Classes[className]; cls != nil {
+			order.Properties[className] = append([]string(nil), cls.PropertiesOrder...)
+		}
+		seen[className] = struct{}{}
+	}
+	// Cover classes absent from ClassesOrder. Single-class schemas
+	// can legally have empty ClassesOrder while still carrying a
+	// multi-key Properties order on the class — without this pass
+	// that nested order would be dropped on the wire. Sort the
+	// remaining names so the worker payload stays deterministic.
+	remaining := make([]string, 0, len(schema.Classes))
+	for className := range schema.Classes {
+		if _, ok := seen[className]; ok {
+			continue
+		}
+		remaining = append(remaining, className)
+	}
+	slices.Sort(remaining)
+	for _, className := range remaining {
 		if cls := schema.Classes[className]; cls != nil {
 			order.Properties[className] = append([]string(nil), cls.PropertiesOrder...)
 		}

@@ -200,7 +200,7 @@ func assertOrderIn(t *testing.T, label, prompt, anchor string, names []string) {
 	}
 	indices := make([]int, len(names))
 	for i, name := range names {
-		idx := strings.Index(window, name)
+		idx := fieldTokenIndex(window, name)
 		if idx < 0 {
 			t.Errorf("%s: name %q not found in window", label, name)
 			t.Logf("window:\n%s\nfull prompt:\n%s", window, prompt)
@@ -217,6 +217,26 @@ func assertOrderIn(t *testing.T, label, prompt, anchor string, names []string) {
 	}
 }
 
+// fieldTokenIndex returns the lowest index at which name appears as a
+// field-key token in window, i.e. either `name:` (unquoted, as the
+// BAML output_format renderer emits) or `"name":` (quoted, as a JSON
+// payload would). Returns -1 if neither form is present. Searching
+// for the token rather than the bare name avoids matching incidental
+// text in descriptions, sibling field names, or value renderings.
+func fieldTokenIndex(window, name string) int {
+	candidates := []string{
+		fmt.Sprintf("%q:", name),
+		fmt.Sprintf("%s:", name),
+	}
+	best := -1
+	for _, token := range candidates {
+		if idx := strings.Index(window, token); idx >= 0 && (best < 0 || idx < best) {
+			best = idx
+		}
+	}
+	return best
+}
+
 func postRaw(ctx context.Context, url, body string) error {
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader([]byte(body)))
 	if err != nil {
@@ -228,7 +248,13 @@ func postRaw(ctx context.Context, url, body string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		if len(respBody) > 0 {
+			return fmt.Errorf("read response body: %w (partial body: %s)", readErr, string(respBody))
+		}
+		return fmt.Errorf("read response body: %w", readErr)
+	}
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
 	}

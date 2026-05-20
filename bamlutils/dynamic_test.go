@@ -281,6 +281,66 @@ func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
 	}
 }
 
+// TestDynamicInput_ToWorkerInput_SingleClassPropertyOrder pins the
+// reachable single-class case: validation legally allows empty
+// ClassesOrder when there is exactly one class, so the worker-bound
+// DynamicTypesOrder.Properties[<className>] must still carry that
+// class's PropertiesOrder. Earlier code only copied per-class order
+// for names listed in ClassesOrder, silently dropping nested order
+// on single-class schemas.
+func TestDynamicInput_ToWorkerInput_SingleClassPropertyOrder(t *testing.T) {
+	t.Parallel()
+	primary := "TestClient"
+	provider := "anthropic"
+	greeting := "go"
+	in := &DynamicInput{
+		Messages: []DynamicMessage{{Role: "user", TextContent: &greeting}},
+		ClientRegistry: &ClientRegistry{
+			Primary: &primary,
+			Clients: []*ClientProperty{{Name: primary, Provider: provider, Options: map[string]any{"model": "m", "api_key": "k"}}},
+		},
+		OutputSchema: &DynamicOutputSchema{
+			Properties: map[string]*DynamicProperty{
+				"only": {Ref: "Solo"},
+			},
+			PropertiesOrder: []string{"only"},
+			Classes: map[string]*DynamicClass{
+				"Solo": {
+					Properties: map[string]*DynamicProperty{
+						"zulu":  {Type: "string"},
+						"alpha": {Type: "int"},
+						"mike":  {Type: "bool"},
+					},
+					PropertiesOrder: []string{"zulu", "alpha", "mike"},
+				},
+			},
+			// ClassesOrder intentionally empty — legal because Classes has one key.
+		},
+		PreserveSchemaOrder: true,
+	}
+	if err := in.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	data, err := in.ToWorkerInput()
+	if err != nil {
+		t.Fatalf("ToWorkerInput: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
+	}
+	opts := decoded["__baml_options__"].(map[string]any)
+	tb := opts["type_builder"].(map[string]any)
+	dt := tb["dynamic_types"].(map[string]any)
+	order := dt["order"].(map[string]any)
+	props := order["properties"].(map[string]any)
+	got := toStringSlice(t, props["Solo"])
+	want := []string{"zulu", "alpha", "mike"}
+	if !equalStrings(got, want) {
+		t.Errorf("order.properties.Solo: got %v want %v", got, want)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
