@@ -1021,9 +1021,17 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 			Reasoning: event.Reasoning,
 		}
 
-		// For error events, store the error message in Data
+		// For error events, store the error message in Data. Route the
+		// string through sonic.Marshal rather than naively concatenating
+		// surrounding quotes — an error message containing `"` or `\`
+		// would otherwise emit invalid JSON here and break consumers that
+		// decode Data downstream.
 		if event.Type == "error" && event.Error != "" {
-			streamEvent.Data = stdjson.RawMessage(`"` + event.Error + `"`)
+			encoded, err := sonic.Marshal(event.Error)
+			if err != nil {
+				encoded = []byte(`""`)
+			}
+			streamEvent.Data = stdjson.RawMessage(encoded)
 		}
 
 		events <- streamEvent
