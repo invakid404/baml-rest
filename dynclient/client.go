@@ -74,6 +74,12 @@ func New(opts ...Option) (*Client, error) {
 // caller is responsible for any de-duplication semantics). Tests pass a
 // no-op init alongside a fake runtime so the native BAML CFFI is never
 // loaded.
+//
+// Validation runs after all options have been applied but BEFORE the
+// init callback so a misconfigured client never reaches runtime
+// initialization (which loads the native BAML library). Tests rely on
+// this ordering to assert that error paths leave the init counter at
+// zero.
 func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, error) {
 	cfg := &config{}
 	for _, opt := range opts {
@@ -83,6 +89,10 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 		if err := opt(cfg); err != nil {
 			return nil, fmt.Errorf("dynclient: new client: %w", err)
 		}
+	}
+
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("dynclient: new client: %w", err)
 	}
 
 	if init != nil {
@@ -116,14 +126,24 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 	}, nil
 }
 
-// newLLMHTTPClient builds the per-handler llmhttp.Client. Caller-supplied
-// HTTP clients are wrapped explicitly; otherwise the tuned default LLM
-// transport is used. Either path passes the configured rewrite rules so
-// outbound requests are rewritten consistently with the registry pass.
+// newLLMHTTPClient builds the per-handler llmhttp.Client. The backend
+// mode (zero is Auto) and fasthttp tuning always flow through; a
+// caller-supplied *http.Client wraps an existing instance, otherwise
+// the tuned default LLM transport is used. Either path passes the
+// configured rewrite rules so outbound requests are rewritten
+// consistently with the registry pass.
+//
+// netHTTPClientSet without a non-nil client (i.e. WithNetHTTPClient(nil))
+// preserves the default tuned transport — validation has already
+// guaranteed this combination is allowed (Auto or ClientModeNetHTTP).
 func newLLMHTTPClient(cfg *config) *llmhttp.Client {
-	opts := llmhttp.ClientOptions{RewriteRules: cfg.baseURLRewrites}
-	if cfg.httpClient != nil {
-		opts.HTTPClient = cfg.httpClient
+	opts := llmhttp.ClientOptions{
+		Mode:         cfg.clientMode,
+		RewriteRules: cfg.baseURLRewrites,
+		FastHTTP:     cfg.fastHTTPOptions,
+	}
+	if cfg.netHTTPClientSet && cfg.netHTTPClient != nil {
+		opts.NetHTTPClient = cfg.netHTTPClient
 		return llmhttp.NewClientWithOptions(opts)
 	}
 	return llmhttp.NewDefaultClientWithOptions(opts)

@@ -242,8 +242,8 @@ func TestHandlerInstallsHTTPClient(t *testing.T) {
 	t.Parallel()
 
 	client := llmhttp.NewClientWithOptions(llmhttp.ClientOptions{
-		HTTPClient: &http.Client{},
-		Mode:       llmhttp.ClientModeNetHTTP,
+		NetHTTPClient: &http.Client{},
+		Mode:          llmhttp.ClientModeNetHTTP,
 	})
 
 	var captured *fakeAdapter

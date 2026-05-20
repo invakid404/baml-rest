@@ -220,7 +220,7 @@ func TestNewAppliesOptions(t *testing.T) {
 		WithLogger(logger),
 		WithMetricsRegistry(metrics),
 		WithBaseURLRewrites(rewrites),
-		WithHTTPClient(httpClient),
+		WithNetHTTPClient(httpClient),
 		WithClientDefaults(defaults),
 		WithSharedStateStore(store),
 	)
@@ -815,3 +815,183 @@ type _ifaceCheck interface {
 }
 
 var _ _ifaceCheck = (*Client)(nil)
+
+// -- Backend option interaction tests --------------------------------
+
+// runOptionsCase exercises newWithRuntime with a counted init callback
+// and returns the resulting error. Error cases assert the init counter
+// stays at zero, proving validation rejected the configuration BEFORE
+// runtime initialization could load the native library.
+func runOptionsCase(t *testing.T, wantErr bool, opts ...Option) error {
+	t.Helper()
+	var initCalls atomic.Int64
+	rt := &fakeRuntime{}
+	_, err := newWithRuntime(rt, func() { initCalls.Add(1) }, opts...)
+	if wantErr {
+		if err == nil {
+			t.Fatalf("expected validation error, got nil")
+		}
+		if got := initCalls.Load(); got != 0 {
+			t.Errorf("init ran %d times on a rejected config; validation must run before init", got)
+		}
+		return err
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := initCalls.Load(); got != 1 {
+		t.Errorf("init ran %d times on a valid config, want 1", got)
+	}
+	return nil
+}
+
+func TestBackendOptions_ValidCombinations(t *testing.T) {
+	netClient := &http.Client{}
+	fastOpts := llmhttp.FastHTTPClientOptions{MaxConns: 64}
+
+	cases := []struct {
+		name string
+		opts []Option
+	}{
+		{"no options", nil},
+		{"fasthttp tuning only", []Option{WithFastHTTPClient(fastOpts)}},
+		{"net/http client only", []Option{WithNetHTTPClient(netClient)}},
+		{"both tunings, implicit auto", []Option{WithFastHTTPClient(fastOpts), WithNetHTTPClient(netClient)}},
+		{"explicit auto + both tunings", []Option{WithClientMode(llmhttp.ClientModeAuto), WithFastHTTPClient(fastOpts), WithNetHTTPClient(netClient)}},
+		{"forced net/http + net client", []Option{WithClientMode(llmhttp.ClientModeNetHTTP), WithNetHTTPClient(netClient)}},
+		{"forced fasthttp + fast opts", []Option{WithClientMode(llmhttp.ClientModeFastHTTP), WithFastHTTPClient(fastOpts)}},
+		// WithNetHTTPClient(nil) signals "net/http tuning requested" so
+		// validation runs, but the default tuned transport still applies.
+		{"forced net/http + nil net client", []Option{WithClientMode(llmhttp.ClientModeNetHTTP), WithNetHTTPClient(nil)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runOptionsCase(t, false, tc.opts...)
+		})
+	}
+}
+
+func TestBackendOptions_ConflictingCombinations(t *testing.T) {
+	netClient := &http.Client{}
+	fastOpts := llmhttp.FastHTTPClientOptions{MaxConns: 64}
+
+	cases := []struct {
+		name       string
+		opts       []Option
+		mustNameA  string
+		mustNameB  string
+		mustNameC  string // optional
+		invalidEnum bool
+	}{
+		{
+			name:      "forced net/http with fasthttp tuning",
+			opts:      []Option{WithClientMode(llmhttp.ClientModeNetHTTP), WithFastHTTPClient(fastOpts)},
+			mustNameA: "WithClientMode",
+			mustNameB: "WithFastHTTPClient",
+		},
+		{
+			name:      "forced fasthttp with net/http client",
+			opts:      []Option{WithClientMode(llmhttp.ClientModeFastHTTP), WithNetHTTPClient(netClient)},
+			mustNameA: "WithClientMode",
+			mustNameB: "WithNetHTTPClient",
+		},
+		{
+			name:      "forced net/http with both tunings",
+			opts:      []Option{WithClientMode(llmhttp.ClientModeNetHTTP), WithFastHTTPClient(fastOpts), WithNetHTTPClient(netClient)},
+			mustNameA: "WithClientMode",
+			mustNameB: "WithFastHTTPClient",
+		},
+		{
+			name:      "forced fasthttp with both tunings",
+			opts:      []Option{WithClientMode(llmhttp.ClientModeFastHTTP), WithFastHTTPClient(fastOpts), WithNetHTTPClient(netClient)},
+			mustNameA: "WithClientMode",
+			mustNameB: "WithNetHTTPClient",
+		},
+		{
+			name:        "invalid client mode value",
+			opts:        []Option{WithClientMode(llmhttp.ClientMode(999))},
+			invalidEnum: true,
+		},
+		{
+			// nil counts as "net/http tuning supplied" so even nil cannot
+			// pass under ClientModeFastHTTP.
+			name:      "forced fasthttp with nil net client",
+			opts:      []Option{WithClientMode(llmhttp.ClientModeFastHTTP), WithNetHTTPClient(nil)},
+			mustNameA: "WithClientMode",
+			mustNameB: "WithNetHTTPClient",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runOptionsCase(t, true, tc.opts...)
+			if !strings.Contains(err.Error(), "dynclient: new client") {
+				t.Errorf("error not wrapped with construction label: %v", err)
+			}
+			if tc.invalidEnum {
+				if !strings.Contains(err.Error(), "invalid llmhttp.ClientMode") {
+					t.Errorf("expected invalid-mode error text, got: %v", err)
+				}
+				return
+			}
+			for _, name := range []string{tc.mustNameA, tc.mustNameB, tc.mustNameC} {
+				if name == "" {
+					continue
+				}
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("expected error to name %q; got: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestBackendOptions_LastWins(t *testing.T) {
+	netClient := &http.Client{}
+	fastOpts := llmhttp.FastHTTPClientOptions{MaxConns: 64}
+
+	// Last-wins on WithClientMode: an early NetHTTP that would conflict
+	// with WithFastHTTPClient is harmless if a later WithClientMode(Auto)
+	// overrides it.
+	runOptionsCase(t, false,
+		WithClientMode(llmhttp.ClientModeNetHTTP),
+		WithClientMode(llmhttp.ClientModeAuto),
+		WithFastHTTPClient(fastOpts),
+	)
+
+	// Last-wins on WithClientMode: FastHTTP first then NetHTTP, with
+	// WithNetHTTPClient present, is valid because the final mode is
+	// NetHTTP.
+	runOptionsCase(t, false,
+		WithClientMode(llmhttp.ClientModeFastHTTP),
+		WithClientMode(llmhttp.ClientModeNetHTTP),
+		WithNetHTTPClient(netClient),
+	)
+
+	// Last-wins on WithNetHTTPClient: two calls — the final non-nil
+	// client is what reaches the underlying llmhttp.Client.
+	clientA := &http.Client{Timeout: 1 * time.Second}
+	clientB := &http.Client{Timeout: 2 * time.Second}
+	cfg := &config{}
+	for _, opt := range []Option{WithNetHTTPClient(clientA), WithNetHTTPClient(clientB)} {
+		if err := opt(cfg); err != nil {
+			t.Fatalf("option: %v", err)
+		}
+	}
+	if cfg.netHTTPClient != clientB {
+		t.Errorf("WithNetHTTPClient is not last-wins: got %p, want %p", cfg.netHTTPClient, clientB)
+	}
+
+	// Last-wins on WithFastHTTPClient: two calls — the final options
+	// value is what reaches the cache.
+	cfg = &config{}
+	first := llmhttp.FastHTTPClientOptions{MaxConns: 10}
+	second := llmhttp.FastHTTPClientOptions{MaxConns: 20}
+	for _, opt := range []Option{WithFastHTTPClient(first), WithFastHTTPClient(second)} {
+		if err := opt(cfg); err != nil {
+			t.Fatalf("option: %v", err)
+		}
+	}
+	if cfg.fastHTTPOptions.MaxConns != 20 {
+		t.Errorf("WithFastHTTPClient is not last-wins: MaxConns = %d, want 20", cfg.fastHTTPOptions.MaxConns)
+	}
+}

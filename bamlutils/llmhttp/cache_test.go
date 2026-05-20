@@ -2,11 +2,14 @@ package llmhttp
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestParseOrigin(t *testing.T) {
@@ -55,7 +58,7 @@ func TestProtocolCacheMode_HTTPAlwaysFast(t *testing.T) {
 	// Plain http:// must never probe — the cache decides "fast" immediately.
 	// The fact that the probe TLS dialer points at nothing is sufficient
 	// proof that we didn't attempt one.
-	cache := newProtocolCache(modeAuto, nil, nil)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("http://example.invalid/")
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +73,7 @@ func TestProtocolCacheMode_HTTPAlwaysFast(t *testing.T) {
 }
 
 func TestProtocolCacheMode_OverrideFast(t *testing.T) {
-	cache := newProtocolCache(modeFast, nil, nil)
+	cache := newProtocolCache(modeFast, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("https://api.openai.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +88,7 @@ func TestProtocolCacheMode_OverrideFast(t *testing.T) {
 }
 
 func TestProtocolCacheMode_OverrideNet(t *testing.T) {
-	cache := newProtocolCache(modeNet, nil, nil)
+	cache := newProtocolCache(modeNet, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("https://api.openai.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +106,7 @@ func TestProtocolCache_ProxyPinsNet(t *testing.T) {
 	proxy := func(req *http.Request) (*url.URL, error) {
 		return &url.URL{Scheme: "http", Host: "proxy.example:3128"}, nil
 	}
-	cache := newProtocolCache(modeAuto, nil, proxy)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, proxy)
 	origin, err := parseOrigin("https://api.openai.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +124,7 @@ func TestProtocolCache_ProxyPinsNetForHTTP(t *testing.T) {
 	proxy := func(req *http.Request) (*url.URL, error) {
 		return &url.URL{Scheme: "http", Host: "proxy.example:3128"}, nil
 	}
-	cache := newProtocolCache(modeAuto, nil, proxy)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, proxy)
 	origin, err := parseOrigin("http://internal.service/")
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +140,7 @@ func TestProtocolCache_CacheHitIsLockFree(t *testing.T) {
 	// go through singleflight or any mutex — hit the atomic map and return.
 	// We approximate this by racing many resolvers and ensuring no data
 	// races trip the race detector. The `go test -race` pass catches it.
-	cache := newProtocolCache(modeFast, nil, nil)
+	cache := newProtocolCache(modeFast, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("http://host/")
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +171,7 @@ func TestProtocolCache_SingleflightDedupe(t *testing.T) {
 		probes.Add(1)
 		return &url.URL{Scheme: "http", Host: "proxy:3128"}, nil
 	}
-	cache := newProtocolCache(modeAuto, nil, proxy)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, proxy)
 	origin, err := parseOrigin("https://host/")
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +231,7 @@ func TestLoadClientMode(t *testing.T) {
 // decision always ships with a non-nil HostClient (dispatcher nil-checks
 // it), while a net decision never allocates one.
 func TestBuildEntry_FastCarriesHost(t *testing.T) {
-	cache := newProtocolCache(modeAuto, nil, nil)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("https://x/")
 	if err != nil {
 		t.Fatalf("parseOrigin: %v", err)
@@ -248,5 +251,77 @@ func TestBuildEntry_FastCarriesHost(t *testing.T) {
 	net := cache.buildEntry(origin, decisionNet)
 	if net.host != nil {
 		t.Error("decisionNet entry must not allocate a HostClient")
+	}
+}
+
+// TestProbe_PreservesCallerServerName guards against the Auto-mode probe
+// clobbering a caller-supplied TLSConfig.ServerName with the URL
+// hostname. A caller that overrides SNI via
+// FastHTTPClientOptions.TLSConfig.ServerName (e.g. to talk to an LLM
+// gateway whose cert advertises a different name than the dial target)
+// must see that ServerName reach the wire during the probe — otherwise
+// the probe handshake would fail and the origin would be silently pinned
+// to net/http, defeating the configured fasthttp tuning.
+//
+// The test captures the ClientHello SNI server-side via
+// GetConfigForClient. With the fix, the wire SNI equals the caller's
+// override. Without the fix, the probe would overwrite ServerName with
+// "127.0.0.1" (the URL hostname), which Go's TLS stack strips before
+// emitting SNI — so the buggy path observes an empty SNI on the wire.
+func TestProbe_PreservesCallerServerName(t *testing.T) {
+	const callerSNI = "custom.sni.example"
+
+	sniCh := make(chan string, 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	server.TLS = &tls.Config{
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			select {
+			case sniCh <- hello.ServerName:
+			default:
+			}
+			return nil, nil
+		},
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+
+	// InsecureSkipVerify so the probe handshake completes despite the
+	// caller's ServerName not matching the test certificate's SAN — we
+	// care about what SNI hits the wire, not about cert verification.
+	tlsCfg := &tls.Config{
+		ServerName:         callerSNI,
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS12,
+	}
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{TLSConfig: tlsCfg}, nil)
+
+	origin, err := parseOrigin("https://" + u.Host + "/")
+	if err != nil {
+		t.Fatalf("parseOrigin: %v", err)
+	}
+	if got := cache.resolve(context.Background(), origin); got == nil {
+		t.Fatal("resolve returned nil")
+	}
+
+	select {
+	case sni := <-sniCh:
+		if sni != callerSNI {
+			t.Errorf("probe sent SNI %q on the wire, want caller-supplied %q (URL hostname was %q)", sni, callerSNI, origin.hostname)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe did not reach the TLS server within 5s")
+	}
+
+	// The caller's TLSConfig itself must not be mutated by the probe —
+	// the clone is what gets the NextProtos / ServerName tweaks.
+	if tlsCfg.ServerName != callerSNI {
+		t.Errorf("caller's TLSConfig.ServerName mutated to %q; probe must clone before edit", tlsCfg.ServerName)
 	}
 }

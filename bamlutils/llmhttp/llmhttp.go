@@ -13,6 +13,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -122,16 +123,53 @@ type Client struct {
 	useGlobalRewriteRules bool
 }
 
+// FastHTTPClientOptions tunes the fasthttp backend. Each field affects
+// only origins that route through fasthttp — either because Mode is
+// ClientModeFastHTTP or because Auto mode resolved an origin to
+// fasthttp via the ALPN probe.
+//
+// The net/http backend is tuned via ClientOptions.NetHTTPClient: the
+// caller supplies a configured *http.Client whose Transport.* fields
+// (MaxConnsPerHost, MaxIdleConnsPerHost, etc.) apply on that path.
+type FastHTTPClientOptions struct {
+	// MaxConns is the per-origin active connection cap for fasthttp.
+	// Values <= 0 use llmhttp's effectively-unbounded default
+	// (math.MaxInt32). fasthttp's own zero value falls back to
+	// DefaultMaxConnsPerHost = 512, which is too low for LLM traffic
+	// that funnels many concurrent requests to a few hosts.
+	MaxConns int
+
+	// MaxConnWaitTimeout is copied to fasthttp.HostClient. Zero keeps
+	// fasthttp's default no-wait behaviour: when MaxConns is saturated,
+	// Do returns ErrNoFreeConns immediately rather than blocking.
+	MaxConnWaitTimeout time.Duration
+
+	// MaxIdleConnDuration is copied to fasthttp.HostClient. Zero keeps
+	// fasthttp's default (10 seconds). Higher values reduce TLS
+	// handshakes for sustained LLM traffic.
+	MaxIdleConnDuration time.Duration
+
+	// TLSConfig is used by the fasthttp backend (per-origin HostClient)
+	// and the auto-mode ALPN probe. When nil, the default
+	// {MinVersion: TLS12} applies. The net/http backend gets its TLS
+	// config from NetHTTPClient.Transport.TLSClientConfig.
+	TLSConfig *tls.Config
+}
+
 // ClientOptions configures NewClientWithOptions / NewDefaultClientWithOptions.
 // All fields are optional; the constructors apply sensible defaults
 // matching the legacy env-driven NewClient(nil) shape when the
 // corresponding field is zero.
 type ClientOptions struct {
-	// HTTPClient is the underlying *http.Client. When nil, the
-	// constructor's default is used: http.DefaultClient for
-	// NewClientWithOptions; the tuned defaultLLMTransport-backed
-	// client for NewDefaultClientWithOptions.
-	HTTPClient *http.Client
+	// NetHTTPClient is the underlying *http.Client used by the net/http
+	// backend. When nil, the constructor's default is used:
+	// http.DefaultClient for NewClientWithOptions; the tuned
+	// defaultLLMTransport-backed client for NewDefaultClientWithOptions.
+	//
+	// This field tunes only the net/http backend. The fasthttp backend
+	// is tuned via FastHTTP below; under Mode == ClientModeAuto each
+	// backend uses its own settings on the origins it serves.
+	NetHTTPClient *http.Client
 	// Mode forces a specific backend selection (Auto / FastHTTP /
 	// NetHTTP). Defaults to ClientModeAuto when zero.
 	Mode ClientMode
@@ -154,6 +192,10 @@ type ClientOptions struct {
 	// To opt into the env-driven defaults under the options
 	// constructors, pass urlrewrite.LoadDefaultRules().
 	RewriteRules []urlrewrite.Rule
+	// FastHTTP tunes the fasthttp backend. Applies when Mode is
+	// ClientModeFastHTTP or when Auto mode resolves an origin to
+	// fasthttp. Ignored entirely when Mode is ClientModeNetHTTP.
+	FastHTTP FastHTTPClientOptions
 }
 
 // NewClient creates a new LLM HTTP client with the given http.Client.
@@ -190,9 +232,15 @@ func NewClient(httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	// Legacy seam: mirror the injected http.Client's TLS config into the
+	// fasthttp/probe path so private CAs and custom verification keep
+	// working under BAML_REST_HTTP_CLIENT=fasthttp / Auto.
+	fast := FastHTTPClientOptions{
+		TLSConfig: tlsConfigFromHTTPClient(httpClient),
+	}
 	return &Client{
 		httpClient:            httpClient,
-		cache:                 newProtocolCache(loadClientMode(), tlsConfigFromHTTPClient(httpClient), proxyFuncFromHTTPClient(httpClient)),
+		cache:                 newProtocolCache(loadClientMode(), fast, proxyFuncFromHTTPClient(httpClient)),
 		useGlobalRewriteRules: true,
 	}
 }
@@ -207,31 +255,31 @@ func NewClient(httpClient *http.Client) *Client {
 // Execute / ExecuteStream / ExecuteAWSStream calls reading
 // c.rewriteRules at request time.
 //
-// HTTPClient nil falls back to http.DefaultClient (matching NewClient).
+// NetHTTPClient nil falls back to http.DefaultClient (matching NewClient).
 // For the tuned LLM transport, use NewDefaultClientWithOptions.
 func NewClientWithOptions(opts ClientOptions) *Client {
-	httpClient := opts.HTTPClient
+	httpClient := opts.NetHTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	return &Client{
 		httpClient:   httpClient,
-		cache:        newProtocolCache(opts.Mode, tlsConfigFromHTTPClient(httpClient), proxyFuncFromHTTPClient(httpClient)),
+		cache:        newProtocolCache(opts.Mode, opts.FastHTTP, proxyFuncFromHTTPClient(httpClient)),
 		rewriteRules: slices.Clone(opts.RewriteRules),
 	}
 }
 
 // NewDefaultClientWithOptions builds a Client whose underlying
 // *http.Client uses defaultLLMTransport — the tuned LLM-traffic
-// transport that backs the package-level DefaultClient. opts.HTTPClient
-// is ignored.
+// transport that backs the package-level DefaultClient. opts.NetHTTPClient
+// is overridden.
 //
 // Use this when constructing a per-process LLM client at startup so
 // the same connection-pool sizing the legacy DefaultClient relied on
 // applies to the new explicit client.
 func NewDefaultClientWithOptions(opts ClientOptions) *Client {
 	httpClient := &http.Client{Transport: defaultLLMTransport}
-	opts.HTTPClient = httpClient
+	opts.NetHTTPClient = httpClient
 	return NewClientWithOptions(opts)
 }
 
@@ -275,9 +323,12 @@ func proxyFuncFromHTTPClient(c *http.Client) func(*http.Request) (*url.URL, erro
 // etc.). With the default, almost every request under concurrent load creates
 // a new TCP+TLS connection (~100-300ms handshake overhead per request).
 //
-// The values below mirror http.DefaultTransport (Go 1.26) with connection
-// pool sizes raised for the LLM provider traffic pattern: many concurrent
-// requests to few hosts.
+// The caps are deliberately uncapped: MaxConnsPerHost=0 (no active limit),
+// MaxIdleConns=0 (no global idle limit), MaxIdleConnsPerHost=math.MaxInt32
+// (effectively no per-host idle limit). Worker concurrency is bounded
+// upstream by the pool size, so the transport itself does not need to
+// throttle further; an artificial cap would just queue requests behind
+// new TCP+TLS handshakes for no benefit.
 var defaultLLMTransport = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
 	DialContext: (&net.Dialer{
@@ -289,8 +340,9 @@ var defaultLLMTransport = &http.Transport{
 		MinVersion: tls.VersionTLS12,
 	},
 	TLSHandshakeTimeout:   10 * time.Second,
-	MaxIdleConns:          256,
-	MaxIdleConnsPerHost:   64,
+	MaxIdleConns:          0,
+	MaxIdleConnsPerHost:   math.MaxInt32,
+	MaxConnsPerHost:       0,
 	IdleConnTimeout:       90 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
 }
