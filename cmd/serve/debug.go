@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/rs/zerolog"
@@ -62,7 +62,7 @@ func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *p
 		var req struct {
 			FirstByteTimeoutMs *int64 `json:"first_byte_timeout_ms,omitempty"`
 		}
-		if err := json.Unmarshal(c.Body(), &req); err != nil {
+		if err := sonic.Unmarshal(c.Body(), &req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"status": "error",
 				"error":  err.Error(),

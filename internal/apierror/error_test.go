@@ -1,11 +1,10 @@
 package apierror
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/goccy/go-json"
 )
 
 // TestValidDetails pins the json.Valid contract: invalid bytes drop

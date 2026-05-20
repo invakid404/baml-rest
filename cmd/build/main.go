@@ -21,8 +21,8 @@ import (
 
 	"github.com/containerd/containerd/v2/pkg/protobuf/proto"
 	"github.com/containerd/platforms"
+	"github.com/bytedance/sonic"
 	"github.com/docker/buildx/util/progress"
-	"github.com/goccy/go-json"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	buildkitclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/util/progress/progressui"
@@ -704,7 +704,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		_ = body.Close()
 	}(response.Body)
 
-	decoder := json.NewDecoder(response.Body)
+	decoder := sonic.ConfigDefault.NewDecoder(response.Body)
 
 	progressWriter, err := progress.NewPrinter(context.TODO(), os.Stdout, progressui.AutoMode)
 	if err != nil {
@@ -1232,7 +1232,7 @@ func pullImage(ctx context.Context, cli *client.Client, imageName string, platfo
 	}(reader)
 
 	// Process the output to show progress
-	decoder := json.NewDecoder(reader)
+	decoder := sonic.ConfigDefault.NewDecoder(reader)
 	for {
 		var message map[string]interface{}
 		if err := decoder.Decode(&message); err != nil {

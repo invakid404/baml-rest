@@ -2,10 +2,11 @@ package main
 
 import (
 	"bytes"
+	stdjson "encoding/json"
 	"errors"
 	"net/http"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/gofiber/fiber/v3"
 	fiberrequestid "github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/invakid404/baml-rest/internal/apierror"
@@ -22,10 +23,10 @@ func writeFiberJSONError(c fiber.Ctx, message string, statusCode int) error {
 // writeFiberJSONErrorWithCode writes a JSON error response carrying a
 // machine-readable code and optional structured details. Pass code=""
 // and details=nil to omit those fields. details is validated through
-// apierror.ValidDetails so an invalid json.RawMessage cannot corrupt
+// apierror.ValidDetails so an invalid stdjson.RawMessage cannot corrupt
 // the encoded body — same defense-in-depth as apierror.WriteJSONWithCode
 // applies on the chi side.
-func writeFiberJSONErrorWithCode(c fiber.Ctx, message string, code apierror.Code, details json.RawMessage, statusCode int) error {
+func writeFiberJSONErrorWithCode(c fiber.Ctx, message string, code apierror.Code, details stdjson.RawMessage, statusCode int) error {
 	return c.Status(statusCode).JSON(apierror.Response{
 		Error:     message,
 		Code:      code,
@@ -153,9 +154,9 @@ func fiberErrorHandler(c fiber.Ctx, err error) error {
 // (or a human debugging) sees the panic trace alongside the message.
 // Stacktraces are also independently logged via httplogger.SetError —
 // the response copy is the explicit, agent-facing channel.
-func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
+func classifyWorkerError(err error) (apierror.Code, stdjson.RawMessage) {
 	var workerCode apierror.Code
-	var details json.RawMessage
+	var details stdjson.RawMessage
 
 	var stackErr *workerplugin.ErrorWithStack
 	if errors.As(err, &stackErr) {
@@ -205,14 +206,14 @@ func classifyWorkerError(err error) (apierror.Code, json.RawMessage) {
 //     arrays, and null are dropped. The OpenAPI schema declares
 //     details as an object (additionalProperties), so anything else
 //     would lie about the contract and confuse generated clients.
-func normalizeWorkerMetadata(rawCode string, rawDetails []byte) (apierror.Code, json.RawMessage) {
+func normalizeWorkerMetadata(rawCode string, rawDetails []byte) (apierror.Code, stdjson.RawMessage) {
 	var code apierror.Code
 	if c := apierror.Code(rawCode); c.IsWorkerFacing() {
 		code = c
 	}
-	var details json.RawMessage
+	var details stdjson.RawMessage
 	if isJSONObject(rawDetails) {
-		details = json.RawMessage(rawDetails)
+		details = stdjson.RawMessage(rawDetails)
 	}
 	return code, details
 }
@@ -225,15 +226,15 @@ func isJSONObject(b []byte) bool {
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return false
 	}
-	return json.Valid(trimmed)
+	return sonic.Valid(trimmed)
 }
 
 // stacktraceDetailsJSON marshals st into the canonical
 // {"stacktrace": "..."} envelope used by the response Details field.
 // Falls back to nil on the (effectively impossible) marshal failure so
 // callers don't ship a half-formed payload.
-func stacktraceDetailsJSON(st string) json.RawMessage {
-	payload, err := json.Marshal(struct {
+func stacktraceDetailsJSON(st string) stdjson.RawMessage {
+	payload, err := sonic.Marshal(struct {
 		Stacktrace string `json:"stacktrace"`
 	}{Stacktrace: st})
 	if err != nil {
@@ -246,7 +247,7 @@ func stacktraceDetailsJSON(st string) json.RawMessage {
 // writeFiberJSONErrorWithCode. Lives in this file rather than
 // unary_handlers.go so the chi handlers and the Fiber handlers share
 // one definition of the error envelope and the worker-error classifier.
-func writeChiJSONErrorWithCode(w http.ResponseWriter, r *http.Request, message string, code apierror.Code, details json.RawMessage, statusCode int) {
+func writeChiJSONErrorWithCode(w http.ResponseWriter, r *http.Request, message string, code apierror.Code, details stdjson.RawMessage, statusCode int) {
 	apierror.WriteJSONWithCode(w, message, code, details, statusCode, unaryRequestID(r.Context()))
 }
 

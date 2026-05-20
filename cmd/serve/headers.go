@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/bamlutils"
 )
@@ -114,7 +114,7 @@ func decodeMetadataJSON(data []byte) *bamlutils.Metadata {
 		return nil
 	}
 	var md bamlutils.Metadata
-	if err := json.Unmarshal(data, &md); err != nil {
+	if err := sonic.Unmarshal(data, &md); err != nil {
 		return nil
 	}
 	return &md

@@ -17,8 +17,10 @@ import (
 	"syscall"
 	"time"
 
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/goccy/go-json"
 	fiberzerolog "github.com/gofiber/contrib/v3/zerolog"
 	"github.com/gofiber/fiber/v3"
 	fiberrecover "github.com/gofiber/fiber/v3/middleware/recover"
@@ -210,7 +212,7 @@ var serveCmd = &cobra.Command{
 
 		// Load OpenAPI schema from embedded JSON
 		var schema openapi3.T
-		if err := json.Unmarshal(openapiJSON, &schema); err != nil {
+		if err := sonic.Unmarshal(openapiJSON, &schema); err != nil {
 			return fmt.Errorf("failed to parse embedded OpenAPI schema: %w", err)
 		}
 
@@ -314,8 +316,8 @@ var serveCmd = &cobra.Command{
 		// *fiber.Error errors (uncaught from a handler) default to
 		// 500 internal_error.
 		app := fiber.New(fiber.Config{
-			JSONEncoder:  json.Marshal,
-			JSONDecoder:  json.Unmarshal,
+			JSONEncoder:  sonic.Marshal,
+			JSONDecoder:  sonic.Unmarshal,
 			BodyLimit:    maxRequestBodyBytes,
 			ErrorHandler: fiberErrorHandler,
 		})
@@ -688,7 +690,7 @@ var serveCmd = &cobra.Command{
 // the request omits / nulls the field; per-request true/false wins.
 func parseDynamicCallBody(rawBody []byte, preserveSchemaOrderDefault bool) (workerInput []byte, statusCode int, code apierror.Code, err error) {
 	var input bamlutils.DynamicInput
-	if err := json.Unmarshal(rawBody, &input); err != nil {
+	if err := sonic.Unmarshal(rawBody, &input); err != nil {
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidJSON, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -711,7 +713,7 @@ func parseDynamicCallBody(rawBody []byte, preserveSchemaOrderDefault bool) (work
 // rather than DynamicInput.
 func parseDynamicParseBody(rawBody []byte, preserveSchemaOrderDefault bool) (workerInput []byte, statusCode int, code apierror.Code, err error) {
 	var input bamlutils.DynamicParseInput
-	if err := json.Unmarshal(rawBody, &input); err != nil {
+	if err := sonic.Unmarshal(rawBody, &input); err != nil {
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidJSON, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -749,7 +751,7 @@ func main() {
 
 // CallWithRawResponse is the response format for the /call-with-raw endpoint
 type CallWithRawResponse struct {
-	Data      json.RawMessage `json:"data"`
+	Data      stdjson.RawMessage `json:"data"`
 	Raw       string          `json:"raw"`
 	Reasoning string          `json:"reasoning,omitempty"`
 }

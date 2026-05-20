@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/pool"
@@ -321,7 +321,7 @@ func TestClassifyWorkerError_StacktraceDetails(t *testing.T) {
 	var parsed struct {
 		Stacktrace string `json:"stacktrace"`
 	}
-	if err := json.Unmarshal(details, &parsed); err != nil {
+	if err := sonic.Unmarshal(details, &parsed); err != nil {
 		t.Fatalf("details did not unmarshal as {stacktrace}: %v (raw: %s)", err, string(details))
 	}
 	if parsed.Stacktrace != trace {
@@ -378,7 +378,7 @@ func TestClassifyStreamResultError_StructuredDetailsOverride(t *testing.T) {
 	}
 
 	var parsed map[string]string
-	if err := json.Unmarshal(details, &parsed); err != nil {
+	if err := sonic.Unmarshal(details, &parsed); err != nil {
 		t.Fatalf("details did not unmarshal as object: %v (raw: %s)", err, details)
 	}
 	if parsed["foo"] != "bar" || parsed["field"] != "sentiment" {
@@ -405,7 +405,7 @@ func TestClassifyStreamResultError_StacktraceDetails(t *testing.T) {
 	var parsed struct {
 		Stacktrace string `json:"stacktrace"`
 	}
-	if err := json.Unmarshal(details, &parsed); err != nil {
+	if err := sonic.Unmarshal(details, &parsed); err != nil {
 		t.Fatalf("details did not unmarshal: %v (raw: %s)", err, string(details))
 	}
 	if parsed.Stacktrace != trace {
@@ -552,7 +552,7 @@ func TestClassifyWorkerError_ScalarDetailsFallsBackToStacktrace(t *testing.T) {
 	var parsed struct {
 		Stacktrace string `json:"stacktrace"`
 	}
-	if err := json.Unmarshal(details, &parsed); err != nil {
+	if err := sonic.Unmarshal(details, &parsed); err != nil {
 		t.Fatalf("details did not unmarshal as {stacktrace}: %v (raw: %s)", err, details)
 	}
 	if parsed.Stacktrace != trace {
@@ -591,7 +591,7 @@ func TestClassifyStreamResultError_NormalizesWorkerFields(t *testing.T) {
 		var parsed struct {
 			Stacktrace string `json:"stacktrace"`
 		}
-		if err := json.Unmarshal(details, &parsed); err != nil {
+		if err := sonic.Unmarshal(details, &parsed); err != nil {
 			t.Fatalf("details did not unmarshal as {stacktrace}: %v (raw: %s)", err, details)
 		}
 		if parsed.Stacktrace != trace {
@@ -616,8 +616,8 @@ func TestClassifyStreamResultError_NormalizesWorkerFields(t *testing.T) {
 // apierror.Code mapping; that's what this asserts.
 func TestFiberErrorHandler_413MapsToRequestTooLarge(t *testing.T) {
 	app := fiber.New(fiber.Config{
-		JSONEncoder:  json.Marshal,
-		JSONDecoder:  json.Unmarshal,
+		JSONEncoder:  sonic.Marshal,
+		JSONDecoder:  sonic.Unmarshal,
 		ErrorHandler: fiberErrorHandler,
 	})
 	app.Post("/oversize", func(c fiber.Ctx) error {
@@ -638,7 +638,7 @@ func TestFiberErrorHandler_413MapsToRequestTooLarge(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want application/json (Fiber default would emit text/plain)", ct)
 	}
 	var parsed apierror.Response
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := sonic.ConfigDefault.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	if parsed.Code != apierror.CodeRequestTooLarge {
@@ -657,8 +657,8 @@ func TestFiberErrorHandler_413MapsToRequestTooLarge(t *testing.T) {
 // need a special case for "this came from Fiber, not our handlers."
 func TestFiberErrorHandler_GenericFiberErrorEmitsJSON(t *testing.T) {
 	app := fiber.New(fiber.Config{
-		JSONEncoder:  json.Marshal,
-		JSONDecoder:  json.Unmarshal,
+		JSONEncoder:  sonic.Marshal,
+		JSONDecoder:  sonic.Unmarshal,
 		ErrorHandler: fiberErrorHandler,
 	})
 	app.Get("/needs-method", func(c fiber.Ctx) error {
@@ -679,7 +679,7 @@ func TestFiberErrorHandler_GenericFiberErrorEmitsJSON(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want application/json", ct)
 	}
 	var parsed apierror.Response
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := sonic.ConfigDefault.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	if parsed.Code != "" {
@@ -696,8 +696,8 @@ func TestFiberErrorHandler_GenericFiberErrorEmitsJSON(t *testing.T) {
 // internal_error rather than Fiber's default text/plain handling.
 func TestFiberErrorHandler_PlainErrorMapsToInternal(t *testing.T) {
 	app := fiber.New(fiber.Config{
-		JSONEncoder:  json.Marshal,
-		JSONDecoder:  json.Unmarshal,
+		JSONEncoder:  sonic.Marshal,
+		JSONDecoder:  sonic.Unmarshal,
 		ErrorHandler: fiberErrorHandler,
 	})
 	app.Get("/bug", func(c fiber.Ctx) error {
@@ -715,7 +715,7 @@ func TestFiberErrorHandler_PlainErrorMapsToInternal(t *testing.T) {
 		t.Fatalf("status = %d, want 500", resp.StatusCode)
 	}
 	var parsed apierror.Response
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := sonic.ConfigDefault.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	if parsed.Code != apierror.CodeInternalError {
