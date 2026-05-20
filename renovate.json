@@ -72,6 +72,13 @@
         "adapters/**/go.mod"
       ],
       "enabled": false
+    },
+    {
+      "description": "dynclient/baml-patched/go.mod is regen-managed: cmd/regenerate-dynclient copies the file verbatim from upstream BAML's go.mod (see cmd/hacks/hacks/patched_module.go writePatchedGoMod). Any Renovate bump here is reverted by the cmd/regenerate-dynclient fresh-tree gate in CI.",
+      "matchFileNames": [
+        "dynclient/baml-patched/go.mod"
+      ],
+      "enabled": false
     }
   ]
 }
