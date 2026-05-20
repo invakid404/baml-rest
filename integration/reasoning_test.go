@@ -33,7 +33,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -94,12 +96,12 @@ func setupAnthropicReasoningScenario(t *testing.T, scenarioID, content, thinking
 
 func boolPtr(v bool) *bool { return &v }
 
-func assertParsedMessage(t *testing.T, data json.RawMessage, want string) {
+func assertParsedMessage(t *testing.T, data stdjson.RawMessage, want string) {
 	t.Helper()
 	var parsed struct {
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
+	if err := sonic.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("Failed to unmarshal parsed data: %v (raw bytes: %s)", err, string(data))
 	}
 	if parsed.Message != want {
@@ -256,7 +258,7 @@ type streamWithRawResult struct {
 	finalEvent         *testutil.StreamEvent
 	rawSnapshots       []string
 	reasoningSnapshots []string
-	dataEvents         []json.RawMessage
+	dataEvents         []stdjson.RawMessage
 }
 
 // streamWithRawTransport selects the wire format under test. Both
@@ -454,7 +456,7 @@ func TestStreamWithRaw_AnthropicReasoning_ParseableInvariant_PerEvent(t *testing
 		var parsed struct {
 			Message string `json:"message"`
 		}
-		if err := json.Unmarshal(data, &parsed); err != nil {
+		if err := sonic.Unmarshal(data, &parsed); err != nil {
 			continue
 		}
 		if parsed.Message == "answer" {

@@ -5,7 +5,7 @@ package mockllm
 import (
 	"fmt"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 )
 
 // Provider interface for formatting LLM responses.
@@ -45,7 +45,7 @@ func (p *OpenAIProvider) FormatChunk(content string, index int) string {
 			},
 		},
 	}
-	data, _ := json.Marshal(chunk)
+	data, _ := sonic.Marshal(chunk)
 	return fmt.Sprintf("data: %s\n\n", data)
 }
 
@@ -63,7 +63,7 @@ func (p *OpenAIProvider) FormatFinalChunk(index int) string {
 			},
 		},
 	}
-	data, _ := json.Marshal(chunk)
+	data, _ := sonic.Marshal(chunk)
 	return fmt.Sprintf("data: %s\n\n", data)
 }
 
@@ -93,7 +93,7 @@ func (p *OpenAIProvider) FormatNonStreaming(content string) ([]byte, error) {
 			"total_tokens":      10 + len(content)/4,
 		},
 	}
-	return json.Marshal(response)
+	return sonic.Marshal(response)
 }
 
 func (p *OpenAIProvider) ContentType(streaming bool) string {
@@ -126,7 +126,7 @@ func (p *AnthropicProvider) FormatChunk(content string, index int) string {
 				"text": content,
 			},
 		}
-		data, _ := json.Marshal(delta)
+		data, _ := sonic.Marshal(delta)
 		return start + blockStart + fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", data)
 	}
 	delta := map[string]any{
@@ -137,7 +137,7 @@ func (p *AnthropicProvider) FormatChunk(content string, index int) string {
 			"text": content,
 		},
 	}
-	data, _ := json.Marshal(delta)
+	data, _ := sonic.Marshal(delta)
 	return fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", data)
 }
 
@@ -188,7 +188,7 @@ func (p *AnthropicProvider) FormatNonStreamingWithThinking(content, thinking str
 			"output_tokens": (len(content) + len(thinking)) / 4,
 		},
 	}
-	return json.Marshal(response)
+	return sonic.Marshal(response)
 }
 
 func (p *AnthropicProvider) ContentType(streaming bool) string {
@@ -248,7 +248,7 @@ func (p *AnthropicProvider) AnthropicBlockDelta(deltaType, content string, block
 		"index": blockIndex,
 		"delta": deltaPayload,
 	}
-	data, _ := json.Marshal(event)
+	data, _ := sonic.Marshal(event)
 	return fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", data)
 }
 
@@ -292,7 +292,7 @@ func (p *GoogleAIProvider) FormatChunk(content string, index int) string {
 			},
 		},
 	}
-	data, _ := json.Marshal(chunk)
+	data, _ := sonic.Marshal(chunk)
 	return fmt.Sprintf("data: %s\n\n", data)
 }
 
@@ -315,7 +315,7 @@ func (p *GoogleAIProvider) FormatFinalChunk(index int) string {
 			"totalTokenCount":      15,
 		},
 	}
-	data, _ := json.Marshal(chunk)
+	data, _ := sonic.Marshal(chunk)
 	return fmt.Sprintf("data: %s\n\n", data)
 }
 
@@ -340,7 +340,7 @@ func (p *GoogleAIProvider) FormatNonStreaming(content string) ([]byte, error) {
 			},
 		},
 	}
-	return json.Marshal(response)
+	return sonic.Marshal(response)
 }
 
 func (p *GoogleAIProvider) ContentType(streaming bool) string {
@@ -358,7 +358,7 @@ func (p *OpenAIResponsesProvider) FormatChunk(content string, index int) string 
 		"type":  "response.output_text.delta",
 		"delta": content,
 	}
-	data, _ := json.Marshal(chunk)
+	data, _ := sonic.Marshal(chunk)
 	return fmt.Sprintf("data: %s\n\n", data)
 }
 
@@ -384,7 +384,7 @@ func (p *OpenAIResponsesProvider) FormatNonStreaming(content string) ([]byte, er
 		},
 		"status": "completed",
 	}
-	return json.Marshal(response)
+	return sonic.Marshal(response)
 }
 
 func (p *OpenAIResponsesProvider) ContentType(streaming bool) string {

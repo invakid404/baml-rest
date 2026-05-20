@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -162,7 +162,7 @@ func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
 		var person struct {
 			Name string `json:"name"`
 		}
-		if err := json.Unmarshal(r.resp.Body, &person); err != nil {
+		if err := sonic.Unmarshal(r.resp.Body, &person); err != nil {
 			t.Errorf("[%s] failed to unmarshal response: %v (body=%s)", r.backend, err, r.resp.Body)
 			continue
 		}

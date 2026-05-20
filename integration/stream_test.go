@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -85,7 +85,7 @@ func TestStreamEndpoint(t *testing.T) {
 			Name string `json:"name"`
 			Age  int    `json:"age"`
 		}
-		if err := json.Unmarshal(lastEvent.Data, &person); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &person); err != nil {
 			t.Fatalf("Failed to unmarshal last event: %v", err)
 		}
 
@@ -144,7 +144,7 @@ func TestStreamEndpoint(t *testing.T) {
 			Name string `json:"name"`
 			Age  int    `json:"age"`
 		}
-		if err := json.Unmarshal(lastEvent.Data, &people); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &people); err != nil {
 			t.Fatalf("Failed to unmarshal last event: %v", err)
 		}
 
@@ -557,7 +557,7 @@ func TestWorkerDeathMidStream(t *testing.T) {
 				Age  int      `json:"age"`
 				Tags []string `json:"tags"`
 			}
-			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
+			if err := sonic.Unmarshal(lastDataEvent.Data, &person); err != nil {
 				t.Fatalf("Failed to unmarshal last event data: %v", err)
 			}
 			if person.Name != "John Doe" || person.Age != 30 {
@@ -714,7 +714,7 @@ func TestWorkerDeathMidStream(t *testing.T) {
 				Age  int      `json:"age"`
 				Tags []string `json:"tags"`
 			}
-			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
+			if err := sonic.Unmarshal(lastDataEvent.Data, &person); err != nil {
 				t.Fatalf("Failed to unmarshal last event data: %v", err)
 			}
 			if person.Name != "Jane Smith" || person.Age != 25 {
@@ -890,7 +890,7 @@ func TestWorkerDeathMidStream(t *testing.T) {
 				Age  int      `json:"age"`
 				Tags []string `json:"tags"`
 			}
-			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
+			if err := sonic.Unmarshal(lastDataEvent.Data, &person); err != nil {
 				t.Fatalf("Failed to unmarshal last event data: %v", err)
 			}
 			if person.Name != "Hung Test Recovery" || person.Age != 42 {
@@ -971,7 +971,7 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 			Name string `json:"name"`
 			Age  int    `json:"age"`
 		}
-		if err := json.Unmarshal(lastEvent.Data, &person); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &person); err != nil {
 			t.Fatalf("Failed to unmarshal last event: %v", err)
 		}
 
@@ -1027,7 +1027,7 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 			Name string `json:"name"`
 			Age  int    `json:"age"`
 		}
-		if err := json.Unmarshal(lastEvent.Data, &people); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &people); err != nil {
 			t.Fatalf("Failed to unmarshal last event: %v", err)
 		}
 
@@ -1042,7 +1042,7 @@ func TestStreamAcceptHeaderNegotiation(t *testing.T) {
 	// Helper to make a raw HTTP request and return the Content-Type
 	makeRequest := func(t *testing.T, ctx context.Context, acceptHeader string, opts *testutil.BAMLOptions) string {
 		t.Helper()
-		body, err := json.Marshal(map[string]any{
+		body, err := sonic.Marshal(map[string]any{
 			"input":            "test",
 			"__baml_options__": opts,
 		})
@@ -1131,7 +1131,7 @@ func TestStreamAcceptHeaderNegotiation(t *testing.T) {
 		content := `{"message": "hello"}`
 		opts := setupScenario(t, "test-accept-unknown", content)
 
-		body, err := json.Marshal(map[string]any{
+		body, err := sonic.Marshal(map[string]any{
 			"input":            "test",
 			"__baml_options__": opts,
 		})
@@ -1181,7 +1181,7 @@ func TestStreamAcceptHeaderNegotiation(t *testing.T) {
 		opts := setupScenario(t, "test-accept-raw-ndjson", content)
 
 		// Test stream-with-raw endpoint with NDJSON
-		body, err := json.Marshal(map[string]any{
+		body, err := sonic.Marshal(map[string]any{
 			"input":            "test",
 			"__baml_options__": opts,
 		})
@@ -1219,7 +1219,7 @@ func TestStreamAcceptHeaderNegotiation(t *testing.T) {
 		opts := setupScenario(t, "test-accept-raw-default", content)
 
 		// Test stream-with-raw endpoint without Accept header
-		body, err := json.Marshal(map[string]any{
+		body, err := sonic.Marshal(map[string]any{
 			"input":            "test",
 			"__baml_options__": opts,
 		})
@@ -1688,7 +1688,7 @@ func TestWorkerDeathMidStreamNDJSON(t *testing.T) {
 				Age  int      `json:"age"`
 				Tags []string `json:"tags"`
 			}
-			if err := json.Unmarshal(lastDataEvent.Data, &person); err != nil {
+			if err := sonic.Unmarshal(lastDataEvent.Data, &person); err != nil {
 				t.Fatalf("Failed to unmarshal last event data: %v", err)
 			}
 			if person.Name != "John Doe" || person.Age != 30 {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -103,7 +103,7 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 		}
 
 		var result string
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if result != "Hello, bridge!" {
@@ -146,7 +146,7 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 		var data struct {
 			Message string `json:"message"`
 		}
-		if err := json.Unmarshal(resp.Data, &data); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &data); err != nil {
 			t.Fatalf("unmarshal data: %v", err)
 		}
 		if data.Message != "bridged-raw" {
@@ -212,7 +212,7 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 		}
 
 		var result string
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if result != "Hello from secondary!" {
@@ -360,7 +360,7 @@ func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
 	}
 
 	var result string
-	if err := json.Unmarshal(resp.Body, &result); err != nil {
+	if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if result != "Hello from mixed-chain secondary!" {

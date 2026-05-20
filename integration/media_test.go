@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -38,7 +38,7 @@ func TestMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -72,7 +72,7 @@ func TestMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -107,7 +107,7 @@ func TestMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -141,7 +141,7 @@ func TestMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -177,7 +177,7 @@ func TestMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -211,7 +211,7 @@ func TestMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -251,7 +251,7 @@ func TestNestedMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -288,7 +288,7 @@ func TestNestedMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -325,7 +325,7 @@ func TestNestedMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -368,7 +368,7 @@ func TestNestedMediaCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -433,7 +433,7 @@ func TestNestedMediaStreamEndpoint(t *testing.T) {
 		}
 
 		var result string
-		if err := json.Unmarshal(lastEvent.Data, &result); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal last event: %v", err)
 		}
 
@@ -508,7 +508,7 @@ func TestMediaCallWithRawEndpoint(t *testing.T) {
 			}
 
 			var data string
-			if err := json.Unmarshal(resp.Data, &data); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &data); err != nil {
 				t.Fatalf("Failed to unmarshal data: %v", err)
 			}
 
@@ -573,7 +573,7 @@ func TestMediaStreamEndpoint(t *testing.T) {
 		}
 
 		var result string
-		if err := json.Unmarshal(lastEvent.Data, &result); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal last event: %v", err)
 		}
 
@@ -637,7 +637,7 @@ func TestMediaStreamEndpoint(t *testing.T) {
 		}
 
 		var result string
-		if err := json.Unmarshal(lastEvent.Data, &result); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal last event: %v", err)
 		}
 
@@ -693,7 +693,7 @@ func TestMediaStreamEndpoint(t *testing.T) {
 		}
 
 		var result string
-		if err := json.Unmarshal(lastEvent.Data, &result); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal last event: %v", err)
 		}
 
@@ -952,7 +952,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -987,7 +987,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1019,7 +1019,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1059,7 +1059,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1097,7 +1097,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1139,7 +1139,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1174,7 +1174,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1206,7 +1206,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1243,7 +1243,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1275,7 +1275,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1316,7 +1316,7 @@ func TestMediaEdgeCases(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 

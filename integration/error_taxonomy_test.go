@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
@@ -151,7 +153,7 @@ func TestLegacyClassification_ParseErrorFromProseCallWithRaw(t *testing.T) {
 		var details struct {
 			Raw string `json:"raw"`
 		}
-		if err := json.Unmarshal(resp.ErrorDetails, &details); err != nil {
+		if err := sonic.Unmarshal(resp.ErrorDetails, &details); err != nil {
 			t.Fatalf("failed to unmarshal ErrorDetails %s: %v", resp.ErrorDetails, err)
 		}
 		if details.Raw == "" {
@@ -227,7 +229,7 @@ func TestLegacyClassification_ProviderHTTPError(t *testing.T) {
 		var details struct {
 			StatusCode int `json:"status_code"`
 		}
-		if err := json.Unmarshal(resp.ErrorDetails, &details); err != nil {
+		if err := sonic.Unmarshal(resp.ErrorDetails, &details); err != nil {
 			t.Fatalf("failed to unmarshal ErrorDetails %s: %v", resp.ErrorDetails, err)
 		}
 		if details.StatusCode != 500 {
@@ -324,7 +326,7 @@ func TestBuildRequestClassification_ParseErrorFromProseCallWithRaw(t *testing.T)
 		var details struct {
 			Raw string `json:"raw"`
 		}
-		if err := json.Unmarshal(resp.ErrorDetails, &details); err != nil {
+		if err := sonic.Unmarshal(resp.ErrorDetails, &details); err != nil {
 			t.Fatalf("failed to unmarshal ErrorDetails %s: %v", resp.ErrorDetails, err)
 		}
 		if details.Raw == "" {
@@ -404,9 +406,9 @@ func TestBuildRequestClassification_ParseErrorFromProseStreamWithRaw(t *testing.
 	var payload struct {
 		Error   string          `json:"error"`
 		Code    string          `json:"code"`
-		Details json.RawMessage `json:"details"`
+		Details stdjson.RawMessage `json:"details"`
 	}
-	if err := json.Unmarshal(errEvent.Data, &payload); err != nil {
+	if err := sonic.Unmarshal(errEvent.Data, &payload); err != nil {
 		t.Fatalf("failed to unmarshal error event Data %s: %v", errEvent.Data, err)
 	}
 	if payload.Code != "parse_error" {
@@ -418,7 +420,7 @@ func TestBuildRequestClassification_ParseErrorFromProseStreamWithRaw(t *testing.
 	var details struct {
 		Raw string `json:"raw"`
 	}
-	if err := json.Unmarshal(payload.Details, &details); err != nil {
+	if err := sonic.Unmarshal(payload.Details, &details); err != nil {
 		t.Fatalf("failed to unmarshal error event details %s: %v", payload.Details, err)
 	}
 	if details.Raw == "" {

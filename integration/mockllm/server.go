@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goccy/go-json"
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -96,7 +98,7 @@ func (s *Server) log(format string, args ...any) {
 
 func (s *Server) handleRegisterScenario(c fiber.Ctx) error {
 	var scenario Scenario
-	if err := json.Unmarshal(c.Body(), &scenario); err != nil {
+	if err := sonic.Unmarshal(c.Body(), &scenario); err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
 	}
 
@@ -191,13 +193,13 @@ type chatCompletionsRequest struct {
 
 type chatMessage struct {
 	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"` // Can be string or array of content parts
+	Content stdjson.RawMessage `json:"content"` // Can be string or array of content parts
 }
 
 func (m *chatMessage) GetContent() string {
 	// Try to unmarshal as string first
 	var str string
-	if err := json.Unmarshal(m.Content, &str); err == nil {
+	if err := sonic.Unmarshal(m.Content, &str); err == nil {
 		return str
 	}
 
@@ -206,7 +208,7 @@ func (m *chatMessage) GetContent() string {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	if err := json.Unmarshal(m.Content, &parts); err == nil {
+	if err := sonic.Unmarshal(m.Content, &parts); err == nil {
 		var texts []string
 		for _, part := range parts {
 			if part.Type == "text" {
@@ -223,7 +225,7 @@ func (s *Server) handleChatCompletions(c fiber.Ctx) error {
 	body := append([]byte(nil), c.Body()...)
 
 	var req chatCompletionsRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := sonic.Unmarshal(body, &req); err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
 	}
 
@@ -279,7 +281,7 @@ type anthropicValidationErrorBody struct {
 // the JSON path of the first offender for diagnostic clarity.
 func validateCacheControlObjectsRecursive(body []byte) *anthropicValidationError {
 	var raw any
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := sonic.Unmarshal(body, &raw); err != nil {
 		return nil
 	}
 	return walkForCacheControl(raw, "")
@@ -407,7 +409,7 @@ func (s *Server) handleAnthropicMessages(c fiber.Ctx) error {
 	body := append([]byte(nil), c.Body()...)
 
 	var req anthropicMessagesRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := sonic.Unmarshal(body, &req); err != nil {
 		return c.Status(fiber.StatusBadRequest).SendString(fmt.Sprintf("invalid JSON: %v", err))
 	}
 
@@ -579,7 +581,7 @@ func NewClient(baseURL string) *Client {
 
 // RegisterScenario registers a scenario with the mock server.
 func (c *Client) RegisterScenario(ctx context.Context, scenario *Scenario) error {
-	data, err := json.Marshal(scenario)
+	data, err := sonic.Marshal(scenario)
 	if err != nil {
 		return fmt.Errorf("failed to marshal scenario: %w", err)
 	}
@@ -694,7 +696,7 @@ func (c *Client) GetRequestCount(ctx context.Context, scenarioID string) (int, e
 	var result struct {
 		Count int `json:"count"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := sonic.ConfigDefault.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return 0, fmt.Errorf("failed to decode response: %w", err)
 	}
 	return result.Count, nil

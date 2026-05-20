@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -90,7 +90,7 @@ func TestDynamicTypes(t *testing.T) {
 				BaseField         string         `json:"base_field"`
 				DynamicProperties map[string]any `json:"DynamicProperties"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -146,7 +146,7 @@ func TestDynamicTypes(t *testing.T) {
 					BaseField         string         `json:"base_field"`
 					DynamicProperties map[string]any `json:"DynamicProperties"`
 				}
-				if err := json.Unmarshal(resp.Body, &result); err != nil {
+				if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 					t.Fatalf("Failed to unmarshal response: %v", err)
 				}
 
@@ -208,7 +208,7 @@ func TestDynamicTypes(t *testing.T) {
 					BaseField         string         `json:"base_field"`
 					DynamicProperties map[string]any `json:"DynamicProperties"`
 				}
-				if err := json.Unmarshal(resp.Body, &result); err != nil {
+				if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 					t.Fatalf("Failed to unmarshal response: %v", err)
 				}
 
@@ -274,7 +274,7 @@ func TestDynamicTypes(t *testing.T) {
 					Name     string `json:"name"`
 					Category string `json:"category"`
 				}
-				if err := json.Unmarshal(resp.Body, &result); err != nil {
+				if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 					t.Fatalf("Failed to unmarshal response: %v", err)
 				}
 
@@ -321,7 +321,7 @@ func TestDynamicTypes(t *testing.T) {
 					Name     string `json:"name"`
 					Category string `json:"category"`
 				}
-				if err := json.Unmarshal(resp.Body, &result); err != nil {
+				if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 					t.Fatalf("Failed to unmarshal response: %v", err)
 				}
 
@@ -370,7 +370,7 @@ func TestDynamicTypes(t *testing.T) {
 					Name     string `json:"name"`
 					Category string `json:"category"`
 				}
-				if err := json.Unmarshal(resp.Body, &result); err != nil {
+				if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 					t.Fatalf("Failed to unmarshal response: %v", err)
 				}
 
@@ -424,7 +424,7 @@ func TestDynamicTypes(t *testing.T) {
 					BaseField         string         `json:"base_field"`
 					DynamicProperties map[string]any `json:"DynamicProperties"`
 				}
-				if err := json.Unmarshal(resp.Body, &result); err != nil {
+				if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 					t.Fatalf("Failed to unmarshal response: %v", err)
 				}
 
@@ -495,7 +495,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 				BaseField         string         `json:"base_field"`
 				DynamicProperties map[string]any `json:"DynamicProperties"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -560,7 +560,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 				Name     string `json:"name"`
 				Category string `json:"category"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -619,7 +619,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 				BaseField         string         `json:"base_field"`
 				DynamicProperties map[string]any `json:"DynamicProperties"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -677,7 +677,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 				BaseField         string         `json:"base_field"`
 				DynamicProperties map[string]any `json:"DynamicProperties"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -728,7 +728,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 				BaseField         string         `json:"base_field"`
 				DynamicProperties map[string]any `json:"DynamicProperties"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -839,7 +839,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 				Name     string `json:"name"`
 				Category string `json:"category"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -945,7 +945,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 				BaseField         string         `json:"base_field"`
 				DynamicProperties map[string]any `json:"DynamicProperties"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -1073,7 +1073,7 @@ func TestDynamicTypesImperative(t *testing.T) {
 				BaseField         string         `json:"base_field"`
 				DynamicProperties map[string]any `json:"DynamicProperties"`
 			}
-			if err := json.Unmarshal(resp.Data, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 

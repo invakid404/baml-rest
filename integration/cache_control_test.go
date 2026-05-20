@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 
 	"github.com/invakid404/baml-rest/dynclient"
 	"github.com/invakid404/baml-rest/integration/mockllm"
@@ -167,7 +167,7 @@ func TestDynclientCacheControlMessageMetadataRoundTrip(t *testing.T) {
 			}
 
 			var decoded map[string]any
-			if err := json.Unmarshal(resp.Data, &decoded); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &decoded); err != nil {
 				t.Fatalf("[%s] decode response: %v (raw=%s)", tc.name, err, string(resp.Data))
 			}
 			if decoded["answer"] != "ok" {
@@ -204,7 +204,7 @@ func assertExactlyOneEphemeralCacheControl(t *testing.T, captured []byte) {
 	t.Helper()
 
 	var root any
-	if err := json.Unmarshal(captured, &root); err != nil {
+	if err := sonic.Unmarshal(captured, &root); err != nil {
 		t.Fatalf("unmarshal captured body: %v\ncaptured=%s", err, string(captured))
 	}
 

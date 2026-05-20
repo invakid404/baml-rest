@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -516,7 +518,7 @@ func TestRoundRobinStream(t *testing.T) {
 			})
 
 			tracker := newMetadataTracker(t)
-			var finalData json.RawMessage
+			var finalData stdjson.RawMessage
 			for ev := range partials {
 				if ev.IsMetadata() {
 					tracker.record(ev)
@@ -532,7 +534,7 @@ func TestRoundRobinStream(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(finalData, &result); err != nil {
+			if err := sonic.Unmarshal(finalData, &result); err != nil {
 				t.Fatalf("Stream %d: failed to unmarshal final: %v", i, err)
 			}
 			seenFinals[result] = true
