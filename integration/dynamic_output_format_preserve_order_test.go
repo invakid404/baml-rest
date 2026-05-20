@@ -175,14 +175,15 @@ func TestDynamicOutputFormatPreserveSchemaOrder(t *testing.T) {
 	assertOrderIn(t, "Mailbox", prompt, "charlie: {", []string{"zip", "city", "street"})
 }
 
-// TestDynamicOutputFormatPreserveSchemaOrder_ServerDefault pins #316:
-// when the server is started with BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT
-// truthy, dynamic requests that omit preserve_schema_order must inherit
-// the default and render the output_format in JSON wire order. A
-// per-request `preserve_schema_order: false` overrides the server
-// default back to the alphabetical fallback. The test boots a
-// dedicated env (the shared TestEnv container has no such env var)
-// and exercises both legs against the same /call/_dynamic endpoint.
+// TestDynamicOutputFormatPreserveSchemaOrder_ServerDefault pins the
+// server-default behavior: when the server is started with
+// BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT truthy, dynamic requests that
+// omit preserve_schema_order must inherit the default and render the
+// output_format in JSON wire order. A per-request
+// `preserve_schema_order: false` overrides the server default back to
+// the alphabetical fallback. The test boots a dedicated env (the
+// shared TestEnv container has no such env var) and exercises both
+// legs against the same /call/_dynamic endpoint.
 func TestDynamicOutputFormatPreserveSchemaOrder_ServerDefault(t *testing.T) {
 	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
 		t.Skip("dynamic endpoints require BAML >= 0.215.0")

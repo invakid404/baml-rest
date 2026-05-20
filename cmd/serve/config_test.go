@@ -6,7 +6,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
-// TestParseTruthyEnvBool pins #316's env-parser contract: 1/true/yes/on
+// TestParseTruthyEnvBool pins the env-parser contract: 1/true/yes/on
 // (case-insensitive) are the only truthy tokens. Mirrors the
 // parseBuildRequestEnv accept list in bamlutils/buildrequest so the two
 // server env flags share a single truthiness convention — diverging

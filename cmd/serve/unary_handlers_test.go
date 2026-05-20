@@ -281,7 +281,7 @@ func workerPayloadPreserveOrder(t *testing.T, data []byte) bool {
 }
 
 // TestMakeChiDynamicCallHandler_PreserveSchemaOrderDefault walks the
-// #316 truth table at the chi handler boundary: server default × per-
+// preserve_schema_order truth table at the chi handler boundary: server default × per-
 // request field => worker preserve_order. The handler must defer to
 // the explicit per-request value when present (true or false) and only
 // fall back to the server default when the field is absent / null.

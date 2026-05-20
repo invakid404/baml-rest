@@ -8,8 +8,8 @@ import (
 )
 
 // envPreserveSchemaOrderDefault names the server-level default switch for
-// the dynamic-endpoint preserve_schema_order opt-in (#316). When truthy,
-// dynamic requests that omit or null preserve_schema_order inherit true.
+// the dynamic-endpoint preserve_schema_order opt-in. When truthy, dynamic
+// requests that omit or null preserve_schema_order inherit true.
 const envPreserveSchemaOrderDefault = "BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT"
 
 // preserveSchemaOrderDefaultFromEnv resolves BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT

@@ -704,7 +704,7 @@ var serveCmd = &cobra.Command{
 // invalid_request). On success: code is "" and statusCode is 0.
 //
 // preserveSchemaOrderDefault is the server-level default for the
-// dynamic preserve_schema_order opt-in (#316). It is applied only when
+// dynamic preserve_schema_order opt-in. It is applied only when
 // the request omits / nulls the field; per-request true/false wins.
 func parseDynamicStreamInput(rawBody []byte, preserveSchemaOrderDefault bool) (workerInput []byte, statusCode int, code apierror.Code, err error) {
 	var input bamlutils.DynamicInput

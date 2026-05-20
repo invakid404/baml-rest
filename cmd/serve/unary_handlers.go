@@ -135,7 +135,7 @@ func makeChiDynamicCallHandler(p unaryCaller, streamMode bamlutils.StreamMode, p
 // can assert how many times the headers seam was invoked.
 //
 // preserveSchemaOrderDefault is the server-level fallback for the
-// dynamic preserve_schema_order opt-in (#316). It is applied via
+// dynamic preserve_schema_order opt-in. It is applied via
 // applyPreserveSchemaOrderDefault after Unmarshal and before Validate
 // so per-request true/false always wins over the server default.
 func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.StreamMode, preserveSchemaOrderDefault bool, emit chiHeadersEmitter) http.HandlerFunc {

@@ -557,11 +557,11 @@ type DynamicInput struct {
 	Messages       []DynamicMessage     `json:"messages"`
 	ClientRegistry *ClientRegistry      `json:"client_registry"`
 	OutputSchema   *DynamicOutputSchema `json:"output_schema"`
-	// PreserveSchemaOrder is a tri-state opt-in for #316: nil means
-	// "inherit the server default" (BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT
-	// on the serve host), while a non-nil pointer wins over any server
-	// default. JSON null decodes to nil through standard Go pointer
-	// unmarshal behavior, matching the absent/inherit semantics.
+	// PreserveSchemaOrder is a tri-state opt-in: nil means "inherit the
+	// server default" (BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT on the
+	// serve host), while a non-nil pointer wins over any server default.
+	// JSON null decodes to nil through standard Go pointer unmarshal
+	// behavior, matching the absent/inherit semantics.
 	PreserveSchemaOrder *bool `json:"preserve_schema_order,omitempty"`
 }
 

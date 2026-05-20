@@ -585,9 +585,9 @@ func TestDynamicParseInput_Validate_RejectsPreserveOrderWithoutOrderMetadata(t *
 	}
 }
 
-// TestDynamicInput_Validate_PreserveSchemaOrderTriState pins the #316
-// *bool contract on the DynamicInput call path. nil and *false both
-// behave like "no opt-in" — preserve-order validation is skipped, so a
+// TestDynamicInput_Validate_PreserveSchemaOrderTriState pins the *bool
+// contract on the DynamicInput call path. nil and *false both behave
+// like "no opt-in" — preserve-order validation is skipped, so a
 // multi-key schema with no captured order metadata still passes. Only
 // *true engages validatePreserveSchemaOrder. The JSON `null` row
 // exercises Go's stdlib pointer unmarshal (a `null` literal decodes a
