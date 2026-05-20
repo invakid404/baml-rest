@@ -110,9 +110,15 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsNonObject(t *testing.T) {
 		{name: "properties as bool", body: `{"properties":true}`, want: `output_schema.properties: must be a JSON object`},
 		{name: "classes as array", body: `{"properties":{"x":{"type":"string"}},"classes":[]}`, want: `output_schema.classes: must be a JSON object`},
 		{name: "classes as string", body: `{"properties":{"x":{"type":"string"}},"classes":"x"}`, want: `output_schema.classes: must be a JSON object`},
+		{name: "classes as number", body: `{"properties":{"x":{"type":"string"}},"classes":42}`, want: `output_schema.classes: must be a JSON object`},
+		{name: "classes as bool", body: `{"properties":{"x":{"type":"string"}},"classes":true}`, want: `output_schema.classes: must be a JSON object`},
 		{name: "enums as array", body: `{"properties":{"x":{"type":"string"}},"enums":[]}`, want: `output_schema.enums: must be a JSON object`},
+		{name: "enums as string", body: `{"properties":{"x":{"type":"string"}},"enums":"x"}`, want: `output_schema.enums: must be a JSON object`},
 		{name: "enums as number", body: `{"properties":{"x":{"type":"string"}},"enums":7}`, want: `output_schema.enums: must be a JSON object`},
+		{name: "enums as bool", body: `{"properties":{"x":{"type":"string"}},"enums":false}`, want: `output_schema.enums: must be a JSON object`},
 		{name: "class properties as array", body: `{"properties":{"x":{"type":"string"}},"classes":{"C":{"properties":[]}}}`, want: `class.properties: must be a JSON object`},
+		{name: "class properties as string", body: `{"properties":{"x":{"type":"string"}},"classes":{"C":{"properties":"x"}}}`, want: `class.properties: must be a JSON object`},
+		{name: "class properties as number", body: `{"properties":{"x":{"type":"string"}},"classes":{"C":{"properties":9}}}`, want: `class.properties: must be a JSON object`},
 		{name: "class properties as bool", body: `{"properties":{"x":{"type":"string"}},"classes":{"C":{"properties":false}}}`, want: `class.properties: must be a JSON object`},
 	}
 	for _, tc := range cases {
