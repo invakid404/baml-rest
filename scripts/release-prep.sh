@@ -87,18 +87,52 @@ if git tag --list "$version" | grep -qx "$version"; then
     exit 1
 fi
 
-# Detect previous version informationally for the status output. Only
-# semver-shaped tags are considered, so accidental tags like
-# `mistake-0.0.41-rc1` don't poison the lookup. `sort -V` would treat
-# `0.0.10` as older than `0.0.2`; git's `-v:refname` understands the
-# semver ordering once we strip non-matching tags.
-prev_version="$(
-    git tag --list '[0-9]*.[0-9]*.[0-9]*' \
-        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-        | sort -V \
-        | tail -1 \
-        || true
-)"
+# The set of go.mod paths the script may stage at the end. The five
+# directly-edited published modules, pool, and every existing
+# adapters/adapter_v*/go.mod (which sync.sh refreshes). Resolved
+# eagerly so the same list drives both the preflight and the
+# stage-at-end pass and the two paths can't drift.
+candidate_paths=(
+    dynclient/go.mod
+    adapters/common/go.mod
+    introspected/go.mod
+    worker/go.mod
+    workerplugin/go.mod
+    pool/go.mod
+)
+shopt -s nullglob
+for dir in adapters/adapter_v*/; do
+    [ -f "${dir}go.mod" ] || continue
+    candidate_paths+=("${dir%/}/go.mod")
+done
+shopt -u nullglob
+
+# Preflight: refuse to run if any candidate path has uncommitted
+# modifications, untracked content, or staged changes. The script
+# ends by `git add`-ing these paths, so pre-existing work-in-progress
+# in one of them would get scooped into the release-prep commit by
+# accident.
+dirty_paths=()
+for path in "${candidate_paths[@]}"; do
+    if [ -n "$(git status --porcelain -- "$path")" ]; then
+        dirty_paths+=("$path")
+    fi
+done
+if [ "${#dirty_paths[@]}" -gt 0 ]; then
+    echo "ERROR: release-prep would stage paths that already have uncommitted changes:" >&2
+    for path in "${dirty_paths[@]}"; do
+        echo "    $path" >&2
+    done
+    echo "       Commit or stash those changes first; the script stages every go.mod it" >&2
+    echo "       rewrites and won't run while any of those paths are dirty." >&2
+    exit 1
+fi
+
+# Detect previous version informationally for the status output. The
+# `[0-9]*` glob excludes subdir-prefixed module tags like
+# `dynclient/v0.0.46` so only product tags rank. `--sort=-v:refname`
+# returns them in descending semver order so `head -1` is the latest.
+prev_version="$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1 || true)"
 if [ -z "$prev_version" ]; then
     echo "ERROR: no previous X.Y.Z tag found; release-prep.sh is meant for incremental releases" >&2
     echo "       — for the very first release, perform the rewrites manually per RELEASE.md" >&2
@@ -198,30 +232,43 @@ if [ "$validation_failed" -ne 0 ]; then
 fi
 echo "Validation OK."
 
-# Status summary. We do NOT commit — the maintainer still runs the
-# RELEASE.md Step 2 verification (`go build`, `go vet`, `go test`,
-# `GOWORK=off go test` inside dynclient) and then commits manually.
+# Stage the rewritten go.mod files so the maintainer's next step is
+# straight `git commit`. We do NOT commit — the maintainer still
+# runs the RELEASE.md Step 2 verification (`go build`, `go vet`,
+# `go test`, `GOWORK=off go test` inside dynclient) before
+# committing manually.
+#
+# Iterating over candidate_paths (the same list the preflight
+# verified clean) keeps the staging targeted: even if some unrelated
+# tool dirtied a file between preflight and now, we won't sweep it
+# up — only paths we knew we were going to touch get staged.
 echo
-changed=()
-while IFS= read -r line; do
-    [ -n "$line" ] && changed+=("$line")
-done < <(git -C "$repo_root" diff --name-only)
+echo "Staging release-prep changes..."
+staged_any=0
+for path in "${candidate_paths[@]}"; do
+    # Skip paths git reports as unchanged so we don't churn the
+    # index with a no-op `git add` on files where every first-party
+    # require was already at expected_version.
+    if [ -n "$(git diff --name-only -- "$path")" ]; then
+        git add -- "$path"
+        staged_any=1
+    fi
+done
 
-if [ "${#changed[@]}" -eq 0 ]; then
+if [ "$staged_any" -eq 0 ]; then
     echo "No changes — every first-party require was already at ${expected_version}."
     echo "(Run scripts/release-go-tags.sh ${version} after tagging.)"
     exit 0
 fi
 
-echo "Changed files:"
-for f in "${changed[@]}"; do
-    echo "  ${f}"
-done
+echo
+echo "Staged files:"
+git diff --cached --name-only | sed 's/^/  /'
 
 echo
 echo "Next steps (per RELEASE.md):"
 echo "  1. Verify the build:  go build ./... && go vet ./... && go test ./... -count=1"
 echo "                        (cd dynclient && GOWORK=off go test ./... -count=1)"
-echo "  2. Review the diff:   git diff"
-echo "  3. Commit:            git commit -am \"chore(release): prepare Go module versions for ${version}\""
+echo "  2. Review the diff:   git diff --cached"
+echo "  3. Commit:            git commit -m \"chore(release): prepare Go module versions for ${version}\""
 echo "  4. Push to master and continue from RELEASE.md Step 3."

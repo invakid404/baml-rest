@@ -139,36 +139,30 @@ for module_path in "${required_modules[@]}"; do
         continue
     fi
     echo "  ${module_path}/go.mod"
-    release_last_failure_kind=""
+    release_last_failure_lines=""
     # Process substitution (not a pipe) so the function runs in the
-    # current shell — the failure-kind assignment relies on that.
+    # current shell — the accumulator assignment relies on that.
     if ! release_validate_module_requires "$module_path" "$expected_version" \
             < <(git show "${version}:${module_path}/go.mod"); then
         echo "ERROR: ${module_path}/go.mod has first-party requires that must be rewritten to ${expected_version} before tagging" >&2
         validation_failed=1
-        case "${release_last_failure_kind:-unknown}" in
-            stale)       stale_count=$(( stale_count + 1 )) ;;
-            pseudo)      pseudo_count=$(( pseudo_count + 1 )) ;;
-            malformed)   malformed_count=$(( malformed_count + 1 )) ;;
-            unparseable) unparseable_count=$(( unparseable_count + 1 )) ;;
-            *)           unparseable_count=$(( unparseable_count + 1 )) ;;
-        esac
-        if [ "${release_last_failure_kind:-}" = "stale" ]; then
-            # Collect every stale require's actual version so the
-            # recovery hint can confirm "they're all at v0.0.<N-1>"
-            # vs "there's a mix of stale versions".
-            while IFS= read -r stale_line; do
-                stripped="${stale_line%%//*}"
-                # shellcheck disable=SC2206
-                stale_fields=($stripped)
-                [ "${#stale_fields[@]}" -ge 2 ] || continue
-                sv="${stale_fields[1]}"
-                if [[ "$sv" =~ ^v0\.0\.[1-9][0-9]*$ ]] && [ "$sv" != "$expected_version" ]; then
-                    stale_versions+=("$sv")
-                fi
-            done < <(git show "${version}:${module_path}/go.mod" \
-                | release_extract_first_party_requires)
-        fi
+        # Tally every emitted failure line, not just the first per
+        # module. A single go.mod can mix kinds (e.g. one stale
+        # require + one pseudo-version) and the recovery hint below
+        # needs accurate per-kind counts to gate correctly.
+        while IFS=$'\t' read -r kind value; do
+            [ -n "$kind" ] || continue
+            case "$kind" in
+                stale)
+                    stale_count=$(( stale_count + 1 ))
+                    stale_versions+=("$value")
+                    ;;
+                pseudo)      pseudo_count=$(( pseudo_count + 1 )) ;;
+                malformed)   malformed_count=$(( malformed_count + 1 )) ;;
+                unparseable) unparseable_count=$(( unparseable_count + 1 )) ;;
+                *)           unparseable_count=$(( unparseable_count + 1 )) ;;
+            esac
+        done <<< "$release_last_failure_lines"
     fi
 done
 if [ "$validation_failed" -ne 0 ]; then
@@ -231,8 +225,12 @@ skipped=()
 for module_path in "${required_modules[@]}"; do
     tag="${module_path}/${expected_version}"
 
+    # Peel to the commit so an annotated tag pointing at the right
+    # release commit isn't misread as pointing at the tag-object SHA.
+    # `^{commit}` resolves both lightweight and annotated tags to a
+    # commit SHA, the same shape as $release_sha above.
     local_sha=""
-    if local_sha="$(git rev-parse --verify --quiet "refs/tags/${tag}")"; then
+    if local_sha="$(git rev-parse --verify --quiet "refs/tags/${tag}^{commit}")"; then
         :
     else
         local_sha=""
@@ -249,9 +247,21 @@ for module_path in "${required_modules[@]}"; do
 
     # `git ls-remote` exits 0 with empty stdout when the ref doesn't
     # exist, so we can't rely on the exit code alone — check stdout.
+    # We can't peel preemptively here: `git ls-remote --tags origin
+    # "refs/tags/<lightweight>^{}"` returns no row, so a naive peel
+    # would treat existing lightweight tags as missing. Instead do a
+    # raw lookup first to detect existence, then peel only when the
+    # raw SHA doesn't match — that handles annotated tags whose raw
+    # ref SHA is the tag-object SHA rather than the target commit.
     remote_line="$(git ls-remote --tags origin "refs/tags/${tag}" || true)"
     if [ -n "$remote_line" ]; then
         remote_sha="${remote_line%%[[:space:]]*}"
+        if [ "$remote_sha" != "$release_sha" ]; then
+            peeled_line="$(git ls-remote --tags origin "refs/tags/${tag}^{}" || true)"
+            if [ -n "$peeled_line" ]; then
+                remote_sha="${peeled_line%%[[:space:]]*}"
+            fi
+        fi
         if [ "$remote_sha" != "$release_sha" ]; then
             echo "ERROR: origin tag ${tag} points at ${remote_sha}, expected ${release_sha}" >&2
             exit 1

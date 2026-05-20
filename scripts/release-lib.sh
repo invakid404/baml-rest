@@ -74,8 +74,9 @@ release_extract_first_party_requires() {
 #     stderr (no leading module label — the caller prints that once,
 #     so the operator sees every fix needed in one pass).
 #
-# On the first failed line in a module, sets the global variable
-# release_last_failure_kind to one of:
+# For every failed line in a module, appends a record to the global
+# variable release_last_failure_lines. The accumulator is a
+# newline-delimited list of `kind<TAB>value` rows where kind is one of:
 #   - "pseudo"      — a v0.0.0-... pseudo-version require survived.
 #   - "stale"       — a clean v0.0.<N> require that points at the
 #                     wrong (most often previous) release; this is
@@ -83,8 +84,17 @@ release_extract_first_party_requires() {
 #   - "malformed"   — a require whose version doesn't even match the
 #                     v0.0.<positive-int> shape.
 #   - "unparseable" — a require line that doesn't parse.
-# Callers use this to decide what recovery hint to print.
-release_last_failure_kind=""
+# For "stale" rows, value is the offending version string (so callers
+# can collect stale_versions directly from this channel); for other
+# kinds value is the offending version (or the raw line for
+# "unparseable"), retained only as a debugging aid.
+#
+# Callers MUST reset release_last_failure_lines to "" before each
+# module so per-module classification stays clean. The accumulator
+# updates state in the current shell, so callers must run the
+# validator via process substitution / file redirection (not a pipe)
+# to keep variable assignments in scope.
+release_last_failure_lines=""
 
 release_validate_module_requires() {
     local module_label="$1"
@@ -99,7 +109,6 @@ release_validate_module_requires() {
 
     local bad=0
     local line dep dep_version stripped
-    local first_kind=""
     while IFS= read -r line; do
         # Strip any trailing `// indirect` (or other) comment so the
         # version field is the last whitespace-separated token.
@@ -108,7 +117,7 @@ release_validate_module_requires() {
         local fields=($stripped)
         if [ "${#fields[@]}" -lt 2 ]; then
             echo "  bad require line (cannot parse): ${line}" >&2
-            [ -z "$first_kind" ] && first_kind="unparseable"
+            release_last_failure_lines+=$'unparseable\t'"${line}"$'\n'
             bad=1
             continue
         fi
@@ -117,27 +126,24 @@ release_validate_module_requires() {
 
         if [[ "$dep_version" == v0.0.0-* ]]; then
             echo "  pseudo-version not allowed: ${dep} ${dep_version}" >&2
-            [ -z "$first_kind" ] && first_kind="pseudo"
+            release_last_failure_lines+=$'pseudo\t'"${dep_version}"$'\n'
             bad=1
             continue
         fi
         if [[ ! "$dep_version" =~ ^v0\.0\.[1-9][0-9]*$ ]]; then
             echo "  version must match v0.0.<positive-integer>: ${dep} ${dep_version}" >&2
-            [ -z "$first_kind" ] && first_kind="malformed"
+            release_last_failure_lines+=$'malformed\t'"${dep_version}"$'\n'
             bad=1
             continue
         fi
         if [ "$dep_version" != "$expected_version" ]; then
             echo "  expected ${expected_version}, got: ${dep} ${dep_version}" >&2
-            [ -z "$first_kind" ] && first_kind="stale"
+            release_last_failure_lines+=$'stale\t'"${dep_version}"$'\n'
             bad=1
             continue
         fi
     done <<< "$first_party_lines"
 
-    if [ "$bad" -ne 0 ]; then
-        release_last_failure_kind="$first_kind"
-    fi
     return "$bad"
 }
 
