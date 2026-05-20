@@ -123,7 +123,7 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 func newLLMHTTPClient(cfg *config) *llmhttp.Client {
 	opts := llmhttp.ClientOptions{RewriteRules: cfg.baseURLRewrites}
 	if cfg.httpClient != nil {
-		opts.HTTPClient = cfg.httpClient
+		opts.NetHTTPClient = cfg.httpClient
 		return llmhttp.NewClientWithOptions(opts)
 	}
 	return llmhttp.NewDefaultClientWithOptions(opts)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,6 +17,14 @@ import (
 	"github.com/valyala/fasthttp"
 	"golang.org/x/sync/singleflight"
 )
+
+// defaultFastHTTPMaxConns is the per-origin connection cap used when
+// FastHTTPClientOptions.MaxConns is zero or negative. fasthttp falls back
+// to DefaultMaxConnsPerHost = 512 on its own zero value, which throttles
+// LLM workloads that funnel many concurrent requests at a few hosts. We
+// pick math.MaxInt32 — large enough to never bound real traffic, small
+// enough to fit a Go int on every platform we support.
+const defaultFastHTTPMaxConns = math.MaxInt32
 
 // ClientMode selects how requests are dispatched between the net/http
 // and fasthttp backends. Constructed via NewClient (env-driven) or
@@ -124,17 +133,27 @@ type protocolCache struct {
 	sf        singleflight.Group
 }
 
-// newProtocolCache constructs a cache configured for the given mode. tlsConf
-// is mirrored into both the probe dialer and every per-origin HostClient so
-// that private CAs / custom verification apply consistently across
-// dispatched backends and the probe itself. A nil tlsConf is treated as the
-// default {MinVersion: TLS12}. proxyFunc determines when origins are pinned
-// to net/http for proxy traversal; a nil value disables proxy pinning
-// (tests use this to force the ALPN probe path).
-func newProtocolCache(mode clientMode, tlsConf *tls.Config, proxyFunc func(*http.Request) (*url.URL, error)) *protocolCache {
+// newProtocolCache constructs a cache configured for the given mode.
+// fastOpts.TLSConfig is mirrored into both the probe dialer and every
+// per-origin HostClient so that private CAs / custom verification apply
+// consistently across dispatched backends and the probe itself. A nil
+// fastOpts.TLSConfig is treated as the default {MinVersion: TLS12}. The
+// remaining fastOpts fields (MaxConns, MaxConnWaitTimeout,
+// MaxIdleConnDuration) propagate to every HostClient buildEntry produces.
+// proxyFunc determines when origins are pinned to net/http for proxy
+// traversal; a nil value disables proxy pinning (tests use this to force
+// the ALPN probe path).
+func newProtocolCache(mode clientMode, fastOpts FastHTTPClientOptions, proxyFunc func(*http.Request) (*url.URL, error)) *protocolCache {
+	tlsConf := fastOpts.TLSConfig
 	if tlsConf == nil {
 		tlsConf = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
+
+	maxConns := fastOpts.MaxConns
+	if maxConns <= 0 {
+		maxConns = defaultFastHTTPMaxConns
+	}
+
 	c := &protocolCache{
 		mode:         mode,
 		probeTLS:     tlsConf,
@@ -145,8 +164,9 @@ func newProtocolCache(mode clientMode, tlsConf *tls.Config, proxyFunc func(*http
 			Name:                          "baml-rest-llmhttp",
 			DisableHeaderNamesNormalizing: true,
 			StreamResponseBody:            true,
-			MaxIdleConnDuration:           90 * time.Second,
-			MaxConns:                      256,
+			MaxIdleConnDuration:           fastOpts.MaxIdleConnDuration,
+			MaxConnWaitTimeout:            fastOpts.MaxConnWaitTimeout,
+			MaxConns:                      maxConns,
 			TLSConfig:                     tlsConf,
 		},
 	}
@@ -361,6 +381,7 @@ func (c *protocolCache) buildEntry(origin originURL, d decision) *hostEntry {
 		DisableHeaderNamesNormalizing: tmpl.DisableHeaderNamesNormalizing,
 		StreamResponseBody:            tmpl.StreamResponseBody,
 		MaxIdleConnDuration:           tmpl.MaxIdleConnDuration,
+		MaxConnWaitTimeout:            tmpl.MaxConnWaitTimeout,
 		MaxConns:                      tmpl.MaxConns,
 		TLSConfig:                     tmpl.TLSConfig,
 	}

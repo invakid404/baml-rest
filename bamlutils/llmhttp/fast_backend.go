@@ -405,6 +405,7 @@ func newStreamHostClient(ctx context.Context, tmpl *fasthttp.HostClient, slot *c
 		DisableHeaderNamesNormalizing: tmpl.DisableHeaderNamesNormalizing,
 		StreamResponseBody:            tmpl.StreamResponseBody,
 		MaxIdleConnDuration:           tmpl.MaxIdleConnDuration,
+		MaxConnWaitTimeout:            tmpl.MaxConnWaitTimeout,
 		MaxConns:                      tmpl.MaxConns,
 		Dial: func(addr string) (net.Conn, error) {
 			dialer := &net.Dialer{

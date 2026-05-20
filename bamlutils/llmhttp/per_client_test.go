@@ -2,11 +2,14 @@ package llmhttp
 
 import (
 	"context"
+	"crypto/tls"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 )
@@ -79,6 +82,25 @@ func TestNewDefaultClientWithOptionsUsesTunedTransport(t *testing.T) {
 	}
 	if client.httpClient.Transport != defaultLLMTransport {
 		t.Errorf("expected NewDefaultClientWithOptions to install defaultLLMTransport; got %T", client.httpClient.Transport)
+	}
+
+	// The default transport must be effectively uncapped for LLM
+	// workloads (many concurrent requests to few hosts). A regression
+	// that re-introduces an artificial limit would queue requests behind
+	// new TCP+TLS handshakes — the exact bottleneck this transport was
+	// rewritten to avoid.
+	tr, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.httpClient.Transport)
+	}
+	if tr.MaxConnsPerHost != 0 {
+		t.Errorf("MaxConnsPerHost = %d, want 0 (unlimited)", tr.MaxConnsPerHost)
+	}
+	if tr.MaxIdleConnsPerHost != math.MaxInt32 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want math.MaxInt32", tr.MaxIdleConnsPerHost)
+	}
+	if tr.MaxIdleConns != 0 {
+		t.Errorf("MaxIdleConns = %d, want 0 (unlimited)", tr.MaxIdleConns)
 	}
 }
 
@@ -256,6 +278,98 @@ func TestClientWithOptionsDefensiveCopiesRewriteRules(t *testing.T) {
 	got := client.resolveRequestURL(&Request{URL: "https://upstream.example/v1/chat"})
 	if want := "http://snapshot.local:8080/v1/chat"; got != want {
 		t.Errorf("expected snapshot rule to survive caller-side mutation; got %q, want %q", got, want)
+	}
+}
+
+// TestFastHTTPDefaultMaxConnsIsUnbounded pins that an unconfigured
+// FastHTTPClientOptions resolves to math.MaxInt32, not fasthttp's own
+// DefaultMaxConnsPerHost (512). Falling back to fasthttp's default would
+// silently throttle every Auto-mode HTTP/1.1 origin under heavy load.
+func TestFastHTTPDefaultMaxConnsIsUnbounded(t *testing.T) {
+	t.Parallel()
+
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, nil)
+	origin, err := parseOrigin("http://example.invalid/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := cache.resolve(context.Background(), origin)
+	if entry == nil || entry.host == nil {
+		t.Fatalf("expected fasthttp host client for http://, got %+v", entry)
+	}
+	if entry.host.MaxConns != math.MaxInt32 {
+		t.Errorf("MaxConns = %d, want math.MaxInt32 (%d)", entry.host.MaxConns, math.MaxInt32)
+	}
+}
+
+// TestFastHTTPTuningPropagates_CachedHost pins that caller-supplied
+// FastHTTPClientOptions reach the per-origin HostClient (both pooled
+// and streaming variants), so users can actually tune the fasthttp
+// backend without forking the package.
+func TestFastHTTPTuningPropagates_CachedHost(t *testing.T) {
+	t.Parallel()
+
+	opts := FastHTTPClientOptions{
+		MaxConns:            123,
+		MaxConnWaitTimeout:  7 * time.Second,
+		MaxIdleConnDuration: 11 * time.Second,
+	}
+	cache := newProtocolCache(modeFast, opts, nil)
+	origin, err := parseOrigin("http://example.invalid/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := cache.resolve(context.Background(), origin)
+	if entry == nil || entry.host == nil {
+		t.Fatalf("expected fasthttp host client, got %+v", entry)
+	}
+	if entry.host.MaxConns != 123 {
+		t.Errorf("MaxConns = %d, want 123", entry.host.MaxConns)
+	}
+	if entry.host.MaxConnWaitTimeout != 7*time.Second {
+		t.Errorf("MaxConnWaitTimeout = %v, want 7s", entry.host.MaxConnWaitTimeout)
+	}
+	if entry.host.MaxIdleConnDuration != 11*time.Second {
+		t.Errorf("MaxIdleConnDuration = %v, want 11s", entry.host.MaxIdleConnDuration)
+	}
+
+	// Streaming per-request HostClient must mirror the pooled template's
+	// tuning — otherwise streams would silently revert to fasthttp's
+	// defaults regardless of caller configuration.
+	streamHC := newStreamHostClient(context.Background(), entry.host, &captureSlot{})
+	if streamHC.MaxConns != 123 {
+		t.Errorf("stream MaxConns = %d, want 123", streamHC.MaxConns)
+	}
+	if streamHC.MaxConnWaitTimeout != 7*time.Second {
+		t.Errorf("stream MaxConnWaitTimeout = %v, want 7s", streamHC.MaxConnWaitTimeout)
+	}
+	if streamHC.MaxIdleConnDuration != 11*time.Second {
+		t.Errorf("stream MaxIdleConnDuration = %v, want 11s", streamHC.MaxIdleConnDuration)
+	}
+}
+
+// TestFastHTTPTLSConfigPropagates pins that a caller-supplied TLSConfig
+// reaches both the probe dialer and the per-origin HostClient. Without
+// this, embedding callers couldn't pin a custom CA pool or ServerName
+// for the fasthttp backend.
+func TestFastHTTPTLSConfigPropagates(t *testing.T) {
+	t.Parallel()
+
+	tlsCfg := &tls.Config{ServerName: "example.test", MinVersion: tls.VersionTLS13}
+	cache := newProtocolCache(modeFast, FastHTTPClientOptions{TLSConfig: tlsCfg}, nil)
+	if cache.probeTLS != tlsCfg {
+		t.Error("expected supplied TLSConfig to reach probeTLS")
+	}
+	origin, err := parseOrigin("https://example.invalid/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := cache.resolve(context.Background(), origin)
+	if entry == nil || entry.host == nil {
+		t.Fatalf("expected fasthttp host client, got %+v", entry)
+	}
+	if entry.host.TLSConfig != tlsCfg {
+		t.Error("expected supplied TLSConfig to reach per-origin HostClient")
 	}
 }
 

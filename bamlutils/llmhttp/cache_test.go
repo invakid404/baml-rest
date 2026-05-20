@@ -55,7 +55,7 @@ func TestProtocolCacheMode_HTTPAlwaysFast(t *testing.T) {
 	// Plain http:// must never probe — the cache decides "fast" immediately.
 	// The fact that the probe TLS dialer points at nothing is sufficient
 	// proof that we didn't attempt one.
-	cache := newProtocolCache(modeAuto, nil, nil)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("http://example.invalid/")
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestProtocolCacheMode_HTTPAlwaysFast(t *testing.T) {
 }
 
 func TestProtocolCacheMode_OverrideFast(t *testing.T) {
-	cache := newProtocolCache(modeFast, nil, nil)
+	cache := newProtocolCache(modeFast, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("https://api.openai.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +85,7 @@ func TestProtocolCacheMode_OverrideFast(t *testing.T) {
 }
 
 func TestProtocolCacheMode_OverrideNet(t *testing.T) {
-	cache := newProtocolCache(modeNet, nil, nil)
+	cache := newProtocolCache(modeNet, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("https://api.openai.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func TestProtocolCache_ProxyPinsNet(t *testing.T) {
 	proxy := func(req *http.Request) (*url.URL, error) {
 		return &url.URL{Scheme: "http", Host: "proxy.example:3128"}, nil
 	}
-	cache := newProtocolCache(modeAuto, nil, proxy)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, proxy)
 	origin, err := parseOrigin("https://api.openai.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestProtocolCache_ProxyPinsNetForHTTP(t *testing.T) {
 	proxy := func(req *http.Request) (*url.URL, error) {
 		return &url.URL{Scheme: "http", Host: "proxy.example:3128"}, nil
 	}
-	cache := newProtocolCache(modeAuto, nil, proxy)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, proxy)
 	origin, err := parseOrigin("http://internal.service/")
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestProtocolCache_CacheHitIsLockFree(t *testing.T) {
 	// go through singleflight or any mutex — hit the atomic map and return.
 	// We approximate this by racing many resolvers and ensuring no data
 	// races trip the race detector. The `go test -race` pass catches it.
-	cache := newProtocolCache(modeFast, nil, nil)
+	cache := newProtocolCache(modeFast, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("http://host/")
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestProtocolCache_SingleflightDedupe(t *testing.T) {
 		probes.Add(1)
 		return &url.URL{Scheme: "http", Host: "proxy:3128"}, nil
 	}
-	cache := newProtocolCache(modeAuto, nil, proxy)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, proxy)
 	origin, err := parseOrigin("https://host/")
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func TestLoadClientMode(t *testing.T) {
 // decision always ships with a non-nil HostClient (dispatcher nil-checks
 // it), while a net decision never allocates one.
 func TestBuildEntry_FastCarriesHost(t *testing.T) {
-	cache := newProtocolCache(modeAuto, nil, nil)
+	cache := newProtocolCache(modeAuto, FastHTTPClientOptions{}, nil)
 	origin, err := parseOrigin("https://x/")
 	if err != nil {
 		t.Fatalf("parseOrigin: %v", err)
