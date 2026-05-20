@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 )
@@ -647,6 +648,29 @@ func (b *TypeBuilder) Add(input string) {
 type DynamicTypes struct {
 	Classes map[string]*DynamicClass `json:"classes,omitempty"`
 	Enums   map[string]*DynamicEnum  `json:"enums,omitempty"`
+
+	// PreserveOrder, when true, instructs the codegen-emitted
+	// applyDynamicTypes to populate TypeBuilder following the explicit
+	// Order metadata instead of sorting map keys alphabetically. Set by
+	// the public dynamic endpoints when their caller opts in via
+	// DynamicInput.PreserveSchemaOrder.
+	PreserveOrder bool `json:"preserve_order,omitempty"`
+	// Order carries the desired population order for Classes, Enums,
+	// and per-class Properties when PreserveOrder is true. nil or
+	// empty slices fall back to alphabetical sorting for that
+	// dimension via the schemaMapKeys helper.
+	Order *DynamicTypesOrder `json:"order,omitempty"`
+}
+
+// DynamicTypesOrder is the cross-boundary order payload that captures
+// the schema's first-party map insertion order. Classes lists the
+// synthetic Baml_Rest_DynamicOutput class first followed by user
+// classes; Enums lists user enums; Properties maps each class name
+// to its per-property order.
+type DynamicTypesOrder struct {
+	Classes    []string            `json:"classes,omitempty"`
+	Enums      []string            `json:"enums,omitempty"`
+	Properties map[string][]string `json:"properties,omitempty"`
 }
 
 // maxTypeDepth is the maximum nesting depth for type references.
@@ -699,6 +723,112 @@ func (dt *DynamicTypes) Validate() error {
 		}
 	}
 
+	if dt.PreserveOrder {
+		if err := dt.validatePreserveOrder(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validatePreserveOrder enforces the same locked contract that the
+// public DynamicInput/DynamicParseInput validators enforce at the HTTP
+// boundary, but on the worker-bound DynamicTypes shape itself. Direct
+// `__baml_options__.type_builder.dynamic_types` callers bypass the
+// input validators; without this pass they could set PreserveOrder=true
+// with missing or malformed Order metadata and silently fall back to
+// the sorted iteration in the generated schemaMapKeys helper.
+//
+// Mirrors validatePreserveSchemaOrder in dynamic.go: each multi-key
+// map dimension (Classes, Enums, per-class Properties) requires a
+// non-empty matching order slice with no duplicates, no unknown names,
+// and full coverage of the map's keys.
+func (dt *DynamicTypes) validatePreserveOrder() error {
+	var orderClasses, orderEnums []string
+	var orderProps map[string][]string
+	if dt.Order != nil {
+		orderClasses = dt.Order.Classes
+		orderEnums = dt.Order.Enums
+		orderProps = dt.Order.Properties
+	}
+
+	classKeys := make(map[string]struct{}, len(dt.Classes))
+	for n := range dt.Classes {
+		classKeys[n] = struct{}{}
+	}
+	if len(dt.Classes) >= 2 && len(orderClasses) == 0 {
+		return fmt.Errorf("dynamic_types.preserve_order=true but classes has no captured order")
+	}
+	if err := checkDynamicTypesOrderSlice("dynamic_types.classes", orderClasses, classKeys); err != nil {
+		return err
+	}
+
+	enumKeys := make(map[string]struct{}, len(dt.Enums))
+	for n := range dt.Enums {
+		enumKeys[n] = struct{}{}
+	}
+	if len(dt.Enums) >= 2 && len(orderEnums) == 0 {
+		return fmt.Errorf("dynamic_types.preserve_order=true but enums has no captured order")
+	}
+	if err := checkDynamicTypesOrderSlice("dynamic_types.enums", orderEnums, enumKeys); err != nil {
+		return err
+	}
+
+	// Iterate per-class property order in deterministic (sorted) order
+	// so error messages are stable across runs.
+	classNames := make([]string, 0, len(dt.Classes))
+	for name := range dt.Classes {
+		classNames = append(classNames, name)
+	}
+	sort.Strings(classNames)
+	for _, className := range classNames {
+		cls := dt.Classes[className]
+		if cls == nil {
+			continue
+		}
+		path := fmt.Sprintf("dynamic_types.classes[%q].properties", className)
+		var classOrder []string
+		if orderProps != nil {
+			classOrder = orderProps[className]
+		}
+		propKeys := make(map[string]struct{}, len(cls.Properties))
+		for n := range cls.Properties {
+			propKeys[n] = struct{}{}
+		}
+		if len(cls.Properties) >= 2 && len(classOrder) == 0 {
+			return fmt.Errorf("dynamic_types.preserve_order=true but %s has no captured order", path)
+		}
+		if err := checkDynamicTypesOrderSlice(path, classOrder, propKeys); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkDynamicTypesOrderSlice mirrors checkOrderSlice in dynamic.go
+// (kept local here to avoid a package-level cycle and to keep the
+// worker-side validator self-contained). Reports the first duplicate,
+// unknown, or missing name as a path-qualified error.
+func checkDynamicTypesOrderSlice(path string, order []string, known map[string]struct{}) error {
+	if len(order) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(order))
+	for _, name := range order {
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("%s order: duplicate name %q", path, name)
+		}
+		seen[name] = struct{}{}
+		if _, ok := known[name]; !ok {
+			return fmt.Errorf("%s order: unknown name %q", path, name)
+		}
+	}
+	for name := range known {
+		if _, ok := seen[name]; !ok {
+			return fmt.Errorf("%s order: missing name %q", path, name)
+		}
+	}
 	return nil
 }
 
@@ -810,6 +940,11 @@ type DynamicClass struct {
 	Description string                      `json:"description,omitempty"`
 	Alias       string                      `json:"alias,omitempty"`
 	Properties  map[string]*DynamicProperty `json:"properties,omitempty"`
+	// PropertiesOrder records the JSON wire order of Properties for
+	// preserve_schema_order callers. Populated by DynamicClass.UnmarshalJSON;
+	// Go callers must set it explicitly when constructing the class
+	// programmatically.
+	PropertiesOrder []string `json:"-"`
 }
 
 // DynamicProperty defines a property on a class.

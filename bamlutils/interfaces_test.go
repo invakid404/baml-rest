@@ -1171,6 +1171,186 @@ func TestDynamicTypes_Validate(t *testing.T) {
 			},
 			wantErr: "",
 		},
+		{
+			name: "preserve_order with no order and multi-key classes",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
+					"B": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
+				},
+				PreserveOrder: true,
+			},
+			wantErr: "classes has no captured order",
+		},
+		{
+			name: "preserve_order with incomplete classes order",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
+					"B": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
+				},
+				PreserveOrder: true,
+				Order:         &DynamicTypesOrder{Classes: []string{"A"}},
+			},
+			wantErr: `dynamic_types.classes order: missing name "B"`,
+		},
+		{
+			name: "preserve_order with duplicate class entry",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
+					"B": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
+				},
+				PreserveOrder: true,
+				Order:         &DynamicTypesOrder{Classes: []string{"A", "A", "B"}},
+			},
+			wantErr: `dynamic_types.classes order: duplicate name "A"`,
+		},
+		{
+			name: "preserve_order with unknown class entry",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}}},
+					"B": {Properties: map[string]*DynamicProperty{"q": {Type: "string"}}},
+				},
+				PreserveOrder: true,
+				Order:         &DynamicTypesOrder{Classes: []string{"A", "B", "Z"}},
+			},
+			wantErr: `dynamic_types.classes order: unknown name "Z"`,
+		},
+		{
+			name: "preserve_order with no order and multi-key enums",
+			dt: &DynamicTypes{
+				Enums: map[string]*DynamicEnum{
+					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
+					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
+				},
+				PreserveOrder: true,
+			},
+			wantErr: "enums has no captured order",
+		},
+		{
+			name: "preserve_order with incomplete enums order",
+			dt: &DynamicTypes{
+				Enums: map[string]*DynamicEnum{
+					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
+					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
+				},
+				PreserveOrder: true,
+				Order:         &DynamicTypesOrder{Enums: []string{"E1"}},
+			},
+			wantErr: `dynamic_types.enums order: missing name "E2"`,
+		},
+		{
+			name: "preserve_order with duplicate enum entry",
+			dt: &DynamicTypes{
+				Enums: map[string]*DynamicEnum{
+					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
+					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
+				},
+				PreserveOrder: true,
+				Order:         &DynamicTypesOrder{Enums: []string{"E1", "E1", "E2"}},
+			},
+			wantErr: `dynamic_types.enums order: duplicate name "E1"`,
+		},
+		{
+			name: "preserve_order with unknown enum entry",
+			dt: &DynamicTypes{
+				Enums: map[string]*DynamicEnum{
+					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
+					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
+				},
+				PreserveOrder: true,
+				Order:         &DynamicTypesOrder{Enums: []string{"E1", "E2", "Z"}},
+			},
+			wantErr: `dynamic_types.enums order: unknown name "Z"`,
+		},
+		{
+			name: "preserve_order with no per-class property order on multi-key class",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
+				},
+				PreserveOrder: true,
+				Order:         &DynamicTypesOrder{Classes: []string{"A"}},
+			},
+			wantErr: `dynamic_types.classes["A"].properties has no captured order`,
+		},
+		{
+			name: "preserve_order with unknown nested property name",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
+				},
+				PreserveOrder: true,
+				Order: &DynamicTypesOrder{
+					Classes:    []string{"A"},
+					Properties: map[string][]string{"A": {"p", "q", "zzz"}},
+				},
+			},
+			wantErr: `dynamic_types.classes["A"].properties order: unknown name "zzz"`,
+		},
+		{
+			name: "preserve_order with duplicate nested property entry",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
+				},
+				PreserveOrder: true,
+				Order: &DynamicTypesOrder{
+					Classes:    []string{"A"},
+					Properties: map[string][]string{"A": {"p", "p", "q"}},
+				},
+			},
+			wantErr: `dynamic_types.classes["A"].properties order: duplicate name "p"`,
+		},
+		{
+			name: "preserve_order with missing nested property entry",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
+				},
+				PreserveOrder: true,
+				Order: &DynamicTypesOrder{
+					Classes:    []string{"A"},
+					Properties: map[string][]string{"A": {"p"}},
+				},
+			},
+			wantErr: `dynamic_types.classes["A"].properties order: missing name "q"`,
+		},
+		{
+			name: "preserve_order accepts complete order across all dimensions",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
+					"B": {Properties: map[string]*DynamicProperty{"r": {Type: "string"}}},
+				},
+				Enums: map[string]*DynamicEnum{
+					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
+					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
+				},
+				PreserveOrder: true,
+				Order: &DynamicTypesOrder{
+					Classes: []string{"A", "B"},
+					Enums:   []string{"E1", "E2"},
+					Properties: map[string][]string{
+						"A": {"p", "q"},
+						// B has a single property — order optional.
+					},
+				},
+			},
+			wantErr: "",
+		},
+		{
+			name: "preserve_order with single-key classes and no order is allowed",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"Solo": {Properties: map[string]*DynamicProperty{"only": {Type: "string"}}},
+				},
+				PreserveOrder: true,
+			},
+			wantErr: "",
+		},
 	}
 
 	for _, tt := range tests {
