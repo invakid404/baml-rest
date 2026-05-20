@@ -2,9 +2,10 @@
 package apierror
 
 import (
+	stdjson "encoding/json"
 	"net/http"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 )
 
 // Code is a stable, machine-readable identifier for an error class.
@@ -132,7 +133,7 @@ const (
 type Response struct {
 	Error     string          `json:"error"`
 	Code      Code            `json:"code,omitempty"`
-	Details   json.RawMessage `json:"details,omitempty"`
+	Details   stdjson.RawMessage `json:"details,omitempty"`
 	RequestID string          `json:"request_id,omitempty"`
 }
 
@@ -152,9 +153,9 @@ func WriteJSON(w http.ResponseWriter, message string, statusCode int, requestID 
 // (cmd/serve/error.go normalizeWorkerMetadata) already gate to JSON
 // objects, but this helper is exported and the validation here is
 // defense-in-depth — without it, a future caller passing an invalid
-// json.RawMessage would emit malformed bytes verbatim because
-// json.RawMessage's MarshalJSON returns its input as-is.
-func WriteJSONWithCode(w http.ResponseWriter, message string, code Code, details json.RawMessage, statusCode int, requestID string) {
+// stdjson.RawMessage would emit malformed bytes verbatim because
+// stdjson.RawMessage's MarshalJSON returns its input as-is.
+func WriteJSONWithCode(w http.ResponseWriter, message string, code Code, details stdjson.RawMessage, statusCode int, requestID string) {
 	resp := Response{
 		Error:     message,
 		Code:      code,
@@ -166,21 +167,21 @@ func WriteJSONWithCode(w http.ResponseWriter, message string, code Code, details
 	w.WriteHeader(statusCode)
 
 	// Best effort - if encoding fails, we've already written the status code
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = sonic.ConfigDefault.NewEncoder(w).Encode(resp)
 }
 
 // ValidDetails returns details unchanged when the bytes parse as
-// valid JSON, or nil otherwise. Callers placing a json.RawMessage
+// valid JSON, or nil otherwise. Callers placing a stdjson.RawMessage
 // onto the Response envelope should run it through this helper so
 // the encoded body is always well-formed — RawMessage is verbatim-
 // marshalled, so an invalid payload would otherwise corrupt the
 // response stream. nil and empty inputs are passed through (and
 // omit from the envelope via the omitempty json tag).
-func ValidDetails(details json.RawMessage) json.RawMessage {
+func ValidDetails(details stdjson.RawMessage) stdjson.RawMessage {
 	if len(details) == 0 {
 		return details
 	}
-	if !json.Valid(details) {
+	if !sonic.Valid(details) {
 		return nil
 	}
 	return details

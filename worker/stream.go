@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -119,7 +119,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 				// Raw and reasoning stay at their zero values for reset-only
 				// frames — the orchestrator clears the accumulators downstream.
 				if !(result.Reset() && result.Stream() == nil) {
-					data, err := json.Marshal(result.Stream())
+					data, err := sonic.Marshal(result.Stream())
 					if err != nil {
 						// Marshal failed: reclassify as an error frame. Raw/
 						// reasoning must stay unset — leaking stale values
@@ -138,7 +138,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 					}
 				}
 			case bamlutils.StreamResultKindFinal:
-				data, err := json.Marshal(result.Final())
+				data, err := sonic.Marshal(result.Final())
 				if err != nil {
 					pluginResult.Kind = workerplugin.StreamResultKindError
 					pluginResult.Error = fmt.Errorf("failed to marshal final result: %w", err)
@@ -160,7 +160,7 @@ func bridgeStreamResults(ctx context.Context, resultChan <-chan bamlutils.Stream
 					pluginResult.ErrorCode = workerCodeInternalError
 					break
 				}
-				data, err := json.Marshal(md)
+				data, err := sonic.Marshal(md)
 				if err != nil {
 					pluginResult.Kind = workerplugin.StreamResultKindError
 					pluginResult.Error = fmt.Errorf("failed to marshal metadata result: %w", err)

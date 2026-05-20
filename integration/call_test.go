@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
 
@@ -33,7 +33,7 @@ func TestCallEndpoint(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -106,7 +106,7 @@ func TestCallEndpoint(t *testing.T) {
 			var result struct {
 				Message string `json:"message"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -145,7 +145,7 @@ func TestCallEndpoint(t *testing.T) {
 				Email *string  `json:"email"`
 				Tags  []string `json:"tags"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -197,7 +197,7 @@ func TestCallEndpoint(t *testing.T) {
 					Zip    string `json:"zip"`
 				} `json:"address"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -235,7 +235,7 @@ func TestCallEndpoint(t *testing.T) {
 				Name string `json:"name"`
 				Age  int    `json:"age"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -277,7 +277,7 @@ func TestCallEndpoint(t *testing.T) {
 			var result struct {
 				Email *string `json:"email"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -314,7 +314,7 @@ func TestCallEndpoint(t *testing.T) {
 			var result struct {
 				Email *string `json:"email"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -349,7 +349,7 @@ func TestCallEndpoint(t *testing.T) {
 				Name     string `json:"name"`
 				Category string `json:"category"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -386,7 +386,7 @@ func TestCallWithRawEndpoint(t *testing.T) {
 			var data struct {
 				Message string `json:"message"`
 			}
-			if err := json.Unmarshal(resp.Data, &data); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &data); err != nil {
 				t.Fatalf("Failed to unmarshal data: %v", err)
 			}
 			if data.Message != "test" {
@@ -450,7 +450,7 @@ func TestCallWithRawEndpoint(t *testing.T) {
 			var data struct {
 				Message string `json:"message"`
 			}
-			if err := json.Unmarshal(resp.Data, &data); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &data); err != nil {
 				t.Fatalf("Failed to unmarshal data: %v", err)
 			}
 			if data.Message != "extracted" {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
 
@@ -36,7 +36,7 @@ func TestParseEndpoint(t *testing.T) {
 				Age  int      `json:"age"`
 				Tags []string `json:"tags"`
 			}
-			if err := json.Unmarshal(resp.Data, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -67,7 +67,7 @@ func TestParseEndpoint(t *testing.T) {
 			var result struct {
 				Message string `json:"message"`
 			}
-			if err := json.Unmarshal(resp.Data, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -105,7 +105,7 @@ func TestParseEndpoint(t *testing.T) {
 					City string `json:"city"`
 				} `json:"address"`
 			}
-			if err := json.Unmarshal(resp.Data, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
@@ -136,7 +136,7 @@ func TestParseEndpoint(t *testing.T) {
 			var result []struct {
 				Name string `json:"name"`
 			}
-			if err := json.Unmarshal(resp.Data, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 )
 
 // doWithRetry executes an HTTP request with one automatic retry on transient
@@ -100,7 +101,7 @@ func isTransientConnError(err error) bool {
 type errorResponse struct {
 	Error     string          `json:"error"`
 	Code      string          `json:"code,omitempty"`
-	Details   json.RawMessage `json:"details,omitempty"`
+	Details   stdjson.RawMessage `json:"details,omitempty"`
 	RequestID string          `json:"request_id,omitempty"`
 }
 
@@ -119,7 +120,7 @@ func extractErrorMessage(body []byte) string {
 // unchanged.
 func extractErrorMessageAndCode(body []byte) (string, string) {
 	var errResp errorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
+	if err := sonic.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
 		return errResp.Error, errResp.Code
 	}
 	return string(body), ""
@@ -134,9 +135,9 @@ func extractErrorMessageAndCode(body []byte) (string, string) {
 // Existing call sites that only need the message or message+code keep
 // using the narrower helpers; tests that branch on structured provider
 // context (e.g. provider_error status_code) reach for this one.
-func extractErrorMessageCodeAndDetails(body []byte) (string, string, json.RawMessage) {
+func extractErrorMessageCodeAndDetails(body []byte) (string, string, stdjson.RawMessage) {
 	var errResp errorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
+	if err := sonic.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
 		return errResp.Error, errResp.Code, errResp.Details
 	}
 	return string(body), "", nil
@@ -292,10 +293,10 @@ type DynamicEnumValue struct {
 type CallResponse struct {
 	StatusCode   int
 	Headers      http.Header // Response headers — used for X-BAML-* assertions
-	Body         json.RawMessage
+	Body         stdjson.RawMessage
 	Error        string
 	ErrorCode    string
-	ErrorDetails json.RawMessage
+	ErrorDetails stdjson.RawMessage
 }
 
 // CallWithRawResponse represents a response from /call-with-raw endpoint.
@@ -305,12 +306,12 @@ type CallResponse struct {
 type CallWithRawResponse struct {
 	StatusCode   int
 	Headers      http.Header     // Response headers — used for X-BAML-* assertions
-	Data         json.RawMessage `json:"data"`
+	Data         stdjson.RawMessage `json:"data"`
 	Raw          string          `json:"raw"`
 	Reasoning    string          `json:"reasoning,omitempty"`
 	Error        string
 	ErrorCode    string
-	ErrorDetails json.RawMessage
+	ErrorDetails stdjson.RawMessage
 }
 
 // Call executes a /call/{method} request.
@@ -361,7 +362,7 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 	if resp.StatusCode >= 400 {
 		result.Error, result.ErrorCode, result.ErrorDetails = extractErrorMessageCodeAndDetails(respBody)
 	} else {
-		if err := json.Unmarshal(respBody, result); err != nil {
+		if err := sonic.Unmarshal(respBody, result); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 		}
 	}
@@ -372,7 +373,7 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 // StreamEvent represents a single event from /stream endpoints (works for both SSE and NDJSON).
 type StreamEvent struct {
 	Event     string          // Event type: "data", "final", "reset", "error" for NDJSON; "" for SSE data, "final"/"reset"/"error" for SSE
-	Data      json.RawMessage // Event data
+	Data      stdjson.RawMessage // Event data
 	Raw       string          // For stream-with-raw, the raw LLM output at this point
 	Reasoning string          // For stream-with-raw with __baml_options__.include_reasoning, the reasoning text at this point
 }
@@ -469,7 +470,7 @@ func (e *StreamEvent) ParseMetadata() (*StreamMetadata, error) {
 		return nil, fmt.Errorf("event type %q is not a metadata event", e.Event)
 	}
 	var md StreamMetadata
-	if err := json.Unmarshal(e.Data, &md); err != nil {
+	if err := sonic.Unmarshal(e.Data, &md); err != nil {
 		return nil, fmt.Errorf("decode metadata: %w", err)
 	}
 	return &md, nil
@@ -477,7 +478,7 @@ func (e *StreamEvent) ParseMetadata() (*StreamMetadata, error) {
 
 // ParseData parses a stream event's data into the target.
 func (e *StreamEvent) ParseData(target any) error {
-	return json.Unmarshal(e.Data, target)
+	return sonic.Unmarshal(e.Data, target)
 }
 
 // ContentTypeNDJSON is the MIME type for NDJSON streams.
@@ -602,10 +603,10 @@ type ParseRequest struct {
 // error paths; see CallResponse.ErrorCode.
 type ParseResponse struct {
 	StatusCode   int
-	Data         json.RawMessage
+	Data         stdjson.RawMessage
 	Error        string
 	ErrorCode    string
-	ErrorDetails json.RawMessage
+	ErrorDetails stdjson.RawMessage
 }
 
 // Parse executes a /parse/{method} request.
@@ -682,7 +683,7 @@ func (c *BAMLRestClient) KillWorker(ctx context.Context) (*KillWorkerResult, err
 	}
 
 	var result KillWorkerResult
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := sonic.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
@@ -729,7 +730,7 @@ func (c *BAMLRestClient) GetInFlightStatus(ctx context.Context) (*InFlightResult
 	}
 
 	var result InFlightResult
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := sonic.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
@@ -749,7 +750,7 @@ func (c *BAMLRestClient) SetFirstByteTimeout(ctx context.Context, timeoutMs int6
 	reqBody := map[string]any{
 		"first_byte_timeout_ms": timeoutMs,
 	}
-	bodyBytes, err := json.Marshal(reqBody)
+	bodyBytes, err := sonic.Marshal(reqBody)
 	if err != nil {
 		return nil, err
 	}
@@ -773,7 +774,7 @@ func (c *BAMLRestClient) SetFirstByteTimeout(ctx context.Context, timeoutMs int6
 	}
 
 	var result ConfigResult
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := sonic.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
@@ -827,7 +828,7 @@ func (c *BAMLRestClient) GetGoroutines(ctx context.Context, filter string) (*Gor
 	}
 
 	var result GoroutinesResult
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := sonic.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
@@ -870,7 +871,7 @@ func (c *BAMLRestClient) GetNativeStacks(ctx context.Context) (*NativeStacksResu
 	}
 
 	var result NativeStacksResult
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := sonic.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
@@ -887,7 +888,7 @@ func buildRequestBody(input map[string]any, opts *BAMLOptions) ([]byte, error) {
 		body["__baml_options__"] = opts
 	}
 
-	return json.Marshal(body)
+	return sonic.Marshal(body)
 }
 
 // newStreamScanner returns a bufio.Scanner configured with a 2 MiB max
@@ -924,15 +925,15 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expec
 		// from raw-absent.
 		if expectRawEnvelope {
 			var rawData struct {
-				Data      json.RawMessage `json:"data"`
+				Data      stdjson.RawMessage `json:"data"`
 				Raw       *string         `json:"raw"`
 				Reasoning string          `json:"reasoning,omitempty"`
 			}
-			if err := json.Unmarshal(data, &rawData); err == nil && rawData.Raw != nil {
+			if err := sonic.Unmarshal(data, &rawData); err == nil && rawData.Raw != nil {
 				currentEvent.Raw = *rawData.Raw
 				currentEvent.Reasoning = rawData.Reasoning
 				// rawData.Data is already a freshly-allocated copy via
-				// json.RawMessage's UnmarshalJSON, so no extra copy needed.
+				// stdjson.RawMessage's UnmarshalJSON, so no extra copy needed.
 				currentEvent.Data = rawData.Data
 			}
 		}
@@ -983,7 +984,7 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expec
 // ndjsonEvent represents a single NDJSON streaming event from the server.
 type ndjsonEvent struct {
 	Type      string          `json:"type"`
-	Data      json.RawMessage `json:"data,omitempty"`
+	Data      stdjson.RawMessage `json:"data,omitempty"`
 	Raw       string          `json:"raw,omitempty"`
 	Reasoning string          `json:"reasoning,omitempty"`
 	Error     string          `json:"error,omitempty"`
@@ -1005,7 +1006,7 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 		}
 
 		var event ndjsonEvent
-		if err := json.Unmarshal(line, &event); err != nil {
+		if err := sonic.Unmarshal(line, &event); err != nil {
 			return fmt.Errorf("failed to parse NDJSON line: %w", err)
 		}
 
@@ -1020,9 +1021,17 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 			Reasoning: event.Reasoning,
 		}
 
-		// For error events, store the error message in Data
+		// For error events, store the error message in Data. Route the
+		// string through sonic.Marshal rather than naively concatenating
+		// surrounding quotes — an error message containing `"` or `\`
+		// would otherwise emit invalid JSON here and break consumers that
+		// decode Data downstream.
 		if event.Type == "error" && event.Error != "" {
-			streamEvent.Data = json.RawMessage(`"` + event.Error + `"`)
+			encoded, err := sonic.Marshal(event.Error)
+			if err != nil {
+				encoded = []byte(`""`)
+			}
+			streamEvent.Data = stdjson.RawMessage(encoded)
 		}
 
 		events <- streamEvent
@@ -1181,7 +1190,7 @@ type DynamicRequest struct {
 // CallResponse.ErrorCode.
 type DynamicCallResponse struct {
 	StatusCode int
-	Body       json.RawMessage
+	Body       stdjson.RawMessage
 	Error      string
 	ErrorCode  string
 }
@@ -1192,7 +1201,7 @@ type DynamicCallResponse struct {
 // CallResponse.ErrorCode.
 type DynamicCallWithRawResponse struct {
 	StatusCode int
-	Data       json.RawMessage `json:"data"`
+	Data       stdjson.RawMessage `json:"data"`
 	Raw        string          `json:"raw"`
 	Reasoning  string          `json:"reasoning,omitempty"`
 	Error      string
@@ -1212,14 +1221,14 @@ type DynamicParseRequest struct {
 // CallResponse.ErrorCode.
 type DynamicParseResponse struct {
 	StatusCode int
-	Data       json.RawMessage
+	Data       stdjson.RawMessage
 	Error      string
 	ErrorCode  string
 }
 
 // DynamicCall executes a /call/_dynamic request.
 func (c *BAMLRestClient) DynamicCall(ctx context.Context, req DynamicRequest) (*DynamicCallResponse, error) {
-	body, err := json.Marshal(req)
+	body, err := sonic.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1245,7 +1254,7 @@ func (c *BAMLRestClient) DynamicCall(ctx context.Context, req DynamicRequest) (*
 
 // DynamicCallWithRaw executes a /call-with-raw/_dynamic request.
 func (c *BAMLRestClient) DynamicCallWithRaw(ctx context.Context, req DynamicRequest) (*DynamicCallWithRawResponse, error) {
-	body, err := json.Marshal(req)
+	body, err := sonic.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1263,7 +1272,7 @@ func (c *BAMLRestClient) DynamicCallWithRaw(ctx context.Context, req DynamicRequ
 	if resp.StatusCode >= 400 {
 		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
 	} else {
-		if err := json.Unmarshal(respBody, result); err != nil {
+		if err := sonic.Unmarshal(respBody, result); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 		}
 	}
@@ -1299,7 +1308,7 @@ func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, r
 		defer close(events)
 		defer close(errs)
 
-		body, err := json.Marshal(req)
+		body, err := sonic.Marshal(req)
 		if err != nil {
 			errs <- err
 			return
@@ -1342,7 +1351,7 @@ func (c *BAMLRestClient) dynamicStreamRequestNDJSON(ctx context.Context, url str
 		defer close(events)
 		defer close(errs)
 
-		body, err := json.Marshal(req)
+		body, err := sonic.Marshal(req)
 		if err != nil {
 			errs <- err
 			return
@@ -1379,7 +1388,7 @@ func (c *BAMLRestClient) dynamicStreamRequestNDJSON(ctx context.Context, url str
 
 // DynamicParse executes a /parse/_dynamic request.
 func (c *BAMLRestClient) DynamicParse(ctx context.Context, req DynamicParseRequest) (*DynamicParseResponse, error) {
-	body, err := json.Marshal(req)
+	body, err := sonic.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1424,7 +1433,7 @@ func (c *BAMLRestClient) GetOpenAPISchema(ctx context.Context) (*OpenAPISchema, 
 	}
 
 	var schema OpenAPISchema
-	if err := json.Unmarshal(body, &schema); err != nil {
+	if err := sonic.Unmarshal(body, &schema); err != nil {
 		return nil, fmt.Errorf("failed to parse OpenAPI schema: %w", err)
 	}
 

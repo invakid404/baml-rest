@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tidwall/gjson"
+	"github.com/cloudwego/gjson"
 )
 
 // ExtractResponseContent extracts the LLM output text from a non-streaming

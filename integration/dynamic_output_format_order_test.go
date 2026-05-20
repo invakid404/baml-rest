@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -159,7 +159,7 @@ func TestDynamicOutputFormatOrderStable(t *testing.T) {
 // output_format block we are pinning.
 func extractFirstMessageText(body []byte) (string, error) {
 	var captured map[string]any
-	if err := json.Unmarshal(body, &captured); err != nil {
+	if err := sonic.Unmarshal(body, &captured); err != nil {
 		return "", fmt.Errorf("unmarshal captured body: %w", err)
 	}
 

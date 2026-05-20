@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -133,7 +133,7 @@ func (h *Handler) CallStream(ctx context.Context, methodName string, inputJSON [
 
 	// Parse input — the typed input struct ignores unknown fields like __baml_options__
 	input := method.MakeInput()
-	if err := json.Unmarshal(inputJSON, input); err != nil {
+	if err := sonic.Unmarshal(inputJSON, input); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
 	}
 
@@ -142,7 +142,7 @@ func (h *Handler) CallStream(ctx context.Context, methodName string, inputJSON [
 	// require a combined struct, but the input type is generated per-method
 	// and not known at compile time. The cost is minor for typical payloads.
 	var options workerBamlOptions
-	if err := json.Unmarshal(inputJSON, &options); err != nil {
+	if err := sonic.Unmarshal(inputJSON, &options); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal options: %w", err)
 	}
 

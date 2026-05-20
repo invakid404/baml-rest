@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -223,7 +223,7 @@ func TestGoroutineLeaks(t *testing.T) {
 				Name string `json:"name"`
 				Age  int    `json:"age"`
 			}
-			if err := json.Unmarshal(lastEvent.Data, &person); err != nil {
+			if err := sonic.Unmarshal(lastEvent.Data, &person); err != nil {
 				t.Fatalf("Stream %d: failed to unmarshal: %v", i, err)
 			}
 			if person.Name != "Stream Test" {
@@ -359,7 +359,7 @@ func TestGoroutineLeaks(t *testing.T) {
 				Name string `json:"name"`
 				Age  int    `json:"age"`
 			}
-			if err := json.Unmarshal(resp.Data, &person); err != nil {
+			if err := sonic.Unmarshal(resp.Data, &person); err != nil {
 				t.Fatalf("Parse %d: failed to unmarshal: %v", i, err)
 			}
 			if person.Name != "Parse Test" {
@@ -676,7 +676,7 @@ func TestNDJSONGoroutineLeaks(t *testing.T) {
 				Name string `json:"name"`
 				Age  int    `json:"age"`
 			}
-			if err := json.Unmarshal(lastEvent.Data, &person); err != nil {
+			if err := sonic.Unmarshal(lastEvent.Data, &person); err != nil {
 				t.Fatalf("StreamNDJSON %d: failed to unmarshal: %v", i, err)
 			}
 			if person.Name != "NDJSON Test" {

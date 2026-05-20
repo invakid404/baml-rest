@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -94,7 +94,7 @@ func minimalDynamicInputJSON(t *testing.T) []byte {
 			),
 		},
 	}
-	body, err := json.Marshal(input)
+	body, err := sonic.Marshal(input)
 	if err != nil {
 		t.Fatalf("marshal DynamicInput: %v", err)
 	}
@@ -108,7 +108,7 @@ func minimalDynamicInputJSON(t *testing.T) []byte {
 // runtime-options diagnoses are visible. The handler sets headers
 // from result.Planned/Outcome before checking err.
 func TestMakeChiDynamicCallHandler_EmitsHeadersOnError(t *testing.T) {
-	planned, err := json.Marshal(&bamlutils.Metadata{
+	planned, err := sonic.Marshal(&bamlutils.Metadata{
 		Phase:      bamlutils.MetadataPhasePlanned,
 		Path:       "legacy",
 		PathReason: "invalid-round-robin-start-override",
@@ -117,7 +117,7 @@ func TestMakeChiDynamicCallHandler_EmitsHeadersOnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal planned: %v", err)
 	}
-	outcome, err := json.Marshal(&bamlutils.Metadata{
+	outcome, err := sonic.Marshal(&bamlutils.Metadata{
 		Phase:          bamlutils.MetadataPhaseOutcome,
 		WinnerProvider: "openai",
 	})
@@ -165,7 +165,7 @@ func TestMakeChiDynamicCallHandler_EmitsHeadersOnError(t *testing.T) {
 // FlattenDynamicOutput and writes 200). A future refactor that
 // removed the result-nil guard could otherwise double-set or drop.
 func TestMakeChiDynamicCallHandler_EmitsHeadersOnSuccess(t *testing.T) {
-	planned, err := json.Marshal(&bamlutils.Metadata{
+	planned, err := sonic.Marshal(&bamlutils.Metadata{
 		Phase:  bamlutils.MetadataPhasePlanned,
 		Path:   "buildrequest",
 		Client: "TestClient",
@@ -261,7 +261,7 @@ func orderedDynamicInputJSON(preserveField string) []byte {
 func workerPayloadPreserveOrder(t *testing.T, data []byte) bool {
 	t.Helper()
 	var decoded map[string]any
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
 	}
 	opts, _ := decoded["__baml_options__"].(map[string]any)

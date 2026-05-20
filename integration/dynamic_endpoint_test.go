@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -59,7 +61,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -105,7 +107,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -160,7 +162,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -216,7 +218,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -284,7 +286,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -367,7 +369,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		t.Logf("Response data: %s", string(resp.Data))
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -472,7 +474,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		t.Logf("Response data: %s", string(resp.Data))
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -542,7 +544,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		t.Logf("Response data: %s", string(resp.Data))
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -609,7 +611,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		t.Logf("Response data: %s", string(resp.Data))
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -672,7 +674,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		t.Logf("Response data: %s", string(resp.Data))
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -737,7 +739,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -911,7 +913,7 @@ func TestDynamicEndpoint(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -1107,7 +1109,7 @@ func TestDynamicEndpointMultiPartContent(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -1259,7 +1261,7 @@ func TestDynamicEndpointMultiPartContent(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
 
@@ -1350,7 +1352,7 @@ func TestDynamicEndpointMultiPartContent(t *testing.T) {
 			t.Fatal("Expected at least one stream event")
 		}
 		var dyn map[string]any
-		if err := json.Unmarshal(lastEvent.Data, &dyn); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &dyn); err != nil {
 			t.Fatalf("Failed to unmarshal last event Data: %v (data=%s)", err, string(lastEvent.Data))
 		}
 		if dyn["description"] != "An image" {
@@ -1601,10 +1603,10 @@ func extractLLMMessageTexts(t *testing.T, capturedBody []byte) []struct {
 	var req struct {
 		Messages []struct {
 			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
+			Content stdjson.RawMessage `json:"content"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal(capturedBody, &req); err != nil {
+	if err := sonic.Unmarshal(capturedBody, &req); err != nil {
 		t.Fatalf("Failed to parse captured request: %v", err)
 	}
 
@@ -1617,7 +1619,7 @@ func extractLLMMessageTexts(t *testing.T, capturedBody []byte) []struct {
 
 		// Try string first
 		var str string
-		if err := json.Unmarshal(m.Content, &str); err == nil {
+		if err := sonic.Unmarshal(m.Content, &str); err == nil {
 			text = str
 		} else {
 			// Try array of content parts
@@ -1625,7 +1627,7 @@ func extractLLMMessageTexts(t *testing.T, capturedBody []byte) []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			}
-			if err := json.Unmarshal(m.Content, &parts); err == nil {
+			if err := sonic.Unmarshal(m.Content, &parts); err == nil {
 				var texts []string
 				for _, p := range parts {
 					if p.Type == "text" {

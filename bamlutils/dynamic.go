@@ -2,11 +2,12 @@ package bamlutils
 
 import (
 	"bytes"
+	stdjson "encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/goccy/go-json"
-	"github.com/tidwall/gjson"
+	"github.com/bytedance/sonic"
+	"github.com/cloudwego/gjson"
 )
 
 // Dynamic endpoint constants
@@ -154,11 +155,11 @@ type DynamicMessage struct {
 func (m *DynamicMessage) UnmarshalJSON(data []byte) error {
 	// Use a raw type to avoid infinite recursion
 	var raw struct {
-		Role     string           `json:"role"`
-		Content  json.RawMessage  `json:"content"`
-		Metadata *MessageMetadata `json:"metadata,omitempty"`
+		Role     string             `json:"role"`
+		Content  stdjson.RawMessage `json:"content"`
+		Metadata *MessageMetadata   `json:"metadata,omitempty"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 
@@ -175,14 +176,14 @@ func (m *DynamicMessage) UnmarshalJSON(data []byte) error {
 	case '"':
 		// String content
 		var s string
-		if err := json.Unmarshal(raw.Content, &s); err != nil {
+		if err := sonic.Unmarshal(raw.Content, &s); err != nil {
 			return fmt.Errorf("invalid string content: %w", err)
 		}
 		m.TextContent = &s
 	case '[':
 		// Array of content parts
 		var parts []DynamicContentPart
-		if err := json.Unmarshal(raw.Content, &parts); err != nil {
+		if err := sonic.Unmarshal(raw.Content, &parts); err != nil {
 			return fmt.Errorf("invalid content parts array: %w", err)
 		}
 		m.PartsContent = parts
@@ -213,7 +214,7 @@ func (m *DynamicMessage) MarshalJSON() ([]byte, error) {
 		a.Content = *m.TextContent
 	}
 
-	return json.Marshal(a)
+	return sonic.Marshal(a)
 }
 
 // internalContentPart is the BAML-facing format for content parts.
@@ -342,10 +343,9 @@ type DynamicOutputSchema struct {
 }
 
 // MarshalJSON emits the schema as a JSON object, including Classes and
-// Enums only when non-empty. goccy/go-json does not honor
-// `json:",omitzero"`, so the field tag alone is not enough to suppress
-// an empty `"classes":{}` / `"enums":{}` under that encoder; this
-// explicit method does the omission.
+// Enums only when non-empty. The explicit method guarantees the
+// empty `"classes":{}` / `"enums":{}` shapes are suppressed regardless
+// of the encoder's `omitzero` support.
 func (s DynamicOutputSchema) MarshalJSON() ([]byte, error) {
 	type alias struct {
 		Properties OrderedMap[*DynamicProperty] `json:"properties"`
@@ -361,7 +361,7 @@ func (s DynamicOutputSchema) MarshalJSON() ([]byte, error) {
 		e := s.Enums
 		a.Enums = &e
 	}
-	return json.Marshal(a)
+	return sonic.Marshal(a)
 }
 
 // UnmarshalJSON decodes a DynamicOutputSchema. Wire-order is preserved
@@ -376,11 +376,11 @@ func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var raw struct {
-		Properties json.RawMessage `json:"properties"`
-		Classes    json.RawMessage `json:"classes"`
-		Enums      json.RawMessage `json:"enums"`
+		Properties stdjson.RawMessage `json:"properties"`
+		Classes    stdjson.RawMessage `json:"classes"`
+		Enums      stdjson.RawMessage `json:"enums"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 
@@ -425,11 +425,11 @@ func (c *DynamicClass) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var raw struct {
-		Description string          `json:"description,omitempty"`
-		Alias       string          `json:"alias,omitempty"`
-		Properties  json.RawMessage `json:"properties,omitempty"`
+		Description string             `json:"description,omitempty"`
+		Alias       string             `json:"alias,omitempty"`
+		Properties  stdjson.RawMessage `json:"properties,omitempty"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	c.Description = raw.Description
@@ -474,13 +474,18 @@ func rejectNonObject(path string, b []byte) error {
 //
 // Non-object inputs are left to the regular unmarshal so the caller
 // keeps producing the same shape-error it does today.
+//
+// This is one of two locked stdlib `encoding/json` token-walking sites
+// (the other is unmarshalOrderedMap). Sonic does not expose
+// Decoder.Token / json.Delim, so duplicate-key rejection over a
+// streaming token walk stays on the stdlib decoder.
 func checkUniqueTopLevelKeys(data []byte, path string) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
+	dec := stdjson.NewDecoder(bytes.NewReader(data))
 	tok, err := dec.Token()
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
-	delim, ok := tok.(json.Delim)
+	delim, ok := tok.(stdjson.Delim)
 	if !ok || delim != '{' {
 		return nil
 	}
@@ -498,7 +503,7 @@ func checkUniqueTopLevelKeys(data []byte, path string) error {
 			return fmt.Errorf("%s: duplicate key %q", path, key)
 		}
 		seen[key] = struct{}{}
-		var raw json.RawMessage
+		var raw stdjson.RawMessage
 		if err := dec.Decode(&raw); err != nil {
 			return fmt.Errorf("%s.%s: %w", path, key, err)
 		}
@@ -569,8 +574,22 @@ func (d *DynamicInput) Validate() error {
 	return nil
 }
 
-// ToWorkerInput converts to the internal format for worker processing
-func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
+// ToWorkerInput converts to the internal format for worker processing.
+//
+// A defer-recover wraps the marshal step as defense-in-depth: this is
+// the public worker boundary, and a panic from any encoder reachable
+// here would otherwise crash the host process (the original #324
+// failure shape on goccy/go-json). Migrating the reachable custom
+// marshalers to sonic removes the known trigger; the recover keeps
+// future encoder regressions from re-introducing the same outage.
+func (d *DynamicInput) ToWorkerInput() (b []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("dynamic input marshal panic: %v", r)
+			b = nil
+		}
+	}()
+
 	classes, err := buildWorkerClassMap(d.OutputSchema)
 	if err != nil {
 		return nil, err
@@ -598,7 +617,7 @@ func (d *DynamicInput) ToWorkerInput() ([]byte, error) {
 			},
 		},
 	}
-	return json.Marshal(internal)
+	return sonic.Marshal(internal)
 }
 
 // DynamicParseInput is the request body for dynamic parse endpoint
@@ -641,8 +660,16 @@ func validateReservedClassNames(s *DynamicOutputSchema) error {
 	return nil
 }
 
-// ToWorkerInput converts to the internal format for worker processing
-func (d *DynamicParseInput) ToWorkerInput() ([]byte, error) {
+// ToWorkerInput converts to the internal format for worker processing.
+// See DynamicInput.ToWorkerInput for the defer-recover rationale.
+func (d *DynamicParseInput) ToWorkerInput() (b []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("dynamic parse input marshal panic: %v", r)
+			b = nil
+		}
+	}()
+
 	classes, err := buildWorkerClassMap(d.OutputSchema)
 	if err != nil {
 		return nil, err
@@ -664,7 +691,7 @@ func (d *DynamicParseInput) ToWorkerInput() ([]byte, error) {
 			},
 		},
 	}
-	return json.Marshal(internal)
+	return sonic.Marshal(internal)
 }
 
 // dynamicOutputClassName is the synthetic class name baml-rest assigns

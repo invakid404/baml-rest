@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -1620,7 +1620,7 @@ func metadataPhase(data []byte) string {
 	var envelope struct {
 		Phase string `json:"phase"`
 	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
+	if err := sonic.Unmarshal(data, &envelope); err != nil {
 		return ""
 	}
 	return envelope.Phase
@@ -1632,11 +1632,11 @@ func metadataPhase(data []byte) string {
 // events of a retried attempt carry the same number.
 func rewriteMetadataAttempt(data []byte, attempt int) ([]byte, error) {
 	var md bamlutils.Metadata
-	if err := json.Unmarshal(data, &md); err != nil {
+	if err := sonic.Unmarshal(data, &md); err != nil {
 		return nil, fmt.Errorf("decode metadata: %w", err)
 	}
 	md.Attempt = attempt
-	encoded, err := json.Marshal(&md)
+	encoded, err := sonic.Marshal(&md)
 	if err != nil {
 		return nil, fmt.Errorf("encode metadata: %w", err)
 	}

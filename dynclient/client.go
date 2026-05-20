@@ -27,7 +27,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/goccy/go-json"
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -266,7 +268,7 @@ func (c *Client) DynamicParse(ctx context.Context, req ParseRequest) (*ParseResu
 	if err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic parse: %w", err)
 	}
-	data := append(json.RawMessage(nil), result.Data...)
+	data := append(stdjson.RawMessage(nil), result.Data...)
 	flattened, err := bamlutils.FlattenDynamicOutput(data)
 	if err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic parse: %w", err)
@@ -339,9 +341,9 @@ func (c *Client) beginScope(ctx context.Context) (context.Context, func()) {
 // error frame, copying every payload byte slice before releasing the
 // underlying result. needRaw controls whether the raw and reasoning
 // channels are propagated to the caller.
-func drainCall(results <-chan *workerplugin.StreamResult, needRaw bool) (json.RawMessage, string, string, []Metadata, error) {
+func drainCall(results <-chan *workerplugin.StreamResult, needRaw bool) (stdjson.RawMessage, string, string, []Metadata, error) {
 	var (
-		data      json.RawMessage
+		data      stdjson.RawMessage
 		raw       string
 		reasoning string
 		metadata  []Metadata
@@ -354,7 +356,7 @@ func drainCall(results <-chan *workerplugin.StreamResult, needRaw bool) (json.Ra
 			drainAndRelease(results)
 			return nil, "", "", nil, err
 		case workerplugin.StreamResultKindFinal:
-			data = append(json.RawMessage(nil), result.Data...)
+			data = append(stdjson.RawMessage(nil), result.Data...)
 			if needRaw {
 				raw = result.Raw
 				reasoning = result.Reasoning
@@ -387,7 +389,7 @@ func decodeMetadata(data []byte) (*Metadata, error) {
 		return nil, nil
 	}
 	var md Metadata
-	if err := json.Unmarshal(data, &md); err != nil {
+	if err := sonic.Unmarshal(data, &md); err != nil {
 		return nil, fmt.Errorf("decode metadata: %w", err)
 	}
 	return &md, nil

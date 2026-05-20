@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/pool"
@@ -89,7 +89,7 @@ func makeChiCallHandler(p *pool.Pool, methodName string, streamMode bamlutils.St
 		w.Header().Set("Content-Type", "application/json")
 		if streamMode.NeedsRaw() {
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(CallWithRawResponse{
+			_ = sonic.ConfigDefault.NewEncoder(w).Encode(CallWithRawResponse{
 				Data:      result.Data,
 				Raw:       result.Raw,
 				Reasoning: result.Reasoning,
@@ -150,7 +150,7 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 		}
 
 		var input bamlutils.DynamicInput
-		if err := json.Unmarshal(body, &input); err != nil {
+		if err := sonic.Unmarshal(body, &input); err != nil {
 			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidJSON, nil, http.StatusBadRequest)
 			return
 		}
@@ -187,7 +187,7 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 		w.Header().Set("Content-Type", "application/json")
 		if streamMode.NeedsRaw() {
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(CallWithRawResponse{
+			_ = sonic.ConfigDefault.NewEncoder(w).Encode(CallWithRawResponse{
 				Data:      flattenedData,
 				Raw:       result.Raw,
 				Reasoning: result.Reasoning,
@@ -212,7 +212,7 @@ func makeChiDynamicParseHandler(p unaryParser, preserveSchemaOrderDefault bool) 
 		}
 
 		var input bamlutils.DynamicParseInput
-		if err := json.Unmarshal(body, &input); err != nil {
+		if err := sonic.Unmarshal(body, &input); err != nil {
 			writeChiJSONErrorWithCode(w, r, err.Error(), apierror.CodeInvalidJSON, nil, http.StatusBadRequest)
 			return
 		}

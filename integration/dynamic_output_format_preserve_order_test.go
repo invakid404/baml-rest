@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
@@ -58,7 +58,7 @@ func TestDynamicOutputFormatPreserveSchemaOrder(t *testing.T) {
   "hotel": ["x", "y"]
 }`)
 
-	registryJSON, err := json.Marshal(opts.ClientRegistry)
+	registryJSON, err := sonic.Marshal(opts.ClientRegistry)
 	if err != nil {
 		t.Fatalf("marshal client_registry: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestDynamicOutputFormatPreserveSchemaOrder_ServerDefault(t *testing.T) {
 	// field so we can exercise omitted vs. false in the same env.
 	buildReq := func(t *testing.T, registry *testutil.ClientRegistry, preserveField string) string {
 		t.Helper()
-		registryJSON, err := json.Marshal(registry)
+		registryJSON, err := sonic.Marshal(registry)
 		if err != nil {
 			t.Fatalf("marshal client_registry: %v", err)
 		}

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 )
 
 // TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder pins #313: raw
@@ -33,7 +33,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_CapturesOrder(t *testing.T) {
       }
     }`)
 	var s DynamicOutputSchema
-	if err := json.Unmarshal(body, &s); err != nil {
+	if err := sonic.Unmarshal(body, &s); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if got, want := s.Properties.Keys(), []string{"delta", "alpha", "charlie", "bravo"}; !equalStrings(got, want) {
@@ -75,7 +75,7 @@ func TestUnmarshalOrderedMap_NestedRawMessage(t *testing.T) {
       }
     }`)
 	var s DynamicOutputSchema
-	if err := json.Unmarshal(body, &s); err != nil {
+	if err := sonic.Unmarshal(body, &s); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if got, want := s.Properties.Keys(), []string{"obj", "lit", "ref", "primitive"}; !equalStrings(got, want) {
@@ -138,7 +138,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateKey(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var s DynamicOutputSchema
-			err := json.Unmarshal([]byte(tc.body), &s)
+			err := sonic.Unmarshal([]byte(tc.body), &s)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -180,7 +180,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testin
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var s DynamicOutputSchema
-			err := json.Unmarshal([]byte(tc.body), &s)
+			err := sonic.Unmarshal([]byte(tc.body), &s)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -218,7 +218,7 @@ func TestDynamicClass_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var c DynamicClass
-			err := json.Unmarshal([]byte(tc.body), &c)
+			err := sonic.Unmarshal([]byte(tc.body), &c)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -230,7 +230,7 @@ func TestDynamicClass_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testing.T) {
 
 	body := []byte(`{"description":"only","alias":"once","properties":{"p":{"type":"string"}}}`)
 	var c DynamicClass
-	if err := json.Unmarshal(body, &c); err != nil {
+	if err := sonic.Unmarshal(body, &c); err != nil {
 		t.Errorf("well-formed class rejected: %v", err)
 	}
 	if c.Description != "only" || c.Alias != "once" || c.Properties.Len() != 1 {
@@ -266,7 +266,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsNonObject(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var s DynamicOutputSchema
-			err := json.Unmarshal([]byte(tc.body), &s)
+			err := sonic.Unmarshal([]byte(tc.body), &s)
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -289,7 +289,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull(t *testing.T) {
       "enums": null
     }`)
 	var s DynamicOutputSchema
-	if err := json.Unmarshal(body, &s); err != nil {
+	if err := sonic.Unmarshal(body, &s); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if !s.Properties.IsZero() {
@@ -307,7 +307,7 @@ func TestDynamicOutputSchema_UnmarshalJSON_AcceptsNull(t *testing.T) {
       "classes": {"C": {"properties": null}}
     }`)
 	var s2 DynamicOutputSchema
-	if err := json.Unmarshal(nested, &s2); err != nil {
+	if err := sonic.Unmarshal(nested, &s2); err != nil {
 		t.Fatalf("Unmarshal nested: %v", err)
 	}
 	cls, _ := s2.Classes.Get("C")
@@ -326,24 +326,24 @@ func TestDynamicOutputSchema_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
       "enums": {"E": {"values": [{"name": "A"}]}}
     }`)
 	var s DynamicOutputSchema
-	if err := json.Unmarshal(first, &s); err != nil {
+	if err := sonic.Unmarshal(first, &s); err != nil {
 		t.Fatalf("first Unmarshal: %v", err)
 	}
 	if s.Properties.Len() == 0 || s.Classes.Len() == 0 || s.Enums.Len() == 0 {
 		t.Fatalf("first decode left maps empty: %+v", s)
 	}
 
-	if err := json.Unmarshal([]byte(`{}`), &s); err != nil {
+	if err := sonic.Unmarshal([]byte(`{}`), &s); err != nil {
 		t.Fatalf("reuse Unmarshal {}: %v", err)
 	}
 	if !s.Properties.IsZero() || !s.Classes.IsZero() || !s.Enums.IsZero() {
 		t.Errorf("maps not cleared after empty reuse: %+v", s)
 	}
 
-	if err := json.Unmarshal(first, &s); err != nil {
+	if err := sonic.Unmarshal(first, &s); err != nil {
 		t.Fatalf("re-populate Unmarshal: %v", err)
 	}
-	if err := json.Unmarshal([]byte(`{"properties":null,"classes":null,"enums":null}`), &s); err != nil {
+	if err := sonic.Unmarshal([]byte(`{"properties":null,"classes":null,"enums":null}`), &s); err != nil {
 		t.Fatalf("reuse Unmarshal null: %v", err)
 	}
 	if !s.Properties.IsZero() || !s.Classes.IsZero() || !s.Enums.IsZero() {
@@ -355,13 +355,13 @@ func TestDynamicClass_UnmarshalJSON_ResetsOnReuse(t *testing.T) {
 	t.Parallel()
 	first := []byte(`{"description": "old", "alias": "old-alias", "properties": {"p": {"type": "string"}, "q": {"type": "int"}}}`)
 	var c DynamicClass
-	if err := json.Unmarshal(first, &c); err != nil {
+	if err := sonic.Unmarshal(first, &c); err != nil {
 		t.Fatalf("first Unmarshal: %v", err)
 	}
 	if c.Description == "" || c.Alias == "" || c.Properties.Len() == 0 {
 		t.Fatalf("first decode left fields empty: %+v", c)
 	}
-	if err := json.Unmarshal([]byte(`{}`), &c); err != nil {
+	if err := sonic.Unmarshal([]byte(`{}`), &c); err != nil {
 		t.Fatalf("reuse Unmarshal: %v", err)
 	}
 	if c.Description != "" || c.Alias != "" || !c.Properties.IsZero() {
@@ -474,7 +474,7 @@ func TestDynamicInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
           "output_schema": {"properties": {"alpha": {"type": "string"}, "bravo": {"type": "int"}}}
         }`)
 		var in DynamicInput
-		if err := json.Unmarshal(body, &in); err != nil {
+		if err := sonic.Unmarshal(body, &in); err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
 		if in.PreserveSchemaOrder != nil {
@@ -517,7 +517,7 @@ func TestDynamicParseInput_Validate_PreserveSchemaOrderTriState(t *testing.T) {
           "output_schema": {"properties": {"alpha": {"type": "string"}, "bravo": {"type": "int"}}}
         }`)
 		var in DynamicParseInput
-		if err := json.Unmarshal(body, &in); err != nil {
+		if err := sonic.Unmarshal(body, &in); err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
 		if in.PreserveSchemaOrder != nil {
@@ -557,7 +557,7 @@ func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
       }
     }`)
 	var in DynamicInput
-	if err := json.Unmarshal(body, &in); err != nil {
+	if err := sonic.Unmarshal(body, &in); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if err := in.Validate(); err != nil {
@@ -585,7 +585,7 @@ func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
 		Opts opts `json:"__baml_options__"`
 	}
 	var decoded payload
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
 	}
 	if !decoded.Opts.TypeBuilder.DynamicTypes.PreserveOrder {
@@ -664,7 +664,7 @@ func TestDynamicInput_ToWorkerInput_SyntheticClassFirst(t *testing.T) {
 		Opts opts `json:"__baml_options__"`
 	}
 	var decoded payload
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
 	}
 	gotClasses := decoded.Opts.TypeBuilder.DynamicTypes.Classes.Keys()
@@ -764,7 +764,7 @@ func TestDynamicInput_ToWorkerInput_CacheControlBridge(t *testing.T) {
 	var decoded struct {
 		Messages []map[string]any `json:"messages"`
 	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
 	}
 	if len(decoded.Messages) != 4 {
@@ -841,7 +841,7 @@ func TestDynamicMessage_PublicJSON_StillUsesType(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"role":"user","content":"hi","metadata":{"cache_control":{"type":"ephemeral"}}}`)
 	var msg DynamicMessage
-	if err := json.Unmarshal(body, &msg); err != nil {
+	if err := sonic.Unmarshal(body, &msg); err != nil {
 		t.Fatalf("unmarshal public DynamicMessage: %v", err)
 	}
 	if msg.Metadata == nil || msg.Metadata.CacheControl == nil {
@@ -850,7 +850,7 @@ func TestDynamicMessage_PublicJSON_StillUsesType(t *testing.T) {
 	if msg.Metadata.CacheControl.Type != "ephemeral" {
 		t.Errorf("CacheControl.Type: got %q, want %q", msg.Metadata.CacheControl.Type, "ephemeral")
 	}
-	out, err := json.Marshal(&msg)
+	out, err := sonic.Marshal(&msg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -910,4 +910,213 @@ func TestDynamicInputValidate_RejectsEmptyCacheControlType(t *testing.T) {
 	if err := input.Validate(); err != nil {
 		t.Errorf("Validate() rejected nil Metadata: %v", err)
 	}
+}
+
+// TestIssue324_DynamicInput_ToWorkerInput_NoPanic pins the #324
+// regression: a DynamicInput shape that includes nested-embedded
+// structs reached through a DynamicProperty.Value (any) and slice
+// fields with omitempty must NOT panic the worker-boundary marshal.
+// Viktor's original repro panicked inside goccy/go-json's encoder VM
+// when goccy walked the nested chain. After the sonic migration the
+// reachable encoders (DynamicTypes.MarshalJSON, DynamicClass.MarshalJSON,
+// OrderedMap.MarshalJSON) all run through sonic, and ToWorkerInput
+// additionally wraps the marshal in a defer-recover.
+//
+// The test asserts the public contract: ToWorkerInput returns a normal
+// (nil-error, valid JSON) pair instead of crashing the host process.
+// Wire-shape details (key order, exact JSON bytes) are intentionally not
+// asserted — the OrderedMap-protected ordering is covered by the
+// pre-existing TestDynamicInput_ToWorkerInput_* suite. The contract
+// being pinned here is "no panic; result is valid JSON; expected top-
+// level keys present", and that contract is what #324 broke.
+func TestIssue324_DynamicInput_ToWorkerInput_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	primary := "TestClient"
+	hello := "hello"
+
+	// Build the shape Viktor's repro produced — a literal_string
+	// property whose Value carries a nested anonymous-embedded struct
+	// containing a slice field. That slice + the embedding are what
+	// drove goccy's encoder VM into the nil-pointer dereference
+	// originally surfaced as #324.
+	type Inner struct {
+		B string   `json:"b"`
+		C string   `json:"c"`
+		D []string `json:"d,omitempty"` // omitempty slice — Viktor's trigger shape
+	}
+	type Outer struct {
+		Inner // anonymous embedded struct
+	}
+	panicTrigger := &DynamicProperty{
+		Type:  "literal_string",
+		Value: Outer{},
+	}
+
+	input := &DynamicInput{
+		Messages: []DynamicMessage{
+			{Role: "user", TextContent: &hello},
+		},
+		ClientRegistry: &ClientRegistry{
+			Primary: &primary,
+			Clients: []*ClientProperty{
+				{
+					Name:     primary,
+					Provider: "anthropic",
+					Options:  map[string]any{"model": "test-model", "api_key": "test-key"},
+				},
+			},
+		},
+		OutputSchema: &DynamicOutputSchema{
+			Properties: MustOrderedMap(
+				OrderedKV("answer", &DynamicProperty{Type: "string"}),
+				OrderedKV("panic_trigger", panicTrigger),
+			),
+		},
+	}
+
+	data, err := input.ToWorkerInput()
+	if err != nil {
+		t.Fatalf("ToWorkerInput returned an error (must not panic and must return valid JSON): %v", err)
+	}
+	if !sonic.Valid(data) {
+		t.Fatalf("ToWorkerInput produced invalid JSON; bytes=%s", string(data))
+	}
+
+	// Expected top-level keys: the worker payload is {"messages": ...,
+	// "__baml_options__": ...}. Decode into a map[string]any and assert
+	// presence — order across the top-level object is not contractual
+	// for the worker boundary.
+	var decoded map[string]any
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("worker payload unmarshal failed: %v", err)
+	}
+	if _, ok := decoded["messages"]; !ok {
+		t.Errorf("worker payload missing required 'messages' key; got keys=%v", keysOf(decoded))
+	}
+	if _, ok := decoded["__baml_options__"]; !ok {
+		t.Errorf("worker payload missing required '__baml_options__' key; got keys=%v", keysOf(decoded))
+	}
+}
+
+// TestIssue324_DynamicParseInput_ToWorkerInput_NoPanic mirrors the
+// regression for the parse path. The parse worker payload's top-level
+// keys are {"raw", "__baml_options__"} — Validate doesn't require raw
+// to be JSON, just non-empty, so we exercise the panic-trigger shape
+// against a stub raw string.
+func TestIssue324_DynamicParseInput_ToWorkerInput_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	type Inner struct {
+		B string   `json:"b"`
+		C string   `json:"c"`
+		D []string `json:"d,omitempty"`
+	}
+	type Outer struct {
+		Inner
+	}
+
+	input := &DynamicParseInput{
+		Raw: `{"answer":"x"}`,
+		OutputSchema: &DynamicOutputSchema{
+			Properties: MustOrderedMap(
+				OrderedKV("answer", &DynamicProperty{Type: "string"}),
+				OrderedKV("panic_trigger", &DynamicProperty{
+					Type:  "literal_string",
+					Value: Outer{},
+				}),
+			),
+		},
+	}
+
+	data, err := input.ToWorkerInput()
+	if err != nil {
+		t.Fatalf("ToWorkerInput returned an error (must not panic and must return valid JSON): %v", err)
+	}
+	if !sonic.Valid(data) {
+		t.Fatalf("ToWorkerInput produced invalid JSON; bytes=%s", string(data))
+	}
+
+	var decoded map[string]any
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("worker payload unmarshal failed: %v", err)
+	}
+	if _, ok := decoded["raw"]; !ok {
+		t.Errorf("worker payload missing required 'raw' key; got keys=%v", keysOf(decoded))
+	}
+	if _, ok := decoded["__baml_options__"]; !ok {
+		t.Errorf("worker payload missing required '__baml_options__' key; got keys=%v", keysOf(decoded))
+	}
+}
+
+// TestIssue324_ToWorkerInput_RecoverGuard pins the defer-recover
+// behaviour of the worker-boundary marshal: the recover converts any
+// downstream panic into a normal error rather than tearing down the
+// host. Currently the sonic-driven encoder chain never reaches this
+// rung for well-formed inputs, so we exercise the seam by injecting a
+// MarshalJSON implementation that panics directly. Without the
+// recover, this test would crash the process.
+func TestIssue324_ToWorkerInput_RecoverGuard(t *testing.T) {
+	t.Parallel()
+
+	primary := "TestClient"
+	hello := "hello"
+	input := &DynamicInput{
+		Messages: []DynamicMessage{
+			{Role: "user", TextContent: &hello},
+		},
+		ClientRegistry: &ClientRegistry{
+			Primary: &primary,
+			Clients: []*ClientProperty{
+				{
+					Name:     primary,
+					Provider: "anthropic",
+					Options: map[string]any{
+						"model":   "test-model",
+						"api_key": "test-key",
+						// panicMarshaler.MarshalJSON panics — the recover
+						// inside ToWorkerInput should convert this into a
+						// normal error.
+						"trigger": &panicMarshaler{},
+					},
+				},
+			},
+		},
+		OutputSchema: &DynamicOutputSchema{
+			Properties: MustOrderedMap(OrderedKV("answer", &DynamicProperty{Type: "string"})),
+		},
+	}
+
+	data, err := input.ToWorkerInput()
+	if err == nil {
+		t.Fatalf("expected ToWorkerInput to surface a normal error after a marshal panic; got data=%s", string(data))
+	}
+	if data != nil {
+		t.Errorf("expected nil data on recover branch; got %d bytes", len(data))
+	}
+	if !strings.Contains(err.Error(), "dynamic input marshal panic") {
+		t.Errorf("expected recover error to mention 'dynamic input marshal panic'; got %q", err.Error())
+	}
+}
+
+// panicMarshaler is a test helper whose MarshalJSON method always
+// panics. Used by TestIssue324_ToWorkerInput_RecoverGuard to exercise
+// the worker-boundary defer-recover without needing to find a real
+// encoder-level crash.
+type panicMarshaler struct{}
+
+func (panicMarshaler) MarshalJSON() ([]byte, error) {
+	panic("synthetic marshal panic for #324 regression test")
+}
+
+// keysOf returns the keys of m in any order — convenience for assertion
+// error messages. Defined here rather than imported because slices.Sorted
+// + maps.Keys requires importing two more packages just for one t.Errorf
+// formatter.
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

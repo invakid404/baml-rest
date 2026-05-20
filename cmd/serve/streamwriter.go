@@ -3,11 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
+	stdjson "encoding/json"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/gofiber/fiber/v3"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/apierror"
@@ -44,12 +45,12 @@ const (
 // the legacy wire shape byte-identical when the flag is off.
 type NDJSONEvent struct {
 	Type      NDJSONEventType `json:"type"`
-	Data      json.RawMessage `json:"data,omitempty"`
+	Data      stdjson.RawMessage `json:"data,omitempty"`
 	Raw       string          `json:"raw,omitempty"`
 	Reasoning string          `json:"reasoning,omitempty"`
 	Error     string          `json:"error,omitempty"`
 	Code      apierror.Code   `json:"code,omitempty"`
-	Details   json.RawMessage `json:"details,omitempty"`
+	Details   stdjson.RawMessage `json:"details,omitempty"`
 }
 
 // NDJSONStreamWriterPublisher implements StreamPublisher for native Fiber streaming.
@@ -61,7 +62,7 @@ type NDJSONStreamWriterPublisher struct {
 }
 
 func encodeNDJSONEvent(event *NDJSONEvent) ([]byte, error) {
-	data, err := json.Marshal(event)
+	data, err := sonic.Marshal(event)
 	if err != nil {
 		return nil, err
 	}
@@ -155,11 +156,11 @@ func (p *NDJSONStreamWriterPublisher) PublishReset() error {
 	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventReset})
 }
 
-func (p *NDJSONStreamWriterPublisher) PublishMetadata(payload json.RawMessage) error {
+func (p *NDJSONStreamWriterPublisher) PublishMetadata(payload stdjson.RawMessage) error {
 	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventMetadata, Data: payload})
 }
 
-func (p *NDJSONStreamWriterPublisher) PublishError(errMsg string, code apierror.Code, details json.RawMessage) error {
+func (p *NDJSONStreamWriterPublisher) PublishError(errMsg string, code apierror.Code, details stdjson.RawMessage) error {
 	return p.writeEvent(&NDJSONEvent{Type: NDJSONEventError, Error: errMsg, Code: code, Details: details})
 }
 
@@ -219,7 +220,7 @@ func HandleNDJSONStreamFiber(
 // Stacktrace is set, the stacktrace is wrapped as
 // {"stacktrace": "..."} so the response carries the same panic trace
 // classifyWorkerError would expose for unary endpoints.
-func classifyStreamResultError(result *workerplugin.StreamResult) (apierror.Code, json.RawMessage) {
+func classifyStreamResultError(result *workerplugin.StreamResult) (apierror.Code, stdjson.RawMessage) {
 	workerCode, details := normalizeWorkerMetadata(result.ErrorCode, result.ErrorDetails)
 	if details == nil && result.Stacktrace != "" {
 		details = stacktraceDetailsJSON(result.Stacktrace)
@@ -249,10 +250,10 @@ type StreamPublisher interface {
 	// PublishError sends an error event. code and details may be empty/nil
 	// when no classification is available — the underlying transport
 	// omits those fields from the wire.
-	PublishError(errMsg string, code apierror.Code, details json.RawMessage) error
+	PublishError(errMsg string, code apierror.Code, details stdjson.RawMessage) error
 	// PublishMetadata sends a routing/retry metadata event.
 	// payload is the JSON-encoded bamlutils.Metadata value.
-	PublishMetadata(payload json.RawMessage) error
+	PublishMetadata(payload stdjson.RawMessage) error
 	// Close performs any cleanup needed (e.g., signaling SSE to stop).
 	Close()
 }
@@ -374,7 +375,7 @@ func (p *SSEStreamWriterPublisher) formatPayload(data []byte, raw, reasoning str
 		return unsafeutil.BytesToString(data), nil
 	}
 
-	wrapped, err := json.Marshal(CallWithRawResponse{Data: data, Raw: raw, Reasoning: reasoning})
+	wrapped, err := sonic.Marshal(CallWithRawResponse{Data: data, Raw: raw, Reasoning: reasoning})
 	if err != nil {
 		return "", err
 	}
@@ -406,17 +407,17 @@ func (p *SSEStreamWriterPublisher) PublishReset() error {
 	return p.writeEvent(sseEventReset, "{}")
 }
 
-func (p *SSEStreamWriterPublisher) PublishMetadata(payload json.RawMessage) error {
+func (p *SSEStreamWriterPublisher) PublishMetadata(payload stdjson.RawMessage) error {
 	return p.writeEvent(sseEventMetadata, unsafeutil.BytesToString(payload))
 }
 
-func (p *SSEStreamWriterPublisher) PublishError(errMsg string, code apierror.Code, details json.RawMessage) error {
+func (p *SSEStreamWriterPublisher) PublishError(errMsg string, code apierror.Code, details stdjson.RawMessage) error {
 	envelope := struct {
 		Error   string          `json:"error"`
 		Code    apierror.Code   `json:"code,omitempty"`
-		Details json.RawMessage `json:"details,omitempty"`
+		Details stdjson.RawMessage `json:"details,omitempty"`
 	}{Error: errMsg, Code: code, Details: details}
-	payload, err := json.Marshal(envelope)
+	payload, err := sonic.Marshal(envelope)
 	if err != nil {
 		// Fallback: at least surface the message as the data payload so
 		// the client sees the failure even if envelope marshaling broke.
@@ -515,7 +516,7 @@ func consumeStream(
 				}
 			}
 			if len(result.Data) > 0 {
-				if err := publisher.PublishMetadata(json.RawMessage(result.Data)); err != nil {
+				if err := publisher.PublishMetadata(stdjson.RawMessage(result.Data)); err != nil {
 					workerplugin.ReleaseStreamResult(result)
 					drainResults(results)
 					return

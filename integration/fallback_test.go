@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
@@ -108,7 +110,7 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 			if result != "Hello from primary!" {
@@ -159,7 +161,7 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 			if result != "Hello from secondary!" {
@@ -239,7 +241,7 @@ func TestFallbackCall(t *testing.T) {
 			}
 
 			var result string
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 			if result != "Hello from tertiary!" {
@@ -347,7 +349,7 @@ func TestFallbackCall(t *testing.T) {
 			var result struct {
 				Message string `json:"message"`
 			}
-			if err := json.Unmarshal(resp.Body, &result); err != nil {
+			if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 			if result.Message != "fallback structured" {
@@ -463,7 +465,7 @@ func TestFallbackStream(t *testing.T) {
 			Input:  map[string]any{"name": "World"},
 		})
 
-		var finalData json.RawMessage
+		var finalData stdjson.RawMessage
 		for ev := range partials {
 			if ev.IsFinal() {
 				finalData = ev.Data
@@ -474,7 +476,7 @@ func TestFallbackStream(t *testing.T) {
 		}
 
 		var result string
-		if err := json.Unmarshal(finalData, &result); err != nil {
+		if err := sonic.Unmarshal(finalData, &result); err != nil {
 			t.Fatalf("Failed to unmarshal final: %v", err)
 		}
 		if result != "Streaming from primary!" {
@@ -524,7 +526,7 @@ func TestFallbackStream(t *testing.T) {
 			Input:  map[string]any{"name": "World"},
 		})
 
-		var finalData json.RawMessage
+		var finalData stdjson.RawMessage
 		tracker := newMetadataTracker(t)
 		for ev := range partials {
 			if ev.IsMetadata() {
@@ -541,7 +543,7 @@ func TestFallbackStream(t *testing.T) {
 		}
 
 		var result string
-		if err := json.Unmarshal(finalData, &result); err != nil {
+		if err := sonic.Unmarshal(finalData, &result); err != nil {
 			t.Fatalf("Failed to unmarshal final: %v", err)
 		}
 		if result != "Streaming from secondary!" {

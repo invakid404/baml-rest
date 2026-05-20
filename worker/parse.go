@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -28,7 +28,7 @@ func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte
 
 	// Parse input
 	var input workerParseInput
-	if err := json.Unmarshal(inputJSON, &input); err != nil {
+	if err := sonic.Unmarshal(inputJSON, &input); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal input: %w", err)
 	}
 
@@ -65,7 +65,7 @@ func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte
 	}
 
 	// Marshal the result to JSON
-	data, err := json.Marshal(result)
+	data, err := sonic.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal parse result: %w", err)
 	}

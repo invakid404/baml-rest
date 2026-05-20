@@ -62,12 +62,13 @@ package clientdefaults
 
 import (
 	"bytes"
+	stdjson "encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
@@ -95,7 +96,7 @@ type envelope struct {
 }
 
 type clientDefaultsBody struct {
-	Options map[string]json.RawMessage `json:"options"`
+	Options map[string]stdjson.RawMessage `json:"options"`
 }
 
 // Load reads BAML_REST_CLIENT_DEFAULTS and returns a non-nil *Config. An
@@ -128,7 +129,7 @@ func parse(raw string) (*Config, error) {
 		return cfg, nil
 	}
 
-	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	dec := sonic.ConfigDefault.NewDecoder(bytes.NewReader([]byte(raw)))
 	dec.DisallowUnknownFields()
 	var env envelope
 	if err := dec.Decode(&env); err != nil {

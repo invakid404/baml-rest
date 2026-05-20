@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/dynclient"
@@ -113,10 +115,10 @@ func simpleAnswerSchema() (*testutil.DynamicOutputSchema, *dynclient.OutputSchem
 func jsonEqual(t *testing.T, a, b []byte) bool {
 	t.Helper()
 	var av, bv any
-	if err := json.Unmarshal(a, &av); err != nil {
+	if err := sonic.Unmarshal(a, &av); err != nil {
 		t.Fatalf("unmarshal a: %v (raw=%s)", err, string(a))
 	}
-	if err := json.Unmarshal(b, &bv); err != nil {
+	if err := sonic.Unmarshal(b, &bv); err != nil {
 		t.Fatalf("unmarshal b: %v (raw=%s)", err, string(b))
 	}
 	return reflect.DeepEqual(av, bv)
@@ -286,7 +288,7 @@ func TestDynclientDynamicStreamRawParity(t *testing.T) {
 	defer stream.Close()
 
 	var (
-		libFinalData json.RawMessage
+		libFinalData stdjson.RawMessage
 		libFinalRaw  string
 		rawSeen      []string
 	)
@@ -499,7 +501,7 @@ func TestDynclientBuildRequestOptionsSmoke(t *testing.T) {
 		t.Fatalf("Library DynamicCall with build-request option: %v", err)
 	}
 	var decoded map[string]any
-	if err := json.Unmarshal(libResp.Data, &decoded); err != nil {
+	if err := sonic.Unmarshal(libResp.Data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if decoded["answer"] != "4" {
@@ -549,7 +551,7 @@ func TestDynclientSharedStateRoundRobinSmoke(t *testing.T) {
 // stream are reported via t.Fatalf.
 func drainHTTPStreamFinal(t *testing.T, events <-chan testutil.StreamEvent, errs <-chan error) []byte {
 	t.Helper()
-	var final json.RawMessage
+	var final stdjson.RawMessage
 	for ev := range events {
 		if ev.IsFinal() || (ev.IsData() && final == nil) {
 			final = ev.Data
@@ -573,7 +575,7 @@ func drainHTTPStreamFinal(t *testing.T, events <-chan testutil.StreamEvent, errs
 func drainHTTPStreamFinalRaw(t *testing.T, events <-chan testutil.StreamEvent, errs <-chan error) ([]byte, string) {
 	t.Helper()
 	var (
-		finalData json.RawMessage
+		finalData stdjson.RawMessage
 		finalRaw  string
 	)
 	for ev := range events {
@@ -598,10 +600,10 @@ func drainHTTPStreamFinalRaw(t *testing.T, events <-chan testutil.StreamEvent, e
 
 // drainLibStream consumes a dynclient.Stream to io.EOF and returns the
 // last final-event data along with the number of partial events seen.
-func drainLibStream(t *testing.T, s *dynclient.Stream) (json.RawMessage, int) {
+func drainLibStream(t *testing.T, s *dynclient.Stream) (stdjson.RawMessage, int) {
 	t.Helper()
 	var (
-		final    json.RawMessage
+		final    stdjson.RawMessage
 		partials int
 	)
 	for {

@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3gen"
-	"github.com/goccy/go-json"
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/apierror"
@@ -20,7 +20,7 @@ func main() {
 
 	schema := generateOpenAPISchema()
 
-	data, err := json.MarshalIndent(schema, "", "  ")
+	data, err := sonic.MarshalIndent(schema, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error marshaling schema: %v\n", err)
 		os.Exit(1)

@@ -13,7 +13,7 @@ package buildrequest
 import (
 	"fmt"
 
-	"github.com/tidwall/gjson"
+	"github.com/cloudwego/gjson"
 
 	"github.com/invakid404/baml-rest/bamlutils/awsstream"
 	"github.com/invakid404/baml-rest/bamlutils/sse"

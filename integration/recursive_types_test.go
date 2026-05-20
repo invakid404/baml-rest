@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
 
@@ -36,7 +36,7 @@ func TestRecursiveTypes(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("Failed to unmarshal: %v", err)
 		}
 
@@ -74,7 +74,7 @@ func TestRecursiveTypes(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("Failed to unmarshal: %v", err)
 		}
 
@@ -135,7 +135,7 @@ func TestRecursiveTypes(t *testing.T) {
 
 		// Walk down 4 levels to verify deep nesting works
 		var result map[string]any
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("Failed to unmarshal: %v", err)
 		}
 
@@ -188,7 +188,7 @@ func TestRecursiveTypes(t *testing.T) {
 			t.Fatal("Expected at least one stream event")
 		}
 		var tree map[string]any
-		if err := json.Unmarshal(lastEvent.Data, &tree); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &tree); err != nil {
 			t.Fatalf("Failed to unmarshal last event Data: %v (data=%s)", err, string(lastEvent.Data))
 		}
 		if tree["value"] != "root" {
@@ -212,7 +212,7 @@ func TestRecursiveTypes(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Data, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal: %v", err)
 		}
 		if result["value"] != "parsed" {
@@ -260,7 +260,7 @@ func TestRecursiveTypesWithMedia(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("Failed to unmarshal: %v", err)
 		}
 		if result["label"] != "root" {
@@ -298,7 +298,7 @@ func TestRecursiveTypesWithMedia(t *testing.T) {
 		}
 
 		var result map[string]any
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 			t.Fatalf("Failed to unmarshal: %v", err)
 		}
 		if result["label"] != "gallery" {
@@ -352,7 +352,7 @@ func TestRecursiveTypesWithMedia(t *testing.T) {
 			t.Fatal("Expected at least one stream event")
 		}
 		var tree map[string]any
-		if err := json.Unmarshal(lastEvent.Data, &tree); err != nil {
+		if err := sonic.Unmarshal(lastEvent.Data, &tree); err != nil {
 			t.Fatalf("Failed to unmarshal last event Data: %v (data=%s)", err, string(lastEvent.Data))
 		}
 		if tree["label"] != "root" {

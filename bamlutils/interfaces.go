@@ -2,11 +2,11 @@ package bamlutils
 
 import (
 	"context"
-	"encoding/json"
+	stdjson "encoding/json"
 	"errors"
 	"fmt"
 
-	goccyjson "github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 )
@@ -347,12 +347,12 @@ func (c *ClientProperty) IsProviderPresent() bool {
 func (c *ClientProperty) UnmarshalJSON(data []byte) error {
 	type alias ClientProperty // avoid recursion
 	aux := alias{}
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	*c = ClientProperty(aux)
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
+	var raw map[string]stdjson.RawMessage
+	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	_, c.ProviderSet = raw["provider"]
@@ -384,7 +384,7 @@ func (c ClientProperty) MarshalJSON() ([]byte, error) {
 		p := c.Provider
 		out.Provider = &p
 	}
-	return json.Marshal(out)
+	return sonic.Marshal(out)
 }
 
 // TranslateUpstreamProvider converts baml-rest's canonical provider
@@ -659,9 +659,8 @@ type DynamicTypes struct {
 }
 
 // MarshalJSON emits the dynamic-types object, omitting Classes / Enums
-// when empty. goccy/go-json does not honor `json:",omitzero"`, so the
-// field tag alone is not enough to suppress empty entries under that
-// encoder.
+// when empty. The explicit method does the omission, so the wire shape
+// stays stable regardless of the encoder's `omitzero` support.
 func (dt DynamicTypes) MarshalJSON() ([]byte, error) {
 	type alias struct {
 		Classes       *OrderedMap[*DynamicClass] `json:"classes,omitempty"`
@@ -677,7 +676,7 @@ func (dt DynamicTypes) MarshalJSON() ([]byte, error) {
 		e := dt.Enums
 		a.Enums = &e
 	}
-	return goccyjson.Marshal(a)
+	return sonic.Marshal(a)
 }
 
 // maxTypeDepth is the maximum nesting depth for type references.
@@ -853,9 +852,8 @@ type DynamicClass struct {
 }
 
 // MarshalJSON emits the class as a JSON object, omitting an empty
-// Properties map. goccy/go-json does not honor `json:",omitzero"`, so
-// the field tag alone is not enough to suppress empty entries under
-// that encoder.
+// Properties map. The explicit method does the omission, so the wire
+// shape stays stable regardless of the encoder's `omitzero` support.
 func (c DynamicClass) MarshalJSON() ([]byte, error) {
 	type alias struct {
 		Description string                        `json:"description,omitempty"`
@@ -867,7 +865,7 @@ func (c DynamicClass) MarshalJSON() ([]byte, error) {
 		p := c.Properties
 		a.Properties = &p
 	}
-	return goccyjson.Marshal(a)
+	return sonic.Marshal(a)
 }
 
 // DynamicProperty defines a property on a class.

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
@@ -136,7 +136,7 @@ func getBAMLVersion() string {
 		var versions struct {
 			Latest string `json:"latest"`
 		}
-		if err := json.Unmarshal(data, &versions); err != nil {
+		if err := sonic.Unmarshal(data, &versions); err != nil {
 			continue
 		}
 		if versions.Latest != "" {
@@ -405,7 +405,7 @@ func callAndDecode[T any](t *testing.T, client *testutil.BAMLRestClient, ctx con
 		t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, resp.Error)
 	}
 	var result T
-	if err := json.Unmarshal(resp.Body, &result); err != nil {
+	if err := sonic.Unmarshal(resp.Body, &result); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 	return result

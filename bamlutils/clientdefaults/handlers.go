@@ -1,9 +1,10 @@
 package clientdefaults
 
 import (
+	stdjson "encoding/json"
 	"fmt"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 )
 
 // Handler describes how one ClientRegistry option key is parsed from the
@@ -19,7 +20,7 @@ type Handler struct {
 
 	// Parse validates and converts the JSON value from the config into
 	// whatever opaque Go form Apply expects. Called once per Load.
-	Parse func(raw json.RawMessage) (any, error)
+	Parse func(raw stdjson.RawMessage) (any, error)
 
 	// Apply is called per client per Apply() invocation. Arguments:
 	//   parsed   — the value returned by Parse.
@@ -58,9 +59,9 @@ var registry = []Handler{
 // deployment default — see the package doc comment for the merge contract.
 var allowedRoleMetadataHandler = Handler{
 	Key: "allowed_role_metadata",
-	Parse: func(raw json.RawMessage) (any, error) {
+	Parse: func(raw stdjson.RawMessage) (any, error) {
 		var v any
-		if err := json.Unmarshal(raw, &v); err != nil {
+		if err := sonic.Unmarshal(raw, &v); err != nil {
 			return nil, fmt.Errorf("allowed_role_metadata: invalid JSON: %w", err)
 		}
 		switch typed := v.(type) {

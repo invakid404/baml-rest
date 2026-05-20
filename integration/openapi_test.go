@@ -16,7 +16,9 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/getkin/kin-openapi/routers/gorillamux"
-	"github.com/goccy/go-json"
+	stdjson "encoding/json"
+
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
 
@@ -152,7 +154,7 @@ func (v *schemaValidator) validateNDJSONEvent(
 
 	// Parse the event JSON
 	var eventData any
-	if err := json.Unmarshal(eventJSON, &eventData); err != nil {
+	if err := sonic.Unmarshal(eventJSON, &eventData); err != nil {
 		return fmt.Errorf("failed to parse event JSON: %w", err)
 	}
 
@@ -283,8 +285,8 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 		}
 
 		// Reconstruct the full response body for validation
-		fullResponse, _ := json.Marshal(map[string]any{
-			"data": json.RawMessage(resp.Data),
+		fullResponse, _ := sonic.Marshal(map[string]any{
+			"data": stdjson.RawMessage(resp.Data),
 			"raw":  resp.Raw,
 		})
 
@@ -322,9 +324,9 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 				if event.IsPartialData() {
 					partialCount++
 					// Validate partial event against stream type schema
-					partialJSON, _ := json.Marshal(map[string]any{
+					partialJSON, _ := sonic.Marshal(map[string]any{
 						"type": "data",
-						"data": json.RawMessage(event.Data),
+						"data": stdjson.RawMessage(event.Data),
 					})
 					if err := validator.validateNDJSONEvent(ctx, "/stream/GetComprehensive", partialJSON); err != nil {
 						t.Errorf("Partial event %d schema validation failed: %v", partialCount, err)
@@ -334,9 +336,9 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 				// Capture the final event (type: "final") for validation
 				if event.IsFinal() {
 					// Reconstruct the NDJSON event for validation
-					eventJSON, _ := json.Marshal(map[string]any{
+					eventJSON, _ := sonic.Marshal(map[string]any{
 						"type": "final",
-						"data": json.RawMessage(event.Data),
+						"data": stdjson.RawMessage(event.Data),
 					})
 					finalEvent = eventJSON
 				}
@@ -396,9 +398,9 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 				if event.IsPartialData() {
 					partialCount++
 					// Validate partial event against stream type schema
-					partialJSON, _ := json.Marshal(map[string]any{
+					partialJSON, _ := sonic.Marshal(map[string]any{
 						"type": "data",
-						"data": json.RawMessage(event.Data),
+						"data": stdjson.RawMessage(event.Data),
 						"raw":  event.Raw,
 					})
 					if err := validator.validateNDJSONEvent(ctx, "/stream-with-raw/GetComprehensive", partialJSON); err != nil {
@@ -408,9 +410,9 @@ func TestOpenAPISchemaValidation(t *testing.T) {
 
 				// Capture the final event (type: "final") for validation
 				if event.IsFinal() {
-					eventJSON, _ := json.Marshal(map[string]any{
+					eventJSON, _ := sonic.Marshal(map[string]any{
 						"type": "final",
-						"data": json.RawMessage(event.Data),
+						"data": stdjson.RawMessage(event.Data),
 						"raw":  event.Raw,
 					})
 					finalEvent = eventJSON
@@ -531,7 +533,7 @@ func TestStreamAndFinalSchemasDiffer(t *testing.T) {
 
 		// Parse the partial data
 		var partialParsed any
-		if err := json.Unmarshal(firstPartialData, &partialParsed); err != nil {
+		if err := sonic.Unmarshal(firstPartialData, &partialParsed); err != nil {
 			t.Fatalf("Failed to parse partial data: %v", err)
 		}
 
@@ -552,7 +554,7 @@ func TestStreamAndFinalSchemasDiffer(t *testing.T) {
 
 		// Verify the final data passes the final schema (sanity check)
 		var finalParsed any
-		if err := json.Unmarshal(finalData, &finalParsed); err != nil {
+		if err := sonic.Unmarshal(finalData, &finalParsed); err != nil {
 			t.Fatalf("Failed to parse final data: %v", err)
 		}
 
@@ -604,7 +606,7 @@ func TestStreamAndFinalSchemasDiffer(t *testing.T) {
 
 		// Parse the final data
 		var finalParsed any
-		if err := json.Unmarshal(finalData, &finalParsed); err != nil {
+		if err := sonic.Unmarshal(finalData, &finalParsed); err != nil {
 			t.Fatalf("Failed to parse final data: %v", err)
 		}
 

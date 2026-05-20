@@ -2,12 +2,11 @@ package dynclient
 
 import (
 	"context"
+	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"sync"
-
-	"github.com/goccy/go-json"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -43,7 +42,7 @@ const (
 // Event is a single streaming event delivered by Stream.Next.
 type Event struct {
 	Kind      EventKind
-	Data      json.RawMessage
+	Data      stdjson.RawMessage
 	Raw       string
 	Reasoning string
 	Metadata  *Metadata
@@ -232,11 +231,11 @@ func (s *Stream) finalEvent(result *workerplugin.StreamResult) (*Event, error) {
 // flattenIfPresent copies the pooled byte slice and unwraps any
 // DynamicProperties envelope. Empty input yields nil so partial frames
 // that carry only metadata (raw deltas) don't surface a bogus payload.
-func flattenIfPresent(data []byte) (json.RawMessage, error) {
+func flattenIfPresent(data []byte) (stdjson.RawMessage, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
-	copied := append(json.RawMessage(nil), data...)
+	copied := append(stdjson.RawMessage(nil), data...)
 	flattened, err := bamlutils.FlattenDynamicOutput(copied)
 	if err != nil {
 		return nil, err

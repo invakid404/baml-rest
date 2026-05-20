@@ -8,10 +8,10 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
-	"github.com/goccy/go-json"
 
 	baml_rest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -56,7 +56,7 @@ func TestPreserveSchemaOrderNullValidates(t *testing.T) {
 	if doc == nil || doc.Components == nil {
 		t.Fatalf("generated schema has no components")
 	}
-	data, err := json.Marshal(doc)
+	data, err := sonic.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal generated schema: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestPreserveSchemaOrderNullValidates(t *testing.T) {
 			// code path a schema-driven HTTP middleware would run on
 			// the wire body, so it catches Nullable-handling
 			// regressions that VisitJSON-on-primitive might miss.
-			bodyBytes, err := json.Marshal(tc.body)
+			bodyBytes, err := sonic.Marshal(tc.body)
 			if err != nil {
 				t.Fatalf("marshal request body: %v", err)
 			}

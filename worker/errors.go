@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 
 	"github.com/invakid404/baml-rest/bamlutils/awsstream"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
@@ -117,7 +117,7 @@ func (d providerErrorDetails) marshal() []byte {
 		d.ExceptionType == "" && d.ExceptionMessage == "" {
 		return nil
 	}
-	data, err := json.Marshal(d)
+	data, err := sonic.Marshal(d)
 	if err != nil {
 		return nil
 	}
@@ -155,22 +155,22 @@ func mergeRawDetail(details []byte, raw string) []byte {
 		return details
 	}
 	if len(details) == 0 {
-		out, err := json.Marshal(map[string]any{"raw": raw})
+		out, err := sonic.Marshal(map[string]any{"raw": raw})
 		if err != nil {
 			return details
 		}
 		return out
 	}
 	var obj map[string]any
-	if err := json.Unmarshal(details, &obj); err != nil || obj == nil {
-		out, marshalErr := json.Marshal(map[string]any{"raw": raw})
+	if err := sonic.Unmarshal(details, &obj); err != nil || obj == nil {
+		out, marshalErr := sonic.Marshal(map[string]any{"raw": raw})
 		if marshalErr != nil {
 			return details
 		}
 		return out
 	}
 	obj["raw"] = raw
-	out, err := json.Marshal(obj)
+	out, err := sonic.Marshal(obj)
 	if err != nil {
 		return details
 	}
@@ -195,7 +195,7 @@ func mergeRawDetail(details []byte, raw string) []byte {
 // errors.As is used (not a direct type assertion) so wrappers like
 // fmt.Errorf("buildrequest: %w", &llmhttp.HTTPError{...}) still match.
 //
-// Returned details bytes are produced via json.Marshal on a fixed-shape
+// Returned details bytes are produced via sonic.Marshal on a fixed-shape
 // struct, so the resulting payload is always well-formed JSON. The
 // returned slice is owned by the caller; assigning it directly to
 // workerplugin.StreamResult.ErrorDetails is safe.

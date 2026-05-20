@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -333,7 +333,7 @@ func TestDynamicCallFlattensAndCopiesData(t *testing.T) {
 	}
 
 	var decoded map[string]any
-	if err := json.Unmarshal(result.Data, &decoded); err != nil {
+	if err := sonic.Unmarshal(result.Data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, ok := decoded["DynamicProperties"]; ok {
@@ -378,7 +378,7 @@ func TestDynamicCallRawSeparatesRawAndReasoning(t *testing.T) {
 		t.Errorf("Reasoning = %q, want %q", result.Reasoning, "because reasons")
 	}
 	var decoded map[string]any
-	if err := json.Unmarshal(result.Data, &decoded); err != nil {
+	if err := sonic.Unmarshal(result.Data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if decoded["answer"] != "4" {
@@ -405,7 +405,7 @@ func TestDynamicParseFlattensData(t *testing.T) {
 		t.Fatalf("DynamicParse: %v", err)
 	}
 	var decoded map[string]any
-	if err := json.Unmarshal(result.Data, &decoded); err != nil {
+	if err := sonic.Unmarshal(result.Data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, ok := decoded["DynamicProperties"]; ok {
@@ -1113,3 +1113,54 @@ func TestPreserveSchemaOrderDefault_DoesNotMutateCallerRequest(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestIssue324_DynamicCall_NoPanic pins the public dynclient.Client.
+// DynamicCall regression for #324: the bamlutils worker-boundary marshal
+// no longer crashes the host on Viktor's nested-embedded-struct shape.
+// Exercises the full public call path through a fakeRuntime so no real
+// network I/O is involved, and asserts a normal (nil-error, decodable
+// result) return — without the migration this call panicked inside
+// goccy/go-json's encoder VM before reaching transport.
+func TestIssue324_DynamicCall_NoPanic(t *testing.T) {
+	rt := &fakeRuntime{}
+	c := newClient(t, rt)
+	rt.streamingImpl = func(_ bamlutils.Adapter, _ any) (<-chan bamlutils.StreamResult, error) {
+		ch := make(chan bamlutils.StreamResult, 1)
+		ch <- &fakeStreamResult{
+			kind:  bamlutils.StreamResultKindFinal,
+			final: map[string]any{"DynamicProperties": map[string]any{"answer": "ok"}},
+		}
+		close(ch)
+		return ch, nil
+	}
+
+	type Inner struct {
+		B string   `json:"b"`
+		C string   `json:"c"`
+		D []string `json:"d,omitempty"`
+	}
+	type Outer struct {
+		Inner
+	}
+
+	req := validRequest()
+	// Append Viktor's panic-trigger shape onto the validRequest's
+	// schema. The OrderedMap append goes through Set so the existing
+	// "answer" entry is preserved and a literal_string property whose
+	// Value carries a nested embedded struct (the original #324
+	// trigger) is added.
+	if err := req.OutputSchema.Properties.Set("panic_trigger", &Property{
+		Type:  "literal_string",
+		Value: Outer{},
+	}); err != nil {
+		t.Fatalf("Properties.Set: %v", err)
+	}
+
+	result, err := c.DynamicCall(context.Background(), req)
+	if err != nil {
+		t.Fatalf("DynamicCall must not panic and must return a normal result; got error: %v", err)
+	}
+	if result == nil || len(result.Data) == 0 {
+		t.Fatalf("DynamicCall returned empty result")
+	}
+}

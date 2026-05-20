@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -74,7 +74,7 @@ func TestConcurrentCallsDuringWorkerDeath(t *testing.T) {
 				var person struct {
 					Name string `json:"name"`
 				}
-				if err := json.Unmarshal(resp.Body, &person); err != nil {
+				if err := sonic.Unmarshal(resp.Body, &person); err != nil {
 					t.Logf("Request %d unmarshal error: %v", idx, err)
 					failures.Add(1)
 				}
