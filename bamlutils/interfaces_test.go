@@ -1242,6 +1242,30 @@ func TestDynamicTypes_Validate(t *testing.T) {
 			wantErr: `dynamic_types.enums order: missing name "E2"`,
 		},
 		{
+			name: "preserve_order with duplicate enum entry",
+			dt: &DynamicTypes{
+				Enums: map[string]*DynamicEnum{
+					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
+					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
+				},
+				PreserveOrder: true,
+				Order:         &DynamicTypesOrder{Enums: []string{"E1", "E1", "E2"}},
+			},
+			wantErr: `dynamic_types.enums order: duplicate name "E1"`,
+		},
+		{
+			name: "preserve_order with unknown enum entry",
+			dt: &DynamicTypes{
+				Enums: map[string]*DynamicEnum{
+					"E1": {Values: []*DynamicEnumValue{{Name: "A"}}},
+					"E2": {Values: []*DynamicEnumValue{{Name: "B"}}},
+				},
+				PreserveOrder: true,
+				Order:         &DynamicTypesOrder{Enums: []string{"E1", "E2", "Z"}},
+			},
+			wantErr: `dynamic_types.enums order: unknown name "Z"`,
+		},
+		{
 			name: "preserve_order with no per-class property order on multi-key class",
 			dt: &DynamicTypes{
 				Classes: map[string]*DynamicClass{
@@ -1265,6 +1289,34 @@ func TestDynamicTypes_Validate(t *testing.T) {
 				},
 			},
 			wantErr: `dynamic_types.classes["A"].properties order: unknown name "zzz"`,
+		},
+		{
+			name: "preserve_order with duplicate nested property entry",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
+				},
+				PreserveOrder: true,
+				Order: &DynamicTypesOrder{
+					Classes:    []string{"A"},
+					Properties: map[string][]string{"A": {"p", "p", "q"}},
+				},
+			},
+			wantErr: `dynamic_types.classes["A"].properties order: duplicate name "p"`,
+		},
+		{
+			name: "preserve_order with missing nested property entry",
+			dt: &DynamicTypes{
+				Classes: map[string]*DynamicClass{
+					"A": {Properties: map[string]*DynamicProperty{"p": {Type: "string"}, "q": {Type: "int"}}},
+				},
+				PreserveOrder: true,
+				Order: &DynamicTypesOrder{
+					Classes:    []string{"A"},
+					Properties: map[string][]string{"A": {"p"}},
+				},
+			},
+			wantErr: `dynamic_types.classes["A"].properties order: missing name "q"`,
 		},
 		{
 			name: "preserve_order accepts complete order across all dimensions",
