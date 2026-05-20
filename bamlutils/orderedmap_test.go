@@ -3,6 +3,7 @@ package bamlutils
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/goccy/go-json"
@@ -318,5 +319,104 @@ func TestOrderedMap_MixedValueRoundtrip(t *testing.T) {
 	v, _ := rt.Get("second")
 	if v.Name != "two" {
 		t.Errorf("Get(second).Name: got %q", v.Name)
+	}
+}
+
+// TestUnmarshalOrderedMap_PathQualifiedDuplicateSentinel pins F1: the
+// path-qualified duplicate-key branch must still surface
+// ErrOrderedMapDuplicateKey under errors.Is, so schema-level decoders
+// using the unexported helper retain the sentinel chain. Previously the
+// branch rendered a plain fmt.Errorf with no wrapping and callers lost
+// the ability to type-assert on the sentinel.
+func TestUnmarshalOrderedMap_PathQualifiedDuplicateSentinel(t *testing.T) {
+	_, err := unmarshalOrderedMap[int]([]byte(`{"a":1,"a":2}`), "output_schema.properties")
+	if err == nil {
+		t.Fatalf("expected duplicate-key error, got nil")
+	}
+	if !errors.Is(err, ErrOrderedMapDuplicateKey) {
+		t.Errorf("errors.Is(_, ErrOrderedMapDuplicateKey) = false; err=%v", err)
+	}
+	var keyErr *OrderedMapKeyError
+	if !errors.As(err, &keyErr) {
+		t.Errorf("errors.As(_, *OrderedMapKeyError) = false; err=%v", err)
+	} else if keyErr.Key != "a" {
+		t.Errorf("OrderedMapKeyError.Key: got %q want %q", keyErr.Key, "a")
+	}
+	// Existing path-qualified prose remains so callers asserting via
+	// strings.Contains keep matching.
+	if !strings.Contains(err.Error(), `output_schema.properties: duplicate key "a"`) {
+		t.Errorf("missing path-qualified prose; err=%q", err.Error())
+	}
+}
+
+// TestUnmarshalOrderedMap_RejectsTrailingBytes pins F2: input like
+// `{"a":1} garbage` is silently accepted by json.Decoder's default
+// behaviour because nothing reads past the closing brace. We explicitly
+// pull the next token and require io.EOF so post-object data is
+// rejected, matching the strict-input principle of the rest of the
+// dynamic-schema decode path.
+//
+// goccy/go-json's outer Unmarshal layer also rejects trailing top-level
+// bytes (with its own "after top-level value" wording) when this decode
+// is reached through json.Unmarshal(&m). We exercise the helper
+// directly so the strict-input contract is pinned at the function
+// boundary regardless of whether the outer encoder enforces it too.
+func TestUnmarshalOrderedMap_RejectsTrailingBytes(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"trailing junk word", `{"a":1} garbage`},
+		{"trailing object", `{"a":1}{"b":2}`},
+		{"trailing array", `{"a":1}[1,2]`},
+		{"trailing number", `{"a":1}42`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := unmarshalOrderedMap[int]([]byte(tc.body), "")
+			if err == nil {
+				t.Fatalf("expected trailing-data rejection; got nil")
+			}
+			if !strings.Contains(err.Error(), "trailing") {
+				t.Errorf("error does not mention trailing data: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestUnmarshalOrderedMap_RejectsTrailingBytes_PathQualified covers the
+// same F2 contract through the path-qualified branch used by
+// DynamicOutputSchema.UnmarshalJSON / DynamicClass.UnmarshalJSON. The
+// path prefix must appear in the error so existing field-qualified
+// diagnostics remain readable.
+func TestUnmarshalOrderedMap_RejectsTrailingBytes_PathQualified(t *testing.T) {
+	_, err := unmarshalOrderedMap[int]([]byte(`{"a":1} garbage`), "output_schema.properties")
+	if err == nil {
+		t.Fatalf("expected trailing-data rejection; got nil")
+	}
+	if !strings.Contains(err.Error(), "output_schema.properties") {
+		t.Errorf("missing path prefix: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "trailing") {
+		t.Errorf("error does not mention trailing data: %q", err.Error())
+	}
+}
+
+// TestUnmarshalOrderedMap_AcceptsTrailingWhitespace pins the inverse
+// contract of the trailing-bytes rejection: trailing whitespace after
+// the top-level object is accepted, matching how json.Decoder treats
+// whitespace as insignificant. Without this, callers feeding pretty-
+// printed JSON with a final newline would suddenly start failing.
+func TestUnmarshalOrderedMap_AcceptsTrailingWhitespace(t *testing.T) {
+	for _, body := range []string{
+		`{"a":1}`,
+		`{"a":1} `,
+		"{\"a\":1}\n",
+		"{\"a\":1}\r\n\t  ",
+	} {
+		var m OrderedMap[int]
+		if err := json.Unmarshal([]byte(body), &m); err != nil {
+			t.Errorf("unexpected error for %q: %v", body, err)
+		}
 	}
 }

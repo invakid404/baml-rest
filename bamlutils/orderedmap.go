@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 
 	"github.com/goccy/go-json"
@@ -308,11 +309,16 @@ func unmarshalOrderedMap[V any](data []byte, path string) (OrderedMap[V], error)
 			return OrderedMap[V]{}, fmt.Errorf("%s%sexpected object key", path, sep(path))
 		}
 		if out.Has(key) {
-			err := &OrderedMapKeyError{Key: key, Err: ErrOrderedMapDuplicateKey}
+			keyErr := &OrderedMapKeyError{Key: key, Err: ErrOrderedMapDuplicateKey}
 			if path == "" {
-				return OrderedMap[V]{}, err
+				return OrderedMap[V]{}, keyErr
 			}
-			return OrderedMap[V]{}, fmt.Errorf("%s: duplicate key %q", path, key)
+			// Wrap with %w so the path-qualified branch still surfaces
+			// the ErrOrderedMapDuplicateKey sentinel under errors.Is and
+			// the *OrderedMapKeyError carrier under errors.As, while
+			// preserving the existing path-qualified error prose that
+			// callers and tests assert against.
+			return OrderedMap[V]{}, fmt.Errorf("%s: duplicate key %q: %w", path, key, keyErr)
 		}
 		var rawVal json.RawMessage
 		if err := dec.Decode(&rawVal); err != nil {
@@ -328,6 +334,16 @@ func unmarshalOrderedMap[V any](data []byte, path string) (OrderedMap[V], error)
 	}
 	if _, err := dec.Token(); err != nil {
 		return OrderedMap[V]{}, qualifyErr(path, err)
+	}
+	// Reject trailing bytes after the top-level object. json.Decoder is
+	// permissive about post-object data by default — `{"a":1} garbage`
+	// would otherwise be silently accepted. Strict input matches the
+	// rest of the dynamic-schema decode path (see #313).
+	if tok, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return OrderedMap[V]{}, qualifyErr(path, fmt.Errorf("trailing bytes after top-level object: %w", err))
+		}
+		return OrderedMap[V]{}, qualifyErr(path, fmt.Errorf("trailing token after top-level object: %v", tok))
 	}
 	return out, nil
 }
