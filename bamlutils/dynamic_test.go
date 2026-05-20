@@ -158,6 +158,102 @@ func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateKey(t *testing.T) {
 	}
 }
 
+// TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateTopLevelKey
+// pins the strict-duplicate rule at the OUTER level of the schema
+// payload. The inner schema objects (properties/classes/enums) already
+// reject duplicate keys via the token-walking unmarshalOrderedObject
+// path; the struct-tag decode on the outer object would silently
+// accept last-wins, so the pre-check helper restores symmetry.
+func TestDynamicOutputSchema_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "duplicate outer properties",
+			body: `{"properties":{"a":{"type":"string"}},"properties":{"b":{"type":"int"}}}`,
+			want: `output_schema: duplicate key "properties"`,
+		},
+		{
+			name: "duplicate outer classes",
+			body: `{"properties":{"x":{"type":"string"}},"classes":{"A":{"properties":{}}},"classes":{"B":{"properties":{}}}}`,
+			want: `output_schema: duplicate key "classes"`,
+		},
+		{
+			name: "duplicate outer enums",
+			body: `{"properties":{"x":{"type":"string"}},"enums":{"E1":{"values":[{"name":"A"}]}},"enums":{"E2":{"values":[{"name":"B"}]}}}`,
+			want: `output_schema: duplicate key "enums"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var s DynamicOutputSchema
+			err := json.Unmarshal([]byte(tc.body), &s)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// TestDynamicClass_UnmarshalJSON_RejectsDuplicateTopLevelKey pins the
+// same outer-level duplicate-key rejection on the nested class type.
+// description/alias/properties are all rejected — the helper is
+// strict-all rather than allow-listed.
+func TestDynamicClass_UnmarshalJSON_RejectsDuplicateTopLevelKey(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "duplicate properties",
+			body: `{"properties":{"a":{"type":"string"}},"properties":{"b":{"type":"int"}}}`,
+			want: `class: duplicate key "properties"`,
+		},
+		{
+			name: "duplicate alias",
+			body: `{"alias":"first","alias":"second","properties":{"a":{"type":"string"}}}`,
+			want: `class: duplicate key "alias"`,
+		},
+		{
+			name: "duplicate description",
+			body: `{"description":"first","description":"second","properties":{"a":{"type":"string"}}}`,
+			want: `class: duplicate key "description"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var c DynamicClass
+			err := json.Unmarshal([]byte(tc.body), &c)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+
+	// Negative control — a well-formed class still parses cleanly.
+	body := []byte(`{"description":"only","alias":"once","properties":{"p":{"type":"string"}}}`)
+	var c DynamicClass
+	if err := json.Unmarshal(body, &c); err != nil {
+		t.Errorf("well-formed class rejected: %v", err)
+	}
+	if c.Description != "only" || c.Alias != "once" || len(c.Properties) != 1 {
+		t.Errorf("well-formed class decoded incorrectly: %+v", c)
+	}
+}
+
 func TestDynamicOutputSchema_UnmarshalJSON_RejectsNonObject(t *testing.T) {
 	t.Parallel()
 

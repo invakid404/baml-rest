@@ -362,6 +362,9 @@ func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 	// stale maps/order slices leaking across decode calls when the
 	// new payload omits or nulls a section.
 	*s = DynamicOutputSchema{}
+	if err := checkUniqueTopLevelKeys(data, "output_schema"); err != nil {
+		return err
+	}
 	var raw struct {
 		Properties json.RawMessage `json:"properties"`
 		Classes    json.RawMessage `json:"classes"`
@@ -415,6 +418,9 @@ func (c *DynamicClass) UnmarshalJSON(data []byte) error {
 	// Reset on reuse — see DynamicOutputSchema.UnmarshalJSON for
 	// rationale. The struct is wholly decoded from input.
 	*c = DynamicClass{}
+	if err := checkUniqueTopLevelKeys(data, "class"); err != nil {
+		return err
+	}
 	var raw struct {
 		Description string          `json:"description,omitempty"`
 		Alias       string          `json:"alias,omitempty"`
@@ -454,6 +460,51 @@ func rejectNonObject(path string, b []byte) error {
 		return nil
 	}
 	return fmt.Errorf("%s: must be a JSON object", path)
+}
+
+// checkUniqueTopLevelKeys token-walks the outer object and rejects any
+// duplicate key. The struct-tag unmarshal path on the receiver
+// (DynamicOutputSchema, DynamicClass) accepts duplicate top-level keys
+// with last-wins semantics, contradicting the strict-duplicate rule
+// enforced for inner schema objects via unmarshalOrderedObject. Calling
+// this before the raw-struct decode restores symmetry — both layers now
+// reject ambiguous repeats.
+//
+// Non-object inputs are left to the regular unmarshal so the caller
+// keeps producing the same shape-error it does today.
+func checkUniqueTopLevelKeys(data []byte, path string) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '{' {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return fmt.Errorf("%s: expected object key", path)
+		}
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("%s: duplicate key %q", path, key)
+		}
+		seen[key] = struct{}{}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return fmt.Errorf("%s.%s: %w", path, key, err)
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
 }
 
 // unmarshalOrderedObject decodes a JSON object into a map[string]V while
