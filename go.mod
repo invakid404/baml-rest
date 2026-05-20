@@ -7,7 +7,7 @@ require (
 	github.com/containerd/containerd/v2 v2.3.0
 	github.com/containerd/platforms v1.0.0-rc.4
 	github.com/dave/jennifer v1.7.1
-	github.com/docker/buildx v0.34.0
+	github.com/docker/buildx v0.34.1
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/getkin/kin-openapi v0.138.0
 	github.com/go-chi/chi/v5 v5.2.5
@@ -20,13 +20,13 @@ require (
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/adapters/adapter_v0_219_0 v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/adapters/common v0.0.0-20260518112657-a042afdd4284
-	github.com/invakid404/baml-rest/bamlutils v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/adapters/common v0.0.44
+	github.com/invakid404/baml-rest/bamlutils v0.0.44
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/introspected v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/introspected v0.0.44
 	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.0-20260518112657-a042afdd4284
-	github.com/invakid404/baml-rest/workerplugin v0.0.0-20260518112657-a042afdd4284
+	github.com/invakid404/baml-rest/worker v0.0.44
+	github.com/invakid404/baml-rest/workerplugin v0.0.44
 	github.com/moby/buildkit v0.30.0
 	github.com/moby/moby/api v1.54.2
 	github.com/moby/moby/client v0.4.1
@@ -108,7 +108,7 @@ require (
 	github.com/in-toto/attestation v1.1.2 // indirect
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.0-20260518112657-a042afdd4284 // indirect
+	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.44 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
