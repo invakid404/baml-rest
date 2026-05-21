@@ -260,11 +260,19 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 				// distinct `*[]Struct` fields per outer type would need
 				// per-type ownedNested params, which the dynamic adapter
 				// shape does not currently require.
-				if pools != nil && field.Type.Kind() == reflect.Ptr && field.Type.Elem().Kind() == reflect.Slice {
+				//
+				// Pointer-element slices (`*[]*T`) are skipped: the pool
+				// would have to produce `*[]*T`, but the convert
+				// function's ownedNested parameter is typed as
+				// `*[]*[]T` (value-element slices) — mixing them would
+				// generate a compile-time type mismatch. Pointer-element
+				// slices fall through to the legacy `make` path inside
+				// nestedStructConversion, which has the symmetric guard.
+				if pools != nil &&
+					field.Type.Kind() == reflect.Ptr &&
+					field.Type.Elem().Kind() == reflect.Slice &&
+					field.Type.Elem().Elem().Kind() != reflect.Ptr {
 					innerElem := field.Type.Elem().Elem()
-					if innerElem.Kind() == reflect.Ptr {
-						innerElem = innerElem.Elem()
-					}
 					if pooledInner == nil {
 						pooledInner = innerElem
 					}
@@ -600,7 +608,15 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 				innerLoopBody = innerConvBlock
 			}
 
-			if pools != nil && out != nil {
+			// Only pool when the inner slice element is a value type:
+			// the convert function's `ownedNested *[]*[]T` parameter is
+			// typed against value elements, and feeding it `*[]*T`
+			// would generate a compile-time type mismatch. The detection
+			// branch in generateConversionFunc has the symmetric guard;
+			// keeping them in sync means pointer-element slices fall
+			// through to the legacy `make` path here without setting
+			// `convertOwnedNested` upstream.
+			if pools != nil && out != nil && !elemIsPtr {
 				poolNames := pools.ensure(out, elemType, 256)
 				return []jen.Code{
 					jen.If(srcExpr.Clone().Op("!=").Nil()).Block(

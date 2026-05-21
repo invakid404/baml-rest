@@ -264,15 +264,15 @@ func bamlRestDynamicNoRaw(adapter bamlutils.Adapter, rawInput any, out chan baml
 	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
 	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
 	__struct_messages := *__messagesPtr_messages
-	var __ownedNested []*[]types.Baml_Rest_ContentPart
+	var __ownedNested_messages []*[]types.Baml_Rest_ContentPart
 	__releaseConverted := func() {
-		for _, __partsPtr := range __ownedNested {
+		for _, __partsPtr := range __ownedNested_messages {
 			putbaml_Rest_ContentPartSlice(__partsPtr)
 		}
 		putbaml_Rest_MessageSlice(__messagesPtr_messages)
 	}
 	for __i, __v := range input.Messages {
-		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested)
+		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested_messages)
 		if __err___struct_messages != nil {
 			__releaseConverted()
 			return fmt.Errorf("messages[%d]: %w", __i, __err___struct_messages)
@@ -367,15 +367,15 @@ func bamlRestDynamicFull(adapter bamlutils.Adapter, rawInput any, out chan bamlu
 	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
 	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
 	__struct_messages := *__messagesPtr_messages
-	var __ownedNested []*[]types.Baml_Rest_ContentPart
+	var __ownedNested_messages []*[]types.Baml_Rest_ContentPart
 	__releaseConverted := func() {
-		for _, __partsPtr := range __ownedNested {
+		for _, __partsPtr := range __ownedNested_messages {
 			putbaml_Rest_ContentPartSlice(__partsPtr)
 		}
 		putbaml_Rest_MessageSlice(__messagesPtr_messages)
 	}
 	for __i, __v := range input.Messages {
-		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested)
+		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested_messages)
 		if __err___struct_messages != nil {
 			__releaseConverted()
 			return fmt.Errorf("messages[%d]: %w", __i, __err___struct_messages)
@@ -581,15 +581,15 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
 	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
 	__struct_messages := *__messagesPtr_messages
-	var __ownedNested []*[]types.Baml_Rest_ContentPart
+	var __ownedNested_messages []*[]types.Baml_Rest_ContentPart
 	__releaseConverted := func() {
-		for _, __partsPtr := range __ownedNested {
+		for _, __partsPtr := range __ownedNested_messages {
 			putbaml_Rest_ContentPartSlice(__partsPtr)
 		}
 		putbaml_Rest_MessageSlice(__messagesPtr_messages)
 	}
 	for __i, __v := range input.Messages {
-		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested)
+		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested_messages)
 		if __err___struct_messages != nil {
 			__releaseConverted()
 			return fmt.Errorf("messages[%d]: %w", __i, __err___struct_messages)
@@ -822,15 +822,15 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
 	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
 	__struct_messages := *__messagesPtr_messages
-	var __ownedNested []*[]types.Baml_Rest_ContentPart
+	var __ownedNested_messages []*[]types.Baml_Rest_ContentPart
 	__releaseConverted := func() {
-		for _, __partsPtr := range __ownedNested {
+		for _, __partsPtr := range __ownedNested_messages {
 			putbaml_Rest_ContentPartSlice(__partsPtr)
 		}
 		putbaml_Rest_MessageSlice(__messagesPtr_messages)
 	}
 	for __i, __v := range input.Messages {
-		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested)
+		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested_messages)
 		if __err___struct_messages != nil {
 			__releaseConverted()
 			return fmt.Errorf("messages[%d]: %w", __i, __err___struct_messages)
