@@ -155,11 +155,17 @@ func (me *methodEmitter) emitLegacyStream() {
 	// body closure, not at the outer function level (where the defer
 	// would fire before the orchestrator even read the slice).
 	//
-	// Seed_OmitAsyncDefer drops the defer at this site, leaking the
-	// pooled slice. The seed is the test-only switch backing the
-	// async-defer regression in the pool-lifecycle harness.
-	if me.hasReleaseConverted && !me.g.opts.Seed_OmitAsyncDefer {
-		noRawGoroutineBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, noRawGoroutineBody...)
+	// Seed_OmitAsyncDefer relocates the defer to the outer
+	// noRawBody. When _noRaw returns, the defer fires while the
+	// orchestrator's goroutine is still reading __struct_messages —
+	// the timing-race shape backing the async-defer regression in
+	// the pool-lifecycle harness.
+	if me.hasReleaseConverted {
+		if me.g.opts.Seed_OmitAsyncDefer {
+			noRawBody = append(noRawBody, jen.Defer().Id("__releaseConverted").Call())
+		} else {
+			noRawGoroutineBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, noRawGoroutineBody...)
+		}
 	}
 
 	// Delegate to shared orchestration helper - supplies per-method closures
@@ -480,7 +486,7 @@ func (me *methodEmitter) emitLegacyStream() {
 	// Same legacy-view rationale as _noRaw.
 	var fullBody []jen.Code
 	fullBody = append(fullBody, me.makeLegacyPreamble()...)
-	if me.hasReleaseConverted && !me.g.opts.Seed_OmitAsyncDefer {
+	if me.hasReleaseConverted {
 		// runFullOrchestration spawns its own goroutines and returns
 		// immediately. driveStream is the only callback that touches
 		// __struct_messages, and it runs inside the orchestrator
@@ -489,10 +495,14 @@ func (me *methodEmitter) emitLegacyStream() {
 		// the defer would fire before the orchestrator even started
 		// the stream). Mirror of the _noRaw fix.
 		//
-		// Seed_OmitAsyncDefer drops the defer entirely so the pooled
-		// slice leaks — the async-defer regression seed's production
-		// reintroduction.
-		driveStreamBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, driveStreamBody...)
+		// Seed_OmitAsyncDefer relocates the defer to the outer
+		// fullBody so it fires when _full returns, racing the
+		// driveStream callback still reading the converted slice.
+		if me.g.opts.Seed_OmitAsyncDefer {
+			fullBody = append(fullBody, jen.Defer().Id("__releaseConverted").Call())
+		} else {
+			driveStreamBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, driveStreamBody...)
+		}
 	}
 
 	// Delegate to shared full orchestration helper with per-method closures

@@ -122,7 +122,8 @@ func AbsRepoPath(t *testing.T, rel string) string {
 
 // WriteFile is a t.Helper wrapper that fails the test on write error
 // so a permissions / disk failure surfaces immediately with a labelled
-// line. Tests use it instead of bare os.WriteFile.
+// line. Test code should always go through this helper for filesystem
+// writes.
 func WriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

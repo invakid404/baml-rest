@@ -95,9 +95,9 @@ func runLifecycleHarness(t *testing.T, opts Options, expectFail bool, label stri
 // go test output so the regression-seed diagnostic stays compact.
 // Full output is omitted to keep -v noise manageable. Recognises
 // both runtime FAIL lines (imbalance / zero-on-Put / barrier) and
-// build-step compiler errors (e.g. arg-count mismatches), since the
-// ownedNested-thread seed surfaces as a compile failure rather than
-// a runtime assertion.
+// build-step compiler errors (e.g. arg-count mismatches); the
+// ownedNested-thread seed surfaces as a compile failure, so the
+// summary has to cover the build-step output too.
 func summarizeInnerFails(stdout string) string {
 	const maxLines = 20
 	var fails []string

@@ -605,15 +605,23 @@ func (me *methodEmitter) emitBuildRequest() {
 		).Block(
 			jen.Id("__httpClient").Op("=").Id("__c"),
 		),
+	)
 
+	// Seed_OmitAsyncDefer relocates the release defer to the outer
+	// buildRequest function body — it fires when the outer function
+	// returns, racing the orchestration goroutine's reads of
+	// __struct_messages.
+	if me.hasReleaseConverted && me.g.opts.Seed_OmitAsyncDefer {
+		buildRequestBody = append(buildRequestBody, jen.Defer().Id("__releaseConverted").Call())
+	}
+
+	buildRequestBody = append(buildRequestBody,
 		jen.Go().Func().Params().BlockFunc(func(grp *jen.Group) {
 			grp.Defer().Close(jen.Id("out"))
 			if me.hasReleaseConverted && !me.g.opts.Seed_OmitAsyncDefer {
 				// Retry closures captured by RunStreamOrchestration
 				// outlive the outer function, so the converted slice
 				// release belongs inside the orchestration goroutine.
-				// Seed_OmitAsyncDefer drops the defer so the pooled
-				// slice leaks for the duration of the orchestration.
 				grp.Defer().Id("__releaseConverted").Call()
 			}
 			grp.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
@@ -884,7 +892,16 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		).Block(
 			jen.Id("__httpClient").Op("=").Id("__c"),
 		),
+	)
 
+	// Seed_OmitAsyncDefer relocates the release defer to the outer
+	// buildCallRequest function body so it fires when the outer
+	// function returns, racing the orchestration goroutine's reads.
+	if me.hasReleaseConverted && me.g.opts.Seed_OmitAsyncDefer {
+		buildCallRequestBody = append(buildCallRequestBody, jen.Defer().Id("__releaseConverted").Call())
+	}
+
+	buildCallRequestBody = append(buildCallRequestBody,
 		// Run in goroutine with panic recovery
 		jen.Go().Func().Params().BlockFunc(func(grp *jen.Group) {
 			grp.Defer().Close(jen.Id("out"))
@@ -892,8 +909,6 @@ func (me *methodEmitter) emitBuildCallRequest() {
 				// Retry closures captured by RunCallOrchestration
 				// outlive the outer function, so the converted slice
 				// release belongs inside the orchestration goroutine.
-				// Seed_OmitAsyncDefer drops the defer so the pooled
-				// slice leaks for the duration of the orchestration.
 				grp.Defer().Id("__releaseConverted").Call()
 			}
 			grp.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
