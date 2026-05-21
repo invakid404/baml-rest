@@ -27,11 +27,11 @@ func TestEmitPoolAuditHooks_Toggle(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name             string
-		audit            bool
-		wantOnCheckout   int
-		wantOnRelease    int
-		wantCheckZero    int
+		name           string
+		audit          bool
+		wantOnCheckout int
+		wantOnRelease  int
+		wantCheckZero  int
 	}{
 		{name: "off", audit: false},
 		{name: "on", audit: true, wantOnCheckout: 1, wantOnRelease: 1, wantCheckZero: 1},
