@@ -26,6 +26,42 @@ release_required_modules=(
     "workerplugin"
 )
 
+# release_dep_allows_pseudo <full_dep_path>
+#
+# Returns 0 (true) iff <full_dep_path> is a first-party module that
+# may sit at a `v0.0.0-...` pseudo-version in root's go.mod, 1
+# otherwise. The set is the inverse of release_required_modules:
+#
+#   - <prefix>/dynclient                  — public consumer-facing
+#                                           module, published with a
+#                                           tag, but root resolves it
+#                                           through a local replace
+#                                           and the require version
+#                                           is a placeholder.
+#   - <prefix>/pool                       — workspace-only.
+#   - <prefix>/adapters/adapter_v*        — every server-only adapter
+#                                           module, also workspace-
+#                                           only.
+#
+# Note that <prefix>/dynclient/baml-patched is NOT in this set: it's
+# a published, indirectly-required module in root with no local
+# replace, so it must be at exact v${version} like the other
+# published modules. The exact-prefix match below distinguishes
+# "dynclient" from "dynclient/baml-patched".
+release_dep_allows_pseudo() {
+    local dep="$1"
+    local prefix="$release_first_party_prefix"
+    case "$dep" in
+        "${prefix}/dynclient"|"${prefix}/pool")
+            return 0
+            ;;
+        "${prefix}/adapters/adapter_v"*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # release_extract_first_party_requires
 #
 # Reads a go.mod from stdin and prints first-party `require` lines
@@ -69,12 +105,17 @@ release_extract_first_party_requires() {
 # non-`v0.0.<positive-int>` require fail by default.
 #
 # Pass <allow_pseudo>=true to permit `v0.0.0-...` requires alongside
-# <expected_version> — used by the root validator, where modules
-# deliberately excluded from the published tag set (adapter_v*,
-# dynclient, pool — see release-lib.sh `release_required_modules` and
-# RELEASE.md) intentionally sit at pseudo-versions. The published
-# modules in `release_required_modules` always pass false because a
-# pseudo-version surviving in a published go.mod is the #308 failure.
+# <expected_version>, but ONLY for first-party modules that
+# release_dep_allows_pseudo accepts (the workspace-only set:
+# adapter_v*, dynclient, pool). A pseudo-version for a published
+# module (anything in release_required_modules) still fails even when
+# allow_pseudo=true — those modules must always move forward to
+# exact <expected_version> at each release. The published-module
+# loop in release-prep.sh passes the default false and the root
+# validator passes true; both rely on the same per-dep gate so a
+# pseudo accidentally landing on bamlutils / common / introspected /
+# worker / workerplugin / dynclient/baml-patched in root still
+# trips validation.
 #
 # Output:
 #   - returns 0 if clean, 1 otherwise.
@@ -140,7 +181,13 @@ release_validate_module_requires() {
 
         if [[ "$dep_version" == v0.0.0-* ]]; then
             release_last_failure_lines+=$'pseudo\t'"${dep_version}"$'\n'
-            if [ "$allow_pseudo" = true ]; then
+            # allow_pseudo is the call-site gate ("any pseudo at all
+            # acceptable here?"); release_dep_allows_pseudo is the
+            # per-dep gate ("is THIS first-party module workspace-only?").
+            # Both must be true for a pseudo-version to pass. This stops
+            # an accidental pseudo on a published module (e.g. bamlutils
+            # in root) from sneaking through under allow_pseudo=true.
+            if [ "$allow_pseudo" = true ] && release_dep_allows_pseudo "$dep"; then
                 continue
             fi
             echo "  pseudo-version not allowed: ${dep} ${dep_version}" >&2

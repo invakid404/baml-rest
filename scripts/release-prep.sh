@@ -124,8 +124,8 @@ fi
 # subdir-prefixed module tags like `dynclient/v0.0.46` so only product
 # tags rank. `--sort=-v:refname` returns them in descending semver
 # order so `head -1` is the latest. Computed up here (rather than just
-# before the "prev → version" banner below) so the tag-existence
-# branch below can compare against it for backfill-mode detection.
+# before the "prev → version" banner below) so the ordering check
+# and backfill-mode detection below can compare against it.
 prev_version="$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1 || true)"
 if [ -z "$prev_version" ]; then
     echo "ERROR: no previous X.Y.Z tag found; release-prep.sh is meant for incremental releases" >&2
@@ -133,38 +133,60 @@ if [ -z "$prev_version" ]; then
     exit 1
 fi
 
-# Tag-existence semantics:
-# - version is not a product tag → normal forward release-prep (no
-#   message, just continue).
+# Bash 3.2-compatible "a < b" comparison for X.Y.Z semver. Used by the
+# ordering check below; we can't lean on `sort -V` because macOS BSD
+# sort doesn't ship it. `10#$x` forces decimal so a leading zero
+# anywhere in the version (already caught by the earlier shape
+# regex, but defense-in-depth) doesn't trigger octal interpretation.
+semver_lt() {
+    local a_major a_minor a_patch b_major b_minor b_patch
+    IFS=. read -r a_major a_minor a_patch <<< "$1"
+    IFS=. read -r b_major b_minor b_patch <<< "$2"
+
+    if [ $((10#$a_major)) -lt $((10#$b_major)) ]; then return 0; fi
+    if [ $((10#$a_major)) -gt $((10#$b_major)) ]; then return 1; fi
+    if [ $((10#$a_minor)) -lt $((10#$b_minor)) ]; then return 0; fi
+    if [ $((10#$a_minor)) -gt $((10#$b_minor)) ]; then return 1; fi
+    [ $((10#$a_patch)) -lt $((10#$b_patch)) ]
+}
+
+# Ordering check: refuse if version is older than the latest product
+# tag, regardless of whether the older tag exists in the local clone.
+# Without this, a typo like `release-prep.sh 0.0.45` in a shallow or
+# tag-pruned clone (where 0.0.45 isn't fetched) would slip past the
+# tag-existence branch below and proceed to downgrade root's
+# first-party requires. The semver comparison fires first so the
+# operator gets a single clear error, not whatever cascade `go mod
+# tidy` would produce against the wrong version.
+if semver_lt "$version" "$prev_version"; then
+    echo "ERROR: ${version} is older than the latest product tag (${prev_version})." >&2
+    echo "       Running release-prep for an older version would attempt to downgrade root's" >&2
+    echo "       first-party requires below the released set." >&2
+    echo "       — to bump forward, pass the next version after ${prev_version}" >&2
+    echo "       — to recover a botched ${version}, skip it and prep the next version cleanly" >&2
+    exit 1
+fi
+
+# Tag-existence semantics, simplified now that semver_lt above already
+# rejected version < prev_version:
+# - version > prev_version → normal forward release-prep (no message,
+#   just continue).
 # - version equals the latest product tag → backfill mode. Every
 #   published-module edit will be a no-op (modules are already at
 #   expected_version from the prior run), but the root `go mod tidy`
 #   step at the end can still pull root's first-party requires forward
 #   to match the release that already shipped. This is the path that
-#   closes the #330/#331 gap on 0.0.47 without needing a one-off
+#   closed the #330/#331 gap on 0.0.47 without needing a one-off
 #   maintainer script. Allow it with a NOTE so the operator sees what
 #   the script is doing.
-# - version is some older product tag → almost certainly a typo. A run
-#   here would attempt to downgrade root's first-party requires below
-#   the released set. Refuse so the operator catches the mistake
-#   before any file changes.
 backfill_mode=false
-if git tag --list "$version" | grep -qx "$version"; then
-    if [ "$version" = "$prev_version" ]; then
-        backfill_mode=true
-        echo "NOTE: ${version} is already the latest product tag — running in backfill mode."
-        echo "      Published-module edits will be no-ops (already at ${expected_version});"
-        echo "      the root \`go mod tidy\` step will pull root's first-party requires"
-        echo "      forward to ${expected_version}."
-        echo
-    else
-        echo "ERROR: ${version} is already a release tag, and not the latest one (${prev_version})." >&2
-        echo "       Running release-prep for an older tag would attempt to downgrade root's" >&2
-        echo "       first-party requires below the released set." >&2
-        echo "       — to bump forward, pass the next version after ${prev_version}" >&2
-        echo "       — to recover a botched ${version}, skip it and prep the next version cleanly" >&2
-        exit 1
-    fi
+if [ "$version" = "$prev_version" ]; then
+    backfill_mode=true
+    echo "NOTE: ${version} is already the latest product tag — running in backfill mode."
+    echo "      Published-module edits will be no-ops (already at ${expected_version});"
+    echo "      the root \`go mod tidy\` step will pull root's first-party requires"
+    echo "      forward to ${expected_version}."
+    echo
 fi
 
 if [ "$backfill_mode" = true ]; then
@@ -249,9 +271,21 @@ run_edit pool \
 # tidy would do anyway. Doing it here as part of release-prep keeps
 # the released tree self-consistent without needing the bot to fill
 # the gap.
-echo
-echo "Tidying root module..."
-go mod tidy
+#
+# Backfill-mode-only: this step is gated on backfill_mode because
+# tidy needs the new product tag to exist on the module proxy. Root
+# has no local replace for dynclient/baml-patched (intentional, see
+# go.work and PR #335 thread), so a forward-mode run for an unreleased
+# version would crash here with "unknown revision
+# dynclient/baml-patched/v0.0.X". The canonical flow is forward prep
+# (this step skipped) → tag → release-go-tags → re-run release-prep
+# in backfill mode (this step fires) → commit root. The "Next steps"
+# output in forward mode below points the operator at the re-run.
+if [ "$backfill_mode" = true ]; then
+    echo
+    echo "Tidying root module..."
+    go mod tidy
+fi
 
 # Final validation: every required module's first-party requires
 # must match v${version}. This is the same shape
@@ -280,10 +314,22 @@ done
 # pseudos as clean while still catching v0.0.<N≠expected> stales for
 # the published modules root depends on (adapters/common, bamlutils,
 # introspected, worker, workerplugin, and the indirect baml-patched).
-echo "  ./go.mod (root)"
-if ! release_validate_module_requires "(root)" "$expected_version" true < go.mod; then
-    echo "ERROR: root go.mod still has first-party requires that don't match ${expected_version}" >&2
-    validation_failed=1
+#
+# Gated on backfill_mode for the same reason as the tidy step above:
+# in forward mode root intentionally stays at the previous release
+# (the tidy step that would advance it is skipped), so a forward
+# validation against the new expected_version would report every
+# root first-party require as "stale" — a false-positive specific
+# to the forward flow. Backfill mode does run tidy first, so the
+# validation here is meaningful: it catches anything tidy left
+# behind (notably, a pseudo-version sneaking onto a published
+# module in root, which release_dep_allows_pseudo now rejects).
+if [ "$backfill_mode" = true ]; then
+    echo "  ./go.mod (root)"
+    if ! release_validate_module_requires "(root)" "$expected_version" true < go.mod; then
+        echo "ERROR: root go.mod still has first-party requires that don't match ${expected_version}" >&2
+        validation_failed=1
+    fi
 fi
 if [ "$validation_failed" -ne 0 ]; then
     echo
@@ -342,3 +388,16 @@ echo "  2. Review the diff:   git diff --cached -- ${candidate_paths[*]}"
 echo "  3. Commit:            git commit -m \"chore(release): prepare Go module versions for ${version}\" \\"
 echo "                            -- ${candidate_paths[*]}"
 echo "  4. Push to master and continue from RELEASE.md Step 3."
+if [ "$backfill_mode" != true ]; then
+    # The root tidy step was skipped in forward mode (it needs the
+    # new product tag on the module proxy). After tagging in Steps 4
+    # / 6 of RELEASE.md, re-running this script picks up backfill
+    # mode and produces the root go.mod / go.sum bump as a separate
+    # commit on top of the release-go-tags work. Surface that here so
+    # the operator doesn't have to remember the two-phase flow from
+    # context.
+    echo
+    echo "  After Step 6 (release-go-tags.sh ${version}), re-run \`scripts/release-prep.sh ${version}\`"
+    echo "  to backfill root's first-party requires. That second run executes \`go mod tidy\` in"
+    echo "  the repo root, which needs the new product tag to be reachable on the module proxy."
+fi
