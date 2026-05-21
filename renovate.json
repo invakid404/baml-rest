@@ -79,6 +79,13 @@
         "dynclient/baml-patched/go.mod"
       ],
       "enabled": false
+    },
+    {
+      "description": "First-party module versions (github.com/invakid404/baml-rest/*) are managed by scripts/release-prep.sh as part of the release flow described in RELEASE.md, not by Renovate. Renovate's bumps for these are at best redundant (matching what release-prep + go mod tidy already do) and at worst regress root go.mod between releases. See PRs #330 and #331 for the failure mode this rule prevents.",
+      "matchPackagePrefixes": [
+        "github.com/invakid404/baml-rest"
+      ],
+      "enabled": false
     }
   ]
 }
