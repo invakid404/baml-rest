@@ -2,13 +2,12 @@ package bamlutils
 
 import (
 	"bytes"
-	stdjson "encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"iter"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 )
 
 // ErrOrderedMapDuplicateKey is the sentinel returned (wrapped in
@@ -285,39 +284,42 @@ func (m *OrderedMap[V]) UnmarshalJSON(data []byte) error {
 // dynamic.go. The optional path is prefixed to errors so callers
 // retain the existing field-qualified error text quality.
 //
-// This is one of two locked stdlib `encoding/json` token-walking sites
-// (the other is checkUniqueTopLevelKeys in dynamic.go). Sonic does not
-// expose Decoder.Token / json.Delim, so the streaming token walk that
-// preserves wire-order and rejects duplicates / trailing bytes stays on
-// the stdlib decoder. Inner value decoding hops to sonic once the raw
-// bytes for a value have been captured.
+// Walks the JSON via sonic's ast.Parser + Properties iterator: the
+// iterator yields pairs in source order and preserves duplicate keys
+// (sonic's linkedPairs stores every pushed pair without dedup), which
+// is the property needed for strict duplicate-key rejection. Per-value
+// decoding then hops back through sonic.Unmarshal on the raw substring.
+//
+// Sonic's ast.Visitor interface uses encoding/json.Number in its
+// method signatures, so a direct visitor implementation would re-pin
+// the stdlib import we are dropping; the Parser+Properties path is the
+// equivalent streaming sonic-native traversal.
 func unmarshalOrderedMap[V any](data []byte, path string) (OrderedMap[V], error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return OrderedMap[V]{}, nil
 	}
-	dec := stdjson.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	tok, err := dec.Token()
-	if err != nil {
-		return OrderedMap[V]{}, qualifyErr(path, err)
+
+	src := string(data)
+	parser := ast.NewParser(src)
+	node, errP := parser.Parse()
+	if errP != 0 {
+		return OrderedMap[V]{}, qualifyErr(path, parser.ExportError(errP))
 	}
-	if delim, ok := tok.(stdjson.Delim); !ok || delim != '{' {
+	if node.TypeSafe() != ast.V_OBJECT {
 		return OrderedMap[V]{}, fmt.Errorf("%s%sexpected object", path, sep(path))
 	}
 
+	it, err := node.Properties()
+	if err != nil {
+		return OrderedMap[V]{}, qualifyErr(path, err)
+	}
+
 	var out OrderedMap[V]
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
-			return OrderedMap[V]{}, qualifyErr(path, err)
-		}
-		key, ok := keyTok.(string)
-		if !ok {
-			return OrderedMap[V]{}, fmt.Errorf("%s%sexpected object key", path, sep(path))
-		}
-		if out.Has(key) {
-			keyErr := &OrderedMapKeyError{Key: key, Err: ErrOrderedMapDuplicateKey}
+	var pair ast.Pair
+	for it.Next(&pair) {
+		if out.Has(pair.Key) {
+			keyErr := &OrderedMapKeyError{Key: pair.Key, Err: ErrOrderedMapDuplicateKey}
 			if path == "" {
 				return OrderedMap[V]{}, keyErr
 			}
@@ -326,33 +328,32 @@ func unmarshalOrderedMap[V any](data []byte, path string) (OrderedMap[V], error)
 			// the *OrderedMapKeyError carrier under errors.As, while
 			// preserving the existing path-qualified error prose that
 			// callers and tests assert against.
-			return OrderedMap[V]{}, fmt.Errorf("%s: duplicate key %q: %w", path, key, keyErr)
+			return OrderedMap[V]{}, fmt.Errorf("%s: duplicate key %q: %w", path, pair.Key, keyErr)
 		}
-		var rawVal stdjson.RawMessage
-		if err := dec.Decode(&rawVal); err != nil {
-			return OrderedMap[V]{}, qualifyField(path, key, err)
+		raw, rawErr := pair.Value.Raw()
+		if rawErr != nil {
+			return OrderedMap[V]{}, qualifyField(path, pair.Key, rawErr)
 		}
 		var value V
-		if err := sonic.Unmarshal(rawVal, &value); err != nil {
-			return OrderedMap[V]{}, qualifyField(path, key, err)
+		if err := sonic.Unmarshal([]byte(raw), &value); err != nil {
+			return OrderedMap[V]{}, qualifyField(path, pair.Key, err)
 		}
-		if err := out.Set(key, value); err != nil {
+		if err := out.Set(pair.Key, value); err != nil {
 			return OrderedMap[V]{}, err
 		}
 	}
-	if _, err := dec.Token(); err != nil {
-		return OrderedMap[V]{}, qualifyErr(path, err)
+
+	// Reject trailing bytes after the top-level object. sonic.Valid is
+	// strict — it returns false when non-whitespace follows the top-level
+	// value. ast.Parser produces a lazy node and doesn't surface its
+	// internal position back to the external Parser, so a manual scan
+	// from parser.Pos() doesn't work; sonic.Valid is the clean check.
+	// This preserves the strict-input contract #318 locked in (stdjson's
+	// Decoder was happy to accept `{"a":1} garbage`).
+	if !sonic.Valid(data) {
+		return OrderedMap[V]{}, qualifyErr(path, errors.New("trailing bytes after top-level object"))
 	}
-	// Reject trailing bytes after the top-level object. stdjson.Decoder
-	// is permissive about post-object data by default — `{"a":1} garbage`
-	// would otherwise be silently accepted. Strict input matches the
-	// rest of the dynamic-schema decode path (see #313).
-	if tok, err := dec.Token(); !errors.Is(err, io.EOF) {
-		if err != nil {
-			return OrderedMap[V]{}, qualifyErr(path, fmt.Errorf("trailing bytes after top-level object: %w", err))
-		}
-		return OrderedMap[V]{}, qualifyErr(path, fmt.Errorf("trailing token after top-level object: %v", tok))
-	}
+
 	return out, nil
 }
 

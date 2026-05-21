@@ -2,11 +2,11 @@ package bamlutils
 
 import (
 	"bytes"
-	stdjson "encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/cloudwego/gjson"
 )
 
@@ -155,9 +155,9 @@ type DynamicMessage struct {
 func (m *DynamicMessage) UnmarshalJSON(data []byte) error {
 	// Use a raw type to avoid infinite recursion
 	var raw struct {
-		Role     string             `json:"role"`
-		Content  stdjson.RawMessage `json:"content"`
-		Metadata *MessageMetadata   `json:"metadata,omitempty"`
+		Role     string                 `json:"role"`
+		Content  sonic.NoCopyRawMessage `json:"content"`
+		Metadata *MessageMetadata       `json:"metadata,omitempty"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
@@ -376,9 +376,9 @@ func (s *DynamicOutputSchema) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var raw struct {
-		Properties stdjson.RawMessage `json:"properties"`
-		Classes    stdjson.RawMessage `json:"classes"`
-		Enums      stdjson.RawMessage `json:"enums"`
+		Properties sonic.NoCopyRawMessage `json:"properties"`
+		Classes    sonic.NoCopyRawMessage `json:"classes"`
+		Enums      sonic.NoCopyRawMessage `json:"enums"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
@@ -425,9 +425,9 @@ func (c *DynamicClass) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var raw struct {
-		Description string             `json:"description,omitempty"`
-		Alias       string             `json:"alias,omitempty"`
-		Properties  stdjson.RawMessage `json:"properties,omitempty"`
+		Description string                 `json:"description,omitempty"`
+		Alias       string                 `json:"alias,omitempty"`
+		Properties  sonic.NoCopyRawMessage `json:"properties,omitempty"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
@@ -464,52 +464,45 @@ func rejectNonObject(path string, b []byte) error {
 	return fmt.Errorf("%s: must be a JSON object", path)
 }
 
-// checkUniqueTopLevelKeys token-walks the outer object and rejects any
-// duplicate key. The struct-tag unmarshal path on the receiver
-// (DynamicOutputSchema, DynamicClass) accepts duplicate top-level keys
-// with last-wins semantics, contradicting the strict-duplicate rule
-// enforced for inner schema objects via unmarshalOrderedObject. Calling
-// this before the raw-struct decode restores symmetry — both layers now
-// reject ambiguous repeats.
+// checkUniqueTopLevelKeys walks the outer object via sonic's ast.Parser
+// and rejects any duplicate key. The struct-tag unmarshal path on the
+// receiver (DynamicOutputSchema, DynamicClass) accepts duplicate
+// top-level keys with last-wins semantics, contradicting the strict-
+// duplicate rule enforced for inner schema objects via
+// unmarshalOrderedMap. Calling this before the raw-struct decode restores
+// symmetry — both layers now reject ambiguous repeats.
 //
-// Non-object inputs are left to the regular unmarshal so the caller
-// keeps producing the same shape-error it does today.
+// Non-object inputs and parse errors are deferred to the subsequent
+// sonic.Unmarshal so the caller keeps producing the same shape-error
+// it does today.
 //
-// This is one of two locked stdlib `encoding/json` token-walking sites
-// (the other is unmarshalOrderedMap). Sonic does not expose
-// Decoder.Token / json.Delim, so duplicate-key rejection over a
-// streaming token walk stays on the stdlib decoder.
+// Sonic's ast.Visitor interface uses encoding/json.Number in the number-
+// value callback signatures, so a direct visitor implementation would
+// force the encoding/json import back into the file. The Parser +
+// Properties iterator is the equivalent sonic-native streaming
+// traversal: the iterator yields pairs in source order and preserves
+// duplicates (sonic's linkedPairs pushes every pair unconditionally),
+// so the dup loop sees both occurrences.
 func checkUniqueTopLevelKeys(data []byte, path string) error {
-	dec := stdjson.NewDecoder(bytes.NewReader(data))
-	tok, err := dec.Token()
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+	parser := ast.NewParser(string(data))
+	node, errP := parser.Parse()
+	if errP != 0 {
+		return nil
 	}
-	delim, ok := tok.(stdjson.Delim)
-	if !ok || delim != '{' {
+	if node.TypeSafe() != ast.V_OBJECT {
+		return nil
+	}
+	it, err := node.Properties()
+	if err != nil {
 		return nil
 	}
 	seen := make(map[string]struct{})
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+	var pair ast.Pair
+	for it.Next(&pair) {
+		if _, dup := seen[pair.Key]; dup {
+			return fmt.Errorf("%s: duplicate key %q", path, pair.Key)
 		}
-		key, ok := keyTok.(string)
-		if !ok {
-			return fmt.Errorf("%s: expected object key", path)
-		}
-		if _, dup := seen[key]; dup {
-			return fmt.Errorf("%s: duplicate key %q", path, key)
-		}
-		seen[key] = struct{}{}
-		var raw stdjson.RawMessage
-		if err := dec.Decode(&raw); err != nil {
-			return fmt.Errorf("%s.%s: %w", path, key, err)
-		}
-	}
-	if _, err := dec.Token(); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		seen[pair.Key] = struct{}{}
 	}
 	return nil
 }
