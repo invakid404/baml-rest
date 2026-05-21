@@ -279,7 +279,6 @@ func bamlRestDynamicNoRaw(adapter bamlutils.Adapter, rawInput any, out chan baml
 		}
 		__struct_messages[__i] = __converted
 	}
-	defer __releaseConverted()
 	return runNoRawOrchestration(adapter, out, func() bamlutils.StreamResult {
 		__r := getBamlRestDynamicOutput()
 		__r.kind = bamlutils.StreamResultKindHeartbeat
@@ -291,6 +290,7 @@ func bamlRestDynamicNoRaw(adapter bamlutils.Adapter, rawInput any, out chan baml
 	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
 		return newBamlRestDynamicOutputMetadata(md)
 	}, func(beforeFinal func(), onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) error {
+		defer __releaseConverted()
 		streamOpts := append(options, bamlclient.WithOnTick(onTick))
 		if clientOverride != "" {
 			streamOpts = append(slices.Clone(streamOpts), bamlclient.WithClient(clientOverride))
@@ -382,7 +382,6 @@ func bamlRestDynamicFull(adapter bamlutils.Adapter, rawInput any, out chan bamlu
 		}
 		__struct_messages[__i] = __converted
 	}
-	defer __releaseConverted()
 	return runFullOrchestration(adapter, out, options, func() bamlutils.StreamResult {
 		__r := getBamlRestDynamicOutput()
 		__r.kind = bamlutils.StreamResultKindHeartbeat
@@ -532,6 +531,7 @@ func bamlRestDynamicFull(adapter bamlutils.Adapter, rawInput any, out chan bamlu
 		}
 		return nil
 	}, func(opts []bamlclient.CallOptionFunc) (any, error) {
+		defer __releaseConverted()
 		driveOpts := opts
 		if clientOverride != "" {
 			driveOpts = append(slices.Clone(opts), bamlclient.WithClient(clientOverride))

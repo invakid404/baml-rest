@@ -148,11 +148,14 @@ func (me *methodEmitter) emitLegacyStream() {
 	// runtime strategy-parent overrides are visible to BAML.
 	noRawBody := me.makeLegacyPreamble()
 
-	// runNoRawOrchestration runs the BAML stream synchronously, so a
-	// top-level defer releases pooled conversion slices once the call
-	// returns (whether by completion, error, or panic).
+	// runNoRawOrchestration spawns its own goroutine and returns
+	// immediately. The body closure below is what actually consumes
+	// __struct_messages, and it runs inside that orchestration
+	// goroutine — so the pooled-slice release MUST live inside the
+	// body closure, not at the outer function level (where the defer
+	// would fire before the orchestrator even read the slice).
 	if me.hasReleaseConverted {
-		noRawBody = append(noRawBody, jen.Defer().Id("__releaseConverted").Call())
+		noRawGoroutineBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, noRawGoroutineBody...)
 	}
 
 	// Delegate to shared orchestration helper - supplies per-method closures
@@ -474,10 +477,14 @@ func (me *methodEmitter) emitLegacyStream() {
 	var fullBody []jen.Code
 	fullBody = append(fullBody, me.makeLegacyPreamble()...)
 	if me.hasReleaseConverted {
-		// runFullOrchestration runs synchronously; defer release at
-		// the top of the function covers normal completion, errors,
-		// and panics. Mirror of the _noRaw shape above.
-		fullBody = append(fullBody, jen.Defer().Id("__releaseConverted").Call())
+		// runFullOrchestration spawns its own goroutines and returns
+		// immediately. driveStream is the only callback that touches
+		// __struct_messages, and it runs inside the orchestrator
+		// goroutine — so the pooled-slice release MUST live inside
+		// driveStream's body, not at the outer function level (where
+		// the defer would fire before the orchestrator even started
+		// the stream). Mirror of the _noRaw fix.
+		driveStreamBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, driveStreamBody...)
 	}
 
 	// Delegate to shared full orchestration helper with per-method closures
