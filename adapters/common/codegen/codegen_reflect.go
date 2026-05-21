@@ -149,6 +149,136 @@ func (m *mirrorStructTracker) convertNeedsOwnedNestedFor(outer reflect.Type) boo
 	return m.convertNeedsOwnedNested[outer]
 }
 
+// precomputeOwnedNestedNeeds walks the struct-media type graph
+// reachable from `roots` and populates `convertNeedsOwnedNested`
+// for every reachable type via fixpoint iteration. Must run before
+// any `generateConversionFunc` call so nested converter call sites
+// query the final transitive value instead of a partial answer
+// frozen mid-emission.
+//
+// Why a separate pass: `ensureMirrorStruct` marks each type as
+// "generated" before recursing into its fields. For cycles like
+// `A.B *B; B.A *A`, B's body emission completes BEFORE A finishes
+// its own analysis — so B's nestedStructConversion call site for
+// the A field used to snapshot the pre-fixpoint
+// (`convertNeedsOwnedNested[A] == false`) answer, while A's
+// converter signature later gained the third parameter once its
+// own pre-walk set the flag. The rendered Go is then internally
+// inconsistent: B's call site is 2-arg, A's signature is 3-arg →
+// compile error.
+//
+// The precompute resolves this by computing the transitive closure
+// up front. The fixpoint converges because the lattice is finite
+// (one bit per type, monotonically rising true), so each round
+// either flips at least one bit or terminates.
+func (m *mirrorStructTracker) precomputeOwnedNestedNeeds(roots []reflect.Type, pkgs PackageConfig) {
+	if m == nil {
+		return
+	}
+
+	// Walk every struct-media type reachable from the roots so the
+	// fixpoint loop iterates the full graph and not just the
+	// subset emitted so far. Cycle detection is via `visited`; the
+	// recursion descends into ptr/slice element types because
+	// those are the wrapping shapes struct-media fields take.
+	visited := map[reflect.Type]bool{}
+	var types []reflect.Type
+	var walk func(t reflect.Type)
+	walk = func(t reflect.Type) {
+		for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice {
+			t = t.Elem()
+		}
+		if t.Kind() != reflect.Struct {
+			return
+		}
+		if !structContainsMedia(t, pkgs) {
+			return
+		}
+		if visited[t] {
+			return
+		}
+		visited[t] = true
+		types = append(types, t)
+		for field := range t.Fields() {
+			if !field.IsExported() {
+				continue
+			}
+			if _, isMedia := isMediaReflectType(field.Type, pkgs); isMedia {
+				continue
+			}
+			walk(field.Type)
+		}
+	}
+	for _, root := range roots {
+		walk(root)
+	}
+
+	// Seed: any reachable type that DIRECTLY pools (has a
+	// `*[]Struct` value-element field whose inner struct contains
+	// media) needs `ownedNested` outright. This mirrors
+	// nestedStructConversion's `*[]Struct` value-element branch
+	// gating.
+	for _, t := range types {
+		if m.convertNeedsOwnedNested[t] {
+			continue
+		}
+		for field := range t.Fields() {
+			if !field.IsExported() {
+				continue
+			}
+			ft := field.Type
+			if _, isMedia := isMediaReflectType(ft, pkgs); isMedia {
+				continue
+			}
+			if ft.Kind() != reflect.Ptr || ft.Elem().Kind() != reflect.Slice || ft.Elem().Elem().Kind() == reflect.Ptr {
+				continue
+			}
+			inner := ft.Elem().Elem()
+			if inner.Kind() != reflect.Struct || !structContainsMedia(ft, pkgs) {
+				continue
+			}
+			m.convertNeedsOwnedNested[t] = true
+			break
+		}
+	}
+
+	// Fixpoint: propagate from callees to callers. If T calls
+	// convert<N> and N needs ownedNested, T must accept and
+	// thread the same parameter through.
+	for {
+		changed := false
+		for _, t := range types {
+			if m.convertNeedsOwnedNested[t] {
+				continue
+			}
+			for field := range t.Fields() {
+				if !field.IsExported() {
+					continue
+				}
+				ft := field.Type
+				if _, isMedia := isMediaReflectType(ft, pkgs); isMedia {
+					continue
+				}
+				inner := ft
+				for inner.Kind() == reflect.Ptr || inner.Kind() == reflect.Slice {
+					inner = inner.Elem()
+				}
+				if inner.Kind() != reflect.Struct || !structContainsMedia(ft, pkgs) {
+					continue
+				}
+				if m.convertNeedsOwnedNested[inner] {
+					m.convertNeedsOwnedNested[t] = true
+					changed = true
+					break
+				}
+			}
+		}
+		if !changed {
+			return
+		}
+	}
+}
+
 // mirrorInputName returns the name for a mirror input struct.
 func mirrorInputName(typ reflect.Type) string {
 	return typ.Name() + "MediaInput"
@@ -260,53 +390,19 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 	funcName := "convert" + mirrorName
 	bamlTypeExpr := parseReflectType(bamlType).statement
 
-	// Pre-walk fields to decide whether this converter needs the
-	// `ownedNested` parameter — both directly (any pooled `*[]Struct`
-	// value-element field) and transitively (any nested converter that
-	// already takes it). Detection must happen before body emission so
-	// nestedStructConversion knows whether the closure it's appending
-	// to actually exists.
-	needsOwnedNested := false
-	for field := range bamlType.Fields() {
-		if !field.IsExported() {
-			continue
-		}
-		if _, isMedia := isMediaReflectType(field.Type, pkgs); isMedia {
-			continue
-		}
-		fieldInner := field.Type
-		for fieldInner.Kind() == reflect.Ptr || fieldInner.Kind() == reflect.Slice {
-			fieldInner = fieldInner.Elem()
-		}
-		if fieldInner.Kind() != reflect.Struct || !structContainsMedia(field.Type, pkgs) {
-			continue
-		}
-		// Direct pool: a `*[]Struct` value-element field this
-		// converter will route through the slice pool.
-		if pools != nil &&
-			field.Type.Kind() == reflect.Ptr &&
-			field.Type.Elem().Kind() == reflect.Slice &&
-			field.Type.Elem().Elem().Kind() != reflect.Ptr {
-			needsOwnedNested = true
-			break
-		}
-		// Transitive: the nested converter for the inner mirror type
-		// already takes `ownedNested`, so the call site must thread
-		// ours through.
-		if m.convertNeedsOwnedNestedFor(fieldInner) {
-			needsOwnedNested = true
-			break
-		}
-	}
-
-	if needsOwnedNested {
-		// Record the contract before emitting the body so any
-		// recursive ensureMirrorStruct callers see the up-to-date
-		// answer for this type. (In practice this matters only for
-		// hypothetical cycle-bearing schemas; the dynamic adapter
-		// has no such cycle today.)
-		m.convertNeedsOwnedNested[bamlType] = true
-	}
+	// `needsOwnedNested` is the precomputed transitive answer from
+	// `precomputeOwnedNestedNeeds`. Earlier revisions of this code
+	// re-derived the flag inline mid-emission, which races with
+	// recursive `ensureMirrorStruct` callers: for cycles like
+	// `A.B *B; B.A *A` where A directly pools, B's emission
+	// would complete before A set its own flag, so B's call site
+	// for A was 2-arg while A's signature ended up 3-arg → compile
+	// error. The precompute pass guarantees every reachable type's
+	// flag is final before any body emission runs.
+	//
+	// When `pools` is nil the legacy non-pooling path applies; the
+	// precompute would have left the map empty in that case too.
+	needsOwnedNested := pools != nil && m.convertNeedsOwnedNested[bamlType]
 
 	var bodyCode []jen.Code
 	bodyCode = append(bodyCode, jen.Var().Id("result").Add(bamlTypeExpr.Clone()))

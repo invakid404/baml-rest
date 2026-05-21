@@ -438,6 +438,7 @@ func TestGenerateConversionFunc_PointerElementSliceSkipsPool(t *testing.T) {
 	pools := newSlicePoolTracker(pkgs)
 
 	outerType := reflect.TypeOf(f2OuterStructPtrSliceOfPointers{})
+	tracker.precomputeOwnedNestedNeeds([]reflect.Type{outerType}, pkgs)
 	mirrorName := tracker.ensureMirrorStruct(out, outerType, pkgs, pools)
 	if mirrorName == "" {
 		t.Fatal("ensureMirrorStruct returned empty mirror name")
@@ -551,14 +552,14 @@ func TestPreambleThreadsOwnedNestedThroughNonPooledCallSites(t *testing.T) {
 		slicePools:           newSlicePoolTracker(pkgs),
 	}
 
-	// Generate the mirror struct + converter for the outer type. The
-	// recursive ensureMirrorStruct call walks fields, sees the inner
-	// `*[]ContentPart` pooled slice, and registers the outer
-	// converter as needing `ownedNested *[]func()`.
+	// Run the analysis pass first so generateConversionFunc sees
+	// the final convertNeedsOwnedNested value. The mirror-struct
+	// emission then queries it from the (already-populated) map.
 	outerType := reflect.TypeOf(f1MessageWithMedia{})
+	g.mirrors.precomputeOwnedNestedNeeds([]reflect.Type{outerType}, pkgs)
 	mirrorName := g.mirrors.ensureMirrorStruct(g.out, outerType, pkgs, g.slicePools)
 	if !g.mirrors.convertNeedsOwnedNestedFor(outerType) {
-		t.Fatalf("fixture invariant: convertNeedsOwnedNestedFor(%v) must be true after ensureMirrorStruct — otherwise the dispatch site under test has nothing to thread", outerType)
+		t.Fatalf("fixture invariant: convertNeedsOwnedNestedFor(%v) must be true after precompute — otherwise the dispatch site under test has nothing to thread", outerType)
 	}
 
 	// Set up a methodEmitter whose single struct-media param is
@@ -634,6 +635,7 @@ func TestPreambleThreadsOwnedNestedThroughNestedHelpers(t *testing.T) {
 	pools := newSlicePoolTracker(pkgs)
 
 	outerType := reflect.TypeOf(f1OuterWrapper{})
+	tracker.precomputeOwnedNestedNeeds([]reflect.Type{outerType}, pkgs)
 	outerMirror := tracker.ensureMirrorStruct(out, outerType, pkgs, pools)
 	innerType := reflect.TypeOf(f1MessageWithMedia{})
 	if !tracker.convertNeedsOwnedNestedFor(innerType) {
@@ -706,6 +708,7 @@ func TestConvertFuncHandlesMultiplePooledNestedTypes(t *testing.T) {
 	pools := newSlicePoolTracker(pkgs)
 
 	outerType := reflect.TypeOf(f2MultiPooledMixed{})
+	tracker.precomputeOwnedNestedNeeds([]reflect.Type{outerType}, pkgs)
 	mirrorName := tracker.ensureMirrorStruct(out, outerType, pkgs, pools)
 	if mirrorName == "" {
 		t.Fatal("ensureMirrorStruct returned empty mirror name")

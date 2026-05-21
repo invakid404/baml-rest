@@ -95,6 +95,28 @@ func emitMatrix(t *testing.T) (*jen.File, []matrixCell) {
 	tracker := newMirrorStructTracker()
 	pools := newSlicePoolTracker(pkgs)
 
+	// Precompute the convertNeedsOwnedNested transitive closure
+	// across every reachable struct-media type the matrix exercises.
+	// Mirrors what `generator.emitMethods` does at the head of the
+	// real generator pipeline. Without this, the per-cell
+	// `ensureMirrorStruct` calls would race with one another and
+	// nested call sites could snapshot a stale `false`.
+	var precomputeRoots []reflect.Type
+	for _, shape := range []struct{ ty reflect.Type }{
+		{reflect.TypeOf(fixtures.MessageA{})},
+		{reflect.TypeOf(fixtures.MessageB{})},
+		{reflect.TypeOf(fixtures.MessageC{})},
+		{reflect.TypeOf(fixtures.ClassA{})},
+		{reflect.TypeOf(fixtures.ClassB{})},
+		{reflect.TypeOf(fixtures.ClassC{})},
+		{reflect.TypeOf(fixtures.OtherA{})},
+		{reflect.TypeOf(fixtures.OtherB{})},
+		{reflect.TypeOf(fixtures.OtherC{})},
+	} {
+		precomputeRoots = append(precomputeRoots, shape.ty)
+	}
+	tracker.precomputeOwnedNestedNeeds(precomputeRoots, pkgs)
+
 	// nestedShapes enumerates the 3 nested-field configurations the
 	// matrix crosses. The fixture struct families (MessageA /
 	// MessageB / MessageC + Class<X> / Other<X> siblings) capture
@@ -277,6 +299,17 @@ func emitMatrix(t *testing.T) (*jen.File, []matrixCell) {
 		}
 	}
 
+	// Mutually-recursive cycle cell. Drives ensureMirrorStruct
+	// against `CycleA` (which references `*CycleB`, which references
+	// `*CycleA` — a cycle) and emits a dispatch function that
+	// converts a `CycleA` slice. Without the two-pass precompute,
+	// the inner-body emission for CycleB would snapshot
+	// convertNeedsOwnedNestedFor(CycleA) == false (because A is
+	// mid-generation) and the call site there would be 2-arg
+	// against A's eventual 3-arg signature. Adding this cell to
+	// the same compile target so the build error surfaces here.
+	emitCycleCell(t, out, tracker, pools, pkgs, &cells)
+
 	// The rendered file's preamble references `makeOptionsFromAdapter`
 	// (which the real generator emits elsewhere). Provide a stub so
 	// `go build` resolves it.
@@ -286,6 +319,63 @@ func emitMatrix(t *testing.T) (*jen.File, []matrixCell) {
 		Block(jen.Return(jen.Nil(), jen.Nil()))
 
 	return out, cells
+}
+
+// emitCycleCell adds the mutually-recursive cycle regression cell
+// to the matrix. CycleA references *CycleB and pools its Parts
+// slice; CycleB references *CycleA. The precompute pass must mark
+// both A and B as needing ownedNested before any body emission, or
+// the rendered file will not compile (B's call site to convertA
+// will be 2-arg while convertA's signature is 3-arg).
+func emitCycleCell(t *testing.T, out *jen.File, tracker *mirrorStructTracker, pools *slicePoolTracker, pkgs PackageConfig, cells *[]matrixCell) {
+	t.Helper()
+	cycleAType := reflect.TypeOf(fixtures.CycleA{})
+	cycleBType := reflect.TypeOf(fixtures.CycleB{})
+	tracker.precomputeOwnedNestedNeeds([]reflect.Type{cycleAType, cycleBType}, pkgs)
+
+	// Both ends of the cycle must end up flagged. CycleA pools
+	// directly; CycleB transitively calls convertA so it must
+	// thread the parameter through.
+	if !tracker.convertNeedsOwnedNestedFor(cycleAType) {
+		t.Fatal("cycle fixture invariant: CycleA must need ownedNested (it directly pools)")
+	}
+	if !tracker.convertNeedsOwnedNestedFor(cycleBType) {
+		t.Fatal("cycle fixture invariant: CycleB must need ownedNested (transitive via *CycleA call site)")
+	}
+
+	mirrorName := tracker.ensureMirrorStruct(out, cycleAType, pkgs, pools)
+	paramType := reflect.SliceOf(cycleAType)
+	smps := []structMediaParam{{
+		paramName:   "cycles",
+		mirrorName:  mirrorName,
+		convertFunc: "convert" + mirrorName,
+		paramType:   paramType,
+	}}
+	cellName := "cell_cycle_mutually_recursive"
+	me := newSyntheticMethodEmitter(out, tracker, pools, pkgs, cellName, smps, []reflect.Type{paramType})
+	preamble := me.makePreambleWithArgs("makeOptionsFromAdapter")
+	tail := []jen.Code{
+		jen.Id("_").Op("=").Id("options"),
+		jen.Id("_").Op("=").Id("__struct_cycles"),
+		jen.Return(jen.Nil()),
+	}
+	body := append([]jen.Code{}, preamble...)
+	body = append(body, tail...)
+
+	dispatchName := cellName + "_dispatch"
+	out.Func().Id(dispatchName).
+		Params(
+			jen.Id("adapter").Qual(pkgs.InterfacesPkg, "Adapter"),
+			jen.Id("rawInput").Any(),
+		).
+		Error().
+		Block(body...)
+
+	*cells = append(*cells, matrixCell{
+		name:                   cellName,
+		dispatchFunc:           dispatchName,
+		expectReleaseConverted: true,
+	})
 }
 
 // newSyntheticMethodEmitter constructs a minimal methodEmitter that
@@ -557,4 +647,3 @@ func writeFile(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
-

@@ -839,6 +839,16 @@ func (g *generator) emitMethods() []methodOut {
 	}
 	slices.Sort(methodNames)
 
+	// Precompute the `convertNeedsOwnedNested` transitive closure
+	// over every struct-media type reachable from any sync-method
+	// param. Must run before the per-method emit loop below so
+	// nested converter call sites query the FINAL flag value
+	// rather than racing with recursive ensureMirrorStruct calls.
+	// Without this pass, mutually-recursive media-bearing structs
+	// emit Go code where an outer signature has 3 params while a
+	// callee's call site is 2-arg — the file doesn't compile.
+	g.precomputeOwnedNestedNeeds(methodNames)
+
 	for _, methodName := range methodNames {
 		args := g.intro.SyncMethods[methodName]
 		me, ok := g.newMethodEmitter(methodName, args)
@@ -854,6 +864,40 @@ func (g *generator) emitMethods() []methodOut {
 	}
 
 	return methods
+}
+
+// precomputeOwnedNestedNeeds collects every struct-media param type
+// across all sync methods and feeds them to
+// mirrorStructTracker.precomputeOwnedNestedNeeds, populating the
+// `convertNeedsOwnedNested` map for every reachable struct-media
+// type before any converter body is emitted. See the tracker
+// method's doc comment for the cycle-handling rationale.
+func (g *generator) precomputeOwnedNestedNeeds(methodNames []string) {
+	if g.mirrors == nil {
+		return
+	}
+	var roots []reflect.Type
+	for _, methodName := range methodNames {
+		fn, ok := g.intro.SyncFuncs[methodName]
+		if !ok {
+			continue
+		}
+		ft := reflect.TypeOf(fn)
+		if ft == nil || ft.Kind() != reflect.Func {
+			continue
+		}
+		// Sync funcs are `func(ctx, args..., opts...)`. Skip the
+		// leading ctx and the trailing variadic opts slot — only
+		// the middle slots can be struct-media params.
+		for paramIdx := 1; paramIdx < ft.NumIn()-1; paramIdx++ {
+			paramType := ft.In(paramIdx)
+			if !structContainsMedia(paramType, g.pkgs) {
+				continue
+			}
+			roots = append(roots, paramType)
+		}
+	}
+	g.mirrors.precomputeOwnedNestedNeeds(roots, g.pkgs)
 }
 
 // emitMethodsMap emits the package-level Methods variable mapping

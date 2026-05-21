@@ -100,3 +100,37 @@ type OtherC struct {
 	Parts *[]ContentPartC
 	Tools *[]ToolPartC
 }
+
+// CycleA + CycleB form a mutually-recursive media-bearing pair used
+// by the cycle regression test. CycleA directly pools (its `Parts`
+// field is `*[]CyclePartWithMedia` with value elements). CycleB
+// references *CycleA, and CycleA references *CycleB.
+//
+// Without the precompute pass, generation order is:
+//   ensure(CycleA) -> mark generated, recurse into *CycleB
+//     ensure(CycleB) -> mark generated, recurse into *CycleA
+//       ensure(CycleA) -> already generated, return cached name
+//     emit body of CycleB -> snapshot
+//       convertNeedsOwnedNestedFor(CycleA) == false (A hasn't
+//       finished its own analysis yet) so the call site for the
+//       A field in B is 2-arg
+//     CycleB body done, generateConversionFunc sets needs for B
+//   emit body of CycleA -> sets needs for A
+// The rendered Go has B's 2-arg call site against A's 3-arg
+// signature -> compile error.
+//
+// With the precompute pass: both A and B are flagged BEFORE any
+// body is emitted, so every call site sees the final transitive
+// answer.
+type CyclePartWithMedia struct {
+	Img *Image
+}
+
+type CycleA struct {
+	B     *CycleB
+	Parts *[]CyclePartWithMedia
+}
+
+type CycleB struct {
+	A *CycleA
+}
