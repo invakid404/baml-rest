@@ -275,7 +275,45 @@ The full Go module tag set for release `0.0.N`:
 | `github.com/invakid404/baml-rest/worker` | `worker/v0.0.N` |
 | `github.com/invakid404/baml-rest/workerplugin` | `workerplugin/v0.0.N` |
 
-## Step 7 — External smoke test
+## Step 7 — Backfill root first-party requires
+
+```sh
+./scripts/release-prep.sh 0.0.N
+```
+
+This is the same script as Step 1, but now `0.0.N` is the latest
+product tag (just pushed in Step 4 / tagged out per-module in Step 6)
+so the script switches into **backfill mode**. Every published-module
+edit is a no-op — those `go.mod` files were already rewritten in
+Step 1 — so the only real work is a `go mod tidy` in the repo root.
+That tidy pulls root's first-party requires (and the indirect
+`dynclient/baml-patched` require + its `go.sum` entries) forward to
+the just-released module set.
+
+The tidy step has to run after Step 6 because root has no local
+`replace` for `dynclient/baml-patched` (intentional — see `go.work`'s
+inline notes on why the patched fork stays outside the workspace).
+With no replace in play, `go mod tidy` resolves baml-patched through
+the module proxy, which means the new per-module tag from Step 6
+must already be reachable. Running this step alongside Step 1, before
+the tag exists, crashes tidy with `unknown revision
+dynclient/baml-patched/v0.0.N`.
+
+Commit + push the resulting `go.mod` / `go.sum` changes as a regular
+PR — the script's "Next steps" output prints the canonical commit
+line (`chore(release): backfill root for 0.0.N`). No new product
+tag, no GitHub Release, no `release-go-tags.sh` rerun: root is
+deliberately excluded from the published tag set (see
+[Tag conventions](#tag-conventions)), so this commit just keeps
+root's own `go.mod` / `go.sum` tracking the released module set.
+
+Skipping this step is harmless for the release itself (the per-module
+tags from Step 6 are what downstream consumers resolve against), but
+it leaves root referencing the previous release and Renovate will
+open redundant first-party bump PRs to close the gap — see #330 /
+#331 against 0.0.47 for the symptom this step exists to prevent.
+
+## Step 8 — External smoke test
 
 Confirm the published Go module tags resolve cleanly for a fresh
 downstream consumer:

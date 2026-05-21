@@ -363,7 +363,20 @@ done
 
 if [ "$staged_any" -eq 0 ]; then
     echo "No changes — every first-party require was already at ${expected_version}."
-    echo "(Run scripts/release-go-tags.sh ${version} after tagging.)"
+    # The post-`No changes` hint depends on where in the release flow
+    # the operator is. In forward mode, the only reason this branch
+    # fires is that someone already landed the Step 1 rewrites
+    # manually (or via a previous run) — they still need to push +
+    # tag + release-go-tags. In backfill mode, "no changes" means root
+    # is already current with the released module set (e.g. the
+    # operator ran backfill twice, or root was tidied out of band);
+    # there's nothing left to do for this release.
+    if [ "$backfill_mode" = true ]; then
+        echo "(Backfill is a no-op — root already tracks ${expected_version}; nothing to commit.)"
+    else
+        echo "(Run scripts/release-go-tags.sh ${version} after tagging,"
+        echo " then re-run scripts/release-prep.sh ${version} for the Step 7 root backfill.)"
+    fi
     exit 0
 fi
 
@@ -376,8 +389,24 @@ echo "Staged files:"
 # below).
 git diff --cached --name-only -- "${candidate_paths[@]}" | sed 's/^/  /'
 
+# Next-steps guidance — split by mode because forward and backfill
+# land in different places in the release flow:
+# - Forward prep is the Step 1 commit; the next chapter is RELEASE.md
+#   Steps 3-6 (push to master, tag, release-go-tags). The forward
+#   output also points at Step 7 so the operator knows the post-tag
+#   backfill rerun is a real step, not a workaround.
+# - Backfill prep is the Step 7 commit; tags already exist, no further
+#   release-go-tags pass, no GitHub Release to publish. The maintainer
+#   just commits + pushes via a regular PR. The commit-message shape
+#   differs (`backfill root for ${version}` vs `prepare Go module
+#   versions for ${version}`) so it's clear in `git log` which
+#   release-prep run produced the commit.
 echo
-echo "Next steps (per RELEASE.md):"
+if [ "$backfill_mode" = true ]; then
+    echo "Next steps (RELEASE.md Step 7 — post-tag root backfill):"
+else
+    echo "Next steps (RELEASE.md Step 1 — forward release-prep):"
+fi
 echo "  1. Verify the build:  go build ./... && go vet ./... && go test ./... -count=1"
 echo "                        (cd dynclient && GOWORK=off go test ./... -count=1)"
 echo "  2. Review the diff:   git diff --cached -- ${candidate_paths[*]}"
@@ -385,10 +414,16 @@ echo "  2. Review the diff:   git diff --cached -- ${candidate_paths[*]}"
 # the working-tree content of those paths only, ignoring any
 # unrelated changes the maintainer may have staged separately. The
 # commit is safe to copy-paste even when other staged work exists.
-echo "  3. Commit:            git commit -m \"chore(release): prepare Go module versions for ${version}\" \\"
-echo "                            -- ${candidate_paths[*]}"
-echo "  4. Push to master and continue from RELEASE.md Step 3."
-if [ "$backfill_mode" != true ]; then
+if [ "$backfill_mode" = true ]; then
+    echo "  3. Commit:            git commit -m \"chore(release): backfill root for ${version}\" \\"
+    echo "                            -- ${candidate_paths[*]}"
+    echo "  4. Push to master via a regular PR. No new tag, no GitHub Release —"
+    echo "     root is excluded from the published tag set (see RELEASE.md Tag conventions),"
+    echo "     so this commit just keeps root's go.mod / go.sum tracking the released set."
+else
+    echo "  3. Commit:            git commit -m \"chore(release): prepare Go module versions for ${version}\" \\"
+    echo "                            -- ${candidate_paths[*]}"
+    echo "  4. Push to master and continue from RELEASE.md Step 3."
     # The root tidy step was skipped in forward mode (it needs the
     # new product tag on the module proxy). After tagging in Steps 4
     # / 6 of RELEASE.md, re-running this script picks up backfill
@@ -398,6 +433,7 @@ if [ "$backfill_mode" != true ]; then
     # context.
     echo
     echo "  After Step 6 (release-go-tags.sh ${version}), re-run \`scripts/release-prep.sh ${version}\`"
-    echo "  to backfill root's first-party requires. That second run executes \`go mod tidy\` in"
-    echo "  the repo root, which needs the new product tag to be reachable on the module proxy."
+    echo "  per RELEASE.md Step 7 to backfill root's first-party requires. That second run"
+    echo "  executes \`go mod tidy\` in the repo root, which needs the new product tag to be"
+    echo "  reachable on the module proxy."
 fi
