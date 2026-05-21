@@ -311,7 +311,7 @@ Skipping this step is harmless for the release itself (the per-module
 tags from Step 6 are what downstream consumers resolve against), but
 it leaves root referencing the previous release and Renovate will
 open redundant first-party bump PRs to close the gap — see #330 /
-#331 against 0.0.47 for the symptom this step exists to prevent.
+\#331 against 0.0.47 for the symptom this step exists to prevent.
 
 ## Step 8 — External smoke test
 
