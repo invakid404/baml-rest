@@ -14,7 +14,10 @@ set -euo pipefail
 # This script exists because the manual release-prep — eleven hand
 # -typed `go mod edit` calls plus a `sync.sh` run plus a known
 # pool-vs-workerplugin quirk — was the step most often skipped, and
-# skipping it forces a destructive tag move to recover. See #308.
+# skipping it forces a destructive tag move to recover (the product
+# tag has to be force-moved to a fresh commit, which rewrites
+# already-published release history). RELEASE.md captures the full
+# failure-mode taxonomy under "What goes wrong if you skip Step 1".
 #
 # Usage:
 #   scripts/release-prep.sh X.Y.Z
@@ -79,8 +82,9 @@ expected_version="v${version}"
 # adapters/adapter_v*/go.mod (which sync.sh refreshes), and root's
 # go.mod / go.sum (which the final `go mod tidy` step rewrites to
 # pull root's first-party requires forward to the released tag set —
-# closes the gap that surfaced after 0.0.47 as Renovate PRs #330 and
-# #331). Resolved eagerly so the same list drives both the preflight
+# without this, root's go.mod drifts behind every release and the
+# Renovate bot opens redundant first-party bump PRs to close the gap
+# instead). Resolved eagerly so the same list drives both the preflight
 # and the stage-at-end pass and the two paths can't drift.
 candidate_paths=(
     dynclient/go.mod
@@ -175,10 +179,10 @@ fi
 #   published-module edit will be a no-op (modules are already at
 #   expected_version from the prior run), but the root `go mod tidy`
 #   step at the end can still pull root's first-party requires forward
-#   to match the release that already shipped. This is the path that
-#   closed the #330/#331 gap on 0.0.47 without needing a one-off
-#   maintainer script. Allow it with a NOTE so the operator sees what
-#   the script is doing.
+#   to match the release that already shipped. This is the post-Step-6
+#   rerun path that updates root once the per-module tags reach the
+#   module proxy — no separate maintainer script required. Allow it
+#   with a NOTE so the operator sees what the script is doing.
 backfill_mode=false
 if [ "$version" = "$prev_version" ]; then
     backfill_mode=true
@@ -198,8 +202,8 @@ echo
 
 # Apply the 11 explicit go mod edit rewrites across the five
 # published modules that have first-party requires. The set matches
-# RELEASE.md "Step 1 — Release-prep require rewrites" and the diffs
-# from PRs #319 and #321.
+# the manual copy-paste form documented under RELEASE.md "Step 1 —
+# Release-prep require rewrites".
 #
 # Each module's edits are batched into a single `go mod edit` call so
 # `go.mod` is only rewritten once per module, matching the manual
@@ -243,8 +247,8 @@ run_edit workerplugin \
 #
 # Known quirk: `go work sync` propagates bamlutils to pool/go.mod but
 # does NOT rewrite pool's `workerplugin` require for the same
-# release. Both prior release-prep PRs (#319, #321) had to bump it
-# manually. We handle that explicitly below after sync.sh runs.
+# release. We handle that explicitly below after sync.sh runs so the
+# automation matches the manual procedure that's worked in practice.
 echo
 echo "Running scripts/sync.sh..."
 "$script_dir/sync.sh"
@@ -264,19 +268,20 @@ run_edit pool \
 # match the released module set. Root is deliberately excluded from
 # the published-tag set (see release-lib.sh release_required_modules),
 # but its own go.mod still references the published modules — those
-# references must move forward at each release. Skipping this step is
-# what produced Renovate PRs #330 and #331 against 0.0.47: every
-# release `go mod tidy` in root would do this organically, so Renovate
-# saw the lag and opened cosmetic-stale bumps that duplicated what
-# tidy would do anyway. Doing it here as part of release-prep keeps
-# the released tree self-consistent without needing the bot to fill
-# the gap.
+# references must move forward at each release. Without this step,
+# every release `go mod tidy` in root would do the bump organically
+# (eventually), and Renovate sees the lag in the meantime and opens
+# redundant first-party bump PRs that duplicate what tidy produces
+# anyway. Doing it here as part of release-prep keeps the released
+# tree self-consistent and lets the Renovate config disable first-
+# party deps without losing anything.
 #
 # Backfill-mode-only: this step is gated on backfill_mode because
 # tidy needs the new product tag to exist on the module proxy. Root
-# has no local replace for dynclient/baml-patched (intentional, see
-# go.work and PR #335 thread), so a forward-mode run for an unreleased
-# version would crash here with "unknown revision
+# has no local replace for dynclient/baml-patched (intentional —
+# go.work's inline notes explain why the patched fork stays outside
+# the workspace), so a forward-mode run for an unreleased version
+# would crash here with "unknown revision
 # dynclient/baml-patched/v0.0.X". The canonical flow is forward prep
 # (this step skipped) → tag → release-go-tags → re-run release-prep
 # in backfill mode (this step fires) → commit root. The "Next steps"
