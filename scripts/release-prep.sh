@@ -74,24 +74,14 @@ cd "$repo_root"
 
 expected_version="v${version}"
 
-# Reject if the version is already a release tag — re-running this
-# script for an already-cut release silently churns module files
-# against a frozen tag, which is never what the operator wants. The
-# hint covers the two real use cases: bumping forward (next release)
-# or skipping a broken cut (cleanly prepping vN+1 after vN was
-# botched).
-if git tag --list "$version" | grep -qx "$version"; then
-    echo "ERROR: ${version} is already a release tag; this script prepares the *next* release commit" >&2
-    echo "       — to bump forward, pass the next version (e.g. the patch after ${version})" >&2
-    echo "       — to recover a botched ${version}, skip it and prep the next version cleanly" >&2
-    exit 1
-fi
-
-# The set of go.mod paths the script may stage at the end. The five
-# directly-edited published modules, pool, and every existing
-# adapters/adapter_v*/go.mod (which sync.sh refreshes). Resolved
-# eagerly so the same list drives both the preflight and the
-# stage-at-end pass and the two paths can't drift.
+# The set of paths the script may stage at the end. The five
+# directly-edited published modules, pool, every existing
+# adapters/adapter_v*/go.mod (which sync.sh refreshes), and root's
+# go.mod / go.sum (which the final `go mod tidy` step rewrites to
+# pull root's first-party requires forward to the released tag set —
+# closes the gap that surfaced after 0.0.47 as Renovate PRs #330 and
+# #331). Resolved eagerly so the same list drives both the preflight
+# and the stage-at-end pass and the two paths can't drift.
 candidate_paths=(
     dynclient/go.mod
     adapters/common/go.mod
@@ -99,6 +89,8 @@ candidate_paths=(
     worker/go.mod
     workerplugin/go.mod
     pool/go.mod
+    go.mod
+    go.sum
 )
 shopt -s nullglob
 for dir in adapters/adapter_v*/; do
@@ -128,10 +120,12 @@ if [ "${#dirty_paths[@]}" -gt 0 ]; then
     exit 1
 fi
 
-# Detect previous version informationally for the status output. The
-# `[0-9]*` glob excludes subdir-prefixed module tags like
-# `dynclient/v0.0.46` so only product tags rank. `--sort=-v:refname`
-# returns them in descending semver order so `head -1` is the latest.
+# Detect the most recent product tag. The `[0-9]*` glob excludes
+# subdir-prefixed module tags like `dynclient/v0.0.46` so only product
+# tags rank. `--sort=-v:refname` returns them in descending semver
+# order so `head -1` is the latest. Computed up here (rather than just
+# before the "prev → version" banner below) so the tag-existence
+# branch below can compare against it for backfill-mode detection.
 prev_version="$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1 || true)"
 if [ -z "$prev_version" ]; then
     echo "ERROR: no previous X.Y.Z tag found; release-prep.sh is meant for incremental releases" >&2
@@ -139,7 +133,45 @@ if [ -z "$prev_version" ]; then
     exit 1
 fi
 
-echo "release-prep: ${prev_version} → ${version}"
+# Tag-existence semantics:
+# - version is not a product tag → normal forward release-prep (no
+#   message, just continue).
+# - version equals the latest product tag → backfill mode. Every
+#   published-module edit will be a no-op (modules are already at
+#   expected_version from the prior run), but the root `go mod tidy`
+#   step at the end can still pull root's first-party requires forward
+#   to match the release that already shipped. This is the path that
+#   closes the #330/#331 gap on 0.0.47 without needing a one-off
+#   maintainer script. Allow it with a NOTE so the operator sees what
+#   the script is doing.
+# - version is some older product tag → almost certainly a typo. A run
+#   here would attempt to downgrade root's first-party requires below
+#   the released set. Refuse so the operator catches the mistake
+#   before any file changes.
+backfill_mode=false
+if git tag --list "$version" | grep -qx "$version"; then
+    if [ "$version" = "$prev_version" ]; then
+        backfill_mode=true
+        echo "NOTE: ${version} is already the latest product tag — running in backfill mode."
+        echo "      Published-module edits will be no-ops (already at ${expected_version});"
+        echo "      the root \`go mod tidy\` step will pull root's first-party requires"
+        echo "      forward to ${expected_version}."
+        echo
+    else
+        echo "ERROR: ${version} is already a release tag, and not the latest one (${prev_version})." >&2
+        echo "       Running release-prep for an older tag would attempt to downgrade root's" >&2
+        echo "       first-party requires below the released set." >&2
+        echo "       — to bump forward, pass the next version after ${prev_version}" >&2
+        echo "       — to recover a botched ${version}, skip it and prep the next version cleanly" >&2
+        exit 1
+    fi
+fi
+
+if [ "$backfill_mode" = true ]; then
+    echo "release-prep: ${prev_version} (backfill)"
+else
+    echo "release-prep: ${prev_version} → ${version}"
+fi
 echo
 
 # Apply the 11 explicit go mod edit rewrites across the five
@@ -205,6 +237,22 @@ run_edit pool \
     bamlutils \
     workerplugin
 
+# Root module: tidy so root's first-party requires (and the indirect
+# dynclient/baml-patched require + its go.sum entries) move forward to
+# match the released module set. Root is deliberately excluded from
+# the published-tag set (see release-lib.sh release_required_modules),
+# but its own go.mod still references the published modules — those
+# references must move forward at each release. Skipping this step is
+# what produced Renovate PRs #330 and #331 against 0.0.47: every
+# release `go mod tidy` in root would do this organically, so Renovate
+# saw the lag and opened cosmetic-stale bumps that duplicated what
+# tidy would do anyway. Doing it here as part of release-prep keeps
+# the released tree self-consistent without needing the bot to fill
+# the gap.
+echo
+echo "Tidying root module..."
+go mod tidy
+
 # Final validation: every required module's first-party requires
 # must match v${version}. This is the same shape
 # scripts/release-go-tags.sh enforces against the tagged commit, run
@@ -225,6 +273,18 @@ for module_path in "${release_required_modules[@]}"; do
         validation_failed=1
     fi
 done
+# Root: the workspace-only modules (adapter_v*, dynclient, pool) sit
+# at pseudo-versions in root by design — they're never published with
+# a tag, and root resolves them through local `replace` directives in
+# the same go.mod. Pass allow_pseudo=true so the validator treats those
+# pseudos as clean while still catching v0.0.<N≠expected> stales for
+# the published modules root depends on (adapters/common, bamlutils,
+# introspected, worker, workerplugin, and the indirect baml-patched).
+echo "  ./go.mod (root)"
+if ! release_validate_module_requires "(root)" "$expected_version" true < go.mod; then
+    echo "ERROR: root go.mod still has first-party requires that don't match ${expected_version}" >&2
+    validation_failed=1
+fi
 if [ "$validation_failed" -ne 0 ]; then
     echo
     echo "ERROR: release-prep validation failed — fix the modules above and re-run" >&2

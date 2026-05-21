@@ -62,11 +62,19 @@ release_extract_first_party_requires() {
     '
 }
 
-# release_validate_module_requires <module_label> <expected_version>
+# release_validate_module_requires <module_label> <expected_version> [allow_pseudo]
 #
 # Reads go.mod from stdin and validates that every first-party
 # require line is exactly <expected_version>. Pseudo-versions and any
-# non-`v0.0.<positive-int>` require fail too.
+# non-`v0.0.<positive-int>` require fail by default.
+#
+# Pass <allow_pseudo>=true to permit `v0.0.0-...` requires alongside
+# <expected_version> — used by the root validator, where modules
+# deliberately excluded from the published tag set (adapter_v*,
+# dynclient, pool — see release-lib.sh `release_required_modules` and
+# RELEASE.md) intentionally sit at pseudo-versions. The published
+# modules in `release_required_modules` always pass false because a
+# pseudo-version surviving in a published go.mod is the #308 failure.
 #
 # Output:
 #   - returns 0 if clean, 1 otherwise.
@@ -78,6 +86,11 @@ release_extract_first_party_requires() {
 # variable release_last_failure_lines. The accumulator is a
 # newline-delimited list of `kind<TAB>value` rows where kind is one of:
 #   - "pseudo"      — a v0.0.0-... pseudo-version require survived.
+#                     Emitted even when allow_pseudo=true so callers
+#                     that want to distinguish "clean release" from
+#                     "release with surviving pseudos" still can; the
+#                     return code is 0 in that case but the channel
+#                     records the lines.
 #   - "stale"       — a clean v0.0.<N> require that points at the
 #                     wrong (most often previous) release; this is
 #                     the canonical "release-prep was skipped" shape.
@@ -99,6 +112,7 @@ release_last_failure_lines=""
 release_validate_module_requires() {
     local module_label="$1"
     local expected_version="$2"
+    local allow_pseudo="${3:-false}"
 
     local first_party_lines
     first_party_lines="$(release_extract_first_party_requires)"
@@ -125,8 +139,11 @@ release_validate_module_requires() {
         dep_version="${fields[1]}"
 
         if [[ "$dep_version" == v0.0.0-* ]]; then
-            echo "  pseudo-version not allowed: ${dep} ${dep_version}" >&2
             release_last_failure_lines+=$'pseudo\t'"${dep_version}"$'\n'
+            if [ "$allow_pseudo" = true ]; then
+                continue
+            fi
+            echo "  pseudo-version not allowed: ${dep} ${dep_version}" >&2
             bad=1
             continue
         fi
