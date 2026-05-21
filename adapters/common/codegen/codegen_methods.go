@@ -600,7 +600,12 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 		// reference an undeclared identifier and fail to compile when
 		// hasReleaseConverted is false too).
 		releaseThenReturnError := func(returnStmt jen.Code) []jen.Code {
-			if me.hasReleaseConverted {
+			// Seed_OmitPhaseBRelease drops the explicit
+			// __releaseConverted() prepend so a Phase-B conv error
+			// leaks the Phase-A checkouts — the dispatch's deferred
+			// drain lives inside a goroutine that never starts on
+			// this path. Harness asserts the imbalance surfaces.
+			if me.hasReleaseConverted && !me.g.opts.Seed_OmitPhaseBRelease {
 				return []jen.Code{jen.Id("__releaseConverted").Call(), returnStmt}
 			}
 			return []jen.Code{returnStmt}
@@ -622,9 +627,16 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 			// the call when the inner converter takes it. Shared by
 			// every branch so call sites and the converter signature
 			// stay in sync regardless of the param's outer wrapping.
+			//
+			// Seed_OmitOwnedNestedThread drops the threading at this
+			// call site — the converter signature still expects the
+			// param, so the rendered file fails to compile at the
+			// dispatch call. The harness observes a non-nil
+			// subprocess error from the build step, which is the
+			// "missing threading" bug class the seed name describes.
 			buildConvertArgs := func(vArg jen.Code) []jen.Code {
 				args := []jen.Code{jen.Id("adapter"), vArg}
-				if info.needsOwnedNested {
+				if info.needsOwnedNested && !me.g.opts.Seed_OmitOwnedNestedThread {
 					args = append(args, jen.Op("&").Id(info.ownedNestedName))
 				}
 				return args

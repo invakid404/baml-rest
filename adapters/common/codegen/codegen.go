@@ -67,6 +67,12 @@ type PackageConfig struct {
 	// QueuePkg is the import path of the go-concurrent-queue dependency
 	// used by the streaming helpers.
 	QueuePkg string
+	// PoolAuditPkg is the import path of the test-only poolaudit hooks
+	// package. Referenced only when slicePoolTracker.audit is true,
+	// which only the lifecycle harness flips. Sits on PackageConfig so
+	// a forked / vendored audit runtime can substitute its own path
+	// without touching the slicePoolTracker emission sites.
+	PoolAuditPkg string
 }
 
 // DefaultPackageConfig returns the PackageConfig that reproduces the
@@ -87,6 +93,7 @@ func DefaultPackageConfig() PackageConfig {
 		RetryPkg:           common.RetryPkg,
 		BamlPkg:            BamlPkg,
 		QueuePkg:           common.GoConcurrentQueuePkg,
+		PoolAuditPkg:       "github.com/invakid404/baml-rest/adapters/common/codegen/internal/poolaudit",
 	}
 }
 
@@ -167,6 +174,29 @@ type Options struct {
 	// as "use the root introspected package" for backwards
 	// compatibility with [Generate].
 	Introspection Introspection
+	// EmitPoolAuditHooks toggles emission of pool checkout / release /
+	// zero-pre-put hooks inside getXSlice / putXSlice. Used only by
+	// the pool-lifecycle test harness — production codegen leaves
+	// this false, in which case the emitted helpers are byte-identical
+	// to the pre-audit baseline. When true, the helpers import the
+	// internal/poolaudit package and surface counter + zero-violation
+	// observations to a running test.
+	EmitPoolAuditHooks bool
+
+	// Test-only regression seeds — DO NOT use in production codegen.
+	// Each seed reintroduces one bug class the slice-pool lifecycle
+	// harness is designed to catch. The harness flips them one at a
+	// time and asserts the inner `go test` fails. If a seed test
+	// starts passing on this branch, either the targeted bug class
+	// is no longer reproducible or this seed needs updating to match
+	// the current emission path.
+	//
+	// Production callers must never set these — leaving them false
+	// is the contract that keeps the audit-mode harness honest.
+	Seed_OmitPhaseBRelease     bool
+	Seed_OmitOwnedNestedThread bool
+	Seed_OmitZeroLoop          bool
+	Seed_OmitAsyncDefer        bool
 }
 
 // Generate generates the adapter.go file for the given adapter
@@ -227,7 +257,7 @@ func newGenerator(opts Options) *generator {
 		supportsWithClient:   resolved.SupportsWithClient,
 		mirrors:              newMirrorStructTracker(),
 		emittedUnwrapHelpers: make(map[string]bool),
-		slicePools:           newSlicePoolTracker(resolved.Packages),
+		slicePools:           newSlicePoolTracker(resolved.Packages, resolved.EmitPoolAuditHooks, resolved.Seed_OmitZeroLoop),
 	}
 }
 

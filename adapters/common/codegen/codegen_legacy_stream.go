@@ -154,8 +154,18 @@ func (me *methodEmitter) emitLegacyStream() {
 	// goroutine — so the pooled-slice release MUST live inside the
 	// body closure, not at the outer function level (where the defer
 	// would fire before the orchestrator even read the slice).
+	//
+	// Seed_OmitAsyncDefer relocates the defer to the outer
+	// noRawBody. When _noRaw returns, the defer fires while the
+	// orchestrator's goroutine is still reading __struct_messages —
+	// the timing-race shape backing the async-defer regression in
+	// the pool-lifecycle harness.
 	if me.hasReleaseConverted {
-		noRawGoroutineBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, noRawGoroutineBody...)
+		if me.g.opts.Seed_OmitAsyncDefer {
+			noRawBody = append(noRawBody, jen.Defer().Id("__releaseConverted").Call())
+		} else {
+			noRawGoroutineBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, noRawGoroutineBody...)
+		}
 	}
 
 	// Delegate to shared orchestration helper - supplies per-method closures
@@ -484,7 +494,15 @@ func (me *methodEmitter) emitLegacyStream() {
 		// driveStream's body, not at the outer function level (where
 		// the defer would fire before the orchestrator even started
 		// the stream). Mirror of the _noRaw fix.
-		driveStreamBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, driveStreamBody...)
+		//
+		// Seed_OmitAsyncDefer relocates the defer to the outer
+		// fullBody so it fires when _full returns, racing the
+		// driveStream callback still reading the converted slice.
+		if me.g.opts.Seed_OmitAsyncDefer {
+			fullBody = append(fullBody, jen.Defer().Id("__releaseConverted").Call())
+		} else {
+			driveStreamBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, driveStreamBody...)
+		}
 	}
 
 	// Delegate to shared full orchestration helper with per-method closures
