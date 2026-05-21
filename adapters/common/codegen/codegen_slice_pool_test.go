@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"go/parser"
+	"go/token"
 	"reflect"
 	"strings"
 	"testing"
@@ -83,8 +85,6 @@ func newPooledMethodEmitter(t *testing.T, paramNames []string) (*methodEmitter, 
 		reflect.TypeOf(testMessageElemA{}),
 		reflect.TypeOf(testMessageElemB{}),
 	}
-	innerElem := reflect.TypeOf(testContentPartElem{})
-
 	var smps []structMediaParam
 	var paramTypes []reflect.Type
 	for i, name := range paramNames {
@@ -97,7 +97,10 @@ func newPooledMethodEmitter(t *testing.T, paramNames []string) (*methodEmitter, 
 			paramType:   sliceType,
 		})
 		paramTypes = append(paramTypes, sliceType)
-		g.mirrors.convertOwnedNested[elem] = innerElem
+		// Pre-populate the closure-context contract so the dispatch
+		// site emits the `&__ownedNested_<name>` 3rd arg without
+		// first generating the inner converter.
+		g.mirrors.convertNeedsOwnedNested[elem] = true
 	}
 
 	me := &methodEmitter{
@@ -275,8 +278,7 @@ func newMixedMethodEmitter(t *testing.T, nonPooledKind string) *methodEmitter {
 	}
 
 	pooledElem := reflect.TypeOf(testMessageElemA{})
-	innerElem := reflect.TypeOf(testContentPartElem{})
-	g.mirrors.convertOwnedNested[pooledElem] = innerElem
+	g.mirrors.convertNeedsOwnedNested[pooledElem] = true
 	pooledType := reflect.SliceOf(pooledElem)
 
 	nonPooledStruct := reflect.TypeOf(nonPooledMessageElem{})
@@ -480,11 +482,267 @@ func TestGenerateConversionFunc_PointerElementSliceSkipsPool(t *testing.T) {
 		t.Errorf("pointer-element slice must NOT trigger a slice-pool emission for the inner element; rendered:\n%s", rendered)
 	}
 
-	// 4. convertOwnedNested must be unset for the outer type so the
-	// dispatch site does not try to pass `&__ownedNested_*` into a
-	// convert call that has no matching parameter.
-	if got := tracker.convertOwnedNestedFor(outerType); got != nil {
-		t.Errorf("convertOwnedNestedFor(%v) = %v, want nil — pointer-element nested slices must NOT register an ownedNested contract",
-			outerType, got)
+	// 4. convertNeedsOwnedNested must be unset for the outer type so
+	// the dispatch site does not try to pass `&__ownedNested_*` into
+	// a convert call that has no matching parameter.
+	if got := tracker.convertNeedsOwnedNestedFor(outerType); got {
+		t.Errorf("convertNeedsOwnedNestedFor(%v) = true, want false — pointer-element nested slices must NOT register an ownedNested contract",
+			outerType)
+	}
+}
+
+// =====================================================================
+// F1/F2 cold-review regression tests (closure-context ownedNested).
+// =====================================================================
+
+// f1MessageWithMedia is the cold-review F1 shape: a struct-media param
+// with shape `*MessageWithMedia` (single pointer-to-struct, non-pooled
+// at the top level) whose mirror's `Parts *[]ContentPart` field IS
+// pooled. The dispatch top-level call site must pass the third
+// `ownedNested` argument so the inner converter's signature matches.
+// Pre-fix the call site emitted 2-arg, the converter emitted 3-param,
+// and the file failed to compile.
+type f1ContentPart struct {
+	Text *string
+	Img  *Image
+}
+
+type f1MessageWithMedia struct {
+	Role  string
+	Parts *[]f1ContentPart
+}
+
+// f1OuterWrapper has a direct nested struct field whose converter
+// needs `ownedNested`. Used to assert nested helpers also thread the
+// argument through.
+type f1OuterWrapper struct {
+	Inner f1MessageWithMedia
+}
+
+// TestPreambleThreadsOwnedNestedThroughNonPooledCallSites pins F1:
+// every top-level dispatch call site whose target converter takes the
+// closure-context `ownedNested` parameter must pass `&__ownedNested_<name>`
+// as the third argument — including the non-pooled `*[]C`, `*C`,
+// direct `C`, and `[]*C` shapes that pre-fix emitted 2-arg calls.
+//
+// We exercise the F1 brief's `*MessageWithMedia` shape: a single
+// pointer-to-struct param whose inner converter requires
+// `ownedNested *[]func()` because the inner struct has a pooled
+// `*[]ContentPart` field. The rendered preamble must declare
+// `var __ownedNested_<name> []func()` and the converter call must
+// include `&__ownedNested_<name>` as its third arg.
+func TestPreambleThreadsOwnedNestedThroughNonPooledCallSites(t *testing.T) {
+	t.Parallel()
+
+	pkgs := DefaultPackageConfig()
+	// Point BamlPkg at this test package so `Image` (declared above)
+	// is recognized as a BAML media type by `isMediaReflectType`,
+	// which routes f1ContentPart through structContainsMedia.
+	pkgs.BamlPkg = reflect.TypeOf(Image{}).PkgPath()
+
+	g := &generator{
+		opts:                 Options{SupportsWithClient: true, Packages: pkgs, Introspection: RootIntrospection()},
+		pkgs:                 pkgs,
+		intro:                RootIntrospection(),
+		out:                  common.MakeFile(),
+		supportsWithClient:   true,
+		mirrors:              newMirrorStructTracker(),
+		emittedUnwrapHelpers: map[string]bool{},
+		slicePools:           newSlicePoolTracker(pkgs),
+	}
+
+	// Generate the mirror struct + converter for the outer type. The
+	// recursive ensureMirrorStruct call walks fields, sees the inner
+	// `*[]ContentPart` pooled slice, and registers the outer
+	// converter as needing `ownedNested *[]func()`.
+	outerType := reflect.TypeOf(f1MessageWithMedia{})
+	mirrorName := g.mirrors.ensureMirrorStruct(g.out, outerType, pkgs, g.slicePools)
+	if !g.mirrors.convertNeedsOwnedNestedFor(outerType) {
+		t.Fatalf("fixture invariant: convertNeedsOwnedNestedFor(%v) must be true after ensureMirrorStruct — otherwise the dispatch site under test has nothing to thread", outerType)
+	}
+
+	// Set up a methodEmitter whose single struct-media param is
+	// `*f1MessageWithMedia`, the F1 failing shape.
+	paramType := reflect.PointerTo(outerType)
+	convertFunc := "convert" + mirrorName
+	me := &methodEmitter{
+		g:            g,
+		methodName:   "TestMethod",
+		args:         []string{"extra"},
+		syncFuncType: synthSyncFuncType([]reflect.Type{paramType}),
+		structMediaParams: []structMediaParam{{
+			paramName:   "extra",
+			mirrorName:  mirrorName,
+			convertFunc: convertFunc,
+			paramType:   paramType,
+		}},
+		methodMediaParams: map[string]bamlutils.MediaKind{},
+		inputStructName:   "TestMethodInput",
+	}
+	me.structMediaParamSet = map[string]bool{"extra": true}
+
+	preamble := me.makePreambleWithArgs("makeOptionsFromAdapter")
+	out := common.MakeFile()
+	out.Func().Id("preambleHarness").Params().Block(preamble...)
+	rendered := out.GoString()
+
+	// 1. The dispatch must declare a per-param closure slice so the
+	// converter has somewhere to deposit its release closures.
+	if !strings.Contains(rendered, "var __ownedNested_extra []func()") {
+		t.Errorf("expected `var __ownedNested_extra []func()` declaration in dispatch preamble; rendered:\n%s", rendered)
+	}
+
+	// 2. The call site for the non-pooled `*Mirror` shape must pass
+	// `&__ownedNested_extra` as the third argument. Pre-fix the
+	// dispatch emitted only `(adapter, input.Extra)` and the file
+	// did not compile.
+	wantCall := convertFunc + "(adapter, input.Extra, &__ownedNested_extra)"
+	if !strings.Contains(rendered, wantCall) {
+		t.Errorf("expected non-pooled call site %q in dispatch preamble; rendered:\n%s", wantCall, rendered)
+	}
+
+	// 3. The hoisted release closure must drain the per-param
+	// closure slice — the F1 fix's reason for existence.
+	if !strings.Contains(rendered, "for _, __release := range __ownedNested_extra") {
+		t.Errorf("hoisted release closure must iterate __ownedNested_extra; rendered:\n%s", rendered)
+	}
+}
+
+// TestPreambleThreadsOwnedNestedThroughNestedHelpers pins F1's nested
+// arm: when a converter's body contains another converter call (via
+// `nestedStructConversion`'s Direct / *Struct / slice / *[]Struct
+// branches), and the inner converter takes `ownedNested`, the outer
+// converter must thread its own `ownedNested` parameter into the inner
+// call. With the closure-context shape this is uniform: every
+// converter that propagates pooled state takes the same
+// `*[]func()` parameter regardless of the specific inner element
+// types its descendants pool.
+//
+// We exercise this by generating mirror converters for the outer
+// `f1OuterWrapper`, whose Inner field is a value-type
+// `f1MessageWithMedia` (the F1 type above — its converter needs
+// ownedNested). The outer converter's rendered body must contain a
+// 3-arg call to the inner converter.
+func TestPreambleThreadsOwnedNestedThroughNestedHelpers(t *testing.T) {
+	t.Parallel()
+
+	pkgs := DefaultPackageConfig()
+	pkgs.BamlPkg = reflect.TypeOf(Image{}).PkgPath()
+
+	out := common.MakeFile()
+	tracker := newMirrorStructTracker()
+	pools := newSlicePoolTracker(pkgs)
+
+	outerType := reflect.TypeOf(f1OuterWrapper{})
+	outerMirror := tracker.ensureMirrorStruct(out, outerType, pkgs, pools)
+	innerType := reflect.TypeOf(f1MessageWithMedia{})
+	if !tracker.convertNeedsOwnedNestedFor(innerType) {
+		t.Fatal("fixture invariant: inner converter must need ownedNested")
+	}
+	if !tracker.convertNeedsOwnedNestedFor(outerType) {
+		t.Fatal("outer converter must transitively need ownedNested (its body calls the inner one)")
+	}
+
+	rendered := out.GoString()
+
+	// The outer converter's signature must propagate ownedNested.
+	wantOuterSig := "func convert" + outerMirror + "(adapter bamlutils.Adapter, input *" + outerMirror + ", ownedNested *[]func())"
+	if !strings.Contains(rendered, wantOuterSig) {
+		t.Errorf("outer converter signature must take ownedNested; expected:\n%s\nrendered:\n%s", wantOuterSig, rendered)
+	}
+
+	// The outer converter's body must call the inner with the 3-arg
+	// shape — passing its own `ownedNested` through unchanged. Pre-
+	// fix the nested helpers emitted 2-arg calls and the file did
+	// not compile.
+	innerMirror := "convert" + tracker.generated[innerType]
+	wantInnerCall := innerMirror + "(adapter, &input.Inner, ownedNested)"
+	if !strings.Contains(rendered, wantInnerCall) {
+		t.Errorf("outer converter must thread ownedNested through nested helper call; expected fragment %q; rendered:\n%s", wantInnerCall, rendered)
+	}
+}
+
+// f2MultiPooledMixed is the cold-review F2 shape: a mirror struct with
+// TWO distinct `*[]Struct` value-element fields whose nested
+// converters target DIFFERENT BAML element types. Pre-fix the
+// converter signature carried a single `ownedNested *[]*[]T` and the
+// second field's `append(*ownedNested, *[]OtherT)` was a type-error.
+// Post-fix (closure context) both fields append `func()` closures
+// to the same `*[]func()` slice.
+type f2ContentPart struct {
+	Text *string
+	Img  *Image
+}
+
+type f2ToolPart struct {
+	Name *string
+	Doc  *Image
+}
+
+type f2MultiPooledMixed struct {
+	Role  string
+	Parts *[]f2ContentPart
+	Tools *[]f2ToolPart
+}
+
+// TestConvertFuncHandlesMultiplePooledNestedTypes pins F2: a mirror
+// converter with two distinct `*[]Struct` value-element fields must
+// generate code that compiles cleanly. The closure-context shape
+// resolves the type mismatch — both fields append `func()` closures
+// to the same `ownedNested *[]func()` slice. Pre-fix the converter's
+// signature carried a single concrete `*[]*[]T` and the second
+// append site was a type error.
+//
+// Compile-checks the rendered output via go/parser plus a focused
+// textual assertion that both pool sites use the closure shape.
+func TestConvertFuncHandlesMultiplePooledNestedTypes(t *testing.T) {
+	t.Parallel()
+
+	pkgs := DefaultPackageConfig()
+	pkgs.BamlPkg = reflect.TypeOf(Image{}).PkgPath()
+
+	out := common.MakeFile()
+	tracker := newMirrorStructTracker()
+	pools := newSlicePoolTracker(pkgs)
+
+	outerType := reflect.TypeOf(f2MultiPooledMixed{})
+	mirrorName := tracker.ensureMirrorStruct(out, outerType, pkgs, pools)
+	if mirrorName == "" {
+		t.Fatal("ensureMirrorStruct returned empty mirror name")
+	}
+	if !tracker.convertNeedsOwnedNestedFor(outerType) {
+		t.Fatal("converter must need ownedNested when it pools any nested slice")
+	}
+
+	rendered := out.GoString()
+
+	// Signature must use closure-context shape — exactly one slice,
+	// regardless of how many distinct nested element types are
+	// pooled.
+	wantSig := "func convert" + mirrorName + "(adapter bamlutils.Adapter, input *" + mirrorName + ", ownedNested *[]func())"
+	if !strings.Contains(rendered, wantSig) {
+		t.Errorf("converter signature must use *[]func() closure context; expected:\n%s\nrendered:\n%s", wantSig, rendered)
+	}
+
+	// Each pool site must append a closure capturing its specific
+	// inner `put<X>Slice` call. Substring-match the two distinct
+	// inner-type names (lowerFirst applied) — the closure-context
+	// shape means both share the same `*ownedNested` slice but
+	// invoke different put helpers.
+	for _, innerName := range []string{"f2ContentPart", "f2ToolPart"} {
+		wantAppend := "*ownedNested = append(*ownedNested, func() {\n\t\t\tput" + innerName + "Slice(__partsPtr)"
+		if !strings.Contains(rendered, wantAppend) {
+			t.Errorf("expected closure append for inner type %q; want fragment:\n%s\nrendered:\n%s", innerName, wantAppend, rendered)
+		}
+	}
+
+	// The rendered code must parse as valid Go. Pre-fix the second
+	// pooled site emitted a `*[]*[]f2ToolPart` append into
+	// `*[]*[]f2ContentPart`, which the type checker rejects (parser
+	// would still accept it; we add an explicit textual sanity
+	// check to catch the regression even when parsing alone passes).
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, "multi_pooled_synth.go", rendered, parser.AllErrors); err != nil {
+		t.Errorf("generated source does not parse as valid Go: %v\n--- rendered ---\n%s", err, rendered)
 	}
 }

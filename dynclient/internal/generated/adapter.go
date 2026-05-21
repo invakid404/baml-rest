@@ -107,13 +107,15 @@ func putbaml_Rest_ContentPartSlice(sp *[]types.Baml_Rest_ContentPart) {
 	*sp = (*sp)[:0]
 	baml_Rest_ContentPartSlicePool.Put(sp)
 }
-func convertBaml_Rest_MessageMediaInput(adapter bamlutils.Adapter, input *Baml_Rest_MessageMediaInput, ownedNested *[]*[]types.Baml_Rest_ContentPart) (types.Baml_Rest_Message, error) {
+func convertBaml_Rest_MessageMediaInput(adapter bamlutils.Adapter, input *Baml_Rest_MessageMediaInput, ownedNested *[]func()) (types.Baml_Rest_Message, error) {
 	var result types.Baml_Rest_Message
 	result.Role = input.Role
 	result.Content = input.Content
 	if input.Parts != nil {
 		__partsPtr := getbaml_Rest_ContentPartSlice(len(*input.Parts))
-		*ownedNested = append(*ownedNested, __partsPtr)
+		*ownedNested = append(*ownedNested, func() {
+			putbaml_Rest_ContentPartSlice(__partsPtr)
+		})
 		*__partsPtr = (*__partsPtr)[:len(*input.Parts)]
 		__ptrSlice := *__partsPtr
 		for __i, __v := range *input.Parts {
@@ -264,10 +266,10 @@ func bamlRestDynamicNoRaw(adapter bamlutils.Adapter, rawInput any, out chan baml
 	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
 	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
 	__struct_messages := *__messagesPtr_messages
-	var __ownedNested_messages []*[]types.Baml_Rest_ContentPart
+	var __ownedNested_messages []func()
 	__releaseConverted := func() {
-		for _, __partsPtr := range __ownedNested_messages {
-			putbaml_Rest_ContentPartSlice(__partsPtr)
+		for _, __release := range __ownedNested_messages {
+			__release()
 		}
 		putbaml_Rest_MessageSlice(__messagesPtr_messages)
 	}
@@ -367,10 +369,10 @@ func bamlRestDynamicFull(adapter bamlutils.Adapter, rawInput any, out chan bamlu
 	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
 	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
 	__struct_messages := *__messagesPtr_messages
-	var __ownedNested_messages []*[]types.Baml_Rest_ContentPart
+	var __ownedNested_messages []func()
 	__releaseConverted := func() {
-		for _, __partsPtr := range __ownedNested_messages {
-			putbaml_Rest_ContentPartSlice(__partsPtr)
+		for _, __release := range __ownedNested_messages {
+			__release()
 		}
 		putbaml_Rest_MessageSlice(__messagesPtr_messages)
 	}
@@ -581,10 +583,10 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
 	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
 	__struct_messages := *__messagesPtr_messages
-	var __ownedNested_messages []*[]types.Baml_Rest_ContentPart
+	var __ownedNested_messages []func()
 	__releaseConverted := func() {
-		for _, __partsPtr := range __ownedNested_messages {
-			putbaml_Rest_ContentPartSlice(__partsPtr)
+		for _, __release := range __ownedNested_messages {
+			__release()
 		}
 		putbaml_Rest_MessageSlice(__messagesPtr_messages)
 	}
@@ -822,10 +824,10 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
 	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
 	__struct_messages := *__messagesPtr_messages
-	var __ownedNested_messages []*[]types.Baml_Rest_ContentPart
+	var __ownedNested_messages []func()
 	__releaseConverted := func() {
-		for _, __partsPtr := range __ownedNested_messages {
-			putbaml_Rest_ContentPartSlice(__partsPtr)
+		for _, __release := range __ownedNested_messages {
+			__release()
 		}
 		putbaml_Rest_MessageSlice(__messagesPtr_messages)
 	}

@@ -5,7 +5,6 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/dynclient/internal/generated/adapter"
-	"github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/types"
 )
 
 // noopMediaFactory returns nil so this benchmark exercises only the
@@ -42,10 +41,13 @@ func runMessageConvert(b *testing.B, adp bamlutils.Adapter, in *BamlRestDynamicI
 		messagesPtr := getbaml_Rest_MessageSlice(len(in.Messages))
 		*messagesPtr = (*messagesPtr)[:len(in.Messages)]
 		structMessages := *messagesPtr
-		var ownedNested []*[]types.Baml_Rest_ContentPart
+		// Closure-context ownedNested: each pooled nested branch
+		// inside the converter appends a release closure capturing
+		// its own put<X>Slice + pointer. Drain in any order.
+		var ownedNested []func()
 		release := func() {
-			for _, p := range ownedNested {
-				putbaml_Rest_ContentPartSlice(p)
+			for _, fn := range ownedNested {
+				fn()
 			}
 			putbaml_Rest_MessageSlice(messagesPtr)
 		}

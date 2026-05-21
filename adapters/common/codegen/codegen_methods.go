@@ -451,85 +451,118 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 			preamble = append(preamble, mediaConversionCode(convertedVar, fieldName, paramType, mediaKind, me.g.pkgs)...)
 		}
 
-		// Pass 1: discover which struct-media params route through the
-		// slice pool so the dispatch can hoist a single
-		// `__releaseConverted` closure that aggregates every per-param
-		// cleanup. Without this hoist, two or more pooled params would
-		// emit two `__releaseConverted := func() { ... }` lines in the
-		// same scope and the generated file would not compile.
-		type pooledSliceParam struct {
-			smp             structMediaParam
-			fieldName       string
-			convertedVar    string
-			messagesPtrName string
-			ownedNestedName string
-			outerPool       *slicePoolNames
-			innerPool       *slicePoolNames
-			innerNestedElem reflect.Type
+		// Pass 1: discover per-param pooling intent so the dispatch can
+		// hoist a single `__releaseConverted` closure that aggregates
+		// every per-param cleanup. Two distinct facets feed this:
+		//
+		//   - outerPool: this param is `[]ClassWithMedia` with value
+		//     elements; the outer slice routes through the slice pool.
+		//   - needsOwnedNested: the converter for this param's inner
+		//     mirror type takes the `ownedNested *[]func()` param
+		//     (either directly pools a `*[]Struct` field, or
+		//     transitively calls another converter that does). The
+		//     dispatch must materialize a per-param closure slice and
+		//     drain it in the release.
+		//
+		// Both facets are independent: a `*MessageWithMedia` param has
+		// no outer pool but its converter may still take ownedNested
+		// (the F1 shape from cold review). Without a per-param
+		// `__ownedNested_<name>` slice the non-pooled call site
+		// couldn't pass the third argument the converter requires.
+		type structMediaParamInfo struct {
+			smp              structMediaParam
+			fieldName        string
+			convertedVar     string
+			messagesPtrName  string
+			ownedNestedName  string
+			outerPool        *slicePoolNames
+			needsOwnedNested bool
 		}
-		var pooledSlices []pooledSliceParam
+		unwrapInner := func(t reflect.Type) reflect.Type {
+			for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice {
+				t = t.Elem()
+			}
+			return t
+		}
+		var paramInfos []structMediaParamInfo
 		for _, smp := range me.structMediaParams {
-			if smp.paramType.Kind() != reflect.Slice {
-				continue
-			}
-			elemType := smp.paramType.Elem()
-			if elemType.Kind() == reflect.Ptr {
-				// Pointer-element slices fall through to the legacy
-				// `make([]*T, n)` path; pooling those would also need
-				// per-element nil clearing and the inner ownedNested
-				// type would not match.
-				continue
-			}
-			if me.g.slicePools == nil {
-				continue
-			}
-			outerPool := me.g.slicePools.ensure(me.g.out, elemType, 1024)
-			innerNestedElem := me.g.mirrors.convertOwnedNestedFor(elemType)
-			var innerPool *slicePoolNames
-			if innerNestedElem != nil {
-				innerPool = me.g.slicePools.ensure(me.g.out, innerNestedElem, 256)
-			}
-			pooledSlices = append(pooledSlices, pooledSliceParam{
+			info := structMediaParamInfo{
 				smp:             smp,
 				fieldName:       strcase.UpperCamelCase(smp.paramName),
 				convertedVar:    "__struct_" + smp.paramName,
 				messagesPtrName: "__messagesPtr_" + smp.paramName,
 				ownedNestedName: "__ownedNested_" + smp.paramName,
-				outerPool:       outerPool,
-				innerPool:       innerPool,
-				innerNestedElem: innerNestedElem,
-			})
+			}
+			// Outer-pool eligibility: only `[]ValueStruct` shapes
+			// (slice with value-type elements). Pointer-element slices
+			// and ptr/direct struct params fall through the existing
+			// non-pooled emission.
+			if smp.paramType.Kind() == reflect.Slice &&
+				smp.paramType.Elem().Kind() != reflect.Ptr &&
+				me.g.slicePools != nil {
+				info.outerPool = me.g.slicePools.ensure(me.g.out, smp.paramType.Elem(), 1024)
+			}
+			// ownedNested propagation: query the inner BAML type's
+			// converter. Works uniformly across [], *[], *, and
+			// direct param shapes because unwrapInner strips every
+			// leading ptr/slice layer.
+			if me.g.mirrors != nil {
+				info.needsOwnedNested = me.g.mirrors.convertNeedsOwnedNestedFor(unwrapInner(smp.paramType))
+			}
+			paramInfos = append(paramInfos, info)
 		}
 
-		// Phase A — emit the per-pooled-param outer-slice checkout +
-		// ownedNested declaration so every referenced variable exists
-		// before the hoisted release closure captures it.
-		for _, p := range pooledSlices {
-			preamble = append(preamble,
-				jen.Id(p.messagesPtrName).Op(":=").Id(p.outerPool.getFunc).Call(jen.Len(jen.Id("input").Dot(p.fieldName))),
-				jen.Op("*").Id(p.messagesPtrName).Op("=").Parens(jen.Op("*").Id(p.messagesPtrName)).Index(jen.Empty(), jen.Len(jen.Id("input").Dot(p.fieldName))),
-				jen.Id(p.convertedVar).Op(":=").Op("*").Id(p.messagesPtrName),
-			)
-			if p.innerNestedElem != nil {
+		// Phase A — declare per-param resources so every variable the
+		// hoisted release closure references exists by the time it
+		// captures them. Outer-pool checkout and ownedNested slice
+		// declarations both land here; the per-param fill loop in
+		// Phase B is non-declarative and just consumes what Phase A
+		// set up.
+		anyReleaseResource := false
+		for _, p := range paramInfos {
+			if p.outerPool != nil {
 				preamble = append(preamble,
-					jen.Var().Id(p.ownedNestedName).Index().Op("*").Index().Add(parseReflectType(p.innerNestedElem).statement),
+					jen.Id(p.messagesPtrName).Op(":=").Id(p.outerPool.getFunc).Call(jen.Len(jen.Id("input").Dot(p.fieldName))),
+					jen.Op("*").Id(p.messagesPtrName).Op("=").Parens(jen.Op("*").Id(p.messagesPtrName)).Index(jen.Empty(), jen.Len(jen.Id("input").Dot(p.fieldName))),
+					jen.Id(p.convertedVar).Op(":=").Op("*").Id(p.messagesPtrName),
 				)
+				anyReleaseResource = true
+			}
+			if p.needsOwnedNested {
+				preamble = append(preamble,
+					jen.Var().Id(p.ownedNestedName).Index().Func().Params(),
+				)
+				anyReleaseResource = true
 			}
 		}
 		// Phase B — hoist a single `__releaseConverted` closure that
-		// drains every per-param ownedNested list and puts every outer
-		// slice back. Dispatch-site emitters defer this closure exactly
-		// once (inside the orchestration goroutine for async paths,
+		// invokes every release closure each per-param ownedNested
+		// slice accumulated and then puts every outer pool slice back.
+		// Dispatch-site emitters defer this closure exactly once
+		// (inside the orchestration goroutine for async paths,
 		// inside the body callback for legacy paths).
-		if len(pooledSlices) > 0 {
+		if anyReleaseResource {
 			var releaseBody []jen.Code
-			for _, p := range pooledSlices {
-				if p.innerPool != nil {
-					releaseBody = append(releaseBody,
-						jen.For(jen.List(jen.Id("_"), jen.Id("__partsPtr")).Op(":=").Range().Id(p.ownedNestedName)).Block(
-							jen.Id(p.innerPool.putFunc).Call(jen.Id("__partsPtr")),
-						),
-					)
+			// Drain release closures first so the pooled inner slices
+			// are zeroed + returned before the outer pool slice's
+			// `put` zeroes the message slots that pointed at them.
+			// (Order within drain doesn't matter functionally — every
+			// closure operates on a disjoint pointer — but draining
+			// innermost-to-outermost mirrors the original allocation
+			// order and reads more naturally.)
+			for _, p := range paramInfos {
+				if !p.needsOwnedNested {
+					continue
+				}
+				releaseBody = append(releaseBody,
+					jen.For(jen.List(jen.Id("_"), jen.Id("__release")).Op(":=").Range().Id(p.ownedNestedName)).Block(
+						jen.Id("__release").Call(),
+					),
+				)
+			}
+			for _, p := range paramInfos {
+				if p.outerPool == nil {
+					continue
 				}
 				releaseBody = append(releaseBody,
 					jen.Id(p.outerPool.putFunc).Call(jen.Id(p.messagesPtrName)),
@@ -542,11 +575,11 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 		}
 
 		// Build a lookup so the per-param emission below can detect
-		// which params are pooled without re-running the cap/type
-		// checks.
-		pooledByName := map[string]pooledSliceParam{}
-		for _, p := range pooledSlices {
-			pooledByName[p.smp.paramName] = p
+		// which params are pooled / need ownedNested without re-
+		// running the type checks.
+		infoByName := map[string]structMediaParamInfo{}
+		for _, p := range paramInfos {
+			infoByName[p.smp.paramName] = p
 		}
 
 		// releaseThenReturnError prepends `__releaseConverted()` to a
@@ -583,12 +616,24 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 			isPtr := smp.paramType.Kind() == reflect.Ptr
 			isSlice := smp.paramType.Kind() == reflect.Slice
 
+			info := infoByName[smp.paramName]
+
+			// buildConvertArgs threads `&__ownedNested_<name>` into
+			// the call when the inner converter takes it. Shared by
+			// every branch so call sites and the converter signature
+			// stay in sync regardless of the param's outer wrapping.
+			buildConvertArgs := func(vArg jen.Code) []jen.Code {
+				args := []jen.Code{jen.Id("adapter"), vArg}
+				if info.needsOwnedNested {
+					args = append(args, jen.Op("&").Id(info.ownedNestedName))
+				}
+				return args
+			}
+
 			if isSlice {
 				// []ClassWithMedia -> iterate and convert each element
 				elemType := smp.paramType.Elem()
 				elemIsPtr := elemType.Kind() == reflect.Ptr
-
-				pooled, isPooled := pooledByName[smp.paramName]
 
 				// Determine how to pass the element to the conversion function
 				var vArg jen.Code
@@ -596,11 +641,6 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 					vArg = jen.Id("__v") // already *Mirror, pass directly
 				} else {
 					vArg = jen.Op("&").Id("__v") // Mirror, take address
-				}
-
-				convertArgs := []jen.Code{jen.Id("adapter"), vArg}
-				if isPooled && pooled.innerNestedElem != nil {
-					convertArgs = append(convertArgs, jen.Op("&").Id(pooled.ownedNestedName))
 				}
 
 				errReturnStmts := releaseThenReturnError(
@@ -612,7 +652,7 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 				)
 
 				convBlock := []jen.Code{
-					jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(convertArgs...),
+					jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(buildConvertArgs(vArg)...),
 					jen.If(jen.Id(errVar).Op("!=").Nil()).Block(errReturnStmts...),
 					func() jen.Code {
 						if elemIsPtr {
@@ -632,9 +672,9 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 					loopBody = convBlock
 				}
 
-				if isPooled {
-					// Pooled outer slice + ownedNested were already
-					// declared above. Just emit the fill loop here.
+				if info.outerPool != nil {
+					// Pooled outer slice was already declared in Phase
+					// A. Just emit the fill loop here.
 					preamble = append(preamble,
 						jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Id("input").Dot(fieldName)).Block(loopBody...),
 					)
@@ -662,10 +702,7 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 					}
 
 					innerConvBlock := []jen.Code{
-						jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
-							jen.Id("adapter"),
-							vArg,
-						),
+						jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(buildConvertArgs(vArg)...),
 						jen.If(jen.Id(errVar).Op("!=").Nil()).Block(releaseThenReturnError(
 							jen.Return(jen.Qual("fmt", "Errorf").Call(
 								jen.Lit(smp.paramName+"[%d]: %w"),
@@ -707,8 +744,7 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 						jen.Var().Id(convertedVar).Add(parseReflectType(smp.paramType).statement),
 						jen.If(jen.Id("input").Dot(fieldName).Op("!=").Nil()).Block(
 							jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
-								jen.Id("adapter"),
-								jen.Id("input").Dot(fieldName), // already *Mirror, pass directly
+								buildConvertArgs(jen.Id("input").Dot(fieldName))..., // already *Mirror, pass directly
 							),
 							jen.If(jen.Id(errVar).Op("!=").Nil()).Block(releaseThenReturnError(
 								jen.Return(jen.Qual("fmt", "Errorf").Call(
@@ -724,8 +760,7 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 				// Direct: ClassWithMedia -> take address and convert
 				preamble = append(preamble,
 					jen.List(jen.Id(convertedVar), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
-						jen.Id("adapter"),
-						jen.Op("&").Id("input").Dot(fieldName),
+						buildConvertArgs(jen.Op("&").Id("input").Dot(fieldName))...,
 					),
 					jen.If(jen.Id(errVar).Op("!=").Nil()).Block(releaseThenReturnError(
 						jen.Return(jen.Qual("fmt", "Errorf").Call(
