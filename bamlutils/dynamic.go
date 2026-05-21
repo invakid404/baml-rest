@@ -155,9 +155,9 @@ type DynamicMessage struct {
 func (m *DynamicMessage) UnmarshalJSON(data []byte) error {
 	// Use a raw type to avoid infinite recursion
 	var raw struct {
-		Role     string             `json:"role"`
+		Role     string                 `json:"role"`
 		Content  sonic.NoCopyRawMessage `json:"content"`
-		Metadata *MessageMetadata   `json:"metadata,omitempty"`
+		Metadata *MessageMetadata       `json:"metadata,omitempty"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
@@ -425,8 +425,8 @@ func (c *DynamicClass) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var raw struct {
-		Description string             `json:"description,omitempty"`
-		Alias       string             `json:"alias,omitempty"`
+		Description string                 `json:"description,omitempty"`
+		Alias       string                 `json:"alias,omitempty"`
 		Properties  sonic.NoCopyRawMessage `json:"properties,omitempty"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
