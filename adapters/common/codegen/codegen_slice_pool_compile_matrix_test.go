@@ -5,11 +5,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -17,6 +14,7 @@ import (
 	"github.com/dave/jennifer/jen"
 
 	"github.com/invakid404/baml-rest/adapters/common/codegen/internal/fixtures"
+	"github.com/invakid404/baml-rest/adapters/common/codegen/internal/testharness"
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
@@ -57,8 +55,8 @@ func TestCompileMatrix(t *testing.T) {
 	rendered := out.GoString()
 
 	tmp := t.TempDir()
-	writeTempModule(t, tmp, rendered)
-	runGoBuild(t, tmp)
+	testharness.WriteTempModule(t, tmp, rendered, nil)
+	testharness.RunGoBuild(t, tmp)
 
 	parsed, fset := parseRendered(t, rendered)
 	assertNoReleaseConvertedInNonPooledCell(t, parsed, fset, cells)
@@ -452,94 +450,6 @@ func upperCamelForMatrix(s string) string {
 	return strings.Join(parts, "")
 }
 
-// writeTempModule lays out a self-contained Go module under `dir`
-// that compiles the rendered file against bamlutils + the fixtures
-// package via replace directives. The temp module reuses
-// adapters/common's go.mod + go.sum verbatim — that module already
-// pins every transitive dep bamlutils needs — and rewrites the
-// module path / replace directives to point at the local sources.
-// Without inheriting the transitive-dep pins `go build` would
-// complain "updates to go.mod needed" and refuse to proceed without
-// network access.
-func writeTempModule(t *testing.T, dir, rendered string) {
-	t.Helper()
-
-	bamlutilsAbs := absRepoPath(t, "bamlutils")
-	introspectedAbs := absRepoPath(t, "introspected")
-	fixturesAbs := absRepoPath(t, "adapters/common/codegen/internal/fixtures")
-	commonAbs := absRepoPath(t, "adapters/common")
-
-	_ = fixturesAbs // fixtures is a sub-package of adapters/common; the adapters/common replace below covers it
-
-	commonModBytes, err := os.ReadFile(filepath.Join(commonAbs, "go.mod"))
-	if err != nil {
-		t.Fatalf("read adapters/common go.mod: %v", err)
-	}
-	commonMod := string(commonModBytes)
-
-	// Rewrite the module path so the temp module is a standalone
-	// build target (`matrixtest`). Replace the original
-	// first-party replaces (which used `../../...` relative paths)
-	// with absolute paths so the temp dir's CWD doesn't matter.
-	// Declare the temp module under the adapters/common/codegen
-	// import-path prefix so the matrix file can import
-	// `.../codegen/internal/fixtures` — Go's `internal/`
-	// visibility rule allows that from any package whose path is
-	// rooted at the same parent (`adapters/common/codegen/`).
-	// Any module path outside that prefix would be rejected as a
-	// cross-tree internal import.
-	rewritten := strings.Replace(
-		commonMod,
-		"module github.com/invakid404/baml-rest/adapters/common",
-		"module github.com/invakid404/baml-rest/adapters/common/codegen/matrixtest",
-		1,
-	)
-	rewritten = strings.Replace(
-		rewritten,
-		"github.com/invakid404/baml-rest/bamlutils => ../../bamlutils",
-		"github.com/invakid404/baml-rest/bamlutils => "+bamlutilsAbs,
-		1,
-	)
-	rewritten = strings.Replace(
-		rewritten,
-		"github.com/invakid404/baml-rest/introspected => ../../introspected",
-		"github.com/invakid404/baml-rest/introspected => "+introspectedAbs,
-		1,
-	)
-	// Add a require + replace for the adapters/common module so the
-	// rendered file's fixtures import (a sub-package of
-	// adapters/common) resolves to the local source tree.
-	rewritten += "\nrequire github.com/invakid404/baml-rest/adapters/common v0.0.0-00010101000000-000000000000\n"
-	rewritten += "\nreplace github.com/invakid404/baml-rest/adapters/common => " + commonAbs + "\n"
-	writeFile(t, filepath.Join(dir, "go.mod"), rewritten)
-
-	// Reuse adapters/common's go.sum verbatim so transitive
-	// dep hashes don't trip the "module verification" gate.
-	commonSum, err := os.ReadFile(filepath.Join(commonAbs, "go.sum"))
-	if err != nil {
-		t.Fatalf("read adapters/common go.sum: %v", err)
-	}
-	writeFile(t, filepath.Join(dir, "go.sum"), string(commonSum))
-
-	writeFile(t, filepath.Join(dir, "matrix.go"), rendered)
-}
-
-// runGoBuild shells out to `go build ./...` in `dir`. The matrix is
-// rendered into a single file, so a single build invocation
-// type-checks every cell in one shot. Any failure (undeclared
-// identifier, arg-count mismatch, type mismatch) surfaces as a
-// build error.
-func runGoBuild(t *testing.T, dir string) {
-	t.Helper()
-	cmd := exec.Command("go", "build", "./...")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("matrix temp module failed to compile (the rendered codegen output type-checks against bamlutils + fixtures):\n%s\nerror: %v", out, err)
-	}
-}
-
 // parseRendered re-parses the rendered file in-process so the AST
 // scan in `assertNoReleaseConvertedInNonPooledCell` can look at the
 // emitter's exact textual output rather than reading the temp file
@@ -624,26 +534,3 @@ func dispatchHasReleaseConverted(fd *ast.FuncDecl) bool {
 	return found
 }
 
-// absRepoPath returns the absolute path to a repo-relative directory.
-// Used to wire the temp module's go.mod replaces against the real
-// bamlutils + fixtures source trees.
-func absRepoPath(t *testing.T, rel string) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("could not resolve test file path via runtime.Caller")
-	}
-	// Walk up from adapters/common/codegen/<this file> to the repo
-	// root, then descend into the requested rel path.
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
-	return filepath.Join(repoRoot, rel)
-}
-
-// writeFile is a t.Helper wrapper that fails the test on write error
-// rather than ignoring it.
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-}
