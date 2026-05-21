@@ -81,13 +81,46 @@ func runLifecycleHarness(t *testing.T, opts Options, expectFail bool, label stri
 		if err == nil {
 			t.Fatalf("%s: inner go test passed but a regression seed should have made it FAIL — the bug class either no longer reproduces or the seed has drifted\n--- inner output ---\n%s", label, stdout)
 		}
-		// Diagnostic only — surfaced under `go test -v` so seed
-		// drift is visible without having to break the harness.
+		if !recognizedLifecycleRegression(label, stdout) {
+			t.Fatalf("%s: inner test failed but stdout does not match this seed's expected regression signature — the failure may be a harness wiring break or unrelated compile error, not the targeted bug class\n--- inner output ---\n%s\n--- error ---\n%v", label, stdout, err)
+		}
 		t.Logf("%s caught expected failures in inner output:\n%s", label, summarizeInnerFails(stdout))
 		return
 	}
 	if err != nil {
 		t.Fatalf("%s: inner go test failed unexpectedly\n--- inner output ---\n%s\n--- error ---\n%v", label, stdout, err)
+	}
+}
+
+// recognizedLifecycleRegression reports whether `stdout` from the
+// inner subprocess contains the failure signature unique to the
+// named seed. Pinning each seed to its own signature prevents a
+// harness-wiring break or unrelated compile error from masquerading
+// as a successful regression catch.
+func recognizedLifecycleRegression(seedName, stdout string) bool {
+	switch seedName {
+	case "Seed_OmitPhaseBRelease":
+		// Inner test asserts via poolaudit.Imbalanced() and logs
+		// "pool imbalance:" on Phase-B error paths whose Phase-A
+		// pool checkout never gets released.
+		return strings.Contains(stdout, "pool imbalance:")
+	case "Seed_OmitOwnedNestedThread":
+		// Rendered matrix no longer threads &__ownedNested_<name>,
+		// so the dispatch call site is short an argument and `go
+		// test` fails at the build step.
+		return strings.Contains(stdout, "not enough arguments in call to convert") &&
+			strings.Contains(stdout, "[build failed]")
+	case "Seed_OmitZeroLoop":
+		// putXSlice skips zeroing, so CheckZeroPrePut records a
+		// violation and the inner test reports it.
+		return strings.Contains(stdout, "zero-on-Put violations:")
+	case "Seed_OmitAsyncDefer":
+		// Production async sites move the release defer to the
+		// outer function body; the barrier test catches the
+		// pre-consume release.
+		return strings.Contains(stdout, "release fired before async barrier signal")
+	default:
+		return false
 	}
 }
 
@@ -801,6 +834,12 @@ func TestPoolLifecycle_Async(t *testing.T) {
 			}
 			if violations := poolaudit.ZeroOnPutViolations(); len(violations) > 0 {
 				t.Errorf("cell %q: zero-on-Put violations: %v", cell.Name, violations)
+			}
+			if cell.ExpectNoPoolForType != "" {
+				snap := poolaudit.Snapshot()
+				if _, has := snap.Checkouts[cell.ExpectNoPoolForType]; has {
+					t.Errorf("cell %q: expected no pool activity for type %q, got %v", cell.Name, cell.ExpectNoPoolForType, snap.Checkouts)
+				}
 			}
 		})
 	}
