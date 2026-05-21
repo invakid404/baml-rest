@@ -141,4 +141,3 @@ func BenchmarkNDJSONEncode(b *testing.B) {
 		})
 	}
 }
-
