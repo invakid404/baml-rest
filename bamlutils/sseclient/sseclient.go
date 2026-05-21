@@ -12,7 +12,45 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 )
+
+const (
+	sseScannerInitialBufferSize = 64 * 1024
+	sseScannerMaxTokenSize      = 1024 * 1024
+)
+
+// sseScannerBufferPool retains the 64 KiB initial buffer that backs each
+// bufio.Scanner created by scan. Tokens above 64 KiB cause the scanner to
+// allocate a larger internal buffer that is not written back into the
+// caller's slice pointer, so the pool stays bounded at the initial size.
+var sseScannerBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 0, sseScannerInitialBufferSize)
+		return &buf
+	},
+}
+
+func getSSEScannerBuffer() *[]byte {
+	bufp := sseScannerBufferPool.Get().(*[]byte)
+	*bufp = (*bufp)[:0]
+	if cap(*bufp) < sseScannerInitialBufferSize {
+		buf := make([]byte, 0, sseScannerInitialBufferSize)
+		bufp = &buf
+	}
+	return bufp
+}
+
+func putSSEScannerBuffer(bufp *[]byte) {
+	if bufp == nil {
+		return
+	}
+	if cap(*bufp) != sseScannerInitialBufferSize {
+		return
+	}
+	*bufp = (*bufp)[:0]
+	sseScannerBufferPool.Put(bufp)
+}
 
 // Event represents a single SSE event parsed from the stream.
 type Event struct {
@@ -61,10 +99,17 @@ func Stream(ctx context.Context, r io.Reader) (<-chan Event, <-chan error) {
 // scan is the internal SSE parser loop. It reads lines from r and assembles
 // them into Event values sent on the out channel.
 func scan(ctx context.Context, r io.Reader, out chan<- Event) error {
+	bufp := getSSEScannerBuffer()
+	defer putSSEScannerBuffer(bufp)
+
 	scanner := bufio.NewScanner(r)
 	// LLM SSE events are typically small JSON objects, but set a generous
 	// max line size to handle edge cases (e.g., base64-encoded images).
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// The initial buffer is pooled. Parsing uses scanner.Text() (owned
+	// string) so event fields never alias the pooled buffer; if anything
+	// here ever switches to scanner.Bytes(), it must copy before sending
+	// events or before putSSEScannerBuffer runs.
+	scanner.Buffer((*bufp)[:0], sseScannerMaxTokenSize)
 
 	var (
 		eventType string

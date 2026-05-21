@@ -15,7 +15,14 @@ import (
 	"github.com/invakid404/baml-rest/internal/unsafeutil"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/workerplugin"
+	"github.com/valyala/bytebufferpool"
 )
+
+// streamFrameBufferPool pools per-frame scratch buffers shared by SSE and
+// NDJSON publishers. Each event acquires a buffer for the duration of
+// writeEvent/writeComment and returns it after the synchronous Write +
+// Flush completes; frame bytes never escape to other goroutines.
+var streamFrameBufferPool bytebufferpool.Pool
 
 // ContentTypeNDJSON is the MIME type for NDJSON streams.
 const ContentTypeNDJSON = "application/x-ndjson"
@@ -61,12 +68,17 @@ type NDJSONStreamWriterPublisher struct {
 	mu sync.Mutex
 }
 
-func encodeNDJSONEvent(event *NDJSONEvent) ([]byte, error) {
+// encodeNDJSONEvent serializes event as a single NDJSON frame (JSON +
+// trailing newline) into dst. The caller owns dst; bytes must not escape
+// outside the synchronous Write/Flush that follows.
+func encodeNDJSONEvent(dst *bytebufferpool.ByteBuffer, event *NDJSONEvent) error {
 	data, err := sonic.Marshal(event)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return append(data, '\n'), nil
+	_, _ = dst.Write(data)
+	_ = dst.WriteByte('\n')
+	return nil
 }
 
 func (p *NDJSONStreamWriterPublisher) writeFrame(frame []byte) error {
@@ -87,13 +99,15 @@ func (p *NDJSONStreamWriterPublisher) writeFrame(frame []byte) error {
 }
 
 func (p *NDJSONStreamWriterPublisher) writeEvent(event *NDJSONEvent) error {
-	frame, err := encodeNDJSONEvent(event)
-	if err != nil {
+	buf := streamFrameBufferPool.Get()
+	defer streamFrameBufferPool.Put(buf)
+	buf.Reset()
+	if err := encodeNDJSONEvent(buf, event); err != nil {
 		p.cancel()
 		return err
 	}
 
-	return p.writeFrame(frame)
+	return p.writeFrame(buf.B)
 }
 
 func (p *NDJSONStreamWriterPublisher) writeKeepalive() error {
@@ -290,36 +304,56 @@ type SSEStreamWriterPublisher struct {
 	mu sync.Mutex
 }
 
-func formatSSEEvent(eventType string, payload string) string {
-	var frame strings.Builder
-
+// appendSSEEventFrame writes an SSE event frame (event: line + repeated
+// data: lines + terminating blank line) into dst. Payload lines are
+// iterated manually to avoid strings.Split's intermediate slice; trailing
+// newlines in payload preserve the existing "empty final data line"
+// behavior pinned by the publisher tests.
+func appendSSEEventFrame(dst *bytebufferpool.ByteBuffer, eventType, payload string) {
 	if eventType != "" {
-		frame.WriteString("event: ")
-		frame.WriteString(eventType)
-		frame.WriteByte('\n')
+		_, _ = dst.WriteString("event: ")
+		_, _ = dst.WriteString(eventType)
+		_ = dst.WriteByte('\n')
 	}
 
 	if payload != "" {
-		for _, line := range strings.Split(payload, "\n") {
-			frame.WriteString("data: ")
-			frame.WriteString(line)
-			frame.WriteByte('\n')
+		rest := payload
+		for {
+			idx := strings.IndexByte(rest, '\n')
+			if idx < 0 {
+				_, _ = dst.WriteString("data: ")
+				_, _ = dst.WriteString(rest)
+				_ = dst.WriteByte('\n')
+				break
+			}
+			_, _ = dst.WriteString("data: ")
+			_, _ = dst.WriteString(rest[:idx])
+			_ = dst.WriteByte('\n')
+			rest = rest[idx+1:]
+			if rest == "" {
+				// payload ended with '\n' — mirror strings.Split's empty
+				// trailing segment so we emit the final blank data line.
+				_, _ = dst.WriteString("data: \n")
+				break
+			}
 		}
 	}
 
-	frame.WriteByte('\n')
-	return frame.String()
+	_ = dst.WriteByte('\n')
 }
 
-func formatSSEComment(comment string) string {
-	return ": " + comment + "\n\n"
+// appendSSECommentFrame writes an SSE comment frame into dst.
+func appendSSECommentFrame(dst *bytebufferpool.ByteBuffer, comment string) {
+	_, _ = dst.WriteString(": ")
+	_, _ = dst.WriteString(comment)
+	_, _ = dst.WriteString("\n\n")
 }
 
-func (p *SSEStreamWriterPublisher) writeFrame(frame string) error {
+func (p *SSEStreamWriterPublisher) writeFrame(frame []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if _, err := p.w.WriteString(frame); err != nil {
+	if _, err := p.w.Write(frame); err != nil {
 		p.cancel()
 		return err
 	}
@@ -333,11 +367,19 @@ func (p *SSEStreamWriterPublisher) writeFrame(frame string) error {
 }
 
 func (p *SSEStreamWriterPublisher) writeEvent(eventType string, payload string) error {
-	return p.writeFrame(formatSSEEvent(eventType, payload))
+	buf := streamFrameBufferPool.Get()
+	defer streamFrameBufferPool.Put(buf)
+	buf.Reset()
+	appendSSEEventFrame(buf, eventType, payload)
+	return p.writeFrame(buf.B)
 }
 
 func (p *SSEStreamWriterPublisher) writeComment(comment string) error {
-	return p.writeFrame(formatSSEComment(comment))
+	buf := streamFrameBufferPool.Get()
+	defer streamFrameBufferPool.Put(buf)
+	buf.Reset()
+	appendSSECommentFrame(buf, comment)
+	return p.writeFrame(buf.B)
 }
 
 func (p *SSEStreamWriterPublisher) startKeepalive(ctx context.Context, interval time.Duration) {

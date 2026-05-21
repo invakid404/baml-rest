@@ -207,6 +207,11 @@ type generator struct {
 	supportsWithClient   bool
 	mirrors              *mirrorStructTracker
 	emittedUnwrapHelpers map[string]bool
+	// slicePools dedupes pooled-slice helper emission across all method
+	// preambles + nested struct conversions. Lifetime is per-file: every
+	// pooled inner type encountered during emission lazily lands one
+	// sync.Pool + get/put helper trio via tracker.ensure.
+	slicePools *slicePoolTracker
 }
 
 func newGenerator(opts Options) *generator {
@@ -222,6 +227,7 @@ func newGenerator(opts Options) *generator {
 		supportsWithClient:   resolved.SupportsWithClient,
 		mirrors:              newMirrorStructTracker(),
 		emittedUnwrapHelpers: make(map[string]bool),
+		slicePools:           newSlicePoolTracker(resolved.Packages),
 	}
 }
 

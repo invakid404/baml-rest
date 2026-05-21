@@ -116,10 +116,167 @@ func structContainsMediaVisited(typ reflect.Type, visited map[reflect.Type]bool,
 // Maps the original BAML type name to the generated mirror struct name.
 type mirrorStructTracker struct {
 	generated map[reflect.Type]string // baml type -> mirror struct name
+	// convertNeedsOwnedNested records which mirror converters take
+	// the third `ownedNested *[]func()` parameter — either because the
+	// converter directly pools a `*[]Struct` field, or because it
+	// transitively calls another converter that takes the parameter.
+	//
+	// The `*[]func()` (closure-context) shape lets a single propagated
+	// slice carry release closures for every pooled nested type at any
+	// depth — distinct nested element types append distinct closures,
+	// the outer dispatch drains them uniformly. The earlier `*[]*[]T`
+	// shape forced a single inner element type per converter and could
+	// not propagate through nested converter calls without per-type
+	// parameter explosion.
+	convertNeedsOwnedNested map[reflect.Type]bool
 }
 
 func newMirrorStructTracker() *mirrorStructTracker {
-	return &mirrorStructTracker{generated: make(map[reflect.Type]string)}
+	return &mirrorStructTracker{
+		generated:               make(map[reflect.Type]string),
+		convertNeedsOwnedNested: make(map[reflect.Type]bool),
+	}
+}
+
+// convertNeedsOwnedNestedFor reports whether convert<Mirror> for
+// `outer` takes the `ownedNested *[]func()` parameter. Call sites
+// (dispatch top-level + nested helpers) consult this to thread the
+// matching slice through.
+func (m *mirrorStructTracker) convertNeedsOwnedNestedFor(outer reflect.Type) bool {
+	if m == nil {
+		return false
+	}
+	return m.convertNeedsOwnedNested[outer]
+}
+
+// precomputeOwnedNestedNeeds walks the struct-media type graph
+// reachable from `roots` and populates `convertNeedsOwnedNested`
+// for every reachable type via fixpoint iteration. Must run before
+// any `generateConversionFunc` call so nested converter call sites
+// query the final transitive value instead of a partial answer
+// frozen mid-emission.
+//
+// Why a separate pass: `ensureMirrorStruct` marks each type as
+// "generated" before recursing into its fields. For cycles like
+// `A.B *B; B.A *A`, B's body emission completes BEFORE A finishes
+// its own analysis — so B's nestedStructConversion call site for
+// the A field used to snapshot the pre-fixpoint
+// (`convertNeedsOwnedNested[A] == false`) answer, while A's
+// converter signature later gained the third parameter once its
+// own pre-walk set the flag. The rendered Go is then internally
+// inconsistent: B's call site is 2-arg, A's signature is 3-arg →
+// compile error.
+//
+// The precompute resolves this by computing the transitive closure
+// up front. The fixpoint converges because the lattice is finite
+// (one bit per type, monotonically rising true), so each round
+// either flips at least one bit or terminates.
+func (m *mirrorStructTracker) precomputeOwnedNestedNeeds(roots []reflect.Type, pkgs PackageConfig) {
+	if m == nil {
+		return
+	}
+
+	// Walk every struct-media type reachable from the roots so the
+	// fixpoint loop iterates the full graph and not just the
+	// subset emitted so far. Cycle detection is via `visited`; the
+	// recursion descends into ptr/slice element types because
+	// those are the wrapping shapes struct-media fields take.
+	visited := map[reflect.Type]bool{}
+	var types []reflect.Type
+	var walk func(t reflect.Type)
+	walk = func(t reflect.Type) {
+		for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice {
+			t = t.Elem()
+		}
+		if t.Kind() != reflect.Struct {
+			return
+		}
+		if !structContainsMedia(t, pkgs) {
+			return
+		}
+		if visited[t] {
+			return
+		}
+		visited[t] = true
+		types = append(types, t)
+		for field := range t.Fields() {
+			if !field.IsExported() {
+				continue
+			}
+			if _, isMedia := isMediaReflectType(field.Type, pkgs); isMedia {
+				continue
+			}
+			walk(field.Type)
+		}
+	}
+	for _, root := range roots {
+		walk(root)
+	}
+
+	// Seed: any reachable type that DIRECTLY pools (has a
+	// `*[]Struct` value-element field whose inner struct contains
+	// media) needs `ownedNested` outright. This mirrors
+	// nestedStructConversion's `*[]Struct` value-element branch
+	// gating.
+	for _, t := range types {
+		if m.convertNeedsOwnedNested[t] {
+			continue
+		}
+		for field := range t.Fields() {
+			if !field.IsExported() {
+				continue
+			}
+			ft := field.Type
+			if _, isMedia := isMediaReflectType(ft, pkgs); isMedia {
+				continue
+			}
+			if ft.Kind() != reflect.Ptr || ft.Elem().Kind() != reflect.Slice || ft.Elem().Elem().Kind() == reflect.Ptr {
+				continue
+			}
+			inner := ft.Elem().Elem()
+			if inner.Kind() != reflect.Struct || !structContainsMedia(ft, pkgs) {
+				continue
+			}
+			m.convertNeedsOwnedNested[t] = true
+			break
+		}
+	}
+
+	// Fixpoint: propagate from callees to callers. If T calls
+	// convert<N> and N needs ownedNested, T must accept and
+	// thread the same parameter through.
+	for {
+		changed := false
+		for _, t := range types {
+			if m.convertNeedsOwnedNested[t] {
+				continue
+			}
+			for field := range t.Fields() {
+				if !field.IsExported() {
+					continue
+				}
+				ft := field.Type
+				if _, isMedia := isMediaReflectType(ft, pkgs); isMedia {
+					continue
+				}
+				inner := ft
+				for inner.Kind() == reflect.Ptr || inner.Kind() == reflect.Slice {
+					inner = inner.Elem()
+				}
+				if inner.Kind() != reflect.Struct || !structContainsMedia(ft, pkgs) {
+					continue
+				}
+				if m.convertNeedsOwnedNested[inner] {
+					m.convertNeedsOwnedNested[t] = true
+					changed = true
+					break
+				}
+			}
+		}
+		if !changed {
+			return
+		}
+	}
 }
 
 // mirrorInputName returns the name for a mirror input struct.
@@ -129,7 +286,11 @@ func mirrorInputName(typ reflect.Type) string {
 
 // ensureMirrorStruct generates a mirror struct and conversion function for a BAML struct
 // that contains media fields. Returns the mirror struct name. Skips generation if already done.
-func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type, pkgs PackageConfig) string {
+//
+// `pools` (optional) wires slice-pool helpers into nested `*[]Struct`
+// conversions and the convert function signature. Pass nil for adapters
+// that should not opt into pooling.
+func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type, pkgs PackageConfig, pools *slicePoolTracker) string {
 	// Unwrap pointer/slice to get to the struct
 	inner := typ
 	for inner.Kind() == reflect.Ptr || inner.Kind() == reflect.Slice {
@@ -153,7 +314,7 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 			fieldInner = fieldInner.Elem()
 		}
 		if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type, pkgs) {
-			m.ensureMirrorStruct(out, field.Type, pkgs)
+			m.ensureMirrorStruct(out, field.Type, pkgs, pools)
 		}
 	}
 
@@ -193,16 +354,55 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 	out.Type().Id(mirrorName).Struct(fields...)
 
 	// Generate the conversion function: convert<MirrorName>(adapter, input) -> (bamlType, error)
-	m.generateConversionFunc(out, inner, mirrorName, pkgs)
+	m.generateConversionFunc(out, inner, mirrorName, pkgs, pools)
 
 	return mirrorName
 }
 
 // generateConversionFunc generates a function that converts a mirror input struct
 // to the real BAML struct, handling media field conversion.
-func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType reflect.Type, mirrorName string, pkgs PackageConfig) {
+//
+// pools is the per-file slice pool tracker. When non-nil, `*[]Struct`
+// value-element fields route through the pool helpers and the emitted
+// function gains an extra `ownedNested *[]func()` parameter — a slice
+// of release closures the dispatch caller drains after BAML consumes
+// the converted value. The closure-context shape (versus the earlier
+// `*[]*[]T` typed-pointer shape) lets a single propagated parameter
+// carry release closures for arbitrarily many distinct pooled nested
+// types at any depth: each pooled-nested branch captures its own
+// `put<X>Slice` call in a closure and appends it; the outer release
+// loop invokes them uniformly.
+//
+// A converter takes the `ownedNested` parameter when EITHER:
+//
+//  1. It directly pools at least one `*[]Struct` field with value
+//     elements (registering a release closure during conversion).
+//  2. It transitively calls another converter that takes the parameter
+//     (in which case it must thread its own `ownedNested` through so
+//     the inner converter's appended closures bubble up to the outer
+//     dispatch's drain).
+//
+// Because ensureMirrorStruct generates nested converters before the
+// outer (depth-first), `convertNeedsOwnedNestedFor` returns the correct
+// answer for any nested call site by the time the outer converter is
+// emitted.
+func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType reflect.Type, mirrorName string, pkgs PackageConfig, pools *slicePoolTracker) {
 	funcName := "convert" + mirrorName
 	bamlTypeExpr := parseReflectType(bamlType).statement
+
+	// `needsOwnedNested` is the precomputed transitive answer from
+	// `precomputeOwnedNestedNeeds`. Earlier revisions of this code
+	// re-derived the flag inline mid-emission, which races with
+	// recursive `ensureMirrorStruct` callers: for cycles like
+	// `A.B *B; B.A *A` where A directly pools, B's emission
+	// would complete before A set its own flag, so B's call site
+	// for A was 2-arg while A's signature ended up 3-arg → compile
+	// error. The precompute pass guarantees every reachable type's
+	// flag is final before any body emission runs.
+	//
+	// When `pools` is nil the legacy non-pooling path applies and
+	// neither signatures nor call sites thread ownedNested.
+	needsOwnedNested := pools != nil && m.convertNeedsOwnedNested[bamlType]
 
 	var bodyCode []jen.Code
 	bodyCode = append(bodyCode, jen.Var().Id("result").Add(bamlTypeExpr.Clone()))
@@ -223,7 +423,7 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 				fieldInner = fieldInner.Elem()
 			}
 			if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type, pkgs) {
-				bodyCode = append(bodyCode, nestedStructConversion(fieldName, srcExpr, field.Type, m)...)
+				bodyCode = append(bodyCode, nestedStructConversion(fieldName, srcExpr, field.Type, m, pools, out)...)
 			} else {
 				// Direct copy
 				bodyCode = append(bodyCode, jen.Id("result").Dot(fieldName).Op("=").Add(srcExpr.Clone()))
@@ -233,11 +433,16 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 
 	bodyCode = append(bodyCode, jen.Return(jen.Id("result"), jen.Nil()))
 
+	params := []jen.Code{
+		jen.Id("adapter").Qual(pkgs.InterfacesPkg, "Adapter"),
+		jen.Id("input").Op("*").Id(mirrorName),
+	}
+	if needsOwnedNested {
+		params = append(params, jen.Id("ownedNested").Op("*").Index().Func().Params())
+	}
+
 	out.Func().Id(funcName).
-		Params(
-			jen.Id("adapter").Qual(pkgs.InterfacesPkg, "Adapter"),
-			jen.Id("input").Op("*").Id(mirrorName),
-		).
+		Params(params...).
 		Params(bamlTypeExpr.Clone(), jen.Error()).
 		Block(bodyCode...)
 }
@@ -433,7 +638,20 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 
 // nestedStructConversion generates code to convert a nested mirror struct field
 // to the real BAML struct via its conversion function. Handles ptr/slice wrapping.
-func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType reflect.Type, tracker *mirrorStructTracker) []jen.Code {
+//
+// pools (optional) wires the `*[]Struct` value-element branch through
+// a shared slice pool — the parts slice is checked out via the
+// generated getter, a release closure that `put`s the slice back is
+// appended to the enclosing convert function's `ownedNested
+// *[]func()` parameter, and the dispatch site invokes the closures
+// after BAML consumes the converted value. Passing nil keeps the
+// legacy `make([]T, n)` shape.
+//
+// Every converter call inside the body threads `ownedNested` through
+// when the called converter takes it. This lets a single propagated
+// `*[]func()` slice carry release closures across arbitrarily nested
+// converters and arbitrarily many distinct pooled element types.
+func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType reflect.Type, tracker *mirrorStructTracker, pools *slicePoolTracker, out *jen.File) []jen.Code {
 	isPtr := fieldType.Kind() == reflect.Ptr
 	isSlice := fieldType.Kind() == reflect.Slice
 
@@ -442,6 +660,18 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 		innerType = innerType.Elem()
 	}
 	convertFunc := "convert" + mirrorInputName(innerType)
+	innerNeedsOwnedNested := pools != nil && tracker.convertNeedsOwnedNestedFor(innerType)
+
+	// buildConvertCall threads `ownedNested` into the convert<Inner>
+	// call when the inner converter takes it. Sits at the head of the
+	// var-args list so every branch builds the call the same way.
+	buildConvertCall := func(vArg jen.Code) *jen.Statement {
+		callArgs := []jen.Code{jen.Id("adapter"), vArg}
+		if innerNeedsOwnedNested {
+			callArgs = append(callArgs, jen.Id("ownedNested"))
+		}
+		return jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(callArgs...)
+	}
 
 	if isSlice {
 		elemType := fieldType.Elem()
@@ -457,10 +687,7 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 		}
 
 		conversionBlock := []jen.Code{
-			jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
-				jen.Id("adapter"),
-				vArg,
-			),
+			buildConvertCall(vArg),
 			jen.If(jen.Id("__err").Op("!=").Nil()).Block(
 				jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
 					jen.Lit(fieldName+"[%d]: %w"),
@@ -510,10 +737,7 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 			}
 
 			innerConvBlock := []jen.Code{
-				jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
-					jen.Id("adapter"),
-					vArg,
-				),
+				buildConvertCall(vArg),
 				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
 					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
 						jen.Lit(fieldName+"[%d]: %w"),
@@ -539,6 +763,42 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 				innerLoopBody = innerConvBlock
 			}
 
+			// Only pool when the inner slice element is a value type.
+			// Pointer-element slices (`*[]*T`) fall through to the
+			// legacy `make` path because pooling them would have to
+			// nil-clear per element and the dispatch site never
+			// promised a pool for that shape. The closure-context
+			// `ownedNested` parameter accepts arbitrary release
+			// closures, so distinct pooled inner types coexist; only
+			// the element-shape mismatch still gates the pool branch.
+			if pools != nil && out != nil && !elemIsPtr {
+				poolNames := pools.ensure(out, elemType, 256)
+				return []jen.Code{
+					jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
+						jen.Id("__partsPtr").Op(":=").Id(poolNames.getFunc).Call(
+							jen.Len(jen.Op("*").Add(srcExpr.Clone())),
+						),
+						// Append a release closure capturing this
+						// branch's specific pool helper + pointer.
+						// Distinct nested types append distinct
+						// closures; the outer dispatch drains them
+						// uniformly without knowing the inner types.
+						jen.Op("*").Id("ownedNested").Op("=").Append(
+							jen.Op("*").Id("ownedNested"),
+							jen.Func().Params().Block(
+								jen.Id(poolNames.putFunc).Call(jen.Id("__partsPtr")),
+							),
+						),
+						jen.Op("*").Id("__partsPtr").Op("=").Parens(jen.Op("*").Id("__partsPtr")).Index(
+							jen.Empty(),
+							jen.Len(jen.Op("*").Add(srcExpr.Clone())),
+						),
+						jen.Id("__ptrSlice").Op(":=").Op("*").Id("__partsPtr"),
+						jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Op("*").Add(srcExpr.Clone())).Block(innerLoopBody...),
+						jen.Id("result").Dot(fieldName).Op("=").Op("&").Id("__ptrSlice"),
+					),
+				}
+			}
 			return []jen.Code{
 				jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
 					jen.Id("__ptrSlice").Op(":=").Make(
@@ -554,10 +814,7 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 		// *Struct (optional single nested struct with media)
 		return []jen.Code{
 			jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
-				jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
-					jen.Id("adapter"),
-					srcExpr.Clone(),
-				),
+				buildConvertCall(srcExpr.Clone()),
 				jen.If(jen.Id("__err").Op("!=").Nil()).Block(
 					jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
 						jen.Lit(fieldName+": %w"),
@@ -572,10 +829,7 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 	// Direct
 	return []jen.Code{
 		jen.Block(
-			jen.List(jen.Id("__converted"), jen.Id("__err")).Op(":=").Id(convertFunc).Call(
-				jen.Id("adapter"),
-				jen.Op("&").Add(srcExpr.Clone()),
-			),
+			buildConvertCall(jen.Op("&").Add(srcExpr.Clone())),
 			jen.If(jen.Id("__err").Op("!=").Nil()).Block(
 				jen.Return(jen.Id("result"), jen.Qual("fmt", "Errorf").Call(
 					jen.Lit(fieldName+": %w"),

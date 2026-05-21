@@ -606,9 +606,15 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("__httpClient").Op("=").Id("__c"),
 		),
 
-		jen.Go().Func().Params().Block(
-			jen.Defer().Close(jen.Id("out")),
-			jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
+		jen.Go().Func().Params().BlockFunc(func(grp *jen.Group) {
+			grp.Defer().Close(jen.Id("out"))
+			if me.hasReleaseConverted {
+				// Retry closures captured by RunStreamOrchestration
+				// outlive the outer function, so the converted slice
+				// release belongs inside the orchestration goroutine.
+				grp.Defer().Id("__releaseConverted").Call()
+			}
+			grp.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 				jen.Func().Params(jen.Id("err").Error()).Block(
 					jen.Id("__errR").Op(":=").Id("newResultFn").Call(
 						jen.Qual(g.pkgs.InterfacesPkg, "StreamResultKindError"),
@@ -633,8 +639,8 @@ func (me *methodEmitter) emitBuildRequest() {
 						jen.Id("newResultFn"),
 					)),
 				),
-			),
-		).Call(),
+			)
+		}).Call(),
 		jen.Return(jen.Nil()),
 	)
 
@@ -878,9 +884,15 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		),
 
 		// Run in goroutine with panic recovery
-		jen.Go().Func().Params().Block(
-			jen.Defer().Close(jen.Id("out")),
-			jen.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
+		jen.Go().Func().Params().BlockFunc(func(grp *jen.Group) {
+			grp.Defer().Close(jen.Id("out"))
+			if me.hasReleaseConverted {
+				// Retry closures captured by RunCallOrchestration
+				// outlive the outer function, so the converted slice
+				// release belongs inside the orchestration goroutine.
+				grp.Defer().Id("__releaseConverted").Call()
+			}
+			grp.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
 				jen.Func().Params(jen.Id("err").Error()).Block(
 					jen.Id("__errR").Op(":=").Id("newResultFn").Call(
 						jen.Qual(g.pkgs.InterfacesPkg, "StreamResultKindError"),
@@ -905,8 +917,8 @@ func (me *methodEmitter) emitBuildCallRequest() {
 						jen.Id("newResultFn"),
 					)),
 				),
-			),
-		).Call(),
+			)
+		}).Call(),
 		jen.Return(jen.Nil()),
 	)
 

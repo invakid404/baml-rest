@@ -80,12 +80,44 @@ type Baml_Rest_MessageMediaInput struct {
 	Metadata *types.Baml_Rest_MessageMetadata   `json:"metadata"`
 }
 
-func convertBaml_Rest_MessageMediaInput(adapter bamlutils.Adapter, input *Baml_Rest_MessageMediaInput) (types.Baml_Rest_Message, error) {
+var baml_Rest_ContentPartSlicePool sync.Pool
+
+func getbaml_Rest_ContentPartSlice(n int) *[]types.Baml_Rest_ContentPart {
+	if v := baml_Rest_ContentPartSlicePool.Get(); v != nil {
+		sp := v.(*[]types.Baml_Rest_ContentPart)
+		if cap(*sp) >= n {
+			*sp = (*sp)[:0]
+			return sp
+		}
+	}
+	s := make([]types.Baml_Rest_ContentPart, 0, n)
+	return &s
+}
+func putbaml_Rest_ContentPartSlice(sp *[]types.Baml_Rest_ContentPart) {
+	if sp == nil {
+		return
+	}
+	if cap(*sp) > 256 {
+		return
+	}
+	used := (*sp)[0:len(*sp):cap(*sp)]
+	for i := range used {
+		used[i] = types.Baml_Rest_ContentPart{}
+	}
+	*sp = (*sp)[:0]
+	baml_Rest_ContentPartSlicePool.Put(sp)
+}
+func convertBaml_Rest_MessageMediaInput(adapter bamlutils.Adapter, input *Baml_Rest_MessageMediaInput, ownedNested *[]func()) (types.Baml_Rest_Message, error) {
 	var result types.Baml_Rest_Message
 	result.Role = input.Role
 	result.Content = input.Content
 	if input.Parts != nil {
-		__ptrSlice := make([]types.Baml_Rest_ContentPart, len(*input.Parts))
+		__partsPtr := getbaml_Rest_ContentPartSlice(len(*input.Parts))
+		*ownedNested = append(*ownedNested, func() {
+			putbaml_Rest_ContentPartSlice(__partsPtr)
+		})
+		*__partsPtr = (*__partsPtr)[:len(*input.Parts)]
+		__ptrSlice := *__partsPtr
 		for __i, __v := range *input.Parts {
 			__converted, __err := convertBaml_Rest_ContentPartMediaInput(adapter, &__v)
 			if __err != nil {
@@ -194,6 +226,34 @@ func newBamlRestDynamicOutputMetadata(md *bamlutils.Metadata) *BamlRestDynamicOu
 	r.metadata = md
 	return r
 }
+
+var baml_Rest_MessageSlicePool sync.Pool
+
+func getbaml_Rest_MessageSlice(n int) *[]types.Baml_Rest_Message {
+	if v := baml_Rest_MessageSlicePool.Get(); v != nil {
+		sp := v.(*[]types.Baml_Rest_Message)
+		if cap(*sp) >= n {
+			*sp = (*sp)[:0]
+			return sp
+		}
+	}
+	s := make([]types.Baml_Rest_Message, 0, n)
+	return &s
+}
+func putbaml_Rest_MessageSlice(sp *[]types.Baml_Rest_Message) {
+	if sp == nil {
+		return
+	}
+	if cap(*sp) > 1024 {
+		return
+	}
+	used := (*sp)[0:len(*sp):cap(*sp)]
+	for i := range used {
+		used[i] = types.Baml_Rest_Message{}
+	}
+	*sp = (*sp)[:0]
+	baml_Rest_MessageSlicePool.Put(sp)
+}
 func bamlRestDynamicNoRaw(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipPartials bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
 	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
 	if err != nil {
@@ -203,10 +263,20 @@ func bamlRestDynamicNoRaw(adapter bamlutils.Adapter, rawInput any, out chan baml
 	if !ok {
 		return fmt.Errorf("invalid input type: expected *%s, got %T", "BamlRestDynamicInput", rawInput)
 	}
-	__struct_messages := make([]types.Baml_Rest_Message, len(input.Messages))
+	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
+	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
+	__struct_messages := *__messagesPtr_messages
+	var __ownedNested_messages []func()
+	__releaseConverted := func() {
+		for _, __release := range __ownedNested_messages {
+			__release()
+		}
+		putbaml_Rest_MessageSlice(__messagesPtr_messages)
+	}
 	for __i, __v := range input.Messages {
-		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v)
+		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested_messages)
 		if __err___struct_messages != nil {
+			__releaseConverted()
 			return fmt.Errorf("messages[%d]: %w", __i, __err___struct_messages)
 		}
 		__struct_messages[__i] = __converted
@@ -222,6 +292,7 @@ func bamlRestDynamicNoRaw(adapter bamlutils.Adapter, rawInput any, out chan baml
 	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
 		return newBamlRestDynamicOutputMetadata(md)
 	}, func(beforeFinal func(), onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) error {
+		defer __releaseConverted()
 		streamOpts := append(options, bamlclient.WithOnTick(onTick))
 		if clientOverride != "" {
 			streamOpts = append(slices.Clone(streamOpts), bamlclient.WithClient(clientOverride))
@@ -295,10 +366,20 @@ func bamlRestDynamicFull(adapter bamlutils.Adapter, rawInput any, out chan bamlu
 	if !ok {
 		return fmt.Errorf("invalid input type: expected *%s, got %T", "BamlRestDynamicInput", rawInput)
 	}
-	__struct_messages := make([]types.Baml_Rest_Message, len(input.Messages))
+	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
+	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
+	__struct_messages := *__messagesPtr_messages
+	var __ownedNested_messages []func()
+	__releaseConverted := func() {
+		for _, __release := range __ownedNested_messages {
+			__release()
+		}
+		putbaml_Rest_MessageSlice(__messagesPtr_messages)
+	}
 	for __i, __v := range input.Messages {
-		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v)
+		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested_messages)
 		if __err___struct_messages != nil {
+			__releaseConverted()
 			return fmt.Errorf("messages[%d]: %w", __i, __err___struct_messages)
 		}
 		__struct_messages[__i] = __converted
@@ -452,6 +533,7 @@ func bamlRestDynamicFull(adapter bamlutils.Adapter, rawInput any, out chan bamlu
 		}
 		return nil
 	}, func(opts []bamlclient.CallOptionFunc) (any, error) {
+		defer __releaseConverted()
 		driveOpts := opts
 		if clientOverride != "" {
 			driveOpts = append(slices.Clone(opts), bamlclient.WithClient(clientOverride))
@@ -498,10 +580,20 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 	if !ok {
 		return fmt.Errorf("invalid input type: expected *%s, got %T", "BamlRestDynamicInput", rawInput)
 	}
-	__struct_messages := make([]types.Baml_Rest_Message, len(input.Messages))
+	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
+	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
+	__struct_messages := *__messagesPtr_messages
+	var __ownedNested_messages []func()
+	__releaseConverted := func() {
+		for _, __release := range __ownedNested_messages {
+			__release()
+		}
+		putbaml_Rest_MessageSlice(__messagesPtr_messages)
+	}
 	for __i, __v := range input.Messages {
-		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v)
+		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested_messages)
 		if __err___struct_messages != nil {
+			__releaseConverted()
 			return fmt.Errorf("messages[%d]: %w", __i, __err___struct_messages)
 		}
 		__struct_messages[__i] = __converted
@@ -706,6 +798,7 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 	}
 	go func() {
 		defer close(out)
+		defer __releaseConverted()
 		gorecovery.GoHandler(func(err error) {
 			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
 			select {
@@ -728,10 +821,20 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 	if !ok {
 		return fmt.Errorf("invalid input type: expected *%s, got %T", "BamlRestDynamicInput", rawInput)
 	}
-	__struct_messages := make([]types.Baml_Rest_Message, len(input.Messages))
+	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
+	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
+	__struct_messages := *__messagesPtr_messages
+	var __ownedNested_messages []func()
+	__releaseConverted := func() {
+		for _, __release := range __ownedNested_messages {
+			__release()
+		}
+		putbaml_Rest_MessageSlice(__messagesPtr_messages)
+	}
 	for __i, __v := range input.Messages {
-		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v)
+		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested_messages)
 		if __err___struct_messages != nil {
+			__releaseConverted()
 			return fmt.Errorf("messages[%d]: %w", __i, __err___struct_messages)
 		}
 		__struct_messages[__i] = __converted
@@ -881,6 +984,7 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 	}
 	go func() {
 		defer close(out)
+		defer __releaseConverted()
 		gorecovery.GoHandler(func(err error) {
 			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
 			select {
