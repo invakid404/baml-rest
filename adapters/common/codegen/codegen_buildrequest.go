@@ -608,10 +608,12 @@ func (me *methodEmitter) emitBuildRequest() {
 
 		jen.Go().Func().Params().BlockFunc(func(grp *jen.Group) {
 			grp.Defer().Close(jen.Id("out"))
-			if me.hasReleaseConverted {
+			if me.hasReleaseConverted && !me.g.opts.Seed_OmitAsyncDefer {
 				// Retry closures captured by RunStreamOrchestration
 				// outlive the outer function, so the converted slice
 				// release belongs inside the orchestration goroutine.
+				// Seed_OmitAsyncDefer drops the defer so the pooled
+				// slice leaks for the duration of the orchestration.
 				grp.Defer().Id("__releaseConverted").Call()
 			}
 			grp.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(
@@ -886,10 +888,12 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		// Run in goroutine with panic recovery
 		jen.Go().Func().Params().BlockFunc(func(grp *jen.Group) {
 			grp.Defer().Close(jen.Id("out"))
-			if me.hasReleaseConverted {
+			if me.hasReleaseConverted && !me.g.opts.Seed_OmitAsyncDefer {
 				// Retry closures captured by RunCallOrchestration
 				// outlive the outer function, so the converted slice
 				// release belongs inside the orchestration goroutine.
+				// Seed_OmitAsyncDefer drops the defer so the pooled
+				// slice leaks for the duration of the orchestration.
 				grp.Defer().Id("__releaseConverted").Call()
 			}
 			grp.Qual("github.com/gregwebs/go-recovery", "GoHandler").Call(

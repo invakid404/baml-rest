@@ -154,7 +154,11 @@ func (me *methodEmitter) emitLegacyStream() {
 	// goroutine — so the pooled-slice release MUST live inside the
 	// body closure, not at the outer function level (where the defer
 	// would fire before the orchestrator even read the slice).
-	if me.hasReleaseConverted {
+	//
+	// Seed_OmitAsyncDefer drops the defer at this site, leaking the
+	// pooled slice. The seed is the test-only switch backing the
+	// async-defer regression in the pool-lifecycle harness.
+	if me.hasReleaseConverted && !me.g.opts.Seed_OmitAsyncDefer {
 		noRawGoroutineBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, noRawGoroutineBody...)
 	}
 
@@ -476,7 +480,7 @@ func (me *methodEmitter) emitLegacyStream() {
 	// Same legacy-view rationale as _noRaw.
 	var fullBody []jen.Code
 	fullBody = append(fullBody, me.makeLegacyPreamble()...)
-	if me.hasReleaseConverted {
+	if me.hasReleaseConverted && !me.g.opts.Seed_OmitAsyncDefer {
 		// runFullOrchestration spawns its own goroutines and returns
 		// immediately. driveStream is the only callback that touches
 		// __struct_messages, and it runs inside the orchestrator
@@ -484,6 +488,10 @@ func (me *methodEmitter) emitLegacyStream() {
 		// driveStream's body, not at the outer function level (where
 		// the defer would fire before the orchestrator even started
 		// the stream). Mirror of the _noRaw fix.
+		//
+		// Seed_OmitAsyncDefer drops the defer entirely so the pooled
+		// slice leaks — the async-defer regression seed's production
+		// reintroduction.
 		driveStreamBody = append([]jen.Code{jen.Defer().Id("__releaseConverted").Call()}, driveStreamBody...)
 	}
 

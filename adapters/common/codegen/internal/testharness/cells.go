@@ -86,9 +86,9 @@ func (m AdapterFailureMode) String() string {
 // its name, its nested shape, the failure mode being injected, and
 // whether the dispatch is expected to emit `__releaseConverted`.
 //
-// #340 will plug a property/QuickCheck generator into this interface;
-// the same emission backend in the codegen package consumes whatever
-// the enumerator yields, so the matrix dimensions can grow without
+// The same emission backend in the codegen package consumes whatever
+// implementation of CellEnumerator below yields, so the matrix
+// dimensions can grow (e.g. via a property-based generator) without
 // touching the harness wiring.
 type CellSpec struct {
 	Name                   string
@@ -98,9 +98,10 @@ type CellSpec struct {
 }
 
 // CellEnumerator yields the matrix cells under test. The compile
-// matrix today uses an enumerated implementation; #339's lifecycle
-// harness extends it with the failure-mode cross-product; #340 will
-// plug in a property/QuickCheck generator.
+// matrix uses an enumerated implementation; the lifecycle harness
+// extends that set with the failure-mode cross-product. Property-
+// based generators can plug into the same interface to grow the
+// matrix without altering the consumers.
 type CellEnumerator interface {
 	Cells() []CellSpec
 }

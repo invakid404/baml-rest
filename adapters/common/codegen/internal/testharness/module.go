@@ -1,9 +1,10 @@
 // Package testharness is the shared infrastructure backing the codegen
 // compile matrix and the pool-lifecycle harness. It owns the temp-
 // module synthesis, the go build / go test subprocess wrappers, and
-// the cell-enumeration interface that #340's property generator will
-// extend. The package lives under `internal/` so dynclient cannot
-// import it: lifecycle infrastructure is a test-only seam.
+// the cell-enumeration interface that downstream property-based
+// generators can extend. The package lives under `internal/` so
+// dynclient cannot import it: lifecycle infrastructure is a test-only
+// seam.
 package testharness
 
 import (
@@ -120,9 +121,8 @@ func AbsRepoPath(t *testing.T, rel string) string {
 }
 
 // WriteFile is a t.Helper wrapper that fails the test on write error
-// rather than ignoring it. Tests use it instead of bare os.WriteFile
-// so a permissions / disk error surfaces immediately with a labelled
-// line.
+// so a permissions / disk failure surfaces immediately with a labelled
+// line. Tests use it instead of bare os.WriteFile.
 func WriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

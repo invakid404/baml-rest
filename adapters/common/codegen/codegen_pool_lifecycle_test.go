@@ -93,18 +93,31 @@ func runLifecycleHarness(t *testing.T, opts Options, expectFail bool, label stri
 
 // summarizeInnerFails extracts the first few FAIL lines from inner
 // go test output so the regression-seed diagnostic stays compact.
-// Full output is omitted to keep -v noise manageable.
+// Full output is omitted to keep -v noise manageable. Recognises
+// both runtime FAIL lines (imbalance / zero-on-Put / barrier) and
+// build-step compiler errors (e.g. arg-count mismatches), since the
+// ownedNested-thread seed surfaces as a compile failure rather than
+// a runtime assertion.
 func summarizeInnerFails(stdout string) string {
 	const maxLines = 20
 	var fails []string
 	for _, line := range strings.Split(stdout, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--- FAIL:") || strings.Contains(trimmed, "imbalance") || strings.Contains(trimmed, "zero-on-Put") || strings.Contains(trimmed, "release fired before") {
-			fails = append(fails, trimmed)
-			if len(fails) >= maxLines {
-				fails = append(fails, "(truncated)")
-				break
-			}
+		switch {
+		case strings.HasPrefix(trimmed, "--- FAIL:"),
+			strings.Contains(trimmed, "imbalance"),
+			strings.Contains(trimmed, "zero-on-Put"),
+			strings.Contains(trimmed, "release fired before"),
+			strings.Contains(trimmed, "not enough arguments"),
+			strings.Contains(trimmed, "cannot use"),
+			strings.Contains(trimmed, "[build failed]"):
+		default:
+			continue
+		}
+		fails = append(fails, trimmed)
+		if len(fails) >= maxLines {
+			fails = append(fails, "(truncated)")
+			break
 		}
 	}
 	if len(fails) == 0 {

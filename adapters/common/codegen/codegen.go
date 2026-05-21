@@ -184,12 +184,12 @@ type Options struct {
 	EmitPoolAuditHooks bool
 
 	// Test-only regression seeds — DO NOT use in production codegen.
-	// Each seed reintroduces one bug class the #338 review surfaced.
-	// The pool-lifecycle harness flips them one at a time and
-	// asserts the inner `go test` fails. If a seed test starts
-	// passing on master, either the bug class is no longer
-	// reproducible at all (harness lost coverage) or this seed has
-	// drifted and needs updating to match a current emission path.
+	// Each seed reintroduces one bug class the slice-pool lifecycle
+	// harness is designed to catch. The harness flips them one at a
+	// time and asserts the inner `go test` fails. If a seed test
+	// starts passing on this branch, either the targeted bug class
+	// is no longer reproducible or this seed needs updating to match
+	// the current emission path.
 	//
 	// Production callers must never set these — leaving them false
 	// is the contract that keeps the audit-mode harness honest.

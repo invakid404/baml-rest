@@ -550,22 +550,15 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 			// closure operates on a disjoint pointer — but draining
 			// innermost-to-outermost mirrors the original allocation
 			// order and reads more naturally.)
-			//
-			// Seed_OmitOwnedNestedThread skips the per-param drain so
-			// inner pool releases never bubble up to the dispatch.
-			// The harness flips it to verify imbalance surfaces when
-			// the ownedNested wiring breaks.
-			if !me.g.opts.Seed_OmitOwnedNestedThread {
-				for _, p := range paramInfos {
-					if !p.needsOwnedNested {
-						continue
-					}
-					releaseBody = append(releaseBody,
-						jen.For(jen.List(jen.Id("_"), jen.Id("__release")).Op(":=").Range().Id(p.ownedNestedName)).Block(
-							jen.Id("__release").Call(),
-						),
-					)
+			for _, p := range paramInfos {
+				if !p.needsOwnedNested {
+					continue
 				}
+				releaseBody = append(releaseBody,
+					jen.For(jen.List(jen.Id("_"), jen.Id("__release")).Op(":=").Range().Id(p.ownedNestedName)).Block(
+						jen.Id("__release").Call(),
+					),
+				)
 			}
 			for _, p := range paramInfos {
 				if p.outerPool == nil {
@@ -634,9 +627,16 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 			// the call when the inner converter takes it. Shared by
 			// every branch so call sites and the converter signature
 			// stay in sync regardless of the param's outer wrapping.
+			//
+			// Seed_OmitOwnedNestedThread drops the threading at this
+			// call site — the converter signature still expects the
+			// param, so the rendered file fails to compile at the
+			// dispatch call. The harness observes a non-nil
+			// subprocess error from the build step, which is the
+			// "missing threading" bug class the seed name describes.
 			buildConvertArgs := func(vArg jen.Code) []jen.Code {
 				args := []jen.Code{jen.Id("adapter"), vArg}
-				if info.needsOwnedNested {
+				if info.needsOwnedNested && !me.g.opts.Seed_OmitOwnedNestedThread {
 					args = append(args, jen.Op("&").Id(info.ownedNestedName))
 				}
 				return args
