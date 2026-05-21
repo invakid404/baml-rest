@@ -185,9 +185,9 @@ func emitLifecycleMatrix(t *testing.T, opts Options) (string, []lifecycleCellMet
 		ptrElem   bool
 	}
 	nestedShapes := []nestedShape{
-		{tag: "a_value_elem", messageTy: reflect.TypeOf(fixtures.MessageA{}), classTy: reflect.TypeOf(fixtures.ClassA{}), otherTy: reflect.TypeOf(fixtures.OtherA{})},
-		{tag: "b_ptr_elem", messageTy: reflect.TypeOf(fixtures.MessageB{}), classTy: reflect.TypeOf(fixtures.ClassB{}), otherTy: reflect.TypeOf(fixtures.OtherB{}), ptrElem: true},
-		{tag: "c_two_pooled_types", messageTy: reflect.TypeOf(fixtures.MessageC{}), classTy: reflect.TypeOf(fixtures.ClassC{}), otherTy: reflect.TypeOf(fixtures.OtherC{})},
+		{tag: testharness.NestedValueElem.String(), messageTy: reflect.TypeOf(fixtures.MessageA{}), classTy: reflect.TypeOf(fixtures.ClassA{}), otherTy: reflect.TypeOf(fixtures.OtherA{})},
+		{tag: testharness.NestedPtrElem.String(), messageTy: reflect.TypeOf(fixtures.MessageB{}), classTy: reflect.TypeOf(fixtures.ClassB{}), otherTy: reflect.TypeOf(fixtures.OtherB{}), ptrElem: true},
+		{tag: testharness.NestedTwoPooledTypes.String(), messageTy: reflect.TypeOf(fixtures.MessageC{}), classTy: reflect.TypeOf(fixtures.ClassC{}), otherTy: reflect.TypeOf(fixtures.OtherC{})},
 	}
 
 	type topShape struct {
@@ -233,7 +233,12 @@ func emitLifecycleMatrix(t *testing.T, opts Options) (string, []lifecycleCellMet
 		}},
 	}
 
-	failModes := []string{"success", "fail_at_idx_0", "fail_at_idx_2", "fail_in_nested"}
+	failModes := []string{
+		testharness.FailureSuccess.String(),
+		testharness.FailureAtIdx0.String(),
+		testharness.FailureAtIdx2.String(),
+		testharness.FailureInNested.String(),
+	}
 
 	var cells []lifecycleCellMeta
 
@@ -327,13 +332,13 @@ func emitLifecycleSyncCell(
 	meta := lifecycleCellMeta{
 		Name:            cellName,
 		FailMode:        failMode,
-		ExpectError:     failMode != "success",
+		ExpectError:     failMode != testharness.FailureSuccess.String(),
 		Async:           false,
 		DispatchName:    dispatchName,
 		InputStructName: cellName + "Input",
 		NestedShapeTag:  nestedTag,
 	}
-	if nestedIsPtrElem && failMode == "success" {
+	if nestedIsPtrElem && failMode == testharness.FailureSuccess.String() {
 		meta.ExpectNoPoolForType = "ContentPartB"
 	}
 	return meta
@@ -382,11 +387,11 @@ func emitLifecycleCycleCell(
 	return lifecycleCellMeta{
 		Name:            cellName,
 		FailMode:        failMode,
-		ExpectError:     failMode != "success",
+		ExpectError:     failMode != testharness.FailureSuccess.String(),
 		Async:           false,
 		DispatchName:    dispatchName,
 		InputStructName: cellName + "Input",
-		NestedShapeTag:  "cycle",
+		NestedShapeTag:  testharness.NestedCycle.String(),
 	}
 }
 
@@ -477,7 +482,7 @@ func emitLifecycleAsyncCell(
 
 	meta := lifecycleCellMeta{
 		Name:            cellName,
-		FailMode:        "async_late_consume",
+		FailMode:        testharness.FailureAsyncLateConsume.String(),
 		ExpectError:     false,
 		Async:           true,
 		DispatchName:    dispatchName,

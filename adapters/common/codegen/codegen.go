@@ -67,6 +67,12 @@ type PackageConfig struct {
 	// QueuePkg is the import path of the go-concurrent-queue dependency
 	// used by the streaming helpers.
 	QueuePkg string
+	// PoolAuditPkg is the import path of the test-only poolaudit hooks
+	// package. Referenced only when slicePoolTracker.audit is true,
+	// which only the lifecycle harness flips. Sits on PackageConfig so
+	// a forked / vendored audit runtime can substitute its own path
+	// without touching the slicePoolTracker emission sites.
+	PoolAuditPkg string
 }
 
 // DefaultPackageConfig returns the PackageConfig that reproduces the
@@ -87,6 +93,7 @@ func DefaultPackageConfig() PackageConfig {
 		RetryPkg:           common.RetryPkg,
 		BamlPkg:            BamlPkg,
 		QueuePkg:           common.GoConcurrentQueuePkg,
+		PoolAuditPkg:       "github.com/invakid404/baml-rest/adapters/common/codegen/internal/poolaudit",
 	}
 }
 

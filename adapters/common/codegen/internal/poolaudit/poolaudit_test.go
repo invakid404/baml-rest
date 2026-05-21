@@ -109,22 +109,31 @@ func TestSnapshotIsCopy(t *testing.T) {
 	}
 }
 
-// TestRaceClean drives counters from many goroutines so go test -race
-// surfaces any missing synchronization.
+// TestRaceClean drives counters AND the violations slice from many
+// goroutines so go test -race surfaces any missing synchronization on
+// either path. Violations recording and reading share the same mutex
+// as the counter maps today; the extra goroutines guard against a
+// future refactor that splits the lock and lets the slice access
+// race.
 func TestRaceClean(t *testing.T) {
 	t.Cleanup(Reset)
 	Reset()
 	var wg sync.WaitGroup
 	const n = 50
-	wg.Add(n * 3)
+	wg.Add(n * 5)
 	for i := 0; i < n; i++ {
 		go func() { defer wg.Done(); OnCheckout("R") }()
 		go func() { defer wg.Done(); OnRelease("R") }()
 		go func() { defer wg.Done(); _ = Snapshot() }()
+		go func() { defer wg.Done(); CheckZeroPrePut("R", []elem{{N: 1}}) }()
+		go func() { defer wg.Done(); _ = ZeroOnPutViolations() }()
 	}
 	wg.Wait()
 	got := Snapshot()
 	if got.Checkouts["R"] != n || got.Releases["R"] != n {
 		t.Fatalf("counter loss under concurrency: %+v", got)
+	}
+	if v := ZeroOnPutViolations(); len(v) != n {
+		t.Fatalf("violation loss under concurrency: got %d, want %d", len(v), n)
 	}
 }

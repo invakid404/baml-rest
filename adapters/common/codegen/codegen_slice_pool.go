@@ -7,13 +7,6 @@ import (
 	"github.com/dave/jennifer/jen"
 )
 
-// poolAuditPkg is the import path of the test-only poolaudit hooks
-// package. Referenced only when slicePoolTracker.audit is true, which
-// only the lifecycle harness flips. Sits behind a constant so the
-// rendered import is identical across cells without threading a
-// PackageConfig field through every test.
-const poolAuditPkg = "github.com/invakid404/baml-rest/adapters/common/codegen/internal/poolaudit"
-
 // slicePoolNames captures the symbol names emitted for a single pooled
 // slice type. Tracked centrally so emitters and call sites stay in
 // lockstep; one entry covers `[]T` where T is the unwrapped BAML
@@ -114,7 +107,7 @@ func (t *slicePoolTracker) ensure(out *jen.File, elemType reflect.Type, maxCap i
 	// func get<Name>Slice(n int) *[]Elem { ... }
 	getBody := []jen.Code{}
 	if t.audit {
-		getBody = append(getBody, jen.Qual(poolAuditPkg, "OnCheckout").Call(jen.Lit(auditTypeLiteral)))
+		getBody = append(getBody, jen.Qual(t.pkgs.PoolAuditPkg, "OnCheckout").Call(jen.Lit(auditTypeLiteral)))
 	}
 	getBody = append(getBody,
 		jen.If(jen.Id("v").Op(":=").Id(names.poolVar).Dot("Get").Call(), jen.Id("v").Op("!=").Nil()).Block(
@@ -154,7 +147,7 @@ func (t *slicePoolTracker) ensure(out *jen.File, elemType reflect.Type, maxCap i
 		// so a violation surfaces precisely when the loop is missing
 		// or fails to cover a slot. The seed that omits the loop
 		// makes every non-zero slot light up.
-		putBody = append(putBody, jen.Qual(poolAuditPkg, "CheckZeroPrePut").Call(jen.Lit(auditTypeLiteral), jen.Id("used")))
+		putBody = append(putBody, jen.Qual(t.pkgs.PoolAuditPkg, "CheckZeroPrePut").Call(jen.Lit(auditTypeLiteral), jen.Id("used")))
 	}
 	putBody = append(putBody,
 		jen.Op("*").Id("sp").Op("=").Parens(jen.Op("*").Id("sp")).Index(jen.Empty(), jen.Lit(0)),
@@ -164,7 +157,7 @@ func (t *slicePoolTracker) ensure(out *jen.File, elemType reflect.Type, maxCap i
 		// OnRelease pairs 1:1 with OnCheckout. Placed after pool.Put
 		// so a non-trivial failure between the zero loop and the
 		// pool handoff still leaves the imbalance visible.
-		putBody = append(putBody, jen.Qual(poolAuditPkg, "OnRelease").Call(jen.Lit(auditTypeLiteral)))
+		putBody = append(putBody, jen.Qual(t.pkgs.PoolAuditPkg, "OnRelease").Call(jen.Lit(auditTypeLiteral)))
 	}
 	out.Func().Id(names.putFunc).
 		Params(jen.Id("sp").Op("*").Index().Add(names.elemQual.Clone())).

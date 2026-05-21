@@ -52,23 +52,17 @@ func WriteTempModule(t *testing.T, dir, rendered string, extraFiles map[string]s
 	// rooted at the same parent (`adapters/common/codegen/`). Any
 	// module path outside that prefix would be rejected as a
 	// cross-tree internal import.
-	rewritten := strings.Replace(
-		commonMod,
+	rewritten := replaceRequired(t, commonMod,
 		"module github.com/invakid404/baml-rest/adapters/common",
 		"module github.com/invakid404/baml-rest/adapters/common/codegen/matrixtest",
-		1,
 	)
-	rewritten = strings.Replace(
-		rewritten,
+	rewritten = replaceRequired(t, rewritten,
 		"github.com/invakid404/baml-rest/bamlutils => ../../bamlutils",
 		"github.com/invakid404/baml-rest/bamlutils => "+bamlutilsAbs,
-		1,
 	)
-	rewritten = strings.Replace(
-		rewritten,
+	rewritten = replaceRequired(t, rewritten,
 		"github.com/invakid404/baml-rest/introspected => ../../introspected",
 		"github.com/invakid404/baml-rest/introspected => "+introspectedAbs,
-		1,
 	)
 	// Add a require + replace for the adapters/common module so the
 	// rendered file's fixtures / poolaudit imports (sub-packages of
@@ -90,6 +84,20 @@ func WriteTempModule(t *testing.T, dir, rendered string, extraFiles map[string]s
 	for name, content := range extraFiles {
 		WriteFile(t, filepath.Join(dir, name), content)
 	}
+}
+
+// replaceRequired is strings.Replace with count=1, but it fails the
+// test loudly when the substring is absent. Used for the three
+// adapters/common/go.mod rewrites so a future drift in that file
+// (e.g. a module-path rename or a reformatted replace directive)
+// surfaces as a clear "rewrite target missing" error rather than a
+// downstream `go build` failure with no obvious cause.
+func replaceRequired(t *testing.T, src, old, new string) string {
+	t.Helper()
+	if !strings.Contains(src, old) {
+		t.Fatalf("testharness: rewrite target missing in adapters/common/go.mod: %q", old)
+	}
+	return strings.Replace(src, old, new, 1)
 }
 
 // AbsRepoPath returns the absolute path to a repo-relative directory.
