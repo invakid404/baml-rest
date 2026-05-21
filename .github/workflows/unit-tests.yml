@@ -54,12 +54,14 @@ jobs:
           # common's own go.mod to be the build list — same envelope
           # scripts/sync.sh uses for the per-adapter tidies.
           #
-          # dynclient/baml-patched is skipped entirely: it's vendored
-          # upstream BAML source we don't own and don't test against, and
-          # since it isn't a go.work member (see go.work), running
-          # `go test ./...` from inside it would also need GOWORK=off.
-          # Easier to just skip it — the patched module's behavior is
-          # exercised transitively through ./dynclient.
+          # dynclient/baml-patched is skipped in this workspace-mode
+          # loop: it's vendored upstream BAML source, isn't a go.work
+          # member (see go.work), and would need GOWORK=off to test
+          # from inside. Its standalone-mode coverage is provided by
+          # the standalone-modules matrix job below, which runs
+          # `GOWORK=off go test ./...` from inside it; the patched
+          # module's behavior is additionally exercised transitively
+          # through ./dynclient in this workspace-mode loop.
           find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -exec dirname {} \; | while read dir; do
             echo "=== Testing $dir ==="
             if [ "$dir" = "./adapters/common" ]; then
