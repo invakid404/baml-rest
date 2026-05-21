@@ -4,11 +4,81 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/bytedance/sonic"
 	"github.com/bytedance/sonic/ast"
 	"github.com/cloudwego/gjson"
 )
+
+// Pool retention thresholds: keep slices around the size of a typical
+// request, drop anything larger to avoid pinning pathological payloads.
+// `internalMessage` retains messages, `internalContentPart` retains
+// per-message multipart slices.
+const (
+	internalMessageSlicePoolMaxCap     = 1024
+	internalContentPartSlicePoolMaxCap = 256
+)
+
+var (
+	internalMessageSlicePool     sync.Pool
+	internalContentPartSlicePool sync.Pool
+)
+
+func getInternalMessageSlice(n int) *[]internalMessage {
+	if v := internalMessageSlicePool.Get(); v != nil {
+		sp := v.(*[]internalMessage)
+		if cap(*sp) >= n {
+			*sp = (*sp)[:0]
+			return sp
+		}
+		// Returned slice is too small; drop it and allocate to size.
+	}
+	s := make([]internalMessage, 0, n)
+	return &s
+}
+
+func putInternalMessageSlice(sp *[]internalMessage) {
+	if sp == nil {
+		return
+	}
+	if cap(*sp) > internalMessageSlicePoolMaxCap {
+		return
+	}
+	used := (*sp)[:len(*sp):cap(*sp)]
+	for i := range used {
+		used[i] = internalMessage{}
+	}
+	*sp = (*sp)[:0]
+	internalMessageSlicePool.Put(sp)
+}
+
+func getInternalContentPartSlice(n int) *[]internalContentPart {
+	if v := internalContentPartSlicePool.Get(); v != nil {
+		sp := v.(*[]internalContentPart)
+		if cap(*sp) >= n {
+			*sp = (*sp)[:0]
+			return sp
+		}
+	}
+	s := make([]internalContentPart, 0, n)
+	return &s
+}
+
+func putInternalContentPartSlice(sp *[]internalContentPart) {
+	if sp == nil {
+		return
+	}
+	if cap(*sp) > internalContentPartSlicePoolMaxCap {
+		return
+	}
+	used := (*sp)[:len(*sp):cap(*sp)]
+	for i := range used {
+		used[i] = internalContentPart{}
+	}
+	*sp = (*sp)[:0]
+	internalContentPartSlicePool.Put(sp)
+}
 
 // Dynamic endpoint constants
 const (
@@ -258,7 +328,14 @@ type internalMessage struct {
 }
 
 // toInternalMessage converts a user-facing DynamicMessage to the internal format.
-func (m *DynamicMessage) toInternalMessage() internalMessage {
+//
+// When the message is multipart, the returned message's Parts slice
+// references a pooled backing array. The caller appends the slice
+// pointer to ownedParts before any other work so a panic between
+// acquisition and the deferred release in ToWorkerInput cannot leak
+// the slice. Callers MUST release the slice via putInternalContentPartSlice
+// after sonic.Marshal returns.
+func (m *DynamicMessage) toInternalMessage(ownedParts *[]*[]internalContentPart) internalMessage {
 	msg := internalMessage{Role: m.Role}
 	if m.Metadata != nil && m.Metadata.CacheControl != nil {
 		msg.Metadata = &internalMessageMetadata{
@@ -269,7 +346,9 @@ func (m *DynamicMessage) toInternalMessage() internalMessage {
 	}
 
 	if m.PartsContent != nil {
-		parts := make([]internalContentPart, 0, len(m.PartsContent))
+		partsPtr := getInternalContentPartSlice(len(m.PartsContent))
+		*ownedParts = append(*ownedParts, partsPtr)
+		parts := *partsPtr
 		for _, p := range m.PartsContent {
 			part := internalContentPart{}
 			switch p.Type {
@@ -289,6 +368,7 @@ func (m *DynamicMessage) toInternalMessage() internalMessage {
 			}
 			parts = append(parts, part)
 		}
+		*partsPtr = parts
 		msg.Parts = parts
 	} else if m.TextContent != nil {
 		msg.Content = m.TextContent
@@ -588,10 +668,20 @@ func (d *DynamicInput) ToWorkerInput() (b []byte, err error) {
 		return nil, err
 	}
 
-	internalMessages := make([]internalMessage, 0, len(d.Messages))
-	for _, m := range d.Messages {
-		internalMessages = append(internalMessages, m.toInternalMessage())
+	messagesPtr := getInternalMessageSlice(len(d.Messages))
+	var ownedParts []*[]internalContentPart
+	defer func() {
+		for _, partsPtr := range ownedParts {
+			putInternalContentPartSlice(partsPtr)
+		}
+		putInternalMessageSlice(messagesPtr)
+	}()
+
+	internalMessages := *messagesPtr
+	for i := range d.Messages {
+		internalMessages = append(internalMessages, d.Messages[i].toInternalMessage(&ownedParts))
 	}
+	*messagesPtr = internalMessages
 
 	dynamicTypes := &DynamicTypes{
 		Classes: classes,

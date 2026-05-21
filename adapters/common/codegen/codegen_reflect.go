@@ -116,10 +116,31 @@ func structContainsMediaVisited(typ reflect.Type, visited map[reflect.Type]bool,
 // Maps the original BAML type name to the generated mirror struct name.
 type mirrorStructTracker struct {
 	generated map[reflect.Type]string // baml type -> mirror struct name
+	// convertOwnedNested records the inner BAML element type that a
+	// convert function pushes into its `ownedNested` parameter (for
+	// `*[]Struct` fields routed through a slice pool). Populated lazily
+	// by nestedStructConversion via the generator's slicePoolTracker.
+	// Keyed by the outer BAML type whose convert function carries the
+	// extra parameter. Empty means the convert function uses the legacy
+	// 2-arg signature.
+	convertOwnedNested map[reflect.Type]reflect.Type
 }
 
 func newMirrorStructTracker() *mirrorStructTracker {
-	return &mirrorStructTracker{generated: make(map[reflect.Type]string)}
+	return &mirrorStructTracker{
+		generated:          make(map[reflect.Type]string),
+		convertOwnedNested: make(map[reflect.Type]reflect.Type),
+	}
+}
+
+// convertOwnedNestedFor returns the inner BAML element type that
+// convert<Mirror> for `outer` threads through its ownedNested param,
+// or nil if the convert function uses the legacy 2-arg signature.
+func (m *mirrorStructTracker) convertOwnedNestedFor(outer reflect.Type) reflect.Type {
+	if m == nil {
+		return nil
+	}
+	return m.convertOwnedNested[outer]
 }
 
 // mirrorInputName returns the name for a mirror input struct.
@@ -129,7 +150,11 @@ func mirrorInputName(typ reflect.Type) string {
 
 // ensureMirrorStruct generates a mirror struct and conversion function for a BAML struct
 // that contains media fields. Returns the mirror struct name. Skips generation if already done.
-func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type, pkgs PackageConfig) string {
+//
+// `pools` (optional) wires slice-pool helpers into nested `*[]Struct`
+// conversions and the convert function signature. Pass nil for adapters
+// that should not opt into pooling.
+func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type, pkgs PackageConfig, pools *slicePoolTracker) string {
 	// Unwrap pointer/slice to get to the struct
 	inner := typ
 	for inner.Kind() == reflect.Ptr || inner.Kind() == reflect.Slice {
@@ -153,7 +178,7 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 			fieldInner = fieldInner.Elem()
 		}
 		if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type, pkgs) {
-			m.ensureMirrorStruct(out, field.Type, pkgs)
+			m.ensureMirrorStruct(out, field.Type, pkgs, pools)
 		}
 	}
 
@@ -193,20 +218,26 @@ func (m *mirrorStructTracker) ensureMirrorStruct(out *jen.File, typ reflect.Type
 	out.Type().Id(mirrorName).Struct(fields...)
 
 	// Generate the conversion function: convert<MirrorName>(adapter, input) -> (bamlType, error)
-	m.generateConversionFunc(out, inner, mirrorName, pkgs)
+	m.generateConversionFunc(out, inner, mirrorName, pkgs, pools)
 
 	return mirrorName
 }
 
 // generateConversionFunc generates a function that converts a mirror input struct
 // to the real BAML struct, handling media field conversion.
-func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType reflect.Type, mirrorName string, pkgs PackageConfig) {
+//
+// pools is the per-file slice pool tracker. When non-nil, `*[]Struct`
+// fields route through the pool helpers and the emitted function gains
+// an extra `ownedNested *[]*[]<innerElem>` parameter that the dispatch
+// caller releases after BAML consumes the converted slice.
+func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType reflect.Type, mirrorName string, pkgs PackageConfig, pools *slicePoolTracker) {
 	funcName := "convert" + mirrorName
 	bamlTypeExpr := parseReflectType(bamlType).statement
 
 	var bodyCode []jen.Code
 	bodyCode = append(bodyCode, jen.Var().Id("result").Add(bamlTypeExpr.Clone()))
 
+	var pooledInner reflect.Type
 	for field := range bamlType.Fields() {
 		if !field.IsExported() {
 			continue
@@ -223,7 +254,22 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 				fieldInner = fieldInner.Elem()
 			}
 			if fieldInner.Kind() == reflect.Struct && structContainsMedia(field.Type, pkgs) {
-				bodyCode = append(bodyCode, nestedStructConversion(fieldName, srcExpr, field.Type, m)...)
+				// Detect the inner-slice-of-struct case before recursing
+				// so we can thread the pool helpers through. Only pools
+				// a single inner type per convert function — multiple
+				// distinct `*[]Struct` fields per outer type would need
+				// per-type ownedNested params, which the dynamic adapter
+				// shape does not currently require.
+				if pools != nil && field.Type.Kind() == reflect.Ptr && field.Type.Elem().Kind() == reflect.Slice {
+					innerElem := field.Type.Elem().Elem()
+					if innerElem.Kind() == reflect.Ptr {
+						innerElem = innerElem.Elem()
+					}
+					if pooledInner == nil {
+						pooledInner = innerElem
+					}
+				}
+				bodyCode = append(bodyCode, nestedStructConversion(fieldName, srcExpr, field.Type, m, pools, out)...)
 			} else {
 				// Direct copy
 				bodyCode = append(bodyCode, jen.Id("result").Dot(fieldName).Op("=").Add(srcExpr.Clone()))
@@ -233,11 +279,19 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 
 	bodyCode = append(bodyCode, jen.Return(jen.Id("result"), jen.Nil()))
 
+	params := []jen.Code{
+		jen.Id("adapter").Qual(pkgs.InterfacesPkg, "Adapter"),
+		jen.Id("input").Op("*").Id(mirrorName),
+	}
+	if pooledInner != nil {
+		// Record the contract so dispatch-site emitters know to pass
+		// the matching `&ownedNested` and to set up the typed slice.
+		m.convertOwnedNested[bamlType] = pooledInner
+		params = append(params, jen.Id("ownedNested").Op("*").Index().Op("*").Index().Add(parseReflectType(pooledInner).statement))
+	}
+
 	out.Func().Id(funcName).
-		Params(
-			jen.Id("adapter").Qual(pkgs.InterfacesPkg, "Adapter"),
-			jen.Id("input").Op("*").Id(mirrorName),
-		).
+		Params(params...).
 		Params(bamlTypeExpr.Clone(), jen.Error()).
 		Block(bodyCode...)
 }
@@ -433,7 +487,14 @@ func mediaFieldConversion(fieldName string, srcExpr *jen.Statement, fieldType re
 
 // nestedStructConversion generates code to convert a nested mirror struct field
 // to the real BAML struct via its conversion function. Handles ptr/slice wrapping.
-func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType reflect.Type, tracker *mirrorStructTracker) []jen.Code {
+//
+// pools (optional) wires the `*[]Struct` branch through a shared slice
+// pool — the parts slice is checked out via the generated getter, the
+// pointer is appended to the enclosing convert function's
+// `ownedNested` parameter, and the dispatch site releases it after
+// BAML consumes the converted value. Passing nil keeps the legacy
+// `make([]T, n)` shape.
+func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType reflect.Type, tracker *mirrorStructTracker, pools *slicePoolTracker, out *jen.File) []jen.Code {
 	isPtr := fieldType.Kind() == reflect.Ptr
 	isSlice := fieldType.Kind() == reflect.Slice
 
@@ -539,6 +600,27 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 				innerLoopBody = innerConvBlock
 			}
 
+			if pools != nil && out != nil {
+				poolNames := pools.ensure(out, elemType, 256)
+				return []jen.Code{
+					jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
+						jen.Id("__partsPtr").Op(":=").Id(poolNames.getFunc).Call(
+							jen.Len(jen.Op("*").Add(srcExpr.Clone())),
+						),
+						jen.Op("*").Id("ownedNested").Op("=").Append(
+							jen.Op("*").Id("ownedNested"),
+							jen.Id("__partsPtr"),
+						),
+						jen.Op("*").Id("__partsPtr").Op("=").Parens(jen.Op("*").Id("__partsPtr")).Index(
+							jen.Empty(),
+							jen.Len(jen.Op("*").Add(srcExpr.Clone())),
+						),
+						jen.Id("__ptrSlice").Op(":=").Op("*").Id("__partsPtr"),
+						jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Op("*").Add(srcExpr.Clone())).Block(innerLoopBody...),
+						jen.Id("result").Dot(fieldName).Op("=").Op("&").Id("__ptrSlice"),
+					),
+				}
+			}
 			return []jen.Code{
 				jen.If(srcExpr.Clone().Op("!=").Nil()).Block(
 					jen.Id("__ptrSlice").Op(":=").Make(

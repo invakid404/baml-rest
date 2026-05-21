@@ -65,6 +65,14 @@ type methodEmitter struct {
 	fullMethodName             string
 	buildRequestMethodName     string
 	buildCallRequestMethodName string
+
+	// hasReleaseConverted is set by makePreambleWithArgs when the
+	// preamble emits a __releaseConverted closure (i.e., this method
+	// has slice params routed through the slice pool). Dispatch-site
+	// emitters consult it to place `defer __releaseConverted()` either
+	// in the outer body (sync paths) or inside the orchestration
+	// goroutine (BuildRequest/BuildCallRequest).
+	hasReleaseConverted bool
 }
 
 // newMethodEmitter validates the method's reflect signature and (on
@@ -155,7 +163,7 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 			fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mediaFieldType(paramType, g.pkgs.InterfacesPkg))
 		} else if structContainsMedia(paramType, g.pkgs) {
 			// Struct param containing nested media: use mirror struct
-			mirrorName := g.mirrors.ensureMirrorStruct(out, paramType, g.pkgs)
+			mirrorName := g.mirrors.ensureMirrorStruct(out, paramType, g.pkgs, g.slicePools)
 			fieldType = jen.Id(strcase.UpperCamelCase(paramName)).Add(mirrorFieldType(paramType, mirrorName))
 
 			// Unwrap to get the inner type for the convert function name
@@ -458,6 +466,24 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 				elemType := smp.paramType.Elem()
 				elemIsPtr := elemType.Kind() == reflect.Ptr
 
+				// Pool the outer slice when the element type is a value
+				// struct. Pointer-element slices ([]*ClassWithMedia) are
+				// rare and skipped — pooling those would also require
+				// nil-clearing per element, which the current shape does
+				// not exercise.
+				var outerPool *slicePoolNames
+				if me.g.slicePools != nil && !elemIsPtr {
+					outerPool = me.g.slicePools.ensure(me.g.out, elemType, 1024)
+				}
+
+				// Detect the convert function's ownedNested contract so
+				// the dispatch site sets up + threads through the
+				// matching `*[]*[]InnerT` variable.
+				var innerNestedElem reflect.Type
+				if outerPool != nil {
+					innerNestedElem = me.g.mirrors.convertOwnedNestedFor(elemType)
+				}
+
 				// Determine how to pass the element to the conversion function
 				var vArg jen.Code
 				if elemIsPtr {
@@ -466,18 +492,26 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 					vArg = jen.Op("&").Id("__v") // Mirror, take address
 				}
 
+				convertArgs := []jen.Code{jen.Id("adapter"), vArg}
+				if innerNestedElem != nil {
+					convertArgs = append(convertArgs, jen.Op("&").Id("__ownedNested"))
+				}
+
+				errReturnStmts := []jen.Code{}
+				if outerPool != nil {
+					errReturnStmts = append(errReturnStmts, jen.Id("__releaseConverted").Call())
+				}
+				errReturnStmts = append(errReturnStmts,
+					jen.Return(jen.Qual("fmt", "Errorf").Call(
+						jen.Lit(smp.paramName+"[%d]: %w"),
+						jen.Id("__i"),
+						jen.Id(errVar),
+					)),
+				)
+
 				convBlock := []jen.Code{
-					jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(
-						jen.Id("adapter"),
-						vArg,
-					),
-					jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
-						jen.Return(jen.Qual("fmt", "Errorf").Call(
-							jen.Lit(smp.paramName+"[%d]: %w"),
-							jen.Id("__i"),
-							jen.Id(errVar),
-						)),
-					),
+					jen.List(jen.Id("__converted"), jen.Id(errVar)).Op(":=").Id(smp.convertFunc).Call(convertArgs...),
+					jen.If(jen.Id(errVar).Op("!=").Nil()).Block(errReturnStmts...),
 					func() jen.Code {
 						if elemIsPtr {
 							return jen.Id(convertedVar).Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
@@ -496,13 +530,46 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 					loopBody = convBlock
 				}
 
-				preamble = append(preamble,
-					jen.Id(convertedVar).Op(":=").Make(
-						jen.Add(parseReflectType(smp.paramType).statement),
-						jen.Len(jen.Id("input").Dot(fieldName)),
-					),
-					jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Id("input").Dot(fieldName)).Block(loopBody...),
-				)
+				if outerPool != nil {
+					messagesPtrName := "__messagesPtr_" + smp.paramName
+					releaseBody := []jen.Code{}
+					if innerNestedElem != nil {
+						innerPool := me.g.slicePools.ensure(me.g.out, innerNestedElem, 256)
+						releaseBody = append(releaseBody,
+							jen.For(jen.List(jen.Id("_"), jen.Id("__partsPtr")).Op(":=").Range().Id("__ownedNested")).Block(
+								jen.Id(innerPool.putFunc).Call(jen.Id("__partsPtr")),
+							),
+						)
+					}
+					releaseBody = append(releaseBody,
+						jen.Id(outerPool.putFunc).Call(jen.Id(messagesPtrName)),
+					)
+
+					preambleAdd := []jen.Code{
+						jen.Id(messagesPtrName).Op(":=").Id(outerPool.getFunc).Call(jen.Len(jen.Id("input").Dot(fieldName))),
+						jen.Op("*").Id(messagesPtrName).Op("=").Parens(jen.Op("*").Id(messagesPtrName)).Index(jen.Empty(), jen.Len(jen.Id("input").Dot(fieldName))),
+						jen.Id(convertedVar).Op(":=").Op("*").Id(messagesPtrName),
+					}
+					if innerNestedElem != nil {
+						preambleAdd = append(preambleAdd,
+							jen.Var().Id("__ownedNested").Index().Op("*").Index().Add(parseReflectType(innerNestedElem).statement),
+						)
+					}
+					preambleAdd = append(preambleAdd,
+						jen.Id("__releaseConverted").Op(":=").Func().Params().Block(releaseBody...),
+						jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Id("input").Dot(fieldName)).Block(loopBody...),
+					)
+					preamble = append(preamble, preambleAdd...)
+					me.hasReleaseConverted = true
+				} else {
+					preamble = append(preamble,
+						jen.Id(convertedVar).Op(":=").Make(
+							jen.Add(parseReflectType(smp.paramType).statement),
+							jen.Len(jen.Id("input").Dot(fieldName)),
+						),
+						jen.For(jen.List(jen.Id("__i"), jen.Id("__v")).Op(":=").Range().Id("input").Dot(fieldName)).Block(loopBody...),
+					)
+				}
 			} else if isPtr {
 				innerAfterPtr := smp.paramType.Elem()
 				if innerAfterPtr.Kind() == reflect.Slice {

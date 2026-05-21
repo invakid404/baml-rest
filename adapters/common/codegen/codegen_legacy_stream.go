@@ -148,6 +148,13 @@ func (me *methodEmitter) emitLegacyStream() {
 	// runtime strategy-parent overrides are visible to BAML.
 	noRawBody := me.makeLegacyPreamble()
 
+	// runNoRawOrchestration runs the BAML stream synchronously, so a
+	// top-level defer releases pooled conversion slices once the call
+	// returns (whether by completion, error, or panic).
+	if me.hasReleaseConverted {
+		noRawBody = append(noRawBody, jen.Defer().Id("__releaseConverted").Call())
+	}
+
 	// Delegate to shared orchestration helper - supplies per-method closures
 	noRawBody = append(noRawBody,
 		jen.Return(jen.Id("runNoRawOrchestration").Call(
@@ -466,6 +473,12 @@ func (me *methodEmitter) emitLegacyStream() {
 	// Same legacy-view rationale as _noRaw.
 	var fullBody []jen.Code
 	fullBody = append(fullBody, me.makeLegacyPreamble()...)
+	if me.hasReleaseConverted {
+		// runFullOrchestration runs synchronously; defer release at
+		// the top of the function covers normal completion, errors,
+		// and panics. Mirror of the _noRaw shape above.
+		fullBody = append(fullBody, jen.Defer().Id("__releaseConverted").Call())
+	}
 
 	// Delegate to shared full orchestration helper with per-method closures
 	fullBody = append(fullBody,
