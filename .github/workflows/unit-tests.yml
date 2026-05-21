@@ -54,12 +54,14 @@ jobs:
           # common's own go.mod to be the build list — same envelope
           # scripts/sync.sh uses for the per-adapter tidies.
           #
-          # dynclient/baml-patched is skipped entirely: it's vendored
-          # upstream BAML source we don't own and don't test against, and
-          # since it isn't a go.work member (see go.work), running
-          # `go test ./...` from inside it would also need GOWORK=off.
-          # Easier to just skip it — the patched module's behavior is
-          # exercised transitively through ./dynclient.
+          # dynclient/baml-patched is skipped in this workspace-mode
+          # loop: it's vendored upstream BAML source, isn't a go.work
+          # member (see go.work), and would need GOWORK=off to test
+          # from inside. Its standalone-mode coverage is provided by
+          # the standalone-modules matrix job below, which runs
+          # `GOWORK=off go test ./...` from inside it; the patched
+          # module's behavior is additionally exercised transitively
+          # through ./dynclient in this workspace-mode loop.
           find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -exec dirname {} \; | while read dir; do
             echo "=== Testing $dir ==="
             if [ "$dir" = "./adapters/common" ]; then
@@ -142,3 +144,49 @@ jobs:
             git ls-files --others --exclude-standard
             exit 1
           fi
+
+  # Per-module GOWORK=off sanity matrix for the modules we publish
+  # release tags for. The job above runs everything under the
+  # workspace, which masks per-module go.sum drift: a missing
+  # `pkg@ver/go.mod` hash in worker/go.sum is silently covered by
+  # go.work.sum during the workspace build, so the failure only
+  # surfaces during release-prep (or for external consumers who
+  # always resolve via GOWORK=off semantics, since they don't share
+  # our go.work). #327 was the most recent miss of this shape: a
+  # stale dynclient/go.sum that only got caught by a maintainer's
+  # manual check during the 0.0.47 release-prep.
+  #
+  # Matrix mirrors release-lib.sh's `release_required_modules`. Keep
+  # the two in sync if a future release adds or removes a published
+  # module. adapters/adapter_v* and the root module are excluded for
+  # the same reasons release-lib.sh excludes them (per-adapter BAML
+  # pins, workspace-only respectively).
+  standalone-modules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - adapters/common
+          - bamlutils
+          - dynclient
+          - dynclient/baml-patched
+          - introspected
+          - worker
+          - workerplugin
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: GOWORK=off go test ./...
+        run: |
+          cd "${{ matrix.module }}"
+          GOWORK=off go test ./... -count=1
