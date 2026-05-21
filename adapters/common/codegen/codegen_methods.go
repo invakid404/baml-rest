@@ -550,15 +550,22 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 			// closure operates on a disjoint pointer — but draining
 			// innermost-to-outermost mirrors the original allocation
 			// order and reads more naturally.)
-			for _, p := range paramInfos {
-				if !p.needsOwnedNested {
-					continue
+			//
+			// Seed_OmitOwnedNestedThread skips the per-param drain so
+			// inner pool releases never bubble up to the dispatch.
+			// The harness flips it to verify imbalance surfaces when
+			// the ownedNested wiring breaks.
+			if !me.g.opts.Seed_OmitOwnedNestedThread {
+				for _, p := range paramInfos {
+					if !p.needsOwnedNested {
+						continue
+					}
+					releaseBody = append(releaseBody,
+						jen.For(jen.List(jen.Id("_"), jen.Id("__release")).Op(":=").Range().Id(p.ownedNestedName)).Block(
+							jen.Id("__release").Call(),
+						),
+					)
 				}
-				releaseBody = append(releaseBody,
-					jen.For(jen.List(jen.Id("_"), jen.Id("__release")).Op(":=").Range().Id(p.ownedNestedName)).Block(
-						jen.Id("__release").Call(),
-					),
-				)
 			}
 			for _, p := range paramInfos {
 				if p.outerPool == nil {
@@ -600,7 +607,12 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 		// reference an undeclared identifier and fail to compile when
 		// hasReleaseConverted is false too).
 		releaseThenReturnError := func(returnStmt jen.Code) []jen.Code {
-			if me.hasReleaseConverted {
+			// Seed_OmitPhaseBRelease drops the explicit
+			// __releaseConverted() prepend so a Phase-B conv error
+			// leaks the Phase-A checkouts — the dispatch's deferred
+			// drain lives inside a goroutine that never starts on
+			// this path. Harness asserts the imbalance surfaces.
+			if me.hasReleaseConverted && !me.g.opts.Seed_OmitPhaseBRelease {
 				return []jen.Code{jen.Id("__releaseConverted").Call(), returnStmt}
 			}
 			return []jen.Code{returnStmt}

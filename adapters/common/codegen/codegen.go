@@ -175,6 +175,21 @@ type Options struct {
 	// internal/poolaudit package and surface counter + zero-violation
 	// observations to a running test.
 	EmitPoolAuditHooks bool
+
+	// Test-only regression seeds — DO NOT use in production codegen.
+	// Each seed reintroduces one bug class the #338 review surfaced.
+	// The pool-lifecycle harness flips them one at a time and
+	// asserts the inner `go test` fails. If a seed test starts
+	// passing on master, either the bug class is no longer
+	// reproducible at all (harness lost coverage) or this seed has
+	// drifted and needs updating to match a current emission path.
+	//
+	// Production callers must never set these — leaving them false
+	// is the contract that keeps the audit-mode harness honest.
+	Seed_OmitPhaseBRelease     bool
+	Seed_OmitOwnedNestedThread bool
+	Seed_OmitZeroLoop          bool
+	Seed_OmitAsyncDefer        bool
 }
 
 // Generate generates the adapter.go file for the given adapter

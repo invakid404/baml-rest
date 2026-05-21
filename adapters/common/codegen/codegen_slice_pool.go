@@ -52,6 +52,11 @@ type slicePoolTracker struct {
 	// codegen leaves this false, in which case helper emission is
 	// byte-identical to the pre-audit baseline.
 	audit bool
+	// seedOmitZeroLoop mirrors Options.Seed_OmitZeroLoop — a
+	// test-only switch the lifecycle harness flips to verify
+	// CheckZeroPrePut still catches a missing zero loop in putXSlice.
+	// Set only by the regression-seed renderer.
+	seedOmitZeroLoop bool
 }
 
 func newSlicePoolTracker(pkgs PackageConfig, audit bool) *slicePoolTracker {
@@ -132,9 +137,17 @@ func (t *slicePoolTracker) ensure(out *jen.File, elemType reflect.Type, maxCap i
 		jen.If(jen.Id("sp").Op("==").Nil()).Block(jen.Return()),
 		jen.If(jen.Cap(jen.Op("*").Id("sp")).Op(">").Lit(maxCap)).Block(jen.Return()),
 		jen.Id("used").Op(":=").Parens(jen.Op("*").Id("sp")).Index(jen.Lit(0), jen.Len(jen.Op("*").Id("sp")), jen.Cap(jen.Op("*").Id("sp"))),
-		jen.For(jen.Id("i").Op(":=").Range().Id("used")).Block(
-			jen.Id("used").Index(jen.Id("i")).Op("=").Add(names.elemQual.Clone()).Values(),
-		),
+	}
+	if !t.seedOmitZeroLoop {
+		// Production path. The seed flips this off so the lifecycle
+		// harness can verify CheckZeroPrePut catches the missing
+		// loop — every non-zero element in `used` becomes a
+		// recorded violation.
+		putBody = append(putBody,
+			jen.For(jen.Id("i").Op(":=").Range().Id("used")).Block(
+				jen.Id("used").Index(jen.Id("i")).Op("=").Add(names.elemQual.Clone()).Values(),
+			),
+		)
 	}
 	if t.audit {
 		// CheckZeroPrePut runs AFTER the zero loop and BEFORE pool.Put
