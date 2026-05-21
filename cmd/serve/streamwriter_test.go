@@ -12,6 +12,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/apierror"
 	"github.com/invakid404/baml-rest/workerplugin"
+	"github.com/valyala/bytebufferpool"
 )
 
 type recordingPublisher struct {
@@ -75,30 +76,67 @@ func TestEncodeNDJSONEvent(t *testing.T) {
 		Raw:  "raw-value",
 	}
 
-	got, err := encodeNDJSONEvent(event)
-	if err != nil {
+	var buf bytebufferpool.ByteBuffer
+	if err := encodeNDJSONEvent(&buf, event); err != nil {
 		t.Fatalf("encodeNDJSONEvent: %v", err)
 	}
 
 	want := "{\"type\":\"data\",\"data\":{\"value\":1},\"raw\":\"raw-value\"}\n"
-	if string(got) != want {
-		t.Fatalf("encoded NDJSON = %q, want %q", string(got), want)
+	if string(buf.B) != want {
+		t.Fatalf("encoded NDJSON = %q, want %q", string(buf.B), want)
 	}
 }
 
-func TestFormatSSEEvent(t *testing.T) {
-	got := formatSSEEvent(sseEventFinal, "first\nsecond")
-	want := "event: final\ndata: first\ndata: second\n\n"
-	if got != want {
-		t.Fatalf("formatted SSE event = %q, want %q", got, want)
+func TestAppendSSEEventFrame(t *testing.T) {
+	cases := []struct {
+		name      string
+		eventType string
+		payload   string
+		want      string
+	}{
+		{
+			name:      "multiline",
+			eventType: sseEventFinal,
+			payload:   "first\nsecond",
+			want:      "event: final\ndata: first\ndata: second\n\n",
+		},
+		{
+			name:      "trailing_newline_emits_empty_data_line",
+			eventType: "",
+			payload:   "a\n",
+			want:      "data: a\ndata: \n\n",
+		},
+		{
+			name:      "no_event_no_payload",
+			eventType: "",
+			payload:   "",
+			want:      "\n",
+		},
+		{
+			name:      "event_only",
+			eventType: sseEventReset,
+			payload:   "",
+			want:      "event: reset\n\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytebufferpool.ByteBuffer
+			appendSSEEventFrame(&buf, tc.eventType, tc.payload)
+			if string(buf.B) != tc.want {
+				t.Fatalf("frame = %q, want %q", string(buf.B), tc.want)
+			}
+		})
 	}
 }
 
-func TestFormatSSEComment(t *testing.T) {
-	got := formatSSEComment("keepalive")
+func TestAppendSSECommentFrame(t *testing.T) {
+	var buf bytebufferpool.ByteBuffer
+	appendSSECommentFrame(&buf, "keepalive")
 	want := ": keepalive\n\n"
-	if got != want {
-		t.Fatalf("formatted SSE comment = %q, want %q", got, want)
+	if string(buf.B) != want {
+		t.Fatalf("comment = %q, want %q", string(buf.B), want)
 	}
 }
 
