@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"context"
 	"go/parser"
 	"go/token"
 	"reflect"
@@ -747,5 +748,41 @@ func TestConvertFuncHandlesMultiplePooledNestedTypes(t *testing.T) {
 	fset := token.NewFileSet()
 	if _, err := parser.ParseFile(fset, "multi_pooled_synth.go", rendered, parser.AllErrors); err != nil {
 		t.Errorf("generated source does not parse as valid Go: %v\n--- rendered ---\n%s", err, rendered)
+	}
+}
+
+func TestEmitMethodsNilSlicePoolsKeepsOwnedNestedDisabled(t *testing.T) {
+	t.Parallel()
+
+	pkgs := DefaultPackageConfig()
+	pkgs.BamlPkg = reflect.TypeOf(Image{}).PkgPath()
+
+	outerType := reflect.TypeOf(f1OuterWrapper{})
+	intro := Introspection{
+		SyncMethods:        map[string][]string{"TestMethod": {"extra"}},
+		SyncFuncs:          map[string]any{"TestMethod": func(context.Context, f1OuterWrapper, ...any) (string, error) { return "", nil }},
+		ParseStreamMethods: map[string]struct{}{"TestMethod": {}},
+		MediaParams:        map[string]map[string]bamlutils.MediaKind{"TestMethod": {}},
+	}
+	g := &generator{
+		opts:                 Options{SupportsWithClient: true, Packages: pkgs, Introspection: intro},
+		pkgs:                 pkgs,
+		intro:                intro,
+		out:                  common.MakeFile(),
+		supportsWithClient:   true,
+		mirrors:              newMirrorStructTracker(),
+		emittedUnwrapHelpers: map[string]bool{},
+		// Nil slicePools exercises the legacy non-pooling emission mode.
+		slicePools: nil,
+	}
+
+	g.emitMethods()
+	rendered := g.out.GoString()
+
+	if g.mirrors.convertNeedsOwnedNestedFor(outerType) {
+		t.Fatal("nil slicePools mode must not precompute ownedNested requirements")
+	}
+	if strings.Contains(rendered, "ownedNested") {
+		t.Fatalf("nil slicePools mode must not emit ownedNested signatures or call-site args; rendered:\n%s", rendered)
 	}
 }

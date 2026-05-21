@@ -400,8 +400,8 @@ func (m *mirrorStructTracker) generateConversionFunc(out *jen.File, bamlType ref
 	// error. The precompute pass guarantees every reachable type's
 	// flag is final before any body emission runs.
 	//
-	// When `pools` is nil the legacy non-pooling path applies; the
-	// precompute would have left the map empty in that case too.
+	// When `pools` is nil the legacy non-pooling path applies and
+	// neither signatures nor call sites thread ownedNested.
 	needsOwnedNested := pools != nil && m.convertNeedsOwnedNested[bamlType]
 
 	var bodyCode []jen.Code
@@ -660,7 +660,7 @@ func nestedStructConversion(fieldName string, srcExpr *jen.Statement, fieldType 
 		innerType = innerType.Elem()
 	}
 	convertFunc := "convert" + mirrorInputName(innerType)
-	innerNeedsOwnedNested := tracker.convertNeedsOwnedNestedFor(innerType)
+	innerNeedsOwnedNested := pools != nil && tracker.convertNeedsOwnedNestedFor(innerType)
 
 	// buildConvertCall threads `ownedNested` into the convert<Inner>
 	// call when the inner converter takes it. Sits at the head of the

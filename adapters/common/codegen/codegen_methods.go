@@ -506,7 +506,7 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 			// converter. Works uniformly across [], *[], *, and
 			// direct param shapes because unwrapInner strips every
 			// leading ptr/slice layer.
-			if me.g.mirrors != nil {
+			if me.g.mirrors != nil && me.g.slicePools != nil {
 				info.needsOwnedNested = me.g.mirrors.convertNeedsOwnedNestedFor(unwrapInner(smp.paramType))
 			}
 			paramInfos = append(paramInfos, info)
@@ -847,7 +847,9 @@ func (g *generator) emitMethods() []methodOut {
 	// Without this pass, mutually-recursive media-bearing structs
 	// emit Go code where an outer signature has 3 params while a
 	// callee's call site is 2-arg — the file doesn't compile.
-	g.precomputeOwnedNestedNeeds(methodNames)
+	if g.slicePools != nil {
+		g.precomputeOwnedNestedNeeds(methodNames)
+	}
 
 	for _, methodName := range methodNames {
 		args := g.intro.SyncMethods[methodName]
