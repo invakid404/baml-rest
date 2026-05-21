@@ -7,6 +7,13 @@ import (
 	"github.com/dave/jennifer/jen"
 )
 
+// poolAuditPkg is the import path of the test-only poolaudit hooks
+// package. Referenced only when slicePoolTracker.audit is true, which
+// only the lifecycle harness flips. Sits behind a constant so the
+// rendered import is identical across cells without threading a
+// PackageConfig field through every test.
+const poolAuditPkg = "github.com/invakid404/baml-rest/adapters/common/codegen/internal/poolaudit"
+
 // slicePoolNames captures the symbol names emitted for a single pooled
 // slice type. Tracked centrally so emitters and call sites stay in
 // lockstep; one entry covers `[]T` where T is the unwrapped BAML
@@ -33,18 +40,26 @@ type slicePoolNames struct {
 // Names are deterministic functions of the unwrapped BAML type name so
 // repeat encounters reuse the same helpers across the file.
 type slicePoolTracker struct {
-	mu       sync.Mutex
-	entries  map[reflect.Type]*slicePoolNames
-	emitOrd  int
-	pkgs     PackageConfig
-	jenSync  string
+	mu      sync.Mutex
+	entries map[reflect.Type]*slicePoolNames
+	emitOrd int
+	pkgs    PackageConfig
+	jenSync string
+	// audit mirrors Options.EmitPoolAuditHooks. When true, ensure()
+	// emits poolaudit.OnCheckout / CheckZeroPrePut / OnRelease calls
+	// inside the generated get/put helpers so the lifecycle harness
+	// can observe pool activity and zero-loop coverage. Production
+	// codegen leaves this false, in which case helper emission is
+	// byte-identical to the pre-audit baseline.
+	audit bool
 }
 
-func newSlicePoolTracker(pkgs PackageConfig) *slicePoolTracker {
+func newSlicePoolTracker(pkgs PackageConfig, audit bool) *slicePoolTracker {
 	return &slicePoolTracker{
 		entries: make(map[reflect.Type]*slicePoolNames),
 		pkgs:    pkgs,
 		jenSync: "sync",
+		audit:   audit,
 	}
 }
 
@@ -84,35 +99,63 @@ func (t *slicePoolTracker) ensure(out *jen.File, elemType reflect.Type, maxCap i
 	// var <pool> sync.Pool
 	out.Var().Id(names.poolVar).Qual(t.jenSync, "Pool")
 
+	// auditTypeLiteral is the literal type-name string the audit
+	// hooks key counters on. Element type's plain name (no package
+	// qualifier) matches what slicePoolBaseName already uses, so an
+	// imbalance report points at the same name a developer sees in
+	// the generated helper symbols.
+	auditTypeLiteral := elemType.Name()
+
 	// func get<Name>Slice(n int) *[]Elem { ... }
+	getBody := []jen.Code{}
+	if t.audit {
+		getBody = append(getBody, jen.Qual(poolAuditPkg, "OnCheckout").Call(jen.Lit(auditTypeLiteral)))
+	}
+	getBody = append(getBody,
+		jen.If(jen.Id("v").Op(":=").Id(names.poolVar).Dot("Get").Call(), jen.Id("v").Op("!=").Nil()).Block(
+			jen.Id("sp").Op(":=").Id("v").Assert(jen.Op("*").Index().Add(names.elemQual.Clone())),
+			jen.If(jen.Cap(jen.Op("*").Id("sp")).Op(">=").Id("n")).Block(
+				jen.Op("*").Id("sp").Op("=").Parens(jen.Op("*").Id("sp")).Index(jen.Empty(), jen.Lit(0)),
+				jen.Return(jen.Id("sp")),
+			),
+		),
+		jen.Id("s").Op(":=").Make(jen.Index().Add(names.elemQual.Clone()), jen.Lit(0), jen.Id("n")),
+		jen.Return(jen.Op("&").Id("s")),
+	)
 	out.Func().Id(names.getFunc).
 		Params(jen.Id("n").Int()).
 		Op("*").Index().Add(names.elemQual.Clone()).
-		Block(
-			jen.If(jen.Id("v").Op(":=").Id(names.poolVar).Dot("Get").Call(), jen.Id("v").Op("!=").Nil()).Block(
-				jen.Id("sp").Op(":=").Id("v").Assert(jen.Op("*").Index().Add(names.elemQual.Clone())),
-				jen.If(jen.Cap(jen.Op("*").Id("sp")).Op(">=").Id("n")).Block(
-					jen.Op("*").Id("sp").Op("=").Parens(jen.Op("*").Id("sp")).Index(jen.Empty(), jen.Lit(0)),
-					jen.Return(jen.Id("sp")),
-				),
-			),
-			jen.Id("s").Op(":=").Make(jen.Index().Add(names.elemQual.Clone()), jen.Lit(0), jen.Id("n")),
-			jen.Return(jen.Op("&").Id("s")),
-		)
+		Block(getBody...)
 
 	// func put<Name>Slice(sp *[]Elem) { ... }
+	putBody := []jen.Code{
+		jen.If(jen.Id("sp").Op("==").Nil()).Block(jen.Return()),
+		jen.If(jen.Cap(jen.Op("*").Id("sp")).Op(">").Lit(maxCap)).Block(jen.Return()),
+		jen.Id("used").Op(":=").Parens(jen.Op("*").Id("sp")).Index(jen.Lit(0), jen.Len(jen.Op("*").Id("sp")), jen.Cap(jen.Op("*").Id("sp"))),
+		jen.For(jen.Id("i").Op(":=").Range().Id("used")).Block(
+			jen.Id("used").Index(jen.Id("i")).Op("=").Add(names.elemQual.Clone()).Values(),
+		),
+	}
+	if t.audit {
+		// CheckZeroPrePut runs AFTER the zero loop and BEFORE pool.Put
+		// so a violation surfaces precisely when the loop is missing
+		// or fails to cover a slot. The seed that omits the loop
+		// makes every non-zero slot light up.
+		putBody = append(putBody, jen.Qual(poolAuditPkg, "CheckZeroPrePut").Call(jen.Lit(auditTypeLiteral), jen.Id("used")))
+	}
+	putBody = append(putBody,
+		jen.Op("*").Id("sp").Op("=").Parens(jen.Op("*").Id("sp")).Index(jen.Empty(), jen.Lit(0)),
+		jen.Id(names.poolVar).Dot("Put").Call(jen.Id("sp")),
+	)
+	if t.audit {
+		// OnRelease pairs 1:1 with OnCheckout. Placed after pool.Put
+		// so a non-trivial failure between the zero loop and the
+		// pool handoff still leaves the imbalance visible.
+		putBody = append(putBody, jen.Qual(poolAuditPkg, "OnRelease").Call(jen.Lit(auditTypeLiteral)))
+	}
 	out.Func().Id(names.putFunc).
 		Params(jen.Id("sp").Op("*").Index().Add(names.elemQual.Clone())).
-		Block(
-			jen.If(jen.Id("sp").Op("==").Nil()).Block(jen.Return()),
-			jen.If(jen.Cap(jen.Op("*").Id("sp")).Op(">").Lit(maxCap)).Block(jen.Return()),
-			jen.Id("used").Op(":=").Parens(jen.Op("*").Id("sp")).Index(jen.Lit(0), jen.Len(jen.Op("*").Id("sp")), jen.Cap(jen.Op("*").Id("sp"))),
-			jen.For(jen.Id("i").Op(":=").Range().Id("used")).Block(
-				jen.Id("used").Index(jen.Id("i")).Op("=").Add(names.elemQual.Clone()).Values(),
-			),
-			jen.Op("*").Id("sp").Op("=").Parens(jen.Op("*").Id("sp")).Index(jen.Empty(), jen.Lit(0)),
-			jen.Id(names.poolVar).Dot("Put").Call(jen.Id("sp")),
-		)
+		Block(putBody...)
 
 	return names
 }

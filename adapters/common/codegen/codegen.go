@@ -167,6 +167,14 @@ type Options struct {
 	// as "use the root introspected package" for backwards
 	// compatibility with [Generate].
 	Introspection Introspection
+	// EmitPoolAuditHooks toggles emission of pool checkout / release /
+	// zero-pre-put hooks inside getXSlice / putXSlice. Used only by
+	// the pool-lifecycle test harness — production codegen leaves
+	// this false, in which case the emitted helpers are byte-identical
+	// to the pre-audit baseline. When true, the helpers import the
+	// internal/poolaudit package and surface counter + zero-violation
+	// observations to a running test.
+	EmitPoolAuditHooks bool
 }
 
 // Generate generates the adapter.go file for the given adapter
@@ -227,7 +235,7 @@ func newGenerator(opts Options) *generator {
 		supportsWithClient:   resolved.SupportsWithClient,
 		mirrors:              newMirrorStructTracker(),
 		emittedUnwrapHelpers: make(map[string]bool),
-		slicePools:           newSlicePoolTracker(resolved.Packages),
+		slicePools:           newSlicePoolTracker(resolved.Packages, resolved.EmitPoolAuditHooks),
 	}
 }
 
