@@ -257,7 +257,7 @@ func newGenerator(opts Options) *generator {
 		supportsWithClient:   resolved.SupportsWithClient,
 		mirrors:              newMirrorStructTracker(),
 		emittedUnwrapHelpers: make(map[string]bool),
-		slicePools:           newSlicePoolTracker(resolved.Packages, resolved.EmitPoolAuditHooks),
+		slicePools:           newSlicePoolTracker(resolved.Packages, resolved.EmitPoolAuditHooks, resolved.Seed_OmitZeroLoop),
 	}
 }
 

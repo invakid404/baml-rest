@@ -44,7 +44,7 @@ func TestEmitPoolAuditHooks_Toggle(t *testing.T) {
 			pkgs.OutputPkgName = "matrix"
 
 			out := jen.NewFilePathName(pkgs.OutputPkg, pkgs.OutputPkgName)
-			tracker := newSlicePoolTracker(pkgs, tc.audit)
+			tracker := newSlicePoolTracker(pkgs, tc.audit, false)
 			tracker.ensure(out, reflect.TypeOf(fixtures.ContentPartA{}), 256)
 
 			rendered := out.GoString()

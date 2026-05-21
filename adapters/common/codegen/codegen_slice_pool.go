@@ -48,16 +48,19 @@ type slicePoolTracker struct {
 	// seedOmitZeroLoop mirrors Options.Seed_OmitZeroLoop — a
 	// test-only switch the lifecycle harness flips to verify
 	// CheckZeroPrePut still catches a missing zero loop in putXSlice.
-	// Set only by the regression-seed renderer.
+	// Threaded at tracker construction so GenerateWithOptions
+	// callers reach this gate through the same path as the audit
+	// flag.
 	seedOmitZeroLoop bool
 }
 
-func newSlicePoolTracker(pkgs PackageConfig, audit bool) *slicePoolTracker {
+func newSlicePoolTracker(pkgs PackageConfig, audit, seedOmitZeroLoop bool) *slicePoolTracker {
 	return &slicePoolTracker{
-		entries: make(map[reflect.Type]*slicePoolNames),
-		pkgs:    pkgs,
-		jenSync: "sync",
-		audit:   audit,
+		entries:          make(map[reflect.Type]*slicePoolNames),
+		pkgs:             pkgs,
+		jenSync:          "sync",
+		audit:            audit,
+		seedOmitZeroLoop: seedOmitZeroLoop,
 	}
 }
 

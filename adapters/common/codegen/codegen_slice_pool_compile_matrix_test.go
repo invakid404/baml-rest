@@ -91,7 +91,7 @@ func emitMatrix(t *testing.T) (*jen.File, []matrixCell) {
 
 	out := jen.NewFilePathName(pkgs.OutputPkg, pkgs.OutputPkgName)
 	tracker := newMirrorStructTracker()
-	pools := newSlicePoolTracker(pkgs, false)
+	pools := newSlicePoolTracker(pkgs, false, false)
 
 	// Precompute the convertNeedsOwnedNested transitive closure
 	// across every reachable struct-media type the matrix exercises.

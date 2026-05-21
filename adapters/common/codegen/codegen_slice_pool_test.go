@@ -79,7 +79,7 @@ func newPooledMethodEmitter(t *testing.T, paramNames []string) (*methodEmitter, 
 		supportsWithClient:   true,
 		mirrors:              newMirrorStructTracker(),
 		emittedUnwrapHelpers: map[string]bool{},
-		slicePools:           newSlicePoolTracker(pkgs, false),
+		slicePools:           newSlicePoolTracker(pkgs, false, false),
 	}
 
 	elemTypes := []reflect.Type{
@@ -275,7 +275,7 @@ func newMixedMethodEmitter(t *testing.T, nonPooledKind string) *methodEmitter {
 		supportsWithClient:   true,
 		mirrors:              newMirrorStructTracker(),
 		emittedUnwrapHelpers: map[string]bool{},
-		slicePools:           newSlicePoolTracker(pkgs, false),
+		slicePools:           newSlicePoolTracker(pkgs, false, false),
 	}
 
 	pooledElem := reflect.TypeOf(testMessageElemA{})
@@ -436,7 +436,7 @@ func TestGenerateConversionFunc_PointerElementSliceSkipsPool(t *testing.T) {
 	// test targets.
 	pkgs := DefaultPackageConfig()
 	pkgs.BamlPkg = reflect.TypeOf(Image{}).PkgPath()
-	pools := newSlicePoolTracker(pkgs, false)
+	pools := newSlicePoolTracker(pkgs, false, false)
 
 	outerType := reflect.TypeOf(f2OuterStructPtrSliceOfPointers{})
 	tracker.precomputeOwnedNestedNeeds([]reflect.Type{outerType}, pkgs)
@@ -550,7 +550,7 @@ func TestPreambleThreadsOwnedNestedThroughNonPooledCallSites(t *testing.T) {
 		supportsWithClient:   true,
 		mirrors:              newMirrorStructTracker(),
 		emittedUnwrapHelpers: map[string]bool{},
-		slicePools:           newSlicePoolTracker(pkgs, false),
+		slicePools:           newSlicePoolTracker(pkgs, false, false),
 	}
 
 	// Run the analysis pass first so generateConversionFunc sees
@@ -633,7 +633,7 @@ func TestPreambleThreadsOwnedNestedThroughNestedHelpers(t *testing.T) {
 
 	out := common.MakeFile()
 	tracker := newMirrorStructTracker()
-	pools := newSlicePoolTracker(pkgs, false)
+	pools := newSlicePoolTracker(pkgs, false, false)
 
 	outerType := reflect.TypeOf(f1OuterWrapper{})
 	tracker.precomputeOwnedNestedNeeds([]reflect.Type{outerType}, pkgs)
@@ -706,7 +706,7 @@ func TestConvertFuncHandlesMultiplePooledNestedTypes(t *testing.T) {
 
 	out := common.MakeFile()
 	tracker := newMirrorStructTracker()
-	pools := newSlicePoolTracker(pkgs, false)
+	pools := newSlicePoolTracker(pkgs, false, false)
 
 	outerType := reflect.TypeOf(f2MultiPooledMixed{})
 	tracker.precomputeOwnedNestedNeeds([]reflect.Type{outerType}, pkgs)

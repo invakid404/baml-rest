@@ -166,8 +166,7 @@ func emitLifecycleMatrix(t *testing.T, opts Options) (string, []lifecycleCellMet
 
 	out := jen.NewFilePathName(pkgs.OutputPkg, pkgs.OutputPkgName)
 	tracker := newMirrorStructTracker()
-	pools := newSlicePoolTracker(pkgs, opts.EmitPoolAuditHooks)
-	pools.seedOmitZeroLoop = opts.Seed_OmitZeroLoop
+	pools := newSlicePoolTracker(pkgs, opts.EmitPoolAuditHooks, opts.Seed_OmitZeroLoop)
 
 	// Precompute ownedNested needs across the whole reachable graph.
 	// Same shape as the compile-matrix path. Without this the cycle
