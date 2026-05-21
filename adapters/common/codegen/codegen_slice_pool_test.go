@@ -232,6 +232,176 @@ type f2OuterStructPtrSliceOfPointers struct {
 	Parts *[]*f2Inner
 }
 
+// nonPooledMessageElem is a value-type mirror struct used to construct
+// non-slice / pointer-element struct-media params in F3's fixture.
+// It pairs with nonPooledContentPart (the would-be-nested type) so
+// structContainsMedia would have returned true under a real
+// PackageConfig — but the F3 test doesn't traverse ensureMirrorStruct,
+// only methodEmitter.makePreambleWithArgs, which reads structMediaParams
+// directly without re-deriving them from BAML media detection.
+type nonPooledMessageElem struct {
+	Role string
+	Note *string
+}
+
+// newMixedMethodEmitter constructs a methodEmitter whose
+// structMediaParams mix one pooled `[]ClassWithMedia` slice (param
+// "messages") with one non-pooled struct-media param of the shape
+// described by `nonPooledKind`:
+//
+//   - "ptr_slice"      → `*[]ClassWithMedia` field shape
+//   - "ptr_struct"     → `*ClassWithMedia` field shape
+//   - "direct"         →  `ClassWithMedia` direct field shape
+//   - "slice_of_ptr"   → `[]*ClassWithMedia` (slice with pointer elements;
+//     skipped from pooling per F2 guard)
+//
+// All four shapes hit a Phase-B error-return site that — pre-fix —
+// did not call `__releaseConverted()` before propagating the
+// conversion failure, leaking the pooled outer slice + ownedNested
+// from param "messages".
+func newMixedMethodEmitter(t *testing.T, nonPooledKind string) *methodEmitter {
+	t.Helper()
+
+	pkgs := DefaultPackageConfig()
+	g := &generator{
+		opts:                 Options{SupportsWithClient: true, Packages: pkgs, Introspection: RootIntrospection()},
+		pkgs:                 pkgs,
+		intro:                RootIntrospection(),
+		out:                  common.MakeFile(),
+		supportsWithClient:   true,
+		mirrors:              newMirrorStructTracker(),
+		emittedUnwrapHelpers: map[string]bool{},
+		slicePools:           newSlicePoolTracker(pkgs),
+	}
+
+	pooledElem := reflect.TypeOf(testMessageElemA{})
+	innerElem := reflect.TypeOf(testContentPartElem{})
+	g.mirrors.convertOwnedNested[pooledElem] = innerElem
+	pooledType := reflect.SliceOf(pooledElem)
+
+	nonPooledStruct := reflect.TypeOf(nonPooledMessageElem{})
+	var nonPooledType reflect.Type
+	switch nonPooledKind {
+	case "ptr_slice":
+		nonPooledType = reflect.PointerTo(reflect.SliceOf(nonPooledStruct))
+	case "ptr_struct":
+		nonPooledType = reflect.PointerTo(nonPooledStruct)
+	case "direct":
+		nonPooledType = nonPooledStruct
+	case "slice_of_ptr":
+		nonPooledType = reflect.SliceOf(reflect.PointerTo(nonPooledStruct))
+	default:
+		t.Fatalf("unknown nonPooledKind %q", nonPooledKind)
+	}
+
+	smps := []structMediaParam{
+		{
+			paramName:   "messages",
+			mirrorName:  "TestMirrorMessages",
+			convertFunc: "convertTestMirrorMessages",
+			paramType:   pooledType,
+		},
+		{
+			paramName:   "context",
+			mirrorName:  "TestMirrorContext",
+			convertFunc: "convertTestMirrorContext",
+			paramType:   nonPooledType,
+		},
+	}
+
+	me := &methodEmitter{
+		g:                 g,
+		methodName:        "TestMethod",
+		args:              []string{"messages", "context"},
+		syncFuncType:      synthSyncFuncType([]reflect.Type{pooledType, nonPooledType}),
+		methodMediaParams: map[string]bamlutils.MediaKind{},
+		structMediaParams: smps,
+		inputStructName:   "TestMethodInput",
+	}
+	me.structMediaParamSet = make(map[string]bool, len(me.structMediaParams))
+	for _, smp := range me.structMediaParams {
+		me.structMediaParamSet[smp.paramName] = true
+	}
+	return me
+}
+
+// TestPreambleReleasesPooledResourcesOnNonPooledConversionError pins
+// F3: every Phase-B conversion-error return must call
+// `__releaseConverted()` before propagating the error when any pooled
+// resources were allocated in Phase A. The pre-fix codegen only added
+// the release call to the pooled-slice branch — non-pooled siblings'
+// error paths leaked the outer slice + ownedNested.
+//
+// Drives one fixture per non-pooled shape (the four Phase-B branches
+// that currently emit `return fmt.Errorf(...)`): `*[]C`, `*C`,
+// direct `C`, and `[]*C`. The shared assertion is that
+// `__releaseConverted()` is called immediately before the
+// non-pooled param's `return fmt.Errorf("<paramName>: %w", ...)` /
+// `return fmt.Errorf("<paramName>[%d]: %w", ...)` site. We match the
+// exact two-statement block jen emits — release call, then the
+// `return fmt.Errorf` literal — so a regression that drops the
+// release call (or moves it elsewhere in the block) fails the
+// assertion regardless of surrounding context.
+func TestPreambleReleasesPooledResourcesOnNonPooledConversionError(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		kind string
+		// wantBlock is the literal two-statement block that must
+		// appear in the rendered preamble for the non-pooled param's
+		// error path: `__releaseConverted()` followed by the matching
+		// `return fmt.Errorf(...)`. We anchor on the "context"
+		// param-name fragment so the assertion targets the non-pooled
+		// branch, not the pooled "messages" branch.
+		wantBlock string
+	}{
+		{
+			name:      "ptr_slice",
+			kind:      "ptr_slice",
+			wantBlock: "__releaseConverted()\n\t\t\t\treturn fmt.Errorf(\"context[%d]: %w\",",
+		},
+		{
+			name:      "ptr_struct",
+			kind:      "ptr_struct",
+			wantBlock: "__releaseConverted()\n\t\t\treturn fmt.Errorf(\"context: %w\",",
+		},
+		{
+			name:      "direct",
+			kind:      "direct",
+			wantBlock: "__releaseConverted()\n\t\treturn fmt.Errorf(\"context: %w\",",
+		},
+		{
+			name:      "slice_of_ptr",
+			kind:      "slice_of_ptr",
+			wantBlock: "__releaseConverted()\n\t\t\t\treturn fmt.Errorf(\"context[%d]: %w\",",
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			me := newMixedMethodEmitter(t, tc.kind)
+			preamble := me.makePreambleWithArgs("makeOptionsFromAdapter")
+
+			out := common.MakeFile()
+			out.Func().Id("preambleHarness").Params().Block(preamble...)
+			rendered := out.GoString()
+
+			// The pooled-slice param must have set hasReleaseConverted —
+			// otherwise the assertion would be vacuously passing (no
+			// release call would be expected anywhere).
+			if !me.hasReleaseConverted {
+				t.Fatalf("fixture invariant: pooled param must set hasReleaseConverted; rendered:\n%s", rendered)
+			}
+
+			if !strings.Contains(rendered, tc.wantBlock) {
+				t.Errorf("non-pooled %q error path must call __releaseConverted() immediately before the error return; expected block:\n%s\n\nrendered:\n%s",
+					tc.kind, tc.wantBlock, rendered)
+			}
+		})
+	}
+}
+
 // TestGenerateConversionFunc_PointerElementSliceSkipsPool pins F2: a
 // `*[]*Inner` field on a mirror struct must take the legacy
 // `make([]*Inner, n)` path inside nestedStructConversion AND must

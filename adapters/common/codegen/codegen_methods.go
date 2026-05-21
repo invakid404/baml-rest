@@ -549,6 +549,30 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 			pooledByName[p.smp.paramName] = p
 		}
 
+		// releaseThenReturnError prepends `__releaseConverted()` to a
+		// Phase-B conversion-error return when any pooled resources
+		// were allocated upstream in Phase A. Without this, a non-
+		// pooled sibling param's conversion failure (e.g. a `*C` field
+		// after a pooled `[]C` was checked out) leaks the pooled outer
+		// slice and every owned nested slice for the lifetime of the
+		// program: the `defer __releaseConverted()` placements live
+		// inside body callbacks / goroutines that never start when the
+		// outer dispatch function returns the conversion error
+		// directly, so the defer cannot cover this path.
+		//
+		// Only call sites EMITTED IN PHASE B should route through this
+		// helper. Errors raised before Phase A (raw-input assertion,
+		// direct media-typed param conversion) happen before any pool
+		// checkout and must NOT call __releaseConverted (which would
+		// reference an undeclared identifier and fail to compile when
+		// hasReleaseConverted is false too).
+		releaseThenReturnError := func(returnStmt jen.Code) []jen.Code {
+			if me.hasReleaseConverted {
+				return []jen.Code{jen.Id("__releaseConverted").Call(), returnStmt}
+			}
+			return []jen.Code{returnStmt}
+		}
+
 		// Generate struct conversion code for params with nested media.
 		// Must handle direct, pointer, and slice wrapping of the struct param.
 		for _, smp := range me.structMediaParams {
@@ -579,11 +603,7 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 					convertArgs = append(convertArgs, jen.Op("&").Id(pooled.ownedNestedName))
 				}
 
-				errReturnStmts := []jen.Code{}
-				if isPooled {
-					errReturnStmts = append(errReturnStmts, jen.Id("__releaseConverted").Call())
-				}
-				errReturnStmts = append(errReturnStmts,
+				errReturnStmts := releaseThenReturnError(
 					jen.Return(jen.Qual("fmt", "Errorf").Call(
 						jen.Lit(smp.paramName+"[%d]: %w"),
 						jen.Id("__i"),
@@ -646,13 +666,13 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 							jen.Id("adapter"),
 							vArg,
 						),
-						jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
+						jen.If(jen.Id(errVar).Op("!=").Nil()).Block(releaseThenReturnError(
 							jen.Return(jen.Qual("fmt", "Errorf").Call(
 								jen.Lit(smp.paramName+"[%d]: %w"),
 								jen.Id("__i"),
 								jen.Id(errVar),
 							)),
-						),
+						)...),
 						func() jen.Code {
 							if elemIsPtr {
 								return jen.Id("__ptrSlice").Index(jen.Id("__i")).Op("=").Op("&").Id("__converted")
@@ -690,12 +710,12 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 								jen.Id("adapter"),
 								jen.Id("input").Dot(fieldName), // already *Mirror, pass directly
 							),
-							jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
+							jen.If(jen.Id(errVar).Op("!=").Nil()).Block(releaseThenReturnError(
 								jen.Return(jen.Qual("fmt", "Errorf").Call(
 									jen.Lit(smp.paramName+": %w"),
 									jen.Id(errVar),
 								)),
-							),
+							)...),
 							jen.Id(convertedVar).Op("=").Op("&").Id("__converted"),
 						),
 					)
@@ -707,12 +727,12 @@ func (me *methodEmitter) makePreambleWithArgs(optionsHelperName string, extraCal
 						jen.Id("adapter"),
 						jen.Op("&").Id("input").Dot(fieldName),
 					),
-					jen.If(jen.Id(errVar).Op("!=").Nil()).Block(
+					jen.If(jen.Id(errVar).Op("!=").Nil()).Block(releaseThenReturnError(
 						jen.Return(jen.Qual("fmt", "Errorf").Call(
 							jen.Lit(smp.paramName+": %w"),
 							jen.Id(errVar),
 						)),
-					),
+					)...),
 				)
 			}
 		}
