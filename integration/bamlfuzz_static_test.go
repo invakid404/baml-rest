@@ -133,7 +133,7 @@ func runStaticBatch(t *testing.T, cases []bamlfuzz.OracleCase, batchLabel string
 		caseID := caseIDFor(batchLabel, i)
 		src, err := bamlfuzz.LowerToBamlSource(cases[i].Schema, caseID)
 		if err != nil {
-			envelope := newStaticEnvelope(cases[i], i, batchLabel, source)
+			envelope := newStaticEnvelope(cases[i], i, batchLabel, source, false)
 			envelope.BuildError = fmt.Sprintf("LowerToBamlSource: %v", err)
 			failStaticAndDump(t, envelope, "LowerToBamlSource for case %s: %v", cases[i].Name, err)
 			return
@@ -154,7 +154,15 @@ func runStaticBatch(t *testing.T, cases []bamlfuzz.OracleCase, batchLabel string
 	env, err := setupStaticEnv(batchDir)
 	if err != nil {
 		t.Logf("batch build failed for %s: %v; isolating cases singly", batchLabel, err)
-		isolateStaticBatch(t, lowered, batchLabel, source)
+		if !isolateStaticBatch(t, lowered, batchLabel, source) {
+			// All isolated rebuilds passed, but the batch build failed.
+			// Without this guard the parent subtest would pass and the
+			// batch-only regression would land in CI silently. Use
+			// t.Errorf so any envelope artifacts already on disk stay
+			// readable and the test still tears down cleanly.
+			t.Errorf("batch build failed for %s (%v) but every isolated rebuild passed — batch-only failure must not pass silently",
+				batchLabel, err)
+		}
 		return
 	}
 	defer terminateStaticEnv(t, env)
@@ -166,7 +174,7 @@ func runStaticBatch(t *testing.T, cases []bamlfuzz.OracleCase, batchLabel string
 		i := i
 		lc := lc
 		t.Run(lc.Case.Name, func(t *testing.T) {
-			runOneStaticCase(t, env, mockClient, bamlClient, lc, i, batchLabel, source)
+			runOneStaticCase(t, env, mockClient, bamlClient, lc, batchDir, i, batchLabel, source)
 		})
 	}
 }
@@ -184,12 +192,13 @@ type loweredStaticCase struct {
 // mockllm scenario, post /call/<FunctionName>, compare the parsed
 // response against Expected, and write a StaticFailureEnvelope on any
 // disagreement.
-func runOneStaticCase(t *testing.T, env *testutil.TestEnvironment, mockClient *mockllm.Client, bamlClient *testutil.BAMLRestClient, lc loweredStaticCase, caseIdx int, batchLabel string, source staticCaseSource) {
-	envelope := newStaticEnvelope(lc.Case, caseIdx, batchLabel, source)
+func runOneStaticCase(t *testing.T, env *testutil.TestEnvironment, mockClient *mockllm.Client, bamlClient *testutil.BAMLRestClient, lc loweredStaticCase, batchDir string, caseIdx int, batchLabel string, source staticCaseSource) {
+	envelope := newStaticEnvelope(lc.Case, caseIdx, batchLabel, source, false)
 	envelope.BamlSource = lc.Source.Source
 	envelope.FunctionName = lc.Source.FunctionName
 	envelope.ClassNames = lc.Source.ClassNames
 	envelope.EnumNames = lc.Source.EnumNames
+	envelope.BuildSourcePath = caseSourcePath(batchDir, lc.CaseID)
 
 	scenarioID := fmt.Sprintf("bamlfuzz-static-%s", scenarioSafe(lc.CaseID))
 	envelope.MockLLMScenarioID = scenarioID
@@ -259,32 +268,60 @@ func runOneStaticCase(t *testing.T, env *testutil.TestEnvironment, mockClient *m
 // requires this whenever a five-function batch build fails — the
 // batched error message rarely identifies which case carries the bad
 // source.
-func isolateStaticBatch(t *testing.T, lowered []loweredStaticCase, batchLabel string, source staticCaseSource) {
+//
+// Returns whether any isolated rebuild failed. The caller treats a
+// false return as a batch-only regression and fails the parent
+// subtest explicitly: a Go `t.Run` only propagates failures from its
+// own body, so without that explicit signal a transient batched
+// build failure would pass silently when the isolated reruns happen
+// to succeed.
+func isolateStaticBatch(t *testing.T, lowered []loweredStaticCase, batchLabel string, source staticCaseSource) (anyFailed bool) {
 	for i, lc := range lowered {
 		i := i
 		lc := lc
-		t.Run(lc.Case.Name+"_isolated", func(t *testing.T) {
-			envelope := newStaticEnvelope(lc.Case, i, batchLabel, source)
-			envelope.BamlSource = lc.Source.Source
-			envelope.FunctionName = lc.Source.FunctionName
-			envelope.ClassNames = lc.Source.ClassNames
-			envelope.EnumNames = lc.Source.EnumNames
-
-			singleDir := t.TempDir()
-			if err := writeBatchBamlSrc(singleDir, []loweredStaticCase{lc}); err != nil {
-				envelope.BuildError = fmt.Sprintf("write isolated baml_src: %v", err)
-				failStaticAndDump(t, envelope, "isolated write: %v", err)
-				return
-			}
-			env, err := setupStaticEnv(singleDir)
-			if err != nil {
-				envelope.BuildError = err.Error()
-				failStaticAndDump(t, envelope, "isolated build failed: %v", err)
-				return
-			}
-			terminateStaticEnv(t, env)
-		})
+		if !t.Run(lc.Case.Name+"_isolated", func(t *testing.T) {
+			runIsolatedStaticCase(t, lc, i, batchLabel, source)
+		}) {
+			anyFailed = true
+		}
 	}
+	return anyFailed
+}
+
+// runIsolatedStaticCase is the per-case body of isolateStaticBatch.
+// Extracted so the t.Run aggregation pattern stays readable and so
+// the body's envelope wiring can evolve without rewriting the loop.
+// The isolated flag on newStaticEnvelope is what routes the
+// reproduction command at the `<case>_isolated` subtest leaf.
+func runIsolatedStaticCase(t *testing.T, lc loweredStaticCase, caseIdx int, batchLabel string, source staticCaseSource) {
+	envelope := newStaticEnvelope(lc.Case, caseIdx, batchLabel, source, true)
+	envelope.BamlSource = lc.Source.Source
+	envelope.FunctionName = lc.Source.FunctionName
+	envelope.ClassNames = lc.Source.ClassNames
+	envelope.EnumNames = lc.Source.EnumNames
+
+	singleDir := t.TempDir()
+	envelope.BuildSourcePath = caseSourcePath(singleDir, lc.CaseID)
+	if err := writeBatchBamlSrc(singleDir, []loweredStaticCase{lc}); err != nil {
+		envelope.BuildError = fmt.Sprintf("write isolated baml_src: %v", err)
+		failStaticAndDump(t, envelope, "isolated write: %v", err)
+		return
+	}
+	env, err := setupStaticEnv(singleDir)
+	if err != nil {
+		envelope.BuildError = err.Error()
+		failStaticAndDump(t, envelope, "isolated build failed: %v", err)
+		return
+	}
+	terminateStaticEnv(t, env)
+}
+
+// caseSourcePath returns the absolute path to the generated .baml
+// file inside `bamlSrcDir` for the given caseID. Pinned to the
+// `bamlfuzz_<CaseID>.baml` naming used by writeBatchBamlSrc so the
+// envelope's BuildSourcePath always identifies a real file on disk.
+func caseSourcePath(bamlSrcDir, caseID string) string {
+	return filepath.Join(bamlSrcDir, fmt.Sprintf("bamlfuzz_%s.baml", caseID))
 }
 
 // writeBatchBamlSrc materialises a baml_src/ at `dir` that is the
@@ -389,8 +426,11 @@ func terminateStaticEnv(t *testing.T, env *testutil.TestEnvironment) {
 
 // newStaticEnvelope returns a partially-populated envelope with the
 // common header fields stamped. Callers fill in lowering / build /
-// REST fields as the case progresses.
-func newStaticEnvelope(c bamlfuzz.OracleCase, caseIdx int, batchLabel string, source staticCaseSource) *bamlfuzz.StaticFailureEnvelope {
+// REST fields as the case progresses. `isolated` selects the
+// reproduction-command shape: the isolated rebuild path runs as a
+// `<case>_isolated` subtest so the developer's copy-paste needs the
+// correct leaf segment.
+func newStaticEnvelope(c bamlfuzz.OracleCase, caseIdx int, batchLabel string, source staticCaseSource, isolated bool) *bamlfuzz.StaticFailureEnvelope {
 	flags := bamlfuzz.AnalyzeGraph(c.Schema)
 	return &bamlfuzz.StaticFailureEnvelope{
 		GeneratorVersion: bamlfuzz.GeneratorVersion,
@@ -403,7 +443,7 @@ func newStaticEnvelope(c bamlfuzz.OracleCase, caseIdx int, batchLabel string, so
 		MockLLMContent:   c.MockLLMContent,
 		Expected:         c.Expected,
 		Metadata:         c.Metadata,
-		Reproduction:     staticReproductionFor(c, caseIdx, batchLabel, source),
+		Reproduction:     staticReproductionFor(c, caseIdx, batchLabel, source, isolated),
 	}
 }
 
@@ -448,19 +488,29 @@ func caseIDFor(batchLabel string, idx int) string {
 // developer can copy-paste from the failure log.
 //
 //	TestBamlfuzzStaticOracle / corpus           / <case_name>
+//	TestBamlfuzzStaticOracle / corpus           / <case_name>_isolated
 //	TestBamlfuzzStaticOracle / rapid_batch_<n>  / <case_name>
+//	TestBamlfuzzStaticOracle / rapid_batch_<n>  / <case_name>_isolated
+//
+// `isolated` flips the leaf segment to the `_isolated` subtest name
+// that isolateStaticBatch creates, so an isolated build failure's
+// envelope command actually selects the failing subtest.
 //
 // BAMLFUZZ_SEED is echoed when set so a rapid-seeded draw is
 // reproducible.
-func staticReproductionFor(c bamlfuzz.OracleCase, caseIdx int, batchLabel string, source staticCaseSource) string {
+func staticReproductionFor(c bamlfuzz.OracleCase, caseIdx int, batchLabel string, source staticCaseSource, isolated bool) string {
+	leaf := c.Name
+	if isolated {
+		leaf = c.Name + "_isolated"
+	}
 	segments := []string{"^TestBamlfuzzStaticOracle$"}
 	switch source {
 	case staticCaseSourceCorpus:
-		segments = append(segments, "^corpus$", "^"+regexp.QuoteMeta(c.Name)+"$")
+		segments = append(segments, "^corpus$", "^"+regexp.QuoteMeta(leaf)+"$")
 	case staticCaseSourceRapid:
 		segments = append(segments,
 			"^"+regexp.QuoteMeta(batchLabel)+"$",
-			"^"+regexp.QuoteMeta(c.Name)+"$",
+			"^"+regexp.QuoteMeta(leaf)+"$",
 		)
 	}
 	cmd := fmt.Sprintf("go test -tags=integration -run='%s' ./integration -count=1",
@@ -571,7 +621,8 @@ func loadStaticCorpus(dir string) ([]bamlfuzz.OracleCase, error) {
 
 // TestStaticReproductionFor pins the shape of the reproduction command
 // embedded in static failure envelopes. Mirrors the dynamic oracle's
-// TestReproductionFor coverage for the static subtest tree.
+// TestReproductionFor coverage for the static subtest tree, plus the
+// `_isolated` leaf shape isolateStaticBatch emits.
 func TestStaticReproductionFor(t *testing.T) {
 	t.Setenv("BAMLFUZZ_SEED", "")
 	corpus := staticReproductionFor(
@@ -579,10 +630,23 @@ func TestStaticReproductionFor(t *testing.T) {
 		4,
 		"corpus",
 		staticCaseSourceCorpus,
+		false,
 	)
 	wantCorpus := "go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^corpus$/^self_referential_tree$' ./integration -count=1"
 	if corpus != wantCorpus {
 		t.Errorf("corpus repro:\n got:  %s\n want: %s", corpus, wantCorpus)
+	}
+
+	corpusIsolated := staticReproductionFor(
+		bamlfuzz.OracleCase{Name: "self_referential_tree"},
+		4,
+		"corpus",
+		staticCaseSourceCorpus,
+		true,
+	)
+	wantCorpusIsolated := "go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^corpus$/^self_referential_tree_isolated$' ./integration -count=1"
+	if corpusIsolated != wantCorpusIsolated {
+		t.Errorf("corpus isolated repro:\n got:  %s\n want: %s", corpusIsolated, wantCorpusIsolated)
 	}
 
 	rapid := staticReproductionFor(
@@ -590,10 +654,23 @@ func TestStaticReproductionFor(t *testing.T) {
 		2,
 		"rapid_batch_0",
 		staticCaseSourceRapid,
+		false,
 	)
 	wantRapid := "go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^rapid_batch_0$/^rapid_b0_c2$' ./integration -count=1"
 	if rapid != wantRapid {
 		t.Errorf("rapid repro:\n got:  %s\n want: %s", rapid, wantRapid)
+	}
+
+	rapidIsolated := staticReproductionFor(
+		bamlfuzz.OracleCase{Name: "rapid_b0_c2"},
+		2,
+		"rapid_batch_0",
+		staticCaseSourceRapid,
+		true,
+	)
+	wantRapidIsolated := "go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^rapid_batch_0$/^rapid_b0_c2_isolated$' ./integration -count=1"
+	if rapidIsolated != wantRapidIsolated {
+		t.Errorf("rapid isolated repro:\n got:  %s\n want: %s", rapidIsolated, wantRapidIsolated)
 	}
 
 	t.Setenv("BAMLFUZZ_SEED", "9999")
@@ -602,10 +679,48 @@ func TestStaticReproductionFor(t *testing.T) {
 		0,
 		"corpus",
 		staticCaseSourceCorpus,
+		false,
 	)
 	wantWithSeed := "BAMLFUZZ_SEED=9999 go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^corpus$/^scalar_object$' ./integration -count=1"
 	if withSeed != wantWithSeed {
 		t.Errorf("corpus+seed repro:\n got:  %s\n want: %s", withSeed, wantWithSeed)
+	}
+}
+
+// TestSubtestAggregationContract pins the Go testing-API contract
+// isolateStaticBatch relies on for F1's batch-mask guard: a t.Run
+// invocation returns the pass/fail state of its body, so the parent
+// can aggregate failures across iterations and detect the case where
+// every isolated rebuild passed but the batched build still failed.
+//
+// Only the green path (no subtest failures => aggregator stays false)
+// is asserted here — deliberately failing a subtest from within this
+// test would propagate up to TestSubtestAggregationContract itself,
+// which there's no built-in way to suppress. The red path is locked
+// by the Go testing package's contract that t.Run returns false on
+// any t.Errorf inside the body.
+func TestSubtestAggregationContract(t *testing.T) {
+	var anyFailed bool
+	if !t.Run("ok_a", func(t *testing.T) {}) {
+		anyFailed = true
+	}
+	if !t.Run("ok_b", func(t *testing.T) {}) {
+		anyFailed = true
+	}
+	if anyFailed {
+		t.Errorf("expected anyFailed=false when no subtest body failed, got true")
+	}
+}
+
+// TestCaseSourcePath pins the on-disk filename writeBatchBamlSrc uses
+// for each generated case. The envelope's BuildSourcePath assignment
+// targets exactly this path, so a drift between the two breaks the
+// developer's path-from-envelope-to-source lookup.
+func TestCaseSourcePath(t *testing.T) {
+	got := caseSourcePath("/tmp/bamlsrc", "corpus_C03")
+	want := filepath.Join("/tmp/bamlsrc", "bamlfuzz_corpus_C03.baml")
+	if got != want {
+		t.Errorf("caseSourcePath: got %q want %q", got, want)
 	}
 }
 
