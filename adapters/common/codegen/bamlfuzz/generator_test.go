@@ -10,11 +10,12 @@ import (
 
 // TestDynamicSafeNeverSelfRefs asserts the dynamic-safe schema
 // generator never produces a class graph in which any class
-// references itself through its own property tree (the direct
-// self-ref case). Mutual cycles through OTHER classes are permitted
-// — see TestDynamicSafeCanEmitMutualCycle. The dynamic emitter
-// relies on no-direct-self-ref to side-step the upstream BAML
-// TypeBuilder self-reference bug (TODO(upstream-self-ref)).
+// references itself through its own property tree (direct self-ref)
+// nor a mutual cycle through other classes. Both shapes are gated at
+// the dynamic emitter today — see TestDynamicSafeNeverEmitsMutualCycle.
+// DynamicSafeSchemaGen pins MutualCycleProbability=0 and
+// AllowSelfRef=false; this property test enforces the matching graph
+// invariant.
 func TestDynamicSafeNeverSelfRefs(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		schema := DynamicSafeSchemaGen().Draw(rt, "schema")
@@ -38,12 +39,16 @@ func TestDynamicSafeNeverSelfRefs(t *testing.T) {
 	})
 }
 
-// TestDynamicSafeCanEmitMutualCycle asserts the dynamic-safe
-// generator CAN produce schemas with HasMutualCycle=true and
-// RequiresDynamicSkip=false. This locks in the corrected contract:
-// mutual cycles through OTHER classes are realizable through
-// TypeBuilder, only DIRECT self-ref requires dynamic skip.
-func TestDynamicSafeCanEmitMutualCycle(t *testing.T) {
+// TestMutualCycleRequiresDynamicSkip asserts the current contract for
+// mutual-cycle schemas: when the schema generator produces a graph
+// with HasMutualCycle=true (no direct self-ref), the analyzer stamps
+// RequiresDynamicSkip=true. The upstream BAML cgo TypeBuilder aborts
+// the host on mutual-cycle dynamic schemas
+// (TODO(upstream-mutual-rec-dynamic-crash)), so the dynamic emitter
+// needs the skip flag to recognize them. Static emission is
+// unaffected: mutual cycles through distinct classes are still
+// expressible in BAML source.
+func TestMutualCycleRequiresDynamicSkip(t *testing.T) {
 	gen := SchemaGen(SchemaGenOptions{
 		AllowSelfRef:           false,
 		MutualCycleProbability: 1.0,
@@ -51,16 +56,33 @@ func TestDynamicSafeCanEmitMutualCycle(t *testing.T) {
 	saw := false
 	for i := 0; i < 64 && !saw; i++ {
 		schema := gen.Example(i + 1)
-		if schema.HasMutualCycle && !schema.HasSelfRef && !schema.RequiresDynamicSkip {
+		if schema.HasMutualCycle && !schema.HasSelfRef {
 			saw = true
-		}
-		if schema.HasMutualCycle && schema.RequiresDynamicSkip && !schema.HasSelfRef {
-			t.Fatalf("mutual-cycle-only schema should NOT require dynamic skip\nschema: %s",
-				schemaDump(schema))
+			if !schema.RequiresDynamicSkip {
+				t.Fatalf("mutual-cycle schema must have RequiresDynamicSkip=true\nschema: %s",
+					schemaDump(schema))
+			}
 		}
 	}
 	if !saw {
-		t.Fatal("dynamic-safe + MutualCycleProbability=1.0 never produced a mutual-cycle schema across 64 examples")
+		t.Fatal("MutualCycleProbability=1.0 never produced a mutual-cycle schema across 64 examples")
+	}
+}
+
+// TestDynamicSafeNeverEmitsMutualCycle asserts the public
+// DynamicSafeSchemaGen never produces a mutual-cycle schema. The
+// generator pins MutualCycleProbability=0 to side-step the upstream
+// BAML cgo crash (TODO(upstream-mutual-rec-dynamic-crash)); this test
+// catches a future change that would lift the probability without
+// also lifting the upstream gate.
+func TestDynamicSafeNeverEmitsMutualCycle(t *testing.T) {
+	gen := DynamicSafeSchemaGen()
+	for i := 0; i < 128; i++ {
+		schema := gen.Example(i + 1)
+		if schema.HasMutualCycle {
+			t.Fatalf("dynamic-safe schema must never have HasMutualCycle=true (seed %d)\nschema: %s",
+				i+1, schemaDump(schema))
+		}
 	}
 }
 

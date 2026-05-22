@@ -33,3 +33,13 @@ integration
 # — but they are NOT part of the published codegen artifact and
 # must not be bundled into the server binary's embed.FS.
 codegen/internal
+
+# Codegen test corpora for the bamlfuzz property fuzzer.
+codegen/testdata
+
+# bamlfuzz lives publicly under codegen/ (not internal/) so the
+# root-module integration test can import it without coupling
+# adapters/common to integration/testutil. The package is test
+# infrastructure for the property fuzzer, not a customer-build
+# input — keep the source out of the production embed bundle.
+codegen/bamlfuzz

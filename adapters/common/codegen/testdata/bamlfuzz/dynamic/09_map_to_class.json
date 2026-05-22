@@ -1,0 +1,118 @@
+{
+  "name": "map_to_class",
+  "seed": 10,
+  "case_index": 9,
+  "mode": "dynamic_three_way",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "by_id",
+            "type": {
+              "kind": "map",
+              "inner": {
+                "kind": "class_ref",
+                "ref": "Item"
+              },
+              "key": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Item",
+        "properties": [
+          {
+            "name": "label",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "by_id",
+        "value": {
+          "kind": "map",
+          "map_entries": [
+            {
+              "key": "a",
+              "value": {
+                "kind": "class_ref",
+                "class_name": "Item",
+                "fields": [
+                  {
+                    "name": "label",
+                    "value": {
+                      "kind": "string",
+                      "string": "apple"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "key": "b",
+              "value": {
+                "kind": "class_ref",
+                "class_name": "Item",
+                "fields": [
+                  {
+                    "name": "label",
+                    "value": {
+                      "kind": "string",
+                      "string": "banana"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "by_id": {
+      "a": {
+        "label": "apple"
+      },
+      "b": {
+        "label": "banana"
+      }
+    }
+  },
+  "expected": {
+    "by_id": {
+      "a": {
+        "label": "apple"
+      },
+      "b": {
+        "label": "banana"
+      }
+    }
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Item": 1,
+      "Root": 1
+    }
+  }
+}

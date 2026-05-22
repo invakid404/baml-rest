@@ -30,9 +30,13 @@ type CaseMetadata struct {
 	// ".Fuzz_field_2.Fuzz_field_0") to "present" / "absent" /
 	// "null". Recorded for every optional field encountered.
 	OptionalShapes map[string]string `json:"optional_shapes,omitempty"`
-	// RecursionDepths maps a class name to the maximum self-ref
-	// depth the value walker entered for that class. Populated for
-	// static cases with self-ref edges; zero for dynamic-safe cases.
+	// RecursionDepths maps a class name to the peak instance-entry
+	// depth the value walker reached for that class. The walker
+	// increments a counter on each class-instance entry and records
+	// the maximum, so every class encountered during the walk gets an
+	// entry — even single-visit classes in a dynamic-safe DAG, which
+	// report depth 1. Self-ref and mutual-cycle schemas report higher
+	// peaks up to MaxValueRecursion.
 	RecursionDepths map[string]int `json:"recursion_depths,omitempty"`
 }
 

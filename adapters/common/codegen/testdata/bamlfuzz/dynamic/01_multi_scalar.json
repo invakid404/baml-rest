@@ -1,0 +1,111 @@
+{
+  "name": "multi_scalar",
+  "seed": 2,
+  "case_index": 1,
+  "mode": "dynamic_three_way",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "name",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "age",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "score",
+            "type": {
+              "kind": "float"
+            }
+          },
+          {
+            "name": "active",
+            "type": {
+              "kind": "bool"
+            }
+          },
+          {
+            "name": "nothing",
+            "type": {
+              "kind": "null"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "name",
+        "value": {
+          "kind": "string",
+          "string": "Ada"
+        }
+      },
+      {
+        "name": "age",
+        "value": {
+          "kind": "int",
+          "int": 36
+        }
+      },
+      {
+        "name": "score",
+        "value": {
+          "kind": "float",
+          "float": 99.5
+        }
+      },
+      {
+        "name": "active",
+        "value": {
+          "kind": "bool",
+          "bool": true
+        }
+      },
+      {
+        "name": "nothing",
+        "value": {
+          "kind": "null"
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "name": "Ada",
+    "age": 36,
+    "score": 99.5,
+    "active": true,
+    "nothing": null
+  },
+  "expected": {
+    "name": "Ada",
+    "age": 36,
+    "score": 99.5,
+    "active": true,
+    "nothing": null
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Root": 1
+    }
+  }
+}

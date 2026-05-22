@@ -1,0 +1,119 @@
+{
+  "name": "optional_list_of_class",
+  "seed": 9,
+  "case_index": 8,
+  "mode": "dynamic_three_way",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "items",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "list",
+                "inner": {
+                  "kind": "class_ref",
+                  "ref": "Item"
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Item",
+        "properties": [
+          {
+            "name": "sku",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "items",
+        "value": {
+          "kind": "optional",
+          "optional_shape": "present",
+          "inner": {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "class_ref",
+                "class_name": "Item",
+                "fields": [
+                  {
+                    "name": "sku",
+                    "value": {
+                      "kind": "string",
+                      "string": "ABC"
+                    }
+                  }
+                ]
+              },
+              {
+                "kind": "class_ref",
+                "class_name": "Item",
+                "fields": [
+                  {
+                    "name": "sku",
+                    "value": {
+                      "kind": "string",
+                      "string": "DEF"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "items": [
+      {
+        "sku": "ABC"
+      },
+      {
+        "sku": "DEF"
+      }
+    ]
+  },
+  "expected": {
+    "items": [
+      {
+        "sku": "ABC"
+      },
+      {
+        "sku": "DEF"
+      }
+    ]
+  },
+  "metadata": {
+    "optional_shapes": {
+      ".items": "present"
+    },
+    "recursion_depths": {
+      "Item": 1,
+      "Root": 1
+    }
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "name": "list_of_strings",
+  "seed": 3,
+  "case_index": 2,
+  "mode": "dynamic_three_way",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "tags",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "tags",
+        "value": {
+          "kind": "list",
+          "items": [
+            {
+              "kind": "string",
+              "string": "alpha"
+            },
+            {
+              "kind": "string",
+              "string": "beta"
+            },
+            {
+              "kind": "string",
+              "string": "gamma"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "tags": [
+      "alpha",
+      "beta",
+      "gamma"
+    ]
+  },
+  "expected": {
+    "tags": [
+      "alpha",
+      "beta",
+      "gamma"
+    ]
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Root": 1
+    }
+  }
+}

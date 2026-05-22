@@ -1,0 +1,52 @@
+{
+  "name": "scalar_string",
+  "seed": 1,
+  "case_index": 0,
+  "mode": "dynamic_three_way",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "name",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "name",
+        "value": {
+          "kind": "string",
+          "string": "hello"
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "name": "hello"
+  },
+  "expected": {
+    "name": "hello"
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Root": 1
+    }
+  }
+}

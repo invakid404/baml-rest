@@ -99,10 +99,10 @@ func isTransientConnError(err error) bool {
 // free-form error text. Kept as a plain string to match the wire
 // representation; testutil does not depend on the apierror package.
 type errorResponse struct {
-	Error     string          `json:"error"`
-	Code      string          `json:"code,omitempty"`
+	Error     string             `json:"error"`
+	Code      string             `json:"code,omitempty"`
 	Details   stdjson.RawMessage `json:"details,omitempty"`
-	RequestID string          `json:"request_id,omitempty"`
+	RequestID string             `json:"request_id,omitempty"`
 }
 
 // extractErrorMessage extracts the error message from a JSON error response body.
@@ -305,10 +305,10 @@ type CallResponse struct {
 // error paths; see CallResponse.ErrorCode.
 type CallWithRawResponse struct {
 	StatusCode   int
-	Headers      http.Header     // Response headers — used for X-BAML-* assertions
+	Headers      http.Header        // Response headers — used for X-BAML-* assertions
 	Data         stdjson.RawMessage `json:"data"`
-	Raw          string          `json:"raw"`
-	Reasoning    string          `json:"reasoning,omitempty"`
+	Raw          string             `json:"raw"`
+	Reasoning    string             `json:"reasoning,omitempty"`
 	Error        string
 	ErrorCode    string
 	ErrorDetails stdjson.RawMessage
@@ -372,10 +372,10 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 
 // StreamEvent represents a single event from /stream endpoints (works for both SSE and NDJSON).
 type StreamEvent struct {
-	Event     string          // Event type: "data", "final", "reset", "error" for NDJSON; "" for SSE data, "final"/"reset"/"error" for SSE
+	Event     string             // Event type: "data", "final", "reset", "error" for NDJSON; "" for SSE data, "final"/"reset"/"error" for SSE
 	Data      stdjson.RawMessage // Event data
-	Raw       string          // For stream-with-raw, the raw LLM output at this point
-	Reasoning string          // For stream-with-raw with __baml_options__.include_reasoning, the reasoning text at this point
+	Raw       string             // For stream-with-raw, the raw LLM output at this point
+	Reasoning string             // For stream-with-raw with __baml_options__.include_reasoning, the reasoning text at this point
 }
 
 // IsPartialData returns true if this is a partial data event (type: "data").
@@ -417,8 +417,7 @@ func (e *StreamEvent) IsMetadata() bool {
 // skip the upfront planned emission while still flagging stray outcome
 // metadata that should not arrive before any upstream byte. A
 // nil/parse-failed payload is treated as not-planned so a malformed
-// metadata event surfaces as a failure rather than being silently
-// ignored.
+// metadata event surfaces as a hard failure with no silent passthrough.
 func (e *StreamEvent) IsPlannedMetadata() bool {
 	if !e.IsMetadata() {
 		return false
@@ -926,8 +925,8 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expec
 		if expectRawEnvelope {
 			var rawData struct {
 				Data      stdjson.RawMessage `json:"data"`
-				Raw       *string         `json:"raw"`
-				Reasoning string          `json:"reasoning,omitempty"`
+				Raw       *string            `json:"raw"`
+				Reasoning string             `json:"reasoning,omitempty"`
 			}
 			if err := sonic.Unmarshal(data, &rawData); err == nil && rawData.Raw != nil {
 				currentEvent.Raw = *rawData.Raw
@@ -983,11 +982,11 @@ func parseSSE(ctx context.Context, r io.Reader, events chan<- StreamEvent, expec
 
 // ndjsonEvent represents a single NDJSON streaming event from the server.
 type ndjsonEvent struct {
-	Type      string          `json:"type"`
+	Type      string             `json:"type"`
 	Data      stdjson.RawMessage `json:"data,omitempty"`
-	Raw       string          `json:"raw,omitempty"`
-	Reasoning string          `json:"reasoning,omitempty"`
-	Error     string          `json:"error,omitempty"`
+	Raw       string             `json:"raw,omitempty"`
+	Reasoning string             `json:"reasoning,omitempty"`
+	Error     string             `json:"error,omitempty"`
 }
 
 func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) error {
@@ -1022,10 +1021,10 @@ func parseNDJSON(ctx context.Context, r io.Reader, events chan<- StreamEvent) er
 		}
 
 		// For error events, store the error message in Data. Route the
-		// string through sonic.Marshal rather than naively concatenating
-		// surrounding quotes — an error message containing `"` or `\`
-		// would otherwise emit invalid JSON here and break consumers that
-		// decode Data downstream.
+		// string through sonic.Marshal so quote/backslash characters in
+		// the message stay JSON-escaped — naïve quote concatenation
+		// would emit invalid JSON for messages containing `"` or `\`
+		// and break consumers that decode Data downstream.
 		if event.Type == "error" && event.Error != "" {
 			encoded, err := sonic.Marshal(event.Error)
 			if err != nil {
@@ -1178,10 +1177,15 @@ type DynamicOutputSchema struct {
 }
 
 // DynamicRequest represents a request to /call/_dynamic, /stream/_dynamic, or /parse/_dynamic.
+//
+// PreserveSchemaOrder mirrors bamlutils.DynamicInput.PreserveSchemaOrder:
+// nil leaves the field absent from the JSON body (server default wins),
+// non-nil emits a concrete boolean that overrides the default.
 type DynamicRequest struct {
-	Messages       []DynamicMessage     `json:"messages"`
-	ClientRegistry *ClientRegistry      `json:"client_registry"`
-	OutputSchema   *DynamicOutputSchema `json:"output_schema"`
+	Messages            []DynamicMessage     `json:"messages"`
+	ClientRegistry      *ClientRegistry      `json:"client_registry"`
+	OutputSchema        *DynamicOutputSchema `json:"output_schema"`
+	PreserveSchemaOrder *bool                `json:"preserve_schema_order,omitempty"`
 }
 
 // DynamicCallResponse represents a response from /call/_dynamic endpoint.
@@ -1202,8 +1206,8 @@ type DynamicCallResponse struct {
 type DynamicCallWithRawResponse struct {
 	StatusCode int
 	Data       stdjson.RawMessage `json:"data"`
-	Raw        string          `json:"raw"`
-	Reasoning  string          `json:"reasoning,omitempty"`
+	Raw        string             `json:"raw"`
+	Reasoning  string             `json:"reasoning,omitempty"`
 	Error      string
 	ErrorCode  string
 }
@@ -1224,6 +1228,29 @@ type DynamicParseResponse struct {
 	Data       stdjson.RawMessage
 	Error      string
 	ErrorCode  string
+}
+
+// DynamicCallJSON executes a /call/_dynamic request with a caller-provided
+// JSON body. Used by tests that build the request via bamlutils-ordered
+// types so insertion order of properties / classes / enums is preserved
+// end-to-end (testutil.DynamicOutputSchema is map-backed and cannot carry
+// declaration order).
+func (c *BAMLRestClient) DynamicCallJSON(ctx context.Context, body []byte) (*DynamicCallResponse, error) {
+	url := fmt.Sprintf("%s/call/_dynamic", c.baseURL)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DynamicCallResponse{
+		StatusCode: resp.StatusCode,
+	}
+	if resp.StatusCode >= 400 {
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
+	} else {
+		result.Body = respBody
+	}
+	return result, nil
 }
 
 // DynamicCall executes a /call/_dynamic request.

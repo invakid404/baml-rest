@@ -83,8 +83,9 @@ func TestAnalyzeGraphDetectsSelfRef(t *testing.T) {
 // TestAnalyzeGraphDetectsMutualCycle wires an A↔B mutual cycle
 // through OTHER classes (neither A nor B references itself
 // directly). HasMutualCycle must fire; HasSelfRef must not fire;
-// RequiresDynamicSkip must be false because the dynamic emitter
-// can realize mutual cycles through TypeBuilder.
+// RequiresDynamicSkip must be true because mutual cycles are gated by
+// TODO(upstream-mutual-rec-dynamic-crash) until BAML's cgo
+// TypeBuilder stops aborting on mutual-cycle dynamic schemas.
 func TestAnalyzeGraphDetectsMutualCycle(t *testing.T) {
 	refA := FuzzType{Kind: KindClassRef, Ref: "FuzzClass0"}
 	refB := FuzzType{Kind: KindClassRef, Ref: "FuzzClass1"}
@@ -114,8 +115,8 @@ func TestAnalyzeGraphDetectsMutualCycle(t *testing.T) {
 	if !got.HasMutualCycle {
 		t.Errorf("HasMutualCycle = false, want true")
 	}
-	if got.RequiresDynamicSkip {
-		t.Errorf("RequiresDynamicSkip = true, want false (mutual cycle is dynamic-friendly)")
+	if !got.RequiresDynamicSkip {
+		t.Errorf("RequiresDynamicSkip = false, want true (mutual cycle gated by TODO(upstream-mutual-rec-dynamic-crash))")
 	}
 }
 
