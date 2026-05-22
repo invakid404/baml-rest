@@ -1,6 +1,7 @@
 package testharness
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"testing"
@@ -28,16 +29,64 @@ func RunGoBuild(t *testing.T, dir string) {
 // run). Callers — the pool-lifecycle harness in particular — decide
 // whether a non-nil error is expected (regression-seed paths expect
 // the inner test to FAIL).
+//
+// For richer invocations (build tags, fuzz, custom env, -race), use
+// RunGoTestArgs.
 func RunGoTest(t *testing.T, dir, runPattern string) (string, error) {
 	t.Helper()
-	args := []string{"test", "-count=1"}
-	if runPattern != "" {
-		args = append(args, "-run", runPattern)
+	return RunGoTestArgs(t, dir, RunGoTestOptions{Run: runPattern})
+}
+
+// RunGoTestOptions captures the knobs the broader fuzz harness needs
+// when invoking `go test` against a temp module: build tags, fuzz
+// target selection, additional environment variables, race detector
+// toggling. Empty fields drop their flags entirely so the default
+// invocation collapses back to `go test -count=1 ./...`.
+type RunGoTestOptions struct {
+	// Run is passed as `-run <pattern>`. Empty omits the flag.
+	Run string
+	// Fuzz is passed as `-fuzz <pattern>`. Empty omits the flag.
+	Fuzz string
+	// Tags is passed as `-tags <list>`. Empty omits the flag.
+	Tags string
+	// Race toggles `-race`.
+	Race bool
+	// Count overrides `-count`. Zero (the default) becomes 1.
+	Count int
+	// Env are extra environment entries appended after os.Environ()
+	// + GOWORK=off. Use this for FUZZ_TIME or per-test toggles.
+	Env []string
+}
+
+// RunGoTestArgs invokes `go test` in `dir` with the options encoded
+// by `opts`. Returns combined stdout/stderr + the subprocess error.
+// GOWORK=off is always set so the temp module's go.mod is the sole
+// resolution source.
+func RunGoTestArgs(t *testing.T, dir string, opts RunGoTestOptions) (string, error) {
+	t.Helper()
+	count := opts.Count
+	if count == 0 {
+		count = 1
+	}
+	args := []string{"test", fmt.Sprintf("-count=%d", count)}
+	if opts.Race {
+		args = append(args, "-race")
+	}
+	if opts.Tags != "" {
+		args = append(args, "-tags", opts.Tags)
+	}
+	if opts.Run != "" {
+		args = append(args, "-run", opts.Run)
+	}
+	if opts.Fuzz != "" {
+		args = append(args, "-fuzz", opts.Fuzz)
 	}
 	args = append(args, "./...")
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	env := append(os.Environ(), "GOWORK=off")
+	env = append(env, opts.Env...)
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
