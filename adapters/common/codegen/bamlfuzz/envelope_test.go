@@ -142,6 +142,73 @@ func TestWriteReplayArtifact_SanitizesUnsafeCaseName(t *testing.T) {
 	}
 }
 
+func TestWriteStaticReplayArtifact_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	env := &StaticFailureEnvelope{
+		CaseName:       "static_demo",
+		CaseIndex:      3,
+		OracleMode:     OracleStaticPrompt,
+		BamlSource:     "class Demo {}",
+		FunctionName:   "FuzzFn_C03",
+		ClassNames:     []string{"Demo_C03"},
+		HasSelfRef:     true,
+		MockLLMContent: json.RawMessage(`{"k":"v"}`),
+		Expected:       json.RawMessage(`{"k":"v"}`),
+	}
+	path, err := WriteStaticReplayArtifact(dir, env)
+	if err != nil {
+		t.Fatalf("WriteStaticReplayArtifact: %v", err)
+	}
+	if got, want := filepath.Base(path), "static_demo.json"; got != want {
+		t.Errorf("path basename: got %q want %q", got, want)
+	}
+	if env.ReplayPath != path {
+		t.Errorf("envelope.ReplayPath: got %q want %q", env.ReplayPath, path)
+	}
+	if env.GeneratorVersion == "" {
+		t.Error("envelope.GeneratorVersion not stamped")
+	}
+	if env.GeneratedAt == "" {
+		t.Error("envelope.GeneratedAt not stamped")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var roundtrip StaticFailureEnvelope
+	if err := json.Unmarshal(data, &roundtrip); err != nil {
+		t.Fatalf("Unmarshal envelope: %v", err)
+	}
+	if roundtrip.CaseName != env.CaseName {
+		t.Errorf("CaseName round-trip: got %q want %q", roundtrip.CaseName, env.CaseName)
+	}
+	if roundtrip.FunctionName != env.FunctionName {
+		t.Errorf("FunctionName round-trip: got %q want %q", roundtrip.FunctionName, env.FunctionName)
+	}
+	if roundtrip.BamlSource != env.BamlSource {
+		t.Errorf("BamlSource round-trip mismatch")
+	}
+	if !roundtrip.HasSelfRef {
+		t.Error("HasSelfRef round-trip lost")
+	}
+}
+
+func TestWriteStaticReplayArtifact_SanitizesUnsafeCaseName(t *testing.T) {
+	dir := t.TempDir()
+	env := &StaticFailureEnvelope{
+		CaseName:  "../escape",
+		CaseIndex: 9,
+	}
+	path, err := WriteStaticReplayArtifact(dir, env)
+	if err != nil {
+		t.Fatalf("WriteStaticReplayArtifact: %v", err)
+	}
+	if got, want := filepath.Base(path), "case_9.json"; got != want {
+		t.Errorf("basename: got %q want %q (raw=%q)", got, want, path)
+	}
+}
+
 func TestWriteReplayArtifact_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	env := &DynamicFailureEnvelope{
