@@ -1,0 +1,122 @@
+{
+  "name": "terminating_mutual_recursion",
+  "seed": 4,
+  "case_index": 3,
+  "mode": "static_prompt",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "A",
+        "properties": [
+          {
+            "name": "name",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "b",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "class_ref",
+                "ref": "B"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {
+            "name": "kind",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "a",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "class_ref",
+                "ref": "A"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "A",
+    "has_self_ref": false,
+    "has_mutual_cycle": true,
+    "has_union": false,
+    "requires_dynamic_skip": true
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "A",
+    "fields": [
+      {
+        "name": "name",
+        "value": {
+          "kind": "string",
+          "string": "root-a"
+        }
+      },
+      {
+        "name": "b",
+        "value": {
+          "kind": "optional",
+          "optional_shape": "present",
+          "inner": {
+            "kind": "class_ref",
+            "class_name": "B",
+            "fields": [
+              {
+                "name": "kind",
+                "value": {
+                  "kind": "string",
+                  "string": "nested-b"
+                }
+              },
+              {
+                "name": "a",
+                "value": {
+                  "kind": "optional",
+                  "optional_shape": "absent"
+                }
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "name": "root-a",
+    "b": {
+      "kind": "nested-b"
+    }
+  },
+  "expected": {
+    "name": "root-a",
+    "b": {
+      "kind": "nested-b",
+      "a": null
+    }
+  },
+  "metadata": {
+    "optional_shapes": {
+      ".b": "present",
+      ".b.a": "absent"
+    },
+    "recursion_depths": {
+      "A": 1,
+      "B": 1
+    }
+  }
+}

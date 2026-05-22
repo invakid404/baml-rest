@@ -1,12 +1,12 @@
-// seedcorpus generates the dynamic oracle seed corpus
-// (testdata/bamlfuzz/dynamic/*.json). The corpus is hand-curated to cover
-// every type-kind branch the dynamic emitter has to handle; each JSON
-// file is an OracleCase that the integration test loads and replays.
+// seedcorpus generates the hand-curated oracle seed corpora under
+// testdata/bamlfuzz/{dynamic,static}/. Each JSON file is an
+// OracleCase the integration test loads and replays.
 //
 // Re-run with:
 //
 //	cd adapters/common
-//	GOWORK=off go run ./codegen/bamlfuzz/cmd/seedcorpus -out=./codegen/testdata/bamlfuzz/dynamic
+//	GOWORK=off go run ./codegen/bamlfuzz/cmd/seedcorpus -mode=dynamic -out=./codegen/testdata/bamlfuzz/dynamic
+//	GOWORK=off go run ./codegen/bamlfuzz/cmd/seedcorpus -mode=static  -out=./codegen/testdata/bamlfuzz/static
 package main
 
 import (
@@ -21,6 +21,7 @@ import (
 
 func main() {
 	outDir := flag.String("out", "", "output directory")
+	mode := flag.String("mode", "dynamic", "corpus mode: dynamic or static")
 	flag.Parse()
 	if *outDir == "" {
 		fmt.Fprintln(os.Stderr, "missing -out")
@@ -31,23 +32,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	cases := []seedSpec{
-		scalarString(),
-		multiScalar(),
-		listOfStrings(),
-		mapOfInts(),
-		optionalThreeShapes(),
-		enumRef(),
-		nestedClass(),
-		classWithEnum(),
-		optionalListOfClass(),
-		mapToClass(),
-		mutualRecursion(),
-		literalsAll(),
+	var (
+		cases     []seedSpec
+		modeValue bamlfuzz.OracleMode
+	)
+	switch *mode {
+	case "dynamic":
+		cases = []seedSpec{
+			scalarString(),
+			multiScalar(),
+			listOfStrings(),
+			mapOfInts(),
+			optionalThreeShapes(),
+			enumRef(),
+			nestedClass(),
+			classWithEnum(),
+			optionalListOfClass(),
+			mapToClass(),
+			mutualRecursion(),
+			literalsAll(),
+		}
+		modeValue = bamlfuzz.OracleDynamicThreeWay
+	case "static":
+		cases = staticCases()
+		modeValue = bamlfuzz.OracleStaticPrompt
+	default:
+		fmt.Fprintln(os.Stderr, "unknown -mode (want dynamic|static)")
+		os.Exit(2)
 	}
 
 	for i, spec := range cases {
-		ocase := materialize(i, spec)
+		ocase := materialize(i, spec, modeValue)
 		path := filepath.Join(*outDir, fmt.Sprintf("%02d_%s.json", i, ocase.Name))
 		data, err := json.MarshalIndent(ocase, "", "  ")
 		if err != nil {
@@ -69,7 +84,7 @@ type seedSpec struct {
 	Preserve bool
 }
 
-func materialize(idx int, spec seedSpec) bamlfuzz.OracleCase {
+func materialize(idx int, spec seedSpec, mode bamlfuzz.OracleMode) bamlfuzz.OracleCase {
 	schema := bamlfuzz.AnalyzeGraph(spec.Schema)
 	walk, err := bamlfuzz.Walk(schema, spec.Value)
 	if err != nil {
@@ -80,13 +95,160 @@ func materialize(idx int, spec seedSpec) bamlfuzz.OracleCase {
 		Name:                spec.Name,
 		Seed:                int64(idx + 1),
 		CaseIndex:           idx,
-		Mode:                bamlfuzz.OracleDynamicThreeWay,
+		Mode:                mode,
 		PreserveSchemaOrder: spec.Preserve,
 		Schema:              schema,
 		Value:               spec.Value,
 		MockLLMContent:      walk.MockLLMContent,
 		Expected:            walk.Expected,
 		Metadata:            walk.Metadata,
+	}
+}
+
+// staticCases returns the five hand-curated static-mode seed cases.
+// Scope D7 lists the static corpus shape: scalar object, nested class
+// with enum, optional three shapes, terminating mutual recursion, and
+// one self-referential tree. The self-ref case is exclusive to static
+// mode; the dynamic emitter rejects it.
+func staticCases() []seedSpec {
+	return []seedSpec{
+		staticScalarObject(),
+		staticNestedClassWithEnum(),
+		staticOptionalThreeShapes(),
+		staticTerminatingMutualRecursion(),
+		staticSelfReferentialTree(),
+	}
+}
+
+func staticScalarObject() seedSpec {
+	return seedSpec{
+		Name: "scalar_object",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("name", tStr()),
+				prop("age", tInt()),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("name", vStr("Ada")),
+			vField("age", vInt(36)),
+		),
+		Preserve: false,
+	}
+}
+
+func staticNestedClassWithEnum() seedSpec {
+	return seedSpec{
+		Name: "nested_class_with_enum",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{
+				cls("Root",
+					prop("title", tStr()),
+					prop("priority", tEnumRef("Priority")),
+					prop("inner", tClassRef("Inner")),
+				),
+				cls("Inner",
+					prop("label", tStr()),
+					prop("count", tInt()),
+				),
+			},
+			Enums:     []bamlfuzz.FuzzEnum{{Name: "Priority", Values: []string{"HIGH", "MEDIUM", "LOW"}}},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("title", vStr("ship it")),
+			vField("priority", vEnum("HIGH")),
+			vField("inner", vClass("Inner",
+				vField("label", vStr("inside")),
+				vField("count", vInt(7)),
+			)),
+		),
+		Preserve: false,
+	}
+}
+
+func staticOptionalThreeShapes() seedSpec {
+	return seedSpec{
+		Name: "optional_three_shapes",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("present_field", tOpt(tStr())),
+				prop("null_field", tOpt(tStr())),
+				prop("absent_field", tOpt(tStr())),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("present_field", vOptPresent(vStr("here"))),
+			vField("null_field", vOptNull()),
+			vField("absent_field", vOptAbsent()),
+		),
+		Preserve: false,
+	}
+}
+
+// staticTerminatingMutualRecursion mirrors the dynamic mutual_recursion
+// seed: A -> optional<B>, B -> optional<A>, value walks one step then
+// terminates via OptionalAbsent. Dynamic mode gates this shape with
+// TODO(upstream-mutual-rec-dynamic-crash); static mode lowers it
+// cleanly.
+func staticTerminatingMutualRecursion() seedSpec {
+	return seedSpec{
+		Name: "terminating_mutual_recursion",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{
+				cls("A",
+					prop("name", tStr()),
+					prop("b", tOpt(tClassRef("B"))),
+				),
+				cls("B",
+					prop("kind", tStr()),
+					prop("a", tOpt(tClassRef("A"))),
+				),
+			},
+			RootClass: "A",
+		},
+		Value: vClass("A",
+			vField("name", vStr("root-a")),
+			vField("b", vOptPresent(vClass("B",
+				vField("kind", vStr("nested-b")),
+				vField("a", vOptAbsent()),
+			))),
+		),
+		Preserve: false,
+	}
+}
+
+// staticSelfReferentialTree is the static-only shape: a class
+// referencing itself through an optional<list<self>> edge, value
+// terminates at depth 2 by emitting an empty list at the leaf. The
+// dynamic emitter rejects self-ref via TODO(upstream-self-ref); the
+// static .baml path supports it natively.
+func staticSelfReferentialTree() seedSpec {
+	return seedSpec{
+		Name: "self_referential_tree",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Tree",
+				prop("value", tStr()),
+				prop("children", tOpt(tList(tClassRef("Tree")))),
+			)},
+			RootClass: "Tree",
+		},
+		Value: vClass("Tree",
+			vField("value", vStr("root")),
+			vField("children", vOptPresent(vList(
+				vClass("Tree",
+					vField("value", vStr("leaf-a")),
+					vField("children", vOptAbsent()),
+				),
+				vClass("Tree",
+					vField("value", vStr("leaf-b")),
+					vField("children", vOptPresent(vList())),
+				),
+			))),
+		),
+		Preserve: false,
 	}
 }
 

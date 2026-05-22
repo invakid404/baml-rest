@@ -57,6 +57,44 @@ type SemanticDiffEntry struct {
 	Want any    `json:"want"`
 }
 
+// StaticFailureEnvelope captures the full context around a failure in
+// the static prompt oracle. It mirrors DynamicFailureEnvelope on the
+// common header fields and adds the static-specific lowering + build
+// metadata listed in scope D8. v1 release-gates on semantic equality
+// only; order mismatches travel under OrderWarning.
+//
+// BuildError populates when the integration build fails for the case;
+// after single-case isolation it identifies the offending case alone.
+// RESTStatus / RESTBody / RESTError populate when the build succeeds
+// and /call/<FunctionName> runs.
+type StaticFailureEnvelope struct {
+	GeneratorVersion  string              `json:"generator_version"`
+	GeneratedAt       string              `json:"generated_at"`
+	RapidSeed         int64               `json:"rapid_seed"`
+	CaseIndex         int                 `json:"case_index"`
+	CaseName          string              `json:"case_name"`
+	OracleMode        OracleMode          `json:"oracle_mode"`
+	Schema            FuzzSchema          `json:"schema"`
+	BamlSource        string              `json:"baml_source,omitempty"`
+	FunctionName      string              `json:"function_name,omitempty"`
+	ClassNames        []string            `json:"class_names,omitempty"`
+	EnumNames         []string            `json:"enum_names,omitempty"`
+	HasSelfRef        bool                `json:"has_self_ref"`
+	BuildSourcePath   string              `json:"build_source_path,omitempty"`
+	MockLLMScenarioID string              `json:"mockllm_scenario_id,omitempty"`
+	MockLLMContent    json.RawMessage     `json:"mockllm_content,omitempty"`
+	Expected          json.RawMessage     `json:"expected,omitempty"`
+	BuildError        string              `json:"build_error,omitempty"`
+	RESTStatus        int                 `json:"rest_status,omitempty"`
+	RESTBody          json.RawMessage     `json:"rest_body,omitempty"`
+	RESTError         string              `json:"rest_error,omitempty"`
+	SemanticDiff      []SemanticDiffEntry `json:"semantic_diff,omitempty"`
+	OrderWarning      []string            `json:"order_warning,omitempty"`
+	ReplayPath        string              `json:"replay_path"`
+	Reproduction      string              `json:"reproduction"`
+	Metadata          CaseMetadata        `json:"metadata"`
+}
+
 // WriteReplayArtifact writes the failure envelope to `dir` as a JSON
 // file and returns the resulting `filepath.Join(dir, basename+".json")`
 // (which is absolute exactly when `dir` is). The basename is derived
@@ -70,6 +108,37 @@ type SemanticDiffEntry struct {
 // Content is rendered with 2-space indent for human readability.
 // `dir` is created if it does not already exist.
 func WriteReplayArtifact(dir string, envelope *DynamicFailureEnvelope) (string, error) {
+	if envelope == nil {
+		return "", fmt.Errorf("bamlfuzz: nil envelope")
+	}
+	if envelope.GeneratorVersion == "" {
+		envelope.GeneratorVersion = GeneratorVersion
+	}
+	if envelope.GeneratedAt == "" {
+		envelope.GeneratedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("bamlfuzz: mkdir %s: %w", dir, err)
+	}
+	name := sanitizeArtifactBasename(envelope.CaseName, envelope.CaseIndex)
+	path := filepath.Join(dir, name+".json")
+	envelope.ReplayPath = path
+	buf, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("bamlfuzz: marshal envelope: %w", err)
+	}
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		return "", fmt.Errorf("bamlfuzz: write %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// WriteStaticReplayArtifact writes a StaticFailureEnvelope to `dir`
+// as a JSON file. Same on-disk format as WriteReplayArtifact (2-space
+// indent, deterministic basename via sanitizeArtifactBasename);
+// envelope.ReplayPath is stamped with the resulting path so the
+// t.Errorf message can point at the artifact.
+func WriteStaticReplayArtifact(dir string, envelope *StaticFailureEnvelope) (string, error) {
 	if envelope == nil {
 		return "", fmt.Errorf("bamlfuzz: nil envelope")
 	}
