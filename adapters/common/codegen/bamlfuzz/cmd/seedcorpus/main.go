@@ -375,8 +375,9 @@ func mapToClass() seedSpec {
 }
 
 // mutualRecursion exercises a two-class A↔B cycle realized through
-// optional back-edges. The value terminates by making both edges absent
-// at depth 1.
+// optional back-edges. The value walks one step: A.b carries a present
+// nested B, and B.a is OptionalAbsent so the cycle terminates after a
+// single hop while still exercising the back-edge schema shape.
 func mutualRecursion() seedSpec {
 	return seedSpec{
 		Name: "mutual_recursion",
