@@ -1,0 +1,123 @@
+name: Renovate Go Module Sync
+
+on:
+  push:
+    branches:
+      - "renovate/**"
+
+concurrency:
+  group: renovate-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.26.3"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event.head_commit.author.name != 'github-actions[bot]'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run scripts/sync.sh
+        run: ./scripts/sync.sh
+
+      - name: Validate changed-file allowlist
+        run: |
+          # Allowlist: only Go module metadata may change.
+          #   go.mod, go.sum, go.work.sum at the root, and go.mod / go.sum
+          #   under any nested module directory. Anything else (tracked or
+          #   untracked) means scripts/sync.sh produced unexpected drift —
+          #   refuse to commit/push so a human inspects the diff.
+          #
+          # --untracked-files=all expands untracked directories into their
+          # individual file entries so a new submod/ directory containing
+          # only allowlisted paths is matched correctly.
+          violators=$(
+            git status --porcelain --untracked-files=all \
+              | awk '{print $NF}' \
+              | while read -r path; do
+                  case "$path" in
+                    go.mod|go.sum|go.work.sum) ;;
+                    */go.mod|*/go.sum) ;;
+                    "") ;;
+                    *) echo "$path" ;;
+                  esac
+                done
+          )
+          if [ -n "$violators" ]; then
+            echo "ERROR: scripts/sync.sh changed files outside the allowlist:"
+            echo "$violators"
+            echo
+            echo "Full git status:"
+            git status --porcelain --untracked-files=all
+            exit 1
+          fi
+
+      - name: Commit and push sync result
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No diff after scripts/sync.sh; nothing to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          add_allowlisted() {
+            # Stage only the Go module metadata paths the allowlist covers.
+            # `git add -A` would also pick up any unexpected drift that
+            # somehow slipped past the allowlist check above.
+            git ls-files --modified --others --exclude-standard \
+              -- 'go.mod' 'go.sum' 'go.work.sum' '*/go.mod' '*/go.sum' \
+              | xargs -r git add --
+          }
+
+          commit_msg() {
+            printf '%s\n\n%s\n' \
+              'chore(deps): sync Go module metadata' \
+              'Run scripts/sync.sh after Renovate dependency update.'
+          }
+
+          add_allowlisted
+          if git diff --cached --quiet; then
+            echo "Nothing staged after allowlisted add; treating as no-op."
+            exit 0
+          fi
+          git commit -m "$(commit_msg)"
+
+          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            exit 0
+          fi
+
+          echo "Initial push rejected; attempting one rebase/retry."
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+          ./scripts/sync.sh
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Sync is a no-op on top of remote; nothing to push."
+            exit 0
+          fi
+          add_allowlisted
+          if git diff --cached --quiet; then
+            echo "Nothing staged after retry; nothing to push."
+            exit 0
+          fi
+          git commit -m "$(commit_msg)"
+          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "ERROR: push still rejected after one retry; aborting."
+            exit 1
+          fi
