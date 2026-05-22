@@ -369,7 +369,14 @@ func (c *valueDrawCtx) drawValueForType(t *rapid.T, ft FuzzType, label string) F
 	case KindLiteral:
 		return c.drawLiteralValue(ft.Literal)
 	case KindEnumRef:
-		e, _ := c.schema.FindEnum(ft.Ref)
+		e, ok := c.schema.FindEnum(ft.Ref)
+		if !ok {
+			t.Fatalf("bamlfuzz: enum ref %q not found in schema (label=%s)", ft.Ref, label)
+		}
+		if len(e.Values) == 0 {
+			t.Fatalf("bamlfuzz: enum %q has no values (label=%s); generator and schema state are inconsistent",
+				ft.Ref, label)
+		}
 		idx := rapid.IntRange(0, len(e.Values)-1).Draw(t, label+":enum_pick")
 		return FuzzValue{Kind: KindEnumRef, Enum: e.Values[idx]}
 	case KindOptional:

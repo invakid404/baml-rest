@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,20 +35,36 @@ func WriteReplayArtifact(t *testing.T, dir, name string, content json.RawMessage
 		t.Fatalf("indent replay artifact %s: %v\nraw: %s", name, err, string(content))
 	}
 	buf.WriteByte('\n')
-	WriteFile(t, filepath.Join(dir, filepath.Clean(name)), buf.String())
+	WriteFile(t, filepath.Join(dir, name), buf.String())
 }
 
 // CheckReplayName reports whether `name` is a safe replay-artifact
-// basename. Returns a non-nil error when `name` contains a path
-// separator, is absolute, or is `.` / `..`. Exposed so unit tests
-// can drive the rejection rules directly.
+// basename. Validation runs on the RAW input — `filepath.Clean`
+// would otherwise normalize away segments like `sub/../case.json`
+// and quietly accept a name that violates the basename contract.
+//
+// Rejected inputs:
+//   - empty, `.`, `..`
+//   - absolute paths
+//   - any path separator (`/` or `\` — both checked because Windows-
+//     style names could appear in test inputs)
+//   - any `..` segment after splitting on either separator
 func CheckReplayName(name string) error {
 	if filepath.IsAbs(name) {
 		return fmt.Errorf("absolute name %q not allowed", name)
 	}
-	clean := filepath.Clean(name)
-	if clean != filepath.Base(clean) || clean == "." || clean == ".." {
-		return fmt.Errorf("name must be a basename, got %q", name)
+	if name == "" || name == "." || name == ".." {
+		return fmt.Errorf("name must be a non-empty basename, got %q", name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("name must be a basename, got %q (contains path separator)", name)
+	}
+	for _, seg := range strings.FieldsFunc(name, isPathSep) {
+		if seg == ".." {
+			return fmt.Errorf("name must be a basename, got %q (contains `..` segment)", name)
+		}
 	}
 	return nil
 }
+
+func isPathSep(r rune) bool { return r == '/' || r == '\\' }

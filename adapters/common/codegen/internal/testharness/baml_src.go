@@ -45,17 +45,31 @@ func WriteTempBamlSrc(t *testing.T, dir string, files map[string]string) {
 }
 
 // CheckBamlSrcName reports whether `name` is a safe relative path
-// underneath `root`. Returns a non-nil error for absolute paths,
-// `.` / `..` segments, or any cleaned path that escapes root.
-// Exposed so unit tests can drive the rejection rules directly.
+// underneath `root`. Nested paths like "shared/types.baml" are
+// allowed; the function rejects:
+//   - empty names and absolute paths
+//   - any raw `.` or `..` segment in the input
+//   - paths that escape `root` after cleaning (belt-and-braces guard
+//     against combinations not covered above)
+//
+// Raw-segment validation runs BEFORE `filepath.Clean`. Without it,
+// `filepath.Clean` would normalize `shared/../main.baml` to
+// `main.baml`, quietly accepting a non-canonical input despite the
+// documented `..`-rejection contract. The Clean + Rel containment
+// check below remains as defence-in-depth.
 func CheckBamlSrcName(root, name string) error {
 	if filepath.IsAbs(name) {
 		return fmt.Errorf("absolute file name %q not allowed", name)
 	}
-	clean := filepath.Clean(name)
-	if clean == "." || clean == ".." {
-		return fmt.Errorf("invalid file name %q", name)
+	if name == "" {
+		return fmt.Errorf("empty file name")
 	}
+	for _, seg := range strings.FieldsFunc(name, isPathSep) {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("path segment %q not allowed in %q", seg, name)
+		}
+	}
+	clean := filepath.Clean(name)
 	full := filepath.Join(root, clean)
 	rel, err := filepath.Rel(root, full)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {

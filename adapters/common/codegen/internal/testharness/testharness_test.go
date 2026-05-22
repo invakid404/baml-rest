@@ -67,10 +67,16 @@ func TestCheckBamlSrcName(t *testing.T) {
 	}
 	bad := []rejection{
 		{"/etc/passwd", "absolute file name"},
-		{"../escaped.baml", "escapes baml_src root"},
-		{"shared/../../escape.baml", "escapes baml_src root"},
-		{".", "invalid file name"},
-		{"..", "invalid file name"},
+		{"../escaped.baml", "not allowed"},
+		{"shared/../../escape.baml", "not allowed"},
+		// Canonicalization-bypass class: raw input contains a
+		// `..` segment that filepath.Clean would erase. Must be
+		// rejected by raw-segment validation BEFORE Clean.
+		{"shared/../main.baml", "not allowed"},
+		{"shared/./main.baml", "not allowed"},
+		{".", "not allowed"},
+		{"..", "not allowed"},
+		{"", "empty file name"},
 	}
 	for _, c := range bad {
 		err := CheckBamlSrcName(root, c.name)
@@ -101,11 +107,15 @@ func TestWriteReplayArtifactStableOutput(t *testing.T) {
 }
 
 func TestCheckReplayName(t *testing.T) {
-	if err := CheckReplayName("case.json"); err != nil {
-		t.Errorf("good basename rejected: %v", err)
+	good := []string{
+		"case.json",
+		"seed-123.json",
+		"failure_envelope.json",
 	}
-	if err := CheckReplayName("seed-123.json"); err != nil {
-		t.Errorf("good basename rejected: %v", err)
+	for _, name := range good {
+		if err := CheckReplayName(name); err != nil {
+			t.Errorf("good basename %q rejected: %v", name, err)
+		}
 	}
 	bad := []string{
 		"sub/file.json",
@@ -113,6 +123,13 @@ func TestCheckReplayName(t *testing.T) {
 		"../escape.json",
 		".",
 		"..",
+		"",
+		// Canonicalization-bypass class: filepath.Clean would
+		// normalize these to a plain basename. Raw-input
+		// validation must reject them up front.
+		"sub/../case.json",
+		`foo\..\bar.json`,
+		`backslash\file.json`,
 	}
 	for _, name := range bad {
 		if err := CheckReplayName(name); err == nil {
