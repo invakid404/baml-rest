@@ -81,9 +81,9 @@ jobs:
             # Stage only the Go module metadata paths the allowlist covers.
             # `git add -A` would also pick up any unexpected drift that
             # somehow slipped past the allowlist check above.
-            git ls-files --modified --others --exclude-standard \
+            git ls-files -z --modified --others --exclude-standard \
               -- 'go.mod' 'go.sum' 'go.work.sum' '*/go.mod' '*/go.sum' \
-              | xargs -r git add --
+              | xargs -0 -r git add --
           }
 
           commit_msg() {
