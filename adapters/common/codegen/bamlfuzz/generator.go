@@ -56,14 +56,20 @@ type SchemaGenOptions struct {
 }
 
 // DynamicSafeSchemaGen returns a rapid generator for FuzzSchema
-// values that the dynamic TypeBuilder path can safely realize: no
-// self-ref. Mutual cycles ARE allowed because the value generator
-// terminates them at the recursion cap; the dynamic emitter targets
-// the cycle through TypeBuilder.AddClass.
+// values that the dynamic TypeBuilder path can safely realize:
+//   - no self-ref (upstream BAML TypeBuilder cannot express self-ref;
+//     TODO(upstream-self-ref))
+//   - no mutual cycle between distinct classes (the BAML cgo
+//     TypeBuilder aborts on mutual-cycle dynamic schemas with a
+//     signal-level fault; TODO(upstream-mutual-rec-dynamic-crash))
+//
+// Mutual cycles return to the rotation once upstream BAML stops
+// aborting on them; the value generator already terminates cycles at
+// the per-class recursion cap so the IR + walker side is ready.
 func DynamicSafeSchemaGen() *rapid.Generator[FuzzSchema] {
 	return SchemaGen(SchemaGenOptions{
 		AllowSelfRef:           false,
-		MutualCycleProbability: 0.15,
+		MutualCycleProbability: 0,
 	})
 }
 

@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -177,6 +178,16 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 	}
 
 	lowered, err := bamlfuzz.LowerToDynamicSchema(c.Schema)
+	if errors.Is(err, bamlfuzz.ErrDynamicSchemaUnsupported) {
+		// The dynamic emitter is correctly rejecting an upstream-unsafe
+		// schema (self-ref or mutual cycle). Per scope D8 the failure
+		// shape that fails the test is "dynamic emitter unexpectedly
+		// ACCEPTS" — rejection is the contract. Skip with a clear
+		// reason; the corpus file remains in tree so coverage returns
+		// once the upstream BAML limitation is fixed.
+		t.Skipf("dynamic emitter skipped schema: %v", err)
+		return
+	}
 	if err != nil {
 		envelope.DynamicSkipReason = err.Error()
 		failAndDump(t, envelope, "LowerToDynamicSchema failed: %v", err)

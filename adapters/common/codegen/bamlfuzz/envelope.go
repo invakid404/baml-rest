@@ -155,7 +155,13 @@ func DetectOrderWarning(label string, a, b json.RawMessage) []string {
 
 func decodeAny(b json.RawMessage) (any, error) {
 	if len(b) == 0 {
-		return nil, nil
+		// Empty raw message is treated as a hard decode error so
+		// SemanticEqual / SemanticDiff can't silently equate two
+		// missing payloads. An oracle leg that produced no output is a
+		// real failure (the leg errored, or the response body was lost
+		// somewhere); the comparator should surface that as a decode
+		// error and let the test print which side was empty.
+		return nil, fmt.Errorf("empty JSON payload")
 	}
 	var v any
 	if err := json.Unmarshal(b, &v); err != nil {
@@ -269,9 +275,9 @@ func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
 	}
 }
 
-// topLevelKeys returns the keys of a JSON object in source order, using
-// an ordered decoder so the slice matches the wire ordering rather than
-// encoding/json's alphabetical default.
+// topLevelKeys returns the keys of a JSON object in wire (source) order.
+// Decoding through bamlutils.OrderedMap preserves insertion order, which
+// is what the order-warning detector compares.
 func topLevelKeys(b json.RawMessage) ([]string, error) {
 	if len(b) == 0 {
 		return nil, fmt.Errorf("empty")

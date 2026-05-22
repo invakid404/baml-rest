@@ -34,6 +34,30 @@ func TestSemanticEqual(t *testing.T) {
 	}
 }
 
+func TestSemanticEqual_RejectsEmptyPayload(t *testing.T) {
+	// Both empty: the comparator MUST NOT report equality on two
+	// missing payloads — that hides real "leg produced no output"
+	// regressions in the dynamic oracle.
+	if _, err := SemanticEqual([]byte{}, []byte{}); err == nil {
+		t.Error("SemanticEqual(empty, empty) returned nil error; want decode error")
+	}
+	if _, err := SemanticEqual([]byte{}, []byte(`{"a":1}`)); err == nil {
+		t.Error("SemanticEqual(empty, nonempty) returned nil error; want decode error")
+	}
+	if _, err := SemanticEqual([]byte(`{"a":1}`), []byte{}); err == nil {
+		t.Error("SemanticEqual(nonempty, empty) returned nil error; want decode error")
+	}
+}
+
+func TestSemanticDiff_RejectsEmptyPayload(t *testing.T) {
+	if _, err := SemanticDiff("side", []byte{}, []byte(`{"a":1}`)); err == nil {
+		t.Error("SemanticDiff(empty, nonempty) returned nil error; want decode error")
+	}
+	if _, err := SemanticDiff("side", []byte(`{"a":1}`), []byte{}); err == nil {
+		t.Error("SemanticDiff(nonempty, empty) returned nil error; want decode error")
+	}
+}
+
 func TestSemanticDiff_FindsDifferences(t *testing.T) {
 	diff, err := SemanticDiff("a_vs_b",
 		[]byte(`{"x":1,"y":{"a":true,"b":"hi"}}`),

@@ -24,6 +24,57 @@ func TestLowerToDynamicSchema_RejectsSelfRef(t *testing.T) {
 	if !errors.Is(err, ErrDynamicSelfRefUnsupported) {
 		t.Fatalf("expected ErrDynamicSelfRefUnsupported, got %v", err)
 	}
+	if !errors.Is(err, ErrDynamicSchemaUnsupported) {
+		t.Errorf("ErrDynamicSelfRefUnsupported should wrap ErrDynamicSchemaUnsupported, got %v", err)
+	}
+}
+
+// TestLowerToDynamicSchema_RecomputesGraphFlags pins the M1 invariant:
+// the lowering must NOT trust the stamped Has*/Requires* booleans on
+// the input — those are documented as non-authoritative, and a
+// hand-edited corpus or replay artifact could carry stale values.
+// LowerToDynamicSchema runs AnalyzeGraph internally so a self-ref or
+// mutual-cycle schema with stale `has_self_ref: false` is still caught.
+func TestLowerToDynamicSchema_RecomputesGraphFlags(t *testing.T) {
+	t.Run("stale self-ref flag", func(t *testing.T) {
+		cls := FuzzClass{Name: "Stale", Properties: []FuzzProperty{
+			{Name: "self", Type: FuzzType{Kind: KindOptional, Inner: &FuzzType{Kind: KindClassRef, Ref: "Stale"}}},
+		}}
+		// Construct WITHOUT calling AnalyzeGraph and explicitly stamp
+		// the flags to false to model a malicious/stale replay file.
+		schema := FuzzSchema{
+			Classes:             []FuzzClass{cls},
+			RootClass:           "Stale",
+			HasSelfRef:          false,
+			RequiresDynamicSkip: false,
+		}
+		_, err := LowerToDynamicSchema(schema)
+		if !errors.Is(err, ErrDynamicSelfRefUnsupported) {
+			t.Fatalf("expected ErrDynamicSelfRefUnsupported via recomputation, got %v", err)
+		}
+	})
+
+	t.Run("stale mutual-cycle flag", func(t *testing.T) {
+		schema := FuzzSchema{
+			Classes: []FuzzClass{
+				{Name: "A", Properties: []FuzzProperty{
+					{Name: "b", Type: FuzzType{Kind: KindOptional, Inner: &FuzzType{Kind: KindClassRef, Ref: "B"}}},
+				}},
+				{Name: "B", Properties: []FuzzProperty{
+					{Name: "a", Type: FuzzType{Kind: KindOptional, Inner: &FuzzType{Kind: KindClassRef, Ref: "A"}}},
+				}},
+			},
+			RootClass:      "A",
+			HasMutualCycle: false,
+		}
+		_, err := LowerToDynamicSchema(schema)
+		if !errors.Is(err, ErrDynamicMutualCycleUnsupported) {
+			t.Fatalf("expected ErrDynamicMutualCycleUnsupported via recomputation, got %v", err)
+		}
+		if !errors.Is(err, ErrDynamicSchemaUnsupported) {
+			t.Errorf("ErrDynamicMutualCycleUnsupported should wrap ErrDynamicSchemaUnsupported, got %v", err)
+		}
+	})
 }
 
 func TestLowerToDynamicSchema_PreservesOrder(t *testing.T) {

@@ -7,12 +7,29 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
+// ErrDynamicSchemaUnsupported is the wider sentinel both dynamic-skip
+// reasons wrap. Callers test errors.Is(err, ErrDynamicSchemaUnsupported)
+// to decide whether a schema should be skipped by the dynamic oracle as
+// a whole, without enumerating each upstream limitation by hand.
+var ErrDynamicSchemaUnsupported = errors.New("bamlfuzz: dynamic emitter does not support this schema")
+
 // ErrDynamicSelfRefUnsupported is returned by LowerToDynamicSchema when
 // the supplied FuzzSchema reaches a class through its own type tree.
 // Dynamic TypeBuilder cannot currently express self-referential classes;
 // TODO(upstream-self-ref) tracks removal of this guard once upstream
-// BAML lifts the limitation. Callers detect via errors.Is.
-var ErrDynamicSelfRefUnsupported = errors.New("bamlfuzz: dynamic emitter rejects self-referential schema")
+// BAML lifts the limitation. Wraps ErrDynamicSchemaUnsupported.
+var ErrDynamicSelfRefUnsupported = fmt.Errorf("%w: self-referential schema", ErrDynamicSchemaUnsupported)
+
+// ErrDynamicMutualCycleUnsupported is returned by LowerToDynamicSchema
+// when the schema contains a class-ref cycle between two or more
+// distinct classes. The BAML cgo TypeBuilder aborts the process with a
+// signal-level fault (SIGBUS / SIGILL) when fed such schemas; gating
+// here keeps the integration oracle from killing its host process when
+// a corpus or rapid case happens to walk into the failure shape.
+// TODO(upstream-mutual-rec-dynamic-crash) tracks removal once upstream
+// BAML stops aborting on mutual-cycle dynamic schemas. Wraps
+// ErrDynamicSchemaUnsupported.
+var ErrDynamicMutualCycleUnsupported = fmt.Errorf("%w: mutual-cycle schema", ErrDynamicSchemaUnsupported)
 
 // LowerToDynamicSchema lowers a FuzzSchema into a bamlutils.DynamicOutputSchema
 // suitable for posting to /call/_dynamic or driving dynclient.Client.DynamicCall.
@@ -22,11 +39,22 @@ var ErrDynamicSelfRefUnsupported = errors.New("bamlfuzz: dynamic emitter rejects
 // callers observe the same order the FuzzSchema generator emitted.
 //
 // Self-referential schemas are rejected with ErrDynamicSelfRefUnsupported.
-// Mutual recursion through distinct classes is permitted — the value generator
-// terminates such cycles via per-class recursion caps.
+// Mutual-cycle schemas (A→B→A through distinct classes) are rejected with
+// ErrDynamicMutualCycleUnsupported pending upstream BAML fix; both errors
+// wrap ErrDynamicSchemaUnsupported.
+//
+// Graph metadata is recomputed via AnalyzeGraph regardless of the stamped
+// Has*/Requires* booleans on the input — those fields are documented as
+// non-authoritative and a hand-edited corpus or replay artifact may carry
+// stale flags. Trusting them here would let a self-ref or mutual-cycle
+// schema slip through the guard.
 func LowerToDynamicSchema(schema FuzzSchema) (bamlutils.DynamicOutputSchema, error) {
-	if schema.HasSelfRef || schema.RequiresDynamicSkip {
+	flags := AnalyzeGraph(schema)
+	if flags.HasSelfRef {
 		return bamlutils.DynamicOutputSchema{}, fmt.Errorf("%w: root=%q", ErrDynamicSelfRefUnsupported, schema.RootClass)
+	}
+	if flags.HasMutualCycle {
+		return bamlutils.DynamicOutputSchema{}, fmt.Errorf("%w: root=%q", ErrDynamicMutualCycleUnsupported, schema.RootClass)
 	}
 	rootCls, ok := schema.FindClass(schema.RootClass)
 	if !ok {
