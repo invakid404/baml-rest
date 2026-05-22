@@ -1,0 +1,99 @@
+{
+  "name": "optional_three_shapes",
+  "seed": 3,
+  "case_index": 2,
+  "mode": "static_prompt",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "present_field",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          },
+          {
+            "name": "null_field",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          },
+          {
+            "name": "absent_field",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "present_field",
+        "value": {
+          "kind": "optional",
+          "optional_shape": "present",
+          "inner": {
+            "kind": "string",
+            "string": "here"
+          }
+        }
+      },
+      {
+        "name": "null_field",
+        "value": {
+          "kind": "optional",
+          "optional_shape": "null"
+        }
+      },
+      {
+        "name": "absent_field",
+        "value": {
+          "kind": "optional",
+          "optional_shape": "absent"
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "present_field": "here",
+    "null_field": null
+  },
+  "expected": {
+    "present_field": "here",
+    "null_field": null,
+    "absent_field": null
+  },
+  "metadata": {
+    "optional_shapes": {
+      ".absent_field": "absent",
+      ".null_field": "null",
+      ".present_field": "present"
+    },
+    "recursion_depths": {
+      "Root": 1
+    }
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "name": "self_referential_tree",
+  "seed": 5,
+  "case_index": 4,
+  "mode": "static_prompt",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Tree",
+        "properties": [
+          {
+            "name": "value",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "children",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "list",
+                "inner": {
+                  "kind": "class_ref",
+                  "ref": "Tree"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Tree",
+    "has_self_ref": true,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": true
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Tree",
+    "fields": [
+      {
+        "name": "value",
+        "value": {
+          "kind": "string",
+          "string": "root"
+        }
+      },
+      {
+        "name": "children",
+        "value": {
+          "kind": "optional",
+          "optional_shape": "present",
+          "inner": {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "class_ref",
+                "class_name": "Tree",
+                "fields": [
+                  {
+                    "name": "value",
+                    "value": {
+                      "kind": "string",
+                      "string": "leaf-a"
+                    }
+                  },
+                  {
+                    "name": "children",
+                    "value": {
+                      "kind": "optional",
+                      "optional_shape": "absent"
+                    }
+                  }
+                ]
+              },
+              {
+                "kind": "class_ref",
+                "class_name": "Tree",
+                "fields": [
+                  {
+                    "name": "value",
+                    "value": {
+                      "kind": "string",
+                      "string": "leaf-b"
+                    }
+                  },
+                  {
+                    "name": "children",
+                    "value": {
+                      "kind": "optional",
+                      "optional_shape": "present",
+                      "inner": {
+                        "kind": "list"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "value": "root",
+    "children": [
+      {
+        "value": "leaf-a"
+      },
+      {
+        "value": "leaf-b",
+        "children": []
+      }
+    ]
+  },
+  "expected": {
+    "value": "root",
+    "children": [
+      {
+        "value": "leaf-a",
+        "children": null
+      },
+      {
+        "value": "leaf-b",
+        "children": []
+      }
+    ]
+  },
+  "metadata": {
+    "optional_shapes": {
+      ".children": "present",
+      ".children[0].children": "absent",
+      ".children[1].children": "present"
+    },
+    "recursion_depths": {
+      "Tree": 2
+    }
+  }
+}
