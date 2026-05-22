@@ -57,11 +57,6 @@ const staticEnvSetupTimeout = 10 * time.Minute
 // before the integration server reports a real failure.
 const staticCallTimeout = 60 * time.Second
 
-// rapidSelfRefProbability sets the self-ref density for randomly-
-// generated static batches. Scope D9 says 10-20%; pinning here keeps
-// each rapid batch reproducible at the seed level.
-const rapidSelfRefProbability = 0.15
-
 // TestBamlfuzzStaticOracle drives the static prompt oracle: lower
 // each FuzzSchema to .baml source, batch five cases into a temporary
 // baml_src/, spin up a dedicated integration environment, register a
@@ -398,17 +393,17 @@ func terminateStaticEnv(t *testing.T, env *testutil.TestEnvironment) {
 func newStaticEnvelope(c bamlfuzz.OracleCase, caseIdx int, batchLabel string, source staticCaseSource) *bamlfuzz.StaticFailureEnvelope {
 	flags := bamlfuzz.AnalyzeGraph(c.Schema)
 	return &bamlfuzz.StaticFailureEnvelope{
-		GeneratorVersion:  bamlfuzz.GeneratorVersion,
-		RapidSeed:         c.Seed,
-		CaseIndex:         caseIdx,
-		CaseName:          c.Name,
-		OracleMode:        bamlfuzz.OracleStaticPrompt,
-		Schema:            c.Schema,
-		HasSelfRef:        flags.HasSelfRef,
-		MockLLMContent:    c.MockLLMContent,
-		Expected:          c.Expected,
-		Metadata:          c.Metadata,
-		Reproduction:      staticReproductionFor(c, caseIdx, batchLabel, source),
+		GeneratorVersion: bamlfuzz.GeneratorVersion,
+		RapidSeed:        c.Seed,
+		CaseIndex:        caseIdx,
+		CaseName:         c.Name,
+		OracleMode:       bamlfuzz.OracleStaticPrompt,
+		Schema:           c.Schema,
+		HasSelfRef:       flags.HasSelfRef,
+		MockLLMContent:   c.MockLLMContent,
+		Expected:         c.Expected,
+		Metadata:         c.Metadata,
+		Reproduction:     staticReproductionFor(c, caseIdx, batchLabel, source),
 	}
 }
 
@@ -648,4 +643,3 @@ func TestCaseIDFor(t *testing.T) {
 		})
 	}
 }
-

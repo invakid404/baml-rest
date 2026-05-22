@@ -261,4 +261,3 @@ func literalSpelling(lit *FuzzLiteral) (string, error) {
 		return "", fmt.Errorf("unknown literal kind %q", lit.Kind)
 	}
 }
-

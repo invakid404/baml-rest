@@ -105,7 +105,7 @@ func TestLowerToBamlSource_EnumRef(t *testing.T) {
 		Classes: []FuzzClass{{Name: "Root", Properties: []FuzzProperty{
 			{Name: "status", Type: FuzzType{Kind: KindEnumRef, Ref: "Status"}},
 		}}},
-		Enums: []FuzzEnum{{Name: "Status", Values: []string{"ACTIVE", "INACTIVE"}}},
+		Enums:     []FuzzEnum{{Name: "Status", Values: []string{"ACTIVE", "INACTIVE"}}},
 		RootClass: "Root",
 	})
 	got, err := LowerToBamlSource(schema, "C05")
@@ -302,7 +302,7 @@ func TestLowerToBamlSource_DeterministicOutput(t *testing.T) {
 				{Name: "x", Type: FuzzType{Kind: KindInt}},
 			}},
 		},
-		Enums: []FuzzEnum{{Name: "E", Values: []string{"X", "Y"}}},
+		Enums:     []FuzzEnum{{Name: "E", Values: []string{"X", "Y"}}},
 		RootClass: "Root",
 	})
 	a, err := LowerToBamlSource(schema, "CDET")
