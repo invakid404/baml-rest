@@ -46,12 +46,16 @@ func WriteReplayArtifact(t *testing.T, dir, name string, content json.RawMessage
 // Rejected inputs:
 //   - empty, `.`, `..`
 //   - absolute paths
+//   - names with a Windows drive prefix ("C:foo")
 //   - any path separator (`/` or `\` — both checked because Windows-
 //     style names could appear in test inputs)
 //   - any `..` segment after splitting on either separator
 func CheckReplayName(name string) error {
 	if filepath.IsAbs(name) {
 		return fmt.Errorf("absolute name %q not allowed", name)
+	}
+	if hasWindowsDrivePrefix(name) {
+		return fmt.Errorf("name must not have a drive prefix, got %q", name)
 	}
 	if name == "" || name == "." || name == ".." {
 		return fmt.Errorf("name must be a non-empty basename, got %q", name)
@@ -66,5 +70,3 @@ func CheckReplayName(name string) error {
 	}
 	return nil
 }
-
-func isPathSep(r rune) bool { return r == '/' || r == '\\' }

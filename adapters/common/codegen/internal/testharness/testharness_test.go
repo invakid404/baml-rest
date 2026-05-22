@@ -77,6 +77,11 @@ func TestCheckBamlSrcName(t *testing.T) {
 		{".", "not allowed"},
 		{"..", "not allowed"},
 		{"", "empty file name"},
+		// Windows drive prefix is rejected regardless of host OS
+		// so the rule is uniform across CI platforms.
+		{"C:case.baml", "drive prefix"},
+		{"D:foo.baml", "drive prefix"},
+		{"z:nested.baml", "drive prefix"},
 	}
 	for _, c := range bad {
 		err := CheckBamlSrcName(root, c.name)
@@ -130,6 +135,11 @@ func TestCheckReplayName(t *testing.T) {
 		"sub/../case.json",
 		`foo\..\bar.json`,
 		`backslash\file.json`,
+		// Windows drive prefix is rejected regardless of host OS
+		// so the rule is uniform across CI platforms.
+		"C:case.json",
+		"D:foo",
+		"d:bar",
 	}
 	for _, name := range bad {
 		if err := CheckReplayName(name); err == nil {

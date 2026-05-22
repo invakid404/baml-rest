@@ -61,6 +61,9 @@ func CheckBamlSrcName(root, name string) error {
 	if filepath.IsAbs(name) {
 		return fmt.Errorf("absolute file name %q not allowed", name)
 	}
+	if hasWindowsDrivePrefix(name) {
+		return fmt.Errorf("name must not have a drive prefix, got %q", name)
+	}
 	if name == "" {
 		return fmt.Errorf("empty file name")
 	}
