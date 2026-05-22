@@ -4,7 +4,7 @@ import (
 	"embed"
 )
 
-//go:embed adapterversions codegen/codegen.go codegen/codegen_adapter.go codegen/codegen_buildrequest.go codegen/codegen_dynamic_types.go codegen/codegen_legacy_stream.go codegen/codegen_methods.go codegen/codegen_options.go codegen/codegen_reflect.go codegen/codegen_router.go codegen/codegen_slice_pool.go codegen/codegen_stream_helpers.go embed.go go.mod go.sum helpers.go testdriver testhelpers/snapshot.go utils/dynamic.go
+//go:embed adapterversions codegen/bamlfuzz/case.go codegen/bamlfuzz/emit_dynamic.go codegen/bamlfuzz/envelope.go codegen/bamlfuzz/generator.go codegen/bamlfuzz/normalize.go codegen/bamlfuzz/schema.go codegen/bamlfuzz/selfref.go codegen/bamlfuzz/value.go codegen/codegen.go codegen/codegen_adapter.go codegen/codegen_buildrequest.go codegen/codegen_dynamic_types.go codegen/codegen_legacy_stream.go codegen/codegen_methods.go codegen/codegen_options.go codegen/codegen_reflect.go codegen/codegen_router.go codegen/codegen_slice_pool.go codegen/codegen_stream_helpers.go embed.go go.mod go.sum helpers.go testdriver testhelpers/snapshot.go utils/dynamic.go
 var source embed.FS
 
 var Sources = make(map[string]embed.FS)

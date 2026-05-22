@@ -33,3 +33,10 @@ integration
 # — but they are NOT part of the published codegen artifact and
 # must not be bundled into the server binary's embed.FS.
 codegen/internal
+
+# Codegen test corpora and helper programs for the bamlfuzz
+# property fuzzer. The bamlfuzz Go package itself is genuine
+# codegen support, but the per-case JSON fixtures and the
+# corpus-regeneration command are not customer-build inputs.
+codegen/testdata
+codegen/bamlfuzz/cmd
