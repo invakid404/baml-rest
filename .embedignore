@@ -34,9 +34,12 @@ integration
 # must not be bundled into the server binary's embed.FS.
 codegen/internal
 
-# Codegen test corpora and helper programs for the bamlfuzz
-# property fuzzer. The bamlfuzz Go package itself is genuine
-# codegen support, but the per-case JSON fixtures and the
-# corpus-regeneration command are not customer-build inputs.
+# Codegen test corpora for the bamlfuzz property fuzzer.
 codegen/testdata
-codegen/bamlfuzz/cmd
+
+# bamlfuzz lives publicly under codegen/ (not internal/) so the
+# root-module integration test can import it without coupling
+# adapters/common to integration/testutil. The package is test
+# infrastructure for the property fuzzer, not a customer-build
+# input — keep the source out of the production embed bundle.
+codegen/bamlfuzz
