@@ -8,6 +8,7 @@ require (
 	github.com/invakid404/baml-rest/bamlutils v0.0.47
 	github.com/invakid404/baml-rest/introspected v0.0.47
 	github.com/stoewer/go-strcase v1.3.1
+	pgregory.net/rapid v1.2.0
 )
 
 require (
