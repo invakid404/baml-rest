@@ -1178,10 +1178,15 @@ type DynamicOutputSchema struct {
 }
 
 // DynamicRequest represents a request to /call/_dynamic, /stream/_dynamic, or /parse/_dynamic.
+//
+// PreserveSchemaOrder mirrors bamlutils.DynamicInput.PreserveSchemaOrder:
+// nil leaves the field absent from the JSON body (server default wins),
+// non-nil emits a concrete boolean that overrides the default.
 type DynamicRequest struct {
-	Messages       []DynamicMessage     `json:"messages"`
-	ClientRegistry *ClientRegistry      `json:"client_registry"`
-	OutputSchema   *DynamicOutputSchema `json:"output_schema"`
+	Messages            []DynamicMessage     `json:"messages"`
+	ClientRegistry      *ClientRegistry      `json:"client_registry"`
+	OutputSchema        *DynamicOutputSchema `json:"output_schema"`
+	PreserveSchemaOrder *bool                `json:"preserve_schema_order,omitempty"`
 }
 
 // DynamicCallResponse represents a response from /call/_dynamic endpoint.
@@ -1224,6 +1229,29 @@ type DynamicParseResponse struct {
 	Data       stdjson.RawMessage
 	Error      string
 	ErrorCode  string
+}
+
+// DynamicCallJSON executes a /call/_dynamic request with a caller-provided
+// JSON body. Used by tests that build the request via bamlutils-ordered
+// types so insertion order of properties / classes / enums is preserved
+// end-to-end (testutil.DynamicOutputSchema is map-backed and cannot carry
+// declaration order).
+func (c *BAMLRestClient) DynamicCallJSON(ctx context.Context, body []byte) (*DynamicCallResponse, error) {
+	url := fmt.Sprintf("%s/call/_dynamic", c.baseURL)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DynamicCallResponse{
+		StatusCode: resp.StatusCode,
+	}
+	if resp.StatusCode >= 400 {
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
+	} else {
+		result.Body = respBody
+	}
+	return result, nil
 }
 
 // DynamicCall executes a /call/_dynamic request.

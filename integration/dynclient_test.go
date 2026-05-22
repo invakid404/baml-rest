@@ -45,50 +45,23 @@ func dynclientCallGate(t *testing.T) {
 	}
 }
 
-// newDynclient constructs a public dynclient.Client wired with a base-
-// URL rewrite that maps the container-internal mockllm URL to the
-// host-reachable URL the test process can hit. Without this rewrite the
-// public client would try to dial `http://mockllm:8080`, which is only
-// resolvable inside the baml-rest container.
+// newDynclient is a thin t.Helper wrapper around testutil.NewDynclient
+// that uses the shared TestEnv and fails the test on construction error.
+// The base-URL rewrite plumbing lives in testutil so non-test-local
+// callers (e.g. bamlfuzz_dynamic_test.go) can use it too.
 func newDynclient(t *testing.T, opts ...dynclient.Option) *dynclient.Client {
 	t.Helper()
-	rewrites := []dynclient.BaseURLRewriteRule{
-		{From: TestEnv.MockLLMInternal, To: TestEnv.MockLLMURL},
-	}
-	all := append([]dynclient.Option{dynclient.WithBaseURLRewrites(rewrites)}, opts...)
-	c, err := dynclient.New(all...)
+	c, err := testutil.NewDynclient(TestEnv, opts...)
 	if err != nil {
 		t.Fatalf("dynclient.New: %v", err)
 	}
 	return c
 }
 
-// httpRegistry wraps the existing testutil helper and reshapes it into a
-// dynclient.ClientRegistry value. Both flavours produce identical wire
-// JSON, but the Go types differ between packages, so callers building a
-// parity test need a converter rather than two parallel builders.
+// dynRegistry is a package-local alias for testutil.DynRegistry kept so
+// existing call sites stay terse.
 func dynRegistry(reg *testutil.ClientRegistry) *dynclient.ClientRegistry {
-	if reg == nil {
-		return nil
-	}
-	out := &dynclient.ClientRegistry{Primary: reg.Primary}
-	for _, c := range reg.Clients {
-		if c == nil {
-			continue
-		}
-		provider := ""
-		if c.Provider != nil {
-			provider = *c.Provider
-		}
-		cp := &dynclient.ClientProperty{
-			Name:        c.Name,
-			Provider:    provider,
-			RetryPolicy: c.RetryPolicy,
-			Options:     c.Options,
-		}
-		out.Clients = append(out.Clients, cp)
-	}
-	return out
+	return testutil.DynRegistry(reg)
 }
 
 // simpleAnswerSchema returns matching output schemas for the HTTP and
