@@ -1,0 +1,94 @@
+{
+  "name": "literals_all",
+  "seed": 12,
+  "case_index": 11,
+  "mode": "dynamic_three_way",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "kind",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "widget"
+              }
+            }
+          },
+          {
+            "name": "count",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "int",
+                "int": 42
+              }
+            }
+          },
+          {
+            "name": "active",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "bool",
+                "bool": true
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "kind",
+        "value": {
+          "kind": "literal",
+          "string": "widget"
+        }
+      },
+      {
+        "name": "count",
+        "value": {
+          "kind": "literal",
+          "int": 42
+        }
+      },
+      {
+        "name": "active",
+        "value": {
+          "kind": "literal",
+          "bool": true
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "kind": "widget",
+    "count": 42,
+    "active": true
+  },
+  "expected": {
+    "kind": "widget",
+    "count": 42,
+    "active": true
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Root": 1
+    }
+  }
+}

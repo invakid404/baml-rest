@@ -1,0 +1,77 @@
+{
+  "name": "class_with_enum",
+  "seed": 8,
+  "case_index": 7,
+  "mode": "dynamic_three_way",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "title",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "priority",
+            "type": {
+              "kind": "enum_ref",
+              "ref": "Priority"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": [
+      {
+        "name": "Priority",
+        "values": [
+          "HIGH",
+          "MEDIUM",
+          "LOW"
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "title",
+        "value": {
+          "kind": "string",
+          "string": "ship it"
+        }
+      },
+      {
+        "name": "priority",
+        "value": {
+          "kind": "enum_ref",
+          "enum": "HIGH"
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "title": "ship it",
+    "priority": "HIGH"
+  },
+  "expected": {
+    "title": "ship it",
+    "priority": "HIGH"
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Root": 1
+    }
+  }
+}

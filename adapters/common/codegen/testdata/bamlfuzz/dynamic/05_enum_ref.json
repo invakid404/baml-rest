@@ -1,0 +1,62 @@
+{
+  "name": "enum_ref",
+  "seed": 6,
+  "case_index": 5,
+  "mode": "dynamic_three_way",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "status",
+            "type": {
+              "kind": "enum_ref",
+              "ref": "Status"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": [
+      {
+        "name": "Status",
+        "values": [
+          "ACTIVE",
+          "INACTIVE",
+          "PENDING"
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": false,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "status",
+        "value": {
+          "kind": "enum_ref",
+          "enum": "ACTIVE"
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "status": "ACTIVE"
+  },
+  "expected": {
+    "status": "ACTIVE"
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Root": 1
+    }
+  }
+}
