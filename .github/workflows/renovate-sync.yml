@@ -59,11 +59,13 @@ jobs:
                 git diff --name-only -z HEAD
                 git ls-files --others --exclude-standard -z
               } | while IFS= read -r -d '' path; do
+                  # Parenthesize case arms so bash doesn't read the
+                  # unbalanced `)` as closing the enclosing $( … ).
                   case "$path" in
-                    go.mod|go.sum|go.work.sum) ;;
-                    */go.mod|*/go.sum) ;;
-                    "") ;;
-                    *) printf '%s\n' "$path" ;;
+                    (go.mod|go.sum|go.work.sum) ;;
+                    (*/go.mod|*/go.sum) ;;
+                    ("") ;;
+                    (*) printf '%s\n' "$path" ;;
                   esac
                 done
             )
