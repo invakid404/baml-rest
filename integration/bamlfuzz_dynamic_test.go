@@ -74,7 +74,7 @@ func TestBamlfuzzDynamicOracle(t *testing.T) {
 			caseIdx := i
 			caseCopy := c
 			t.Run(caseCopy.Name, func(t *testing.T) {
-				runDynamicOracleCase(t, dyn, caseCopy, caseIdx)
+				runDynamicOracleCase(t, dyn, caseCopy, caseIdx, caseSourceCorpus)
 			})
 		}
 	})
@@ -97,12 +97,46 @@ func TestBamlfuzzDynamicOracle(t *testing.T) {
 					seed := dynamicSeedFor(preserve, i)
 					t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
 						caseCopy := buildRapidCase(t, seed, preserve, i)
-						runDynamicOracleCase(t, dyn, caseCopy, i)
+						runDynamicOracleCase(t, dyn, caseCopy, i, caseSourceRapid)
 					})
 				}
 			})
 		}
 	})
+}
+
+// caseSource identifies whether an OracleCase came from the on-disk
+// corpus or the rapid generator. Provenance matters when the dynamic
+// emitter rejects a schema with ErrDynamicSchemaUnsupported: corpus
+// cases (e.g. the mutual_recursion case gated by
+// TODO(upstream-mutual-rec-dynamic-crash)) skip with a clear message,
+// but a rapid case hitting the same error is a generator regression —
+// DynamicSafeSchemaGen pins MutualCycleProbability=0 and
+// AllowSelfRef=false, so the random walker should never produce an
+// unsupported schema. Failing rather than skipping surfaces the drift.
+type caseSource int
+
+const (
+	caseSourceCorpus caseSource = iota
+	caseSourceRapid
+)
+
+// unsupportedAction is what runDynamicOracleCase should do when the
+// dynamic emitter rejects a schema (ErrDynamicSchemaUnsupported). The
+// dispatch lives in its own function so a unit test can pin the
+// contract without driving the full oracle harness.
+type unsupportedAction int
+
+const (
+	unsupportedSkip unsupportedAction = iota
+	unsupportedFail
+)
+
+func unsupportedActionFor(source caseSource) unsupportedAction {
+	if source == caseSourceCorpus {
+		return unsupportedSkip
+	}
+	return unsupportedFail
 }
 
 // dynamicSeedFor produces a deterministic rapid seed for a (preserve, i)
@@ -159,8 +193,10 @@ func buildRapidCase(t *testing.T, seed uint64, preserve bool, idx int) bamlfuzz.
 
 // runDynamicOracleCase performs the three-way comparison for one
 // OracleCase, capturing all relevant context into a DynamicFailureEnvelope
-// when any leg disagrees semantically.
-func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.OracleCase, caseIdx int) {
+// when any leg disagrees semantically. `source` selects how
+// ErrDynamicSchemaUnsupported is treated: corpus cases skip, rapid
+// cases fail.
+func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.OracleCase, caseIdx int, source caseSource) {
 	t.Helper()
 
 	envelope := &bamlfuzz.DynamicFailureEnvelope{
@@ -179,14 +215,27 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 
 	lowered, err := bamlfuzz.LowerToDynamicSchema(c.Schema)
 	if errors.Is(err, bamlfuzz.ErrDynamicSchemaUnsupported) {
-		// The dynamic emitter is correctly rejecting an upstream-unsafe
-		// schema (self-ref or mutual cycle). Per scope D8 the failure
-		// shape that fails the test is "dynamic emitter unexpectedly
-		// ACCEPTS" — rejection is the contract. Skip with a clear
-		// reason; the corpus file remains in tree so coverage returns
-		// once the upstream BAML limitation is fixed.
-		t.Skipf("dynamic emitter skipped schema: %v", err)
-		return
+		switch unsupportedActionFor(source) {
+		case unsupportedSkip:
+			// The dynamic emitter is correctly rejecting an
+			// upstream-unsafe corpus schema (self-ref or mutual
+			// cycle). Per scope D8 the failure shape that fails the
+			// test is "dynamic emitter unexpectedly ACCEPTS" —
+			// rejection is the contract. Skip with a clear reason;
+			// the corpus file remains in tree so coverage returns
+			// once the upstream BAML limitation is fixed.
+			t.Skipf("dynamic emitter skipped schema: %v", err)
+			return
+		case unsupportedFail:
+			// DynamicSafeSchemaGen pins MutualCycleProbability=0 and
+			// AllowSelfRef=false, so a rapid-generated case must
+			// never land in an unsupported shape. Treat this as a
+			// generator regression and fail with the envelope
+			// describing the offending schema.
+			envelope.DynamicSkipReason = err.Error()
+			failAndDump(t, envelope, "rapid generator produced unsupported schema: %v", err)
+			return
+		}
 	}
 	if err != nil {
 		envelope.DynamicSkipReason = err.Error()
@@ -233,9 +282,20 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 		PreserveSchemaOrder: preservePtr,
 	}
 	libResp, libErr := dyn.DynamicCall(callCtx, libReq)
-	if libErr != nil {
+	switch {
+	case libErr != nil:
 		envelope.DynclientError = libErr.Error()
-	} else if libResp != nil {
+	case libResp == nil:
+		// Defensive contract check: dynclient.Client.DynamicCall today
+		// always returns a non-nil response on the nil-error path. A
+		// future client regression returning (nil, nil) would otherwise
+		// flow through as a successful empty response and silently
+		// equate two legs. Surface as a hard failure with the envelope
+		// noting which side went nil.
+		envelope.DynclientError = "nil response from dyn.DynamicCall"
+		failAndDump(t, envelope, "dynclient returned nil response without an error")
+		return
+	default:
 		envelope.DynclientOutput = libResp.Data
 	}
 
@@ -248,9 +308,18 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 		return
 	}
 	restResp, err := BAMLClient.DynamicCallJSON(callCtx, restBody)
-	if err != nil {
+	switch {
+	case err != nil:
 		envelope.RESTError = err.Error()
-	} else if restResp != nil {
+	case restResp == nil:
+		// Defensive contract check: see the dynclient branch above.
+		// DynamicCallJSON today always allocates a response on the
+		// nil-error path; this guard turns a future regression into a
+		// hard failure with the envelope noting the source leg.
+		envelope.RESTError = "nil response from BAMLClient.DynamicCallJSON"
+		failAndDump(t, envelope, "REST client returned nil response without an error")
+		return
+	default:
 		envelope.RESTStatus = restResp.StatusCode
 		envelope.RESTBody = restResp.Body
 		if restResp.StatusCode >= 400 {
@@ -396,4 +465,19 @@ func loadDynamicCorpus(dir string) ([]bamlfuzz.OracleCase, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// TestUnsupportedActionFor pins the source-dependent dispatch for the
+// rapid-vs-corpus skip-vs-fail contract. Decoupled from
+// runDynamicOracleCase itself because a Go subtest failure cascades to
+// the parent — there is no built-in "expect this subtest to fail"
+// mechanism, so the dispatch lives in a small pure function whose
+// behaviour can be asserted directly.
+func TestUnsupportedActionFor(t *testing.T) {
+	if got := unsupportedActionFor(caseSourceCorpus); got != unsupportedSkip {
+		t.Errorf("caseSourceCorpus: got %v, want unsupportedSkip", got)
+	}
+	if got := unsupportedActionFor(caseSourceRapid); got != unsupportedFail {
+		t.Errorf("caseSourceRapid: got %v, want unsupportedFail", got)
+	}
 }

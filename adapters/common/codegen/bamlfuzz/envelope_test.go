@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -88,6 +89,56 @@ func TestDetectOrderWarning(t *testing.T) {
 		[]byte(`{"a":1,"b":2}`))
 	if len(none) != 0 {
 		t.Errorf("expected no warnings, got %v", none)
+	}
+}
+
+func TestSanitizeArtifactBasename(t *testing.T) {
+	cases := []struct {
+		name  string
+		index int
+		want  string
+	}{
+		{"safe_name", 0, "safe_name"},
+		{"case_demo", 7, "case_demo"},
+		{"with-dashes_and_under", 3, "with-dashes_and_under"},
+		// Unsafe inputs all fall back to case_<index>.
+		{"", 4, "case_4"},
+		{".", 5, "case_5"},
+		{"..", 6, "case_6"},
+		{"sub/name", 7, "case_7"},
+		{`sub\name`, 8, "case_8"},
+		{"/abs", 9, "case_9"},
+		{"C:foo", 10, "case_10"},
+		{"a/../b", 11, "case_11"},
+	}
+	for _, c := range cases {
+		got := sanitizeArtifactBasename(c.name, c.index)
+		if got != c.want {
+			t.Errorf("sanitizeArtifactBasename(%q, %d) = %q, want %q", c.name, c.index, got, c.want)
+		}
+	}
+}
+
+func TestWriteReplayArtifact_SanitizesUnsafeCaseName(t *testing.T) {
+	dir := t.TempDir()
+	env := &DynamicFailureEnvelope{
+		CaseName:  "../escape",
+		CaseIndex: 42,
+		Expected:  json.RawMessage(`{"k":"v"}`),
+	}
+	path, err := WriteReplayArtifact(dir, env)
+	if err != nil {
+		t.Fatalf("WriteReplayArtifact: %v", err)
+	}
+	if got, want := filepath.Base(path), "case_42.json"; got != want {
+		t.Errorf("basename: got %q want %q (raw=%q)", got, want, path)
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		t.Errorf("artifact escaped dir: rel=%q dir=%q path=%q", rel, dir, path)
 	}
 }
 

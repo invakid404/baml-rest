@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/invakid404/baml-rest/adapters/common/codegen/internal/testharness"
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
@@ -76,10 +77,7 @@ func WriteReplayArtifact(dir string, envelope *DynamicFailureEnvelope) (string, 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("bamlfuzz: mkdir %s: %w", dir, err)
 	}
-	name := envelope.CaseName
-	if name == "" {
-		name = fmt.Sprintf("case_%d", envelope.CaseIndex)
-	}
+	name := sanitizeArtifactBasename(envelope.CaseName, envelope.CaseIndex)
 	path := filepath.Join(dir, name+".json")
 	envelope.ReplayPath = path
 	buf, err := json.MarshalIndent(envelope, "", "  ")
@@ -90,6 +88,20 @@ func WriteReplayArtifact(dir string, envelope *DynamicFailureEnvelope) (string, 
 		return "", fmt.Errorf("bamlfuzz: write %s: %w", path, err)
 	}
 	return path, nil
+}
+
+// sanitizeArtifactBasename returns a safe basename for the replay
+// artifact filename. CaseName comes from on-disk corpus / replay JSON
+// and a hand-edited file with separators, traversal segments, or an
+// absolute / drive-prefixed path could otherwise escape the artifact
+// directory. testharness.CheckReplayName is the shared contract; on
+// any violation (including empty) the basename falls back to
+// case_<index> so the failure envelope still lands on disk.
+func sanitizeArtifactBasename(caseName string, caseIndex int) string {
+	if err := testharness.CheckReplayName(caseName); err != nil {
+		return fmt.Sprintf("case_%d", caseIndex)
+	}
+	return caseName
 }
 
 // SemanticEqual reports whether two JSON byte slices are equal modulo
