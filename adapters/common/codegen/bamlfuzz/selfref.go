@@ -17,11 +17,16 @@ package bamlfuzz
 // reach[C][C]=true but C does not have a direct self-ref edge.
 //
 // RequiresDynamicSkip is true whenever the dynamic emitter cannot
-// safely realize the schema. Today that is exactly the self-ref
-// case: upstream BAML TypeBuilder cannot express a class referencing
-// itself (TODO(upstream-self-ref)). Mutual cycles through OTHER
-// classes are realizable through TypeBuilder; the value generator
-// terminates them via the per-class recursion cap.
+// safely realize the schema. Two upstream limitations gate it today:
+//   - self-ref classes (TODO(upstream-self-ref)): upstream BAML
+//     TypeBuilder cannot express a class referencing itself.
+//   - mutual cycles between distinct classes
+//     (TODO(upstream-mutual-rec-dynamic-crash)): the BAML cgo
+//     TypeBuilder aborts the host process with a signal-level fault
+//     when a schema carries A→B→A cross-references. The value
+//     generator already terminates such cycles via the per-class
+//     recursion cap, so the IR + walker side is ready; only the
+//     dynamic emission path is gated.
 func AnalyzeGraph(schema FuzzSchema) FuzzSchema {
 	direct := directClassRefs(schema)
 	reach := closureFromDirect(schema, direct)
@@ -39,7 +44,7 @@ func AnalyzeGraph(schema FuzzSchema) FuzzSchema {
 			out.HasMutualCycle = true
 		}
 	}
-	out.RequiresDynamicSkip = out.HasSelfRef
+	out.RequiresDynamicSkip = out.HasSelfRef || out.HasMutualCycle
 	return out
 }
 

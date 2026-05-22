@@ -10,6 +10,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -211,7 +212,7 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 		MockLLMContent:      c.MockLLMContent,
 		Expected:            c.Expected,
 		Metadata:            c.Metadata,
-		Reproduction:        reproductionFor(c, caseIdx),
+		Reproduction:        reproductionFor(c, caseIdx, source),
 	}
 
 	lowered, err := bamlfuzz.LowerToDynamicSchema(c.Schema)
@@ -396,9 +397,38 @@ func failAndDump(t *testing.T, envelope *bamlfuzz.DynamicFailureEnvelope, format
 // reproductionFor returns the canonical command to re-run a failing case
 // in isolation. Embedded in the envelope so a developer can copy-paste
 // it from the failure log.
-func reproductionFor(c bamlfuzz.OracleCase, caseIdx int) string {
-	return fmt.Sprintf("go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/%s$' ./integration -count=1",
-		c.Name)
+//
+// The Go `-run` flag matches each `/`-separated segment as its own
+// regex against the corresponding test-name level. Both subtest trees
+// are spelled out here:
+//
+//	TestBamlfuzzDynamicOracle / corpus / <case_name>
+//	TestBamlfuzzDynamicOracle / rapid  / preserve_{on,off} / case_<index>
+//
+// When the runner is invoked with BAMLFUZZ_SEED set, the env var is
+// echoed into the command so the rapid-seeded draw is reproducible.
+func reproductionFor(c bamlfuzz.OracleCase, caseIdx int, source caseSource) string {
+	segments := []string{"^TestBamlfuzzDynamicOracle$"}
+	switch source {
+	case caseSourceCorpus:
+		segments = append(segments, "^corpus$", "^"+regexp.QuoteMeta(c.Name)+"$")
+	case caseSourceRapid:
+		preserve := "preserve_off"
+		if c.PreserveSchemaOrder {
+			preserve = "preserve_on"
+		}
+		segments = append(segments,
+			"^rapid$",
+			"^"+regexp.QuoteMeta(preserve)+"$",
+			fmt.Sprintf("^case_%d$", caseIdx),
+		)
+	}
+	cmd := fmt.Sprintf("go test -tags=integration -run='%s' ./integration -count=1",
+		strings.Join(segments, "/"))
+	if seed := os.Getenv("BAMLFUZZ_SEED"); seed != "" {
+		cmd = "BAMLFUZZ_SEED=" + seed + " " + cmd
+	}
+	return cmd
 }
 
 // scenarioSafe sanitizes a case name into a mockllm scenario ID. Mockllm
@@ -466,6 +496,54 @@ func loadDynamicCorpus(dir string) ([]bamlfuzz.OracleCase, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// TestReproductionFor pins the shape of the reproduction command
+// embedded in failure envelopes. The two subtest trees (corpus + rapid)
+// have different depths and the BAMLFUZZ_SEED env var prefix is only
+// applied when set; this test exercises both.
+func TestReproductionFor(t *testing.T) {
+	t.Setenv("BAMLFUZZ_SEED", "")
+	corpus := reproductionFor(
+		bamlfuzz.OracleCase{Name: "scalar_string"},
+		0,
+		caseSourceCorpus,
+	)
+	wantCorpus := "go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^corpus$/^scalar_string$' ./integration -count=1"
+	if corpus != wantCorpus {
+		t.Errorf("corpus repro:\n got:  %s\n want: %s", corpus, wantCorpus)
+	}
+
+	rapidOn := reproductionFor(
+		bamlfuzz.OracleCase{PreserveSchemaOrder: true},
+		2,
+		caseSourceRapid,
+	)
+	wantRapidOn := "go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^rapid$/^preserve_on$/^case_2$' ./integration -count=1"
+	if rapidOn != wantRapidOn {
+		t.Errorf("rapid preserve-on repro:\n got:  %s\n want: %s", rapidOn, wantRapidOn)
+	}
+
+	rapidOff := reproductionFor(
+		bamlfuzz.OracleCase{PreserveSchemaOrder: false},
+		3,
+		caseSourceRapid,
+	)
+	wantRapidOff := "go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^rapid$/^preserve_off$/^case_3$' ./integration -count=1"
+	if rapidOff != wantRapidOff {
+		t.Errorf("rapid preserve-off repro:\n got:  %s\n want: %s", rapidOff, wantRapidOff)
+	}
+
+	t.Setenv("BAMLFUZZ_SEED", "12345")
+	withSeed := reproductionFor(
+		bamlfuzz.OracleCase{PreserveSchemaOrder: true},
+		0,
+		caseSourceRapid,
+	)
+	wantWithSeed := "BAMLFUZZ_SEED=12345 go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^rapid$/^preserve_on$/^case_0$' ./integration -count=1"
+	if withSeed != wantWithSeed {
+		t.Errorf("rapid+seed repro:\n got:  %s\n want: %s", withSeed, wantWithSeed)
+	}
 }
 
 // TestUnsupportedActionFor pins the source-dependent dispatch for the

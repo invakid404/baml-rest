@@ -114,8 +114,8 @@ func TestAnalyzeGraphDetectsMutualCycle(t *testing.T) {
 	if !got.HasMutualCycle {
 		t.Errorf("HasMutualCycle = false, want true")
 	}
-	if got.RequiresDynamicSkip {
-		t.Errorf("RequiresDynamicSkip = true, want false (mutual cycle is dynamic-friendly)")
+	if !got.RequiresDynamicSkip {
+		t.Errorf("RequiresDynamicSkip = false, want true (mutual cycle gated by TODO(upstream-mutual-rec-dynamic-crash))")
 	}
 }
 

@@ -54,7 +54,7 @@
     "has_self_ref": false,
     "has_mutual_cycle": true,
     "has_union": false,
-    "requires_dynamic_skip": false
+    "requires_dynamic_skip": true
   },
   "value": {
     "kind": "class_ref",
