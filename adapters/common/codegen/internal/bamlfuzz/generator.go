@@ -1,4 +1,4 @@
-package issue340fuzz
+package bamlfuzz
 
 import (
 	"fmt"
@@ -23,18 +23,18 @@ const (
 )
 
 // classNameFor / enumNameFor / fieldNameFor produce the stable
-// generator-name convention: classes F340_C0..F340_C{N-1}, enums
-// F340_E0..F340_E{N-1}, fields F340_field_0.. per class (the index
+// generator-name convention: classes FuzzClass0..FuzzClass{N-1}, enums
+// FuzzEnum0..FuzzEnum{N-1}, fields Fuzz_field_0.. per class (the index
 // is local to the class so fields don't bleed names across
 // declarations).
-func classNameFor(i int) string { return fmt.Sprintf("F340_C%d", i) }
-func enumNameFor(i int) string  { return fmt.Sprintf("F340_E%d", i) }
+func classNameFor(i int) string { return fmt.Sprintf("FuzzClass%d", i) }
+func enumNameFor(i int) string  { return fmt.Sprintf("FuzzEnum%d", i) }
 func enumValueFor(eIdx, vIdx int) string {
-	return fmt.Sprintf("F340_E%d_V%d", eIdx, vIdx)
+	return fmt.Sprintf("FuzzEnum%d_V%d", eIdx, vIdx)
 }
-func fieldNameFor(i int) string { return fmt.Sprintf("F340_field_%d", i) }
+func fieldNameFor(i int) string { return fmt.Sprintf("Fuzz_field_%d", i) }
 
-// SchemaGenOptions configures the schema generator. Mostly callers
+// SchemaGenOptions configures the schema generator. Callers usually
 // pick the dynamic-safe or static entry-point helpers below; this
 // struct is exposed for tests that need a specific shape.
 type SchemaGenOptions struct {
@@ -46,23 +46,37 @@ type SchemaGenOptions struct {
 	// actually produces a self-ref class. The scope doc settled on
 	// 10–20% of static random cases; tests pin a fixed value.
 	SelfRefProbability float64
+	// MutualCycleProbability is the chance, in [0,1], that the
+	// generator injects a two-class mutual cycle (A → optional<B>
+	// and B → optional<A>). Mutual cycles do not require dynamic
+	// skip — they are realizable through dynamic TypeBuilder — and
+	// the value generator terminates them via the per-class
+	// recursion cap.
+	MutualCycleProbability float64
 }
 
 // DynamicSafeSchemaGen returns a rapid generator for FuzzSchema
 // values that the dynamic TypeBuilder path can safely realize: no
-// self-ref, no mutual cycles, RequiresDynamicSkip=false.
+// self-ref. Mutual cycles ARE allowed because the value generator
+// terminates them at the recursion cap; the dynamic emitter targets
+// the cycle through TypeBuilder.AddClass.
 func DynamicSafeSchemaGen() *rapid.Generator[FuzzSchema] {
-	return SchemaGen(SchemaGenOptions{AllowSelfRef: false})
+	return SchemaGen(SchemaGenOptions{
+		AllowSelfRef:           false,
+		MutualCycleProbability: 0.15,
+	})
 }
 
 // StaticSchemaGen returns a generator for FuzzSchema values the
 // static .baml emitter can render. Self-ref schemas are permitted
-// at the configured probability and are stamped with
-// RequiresDynamicSkip=true.
+// at the configured probability and stamped with
+// RequiresDynamicSkip=true; mutual cycles are also permitted and
+// remain dynamic-friendly.
 func StaticSchemaGen() *rapid.Generator[FuzzSchema] {
 	return SchemaGen(SchemaGenOptions{
-		AllowSelfRef:       true,
-		SelfRefProbability: 0.15,
+		AllowSelfRef:           true,
+		SelfRefProbability:     0.15,
+		MutualCycleProbability: 0.15,
 	})
 }
 
@@ -107,10 +121,10 @@ func drawSchema(t *rapid.T, opts SchemaGenOptions) FuzzSchema {
 
 	classes := make([]FuzzClass, numClasses)
 	for i := 0; i < numClasses; i++ {
-		// DAG order: each class can reference classes with a
-		// higher index (so far-removed leaves don't cycle back).
-		// The root (i=0) is the only class permitted a self-ref
-		// edge when selfRefRoot is set.
+		// Forward-only refs at draw time keep the initial graph a
+		// DAG. The mutual-cycle injection below adds the only
+		// back-edges in the schema; the value generator
+		// terminates cycles via the per-class recursion cap.
 		var refTargets []string
 		if i+1 < numClasses {
 			refTargets = append(refTargets, classNames[i+1:]...)
@@ -118,6 +132,14 @@ func drawSchema(t *rapid.T, opts SchemaGenOptions) FuzzSchema {
 		classes[i] = drawClass(t, i, classNames[i], refTargets, enums)
 	}
 
+	mutualCycle := false
+	if numClasses >= 2 && opts.MutualCycleProbability > 0 {
+		dice := rapid.Float64Range(0, 1).Draw(t, "mutual_cycle_dice")
+		mutualCycle = dice < opts.MutualCycleProbability
+	}
+	if mutualCycle {
+		injectMutualCycle(t, classes)
+	}
 	if selfRefRoot {
 		injectSelfRef(&classes[0])
 	}
@@ -167,7 +189,7 @@ func drawType(t *rapid.T, label string, refTargets []string, enums []FuzzEnum, d
 	// Atomic kinds always available; refs available only when
 	// targets exist; wrappers available only while we have depth
 	// budget remaining.
-	atomicKinds := []FuzzTypeKind{KindString, KindInt, KindFloat, KindBool, KindLiteral}
+	atomicKinds := []FuzzTypeKind{KindString, KindInt, KindFloat, KindBool, KindNull, KindLiteral}
 	if len(enums) > 0 {
 		atomicKinds = append(atomicKinds, KindEnumRef)
 	}
@@ -182,7 +204,7 @@ func drawType(t *rapid.T, label string, refTargets []string, enums []FuzzEnum, d
 
 	kind := drawKind(t, label, choices)
 	switch kind {
-	case KindString, KindInt, KindFloat, KindBool:
+	case KindString, KindInt, KindFloat, KindBool, KindNull:
 		return FuzzType{Kind: kind}
 	case KindLiteral:
 		return FuzzType{Kind: KindLiteral, Literal: drawLiteral(t, label)}
@@ -235,18 +257,54 @@ func drawLiteral(t *rapid.T, label string) *FuzzLiteral {
 	return &FuzzLiteral{Kind: LiteralString}
 }
 
-// injectSelfRef appends a self-referential optional class field to
-// `cls`. The wrapper is always KindOptional so the value generator
-// terminates at depth cap by emitting null / absent. Required
-// class-ref self-edges would never terminate.
+// injectSelfRef replaces `cls`'s last property with a self-
+// referential optional class field. Replacement (not append) keeps
+// the per-class field count inside the [MinFieldsPerClass,
+// MaxFieldsPerClass] budget. The wrapper is always KindOptional so
+// the value generator terminates at depth cap by emitting null /
+// absent. A required class-ref self-edge would never terminate.
 func injectSelfRef(cls *FuzzClass) {
-	idx := len(cls.Properties)
+	if len(cls.Properties) == 0 {
+		return
+	}
+	last := len(cls.Properties) - 1
 	self := FuzzType{Kind: KindClassRef, Ref: cls.Name}
 	opt := FuzzType{Kind: KindOptional, Inner: &self}
-	cls.Properties = append(cls.Properties, FuzzProperty{
-		Name: fieldNameFor(idx),
+	cls.Properties[last] = FuzzProperty{
+		Name: cls.Properties[last].Name,
 		Type: opt,
-	})
+	}
+}
+
+// injectMutualCycle replaces one field in each of two distinct
+// classes with a back-edge optional<other>, creating an A↔B mutual
+// cycle through "other" classes. Replacement (not append) keeps
+// each class within the field-count budget. Cycle traversal at
+// value-generation time is bounded by the per-class recursion cap.
+func injectMutualCycle(t *rapid.T, classes []FuzzClass) {
+	if len(classes) < 2 {
+		return
+	}
+	a := rapid.IntRange(0, len(classes)-1).Draw(t, "mutual_a")
+	b := rapid.IntRange(0, len(classes)-1).Draw(t, "mutual_b")
+	if a == b {
+		b = (a + 1) % len(classes)
+	}
+	wireBackEdge(&classes[a], classes[b].Name)
+	wireBackEdge(&classes[b], classes[a].Name)
+}
+
+func wireBackEdge(cls *FuzzClass, targetClassName string) {
+	if len(cls.Properties) == 0 {
+		return
+	}
+	last := len(cls.Properties) - 1
+	ref := FuzzType{Kind: KindClassRef, Ref: targetClassName}
+	opt := FuzzType{Kind: KindOptional, Inner: &ref}
+	cls.Properties[last] = FuzzProperty{
+		Name: cls.Properties[last].Name,
+		Type: opt,
+	}
 }
 
 // ValueGen returns a generator that produces a FuzzValue conforming
@@ -276,7 +334,11 @@ type valueDrawCtx struct {
 }
 
 func (c *valueDrawCtx) drawClass(t *rapid.T, className, label string) FuzzValue {
-	cls, _ := c.schema.FindClass(className)
+	cls, ok := c.schema.FindClass(className)
+	if !ok {
+		t.Fatalf("bamlfuzz: drawClass cannot find class %q (label=%s); generator and schema state are inconsistent",
+			className, label)
+	}
 	c.depth[className]++
 	defer func() { c.depth[className]-- }()
 	fields := make([]FuzzFieldValue, len(cls.Properties))
@@ -302,6 +364,8 @@ func (c *valueDrawCtx) drawValueForType(t *rapid.T, ft FuzzType, label string) F
 		return FuzzValue{Kind: KindFloat, Float: drawFloat(t, label)}
 	case KindBool:
 		return FuzzValue{Kind: KindBool, Bool: rapid.Bool().Draw(t, label)}
+	case KindNull:
+		return FuzzValue{Kind: KindNull}
 	case KindLiteral:
 		return c.drawLiteralValue(ft.Literal)
 	case KindEnumRef:

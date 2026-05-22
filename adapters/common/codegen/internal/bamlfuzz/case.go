@@ -1,4 +1,4 @@
-package issue340fuzz
+package bamlfuzz
 
 import "encoding/json"
 
@@ -27,7 +27,7 @@ const (
 // walker made.
 type CaseMetadata struct {
 	// OptionalShapes maps a JSON-path-style key (e.g.
-	// ".F340_field_2.F340_field_0") to "present" / "absent" /
+	// ".Fuzz_field_2.Fuzz_field_0") to "present" / "absent" /
 	// "null". Recorded for every optional field encountered.
 	OptionalShapes map[string]string `json:"optional_shapes,omitempty"`
 	// RecursionDepths maps a class name to the maximum self-ref

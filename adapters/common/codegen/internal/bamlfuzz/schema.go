@@ -1,4 +1,4 @@
-// Package issue340fuzz hosts the shared IR + rapid generators that
+// Package bamlfuzz hosts the shared IR + rapid generators that
 // back the property-style fuzz framework for the BAML-on-Go pipeline.
 // It is intentionally implementation-agnostic: the IR describes a
 // schema + value pair abstractly, and downstream emitters (dynamic
@@ -6,14 +6,13 @@
 // paths that need to agree.
 //
 // Naming convention for generated classes/enums is deterministic:
-// classes are F340_C0, F340_C1, ...; enums are F340_E0, F340_E1, ...
-// Property names are F340_field_N. Stability across runs makes
+// classes are FuzzClass0, FuzzClass1, ...; enums are FuzzEnum0, FuzzEnum1, ...
+// Property names are Fuzz_field_N. Stability across runs makes
 // failure replay produce identical artifacts independent of map
 // iteration order.
-package issue340fuzz
+package bamlfuzz
 
-// FuzzTypeKind enumerates every type shape the IR supports. Unions
-// are intentionally excluded from v1; see issue #340 v1.1.
+// FuzzTypeKind enumerates every type shape the IR supports.
 type FuzzTypeKind string
 
 const (
@@ -21,6 +20,7 @@ const (
 	KindInt      FuzzTypeKind = "int"
 	KindFloat    FuzzTypeKind = "float"
 	KindBool     FuzzTypeKind = "bool"
+	KindNull     FuzzTypeKind = "null"
 	KindLiteral  FuzzTypeKind = "literal"
 	KindOptional FuzzTypeKind = "optional"
 	KindList     FuzzTypeKind = "list"
@@ -30,9 +30,9 @@ const (
 )
 
 // FuzzLiteralKind narrows the literal payload to one of the BAML
-// literal scalar kinds. Literals are stored inline on FuzzType
-// rather than as a separate node so emitters can render them
-// without a second indirection.
+// literal scalar kinds. Literals are stored inline on FuzzType so
+// emitters can render the literal value without a second
+// indirection through a separate node type.
 type FuzzLiteralKind string
 
 const (
@@ -52,16 +52,17 @@ type FuzzLiteral struct {
 
 // FuzzType is the structural type spec. The discriminator is Kind;
 // the other fields are populated based on Kind:
-//   - KindOptional / KindList:  Inner
-//   - KindMap:                  Key (always KindString in v1) + Inner
+//   - KindOptional / KindList:    Inner
+//   - KindMap:                    Key (always KindString in v1) +
+//     Inner
 //   - KindClassRef / KindEnumRef: Ref
-//   - KindLiteral:              Literal
-//   - primitives:               nothing else.
+//   - KindLiteral:                Literal
+//   - primitives, KindNull:       nothing else.
 //
-// Storing Inner / Key as pointers (rather than value-embedded
-// FuzzType) lets the IR hold recursive schemas (self-ref classes
-// reach themselves only through a ClassRef, not through structural
-// nesting, so the type itself stays finite).
+// Inner / Key are pointers so the IR can hold recursive schemas:
+// self-ref classes reach themselves only through a ClassRef edge,
+// never through structural nesting, so the type spec itself stays
+// finite.
 type FuzzType struct {
 	Kind    FuzzTypeKind `json:"kind"`
 	Inner   *FuzzType    `json:"inner,omitempty"`
@@ -85,7 +86,7 @@ type FuzzClass struct {
 }
 
 // FuzzEnum is a generated enum declaration. Values are unique
-// uppercase tokens (e.g. F340_E0_V0).
+// uppercase tokens (e.g. FuzzEnum0_V0).
 type FuzzEnum struct {
 	Name   string   `json:"name"`
 	Values []string `json:"values"`

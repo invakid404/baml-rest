@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -54,7 +55,8 @@ type RunGoTestOptions struct {
 	// Count overrides `-count`. Zero (the default) becomes 1.
 	Count int
 	// Env are extra environment entries appended after os.Environ()
-	// + GOWORK=off. Use this for FUZZ_TIME or per-test toggles.
+	// + GOWORK=off. Any GOWORK= entry is silently dropped so the
+	// harness's GOWORK=off contract is non-overridable.
 	Env []string
 }
 
@@ -80,12 +82,24 @@ func RunGoTestArgs(t *testing.T, dir string, opts RunGoTestOptions) (string, err
 	}
 	if opts.Fuzz != "" {
 		args = append(args, "-fuzz", opts.Fuzz)
+		// `go test -fuzz` accepts exactly one package; "./..."
+		// would fail with multi-package matches. Pin the target
+		// to the temp module root.
+		args = append(args, ".")
+	} else {
+		args = append(args, "./...")
 	}
-	args = append(args, "./...")
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
 	env := append(os.Environ(), "GOWORK=off")
-	env = append(env, opts.Env...)
+	// Drop any caller-supplied GOWORK= entry so the harness's
+	// "always GOWORK=off" contract holds.
+	for _, e := range opts.Env {
+		if strings.HasPrefix(e, "GOWORK=") {
+			continue
+		}
+		env = append(env, e)
+	}
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err

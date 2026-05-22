@@ -1,4 +1,4 @@
-package issue340fuzz
+package bamlfuzz
 
 import (
 	"encoding/json"
@@ -9,20 +9,18 @@ import (
 )
 
 // TestDynamicSafeNeverSelfRefs asserts the dynamic-safe schema
-// generator never produces a class graph that allows any class to
-// reach itself (including transitive paths through optional / list /
-// map wrappers). This is the contract the dynamic emitter relies on
-// to avoid the upstream BAML TypeBuilder self-reference bug
-// (TODO(upstream-self-ref)).
+// generator never produces a class graph in which any class
+// references itself through its own property tree (the direct
+// self-ref case). Mutual cycles through OTHER classes are permitted
+// — see TestDynamicSafeCanEmitMutualCycle. The dynamic emitter
+// relies on no-direct-self-ref to side-step the upstream BAML
+// TypeBuilder self-reference bug (TODO(upstream-self-ref)).
 func TestDynamicSafeNeverSelfRefs(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		schema := DynamicSafeSchemaGen().Draw(rt, "schema")
 		fresh := AnalyzeGraph(schema)
 		if fresh.HasSelfRef {
-			rt.Fatalf("dynamic-safe schema reached self via reachability:\n%s", schemaDump(schema))
-		}
-		if fresh.HasMutualCycle {
-			rt.Fatalf("dynamic-safe schema has mutual cycle:\n%s", schemaDump(schema))
+			rt.Fatalf("dynamic-safe schema has direct self-ref:\n%s", schemaDump(schema))
 		}
 		if fresh.RequiresDynamicSkip {
 			rt.Fatalf("dynamic-safe schema flagged RequiresDynamicSkip:\n%s", schemaDump(schema))
@@ -38,6 +36,32 @@ func TestDynamicSafeNeverSelfRefs(t *testing.T) {
 				fresh.HasSelfRef, fresh.HasMutualCycle, fresh.RequiresDynamicSkip)
 		}
 	})
+}
+
+// TestDynamicSafeCanEmitMutualCycle asserts the dynamic-safe
+// generator CAN produce schemas with HasMutualCycle=true and
+// RequiresDynamicSkip=false. This locks in the corrected contract:
+// mutual cycles through OTHER classes are realizable through
+// TypeBuilder, only DIRECT self-ref requires dynamic skip.
+func TestDynamicSafeCanEmitMutualCycle(t *testing.T) {
+	gen := SchemaGen(SchemaGenOptions{
+		AllowSelfRef:           false,
+		MutualCycleProbability: 1.0,
+	})
+	saw := false
+	for i := 0; i < 64 && !saw; i++ {
+		schema := gen.Example(i + 1)
+		if schema.HasMutualCycle && !schema.HasSelfRef && !schema.RequiresDynamicSkip {
+			saw = true
+		}
+		if schema.HasMutualCycle && schema.RequiresDynamicSkip && !schema.HasSelfRef {
+			t.Fatalf("mutual-cycle-only schema should NOT require dynamic skip\nschema: %s",
+				schemaDump(schema))
+		}
+	}
+	if !saw {
+		t.Fatal("dynamic-safe + MutualCycleProbability=1.0 never produced a mutual-cycle schema across 64 examples")
+	}
 }
 
 // TestStaticGeneratorMayEmitSelfRef asserts the static generator,
@@ -65,16 +89,15 @@ func TestStaticGeneratorMayEmitSelfRef(t *testing.T) {
 }
 
 // TestStaticValueTerminates asserts the value walker terminates for
-// static schemas — even those with self-ref. Concretely: for any
-// generated (schema, value), Walk returns without exceeding the
-// per-class recursion cap. The walker's metadata reports peak depth
-// per class; if the value generator obeyed the cap, no value
-// exceeds MaxValueRecursion.
+// static schemas — even those with self-ref. The walker reports peak
+// per-class depth in metadata; if the value generator obeyed the
+// recursion cap, the peak never exceeds MaxValueRecursion.
 func TestStaticValueTerminates(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		schema := SchemaGen(SchemaGenOptions{
-			AllowSelfRef:       true,
-			SelfRefProbability: 0.5,
+			AllowSelfRef:           true,
+			SelfRefProbability:     0.5,
+			MutualCycleProbability: 0.5,
 		}).Draw(rt, "schema")
 		value := ValueGen(schema).Draw(rt, "value")
 		res, err := Walk(schema, value)
@@ -98,18 +121,26 @@ func TestStaticValueTerminates(t *testing.T) {
 // in sync with the analyzer used by the rest of the harness.
 func TestRequiresDynamicSkipMatchesDetection(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		// Toggle a coin per check whether we draw from the
-		// dynamic-safe or static generator. Rapid biases coverage
-		// across both paths.
 		allowSelfRef := rapid.Bool().Draw(rt, "allow_self_ref")
-		opts := SchemaGenOptions{AllowSelfRef: allowSelfRef}
+		opts := SchemaGenOptions{
+			AllowSelfRef:           allowSelfRef,
+			MutualCycleProbability: 0.5,
+		}
 		if allowSelfRef {
 			opts.SelfRefProbability = 0.5
 		}
 		schema := SchemaGen(opts).Draw(rt, "schema")
 		fresh := AnalyzeGraph(schema)
+		if schema.HasSelfRef != fresh.HasSelfRef {
+			rt.Fatalf("HasSelfRef drift: stamped=%v fresh=%v\nschema: %s",
+				schema.HasSelfRef, fresh.HasSelfRef, schemaDump(schema))
+		}
+		if schema.HasMutualCycle != fresh.HasMutualCycle {
+			rt.Fatalf("HasMutualCycle drift: stamped=%v fresh=%v\nschema: %s",
+				schema.HasMutualCycle, fresh.HasMutualCycle, schemaDump(schema))
+		}
 		if schema.RequiresDynamicSkip != fresh.RequiresDynamicSkip {
-			rt.Fatalf("flag drift: stamped=%v fresh=%v\nschema: %s",
+			rt.Fatalf("RequiresDynamicSkip drift: stamped=%v fresh=%v\nschema: %s",
 				schema.RequiresDynamicSkip, fresh.RequiresDynamicSkip,
 				schemaDump(schema))
 		}
@@ -117,14 +148,16 @@ func TestRequiresDynamicSkipMatchesDetection(t *testing.T) {
 }
 
 // TestSchemaBoundsRespected asserts the generator never exceeds the
-// scope-doc D9 budget: max 4 classes, max 3 enums, 1–5 fields per
-// class plus a possible self-ref-injected extra optional, type
-// depth ≤ 4.
+// locked budget: max MaxClasses classes, max MaxEnums enums,
+// MinFieldsPerClass..MaxFieldsPerClass fields per class (no leeway
+// — self-ref / mutual-cycle injection REPLACES one field rather
+// than appending), type depth ≤ MaxTypeDepth.
 func TestSchemaBoundsRespected(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		schema := SchemaGen(SchemaGenOptions{
-			AllowSelfRef:       true,
-			SelfRefProbability: 0.5,
+			AllowSelfRef:           true,
+			SelfRefProbability:     0.5,
+			MutualCycleProbability: 0.5,
 		}).Draw(rt, "schema")
 		if len(schema.Classes) < 1 || len(schema.Classes) > MaxClasses {
 			rt.Fatalf("class count %d outside [1, %d]", len(schema.Classes), MaxClasses)
@@ -133,12 +166,9 @@ func TestSchemaBoundsRespected(t *testing.T) {
 			rt.Fatalf("enum count %d > cap %d", len(schema.Enums), MaxEnums)
 		}
 		for _, cls := range schema.Classes {
-			// +1 leeway: injectSelfRef appends one optional at
-			// the back when AllowSelfRef + SelfRefProbability
-			// trigger.
-			if len(cls.Properties) < MinFieldsPerClass || len(cls.Properties) > MaxFieldsPerClass+1 {
+			if len(cls.Properties) < MinFieldsPerClass || len(cls.Properties) > MaxFieldsPerClass {
 				rt.Fatalf("class %q has %d fields, outside [%d, %d]",
-					cls.Name, len(cls.Properties), MinFieldsPerClass, MaxFieldsPerClass+1)
+					cls.Name, len(cls.Properties), MinFieldsPerClass, MaxFieldsPerClass)
 			}
 			for _, prop := range cls.Properties {
 				if d := typeDepth(prop.Type); d > MaxTypeDepth {
@@ -151,7 +181,7 @@ func TestSchemaBoundsRespected(t *testing.T) {
 }
 
 // TestValueBoundsRespected asserts list / map values stay within
-// the scope-doc length bounds.
+// the locked length bounds.
 func TestValueBoundsRespected(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		schema := DynamicSafeSchemaGen().Draw(rt, "schema")
@@ -166,13 +196,14 @@ func TestValueBoundsRespected(t *testing.T) {
 // TestWalkRoundTripNormalizesAbsent asserts the central walker
 // contract: parsing the mock LLM output and normalizing it against
 // the schema produces a byte-identical match to the walker's
-// expected output. This is the property the three-way oracle
-// (added in PR-B/PR-C) relies on.
+// expected output. This is the property the oracle execution paths
+// rely on downstream.
 func TestWalkRoundTripNormalizesAbsent(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		schema := SchemaGen(SchemaGenOptions{
-			AllowSelfRef:       true,
-			SelfRefProbability: 0.5,
+			AllowSelfRef:           true,
+			SelfRefProbability:     0.5,
+			MutualCycleProbability: 0.5,
 		}).Draw(rt, "schema")
 		value := ValueGen(schema).Draw(rt, "value")
 		res, err := Walk(schema, value)
@@ -201,14 +232,14 @@ func TestWalkRoundTripNormalizesAbsent(t *testing.T) {
 func TestEdgeValuesAreReachable(t *testing.T) {
 	schema := FuzzSchema{
 		Classes: []FuzzClass{{
-			Name: "F340_C0",
+			Name: "FuzzClass0",
 			Properties: []FuzzProperty{
-				{Name: "F340_field_0", Type: FuzzType{Kind: KindString}},
-				{Name: "F340_field_1", Type: FuzzType{Kind: KindInt}},
-				{Name: "F340_field_2", Type: FuzzType{Kind: KindBool}},
+				{Name: "Fuzz_field_0", Type: FuzzType{Kind: KindString}},
+				{Name: "Fuzz_field_1", Type: FuzzType{Kind: KindInt}},
+				{Name: "Fuzz_field_2", Type: FuzzType{Kind: KindBool}},
 			},
 		}},
-		RootClass: "F340_C0",
+		RootClass: "FuzzClass0",
 	}
 	gen := ValueGen(schema)
 	var (
@@ -245,6 +276,45 @@ func TestEdgeValuesAreReachable(t *testing.T) {
 	}
 	t.Fatalf("edge coverage incomplete after 256 draws: empty=%v zero=%v neg=%v true=%v false=%v",
 		sawEmptyString, sawZero, sawNeg, sawTrue, sawFalse)
+}
+
+// TestGeneratorEmitsKindNull asserts the generator's atomic rotation
+// includes KindNull and that it appears in produced schemas under a
+// finite budget. Without this coverage, the null primitive would be
+// declared but never reached.
+func TestGeneratorEmitsKindNull(t *testing.T) {
+	gen := SchemaGen(SchemaGenOptions{})
+	saw := false
+	for i := 0; i < 128 && !saw; i++ {
+		schema := gen.Example(i + 1)
+		if schemaContainsKind(schema, KindNull) {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatal("generator never produced a KindNull type across 128 examples")
+	}
+}
+
+func schemaContainsKind(schema FuzzSchema, want FuzzTypeKind) bool {
+	var contains func(t FuzzType) bool
+	contains = func(t FuzzType) bool {
+		if t.Kind == want {
+			return true
+		}
+		if t.Inner != nil && contains(*t.Inner) {
+			return true
+		}
+		return false
+	}
+	for _, cls := range schema.Classes {
+		for _, prop := range cls.Properties {
+			if contains(prop.Type) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // typeDepth computes the maximum wrapper nesting depth in a type.

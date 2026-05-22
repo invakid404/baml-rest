@@ -1,4 +1,4 @@
-package issue340fuzz
+package bamlfuzz
 
 import (
 	"bytes"
@@ -51,11 +51,6 @@ func Walk(schema FuzzSchema, value FuzzValue) (WalkResult, error) {
 	if err := state.renderClassExpected(&expectBuf, value); err != nil {
 		return WalkResult{}, err
 	}
-	for cls, depth := range state.depths {
-		if depth > 0 {
-			meta.RecursionDepths[cls] = depth
-		}
-	}
 	return WalkResult{
 		MockLLMContent: append(json.RawMessage(nil), mockBuf.Bytes()...),
 		Expected:       append(json.RawMessage(nil), expectBuf.Bytes()...),
@@ -79,6 +74,9 @@ func (s *walkState) renderClassMock(buf *bytes.Buffer, val FuzzValue, path strin
 		return fmt.Errorf("walk: unknown class %q in value at %q", val.ClassName, path)
 	}
 	s.depths[cls.Name]++
+	if s.meta.RecursionDepths[cls.Name] < s.depths[cls.Name] {
+		s.meta.RecursionDepths[cls.Name] = s.depths[cls.Name]
+	}
 	defer func() { s.depths[cls.Name]-- }()
 
 	buf.WriteByte('{')
@@ -118,6 +116,11 @@ func (s *walkState) renderClassExpected(buf *bytes.Buffer, val FuzzValue) error 
 	if !ok {
 		return fmt.Errorf("walk: unknown class %q in expected", val.ClassName)
 	}
+	s.depths[cls.Name]++
+	if s.meta.RecursionDepths[cls.Name] < s.depths[cls.Name] {
+		s.meta.RecursionDepths[cls.Name] = s.depths[cls.Name]
+	}
+	defer func() { s.depths[cls.Name]-- }()
 	buf.WriteByte('{')
 	for i, prop := range cls.Properties {
 		fv, ok := val.LookupField(prop.Name)
@@ -156,6 +159,9 @@ func (s *walkState) renderValueMock(buf *bytes.Buffer, t FuzzType, val FuzzValue
 		} else {
 			buf.WriteString("false")
 		}
+		return nil
+	case KindNull:
+		buf.WriteString("null")
 		return nil
 	case KindLiteral:
 		return writeLiteral(buf, t.Literal)
@@ -242,6 +248,9 @@ func (s *walkState) renderValueExpected(buf *bytes.Buffer, t FuzzType, val FuzzV
 		} else {
 			buf.WriteString("false")
 		}
+		return nil
+	case KindNull:
+		buf.WriteString("null")
 		return nil
 	case KindLiteral:
 		return writeLiteral(buf, t.Literal)
@@ -390,6 +399,8 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any) (any, error) {
 	switch t.Kind {
 	case KindString, KindInt, KindFloat, KindBool, KindLiteral, KindEnumRef:
 		return raw, nil
+	case KindNull:
+		return nil, nil
 	case KindOptional:
 		if raw == nil {
 			return nil, nil
@@ -512,11 +523,11 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any) 
 			buf.WriteString("null")
 			return nil
 		}
-		// encoding/json sorts map keys alphabetically; use it
-		// directly for consistency with how the walker emits
-		// MapEntries (the walker also writes in stable order, but
-		// chosen by the generator rather than alphabetical, so
-		// don't fall back to encoding/json here — re-walk).
+		// Sort the keys ourselves so the byte-stream matches the
+		// walker's lexicographic emission order. encoding/json's
+		// map encoder also sorts alphabetically, but going through
+		// it would re-emit any class-instance map without the
+		// schema-ordered field layout we need at outer levels.
 		obj, ok := v.(map[string]any)
 		if !ok {
 			return fmt.Errorf("map expected object, got %T", v)

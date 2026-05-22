@@ -1,4 +1,4 @@
-package issue340fuzz
+package bamlfuzz
 
 // FuzzOptionalShape encodes which of the three legitimate LLM
 // shapes an optional field takes. Both Absent and Null normalize

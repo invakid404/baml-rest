@@ -1,46 +1,45 @@
-package issue340fuzz
+package bamlfuzz
 
 // AnalyzeGraph computes the graph-metadata flags (HasSelfRef,
 // HasMutualCycle, RequiresDynamicSkip) from the class-ref
 // reachability graph and returns a copy of `schema` with those
-// fields refreshed. HasUnion is left unchanged — unions are
-// excluded from v1's grammar, so the field is always false here
-// but kept as a forward-compat slot.
+// fields refreshed. HasUnion is left unchanged — unions are excluded
+// from the v1 grammar, so the field is always false here but kept
+// as a forward-compat slot.
 //
-// The reachability graph treats every class ref in any property
-// type — including refs reached through optional / list / map
-// wrappers — as an edge from the containing class to the referenced
-// class. Self-loops mean A reaches itself directly via at least one
-// property chain. Mutual cycles mean A and B (A≠B) each reach the
-// other.
+// HasSelfRef is true when at least one class C has a class-ref edge
+// to C in its own property tree (the direct one-hop edges, before
+// closure). Self-ref means C reaches itself through its own type
+// declaration, not through a chain of other classes.
+//
+// HasMutualCycle is true when at least one class is in a cycle
+// through OTHER classes — i.e. the transitive closure reports
+// reach[C][C]=true but C does not have a direct self-ref edge.
 //
 // RequiresDynamicSkip is true whenever the dynamic emitter cannot
-// safely realize the schema. Today that means any self-ref edge:
-// upstream BAML TypeBuilder cannot express class-self-reference
-// (TODO(upstream-self-ref)). A schema with a mutual cycle but no
-// direct self-ref also requires dynamic skip — TypeBuilder cannot
-// represent the cycle via dynamic class addition either.
+// safely realize the schema. Today that is exactly the self-ref
+// case: upstream BAML TypeBuilder cannot express a class referencing
+// itself (TODO(upstream-self-ref)). Mutual cycles through OTHER
+// classes are realizable through TypeBuilder; the value generator
+// terminates them via the per-class recursion cap.
 func AnalyzeGraph(schema FuzzSchema) FuzzSchema {
-	reach := ReachabilityClosure(schema)
+	direct := directClassRefs(schema)
+	reach := closureFromDirect(schema, direct)
 	out := schema
 	out.HasSelfRef = false
 	out.HasMutualCycle = false
 	for _, cls := range schema.Classes {
-		if reach[cls.Name][cls.Name] {
+		hasDirectSelf := direct[cls.Name][cls.Name]
+		hasCycleHere := reach[cls.Name][cls.Name]
+		if hasDirectSelf {
 			out.HasSelfRef = true
+			continue
+		}
+		if hasCycleHere {
+			out.HasMutualCycle = true
 		}
 	}
-	for _, a := range schema.Classes {
-		for _, b := range schema.Classes {
-			if a.Name == b.Name {
-				continue
-			}
-			if reach[a.Name][b.Name] && reach[b.Name][a.Name] {
-				out.HasMutualCycle = true
-			}
-		}
-	}
-	out.RequiresDynamicSkip = out.HasSelfRef || out.HasMutualCycle
+	out.RequiresDynamicSkip = out.HasSelfRef
 	return out
 }
 
@@ -53,7 +52,10 @@ func AnalyzeGraph(schema FuzzSchema) FuzzSchema {
 // independently re-derive the metadata flags and assert they match
 // the generator's stamping.
 func ReachabilityClosure(schema FuzzSchema) map[string]map[string]bool {
-	direct := directClassRefs(schema)
+	return closureFromDirect(schema, directClassRefs(schema))
+}
+
+func closureFromDirect(schema FuzzSchema, direct map[string]map[string]bool) map[string]map[string]bool {
 	closure := make(map[string]map[string]bool, len(direct))
 	for k, v := range direct {
 		closure[k] = make(map[string]bool, len(v))
@@ -102,6 +104,10 @@ func collectClassRefs(t FuzzType, out map[string]bool) {
 	case KindClassRef:
 		out[t.Ref] = true
 	case KindOptional, KindList, KindMap:
+		// Map keys are always KindString in the v1 grammar
+		// (enforced at schema construction by the generator and at
+		// the IR doc on FuzzType), so class-ref reachability only
+		// needs to descend into Inner.
 		if t.Inner != nil {
 			collectClassRefs(*t.Inner, out)
 		}
