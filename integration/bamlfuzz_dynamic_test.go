@@ -113,7 +113,8 @@ func TestBamlfuzzDynamicOracle(t *testing.T) {
 // but a rapid case hitting the same error is a generator regression —
 // DynamicSafeSchemaGen pins MutualCycleProbability=0 and
 // AllowSelfRef=false, so the random walker should never produce an
-// unsupported schema. Failing rather than skipping surfaces the drift.
+// unsupported schema; the rapid branch fails to surface that drift,
+// while corpus cases take the skip branch via unsupportedActionFor.
 type caseSource int
 
 const (
