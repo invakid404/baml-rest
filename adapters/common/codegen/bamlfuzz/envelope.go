@@ -57,13 +57,18 @@ type SemanticDiffEntry struct {
 	Want any    `json:"want"`
 }
 
-// WriteReplayArtifact writes the failure envelope to `dir` as
-// `<name>.json` with 2-space indent for readability and returns the
-// absolute path. Callers embed the returned path in the envelope's
-// ReplayPath field before logging, so the t.Errorf message points the
-// developer directly at the artifact.
+// WriteReplayArtifact writes the failure envelope to `dir` as a JSON
+// file and returns the resulting `filepath.Join(dir, basename+".json")`
+// (which is absolute exactly when `dir` is). The basename is derived
+// from envelope.CaseName via sanitizeArtifactBasename: a safe CaseName
+// is used as-is, anything that fails testharness.CheckReplayName
+// (empty, separator-bearing, traversal segment, absolute, drive
+// prefix) falls back to `case_<CaseIndex>`. The envelope's ReplayPath
+// field is stamped with the resulting path so the t.Errorf message
+// points the developer directly at the artifact.
 //
-// dir is created if it does not already exist.
+// Content is rendered with 2-space indent for human readability.
+// `dir` is created if it does not already exist.
 func WriteReplayArtifact(dir string, envelope *DynamicFailureEnvelope) (string, error) {
 	if envelope == nil {
 		return "", fmt.Errorf("bamlfuzz: nil envelope")
@@ -108,6 +113,11 @@ func sanitizeArtifactBasename(caseName string, caseIndex int) string {
 // map-key ordering. Slices, scalars, and nulls compare by value; objects
 // are compared as key sets. This is the v1 hard-failure oracle for the
 // dynamic three-way test.
+//
+// Either input being empty (len == 0) is a decode error — two missing
+// oracle payloads must not silently equate. Callers wrap the error as
+// `decode a: %w` / `decode b: %w` so the failure log identifies which
+// side was empty.
 func SemanticEqual(a, b json.RawMessage) (bool, error) {
 	av, err := decodeAny(a)
 	if err != nil {
@@ -126,6 +136,10 @@ func SemanticEqual(a, b json.RawMessage) (bool, error) {
 // `side` is opaque to the comparator — it is copied verbatim into each
 // emitted SemanticDiffEntry so callers can label which oracle leg pair
 // they're comparing.
+//
+// Either input being empty (len == 0) is a decode error — same contract
+// as SemanticEqual. Callers wrap with `decode a: %w` / `decode b: %w`
+// so the failure log identifies which side was empty.
 func SemanticDiff(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error) {
 	av, err := decodeAny(a)
 	if err != nil {
