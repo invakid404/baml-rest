@@ -48,10 +48,14 @@ type SchemaGenOptions struct {
 	SelfRefProbability float64
 	// MutualCycleProbability is the chance, in [0,1], that the
 	// generator injects a two-class mutual cycle (A → optional<B>
-	// and B → optional<A>). Mutual cycles do not require dynamic
-	// skip — they are realizable through dynamic TypeBuilder — and
-	// the value generator terminates them via the per-class
-	// recursion cap.
+	// and B → optional<A>). Mutual-cycle schemas have
+	// HasMutualCycle=true and stamp RequiresDynamicSkip=true: the
+	// BAML cgo TypeBuilder aborts on mutual-cycle dynamic schemas
+	// today (TODO(upstream-mutual-rec-dynamic-crash)), so dynamic
+	// emission is gated. Static .baml emission supports mutual
+	// cycles cleanly. The value generator terminates traversal via
+	// the per-class recursion cap so the IR + walker side is ready
+	// for either path.
 	MutualCycleProbability float64
 }
 
@@ -74,10 +78,12 @@ func DynamicSafeSchemaGen() *rapid.Generator[FuzzSchema] {
 }
 
 // StaticSchemaGen returns a generator for FuzzSchema values the
-// static .baml emitter can render. Self-ref schemas are permitted
-// at the configured probability and stamped with
-// RequiresDynamicSkip=true; mutual cycles are also permitted and
-// remain dynamic-friendly.
+// static .baml emitter can render. Self-ref schemas and mutual-cycle
+// schemas are both permitted at the configured probabilities; both
+// shapes stamp RequiresDynamicSkip=true (self-ref via
+// TODO(upstream-self-ref), mutual cycle via
+// TODO(upstream-mutual-rec-dynamic-crash)) and so are gated at the
+// dynamic emitter, but the static .baml lowering supports them.
 func StaticSchemaGen() *rapid.Generator[FuzzSchema] {
 	return SchemaGen(SchemaGenOptions{
 		AllowSelfRef:           true,
