@@ -25,11 +25,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.ref_name }}
-          # PAT instead of GITHUB_TOKEN so the sync commit's push
-          # triggers normal PR-event CI on the new tip. GitHub
-          # suppresses workflow runs from GITHUB_TOKEN pushes to
-          # prevent recursion; a PAT looks like a user push and
-          # reruns Unit/Integration on the sync commit.
+          # Use a PAT so the sync commit's push triggers normal
+          # PR-event CI on the new tip. GitHub suppresses workflow
+          # runs from GITHUB_TOKEN-authored pushes to prevent
+          # recursion; a PAT push looks like a user push and reruns
+          # Unit/Integration on the sync commit.
           token: ${{ secrets.RENOVATE_SYNC_TOKEN }}
           # Don't write the PAT into .git/config. Pushes below
           # inject the credential explicitly via -c extraheader so
@@ -110,9 +110,9 @@ jobs:
           }
 
           # Push helper: injects the PAT through an in-memory git
-          # config override (-c) instead of relying on a persisted
-          # credential. The token never lands in .git/config and
-          # GitHub's log redactor masks it if it ever echoes.
+          # config override (-c). The token never lands in
+          # .git/config and GitHub's log redactor masks it if it
+          # ever echoes.
           git_push() {
             if [ -z "${RENOVATE_SYNC_TOKEN:-}" ]; then
               echo "ERROR: RENOVATE_SYNC_TOKEN is unset or empty; cannot push." >&2
