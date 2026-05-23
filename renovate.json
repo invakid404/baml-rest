@@ -3,6 +3,7 @@
   "extends": [
     "local>invakid404/renovate-config"
   ],
+  "rebaseWhen": "conflicted",
   "customManagers": [
     {
       "customType": "regex",
