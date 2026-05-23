@@ -68,31 +68,32 @@ type SemanticDiffEntry struct {
 // RESTStatus / RESTBody / RESTError populate when the build succeeds
 // and /call/<FunctionName> runs.
 type StaticFailureEnvelope struct {
-	GeneratorVersion  string              `json:"generator_version"`
-	GeneratedAt       string              `json:"generated_at"`
-	RapidSeed         int64               `json:"rapid_seed"`
-	CaseIndex         int                 `json:"case_index"`
-	CaseName          string              `json:"case_name"`
-	OracleMode        OracleMode          `json:"oracle_mode"`
-	Schema            FuzzSchema          `json:"schema"`
-	BamlSource        string              `json:"baml_source,omitempty"`
-	FunctionName      string              `json:"function_name,omitempty"`
-	ClassNames        []string            `json:"class_names,omitempty"`
-	EnumNames         []string            `json:"enum_names,omitempty"`
-	HasSelfRef        bool                `json:"has_self_ref"`
-	BuildSourcePath   string              `json:"build_source_path,omitempty"`
-	MockLLMScenarioID string              `json:"mockllm_scenario_id,omitempty"`
-	MockLLMContent    json.RawMessage     `json:"mockllm_content,omitempty"`
-	Expected          json.RawMessage     `json:"expected,omitempty"`
-	BuildError        string              `json:"build_error,omitempty"`
-	RESTStatus        int                 `json:"rest_status,omitempty"`
-	RESTBody          json.RawMessage     `json:"rest_body,omitempty"`
-	RESTError         string              `json:"rest_error,omitempty"`
-	SemanticDiff      []SemanticDiffEntry `json:"semantic_diff,omitempty"`
-	OrderWarning      []string            `json:"order_warning,omitempty"`
-	ReplayPath        string              `json:"replay_path"`
-	Reproduction      string              `json:"reproduction"`
-	Metadata          CaseMetadata        `json:"metadata"`
+	GeneratorVersion    string              `json:"generator_version"`
+	GeneratedAt         string              `json:"generated_at"`
+	RapidSeed           int64               `json:"rapid_seed"`
+	CaseIndex           int                 `json:"case_index"`
+	CaseName            string              `json:"case_name"`
+	OracleMode          OracleMode          `json:"oracle_mode"`
+	PreserveSchemaOrder bool                `json:"preserve_schema_order"`
+	Schema              FuzzSchema          `json:"schema"`
+	BamlSource          string              `json:"baml_source,omitempty"`
+	FunctionName        string              `json:"function_name,omitempty"`
+	ClassNames          []string            `json:"class_names,omitempty"`
+	EnumNames           []string            `json:"enum_names,omitempty"`
+	HasSelfRef          bool                `json:"has_self_ref"`
+	BuildSourcePath     string              `json:"build_source_path,omitempty"`
+	MockLLMScenarioID   string              `json:"mockllm_scenario_id,omitempty"`
+	MockLLMContent      json.RawMessage     `json:"mockllm_content,omitempty"`
+	Expected            json.RawMessage     `json:"expected,omitempty"`
+	BuildError          string              `json:"build_error,omitempty"`
+	RESTStatus          int                 `json:"rest_status,omitempty"`
+	RESTBody            json.RawMessage     `json:"rest_body,omitempty"`
+	RESTError           string              `json:"rest_error,omitempty"`
+	SemanticDiff        []SemanticDiffEntry `json:"semantic_diff,omitempty"`
+	OrderWarning        []string            `json:"order_warning,omitempty"`
+	ReplayPath          string              `json:"replay_path"`
+	Reproduction        string              `json:"reproduction"`
+	Metadata            CaseMetadata        `json:"metadata"`
 }
 
 // WriteReplayArtifact writes the failure envelope to `dir` as a JSON

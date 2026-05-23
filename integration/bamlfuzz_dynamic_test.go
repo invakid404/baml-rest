@@ -52,8 +52,11 @@ const rapidCasesPerMode = 4
 // (request validation, schema rendering, worker dispatch, response
 // flattening) is exercised on both runtime legs.
 //
-// Order mismatches are recorded under OrderWarning per scope D8 and
-// logged but do not fail the test in v1.
+// Preserve-on cases additionally run a schema-aware key-order check
+// against the expected JSON on both runtime legs; diagnostics travel
+// under OrderWarning per scope D8 and an order mismatch fails the
+// subtest. Preserve-off cases skip the order assertion and gate on
+// semantic equality only.
 func TestBamlfuzzDynamicOracle(t *testing.T) {
 	dynclientCallGate(t)
 
@@ -83,7 +86,7 @@ func TestBamlfuzzDynamicOracle(t *testing.T) {
 	t.Run("rapid", func(t *testing.T) {
 		// Two preserve modes × rapidCasesPerMode each. We materialize
 		// each case explicitly so each subtest carries the exact case
-		// it ran with into the failure envelope, instead of relying on
+		// it ran with into the failure envelope, without leaning on
 		// rapid's internal shrinking corpus.
 		modes := []bool{true, false}
 		for _, preserve := range modes {
@@ -345,7 +348,7 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 			envelope.SemanticDiff = append(envelope.SemanticDiff, diff...)
 			failures = append(failures, "expected ≠ dynclient")
 		}
-		envelope.OrderWarning = append(envelope.OrderWarning, bamlfuzz.DetectOrderWarning("expected_vs_dynclient", c.Expected, envelope.DynclientOutput)...)
+		checkSchemaOrder(t, c, envelope, &failures, "expected_vs_dynclient", c.Expected, envelope.DynclientOutput)
 	}
 	if envelope.RESTError == "" && envelope.RESTBody != nil {
 		if diff, err := bamlfuzz.SemanticDiff("expected_vs_rest", c.Expected, envelope.RESTBody); err != nil {
@@ -354,7 +357,7 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 			envelope.SemanticDiff = append(envelope.SemanticDiff, diff...)
 			failures = append(failures, "expected ≠ REST")
 		}
-		envelope.OrderWarning = append(envelope.OrderWarning, bamlfuzz.DetectOrderWarning("expected_vs_rest", c.Expected, envelope.RESTBody)...)
+		checkSchemaOrder(t, c, envelope, &failures, "expected_vs_rest", c.Expected, envelope.RESTBody)
 	}
 	if libErr == nil && envelope.RESTError == "" && envelope.DynclientOutput != nil && envelope.RESTBody != nil {
 		if diff, err := bamlfuzz.SemanticDiff("dynclient_vs_rest", envelope.DynclientOutput, envelope.RESTBody); err != nil {
@@ -363,11 +366,6 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 			envelope.SemanticDiff = append(envelope.SemanticDiff, diff...)
 			failures = append(failures, "dynclient ≠ REST")
 		}
-		envelope.OrderWarning = append(envelope.OrderWarning, bamlfuzz.DetectOrderWarning("dynclient_vs_rest", envelope.DynclientOutput, envelope.RESTBody)...)
-	}
-
-	if len(envelope.OrderWarning) > 0 {
-		t.Logf("order warnings (non-fatal in v1) for %s: %s", c.Name, strings.Join(envelope.OrderWarning, "; "))
 	}
 	if len(failures) == 0 {
 		if os.Getenv("BAMLFUZZ_KEEP_ARTIFACTS") == "1" {
@@ -378,6 +376,31 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 		return
 	}
 	failAndDump(t, envelope, "%s", strings.Join(failures, "; "))
+}
+
+// checkSchemaOrder runs the strict schema-aware key-order assertion on
+// one oracle pair when the case opts into PreserveSchemaOrder. A
+// non-empty diff records the diagnostic lines on envelope.OrderWarning
+// (the field still travels in the replay artifact for forensics) and
+// appends a failure reason so the caller's collected `failures` list
+// flows through failAndDump. ErrSchemaOrderUnsupported is a soft skip:
+// union-bearing schemas have no canonical order contract today, so the
+// semantic-equality oracle remains the gate.
+func checkSchemaOrder(t *testing.T, c bamlfuzz.OracleCase, envelope *bamlfuzz.DynamicFailureEnvelope, failures *[]string, label string, expected, actual json.RawMessage) {
+	t.Helper()
+	if !c.PreserveSchemaOrder {
+		return
+	}
+	diffs, err := bamlfuzz.SchemaOrderDiff(label, c.Schema, expected, actual)
+	switch {
+	case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
+		t.Logf("schema order check skipped for %s %s: %v", c.Name, label, err)
+	case err != nil:
+		*failures = append(*failures, fmt.Sprintf("%s schema order: %v", label, err))
+	case len(diffs) > 0:
+		envelope.OrderWarning = append(envelope.OrderWarning, bamlfuzz.FormatSchemaOrderDiffs(diffs)...)
+		*failures = append(*failures, fmt.Sprintf("%s: schema key order mismatch", label))
+	}
 }
 
 // failAndDump writes the envelope to the artifact dir and fails the test

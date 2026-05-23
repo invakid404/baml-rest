@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -64,8 +65,9 @@ const staticCallTimeout = 60 * time.Second
 // against the per-request client_registry override.
 //
 // The oracle compares the parsed REST response to bamlfuzz.Walk's
-// schema-driven expected JSON. Order mismatches travel under
-// OrderWarning per scope D8 and log but do not fail in v1.
+// schema-driven expected JSON. Preserve-on cases additionally run a
+// schema-aware key-order check; the diagnostic lines travel under
+// OrderWarning per scope D8 and an order mismatch fails the subtest.
 //
 // PR coverage: one corpus batch (the five hand-curated seeds) +
 // BAMLFUZZ_STATIC_BATCHES rapid batches (default 1, scope D9). Nightly
@@ -252,9 +254,20 @@ func runOneStaticCase(t *testing.T, env *testutil.TestEnvironment, mockClient *m
 		failStaticAndDump(t, envelope, "expected ≠ /call/%s", lc.Source.FunctionName)
 		return
 	}
-	envelope.OrderWarning = bamlfuzz.DetectOrderWarning("expected_vs_rest", lc.Case.Expected, resp.Body)
-	if len(envelope.OrderWarning) > 0 {
-		t.Logf("order warnings (non-fatal in v1) for %s: %s", lc.Case.Name, strings.Join(envelope.OrderWarning, "; "))
+	if lc.Case.PreserveSchemaOrder {
+		diffs, err := bamlfuzz.SchemaOrderDiff("expected_vs_rest", lc.Case.Schema, lc.Case.Expected, resp.Body)
+		switch {
+		case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
+			t.Logf("schema order check skipped for %s: %v", lc.Case.Name, err)
+		case err != nil:
+			envelope.OrderWarning = append(envelope.OrderWarning, err.Error())
+			failStaticAndDump(t, envelope, "schema order check failed for %s: %v", lc.Case.Name, err)
+			return
+		case len(diffs) > 0:
+			envelope.OrderWarning = append(envelope.OrderWarning, bamlfuzz.FormatSchemaOrderDiffs(diffs)...)
+			failStaticAndDump(t, envelope, "schema key order mismatch for /call/%s", lc.Source.FunctionName)
+			return
+		}
 	}
 	if os.Getenv("BAMLFUZZ_KEEP_ARTIFACTS") == "1" {
 		if path, err := bamlfuzz.WriteStaticReplayArtifact(staticOracleArtifactDir, envelope); err == nil {
@@ -433,17 +446,18 @@ func terminateStaticEnv(t *testing.T, env *testutil.TestEnvironment) {
 func newStaticEnvelope(c bamlfuzz.OracleCase, caseIdx int, batchLabel string, source staticCaseSource, isolated bool) *bamlfuzz.StaticFailureEnvelope {
 	flags := bamlfuzz.AnalyzeGraph(c.Schema)
 	return &bamlfuzz.StaticFailureEnvelope{
-		GeneratorVersion: bamlfuzz.GeneratorVersion,
-		RapidSeed:        c.Seed,
-		CaseIndex:        caseIdx,
-		CaseName:         c.Name,
-		OracleMode:       bamlfuzz.OracleStaticPrompt,
-		Schema:           c.Schema,
-		HasSelfRef:       flags.HasSelfRef,
-		MockLLMContent:   c.MockLLMContent,
-		Expected:         c.Expected,
-		Metadata:         c.Metadata,
-		Reproduction:     staticReproductionFor(c, caseIdx, batchLabel, source, isolated),
+		GeneratorVersion:    bamlfuzz.GeneratorVersion,
+		RapidSeed:           c.Seed,
+		CaseIndex:           caseIdx,
+		CaseName:            c.Name,
+		OracleMode:          bamlfuzz.OracleStaticPrompt,
+		PreserveSchemaOrder: c.PreserveSchemaOrder,
+		Schema:              c.Schema,
+		HasSelfRef:          flags.HasSelfRef,
+		MockLLMContent:      c.MockLLMContent,
+		Expected:            c.Expected,
+		Metadata:            c.Metadata,
+		Reproduction:        staticReproductionFor(c, caseIdx, batchLabel, source, isolated),
 	}
 }
 
@@ -538,15 +552,16 @@ func buildStaticRapidBatch(t *testing.T, batchIdx int, n int) []bamlfuzz.OracleC
 			t.Fatalf("walk batch=%d idx=%d: %v", batchIdx, i, err)
 		}
 		cases[i] = bamlfuzz.OracleCase{
-			Name:           fmt.Sprintf("rapid_b%d_c%d", batchIdx, i),
-			Seed:           int64(seed),
-			CaseIndex:      i,
-			Mode:           bamlfuzz.OracleStaticPrompt,
-			Schema:         schema,
-			Value:          value,
-			MockLLMContent: walk.MockLLMContent,
-			Expected:       walk.Expected,
-			Metadata:       walk.Metadata,
+			Name:                fmt.Sprintf("rapid_b%d_c%d", batchIdx, i),
+			Seed:                int64(seed),
+			CaseIndex:           i,
+			Mode:                bamlfuzz.OracleStaticPrompt,
+			PreserveSchemaOrder: i%2 == 0,
+			Schema:              schema,
+			Value:               value,
+			MockLLMContent:      walk.MockLLMContent,
+			Expected:            walk.Expected,
+			Metadata:            walk.Metadata,
 		}
 	}
 	return cases
