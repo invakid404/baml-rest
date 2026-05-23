@@ -25,11 +25,24 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.ref_name }}
-          # Don't persist the default GITHUB_TOKEN into .git/config.
-          # The push step below injects RENOVATE_SYNC_TOKEN via a
-          # `-c extraheader` at push time, so no credential lands on
-          # the runner filesystem.
-          persist-credentials: false
+          # PAT used both for checkout and the sync commit's push.
+          # actions/checkout writes a URL-scoped HTTP Basic
+          # extraheader (`x-access-token:<PAT>`) to the runner's
+          # git config and removes it during post-job cleanup.
+          # PAT-authored pushes retrigger normal PR-event CI;
+          # GITHUB_TOKEN-authored pushes are suppressed by GitHub
+          # to prevent workflow recursion.
+          token: ${{ secrets.RENOVATE_SYNC_TOKEN }}
+
+      - name: Verify PAT push auth
+        # Preflight: exercise git-receive-pack auth before doing
+        # any sync work. If the PAT lacks Contents:write or the
+        # auth wiring is otherwise broken, we want to fail here
+        # with a clear error, not after producing a sync commit
+        # that has nowhere to go.
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: git push --dry-run origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -44,14 +57,6 @@ jobs:
         run: ./scripts/sync.sh
 
       - name: Validate, commit, and push sync result
-        env:
-          # PAT used by git_push() to push the sync commit. The PAT
-          # makes the push look like a user push so GitHub reruns
-          # normal PR-event CI on the new tip; GITHUB_TOKEN-authored
-          # pushes are suppressed to prevent workflow recursion. The
-          # token is injected via -c extraheader at push time, so
-          # nothing persists in .git/config.
-          RENOVATE_SYNC_TOKEN: ${{ secrets.RENOVATE_SYNC_TOKEN }}
         run: |
           # Allowlist: only Go module metadata may change.
           #   go.mod, go.sum, go.work.sum at the root, and go.mod / go.sum
@@ -107,23 +112,13 @@ jobs:
               'Run scripts/sync.sh after Renovate dependency update.'
           }
 
-          # Push helper: injects the PAT via an in-memory git
-          # extraheader override (-c). The unscoped
-          # `http.extraheader` key is required: a URL-scoped key
-          # like `http.https://github.com/.extraheader` does not
-          # propagate auth through `git -c`, so git falls back to
-          # the credential helper and the push fails. The unscoped
-          # form is safe here because the override lasts for one
-          # `git push` only — no other HTTPS calls run in this
-          # command. The token never lands in .git/config and
-          # GitHub's log redactor masks it if it ever echoes.
+          # Auth for `git push` is configured by actions/checkout
+          # (URL-scoped Basic extraheader with `x-access-token:<PAT>`),
+          # so a plain `git push` works. The Verify PAT push auth
+          # step above guards against PAT/auth regressions before
+          # we reach this point.
           git_push() {
-            if [ -z "${RENOVATE_SYNC_TOKEN:-}" ]; then
-              echo "ERROR: RENOVATE_SYNC_TOKEN is unset or empty; cannot push." >&2
-              return 1
-            fi
-            git -c "http.extraheader=AUTHORIZATION: bearer ${RENOVATE_SYNC_TOKEN}" \
-              push origin "HEAD:${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           }
 
           # ---- first pass: validate, commit, push ----
