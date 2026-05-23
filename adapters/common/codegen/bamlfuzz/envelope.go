@@ -21,9 +21,10 @@ const GeneratorVersion = "0.1.0"
 // disagreement between the three dynamic-oracle legs (expected /
 // dynclient / REST). Release gates: semantic equality always, and
 // schema-aware key order at every class instance when
-// PreserveSchemaOrder is true (see SchemaOrderDiff). Order
-// diagnostics — strict mismatches and any unsupported-schema skips —
-// are recorded under OrderWarning for replay.
+// PreserveSchemaOrder is true (see SchemaOrderDiff). Strict order
+// mismatches are recorded under OrderWarning for replay; unsupported
+// schemas (today: union-bearing) skip the order assertion with a log
+// line only and don't populate OrderWarning.
 type DynamicFailureEnvelope struct {
 	GeneratorVersion    string                         `json:"generator_version"`
 	GeneratedAt         string                         `json:"generated_at"`
@@ -65,8 +66,9 @@ type SemanticDiffEntry struct {
 // common header fields and adds the static-specific lowering + build
 // metadata listed in scope D8. Release gates: semantic equality
 // always, and schema-aware key order at every class instance when
-// PreserveSchemaOrder is true. Order diagnostics travel under
-// OrderWarning for replay.
+// PreserveSchemaOrder is true. Strict order mismatches are recorded
+// under OrderWarning for replay; unsupported schemas skip the order
+// assertion with a log line only and don't populate OrderWarning.
 //
 // BuildError populates when the integration build fails for the case;
 // after single-case isolation it identifies the offending case alone.
