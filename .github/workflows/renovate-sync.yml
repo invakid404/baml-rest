@@ -25,15 +25,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.ref_name }}
-          # Use a PAT so the sync commit's push triggers normal
-          # PR-event CI on the new tip. GitHub suppresses workflow
-          # runs from GITHUB_TOKEN-authored pushes to prevent
-          # recursion; a PAT push looks like a user push and reruns
-          # Unit/Integration on the sync commit.
-          token: ${{ secrets.RENOVATE_SYNC_TOKEN }}
-          # Don't write the PAT into .git/config. Pushes below
-          # inject the credential explicitly via -c extraheader so
-          # the token never persists on the runner filesystem.
+          # Don't persist the default GITHUB_TOKEN into .git/config.
+          # The push step below injects RENOVATE_SYNC_TOKEN via a
+          # `-c extraheader` at push time, so no credential lands on
+          # the runner filesystem.
           persist-credentials: false
 
       - name: Set up Go
@@ -50,9 +45,12 @@ jobs:
 
       - name: Validate, commit, and push sync result
         env:
-          # Exposed to the step's run script so git push can inject
-          # the credential explicitly via -c extraheader. Pairs with
-          # persist-credentials: false on the checkout step above.
+          # PAT used by git_push() to push the sync commit. The PAT
+          # makes the push look like a user push so GitHub reruns
+          # normal PR-event CI on the new tip; GITHUB_TOKEN-authored
+          # pushes are suppressed to prevent workflow recursion. The
+          # token is injected via -c extraheader at push time, so
+          # nothing persists in .git/config.
           RENOVATE_SYNC_TOKEN: ${{ secrets.RENOVATE_SYNC_TOKEN }}
         run: |
           # Allowlist: only Go module metadata may change.
