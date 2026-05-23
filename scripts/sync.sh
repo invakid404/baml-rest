@@ -117,6 +117,15 @@ verify_pins() {
 # published standalone module. A missing go.mod is fatal: this is the
 # canonical release module set, and silently skipping an entry would
 # hide release/CI drift the moment a module is renamed or moved.
+#
+# A single pass is sufficient given the current graph: `go work sync`
+# above already reconciles workspace members' go.mod files, and the
+# two non-workspace standalone modules — adapters/common and
+# dynclient/baml-patched — depend only on workspace members and on
+# nothing first-party, respectively. If a future standalone module
+# gains a local first-party replace that points outside the
+# workspace, revisit this loop and either order it dependency-first
+# or add a bounded second pass with an idempotency check.
 tidy_standalone_modules() {
     echo "Tidying standalone-tested module(s) with GOWORK=off..."
     local dir
