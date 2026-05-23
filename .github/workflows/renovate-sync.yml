@@ -114,6 +114,10 @@ jobs:
           # credential. The token never lands in .git/config and
           # GitHub's log redactor masks it if it ever echoes.
           git_push() {
+            if [ -z "${RENOVATE_SYNC_TOKEN:-}" ]; then
+              echo "ERROR: RENOVATE_SYNC_TOKEN is unset or empty; cannot push." >&2
+              return 1
+            fi
             git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${RENOVATE_SYNC_TOKEN}" \
               push origin "HEAD:${GITHUB_REF_NAME}"
           }
