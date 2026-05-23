@@ -107,16 +107,22 @@ jobs:
               'Run scripts/sync.sh after Renovate dependency update.'
           }
 
-          # Push helper: injects the PAT through an in-memory git
-          # config override (-c). The token never lands in
-          # .git/config and GitHub's log redactor masks it if it
-          # ever echoes.
+          # Push helper: injects the PAT via an in-memory git
+          # extraheader override (-c). The unscoped
+          # `http.extraheader` key is required: a URL-scoped key
+          # like `http.https://github.com/.extraheader` does not
+          # propagate auth through `git -c`, so git falls back to
+          # the credential helper and the push fails. The unscoped
+          # form is safe here because the override lasts for one
+          # `git push` only — no other HTTPS calls run in this
+          # command. The token never lands in .git/config and
+          # GitHub's log redactor masks it if it ever echoes.
           git_push() {
             if [ -z "${RENOVATE_SYNC_TOKEN:-}" ]; then
               echo "ERROR: RENOVATE_SYNC_TOKEN is unset or empty; cannot push." >&2
               return 1
             fi
-            git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${RENOVATE_SYNC_TOKEN}" \
+            git -c "http.extraheader=AUTHORIZATION: bearer ${RENOVATE_SYNC_TOKEN}" \
               push origin "HEAD:${GITHUB_REF_NAME}"
           }
 
