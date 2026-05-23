@@ -31,6 +31,10 @@ jobs:
           # prevent recursion; a PAT looks like a user push and
           # reruns Unit/Integration on the sync commit.
           token: ${{ secrets.RENOVATE_SYNC_TOKEN }}
+          # Don't write the PAT into .git/config. Pushes below
+          # inject the credential explicitly via -c extraheader so
+          # the token never persists on the runner filesystem.
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -45,6 +49,11 @@ jobs:
         run: ./scripts/sync.sh
 
       - name: Validate, commit, and push sync result
+        env:
+          # Exposed to the step's run script so git push can inject
+          # the credential explicitly via -c extraheader. Pairs with
+          # persist-credentials: false on the checkout step above.
+          RENOVATE_SYNC_TOKEN: ${{ secrets.RENOVATE_SYNC_TOKEN }}
         run: |
           # Allowlist: only Go module metadata may change.
           #   go.mod, go.sum, go.work.sum at the root, and go.mod / go.sum
@@ -100,6 +109,15 @@ jobs:
               'Run scripts/sync.sh after Renovate dependency update.'
           }
 
+          # Push helper: injects the PAT through an in-memory git
+          # config override (-c) instead of relying on a persisted
+          # credential. The token never lands in .git/config and
+          # GitHub's log redactor masks it if it ever echoes.
+          git_push() {
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${RENOVATE_SYNC_TOKEN}" \
+              push origin "HEAD:${GITHUB_REF_NAME}"
+          }
+
           # ---- first pass: validate, commit, push ----
           validate_diff_allowlist
 
@@ -118,7 +136,7 @@ jobs:
           fi
           git commit -m "$(commit_msg)"
 
-          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+          if git_push; then
             exit 0
           fi
 
@@ -138,7 +156,7 @@ jobs:
             exit 0
           fi
           git commit -m "$(commit_msg)"
-          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+          if ! git_push; then
             echo "ERROR: push still rejected after one retry; aborting."
             exit 1
           fi
