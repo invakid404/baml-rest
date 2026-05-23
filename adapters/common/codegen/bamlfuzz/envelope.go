@@ -19,8 +19,11 @@ const GeneratorVersion = "0.1.0"
 
 // DynamicFailureEnvelope captures the full context surrounding a
 // disagreement between the three dynamic-oracle legs (expected /
-// dynclient / REST). v1 release-gates on semantic equality only; order
-// mismatches are recorded under OrderWarning and don't fail the test.
+// dynclient / REST). Release gates: semantic equality always, and
+// schema-aware key order at every class instance when
+// PreserveSchemaOrder is true (see SchemaOrderDiff). Order
+// diagnostics — strict mismatches and any unsupported-schema skips —
+// are recorded under OrderWarning for replay.
 type DynamicFailureEnvelope struct {
 	GeneratorVersion    string                         `json:"generator_version"`
 	GeneratedAt         string                         `json:"generated_at"`
@@ -60,8 +63,10 @@ type SemanticDiffEntry struct {
 // StaticFailureEnvelope captures the full context around a failure in
 // the static prompt oracle. It mirrors DynamicFailureEnvelope on the
 // common header fields and adds the static-specific lowering + build
-// metadata listed in scope D8. v1 release-gates on semantic equality
-// only; order mismatches travel under OrderWarning.
+// metadata listed in scope D8. Release gates: semantic equality
+// always, and schema-aware key order at every class instance when
+// PreserveSchemaOrder is true. Order diagnostics travel under
+// OrderWarning for replay.
 //
 // BuildError populates when the integration build fails for the case;
 // after single-case isolation it identifies the offending case alone.
@@ -226,8 +231,10 @@ func SemanticDiff(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error
 
 // DetectOrderWarning compares the top-level key order of two JSON
 // objects and returns a list of human-readable mismatches. The
-// comparison is shallow (top-level only) because the v1 strict-order
-// follow-up will revisit nested objects.
+// comparison is shallow (top-level only); new strict-mode callers
+// should use SchemaOrderDiff, which is schema-aware and recurses
+// through nested classes. DetectOrderWarning is retained for legacy
+// callers that don't have access to a FuzzSchema.
 //
 // Both inputs must be JSON objects; non-object inputs return nil with no
 // warning (semantic equality still catches structural disagreements).
