@@ -25,6 +25,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.ref_name }}
+          # Don't persist the default GITHUB_TOKEN into .git/config.
+          # The push step below injects RENOVATE_SYNC_TOKEN via a
+          # `-c extraheader` at push time, so no credential lands on
+          # the runner filesystem.
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -39,6 +44,14 @@ jobs:
         run: ./scripts/sync.sh
 
       - name: Validate, commit, and push sync result
+        env:
+          # PAT used by git_push() to push the sync commit. The PAT
+          # makes the push look like a user push so GitHub reruns
+          # normal PR-event CI on the new tip; GITHUB_TOKEN-authored
+          # pushes are suppressed to prevent workflow recursion. The
+          # token is injected via -c extraheader at push time, so
+          # nothing persists in .git/config.
+          RENOVATE_SYNC_TOKEN: ${{ secrets.RENOVATE_SYNC_TOKEN }}
         run: |
           # Allowlist: only Go module metadata may change.
           #   go.mod, go.sum, go.work.sum at the root, and go.mod / go.sum
@@ -94,6 +107,19 @@ jobs:
               'Run scripts/sync.sh after Renovate dependency update.'
           }
 
+          # Push helper: injects the PAT through an in-memory git
+          # config override (-c). The token never lands in
+          # .git/config and GitHub's log redactor masks it if it
+          # ever echoes.
+          git_push() {
+            if [ -z "${RENOVATE_SYNC_TOKEN:-}" ]; then
+              echo "ERROR: RENOVATE_SYNC_TOKEN is unset or empty; cannot push." >&2
+              return 1
+            fi
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${RENOVATE_SYNC_TOKEN}" \
+              push origin "HEAD:${GITHUB_REF_NAME}"
+          }
+
           # ---- first pass: validate, commit, push ----
           validate_diff_allowlist
 
@@ -112,7 +138,7 @@ jobs:
           fi
           git commit -m "$(commit_msg)"
 
-          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+          if git_push; then
             exit 0
           fi
 
@@ -132,7 +158,7 @@ jobs:
             exit 0
           fi
           git commit -m "$(commit_msg)"
-          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+          if ! git_push; then
             echo "ERROR: push still rejected after one retry; aborting."
             exit 1
           fi
