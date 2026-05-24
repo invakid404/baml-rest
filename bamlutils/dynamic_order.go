@@ -4,6 +4,7 @@ import (
 	"bytes"
 	stdjson "encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/bytedance/sonic"
@@ -561,4 +562,55 @@ func compareLiteralInt(value any, raw []byte) bool {
 		return float64(nodeInt) == v
 	}
 	return false
+}
+
+// SortDynamicOutput re-emits `data` with every JSON object's keys in
+// alphabetical order. Used in the PreserveSchemaOrder=false path so
+// the wire shape is deterministic and matches the codegen-emitted
+// schemaKeys fallback (which alpha-sorts schema iteration when
+// preserve is false).
+//
+// Lists and scalars pass through. Nested objects are recursively
+// alpha-sorted. Duplicate object keys are rejected with the same
+// error shape ReorderDynamicOutputBySchema surfaces, so the two
+// helpers share invariants on malformed inputs. One JSON parse + one
+// re-emit; linear in payload size.
+func SortDynamicOutput(data []byte) ([]byte, error) {
+	node, err := decodeOrderedDynamicJSON(data)
+	if err != nil {
+		return nil, fmt.Errorf("dynamic output sort: %w", err)
+	}
+	sorted := alphaSortNode(node)
+	var buf bytes.Buffer
+	if err := sorted.appendTo(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// alphaSortNode returns a copy of node with every nested object's
+// keys reordered alphabetically. Leaf scalars and arrays pass through
+// (array elements are recursively sorted to catch nested objects).
+func alphaSortNode(node orderedNode) orderedNode {
+	switch node.kind {
+	case orderedObject:
+		out := orderedNode{
+			kind:  orderedObject,
+			keys:  append([]string(nil), node.keys...),
+			byKey: make(map[string]orderedNode, len(node.keys)),
+		}
+		sort.Strings(out.keys)
+		for _, k := range out.keys {
+			out.byKey[k] = alphaSortNode(node.byKey[k])
+		}
+		return out
+	case orderedArray:
+		out := orderedNode{kind: orderedArray, array: make([]orderedNode, len(node.array))}
+		for i, item := range node.array {
+			out.array[i] = alphaSortNode(item)
+		}
+		return out
+	default:
+		return node
+	}
 }

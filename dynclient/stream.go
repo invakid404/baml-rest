@@ -225,18 +225,24 @@ func (s *Stream) partialEvent(result *workerplugin.StreamResult) (*Event, error)
 //
 // When the stream was opened with preserveSchemaOrder=true, the
 // flattened payload is run through ReorderDynamicOutputBySchema so the
-// final frame matches the unary call contract.
+// final frame matches the unary call contract. When preserve is
+// false, SortDynamicOutput alpha-sorts the keys so the wire shape
+// stays aligned with the codegen-emitted schemaKeys fallback.
 func (s *Stream) finalEvent(result *workerplugin.StreamResult) (*Event, error) {
 	flattened, err := flattenIfPresent(result.Data)
 	if err != nil {
 		return nil, err
 	}
-	if s.preserveSchemaOrder && flattened != nil {
-		reordered, rerr := bamlutils.ReorderDynamicOutputBySchema(flattened, s.outputSchema)
-		if rerr != nil {
-			return nil, rerr
+	if flattened != nil {
+		var transErr error
+		if s.preserveSchemaOrder {
+			flattened, transErr = bamlutils.ReorderDynamicOutputBySchema(flattened, s.outputSchema)
+		} else {
+			flattened, transErr = bamlutils.SortDynamicOutput(flattened)
 		}
-		flattened = reordered
+		if transErr != nil {
+			return nil, transErr
+		}
 	}
 	ev := &Event{Kind: EventFinal, Data: flattened}
 	if s.needRaw {

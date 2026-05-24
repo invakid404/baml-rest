@@ -209,9 +209,11 @@ func (c *Client) DynamicCall(ctx context.Context, req Request) (*CallResult, err
 	}
 	if req.PreserveSchemaOrder != nil && *req.PreserveSchemaOrder {
 		flattened, err = bamlutils.ReorderDynamicOutputBySchema(flattened, req.OutputSchema)
-		if err != nil {
-			return nil, fmt.Errorf("dynclient: dynamic call: %w", err)
-		}
+	} else {
+		flattened, err = bamlutils.SortDynamicOutput(flattened)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("dynclient: dynamic call: %w", err)
 	}
 	return &CallResult{Data: flattened, Metadata: metadata}, nil
 }
@@ -249,9 +251,11 @@ func (c *Client) DynamicCallRaw(ctx context.Context, req Request) (*CallRawResul
 	}
 	if req.PreserveSchemaOrder != nil && *req.PreserveSchemaOrder {
 		flattened, err = bamlutils.ReorderDynamicOutputBySchema(flattened, req.OutputSchema)
-		if err != nil {
-			return nil, fmt.Errorf("dynclient: dynamic call raw: %w", err)
-		}
+	} else {
+		flattened, err = bamlutils.SortDynamicOutput(flattened)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("dynclient: dynamic call raw: %w", err)
 	}
 	return &CallRawResult{
 		Data:      flattened,
@@ -287,9 +291,11 @@ func (c *Client) DynamicParse(ctx context.Context, req ParseRequest) (*ParseResu
 	}
 	if req.PreserveSchemaOrder != nil && *req.PreserveSchemaOrder {
 		flattened, err = bamlutils.ReorderDynamicOutputBySchema(flattened, req.OutputSchema)
-		if err != nil {
-			return nil, fmt.Errorf("dynclient: dynamic parse: %w", err)
-		}
+	} else {
+		flattened, err = bamlutils.SortDynamicOutput(flattened)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("dynclient: dynamic parse: %w", err)
 	}
 	return &ParseResult{Data: flattened}, nil
 }

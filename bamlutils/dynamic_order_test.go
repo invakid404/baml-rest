@@ -478,3 +478,87 @@ func TestReorderDynamicOutputBySchema_MalformedJSONError(t *testing.T) {
 		t.Fatal("expected error for malformed JSON")
 	}
 }
+
+func sortOutput(t *testing.T, raw string) string {
+	t.Helper()
+	out, err := SortDynamicOutput([]byte(raw))
+	if err != nil {
+		t.Fatalf("SortDynamicOutput: %v", err)
+	}
+	return string(out)
+}
+
+func TestSortDynamicOutput_TopLevelKeysSorted(t *testing.T) {
+	t.Parallel()
+	got := sortOutput(t, `{"c":3,"a":1,"b":2}`)
+	if got != `{"a":1,"b":2,"c":3}` {
+		t.Fatalf("top-level: got %s", got)
+	}
+}
+
+func TestSortDynamicOutput_NestedObjectSorted(t *testing.T) {
+	t.Parallel()
+	got := sortOutput(t, `{"outer":{"z":1,"a":2,"m":3},"alpha":true}`)
+	want := `{"alpha":true,"outer":{"a":2,"m":3,"z":1}}`
+	if got != want {
+		t.Fatalf("nested: got %s want %s", got, want)
+	}
+}
+
+func TestSortDynamicOutput_ListPassesThrough(t *testing.T) {
+	t.Parallel()
+	got := sortOutput(t, `{"list":[3,1,2,"x",{"z":1,"a":2}]}`)
+	want := `{"list":[3,1,2,"x",{"a":2,"z":1}]}`
+	if got != want {
+		t.Fatalf("list: got %s want %s", got, want)
+	}
+}
+
+func TestSortDynamicOutput_AlreadySortedIsIdempotent(t *testing.T) {
+	t.Parallel()
+	in := `{"a":1,"b":{"c":2,"d":3},"e":[true,{"f":4,"g":5}]}`
+	first := sortOutput(t, in)
+	second := sortOutput(t, first)
+	if first != second {
+		t.Fatalf("not idempotent: first=%s second=%s", first, second)
+	}
+	if first != in {
+		t.Fatalf("already-sorted input should round-trip: in=%s out=%s", in, first)
+	}
+}
+
+func TestSortDynamicOutput_DuplicateKeysError(t *testing.T) {
+	t.Parallel()
+	_, err := SortDynamicOutput([]byte(`{"a":1,"a":2}`))
+	if err == nil {
+		t.Fatal("expected error for duplicate keys")
+	}
+}
+
+func TestSortDynamicOutput_MalformedJSONError(t *testing.T) {
+	t.Parallel()
+	_, err := SortDynamicOutput([]byte(`{not json`))
+	if err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+}
+
+// TestReorderDynamicOutputBySchema_PreserveOffSortGate exercises the
+// call-site contract: with preserve=false, callers run the payload
+// through SortDynamicOutput, so out-of-declaration-order class keys
+// come back alpha-sorted regardless of the BAML-emitted shape. This
+// pins the symmetry with the codegen-emitted schemaKeys fallback so
+// future BAML shape changes do not silently break the alignment.
+func TestReorderDynamicOutputBySchema_PreserveOffSortGate(t *testing.T) {
+	t.Parallel()
+	// Schema declares c, a, b. With preserve off, the helper used at
+	// every call site is SortDynamicOutput, which yields alpha order.
+	in := `{"c":"x","a":1,"b":true}`
+	out, err := SortDynamicOutput([]byte(in))
+	if err != nil {
+		t.Fatalf("SortDynamicOutput: %v", err)
+	}
+	if string(out) != `{"a":1,"b":true,"c":"x"}` {
+		t.Fatalf("preserve-off sort: got %s", out)
+	}
+}

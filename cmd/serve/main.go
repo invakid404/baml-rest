@@ -523,6 +523,13 @@ var serveCmd = &cobra.Command{
 							return writeFiberInternalError(c, rerr)
 						}
 						flattenedData = reordered
+					} else {
+						sorted, serr := bamlutils.SortDynamicOutput(flattenedData)
+						if serr != nil {
+							logger.Error().Err(serr).Msg("dynamic response sort failed")
+							return writeFiberInternalError(c, serr)
+						}
+						flattenedData = sorted
 					}
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
@@ -610,6 +617,13 @@ var serveCmd = &cobra.Command{
 						return writeFiberInternalError(c, rerr)
 					}
 					flattenedData = reordered
+				} else {
+					sorted, serr := bamlutils.SortDynamicOutput(flattenedData)
+					if serr != nil {
+						logger.Error().Err(serr).Msg("dynamic parse response sort failed")
+						return writeFiberInternalError(c, serr)
+					}
+					flattenedData = sorted
 				}
 
 				c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)

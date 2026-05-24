@@ -184,21 +184,36 @@ func (p *NDJSONStreamWriterPublisher) Close() {
 
 // dynamicFinalReorder carries the schema + opt-in flag the dynamic
 // stream handlers thread into consumeStream so final frames can be
-// reordered to schema declaration order. Partial frames stay
-// flatten-only because their objects may carry placeholder nulls and
-// incomplete subtrees that a schema-guided walk cannot honour.
+// reordered to schema declaration order (preserve on) or alpha-sorted
+// (preserve off, matching the codegen-emitted schemaKeys fallback).
+// Partial frames stay flatten-only because their objects may carry
+// placeholder nulls and incomplete subtrees that a schema-guided
+// walk cannot honour.
 //
-// A nil pointer disables reordering (the static stream handlers use
-// nil); Enabled=false on a non-nil pointer also disables it (the
-// dynamic handlers populate the schema even on preserve-off requests
-// so the per-frame check stays a single field read).
+// A nil pointer disables both transforms (the static stream handlers
+// use nil). Dynamic handlers always populate this so the final-frame
+// wire shape is deterministic regardless of the preserve flag.
 type dynamicFinalReorder struct {
 	Schema  *bamlutils.DynamicOutputSchema
 	Enabled bool
 }
 
-func (d *dynamicFinalReorder) on() bool {
-	return d != nil && d.Enabled && d.Schema != nil
+// applyFinal runs the schema-guided reorder when Enabled is true (and
+// Schema is non-nil) and otherwise alpha-sorts the payload. Returns
+// the original bytes when no transform applies (e.g. Enabled with a
+// nil Schema, which the handlers do not populate today but the
+// fallback keeps consumeStream safe under future shape changes).
+func (d *dynamicFinalReorder) applyFinal(data []byte) ([]byte, error) {
+	if d == nil {
+		return data, nil
+	}
+	if d.Enabled {
+		if d.Schema == nil {
+			return data, nil
+		}
+		return bamlutils.ReorderDynamicOutputBySchema(data, d.Schema)
+	}
+	return bamlutils.SortDynamicOutput(data)
 }
 
 // HandleNDJSONStreamFiber handles NDJSON stream requests with native Fiber streaming.
@@ -661,16 +676,16 @@ func consumeStream(
 					data = flattened
 				}
 			}
-			if finalReorder.on() {
-				reordered, rerr := bamlutils.ReorderDynamicOutputBySchema(data, finalReorder.Schema)
-				if rerr != nil {
-					code, details := classifyWorkerError(rerr)
-					_ = publisher.PublishError(rerr.Error(), code, details)
+			if finalReorder != nil {
+				transformed, terr := finalReorder.applyFinal(data)
+				if terr != nil {
+					code, details := classifyWorkerError(terr)
+					_ = publisher.PublishError(terr.Error(), code, details)
 					workerplugin.ReleaseStreamResult(result)
 					drainResults(results)
 					return
 				}
-				data = reordered
+				data = transformed
 			}
 
 			// Publish final data event (complete, validated result)

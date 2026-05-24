@@ -191,6 +191,13 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 				return
 			}
 			flattenedData = reordered
+		} else {
+			sorted, serr := bamlutils.SortDynamicOutput(flattenedData)
+			if serr != nil {
+				writeChiInternalError(w, r, serr)
+				return
+			}
+			flattenedData = sorted
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if streamMode.NeedsRaw() {
@@ -254,6 +261,13 @@ func makeChiDynamicParseHandler(p unaryParser, preserveSchemaOrderDefault bool) 
 				return
 			}
 			flattenedData = reordered
+		} else {
+			sorted, serr := bamlutils.SortDynamicOutput(flattenedData)
+			if serr != nil {
+				writeChiInternalError(w, r, serr)
+				return
+			}
+			flattenedData = sorted
 		}
 
 		w.Header().Set("Content-Type", "application/json")
