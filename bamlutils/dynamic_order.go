@@ -408,7 +408,13 @@ func (w *dynamicOrderWalker) matchesType(spec DynamicTypeSpec, node orderedNode)
 		}
 		return w.matchesType(*spec.Inner, node)
 	case "list":
-		return node.kind == orderedArray
+		if node.kind != orderedArray {
+			return false
+		}
+		if spec.Items == nil || len(node.array) == 0 {
+			return true
+		}
+		return w.matchesType(*spec.Items, node.array[0])
 	case "map":
 		if node.kind != orderedObject {
 			return false

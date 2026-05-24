@@ -679,8 +679,7 @@ func consumeStream(
 			if finalReorder != nil {
 				transformed, terr := finalReorder.applyFinal(data)
 				if terr != nil {
-					code, details := classifyWorkerError(terr)
-					_ = publisher.PublishError(terr.Error(), code, details)
+					_ = publisher.PublishError(terr.Error(), apierror.CodeInternalError, nil)
 					workerplugin.ReleaseStreamResult(result)
 					drainResults(results)
 					return

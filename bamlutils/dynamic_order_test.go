@@ -277,6 +277,68 @@ func TestReorderDynamicOutputBySchema_UnionSecondClassMatch(t *testing.T) {
 	}
 }
 
+func TestReorderDynamicOutputBySchema_UnionListVariantsElementTypeDispatch(t *testing.T) {
+	t.Parallel()
+	// Union of list<A> | list<B> with deliberately non-alphabetical class
+	// fields. matchesType("list") must inspect the array's representative
+	// element so the right list variant wins; otherwise the first list
+	// variant always wins regardless of element shape.
+	aProps, _ := NewOrderedMap(
+		OrderedKV("name", &DynamicProperty{Type: "string"}),
+		OrderedKV("id", &DynamicProperty{Type: "int"}),
+	)
+	bProps, _ := NewOrderedMap(
+		OrderedKV("title", &DynamicProperty{Type: "string"}),
+		OrderedKV("uid", &DynamicProperty{Type: "int"}),
+	)
+	classes, _ := NewOrderedMap(
+		OrderedKV("A", &DynamicClass{Properties: aProps}),
+		OrderedKV("B", &DynamicClass{Properties: bProps}),
+	)
+	props, _ := NewOrderedMap(
+		OrderedKV("v", &DynamicProperty{
+			Type: "union",
+			OneOf: []*DynamicTypeSpec{
+				{Type: "list", Items: &DynamicTypeSpec{Ref: "A"}},
+				{Type: "list", Items: &DynamicTypeSpec{Ref: "B"}},
+			},
+		}),
+	)
+	s := &DynamicOutputSchema{Properties: props, Classes: classes}
+	// Runtime value is list<B> — element has B's keys, not A's. The
+	// element-type check must pick the second list variant.
+	got := reorder(t, `{"v":[{"uid":5,"title":"y"}]}`, s)
+	if got != `{"v":[{"title":"y","uid":5}]}` {
+		t.Fatalf("list-of-class union element-type dispatch: got %s", got)
+	}
+}
+
+func TestReorderDynamicOutputBySchema_UnionListVariantsEmptyMatchesFirst(t *testing.T) {
+	t.Parallel()
+	// Empty list matches the first list variant (matchesType empty
+	// pass-through), matching the empty-map convention.
+	aProps, _ := NewOrderedMap(
+		OrderedKV("name", &DynamicProperty{Type: "string"}),
+	)
+	classes, _ := NewOrderedMap(
+		OrderedKV("A", &DynamicClass{Properties: aProps}),
+	)
+	props, _ := NewOrderedMap(
+		OrderedKV("v", &DynamicProperty{
+			Type: "union",
+			OneOf: []*DynamicTypeSpec{
+				{Type: "list", Items: &DynamicTypeSpec{Ref: "A"}},
+				{Type: "list", Items: &DynamicTypeSpec{Type: "int"}},
+			},
+		}),
+	)
+	s := &DynamicOutputSchema{Properties: props, Classes: classes}
+	got := reorder(t, `{"v":[]}`, s)
+	if got != `{"v":[]}` {
+		t.Fatalf("empty list union dispatch: got %s", got)
+	}
+}
+
 func TestReorderDynamicOutputBySchema_UnionClassPlusScalarRuntimeScalar(t *testing.T) {
 	t.Parallel()
 	aProps, _ := NewOrderedMap(
