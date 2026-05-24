@@ -62,3 +62,43 @@ const (
 	StreamStateIncomplete	= shared.StreamStateIncomplete
 	StreamStateComplete	= shared.StreamStateComplete
 )
+
+// OrderedFields is the public alias for the ordered field map
+// the patched runtime uses inside DynamicClass and CFFI map values.
+// Generated @@dynamic clients reference this through baml.OrderedFields
+// so dynamic outputs surface insertion order to baml-rest.
+type OrderedFields = serde.OrderedFields
+
+// NewOrderedFields allocates an empty OrderedFields with the
+// supplied capacity hint.
+func NewOrderedFields(capacity int) OrderedFields {
+	return serde.NewOrderedFields(capacity)
+}
+
+// DecodeToOrderedValue is the order-preserving counterpart to
+// DecodeToValue. Generated @@dynamic clients call this for each
+// LLM-added property so nested dynamic class and CFFI map values
+// retain CFFI insertion order before baml-rest assembles the
+// response.
+func DecodeToOrderedValue(holder *cffi.CFFIValueHolder) any {
+	return serde.DecodeToOrderedValue(holder, typeMap)
+}
+
+// EncodeClassOrdered mirrors EncodeClass but accepts the ordered
+// field map generated clients now use for DynamicProperties. The
+// underlying serde.EncodeClass call still takes a map[string]any, so
+// the helper materialises a plain map by iterating in insertion
+// order — encode semantics do not depend on map order, but the
+// iteration shape keeps the helper trivially auditable.
+func EncodeClassOrdered(name string, fields map[string]any, dynamicFields *OrderedFields) (*cffi.HostValue, error) {
+	if dynamicFields == nil {
+		return serde.EncodeClass(name, fields, nil)
+	}
+	flattened := make(map[string]any, dynamicFields.Len())
+	dynamicFields.Range(func(k string, v any) bool {
+		flattened[k] = v
+		return true
+	})
+	return serde.EncodeClass(name, fields, &flattened)
+}
+

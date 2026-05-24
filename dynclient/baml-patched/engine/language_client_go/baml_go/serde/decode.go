@@ -35,7 +35,7 @@ type BamlUnionDeserializer interface {
 
 type DynamicClass struct {
 	Name	string
-	Fields	map[string]any
+	Fields OrderedFields
 }
 
 func (d *DynamicClass) Decode(holder *cffi.CFFIValueClass, typeMap TypeMap) {
@@ -45,7 +45,7 @@ func (d *DynamicClass) Decode(holder *cffi.CFFIValueClass, typeMap TypeMap) {
 	}
 	d.Name = string(typeName.Name)
 	fieldCount := len(holder.Fields)
-	d.Fields = make(map[string]any, fieldCount)
+	d.Fields = NewOrderedFields(fieldCount)
 	for i := 0; i < fieldCount; i++ {
 		field := holder.Fields[i]
 		if field == nil {
@@ -53,17 +53,7 @@ func (d *DynamicClass) Decode(holder *cffi.CFFIValueClass, typeMap TypeMap) {
 		}
 		key := field.Key
 		valueHolder := field.Value
-		value, goType := Decode(valueHolder, typeMap)
-		switch goType {
-		case reflect.TypeOf(int64(0)):
-			d.Fields[key] = value.Int()
-		case reflect.TypeOf(float64(0)):
-			d.Fields[key] = value.Float()
-		case reflect.TypeOf(false):
-			d.Fields[key] = value.Bool()
-		default:
-			d.Fields[key] = value.Interface()
-		}
+		_ = d.Fields.Set(key, DecodeToOrderedValue(valueHolder, typeMap))
 	}
 }
 
@@ -87,17 +77,7 @@ type DynamicUnion struct {
 
 func (d *DynamicUnion) Decode(holder *cffi.CFFIValueUnionVariant, typeMap TypeMap) {
 	d.Variant = string(holder.ValueOptionName)
-	value, goType := Decode(holder.Value, typeMap)
-	switch goType {
-	case reflect.TypeOf(int64(0)):
-		d.Value = value.Int()
-	case reflect.TypeOf(float64(0)):
-		d.Value = value.Float()
-	case reflect.TypeOf(false):
-		d.Value = value.Bool()
-	default:
-		d.Value = value.Interface()
-	}
+	d.Value = DecodeToOrderedValue(holder.Value, typeMap)
 }
 
 func decodeListValue(valueList *cffi.CFFIValueList, typeMap TypeMap) (reflect.Value, reflect.Type) {
@@ -610,5 +590,54 @@ func decodeLiteralValue(valueLiteral *cffi.CFFIFieldTypeLiteral, _ TypeMap) (ref
 		return reflect.ValueOf(value.StringLiteral.Value), reflect.TypeOf("")
 	default:
 		panic("error decoding value, unknown literal type: " + fmt.Sprintf("%+v", value))
+	}
+}
+
+// DecodeToOrderedValue walks the CFFI holder tree producing
+// insertion-ordered OrderedFields for class and map nodes while
+// delegating arrays and scalars to the existing Decode pipeline. It
+// is the entry point generated @@dynamic clients call so dynamic
+// outputs preserve LLM/CFFI key order before reaching baml-rest.
+func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
+	if holder == nil {
+		return nil
+	}
+	switch v := holder.Value.(type) {
+	case *cffi.CFFIValueHolder_ClassValue:
+		decoded, _ := decodeClassValue(v.ClassValue, typeMap)
+		return decoded.Interface()
+	case *cffi.CFFIValueHolder_MapValue:
+		if v.MapValue == nil {
+			return NewOrderedFields(0)
+		}
+		out := NewOrderedFields(len(v.MapValue.Entries))
+		for _, entry := range v.MapValue.Entries {
+			_ = out.Set(entry.Key, DecodeToOrderedValue(entry.Value, typeMap))
+		}
+		return out
+	case *cffi.CFFIValueHolder_ListValue:
+		if v.ListValue == nil {
+			return []any{}
+		}
+		items := make([]any, 0, len(v.ListValue.Items))
+		for _, item := range v.ListValue.Items {
+			items = append(items, DecodeToOrderedValue(item, typeMap))
+		}
+		return items
+	default:
+		decoded, goType := Decode(holder, typeMap)
+		if !decoded.IsValid() {
+			return nil
+		}
+		switch goType {
+		case reflect.TypeOf(int64(0)):
+			return decoded.Int()
+		case reflect.TypeOf(float64(0)):
+			return decoded.Float()
+		case reflect.TypeOf(false):
+			return decoded.Bool()
+		default:
+			return decoded.Interface()
+		}
 	}
 }
