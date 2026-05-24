@@ -92,9 +92,9 @@ func TestApplyDynamicOrderFixToDir_PerVersion(t *testing.T) {
 			// case that routes through decodeUnionValue (which itself
 			// uses the ordered decoder), and the unknown-union branch
 			// in decodeUnionValue routes the nested value through
-			// DecodeToOrderedValue rather than Decode. Without these
-			// two patches, a dynamic union whose Value is a CFFI map
-			// drops key order on the way out of serde.
+			// DecodeToOrderedValue. With the plain Decode path, a
+			// dynamic union whose Value is a CFFI map drops key order
+			// on the way out of serde.
 			if !strings.Contains(body, "*cffi.CFFIValueHolder_UnionVariantValue") {
 				t.Fatalf("decode.go in %s missing CFFIValueHolder_UnionVariantValue case in DecodeToOrderedValue", v)
 			}
@@ -106,6 +106,30 @@ func TestApplyDynamicOrderFixToDir_PerVersion(t *testing.T) {
 			}
 			if strings.Contains(body, "Value:   value.Elem(),") {
 				t.Fatalf("decode.go in %s still wraps dynamic union value through value.Elem() (family B pre-patch shape)", v)
+			}
+
+			// Postcondition (cold-v4 IsSinglePattern fix): the
+			// optional / single-pattern branch — the path BAML drives
+			// for `T | null` shapes including non-null
+			// `optional(map<...>)` dynamic fields — also flows the
+			// inner value through DecodeToOrderedValue. The plain
+			// Decode path landed the inner value as a Go map, so
+			// UnwrapDynamicValue could not see the CFFI key order.
+			//
+			// The action line `decoded := DecodeToOrderedValue(...)`
+			// is emitted identically across all three families'
+			// after-images, so a single substring assertion covers
+			// v0.204 (isOptionalPattern) and v0.215+ (IsSinglePattern)
+			// at once. The absence checks pin the pre-patch lines that
+			// each family used to carry, family-by-family.
+			if !strings.Contains(body, "decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)") {
+				t.Fatalf("decode.go in %s did not route the IsSinglePattern / isOptionalPattern branch through DecodeToOrderedValue", v)
+			}
+			if strings.Contains(body, "return Decode(valueUnion.Value, typeMap)\n") {
+				t.Fatalf("decode.go in %s still returns Decode(valueUnion.Value, typeMap) directly (family B/C IsSinglePattern pre-patch shape)", v)
+			}
+			if strings.Contains(body, "return Decode(value, typeMap)\n") {
+				t.Fatalf("decode.go in %s still returns Decode(value, typeMap) directly (family A isOptionalPattern pre-patch shape)", v)
 			}
 
 			// Postcondition: pkg/lib.go exposes the public surface.
@@ -502,14 +526,22 @@ func TestPatchDecodeUnionValueDynamicBranch_TolerantToDrift(t *testing.T) {
 			},
 		},
 		{
-			name:   "familyC reworded comment plus blank-line drift inside scalar switch",
+			name:   "familyC reworded comment plus blank-line drift plus inner-block indentation tweak",
 			family: familyC,
-			// Indentation kept at four tabs but the upstream blank line
-			// between the struct literal and the scalar switch is
-			// removed, the comment is rewritten to a single shorter
-			// line, and an extra blank line is inserted inside the
-			// switch arms. The patch must still locate the span by
-			// distinctive code tokens and replace it cleanly.
+			// Three concurrent drifts: the comment is rewritten to a
+			// single shorter line, the upstream blank line between the
+			// struct literal and the scalar switch is removed and an
+			// extra blank line is inserted inside the switch arms, and
+			// two inner-block lines use four-space indentation in
+			// place of tabs. The patch must locate the span by
+			// distinctive code tokens and replace the whole branch
+			// regardless of inner-block indentation style; the
+			// indentation tweak lives strictly inside the replaced
+			// span, exercising the property that any drift between the
+			// start and end anchors is discarded by the wholesale
+			// rewrite. The start-anchor indentation is left at four
+			// tabs so the after-image's captured indent stays stable
+			// and the mustContain assertions remain literal.
 			source: "package serde\n\n" +
 				"func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (reflect.Value, reflect.Type) {\n" +
 				"\tvalue, goType := func() (reflect.Value, reflect.Type) {\n" +
@@ -518,11 +550,11 @@ func TestPatchDecodeUnionValueDynamicBranch_TolerantToDrift(t *testing.T) {
 				"\t\t\t\t// fully dynamic; preserve scalar fast-path.\n" +
 				"\t\t\t\tvalue, goType := Decode(valueUnion.Value, typeMap)\n" +
 				"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
-				"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
+				"                    Variant: valueUnion.Name.Name,\n" +
 				"\t\t\t\t}\n" +
 				"\t\t\t\tswitch goType {\n" +
 				"\t\t\t\tcase reflect.TypeOf(int64(0)):\n" +
-				"\t\t\t\t\tdynamicUnion.Value = value.Int()\n" +
+				"                    dynamicUnion.Value = value.Int()\n" +
 				"\n" +
 				"\t\t\t\tcase reflect.TypeOf(float64(0)):\n" +
 				"\t\t\t\t\tdynamicUnion.Value = value.Float()\n" +
@@ -551,6 +583,8 @@ func TestPatchDecodeUnionValueDynamicBranch_TolerantToDrift(t *testing.T) {
 				"switch goType {",
 				"dynamicUnion.Value = value.Int()",
 				"dynamicUnion.Value = value.Float()",
+				"                    Variant: valueUnion.Name.Name,",
+				"                    dynamicUnion.Value = value.Int()",
 				"// Union not found",
 			},
 		},
@@ -623,3 +657,171 @@ func TestPatchDecodeUnionValueDynamicBranch_FailClosed(t *testing.T) {
 	})
 }
 
+// TestPatchDecodeUnionValueIsSinglePatternBranch covers the cold-v4
+// patch that routes the optional / single-pattern branch through
+// DecodeToOrderedValue. familyA uses a structurally distinct
+// `if isOptionalPattern { ... }` block returning a single
+// reflect.Value; familyB and familyC share an
+// `else if valueUnion.IsSinglePattern { ... }` block returning
+// (reflect.Value, reflect.Type). Each case asserts the after-image
+// uses the ordered decoder and that the pre-patch action line is
+// gone.
+func TestPatchDecodeUnionValueIsSinglePatternBranch(t *testing.T) {
+	cases := []struct {
+		name           string
+		family         decodeFamily
+		source         string
+		mustContain    []string
+		mustNotContain []string
+	}{
+		{
+			name:   "familyA isOptionalPattern branch",
+			family: familyA,
+			source: "package serde\n\n" +
+				"func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) reflect.Value {\n" +
+				"\tvar isOptionalPattern bool = false\n" +
+				"\t// For optional patterns (T | null), decode the inner value directly\n" +
+				"\t// These shouldn't be looked up as union types\n" +
+				"\tif isOptionalPattern {\n" +
+				"\t\tvalue := valueUnion.Value\n" +
+				"\t\treturn Decode(value, typeMap)\n" +
+				"\t}\n" +
+				"\treturn reflect.ValueOf(nil)\n" +
+				"}\n",
+			mustContain: []string{
+				"\tif isOptionalPattern {\n",
+				"\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n",
+				"\t\t\treturn reflect.ValueOf(nil)\n",
+				"\t\treturn reflect.ValueOf(decoded)\n",
+			},
+			mustNotContain: []string{
+				"return Decode(value, typeMap)",
+				"value := valueUnion.Value",
+			},
+		},
+		{
+			name:   "familyB IsSinglePattern branch",
+			family: familyB,
+			source: "package serde\n\n" +
+				"func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (reflect.Value, reflect.Type) {\n" +
+				"\tvalue, goType := func() (reflect.Value, reflect.Type) {\n" +
+				"\t\tif ok := valueUnion.Value.GetNullValue(); ok != nil {\n" +
+				"\t\t\treturn reflect.ValueOf(nil), nil\n" +
+				"\t\t} else if valueUnion.IsSinglePattern {\n" +
+				"\t\t\t// For optional patterns (T | null), decode the inner value directly\n" +
+				"\t\t\t// These shouldn't be looked up as union types\n" +
+				"\t\t\treturn Decode(valueUnion.Value, typeMap)\n" +
+				"\t\t} else {\n" +
+				"\t\t\treturn reflect.ValueOf(nil), nil\n" +
+				"\t\t}\n" +
+				"\t}()\n" +
+				"\treturn value, goType\n" +
+				"}\n",
+			mustContain: []string{
+				"\t\t} else if valueUnion.IsSinglePattern {\n",
+				"\t\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n",
+				"\t\t\t\treturn reflect.ValueOf(nil), nil\n",
+				"\t\t\trv := reflect.ValueOf(decoded)\n",
+				"\t\t\treturn rv, rv.Type()\n",
+			},
+			mustNotContain: []string{
+				"return Decode(valueUnion.Value, typeMap)",
+			},
+		},
+		{
+			name:   "familyC IsSinglePattern branch with reworded comment and shallower indent",
+			family: familyC,
+			source: "package serde\n\n" +
+				"func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (reflect.Value, reflect.Type) {\n" +
+				"\tif true {\n" +
+				"\t\tif ok := valueUnion.Value.GetNullValue(); ok != nil {\n" +
+				"\t\t\treturn reflect.ValueOf(nil), nil\n" +
+				"\t\t} else if valueUnion.IsSinglePattern {\n" +
+				"\t\t\t// reworded: drop union-ness for optional shape\n" +
+				"\t\t\treturn Decode(valueUnion.Value, typeMap)\n" +
+				"\t\t}\n" +
+				"\t}\n" +
+				"\treturn reflect.ValueOf(nil), nil\n" +
+				"}\n",
+			mustContain: []string{
+				"\t\t} else if valueUnion.IsSinglePattern {\n",
+				"\t\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n",
+				"\t\t\trv := reflect.ValueOf(decoded)\n",
+				"\t\t\treturn rv, rv.Type()\n",
+			},
+			mustNotContain: []string{
+				"return Decode(valueUnion.Value, typeMap)",
+				"// For optional patterns (T | null), decode the inner value directly",
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := patchDecodeUnionValueIsSinglePatternBranch(c.source, c.family)
+			if err != nil {
+				t.Fatalf("patch failed: %v\ninput:\n%s", err, c.source)
+			}
+			for _, marker := range c.mustContain {
+				if !strings.Contains(got, marker) {
+					t.Errorf("expected patched output to contain %q\noutput:\n%s", marker, got)
+				}
+			}
+			for _, marker := range c.mustNotContain {
+				if strings.Contains(got, marker) {
+					t.Errorf("expected patched output to NOT contain %q\noutput:\n%s", marker, got)
+				}
+			}
+		})
+	}
+}
+
+// TestPatchDecodeUnionValueIsSinglePatternBranch_FailClosed mirrors the
+// fail-closed contract pinned for the dynamic-union branch: missing
+// anchors, ambiguous start anchors, and a missing discriminator each
+// surface a family-named error.
+func TestPatchDecodeUnionValueIsSinglePatternBranch_FailClosed(t *testing.T) {
+	t.Run("missing start anchor", func(t *testing.T) {
+		_, err := patchDecodeUnionValueIsSinglePatternBranch("package serde\n\nfunc nothing() {}\n", familyC)
+		if err == nil {
+			t.Fatalf("expected error for missing start anchor")
+		}
+		if !strings.Contains(err.Error(), string(familyC)) {
+			t.Errorf("error %q should name family %s", err, familyC)
+		}
+	})
+
+	t.Run("ambiguous start anchor", func(t *testing.T) {
+		dup := "package serde\n" +
+			"\t\t} else if valueUnion.IsSinglePattern {\n" +
+			"\t\t\treturn Decode(valueUnion.Value, typeMap)\n" +
+			"\t\t} else if valueUnion.IsSinglePattern {\n" +
+			"\t\t\treturn Decode(valueUnion.Value, typeMap)\n"
+		_, err := patchDecodeUnionValueIsSinglePatternBranch(dup, familyC)
+		if err == nil {
+			t.Fatalf("expected error for ambiguous start anchor")
+		}
+		if !strings.Contains(err.Error(), string(familyC)) {
+			t.Errorf("error %q should name family %s", err, familyC)
+		}
+	})
+
+	t.Run("missing discriminator", func(t *testing.T) {
+		// Start anchor present but the branch body never references
+		// `Decode(valueUnion.Value, typeMap)`; the spec was not
+		// designed for this shape and must fail closed.
+		missing := "package serde\n\n" +
+			"func decodeUnionValue() (reflect.Value, reflect.Type) {\n" +
+			"\t\t} else if valueUnion.IsSinglePattern {\n" +
+			"\t\t\t_ = valueUnion\n" +
+			"\t\t\treturn Decode(other.Value, typeMap)\n" +
+			"}\n"
+		_, err := patchDecodeUnionValueIsSinglePatternBranch(missing, familyC)
+		if err == nil {
+			t.Fatalf("expected error for missing discriminator or end anchor")
+		}
+		if !strings.Contains(err.Error(), string(familyC)) {
+			t.Errorf("error %q should name family %s", err, familyC)
+		}
+	})
+}

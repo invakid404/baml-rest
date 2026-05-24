@@ -211,10 +211,12 @@ func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (
 			// If the union value is null, return nil
 			return reflect.ValueOf(nil), nil
 		} else if valueUnion.IsSinglePattern {
-			// For optional patterns (T | null), decode the inner value directly
-			// These shouldn't be looked up as union types
-			// Ignore the union-ness of it and just decode the inner value
-			return Decode(valueUnion.Value, typeMap)
+			decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)
+			if decoded == nil {
+				return reflect.ValueOf(nil), nil
+			}
+			rv := reflect.ValueOf(decoded)
+			return rv, rv.Type()
 		} else {
 			goType, ok := typeMap.GetType(valueUnion.Name)
 			if !ok {

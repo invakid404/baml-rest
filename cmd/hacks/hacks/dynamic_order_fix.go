@@ -368,7 +368,18 @@ func patchDecodeGo(moduleDir string, family decodeFamily) error {
 	}
 	body = patched
 
-	// 5. Append the family-specific DecodeToOrderedValue helper.
+	// 5. Patch decodeUnionValue's optional/single-pattern branch so the
+	// inner CFFI value flows through DecodeToOrderedValue. BAML uses this
+	// branch for `T | null` shapes, so a non-null `optional(map<...>)`
+	// dynamic field would otherwise reach decodeMapValue and become a
+	// plain Go map before UnwrapDynamicValue could preserve key order.
+	patched, err = patchDecodeUnionValueIsSinglePatternBranch(body, family)
+	if err != nil {
+		return fmt.Errorf("patching decodeUnionValue IsSinglePattern branch in %s: %w", path, err)
+	}
+	body = patched
+
+	// 6. Append the family-specific DecodeToOrderedValue helper.
 	body = strings.TrimRight(body, "\n") + "\n\n" + decodeToOrderedValueFunc(family) + "\n"
 
 	return os.WriteFile(path, []byte(body), 0o644)
@@ -526,22 +537,19 @@ func dynamicUnionDecodePatched(family decodeFamily) string {
 
 // patchDecodeUnionValueDynamicBranch rewrites the unknown-union (fully
 // dynamic) branch in decodeUnionValue so the nested CFFI value is
-// decoded through DecodeToOrderedValue instead of Decode. Without this,
-// a DynamicUnion whose Value contains a CFFI map or class holder is
-// flattened into a plain Go map via the standard decode path before the
-// generated client wraps the result, dropping insertion order — the
-// scope D2 requirement that union nested values use the ordered
-// decoder is then violated.
+// decoded through DecodeToOrderedValue (the plain Decode path would
+// flatten a CFFI map or class holder into an unordered Go map). The
+// generated client then preserves insertion order — the scope D2
+// requirement that union nested values use the ordered decoder.
 //
-// The branch is located by per-family code-token anchors rather than a
-// byte-exact comment+whitespace pre-image: a unique start-of-span line,
-// a discriminator that must appear between the anchors, and an end-of-
-// span line. Only the matched code span is replaced; preceding comments
-// are left intact so upstream comment rewording, blank-line drift, and
-// indentation drift within a known family no longer fail the patch.
-// Unrecognised shapes still fail closed: missing anchors, an ambiguous
-// start, or a missing discriminator each return an error naming the
-// family.
+// The branch is located by per-family code-token anchors: a unique
+// start-of-span line, a discriminator that must appear between the
+// anchors, and an end-of-span line. Comment-text matching is avoided
+// so upstream comment rewording, blank-line drift, and indentation
+// drift within a known family all stay tolerated; only the matched
+// code span is replaced. Unrecognised shapes still fail closed: a
+// missing anchor, an ambiguous start, or a missing discriminator each
+// returns an error naming the family.
 func patchDecodeUnionValueDynamicBranch(body string, family decodeFamily) (string, error) {
 	spec, ok := decodeUnionValueBranchSpec(family)
 	if !ok {
@@ -599,8 +607,8 @@ func decodeUnionValueBranchSpec(family decodeFamily) (decodeUnionBranchSpec, boo
 // distinctive line of the dynamic-union branch:
 //
 //   - familyA: `dynamicUnion := DynamicUnion{` — the discriminator
-//     `Decode(valueUnion.Value, typeMap).Interface()` then pins this as
-//     the v0.204 shape rather than a hypothetical reuse elsewhere.
+//     `Decode(valueUnion.Value, typeMap).Interface()` pins this to the
+//     v0.204 shape so a hypothetical reuse elsewhere cannot match.
 //   - familyB: `value, _ := Decode(valueUnion.Value, typeMap)` —
 //     paired with the `value.Elem()` discriminator.
 //   - familyC: `value, goType := Decode(valueUnion.Value, typeMap)` —
@@ -643,6 +651,104 @@ var decodeUnionBranchSpecs = map[decodeFamily]decodeUnionBranchSpec{
 			"{I}value := reflect.ValueOf(dynamicUnion)\n" +
 			"{I}goType = reflect.TypeOf(DynamicUnion{})\n" +
 			"{I}return value, goType\n",
+	},
+}
+
+// patchDecodeUnionValueIsSinglePatternBranch rewrites the optional /
+// single-pattern (`T | null`) branch of decodeUnionValue so the inner
+// CFFI value is decoded through DecodeToOrderedValue. BAML drives this
+// branch for `optional(T)` dynamic fields; with the upstream code the
+// inner value reached decodeMapValue and became a plain Go map, so
+// UnwrapDynamicValue lost its chance to preserve CFFI key order.
+//
+// Family A's optional-pattern branch is structurally distinct from
+// family B/C's `IsSinglePattern` branch (it is gated on a locally
+// computed `isOptionalPattern` boolean and returns a single
+// reflect.Value), so the per-family specs differ in start anchor,
+// return arity, and after-image. Fail-closed semantics mirror the
+// dynamic-branch patch: a missing anchor, an ambiguous anchor, or a
+// missing discriminator each surfaces a family-named error.
+func patchDecodeUnionValueIsSinglePatternBranch(body string, family decodeFamily) (string, error) {
+	spec, ok := decodeUnionIsSinglePatternBranchSpecs[family]
+	if !ok {
+		return body, fmt.Errorf("no decodeUnionValue IsSinglePattern-branch spec for family %s", family)
+	}
+
+	startMatches := spec.startRe.FindAllStringSubmatchIndex(body, -1)
+	if len(startMatches) == 0 {
+		return body, fmt.Errorf("could not locate decodeUnionValue IsSinglePattern-branch start anchor for family %s", family)
+	}
+	if len(startMatches) > 1 {
+		return body, fmt.Errorf("decodeUnionValue IsSinglePattern-branch start anchor matched %d times for family %s; expected exactly 1", len(startMatches), family)
+	}
+	start := startMatches[0]
+	indent := body[start[2]:start[3]]
+
+	endLoc := spec.endRe.FindStringIndex(body[start[1]:])
+	if endLoc == nil {
+		return body, fmt.Errorf("could not locate decodeUnionValue IsSinglePattern-branch end anchor for family %s after start anchor", family)
+	}
+	spanEnd := start[1] + endLoc[1]
+
+	middle := body[start[0]:spanEnd]
+	if !strings.Contains(middle, spec.discriminator) {
+		return body, fmt.Errorf("decodeUnionValue IsSinglePattern-branch discriminator %q missing between anchors for family %s", spec.discriminator, family)
+	}
+
+	afterImage := strings.ReplaceAll(spec.afterTemplate, "{I}", indent)
+	return body[:start[0]] + afterImage + body[spanEnd:], nil
+}
+
+// decodeUnionIsSinglePatternBranchSpecs holds per-family token anchors
+// and after-image templates for the optional-pattern branch. The
+// startRe regexes anchor on the first distinctive line of the branch:
+//
+//   - familyA: `if isOptionalPattern {` — the discriminator
+//     `value := valueUnion.Value` pins this as the v0.204 shape.
+//   - familyB / familyC: `} else if valueUnion.IsSinglePattern {` —
+//     paired with the `Decode(valueUnion.Value, typeMap)` discriminator
+//     so the same regex would not silently match an unrelated
+//     `IsSinglePattern` reference elsewhere.
+//
+// The after-image keeps the branch's opening line intact and rewrites
+// only its body: invoke DecodeToOrderedValue on the inner holder, fold
+// a nil result back to the family's zero/null return, and wrap the
+// decoded `any` back into the family's return arity via reflect.
+var decodeUnionIsSinglePatternBranchSpecs = map[decodeFamily]decodeUnionBranchSpec{
+	familyA: {
+		startRe:       regexp.MustCompile(`(?m)^([ \t]+)if isOptionalPattern \{[ \t]*$`),
+		endRe:         regexp.MustCompile(`(?m)^[ \t]+return Decode\(value, typeMap\)[ \t]*\n`),
+		discriminator: "value := valueUnion.Value",
+		afterTemplate: "{I}if isOptionalPattern {\n" +
+			"{I}\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n" +
+			"{I}\tif decoded == nil {\n" +
+			"{I}\t\treturn reflect.ValueOf(nil)\n" +
+			"{I}\t}\n" +
+			"{I}\treturn reflect.ValueOf(decoded)\n",
+	},
+	familyB: {
+		startRe:       regexp.MustCompile(`(?m)^([ \t]+)\} else if valueUnion\.IsSinglePattern \{[ \t]*$`),
+		endRe:         regexp.MustCompile(`(?m)^[ \t]+return Decode\(valueUnion\.Value, typeMap\)[ \t]*\n`),
+		discriminator: "Decode(valueUnion.Value, typeMap)",
+		afterTemplate: "{I}} else if valueUnion.IsSinglePattern {\n" +
+			"{I}\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n" +
+			"{I}\tif decoded == nil {\n" +
+			"{I}\t\treturn reflect.ValueOf(nil), nil\n" +
+			"{I}\t}\n" +
+			"{I}\trv := reflect.ValueOf(decoded)\n" +
+			"{I}\treturn rv, rv.Type()\n",
+	},
+	familyC: {
+		startRe:       regexp.MustCompile(`(?m)^([ \t]+)\} else if valueUnion\.IsSinglePattern \{[ \t]*$`),
+		endRe:         regexp.MustCompile(`(?m)^[ \t]+return Decode\(valueUnion\.Value, typeMap\)[ \t]*\n`),
+		discriminator: "Decode(valueUnion.Value, typeMap)",
+		afterTemplate: "{I}} else if valueUnion.IsSinglePattern {\n" +
+			"{I}\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n" +
+			"{I}\tif decoded == nil {\n" +
+			"{I}\t\treturn reflect.ValueOf(nil), nil\n" +
+			"{I}\t}\n" +
+			"{I}\trv := reflect.ValueOf(decoded)\n" +
+			"{I}\treturn rv, rv.Type()\n",
 	},
 }
 
