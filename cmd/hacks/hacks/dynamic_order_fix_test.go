@@ -482,53 +482,68 @@ func isAllowedVetFailure(out string) bool {
 	}
 	pairedCgoTokens := []string{"cgo", "C source", "libbaml", "lib_baml", "_cgo_", "baml_cffi"}
 
-	// The "could not import" verdict is scoped per line. A diagnostic
-	// like `could not import example.com/pkg (no Go files in /…)` is
-	// benign — the parenthesised reason is itself the cgo-package-
-	// excluded signal — and must be allowed even when an unrelated
-	// line elsewhere happens to match a broad fragment. Conversely, a
-	// real `could not import realfailure (transitive dep broken)`
-	// must not be hidden by a stray `no Go files` substring further
-	// down the output. Scope the check to the line that carries the
-	// import diagnostic so both shapes get the correct verdict.
+	// The verdict is scoped per line so a benign `could not import
+	// example.com/pkg (no Go files in /…)` is not blocked by an
+	// unrelated `no Go files` further down the output, and conversely
+	// a real diagnostic on a different line is not masked by an
+	// otherwise-allowed import line. The function walks every
+	// non-noise line and tracks two flags: hasCouldNotImport for a
+	// validated import diagnostic, hasOtherDiagnostic for any line
+	// that is neither an allowed import nor matches an
+	// allowedFragments substring. Headers (`# pkg/path`) and blank
+	// lines are skipped as noise. The function returns true only
+	// when at least one line is allowed and no other diagnostic is
+	// present; mixed shapes — a valid import diagnostic plus a real
+	// `cannot use X as Y` elsewhere — return false.
 	hasCouldNotImport := false
-	for _, line := range strings.Split(out, "\n") {
-		if !strings.Contains(line, "could not import") {
+	hasOtherDiagnostic := false
+	hasAllowedFragment := false
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		hasCouldNotImport = true
-		lineAllowed := false
-		for _, paired := range pairedCgoTokens {
-			if strings.Contains(line, paired) {
-				lineAllowed = true
-				break
-			}
-		}
-		if !lineAllowed {
-			for _, f := range allowedFragments {
-				if strings.Contains(line, f) {
+		if strings.Contains(line, "could not import") {
+			lineAllowed := false
+			for _, paired := range pairedCgoTokens {
+				if strings.Contains(line, paired) {
 					lineAllowed = true
 					break
 				}
 			}
+			if !lineAllowed {
+				for _, f := range allowedFragments {
+					if strings.Contains(line, f) {
+						lineAllowed = true
+						break
+					}
+				}
+			}
+			if !lineAllowed {
+				return false
+			}
+			hasCouldNotImport = true
+			continue
 		}
-		if !lineAllowed {
-			return false
+		lineAllowed := false
+		for _, f := range allowedFragments {
+			if strings.Contains(line, f) {
+				lineAllowed = true
+				break
+			}
 		}
-	}
-	if hasCouldNotImport {
-		return true
+		if lineAllowed {
+			hasAllowedFragment = true
+		} else {
+			hasOtherDiagnostic = true
+		}
 	}
 
-	// Non-import-chain failures: the output-wide fragment sweep
-	// covers cases like `package cffi` errors or `build constraints
-	// exclude all Go files` that arrive on their own lines.
-	for _, f := range allowedFragments {
-		if strings.Contains(out, f) {
-			return true
-		}
+	if hasOtherDiagnostic {
+		return false
 	}
-	return false
+	return hasCouldNotImport || hasAllowedFragment
 }
 
 func TestIsAllowedVetFailure(t *testing.T) {
@@ -566,6 +581,21 @@ func TestIsAllowedVetFailure(t *testing.T) {
 			name: "real-import-failure",
 			out:  "could not import example.com/realfailure (some other reason)",
 			want: false,
+		},
+		{
+			name: "mixed-allowed-import-plus-real-diagnostic",
+			out:  "app.go:3:8: could not import example.com/cgopkg (no Go files in /path)\ndecode.go:123:5: cannot use X (untyped string constant) as int",
+			want: false,
+		},
+		{
+			name: "mixed-cgo-stub-plus-real-diagnostic",
+			out:  "# pkg/cffi\npkg/cffi/wrapper.go:5:8: undefined: C.foo\ndecode.go:123:5: cannot use X as Y",
+			want: false,
+		},
+		{
+			name: "cgo-stub-with-header-and-multiple-allowed-lines",
+			out:  "# pkg/cffi\npkg/cffi/wrapper.go:5:8: undefined: C.foo\npkg/cffi/wrapper.go:6:8: undefined: C.bar",
+			want: true,
 		},
 	}
 	for _, tc := range cases {
