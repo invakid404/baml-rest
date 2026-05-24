@@ -9,9 +9,21 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// perVersionTestRan gates the heavy per-version hack fixture so it only
+// performs its real go vet + go build sweep once per process. Each pass
+// across all pinned BAML versions runs ~8 compile-shaped operations
+// against fresh patched module trees; under the unit-tests workflow's
+// `go test -race -count=100 ./...` loop that would balloon to ~800
+// invocations and blow past the default 10-minute go-test timeout.
+// The deterministic-AST + compile invariants don't gain extra signal
+// from being re-checked 100×, so the second and subsequent invocations
+// skip cleanly while preserving real-regression coverage on the first.
+var perVersionTestRan atomic.Int32
 
 // TestApplyDynamicOrderFixToDir_PerVersion exercises the hack against
 // each pinned upstream BAML version. The fixture is the read-only
@@ -25,6 +37,9 @@ import (
 func TestApplyDynamicOrderFixToDir_PerVersion(t *testing.T) {
 	if testing.Short() {
 		t.Skip("per-version fixtures require module-cache access; skip under -short")
+	}
+	if perVersionTestRan.Add(1) > 1 {
+		t.Skip("per-version compile sweep is deterministic; only ran on the first -count iteration to keep -count=100 under the go-test default 10m timeout")
 	}
 
 	versions := []string{
