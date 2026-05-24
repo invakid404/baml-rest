@@ -108,26 +108,36 @@ func TestApplyDynamicOrderFixToDir_PerVersion(t *testing.T) {
 				t.Fatalf("decode.go in %s still wraps dynamic union value through value.Elem() (family B pre-patch shape)", v)
 			}
 
-			// Postcondition (cold-v4 IsSinglePattern fix): the
+			// Postcondition (Option A IsSinglePattern dispatch): the
 			// optional / single-pattern branch — the path BAML drives
-			// for `T | null` shapes including non-null
-			// `optional(map<...>)` dynamic fields — also flows the
-			// inner value through DecodeToOrderedValue. The plain
-			// Decode path landed the inner value as a Go map, so
-			// UnwrapDynamicValue could not see the CFFI key order.
+			// for `T | null` shapes — dispatches on the inner CFFI
+			// holder kind. Only dynamic class values and dynamic-value
+			// maps flow through DecodeToOrderedValue; lists, scalars,
+			// nested unions, and statically-typed maps stay on plain
+			// Decode so the optional wrapper can `Set(value)` into a
+			// `reflect.New(pointerToConcrete)` without a type mismatch.
+			// A prior pass routed every IsSinglePattern shape through
+			// DecodeToOrderedValue and panicked on `optional(list<T>)`
+			// static fields with `*[]any` vs `*[]T`.
 			//
-			// The action line `decoded := DecodeToOrderedValue(...)`
-			// is emitted identically across all three families'
-			// after-images, so a single substring assertion covers
-			// v0.204 (isOptionalPattern) and v0.215+ (IsSinglePattern)
-			// at once. The absence checks pin the pre-patch lines that
-			// each family used to carry, family-by-family.
+			// The dispatch line `if isOrderableSinglePattern(...)` is
+			// unique to the new branch body and the helper definition
+			// is appended once per file; together they pin both halves
+			// of the after-image across v0.204 (isOptionalPattern) and
+			// v0.215+ (IsSinglePattern).
+			if !strings.Contains(body, "if isOrderableSinglePattern(valueUnion.Value, typeMap)") {
+				t.Fatalf("decode.go in %s did not dispatch the IsSinglePattern / isOptionalPattern branch through isOrderableSinglePattern", v)
+			}
+			if !strings.Contains(body, "func isOrderableSinglePattern(") {
+				t.Fatalf("decode.go in %s missing isOrderableSinglePattern helper definition", v)
+			}
 			if !strings.Contains(body, "decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)") {
-				t.Fatalf("decode.go in %s did not route the IsSinglePattern / isOptionalPattern branch through DecodeToOrderedValue", v)
+				t.Fatalf("decode.go in %s did not route the orderable IsSinglePattern / isOptionalPattern branch through DecodeToOrderedValue", v)
 			}
-			if strings.Contains(body, "return Decode(valueUnion.Value, typeMap)\n") {
-				t.Fatalf("decode.go in %s still returns Decode(valueUnion.Value, typeMap) directly (family B/C IsSinglePattern pre-patch shape)", v)
-			}
+			// The pre-patch family A action line `return Decode(value, typeMap)`
+			// must be gone — the new template references valueUnion.Value
+			// directly in its fallback, so the bare `value` form would
+			// only appear if the patch failed to replace the branch.
 			if strings.Contains(body, "return Decode(value, typeMap)\n") {
 				t.Fatalf("decode.go in %s still returns Decode(value, typeMap) directly (family A isOptionalPattern pre-patch shape)", v)
 			}
@@ -423,6 +433,10 @@ func runGoBuildPkg(moduleDir string) (string, error) {
 }
 
 func isAllowedVetFailure(out string) bool {
+	// Fragments that on their own pin the failure to the test
+	// environment's missing cgo / native BAML libraries. A syntax or
+	// type error in the patched serde package surfaces under a
+	// different shape and is re-raised as a real failure.
 	allowedFragments := []string{
 		"package cffi",
 		"build constraints exclude all Go files",
@@ -432,12 +446,24 @@ func isAllowedVetFailure(out string) bool {
 		"libbaml",
 		"baml_cffi_wrapper.h",
 		"language_client_go/baml_go/lib_",
-		"could not import",
 		"no Go files",
 	}
 	for _, f := range allowedFragments {
 		if strings.Contains(out, f) {
 			return true
+		}
+	}
+	// `could not import` is too generic on its own — a real
+	// type-check error in the patched serde package surfaces with
+	// that prefix as well. Accept it only when paired with a
+	// fragment that pins the failure to the cgo / native-library
+	// boundary the test harness cannot satisfy. A standalone
+	// `could not import` surfaces as a real failure.
+	if strings.Contains(out, "could not import") {
+		for _, paired := range []string{"cgo", "C source", "libbaml", "lib_baml", "_cgo_", "baml_cffi"} {
+			if strings.Contains(out, paired) {
+				return true
+			}
 		}
 	}
 	return false
@@ -690,9 +716,11 @@ func TestPatchDecodeUnionValueIsSinglePatternBranch(t *testing.T) {
 				"}\n",
 			mustContain: []string{
 				"\tif isOptionalPattern {\n",
-				"\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n",
-				"\t\t\treturn reflect.ValueOf(nil)\n",
-				"\t\treturn reflect.ValueOf(decoded)\n",
+				"\t\tif isOrderableSinglePattern(valueUnion.Value, typeMap) {\n",
+				"\t\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n",
+				"\t\t\t\treturn reflect.ValueOf(nil)\n",
+				"\t\t\treturn reflect.ValueOf(decoded)\n",
+				"\t\treturn Decode(valueUnion.Value, typeMap)\n",
 			},
 			mustNotContain: []string{
 				"return Decode(value, typeMap)",
@@ -719,13 +747,18 @@ func TestPatchDecodeUnionValueIsSinglePatternBranch(t *testing.T) {
 				"}\n",
 			mustContain: []string{
 				"\t\t} else if valueUnion.IsSinglePattern {\n",
-				"\t\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n",
-				"\t\t\t\treturn reflect.ValueOf(nil), nil\n",
-				"\t\t\trv := reflect.ValueOf(decoded)\n",
-				"\t\t\treturn rv, rv.Type()\n",
+				"\t\t\tif isOrderableSinglePattern(valueUnion.Value, typeMap) {\n",
+				"\t\t\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n",
+				"\t\t\t\t\treturn reflect.ValueOf(nil), nil\n",
+				"\t\t\t\trv := reflect.ValueOf(decoded)\n",
+				"\t\t\t\treturn rv, rv.Type()\n",
+				"\t\t\treturn Decode(valueUnion.Value, typeMap)\n",
 			},
 			mustNotContain: []string{
-				"return Decode(valueUnion.Value, typeMap)",
+				// The pre-patch one-line shape — the new template wraps
+				// the fallback Decode inside the dispatch's else arm, so
+				// the unadorned discriminator line must be gone.
+				"// For optional patterns (T | null), decode the inner value directly",
 			},
 		},
 		{
@@ -745,12 +778,14 @@ func TestPatchDecodeUnionValueIsSinglePatternBranch(t *testing.T) {
 				"}\n",
 			mustContain: []string{
 				"\t\t} else if valueUnion.IsSinglePattern {\n",
-				"\t\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n",
-				"\t\t\trv := reflect.ValueOf(decoded)\n",
-				"\t\t\treturn rv, rv.Type()\n",
+				"\t\t\tif isOrderableSinglePattern(valueUnion.Value, typeMap) {\n",
+				"\t\t\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n",
+				"\t\t\t\trv := reflect.ValueOf(decoded)\n",
+				"\t\t\t\treturn rv, rv.Type()\n",
+				"\t\t\treturn Decode(valueUnion.Value, typeMap)\n",
 			},
 			mustNotContain: []string{
-				"return Decode(valueUnion.Value, typeMap)",
+				"// reworded: drop union-ness for optional shape",
 				"// For optional patterns (T | null), decode the inner value directly",
 			},
 		},
@@ -824,4 +859,145 @@ func TestPatchDecodeUnionValueIsSinglePatternBranch_FailClosed(t *testing.T) {
 			t.Errorf("error %q should name family %s", err, familyC)
 		}
 	})
+}
+
+// TestPatchDecodeGo_PartiallyPatchedTreeIsCompleted pins the
+// idempotency contract patchDecodeGo must satisfy when
+// preparePatchedBamlModuleDir hands back a cached
+// .baml_patched_modules tree that an earlier hack revision left in a
+// partially-patched state — specifically, the DynamicClass struct
+// field has already been switched to OrderedFields but the
+// IsSinglePattern dispatch never landed. The previous sentinel
+// short-circuited on the first marker alone, so the dispatch step was
+// silently skipped on cache reuse. The tightened sentinel keeps
+// looking until both markers are present, and each step is robust
+// enough to complete the patch on a partially-applied tree.
+func TestPatchDecodeGo_PartiallyPatchedTreeIsCompleted(t *testing.T) {
+	tmp := t.TempDir()
+	moduleDir := filepath.Join(tmp, "baml")
+	serdeDir := filepath.Join(moduleDir, "engine", "language_client_go", "baml_go", "serde")
+	if err := os.MkdirAll(serdeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Synthetic v0.219+ shaped decode.go where the DynamicClass field
+	// is already in its post-patch form and a stale (pre-dispatch)
+	// IsSinglePattern after-image is in place. The DecodeToOrderedValue
+	// helper is already appended; the new isOrderableSinglePattern
+	// helper is missing. This mirrors what a cached patched-module
+	// tree looks like after an earlier hack run on a previous commit.
+	partial := `package serde
+
+import (
+	"reflect"
+
+	"github.com/example/fake-baml/engine/language_client_go/pkg/cffi"
+)
+
+type DynamicClass struct {
+	Name   string
+	Fields OrderedFields
+}
+
+func (d *DynamicClass) Decode(holder *cffi.CFFIValueClass, typeMap TypeMap) {
+	d.Name = string(holder.Name.Name)
+	d.Fields = NewOrderedFields(len(holder.Fields))
+	for _, field := range holder.Fields {
+		_ = d.Fields.Set(field.Key, DecodeToOrderedValue(field.Value, typeMap))
+	}
+}
+
+type DynamicUnion struct {
+	Variant string
+	Value   any
+}
+
+func (d *DynamicUnion) Decode(holder *cffi.CFFIValueUnionVariant, typeMap TypeMap) {
+	d.Variant = string(holder.ValueOptionName)
+	d.Value = DecodeToOrderedValue(holder.Value, typeMap)
+}
+
+func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (reflect.Value, reflect.Type) {
+	value, goType := func() (reflect.Value, reflect.Type) {
+		if ok := valueUnion.Value.GetNullValue(); ok != nil {
+			return reflect.ValueOf(nil), nil
+		} else if valueUnion.IsSinglePattern {
+			decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)
+			if decoded == nil {
+				return reflect.ValueOf(nil), nil
+			}
+			rv := reflect.ValueOf(decoded)
+			return rv, rv.Type()
+		} else {
+			dynamicUnion := DynamicUnion{
+				Variant: valueUnion.Name.Name,
+				Value:   DecodeToOrderedValue(valueUnion.Value, typeMap),
+			}
+			value := reflect.ValueOf(dynamicUnion)
+			goType = reflect.TypeOf(DynamicUnion{})
+			return value, goType
+		}
+	}()
+	return value, goType
+}
+
+func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
+	return nil
+}
+`
+	if err := os.WriteFile(filepath.Join(serdeDir, "decode.go"), []byte(partial), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Run the focused step under test. patchDecodeGo is the function
+	// whose sentinel determines whether to skip a cached tree.
+	if err := patchDecodeGo(moduleDir, familyC); err != nil {
+		t.Fatalf("patchDecodeGo on partially-patched tree: %v", err)
+	}
+
+	patched, err := os.ReadFile(filepath.Join(serdeDir, "decode.go"))
+	if err != nil {
+		t.Fatalf("read patched: %v", err)
+	}
+	body := string(patched)
+
+	// Postcondition: the dispatch helper and its call site landed —
+	// the partially-patched tree was completed, not skipped.
+	if !strings.Contains(body, "if isOrderableSinglePattern(valueUnion.Value, typeMap)") {
+		t.Fatalf("partially-patched tree was not completed: IsSinglePattern dispatch missing\n%s", body)
+	}
+	if !strings.Contains(body, "func isOrderableSinglePattern(") {
+		t.Fatalf("partially-patched tree was not completed: isOrderableSinglePattern helper missing\n%s", body)
+	}
+
+	// And the prior in-place markers (DynamicClass.Fields, the union
+	// dynamic branch's ordered routing) remain — the re-pass converged
+	// without unwinding them.
+	if !strings.Contains(body, "Fields OrderedFields") {
+		t.Fatalf("re-pass over partially-patched tree wiped the OrderedFields struct field\n%s", body)
+	}
+	if !strings.Contains(body, "Value:   DecodeToOrderedValue(valueUnion.Value, typeMap),") {
+		t.Fatalf("re-pass over partially-patched tree wiped the dynamic-union ordered routing\n%s", body)
+	}
+
+	// No duplicate DecodeToOrderedValue declarations — the append
+	// step skipped when the function name was already present.
+	if got := strings.Count(body, "func DecodeToOrderedValue("); got != 1 {
+		t.Fatalf("expected exactly 1 DecodeToOrderedValue declaration after re-pass; got %d\n%s", got, body)
+	}
+	if got := strings.Count(body, "func isOrderableSinglePattern("); got != 1 {
+		t.Fatalf("expected exactly 1 isOrderableSinglePattern declaration after re-pass; got %d\n%s", got, body)
+	}
+
+	// A second re-pass over the now-fully-patched tree must be a no-op:
+	// the tightened sentinel sees both markers and skips before any
+	// per-step rewrite runs.
+	before, _ := os.ReadFile(filepath.Join(serdeDir, "decode.go"))
+	if err := patchDecodeGo(moduleDir, familyC); err != nil {
+		t.Fatalf("patchDecodeGo on fully-patched tree: %v", err)
+	}
+	after, _ := os.ReadFile(filepath.Join(serdeDir, "decode.go"))
+	if string(before) != string(after) {
+		t.Fatalf("second pass over fully-patched tree mutated decode.go")
+	}
 }

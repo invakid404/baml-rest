@@ -312,18 +312,32 @@ func patchDecodeGo(moduleDir string, family decodeFamily) error {
 	}
 	body := string(raw)
 
-	if strings.Contains(body, "Fields OrderedFields") {
+	// Strict sentinel: only short-circuit when both the struct-field
+	// rewrite AND the IsSinglePattern dispatch helper landed. A cached
+	// patched-module tree from an earlier hack revision can satisfy
+	// only the first condition; without the helper marker, the strict
+	// check forces a re-pass so the new dispatch wires in. Each step
+	// below handles its already-patched state idempotently, so a
+	// re-pass over a fully or partially patched tree converges without
+	// double-applying.
+	if strings.Contains(body, "Fields OrderedFields") && strings.Contains(body, "func isOrderableSinglePattern(") {
 		return nil
 	}
 
 	// 1. Replace the DynamicClass struct field type. BAML's upstream
 	// source uses a single space; gofmt's tab-aligned struct field
-	// layout in patched copies uses a tab. Match either.
+	// layout in patched copies uses a tab. Match either. When the
+	// declaration is already in its post-patch shape (cached patched
+	// tree), the no-match branch falls through silently so the rest
+	// of the rewrite can update the file in place.
 	patched, ok := replaceFirstFieldDecl(body)
 	if !ok {
-		return fmt.Errorf("could not find a `Fields map[string]any` declaration in %s; BAML serde shape may have changed", path)
+		if !strings.Contains(body, "Fields OrderedFields") {
+			return fmt.Errorf("could not find a `Fields map[string]any` declaration in %s; BAML serde shape may have changed", path)
+		}
+	} else {
+		body = patched
 	}
-	body = patched
 
 	// 2. Replace the DynamicClass.Decode body. The function body is
 	// rewritten wholesale because each family has different scalar
@@ -379,8 +393,17 @@ func patchDecodeGo(moduleDir string, family decodeFamily) error {
 	}
 	body = patched
 
-	// 6. Append the family-specific DecodeToOrderedValue helper.
-	body = strings.TrimRight(body, "\n") + "\n\n" + decodeToOrderedValueFunc(family) + "\n"
+	// 6. Append the family-specific DecodeToOrderedValue helper and the
+	// isOrderableSinglePattern kind-dispatch helper. Each append is
+	// idempotent: skip when the function name is already present so a
+	// re-run over a cached patched tree does not stack duplicate
+	// declarations at end-of-file.
+	if !strings.Contains(body, "func DecodeToOrderedValue(") {
+		body = strings.TrimRight(body, "\n") + "\n\n" + decodeToOrderedValueFunc(family) + "\n"
+	}
+	if !strings.Contains(body, "func isOrderableSinglePattern(") {
+		body = strings.TrimRight(body, "\n") + "\n\n" + isOrderableSinglePatternFunc(family) + "\n"
+	}
 
 	return os.WriteFile(path, []byte(body), 0o644)
 }
@@ -558,6 +581,13 @@ func patchDecodeUnionValueDynamicBranch(body string, family decodeFamily) (strin
 
 	startMatches := spec.startRe.FindAllStringSubmatchIndex(body, -1)
 	if len(startMatches) == 0 {
+		// Idempotency: a cached patched-module tree already carries the
+		// after-image. The struct-literal marker only appears in this
+		// branch's after-image, never in the IsSinglePattern branch, so
+		// it pins "this branch was patched" without false-positives.
+		if strings.Contains(body, "Value:   DecodeToOrderedValue(valueUnion.Value, typeMap),") {
+			return body, nil
+		}
 		return body, fmt.Errorf("could not locate decodeUnionValue dynamic-branch start anchor for family %s", family)
 	}
 	if len(startMatches) > 1 {
@@ -594,7 +624,15 @@ type decodeUnionBranchSpec struct {
 	startRe       *regexp.Regexp
 	endRe         *regexp.Regexp
 	discriminator string
-	afterTemplate string
+	// discriminatorAlts holds additional acceptable substrings that
+	// also pin the spec to its branch. Used by the IsSinglePattern
+	// patcher so a cached patched-module tree carrying a stale
+	// post-patch shape (commit-era 6f8464e50: unconditional ordered
+	// routing) can be recognised and rewritten in-place. Empty for
+	// the dynamic-branch patcher where the discriminator alone is
+	// authoritative.
+	discriminatorAlts []string
+	afterTemplate     string
 }
 
 func decodeUnionValueBranchSpec(family decodeFamily) (decodeUnionBranchSpec, bool) {
@@ -674,6 +712,15 @@ func patchDecodeUnionValueIsSinglePatternBranch(body string, family decodeFamily
 		return body, fmt.Errorf("no decodeUnionValue IsSinglePattern-branch spec for family %s", family)
 	}
 
+	// Idempotency: the dispatch line `if isOrderableSinglePattern(...)`
+	// is unique to this branch's after-image. When it is present the
+	// branch has already been rewritten and the regex match below
+	// would otherwise re-replace the post-patch span with itself,
+	// which is safe but wastes work and obscures unexpected drift.
+	if strings.Contains(body, "if isOrderableSinglePattern(valueUnion.Value, typeMap)") {
+		return body, nil
+	}
+
 	startMatches := spec.startRe.FindAllStringSubmatchIndex(body, -1)
 	if len(startMatches) == 0 {
 		return body, fmt.Errorf("could not locate decodeUnionValue IsSinglePattern-branch start anchor for family %s", family)
@@ -691,12 +738,30 @@ func patchDecodeUnionValueIsSinglePatternBranch(body string, family decodeFamily
 	spanEnd := start[1] + endLoc[1]
 
 	middle := body[start[0]:spanEnd]
-	if !strings.Contains(middle, spec.discriminator) {
+	if !discriminatorMatches(middle, spec) {
 		return body, fmt.Errorf("decodeUnionValue IsSinglePattern-branch discriminator %q missing between anchors for family %s", spec.discriminator, family)
 	}
 
 	afterImage := strings.ReplaceAll(spec.afterTemplate, "{I}", indent)
 	return body[:start[0]] + afterImage + body[spanEnd:], nil
+}
+
+// discriminatorMatches reports whether the candidate span carries the
+// spec's primary discriminator or any of its alternates. The
+// alternates list is empty for branch specs whose pre-patch shape is
+// the only acceptable form; the IsSinglePattern spec lists the stale
+// post-patch action line so a re-run over a cached patched-module
+// tree can recognise the prior broken patch as a recoverable state.
+func discriminatorMatches(span string, spec decodeUnionBranchSpec) bool {
+	if strings.Contains(span, spec.discriminator) {
+		return true
+	}
+	for _, alt := range spec.discriminatorAlts {
+		if strings.Contains(span, alt) {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeUnionIsSinglePatternBranchSpecs holds per-family token anchors
@@ -711,44 +776,70 @@ func patchDecodeUnionValueIsSinglePatternBranch(body string, family decodeFamily
 //     `IsSinglePattern` reference elsewhere.
 //
 // The after-image keeps the branch's opening line intact and rewrites
-// only its body: invoke DecodeToOrderedValue on the inner holder, fold
-// a nil result back to the family's zero/null return, and wrap the
-// decoded `any` back into the family's return arity via reflect.
+// only its body to dispatch on the inner CFFI holder kind. Lists,
+// scalars, unions, and statically-typed maps stay on the plain Decode
+// pipeline so the generated client receives the concrete element /
+// value types its static fields assert against (e.g. `*[]string` for
+// an `optional(list<string>)` field). Dynamic class values and
+// dynamic-value maps route through DecodeToOrderedValue so OrderedFields
+// propagates up. The kind discriminator lives in the appended helper
+// `isOrderableSinglePattern` so the branch body stays narrow.
 var decodeUnionIsSinglePatternBranchSpecs = map[decodeFamily]decodeUnionBranchSpec{
 	familyA: {
-		startRe:       regexp.MustCompile(`(?m)^([ \t]+)if isOptionalPattern \{[ \t]*$`),
-		endRe:         regexp.MustCompile(`(?m)^[ \t]+return Decode\(value, typeMap\)[ \t]*\n`),
-		discriminator: "value := valueUnion.Value",
+		startRe: regexp.MustCompile(`(?m)^([ \t]+)if isOptionalPattern \{[ \t]*$`),
+		// Accept either the pre-patch end line or the stale post-patch
+		// end line so a cached patched tree from a prior hack revision
+		// is also rewritten in place.
+		endRe:             regexp.MustCompile(`(?m)^[ \t]+return (?:Decode\(value, typeMap\)|reflect\.ValueOf\(decoded\))[ \t]*\n`),
+		discriminator:     "value := valueUnion.Value",
+		discriminatorAlts: []string{"decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)"},
 		afterTemplate: "{I}if isOptionalPattern {\n" +
-			"{I}\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n" +
-			"{I}\tif decoded == nil {\n" +
-			"{I}\t\treturn reflect.ValueOf(nil)\n" +
+			"{I}\tif isOrderableSinglePattern(valueUnion.Value, typeMap) {\n" +
+			"{I}\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n" +
+			"{I}\t\tif decoded == nil {\n" +
+			"{I}\t\t\treturn reflect.ValueOf(nil)\n" +
+			"{I}\t\t}\n" +
+			"{I}\t\treturn reflect.ValueOf(decoded)\n" +
 			"{I}\t}\n" +
-			"{I}\treturn reflect.ValueOf(decoded)\n",
+			"{I}\treturn Decode(valueUnion.Value, typeMap)\n",
 	},
 	familyB: {
-		startRe:       regexp.MustCompile(`(?m)^([ \t]+)\} else if valueUnion\.IsSinglePattern \{[ \t]*$`),
-		endRe:         regexp.MustCompile(`(?m)^[ \t]+return Decode\(valueUnion\.Value, typeMap\)[ \t]*\n`),
-		discriminator: "Decode(valueUnion.Value, typeMap)",
+		startRe: regexp.MustCompile(`(?m)^([ \t]+)\} else if valueUnion\.IsSinglePattern \{[ \t]*$`),
+		// Accept either the pre-patch end line or the stale post-patch
+		// end line so a cached patched tree from a prior hack revision
+		// is also rewritten in place.
+		endRe:             regexp.MustCompile(`(?m)^[ \t]+return (?:Decode\(valueUnion\.Value, typeMap\)|rv, rv\.Type\(\))[ \t]*\n`),
+		discriminator:     "Decode(valueUnion.Value, typeMap)",
+		discriminatorAlts: []string{"decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)"},
 		afterTemplate: "{I}} else if valueUnion.IsSinglePattern {\n" +
-			"{I}\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n" +
-			"{I}\tif decoded == nil {\n" +
-			"{I}\t\treturn reflect.ValueOf(nil), nil\n" +
+			"{I}\tif isOrderableSinglePattern(valueUnion.Value, typeMap) {\n" +
+			"{I}\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n" +
+			"{I}\t\tif decoded == nil {\n" +
+			"{I}\t\t\treturn reflect.ValueOf(nil), nil\n" +
+			"{I}\t\t}\n" +
+			"{I}\t\trv := reflect.ValueOf(decoded)\n" +
+			"{I}\t\treturn rv, rv.Type()\n" +
 			"{I}\t}\n" +
-			"{I}\trv := reflect.ValueOf(decoded)\n" +
-			"{I}\treturn rv, rv.Type()\n",
+			"{I}\treturn Decode(valueUnion.Value, typeMap)\n",
 	},
 	familyC: {
-		startRe:       regexp.MustCompile(`(?m)^([ \t]+)\} else if valueUnion\.IsSinglePattern \{[ \t]*$`),
-		endRe:         regexp.MustCompile(`(?m)^[ \t]+return Decode\(valueUnion\.Value, typeMap\)[ \t]*\n`),
-		discriminator: "Decode(valueUnion.Value, typeMap)",
+		startRe: regexp.MustCompile(`(?m)^([ \t]+)\} else if valueUnion\.IsSinglePattern \{[ \t]*$`),
+		// Accept either the pre-patch end line or the stale post-patch
+		// end line so a cached patched tree from a prior hack revision
+		// is also rewritten in place.
+		endRe:             regexp.MustCompile(`(?m)^[ \t]+return (?:Decode\(valueUnion\.Value, typeMap\)|rv, rv\.Type\(\))[ \t]*\n`),
+		discriminator:     "Decode(valueUnion.Value, typeMap)",
+		discriminatorAlts: []string{"decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)"},
 		afterTemplate: "{I}} else if valueUnion.IsSinglePattern {\n" +
-			"{I}\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n" +
-			"{I}\tif decoded == nil {\n" +
-			"{I}\t\treturn reflect.ValueOf(nil), nil\n" +
+			"{I}\tif isOrderableSinglePattern(valueUnion.Value, typeMap) {\n" +
+			"{I}\t\tdecoded := DecodeToOrderedValue(valueUnion.Value, typeMap)\n" +
+			"{I}\t\tif decoded == nil {\n" +
+			"{I}\t\t\treturn reflect.ValueOf(nil), nil\n" +
+			"{I}\t\t}\n" +
+			"{I}\t\trv := reflect.ValueOf(decoded)\n" +
+			"{I}\t\treturn rv, rv.Type()\n" +
 			"{I}\t}\n" +
-			"{I}\trv := reflect.ValueOf(decoded)\n" +
-			"{I}\treturn rv, rv.Type()\n",
+			"{I}\treturn Decode(valueUnion.Value, typeMap)\n",
 	},
 }
 
@@ -915,6 +1006,70 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 		}
 	}
 }`
+	default:
+		return ""
+	}
+}
+
+// isOrderableSinglePatternFunc emits the kind-discriminator helper the
+// IsSinglePattern after-image dispatches against. The helper returns
+// true only for shapes where plain Decode would lose key order: a CFFI
+// class value (whose decodeClassValue path produces DynamicClass with
+// OrderedFields for the dynamic case and a typed struct for the
+// static case; either way the resulting reflect.Value is shape-
+// compatible with the static field) and a CFFI map value whose value
+// type resolves to the runtime's INTERNAL.nil sentinel (an untyped
+// dynamic-value map, which decodeMapValue would otherwise flatten into
+// a plain Go map[string]any). Lists, scalars, enums, nested unions,
+// and statically-typed maps return false so plain Decode hands back a
+// concretely typed reflect.Value the optional wrapper can Set into
+// `reflect.New(pointerToConcrete)`.
+//
+// The TypeMap surface differs between families: v0.204 and v0.215 use
+// `type TypeMap map[string]reflect.Type` (direct index for the
+// INTERNAL.nil lookup), while v0.219+ wraps the map in a struct with
+// an unexported `typeMap` field. The helper is rendered per-family so
+// the access form matches the family's TypeMap shape; the body is
+// otherwise identical across families.
+func isOrderableSinglePatternFunc(family decodeFamily) string {
+	const body = `// isOrderableSinglePattern reports whether decodeUnionValue's
+// optional / single-pattern branch should route the inner CFFI
+// holder through DecodeToOrderedValue. The branch is shared by
+// static fields like ` + "`optional(list<string>)`" + ` that need a
+// concretely typed reflect.Value out of Decode and dynamic
+// fields like ` + "`optional(map<string, dynamic>)`" + ` that need
+// OrderedFields to preserve CFFI key order. Returning true here
+// commits the caller to the ordered pipeline; returning false
+// keeps the value on the plain Decode pipeline. Lists, scalars,
+// enums, nested unions, and statically-typed maps all return
+// false so the IsOptional wrapper can ` + "`Set(value)`" + ` into a
+// ` + "`reflect.New(concreteGoType)`" + ` without a type-assertion
+// mismatch.
+func isOrderableSinglePattern(holder *cffi.CFFIValueHolder, typeMap TypeMap) bool {
+	if holder == nil {
+		return false
+	}
+	switch v := holder.Value.(type) {
+	case *cffi.CFFIValueHolder_ClassValue:
+		return v.ClassValue != nil
+	case *cffi.CFFIValueHolder_MapValue:
+		if v.MapValue == nil {
+			return false
+		}
+		nilType, ok := %s["INTERNAL.nil"]
+		if !ok {
+			return false
+		}
+		return convertFieldTypeToGoType(v.MapValue.ValueType, typeMap) == nilType
+	default:
+		return false
+	}
+}`
+	switch family {
+	case familyA, familyB:
+		return fmt.Sprintf(body, "typeMap")
+	case familyC:
+		return fmt.Sprintf(body, "typeMap.typeMap")
 	default:
 		return ""
 	}

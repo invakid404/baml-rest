@@ -43,3 +43,10 @@ codegen/testdata
 # infrastructure for the property fuzzer, not a customer-build
 # input — keep the source out of the production embed bundle.
 codegen/bamlfuzz
+
+# Working notes used during in-flight feature scoping. The directory
+# is untracked in git and only appears in some local workspaces; it
+# carries no runtime semantics for the server. Excluding it keeps a
+# fresh checkout's cmd/embed output deterministic regardless of
+# whether the operator has session notes on disk.
+notes

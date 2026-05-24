@@ -211,24 +211,22 @@ func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (
 			// If the union value is null, return nil
 			return reflect.ValueOf(nil), nil
 		} else if valueUnion.IsSinglePattern {
-			decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)
-			if decoded == nil {
-				return reflect.ValueOf(nil), nil
+			if isOrderableSinglePattern(valueUnion.Value, typeMap) {
+				decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)
+				if decoded == nil {
+					return reflect.ValueOf(nil), nil
+				}
+				rv := reflect.ValueOf(decoded)
+				return rv, rv.Type()
 			}
-			rv := reflect.ValueOf(decoded)
-			return rv, rv.Type()
+			return Decode(valueUnion.Value, typeMap)
 		} else {
 			goType, ok := typeMap.GetType(valueUnion.Name)
 			if !ok {
 				// Union not found
 				// This is a fully dynamic union, so we
 				// decode the value as the value and drop
-				// union type information; route the nested value
-				// through DecodeToOrderedValue so a CFFI map or class
-				// inside the union preserves key order, and so the
-				// scalar fast-path inside DecodeToOrderedValue covers
-				// the int64/float64/bool cases the unpatched switch
-				// used to handle here.
+				// union type information
 				dynamicUnion := DynamicUnion{
 					Variant: valueUnion.Name.Name,
 					Value:   DecodeToOrderedValue(valueUnion.Value, typeMap),
@@ -644,5 +642,39 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 		default:
 			return decoded.Interface()
 		}
+	}
+}
+
+// isOrderableSinglePattern reports whether decodeUnionValue's
+// optional / single-pattern branch should route the inner CFFI
+// holder through DecodeToOrderedValue. The branch is shared by
+// static fields like `optional(list<string>)` that need a
+// concretely typed reflect.Value out of Decode and dynamic
+// fields like `optional(map<string, dynamic>)` that need
+// OrderedFields to preserve CFFI key order. Returning true here
+// commits the caller to the ordered pipeline; returning false
+// keeps the value on the plain Decode pipeline. Lists, scalars,
+// enums, nested unions, and statically-typed maps all return
+// false so the IsOptional wrapper can `Set(value)` into a
+// `reflect.New(concreteGoType)` without a type-assertion
+// mismatch.
+func isOrderableSinglePattern(holder *cffi.CFFIValueHolder, typeMap TypeMap) bool {
+	if holder == nil {
+		return false
+	}
+	switch v := holder.Value.(type) {
+	case *cffi.CFFIValueHolder_ClassValue:
+		return v.ClassValue != nil
+	case *cffi.CFFIValueHolder_MapValue:
+		if v.MapValue == nil {
+			return false
+		}
+		nilType, ok := typeMap.typeMap["INTERNAL.nil"]
+		if !ok {
+			return false
+		}
+		return convertFieldTypeToGoType(v.MapValue.ValueType, typeMap) == nilType
+	default:
+		return false
 	}
 }
