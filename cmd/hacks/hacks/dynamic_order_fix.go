@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -530,123 +531,119 @@ func dynamicUnionDecodePatched(family decodeFamily) string {
 // flattened into a plain Go map via the standard decode path before the
 // generated client wraps the result, dropping insertion order — the
 // scope D2 requirement that union nested values use the ordered
-// decoder is then violated. The pre-image text matches the upstream
-// BAML serde shape per family; an unrecognised shape fails closed so
-// future drift is loud.
+// decoder is then violated.
+//
+// The branch is located by per-family code-token anchors rather than a
+// byte-exact comment+whitespace pre-image: a unique start-of-span line,
+// a discriminator that must appear between the anchors, and an end-of-
+// span line. Only the matched code span is replaced; preceding comments
+// are left intact so upstream comment rewording, blank-line drift, and
+// indentation drift within a known family no longer fail the patch.
+// Unrecognised shapes still fail closed: missing anchors, an ambiguous
+// start, or a missing discriminator each return an error naming the
+// family.
 func patchDecodeUnionValueDynamicBranch(body string, family decodeFamily) (string, error) {
-	before, after, ok := decodeUnionValueDynamicBranchStrings(family)
+	spec, ok := decodeUnionValueBranchSpec(family)
 	if !ok {
-		return body, fmt.Errorf("no decodeUnionValue dynamic-branch template for family %s", family)
+		return body, fmt.Errorf("no decodeUnionValue dynamic-branch spec for family %s", family)
 	}
-	idx := strings.Index(body, before)
-	if idx < 0 {
-		return body, fmt.Errorf("could not locate decodeUnionValue dynamic branch for family %s", family)
+
+	startMatches := spec.startRe.FindAllStringSubmatchIndex(body, -1)
+	if len(startMatches) == 0 {
+		return body, fmt.Errorf("could not locate decodeUnionValue dynamic-branch start anchor for family %s", family)
 	}
-	if strings.Index(body[idx+1:], before) >= 0 {
-		return body, fmt.Errorf("decodeUnionValue dynamic branch pre-image is not unique for family %s", family)
+	if len(startMatches) > 1 {
+		return body, fmt.Errorf("decodeUnionValue dynamic-branch start anchor matched %d times for family %s; expected exactly 1", len(startMatches), family)
 	}
-	return body[:idx] + after + body[idx+len(before):], nil
+	start := startMatches[0]
+	indent := body[start[2]:start[3]]
+
+	endLoc := spec.endRe.FindStringIndex(body[start[1]:])
+	if endLoc == nil {
+		return body, fmt.Errorf("could not locate decodeUnionValue dynamic-branch end anchor for family %s after start anchor", family)
+	}
+	spanEnd := start[1] + endLoc[1]
+
+	middle := body[start[0]:spanEnd]
+	if !strings.Contains(middle, spec.discriminator) {
+		return body, fmt.Errorf("decodeUnionValue dynamic-branch discriminator %q missing between anchors for family %s", spec.discriminator, family)
+	}
+
+	afterImage := strings.ReplaceAll(spec.afterTemplate, "{I}", indent)
+	return body[:start[0]] + afterImage + body[spanEnd:], nil
 }
 
-// decodeUnionValueDynamicBranchStrings returns the (pre-image, post-image)
-// pair the surgical patch in patchDecodeUnionValueDynamicBranch
-// rewrites for each BAML serde family. Whitespace mirrors the upstream
-// gofmt output (tabs throughout); the import-rewrite step that produces
-// the patched fork preserves these positions verbatim.
-func decodeUnionValueDynamicBranchStrings(family decodeFamily) (string, string, bool) {
-	switch family {
-	case familyA:
-		before := "\t\t// Union not found\n" +
-			"\t\t// This is a fully dynamic union, so we\n" +
-			"\t\t// decode the value as the value and drop\n" +
-			"\t\t// union type information\n" +
-			"\t\tdynamicUnion := DynamicUnion{\n" +
-			"\t\t\tVariant: unionName,\n" +
-			"\t\t\tValue:   Decode(valueUnion.Value, typeMap).Interface(),\n" +
-			"\t\t}\n" +
-			"\t\treturn reflect.ValueOf(dynamicUnion)\n"
-		after := "\t\t// Union not found\n" +
-			"\t\t// This is a fully dynamic union, so we\n" +
-			"\t\t// decode the value as the value and drop\n" +
-			"\t\t// union type information; route the nested value\n" +
-			"\t\t// through DecodeToOrderedValue so a CFFI map or class\n" +
-			"\t\t// inside the union preserves key order.\n" +
-			"\t\tdynamicUnion := DynamicUnion{\n" +
-			"\t\t\tVariant: unionName,\n" +
-			"\t\t\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n" +
-			"\t\t}\n" +
-			"\t\treturn reflect.ValueOf(dynamicUnion)\n"
-		return before, after, true
-	case familyB:
-		before := "\t\t\t\t// Union not found\n" +
-			"\t\t\t\t// This is a fully dynamic union, so we\n" +
-			"\t\t\t\t// decode the value as the value and drop\n" +
-			"\t\t\t\t// union type information\n" +
-			"\t\t\t\tvalue, _ := Decode(valueUnion.Value, typeMap)\n" +
-			"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
-			"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
-			"\t\t\t\t\tValue:   value.Elem(),\n" +
-			"\t\t\t\t}\n" +
-			"\t\t\t\tvalue = reflect.ValueOf(dynamicUnion)\n" +
-			"\t\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
-			"\t\t\t\treturn value, goType\n"
-		after := "\t\t\t\t// Union not found\n" +
-			"\t\t\t\t// This is a fully dynamic union, so we\n" +
-			"\t\t\t\t// decode the value as the value and drop\n" +
-			"\t\t\t\t// union type information; route the nested value\n" +
-			"\t\t\t\t// through DecodeToOrderedValue so a CFFI map or class\n" +
-			"\t\t\t\t// inside the union preserves key order.\n" +
-			"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
-			"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
-			"\t\t\t\t\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n" +
-			"\t\t\t\t}\n" +
-			"\t\t\t\tvalue := reflect.ValueOf(dynamicUnion)\n" +
-			"\t\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
-			"\t\t\t\treturn value, goType\n"
-		return before, after, true
-	case familyC:
-		before := "\t\t\t\t// Union not found\n" +
-			"\t\t\t\t// This is a fully dynamic union, so we\n" +
-			"\t\t\t\t// decode the value as the value and drop\n" +
-			"\t\t\t\t// union type information\n" +
-			"\t\t\t\tvalue, goType := Decode(valueUnion.Value, typeMap)\n" +
-			"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
-			"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
-			"\t\t\t\t}\n" +
-			"\n" +
-			"\t\t\t\tswitch goType {\n" +
-			"\t\t\t\tcase reflect.TypeOf(int64(0)):\n" +
-			"\t\t\t\t\tdynamicUnion.Value = value.Int()\n" +
-			"\t\t\t\tcase reflect.TypeOf(float64(0)):\n" +
-			"\t\t\t\t\tdynamicUnion.Value = value.Float()\n" +
-			"\t\t\t\tcase reflect.TypeOf(false):\n" +
-			"\t\t\t\t\tdynamicUnion.Value = value.Bool()\n" +
-			"\t\t\t\tdefault:\n" +
-			"\t\t\t\t\tdynamicUnion.Value = value.Interface()\n" +
-			"\t\t\t\t}\n" +
-			"\t\t\t\tvalue = reflect.ValueOf(dynamicUnion)\n" +
-			"\t\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
-			"\t\t\t\treturn value, goType\n"
-		after := "\t\t\t\t// Union not found\n" +
-			"\t\t\t\t// This is a fully dynamic union, so we\n" +
-			"\t\t\t\t// decode the value as the value and drop\n" +
-			"\t\t\t\t// union type information; route the nested value\n" +
-			"\t\t\t\t// through DecodeToOrderedValue so a CFFI map or class\n" +
-			"\t\t\t\t// inside the union preserves key order, and so the\n" +
-			"\t\t\t\t// scalar fast-path inside DecodeToOrderedValue covers\n" +
-			"\t\t\t\t// the int64/float64/bool cases the unpatched switch\n" +
-			"\t\t\t\t// used to handle here.\n" +
-			"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
-			"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
-			"\t\t\t\t\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n" +
-			"\t\t\t\t}\n" +
-			"\t\t\t\tvalue := reflect.ValueOf(dynamicUnion)\n" +
-			"\t\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
-			"\t\t\t\treturn value, goType\n"
-		return before, after, true
-	default:
-		return "", "", false
-	}
+// decodeUnionBranchSpec describes how to locate and rewrite the
+// unknown-union code span for a single BAML serde family. startRe must
+// match exactly once in the file and capture the leading whitespace as
+// group 1. endRe is searched only after the start match and locates the
+// last line of the span (consumes its trailing newline). discriminator
+// is a substring expected to occur between the anchors; its absence
+// flags a shape the spec was not designed for. afterTemplate is the
+// replacement, with "{I}" placeholders for the leading indentation
+// captured from the start match.
+type decodeUnionBranchSpec struct {
+	startRe       *regexp.Regexp
+	endRe         *regexp.Regexp
+	discriminator string
+	afterTemplate string
+}
+
+func decodeUnionValueBranchSpec(family decodeFamily) (decodeUnionBranchSpec, bool) {
+	spec, ok := decodeUnionBranchSpecs[family]
+	return spec, ok
+}
+
+// decodeUnionBranchSpecs holds the per-family token anchors and
+// after-image templates. The startRe regexes anchor on the first
+// distinctive line of the dynamic-union branch:
+//
+//   - familyA: `dynamicUnion := DynamicUnion{` — the discriminator
+//     `Decode(valueUnion.Value, typeMap).Interface()` then pins this as
+//     the v0.204 shape rather than a hypothetical reuse elsewhere.
+//   - familyB: `value, _ := Decode(valueUnion.Value, typeMap)` —
+//     paired with the `value.Elem()` discriminator.
+//   - familyC: `value, goType := Decode(valueUnion.Value, typeMap)` —
+//     paired with the scalar `switch goType` discriminator.
+//
+// endRe locates the trailing line of the span (the family's final
+// `return`), consuming its newline so the after-image substitution
+// preserves the surrounding line layout.
+var decodeUnionBranchSpecs = map[decodeFamily]decodeUnionBranchSpec{
+	familyA: {
+		startRe:       regexp.MustCompile(`(?m)^([ \t]+)dynamicUnion := DynamicUnion\{[ \t]*$`),
+		endRe:         regexp.MustCompile(`(?m)^[ \t]+return reflect\.ValueOf\(dynamicUnion\)[ \t]*\n`),
+		discriminator: "Decode(valueUnion.Value, typeMap).Interface()",
+		afterTemplate: "{I}dynamicUnion := DynamicUnion{\n" +
+			"{I}\tVariant: unionName,\n" +
+			"{I}\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n" +
+			"{I}}\n" +
+			"{I}return reflect.ValueOf(dynamicUnion)\n",
+	},
+	familyB: {
+		startRe:       regexp.MustCompile(`(?m)^([ \t]+)value, _ := Decode\(valueUnion\.Value, typeMap\)[ \t]*$`),
+		endRe:         regexp.MustCompile(`(?m)^[ \t]+return value, goType[ \t]*\n`),
+		discriminator: "value.Elem()",
+		afterTemplate: "{I}dynamicUnion := DynamicUnion{\n" +
+			"{I}\tVariant: valueUnion.Name.Name,\n" +
+			"{I}\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n" +
+			"{I}}\n" +
+			"{I}value := reflect.ValueOf(dynamicUnion)\n" +
+			"{I}goType = reflect.TypeOf(DynamicUnion{})\n" +
+			"{I}return value, goType\n",
+	},
+	familyC: {
+		startRe:       regexp.MustCompile(`(?m)^([ \t]+)value, goType := Decode\(valueUnion\.Value, typeMap\)[ \t]*$`),
+		endRe:         regexp.MustCompile(`(?m)^[ \t]+return value, goType[ \t]*\n`),
+		discriminator: "switch goType",
+		afterTemplate: "{I}dynamicUnion := DynamicUnion{\n" +
+			"{I}\tVariant: valueUnion.Name.Name,\n" +
+			"{I}\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n" +
+			"{I}}\n" +
+			"{I}value := reflect.ValueOf(dynamicUnion)\n" +
+			"{I}goType = reflect.TypeOf(DynamicUnion{})\n" +
+			"{I}return value, goType\n",
+	},
 }
 
 // decodeToOrderedValueFunc emits the version-family-specific

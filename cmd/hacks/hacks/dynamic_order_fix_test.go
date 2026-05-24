@@ -419,3 +419,207 @@ func isAllowedVetFailure(out string) bool {
 	return false
 }
 
+// TestPatchDecodeUnionValueDynamicBranch_TolerantToDrift covers the
+// brittleness fix that motivated the token-anchored rewrite: comment
+// rewording, blank-line drift inside the branch, and reduced
+// indentation depth must all leave the patch operational. Each
+// synthetic fixture is a minimal slice of decodeUnionValue's body
+// containing only the dynamic-union branch and a small surrounding
+// signature; the patch is invoked directly so the test runs without
+// touching the module cache.
+func TestPatchDecodeUnionValueDynamicBranch_TolerantToDrift(t *testing.T) {
+	cases := []struct {
+		name           string
+		family         decodeFamily
+		source         string
+		mustContain    []string
+		mustNotContain []string
+	}{
+		{
+			name:   "familyA reworded comment plus extra blank line and shallower indent",
+			family: familyA,
+			// Indentation reduced from two tabs to one; the upstream
+			// "Union not found" header is replaced with a single
+			// reworded note; an extra blank line separates the comment
+			// from the struct literal.
+			source: "package serde\n\n" +
+				"func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) reflect.Value {\n" +
+				"\t// dynamic union path: type lookup miss, drop union info.\n" +
+				"\n" +
+				"\tdynamicUnion := DynamicUnion{\n" +
+				"\t\tVariant: unionName,\n" +
+				"\t\tValue:   Decode(valueUnion.Value, typeMap).Interface(),\n" +
+				"\t}\n" +
+				"\treturn reflect.ValueOf(dynamicUnion)\n" +
+				"}\n",
+			mustContain: []string{
+				"// dynamic union path: type lookup miss, drop union info.",
+				"\tdynamicUnion := DynamicUnion{\n",
+				"\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n",
+				"\treturn reflect.ValueOf(dynamicUnion)\n",
+			},
+			mustNotContain: []string{
+				"Decode(valueUnion.Value, typeMap).Interface()",
+				"// Union not found",
+			},
+		},
+		{
+			name:   "familyB reworded comment plus inserted blank line and shallower indent",
+			family: familyB,
+			// Indentation reduced from four tabs to three; comment block
+			// reworded entirely; an extra blank line is added inside the
+			// branch between the value-decode and the struct literal.
+			source: "package serde\n\n" +
+				"func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (reflect.Value, reflect.Type) {\n" +
+				"\tvalue, goType := func() (reflect.Value, reflect.Type) {\n" +
+				"\t\tif true {\n" +
+				"\t\t\t// (note) variant not in typeMap; fall through to dynamic.\n" +
+				"\n" +
+				"\t\t\tvalue, _ := Decode(valueUnion.Value, typeMap)\n" +
+				"\n" +
+				"\t\t\tdynamicUnion := DynamicUnion{\n" +
+				"\t\t\t\tVariant: valueUnion.Name.Name,\n" +
+				"\t\t\t\tValue:   value.Elem(),\n" +
+				"\t\t\t}\n" +
+				"\t\t\tvalue = reflect.ValueOf(dynamicUnion)\n" +
+				"\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
+				"\t\t\treturn value, goType\n" +
+				"\t\t}\n" +
+				"\t\treturn reflect.ValueOf(nil), nil\n" +
+				"\t}()\n" +
+				"\treturn value, goType\n" +
+				"}\n",
+			mustContain: []string{
+				"// (note) variant not in typeMap; fall through to dynamic.",
+				"\t\t\tdynamicUnion := DynamicUnion{\n",
+				"\t\t\t\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n",
+				"\t\t\tvalue := reflect.ValueOf(dynamicUnion)\n",
+			},
+			mustNotContain: []string{
+				"value, _ := Decode(valueUnion.Value, typeMap)",
+				"Value:   value.Elem(),",
+				"// Union not found",
+			},
+		},
+		{
+			name:   "familyC reworded comment plus blank-line drift inside scalar switch",
+			family: familyC,
+			// Indentation kept at four tabs but the upstream blank line
+			// between the struct literal and the scalar switch is
+			// removed, the comment is rewritten to a single shorter
+			// line, and an extra blank line is inserted inside the
+			// switch arms. The patch must still locate the span by
+			// distinctive code tokens and replace it cleanly.
+			source: "package serde\n\n" +
+				"func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (reflect.Value, reflect.Type) {\n" +
+				"\tvalue, goType := func() (reflect.Value, reflect.Type) {\n" +
+				"\t\tif true {\n" +
+				"\t\t\tif true {\n" +
+				"\t\t\t\t// fully dynamic; preserve scalar fast-path.\n" +
+				"\t\t\t\tvalue, goType := Decode(valueUnion.Value, typeMap)\n" +
+				"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
+				"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t\tswitch goType {\n" +
+				"\t\t\t\tcase reflect.TypeOf(int64(0)):\n" +
+				"\t\t\t\t\tdynamicUnion.Value = value.Int()\n" +
+				"\n" +
+				"\t\t\t\tcase reflect.TypeOf(float64(0)):\n" +
+				"\t\t\t\t\tdynamicUnion.Value = value.Float()\n" +
+				"\t\t\t\tcase reflect.TypeOf(false):\n" +
+				"\t\t\t\t\tdynamicUnion.Value = value.Bool()\n" +
+				"\t\t\t\tdefault:\n" +
+				"\t\t\t\t\tdynamicUnion.Value = value.Interface()\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t\tvalue = reflect.ValueOf(dynamicUnion)\n" +
+				"\t\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
+				"\t\t\t\treturn value, goType\n" +
+				"\t\t\t}\n" +
+				"\t\t}\n" +
+				"\t\treturn reflect.ValueOf(nil), nil\n" +
+				"\t}()\n" +
+				"\treturn value, goType\n" +
+				"}\n",
+			mustContain: []string{
+				"// fully dynamic; preserve scalar fast-path.",
+				"\t\t\t\tdynamicUnion := DynamicUnion{\n",
+				"\t\t\t\t\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n",
+				"\t\t\t\tvalue := reflect.ValueOf(dynamicUnion)\n",
+			},
+			mustNotContain: []string{
+				"value, goType := Decode(valueUnion.Value, typeMap)",
+				"switch goType {",
+				"dynamicUnion.Value = value.Int()",
+				"dynamicUnion.Value = value.Float()",
+				"// Union not found",
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := patchDecodeUnionValueDynamicBranch(c.source, c.family)
+			if err != nil {
+				t.Fatalf("patch failed: %v\ninput:\n%s", err, c.source)
+			}
+			for _, marker := range c.mustContain {
+				if !strings.Contains(got, marker) {
+					t.Errorf("expected patched output to contain %q\noutput:\n%s", marker, got)
+				}
+			}
+			for _, marker := range c.mustNotContain {
+				if strings.Contains(got, marker) {
+					t.Errorf("expected patched output to NOT contain %q\noutput:\n%s", marker, got)
+				}
+			}
+		})
+	}
+}
+
+// TestPatchDecodeUnionValueDynamicBranch_FailClosed pins the
+// fail-closed contract: missing anchors, ambiguous start anchors, and
+// a missing discriminator each return an error naming the family.
+func TestPatchDecodeUnionValueDynamicBranch_FailClosed(t *testing.T) {
+	t.Run("missing start anchor", func(t *testing.T) {
+		_, err := patchDecodeUnionValueDynamicBranch("package serde\n\nfunc nothing() {}\n", familyC)
+		if err == nil {
+			t.Fatalf("expected error for missing start anchor")
+		}
+		if !strings.Contains(err.Error(), string(familyC)) {
+			t.Errorf("error %q should name family %s", err, familyC)
+		}
+	})
+
+	t.Run("ambiguous start anchor", func(t *testing.T) {
+		dup := "package serde\n" +
+			"\t\t\t\tvalue, goType := Decode(valueUnion.Value, typeMap)\n" +
+			"\t\t\t\tvalue, goType := Decode(valueUnion.Value, typeMap)\n"
+		_, err := patchDecodeUnionValueDynamicBranch(dup, familyC)
+		if err == nil {
+			t.Fatalf("expected error for ambiguous start anchor")
+		}
+		if !strings.Contains(err.Error(), string(familyC)) {
+			t.Errorf("error %q should name family %s", err, familyC)
+		}
+	})
+
+	t.Run("missing discriminator", func(t *testing.T) {
+		// familyC start anchor present, end anchor present, but the
+		// `switch goType` discriminator is absent — the spec was not
+		// designed for this shape.
+		missing := "package serde\n\n" +
+			"func decodeUnionValue() (reflect.Value, reflect.Type) {\n" +
+			"\t\t\t\tvalue, goType := Decode(valueUnion.Value, typeMap)\n" +
+			"\t\t\t\t_ = value\n" +
+			"\t\t\t\treturn value, goType\n" +
+			"}\n"
+		_, err := patchDecodeUnionValueDynamicBranch(missing, familyC)
+		if err == nil {
+			t.Fatalf("expected error for missing discriminator")
+		}
+		if !strings.Contains(err.Error(), string(familyC)) {
+			t.Errorf("error %q should name family %s", err, familyC)
+		}
+	})
+}
+
