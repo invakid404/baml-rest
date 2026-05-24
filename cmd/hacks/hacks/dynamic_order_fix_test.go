@@ -464,24 +464,6 @@ func runGoBuildPkg(moduleDir string) (string, error) {
 }
 
 func isAllowedVetFailure(out string) bool {
-	// The "could not import" coupling check has to run BEFORE the
-	// unconditional allowedFragments sweep below. A failure like
-	// `could not import example.com/pkg (no Go files in /…)` shipped
-	// with a stray `no Go files` substring elsewhere in the output
-	// would otherwise short-circuit through the broad fragment and
-	// hide a real import-resolution failure originating in the
-	// patched serde package. Run the coupling check first so the
-	// authoritative verdict for any `could not import` line is the
-	// paired-fragment decision, not the broad fragment sweep.
-	if strings.Contains(out, "could not import") {
-		for _, paired := range []string{"cgo", "C source", "libbaml", "lib_baml", "_cgo_", "baml_cffi"} {
-			if strings.Contains(out, paired) {
-				return true
-			}
-		}
-		return false
-	}
-
 	// Fragments that on their own pin the failure to the test
 	// environment's missing cgo / native BAML libraries. A syntax or
 	// type error in the patched serde package surfaces under a
@@ -496,13 +478,104 @@ func isAllowedVetFailure(out string) bool {
 		"baml_cffi_wrapper.h",
 		"language_client_go/baml_go/lib_",
 		"no Go files",
+		"no buildable Go source files",
 	}
+	pairedCgoTokens := []string{"cgo", "C source", "libbaml", "lib_baml", "_cgo_", "baml_cffi"}
+
+	// The "could not import" verdict is scoped per line. A diagnostic
+	// like `could not import example.com/pkg (no Go files in /…)` is
+	// benign — the parenthesised reason is itself the cgo-package-
+	// excluded signal — and must be allowed even when an unrelated
+	// line elsewhere happens to match a broad fragment. Conversely, a
+	// real `could not import realfailure (transitive dep broken)`
+	// must not be hidden by a stray `no Go files` substring further
+	// down the output. Scope the check to the line that carries the
+	// import diagnostic so both shapes get the correct verdict.
+	hasCouldNotImport := false
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "could not import") {
+			continue
+		}
+		hasCouldNotImport = true
+		lineAllowed := false
+		for _, paired := range pairedCgoTokens {
+			if strings.Contains(line, paired) {
+				lineAllowed = true
+				break
+			}
+		}
+		if !lineAllowed {
+			for _, f := range allowedFragments {
+				if strings.Contains(line, f) {
+					lineAllowed = true
+					break
+				}
+			}
+		}
+		if !lineAllowed {
+			return false
+		}
+	}
+	if hasCouldNotImport {
+		return true
+	}
+
+	// Non-import-chain failures: the output-wide fragment sweep
+	// covers cases like `package cffi` errors or `build constraints
+	// exclude all Go files` that arrive on their own lines.
 	for _, f := range allowedFragments {
 		if strings.Contains(out, f) {
 			return true
 		}
 	}
 	return false
+}
+
+func TestIsAllowedVetFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{
+			name: "benign-same-line-no-go-files",
+			out:  "app.go:3:8: could not import example.com/badpkg (no Go files in /home/x/example.com/badpkg)",
+			want: true,
+		},
+		{
+			name: "benign-same-line-no-buildable",
+			out:  "app.go:3:8: could not import example.com/cgopkg (no buildable Go source files in /home/x/example.com/cgopkg)",
+			want: true,
+		},
+		{
+			name: "real-failure-no-go-files-elsewhere",
+			out:  "app.go:3:8: could not import example.com/realfailure (transitive dep broken)\nother.go:1: no Go files in /unrelated/path",
+			want: false,
+		},
+		{
+			name: "cgo-stub-package",
+			out:  "package cffi: build constraints exclude all Go files in /pkg/cffi",
+			want: true,
+		},
+		{
+			name: "could-not-import-with-cgo-token-on-same-line",
+			out:  "could not import example.com/_cgo_pkg (reason)",
+			want: true,
+		},
+		{
+			name: "real-import-failure",
+			out:  "could not import example.com/realfailure (some other reason)",
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isAllowedVetFailure(tc.out)
+			if got != tc.want {
+				t.Fatalf("isAllowedVetFailure(%q) = %v, want %v", tc.out, got, tc.want)
+			}
+		})
+	}
 }
 
 // TestPatchDecodeUnionValueDynamicBranch_TolerantToDrift covers the
