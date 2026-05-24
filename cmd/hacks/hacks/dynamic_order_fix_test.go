@@ -104,6 +104,20 @@ func TestApplyDynamicOrderFixToDir_PerVersion(t *testing.T) {
 			if vetErr != nil {
 				t.Fatalf("go vet on patched serde failed: %v\n%s", vetErr, vetOut)
 			}
+
+			// Compile check: go build against the patched pkg (the
+			// BAML facade lib.go). This catches per-version drift in
+			// the serde.EncodeClass/EncodeEnum/EncodeUnion shapes that
+			// the EncodeClassOrdered wrapper has to thread through —
+			// e.g. v0.204-family takes a func() *cffi.CFFITypeName
+			// while v0.215+ takes a string. Tested via `go build`
+			// (not `go vet`) so the upstream encode_decode_test.go
+			// file, which indexes serde.DynamicClass.Fields as a map,
+			// does not need to be deleted from the fixture.
+			buildOut, buildErr := runGoBuildPkg(workDir)
+			if buildErr != nil {
+				t.Fatalf("go build on patched pkg failed: %v\n%s", buildErr, buildOut)
+			}
 		})
 	}
 }
@@ -299,6 +313,47 @@ func runGoVetSerde(moduleDir string) (string, error) {
 		// signal — the per-file marker assertions above already pin
 		// the patched shape. Re-surface only when the failure looks
 		// like a syntax or type-check error in serde itself.
+		if isAllowedVetFailure(string(out)) {
+			return string(out), nil
+		}
+		return string(out), err
+	}
+	return string(out), nil
+}
+
+// runGoBuildPkg invokes `go build` on the patched pkg/ package. The
+// build runs in moduleDir and uses GOFLAGS=-mod=mod so the patched
+// module resolves against its own go.sum. Unlike `go vet`, `go build`
+// does not include _test.go files in the compilation unit, which keeps
+// upstream tests under engine/language_client_go/pkg/ — which still
+// index serde.DynamicClass.Fields as a map[string]any — out of the way.
+//
+// On a system without a Go toolchain in the test environment, the
+// build step is skipped silently (matches the runGoVetSerde policy).
+func runGoBuildPkg(moduleDir string) (string, error) {
+	goVetOnce.Do(func() {
+		if _, err := exec.LookPath("go"); err == nil {
+			goVetAvailable = true
+		}
+	})
+	if !goVetAvailable {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "./engine/language_client_go/pkg/")
+	cmd.Dir = moduleDir
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return string(out), fmt.Errorf("go build timed out")
+		}
+		// As with runGoVetSerde, allow failures that look like the
+		// build environment lacks cgo or the native BAML libraries
+		// (the linker would surface those late; type errors in
+		// pkg/lib.go itself — which is what we want to catch — show
+		// up as `cannot use X as Y` lines well before linking).
 		if isAllowedVetFailure(string(out)) {
 			return string(out), nil
 		}

@@ -734,16 +734,21 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder) any {
 // the helper materialises a plain map by iterating in insertion
 // order — encode semantics do not depend on map order, but the
 // iteration shape keeps the helper trivially auditable.
-func EncodeClassOrdered(name string, fields map[string]any, dynamicFields *OrderedFields) (*cffi.CFFIValueHolder, error) {
+//
+// v0.204-family serde.EncodeClass takes a nameEncoder callback
+// (func() *cffi.CFFITypeName), not a string; the wrapper passes the
+// callback through unchanged so generated clients can keep emitting
+// the BamlEncodeName method reference as the first argument.
+func EncodeClassOrdered(nameEncoder func() *cffi.CFFITypeName, fields map[string]any, dynamicFields *OrderedFields) (*cffi.CFFIValueHolder, error) {
 	if dynamicFields == nil {
-		return serde.EncodeClass(name, fields, nil)
+		return serde.EncodeClass(nameEncoder, fields, nil)
 	}
 	flattened := make(map[string]any, dynamicFields.Len())
 	dynamicFields.Range(func(k string, v any) bool {
 		flattened[k] = v
 		return true
 	})
-	return serde.EncodeClass(name, fields, &flattened)
+	return serde.EncodeClass(nameEncoder, fields, &flattened)
 }
 `
 	default:
