@@ -480,12 +480,12 @@ func orderedDynamicParseInputJSON(preserveField string) []byte {
 func TestParseDynamicCallBody_PreserveSchemaOrderDefault(t *testing.T) {
 	for _, tc := range preserveSchemaOrderTruthTable {
 		t.Run(tc.name, func(t *testing.T) {
-			workerInput, statusCode, code, err := parseDynamicCallBody(orderedDynamicInputJSON(tc.preserveField), tc.serverDefault)
+			parsed, statusCode, code, err := parseDynamicCallBody(orderedDynamicInputJSON(tc.preserveField), tc.serverDefault)
 			if err != nil {
 				t.Fatalf("parseDynamicCallBody: status=%d code=%q err=%v", statusCode, code, err)
 			}
-			if got := workerPayloadPreserveOrder(t, workerInput); got != tc.wantPreserve {
-				t.Errorf("preserve_order: got %v want %v\nworker payload:\n%s", got, tc.wantPreserve, workerInput)
+			if got := workerPayloadPreserveOrder(t, parsed.WorkerInput); got != tc.wantPreserve {
+				t.Errorf("preserve_order: got %v want %v\nworker payload:\n%s", got, tc.wantPreserve, parsed.WorkerInput)
 			}
 		})
 	}
@@ -499,12 +499,12 @@ func TestParseDynamicCallBody_PreserveSchemaOrderDefault(t *testing.T) {
 func TestParseDynamicParseBody_PreserveSchemaOrderDefault(t *testing.T) {
 	for _, tc := range preserveSchemaOrderTruthTable {
 		t.Run(tc.name, func(t *testing.T) {
-			workerInput, statusCode, code, err := parseDynamicParseBody(orderedDynamicParseInputJSON(tc.preserveField), tc.serverDefault)
+			parsed, statusCode, code, err := parseDynamicParseBody(orderedDynamicParseInputJSON(tc.preserveField), tc.serverDefault)
 			if err != nil {
 				t.Fatalf("parseDynamicParseBody: status=%d code=%q err=%v", statusCode, code, err)
 			}
-			if got := workerPayloadPreserveOrder(t, workerInput); got != tc.wantPreserve {
-				t.Errorf("preserve_order: got %v want %v\nworker payload:\n%s", got, tc.wantPreserve, workerInput)
+			if got := workerPayloadPreserveOrder(t, parsed.WorkerInput); got != tc.wantPreserve {
+				t.Errorf("preserve_order: got %v want %v\nworker payload:\n%s", got, tc.wantPreserve, parsed.WorkerInput)
 			}
 		})
 	}

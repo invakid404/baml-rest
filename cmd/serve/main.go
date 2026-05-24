@@ -450,9 +450,9 @@ var serveCmd = &cobra.Command{
 				return func(c fiber.Ctx) error {
 					switch c.Accepts(contentTypeSSE, ContentTypeNDJSON) {
 					case ContentTypeNDJSON:
-						return HandleNDJSONStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false)
+						return HandleNDJSONStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false, nil)
 					case contentTypeSSE:
-						return HandleSSEStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false)
+						return HandleSSEStreamFiber(c, methodName, c.Body(), streamMode, workerPool, false, nil)
 					default:
 						return writeFiberJSONErrorWithCode(c, "Not Acceptable: server can produce text/event-stream or application/x-ndjson", apierror.CodeNotAcceptable, nil, fiber.StatusNotAcceptable)
 					}
@@ -490,7 +490,7 @@ var serveCmd = &cobra.Command{
 					ctx, cancel := context.WithCancel(c.Context())
 					defer cancel()
 
-					workerInput, statusCode, code, err := parseDynamicCallBody(c.Body(), preserveSchemaOrderDefault)
+					parsed, statusCode, code, err := parseDynamicCallBody(c.Body(), preserveSchemaOrderDefault)
 					if err != nil {
 						if statusCode >= fiber.StatusInternalServerError {
 							logger.Error().Err(err).Msg("dynamic input conversion failed")
@@ -499,7 +499,7 @@ var serveCmd = &cobra.Command{
 						return writeFiberJSONErrorWithCode(c, err.Error(), code, nil, statusCode)
 					}
 
-					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, workerInput, streamMode)
+					result, err := workerPool.Call(ctx, bamlutils.DynamicMethodName, parsed.WorkerInput, streamMode)
 					// Surface routing headers on the error tail too — see
 					// the per-method handler above for rationale.
 					if result != nil {
@@ -515,6 +515,21 @@ var serveCmd = &cobra.Command{
 					if err != nil {
 						logger.Error().Err(err).Msg("dynamic response flatten failed")
 						return writeFiberInternalError(c, err)
+					}
+					if parsed.PreserveSchemaOrder {
+						reordered, rerr := bamlutils.ReorderDynamicOutputBySchema(flattenedData, parsed.OutputSchema)
+						if rerr != nil {
+							logger.Error().Err(rerr).Msg("dynamic response reorder failed")
+							return writeFiberInternalError(c, rerr)
+						}
+						flattenedData = reordered
+					} else {
+						sorted, serr := bamlutils.SortDynamicOutput(flattenedData)
+						if serr != nil {
+							logger.Error().Err(serr).Msg("dynamic response sort failed")
+							return writeFiberInternalError(c, serr)
+						}
+						flattenedData = sorted
 					}
 					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 					if streamMode.NeedsRaw() {
@@ -534,7 +549,7 @@ var serveCmd = &cobra.Command{
 
 			makeDynamicStreamHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
-					workerInput, statusCode, code, err := parseDynamicCallBody(c.Body(), preserveSchemaOrderDefault)
+					parsed, statusCode, code, err := parseDynamicCallBody(c.Body(), preserveSchemaOrderDefault)
 					if err != nil {
 						if statusCode >= fiber.StatusInternalServerError {
 							logger.Error().Err(err).Msg("dynamic stream input parsing failed")
@@ -551,11 +566,15 @@ var serveCmd = &cobra.Command{
 						return writeFiberJSONErrorWithCode(c, err.Error(), code, nil, statusCode)
 					}
 
+					reorder := &dynamicFinalReorder{
+						Schema:  parsed.OutputSchema,
+						Enabled: parsed.PreserveSchemaOrder,
+					}
 					switch c.Accepts(contentTypeSSE, ContentTypeNDJSON) {
 					case ContentTypeNDJSON:
-						return HandleNDJSONStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
+						return HandleNDJSONStreamFiber(c, bamlutils.DynamicMethodName, parsed.WorkerInput, streamMode, workerPool, true, reorder)
 					case contentTypeSSE:
-						return HandleSSEStreamFiber(c, bamlutils.DynamicMethodName, workerInput, streamMode, workerPool, true)
+						return HandleSSEStreamFiber(c, bamlutils.DynamicMethodName, parsed.WorkerInput, streamMode, workerPool, true, reorder)
 					default:
 						return writeFiberJSONErrorWithCode(c, "Not Acceptable: server can produce text/event-stream or application/x-ndjson", apierror.CodeNotAcceptable, nil, fiber.StatusNotAcceptable)
 					}
@@ -570,7 +589,7 @@ var serveCmd = &cobra.Command{
 				ctx, cancel := context.WithCancel(c.Context())
 				defer cancel()
 
-				workerInput, statusCode, code, err := parseDynamicParseBody(c.Body(), preserveSchemaOrderDefault)
+				parsed, statusCode, code, err := parseDynamicParseBody(c.Body(), preserveSchemaOrderDefault)
 				if err != nil {
 					if statusCode >= fiber.StatusInternalServerError {
 						logger.Error().Err(err).Msg("dynamic parse input conversion failed")
@@ -579,7 +598,7 @@ var serveCmd = &cobra.Command{
 					return writeFiberJSONErrorWithCode(c, err.Error(), code, nil, statusCode)
 				}
 
-				result, err := workerPool.Parse(ctx, bamlutils.DynamicMethodName, workerInput)
+				result, err := workerPool.Parse(ctx, bamlutils.DynamicMethodName, parsed.WorkerInput)
 				if err != nil {
 					logger.Error().Err(err).Msg("dynamic worker parse failed")
 					return writeFiberParseWorkerError(c, err)
@@ -590,6 +609,21 @@ var serveCmd = &cobra.Command{
 				if err != nil {
 					logger.Error().Err(err).Msg("dynamic parse response flatten failed")
 					return writeFiberInternalError(c, err)
+				}
+				if parsed.PreserveSchemaOrder {
+					reordered, rerr := bamlutils.ReorderDynamicOutputBySchema(flattenedData, parsed.OutputSchema)
+					if rerr != nil {
+						logger.Error().Err(rerr).Msg("dynamic parse response reorder failed")
+						return writeFiberInternalError(c, rerr)
+					}
+					flattenedData = reordered
+				} else {
+					sorted, serr := bamlutils.SortDynamicOutput(flattenedData)
+					if serr != nil {
+						logger.Error().Err(serr).Msg("dynamic parse response sort failed")
+						return writeFiberInternalError(c, serr)
+					}
+					flattenedData = sorted
 				}
 
 				c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
@@ -677,18 +711,38 @@ var serveCmd = &cobra.Command{
 	},
 }
 
+// parsedDynamicCall bundles the post-validation context the dynamic
+// call/stream Fiber handlers need: the worker-shaped input bytes, the
+// resolved output schema (pointer back into the parsed DynamicInput so
+// the schema is not deep-copied), and the resolved preserve_schema_order
+// boolean. Streaming handlers carry the same struct so final-frame
+// reorder can run with the same context the unary path uses.
+type parsedDynamicCall struct {
+	WorkerInput         []byte
+	OutputSchema        *bamlutils.DynamicOutputSchema
+	PreserveSchemaOrder bool
+}
+
+// parsedDynamicParse mirrors parsedDynamicCall for the /parse/_dynamic
+// endpoint.
+type parsedDynamicParse struct {
+	WorkerInput         []byte
+	OutputSchema        *bamlutils.DynamicOutputSchema
+	PreserveSchemaOrder bool
+}
+
 // parseDynamicCallBody parses + validates the JSON body for any
 // dynamic call/stream endpoint (/call/_dynamic, /call-with-raw/_dynamic,
 // /stream/_dynamic, /stream-with-raw/_dynamic) and returns the
-// worker-shaped input alongside the apierror.Code that classifies any
-// failure (so callers preserve machine-readable codes instead of
+// post-validation context alongside the apierror.Code that classifies
+// any failure (so callers preserve machine-readable codes without
 // collapsing every 4xx into invalid_request). On success: code is ""
 // and statusCode is 0.
 //
 // preserveSchemaOrderDefault is the server-level default for the
-// dynamic preserve_schema_order opt-in. It is applied only when
-// the request omits / nulls the field; per-request true/false wins.
-func parseDynamicCallBody(rawBody []byte, preserveSchemaOrderDefault bool) (workerInput []byte, statusCode int, code apierror.Code, err error) {
+// dynamic preserve_schema_order opt-in. It is applied only when the
+// request omits / nulls the field; per-request true/false wins.
+func parseDynamicCallBody(rawBody []byte, preserveSchemaOrderDefault bool) (parsed *parsedDynamicCall, statusCode int, code apierror.Code, err error) {
 	var input bamlutils.DynamicInput
 	if err := sonic.Unmarshal(rawBody, &input); err != nil {
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidJSON, fmt.Errorf("invalid JSON: %w", err)
@@ -700,18 +754,21 @@ func parseDynamicCallBody(rawBody []byte, preserveSchemaOrderDefault bool) (work
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidRequest, err
 	}
 
-	workerInput, err = input.ToWorkerInput()
+	workerInput, err := input.ToWorkerInput()
 	if err != nil {
 		return nil, fiber.StatusInternalServerError, apierror.CodeInternalError, fmt.Errorf("failed to convert input: %w", err)
 	}
 
-	return workerInput, 0, "", nil
+	return &parsedDynamicCall{
+		WorkerInput:         workerInput,
+		OutputSchema:        input.OutputSchema,
+		PreserveSchemaOrder: input.PreserveSchemaOrder != nil && *input.PreserveSchemaOrder,
+	}, 0, "", nil
 }
 
 // parseDynamicParseBody mirrors parseDynamicCallBody for the
-// /parse/_dynamic endpoint, decoding into the DynamicParseInput shape
-// rather than DynamicInput.
-func parseDynamicParseBody(rawBody []byte, preserveSchemaOrderDefault bool) (workerInput []byte, statusCode int, code apierror.Code, err error) {
+// /parse/_dynamic endpoint, decoding into the DynamicParseInput shape.
+func parseDynamicParseBody(rawBody []byte, preserveSchemaOrderDefault bool) (parsed *parsedDynamicParse, statusCode int, code apierror.Code, err error) {
 	var input bamlutils.DynamicParseInput
 	if err := sonic.Unmarshal(rawBody, &input); err != nil {
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidJSON, fmt.Errorf("invalid JSON: %w", err)
@@ -723,12 +780,16 @@ func parseDynamicParseBody(rawBody []byte, preserveSchemaOrderDefault bool) (wor
 		return nil, fiber.StatusBadRequest, apierror.CodeInvalidRequest, err
 	}
 
-	workerInput, err = input.ToWorkerInput()
+	workerInput, err := input.ToWorkerInput()
 	if err != nil {
 		return nil, fiber.StatusInternalServerError, apierror.CodeInternalError, fmt.Errorf("failed to convert input: %w", err)
 	}
 
-	return workerInput, 0, "", nil
+	return &parsedDynamicParse{
+		WorkerInput:         workerInput,
+		OutputSchema:        input.OutputSchema,
+		PreserveSchemaOrder: input.PreserveSchemaOrder != nil && *input.PreserveSchemaOrder,
+	}, 0, "", nil
 }
 
 func init() {

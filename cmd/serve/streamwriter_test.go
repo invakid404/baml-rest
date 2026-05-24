@@ -306,7 +306,7 @@ func TestConsumeStream_ResetOnlyResultDoesNotPublishDataFrame(t *testing.T) {
 	close(results)
 
 	publisher := &recordingPublisher{}
-	consumeStream(results, publisher, bamlutils.StreamModeStream, false)
+	consumeStream(results, publisher, bamlutils.StreamModeStream, false, nil)
 
 	if publisher.resetCount != 1 {
 		t.Fatalf("expected 1 reset event, got %d", publisher.resetCount)
@@ -343,7 +343,7 @@ func TestConsumeStream_HonorsResetOnMetadata(t *testing.T) {
 	close(results)
 
 	publisher := &recordingPublisher{}
-	consumeStream(results, publisher, bamlutils.StreamModeStream, false)
+	consumeStream(results, publisher, bamlutils.StreamModeStream, false, nil)
 
 	if publisher.resetCount != 1 {
 		t.Fatalf("Reset on Metadata kind should publish exactly 1 reset event; got %d", publisher.resetCount)
@@ -376,7 +376,7 @@ func TestConsumeStream_ForwardsErrorCodeAndDetails(t *testing.T) {
 	close(results)
 
 	publisher := &recordingPublisher{}
-	consumeStream(results, publisher, bamlutils.StreamModeStream, false)
+	consumeStream(results, publisher, bamlutils.StreamModeStream, false, nil)
 
 	if len(publisher.errors) != 1 {
 		t.Fatalf("expected 1 error frame, got %d", len(publisher.errors))
@@ -412,7 +412,7 @@ func TestConsumeStream_ClassifiesUnclassifiedErrorsAsWorkerError(t *testing.T) {
 	close(results)
 
 	publisher := &recordingPublisher{}
-	consumeStream(results, publisher, bamlutils.StreamModeStream, false)
+	consumeStream(results, publisher, bamlutils.StreamModeStream, false, nil)
 
 	if len(publisher.errorCodes) != 1 || publisher.errorCodes[0] != apierror.CodeWorkerError {
 		t.Errorf("error code = %q, want %q", publisher.errorCodes, apierror.CodeWorkerError)
@@ -460,7 +460,7 @@ func TestConsumeStream_ForwardsRawAndReasoningAcrossStreamAndFinal(t *testing.T)
 	close(results)
 
 	publisher := &recordingPublisher{}
-	consumeStream(results, publisher, bamlutils.StreamModeStreamWithRaw, false)
+	consumeStream(results, publisher, bamlutils.StreamModeStreamWithRaw, false, nil)
 
 	if got, want := len(publisher.dataFrames), 2; got != want {
 		t.Fatalf("dataFrames len = %d, want %d", got, want)

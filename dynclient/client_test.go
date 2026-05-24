@@ -655,7 +655,7 @@ func directStream(t *testing.T, needRaw bool, frames ...*workerplugin.StreamResu
 	}
 	close(ch)
 	ctx, cancel := context.WithCancel(context.Background())
-	s := newStream(ctx, cancel, func() {}, ch, needRaw, "dynamic stream")
+	s := newStream(ctx, cancel, func() {}, ch, needRaw, "dynamic stream", nil, false)
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
