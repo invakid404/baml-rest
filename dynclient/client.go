@@ -207,6 +207,12 @@ func (c *Client) DynamicCall(ctx context.Context, req Request) (*CallResult, err
 	if err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic call: %w", err)
 	}
+	if req.PreserveSchemaOrder != nil && *req.PreserveSchemaOrder {
+		flattened, err = bamlutils.ReorderDynamicOutputBySchema(flattened, req.OutputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("dynclient: dynamic call: %w", err)
+		}
+	}
 	return &CallResult{Data: flattened, Metadata: metadata}, nil
 }
 
@@ -241,6 +247,12 @@ func (c *Client) DynamicCallRaw(ctx context.Context, req Request) (*CallRawResul
 	if err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic call raw: %w", err)
 	}
+	if req.PreserveSchemaOrder != nil && *req.PreserveSchemaOrder {
+		flattened, err = bamlutils.ReorderDynamicOutputBySchema(flattened, req.OutputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("dynclient: dynamic call raw: %w", err)
+		}
+	}
 	return &CallRawResult{
 		Data:      flattened,
 		Raw:       raw,
@@ -272,6 +284,12 @@ func (c *Client) DynamicParse(ctx context.Context, req ParseRequest) (*ParseResu
 	flattened, err := bamlutils.FlattenDynamicOutput(data)
 	if err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic parse: %w", err)
+	}
+	if req.PreserveSchemaOrder != nil && *req.PreserveSchemaOrder {
+		flattened, err = bamlutils.ReorderDynamicOutputBySchema(flattened, req.OutputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("dynclient: dynamic parse: %w", err)
+		}
 	}
 	return &ParseResult{Data: flattened}, nil
 }
@@ -315,7 +333,8 @@ func (c *Client) openStream(ctx context.Context, req Request, mode bamlutils.Str
 		return nil, fmt.Errorf("dynclient: %s: %w", errLabel, err)
 	}
 
-	return newStream(streamCtx, cancel, dropScope, results, mode.NeedsRaw(), errLabel), nil
+	preserveOrder := req.PreserveSchemaOrder != nil && *req.PreserveSchemaOrder
+	return newStream(streamCtx, cancel, dropScope, results, mode.NeedsRaw(), errLabel, req.OutputSchema, preserveOrder), nil
 }
 
 // beginScope generates a request id, threads it through the context for

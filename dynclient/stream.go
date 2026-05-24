@@ -58,27 +58,34 @@ type Stream struct {
 	results   <-chan *workerplugin.StreamResult
 	errLabel  string
 
-	needRaw       bool
-	rawAccum      string
-	reasonAccum   string
-	pending       []Event
-	closeOnce     sync.Once
-	cleanupOnce   sync.Once
-	terminated    bool
-	terminatedErr error
+	needRaw             bool
+	outputSchema        *bamlutils.DynamicOutputSchema
+	preserveSchemaOrder bool
+	rawAccum            string
+	reasonAccum         string
+	pending             []Event
+	closeOnce           sync.Once
+	cleanupOnce         sync.Once
+	terminated          bool
+	terminatedErr       error
 }
 
 // newStream wires a Stream over the worker result channel returned by
 // CallStream. cancel cancels the per-stream context; dropScope drops
-// the shared-state scope when the stream terminates.
-func newStream(ctx context.Context, cancel context.CancelFunc, dropScope func(), results <-chan *workerplugin.StreamResult, needRaw bool, errLabel string) *Stream {
+// the shared-state scope when the stream terminates. The schema +
+// preserve flag drive the final-frame reorder pass; partial frames
+// stay flatten-only because they may carry placeholder nulls and
+// incomplete objects that the schema-guided reorder cannot honour.
+func newStream(ctx context.Context, cancel context.CancelFunc, dropScope func(), results <-chan *workerplugin.StreamResult, needRaw bool, errLabel string, outputSchema *bamlutils.DynamicOutputSchema, preserveSchemaOrder bool) *Stream {
 	return &Stream{
-		ctx:       ctx,
-		cancel:    cancel,
-		dropScope: dropScope,
-		results:   results,
-		errLabel:  errLabel,
-		needRaw:   needRaw,
+		ctx:                 ctx,
+		cancel:              cancel,
+		dropScope:           dropScope,
+		results:             results,
+		errLabel:            errLabel,
+		needRaw:             needRaw,
+		outputSchema:        outputSchema,
+		preserveSchemaOrder: preserveSchemaOrder,
 	}
 }
 
@@ -215,10 +222,21 @@ func (s *Stream) partialEvent(result *workerplugin.StreamResult) (*Event, error)
 // and reasoning fields use the worker's full final values, not the
 // running accumulator — the HTTP path emits the final values verbatim
 // regardless of how many partials preceded them.
+//
+// When the stream was opened with preserveSchemaOrder=true, the
+// flattened payload is run through ReorderDynamicOutputBySchema so the
+// final frame matches the unary call contract.
 func (s *Stream) finalEvent(result *workerplugin.StreamResult) (*Event, error) {
 	flattened, err := flattenIfPresent(result.Data)
 	if err != nil {
 		return nil, err
+	}
+	if s.preserveSchemaOrder && flattened != nil {
+		reordered, rerr := bamlutils.ReorderDynamicOutputBySchema(flattened, s.outputSchema)
+		if rerr != nil {
+			return nil, rerr
+		}
+		flattened = reordered
 	}
 	ev := &Event{Kind: EventFinal, Data: flattened}
 	if s.needRaw {

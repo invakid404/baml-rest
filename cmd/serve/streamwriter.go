@@ -182,6 +182,25 @@ func (p *NDJSONStreamWriterPublisher) Close() {
 	// No cleanup needed.
 }
 
+// dynamicFinalReorder carries the schema + opt-in flag the dynamic
+// stream handlers thread into consumeStream so final frames can be
+// reordered to schema declaration order. Partial frames stay
+// flatten-only because their objects may carry placeholder nulls and
+// incomplete subtrees that a schema-guided walk cannot honour.
+//
+// A nil pointer disables reordering (the static stream handlers use
+// nil); Enabled=false on a non-nil pointer also disables it (the
+// dynamic handlers populate the schema even on preserve-off requests
+// so the per-frame check stays a single field read).
+type dynamicFinalReorder struct {
+	Schema  *bamlutils.DynamicOutputSchema
+	Enabled bool
+}
+
+func (d *dynamicFinalReorder) on() bool {
+	return d != nil && d.Enabled && d.Schema != nil
+}
+
 // HandleNDJSONStreamFiber handles NDJSON stream requests with native Fiber streaming.
 func HandleNDJSONStreamFiber(
 	c fiber.Ctx,
@@ -190,6 +209,7 @@ func HandleNDJSONStreamFiber(
 	streamMode bamlutils.StreamMode,
 	workerPool *pool.Pool,
 	flattenDynamic bool,
+	finalReorder *dynamicFinalReorder,
 ) error {
 	c.Set(fiber.HeaderContentType, ContentTypeNDJSON)
 	c.Set(fiber.HeaderCacheControl, "no-cache")
@@ -219,7 +239,7 @@ func HandleNDJSONStreamFiber(
 			return
 		}
 
-		consumeStream(results, publisher, streamMode, flattenDynamic)
+		consumeStream(results, publisher, streamMode, flattenDynamic, finalReorder)
 	})
 }
 
@@ -481,6 +501,7 @@ func HandleSSEStreamFiber(
 	streamMode bamlutils.StreamMode,
 	workerPool *pool.Pool,
 	flattenDynamic bool,
+	finalReorder *dynamicFinalReorder,
 ) error {
 	c.Set(fiber.HeaderContentType, contentTypeSSE)
 	c.Set(fiber.HeaderCacheControl, "no-cache")
@@ -511,18 +532,23 @@ func HandleSSEStreamFiber(
 			return
 		}
 
-		consumeStream(results, publisher, streamMode, flattenDynamic)
+		consumeStream(results, publisher, streamMode, flattenDynamic, finalReorder)
 	})
 }
 
 // consumeStream is the single consumer that iterates over pool results
 // and publishes through the StreamPublisher interface.
 // If flattenDynamic is true, DynamicProperties fields will be flattened to the root level.
+// finalReorder, when non-nil and enabled, applies the schema-guided
+// key reorder to final frames after flatten; partial frames keep
+// flatten-only semantics because their objects may carry placeholder
+// nulls or incomplete subtrees.
 func consumeStream(
 	results <-chan *workerplugin.StreamResult,
 	publisher StreamPublisher,
 	streamMode bamlutils.StreamMode,
 	flattenDynamic bool,
+	finalReorder *dynamicFinalReorder,
 ) {
 	// Accumulate raw + reasoning deltas for output (internal gRPC sends
 	// deltas to save bandwidth). Reasoning accumulates in lockstep with
@@ -634,6 +660,17 @@ func consumeStream(
 				if flattened, err := bamlutils.FlattenDynamicOutput(data); err == nil {
 					data = flattened
 				}
+			}
+			if finalReorder.on() {
+				reordered, rerr := bamlutils.ReorderDynamicOutputBySchema(data, finalReorder.Schema)
+				if rerr != nil {
+					code, details := classifyWorkerError(rerr)
+					_ = publisher.PublishError(rerr.Error(), code, details)
+					workerplugin.ReleaseStreamResult(result)
+					drainResults(results)
+					return
+				}
+				data = reordered
 			}
 
 			// Publish final data event (complete, validated result)
