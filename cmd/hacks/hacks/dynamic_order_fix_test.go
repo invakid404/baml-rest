@@ -131,6 +131,37 @@ func TestApplyDynamicOrderFixToDir_PerVersion(t *testing.T) {
 			if !strings.Contains(body, "func isOrderableSinglePattern(") {
 				t.Fatalf("decode.go in %s missing isOrderableSinglePattern helper definition", v)
 			}
+			// Postcondition (cold-v6 finding 1 / B2): the _MapValue arm
+			// of isOrderableSinglePattern delegates to
+			// isOrderableMapValueType — a ValueType-discriminated
+			// helper that does not consult the runtime's
+			// `INTERNAL.nil` sentinel. That sentinel is absent from
+			// the external TypeMap a generated client populates, so
+			// the pre-B2 probe returned false universally and
+			// `optional(map<string, dynamic>)` lost key order. B2
+			// replaces the broken probe with direct CFFI oneof
+			// inspection.
+			if !strings.Contains(body, "func isOrderableMapValueType(") {
+				t.Fatalf("decode.go in %s missing isOrderableMapValueType helper definition", v)
+			}
+			if !strings.Contains(body, "isOrderableMapValueType(v.MapValue.") {
+				t.Fatalf("decode.go in %s did not delegate the _MapValue arm of isOrderableSinglePattern to isOrderableMapValueType", v)
+			}
+			// The previous helper (commit-era de3bbd5c3) read
+			// `typeMap["INTERNAL.nil"]` (or `typeMap.typeMap["INTERNAL.nil"]`
+			// on familyC) inside the _MapValue arm; B2 must not bring
+			// that probe back. Other call sites in the file (e.g.
+			// convertFieldTypeToGoType's NullType branch) still
+			// reference INTERNAL.nil legitimately, so the assertion
+			// is scoped to the helper-local probe shapes only.
+			for _, banned := range []string{
+				`nilType, ok := typeMap["INTERNAL.nil"]`,
+				`nilType, ok := typeMap.typeMap["INTERNAL.nil"]`,
+			} {
+				if strings.Contains(body, banned) {
+					t.Fatalf("decode.go in %s still carries the pre-B2 INTERNAL.nil sentinel probe %q", v, banned)
+				}
+			}
 			if !strings.Contains(body, "decoded := DecodeToOrderedValue(valueUnion.Value, typeMap)") {
 				t.Fatalf("decode.go in %s did not route the orderable IsSinglePattern / isOptionalPattern branch through DecodeToOrderedValue", v)
 			}
@@ -433,6 +464,24 @@ func runGoBuildPkg(moduleDir string) (string, error) {
 }
 
 func isAllowedVetFailure(out string) bool {
+	// The "could not import" coupling check has to run BEFORE the
+	// unconditional allowedFragments sweep below. A failure like
+	// `could not import example.com/pkg (no Go files in /…)` shipped
+	// with a stray `no Go files` substring elsewhere in the output
+	// would otherwise short-circuit through the broad fragment and
+	// hide a real import-resolution failure originating in the
+	// patched serde package. Run the coupling check first so the
+	// authoritative verdict for any `could not import` line is the
+	// paired-fragment decision, not the broad fragment sweep.
+	if strings.Contains(out, "could not import") {
+		for _, paired := range []string{"cgo", "C source", "libbaml", "lib_baml", "_cgo_", "baml_cffi"} {
+			if strings.Contains(out, paired) {
+				return true
+			}
+		}
+		return false
+	}
+
 	// Fragments that on their own pin the failure to the test
 	// environment's missing cgo / native BAML libraries. A syntax or
 	// type error in the patched serde package surfaces under a
@@ -451,19 +500,6 @@ func isAllowedVetFailure(out string) bool {
 	for _, f := range allowedFragments {
 		if strings.Contains(out, f) {
 			return true
-		}
-	}
-	// `could not import` is too generic on its own — a real
-	// type-check error in the patched serde package surfaces with
-	// that prefix as well. Accept it only when paired with a
-	// fragment that pins the failure to the cgo / native-library
-	// boundary the test harness cannot satisfy. A standalone
-	// `could not import` surfaces as a real failure.
-	if strings.Contains(out, "could not import") {
-		for _, paired := range []string{"cgo", "C source", "libbaml", "lib_baml", "_cgo_", "baml_cffi"} {
-			if strings.Contains(out, paired) {
-				return true
-			}
 		}
 	}
 	return false
@@ -969,6 +1005,18 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 	if !strings.Contains(body, "func isOrderableSinglePattern(") {
 		t.Fatalf("partially-patched tree was not completed: isOrderableSinglePattern helper missing\n%s", body)
 	}
+	// cold-v6 finding 1 / B2: the ValueType-discriminated helper
+	// must also land on a partially-patched tree. Cached patched-
+	// module copies from the de3bbd5c3 commit era satisfy both the
+	// OrderedFields struct field marker and the isOrderableSinglePattern
+	// marker but lack isOrderableMapValueType; the tightened sentinel
+	// forces a re-pass that adds it.
+	if !strings.Contains(body, "func isOrderableMapValueType(") {
+		t.Fatalf("partially-patched tree was not completed: isOrderableMapValueType helper missing\n%s", body)
+	}
+	if !strings.Contains(body, "isOrderableMapValueType(v.MapValue.ValueType, typeMap)") {
+		t.Fatalf("partially-patched tree was not completed: _MapValue arm does not delegate to isOrderableMapValueType\n%s", body)
+	}
 
 	// And the prior in-place markers (DynamicClass.Fields, the union
 	// dynamic branch's ordered routing) remain — the re-pass converged
@@ -988,6 +1036,9 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 	if got := strings.Count(body, "func isOrderableSinglePattern("); got != 1 {
 		t.Fatalf("expected exactly 1 isOrderableSinglePattern declaration after re-pass; got %d\n%s", got, body)
 	}
+	if got := strings.Count(body, "func isOrderableMapValueType("); got != 1 {
+		t.Fatalf("expected exactly 1 isOrderableMapValueType declaration after re-pass; got %d\n%s", got, body)
+	}
 
 	// A second re-pass over the now-fully-patched tree must be a no-op:
 	// the tightened sentinel sees both markers and skips before any
@@ -999,5 +1050,178 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 	after, _ := os.ReadFile(filepath.Join(serdeDir, "decode.go"))
 	if string(before) != string(after) {
 		t.Fatalf("second pass over fully-patched tree mutated decode.go")
+	}
+}
+
+// TestIsOrderableMapValueType_PerFamily encodes the verdict table for
+// the rendered isOrderableMapValueType helper as text-shape assertions
+// against the emitted source. The helper is generated as Go source
+// (not callable from the hacks package) so the per-family case arms
+// and per-family lookup forms are validated structurally.
+//
+// The table mirrors the user-facing dispatch contract:
+//
+//   - AnyType / NullType → true (structurally dynamic)
+//   - UnionVariantType{Name: nil} → true (no name to look up)
+//   - UnionVariantType{Name: <typeMap miss>} → true (dynamic union)
+//   - UnionVariantType{Name: <typeMap hit>} → false (concrete user union)
+//   - OptionalType / CheckedType / StreamStateType → recurse into
+//     the inner value type
+//   - Concrete scalar / class / enum / list / map / type-alias / tuple →
+//     false (default fall-through; tuple has an explicit arm on
+//     familyA)
+//
+// The per-family difference is the UnionVariantType lookup form:
+// familyA/familyB index TypeMap directly using
+// `name.Namespace.Enum().String() + "." + name.Name`; familyC calls
+// `typeMap.GetType(name)` (the only stable accessor on the struct-
+// wrapped TypeMap).
+//
+// Regression coverage for cold-v6 finding 1 lives in the dispatch
+// check: the helper does not consult `typeMap["INTERNAL.nil"]` at any
+// point, so a generated client whose external TypeMap lacks that
+// sentinel still routes AnyType / NullType ValueType maps through
+// the ordered pipeline. Regression coverage for cold-v5 lives in the
+// _MapValue accessor check on the caller side (a non-_MapValue holder
+// falls into the `default: return false` arm and the optional wrapper
+// stays on plain Decode, avoiding the `*[]any` vs `*[]string` panic
+// for `optional(list<string>)`).
+func TestIsOrderableMapValueType_PerFamily(t *testing.T) {
+	type contract struct {
+		mustContain    []string
+		mustNotContain []string
+	}
+	commonTrueArms := []string{
+		"case *cffi.CFFIFieldTypeHolder_AnyType:",
+		"case *cffi.CFFIFieldTypeHolder_NullType:",
+		"if t.UnionVariantType == nil || t.UnionVariantType.Name == nil {",
+		"return true",
+	}
+	commonRecurse := []string{
+		"case *cffi.CFFIFieldTypeHolder_OptionalType:",
+		"return isOrderableMapValueType(t.OptionalType.Value, typeMap)",
+		"case *cffi.CFFIFieldTypeHolder_CheckedType:",
+		"return isOrderableMapValueType(t.CheckedType.Value, typeMap)",
+		"case *cffi.CFFIFieldTypeHolder_StreamStateType:",
+		"return isOrderableMapValueType(t.StreamStateType.Value, typeMap)",
+	}
+	commonStaticFallthrough := []string{
+		"default:",
+		"return false",
+	}
+	commonBanned := []string{
+		// The whole point of B2 — the helper must not depend on the
+		// generated client's TypeMap carrying an INTERNAL.nil entry.
+		`typeMap["INTERNAL.nil"]`,
+		`typeMap.typeMap["INTERNAL.nil"]`,
+		// The previous helper called convertFieldTypeToGoType to
+		// resolve the value type and compared against nilType.
+		// B2 dispatches directly on the CFFI oneof variant.
+		"convertFieldTypeToGoType(v.MapValue.ValueType, typeMap)",
+		"convertFieldTypeToGoType(v.MapValue.Value, typeMap)",
+	}
+
+	cases := map[decodeFamily]contract{
+		familyA: {
+			mustContain: append(append(append(
+				[]string{
+					// familyA TypeMap is a plain map; lookup mirrors
+					// convertFieldTypeToGoType's union-variant resolution.
+					`key := name.Namespace.Enum().String() + "." + name.Name`,
+					"_, ok := typeMap[key]",
+					"return !ok",
+					// TupleType is familyA-only and lands on an explicit
+					// static-verdict arm.
+					"case *cffi.CFFIFieldTypeHolder_TupleType:",
+				},
+				commonTrueArms...), commonRecurse...), commonStaticFallthrough...),
+			mustNotContain: append(commonBanned,
+				// familyC accessor must not leak into familyA.
+				"typeMap.GetType(t.UnionVariantType.Name)",
+			),
+		},
+		familyB: {
+			mustContain: append(append(append(
+				[]string{
+					`key := name.Namespace.Enum().String() + "." + name.Name`,
+					"_, ok := typeMap[key]",
+					"return !ok",
+				},
+				commonTrueArms...), commonRecurse...), commonStaticFallthrough...),
+			mustNotContain: append(commonBanned,
+				// No TupleType variant exists on familyB.
+				"case *cffi.CFFIFieldTypeHolder_TupleType:",
+				// familyC accessor must not leak into familyB.
+				"typeMap.GetType(t.UnionVariantType.Name)",
+			),
+		},
+		familyC: {
+			mustContain: append(append(append(
+				[]string{
+					// familyC TypeMap is a struct; GetType is the only
+					// stable accessor.
+					"_, ok := typeMap.GetType(t.UnionVariantType.Name)",
+					"return !ok",
+				},
+				commonTrueArms...), commonRecurse...), commonStaticFallthrough...),
+			mustNotContain: append(commonBanned,
+				"case *cffi.CFFIFieldTypeHolder_TupleType:",
+				// No direct-index map lookup; that is the familyA/B shape.
+				`name.Namespace.Enum().String() + "." + name.Name`,
+			),
+		},
+	}
+
+	for family, want := range cases {
+		t.Run(string(family), func(t *testing.T) {
+			body := isOrderableMapValueTypeFunc(family)
+			if body == "" {
+				t.Fatalf("isOrderableMapValueTypeFunc(%s) returned empty body", family)
+			}
+			for _, marker := range want.mustContain {
+				if !strings.Contains(body, marker) {
+					t.Errorf("rendered helper for %s missing %q\n--- helper ---\n%s", family, marker, body)
+				}
+			}
+			for _, marker := range want.mustNotContain {
+				if strings.Contains(body, marker) {
+					t.Errorf("rendered helper for %s unexpectedly contains %q\n--- helper ---\n%s", family, marker, body)
+				}
+			}
+		})
+	}
+}
+
+// TestIsOrderableSinglePatternFunc_DelegatesToMapValueType pins the
+// IsSinglePattern helper's _MapValue accessor and confirms it hands
+// off to the value-type discriminator on every family. The pre-B2
+// helper carried a typeMap-sentinel check inline (cold-v6 finding 1);
+// the post-B2 helper must call isOrderableMapValueType and stop
+// referencing INTERNAL.nil. The value-side `CFFIValueMap.ValueType`
+// field is consistently named across all families — only the
+// type-descriptor inner-field names differ, and that variance is
+// absorbed inside isOrderableMapValueType.
+func TestIsOrderableSinglePatternFunc_DelegatesToMapValueType(t *testing.T) {
+	const delegateCall = "isOrderableMapValueType(v.MapValue.ValueType, typeMap)"
+	for _, family := range []decodeFamily{familyA, familyB, familyC} {
+		t.Run(string(family), func(t *testing.T) {
+			body := isOrderableSinglePatternFunc(family)
+			if !strings.Contains(body, delegateCall) {
+				t.Errorf("%s helper missing delegate call %q\n--- helper ---\n%s", family, delegateCall, body)
+			}
+			// cold-v6 finding 1 regression — the helper no longer
+			// short-circuits on the INTERNAL.nil sentinel that may be
+			// absent from a generated client's external TypeMap.
+			for _, banned := range []string{
+				`typeMap["INTERNAL.nil"]`,
+				`typeMap.typeMap["INTERNAL.nil"]`,
+				"convertFieldTypeToGoType(v.MapValue.ValueType, typeMap)",
+				"convertFieldTypeToGoType(v.MapValue.Value, typeMap)",
+			} {
+				if strings.Contains(body, banned) {
+					t.Errorf("%s helper still references pre-B2 sentinel/conversion %q\n--- helper ---\n%s", family, banned, body)
+				}
+			}
+		})
 	}
 }

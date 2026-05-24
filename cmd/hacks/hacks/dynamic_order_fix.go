@@ -312,15 +312,19 @@ func patchDecodeGo(moduleDir string, family decodeFamily) error {
 	}
 	body := string(raw)
 
-	// Strict sentinel: only short-circuit when both the struct-field
-	// rewrite AND the IsSinglePattern dispatch helper landed. A cached
-	// patched-module tree from an earlier hack revision can satisfy
-	// only the first condition; without the helper marker, the strict
-	// check forces a re-pass so the new dispatch wires in. Each step
+	// Strict sentinel: only short-circuit when the struct-field rewrite
+	// AND the IsSinglePattern dispatch helper AND the per-family
+	// isOrderableMapValueType helper all landed. A cached patched-module
+	// tree from an earlier hack revision (commit-era de3bbd5c3:
+	// typeMap-sentinel `INTERNAL.nil` lookup) satisfies only the first
+	// two markers; without the third the strict check forces a re-pass
+	// so the new ValueType-discriminated helper wires in. Each step
 	// below handles its already-patched state idempotently, so a
 	// re-pass over a fully or partially patched tree converges without
 	// double-applying.
-	if strings.Contains(body, "Fields OrderedFields") && strings.Contains(body, "func isOrderableSinglePattern(") {
+	if strings.Contains(body, "Fields OrderedFields") &&
+		strings.Contains(body, "func isOrderableSinglePattern(") &&
+		strings.Contains(body, "func isOrderableMapValueType(") {
 		return nil
 	}
 
@@ -393,16 +397,20 @@ func patchDecodeGo(moduleDir string, family decodeFamily) error {
 	}
 	body = patched
 
-	// 6. Append the family-specific DecodeToOrderedValue helper and the
-	// isOrderableSinglePattern kind-dispatch helper. Each append is
-	// idempotent: skip when the function name is already present so a
-	// re-run over a cached patched tree does not stack duplicate
-	// declarations at end-of-file.
+	// 6. Append the family-specific DecodeToOrderedValue helper, the
+	// isOrderableSinglePattern kind-dispatch helper, and the
+	// isOrderableMapValueType ValueType-discriminator helper. Each
+	// append is idempotent: skip when the function name is already
+	// present so a re-run over a cached patched tree does not stack
+	// duplicate declarations at end-of-file.
 	if !strings.Contains(body, "func DecodeToOrderedValue(") {
 		body = strings.TrimRight(body, "\n") + "\n\n" + decodeToOrderedValueFunc(family) + "\n"
 	}
 	if !strings.Contains(body, "func isOrderableSinglePattern(") {
 		body = strings.TrimRight(body, "\n") + "\n\n" + isOrderableSinglePatternFunc(family) + "\n"
+	}
+	if !strings.Contains(body, "func isOrderableMapValueType(") {
+		body = strings.TrimRight(body, "\n") + "\n\n" + isOrderableMapValueTypeFunc(family) + "\n"
 	}
 
 	return os.WriteFile(path, []byte(body), 0o644)
@@ -1017,22 +1025,26 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 // class value (whose decodeClassValue path produces DynamicClass with
 // OrderedFields for the dynamic case and a typed struct for the
 // static case; either way the resulting reflect.Value is shape-
-// compatible with the static field) and a CFFI map value whose value
-// type resolves to the runtime's INTERNAL.nil sentinel (an untyped
-// dynamic-value map, which decodeMapValue would otherwise flatten into
-// a plain Go map[string]any). Lists, scalars, enums, nested unions,
-// and statically-typed maps return false so plain Decode hands back a
-// concretely typed reflect.Value the optional wrapper can Set into
-// `reflect.New(pointerToConcrete)`.
+// compatible with the static field) and a CFFI map value whose
+// declared ValueType is structurally dynamic. Lists, scalars, enums,
+// nested unions, and statically-typed maps return false so plain
+// Decode hands back a concretely typed reflect.Value the optional
+// wrapper can Set into `reflect.New(pointerToConcrete)`.
 //
-// The TypeMap surface differs between families: v0.204 and v0.215 use
-// `type TypeMap map[string]reflect.Type` (direct index for the
-// INTERNAL.nil lookup), while v0.219+ wraps the map in a struct with
-// an unexported `typeMap` field. The helper is rendered per-family so
-// the access form matches the family's TypeMap shape; the body is
-// otherwise identical across families.
+// The map-value decision is delegated to isOrderableMapValueType so
+// the kind-switch here is body-stable across families; the per-family
+// difference lives in that helper alone (different TypeMap surface
+// and different per-variant inner field names on the *type-descriptor*
+// side of CFFI).
+//
+// On the *value* side (`*cffi.CFFIValueMap`, what `v.MapValue` is)
+// the declared value type is named `ValueType` consistently across
+// all observed families — the proto field rename was on the
+// `CFFIFieldTypeMap` (the *type* descriptor), not on `CFFIValueMap`.
+// The body therefore reads the same `v.MapValue.ValueType` accessor
+// regardless of family.
 func isOrderableSinglePatternFunc(family decodeFamily) string {
-	const body = `// isOrderableSinglePattern reports whether decodeUnionValue's
+	body := `// isOrderableSinglePattern reports whether decodeUnionValue's
 // optional / single-pattern branch should route the inner CFFI
 // holder through DecodeToOrderedValue. The branch is shared by
 // static fields like ` + "`optional(list<string>)`" + ` that need a
@@ -1056,23 +1068,155 @@ func isOrderableSinglePattern(holder *cffi.CFFIValueHolder, typeMap TypeMap) boo
 		if v.MapValue == nil {
 			return false
 		}
-		nilType, ok := %s["INTERNAL.nil"]
-		if !ok {
-			return false
-		}
-		return convertFieldTypeToGoType(v.MapValue.ValueType, typeMap) == nilType
+		return isOrderableMapValueType(v.MapValue.ValueType, typeMap)
 	default:
 		return false
 	}
 }`
+	// Family-stable body; per-family differences are absorbed entirely
+	// by isOrderableMapValueType. Reject unknown families explicitly
+	// so a future enum value surfaces as a loud no-op (empty string —
+	// the caller's `strings.Contains` postcondition then fails).
 	switch family {
-	case familyA, familyB:
-		return fmt.Sprintf(body, "typeMap")
-	case familyC:
-		return fmt.Sprintf(body, "typeMap.typeMap")
+	case familyA, familyB, familyC:
+		return body
 	default:
 		return ""
 	}
+}
+
+// isOrderableMapValueTypeFunc emits the per-family ValueType
+// discriminator the _MapValue arm of isOrderableSinglePattern delegates
+// to. The helper inspects the declared CFFI value type of a map and
+// returns true only when the type is structurally dynamic (would
+// otherwise produce a plain Go map under the standard Decode pipeline
+// and lose CFFI key order):
+//
+//   - AnyType / NullType resolve to the unconstrained `interface{}`
+//     value type at the runtime layer (NullType under serde's
+//     `INTERNAL.nil` interpretation), so the map's value column is
+//     untyped — route ordered.
+//   - UnionVariantType is dynamic only when the variant name is unset
+//     OR the variant name is absent from the generated TypeMap; a
+//     concrete user union whose name is registered must stay on plain
+//     Decode so the typed struct comes through unchanged.
+//   - OptionalType / CheckedType / StreamStateType wrap an inner
+//     value type; recurse so an `optional(any)` or
+//     `streamstate(map<string, any>)` value column still routes
+//     through the ordered pipeline.
+//   - Concrete scalar / class / enum / list / map / type-alias
+//     variants are static — return false so plain Decode produces a
+//     concretely typed reflect.Value.
+//
+// familyA carries an additional TupleType variant; tuples are
+// concrete in BAML's value-type sense so they return false as well.
+// The trailing `default: return false` arm fails closed on any
+// hypothetical future variant: a BAML release that introduces a new
+// shape lands on plain Decode (the safe direction — the ordered
+// pipeline would otherwise silently swallow shapes whose decode
+// semantics have not been audited).
+//
+// Per-family differences captured here:
+//
+//   - TypeMap surface for the UnionVariantType lookup. v0.204 has
+//     no GetType method on TypeMap; the existing
+//     `convertFieldTypeToGoType` resolves union names via
+//     ` + "`typeMap[namespace.Enum().String() + \".\" + name]`" + ` —
+//     mirror that form. v0.215 has a GetType method but
+//     `convertFieldTypeToGoType` still uses the direct-index form —
+//     mirror it for consistency. v0.219+ wraps TypeMap in a struct
+//     with `.GetType(name)` as the only stable accessor.
+//   - familyA additionally enumerates the `TupleType` variant in
+//     the switch so the case appears explicitly under the static
+//     verdict; familyB / familyC let the `default` arm cover the
+//     same outcome because the variant does not exist in their
+//     proto descriptors.
+func isOrderableMapValueTypeFunc(family decodeFamily) string {
+	header := `// isOrderableMapValueType reports whether a CFFI value-type
+// holder describes a structurally dynamic value. Only structurally
+// dynamic types route the surrounding _MapValue through
+// DecodeToOrderedValue; concrete scalar, class, enum, list, map,
+// and type-alias variants stay on the plain Decode pipeline so a
+// statically-typed map<K, V> field still decodes to map[K]V.
+func isOrderableMapValueType(vt *cffi.CFFIFieldTypeHolder, typeMap TypeMap) bool {
+	if vt == nil {
+		return false
+	}
+	switch t := vt.Type.(type) {
+	case *cffi.CFFIFieldTypeHolder_AnyType:
+		return true
+	case *cffi.CFFIFieldTypeHolder_NullType:
+		return true
+	case *cffi.CFFIFieldTypeHolder_UnionVariantType:
+		if t.UnionVariantType == nil || t.UnionVariantType.Name == nil {
+			return true
+		}
+%s
+	case *cffi.CFFIFieldTypeHolder_OptionalType:
+		if t.OptionalType == nil {
+			return false
+		}
+		return isOrderableMapValueType(t.OptionalType.Value, typeMap)
+	case *cffi.CFFIFieldTypeHolder_CheckedType:
+		if t.CheckedType == nil {
+			return false
+		}
+		return isOrderableMapValueType(t.CheckedType.Value, typeMap)
+	case *cffi.CFFIFieldTypeHolder_StreamStateType:
+		if t.StreamStateType == nil {
+			return false
+		}
+		return isOrderableMapValueType(t.StreamStateType.Value, typeMap)
+%s
+	default:
+		return false
+	}
+}`
+
+	// Union-variant lookup body (per-family). A concrete user union
+	// returns false (the static path); an unknown variant returns true
+	// (the dynamic path mirrors what convertFieldTypeToGoType would
+	// produce — a DynamicUnion wrapper).
+	var unionLookup string
+	switch family {
+	case familyA:
+		unionLookup = "\t\tname := t.UnionVariantType.Name\n" +
+			"\t\tkey := name.Namespace.Enum().String() + \".\" + name.Name\n" +
+			"\t\t_, ok := typeMap[key]\n" +
+			"\t\treturn !ok"
+	case familyB:
+		unionLookup = "\t\tname := t.UnionVariantType.Name\n" +
+			"\t\tkey := name.Namespace.Enum().String() + \".\" + name.Name\n" +
+			"\t\t_, ok := typeMap[key]\n" +
+			"\t\treturn !ok"
+	case familyC:
+		unionLookup = "\t\t_, ok := typeMap.GetType(t.UnionVariantType.Name)\n" +
+			"\t\treturn !ok"
+	default:
+		return ""
+	}
+
+	// familyA-only TupleType case; rendered as an explicit
+	// static-verdict arm so the verdict is reviewable in the helper
+	// itself — the `default` fall-through covers the same outcome but
+	// hides the verdict behind a catch-all. familyB / familyC omit
+	// this arm (no TupleType variant exists in those proto
+	// descriptors); the %s substitution would otherwise leave a stray
+	// blank line, so render an explicit placeholder marker that the
+	// caller strips after sprintf.
+	tupleCase := "\t_ = struct{}{}"
+	if family == familyA {
+		tupleCase = "\tcase *cffi.CFFIFieldTypeHolder_TupleType:\n" +
+			"\t\treturn false"
+	}
+
+	rendered := fmt.Sprintf(header, unionLookup, tupleCase)
+	// Strip the placeholder line for non-familyA so the resulting
+	// switch body has no stray dead statement. Targeted on a private
+	// sentinel so unrelated `_ = struct{}{}` occurrences (none in the
+	// templates above) are unaffected.
+	rendered = strings.Replace(rendered, "\t_ = struct{}{}\n", "", 1)
+	return rendered
 }
 
 // patchPkgLibGo augments the BAML pkg facade with three things the

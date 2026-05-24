@@ -669,11 +669,48 @@ func isOrderableSinglePattern(holder *cffi.CFFIValueHolder, typeMap TypeMap) boo
 		if v.MapValue == nil {
 			return false
 		}
-		nilType, ok := typeMap.typeMap["INTERNAL.nil"]
-		if !ok {
+		return isOrderableMapValueType(v.MapValue.ValueType, typeMap)
+	default:
+		return false
+	}
+}
+
+// isOrderableMapValueType reports whether a CFFI value-type
+// holder describes a structurally dynamic value. Only structurally
+// dynamic types route the surrounding _MapValue through
+// DecodeToOrderedValue; concrete scalar, class, enum, list, map,
+// and type-alias variants stay on the plain Decode pipeline so a
+// statically-typed map<K, V> field still decodes to map[K]V.
+func isOrderableMapValueType(vt *cffi.CFFIFieldTypeHolder, typeMap TypeMap) bool {
+	if vt == nil {
+		return false
+	}
+	switch t := vt.Type.(type) {
+	case *cffi.CFFIFieldTypeHolder_AnyType:
+		return true
+	case *cffi.CFFIFieldTypeHolder_NullType:
+		return true
+	case *cffi.CFFIFieldTypeHolder_UnionVariantType:
+		if t.UnionVariantType == nil || t.UnionVariantType.Name == nil {
+			return true
+		}
+		_, ok := typeMap.GetType(t.UnionVariantType.Name)
+		return !ok
+	case *cffi.CFFIFieldTypeHolder_OptionalType:
+		if t.OptionalType == nil {
 			return false
 		}
-		return convertFieldTypeToGoType(v.MapValue.ValueType, typeMap) == nilType
+		return isOrderableMapValueType(t.OptionalType.Value, typeMap)
+	case *cffi.CFFIFieldTypeHolder_CheckedType:
+		if t.CheckedType == nil {
+			return false
+		}
+		return isOrderableMapValueType(t.CheckedType.Value, typeMap)
+	case *cffi.CFFIFieldTypeHolder_StreamStateType:
+		if t.StreamStateType == nil {
+			return false
+		}
+		return isOrderableMapValueType(t.StreamStateType.Value, typeMap)
 	default:
 		return false
 	}
