@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -329,7 +328,3 @@ func isAllowedVetFailure(out string) bool {
 	return false
 }
 
-// copyTreeQuick is a thin wrapper retained for naming symmetry with
-// the production copyDir; tests use copyDir directly via the unexported
-// package-level helper.
-var _ = func() error { var r io.Reader; _ = r; return nil }
