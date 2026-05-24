@@ -356,7 +356,18 @@ func patchDecodeGo(moduleDir string, family decodeFamily) error {
 	}
 	body = body[:uIdx] + dynamicUnionDecodePatched(family) + body[uEnd+1:]
 
-	// 4. Append the family-specific DecodeToOrderedValue helper.
+	// 4. Patch decodeUnionValue's unknown-union branch so the nested
+	// CFFI value flows through DecodeToOrderedValue. Without this,
+	// dynamic unions whose Value is a CFFI map/class decode through
+	// the standard Decode pipeline and lose key order before the
+	// generated client wraps the result.
+	patched, err = patchDecodeUnionValueDynamicBranch(body, family)
+	if err != nil {
+		return fmt.Errorf("patching decodeUnionValue dynamic branch in %s: %w", path, err)
+	}
+	body = patched
+
+	// 5. Append the family-specific DecodeToOrderedValue helper.
 	body = strings.TrimRight(body, "\n") + "\n\n" + decodeToOrderedValueFunc(family) + "\n"
 
 	return os.WriteFile(path, []byte(body), 0o644)
@@ -512,6 +523,132 @@ func dynamicUnionDecodePatched(family decodeFamily) string {
 }`, variantField)
 }
 
+// patchDecodeUnionValueDynamicBranch rewrites the unknown-union (fully
+// dynamic) branch in decodeUnionValue so the nested CFFI value is
+// decoded through DecodeToOrderedValue instead of Decode. Without this,
+// a DynamicUnion whose Value contains a CFFI map or class holder is
+// flattened into a plain Go map via the standard decode path before the
+// generated client wraps the result, dropping insertion order — the
+// scope D2 requirement that union nested values use the ordered
+// decoder is then violated. The pre-image text matches the upstream
+// BAML serde shape per family; an unrecognised shape fails closed so
+// future drift is loud.
+func patchDecodeUnionValueDynamicBranch(body string, family decodeFamily) (string, error) {
+	before, after, ok := decodeUnionValueDynamicBranchStrings(family)
+	if !ok {
+		return body, fmt.Errorf("no decodeUnionValue dynamic-branch template for family %s", family)
+	}
+	idx := strings.Index(body, before)
+	if idx < 0 {
+		return body, fmt.Errorf("could not locate decodeUnionValue dynamic branch for family %s", family)
+	}
+	if strings.Index(body[idx+1:], before) >= 0 {
+		return body, fmt.Errorf("decodeUnionValue dynamic branch pre-image is not unique for family %s", family)
+	}
+	return body[:idx] + after + body[idx+len(before):], nil
+}
+
+// decodeUnionValueDynamicBranchStrings returns the (pre-image, post-image)
+// pair the surgical patch in patchDecodeUnionValueDynamicBranch
+// rewrites for each BAML serde family. Whitespace mirrors the upstream
+// gofmt output (tabs throughout); the import-rewrite step that produces
+// the patched fork preserves these positions verbatim.
+func decodeUnionValueDynamicBranchStrings(family decodeFamily) (string, string, bool) {
+	switch family {
+	case familyA:
+		before := "\t\t// Union not found\n" +
+			"\t\t// This is a fully dynamic union, so we\n" +
+			"\t\t// decode the value as the value and drop\n" +
+			"\t\t// union type information\n" +
+			"\t\tdynamicUnion := DynamicUnion{\n" +
+			"\t\t\tVariant: unionName,\n" +
+			"\t\t\tValue:   Decode(valueUnion.Value, typeMap).Interface(),\n" +
+			"\t\t}\n" +
+			"\t\treturn reflect.ValueOf(dynamicUnion)\n"
+		after := "\t\t// Union not found\n" +
+			"\t\t// This is a fully dynamic union, so we\n" +
+			"\t\t// decode the value as the value and drop\n" +
+			"\t\t// union type information; route the nested value\n" +
+			"\t\t// through DecodeToOrderedValue so a CFFI map or class\n" +
+			"\t\t// inside the union preserves key order.\n" +
+			"\t\tdynamicUnion := DynamicUnion{\n" +
+			"\t\t\tVariant: unionName,\n" +
+			"\t\t\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n" +
+			"\t\t}\n" +
+			"\t\treturn reflect.ValueOf(dynamicUnion)\n"
+		return before, after, true
+	case familyB:
+		before := "\t\t\t\t// Union not found\n" +
+			"\t\t\t\t// This is a fully dynamic union, so we\n" +
+			"\t\t\t\t// decode the value as the value and drop\n" +
+			"\t\t\t\t// union type information\n" +
+			"\t\t\t\tvalue, _ := Decode(valueUnion.Value, typeMap)\n" +
+			"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
+			"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
+			"\t\t\t\t\tValue:   value.Elem(),\n" +
+			"\t\t\t\t}\n" +
+			"\t\t\t\tvalue = reflect.ValueOf(dynamicUnion)\n" +
+			"\t\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
+			"\t\t\t\treturn value, goType\n"
+		after := "\t\t\t\t// Union not found\n" +
+			"\t\t\t\t// This is a fully dynamic union, so we\n" +
+			"\t\t\t\t// decode the value as the value and drop\n" +
+			"\t\t\t\t// union type information; route the nested value\n" +
+			"\t\t\t\t// through DecodeToOrderedValue so a CFFI map or class\n" +
+			"\t\t\t\t// inside the union preserves key order.\n" +
+			"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
+			"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
+			"\t\t\t\t\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n" +
+			"\t\t\t\t}\n" +
+			"\t\t\t\tvalue := reflect.ValueOf(dynamicUnion)\n" +
+			"\t\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
+			"\t\t\t\treturn value, goType\n"
+		return before, after, true
+	case familyC:
+		before := "\t\t\t\t// Union not found\n" +
+			"\t\t\t\t// This is a fully dynamic union, so we\n" +
+			"\t\t\t\t// decode the value as the value and drop\n" +
+			"\t\t\t\t// union type information\n" +
+			"\t\t\t\tvalue, goType := Decode(valueUnion.Value, typeMap)\n" +
+			"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
+			"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
+			"\t\t\t\t}\n" +
+			"\n" +
+			"\t\t\t\tswitch goType {\n" +
+			"\t\t\t\tcase reflect.TypeOf(int64(0)):\n" +
+			"\t\t\t\t\tdynamicUnion.Value = value.Int()\n" +
+			"\t\t\t\tcase reflect.TypeOf(float64(0)):\n" +
+			"\t\t\t\t\tdynamicUnion.Value = value.Float()\n" +
+			"\t\t\t\tcase reflect.TypeOf(false):\n" +
+			"\t\t\t\t\tdynamicUnion.Value = value.Bool()\n" +
+			"\t\t\t\tdefault:\n" +
+			"\t\t\t\t\tdynamicUnion.Value = value.Interface()\n" +
+			"\t\t\t\t}\n" +
+			"\t\t\t\tvalue = reflect.ValueOf(dynamicUnion)\n" +
+			"\t\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
+			"\t\t\t\treturn value, goType\n"
+		after := "\t\t\t\t// Union not found\n" +
+			"\t\t\t\t// This is a fully dynamic union, so we\n" +
+			"\t\t\t\t// decode the value as the value and drop\n" +
+			"\t\t\t\t// union type information; route the nested value\n" +
+			"\t\t\t\t// through DecodeToOrderedValue so a CFFI map or class\n" +
+			"\t\t\t\t// inside the union preserves key order, and so the\n" +
+			"\t\t\t\t// scalar fast-path inside DecodeToOrderedValue covers\n" +
+			"\t\t\t\t// the int64/float64/bool cases the unpatched switch\n" +
+			"\t\t\t\t// used to handle here.\n" +
+			"\t\t\t\tdynamicUnion := DynamicUnion{\n" +
+			"\t\t\t\t\tVariant: valueUnion.Name.Name,\n" +
+			"\t\t\t\t\tValue:   DecodeToOrderedValue(valueUnion.Value, typeMap),\n" +
+			"\t\t\t\t}\n" +
+			"\t\t\t\tvalue := reflect.ValueOf(dynamicUnion)\n" +
+			"\t\t\t\tgoType = reflect.TypeOf(DynamicUnion{})\n" +
+			"\t\t\t\treturn value, goType\n"
+		return before, after, true
+	default:
+		return "", "", false
+	}
+}
+
 // decodeToOrderedValueFunc emits the version-family-specific
 // DecodeToOrderedValue helper. The helper walks the CFFI holder tree
 // producing OrderedFields for class and map nodes while delegating
@@ -551,6 +688,15 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 			items = append(items, DecodeToOrderedValue(item, typeMap))
 		}
 		return items
+	case *cffi.CFFIValueHolder_UnionVariantValue:
+		if v.UnionVariantValue == nil {
+			return nil
+		}
+		decoded := decodeUnionValue(v.UnionVariantValue, typeMap)
+		if !decoded.IsValid() {
+			return nil
+		}
+		return decoded.Interface()
 	default:
 		decoded := Decode(holder, typeMap)
 		if !decoded.IsValid() {
@@ -591,6 +737,15 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 			items = append(items, DecodeToOrderedValue(item, typeMap))
 		}
 		return items
+	case *cffi.CFFIValueHolder_UnionVariantValue:
+		if v.UnionVariantValue == nil {
+			return nil
+		}
+		decoded, _ := decodeUnionValue(v.UnionVariantValue, typeMap)
+		if !decoded.IsValid() {
+			return nil
+		}
+		return decoded.Interface()
 	default:
 		decoded, _ := Decode(holder, typeMap)
 		if !decoded.IsValid() {
@@ -631,6 +786,15 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 			items = append(items, DecodeToOrderedValue(item, typeMap))
 		}
 		return items
+	case *cffi.CFFIValueHolder_UnionVariantValue:
+		if v.UnionVariantValue == nil {
+			return nil
+		}
+		decoded, _ := decodeUnionValue(v.UnionVariantValue, typeMap)
+		if !decoded.IsValid() {
+			return nil
+		}
+		return decoded.Interface()
 	default:
 		decoded, goType := Decode(holder, typeMap)
 		if !decoded.IsValid() {

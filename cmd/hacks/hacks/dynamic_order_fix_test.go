@@ -72,6 +72,27 @@ func TestApplyDynamicOrderFixToDir_PerVersion(t *testing.T) {
 				t.Fatalf("decode.go in %s missing DecodeToOrderedValue helper", v)
 			}
 
+			// Postcondition (cold-v2 union fix): DecodeToOrderedValue
+			// has an explicit *cffi.CFFIValueHolder_UnionVariantValue
+			// case that routes through decodeUnionValue (which itself
+			// uses the ordered decoder), and the unknown-union branch
+			// in decodeUnionValue routes the nested value through
+			// DecodeToOrderedValue rather than Decode. Without these
+			// two patches, a dynamic union whose Value is a CFFI map
+			// drops key order on the way out of serde.
+			if !strings.Contains(body, "*cffi.CFFIValueHolder_UnionVariantValue") {
+				t.Fatalf("decode.go in %s missing CFFIValueHolder_UnionVariantValue case in DecodeToOrderedValue", v)
+			}
+			if !strings.Contains(body, "DecodeToOrderedValue(valueUnion.Value, typeMap)") {
+				t.Fatalf("decode.go in %s did not route decodeUnionValue's dynamic branch through DecodeToOrderedValue", v)
+			}
+			if strings.Contains(body, "Decode(valueUnion.Value, typeMap).Interface()") {
+				t.Fatalf("decode.go in %s still routes dynamic union value through Decode(...).Interface() (family A pre-patch shape)", v)
+			}
+			if strings.Contains(body, "Value:   value.Elem(),") {
+				t.Fatalf("decode.go in %s still wraps dynamic union value through value.Elem() (family B pre-patch shape)", v)
+			}
+
 			// Postcondition: pkg/lib.go exposes the public surface.
 			libBody := readFileT(t, filepath.Join(workDir, "engine", "language_client_go", "pkg", "lib.go"))
 			for _, marker := range []string{

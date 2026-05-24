@@ -221,23 +221,17 @@ func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (
 				// Union not found
 				// This is a fully dynamic union, so we
 				// decode the value as the value and drop
-				// union type information
-				value, goType := Decode(valueUnion.Value, typeMap)
+				// union type information; route the nested value
+				// through DecodeToOrderedValue so a CFFI map or class
+				// inside the union preserves key order, and so the
+				// scalar fast-path inside DecodeToOrderedValue covers
+				// the int64/float64/bool cases the unpatched switch
+				// used to handle here.
 				dynamicUnion := DynamicUnion{
 					Variant: valueUnion.Name.Name,
+					Value:   DecodeToOrderedValue(valueUnion.Value, typeMap),
 				}
-
-				switch goType {
-				case reflect.TypeOf(int64(0)):
-					dynamicUnion.Value = value.Int()
-				case reflect.TypeOf(float64(0)):
-					dynamicUnion.Value = value.Float()
-				case reflect.TypeOf(false):
-					dynamicUnion.Value = value.Bool()
-				default:
-					dynamicUnion.Value = value.Interface()
-				}
-				value = reflect.ValueOf(dynamicUnion)
+				value := reflect.ValueOf(dynamicUnion)
 				goType = reflect.TypeOf(DynamicUnion{})
 				return value, goType
 			}
@@ -624,6 +618,15 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 			items = append(items, DecodeToOrderedValue(item, typeMap))
 		}
 		return items
+	case *cffi.CFFIValueHolder_UnionVariantValue:
+		if v.UnionVariantValue == nil {
+			return nil
+		}
+		decoded, _ := decodeUnionValue(v.UnionVariantValue, typeMap)
+		if !decoded.IsValid() {
+			return nil
+		}
+		return decoded.Interface()
 	default:
 		decoded, goType := Decode(holder, typeMap)
 		if !decoded.IsValid() {
