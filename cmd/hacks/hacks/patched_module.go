@@ -106,6 +106,10 @@ func GeneratePatchedBAMLModule(srcDir, outDir, modulePath, version string) error
 		return err
 	}
 
+	if err := ApplyDynamicOrderFixToDir(normalizedVersion, outDir); err != nil {
+		return err
+	}
+
 	if err := writePatchedProvenance(outDir, normalizedVersion, modulePath); err != nil {
 		return err
 	}
