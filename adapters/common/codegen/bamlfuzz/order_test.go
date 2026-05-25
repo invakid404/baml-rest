@@ -240,15 +240,195 @@ func TestSchemaOrderDiff_MissingExtraKeysDoNotPanic(t *testing.T) {
 	}
 }
 
-func TestSchemaOrderDiff_HasUnionReturnsUnsupported(t *testing.T) {
-	schema := schemaRootOnly("a", "b")
-	schema.HasUnion = true
+// TestSchemaOrderDiff_UnionWithoutChoiceReturnsUnsupported pins the
+// union contract: when the order walker reaches a KindUnion node
+// without a matching UnionChoices entry, SchemaOrderDiff returns
+// ErrSchemaOrderUnsupported and the caller falls back to
+// semantic-only diagnostics.
+func TestSchemaOrderDiff_UnionWithoutChoiceReturnsUnsupported(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "u", Type: FuzzType{
+					Kind: KindUnion,
+					Variants: []FuzzType{
+						{Kind: KindString},
+						{Kind: KindInt},
+					},
+				}},
+			},
+		}},
+		RootClass: "Root",
+	}
 	_, err := SchemaOrderDiff("side", schema,
-		json.RawMessage(`{"a":1,"b":2}`),
-		json.RawMessage(`{"b":2,"a":1}`),
+		json.RawMessage(`{"u":"x"}`),
+		json.RawMessage(`{"u":"x"}`),
 	)
 	if !errors.Is(err, ErrSchemaOrderUnsupported) {
 		t.Errorf("got err=%v, want errors.Is(err, ErrSchemaOrderUnsupported)", err)
+	}
+}
+
+// TestSchemaOrderDiff_UnionWithChoiceWalksArm pins the positive
+// path: given a recorded UnionChoices entry the walker descends into
+// the named arm and continues the order check from there.
+func TestSchemaOrderDiff_UnionWithChoiceWalksArm(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{
+			{
+				Name: "Root",
+				Properties: []FuzzProperty{
+					{Name: "u", Type: FuzzType{
+						Kind: KindUnion,
+						Variants: []FuzzType{
+							{Kind: KindClassRef, Ref: "Inner"},
+							{Kind: KindString},
+						},
+					}},
+				},
+			},
+			{
+				Name: "Inner",
+				Properties: []FuzzProperty{
+					{Name: "a", Type: FuzzType{Kind: KindInt}},
+					{Name: "b", Type: FuzzType{Kind: KindInt}},
+				},
+			},
+		},
+		RootClass: "Root",
+	}
+	// The metadata key `.u` names the union node itself — the field
+	// `u` on Root. Suffixed `:v` segments only appear for paths that
+	// live INSIDE the picked arm (e.g. a nested union below `u` would
+	// be at `.u:v...`); the outer union's own choice lives at the
+	// unsuffixed field path.
+	choices := map[string]UnionChoice{
+		".u": {Index: 0, Kind: KindClassRef, Ref: "Inner", VariantCount: 2},
+	}
+	diffs, err := SchemaOrderDiffWithChoices("side", schema,
+		json.RawMessage(`{"u":{"a":1,"b":2}}`),
+		json.RawMessage(`{"u":{"b":2,"a":1}}`),
+		choices,
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff in the Inner class, got %d", len(diffs))
+	}
+}
+
+// TestSchemaOrderDiff_UnionStaleVariantCountFailsClosed asserts the
+// order walker bails when the recorded UnionChoice.VariantCount does
+// not match the schema's current variant slice. Stale corpus/replay
+// metadata after a schema-side variant reorder must surface as
+// ErrSchemaOrderUnsupported, not silent traversal of the wrong arm.
+func TestSchemaOrderDiff_UnionStaleVariantCountFailsClosed(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "u", Type: FuzzType{
+					Kind: KindUnion,
+					Variants: []FuzzType{
+						{Kind: KindString},
+						{Kind: KindInt},
+					},
+				}},
+			},
+		}},
+		RootClass: "Root",
+	}
+	choices := map[string]UnionChoice{
+		// Stale: schema has 2 arms, choice claims 3.
+		".u": {Index: 0, Kind: KindString, VariantCount: 3},
+	}
+	_, err := SchemaOrderDiffWithChoices("side", schema,
+		json.RawMessage(`{"u":"x"}`),
+		json.RawMessage(`{"u":"x"}`),
+		choices,
+	)
+	if !errors.Is(err, ErrSchemaOrderUnsupported) {
+		t.Errorf("stale variant count should be unsupported, got %v", err)
+	}
+}
+
+// TestSchemaOrderDiff_UnionStaleKindFailsClosed asserts the order
+// walker bails when the recorded UnionChoice.Kind disagrees with the
+// kind of the selected variant in the current schema.
+func TestSchemaOrderDiff_UnionStaleKindFailsClosed(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "u", Type: FuzzType{
+					Kind: KindUnion,
+					Variants: []FuzzType{
+						{Kind: KindString},
+						{Kind: KindInt},
+					},
+				}},
+			},
+		}},
+		RootClass: "Root",
+	}
+	choices := map[string]UnionChoice{
+		// Stale: index 0 is string in the schema but the metadata
+		// records it as int (the variants were reordered).
+		".u": {Index: 0, Kind: KindInt, VariantCount: 2},
+	}
+	_, err := SchemaOrderDiffWithChoices("side", schema,
+		json.RawMessage(`{"u":"x"}`),
+		json.RawMessage(`{"u":"x"}`),
+		choices,
+	)
+	if !errors.Is(err, ErrSchemaOrderUnsupported) {
+		t.Errorf("stale arm kind should be unsupported, got %v", err)
+	}
+}
+
+// TestSchemaOrderDiff_UnionStaleRefFailsClosed asserts the order
+// walker bails when the recorded UnionChoice.Ref differs from the
+// selected variant's class/enum ref name. A class rename or swap
+// upstream of the corpus would otherwise let the walker traverse the
+// wrong target.
+func TestSchemaOrderDiff_UnionStaleRefFailsClosed(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{
+			{
+				Name: "Root",
+				Properties: []FuzzProperty{
+					{Name: "u", Type: FuzzType{
+						Kind: KindUnion,
+						Variants: []FuzzType{
+							{Kind: KindClassRef, Ref: "Inner"},
+							{Kind: KindString},
+						},
+					}},
+				},
+			},
+			{
+				Name: "Inner",
+				Properties: []FuzzProperty{
+					{Name: "a", Type: FuzzType{Kind: KindInt}},
+				},
+			},
+		},
+		RootClass: "Root",
+	}
+	choices := map[string]UnionChoice{
+		// Stale: schema points the class-ref arm at "Inner" but the
+		// metadata still names "Other" from a prior schema.
+		".u": {Index: 0, Kind: KindClassRef, Ref: "Other", VariantCount: 2},
+	}
+	_, err := SchemaOrderDiffWithChoices("side", schema,
+		json.RawMessage(`{"u":{"a":1}}`),
+		json.RawMessage(`{"u":{"a":1}}`),
+		choices,
+	)
+	if !errors.Is(err, ErrSchemaOrderUnsupported) {
+		t.Errorf("stale arm ref should be unsupported, got %v", err)
 	}
 }
 

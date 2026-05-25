@@ -38,6 +38,26 @@ type CaseMetadata struct {
 	// report depth 1. Self-ref and mutual-cycle schemas report higher
 	// peaks up to MaxValueRecursion.
 	RecursionDepths map[string]int `json:"recursion_depths,omitempty"`
+	// UnionChoices maps a JSON-path-style key to the union-variant
+	// choice the value walker recorded at that path. Populated for
+	// every KindUnion node encountered. The order checker and the
+	// failure envelope read this to explain which arm was exercised;
+	// callers reading union choices fail closed when an entry is
+	// missing.
+	UnionChoices map[string]UnionChoice `json:"union_choices,omitempty"`
+}
+
+// UnionChoice records which arm of a KindUnion was selected at one
+// JSON path. Index is the zero-based slot in FuzzType.Variants;
+// Kind / Ref describe the selected arm's discriminator so a
+// developer can interpret the envelope without re-deriving the
+// schema. VariantCount lets a consumer detect a single-arm shrink
+// state (where the union collapsed to a bare type during shrinking).
+type UnionChoice struct {
+	Index        int          `json:"index"`
+	Kind         FuzzTypeKind `json:"kind"`
+	Ref          string       `json:"ref,omitempty"`
+	VariantCount int          `json:"variant_count"`
 }
 
 // OracleCase is the fully-materialized fuzz case downstream PRs ship

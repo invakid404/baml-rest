@@ -1,0 +1,71 @@
+{
+  "name": "static_union_field_string_or_int",
+  "seed": 6,
+  "case_index": 5,
+  "mode": "static_prompt",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "either",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "string"
+                },
+                {
+                  "kind": "int"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": true,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "either",
+        "value": {
+          "kind": "union",
+          "variant_index": 1,
+          "variant": {
+            "kind": "int",
+            "int": 7
+          }
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "either": 7
+  },
+  "expected": {
+    "either": 7
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Root": 1
+    },
+    "union_choices": {
+      ".either": {
+        "index": 1,
+        "kind": "int",
+        "variant_count": 2
+      }
+    }
+  }
+}

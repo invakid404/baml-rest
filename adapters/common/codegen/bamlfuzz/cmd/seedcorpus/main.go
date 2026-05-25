@@ -51,6 +51,11 @@ func main() {
 			mapToClass(),
 			mutualRecursion(),
 			literalsAll(),
+			unionFieldString(),
+			unionListElement(),
+			unionMapValue(),
+			unionNestedInsideUnion(),
+			unionTNull(),
 		}
 		modeValue = bamlfuzz.OracleDynamicThreeWay
 	case "static":
@@ -105,11 +110,12 @@ func materialize(idx int, spec seedSpec, mode bamlfuzz.OracleMode) bamlfuzz.Orac
 	}
 }
 
-// staticCases returns the five hand-curated static-mode seed cases.
-// Scope D7 lists the static corpus shape: scalar object, nested class
-// with enum, optional three shapes, terminating mutual recursion, and
-// one self-referential tree. The self-ref case is exclusive to static
-// mode; the dynamic emitter rejects it.
+// staticCases returns the hand-curated static-mode seed cases. The
+// first five cases mirror the original v1 static corpus (scalar
+// object, nested class with enum, optional three shapes, terminating
+// mutual recursion, self-referential tree). The union cases sit on
+// top so the integration test can chunk the corpus into 5-function
+// batches.
 func staticCases() []seedSpec {
 	return []seedSpec{
 		staticScalarObject(),
@@ -117,6 +123,12 @@ func staticCases() []seedSpec {
 		staticOptionalThreeShapes(),
 		staticTerminatingMutualRecursion(),
 		staticSelfReferentialTree(),
+		staticUnionFieldString(),
+		staticUnionListElement(),
+		staticUnionMapValue(),
+		staticUnionNested(),
+		staticUnionTNull(),
+		staticRawTopLevelUnion(),
 	}
 }
 
@@ -563,6 +575,231 @@ func mutualRecursion() seedSpec {
 				vField("a", vOptAbsent()),
 			))),
 		),
+		Preserve: false,
+	}
+}
+
+func tUnion(variants ...bamlfuzz.FuzzType) bamlfuzz.FuzzType {
+	return bamlfuzz.FuzzType{Kind: bamlfuzz.KindUnion, Variants: variants}
+}
+
+func vUnion(idx int, picked bamlfuzz.FuzzValue) bamlfuzz.FuzzValue {
+	return bamlfuzz.FuzzValue{Kind: bamlfuzz.KindUnion, VariantIndex: idx, Variant: &picked}
+}
+
+// unionFieldString covers a class field typed as union(string, int)
+// where the value picks the int arm. Exercises the dynamic emitter's
+// type=union + OneOf lowering and the walker's variant-aware
+// rendering. Schema-order preservation is on so the order checker
+// runs the union-aware path through CaseMetadata.UnionChoices.
+func unionFieldString() seedSpec {
+	return seedSpec{
+		Name: "union_field_string_or_int",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("either", tUnion(tStr(), tInt())),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("either", vUnion(1, vInt(7))),
+		),
+		Preserve: true,
+	}
+}
+
+// unionListElement covers a list whose element type is a union.
+// Element 0 picks the string arm, element 1 picks the int arm: the
+// walker and order checker must dispatch per-element on the recorded
+// choice.
+func unionListElement() seedSpec {
+	return seedSpec{
+		Name: "union_list_element",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("xs", tList(tUnion(tStr(), tInt()))),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("xs", vList(
+				vUnion(0, vStr("alpha")),
+				vUnion(1, vInt(42)),
+			)),
+		),
+		Preserve: false,
+	}
+}
+
+// unionMapValue covers a map whose value type is a union. The two
+// keys pick different arms so the metadata records distinct paths.
+func unionMapValue() seedSpec {
+	return seedSpec{
+		Name: "union_map_value",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("m", tMap(tUnion(tStr(), tBool()))),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("m", vMap(
+				mapEntry("a", vUnion(0, vStr("v"))),
+				mapEntry("b", vUnion(1, vBool(true))),
+			)),
+		),
+		Preserve: false,
+	}
+}
+
+// unionNestedInsideUnion covers union(union(string, int), bool). The
+// walker records distinct choices at the outer and inner positions
+// using the path-with-`:v`-suffix convention.
+func unionNestedInsideUnion() seedSpec {
+	return seedSpec{
+		Name: "union_nested_inside_union",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("x", tUnion(
+					tUnion(tStr(), tInt()),
+					tBool(),
+				)),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("x", vUnion(0, vUnion(1, vInt(123)))),
+		),
+		Preserve: true,
+	}
+}
+
+// unionTNull encodes the T|null pattern. The value picks the null
+// arm so the mock emits explicit JSON null at the field — not the
+// absent-key behaviour optional carries.
+func unionTNull() seedSpec {
+	return seedSpec{
+		Name: "union_t_null",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("maybe", tUnion(tStr(), tNull())),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("maybe", vUnion(1, vNull())),
+		),
+		Preserve: true,
+	}
+}
+
+// staticUnionFieldString is the static-mode equivalent of
+// unionFieldString. Same shape; lives in the static corpus so the
+// static oracle exercises the pipe-syntax lowering end-to-end.
+func staticUnionFieldString() seedSpec {
+	return seedSpec{
+		Name: "static_union_field_string_or_int",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("either", tUnion(tStr(), tInt())),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("either", vUnion(1, vInt(7))),
+		),
+		Preserve: true,
+	}
+}
+
+func staticUnionListElement() seedSpec {
+	return seedSpec{
+		Name: "static_union_list_element",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("xs", tList(tUnion(tStr(), tInt()))),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("xs", vList(
+				vUnion(0, vStr("alpha")),
+				vUnion(1, vInt(42)),
+			)),
+		),
+		Preserve: false,
+	}
+}
+
+func staticUnionMapValue() seedSpec {
+	return seedSpec{
+		Name: "static_union_map_value",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("m", tMap(tUnion(tStr(), tBool()))),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("m", vMap(
+				mapEntry("a", vUnion(0, vStr("v"))),
+				mapEntry("b", vUnion(1, vBool(true))),
+			)),
+		),
+		Preserve: false,
+	}
+}
+
+func staticUnionNested() seedSpec {
+	return seedSpec{
+		Name: "static_union_nested_inside_union",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("x", tUnion(
+					tUnion(tStr(), tInt()),
+					tBool(),
+				)),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("x", vUnion(0, vUnion(1, vInt(123)))),
+		),
+		Preserve: true,
+	}
+}
+
+func staticUnionTNull() seedSpec {
+	return seedSpec{
+		Name: "static_union_t_null",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes: []bamlfuzz.FuzzClass{cls("Root",
+				prop("maybe", tUnion(tStr(), tNull())),
+			)},
+			RootClass: "Root",
+		},
+		Value: vClass("Root",
+			vField("maybe", vUnion(1, vNull())),
+		),
+		Preserve: true,
+	}
+}
+
+// staticRawTopLevelUnion declares a non-class effective root: the
+// synthesized function returns `string | int` directly. The dynamic
+// emitter rejects this shape with ErrDynamicRootTypeUnsupported
+// (raw roots are gated to static); the static .baml lowering
+// supports it natively.
+func staticRawTopLevelUnion() seedSpec {
+	root := tUnion(tStr(), tInt())
+	return seedSpec{
+		Name: "static_raw_top_level_union",
+		Schema: bamlfuzz.FuzzSchema{
+			Classes:  []bamlfuzz.FuzzClass{},
+			Enums:    []bamlfuzz.FuzzEnum{},
+			RootType: &root,
+		},
+		Value:    vUnion(0, vStr("top-level")),
 		Preserve: false,
 	}
 }

@@ -1,0 +1,106 @@
+{
+  "name": "union_map_value",
+  "seed": 15,
+  "case_index": 14,
+  "mode": "dynamic_three_way",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "m",
+            "type": {
+              "kind": "map",
+              "inner": {
+                "kind": "union",
+                "variants": [
+                  {
+                    "kind": "string"
+                  },
+                  {
+                    "kind": "bool"
+                  }
+                ]
+              },
+              "key": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": true,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "m",
+        "value": {
+          "kind": "map",
+          "map_entries": [
+            {
+              "key": "a",
+              "value": {
+                "kind": "union",
+                "variant": {
+                  "kind": "string",
+                  "string": "v"
+                }
+              }
+            },
+            {
+              "key": "b",
+              "value": {
+                "kind": "union",
+                "variant_index": 1,
+                "variant": {
+                  "kind": "bool",
+                  "bool": true
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "m": {
+      "a": "v",
+      "b": true
+    }
+  },
+  "expected": {
+    "m": {
+      "a": "v",
+      "b": true
+    }
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Root": 1
+    },
+    "union_choices": {
+      ".m[\"a\"]": {
+        "index": 0,
+        "kind": "string",
+        "variant_count": 2
+      },
+      ".m[\"b\"]": {
+        "index": 1,
+        "kind": "bool",
+        "variant_count": 2
+      }
+    }
+  }
+}

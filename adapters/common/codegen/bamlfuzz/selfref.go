@@ -1,11 +1,9 @@
 package bamlfuzz
 
 // AnalyzeGraph computes the graph-metadata flags (HasSelfRef,
-// HasMutualCycle, RequiresDynamicSkip) from the class-ref
+// HasMutualCycle, HasUnion, RequiresDynamicSkip) from the class-ref
 // reachability graph and returns a copy of `schema` with those
-// fields refreshed. HasUnion is left unchanged — unions are excluded
-// from the v1 grammar, so the field is always false here but kept
-// as a forward-compat slot.
+// fields refreshed.
 //
 // HasSelfRef is true when at least one class C has a class-ref edge
 // to C in its own property tree (the direct one-hop edges, before
@@ -15,6 +13,11 @@ package bamlfuzz
 // HasMutualCycle is true when at least one class is in a cycle
 // through OTHER classes — i.e. the transitive closure reports
 // reach[C][C]=true but C does not have a direct self-ref edge.
+//
+// HasUnion is true when any KindUnion node appears in any class's
+// property tree, in the effective root type, or in any union
+// variant of either. The graph descent recurses through unions so
+// nested unions still register.
 //
 // RequiresDynamicSkip is true whenever the dynamic emitter cannot
 // safely realize the schema. Two upstream limitations gate it today:
@@ -27,6 +30,10 @@ package bamlfuzz
 //     generator already terminates such cycles via the per-class
 //     recursion cap, so the IR + walker side is ready; only the
 //     dynamic emission path is gated.
+//
+// A raw non-class effective root (RootType non-nil and not a
+// KindClassRef) also flips RequiresDynamicSkip because the production
+// /call/_dynamic endpoint only accepts object-shaped outputs today.
 func AnalyzeGraph(schema FuzzSchema) FuzzSchema {
 	direct := directClassRefs(schema)
 	reach := closureFromDirect(schema, direct)
@@ -44,8 +51,44 @@ func AnalyzeGraph(schema FuzzSchema) FuzzSchema {
 			out.HasMutualCycle = true
 		}
 	}
-	out.RequiresDynamicSkip = out.HasSelfRef || out.HasMutualCycle
+	out.HasUnion = hasUnionAnywhere(schema)
+	rawRoot := schema.RootType != nil && schema.RootType.Kind != KindClassRef
+	out.RequiresDynamicSkip = out.HasSelfRef || out.HasMutualCycle || rawRoot
 	return out
+}
+
+// hasUnionAnywhere returns true if any FuzzType in the schema is
+// (or contains) a KindUnion. Descends through wrapper kinds and
+// through union variants.
+func hasUnionAnywhere(schema FuzzSchema) bool {
+	for _, cls := range schema.Classes {
+		for _, prop := range cls.Properties {
+			if typeContainsUnion(prop.Type) {
+				return true
+			}
+		}
+	}
+	if schema.RootType != nil && typeContainsUnion(*schema.RootType) {
+		return true
+	}
+	return false
+}
+
+func typeContainsUnion(t FuzzType) bool {
+	switch t.Kind {
+	case KindUnion:
+		return true
+	case KindOptional, KindList, KindMap:
+		if t.Inner != nil && typeContainsUnion(*t.Inner) {
+			return true
+		}
+	}
+	for _, v := range t.Variants {
+		if typeContainsUnion(v) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReachabilityClosure returns the transitive class-ref reachability
@@ -91,7 +134,17 @@ func closureFromDirect(schema FuzzSchema, direct map[string]map[string]bool) map
 	return closure
 }
 
-// directClassRefs returns the one-hop class-ref edges per class.
+// directClassRefs returns the one-hop class-ref edges per class. Only
+// property-tree edges count: a class's direct refs are exactly the
+// class refs reachable through its own properties.
+//
+// Edges in the effective root type are NOT attributed to RootClass.
+// RootType and RootClass can coexist (a schema may have both a
+// non-class effective root and a v1-compatible RootClass), and folding
+// root-reachable refs into RootClass's edge set would falsely mark
+// classes self-referential just because the raw root happens to
+// mention them. Root reachability is a separate concern and lives
+// outside the property-edge graph.
 func directClassRefs(schema FuzzSchema) map[string]map[string]bool {
 	out := make(map[string]map[string]bool, len(schema.Classes))
 	for _, cls := range schema.Classes {
@@ -115,6 +168,10 @@ func collectClassRefs(t FuzzType, out map[string]bool) {
 		// needs to descend into Inner.
 		if t.Inner != nil {
 			collectClassRefs(*t.Inner, out)
+		}
+	case KindUnion:
+		for _, v := range t.Variants {
+			collectClassRefs(v, out)
 		}
 	}
 }
