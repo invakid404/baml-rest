@@ -1596,14 +1596,14 @@ func emitStaticHelperByName(name string, pkgIdx *pkgTypeIndex) (string, bool) {
 		if !ok {
 			return "", false
 		}
-		return emitStaticMapHelper(name, typeExpr), true
+		return emitStaticMapHelper(name, typeExpr, pkgIdx), true
 	}
 	if strings.HasPrefix(name, "bamlConvertList_") {
 		listType, ok := convertListHelperTypeFromName(name)
 		if !ok {
 			return "", false
 		}
-		return emitConvertListHelper(name, listType), true
+		return emitConvertListHelper(name, listType, pkgIdx), true
 	}
 	if strings.HasPrefix(name, "bamlNativeMapAs_") {
 		elemName, isPtr, ok := nativeMapHelperElementFromName(name)
@@ -1926,7 +1926,7 @@ func decodeStaticMapEnc(enc string) string {
 // map fields), the helper allocates an OrderedMap[T] from the
 // carrier and returns the address; a nil carrier returns nil so the
 // optional field stays nil for absent values.
-func emitStaticMapHelper(name, typeExpr string) string {
+func emitStaticMapHelper(name, typeExpr string, pkgIdx *pkgTypeIndex) string {
 	t := strings.TrimSpace(typeExpr)
 	// Slice-wrapped variants (`[]baml.OrderedMap[T]`,
 	// `*[]baml.OrderedMap[T]`, `[]*baml.OrderedMap[T]`, …) peel
@@ -1935,7 +1935,7 @@ func emitStaticMapHelper(name, typeExpr string) string {
 	// rewrite emits `bamlOrderedAs_Slice_*` calls that must
 	// reach a defined helper here.
 	if strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "*[]") {
-		return emitSliceWrappedStaticMapHelper(name, t)
+		return emitSliceWrappedStaticMapHelper(name, t, pkgIdx)
 	}
 	isPtr := strings.HasPrefix(t, "*")
 	innerOrderedType := t
@@ -1993,6 +1993,15 @@ func emitStaticMapHelper(name, typeExpr string) string {
 	body.WriteString("\t\tLen() int\n")
 	body.WriteString("\t}); ok {\n")
 	body.WriteString("\t\tranger.RangeAny(func(k string, v any) bool {\n")
+	// Null-holder preservation mirrors the native-map helper: when
+	// the element type is nilable and the conversion is a raw
+	// `v.(T)` assertion, untyped nil from the BAML runtime would
+	// panic the assertion before reaching `out.Set`. Emit a guard
+	// that records the key with a nil value so the carrier's CFFI
+	// insertion order survives a null entry. Helper-routed inner
+	// types (nested `baml.OrderedMap[T]`, lists, pointer-wrapped
+	// ordered maps) handle nil internally and need no guard here.
+	emitStaticMapElementGuard(&body, "\t\t\t", "v", inner, pkgIdx, "_ = out.Set(k, nil)\n\t\t\t\treturn true\n")
 	fmt.Fprintf(&body, "\t\t\t_ = out.Set(k, %s)\n", convertStaticMapValueExpr("v", inner))
 	body.WriteString("\t\t\treturn true\n")
 	body.WriteString("\t\t})\n")
@@ -2068,7 +2077,7 @@ func convertStaticMapValueExpr(varName, innerType string) string {
 // slice (and its pointer), and a fall-through that returns nil
 // when neither the ordered nor the typed shape applies (rather
 // than panicking on an unexpected carrier).
-func emitSliceWrappedStaticMapHelper(name, typeExpr string) string {
+func emitSliceWrappedStaticMapHelper(name, typeExpr string, pkgIdx *pkgTypeIndex) string {
 	t := strings.TrimSpace(typeExpr)
 	isPtr := strings.HasPrefix(t, "*")
 	sliceType := t
@@ -2130,6 +2139,11 @@ func emitSliceWrappedStaticMapHelper(name, typeExpr string) string {
 	b.WriteString("\t}\n")
 	fmt.Fprintf(&b, "\tout := make(%s, len(listVal))\n", sliceType)
 	b.WriteString("\tfor i, ev := range listVal {\n")
+	// Mirror the ordered-map helper's null-holder preservation: a
+	// nil slot in the `[]any` carrier must be recorded as nil in
+	// the typed slice when the element is nilable. The raw
+	// assertion path otherwise panics on an untyped nil.
+	emitStaticMapElementGuard(&b, "\t\t", "ev", elem, pkgIdx, "out[i] = nil\n\t\t\tcontinue\n")
 	fmt.Fprintf(&b, "\t\tout[i] = %s\n", convertStaticMapValueExpr("ev", elem))
 	b.WriteString("\t}\n")
 	if isPtr {
@@ -2149,7 +2163,7 @@ func emitSliceWrappedStaticMapHelper(name, typeExpr string) string {
 // is also accepted as a compat fall-through so a generated client
 // fed through the new helper from a path that still produced a
 // concrete slice does not panic.
-func emitConvertListHelper(name, listType string) string {
+func emitConvertListHelper(name, listType string, pkgIdx *pkgTypeIndex) string {
 	elem := strings.TrimPrefix(strings.TrimSpace(listType), "[]")
 
 	var b strings.Builder
@@ -2179,11 +2193,71 @@ func emitConvertListHelper(name, listType string) string {
 	b.WriteString("\t}\n")
 	fmt.Fprintf(&b, "\tout := make(%s, len(listVal))\n", listType)
 	b.WriteString("\tfor i, ev := range listVal {\n")
+	// Preserve nil slots in the `[]any` carrier when the element
+	// type is nilable; without the guard a raw `ev.(T)` assertion
+	// panics on untyped nil for pointer / alias-to-pointer / slice
+	// / map / interface / chan / func elements.
+	emitStaticMapElementGuard(&b, "\t\t", "ev", elem, pkgIdx, "out[i] = nil\n\t\t\tcontinue\n")
 	fmt.Fprintf(&b, "\t\tout[i] = %s\n", convertStaticMapValueExpr("ev", elem))
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn out\n")
 	b.WriteString("}")
 	return b.String()
+}
+
+// emitStaticMapElementGuard writes a `if <var> == nil { <onNil> }`
+// guard into b when the inner-element conversion would otherwise be
+// a raw `<var>.(T)` assertion AND the element type is nilable. The
+// guard preserves nil entries from the BAML runtime by routing them
+// through the caller-supplied onNil body (which sets the sink to nil
+// and skips the typed assertion) before the assertion has a chance
+// to panic on untyped nil.
+//
+// indent is the leading tabs that match the surrounding scope (so
+// the rendered block lines up with sibling statements). onNil is the
+// caller-supplied body inserted inside the guard — it carries both
+// the sink assignment (`out[k] = nil` / `out[i] = nil`) and the
+// continuation statement (`return true` for the ranger callback,
+// `continue` for the for-loop). Indentation of onNil's first line
+// is already accounted for by the caller (it must begin at indent +
+// one tab); onNil's trailing newline is preserved so the closing
+// brace lands on its own line.
+//
+// No-op when the inner type routes through a helper (nested ordered
+// map, slice helper) — the helper handles its own nil case — or when
+// the element type is non-nilable (struct, builtin value type).
+func emitStaticMapElementGuard(b *strings.Builder, indent, varName, innerType string, pkgIdx *pkgTypeIndex, onNil string) {
+	if !staticMapElementUsesRawAssertion(innerType) {
+		return
+	}
+	if !pkgIdx.isNilableElementType(innerType) {
+		return
+	}
+	fmt.Fprintf(b, "%sif %s == nil {\n", indent, varName)
+	fmt.Fprintf(b, "%s\t%s", indent, onNil)
+	fmt.Fprintf(b, "%s}\n", indent)
+}
+
+// staticMapElementUsesRawAssertion reports whether convertStaticMapValueExpr
+// would emit a bare `v.(T)` assertion for the given inner type — as
+// opposed to recursing through a helper. Helper-routed shapes
+// (`baml.OrderedMap[T]`, `*baml.OrderedMap[T]`, `[]E`) handle nil
+// themselves, so the per-element guard would be both redundant and
+// structurally incorrect (the helper accepts a nil `any` and returns
+// the right nil/zero, which is what `out.Set(k, helper(v))` already
+// stores).
+func staticMapElementUsesRawAssertion(innerType string) bool {
+	t := strings.TrimSpace(innerType)
+	if strings.HasPrefix(t, "baml.OrderedMap[") {
+		return false
+	}
+	if strings.HasPrefix(t, "*baml.OrderedMap[") {
+		return false
+	}
+	if strings.HasPrefix(t, "[]") {
+		return false
+	}
+	return true
 }
 
 // staticMapHelperCore returns the supporting bits the helpers share.
@@ -2401,6 +2475,47 @@ func (idx *pkgTypeIndex) isNilableElement(elemName string) bool {
 		return false
 	}
 	return idx.isNilableIdent(target, map[string]bool{})
+}
+
+// isNilableElementType reports whether typeExprText, used as the
+// element type T of a `baml.OrderedMap[T]` (or a `[]T` slice element),
+// resolves to a nilable Go type. Unlike isNilableElement, the input
+// is a free-form type expression where isNilableElement accepts only
+// a bare identifier: the ordered-map static helper sees element
+// types like `*ConcreteClass`, `AliasPtr` (an alias to a pointer),
+// `*baml.OrderedMap[X]`, etc.
+// Pointer / slice / map / chan / func / interface shapes are nilable
+// directly; bare identifiers route through the package index's alias
+// chain so a `type AliasPtr = *T` declaration surfaces as nilable.
+//
+// A nil receiver and an unparseable expression default to non-nilable
+// (the conservative call for emitting the guard: only emit it when
+// we are confident the assertion target can actually accept nil; a
+// false positive would emit dead code on a non-nilable element, while
+// a false negative would drop nil entries — but a false positive on
+// a struct element triggers a compile error because `nil` is not
+// assignable to a struct, so being strict here is the right default
+// for unknown shapes).
+func (idx *pkgTypeIndex) isNilableElementType(typeExprText string) bool {
+	t := strings.TrimSpace(typeExprText)
+	if t == "" {
+		return false
+	}
+	expr, err := parser.ParseExpr(t)
+	if err != nil || expr == nil {
+		return false
+	}
+	if idx == nil {
+		// Walker is independent of the receiver for structural shapes;
+		// pointer / slice / map / chan / func / interface return true
+		// without consulting any alias table. Only bare-identifier
+		// inputs need the index, and a nil index treats them as
+		// unresolved (non-nilable). This matches how the native-map
+		// helper degrades when the package index is absent.
+		dummy := &pkgTypeIndex{aliases: map[string]ast.Expr{}, defs: map[string]ast.Expr{}}
+		return dummy.isNilableTypeExpr(expr, map[string]bool{})
+	}
+	return idx.isNilableTypeExpr(expr, map[string]bool{})
 }
 
 func (idx *pkgTypeIndex) isNilableIdent(name string, visited map[string]bool) bool {

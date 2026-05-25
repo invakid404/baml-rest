@@ -2740,3 +2740,458 @@ func TestIsOrderableSinglePatternFunc_DelegatesToMapValueType(t *testing.T) {
 		})
 	}
 }
+
+// TestOrderedMapHelperPreservesNilPtrValue pins the cold-v5 regression
+// for the typed ordered-map helper. The native-map helper (cold-v4)
+// guards against untyped nil values from the BAML ranger callback,
+// but the equivalent guard was missing on the
+// `bamlOrderedAs_OM_<T>(value any) baml.OrderedMap[T]` emission. For
+// a class field declared as `map[string]*ConcreteClass` the rewrite
+// surfaces a `baml.OrderedMap[*ConcreteClass]`; an `OrderedFields`
+// carrier with `Set("a", nil)` panics inside the helper at
+// `v.(*ConcreteClass)` before the assignment can record the nil.
+// The fix mirrors the native-map approach: emit
+// `if v == nil { _ = out.Set(k, nil); return true }` ahead of the
+// typed assertion so the carrier's CFFI insertion order survives a
+// null entry.
+//
+// The fixture declares a pointer-element map field and asserts the
+// generated helper contains the guard with the right structure (guard
+// precedes assertion, sink writes `nil` to the same `out.Set` call).
+func TestOrderedMapHelperPreservesNilPtrValue(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const src = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type ConcreteClass struct {
+	Name string
+}
+
+type WithPtrMap struct {
+	Items map[string]*ConcreteClass
+}
+
+func (w *WithPtrMap) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "items":
+			w.Items = baml.Decode(valueHolder).Interface().(map[string]*ConcreteClass)
+		default:
+			panic(fmt.Sprintf("unexpected field: %s", key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	// The pointer-element helper must include the nil guard ahead of
+	// the typed assertion. The guard writes the key with a nil value
+	// to `out.Set` so the carrier's insertion order survives.
+	const nilGuard = "if v == nil {\n\t\t\t\t_ = out.Set(k, nil)\n\t\t\t\treturn true\n\t\t\t}"
+	if !strings.Contains(helperBody, nilGuard) {
+		t.Fatalf("ordered-map helper missing nil-preservation branch:\n%s", helperBody)
+	}
+	// The typed-assertion `_ = out.Set(k, v.(*ConcreteClass))` line
+	// must remain — the guard is additive, not a replacement.
+	if !strings.Contains(helperBody, "_ = out.Set(k, v.(*ConcreteClass))") {
+		t.Fatalf("ordered-map helper lost typed-assertion path:\n%s", helperBody)
+	}
+	// The guard must precede the typed assertion textually so the
+	// nil case wins over the assertion (which would panic on
+	// untyped nil and crash the decode).
+	idxGuard := strings.Index(helperBody, "if v == nil {")
+	idxAssert := strings.Index(helperBody, "_ = out.Set(k, v.(*ConcreteClass))")
+	if idxGuard < 0 || idxAssert < 0 || idxGuard > idxAssert {
+		t.Fatalf("nil guard does not precede typed assertion:\n%s", helperBody)
+	}
+}
+
+// TestOrderedMapHelperPreservesNilAliasPtrValue pins the alias-chain
+// arm of the ordered-map nil guard. A `type AliasPtr = *ConcreteClass`
+// declaration is a bare identifier in the element-type slot but
+// resolves through the package index to a pointer; the nilability
+// check must follow the alias hop and emit the guard. Without the
+// alias-walk the helper would skip the guard and the typed assertion
+// `v.(AliasPtr)` would panic on untyped nil for the same reason as
+// the direct-pointer case.
+func TestOrderedMapHelperPreservesNilAliasPtrValue(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const src = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type ConcreteClass struct {
+	Name string
+}
+
+type AliasPtr = *ConcreteClass
+
+type WithAliasMap struct {
+	Items map[string]AliasPtr
+}
+
+func (w *WithAliasMap) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "items":
+			w.Items = baml.Decode(valueHolder).Interface().(map[string]AliasPtr)
+		default:
+			panic(fmt.Sprintf("unexpected field: %s", key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	// Same structural expectations as the direct-pointer case, but
+	// the typed assertion is against the alias name. The nilability
+	// walk must resolve `AliasPtr` → `*ConcreteClass` → nilable.
+	const nilGuard = "if v == nil {\n\t\t\t\t_ = out.Set(k, nil)\n\t\t\t\treturn true\n\t\t\t}"
+	if !strings.Contains(helperBody, nilGuard) {
+		t.Fatalf("ordered-map helper missing nil-preservation branch for alias element:\n%s", helperBody)
+	}
+	if !strings.Contains(helperBody, "_ = out.Set(k, v.(AliasPtr))") {
+		t.Fatalf("ordered-map helper lost typed-assertion path for alias element:\n%s", helperBody)
+	}
+	idxGuard := strings.Index(helperBody, "if v == nil {")
+	idxAssert := strings.Index(helperBody, "_ = out.Set(k, v.(AliasPtr))")
+	if idxGuard < 0 || idxAssert < 0 || idxGuard > idxAssert {
+		t.Fatalf("nil guard does not precede typed assertion for alias element:\n%s", helperBody)
+	}
+}
+
+// TestOrderedMapHelperSkipsNilGuardForNonNilableElement pins the
+// other side of the nilability split for the ordered-map helper. A
+// `map[string]string` field must not emit the `v == nil` branch
+// because the BAML runtime never hands an untyped nil into the
+// ranger callback for non-nilable element types — emitting the guard
+// anyway would compile-fail at `_ = out.Set(k, nil)` since `nil` is
+// not assignable to a `string` value parameter. The guard is gated on
+// the type expression's nilability so non-nilable elements skip it
+// cleanly.
+func TestOrderedMapHelperSkipsNilGuardForNonNilableElement(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const src = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type WithStringMap struct {
+	Items map[string]string
+}
+
+func (w *WithStringMap) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "items":
+			w.Items = baml.Decode(valueHolder).Interface().(map[string]string)
+		default:
+			panic(fmt.Sprintf("unexpected field: %s", key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	// The non-nilable element helper must not emit the
+	// `_ = out.Set(k, nil)` branch — `nil` is not assignable to a
+	// `string` and would compile-fail if emitted.
+	if strings.Contains(helperBody, "_ = out.Set(k, nil)") {
+		t.Fatalf("non-nilable string-element helper unexpectedly emitted nil preservation:\n%s", helperBody)
+	}
+	// The typed-assertion path remains.
+	if !strings.Contains(helperBody, "_ = out.Set(k, v.(string))") {
+		t.Fatalf("non-nilable string-element helper lost typed-assertion path:\n%s", helperBody)
+	}
+}
+
+// TestConvertListHelperPreservesNilPtrValue pins the list-helper arm
+// of the cold-v5 nil-guard fix. The map-of-list rewrite produces a
+// per-element-type `bamlConvertList_<T>` helper that walks the
+// `[]any` carrier from `baml.DecodeToOrderedValue` and converts each
+// slot to T. For T = `*ConcreteClass` an untyped nil slot would panic
+// the raw `ev.(*ConcreteClass)` assertion; the fix mirrors the
+// ordered-map guard with `if ev == nil { out[i] = nil; continue }`.
+func TestConvertListHelperPreservesNilPtrValue(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const src = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type ConcreteClass struct {
+	Name string
+}
+
+type WithPtrListMap struct {
+	Items map[string][]*ConcreteClass
+}
+
+func (w *WithPtrListMap) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		switch field.Key {
+		case "items":
+			w.Items = baml.Decode(field.Value).Interface().(map[string][]*ConcreteClass)
+		default:
+			panic(fmt.Sprintf("unexpected: %s", field.Key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	const nilGuard = "if ev == nil {\n\t\t\tout[i] = nil\n\t\t\tcontinue\n\t\t}"
+	if !strings.Contains(helperBody, nilGuard) {
+		t.Fatalf("convert-list helper missing nil-preservation branch for pointer element:\n%s", helperBody)
+	}
+	if !strings.Contains(helperBody, "out[i] = ev.(*ConcreteClass)") {
+		t.Fatalf("convert-list helper lost typed-assertion path for pointer element:\n%s", helperBody)
+	}
+	idxGuard := strings.Index(helperBody, "if ev == nil {")
+	idxAssert := strings.Index(helperBody, "out[i] = ev.(*ConcreteClass)")
+	if idxGuard < 0 || idxAssert < 0 || idxGuard > idxAssert {
+		t.Fatalf("nil guard does not precede typed assertion in convert-list helper:\n%s", helperBody)
+	}
+}
+
+// TestConvertListHelperSkipsNilGuardForNonNilableElement is the
+// non-nilable side of the convert-list nil guard: a
+// `map[string][]string` field rewrites to a list helper for
+// `[]string`; the helper must not emit `out[i] = nil` because the
+// zero string would silently masquerade as a present nil entry (and
+// the assignment would compile-fail anyway since `nil` is not
+// assignable to a `string`).
+func TestConvertListHelperSkipsNilGuardForNonNilableElement(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const src = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type WithStrListMap struct {
+	Items map[string][]string
+}
+
+func (w *WithStrListMap) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		switch field.Key {
+		case "items":
+			w.Items = baml.Decode(field.Value).Interface().(map[string][]string)
+		default:
+			panic(fmt.Sprintf("unexpected: %s", field.Key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	if strings.Contains(helperBody, "out[i] = nil") {
+		t.Fatalf("non-nilable string-element convert-list helper unexpectedly emitted nil preservation:\n%s", helperBody)
+	}
+	if !strings.Contains(helperBody, "out[i] = ev.(string)") {
+		t.Fatalf("non-nilable string-element convert-list helper lost typed-assertion path:\n%s", helperBody)
+	}
+}
+
+// TestOrderedMapHelperNilInNestedOrderedMap pins the nested case for
+// the ordered-map nil guard. A nested `map[string]map[string]*ConcreteClass`
+// surfaces as `baml.OrderedMap[baml.OrderedMap[*ConcreteClass]]`. The
+// outer helper recurses through a sub-helper for the inner ordered
+// map (which already handles a nil inner carrier by returning the
+// zero value), and the inner ordered-map helper carries the pointer-
+// element guard so a nil entry inside a present inner carrier is
+// preserved as a key with a nil value; without the guard the inner
+// `v.(*ConcreteClass)` assertion would panic.
+//
+// Verified textually: the inner helper for `*ConcreteClass` must
+// emit the guard, and the outer helper for the nested ordered map
+// must NOT emit the per-value guard (because its inner conversion
+// routes through the inner helper, which handles nil itself).
+func TestOrderedMapHelperNilInNestedOrderedMap(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const src = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type ConcreteClass struct {
+	Name string
+}
+
+type WithNestedMap struct {
+	Items map[string]map[string]*ConcreteClass
+}
+
+func (w *WithNestedMap) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "items":
+			w.Items = baml.Decode(valueHolder).Interface().(map[string]map[string]*ConcreteClass)
+		default:
+			panic(fmt.Sprintf("unexpected field: %s", key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	// Inner helper (bamlOrderedAs_OM_Ptr_ConcreteClass) carries the
+	// pointer-element guard ahead of the typed assertion.
+	const nilGuard = "if v == nil {\n\t\t\t\t_ = out.Set(k, nil)\n\t\t\t\treturn true\n\t\t\t}"
+	if !strings.Contains(helperBody, nilGuard) {
+		t.Fatalf("nested-case inner helper missing nil-preservation branch:\n%s", helperBody)
+	}
+	if !strings.Contains(helperBody, "_ = out.Set(k, v.(*ConcreteClass))") {
+		t.Fatalf("nested-case inner helper lost typed-assertion path:\n%s", helperBody)
+	}
+	// Outer helper recurses through `bamlOrderedAs_OM_Ptr_ConcreteClass`
+	// for each value; the per-value branch in the outer helper is
+	// the recursive helper call, not a raw assertion, so no guard is
+	// needed (or correct) there. The outer helper's per-element line
+	// must NOT have a raw assertion against the inner ordered-map
+	// type — that would skip the per-key recursion entirely.
+	if strings.Contains(helperBody, "v.(baml.OrderedMap[*ConcreteClass])") {
+		t.Fatalf("outer helper unexpectedly bypassed the inner ordered-map helper with a raw assertion:\n%s", helperBody)
+	}
+	// And the recursive call must be present.
+	if !strings.Contains(helperBody, "bamlOrderedAs_OM_Ptr_ConcreteClass(v)") {
+		t.Fatalf("outer helper missing the recursive inner-ordered-map call:\n%s", helperBody)
+	}
+}
