@@ -1281,6 +1281,106 @@ func (a *alignError) Error() string {
 	return a.path + ": want kind " + string(a.want) + ", got " + string(a.got)
 }
 
+// TestAssertValueAlignsWithSchemaRejectsScalarKindMismatch directly
+// exercises the strict scalar-kind check in assertValueAlignsWithSchema.
+// The property test that backs the helper does not draw adversarial
+// kind mismatches, so without this unit-level guard a regression that
+// reverts the scalar check to `v.Kind == KindUnion` would go unnoticed.
+func TestAssertValueAlignsWithSchemaRejectsScalarKindMismatch(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{
+			{Name: "Root", Properties: []FuzzProperty{
+				{Name: "f", Type: FuzzType{Kind: KindString}},
+			}},
+		},
+		RootClass: "Root",
+	}
+	value := FuzzValue{
+		Kind:      KindClassRef,
+		ClassName: "Root",
+		Fields: []FuzzFieldValue{
+			{Name: "f", Value: FuzzValue{Kind: KindInt, Int: 7}},
+		},
+	}
+	err := assertValueAlignsWithSchema(schema, schema.EffectiveRoot(), value)
+	if err == nil {
+		t.Fatalf("expected scalar-kind mismatch error, got nil")
+	}
+	leaf := err
+	for {
+		ae, ok := leaf.(*alignError)
+		if !ok || ae.inner == nil {
+			break
+		}
+		leaf = ae.inner
+	}
+	ae, ok := leaf.(*alignError)
+	if !ok {
+		t.Fatalf("expected leaf *alignError, got %T: %v", leaf, leaf)
+	}
+	if ae.want != KindString || ae.got != KindInt {
+		t.Fatalf("alignError want=%q got=%q; expected want=KindString got=KindInt (full: %v)",
+			ae.want, ae.got, err)
+	}
+}
+
+// TestAssertValueAlignsWithSchemaRejectsClassRefDrift directly exercises
+// the strict class-name check. Without this, a regression that resolves
+// schema.FindClass(v.ClassName) and walks the wrong class would slip
+// through the property test (which never produces drifted class names).
+func TestAssertValueAlignsWithSchemaRejectsClassRefDrift(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{
+			{Name: "Root", Properties: []FuzzProperty{
+				{Name: "inner", Type: FuzzType{Kind: KindClassRef, Ref: "Foo"}},
+			}},
+			{Name: "Foo", Properties: []FuzzProperty{
+				{Name: "x", Type: FuzzType{Kind: KindString}},
+			}},
+			{Name: "Bar", Properties: []FuzzProperty{
+				{Name: "x", Type: FuzzType{Kind: KindString}},
+			}},
+		},
+		RootClass: "Root",
+	}
+	value := FuzzValue{
+		Kind:      KindClassRef,
+		ClassName: "Root",
+		Fields: []FuzzFieldValue{
+			{Name: "inner", Value: FuzzValue{
+				Kind:      KindClassRef,
+				ClassName: "Bar",
+				Fields: []FuzzFieldValue{
+					{Name: "x", Value: FuzzValue{Kind: KindString, String: "hi"}},
+				},
+			}},
+		},
+	}
+	err := assertValueAlignsWithSchema(schema, schema.EffectiveRoot(), value)
+	if err == nil {
+		t.Fatalf("expected class-ref drift error, got nil")
+	}
+	leaf := err
+	for {
+		ae, ok := leaf.(*alignError)
+		if !ok || ae.inner == nil {
+			break
+		}
+		leaf = ae.inner
+	}
+	ae, ok := leaf.(*alignError)
+	if !ok {
+		t.Fatalf("expected leaf *alignError, got %T: %v", leaf, leaf)
+	}
+	if ae.wantRef != "Foo" || ae.gotRef != "Bar" {
+		t.Fatalf("alignError wantRef=%q gotRef=%q; expected Foo/Bar (full: %v)",
+			ae.wantRef, ae.gotRef, err)
+	}
+	if !strings.Contains(err.Error(), "ref Foo") || !strings.Contains(err.Error(), "ref Bar") {
+		t.Fatalf("rendered error missing ref Foo / ref Bar: %s", err.Error())
+	}
+}
+
 func itoa(i int) string {
 	if i == 0 {
 		return "0"
