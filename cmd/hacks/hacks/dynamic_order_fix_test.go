@@ -967,9 +967,10 @@ func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
 		}
 	}
 	// The helper body must recurse through the inner ordered-map
-	// helper rather than emit a direct `ev.(baml.OrderedMap[...])`
-	// assertion — the runtime carrier from DecodeToOrderedValue is
-	// an OrderedFields, not a typed OrderedMap, so a direct cast
+	// helper; a direct `ev.(baml.OrderedMap[...])`
+	// assertion would not work — the runtime carrier from
+	// DecodeToOrderedValue is an OrderedFields, not a typed OrderedMap,
+	// so a direct cast
 	// panics.
 	for _, banned := range []string{
 		"ev.(baml.OrderedMap[string])",

@@ -1448,8 +1448,8 @@ func findBAMLPkgImportPath(file *ast.File) string {
 // staticMapHelperTypeFromName reverses staticMapHelperName. Returns
 // the wrapped `baml.OrderedMap[T]` type expression the helper
 // produces. Returns false for unparseable encodings so a future
-// drift in the encoder surfaces as a missing helper rather than as
-// a wrong-typed helper that compiles and crashes at runtime.
+// drift in the encoder surfaces as a missing helper; this fails
+// closed where a wrong-typed helper would compile and crash at runtime.
 //
 // Accepted encodings: any sequence of `Ptr_` / `Slice_` prefixes
 // followed by an `OM_` opener — e.g. `OM_T`, `Ptr_OM_T`,
@@ -1663,9 +1663,9 @@ func convertStaticMapValueExpr(varName, innerType string) string {
 	if strings.HasPrefix(t, "*baml.OrderedMap[") {
 		// Pointer-wrapped ordered map. The matching helper has a
 		// `Ptr_OM_*` encoding and accepts the ordered carrier
-		// directly, so route through it rather than emit a direct
-		// `v.(*baml.OrderedMap[T])` assertion the carrier never
-		// satisfies.
+		// directly; route through it. A direct
+		// `v.(*baml.OrderedMap[T])` assertion would not match the
+		// ordered carrier.
 		helper := staticMapHelperName(t)
 		return fmt.Sprintf("%s(%s)", helper, varName)
 	}
@@ -1701,7 +1701,10 @@ func emitSliceWrappedStaticMapHelper(name, typeExpr string) string {
 	if !strings.HasPrefix(sliceType, "[]") {
 		// Shouldn't happen given the caller's prefix check; emit
 		// an empty-return stub so a future drift surfaces as
-		// always-empty data rather than a compile error.
+		// always-empty data; a compile error would be louder but
+		// the stub keeps the pass fail-closed without breaking
+		// callers that already type-assert against the slice
+		// return shape.
 		var stub strings.Builder
 		fmt.Fprintf(&stub, "// %s is a slice-wrapped static-map helper stub;\n", name)
 		fmt.Fprintf(&stub, "// the type expression %q does not start with `[]` or `*[]`.\n", typeExpr)
