@@ -240,15 +240,77 @@ func TestSchemaOrderDiff_MissingExtraKeysDoNotPanic(t *testing.T) {
 	}
 }
 
-func TestSchemaOrderDiff_HasUnionReturnsUnsupported(t *testing.T) {
-	schema := schemaRootOnly("a", "b")
-	schema.HasUnion = true
+// TestSchemaOrderDiff_UnionWithoutChoiceReturnsUnsupported pins the
+// union contract: when the order walker reaches a KindUnion node
+// without a matching UnionChoices entry, SchemaOrderDiff returns
+// ErrSchemaOrderUnsupported and the caller falls back to
+// semantic-only diagnostics.
+func TestSchemaOrderDiff_UnionWithoutChoiceReturnsUnsupported(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "u", Type: FuzzType{
+					Kind: KindUnion,
+					Variants: []FuzzType{
+						{Kind: KindString},
+						{Kind: KindInt},
+					},
+				}},
+			},
+		}},
+		RootClass: "Root",
+	}
 	_, err := SchemaOrderDiff("side", schema,
-		json.RawMessage(`{"a":1,"b":2}`),
-		json.RawMessage(`{"b":2,"a":1}`),
+		json.RawMessage(`{"u":"x"}`),
+		json.RawMessage(`{"u":"x"}`),
 	)
 	if !errors.Is(err, ErrSchemaOrderUnsupported) {
 		t.Errorf("got err=%v, want errors.Is(err, ErrSchemaOrderUnsupported)", err)
+	}
+}
+
+// TestSchemaOrderDiff_UnionWithChoiceWalksArm pins the positive
+// path: given a recorded UnionChoices entry the walker descends into
+// the named arm and continues the order check from there.
+func TestSchemaOrderDiff_UnionWithChoiceWalksArm(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{
+			{
+				Name: "Root",
+				Properties: []FuzzProperty{
+					{Name: "u", Type: FuzzType{
+						Kind: KindUnion,
+						Variants: []FuzzType{
+							{Kind: KindClassRef, Ref: "Inner"},
+							{Kind: KindString},
+						},
+					}},
+				},
+			},
+			{
+				Name: "Inner",
+				Properties: []FuzzProperty{
+					{Name: "a", Type: FuzzType{Kind: KindInt}},
+					{Name: "b", Type: FuzzType{Kind: KindInt}},
+				},
+			},
+		},
+		RootClass: "Root",
+	}
+	choices := map[string]UnionChoice{
+		".u": {Index: 0, Kind: KindClassRef, Ref: "Inner", VariantCount: 2},
+	}
+	diffs, err := SchemaOrderDiffWithChoices("side", schema,
+		json.RawMessage(`{"u":{"a":1,"b":2}}`),
+		json.RawMessage(`{"u":{"b":2,"a":1}}`),
+		choices,
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff in the Inner class, got %d", len(diffs))
 	}
 }
 
