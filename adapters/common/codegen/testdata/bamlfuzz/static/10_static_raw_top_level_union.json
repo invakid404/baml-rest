@@ -1,0 +1,45 @@
+{
+  "name": "static_raw_top_level_union",
+  "seed": 11,
+  "case_index": 10,
+  "mode": "static_prompt",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [],
+    "enums": [],
+    "root_class": "",
+    "root_type": {
+      "kind": "union",
+      "variants": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "int"
+        }
+      ]
+    },
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": true,
+    "requires_dynamic_skip": true
+  },
+  "value": {
+    "kind": "union",
+    "variant": {
+      "kind": "string",
+      "string": "top-level"
+    }
+  },
+  "mock_llm_content": "top-level",
+  "expected": "top-level",
+  "metadata": {
+    "union_choices": {
+      "": {
+        "index": 0,
+        "kind": "string",
+        "variant_count": 2
+      }
+    }
+  }
+}
