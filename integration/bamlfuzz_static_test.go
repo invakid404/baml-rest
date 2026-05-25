@@ -548,9 +548,15 @@ func staticReproductionFor(c bamlfuzz.OracleCase, caseIdx int, batchLabel string
 	}
 	segments := []string{"^TestBamlfuzzStaticOracle$"}
 	switch source {
-	case staticCaseSourceCorpus:
-		segments = append(segments, "^corpus$", "^"+regexp.QuoteMeta(leaf)+"$")
-	case staticCaseSourceRapid:
+	case staticCaseSourceCorpus, staticCaseSourceRapid:
+		// Both sources use the parent's actual batch label. The
+		// corpus path used to be hardcoded to "^corpus$", but
+		// chunkStaticCorpus emits "corpus_batch_<i>" subtest names
+		// when there is more than one batch, so the repro command
+		// would not select the failing case for any non-first
+		// corpus batch. Routing the label through here keeps the
+		// repro string aligned with the subtest tree the harness
+		// actually builds.
 		segments = append(segments,
 			"^"+regexp.QuoteMeta(batchLabel)+"$",
 			"^"+regexp.QuoteMeta(leaf)+"$",
@@ -724,6 +730,34 @@ func TestStaticReproductionFor(t *testing.T) {
 	wantWithSeed := "BAMLFUZZ_SEED=9999 go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^corpus$/^scalar_object$' ./integration -count=1"
 	if withSeed != wantWithSeed {
 		t.Errorf("corpus+seed repro:\n got:  %s\n want: %s", withSeed, wantWithSeed)
+	}
+
+	// Corpus chunking with more than one batch emits
+	// "corpus_batch_<i>" subtest names. The repro command must use
+	// that exact label, including the isolated leaf shape, so the
+	// developer can copy-paste straight from the envelope.
+	t.Setenv("BAMLFUZZ_SEED", "")
+	corpusBatch := staticReproductionFor(
+		bamlfuzz.OracleCase{Name: "raw_union_root"},
+		1,
+		"corpus_batch_3",
+		staticCaseSourceCorpus,
+		false,
+	)
+	wantCorpusBatch := "go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^corpus_batch_3$/^raw_union_root$' ./integration -count=1"
+	if corpusBatch != wantCorpusBatch {
+		t.Errorf("corpus_batch repro:\n got:  %s\n want: %s", corpusBatch, wantCorpusBatch)
+	}
+	corpusBatchIsolated := staticReproductionFor(
+		bamlfuzz.OracleCase{Name: "raw_union_root"},
+		1,
+		"corpus_batch_3",
+		staticCaseSourceCorpus,
+		true,
+	)
+	wantCorpusBatchIsolated := "go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^corpus_batch_3$/^raw_union_root_isolated$' ./integration -count=1"
+	if corpusBatchIsolated != wantCorpusBatchIsolated {
+		t.Errorf("corpus_batch isolated repro:\n got:  %s\n want: %s", corpusBatchIsolated, wantCorpusBatchIsolated)
 	}
 }
 
