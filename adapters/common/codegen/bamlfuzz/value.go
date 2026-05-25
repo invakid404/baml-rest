@@ -45,6 +45,10 @@ type FuzzFieldValue struct {
 //   - KindMap: MapEntries (may be empty).
 //   - KindClassRef: ClassName + Fields (one per class property, in
 //     declaration order).
+//   - KindUnion: VariantIndex names the FuzzType.Variants slot the
+//     value chose; Variant carries the generated value for that
+//     arm. A KindUnion value MUST always wrap a Variant — the walker,
+//     emitters, and order checker fail closed when it does not.
 type FuzzValue struct {
 	Kind FuzzTypeKind `json:"kind"`
 
@@ -63,6 +67,9 @@ type FuzzValue struct {
 
 	ClassName string           `json:"class_name,omitempty"`
 	Fields    []FuzzFieldValue `json:"fields,omitempty"`
+
+	VariantIndex int        `json:"variant_index,omitempty"`
+	Variant      *FuzzValue `json:"variant,omitempty"`
 }
 
 // LookupField returns the FuzzValue for the named property on a

@@ -27,6 +27,13 @@ const (
 	KindMap      FuzzTypeKind = "map"
 	KindClassRef FuzzTypeKind = "class_ref"
 	KindEnumRef  FuzzTypeKind = "enum_ref"
+	// KindUnion represents an ordered sum of alternative types. The
+	// type's Variants slice carries the alternatives in declaration
+	// order; emitters render them with BAML pipe syntax (static) or
+	// the upstream `union` / `oneOf` shape (dynamic). T | null is
+	// expressed as a union with a KindNull variant — KindOptional
+	// stays as the separate absent-key wrapper.
+	KindUnion FuzzTypeKind = "union"
 )
 
 // FuzzLiteralKind narrows the literal payload to one of the BAML
@@ -57,18 +64,21 @@ type FuzzLiteral struct {
 //     Inner
 //   - KindClassRef / KindEnumRef: Ref
 //   - KindLiteral:                Literal
+//   - KindUnion:                  Variants (>=1)
 //   - primitives, KindNull:       nothing else.
 //
 // Inner / Key are pointers so the IR can hold recursive schemas:
 // self-ref classes reach themselves only through a ClassRef edge,
 // never through structural nesting, so the type spec itself stays
-// finite.
+// finite. Variants is a slice so unions stay ordered: the chosen
+// arm index in a FuzzValue refers to this declaration order.
 type FuzzType struct {
-	Kind    FuzzTypeKind `json:"kind"`
-	Inner   *FuzzType    `json:"inner,omitempty"`
-	Key     *FuzzType    `json:"key,omitempty"`
-	Literal *FuzzLiteral `json:"literal,omitempty"`
-	Ref     string       `json:"ref,omitempty"`
+	Kind     FuzzTypeKind `json:"kind"`
+	Inner    *FuzzType    `json:"inner,omitempty"`
+	Key      *FuzzType    `json:"key,omitempty"`
+	Literal  *FuzzLiteral `json:"literal,omitempty"`
+	Ref      string       `json:"ref,omitempty"`
+	Variants []FuzzType   `json:"variants,omitempty"`
 }
 
 // FuzzProperty is one field inside a class declaration.
@@ -94,7 +104,17 @@ type FuzzEnum struct {
 
 // FuzzSchema is the top-level IR. Classes / Enums are declared in
 // the order the generator emitted them; RootClass names the class
-// the synthesized BAML function returns.
+// the synthesized BAML function returns when the effective root is
+// a class instance.
+//
+// RootType is the optional non-class effective root. When set it
+// overrides RootClass for emission and value-walking: the
+// synthesized function returns the spelled type (raw union /
+// list / map / primitive), and the value walker drives the value
+// as the corresponding kind. When RootType is nil the schema
+// behaves exactly as v1: RootClass names the returned class. The
+// fallback keeps existing corpus replay files (which serialize
+// with no root_type) compatible.
 //
 // The Has* / Requires* flags are graph metadata derived from the
 // class-ref reachability graph. They are not authoritative — call
@@ -104,10 +124,24 @@ type FuzzSchema struct {
 	Classes             []FuzzClass `json:"classes"`
 	Enums               []FuzzEnum  `json:"enums"`
 	RootClass           string      `json:"root_class"`
+	RootType            *FuzzType   `json:"root_type,omitempty"`
 	HasSelfRef          bool        `json:"has_self_ref"`
 	HasMutualCycle      bool        `json:"has_mutual_cycle"`
 	HasUnion            bool        `json:"has_union"`
 	RequiresDynamicSkip bool        `json:"requires_dynamic_skip"`
+}
+
+// EffectiveRoot returns the FuzzType the schema returns from its
+// synthesized function. When RootType is non-nil it is returned
+// verbatim. Otherwise the result is a synthesized
+// KindClassRef pointing at RootClass — the v1 default, kept so
+// callers (emitters, walker, order checker) can always reason in
+// terms of one return type.
+func (s FuzzSchema) EffectiveRoot() FuzzType {
+	if s.RootType != nil {
+		return *s.RootType
+	}
+	return FuzzType{Kind: KindClassRef, Ref: s.RootClass}
 }
 
 // FindClass returns the named class declaration plus a found flag.
