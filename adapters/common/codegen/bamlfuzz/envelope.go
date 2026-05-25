@@ -14,17 +14,22 @@ import (
 
 // GeneratorVersion is the on-the-wire version stamp embedded in replay
 // artifacts. Bumped when the generator semantics change in a way that
-// invalidates older replays.
-const GeneratorVersion = "0.1.0"
+// invalidates older replays. 0.2.0 introduces KindUnion as a
+// first-class IR node plus CaseMetadata.UnionChoices; older v1
+// replays decode cleanly (the new fields default to zero values).
+const GeneratorVersion = "0.2.0"
 
 // DynamicFailureEnvelope captures the full context surrounding a
 // disagreement between the three dynamic-oracle legs (expected /
 // dynclient / REST). Release gates: semantic equality always, and
 // schema-aware key order at every class instance when
 // PreserveSchemaOrder is true (see SchemaOrderDiff). Strict order
-// mismatches are recorded under OrderWarning for replay; unsupported
-// schemas (today: union-bearing) skip the order assertion with a log
-// line only and don't populate OrderWarning.
+// mismatches are recorded under OrderWarning for replay; schemas
+// the order checker cannot resolve (missing union-choice metadata)
+// skip the assertion with a log line only and don't populate
+// OrderWarning. Per-arm union choices travel in Metadata.UnionChoices
+// so a developer reading the envelope can see exactly which variant
+// the value walker selected at each union node.
 type DynamicFailureEnvelope struct {
 	GeneratorVersion    string                         `json:"generator_version"`
 	GeneratedAt         string                         `json:"generated_at"`

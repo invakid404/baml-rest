@@ -20,6 +20,19 @@ const (
 	MaxValueRecursion = 2
 	EnumValuesMin     = 1
 	EnumValuesMax     = 4
+	// MinUnionVariants is the smallest legal arm count drawn by the
+	// generator. Single-arm unions are reachable only through the
+	// shrink-collapse pass (Move B), never the random draw.
+	MinUnionVariants = 2
+	// MaxUnionVariants caps random union arm counts. Larger unions
+	// quickly dominate coverage without exercising additional code
+	// paths in the emitters, so the upper bound stays modest.
+	MaxUnionVariants = 3
+	// UnionDrawProbability is the chance that an eligible drawType
+	// slot is filled with a KindUnion. Tuned low enough that
+	// non-union shapes still dominate random corpora — too high and
+	// every random case becomes a union test.
+	UnionDrawProbability = 0.15
 )
 
 // classNameFor / enumNameFor / fieldNameFor produce the stable
@@ -212,6 +225,14 @@ func drawType(t *rapid.T, label string, refTargets []string, enums []FuzzEnum, d
 	choices := append([]FuzzTypeKind(nil), atomicKinds...)
 	if depth+1 < MaxTypeDepth {
 		choices = append(choices, KindOptional, KindList, KindMap)
+		// Union counts toward MaxTypeDepth the same way the other
+		// wrappers do: each variant is drawn at depth+1 so a chain
+		// of nested unions still terminates on the existing budget.
+		// A separate dice roll gates the union path so the wrapper
+		// mix isn't skewed by adding a fourth equally-weighted kind.
+		if rapid.Float64Range(0, 1).Draw(t, label+":union_dice") < UnionDrawProbability {
+			return drawUnion(t, label, refTargets, enums, depth+1)
+		}
 	}
 
 	kind := drawKind(t, label, choices)
@@ -240,6 +261,21 @@ func drawType(t *rapid.T, label string, refTargets []string, enums []FuzzEnum, d
 	}
 	// Unreachable; drawKind always returns one of the choices above.
 	return FuzzType{Kind: KindString}
+}
+
+// drawUnion draws a KindUnion type with rapid-controlled arm count
+// in [MinUnionVariants, MaxUnionVariants]. The arm count is drawn
+// with a separate `variant_count` label so rapid's shrinker can drag
+// it toward the lower bound independently of arm contents — this is
+// the "Move A" shrink behaviour from the scope doc. Each variant is
+// drawn at `depth` already advanced by the caller.
+func drawUnion(t *rapid.T, label string, refTargets []string, enums []FuzzEnum, depth int) FuzzType {
+	count := rapid.IntRange(MinUnionVariants, MaxUnionVariants).Draw(t, label+":variant_count")
+	variants := make([]FuzzType, count)
+	for i := 0; i < count; i++ {
+		variants[i] = drawType(t, fmt.Sprintf("%s:variant_%d", label, i), refTargets, enums, depth)
+	}
+	return FuzzType{Kind: KindUnion, Variants: variants}
 }
 
 func drawKind(t *rapid.T, label string, choices []FuzzTypeKind) FuzzTypeKind {
@@ -320,11 +356,13 @@ func wireBackEdge(cls *FuzzClass, targetClassName string) {
 }
 
 // ValueGen returns a generator that produces a FuzzValue conforming
-// to the schema's root class. The generator threads a per-class
-// recursion depth counter through the walk and forces termination at
-// the depth cap by emitting OptionalAbsent / empty list / empty map
-// for any nested edge that would recurse further into the same
-// class.
+// to the schema's effective root type. When the schema declares a
+// non-class root via RootType the generator walks that type
+// directly; otherwise it dispatches to the RootClass class
+// generator. The generator threads a per-class recursion depth
+// counter through the walk and forces termination at the depth cap
+// by emitting OptionalAbsent / empty list / empty map for any
+// nested edge that would recurse further into the same class.
 func ValueGen(schema FuzzSchema) *rapid.Generator[FuzzValue] {
 	return rapid.Custom(func(t *rapid.T) FuzzValue {
 		// Rapid requires every Custom invocation to draw at
@@ -336,7 +374,8 @@ func ValueGen(schema FuzzSchema) *rapid.Generator[FuzzValue] {
 			schema: schema,
 			depth:  make(map[string]int),
 		}
-		return ctx.drawClass(t, schema.RootClass, "root")
+		root := schema.EffectiveRoot()
+		return ctx.drawValueForType(t, root, "root")
 	})
 }
 
@@ -406,8 +445,46 @@ func (c *valueDrawCtx) drawValueForType(t *rapid.T, ft FuzzType, label string) F
 		// Self-ref / cycle edges are always wrapped in optional/
 		// list/map (handled above) where termination is enforced.
 		return c.drawClass(t, ft.Ref, label)
+	case KindUnion:
+		return c.drawUnion(t, ft, label)
 	}
 	return FuzzValue{Kind: KindString}
+}
+
+// drawUnion picks one variant arm and recurses into its type.
+// Variants whose realization would blow the per-class recursion
+// budget are filtered out before the arm draw so the rapid bitstream
+// shrinks toward terminating arms first. When every arm is unsafe
+// the helper falls back to any arm (the inner draw still enforces
+// optional/list/map termination); this is a defensive branch the
+// schema generator's depth bounds make unreachable.
+func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValue {
+	if len(ft.Variants) == 0 {
+		t.Fatalf("bamlfuzz: union has no variants (label=%s); schema is malformed", label)
+	}
+	safe := make([]int, 0, len(ft.Variants))
+	for i := range ft.Variants {
+		v := ft.Variants[i]
+		if !c.wouldExceedDepth(&v) {
+			safe = append(safe, i)
+		}
+	}
+	if len(safe) == 0 {
+		// Every arm reaches an already-exhausted class. Fall through
+		// to the full index range — the inner draw still enforces
+		// termination at the next optional/list/map wrapper.
+		for i := range ft.Variants {
+			safe = append(safe, i)
+		}
+	}
+	pick := rapid.IntRange(0, len(safe)-1).Draw(t, label+":variant_pick")
+	idx := safe[pick]
+	inner := c.drawValueForType(t, ft.Variants[idx], fmt.Sprintf("%s:variant_%d", label, idx))
+	return FuzzValue{
+		Kind:         KindUnion,
+		VariantIndex: idx,
+		Variant:      &inner,
+	}
 }
 
 func (c *valueDrawCtx) drawOptional(t *rapid.T, ft FuzzType, label string) FuzzValue {
@@ -522,6 +599,411 @@ func (c *valueDrawCtx) drawLiteralValue(lit *FuzzLiteral) FuzzValue {
 		return FuzzValue{Kind: KindLiteral, Bool: lit.Bool}
 	}
 	return FuzzValue{Kind: KindLiteral}
+}
+
+// CoupledCase pairs a schema + value with the Walk output computed
+// from them. CoupledCaseGen returns these so the integration test
+// can build an OracleCase without redoing the (schema, value, walk)
+// dance per call site.
+type CoupledCase struct {
+	Schema FuzzSchema
+	Value  FuzzValue
+	Walk   WalkResult
+}
+
+// CoupledCaseGen returns a rapid generator that draws a schema from
+// schemaGen, draws a value conforming to that schema, walks the
+// pair to compute MockLLMContent + Expected, and — at a rapid-
+// controlled probability — applies the union-collapse pass
+// ("Move B" in the scope doc) that rewrites unions where the value
+// tree picked a single arm consistently.
+//
+// The collapse is gated by a rapid boolean draw so the shrinker can
+// independently bias toward the collapsed shape: when the rapid
+// engine flips the dice off the original schema is returned,
+// exercising the union-shape contract; when it flips on the
+// collapsed schema is returned, which proves the behaviour replays
+// correctly without the union wrapper. The collapse falls back to
+// the original (uncollapsed) shape when union choices disagree
+// across class instances or when re-walking the collapsed value
+// fails for any reason — coupled cases must always be walkable.
+func CoupledCaseGen(schemaGen *rapid.Generator[FuzzSchema]) *rapid.Generator[CoupledCase] {
+	return rapid.Custom(func(t *rapid.T) CoupledCase {
+		schema := schemaGen.Draw(t, "schema")
+		value := ValueGen(schema).Draw(t, "value")
+		walk, err := Walk(schema, value)
+		if err != nil {
+			t.Fatalf("bamlfuzz: walk drawn (schema, value): %v", err)
+		}
+		out := CoupledCase{Schema: schema, Value: value, Walk: walk}
+		if rapid.Bool().Draw(t, "collapse_unions") {
+			cs, cv, cerr := collapseUnionsToPicked(schema, value)
+			if cerr == nil {
+				cw, werr := Walk(cs, cv)
+				if werr == nil {
+					out.Schema = cs
+					out.Value = cv
+					out.Walk = cw
+				}
+			}
+		}
+		return out
+	})
+}
+
+// collapseUnionsToPicked rewrites every KindUnion node in
+// (schema, value) for which the value tree's observed arm choices
+// are consistent. A union node is consistent when every instance
+// of the surrounding class field selected the same variant — this
+// keeps the schema-level rewrite valid for all callers of the class.
+// Returns the original (schema, value) when no union qualifies and
+// an error only when the schema/value pair is structurally
+// inconsistent (defensive — the generator never produces such pairs).
+//
+// Move B applies at three positions:
+//   - the effective root type (RootType when non-nil),
+//   - each class property type,
+//   - and recursively inside wrappers (optional/list/map) and
+//     other unions.
+func collapseUnionsToPicked(schema FuzzSchema, value FuzzValue) (FuzzSchema, FuzzValue, error) {
+	visits := gatherClassVisits(schema.EffectiveRoot(), value, schema)
+	collapseMap, err := planCollapses(schema, visits)
+	if err != nil {
+		return FuzzSchema{}, FuzzValue{}, err
+	}
+	out := schema
+	out.Classes = make([]FuzzClass, len(schema.Classes))
+	for i, cls := range schema.Classes {
+		newProps := make([]FuzzProperty, len(cls.Properties))
+		for j, prop := range cls.Properties {
+			plan := collapseMap[fieldKey{cls.Name, prop.Name}]
+			newProps[j] = FuzzProperty{
+				Name: prop.Name,
+				Type: rewriteTypeWithPlan(prop.Type, plan),
+			}
+		}
+		out.Classes[i] = FuzzClass{Name: cls.Name, Properties: newProps}
+	}
+	if schema.RootType != nil {
+		rootPlan := planRoot(*schema.RootType, value)
+		newRoot := rewriteTypeWithPlan(*schema.RootType, rootPlan)
+		out.RootType = &newRoot
+	}
+	newValue := rewriteValueAgainstSchema(out.EffectiveRoot(), value, out)
+	out = AnalyzeGraph(out)
+	return out, newValue, nil
+}
+
+// fieldKey names one (class, property) slot — Move B's collapse
+// decisions key off these so rewrites stay class-scoped.
+type fieldKey struct {
+	Class string
+	Field string
+}
+
+// collapsePlan records, for one position in a type tree, which
+// union arm index to keep (-1 means "no collapse here"). The
+// position is identified by the structural path through the type,
+// represented as the sequence of accessor steps from the type
+// root. Plans are merged across visits: a position is collapsible
+// only when every observation agrees on the same arm index.
+type collapsePlan struct {
+	// At each path the entry maps "yes-collapse-to-N" or
+	// "saw-disagreement" (encoded as -1). Missing entries mean the
+	// path was not a union at any visit and stays untouched.
+	choices map[string]int
+}
+
+func newCollapsePlan() collapsePlan { return collapsePlan{choices: map[string]int{}} }
+
+// gatherClassVisits scans the (root-type, root-value) tree and
+// returns, for each class instance in the value tree, the union
+// choices it made for each of its fields keyed by the structural
+// path through the field's type.
+type classVisit struct {
+	className string
+	fieldName string
+	plan      collapsePlan
+}
+
+func gatherClassVisits(t FuzzType, v FuzzValue, schema FuzzSchema) []classVisit {
+	var out []classVisit
+	walkClassesInValue(t, v, schema, func(className string, fieldName string, ft FuzzType, fv FuzzValue) {
+		p := newCollapsePlan()
+		recordUnionChoices(ft, fv, "", p)
+		out = append(out, classVisit{className: className, fieldName: fieldName, plan: p})
+	})
+	return out
+}
+
+func walkClassesInValue(t FuzzType, v FuzzValue, schema FuzzSchema, visit func(className, fieldName string, ft FuzzType, fv FuzzValue)) {
+	switch t.Kind {
+	case KindClassRef:
+		if v.Kind != KindClassRef {
+			return
+		}
+		cls, ok := schema.FindClass(v.ClassName)
+		if !ok {
+			return
+		}
+		for _, prop := range cls.Properties {
+			fv, ok := v.LookupField(prop.Name)
+			if !ok {
+				continue
+			}
+			visit(v.ClassName, prop.Name, prop.Type, fv)
+			walkClassesInValue(prop.Type, fv, schema, visit)
+		}
+	case KindOptional:
+		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
+			walkClassesInValue(*t.Inner, *v.Inner, schema, visit)
+		}
+	case KindList:
+		if t.Inner == nil {
+			return
+		}
+		for _, item := range v.Items {
+			walkClassesInValue(*t.Inner, item, schema, visit)
+		}
+	case KindMap:
+		if t.Inner == nil {
+			return
+		}
+		for _, e := range v.MapEntries {
+			walkClassesInValue(*t.Inner, e.Value, schema, visit)
+		}
+	case KindUnion:
+		if v.Kind != KindUnion || v.Variant == nil {
+			return
+		}
+		if v.VariantIndex < 0 || v.VariantIndex >= len(t.Variants) {
+			return
+		}
+		walkClassesInValue(t.Variants[v.VariantIndex], *v.Variant, schema, visit)
+	}
+}
+
+func recordUnionChoices(t FuzzType, v FuzzValue, path string, p collapsePlan) {
+	switch t.Kind {
+	case KindUnion:
+		if v.Kind != KindUnion || v.Variant == nil {
+			p.choices[path] = -1
+			return
+		}
+		existing, seen := p.choices[path]
+		switch {
+		case !seen:
+			p.choices[path] = v.VariantIndex
+		case existing != v.VariantIndex:
+			p.choices[path] = -1
+		}
+		recordUnionChoices(t.Variants[v.VariantIndex], *v.Variant, path+":v", p)
+	case KindOptional:
+		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
+			recordUnionChoices(*t.Inner, *v.Inner, path+":o", p)
+		}
+	case KindList:
+		if t.Inner == nil {
+			return
+		}
+		for i, item := range v.Items {
+			recordUnionChoices(*t.Inner, item, fmt.Sprintf("%s:l%d", path, i), p)
+		}
+	case KindMap:
+		if t.Inner == nil {
+			return
+		}
+		for _, e := range v.MapEntries {
+			recordUnionChoices(*t.Inner, e.Value, path+":m:"+e.Key, p)
+		}
+	}
+}
+
+func planCollapses(schema FuzzSchema, visits []classVisit) (map[fieldKey]collapsePlan, error) {
+	merged := map[fieldKey]collapsePlan{}
+	for _, v := range visits {
+		key := fieldKey{Class: v.className, Field: v.fieldName}
+		existing, ok := merged[key]
+		if !ok {
+			merged[key] = v.plan
+			continue
+		}
+		for path, idx := range v.plan.choices {
+			prev, seen := existing.choices[path]
+			switch {
+			case !seen:
+				existing.choices[path] = idx
+			case prev == -1:
+				// already invalidated
+			case prev != idx:
+				existing.choices[path] = -1
+			}
+		}
+		merged[key] = existing
+	}
+	// Strip disagreement markers so rewriteTypeWithPlan can treat
+	// missing entries uniformly.
+	for k, p := range merged {
+		for path, idx := range p.choices {
+			if idx < 0 {
+				delete(p.choices, path)
+			}
+		}
+		merged[k] = p
+	}
+	return merged, nil
+}
+
+// planRoot collapses the unions in the effective root type using
+// the value at the root as the single observation.
+func planRoot(rootType FuzzType, value FuzzValue) collapsePlan {
+	p := newCollapsePlan()
+	recordUnionChoices(rootType, value, "", p)
+	for path, idx := range p.choices {
+		if idx < 0 {
+			delete(p.choices, path)
+		}
+	}
+	return p
+}
+
+func rewriteTypeWithPlan(t FuzzType, plan collapsePlan) FuzzType {
+	if len(plan.choices) == 0 {
+		return t
+	}
+	return rewriteTypeAtPath(t, "", plan)
+}
+
+func rewriteTypeAtPath(t FuzzType, path string, plan collapsePlan) FuzzType {
+	switch t.Kind {
+	case KindUnion:
+		if idx, ok := plan.choices[path]; ok && idx >= 0 && idx < len(t.Variants) {
+			return rewriteTypeAtPath(t.Variants[idx], path+":v", plan)
+		}
+		out := t
+		out.Variants = make([]FuzzType, len(t.Variants))
+		for i, v := range t.Variants {
+			out.Variants[i] = rewriteTypeAtPath(v, fmt.Sprintf("%s:v%d", path, i), plan)
+		}
+		return out
+	case KindOptional:
+		if t.Inner == nil {
+			return t
+		}
+		inner := rewriteTypeAtPath(*t.Inner, path+":o", plan)
+		out := t
+		out.Inner = &inner
+		return out
+	case KindList:
+		if t.Inner == nil {
+			return t
+		}
+		inner := rewriteTypeAtPath(*t.Inner, path+":l", plan)
+		out := t
+		out.Inner = &inner
+		return out
+	case KindMap:
+		if t.Inner == nil {
+			return t
+		}
+		inner := rewriteTypeAtPath(*t.Inner, path+":m", plan)
+		out := t
+		out.Inner = &inner
+		return out
+	}
+	return t
+}
+
+// rewriteValueAgainstSchema walks (effective-root-type, value)
+// in parallel and strips union wrappers wherever the rewritten
+// schema no longer carries a union at the matching position.
+func rewriteValueAgainstSchema(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzValue {
+	switch t.Kind {
+	case KindUnion:
+		if v.Kind != KindUnion || v.Variant == nil {
+			return v
+		}
+		if v.VariantIndex < 0 || v.VariantIndex >= len(t.Variants) {
+			return v
+		}
+		newInner := rewriteValueAgainstSchema(t.Variants[v.VariantIndex], *v.Variant, schema)
+		out := v
+		out.Variant = &newInner
+		return out
+	case KindClassRef:
+		if v.Kind != KindClassRef {
+			return v
+		}
+		cls, ok := schema.FindClass(v.ClassName)
+		if !ok {
+			return v
+		}
+		newFields := make([]FuzzFieldValue, len(v.Fields))
+		for i, fv := range v.Fields {
+			var propType FuzzType
+			for _, p := range cls.Properties {
+				if p.Name == fv.Name {
+					propType = p.Type
+					break
+				}
+			}
+			newFields[i] = FuzzFieldValue{
+				Name:  fv.Name,
+				Value: rewriteValueAgainstType(propType, fv.Value, schema),
+			}
+		}
+		out := v
+		out.Fields = newFields
+		return out
+	case KindOptional:
+		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
+			newInner := rewriteValueAgainstType(*t.Inner, *v.Inner, schema)
+			out := v
+			out.Inner = &newInner
+			return out
+		}
+		return v
+	case KindList:
+		if t.Inner == nil {
+			return v
+		}
+		newItems := make([]FuzzValue, len(v.Items))
+		for i, item := range v.Items {
+			newItems[i] = rewriteValueAgainstType(*t.Inner, item, schema)
+		}
+		out := v
+		out.Items = newItems
+		return out
+	case KindMap:
+		if t.Inner == nil {
+			return v
+		}
+		newEntries := make([]FuzzMapEntry, len(v.MapEntries))
+		for i, e := range v.MapEntries {
+			newEntries[i] = FuzzMapEntry{
+				Key:   e.Key,
+				Value: rewriteValueAgainstType(*t.Inner, e.Value, schema),
+			}
+		}
+		out := v
+		out.MapEntries = newEntries
+		return out
+	}
+	return v
+}
+
+// rewriteValueAgainstType matches a value to its (possibly-rewritten)
+// type. When the type no longer has a union at the value position,
+// the union wrapper is stripped; when both still carry a union the
+// helper recurses into the picked arm.
+func rewriteValueAgainstType(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzValue {
+	if v.Kind == KindUnion && t.Kind != KindUnion {
+		if v.Variant == nil {
+			return v
+		}
+		return rewriteValueAgainstType(t, *v.Variant, schema)
+	}
+	return rewriteValueAgainstSchema(t, v, schema)
 }
 
 // drawString uses rapid's biased generator: short strings, common

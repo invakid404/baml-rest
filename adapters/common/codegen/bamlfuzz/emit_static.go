@@ -52,6 +52,11 @@ var caseIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 // equivalent to the dynamic TypeBuilder's self-ref/mutual-cycle gates.
 // Value-side termination is enforced earlier, at value generation.
 //
+// When FuzzSchema.RootType is non-nil the synthesized function
+// returns that type spelled in BAML source (raw union, list, map,
+// or primitive). Otherwise the function returns RootClass — the v1
+// default, kept for replay-artifact compatibility.
+//
 // The emitted function declares `client TestClient`, expecting the
 // integration test to supply a per-request `client_registry` override
 // pointing TestClient at the scenario for this case.
@@ -59,11 +64,13 @@ func LowerToBamlSource(schema FuzzSchema, caseID string) (StaticBamlSource, erro
 	if !caseIDPattern.MatchString(caseID) {
 		return StaticBamlSource{}, fmt.Errorf("bamlfuzz: invalid caseID %q (must match %s)", caseID, caseIDPattern)
 	}
-	if schema.RootClass == "" {
-		return StaticBamlSource{}, fmt.Errorf("bamlfuzz: schema missing RootClass")
+	if schema.RootClass == "" && schema.RootType == nil {
+		return StaticBamlSource{}, fmt.Errorf("bamlfuzz: schema missing both RootClass and RootType")
 	}
-	if _, ok := schema.FindClass(schema.RootClass); !ok {
-		return StaticBamlSource{}, fmt.Errorf("bamlfuzz: root class %q not present in schema", schema.RootClass)
+	if schema.RootClass != "" {
+		if _, ok := schema.FindClass(schema.RootClass); !ok {
+			return StaticBamlSource{}, fmt.Errorf("bamlfuzz: root class %q not present in schema", schema.RootClass)
+		}
 	}
 
 	classNames := make(map[string]string, len(schema.Classes))
@@ -97,8 +104,15 @@ func LowerToBamlSource(schema FuzzSchema, caseID string) (StaticBamlSource, erro
 	}
 
 	funcName := "FuzzFn_" + caseID
-	rootMangled := classNames[schema.RootClass]
-	if err := writeFunction(&b, funcName, rootMangled); err != nil {
+	rootMangled := ""
+	if schema.RootClass != "" {
+		rootMangled = classNames[schema.RootClass]
+	}
+	returnSpelling, err := returnTypeSpelling(schema, classNames, enumNames)
+	if err != nil {
+		return StaticBamlSource{}, fmt.Errorf("bamlfuzz: emit function return type: %w", err)
+	}
+	if err := writeFunction(&b, funcName, returnSpelling); err != nil {
 		return StaticBamlSource{}, fmt.Errorf("bamlfuzz: emit function: %w", err)
 	}
 
@@ -110,6 +124,24 @@ func LowerToBamlSource(schema FuzzSchema, caseID string) (StaticBamlSource, erro
 		EnumNames:    enumOrder,
 		RootClass:    rootMangled,
 	}, nil
+}
+
+// returnTypeSpelling renders the BAML return type for the
+// synthesized function. When RootType is set it walks the spelled
+// type tree (parens around unions in nested positions); otherwise it
+// returns the mangled RootClass name for the v1 default.
+func returnTypeSpelling(schema FuzzSchema, classNames, enumNames map[string]string) (string, error) {
+	if schema.RootType != nil {
+		// Top-level return types do not need outer parens — they
+		// are not nested inside another wrapper. typeSpelling adds
+		// inner parens where needed for precedence.
+		return typeSpellingNoUnionParens(*schema.RootType, classNames, enumNames)
+	}
+	mangled, ok := classNames[schema.RootClass]
+	if !ok {
+		return "", fmt.Errorf("class ref %q not declared in schema", schema.RootClass)
+	}
+	return mangled, nil
 }
 
 // writeEnum emits a BAML enum declaration. Values are written in the
@@ -158,18 +190,18 @@ func writeClass(b *strings.Builder, cls FuzzClass, classNames, enumNames map[str
 }
 
 // writeFunction emits the synthesized BAML function. The function
-// returns the suffixed root class and references the existing
-// TestClient declared in the integration testdata baml_src/. Tests
-// override TestClient via a per-request client_registry to point at
-// the mockllm scenario for this case.
+// returns `returnType` (already spelled in BAML source) and
+// references the existing TestClient declared in the integration
+// testdata baml_src/. Tests override TestClient via a per-request
+// client_registry to point at the mockllm scenario for this case.
 //
 // The prompt includes {{ ctx.output_format }} so schema rendering is
 // exercised in the upstream request.
-func writeFunction(b *strings.Builder, funcName, rootMangled string) error {
+func writeFunction(b *strings.Builder, funcName, returnType string) error {
 	b.WriteString("function ")
 	b.WriteString(funcName)
 	b.WriteString("(input: string) -> ")
-	b.WriteString(rootMangled)
+	b.WriteString(returnType)
 	b.WriteString(" {\n")
 	b.WriteString("  client TestClient\n")
 	b.WriteString("  prompt #\"{{ ctx.output_format }}\n")
@@ -181,6 +213,9 @@ func writeFunction(b *strings.Builder, funcName, rootMangled string) error {
 // typeSpelling returns the BAML source-level type spelling for a
 // FuzzType. ClassRef/EnumRef targets are resolved through the mangle
 // maps so the emitted source matches the declared symbol names.
+// Unions are spelled as pipe-separated variants. A single-arm union
+// (only reachable through shrink-collapse) is spelled as the bare
+// variant — emitting a one-operand pipe is invalid BAML.
 func typeSpelling(t FuzzType, classNames, enumNames map[string]string) (string, error) {
 	switch t.Kind {
 	case KindString, KindInt, KindFloat, KindBool, KindNull:
@@ -236,9 +271,56 @@ func typeSpelling(t FuzzType, classNames, enumNames map[string]string) (string, 
 			return "", fmt.Errorf("enum ref %q not declared in schema", t.Ref)
 		}
 		return mangled, nil
+	case KindUnion:
+		if len(t.Variants) == 0 {
+			return "", fmt.Errorf("union has no variants")
+		}
+		if len(t.Variants) == 1 {
+			return typeSpelling(t.Variants[0], classNames, enumNames)
+		}
+		parts := make([]string, len(t.Variants))
+		for i, v := range t.Variants {
+			s, err := typeSpelling(v, classNames, enumNames)
+			if err != nil {
+				return "", fmt.Errorf("union variant %d: %w", i, err)
+			}
+			parts[i] = s
+		}
+		// Union appearing inside another wrapper (optional, list,
+		// map) is rendered with outer parens here so the surrounding
+		// `?` / `[]` / `map<...>` spelling binds correctly. Standalone
+		// top-level unions don't need parens; returnTypeSpelling
+		// uses the noUnionParens variant to omit them.
+		return "(" + strings.Join(parts, " | ") + ")", nil
 	default:
 		return "", fmt.Errorf("unsupported kind %q", t.Kind)
 	}
+}
+
+// typeSpellingNoUnionParens spells `t` but, when t is a KindUnion,
+// omits the outer parens around the pipe expression. Used only by
+// the function-return-type spelling: a top-level union doesn't need
+// parens (nothing wraps it) and BAML's pretty-printer style prefers
+// the unparenthesized form.
+func typeSpellingNoUnionParens(t FuzzType, classNames, enumNames map[string]string) (string, error) {
+	if t.Kind != KindUnion {
+		return typeSpelling(t, classNames, enumNames)
+	}
+	if len(t.Variants) == 0 {
+		return "", fmt.Errorf("union has no variants")
+	}
+	if len(t.Variants) == 1 {
+		return typeSpelling(t.Variants[0], classNames, enumNames)
+	}
+	parts := make([]string, len(t.Variants))
+	for i, v := range t.Variants {
+		s, err := typeSpelling(v, classNames, enumNames)
+		if err != nil {
+			return "", fmt.Errorf("union variant %d: %w", i, err)
+		}
+		parts[i] = s
+	}
+	return strings.Join(parts, " | "), nil
 }
 
 // literalSpelling renders a FuzzLiteral as its BAML source-level

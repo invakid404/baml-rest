@@ -31,6 +31,16 @@ var ErrDynamicSelfRefUnsupported = fmt.Errorf("%w: self-referential schema", Err
 // ErrDynamicSchemaUnsupported.
 var ErrDynamicMutualCycleUnsupported = fmt.Errorf("%w: mutual-cycle schema", ErrDynamicSchemaUnsupported)
 
+// ErrDynamicRootTypeUnsupported is returned by LowerToDynamicSchema
+// when the schema declares a non-class effective root type (a raw
+// top-level union / list / map / primitive). The production
+// /call/_dynamic endpoint accepts object-shaped output schemas
+// only — the contract is "fill in a class" — so the dynamic emitter
+// rejects raw roots. Static lowering handles the same shapes
+// natively via the synthesized function's return type. Wraps
+// ErrDynamicSchemaUnsupported.
+var ErrDynamicRootTypeUnsupported = fmt.Errorf("%w: raw non-class root type", ErrDynamicSchemaUnsupported)
+
 // LowerToDynamicSchema lowers a FuzzSchema into a bamlutils.DynamicOutputSchema
 // suitable for posting to /call/_dynamic or driving dynclient.Client.DynamicCall.
 //
@@ -55,6 +65,9 @@ func LowerToDynamicSchema(schema FuzzSchema) (bamlutils.DynamicOutputSchema, err
 	}
 	if flags.HasMutualCycle {
 		return bamlutils.DynamicOutputSchema{}, fmt.Errorf("%w: root=%q", ErrDynamicMutualCycleUnsupported, schema.RootClass)
+	}
+	if schema.RootType != nil && schema.RootType.Kind != KindClassRef {
+		return bamlutils.DynamicOutputSchema{}, fmt.Errorf("%w: root kind=%q", ErrDynamicRootTypeUnsupported, schema.RootType.Kind)
 	}
 	rootCls, ok := schema.FindClass(schema.RootClass)
 	if !ok {
@@ -161,6 +174,13 @@ func lowerProperty(ft FuzzType) (*bamlutils.DynamicProperty, error) {
 			return nil, fmt.Errorf("ref kind %q missing target", ft.Kind)
 		}
 		prop.Ref = ft.Ref
+	case KindUnion:
+		variants, err := lowerVariants(ft.Variants)
+		if err != nil {
+			return nil, err
+		}
+		prop.Type = "union"
+		prop.OneOf = variants
 	default:
 		return nil, fmt.Errorf("unsupported kind %q", ft.Kind)
 	}
@@ -224,10 +244,37 @@ func lowerTypeSpec(ft FuzzType) (*bamlutils.DynamicTypeSpec, error) {
 			return nil, fmt.Errorf("ref kind %q missing target", ft.Kind)
 		}
 		spec.Ref = ft.Ref
+	case KindUnion:
+		variants, err := lowerVariants(ft.Variants)
+		if err != nil {
+			return nil, err
+		}
+		spec.Type = "union"
+		spec.OneOf = variants
 	default:
 		return nil, fmt.Errorf("unsupported kind %q", ft.Kind)
 	}
 	return spec, nil
+}
+
+// lowerVariants renders each union variant as a DynamicTypeSpec.
+// Empty / single-arm variants are rejected: an empty union is
+// invalid BAML, and a single-arm union should have been collapsed
+// to the bare variant before reaching the dynamic emitter
+// (LowerToBamlSource enforces the static-side equivalent).
+func lowerVariants(variants []FuzzType) ([]*bamlutils.DynamicTypeSpec, error) {
+	if len(variants) == 0 {
+		return nil, fmt.Errorf("union has no variants")
+	}
+	out := make([]*bamlutils.DynamicTypeSpec, len(variants))
+	for i, v := range variants {
+		spec, err := lowerTypeSpec(v)
+		if err != nil {
+			return nil, fmt.Errorf("union variant %d: %w", i, err)
+		}
+		out[i] = spec
+	}
+	return out, nil
 }
 
 func literalTypeAndValue(lit *FuzzLiteral) (string, any, error) {

@@ -12,11 +12,13 @@ import (
 )
 
 // ErrSchemaOrderUnsupported is returned by SchemaOrderDiff when the
-// schema shape carries semantics the walker does not yet model. Today
-// this is union-bearing schemas (FuzzSchema.HasUnion); the walker has
-// no canonical "expected order" for a union value without a union-aware
-// dispatch. Callers detect with errors.Is and typically skip the order
-// assertion while still running the semantic-equality checks.
+// schema shape carries semantics the walker cannot drive without
+// additional metadata. Today this fires when a union node is
+// reached without a recorded UnionChoice entry — the walker has no
+// canonical "expected order" for a union value without knowing
+// which arm produced it. Callers detect with errors.Is and
+// typically skip the order assertion while still running the
+// semantic-equality checks.
 var ErrSchemaOrderUnsupported = errors.New("bamlfuzz: schema order check unsupported")
 
 // SchemaOrderDiffEntry names one schema-order disagreement at a JSON
@@ -36,26 +38,33 @@ type SchemaOrderDiffEntry struct {
 // `schema`, asserting wire key order only at JSON nodes the schema
 // types as a class instance. Map nodes participate in recursion but
 // their key order is not asserted; map values are walked through the
-// inner type.
+// inner type. Union nodes resolve through `choices` (typically
+// CaseMetadata.UnionChoices from the walker), advancing into the
+// recorded variant arm; a missing or out-of-range entry returns
+// ErrSchemaOrderUnsupported so callers can skip the order assertion
+// without abandoning semantic diagnostics.
 //
 // `label` is opaque and is stored on every emitted entry's Side field.
 //
 // Pure: takes no *testing.T. Callers decide whether a non-empty diff
-// fails, logs, or feeds the replay envelope. Returns
-// ErrSchemaOrderUnsupported when schema.HasUnion is true so callers can
-// skip the order assertion without abandoning semantic diagnostics.
+// fails, logs, or feeds the replay envelope.
 //
 // An empty diff slice with a nil error means the inputs agreed on key
-// order at every class node reachable from schema.RootClass.
+// order at every class node reachable from schema's effective root.
 func SchemaOrderDiff(label string, schema FuzzSchema, expected, actual json.RawMessage) ([]SchemaOrderDiffEntry, error) {
-	if schema.HasUnion {
-		return nil, ErrSchemaOrderUnsupported
+	return SchemaOrderDiffWithChoices(label, schema, expected, actual, nil)
+}
+
+// SchemaOrderDiffWithChoices is the union-aware variant of
+// SchemaOrderDiff. `choices` mirrors CaseMetadata.UnionChoices.
+func SchemaOrderDiffWithChoices(label string, schema FuzzSchema, expected, actual json.RawMessage, choices map[string]UnionChoice) ([]SchemaOrderDiffEntry, error) {
+	if schema.RootClass == "" && schema.RootType == nil {
+		return nil, fmt.Errorf("bamlfuzz: schema missing both RootClass and RootType")
 	}
-	if schema.RootClass == "" {
-		return nil, fmt.Errorf("bamlfuzz: schema missing RootClass")
-	}
-	if _, ok := schema.FindClass(schema.RootClass); !ok {
-		return nil, fmt.Errorf("bamlfuzz: root class %q not present in schema", schema.RootClass)
+	if schema.RootClass != "" {
+		if _, ok := schema.FindClass(schema.RootClass); !ok {
+			return nil, fmt.Errorf("bamlfuzz: root class %q not present in schema", schema.RootClass)
+		}
 	}
 	exp, err := decodeOrderedJSON(expected)
 	if err != nil {
@@ -65,8 +74,8 @@ func SchemaOrderDiff(label string, schema FuzzSchema, expected, actual json.RawM
 	if err != nil {
 		return nil, fmt.Errorf("decode actual: %w", err)
 	}
-	w := &orderWalker{schema: schema, side: label}
-	w.walkClass("$", schema.RootClass, exp, got)
+	w := &orderWalker{schema: schema, side: label, choices: choices}
+	w.walkType("$", schema.EffectiveRoot(), exp, got)
 	return w.diffs, w.err
 }
 
@@ -171,10 +180,11 @@ func decodeOrderedJSON(data json.RawMessage) (orderedJSON, error) {
 }
 
 type orderWalker struct {
-	schema FuzzSchema
-	side   string
-	diffs  []SchemaOrderDiffEntry
-	err    error
+	schema  FuzzSchema
+	side    string
+	diffs   []SchemaOrderDiffEntry
+	err     error
+	choices map[string]UnionChoice
 }
 
 func (w *orderWalker) setErr(err error) {
@@ -246,6 +256,25 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 		for _, key := range sortedIntersection(exp.byKey, got.byKey) {
 			w.walkType(fmt.Sprintf("%s[%q]", path, key), *typ.Inner, exp.byKey[key], got.byKey[key])
 		}
+	case KindUnion:
+		// CaseMetadata.UnionChoices uses paths rooted at "" (the
+		// renderer convention); SchemaOrderDiff paths are rooted at
+		// "$". Strip the leading "$" so the two conventions match
+		// without leaking the path format into the metadata.
+		key := path
+		if len(key) > 0 && key[0] == '$' {
+			key = key[1:]
+		}
+		choice, ok := w.choices[key]
+		if !ok {
+			w.setErr(ErrSchemaOrderUnsupported)
+			return
+		}
+		if choice.Index < 0 || choice.Index >= len(typ.Variants) {
+			w.setErr(ErrSchemaOrderUnsupported)
+			return
+		}
+		w.walkType(path+":v", typ.Variants[choice.Index], exp, got)
 	}
 }
 
