@@ -24,12 +24,12 @@ const GeneratorVersion = "0.2.0"
 // dynclient / REST). Release gates: semantic equality always, and
 // schema-aware key order at every class instance when
 // PreserveSchemaOrder is true (see SchemaOrderDiff). Strict order
-// mismatches are recorded under OrderWarning for replay; schemas
-// the order checker cannot resolve (missing union-choice metadata)
-// skip the assertion with a log line only and don't populate
-// OrderWarning. Per-arm union choices travel in Metadata.UnionChoices
-// so a developer reading the envelope can see exactly which variant
-// the value walker selected at each union node.
+// mismatches and schemas the order checker cannot resolve (e.g.
+// missing union-choice metadata) are both release-blocking; the
+// diagnostic lands on OrderWarning before the envelope is dumped.
+// Per-arm union choices travel in Metadata.UnionChoices so a
+// developer reading the envelope can see exactly which variant the
+// value walker selected at each union node.
 type DynamicFailureEnvelope struct {
 	GeneratorVersion    string                         `json:"generator_version"`
 	GeneratedAt         string                         `json:"generated_at"`
@@ -71,9 +71,9 @@ type SemanticDiffEntry struct {
 // common header fields and adds the static-specific lowering + build
 // metadata listed in scope D8. Release gates: semantic equality
 // always, and schema-aware key order at every class instance when
-// PreserveSchemaOrder is true. Strict order mismatches are recorded
-// under OrderWarning for replay; unsupported schemas skip the order
-// assertion with a log line only and don't populate OrderWarning.
+// PreserveSchemaOrder is true. Strict order mismatches and schemas
+// the order checker cannot resolve are both release-blocking; the
+// diagnostic lands on OrderWarning before the envelope is dumped.
 //
 // BuildError populates when the integration build fails for the case;
 // after single-case isolation it identifies the offending case alone.
