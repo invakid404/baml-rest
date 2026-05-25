@@ -295,7 +295,15 @@ func drawLiteral(t *rapid.T, label string) *FuzzLiteral {
 		oidx := rapid.IntRange(0, len(options)-1).Draw(t, label+":lit_str")
 		return &FuzzLiteral{Kind: LiteralString, String: options[oidx]}
 	case LiteralInt:
-		options := []int64{0, 1, -1, 42, -42}
+		// Stick to non-negative literal ints. BAML's Go codegen derives
+		// identifier-bearing tokens from literal type spellings; a `-`
+		// in a literal-int spelling lands as a non-identifier byte in
+		// the generated Go source (e.g. `expected ';', found '-'`
+		// inside `baml_client/stream_types/classes.go`) when the
+		// literal appears as a union variant. Cover the surrounding
+		// integer space without the hyphen sigil; negative literals
+		// can be re-enabled if BAML's codegen learns to sanitize them.
+		options := []int64{0, 1, 42}
 		oidx := rapid.IntRange(0, len(options)-1).Draw(t, label+":lit_int")
 		return &FuzzLiteral{Kind: LiteralInt, Int: options[oidx]}
 	case LiteralBool:

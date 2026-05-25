@@ -657,6 +657,47 @@ func checkUnionBounds(rt *rapid.T, t FuzzType) {
 	}
 }
 
+// TestSchemaGenDoesNotProduceNegativeLiteralInt is a rapid-driven
+// invariant: literal-int types drawn anywhere in the schema must be
+// non-negative. BAML's Go codegen derives identifier-bearing tokens
+// from literal type spellings; a `-` in a literal-int spelling lands
+// as a non-identifier byte in the generated Go source when the literal
+// appears inside a union, surfacing as `expected ';', found '-'` in
+// baml_client/stream_types/classes.go and breaking the context-fix
+// hack's downstream parse. Pin the generator's safe-literal-int set
+// so a future widening of drawLiteral cannot silently reintroduce the
+// CI failure class.
+func TestSchemaGenDoesNotProduceNegativeLiteralInt(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		schema := StaticSchemaGen().Draw(rt, "schema")
+		for _, cls := range schema.Classes {
+			for _, prop := range cls.Properties {
+				checkNoNegativeLiteralInt(rt, prop.Type)
+			}
+		}
+		if schema.RootType != nil {
+			checkNoNegativeLiteralInt(rt, *schema.RootType)
+		}
+	})
+}
+
+func checkNoNegativeLiteralInt(rt *rapid.T, t FuzzType) {
+	switch t.Kind {
+	case KindLiteral:
+		if t.Literal != nil && t.Literal.Kind == LiteralInt && t.Literal.Int < 0 {
+			rt.Fatalf("negative literal-int %d drawn; BAML Go codegen cannot represent the hyphen safely inside a union arm", t.Literal.Int)
+		}
+	case KindUnion:
+		for _, v := range t.Variants {
+			checkNoNegativeLiteralInt(rt, v)
+		}
+	case KindOptional, KindList, KindMap:
+		if t.Inner != nil {
+			checkNoNegativeLiteralInt(rt, *t.Inner)
+		}
+	}
+}
+
 // TestCoupledCaseGenProducesWalkableCases is a rapid-driven smoke
 // test that CoupledCaseGen always returns a (schema, value) pair
 // whose Walk output round-trips through normalize. Catches a future
