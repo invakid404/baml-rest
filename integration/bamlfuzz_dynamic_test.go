@@ -170,29 +170,25 @@ func fnv64aString(s string) uint64 {
 }
 
 // buildRapidCase synthesizes one OracleCase by drawing a dynamic-safe
-// schema + value deterministically from seed. Generator.Example is the
-// rapid API for one-shot seeded draws; rapid.Check uses unstable
-// internal selection that we don't need for the dynamic three-way oracle.
+// schema + value deterministically from seed. Uses bamlfuzz.CoupledCaseGen
+// so the value generator's union-choice metadata + the Move B
+// shrink-biased collapse pass land on the case together — the
+// integration test then runs the three-way oracle against the (possibly
+// collapsed) schema/value pair.
 func buildRapidCase(t *testing.T, seed uint64, preserve bool, idx int) bamlfuzz.OracleCase {
 	t.Helper()
-	schemaSeed := int(seed)
-	schema := bamlfuzz.DynamicSafeSchemaGen().Example(schemaSeed)
-	value := bamlfuzz.ValueGen(schema).Example(schemaSeed + 1)
-	walk, err := bamlfuzz.Walk(schema, value)
-	if err != nil {
-		t.Fatalf("walk: %v", err)
-	}
+	cc := bamlfuzz.CoupledCaseGen(bamlfuzz.DynamicSafeSchemaGen()).Example(int(seed))
 	return bamlfuzz.OracleCase{
 		Name:                fmt.Sprintf("rapid_%t_%d", preserve, idx),
 		Seed:                int64(seed),
 		CaseIndex:           idx,
 		Mode:                bamlfuzz.OracleDynamicThreeWay,
 		PreserveSchemaOrder: preserve,
-		Schema:              schema,
-		Value:               value,
-		MockLLMContent:      walk.MockLLMContent,
-		Expected:            walk.Expected,
-		Metadata:            walk.Metadata,
+		Schema:              cc.Schema,
+		Value:               cc.Value,
+		MockLLMContent:      cc.Walk.MockLLMContent,
+		Expected:            cc.Walk.Expected,
+		Metadata:            cc.Walk.Metadata,
 	}
 }
 
@@ -391,7 +387,7 @@ func checkSchemaOrder(t *testing.T, c bamlfuzz.OracleCase, envelope *bamlfuzz.Dy
 	if !c.PreserveSchemaOrder {
 		return
 	}
-	diffs, err := bamlfuzz.SchemaOrderDiff(label, c.Schema, expected, actual)
+	diffs, err := bamlfuzz.SchemaOrderDiffWithChoices(label, c.Schema, expected, actual, c.Metadata.UnionChoices)
 	switch {
 	case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
 		t.Logf("schema order check skipped for %s %s: %v", c.Name, label, err)

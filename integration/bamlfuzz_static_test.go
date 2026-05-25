@@ -82,13 +82,23 @@ func TestBamlfuzzStaticOracle(t *testing.T) {
 	if len(corpus) == 0 {
 		t.Fatalf("static corpus at %s is empty — PR-C must ship hand-curated cases", staticOracleCorpusDir)
 	}
-	if len(corpus) != staticCasesPerBatch {
-		t.Fatalf("corpus must have exactly %d cases for one batch, got %d", staticCasesPerBatch, len(corpus))
-	}
 
-	t.Run("corpus", func(t *testing.T) {
-		runStaticBatch(t, corpus, "corpus", staticCaseSourceCorpus)
-	})
+	// Chunk the corpus into batches of staticCasesPerBatch so a single
+	// build always covers at most five functions. The union expansion
+	// of the corpus pushes the count past one batch; each batch keeps
+	// the build-failure-isolation contract from D4.
+	corpusBatches := chunkStaticCorpus(corpus, staticCasesPerBatch)
+	for i, batch := range corpusBatches {
+		i := i
+		batch := batch
+		label := "corpus"
+		if len(corpusBatches) > 1 {
+			label = fmt.Sprintf("corpus_batch_%d", i)
+		}
+		t.Run(label, func(t *testing.T) {
+			runStaticBatch(t, batch, label, staticCaseSourceCorpus)
+		})
+	}
 
 	rapidBatches := envIntDefault("BAMLFUZZ_STATIC_BATCHES", 1)
 	for b := 0; b < rapidBatches; b++ {
@@ -98,6 +108,25 @@ func TestBamlfuzzStaticOracle(t *testing.T) {
 			runStaticBatch(t, cases, fmt.Sprintf("rapid_batch_%d", b), staticCaseSourceRapid)
 		})
 	}
+}
+
+// chunkStaticCorpus splits cases into consecutive batches of at most
+// batchSize entries. The last batch may be smaller; an empty input
+// returns nil. Used so a corpus that exceeds the locked five-function
+// batch ceiling still fits the build-isolation harness.
+func chunkStaticCorpus(cases []bamlfuzz.OracleCase, batchSize int) [][]bamlfuzz.OracleCase {
+	if len(cases) == 0 {
+		return nil
+	}
+	var out [][]bamlfuzz.OracleCase
+	for i := 0; i < len(cases); i += batchSize {
+		end := i + batchSize
+		if end > len(cases) {
+			end = len(cases)
+		}
+		out = append(out, cases[i:end])
+	}
+	return out
 }
 
 // staticCaseSource mirrors caseSource from the dynamic oracle: corpus
@@ -255,7 +284,7 @@ func runOneStaticCase(t *testing.T, env *testutil.TestEnvironment, mockClient *m
 		return
 	}
 	if lc.Case.PreserveSchemaOrder {
-		diffs, err := bamlfuzz.SchemaOrderDiff("expected_vs_rest", lc.Case.Schema, lc.Case.Expected, resp.Body)
+		diffs, err := bamlfuzz.SchemaOrderDiffWithChoices("expected_vs_rest", lc.Case.Schema, lc.Case.Expected, resp.Body, lc.Case.Metadata.UnionChoices)
 		switch {
 		case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
 			t.Logf("schema order check skipped for %s: %v", lc.Case.Name, err)
@@ -536,32 +565,28 @@ func staticReproductionFor(c bamlfuzz.OracleCase, caseIdx int, batchLabel string
 }
 
 // buildStaticRapidBatch draws `n` static-mode cases deterministically
-// from a seed derived from batchIdx. Uses bamlfuzz.StaticSchemaGen so
-// self-ref and mutual-cycle schemas appear at scope D9's density. Each
-// case is materialised into an OracleCase up front so a failure
-// envelope can describe the exact shape that triggered the bug.
+// from a seed derived from batchIdx. Uses bamlfuzz.CoupledCaseGen so
+// the union-aware Move B shrink-biased collapse pass and the value
+// generator's choice metadata land on the case together. Each case
+// is materialised into an OracleCase up front so a failure envelope
+// can describe the exact shape that triggered the bug.
 func buildStaticRapidBatch(t *testing.T, batchIdx int, n int) []bamlfuzz.OracleCase {
 	t.Helper()
 	cases := make([]bamlfuzz.OracleCase, n)
 	for i := 0; i < n; i++ {
 		seed := staticSeedFor(batchIdx, i)
-		schema := bamlfuzz.StaticSchemaGen().Example(int(seed))
-		value := bamlfuzz.ValueGen(schema).Example(int(seed) + 1)
-		walk, err := bamlfuzz.Walk(schema, value)
-		if err != nil {
-			t.Fatalf("walk batch=%d idx=%d: %v", batchIdx, i, err)
-		}
+		cc := bamlfuzz.CoupledCaseGen(bamlfuzz.StaticSchemaGen()).Example(int(seed))
 		cases[i] = bamlfuzz.OracleCase{
 			Name:                fmt.Sprintf("rapid_b%d_c%d", batchIdx, i),
 			Seed:                int64(seed),
 			CaseIndex:           i,
 			Mode:                bamlfuzz.OracleStaticPrompt,
 			PreserveSchemaOrder: i%2 == 0,
-			Schema:              schema,
-			Value:               value,
-			MockLLMContent:      walk.MockLLMContent,
-			Expected:            walk.Expected,
-			Metadata:            walk.Metadata,
+			Schema:              cc.Schema,
+			Value:               cc.Value,
+			MockLLMContent:      cc.Walk.MockLLMContent,
+			Expected:            cc.Walk.Expected,
+			Metadata:            cc.Walk.Metadata,
 		}
 	}
 	return cases
