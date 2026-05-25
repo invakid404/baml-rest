@@ -249,8 +249,8 @@ func TestSchemaOrderDiff_MissingExtraKeysDoNotPanic(t *testing.T) {
 // TestSchemaOrderDiff_UnionWithoutChoiceReturnsUnsupported pins the
 // union contract: when the order walker reaches a KindUnion node
 // without a matching UnionChoices entry, SchemaOrderDiff returns
-// ErrSchemaOrderUnsupported and the caller falls back to
-// semantic-only diagnostics.
+// ErrSchemaOrderUnsupported. The integration oracles promote this
+// to a hard failure (see ErrSchemaOrderUnsupported's doc comment).
 func TestSchemaOrderDiff_UnionWithoutChoiceReturnsUnsupported(t *testing.T) {
 	schema := FuzzSchema{
 		Classes: []FuzzClass{{

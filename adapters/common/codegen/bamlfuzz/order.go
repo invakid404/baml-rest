@@ -16,9 +16,10 @@ import (
 // additional metadata. Today this fires when a union node is
 // reached without a recorded UnionChoice entry — the walker has no
 // canonical "expected order" for a union value without knowing
-// which arm produced it. Callers detect with errors.Is and
-// typically skip the order assertion while still running the
-// semantic-equality checks.
+// which arm produced it. The integration oracles treat this as a
+// hard failure because UnionChoices are propagated for every union
+// path the walker visits; a missing or stale choice is an integrity
+// bug, not a skippable shape.
 var ErrSchemaOrderUnsupported = errors.New("bamlfuzz: schema order check unsupported")
 
 // SchemaOrderDiffEntry names one schema-order disagreement at a JSON
@@ -43,8 +44,8 @@ type SchemaOrderDiffEntry struct {
 // through `choices` (typically
 // CaseMetadata.UnionChoices from the walker), advancing into the
 // recorded variant arm; a missing or out-of-range entry returns
-// ErrSchemaOrderUnsupported so callers can skip the order assertion
-// without abandoning semantic diagnostics.
+// ErrSchemaOrderUnsupported, which the integration oracles surface
+// as a hard failure (see ErrSchemaOrderUnsupported's doc comment).
 //
 // `label` is opaque and is stored on every emitted entry's Side field.
 //
