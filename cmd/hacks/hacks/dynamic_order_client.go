@@ -396,12 +396,6 @@ func gofmtBytes(src []byte) ([]byte, error) {
 	return []byte(buf.String()), nil
 }
 
-// _ assigns ast.NewIdent to silence Go's unused-import detector when
-// the file is rewritten in a tight loop without exercising the parser
-// import. The parser import is kept because future shape validation
-// hooks under DynamicOrderClientHack will require it.
-var _ = ast.NewIdent
-
 // staticMapOrderedHelperMarker is the comment line embedded at the top
 // of every generated helper file. Lets re-runs detect "this file's
 // helpers were emitted by the static-map pass" and skip re-emission.
@@ -969,8 +963,17 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 		return nil
 	}
 
-	// Determine the package name from any sibling Go file.
+	// Determine the package name and the BAML `pkg` import path from a
+	// sibling Go file. The import path varies by build context: the
+	// regenerate-dynclient pipeline rewrites generated-client imports to
+	// the patched-fork path AFTER the static-map pass, while the
+	// cmd/build/build.sh integration pipeline leaves them on the
+	// upstream `github.com/boundaryml/baml/...` path. Adopting whatever
+	// the surrounding files use keeps the helper file resolvable in both
+	// pipelines (and lets the post-pass rewriter retarget the helper
+	// along with everything else when it runs).
 	pkgName := ""
+	bamlImportPath := ""
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == staticMapHelperBaseName {
 			continue
@@ -980,14 +983,31 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 			return readErr
 		}
 		fset := token.NewFileSet()
-		file, parseErr := parser.ParseFile(fset, e.Name(), data, parser.PackageClauseOnly)
-		if parseErr == nil && file.Name != nil {
+		file, parseErr := parser.ParseFile(fset, e.Name(), data, parser.ImportsOnly)
+		if parseErr != nil || file.Name == nil {
+			continue
+		}
+		if pkgName == "" {
 			pkgName = file.Name.Name
+		}
+		if bamlImportPath == "" {
+			bamlImportPath = findBAMLPkgImportPath(file)
+		}
+		if pkgName != "" && bamlImportPath != "" {
 			break
 		}
 	}
 	if pkgName == "" {
 		return fmt.Errorf("static-map helper: cannot determine package name in %s", packageDir)
+	}
+	if bamlImportPath == "" {
+		// No sibling file declared the BAML `pkg` import — fall back to
+		// the upstream module path. The cmd/regenerate-dynclient
+		// pipeline runs RewriteGeneratedClientBAMLImports after this
+		// pass and will retarget the fallback to the patched-fork path;
+		// the cmd/build/build.sh pipeline keeps the upstream path
+		// (the in-place patched module cache copy carries OrderedMap[T]).
+		bamlImportPath = "github.com/boundaryml/baml/engine/language_client_go/pkg"
 	}
 
 	sortedNames := make([]string, 0, len(names))
@@ -1006,7 +1026,7 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 	buf.WriteString(staticMapOrderedHelperMarker + "\n\n")
 	buf.WriteString("package " + pkgName + "\n\n")
 	buf.WriteString("import (\n")
-	buf.WriteString("\tbaml \"github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg\"\n")
+	fmt.Fprintf(&buf, "\tbaml %q\n", bamlImportPath)
 	buf.WriteString(")\n\n")
 	for _, name := range sortedNames {
 		typeExpr, ok := staticMapHelperTypeFromName(name)
@@ -1019,6 +1039,42 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 	buf.WriteString(staticMapHelperCore())
 
 	return os.WriteFile(filepath.Join(packageDir, staticMapHelperBaseName), []byte(buf.String()), 0o644)
+}
+
+// findBAMLPkgImportPath returns the module-qualified import path used
+// by file for the BAML `pkg` package the rewrite targets, or the empty
+// string when no such import is present. Returning the exact path the
+// surrounding files declare lets the helper file resolve under both the
+// regenerate-dynclient build (which later rewrites to the patched
+// fork) and the cmd/build/build.sh integration build (which keeps the
+// upstream module path).
+//
+// Selection order:
+//  1. An import explicitly aliased `baml` — this is the alias the
+//     rewrite emits `baml.OrderedMap[T]` against, so adopting its
+//     module path is the most direct way to keep the helper in lockstep.
+//  2. Any import path ending with `/engine/language_client_go/pkg` —
+//     covers default-aliased BAML imports in surrounding files.
+func findBAMLPkgImportPath(file *ast.File) string {
+	const suffix = "/engine/language_client_go/pkg"
+	var fallback string
+	for _, imp := range file.Imports {
+		if imp == nil || imp.Path == nil {
+			continue
+		}
+		raw := imp.Path.Value
+		if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+			continue
+		}
+		path := raw[1 : len(raw)-1]
+		if imp.Name != nil && imp.Name.Name == "baml" {
+			return path
+		}
+		if fallback == "" && strings.HasSuffix(path, suffix) {
+			fallback = path
+		}
+	}
+	return fallback
 }
 
 // staticMapHelperTypeFromName reverses staticMapHelperName. Returns

@@ -401,6 +401,93 @@ func (c Sample) Encode() (*cffi.HostValue, error) {
 	}
 }
 
+// TestStaticMapHelperFile_AdoptsSiblingBAMLImportPath pins the
+// per-context import path used by the emitted helper file. The two
+// codepaths the static-map pass runs through (cmd/regenerate-dynclient
+// and cmd/build/build.sh) target different BAML module paths; the
+// helper has to match whichever path the sibling generated files
+// declare or it will fail to resolve at compile time.
+//
+// upstreamImport mirrors the BAML-emitted preamble in the integration
+// build pipeline (cmd/build/build.sh): `baml` is aliased to the
+// upstream module path and no post-pass import rewrite runs, so the
+// helper must adopt the same path.
+//
+// patchedImport mirrors the committed dynclient tree after
+// RewriteGeneratedClientBAMLImports lands on it: `baml` is aliased to
+// the patched-fork path. The helper must follow.
+func TestStaticMapHelperFile_AdoptsSiblingBAMLImportPath(t *testing.T) {
+	cases := []struct {
+		name       string
+		importPath string
+	}{
+		{name: "upstream", importPath: "github.com/boundaryml/baml/engine/language_client_go/pkg"},
+		{name: "patched_fork", importPath: "github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srcDir := t.TempDir()
+			clientDir := filepath.Join(srcDir, "baml_client")
+			typesDir := filepath.Join(clientDir, "types")
+			if err := os.MkdirAll(typesDir, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			classesSrc := fmt.Sprintf(`package types
+
+import (
+	"fmt"
+
+	baml %q
+	%q
+)
+
+type Sample struct {
+	Headers map[string]string `+"`json:\"headers\"`"+`
+}
+
+func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "headers":
+			s.Headers = baml.Decode(valueHolder).Interface().(map[string]string)
+		default:
+			panic(fmt.Sprintf("unexpected field: %%s", key))
+		}
+	}
+}
+`, tc.importPath, tc.importPath+"/cffi")
+			classesPath := filepath.Join(typesDir, "classes.go")
+			if err := os.WriteFile(classesPath, []byte(classesSrc), 0o644); err != nil {
+				t.Fatalf("write classes.go: %v", err)
+			}
+
+			hack := &DynamicOrderClientHack{}
+			if err := hack.Apply(clientDir); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+
+			helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+			helperBody := readFileT(t, helperPath)
+			wantImport := fmt.Sprintf(`baml %q`, tc.importPath)
+			if !strings.Contains(helperBody, wantImport) {
+				t.Fatalf("helper file does not adopt sibling import path.\nwant import line containing: %s\nhelper file:\n%s", wantImport, helperBody)
+			}
+			// The classes.go path is the only acceptable BAML module
+			// reference — the helper must not stamp a different path
+			// alongside the sibling-derived one.
+			other := "github.com/boundaryml/baml/engine/language_client_go/pkg"
+			if tc.importPath == other {
+				other = "github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/pkg"
+			}
+			if strings.Contains(helperBody, other) {
+				t.Fatalf("helper file references unrelated import %q in addition to sibling %q:\n%s", other, tc.importPath, helperBody)
+			}
+		})
+	}
+}
+
 // repoRootForTest walks upward from the test file's package looking
 // for the bamlutils directory. The hack tests need a stable path to
 // bamlutils/orderedmap.go independent of where `go test` is invoked.
