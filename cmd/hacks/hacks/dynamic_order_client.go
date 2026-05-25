@@ -1094,6 +1094,21 @@ func convertListHelperName(typeExpr string) string {
 // underscore that is part of a Go identifier (e.g. `stream_types`).
 // All map types we encode have exactly one type parameter so the
 // implicit-close-at-end rule is unambiguous.
+//
+// Known limitation: encodeStaticMapType reserves the token
+// substrings `_dot_`, `Slice_`, `Ptr_`, and `OM_`. Identifiers
+// whose own spelling contains any of those literal substrings
+// (e.g. a Go type called `Slice_string` or a package selector
+// `some_dot_type`) are not round-trip-safe: the decoder would
+// greedily consume the reserved token and rebuild a different
+// Go type expression. BAML's generated Go identifiers are
+// PascalCase/camelCase without those substrings today, so the
+// collision class is theoretical for the current code generator,
+// but callers and any future codegen extensions should avoid
+// emitting identifiers containing those literals through this
+// encoding. A future fully-reversible encoding (base32 or hex of
+// the normalized type expression) would side-step the limitation
+// entirely.
 func encodeStaticMapType(typeExpr string) string {
 	s := strings.ReplaceAll(typeExpr, " ", "")
 	s = strings.ReplaceAll(s, "baml.OrderedMap[", "OM_")
