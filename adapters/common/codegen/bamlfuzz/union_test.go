@@ -988,3 +988,311 @@ func schemaDumpJSON(s FuzzSchema) string {
 	}
 	return string(b)
 }
+
+// TestCollapseUnionsToPickedStripsWrappersForCollapsedNestedUnions
+// pins the Move B value-rewrite contract for the multi-level union
+// shape that surfaced as TestBamlfuzzDynamicOracle/rapid/preserve_off
+// /case_3: a 3-level union where the outer arm is consistent across
+// observations (collapses), and at least one nested union arm is
+// visited by a single observation and collapses too. The pre-fix
+// rewrite walked the post-collapse schema using `v.VariantIndex` as
+// the descent key, which kept stale wrappers in place — the walker
+// then dispatched on a non-union schema kind (e.g. enum_ref) with a
+// union-shaped value whose payload field was the zero value, emitting
+// the wrapper's zero ("", 0, false) — not the actual leaf payload at
+// the bottom of the value tree.
+//
+// The contract this test pins: after collapseUnionsToPicked returns,
+// the rewritten value's structural kinds must align with the rewritten
+// schema. No union wrapper must survive at a position where the new
+// schema's type is no longer a union, regardless of how many union
+// levels the original schema had.
+func TestCollapseUnionsToPickedStripsWrappersForCollapsedNestedUnions(t *testing.T) {
+	// Schema modelled after the kD branch of the case_3 schema:
+	// FuzzClass1.Fuzz_field_0 = union[union[union[null, enum, lit-false],
+	//                                          union[bool, lit-false],
+	//                                          union[bool, bool, int]],
+	//                                  union[<other shapes>]]
+	// Reduced to the minimal shape that exercises the bug: a 3-level
+	// union where the outer's arm 0 is a middle union, and the middle's
+	// arm 1 is a sub-union whose first arm is enum_ref.
+	enum := FuzzEnum{Name: "E", Values: []string{"E_V0"}}
+	subA := FuzzType{Kind: KindUnion, Variants: []FuzzType{
+		{Kind: KindBool},
+		{Kind: KindLiteral, Literal: &FuzzLiteral{Kind: LiteralBool, Bool: false}},
+	}}
+	subB := FuzzType{Kind: KindUnion, Variants: []FuzzType{
+		{Kind: KindEnumRef, Ref: enum.Name},
+		{Kind: KindBool},
+	}}
+	subC := FuzzType{Kind: KindUnion, Variants: []FuzzType{
+		{Kind: KindString},
+		{Kind: KindInt},
+	}}
+	middle := FuzzType{Kind: KindUnion, Variants: []FuzzType{subA, subB, subC}}
+	otherOuterArm := FuzzType{Kind: KindString}
+	outer := FuzzType{Kind: KindUnion, Variants: []FuzzType{middle, otherOuterArm}}
+
+	// Wrap in a map so two visits can take different middle arms,
+	// disagreeing at the middle level (so middle stays a 3-arm union)
+	// while still agreeing at the outer level (so outer collapses to
+	// its arm 0 = middle).
+	keyT := FuzzType{Kind: KindString}
+	mapT := FuzzType{Kind: KindMap, Key: &keyT, Inner: &outer}
+
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapT},
+			},
+		}},
+		Enums:     []FuzzEnum{enum},
+		RootClass: "Root",
+	}
+
+	// kA visit: outer=0, middle=0 (subA), inner=1 (lit-false). All
+	// three wrappers present, leaf is the literal payload.
+	kA := FuzzValue{
+		Kind: KindUnion, VariantIndex: 0,
+		Variant: &FuzzValue{
+			Kind: KindUnion, VariantIndex: 0,
+			Variant: &FuzzValue{
+				Kind: KindUnion, VariantIndex: 1,
+				Variant: &FuzzValue{Kind: KindLiteral, Bool: false},
+			},
+		},
+	}
+	// kD visit: outer=0, middle=1 (subB), inner=0 (enum_ref). This
+	// reproduces the case_3 failure shape: the inner enum_ref slot
+	// retained a union wrapper after rewrite, and the walker emitted
+	// "" — not "E_V0" — at that position.
+	kD := FuzzValue{
+		Kind: KindUnion, VariantIndex: 0,
+		Variant: &FuzzValue{
+			Kind: KindUnion, VariantIndex: 1,
+			Variant: &FuzzValue{
+				Kind: KindUnion, VariantIndex: 0,
+				Variant: &FuzzValue{Kind: KindEnumRef, Enum: "E_V0"},
+			},
+		},
+	}
+
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{{
+			Name: "m",
+			Value: FuzzValue{Kind: KindMap, MapEntries: []FuzzMapEntry{
+				{Key: "kA", Value: kA},
+				{Key: "kD", Value: kD},
+			}},
+		}},
+	}
+
+	newSchema, newValue, err := collapseUnionsToPicked(schema, value)
+	if err != nil {
+		t.Fatalf("collapse: %v", err)
+	}
+
+	// The new schema's m.inner should be the middle union with its
+	// three arms rewritten: subA, subB, subC each collapsed (single
+	// observation per arm), so the new middle is union[lit-false,
+	// enum_ref, string] (visited inner arms collapsed; arm 0 sub-arm
+	// 1 was kA's pick → lit-false; arm 1 sub-arm 0 was kD's pick →
+	// enum_ref; arm 2 was never visited so stays a string|int union).
+	cls, _ := newSchema.FindClass("Root")
+	mapType := cls.Properties[0].Type
+	if mapType.Kind != KindMap || mapType.Inner == nil {
+		t.Fatalf("expected map<string, T>, got %#v", mapType)
+	}
+	collapsedOuter := *mapType.Inner
+	if collapsedOuter.Kind != KindUnion {
+		t.Fatalf("expected outer union preserved as a union, got %q\nschema: %s",
+			collapsedOuter.Kind, schemaDumpJSON(newSchema))
+	}
+	if len(collapsedOuter.Variants) != 3 {
+		t.Fatalf("collapsed outer should expose middle's 3 arms, got %d: %s",
+			len(collapsedOuter.Variants), schemaDumpJSON(newSchema))
+	}
+	if got := collapsedOuter.Variants[0].Kind; got != KindLiteral {
+		t.Errorf("arm 0 (kA's middle arm = subA collapsed via inner=1) should be lit-bool, got %q", got)
+	}
+	if got := collapsedOuter.Variants[1].Kind; got != KindEnumRef {
+		t.Errorf("arm 1 (kD's middle arm = subB collapsed via inner=0) should be enum_ref, got %q", got)
+	}
+	// arm 2 (subC) was never visited so it stays as the original
+	// 2-arm union of unrelated kinds.
+	if got := collapsedOuter.Variants[2].Kind; got != KindUnion {
+		t.Errorf("arm 2 (never visited) should stay as a union, got %q", got)
+	}
+
+	// Now the load-bearing assertion: the rewritten map entries must
+	// align with the rewritten schema — kA's value at arm 0 must
+	// dispatch as KindLiteral, kD's value at arm 1 must dispatch as
+	// KindEnumRef, and crucially the inner slots must carry the leaf
+	// payload, not a stale union wrapper.
+	if err := assertValueAlignsWithSchema(newSchema, newSchema.EffectiveRoot(), newValue); err != nil {
+		t.Fatalf("rewritten value not aligned with new schema: %v\nschema: %s\nvalue: %s",
+			err, schemaDumpJSON(newSchema), valueDumpJSON(newValue))
+	}
+
+	// And the walked output must reflect the leaf payloads (no ""
+	// from a wrapper's zero-value Enum/Bool/Int).
+	walked, err := Walk(newSchema, newValue)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	got := string(walked.Expected)
+	if !strings.Contains(got, `"E_V0"`) {
+		t.Errorf("expected enum value E_V0 in walked output, got %s", got)
+	}
+	if strings.Contains(got, `""`) {
+		t.Errorf("walked output contains \"\" — wrapper stripping regressed: %s", got)
+	}
+}
+
+// TestCoupledCaseGenValueShapeMatchesSchema is the property-level
+// counterpart to the focused regression test above: across a large
+// number of random draws, the post-collapse value's structural shape
+// must align with the post-collapse schema. The original round-trip
+// test (TestCoupledCaseGenProducesWalkableCases) only checked that
+// MockLLMContent and Expected normalized to each other, which is
+// satisfied even when both are equally wrong — a value-wrapper bug
+// renders both via the same broken walker, so the round-trip survives
+// while the actual emitted JSON is structurally meaningless. This
+// test compares against the schema directly to catch that class of
+// drift.
+func TestCoupledCaseGenValueShapeMatchesSchema(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		cc := CoupledCaseGen(StaticSchemaGen()).Draw(rt, "case")
+		if err := assertValueAlignsWithSchema(cc.Schema, cc.Schema.EffectiveRoot(), cc.Value); err != nil {
+			rt.Fatalf("value/schema misalignment: %v\nschema: %s\nvalue: %s",
+				err, schemaDumpJSON(cc.Schema), valueDumpJSON(cc.Value))
+		}
+	})
+}
+
+// assertValueAlignsWithSchema walks a FuzzType and FuzzValue in
+// lockstep and reports the first kind mismatch. The check is strict:
+// every wrapper (optional/list/map/union/class_ref) in the schema must
+// have a matching wrapper in the value, and every primitive/literal/
+// enum schema slot must NOT have a union value sitting in it. The
+// latter is the failure shape the case_3 bug surfaced.
+func assertValueAlignsWithSchema(schema FuzzSchema, t FuzzType, v FuzzValue) error {
+	switch t.Kind {
+	case KindString, KindInt, KindFloat, KindBool, KindNull, KindLiteral, KindEnumRef:
+		if v.Kind == KindUnion {
+			return &alignError{path: "<scalar>", want: t.Kind, got: v.Kind}
+		}
+		return nil
+	case KindUnion:
+		if v.Kind != KindUnion {
+			return &alignError{path: "<union>", want: KindUnion, got: v.Kind}
+		}
+		if v.Variant == nil {
+			return errors.New("union value missing Variant")
+		}
+		if v.VariantIndex < 0 || v.VariantIndex >= len(t.Variants) {
+			return errors.New("union variant index out of range")
+		}
+		return assertValueAlignsWithSchema(schema, t.Variants[v.VariantIndex], *v.Variant)
+	case KindOptional:
+		if v.Kind != KindOptional {
+			return &alignError{path: "<optional>", want: KindOptional, got: v.Kind}
+		}
+		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
+			return assertValueAlignsWithSchema(schema, *t.Inner, *v.Inner)
+		}
+		return nil
+	case KindList:
+		if v.Kind != KindList {
+			return &alignError{path: "<list>", want: KindList, got: v.Kind}
+		}
+		if t.Inner == nil {
+			return nil
+		}
+		for i, item := range v.Items {
+			if err := assertValueAlignsWithSchema(schema, *t.Inner, item); err != nil {
+				return &alignError{path: "list[" + itoa(i) + "]", inner: err}
+			}
+		}
+		return nil
+	case KindMap:
+		if v.Kind != KindMap {
+			return &alignError{path: "<map>", want: KindMap, got: v.Kind}
+		}
+		if t.Inner == nil {
+			return nil
+		}
+		for _, e := range v.MapEntries {
+			if err := assertValueAlignsWithSchema(schema, *t.Inner, e.Value); err != nil {
+				return &alignError{path: "map[" + e.Key + "]", inner: err}
+			}
+		}
+		return nil
+	case KindClassRef:
+		if v.Kind != KindClassRef {
+			return &alignError{path: "<class>", want: KindClassRef, got: v.Kind}
+		}
+		cls, ok := schema.FindClass(v.ClassName)
+		if !ok {
+			return errors.New("class ref " + v.ClassName + " not in schema")
+		}
+		for _, prop := range cls.Properties {
+			fv, ok := v.LookupField(prop.Name)
+			if !ok {
+				continue
+			}
+			if err := assertValueAlignsWithSchema(schema, prop.Type, fv); err != nil {
+				return &alignError{path: v.ClassName + "." + prop.Name, inner: err}
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+type alignError struct {
+	path  string
+	want  FuzzTypeKind
+	got   FuzzTypeKind
+	inner error
+}
+
+func (a *alignError) Error() string {
+	if a.inner != nil {
+		return a.path + ": " + a.inner.Error()
+	}
+	return a.path + ": want kind " + string(a.want) + ", got " + string(a.got)
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	neg := false
+	if i < 0 {
+		neg = true
+		i = -i
+	}
+	var b [20]byte
+	pos := len(b)
+	for i > 0 {
+		pos--
+		b[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		pos--
+		b[pos] = '-'
+	}
+	return string(b[pos:])
+}
+
+func valueDumpJSON(v FuzzValue) string {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}

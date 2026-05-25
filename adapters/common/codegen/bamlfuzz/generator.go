@@ -701,12 +701,22 @@ func collapseUnionsToPicked(schema FuzzSchema, value FuzzValue) (FuzzSchema, Fuz
 		}
 		out.Classes[i] = FuzzClass{Name: cls.Name, Properties: newProps}
 	}
+	rootPlan := newCollapsePlan()
 	if schema.RootType != nil {
-		rootPlan := planRoot(*schema.RootType, value)
+		rootPlan = planRoot(*schema.RootType, value)
 		newRoot := rewriteTypeWithPlan(*schema.RootType, rootPlan)
 		out.RootType = &newRoot
 	}
-	newValue := rewriteValueAgainstSchema(out.EffectiveRoot(), value, out)
+	// Drive the value rewrite off the ORIGINAL schema's type tree +
+	// the same per-field plans the schema rewrite used. The previous
+	// implementation walked the NEW (post-collapse) schema and used
+	// `v.VariantIndex` to descend into arms, which silently dropped
+	// alignment whenever a nested union was collapsed: the surviving
+	// outer wrapper's index then pointed at a different post-collapse
+	// arm than the value's leaf chose, and the walker landed on the
+	// wrong schema kind (e.g. enum_ref with an empty-string value).
+	rootType := schema.EffectiveRoot()
+	newValue := rewriteValueByPlans(schema, rootType, value, collapseMap, rootPlan, "")
 	out = AnalyzeGraph(out)
 	return out, newValue, nil
 }
@@ -951,10 +961,25 @@ func rewriteTypeAtPath(t FuzzType, path string, plan collapsePlan) FuzzType {
 	return t
 }
 
-// rewriteValueAgainstSchema walks (effective-root-type, value)
-// in parallel and strips union wrappers wherever the rewritten
-// schema no longer carries a union at the matching position.
-func rewriteValueAgainstSchema(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzValue {
+// rewriteValueByPlans rewrites the value to match a schema rewritten
+// via collapse plans. It walks the ORIGINAL pre-collapse schema type
+// `t` in parallel with `v`. At every KindUnion node it consults the
+// active `currentPlan` keyed by `path`: a recorded non-negative arm
+// index means that union collapsed in the new schema, so the value's
+// wrapper at this position is stripped to keep the post-collapse
+// schema and the rewritten value aligned. Without this strip the
+// retained wrapper's index would slot in at the wrong arm of the
+// post-collapse union (whose arity is unchanged but whose arm types
+// have shifted) and the walker would dispatch on a mismatched schema
+// kind — landing, for example, on KindEnumRef with a union-shaped
+// value whose Enum field is empty.
+//
+// The path scheme matches recordUnionChoices exactly: ":v<idx>" for a
+// union arm step, ":o" for an optional Inner, ":l" for any list
+// element, ":m" for any map value. Path resets to "" at every class-
+// instance boundary because collapse plans are per-field; the global
+// `plans` map supplies the field's plan on entry.
+func rewriteValueByPlans(schema FuzzSchema, t FuzzType, v FuzzValue, plans map[fieldKey]collapsePlan, currentPlan collapsePlan, path string) FuzzValue {
 	switch t.Kind {
 	case KindUnion:
 		if v.Kind != KindUnion || v.Variant == nil {
@@ -963,7 +988,16 @@ func rewriteValueAgainstSchema(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzV
 		if v.VariantIndex < 0 || v.VariantIndex >= len(t.Variants) {
 			return v
 		}
-		newInner := rewriteValueAgainstSchema(t.Variants[v.VariantIndex], *v.Variant, schema)
+		if idx, ok := currentPlan.choices[path]; ok && idx >= 0 {
+			// Union collapsed in the new schema: drop the wrapper and
+			// descend into the picked arm. v.VariantIndex equals idx
+			// for every visit whose observations were merged (the plan
+			// only retains paths where every visiting instance agreed
+			// on the same arm), so the picked arm unambiguously
+			// selects the surviving subtree.
+			return rewriteValueByPlans(schema, t.Variants[idx], *v.Variant, plans, currentPlan, fmt.Sprintf("%s:v%d", path, idx))
+		}
+		newInner := rewriteValueByPlans(schema, t.Variants[v.VariantIndex], *v.Variant, plans, currentPlan, fmt.Sprintf("%s:v%d", path, v.VariantIndex))
 		out := v
 		out.Variant = &newInner
 		return out
@@ -984,9 +1018,10 @@ func rewriteValueAgainstSchema(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzV
 					break
 				}
 			}
+			fieldPlan := plans[fieldKey{v.ClassName, fv.Name}]
 			newFields[i] = FuzzFieldValue{
 				Name:  fv.Name,
-				Value: rewriteValueAgainstType(propType, fv.Value, schema),
+				Value: rewriteValueByPlans(schema, propType, fv.Value, plans, fieldPlan, ""),
 			}
 		}
 		out := v
@@ -994,7 +1029,7 @@ func rewriteValueAgainstSchema(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzV
 		return out
 	case KindOptional:
 		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
-			newInner := rewriteValueAgainstType(*t.Inner, *v.Inner, schema)
+			newInner := rewriteValueByPlans(schema, *t.Inner, *v.Inner, plans, currentPlan, path+":o")
 			out := v
 			out.Inner = &newInner
 			return out
@@ -1006,7 +1041,7 @@ func rewriteValueAgainstSchema(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzV
 		}
 		newItems := make([]FuzzValue, len(v.Items))
 		for i, item := range v.Items {
-			newItems[i] = rewriteValueAgainstType(*t.Inner, item, schema)
+			newItems[i] = rewriteValueByPlans(schema, *t.Inner, item, plans, currentPlan, path+":l")
 		}
 		out := v
 		out.Items = newItems
@@ -1019,7 +1054,7 @@ func rewriteValueAgainstSchema(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzV
 		for i, e := range v.MapEntries {
 			newEntries[i] = FuzzMapEntry{
 				Key:   e.Key,
-				Value: rewriteValueAgainstType(*t.Inner, e.Value, schema),
+				Value: rewriteValueByPlans(schema, *t.Inner, e.Value, plans, currentPlan, path+":m"),
 			}
 		}
 		out := v
@@ -1027,20 +1062,6 @@ func rewriteValueAgainstSchema(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzV
 		return out
 	}
 	return v
-}
-
-// rewriteValueAgainstType matches a value to its (possibly-rewritten)
-// type. When the type no longer has a union at the value position,
-// the union wrapper is stripped; when both still carry a union the
-// helper recurses into the picked arm.
-func rewriteValueAgainstType(t FuzzType, v FuzzValue, schema FuzzSchema) FuzzValue {
-	if v.Kind == KindUnion && t.Kind != KindUnion {
-		if v.Variant == nil {
-			return v
-		}
-		return rewriteValueAgainstType(t, *v.Variant, schema)
-	}
-	return rewriteValueAgainstSchema(t, v, schema)
 }
 
 // drawString uses rapid's biased generator: short strings, common
