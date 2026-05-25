@@ -390,10 +390,10 @@ func checkSchemaOrder(t *testing.T, c bamlfuzz.OracleCase, envelope *bamlfuzz.Dy
 	diffs, err := bamlfuzz.SchemaOrderDiffWithChoices(label, c.Schema, expected, actual, c.Metadata.UnionChoices)
 	switch {
 	case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
-		envelope.OrderWarning = append(envelope.OrderWarning, err.Error())
+		envelope.OrderWarning = append(envelope.OrderWarning, fmt.Sprintf("%s: %v", label, err))
 		*failures = append(*failures, fmt.Sprintf("%s schema order unsupported: %v", label, err))
 	case err != nil:
-		envelope.OrderWarning = append(envelope.OrderWarning, err.Error())
+		envelope.OrderWarning = append(envelope.OrderWarning, fmt.Sprintf("%s: %v", label, err))
 		*failures = append(*failures, fmt.Sprintf("%s schema order: %v", label, err))
 	case len(diffs) > 0:
 		envelope.OrderWarning = append(envelope.OrderWarning, bamlfuzz.FormatSchemaOrderDiffs(diffs)...)
