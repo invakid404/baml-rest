@@ -69,6 +69,17 @@ func (h *DynamicOrderClientHack) Apply(bamlClientDir string) error {
 	// that rebuilds the ordered carrier without losing CFFI key order.
 	// Skips dynamic surfaces (`DynamicProperties`, `map[string]any`)
 	// because they already flow through the OrderedFields path.
+	//
+	// The pass also detects recursive type aliases: when a map's value
+	// type is a type alias whose transitive closure references the same
+	// alias in another map element position (e.g. the integration
+	// `JsonValue` alias union with a `map<string, JsonValue>` arm), the
+	// rewrite to `baml.OrderedMap[T]` would trip a Go compiler ICE on
+	// the recursive generic instantiation. Those arms are left as
+	// native `map[string]T`; their decode/assert sites instead route
+	// through a `bamlNativeMapAs_*` helper that converts the patched
+	// ordered runtime carrier back to an unordered native map.
+	pkgIndexCache := map[string]*pkgTypeIndex{}
 	return filepath.WalkDir(bamlClientDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -76,7 +87,17 @@ func (h *DynamicOrderClientHack) Apply(bamlClientDir string) error {
 		if d.IsDir() || !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		changed, applyErr := patchGeneratedStaticMapFile(path)
+		dir := filepath.Dir(path)
+		idx, cached := pkgIndexCache[dir]
+		if !cached {
+			built, buildErr := newPkgTypeIndex(dir)
+			if buildErr != nil {
+				return fmt.Errorf("building type index for %s: %w", dir, buildErr)
+			}
+			idx = built
+			pkgIndexCache[dir] = idx
+		}
+		changed, applyErr := patchGeneratedStaticMapFile(path, idx)
 		if applyErr != nil {
 			return fmt.Errorf("processing static-map pass on %s: %w", path, applyErr)
 		}
@@ -413,7 +434,7 @@ const staticMapHelperBaseName = "ordered_map_static.go"
 // rewrites land on type expressions and call expressions without
 // mistakenly matching identical substrings inside strings or comments.
 // Returns true when the file's contents changed.
-func patchGeneratedStaticMapFile(path string) (bool, error) {
+func patchGeneratedStaticMapFile(path string, pkgIdx *pkgTypeIndex) (bool, error) {
 	base := filepath.Base(path)
 	// Skip the helper file itself — it carries `baml.OrderedMap` and
 	// `Interface().(...)` references that would otherwise be rewritten
@@ -446,7 +467,7 @@ func patchGeneratedStaticMapFile(path string) (bool, error) {
 		return false, nil
 	}
 
-	newBody, rewroteAny, err := rewriteStaticMapTypesAndAsserts(body)
+	newBody, rewroteAny, err := rewriteStaticMapTypesAndAsserts(body, pkgIdx)
 	if err != nil {
 		return false, err
 	}
@@ -518,7 +539,7 @@ func isStaticMapInfraFile(base string) bool {
 //   - rewritten body
 //   - whether any rewrite landed
 //   - error when a structural malformation prevents safe rewriting
-func rewriteStaticMapTypesAndAsserts(body string) (string, bool, error) {
+func rewriteStaticMapTypesAndAsserts(body string, pkgIdx *pkgTypeIndex) (string, bool, error) {
 	rewroteAny := false
 
 	// Pass 1: rewrite type expressions. Two scopes:
@@ -530,14 +551,14 @@ func rewriteStaticMapTypesAndAsserts(body string) (string, bool, error) {
 	// Implementation: walk the body byte-by-byte; when we see
 	// `map[string]` followed by a non-`any` and non-`map[string]any`
 	// token, capture the type expression and rewrite.
-	newBody, changedTypes := rewriteMapStringTypeExprs(body)
+	newBody, changedTypes := rewriteMapStringTypeExprs(body, pkgIdx)
 	if changedTypes {
 		rewroteAny = true
 		body = newBody
 	}
 
 	// Pass 2: rewrite Decode().Interface() casts.
-	newBody, changedAsserts := rewriteStaticMapDecodeAsserts(body)
+	newBody, changedAsserts := rewriteStaticMapDecodeAsserts(body, pkgIdx)
 	if changedAsserts {
 		rewroteAny = true
 		body = newBody
@@ -553,7 +574,7 @@ func rewriteStaticMapTypesAndAsserts(body string) (string, bool, error) {
 	// (post-pass-1-rewritten) `baml.OrderedMap[T]` shape panics.
 	// Routing the carrier through the typed conversion helper keeps
 	// the ordered runtime value alive on the way out of the runtime.
-	newBody, changedDirects := rewriteStaticMapDirectAsserts(body)
+	newBody, changedDirects := rewriteStaticMapDirectAsserts(body, pkgIdx)
 	if changedDirects {
 		rewroteAny = true
 		body = newBody
@@ -573,7 +594,7 @@ func rewriteStaticMapTypesAndAsserts(body string) (string, bool, error) {
 // `[]baml.OrderedMap[Foo]`. Composite literals (`map[string]any{}`)
 // are left untouched because their value type is `any`, which is
 // filtered out by the concrete-type predicate.
-func rewriteMapStringTypeExprs(body string) (string, bool) {
+func rewriteMapStringTypeExprs(body string, pkgIdx *pkgTypeIndex) (string, bool) {
 	const prefix = "map[string]"
 	changed := false
 	for searchFrom := 0; ; {
@@ -609,18 +630,44 @@ func rewriteMapStringTypeExprs(body string) (string, bool) {
 		// Rewriting these to `baml.OrderedMap[T]{...}` is invalid Go
 		// because OrderedMap's fields are unexported. Look ahead past
 		// whitespace to detect a `{`.
+		//
+		// The function-return-type position (`func F() *map[string]T {`)
+		// shares the same trailing-`{` shape — the `{` opens the body,
+		// not a composite literal. Distinguish by checking whether the
+		// byte preceding the map type (after walking back over pointer
+		// and slice modifier prefixes plus whitespace) is the `)` that
+		// closes a function's parameter list. When it is, treat this
+		// as a function return-type and rewrite normally; otherwise
+		// the trailing `{` belongs to a composite literal and we skip.
 		nextNonSpace := typeEnd
 		for nextNonSpace < len(body) && (body[nextNonSpace] == ' ' || body[nextNonSpace] == '\t') {
 			nextNonSpace++
 		}
 		if nextNonSpace < len(body) && body[nextNonSpace] == '{' {
+			if !isFuncReturnTypePosition(body, absIdx) {
+				searchFrom = typeEnd
+				continue
+			}
+		}
+		// Recursive type-alias guard. The Go compiler ICEs on a
+		// `baml.OrderedMap[T]` instantiation when T is a type alias
+		// whose transitive closure reaches back to the same alias in
+		// another map value position (the integration `JsonValue`
+		// shape). Leaving the offending arm as native `map[string]T`
+		// avoids the ICE; the trade-off is that arm loses CFFI
+		// insertion order on the way out of the runtime — Pass 2 and
+		// Pass 3 detect the same recursive case and route the
+		// decode/assert site through a native-map helper that builds
+		// `map[string]T` from the ordered carrier without claiming
+		// to preserve order.
+		if pkgIdx != nil && pkgIdx.isRecursiveMapElement(inner) {
 			searchFrom = typeEnd
 			continue
 		}
 		// Recurse into the inner type expression so nested maps are
 		// rewritten first. The recursion produces a stable substring
 		// the outer rewrite can splice in.
-		innerRewritten, _ := rewriteMapStringTypeExprs(inner)
+		innerRewritten, _ := rewriteMapStringTypeExprs(inner, pkgIdx)
 		replacement := "baml.OrderedMap[" + innerRewritten + "]"
 		body = body[:absIdx] + replacement + body[typeEnd:]
 		searchFrom = absIdx + len(replacement)
@@ -641,7 +688,7 @@ func rewriteMapStringTypeExprs(body string) (string, bool) {
 // `baml.OrderedMap[T]`, ranging in CFFI insertion order. Per-key
 // conversion is type-asserted on the element type; an inner map
 // recurses through the same helper at the nested element T.
-func rewriteStaticMapDecodeAsserts(body string) (string, bool) {
+func rewriteStaticMapDecodeAsserts(body string, pkgIdx *pkgTypeIndex) (string, bool) {
 	const interfaceMarker = ".Interface().("
 	changed := false
 	for searchFrom := 0; ; {
@@ -670,20 +717,8 @@ func rewriteStaticMapDecodeAsserts(body string) (string, bool) {
 			searchFrom = assertCloseIdx + 1
 			continue
 		}
-		// Walk back to find the Decode call start. Only the immediate
-		// `baml.Decode(<arg>).Interface()` pattern qualifies; the
-		// pre-marker substring must end with `).Interface()` (i.e. a
-		// decode call followed by .Interface()). If the assert sits on
-		// a different receiver, leave it alone.
-		preMarker := body[:absIdx]
-		const wantInterfaceCall = ".Interface()"
-		if !strings.HasSuffix(preMarker, "") {
-			// Tautological guard; the slice always satisfies the
-			// suffix test below. Kept for symmetry with the matching
-			// suffix check on the trailing side.
-		}
-		_ = wantInterfaceCall
 		// Find `baml.Decode(` to the left.
+		preMarker := body[:absIdx]
 		decodeStart := strings.LastIndex(preMarker, "baml.Decode(")
 		if decodeStart < 0 {
 			searchFrom = assertCloseIdx + 1
@@ -708,10 +743,25 @@ func rewriteStaticMapDecodeAsserts(body string) (string, bool) {
 			continue
 		}
 		decodeArg := body[decodeArgStart:decodeArgEnd]
+		// Recursive type-alias case: pass 1 left the surface type as
+		// native `map[string]T` to dodge the Go compiler ICE on
+		// `baml.OrderedMap[T]`; the assertion result type still has
+		// to match, so route through a native-map helper that builds
+		// `map[string]T` from the patched runtime's ordered carrier.
+		// The element-order trade-off documented above applies.
+		if elemName, ok := recursiveMapAssertElement(typeExpr, pkgIdx); ok {
+			isPtr := strings.HasPrefix(strings.TrimSpace(typeExpr), "*")
+			helperName := nativeMapHelperName(elemName, isPtr)
+			replacement := fmt.Sprintf("%s(baml.DecodeToOrderedValue(%s))", helperName, decodeArg)
+			body = body[:decodeStart] + replacement + body[assertCloseIdx+1:]
+			searchFrom = decodeStart + len(replacement)
+			changed = true
+			continue
+		}
 		// Normalise the type expression to its `baml.OrderedMap[...]`
 		// form (the pass-1 rewriter may have already done this; pass
 		// it through again to be sure).
-		normalised, _ := rewriteMapStringTypeExprs(typeExpr)
+		normalised, _ := rewriteMapStringTypeExprs(typeExpr, pkgIdx)
 		helperName := staticMapHelperName(normalised)
 		replacement := fmt.Sprintf("%s(baml.DecodeToOrderedValue(%s))", helperName, decodeArg)
 		body = body[:decodeStart] + replacement + body[assertCloseIdx+1:]
@@ -736,7 +786,7 @@ func rewriteStaticMapDecodeAsserts(body string) (string, bool) {
 // expression inside the assertion is a static-map shape
 // (isStaticMapAssertType). Every other type assertion in the
 // generated code (e.g. `result.Data.(types.Foo)`) is left untouched.
-func rewriteStaticMapDirectAsserts(body string) (string, bool) {
+func rewriteStaticMapDirectAsserts(body string, pkgIdx *pkgTypeIndex) (string, bool) {
 	const dotParen = ".("
 	changed := false
 	for searchFrom := 0; ; {
@@ -778,7 +828,20 @@ func rewriteStaticMapDirectAsserts(body string) (string, bool) {
 			searchFrom = assertCloseIdx + 1
 			continue
 		}
-		normalised, _ := rewriteMapStringTypeExprs(typeExpr)
+		// Recursive type-alias case mirrors pass 2: route through the
+		// native-map helper so the un-rewritten `map[string]T` surface
+		// is preserved and the runtime-produced ordered carrier is
+		// flattened to a native Go map.
+		if elemName, ok := recursiveMapAssertElement(typeExpr, pkgIdx); ok {
+			isPtr := strings.HasPrefix(strings.TrimSpace(typeExpr), "*")
+			helperName := nativeMapHelperName(elemName, isPtr)
+			replacement := fmt.Sprintf("%s(%s)", helperName, stripped)
+			body = body[:recvStart] + replacement + body[assertCloseIdx+1:]
+			searchFrom = recvStart + len(replacement)
+			changed = true
+			continue
+		}
+		normalised, _ := rewriteMapStringTypeExprs(typeExpr, pkgIdx)
 		helperName := staticMapHelperName(normalised)
 		replacement := fmt.Sprintf("%s(%s)", helperName, stripped)
 		body = body[:recvStart] + replacement + body[assertCloseIdx+1:]
@@ -890,6 +953,60 @@ func isStaticMapAssertType(typeExpr string) bool {
 	if strings.HasPrefix(t, "map[string]") {
 		inner := strings.TrimPrefix(t, "map[string]")
 		return !isDynamicValueType(inner)
+	}
+	return false
+}
+
+// isFuncReturnTypePosition reports whether the `map[string]` substring
+// at body[mapStart:] sits in a function-declaration return-type position
+// (e.g. `func F() *map[string]T {`) — the alternative shape is a
+// composite-literal expression position (e.g. `var x = map[string]T{...}`).
+//
+// The two shapes share a trailing `{` byte — for the function decl, `{`
+// opens the body; for the literal, `{` opens the value list. The
+// distinguishing signal is the byte that precedes the map type: a
+// function return-type position has a `)` (the closing paren of the
+// parameter list) before the map type, after skipping pointer / slice
+// modifier prefixes and whitespace. Literal expressions are preceded
+// by `=`, `,`, `(`, `return`, etc.
+//
+// Walks left from mapStart over `*`, `[]` slice prefixes, and inline
+// whitespace. The first non-modifier byte determines the verdict.
+// Returns false on malformed input (no preceding context, mismatched
+// brackets) so the fail-closed default stays composite-literal-safe.
+func isFuncReturnTypePosition(body string, mapStart int) bool {
+	i := mapStart
+	for i > 0 {
+		c := body[i-1]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n':
+			i--
+			continue
+		case c == '*':
+			i--
+			continue
+		case c == ']':
+			depth := 1
+			j := i - 2
+			for j >= 0 && depth > 0 {
+				switch body[j] {
+				case ']':
+					depth++
+				case '[':
+					depth--
+				}
+				if depth == 0 {
+					break
+				}
+				j--
+			}
+			if depth != 0 || j < 0 {
+				return false
+			}
+			i = j
+			continue
+		}
+		return c == ')'
 	}
 	return false
 }
@@ -1146,7 +1263,7 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 		return err
 	}
 	seed := map[string]struct{}{}
-	helperRefRe := regexp.MustCompile(`baml(OrderedAs|ConvertList)_[A-Za-z0-9_]+`)
+	helperRefRe := regexp.MustCompile(`baml(OrderedAs|ConvertList|NativeMapAs)_[A-Za-z0-9_]+`)
 	collect := func(src []byte) {
 		for _, m := range helperRefRe.FindAll(src, -1) {
 			seed[string(m)] = struct{}{}
@@ -1302,32 +1419,50 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 		}
 	}
 
+	// The native-map-only helper bodies (emitted exclusively for
+	// recursive type aliases) never reference the `baml` selector
+	// in code — they keep the field type as a native `map[string]T`.
+	// Skip the baml import when no helper has a `baml.` token
+	// outside of `//` comments so the helper file does not fail
+	// the `imported and not used` check.
+	needsBAMLImport := false
+	for _, name := range sortedNames {
+		if helperBodyReferencesBAML(emitted[name]) {
+			needsBAMLImport = true
+			break
+		}
+	}
+
 	var buf strings.Builder
 	buf.WriteString("// Code generated by cmd/hacks/hacks/dynamic_order_client.go; DO NOT EDIT.\n")
 	buf.WriteString(staticMapOrderedHelperMarker + "\n\n")
 	buf.WriteString("package " + pkgName + "\n\n")
-	buf.WriteString("import (\n")
-	fmt.Fprintf(&buf, "\tbaml %q\n", bamlImportPath)
-	// Stable import order: sort by path.
-	if len(extraImports) > 0 {
-		paths := make([]string, 0, len(extraImports))
-		for p := range extraImports {
-			paths = append(paths, p)
+	if needsBAMLImport || len(extraImports) > 0 {
+		buf.WriteString("import (\n")
+		if needsBAMLImport {
+			fmt.Fprintf(&buf, "\tbaml %q\n", bamlImportPath)
 		}
-		for i := 1; i < len(paths); i++ {
-			for j := i; j > 0 && paths[j] < paths[j-1]; j-- {
-				paths[j], paths[j-1] = paths[j-1], paths[j]
+		// Stable import order: sort by path.
+		if len(extraImports) > 0 {
+			paths := make([]string, 0, len(extraImports))
+			for p := range extraImports {
+				paths = append(paths, p)
+			}
+			for i := 1; i < len(paths); i++ {
+				for j := i; j > 0 && paths[j] < paths[j-1]; j-- {
+					paths[j], paths[j-1] = paths[j-1], paths[j]
+				}
+			}
+			for _, p := range paths {
+				if alias := extraImports[p]; alias != "" {
+					fmt.Fprintf(&buf, "\t%s %q\n", alias, p)
+				} else {
+					fmt.Fprintf(&buf, "\t%q\n", p)
+				}
 			}
 		}
-		for _, p := range paths {
-			if alias := extraImports[p]; alias != "" {
-				fmt.Fprintf(&buf, "\t%s %q\n", alias, p)
-			} else {
-				fmt.Fprintf(&buf, "\t%q\n", p)
-			}
-		}
+		buf.WriteString(")\n\n")
 	}
-	buf.WriteString(")\n\n")
 	for _, name := range sortedNames {
 		buf.WriteString(emitted[name])
 		buf.WriteString("\n\n")
@@ -1356,6 +1491,13 @@ func emitStaticHelperByName(name string) (string, bool) {
 			return "", false
 		}
 		return emitConvertListHelper(name, listType), true
+	}
+	if strings.HasPrefix(name, "bamlNativeMapAs_") {
+		elemName, isPtr, ok := nativeMapHelperElementFromName(name)
+		if !ok {
+			return "", false
+		}
+		return emitNativeMapHelper(name, elemName, isPtr), true
 	}
 	return "", false
 }
@@ -1815,4 +1957,368 @@ func emitConvertListHelper(name, listType string) string {
 // well-known place without revisiting every helper emission.
 func staticMapHelperCore() string {
 	return ""
+}
+
+// pkgTypeIndex caches the type-declaration topology of a single
+// generated package directory. It feeds the recursive-alias guard
+// that protects the static-map rewrite from triggering a Go compiler
+// ICE on `baml.OrderedMap[T]` instantiations where T is a recursive
+// type alias (e.g. the integration `JsonValue = *Union6...` shape).
+//
+// Two maps are kept:
+//
+//   - aliases: every `type X = Y` declaration's RHS expression.
+//     `JsonValue` lives here.
+//   - defs: every non-alias `type X T` declaration's RHS (struct
+//     types, interface types, named function types, etc.).
+//     `Union6...` lives here.
+//
+// The split matters because only alias chains trigger the ICE; a
+// recursive struct without an alias hop compiles fine. Restricting
+// the recursion check to alias-rooted element types avoids
+// over-skipping plain struct recursion.
+type pkgTypeIndex struct {
+	aliases map[string]ast.Expr
+	defs    map[string]ast.Expr
+}
+
+// newPkgTypeIndex parses every .go file in dir and collects the
+// alias / def graph. Parse errors are tolerated per file because the
+// static-map pass walks unverified generator output; a corrupted
+// sibling file should not block the rewriter for the rest of the
+// package. Unparseable files contribute nothing to the index and the
+// recursive-alias check fails-open (no skip).
+func newPkgTypeIndex(dir string) (*pkgTypeIndex, error) {
+	idx := &pkgTypeIndex{
+		aliases: map[string]ast.Expr{},
+		defs:    map[string]ast.Expr{},
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return idx, nil
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if readErr != nil {
+			continue
+		}
+		file, parseErr := parser.ParseFile(token.NewFileSet(), e.Name(), data, parser.SkipObjectResolution)
+		if parseErr != nil || file == nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || ts.Name == nil || ts.Type == nil {
+					continue
+				}
+				if ts.Assign.IsValid() {
+					idx.aliases[ts.Name.Name] = ts.Type
+				} else {
+					idx.defs[ts.Name.Name] = ts.Type
+				}
+			}
+		}
+	}
+	return idx, nil
+}
+
+// isRecursiveMapElement reports whether elemExpr names a type whose
+// transitive alias-and-struct closure references the same name in
+// another map element position. The recursion check fires only when
+// elemExpr is a bare identifier registered as an alias in the
+// package: non-alias struct recursion does not trigger the Go compiler
+// ICE on `baml.OrderedMap[T]` instantiations, so the broader
+// definition would over-skip and lose order preservation on plain
+// recursive structs unnecessarily.
+//
+// Pointer / slice wrappers on elemExpr are not unwrapped here; the
+// caller passes the raw element type captured from `map[string]<T>`,
+// and Go's recursive-alias hazard sits on the bare identifier path.
+func (idx *pkgTypeIndex) isRecursiveMapElement(elemExpr string) bool {
+	target := strings.TrimSpace(elemExpr)
+	if !isSimpleGoIdent(target) {
+		return false
+	}
+	if _, isAlias := idx.aliases[target]; !isAlias {
+		return false
+	}
+	return idx.reachesMapValue(target, target, map[string]bool{})
+}
+
+// reachesMapValue walks the type-decl graph from `name` and returns
+// true when any reachable map element position resolves back to
+// `target`. The walk follows alias-RHS expressions and struct field
+// types; idents inside those expressions are followed by recursion
+// into reachesMapValue with the same `target`.
+func (idx *pkgTypeIndex) reachesMapValue(name, target string, visited map[string]bool) bool {
+	if visited[name] {
+		return false
+	}
+	visited[name] = true
+	expr := idx.exprFor(name)
+	if expr == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if m, ok := n.(*ast.MapType); ok {
+			if idx.valueRefersTo(m.Value, target, map[string]bool{}) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	if found {
+		return true
+	}
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if id, ok := n.(*ast.Ident); ok {
+			if idx.reachesMapValue(id.Name, target, visited) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// valueRefersTo reports whether the map-value expression resolves
+// (through pointer / slice prefixes and alias hops) to the target
+// identifier. The visited set guards against infinite loops on
+// `type A = *B; type B = *A` style cycles that do not themselves
+// involve maps.
+func (idx *pkgTypeIndex) valueRefersTo(expr ast.Expr, target string, visited map[string]bool) bool {
+	for {
+		switch t := expr.(type) {
+		case *ast.StarExpr:
+			expr = t.X
+			continue
+		case *ast.ArrayType:
+			expr = t.Elt
+			continue
+		}
+		break
+	}
+	id, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if id.Name == target {
+		return true
+	}
+	if visited[id.Name] {
+		return false
+	}
+	visited[id.Name] = true
+	if a, ok := idx.aliases[id.Name]; ok {
+		return idx.valueRefersTo(a, target, visited)
+	}
+	return false
+}
+
+// exprFor returns the declared RHS expression for name when name is
+// registered as either an alias or a struct/def in the package
+// index. Aliases take precedence on the off chance a name appears in
+// both maps (which the indexer prevents by construction, but the
+// lookup stays safe regardless).
+func (idx *pkgTypeIndex) exprFor(name string) ast.Expr {
+	if a, ok := idx.aliases[name]; ok {
+		return a
+	}
+	if d, ok := idx.defs[name]; ok {
+		return d
+	}
+	return nil
+}
+
+// isSimpleGoIdent reports whether s is a Go identifier (a leading
+// letter or `_` followed by letters / digits / underscores). The
+// pkgTypeIndex check uses this to short-circuit on qualified names
+// like `types.Foo` and on composite expressions like `*Foo`, neither
+// of which the recursive-alias guard handles.
+func isSimpleGoIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '_':
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case i > 0 && c >= '0' && c <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// recursiveMapAssertElement returns the element-type identifier when
+// the given type-assertion expression names a recursive map element
+// that pass 1 chose to leave as native `map[string]T`. Used by passes
+// 2 and 3 to route the assert through a native-map helper — the
+// OrderedMap helper would not match the un-rewritten field type.
+// Returns the element identifier and true on a match; false otherwise.
+//
+// Accepts `map[string]T` and `*map[string]T` (slice wrappers around
+// recursive maps are not generated by BAML today and stay out of
+// scope until a concrete case appears).
+func recursiveMapAssertElement(typeExpr string, idx *pkgTypeIndex) (string, bool) {
+	if idx == nil {
+		return "", false
+	}
+	t := strings.TrimSpace(typeExpr)
+	t = strings.TrimPrefix(t, "*")
+	t = strings.TrimSpace(t)
+	const prefix = "map[string]"
+	if !strings.HasPrefix(t, prefix) {
+		return "", false
+	}
+	elem := strings.TrimSpace(strings.TrimPrefix(t, prefix))
+	if !idx.isRecursiveMapElement(elem) {
+		return "", false
+	}
+	return elem, true
+}
+
+// nativeMapHelperName names the per-element-type native-map helper
+// the recursive-alias path routes through. The pointer variant has a
+// `Ptr_` suffix mirroring the ordered-map helper naming scheme so
+// the helper-file generator can dispatch by prefix.
+func nativeMapHelperName(elemName string, isPtr bool) string {
+	if isPtr {
+		return "bamlNativeMapAs_Ptr_" + elemName
+	}
+	return "bamlNativeMapAs_" + elemName
+}
+
+// emitNativeMapHelper renders one native-map conversion helper. The
+// helper turns the patched runtime's ordered carrier (or an already-
+// native Go map) into a plain `map[string]T`. CFFI iteration order
+// is consumed during conversion but the resulting Go map is
+// unordered — the recursive-alias path explicitly trades order
+// preservation for compilable output on the ICE-prone shape.
+//
+// When isPtr is true the helper returns `*map[string]T` so the call
+// site that previously assigned `&value` to the variant field can
+// stay structurally identical (the assert was on the non-pointer
+// shape; only direct top-level returns ever assert to the pointer
+// shape, but emitting both variants keeps the worklist symmetric).
+func emitNativeMapHelper(name, elemName string, isPtr bool) string {
+	nativeType := "map[string]" + elemName
+	retType := nativeType
+	if isPtr {
+		retType = "*" + nativeType
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "// %s converts the runtime ordered carrier produced\n", name)
+	fmt.Fprintf(&b, "// by baml.DecodeToOrderedValue into a native %s.\n", retType)
+	b.WriteString("// The recursive-type-alias path keeps the field as a native\n")
+	b.WriteString("// Go map (CFFI insertion order is lost on this arm) so the\n")
+	b.WriteString("// rewriter avoids the Go compiler ICE on baml.OrderedMap[T]\n")
+	b.WriteString("// where T is a self-referential alias.\n")
+	fmt.Fprintf(&b, "func %s(value any) %s {\n", name, retType)
+	b.WriteString("\tif value == nil {\n")
+	b.WriteString("\t\treturn nil\n")
+	b.WriteString("\t}\n")
+	// Identity short-circuit for the return type.
+	fmt.Fprintf(&b, "\tif typed, ok := value.(%s); ok {\n", retType)
+	b.WriteString("\t\treturn typed\n")
+	b.WriteString("\t}\n")
+	if isPtr {
+		fmt.Fprintf(&b, "\tif bare, ok := value.(%s); ok {\n", nativeType)
+		b.WriteString("\t\treturn &bare\n")
+		b.WriteString("\t}\n")
+	} else {
+		fmt.Fprintf(&b, "\tif ptr, ok := value.(*%s); ok {\n", nativeType)
+		b.WriteString("\t\tif ptr == nil {\n")
+		b.WriteString("\t\t\treturn nil\n")
+		b.WriteString("\t\t}\n")
+		b.WriteString("\t\treturn *ptr\n")
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("\tif ranger, ok := value.(interface {\n")
+	b.WriteString("\t\tRangeAny(func(string, any) bool)\n")
+	b.WriteString("\t\tLen() int\n")
+	b.WriteString("\t}); ok {\n")
+	fmt.Fprintf(&b, "\t\tout := make(%s, ranger.Len())\n", nativeType)
+	b.WriteString("\t\tranger.RangeAny(func(k string, v any) bool {\n")
+	fmt.Fprintf(&b, "\t\t\tif cv, ok := v.(%s); ok {\n", elemName)
+	b.WriteString("\t\t\t\tout[k] = cv\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\treturn true\n")
+	b.WriteString("\t\t})\n")
+	if isPtr {
+		b.WriteString("\t\treturn &out\n")
+	} else {
+		b.WriteString("\t\treturn out\n")
+	}
+	b.WriteString("\t}\n")
+	if isPtr {
+		b.WriteString("\treturn nil\n")
+	} else {
+		b.WriteString("\treturn nil\n")
+	}
+	b.WriteString("}")
+	return b.String()
+}
+
+// helperBodyReferencesBAML reports whether body has a `baml.`
+// selector outside of `//` line comments. The static-map helper
+// renderer drops the baml import from the helper file when no
+// emitted helper actually needs it, but every helper still has a
+// comment line that documents the `baml.DecodeToOrderedValue`
+// runtime entrypoint. A naive substring check on the rendered
+// helper would falsely flag the comment as a baml use; this walker
+// strips `//` comment trailers per line first.
+func helperBodyReferencesBAML(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		if strings.Contains(line, "baml.") {
+			return true
+		}
+	}
+	return false
+}
+
+// nativeMapHelperElementFromName reverses nativeMapHelperName. Returns
+// the element identifier and whether the helper is the pointer
+// variant. False on names that do not match the
+// `bamlNativeMapAs_(Ptr_)?<Ident>` shape so the worklist skips
+// unrelated references.
+func nativeMapHelperElementFromName(name string) (string, bool, bool) {
+	const prefix = "bamlNativeMapAs_"
+	if !strings.HasPrefix(name, prefix) {
+		return "", false, false
+	}
+	rest := strings.TrimPrefix(name, prefix)
+	isPtr := false
+	if strings.HasPrefix(rest, "Ptr_") {
+		isPtr = true
+		rest = strings.TrimPrefix(rest, "Ptr_")
+	}
+	if !isSimpleGoIdent(rest) {
+		return "", false, false
+	}
+	return rest, isPtr, true
 }

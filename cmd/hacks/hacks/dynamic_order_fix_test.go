@@ -1076,6 +1076,253 @@ func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
 	}
 }
 
+// TestRecursiveMapSkip pins the issue #366 / cold-v3 BLOCK fix for
+// the recursive-type-alias trap. The Go compiler ICEs on a
+// `baml.OrderedMap[T]` instantiation when T is a type alias whose
+// transitive closure references the same alias in another map element
+// position (the integration `JsonValue = *Union6...` shape). The
+// static-map pass must leave the recursive arm as native
+// `map[string]T` and route the matching decode/assert site through a
+// `bamlNativeMapAs_*` helper so the resulting tree compiles without
+// the ICE — while still rewriting non-recursive map fields in the
+// same package normally.
+//
+// The fixture mirrors the integration shape compactly: a `Self` alias
+// to a union struct that has a `map[string]Self` arm, plus a plain
+// `map[string]int` arm on the same struct that must still rewrite
+// to `baml.OrderedMap[int]`. The rewrite is correct only when both
+// surface types come out simultaneously consistent: the recursive
+// arm stays native and the non-recursive arm flips to OrderedMap.
+func TestRecursiveMapSkip(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const aliasSrc = `package types
+
+type Self = *MyUnion
+`
+	if err := os.WriteFile(filepath.Join(typesDir, "type_aliases.go"), []byte(aliasSrc), 0o644); err != nil {
+		t.Fatalf("write type_aliases.go: %v", err)
+	}
+
+	const unionSrc = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type MyUnion struct {
+	variant                     string
+	variant_Int                 *int64
+	variant_String              *string
+	variant_MapSelf             *map[string]Self
+	variant_MapInt              *map[string]int
+}
+
+func (u *MyUnion) Decode(holder *cffi.CFFIValueUnionVariant, typeMap baml.TypeMap) {
+	valueHolder := holder.Value
+	variantName := holder.ValueOptionName
+	switch variantName {
+	case "int":
+		u.variant = "Int"
+		value := baml.Decode(valueHolder).Int()
+		u.variant_Int = &value
+	case "string":
+		u.variant = "String"
+		value := baml.Decode(valueHolder).Interface().(string)
+		u.variant_String = &value
+	case "Map__string_Self":
+		u.variant = "MapSelf"
+		value := baml.Decode(valueHolder).Interface().(map[string]Self)
+		u.variant_MapSelf = &value
+	case "Map__string_int":
+		u.variant = "MapInt"
+		value := baml.Decode(valueHolder).Interface().(map[string]int)
+		u.variant_MapInt = &value
+	default:
+		panic(fmt.Sprintf("unexpected variant: %s", variantName))
+	}
+}
+
+func (u *MyUnion) AsMapSelf() *map[string]Self {
+	if u.variant != "MapSelf" {
+		return nil
+	}
+	return u.variant_MapSelf
+}
+
+func (u *MyUnion) AsMapInt() *map[string]int {
+	if u.variant != "MapInt" {
+		return nil
+	}
+	return u.variant_MapInt
+}
+
+func MyUnion__NewMapSelf(v map[string]Self) MyUnion {
+	return MyUnion{
+		variant:         "MapSelf",
+		variant_MapSelf: &v,
+	}
+}
+`
+	unionsPath := filepath.Join(typesDir, "unions.go")
+	if err := os.WriteFile(unionsPath, []byte(unionSrc), 0o644); err != nil {
+		t.Fatalf("write unions.go: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	after := readFileT(t, unionsPath)
+
+	// Recursive arm stays native (no OrderedMap[Self], no rewritten cast).
+	if strings.Contains(after, "baml.OrderedMap[Self]") {
+		t.Fatalf("recursive map[string]Self was rewritten to baml.OrderedMap[Self] — would ICE on Go compiler:\n%s", after)
+	}
+	for _, want := range []string{
+		"variant_MapSelf *map[string]Self",
+		"func (u *MyUnion) AsMapSelf() *map[string]Self",
+		"func MyUnion__NewMapSelf(v map[string]Self)",
+		"bamlNativeMapAs_Self(baml.DecodeToOrderedValue(valueHolder))",
+	} {
+		if !strings.Contains(after, want) {
+			t.Fatalf("missing required recursive-arm shape %q in patched file:\n%s", want, after)
+		}
+	}
+	// The recursive Decode assertion must not route through the
+	// OrderedMap helper — that would produce baml.OrderedMap[Self]
+	// at the helper boundary.
+	if strings.Contains(after, "bamlOrderedAs_OM_Self") {
+		t.Fatalf("recursive arm routed through OrderedMap helper, native-map helper expected:\n%s", after)
+	}
+
+	// Non-recursive arm still flips to OrderedMap normally.
+	for _, want := range []string{
+		"variant_MapInt  *baml.OrderedMap[int]",
+		"func (u *MyUnion) AsMapInt() *baml.OrderedMap[int]",
+		"bamlOrderedAs_OM_int(baml.DecodeToOrderedValue(valueHolder))",
+	} {
+		if !strings.Contains(after, want) {
+			t.Fatalf("non-recursive map[string]int was not rewritten as expected; missing %q:\n%s", want, after)
+		}
+	}
+
+	// Helper file must define the native-map helper for Self and the
+	// ordered helper for int.
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+	for _, want := range []string{
+		"func bamlNativeMapAs_Self(value any) map[string]Self",
+		"func bamlOrderedAs_OM_int(",
+	} {
+		if !strings.Contains(helperBody, want) {
+			t.Fatalf("helper file missing %q:\n%s", want, helperBody)
+		}
+	}
+	// The native-map helper must not advertise order preservation —
+	// the recursive arm's documented trade-off is that order is lost.
+	if !strings.Contains(helperBody, "CFFI insertion order is lost on this arm") {
+		t.Fatalf("native-map helper does not document the order-loss trade-off:\n%s", helperBody)
+	}
+}
+
+// TestFuncReturnMapRewrite pins the issue #366 / cold-v3 Finding-2
+// fix for the composite-literal guard. A function declaration whose
+// return type is `*?map[string]T` is followed by ` {` opening the
+// function body — the same trailing-`{` shape as a `map[string]T{...}`
+// composite literal. The pre-fix guard skipped the rewrite for both
+// shapes, leaving union `As*` accessors with a stale `*map[string]T`
+// return type that no longer matched the rewritten storage field's
+// `*baml.OrderedMap[T]` type.
+//
+// The fixture covers four shapes simultaneously:
+//   - `func AsX() *map[string]T {` must rewrite the return type.
+//   - `func F() map[string]T {`     same, without the pointer wrapper.
+//   - `return map[string]T{}` (composite literal) must NOT rewrite —
+//     OrderedMap's fields are unexported and a literal allocation
+//     would fail to compile.
+//   - `var v = map[string]T{}` (composite literal in expression
+//     context) must NOT rewrite for the same reason.
+func TestFuncReturnMapRewrite(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const src = `package types
+
+import (
+	baml "github.com/example/fake-baml-patched/pkg"
+	_ "github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type Container struct {
+	storage *map[string]string
+}
+
+func (c *Container) AsStringMap() *map[string]string {
+	return c.storage
+}
+
+func PlainStringMap() map[string]string {
+	return map[string]string{"k": "v"}
+}
+
+var seed = map[string]string{"a": "b"}
+
+var _ = baml.TypeMap{}
+
+var _ = seed
+`
+	path := filepath.Join(typesDir, "container.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	after := readFileT(t, path)
+
+	// Function return types must flip to OrderedMap.
+	for _, want := range []string{
+		"func (c *Container) AsStringMap() *baml.OrderedMap[string]",
+		"func PlainStringMap() baml.OrderedMap[string]",
+		"storage *baml.OrderedMap[string]",
+	} {
+		if !strings.Contains(after, want) {
+			t.Fatalf("missing rewritten return type %q in patched file:\n%s", want, after)
+		}
+	}
+
+	// Composite literals must NOT flip — those would not compile
+	// because baml.OrderedMap's fields are unexported.
+	if strings.Contains(after, "baml.OrderedMap[string]{") {
+		t.Fatalf("composite literal map[string]string{...} was rewritten to baml.OrderedMap[string]{...}, would fail to compile:\n%s", after)
+	}
+	for _, mustStay := range []string{
+		`return map[string]string{"k": "v"}`,
+		`var seed = map[string]string{"a": "b"}`,
+	} {
+		if !strings.Contains(after, mustStay) {
+			t.Fatalf("composite literal lost expected form %q after rewrite:\n%s", mustStay, after)
+		}
+	}
+}
+
 // repoRootForTest walks upward from the test file's package looking
 // for the bamlutils directory. The hack tests need a stable path to
 // bamlutils/orderedmap.go independent of where `go test` is invoked.
