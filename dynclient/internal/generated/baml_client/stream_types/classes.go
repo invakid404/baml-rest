@@ -137,7 +137,7 @@ func (c Baml_Rest_ContentPart) BamlTypeName() string {
 }
 
 type Baml_Rest_DynamicOutput struct {
-	DynamicProperties map[string]any
+	DynamicProperties baml.OrderedFields
 }
 
 func (c *Baml_Rest_DynamicOutput) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
@@ -149,7 +149,7 @@ func (c *Baml_Rest_DynamicOutput) Decode(holder *cffi.CFFIValueClass, typeMap ba
 		panic(fmt.Sprintf("expected Baml_Rest_DynamicOutput, got %s", typeName.Name))
 	}
 
-	c.DynamicProperties = make(map[string]any)
+	c.DynamicProperties = baml.NewOrderedFields(0)
 
 	for _, field := range holder.Fields {
 		key := field.Key
@@ -158,7 +158,7 @@ func (c *Baml_Rest_DynamicOutput) Decode(holder *cffi.CFFIValueClass, typeMap ba
 
 		default:
 
-			c.DynamicProperties[key] = baml.DecodeToValue(valueHolder)
+			c.DynamicProperties.Set(key, baml.DecodeToOrderedValue(valueHolder))
 
 		}
 	}
@@ -168,7 +168,7 @@ func (c *Baml_Rest_DynamicOutput) Decode(holder *cffi.CFFIValueClass, typeMap ba
 func (c Baml_Rest_DynamicOutput) Encode() (*cffi.HostValue, error) {
 	fields := map[string]any{}
 
-	return baml.EncodeClass("Baml_Rest_DynamicOutput", fields, &c.DynamicProperties)
+	return baml.EncodeClassOrdered("Baml_Rest_DynamicOutput", fields, &c.DynamicProperties)
 }
 
 func (c Baml_Rest_DynamicOutput) BamlTypeName() string {

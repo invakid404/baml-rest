@@ -152,31 +152,37 @@ func unwrapDynamicBamlRestDynamicOutputStream(val *streamtypes.Baml_Rest_Dynamic
 	if val == nil {
 		return
 	}
-	if val.DynamicProperties == nil {
+	if val.DynamicProperties.Len() == 0 {
 		return
 	}
-	for key, value := range val.DynamicProperties {
+	val.DynamicProperties.Range(func(key string, value any) bool {
+		var unwrapped any
 		if reflectValue, ok := value.(reflect.Value); ok {
-			val.DynamicProperties[key] = utils.UnwrapDynamicValue(reflectValue.Interface())
+			unwrapped = utils.UnwrapDynamicValue(reflectValue.Interface())
 		} else {
-			val.DynamicProperties[key] = utils.UnwrapDynamicValue(value)
+			unwrapped = utils.UnwrapDynamicValue(value)
 		}
-	}
+		_ = val.DynamicProperties.Replace(key, unwrapped)
+		return true
+	})
 }
 func unwrapDynamicBamlRestDynamicOutputFinal(val *types.Baml_Rest_DynamicOutput) {
 	if val == nil {
 		return
 	}
-	if val.DynamicProperties == nil {
+	if val.DynamicProperties.Len() == 0 {
 		return
 	}
-	for key, value := range val.DynamicProperties {
+	val.DynamicProperties.Range(func(key string, value any) bool {
+		var unwrapped any
 		if reflectValue, ok := value.(reflect.Value); ok {
-			val.DynamicProperties[key] = utils.UnwrapDynamicValue(reflectValue.Interface())
+			unwrapped = utils.UnwrapDynamicValue(reflectValue.Interface())
 		} else {
-			val.DynamicProperties[key] = utils.UnwrapDynamicValue(value)
+			unwrapped = utils.UnwrapDynamicValue(value)
 		}
-	}
+		_ = val.DynamicProperties.Replace(key, unwrapped)
+		return true
+	})
 }
 func (v *BamlRestDynamicOutput) Stream() any {
 	return v.streamParsed

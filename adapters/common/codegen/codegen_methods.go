@@ -806,23 +806,33 @@ func (me *methodEmitter) makeLegacyPreamble() []jen.Code {
 // for a pointer type. The generated function mutates val.DynamicProperties once
 // so getters need no work. Used by both the streaming-method loop and the
 // parse-only method loop to avoid duplicating the Jen AST.
+//
+// After issue #364 patched the BAML runtime and generated client to use
+// baml.OrderedFields for DynamicProperties, the emitted body iterates
+// via Range and updates each value via Replace so insertion order
+// survives the unwrap pass.
 func (g *generator) emitDynamicUnwrapFunc(funcName string, typePtr *jen.Statement) {
 	g.out.Func().Id(funcName).
 		Params(jen.Id("val").Add(typePtr.Clone())).
 		Block(
 			jen.If(jen.Id("val").Op("==").Nil()).Block(jen.Return()),
-			jen.If(jen.Id("val").Dot("DynamicProperties").Op("==").Nil()).Block(jen.Return()),
-			jen.For(jen.List(jen.Id("key"), jen.Id("value")).Op(":=").Range().Id("val").Dot("DynamicProperties")).
-				Block(
-					jen.If(
-						jen.List(jen.Id("reflectValue"), jen.Id("ok")).Op(":=").Id("value").Assert(jen.Qual("reflect", "Value")),
-						jen.Id("ok"),
-					).Block(
-						jen.Id("val").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(g.selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("reflectValue").Dot("Interface").Call()),
-					).Else().Block(
-						jen.Id("val").Dot("DynamicProperties").Index(jen.Id("key")).Op("=").Qual(g.selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("value")),
-					),
+			jen.If(jen.Id("val").Dot("DynamicProperties").Dot("Len").Call().Op("==").Lit(0)).Block(jen.Return()),
+			jen.Id("val").Dot("DynamicProperties").Dot("Range").Call(jen.Func().Params(
+				jen.Id("key").String(),
+				jen.Id("value").Any(),
+			).Bool().Block(
+				jen.Var().Id("unwrapped").Any(),
+				jen.If(
+					jen.List(jen.Id("reflectValue"), jen.Id("ok")).Op(":=").Id("value").Assert(jen.Qual("reflect", "Value")),
+					jen.Id("ok"),
+				).Block(
+					jen.Id("unwrapped").Op("=").Qual(g.selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("reflectValue").Dot("Interface").Call()),
+				).Else().Block(
+					jen.Id("unwrapped").Op("=").Qual(g.selfUtilsPkg, "UnwrapDynamicValue").Call(jen.Id("value")),
 				),
+				jen.Id("_").Op("=").Id("val").Dot("DynamicProperties").Dot("Replace").Call(jen.Id("key"), jen.Id("unwrapped")),
+				jen.Return(jen.True()),
+			)),
 		)
 }
 

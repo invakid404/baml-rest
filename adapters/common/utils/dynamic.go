@@ -5,7 +5,20 @@ import (
 	"reflect"
 
 	"github.com/boundaryml/baml/engine/language_client_go/baml_go/serde"
+	"github.com/invakid404/baml-rest/bamlutils"
 )
+
+// orderedFieldRanger is the structural interface the dynamic-order
+// patched BAML runtime emits for ordered field carriers
+// (serde.OrderedFields and the DynamicClass.Fields it now uses).
+// Detecting the shape by interface keeps adapters/common
+// source-compatible with the unpatched BAML module standalone modules
+// pin — the type only resolves at runtime when the patched fork is in
+// the link graph.
+type orderedFieldRanger interface {
+	Len() int
+	Range(func(string, any) bool)
+}
 
 func UnwrapDynamicValue(value any) any {
 	if value == nil {
@@ -15,6 +28,20 @@ func UnwrapDynamicValue(value any) any {
 	rv := reflect.ValueOf(value)
 	if rv.Kind() == reflect.Ptr && rv.IsNil() {
 		return nil
+	}
+
+	// Detect the patched ordered field carrier before the typed
+	// serde.DynamicClass cases below, so an ordered DynamicClass.Fields
+	// passed through recursion (or a top-level OrderedFields handed
+	// back by DecodeToOrderedValue) lands here first and survives as a
+	// bamlutils.OrderedMap[any] with preserved insertion order.
+	if ordered, ok := value.(orderedFieldRanger); ok {
+		out := bamlutils.OrderedMap[any]{}
+		ordered.Range(func(key string, v any) bool {
+			_ = out.Set(key, UnwrapDynamicValue(v))
+			return true
+		})
+		return out
 	}
 
 	// Check pointer types

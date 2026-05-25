@@ -17,8 +17,20 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/dynclient/baml-patched/engine/language_client_go/baml_go/serde"
 )
+
+// orderedFieldRanger is the structural interface the dynamic-order
+// patched BAML runtime emits for ordered field carriers
+// (serde.OrderedFields and the DynamicClass.Fields it now uses).
+// Detection here mirrors adapters/common/utils so the two unwrap
+// implementations behave identically against the patched fork's
+// ordered shapes.
+type orderedFieldRanger interface {
+	Len() int
+	Range(func(string, any) bool)
+}
 
 // UnwrapDynamicValue collapses BAML's serde wrapper types (DynamicClass /
 // DynamicEnum / DynamicUnion) into plain Go values so the JSON encoder
@@ -35,6 +47,15 @@ func UnwrapDynamicValue(value any) any {
 	rv := reflect.ValueOf(value)
 	if rv.Kind() == reflect.Ptr && rv.IsNil() {
 		return nil
+	}
+
+	if ordered, ok := value.(orderedFieldRanger); ok {
+		out := bamlutils.OrderedMap[any]{}
+		ordered.Range(func(key string, v any) bool {
+			_ = out.Set(key, UnwrapDynamicValue(v))
+			return true
+		})
+		return out
 	}
 
 	if class, ok := value.(*serde.DynamicClass); ok {
