@@ -1270,7 +1270,14 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 	// The local package and the `baml` alias are excluded; everything
 	// else is treated as a sibling generated package and resolved
 	// through the import map collected from the surrounding files.
-	extraImports := map[string]string{} // import path -> alias ("" for default)
+	//
+	// When the in-scope name (the `ref` the helper body emits as a
+	// selector prefix) differs from the path's default last-segment
+	// name, the helper file must reproduce the explicit alias used
+	// by the surrounding files. Without the alias, the import would
+	// bind the default name and the helper body's `ref.Foo` would
+	// resolve to an undefined identifier.
+	extraImports := map[string]string{} // import path -> alias ("" for default name)
 	pkgRefRe := regexp.MustCompile(`\b([a-zA-Z_][a-zA-Z0-9_]*)\.[A-Z][a-zA-Z0-9_]*`)
 	for _, name := range sortedNames {
 		body := emitted[name]
@@ -1283,7 +1290,15 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 			if !ok {
 				continue
 			}
-			extraImports[path] = ""
+			alias := ""
+			if ref != defaultImportName(path) {
+				alias = ref
+			}
+			// Don't downgrade an existing explicit alias to the
+			// default form on a later iteration.
+			if existing, present := extraImports[path]; !present || existing == "" {
+				extraImports[path] = alias
+			}
 		}
 	}
 
@@ -1305,7 +1320,11 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 			}
 		}
 		for _, p := range paths {
-			fmt.Fprintf(&buf, "\t%q\n", p)
+			if alias := extraImports[p]; alias != "" {
+				fmt.Fprintf(&buf, "\t%s %q\n", alias, p)
+			} else {
+				fmt.Fprintf(&buf, "\t%q\n", p)
+			}
 		}
 	}
 	buf.WriteString(")\n\n")
@@ -1341,6 +1360,19 @@ func emitStaticHelperByName(name string) (string, bool) {
 	return "", false
 }
 
+// defaultImportName returns the default in-scope name Go binds for
+// an unaliased import of the given path — the last `/`-separated
+// segment. Used to decide whether a sibling-import in the helper
+// file needs an explicit alias to keep the helper body's selector
+// references resolvable.
+func defaultImportName(path string) string {
+	slash := strings.LastIndex(path, "/")
+	if slash < 0 {
+		return path
+	}
+	return path[slash+1:]
+}
+
 // collectImportPathsByName returns the file's imports keyed by the
 // in-scope name they bind. The name is the explicit alias when
 // present, otherwise the last segment of the import path — matching
@@ -1367,13 +1399,7 @@ func collectImportPathsByName(file *ast.File) map[string]string {
 				name = imp.Name.Name
 			}
 		} else {
-			// Default name = last path segment.
-			slash := strings.LastIndex(path, "/")
-			if slash < 0 {
-				name = path
-			} else {
-				name = path[slash+1:]
-			}
+			name = defaultImportName(path)
 		}
 		if name == "" {
 			continue
@@ -1420,23 +1446,37 @@ func findBAMLPkgImportPath(file *ast.File) string {
 }
 
 // staticMapHelperTypeFromName reverses staticMapHelperName. Returns
-// the `baml.OrderedMap[T]` (or `*baml.OrderedMap[T]`) type expression
-// the helper produces. Returns false for unparseable encodings so a
-// future drift in the encoder surfaces as a missing helper rather
-// than as a wrong-typed helper that compiles and crashes at runtime.
+// the wrapped `baml.OrderedMap[T]` type expression the helper
+// produces. Returns false for unparseable encodings so a future
+// drift in the encoder surfaces as a missing helper rather than as
+// a wrong-typed helper that compiles and crashes at runtime.
+//
+// Accepted encodings: any sequence of `Ptr_` / `Slice_` prefixes
+// followed by an `OM_` opener — e.g. `OM_T`, `Ptr_OM_T`,
+// `Slice_OM_T`, `Ptr_Slice_OM_T`, `Slice_Ptr_OM_T`. The static-map
+// assert recogniser (isStaticMapAssertType) accepts the same set,
+// so every helper-name the rewrite emits must reach a defined
+// helper here or the generated package fails to compile with an
+// undefined symbol.
 func staticMapHelperTypeFromName(name string) (string, bool) {
 	const prefix = "bamlOrderedAs_"
 	if !strings.HasPrefix(name, prefix) {
 		return "", false
 	}
 	enc := strings.TrimPrefix(name, prefix)
-	// The encoding always starts with `OM_` (plain ordered map) or
-	// `Ptr_OM_` (optional/pointer wrapped); anything else is not a
-	// static-map helper this pass emits.
-	if !strings.HasPrefix(enc, "OM_") && !strings.HasPrefix(enc, "Ptr_OM_") {
-		return "", false
+	rest := enc
+	for {
+		switch {
+		case strings.HasPrefix(rest, "Ptr_"):
+			rest = strings.TrimPrefix(rest, "Ptr_")
+		case strings.HasPrefix(rest, "Slice_"):
+			rest = strings.TrimPrefix(rest, "Slice_")
+		case strings.HasPrefix(rest, "OM_"):
+			return decodeStaticMapEnc(enc), true
+		default:
+			return "", false
+		}
 	}
-	return decodeStaticMapEnc(enc), true
 }
 
 // convertListHelperTypeFromName reverses convertListHelperName. The
@@ -1510,10 +1550,20 @@ func decodeStaticMapEnc(enc string) string {
 // carrier and returns the address; a nil carrier returns nil so the
 // optional field stays nil for absent values.
 func emitStaticMapHelper(name, typeExpr string) string {
-	isPtr := strings.HasPrefix(typeExpr, "*")
-	innerOrderedType := typeExpr
+	t := strings.TrimSpace(typeExpr)
+	// Slice-wrapped variants (`[]baml.OrderedMap[T]`,
+	// `*[]baml.OrderedMap[T]`, `[]*baml.OrderedMap[T]`, …) peel
+	// the outer slice and recurse through the element-type helper.
+	// `isStaticMapAssertType` accepts these shapes, so the
+	// rewrite emits `bamlOrderedAs_Slice_*` calls that must
+	// reach a defined helper here.
+	if strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "*[]") {
+		return emitSliceWrappedStaticMapHelper(name, t)
+	}
+	isPtr := strings.HasPrefix(t, "*")
+	innerOrderedType := t
 	if isPtr {
-		innerOrderedType = strings.TrimPrefix(typeExpr, "*")
+		innerOrderedType = strings.TrimPrefix(t, "*")
 	}
 	if !strings.HasPrefix(innerOrderedType, "baml.OrderedMap[") {
 		// Unrecognised shape — emit a stub that returns the zero
@@ -1597,15 +1647,25 @@ func emitStaticMapHelper(name, typeExpr string) string {
 
 // convertStaticMapValueExpr returns a Go expression that converts the
 // `any`-typed value v to the typed element T. For nested ordered maps
-// the conversion recurses through the matching ordered-map helper;
-// for lists (`[]E`) it recurses through a per-element-type list
-// helper that walks the `[]any` carrier produced by
-// baml.DecodeToOrderedValue. Other shapes fall back to a direct type
-// assertion that mirrors what `.Interface().(T)` would produce on
-// the upstream pre-ordered-decode path.
+// (with or without a pointer wrapper) the conversion recurses through
+// the matching ordered-map helper; for lists (`[]E`) it recurses
+// through a per-element-type list helper that walks the `[]any`
+// carrier produced by baml.DecodeToOrderedValue. Other shapes fall
+// back to a direct type assertion that mirrors what
+// `.Interface().(T)` would produce on the upstream pre-ordered-decode
+// path.
 func convertStaticMapValueExpr(varName, innerType string) string {
 	t := strings.TrimSpace(innerType)
 	if strings.HasPrefix(t, "baml.OrderedMap[") {
+		helper := staticMapHelperName(t)
+		return fmt.Sprintf("%s(%s)", helper, varName)
+	}
+	if strings.HasPrefix(t, "*baml.OrderedMap[") {
+		// Pointer-wrapped ordered map. The matching helper has a
+		// `Ptr_OM_*` encoding and accepts the ordered carrier
+		// directly, so route through it rather than emit a direct
+		// `v.(*baml.OrderedMap[T])` assertion the carrier never
+		// satisfies.
 		helper := staticMapHelperName(t)
 		return fmt.Sprintf("%s(%s)", helper, varName)
 	}
@@ -1614,6 +1674,91 @@ func convertStaticMapValueExpr(varName, innerType string) string {
 		return fmt.Sprintf("%s(%s)", helper, varName)
 	}
 	return fmt.Sprintf("%s.(%s)", varName, t)
+}
+
+// emitSliceWrappedStaticMapHelper renders a helper for a slice-
+// wrapped ordered-map type — `[]baml.OrderedMap[T]`,
+// `*[]baml.OrderedMap[T]`, `[]*baml.OrderedMap[T]`, etc. The body
+// peels the outer pointer (when present), unpacks the `[]any`
+// carrier baml.DecodeToOrderedValue produces for list nodes, and
+// recurses through convertStaticMapValueExpr on the element type
+// so the inner ordered-map (or further-wrapped element) flows
+// through its own typed helper.
+//
+// The shape mirrors emitConvertListHelper so a slice of ordered
+// maps and a slice of plain typed values share the same recovery
+// rules: nil → nil, identity short-circuit on the already-typed
+// slice (and its pointer), and a fall-through that returns nil
+// when neither the ordered nor the typed shape applies (rather
+// than panicking on an unexpected carrier).
+func emitSliceWrappedStaticMapHelper(name, typeExpr string) string {
+	t := strings.TrimSpace(typeExpr)
+	isPtr := strings.HasPrefix(t, "*")
+	sliceType := t
+	if isPtr {
+		sliceType = strings.TrimPrefix(t, "*")
+	}
+	if !strings.HasPrefix(sliceType, "[]") {
+		// Shouldn't happen given the caller's prefix check; emit
+		// an empty-return stub so a future drift surfaces as
+		// always-empty data rather than a compile error.
+		var stub strings.Builder
+		fmt.Fprintf(&stub, "// %s is a slice-wrapped static-map helper stub;\n", name)
+		fmt.Fprintf(&stub, "// the type expression %q does not start with `[]` or `*[]`.\n", typeExpr)
+		fmt.Fprintf(&stub, "func %s(value any) %s {\n", name, typeExpr)
+		fmt.Fprintf(&stub, "\tvar out %s\n", typeExpr)
+		stub.WriteString("\t_ = value\n")
+		stub.WriteString("\treturn out\n")
+		stub.WriteString("}")
+		return stub.String()
+	}
+	elem := strings.TrimPrefix(sliceType, "[]")
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "// %s converts the runtime []any carrier produced\n", name)
+	fmt.Fprintf(&b, "// by baml.DecodeToOrderedValue into a typed %s,\n", typeExpr)
+	b.WriteString("// recursing through the matching ordered-map or list helper\n")
+	b.WriteString("// for each element so CFFI insertion order is preserved.\n")
+	fmt.Fprintf(&b, "func %s(value any) %s {\n", name, typeExpr)
+	b.WriteString("\tif value == nil {\n")
+	b.WriteString("\t\treturn nil\n")
+	b.WriteString("\t}\n")
+	// Identity short-circuit: the runtime carrier may already be
+	// the exact return type (re-decoded by a previous helper, or
+	// fed from a non-CFFI path).
+	fmt.Fprintf(&b, "\tif typed, ok := value.(%s); ok {\n", typeExpr)
+	b.WriteString("\t\treturn typed\n")
+	b.WriteString("\t}\n")
+	if isPtr {
+		// For `*[]T` returns, also accept a bare `[]T` and take its
+		// address so the optional wrapper sits over the rebuilt slice.
+		fmt.Fprintf(&b, "\tif typed, ok := value.(%s); ok {\n", sliceType)
+		b.WriteString("\t\treturn &typed\n")
+		b.WriteString("\t}\n")
+	} else {
+		// For `[]T` returns, also accept a `*[]T` and dereference.
+		fmt.Fprintf(&b, "\tif ptr, ok := value.(*%s); ok {\n", sliceType)
+		b.WriteString("\t\tif ptr == nil {\n")
+		b.WriteString("\t\t\treturn nil\n")
+		b.WriteString("\t\t}\n")
+		b.WriteString("\t\treturn *ptr\n")
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("\tlistVal, ok := value.([]any)\n")
+	b.WriteString("\tif !ok {\n")
+	b.WriteString("\t\treturn nil\n")
+	b.WriteString("\t}\n")
+	fmt.Fprintf(&b, "\tout := make(%s, len(listVal))\n", sliceType)
+	b.WriteString("\tfor i, ev := range listVal {\n")
+	fmt.Fprintf(&b, "\t\tout[i] = %s\n", convertStaticMapValueExpr("ev", elem))
+	b.WriteString("\t}\n")
+	if isPtr {
+		b.WriteString("\treturn &out\n")
+	} else {
+		b.WriteString("\treturn out\n")
+	}
+	b.WriteString("}")
+	return b.String()
 }
 
 // emitConvertListHelper renders the per-element-type list conversion

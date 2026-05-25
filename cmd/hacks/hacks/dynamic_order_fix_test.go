@@ -861,6 +861,220 @@ func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
 	}
 }
 
+// TestStaticMapClientRewrite_SliceWrappedOrderedMapHasHelper pins
+// the slice-wrapped variant of the static-map helper contract.
+// `isStaticMapAssertType` accepts `[]map[string]T` and
+// `[]baml.OrderedMap[T]` assertions, so a generated `list<map<string, T>>`
+// field reaches `staticMapHelperName` with an `Slice_OM_*` encoding.
+// Before this fix, `staticMapHelperTypeFromName` only accepted
+// `OM_*` and `Ptr_OM_*` encodings, so the helper for a
+// `bamlOrderedAs_Slice_OM_*` call was never emitted and the
+// rewritten package failed to compile with an undefined symbol.
+//
+// The fixture pairs a pre-rewrite `[]map[string]T` field with a
+// post-rewrite-shape `[]baml.OrderedMap[T]` field to cover both
+// the pass-1 promotion of native list-of-maps AND the case where a
+// previous run already left an `[]baml.OrderedMap[T]` carrier in
+// place.
+func TestStaticMapClientRewrite_SliceWrappedOrderedMapHasHelper(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const before = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type ConcreteClass struct{}
+
+type Sample struct {
+	Headers []map[string]string             ` + "`json:\"headers\"`" + `
+	Records []baml.OrderedMap[ConcreteClass] ` + "`json:\"records\"`" + `
+}
+
+func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "headers":
+			s.Headers = baml.Decode(valueHolder).Interface().([]map[string]string)
+		case "records":
+			s.Records = baml.Decode(valueHolder).Interface().([]baml.OrderedMap[ConcreteClass])
+		default:
+			panic(fmt.Sprintf("unexpected field: %s", key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	after := readFileT(t, path)
+	// Pass 1 must promote []map[string]string to []baml.OrderedMap[string].
+	if !strings.Contains(after, "[]baml.OrderedMap[string]") {
+		t.Fatalf("pass 1 did not promote []map[string]string:\n%s", after)
+	}
+	// Both call sites must route through the slice-wrapped helper.
+	for _, marker := range []string{
+		"bamlOrderedAs_Slice_OM_string(baml.DecodeToOrderedValue(valueHolder))",
+		"bamlOrderedAs_Slice_OM_ConcreteClass(baml.DecodeToOrderedValue(valueHolder))",
+	} {
+		if !strings.Contains(after, marker) {
+			t.Fatalf("expected slice-wrapped helper call %q in patched file:\n%s", marker, after)
+		}
+	}
+
+	// The helper file must define both slice-wrapped helpers AND
+	// the inner OM helpers they recurse through. Without all four
+	// declarations the package has an undefined symbol.
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+	for _, decl := range []string{
+		"func bamlOrderedAs_Slice_OM_string(",
+		"func bamlOrderedAs_Slice_OM_ConcreteClass(",
+		"func bamlOrderedAs_OM_string(",
+		"func bamlOrderedAs_OM_ConcreteClass(",
+	} {
+		if !strings.Contains(helperBody, decl) {
+			t.Fatalf("helper file missing required declaration %q:\n%s", decl, helperBody)
+		}
+	}
+	// The slice-wrapped helper signature must declare the typed
+	// list return — a `bamlOrderedAs_Slice_OM_string` returning
+	// anything other than `[]baml.OrderedMap[string]` would point
+	// to a regression in the name-to-type decoder.
+	for _, sig := range []string{
+		"func bamlOrderedAs_Slice_OM_string(value any) []baml.OrderedMap[string]",
+		"func bamlOrderedAs_Slice_OM_ConcreteClass(value any) []baml.OrderedMap[ConcreteClass]",
+	} {
+		if !strings.Contains(helperBody, sig) {
+			t.Fatalf("helper file missing slice-wrapped signature %q:\n%s", sig, helperBody)
+		}
+	}
+	// The helper body must recurse through the inner ordered-map
+	// helper rather than emit a direct `ev.(baml.OrderedMap[...])`
+	// assertion — the runtime carrier from DecodeToOrderedValue is
+	// an OrderedFields, not a typed OrderedMap, so a direct cast
+	// panics.
+	for _, banned := range []string{
+		"ev.(baml.OrderedMap[string])",
+		"ev.(baml.OrderedMap[ConcreteClass])",
+	} {
+		if strings.Contains(helperBody, banned) {
+			t.Fatalf("helper body still has direct OrderedMap assertion %q (panics on OrderedFields):\n%s", banned, helperBody)
+		}
+	}
+	// The helper file must parse cleanly.
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, helperPath, []byte(helperBody), parser.ParseComments); err != nil {
+		t.Fatalf("helper file does not parse: %v\n%s", err, helperBody)
+	}
+}
+
+// TestStaticMapClientRewrite_AliasedSiblingImportPreserved pins
+// the explicit-alias contract for sibling imports. When a
+// surrounding file imports a sibling generated package under an
+// explicit alias (e.g. `models "example.com/baml_client/types"`)
+// and a static map field references that alias
+// (`map[string]models.Foo`), the helper body emits the alias name.
+// Before this fix, the helper file's import block stamped the
+// default segment name from the path — binding `types`, not
+// `models` — so `models.Foo` in the helper body resolved to an
+// undefined identifier and the `types` import was unused.
+func TestStaticMapClientRewrite_AliasedSiblingImportPreserved(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(typesDir, "classes.go"), []byte(`package types
+
+type Foo struct{}
+`), 0o644); err != nil {
+		t.Fatalf("write types/classes.go: %v", err)
+	}
+
+	const before = `package baml_client
+
+import (
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+
+	models "github.com/example/proj/baml_client/types"
+)
+
+type Sample struct {
+	FooMap map[string]models.Foo ` + "`json:\"foo_map\"`" + `
+}
+
+func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		valueHolder := field.Value
+		if field.Key == "foo_map" {
+			s.FooMap = baml.Decode(valueHolder).Interface().(map[string]models.Foo)
+		}
+	}
+	_ = cffi.CFFIValueClass{}
+}
+`
+	path := filepath.Join(clientDir, "classes.go")
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(clientDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	// The helper file's import block must carry the same explicit
+	// alias `models` against the sibling path. The default-name
+	// binding `types` would leave `models` undefined in the helper
+	// body.
+	wantAliased := `models "github.com/example/proj/baml_client/types"`
+	if !strings.Contains(helperBody, wantAliased) {
+		t.Fatalf("helper file does not preserve explicit alias.\nwant: %s\nhelper file:\n%s", wantAliased, helperBody)
+	}
+	// The unaliased default import would bind `types`; the helper
+	// body never references `types.Foo` so the import would be
+	// unused — guard against that drift explicitly.
+	unaliased := `"github.com/example/proj/baml_client/types"` + "\n"
+	if strings.Contains(helperBody, "\t"+unaliased) {
+		t.Fatalf("helper file uses unaliased sibling import; would bind `types` not `models`:\n%s", helperBody)
+	}
+	// The helper body must reference the aliased name.
+	if !strings.Contains(helperBody, "baml.OrderedMap[models.Foo]") {
+		t.Fatalf("helper body does not use the alias `models`:\n%s", helperBody)
+	}
+	if strings.Contains(helperBody, "baml.OrderedMap[types.Foo]") {
+		t.Fatalf("helper body rewrote alias `models` to default name `types`:\n%s", helperBody)
+	}
+	// The helper file must parse cleanly.
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, helperPath, []byte(helperBody), parser.ParseComments); err != nil {
+		t.Fatalf("helper file does not parse: %v\n%s", err, helperBody)
+	}
+}
+
 // repoRootForTest walks upward from the test file's package looking
 // for the bamlutils directory. The hack tests need a stable path to
 // bamlutils/orderedmap.go independent of where `go test` is invoked.
