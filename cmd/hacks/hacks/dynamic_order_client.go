@@ -2519,6 +2519,16 @@ func (idx *pkgTypeIndex) isNilableElementType(typeExprText string) bool {
 }
 
 func (idx *pkgTypeIndex) isNilableIdent(name string, visited map[string]bool) bool {
+	// Predeclared interface identifiers are nilable. `any` and `error`
+	// are not registered in idx.aliases or idx.defs because the
+	// package walk only collects user-declared type names; classifying
+	// them here avoids the false-negative where a static map field
+	// like map[string]any or map[string]error skips the nil-guard and
+	// then panics on a single-value `v.(any)` / `v.(error)` assertion
+	// against an untyped nil at decode time.
+	if name == "any" || name == "error" {
+		return true
+	}
 	if visited[name] {
 		return false
 	}

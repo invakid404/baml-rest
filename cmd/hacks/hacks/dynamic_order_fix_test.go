@@ -3107,6 +3107,74 @@ func (w *WithStrListMap) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMa
 	}
 }
 
+// TestConvertListHelperPreservesNilAnyValue pins the predeclared-`any`
+// case. A `map[string][]any` field rewrites to a list helper for
+// `[]any`; without classifying `any` as nilable the helper skips the
+// `if ev == nil { out[i] = nil; continue }` guard and the generated
+// `out[i] = ev.(any)` assertion panics on an untyped nil at runtime
+// (single-value assertions to the empty interface against a
+// no-dynamic-type nil interface still fail). The predeclared
+// identifier is not in idx.aliases or idx.defs, so the classifier has
+// to special-case it.
+func TestConvertListHelperPreservesNilAnyValue(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const src = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type WithAnyListMap struct {
+	Items map[string][]any
+}
+
+func (w *WithAnyListMap) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		switch field.Key {
+		case "items":
+			w.Items = baml.Decode(field.Value).Interface().(map[string][]any)
+		default:
+			panic(fmt.Sprintf("unexpected: %s", field.Key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	const nilGuard = "if ev == nil {\n\t\t\tout[i] = nil\n\t\t\tcontinue\n\t\t}"
+	if !strings.Contains(helperBody, nilGuard) {
+		t.Fatalf("convert-list helper missing nil-preservation branch for `any` element:\n%s", helperBody)
+	}
+	if !strings.Contains(helperBody, "out[i] = ev.(any)") {
+		t.Fatalf("convert-list helper lost typed-assertion path for `any` element:\n%s", helperBody)
+	}
+	idxGuard := strings.Index(helperBody, "if ev == nil {")
+	idxAssert := strings.Index(helperBody, "out[i] = ev.(any)")
+	if idxGuard < 0 || idxAssert < 0 || idxGuard > idxAssert {
+		t.Fatalf("nil guard does not precede typed assertion for `any` element:\n%s", helperBody)
+	}
+}
+
 // TestOrderedMapHelperNilInNestedOrderedMap pins the nested case for
 // the ordered-map nil guard. A nested `map[string]map[string]*ConcreteClass`
 // surfaces as `baml.OrderedMap[baml.OrderedMap[*ConcreteClass]]`. The
