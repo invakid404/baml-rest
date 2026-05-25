@@ -284,7 +284,18 @@ func drawKind(t *rapid.T, label string, choices []FuzzTypeKind) FuzzTypeKind {
 }
 
 func drawLiteral(t *rapid.T, label string) *FuzzLiteral {
-	kindChoices := []FuzzLiteralKind{LiteralString, LiteralInt, LiteralBool}
+	// Integer literals (LiteralInt) are intentionally excluded. BAML
+	// validates `field (0 | bool | 42)` style class properties as
+	// "not a valid field or attribute definition" — the grammar does
+	// not accept integer literals as union variants, and the static
+	// emitter regularly surfaces them inside unions. Negative integer
+	// literals additionally tripped the Go codegen identifier path
+	// (`expected ';', found '-'` in baml_client/stream_types/classes.go)
+	// when they reached the post-codegen Go parser. Dropping the kind
+	// entirely keeps every drawn schema compilable by BAML;
+	// integer-literal coverage can be reinstated when BAML's grammar /
+	// Go codegen is verified to accept the shape end-to-end.
+	kindChoices := []FuzzLiteralKind{LiteralString, LiteralBool}
 	kidx := rapid.IntRange(0, len(kindChoices)-1).Draw(t, label+":lit_kind")
 	switch kindChoices[kidx] {
 	case LiteralString:
@@ -294,18 +305,6 @@ func drawLiteral(t *rapid.T, label string) *FuzzLiteral {
 		options := []string{"alpha", "beta", "gamma", "", `"quoted"`}
 		oidx := rapid.IntRange(0, len(options)-1).Draw(t, label+":lit_str")
 		return &FuzzLiteral{Kind: LiteralString, String: options[oidx]}
-	case LiteralInt:
-		// Stick to non-negative literal ints. BAML's Go codegen derives
-		// identifier-bearing tokens from literal type spellings; a `-`
-		// in a literal-int spelling lands as a non-identifier byte in
-		// the generated Go source (e.g. `expected ';', found '-'`
-		// inside `baml_client/stream_types/classes.go`) when the
-		// literal appears as a union variant. Cover the surrounding
-		// integer space without the hyphen sigil; negative literals
-		// can be re-enabled if BAML's codegen learns to sanitize them.
-		options := []int64{0, 1, 42}
-		oidx := rapid.IntRange(0, len(options)-1).Draw(t, label+":lit_int")
-		return &FuzzLiteral{Kind: LiteralInt, Int: options[oidx]}
 	case LiteralBool:
 		b := rapid.Bool().Draw(t, label+":lit_bool")
 		return &FuzzLiteral{Kind: LiteralBool, Bool: b}
