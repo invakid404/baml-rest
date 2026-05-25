@@ -183,7 +183,10 @@ func TestSchemaOrderDiff_OptionalNullDoesNotRecurse(t *testing.T) {
 	}
 }
 
-func TestSchemaOrderDiff_MapKeyReorderingIgnored(t *testing.T) {
+// TestSchemaOrderDiff_MapKeyReorderFlagged pins the map insertion-order
+// policy: FuzzValue.MapEntries carries the request's insertion order;
+// the wire must echo it back when preserve_schema_order=true.
+func TestSchemaOrderDiff_MapKeyReorderFlagged(t *testing.T) {
 	outer := FuzzClass{Name: "Root", Properties: []FuzzProperty{
 		{Name: "by_id", Type: mapOf(FuzzType{Kind: KindInt})},
 	}}
@@ -195,8 +198,11 @@ func TestSchemaOrderDiff_MapKeyReorderingIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaOrderDiff: %v", err)
 	}
-	if len(diffs) != 0 {
-		t.Errorf("map key reorder should be ignored, got %v", diffs)
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d (%v)", len(diffs), diffs)
+	}
+	if diffs[0].Path != "$.by_id" {
+		t.Errorf("path: got %q want %q", diffs[0].Path, "$.by_id")
 	}
 }
 
