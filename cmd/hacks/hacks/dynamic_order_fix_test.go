@@ -223,6 +223,115 @@ func TestApplyDynamicOrderFixToDir_PerVersion(t *testing.T) {
 	}
 }
 
+// TestStaticMapClientRewrite_RewritesTypesAndAsserts pins the issue
+// #366 static-map pass: every concrete `map[string]T` field/return is
+// rewritten to `baml.OrderedMap[T]`, every `Decode().Interface().(map[string]T)`
+// cast routes through a generated typed conversion helper, and the
+// per-package helper file lands alongside the patched code. The
+// dynamic-surface `map[string]any` and `DynamicProperties` shapes are
+// left untouched so the dynamic-only pipeline still works.
+func TestStaticMapClientRewrite_RewritesTypesAndAsserts(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const before = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type Sample struct {
+	Headers      map[string]string  ` + "`json:\"headers\"`" + `
+	Counts       map[string]int     ` + "`json:\"counts\"`" + `
+	NestedMap    map[string]map[string]string ` + "`json:\"nested_map\"`" + `
+	OptionalMap  *map[string]string ` + "`json:\"opt_map,omitempty\"`" + `
+	DynamicAny   map[string]any
+}
+
+func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "headers":
+			s.Headers = baml.Decode(valueHolder).Interface().(map[string]string)
+		case "counts":
+			s.Counts = baml.Decode(valueHolder).Interface().(map[string]int)
+		case "nested_map":
+			s.NestedMap = baml.Decode(valueHolder).Interface().(map[string]map[string]string)
+		case "opt_map":
+			s.OptionalMap = baml.Decode(valueHolder).Interface().(*map[string]string)
+		default:
+			panic(fmt.Sprintf("unexpected field: %s", key))
+		}
+	}
+}
+
+func (s Sample) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+	fields["headers"] = s.Headers
+	return baml.EncodeClass("Sample", fields, nil)
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	after := readFileT(t, path)
+	// Concrete types rewritten.
+	for _, marker := range []string{
+		"baml.OrderedMap[string]",
+		"baml.OrderedMap[int]",
+		"baml.OrderedMap[baml.OrderedMap[string]]",
+		"*baml.OrderedMap[string]",
+	} {
+		if !strings.Contains(after, marker) {
+			t.Fatalf("missing rewritten type %q in patched file:\n%s", marker, after)
+		}
+	}
+	// Dynamic surfaces untouched.
+	if !strings.Contains(after, "map[string]any") {
+		t.Fatalf("dynamic surface map[string]any was rewritten unexpectedly:\n%s", after)
+	}
+	// Decode asserts now route through helpers.
+	for _, helper := range []string{
+		"bamlOrderedAs_OM_string",
+		"bamlOrderedAs_OM_int",
+		"baml.DecodeToOrderedValue(valueHolder)",
+	} {
+		if !strings.Contains(after, helper) {
+			t.Fatalf("expected helper marker %q in patched file:\n%s", helper, after)
+		}
+	}
+
+	// Helper file emitted alongside.
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+	for _, marker := range []string{
+		"package types",
+		"func bamlOrderedAs_OM_string(",
+		"func bamlOrderedAs_OM_int(",
+		"RangeAny(func(string, any) bool)",
+	} {
+		if !strings.Contains(helperBody, marker) {
+			t.Fatalf("helper file missing %q:\n%s", marker, helperBody)
+		}
+	}
+}
+
 // TestApplyDynamicOrderFix_GeneratedClient_ToyFixture compiles a small
 // synthetic baml_client tree through the generated-client hack and
 // asserts the rewrite covers field, allocation, assignment, and
@@ -1080,9 +1189,74 @@ func decodeUnionValue(valueUnion *cffi.CFFIValueUnionVariant, typeMap TypeMap) (
 	return value, goType
 }
 
+// Unpatched decodeMapValue body — a cached tree from the prior hack
+// revision left this untouched. The new patch must rewrite it.
+func decodeMapValue(valueMap *cffi.CFFIValueMap, typeMap TypeMap) (reflect.Value, reflect.Type) {
+	if valueMap == nil {
+		panic("decodeMapValue: valueMap is nil")
+	}
+	keyType := valueMap.KeyType
+	valueType := valueMap.ValueType
+	goKeyType := convertFieldTypeToGoType(keyType, typeMap)
+	goValueType := convertFieldTypeToGoType(valueType, typeMap)
+	debugLog("goValueType: %+v\n", goValueType)
+	debugLog("typeMap.typeMap[\"INTERNAL.nil\"]: %+v\n", typeMap.typeMap["INTERNAL.nil"])
+	if goValueType == typeMap.typeMap["INTERNAL.nil"] {
+		values := map[string]any{}
+		for _, entry := range valueMap.Entries {
+			key := entry.Key
+			value := entry.Value
+			decodedValue, goType := Decode(value, typeMap)
+			switch goType {
+			case reflect.TypeOf(int64(0)):
+				values[key] = decodedValue.Int()
+			case reflect.TypeOf(float64(0)):
+				values[key] = decodedValue.Float()
+			case reflect.TypeOf(false):
+				values[key] = decodedValue.Bool()
+			default:
+				values[key] = decodedValue.Interface()
+			}
+		}
+		return reflect.ValueOf(values), reflect.TypeOf(values)
+	} else {
+		mapType := reflect.MapOf(goKeyType, goValueType)
+		values := reflect.MakeMap(mapType)
+		for _, entry := range valueMap.Entries {
+			key := entry.Key
+			value := entry.Value
+			decodedValue, _ := Decode(value, typeMap)
+			values.SetMapIndex(reflect.ValueOf(key), decodedValue)
+		}
+		return values, mapType
+	}
+}
+
+// Unpatched convertFieldTypeToGoType — only the MapType arm is
+// inspected by D5; the surrounding switches are stubbed so the function
+// parses.
+func convertFieldTypeToGoType(fieldType *cffi.CFFIFieldTypeHolder, typeMap TypeMap) reflect.Type {
+	if map_, ok := fieldType.Type.(*cffi.CFFIFieldTypeHolder_MapType); ok {
+		mapType := map_.MapType
+		goKeyType := convertFieldTypeToGoType(mapType.KeyType, typeMap)
+		goValueType := convertFieldTypeToGoType(mapType.ValueType, typeMap)
+		if goValueType == typeMap.typeMap["INTERNAL.nil"] {
+			return reflect.TypeOf(map[string]any{})
+		}
+		return reflect.MapOf(goKeyType, goValueType)
+	}
+	return nil
+}
+
 func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 	return nil
 }
+
+func Decode(holder *cffi.CFFIValueHolder, typeMap TypeMap) (reflect.Value, reflect.Type) {
+	return reflect.ValueOf(nil), nil
+}
+
+func debugLog(format string, args ...any) {}
 `
 	if err := os.WriteFile(filepath.Join(serdeDir, "decode.go"), []byte(partial), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -1119,6 +1293,18 @@ func DecodeToOrderedValue(holder *cffi.CFFIValueHolder, typeMap TypeMap) any {
 	}
 	if !strings.Contains(body, "isOrderableMapValueType(v.MapValue.ValueType, typeMap)") {
 		t.Fatalf("partially-patched tree was not completed: _MapValue arm does not delegate to isOrderableMapValueType\n%s", body)
+	}
+	// issue #366: decodeMapValue body must have been rewritten on the
+	// re-pass to emit OrderedFields. The marker is family-stable and
+	// embedded in the after-image.
+	if !strings.Contains(body, orderedMapDecodeMarker) {
+		t.Fatalf("partially-patched tree was not completed: decodeMapValue did not land the ordered after-image\n%s", body)
+	}
+	// issue #366: the convertFieldTypeToGoType map arm advertises the
+	// OrderedFields carrier type; the upstream reflect.MapOf(K, V)
+	// return is replaced by reflect.TypeOf(OrderedFields{}).
+	if !strings.Contains(body, orderedMapTypeMarker) {
+		t.Fatalf("partially-patched tree was not completed: convertFieldTypeToGoType map arm did not land the ordered after-image\n%s", body)
 	}
 
 	// And the prior in-place markers (DynamicClass.Fields, the union

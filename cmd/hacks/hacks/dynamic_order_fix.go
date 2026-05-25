@@ -106,6 +106,14 @@ func ApplyDynamicOrderFixToDir(bamlVersion, moduleDir string) error {
 		return fmt.Errorf("patching serde/decode.go in %s: %w", moduleDir, err)
 	}
 
+	if err := patchEncodeGo(moduleDir, family); err != nil {
+		return fmt.Errorf("patching serde/encode.go in %s: %w", moduleDir, err)
+	}
+
+	if err := patchRawObjectMaps(moduleDir, family); err != nil {
+		return fmt.Errorf("patching pkg/rawobjects_*.go in %s: %w", moduleDir, err)
+	}
+
 	if err := patchPkgLibGo(moduleDir, family); err != nil {
 		return fmt.Errorf("patching pkg/lib.go in %s: %w", moduleDir, err)
 	}
@@ -141,6 +149,14 @@ const (
 
 func decodeGoPath(moduleDir string) string {
 	return filepath.Join(moduleDir, "engine", "language_client_go", "baml_go", "serde", "decode.go")
+}
+
+func encodeGoPath(moduleDir string) string {
+	return filepath.Join(moduleDir, "engine", "language_client_go", "baml_go", "serde", "encode.go")
+}
+
+func rawObjectsPath(moduleDir, name string) string {
+	return filepath.Join(moduleDir, "engine", "language_client_go", "pkg", name)
 }
 
 func orderedFieldsGoPath(moduleDir string) string {
@@ -314,17 +330,18 @@ func patchDecodeGo(moduleDir string, family decodeFamily) error {
 
 	// Strict sentinel: only short-circuit when the struct-field rewrite
 	// AND the IsSinglePattern dispatch helper AND the per-family
-	// isOrderableMapValueType helper all landed. A cached patched-module
-	// tree from an earlier hack revision (commit-era de3bbd5c3:
-	// typeMap-sentinel `INTERNAL.nil` lookup) satisfies only the first
-	// two markers; without the third the strict check forces a re-pass
-	// so the new ValueType-discriminated helper wires in. Each step
-	// below handles its already-patched state idempotently, so a
-	// re-pass over a fully or partially patched tree converges without
+	// isOrderableMapValueType helper AND the new ordered map decode
+	// marker all landed. A cached patched-module tree from an earlier
+	// hack revision (issue #365: dynamic-only patch) satisfies only the
+	// first three markers; without the fourth the strict check forces a
+	// re-pass so the new decodeMapValue body wires in. Each step below
+	// handles its already-patched state idempotently, so a re-pass over
+	// a fully or partially patched tree converges without
 	// double-applying.
 	if strings.Contains(body, "Fields OrderedFields") &&
 		strings.Contains(body, "func isOrderableSinglePattern(") &&
-		strings.Contains(body, "func isOrderableMapValueType(") {
+		strings.Contains(body, "func isOrderableMapValueType(") &&
+		strings.Contains(body, orderedMapDecodeMarker) {
 		return nil
 	}
 
@@ -397,7 +414,33 @@ func patchDecodeGo(moduleDir string, family decodeFamily) error {
 	}
 	body = patched
 
-	// 6. Append the family-specific DecodeToOrderedValue helper, the
+	// 6. Patch decodeMapValue itself so every CFFI map node is decoded
+	// into an OrderedFields carrier in valueMap.Entries order. The
+	// per-family bodies preserve the upstream signatures (familyA's
+	// single-return shape, familyB/C's two-return shape) and familyC's
+	// INTERNAL.nil scalar-preserving branch; only the storage target
+	// changes from a native Go map to OrderedFields. Generated client
+	// conversion helpers (added in D8-D11) then rebuild typed
+	// baml.OrderedMap[T] from the carrier without losing CFFI key order.
+	patched, err = patchDecodeMapValue(body, family)
+	if err != nil {
+		return fmt.Errorf("patching decodeMapValue in %s: %w", path, err)
+	}
+	body = patched
+
+	// 7. Patch convertFieldTypeToGoType's map arm so it advertises the
+	// ordered carrier type for map nodes. Optional/checked/stream-state
+	// wrappers consult convertFieldTypeToGoType to allocate their
+	// pointer/holder targets; without this rewrite the wrapper allocates
+	// a `*map[K]V` and panics when the inner decode hands back the
+	// OrderedFields carrier.
+	patched, err = patchConvertFieldTypeToGoTypeMapArm(body, family)
+	if err != nil {
+		return fmt.Errorf("patching convertFieldTypeToGoType map arm in %s: %w", path, err)
+	}
+	body = patched
+
+	// 8. Append the family-specific DecodeToOrderedValue helper, the
 	// isOrderableSinglePattern kind-dispatch helper, and the
 	// isOrderableMapValueType ValueType-discriminator helper. Each
 	// append is idempotent: skip when the function name is already
@@ -1234,7 +1277,17 @@ func patchPkgLibGo(moduleDir string, family decodeFamily) error {
 	}
 	body := string(raw)
 
-	if strings.Contains(body, "type OrderedFields = serde.OrderedFields") {
+	// Strict sentinel: only short-circuit when both the OrderedFields
+	// alias AND the generic OrderedMap alias have landed. A cached
+	// patched-module tree from an earlier hack revision (issue #365)
+	// carries only OrderedFields; without the OrderedMap alias the
+	// generated client's typed static-map fields fail to resolve. The
+	// append step below is split into independent fragments, so a
+	// re-pass over a partially patched tree converges without
+	// duplicating the OrderedFields-era block.
+	hasOrderedFields := strings.Contains(body, "type OrderedFields = serde.OrderedFields")
+	hasOrderedMap := strings.Contains(body, "type OrderedMap[V any] = serde.OrderedMap[V]")
+	if hasOrderedFields && hasOrderedMap {
 		return nil
 	}
 
@@ -1258,9 +1311,42 @@ func patchPkgLibGo(moduleDir string, family decodeFamily) error {
 	}
 	body = buf.String()
 
-	body = strings.TrimRight(body, "\n") + "\n\n" + pkgFacadeAppend(family) + "\n"
+	if !hasOrderedFields {
+		body = strings.TrimRight(body, "\n") + "\n\n" + pkgFacadeAppend(family) + "\n"
+	}
+	if !hasOrderedMap {
+		body = strings.TrimRight(body, "\n") + "\n\n" + pkgOrderedMapAppend() + "\n"
+	}
 
 	return os.WriteFile(path, []byte(body), 0o644)
+}
+
+// pkgOrderedMapAppend returns the family-stable block that exposes the
+// generic OrderedMap[V] alias and its constructors. The block is
+// independent of family because serde.OrderedMap is the same generic
+// type across BAML versions; the family parameter only matters for
+// EncodeClassOrdered and its scalar fast-path companions, both already
+// covered by pkgFacadeAppend.
+func pkgOrderedMapAppend() string {
+	return `// OrderedMap is the public alias for the generic ordered map carrier
+// used by statically-typed map<string, T> fields in the generated
+// client. Generated code spells it ` + "`baml.OrderedMap[T]`" + `; the
+// value type stays concrete while iteration order matches BAML's CFFI
+// emission order.
+type OrderedMap[V any] = serde.OrderedMap[V]
+
+// OrderedKV constructs a single ordered-map entry. Provided so
+// generated initialisers can build ` + "`baml.OrderedMap[T]`" + ` literals
+// without importing serde directly.
+func OrderedKV[V any](key string, value V) serde.OrderedEntry[V] {
+	return serde.OrderedKV(key, value)
+}
+
+// NewOrderedMap builds a typed ordered map from entries in source
+// order. Returns the wrapped serde error on duplicate keys.
+func NewOrderedMap[V any](entries ...serde.OrderedEntry[V]) (OrderedMap[V], error) {
+	return serde.NewOrderedMap(entries...)
+}`
 }
 
 // pkgFacadeAppend returns the family-specific block of additions to
@@ -1358,6 +1444,709 @@ func EncodeClassOrdered(name string, fields map[string]any, dynamicFields *Order
 }
 `
 	}
+}
+
+// orderedMapDecodeMarker is the distinctive comment line embedded in
+// every per-family decodeMapValue after-image. The decode.go sentinel
+// in patchDecodeGo requires this marker so a re-run over a tree
+// patched by the pre-issue-366 hack (which left decodeMapValue
+// returning a native Go map) re-enters the patcher and lands the new
+// ordered body. The marker survives gofmt unchanged and does not
+// appear in any upstream BAML source, so a substring check pins
+// "this file carries the ordered map decode after-image" without
+// false positives.
+const orderedMapDecodeMarker = "// ordered map decode: build OrderedFields in CFFI entry order"
+
+// patchDecodeMapValue rewrites serde/decode.go::decodeMapValue per
+// family so every map node decodes into an OrderedFields carrier in
+// `valueMap.Entries` order. The transform is body-only: the upstream
+// signature is preserved (familyA single-return; familyB/C two-return)
+// so external call sites (Decode's _MapValue arm; rawobjects_*) keep
+// their compile shape. Idempotent: a tree already carrying the marker
+// returns unchanged so re-runs converge without double-applying.
+func patchDecodeMapValue(body string, family decodeFamily) (string, error) {
+	if strings.Contains(body, orderedMapDecodeMarker) {
+		return body, nil
+	}
+	decl := "func decodeMapValue(valueMap *cffi.CFFIValueMap, typeMap TypeMap)"
+	idx := strings.Index(body, decl)
+	if idx < 0 {
+		return body, fmt.Errorf("could not find decodeMapValue signature in serde/decode.go")
+	}
+	braceStart := strings.IndexByte(body[idx:], '{')
+	if braceStart < 0 {
+		return body, fmt.Errorf("could not locate decodeMapValue opening brace")
+	}
+	openIdx := idx + braceStart
+	endIdx, err := findMatchingBraceEnd(body, openIdx)
+	if err != nil {
+		return body, fmt.Errorf("locating decodeMapValue body end: %w", err)
+	}
+	replacement := decodeMapValuePatched(family)
+	if replacement == "" {
+		return body, fmt.Errorf("no decodeMapValue after-image for family %s", family)
+	}
+	return body[:idx] + replacement + body[endIdx+1:], nil
+}
+
+// decodeMapValuePatched emits the canonical post-patch body for each
+// family. All bodies share two invariants: every entry lands in the
+// returned OrderedFields via `values.Set(entry.Key, ...)` so insertion
+// order matches the CFFI entry order, and the orderedMapDecodeMarker
+// comment is embedded at the top of the body so the sentinel in
+// patchDecodeGo can recognise the post-patch shape on re-runs.
+func decodeMapValuePatched(family decodeFamily) string {
+	switch family {
+	case familyA:
+		return `func decodeMapValue(valueMap *cffi.CFFIValueMap, typeMap TypeMap) reflect.Value {
+	if valueMap == nil {
+		panic("decodeMapValue: valueMap is nil")
+	}
+	debugLog("decodeMapValue: valueMap=%+v\n", valueMap)
+	keyType := valueMap.KeyType
+	valueType := valueMap.ValueType
+	goKeyType := convertFieldTypeToGoType(keyType, typeMap)
+	goValueType := convertFieldTypeToGoType(valueType, typeMap)
+
+	debugLog("goKeyType: %v\n", goKeyType)
+	debugLog("goValueType: %v\n", goValueType)
+	_ = goKeyType
+	_ = goValueType
+
+	` + orderedMapDecodeMarker + ` so generated client
+	// conversion preserves BAML emission order. The returned reflect.Value
+	// wraps OrderedFields; static-map call sites convert via the typed
+	// helper emitted by cmd/hacks/hacks/dynamic_order_client.go.
+	values := NewOrderedFields(len(valueMap.Entries))
+	for _, entry := range valueMap.Entries {
+		key := entry.Key
+		value := entry.Value
+		decodedValue := Decode(value, typeMap)
+		var boxed any
+		if decodedValue.IsValid() {
+			boxed = decodedValue.Interface()
+		}
+		_ = values.Set(key, boxed)
+	}
+	return reflect.ValueOf(values)
+}`
+	case familyB:
+		return `func decodeMapValue(valueMap *cffi.CFFIValueMap, typeMap TypeMap) (reflect.Value, reflect.Type) {
+	if valueMap == nil {
+		panic("decodeMapValue: valueMap is nil")
+	}
+	keyType := valueMap.KeyType
+	valueType := valueMap.ValueType
+	goKeyType := convertFieldTypeToGoType(keyType, typeMap)
+	goValueType := convertFieldTypeToGoType(valueType, typeMap)
+	_ = goKeyType
+	_ = goValueType
+
+	` + orderedMapDecodeMarker + ` so generated client
+	// conversion preserves BAML emission order. The returned reflect.Value
+	// wraps OrderedFields; static-map call sites convert via the typed
+	// helper emitted by cmd/hacks/hacks/dynamic_order_client.go.
+	values := NewOrderedFields(len(valueMap.Entries))
+	for _, entry := range valueMap.Entries {
+		key := entry.Key
+		value := entry.Value
+		decodedValue, _ := Decode(value, typeMap)
+		var boxed any
+		if decodedValue.IsValid() {
+			boxed = decodedValue.Interface()
+		}
+		_ = values.Set(key, boxed)
+	}
+	rv := reflect.ValueOf(values)
+	return rv, rv.Type()
+}`
+	case familyC:
+		return `func decodeMapValue(valueMap *cffi.CFFIValueMap, typeMap TypeMap) (reflect.Value, reflect.Type) {
+	if valueMap == nil {
+		panic("decodeMapValue: valueMap is nil")
+	}
+	keyType := valueMap.KeyType
+	valueType := valueMap.ValueType
+	goKeyType := convertFieldTypeToGoType(keyType, typeMap)
+	goValueType := convertFieldTypeToGoType(valueType, typeMap)
+	debugLog("goValueType: %+v\n", goValueType)
+	debugLog("typeMap.typeMap[\"INTERNAL.nil\"]: %+v\n", typeMap.typeMap["INTERNAL.nil"])
+	_ = goKeyType
+
+	` + orderedMapDecodeMarker + ` so generated client
+	// conversion preserves BAML emission order. The INTERNAL.nil branch
+	// keeps scalar-preserving assignments (int64/float64/bool surface
+	// through reflect.Value's typed accessors) so dynamic-value maps
+	// hand back faithfully typed scalars; the concrete branch routes
+	// each value through Decode and boxes the result so generated
+	// client conversion can rebuild baml.OrderedMap[T] without losing
+	// CFFI key order.
+	values := NewOrderedFields(len(valueMap.Entries))
+	if goValueType == typeMap.typeMap["INTERNAL.nil"] {
+		for _, entry := range valueMap.Entries {
+			key := entry.Key
+			value := entry.Value
+			decodedValue, goType := Decode(value, typeMap)
+			switch goType {
+			case reflect.TypeOf(int64(0)):
+				_ = values.Set(key, decodedValue.Int())
+			case reflect.TypeOf(float64(0)):
+				_ = values.Set(key, decodedValue.Float())
+			case reflect.TypeOf(false):
+				_ = values.Set(key, decodedValue.Bool())
+			default:
+				if decodedValue.IsValid() {
+					_ = values.Set(key, decodedValue.Interface())
+				} else {
+					_ = values.Set(key, nil)
+				}
+			}
+		}
+	} else {
+		for _, entry := range valueMap.Entries {
+			key := entry.Key
+			value := entry.Value
+			decodedValue, _ := Decode(value, typeMap)
+			var boxed any
+			if decodedValue.IsValid() {
+				boxed = decodedValue.Interface()
+			}
+			_ = values.Set(key, boxed)
+		}
+	}
+	rv := reflect.ValueOf(values)
+	return rv, rv.Type()
+}`
+	default:
+		return ""
+	}
+}
+
+// patchConvertFieldTypeToGoTypeMapArm rewrites the MapType arm of
+// convertFieldTypeToGoType so it advertises the ordered carrier type
+// (reflect.TypeOf(OrderedFields{})); the upstream return value
+// reflect.MapOf(K, V) becomes the ordered carrier under this patch.
+// Optional/checked/stream-state wrappers call this to allocate their
+// destination via reflect.New; without this rewrite a wrapper around a
+// map field allocates `*map[K]V` and panics when the inner decode
+// produces an OrderedFields carrier. The reflect.Type advertised here
+// matches decodeMapValue's return type so the type-assertion at the
+// wrapper level lines up byte-for-byte.
+func patchConvertFieldTypeToGoTypeMapArm(body string, family decodeFamily) (string, error) {
+	spec, ok := convertFieldTypeMapArmSpecs[family]
+	if !ok {
+		return body, fmt.Errorf("no convertFieldTypeToGoType map-arm spec for family %s", family)
+	}
+	// Idempotency: the after-image's distinctive comment pins
+	// "this arm was rewritten" so a re-run skips cleanly.
+	if strings.Contains(body, orderedMapTypeMarker) {
+		return body, nil
+	}
+	loc := spec.re.FindStringSubmatchIndex(body)
+	if loc == nil {
+		return body, fmt.Errorf("could not locate convertFieldTypeToGoType map arm for family %s", family)
+	}
+	// Group 1 captures the leading indentation of the matched line so
+	// the after-image preserves layout regardless of upstream tab/space
+	// drift across BAML revisions.
+	indent := body[loc[2]:loc[3]]
+	after := strings.ReplaceAll(spec.afterTemplate, "{I}", indent)
+	return body[:loc[0]] + after + body[loc[1]:], nil
+}
+
+// orderedMapTypeMarker is the comment line embedded in the rewritten
+// map arm of convertFieldTypeToGoType. Acts as both an idempotency
+// pin and a per-family reviewable marker.
+const orderedMapTypeMarker = "// ordered map type: advertise OrderedFields carrier"
+
+// convertFieldTypeMapArmSpec describes how to locate and rewrite the
+// map arm of convertFieldTypeToGoType for a single BAML serde family.
+// re must match exactly once in the file and capture the leading
+// indentation in group 1. afterTemplate is the replacement, with "{I}"
+// placeholders for the leading indentation captured from the match.
+type convertFieldTypeMapArmSpec struct {
+	re            *regexp.Regexp
+	afterTemplate string
+}
+
+// convertFieldTypeMapArmSpecs holds the per-family token anchors and
+// after-image templates for the map arm of convertFieldTypeToGoType.
+// The patterns target the inline `return reflect.MapOf(...)` shape
+// upstream uses; the after-image returns the OrderedFields reflect.Type
+// instead so optional/checked/stream-state wrappers allocate the
+// ordered carrier directly.
+//
+// familyA (v0.204):
+//
+//	`return reflect.MapOf(convertFieldTypeToGoType(mapType.Key, typeMap), convertFieldTypeToGoType(mapType.Value, typeMap))`
+//
+// familyB/C (v0.215+):
+//
+//	`goKeyType := convertFieldTypeToGoType(mapType.KeyType, typeMap)`
+//	`goValueType := convertFieldTypeToGoType(mapType.ValueType, typeMap)`
+//	`return reflect.MapOf(goKeyType, goValueType)`
+var convertFieldTypeMapArmSpecs = map[decodeFamily]convertFieldTypeMapArmSpec{
+	familyA: {
+		re: regexp.MustCompile(`(?m)^([ \t]+)return reflect\.MapOf\(convertFieldTypeToGoType\(mapType\.Key, typeMap\), convertFieldTypeToGoType\(mapType\.Value, typeMap\)\)[ \t]*\n`),
+		afterTemplate: "{I}" + orderedMapTypeMarker + "; the ordered\n" +
+			"{I}// runtime decoder produces an OrderedFields and the generated\n" +
+			"{I}// client converts it back to baml.OrderedMap[T] at the static-map\n" +
+			"{I}// surface. Allocating a native map type here would mismatch the\n" +
+			"{I}// reflect.Value handed back by decodeMapValue.\n" +
+			"{I}_ = convertFieldTypeToGoType(mapType.Key, typeMap)\n" +
+			"{I}_ = convertFieldTypeToGoType(mapType.Value, typeMap)\n" +
+			"{I}return reflect.TypeOf(OrderedFields{})\n",
+	},
+	familyB: {
+		re: regexp.MustCompile(`(?m)^([ \t]+)return reflect\.MapOf\(convertFieldTypeToGoType\(mapType\.KeyType, typeMap\), convertFieldTypeToGoType\(mapType\.ValueType, typeMap\)\)[ \t]*\n`),
+		afterTemplate: "{I}" + orderedMapTypeMarker + "; the ordered\n" +
+			"{I}// runtime decoder produces an OrderedFields and the generated\n" +
+			"{I}// client converts it back to baml.OrderedMap[T] at the static-map\n" +
+			"{I}// surface. Allocating a native map type here would mismatch the\n" +
+			"{I}// reflect.Value handed back by decodeMapValue.\n" +
+			"{I}_ = convertFieldTypeToGoType(mapType.KeyType, typeMap)\n" +
+			"{I}_ = convertFieldTypeToGoType(mapType.ValueType, typeMap)\n" +
+			"{I}return reflect.TypeOf(OrderedFields{})\n",
+	},
+	familyC: {
+		re: regexp.MustCompile(`(?m)^([ \t]+)goKeyType := convertFieldTypeToGoType\(mapType\.KeyType, typeMap\)\n[ \t]+goValueType := convertFieldTypeToGoType\(mapType\.ValueType, typeMap\)\n[ \t]+if goValueType == typeMap\.typeMap\["INTERNAL\.nil"\] \{\n[ \t]+return reflect\.TypeOf\(map\[string\]any\{\}\)\n[ \t]+\}\n[ \t]+return reflect\.MapOf\(goKeyType, goValueType\)[ \t]*\n`),
+		afterTemplate: "{I}" + orderedMapTypeMarker + "; the ordered\n" +
+			"{I}// runtime decoder produces an OrderedFields and the generated\n" +
+			"{I}// client converts it back to baml.OrderedMap[T] at the static-map\n" +
+			"{I}// surface. Allocating a native map type here would mismatch the\n" +
+			"{I}// reflect.Value handed back by decodeMapValue. Both the\n" +
+			"{I}// INTERNAL.nil dynamic-valued branch and the concrete-valued\n" +
+			"{I}// branch collapse to OrderedFields because decodeMapValue\n" +
+			"{I}// stores either shape through the same carrier.\n" +
+			"{I}_ = convertFieldTypeToGoType(mapType.KeyType, typeMap)\n" +
+			"{I}_ = convertFieldTypeToGoType(mapType.ValueType, typeMap)\n" +
+			"{I}return reflect.TypeOf(OrderedFields{})\n",
+	},
+}
+
+// orderedMapEncodeMarker pins the after-image of patchEncodeGo so the
+// patcher recognises an already-patched tree and a re-run converges
+// without double-applying the dispatch.
+const orderedMapEncodeMarker = "// ordered map encode: materialize OrderedFields"
+
+// orderedRangerInterfaceSnippet is the small interface definition the
+// encode dispatch tests against, plus the pointer-unwrap helper the
+// per-family insertions call. Embedded at the bottom of encode.go once
+// per file; both per-family encodeValue insertions reference it by
+// name so the patch stays minimal.
+const orderedRangerInterfaceSnippet = `// orderedRanger captures the structural shape both
+// OrderedFields (= OrderedMap[any]) and any typed
+// OrderedMap[T] satisfy through bamlutils' RangeAny method.
+// Used by encodeValue so static-map inputs (now typed as
+// baml.OrderedMap[T]) reach the BAML map-encoding pipeline
+// without losing key/value resolution.
+type orderedRanger interface {
+	RangeAny(func(string, any) bool)
+	Len() int
+}
+
+// unwrapEncodeOrderedCarrier normalises ordered-map carriers the
+// generated client may pass into encodeValue. A value receiver
+// orderedMap[V] satisfies orderedRanger directly; a pointer to one
+// (used by optional map fields) is unwrapped via reflect so a nil
+// pointer surfaces as no match — the RangeAny invocation on a nil
+// pointer would otherwise panic. Returns nil for any other shape so
+// the caller falls through to the standard kind dispatch.
+func unwrapEncodeOrderedCarrier(value any) orderedRanger {
+	if value == nil {
+		return nil
+	}
+	if r, ok := value.(orderedRanger); ok {
+		return r
+	}
+	rv := reflect.ValueOf(value)
+	if rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return nil
+		}
+		if r, ok := rv.Elem().Interface().(orderedRanger); ok {
+			return r
+		}
+	}
+	return nil
+}`
+
+// patchEncodeGo inserts an orderedRanger dispatch into encodeValue per
+// family and appends the orderedRanger interface definition. The
+// dispatch materialises the OrderedFields / OrderedMap[V] into a
+// map[string]any and recurses through encodeValue so the existing
+// map-encoding pipeline (with per-family value_type plumbing) is
+// reused unchanged. Idempotent on the marker.
+func patchEncodeGo(moduleDir string, family decodeFamily) error {
+	path := encodeGoPath(moduleDir)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	body := string(raw)
+
+	hasMarker := strings.Contains(body, orderedMapEncodeMarker)
+	hasInterface := strings.Contains(body, "type orderedRanger interface")
+	if hasMarker && hasInterface {
+		return nil
+	}
+
+	if !hasMarker {
+		spec, ok := encodeDispatchSpecs[family]
+		if !ok {
+			return fmt.Errorf("no encodeValue dispatch spec for family %s", family)
+		}
+		loc := spec.anchorRe.FindStringSubmatchIndex(body)
+		if loc == nil {
+			return fmt.Errorf("could not locate encodeValue dispatch anchor for family %s in %s", family, path)
+		}
+		// The captured group is the leading indentation of the anchor
+		// line; the after-image preserves layout across upstream
+		// tab/space drift by substituting the same indent into the
+		// inserted block.
+		indent := body[loc[2]:loc[3]]
+		insertion := strings.ReplaceAll(spec.insertion, "{I}", indent)
+		// The anchor regex matches *up to and including* the anchor
+		// line; the insertion goes BEFORE that line. loc[0] is the
+		// start of the matched span.
+		body = body[:loc[0]] + insertion + body[loc[0]:]
+	}
+
+	if !hasInterface {
+		body = strings.TrimRight(body, "\n") + "\n\n" + orderedRangerInterfaceSnippet + "\n"
+	}
+
+	return os.WriteFile(path, []byte(body), 0o644)
+}
+
+// encodeDispatchSpec describes how to find the insertion anchor in
+// encodeValue for a single family and what to insert. The anchorRe
+// must match exactly once in the file and capture the line's
+// indentation in group 1; insertion is prepended to the matched span.
+type encodeDispatchSpec struct {
+	anchorRe  *regexp.Regexp
+	insertion string
+}
+
+// encodeDispatchSpecs holds per-family encode-side patch anchors. The
+// dispatch lives at a slightly different point in each family: familyA
+// computes value_type from encodeFieldType at the top of encodeValue,
+// which errors on OrderedMap's struct kind — so the dispatch must
+// land BEFORE the value_type computation. familyB/C have no upfront
+// value_type, so the dispatch lands right before the `switch rv.Kind()`
+// kind dispatch (after the receiver/serializer/Checked/StreamState
+// checks).
+//
+// The dispatch body itself is family-stable: it materialises the
+// OrderedFields / OrderedMap[V] into a `map[string]any` (RangeAny
+// captures order at the source) and recurses through encodeValue, so
+// the existing map-encoding pipeline (with per-family Type/ValueType
+// plumbing) is reused unchanged. Order is preserved at the materialise
+// step because RangeAny walks the carrier in insertion order; the
+// downstream encodeMap may reshuffle native-map iteration, but
+// generated input encoding does not require strict order — input
+// shape, not key sequence, is what BAML's runtime asserts against.
+var encodeDispatchSpecs = map[decodeFamily]encodeDispatchSpec{
+	familyA: {
+		// Anchor: the very first line inside encodeValue. familyA's
+		// value_type computation happens immediately after; the
+		// dispatch must precede it so OrderedMap's struct kind never
+		// reaches encodeFieldType.
+		anchorRe: regexp.MustCompile(`(?m)^([ \t]+)value_type, err := encodeFieldType\(reflect\.TypeOf\(value\),\)[ \t]*\n`),
+		insertion: "{I}" + orderedMapEncodeMarker + " into a native\n" +
+			"{I}// map[string]any and recurse. The downstream encodeMap path then\n" +
+			"{I}// computes the CFFIValueMap KeyType/ValueType correctly even though\n" +
+			"{I}// the carrier was a struct on entry. Pointer-wrapped ordered carriers\n" +
+			"{I}// (used by optional map fields) are unwrapped via reflect so a nil\n" +
+			"{I}// optional flows to the existing nil-value handling below.\n" +
+			"{I}{\n" +
+			"{I}\tif probe := unwrapEncodeOrderedCarrier(value); probe != nil {\n" +
+			"{I}\t\tmaterialized := make(map[string]any, probe.Len())\n" +
+			"{I}\t\tprobe.RangeAny(func(k string, v any) bool {\n" +
+			"{I}\t\t\tmaterialized[k] = v\n" +
+			"{I}\t\t\treturn true\n" +
+			"{I}\t\t})\n" +
+			"{I}\t\treturn encodeValue(materialized)\n" +
+			"{I}\t}\n" +
+			"{I}}\n",
+	},
+	familyB: {
+		// Anchor: the kind-dispatch line near the bottom of encodeValue.
+		// Inserting before it leaves the upfront serializer/Checked
+		// branches intact.
+		anchorRe: regexp.MustCompile(`(?m)^([ \t]+)// Handle primitive kinds and collections using reflection value rv \(points to underlying value\)[ \t]*\n`),
+		insertion: "{I}" + orderedMapEncodeMarker + " into a native\n" +
+			"{I}// map[string]any and recurse. The downstream encodeMap path then\n" +
+			"{I}// produces the HostMapValue with the right structure. Pointer-wrapped\n" +
+			"{I}// ordered carriers (used by optional map fields) are unwrapped via\n" +
+			"{I}// reflect so a nil optional flows to the existing nil-value handling.\n" +
+			"{I}if probe := unwrapEncodeOrderedCarrier(value); probe != nil {\n" +
+			"{I}\tmaterialized := make(map[string]any, probe.Len())\n" +
+			"{I}\tprobe.RangeAny(func(k string, v any) bool {\n" +
+			"{I}\t\tmaterialized[k] = v\n" +
+			"{I}\t\treturn true\n" +
+			"{I}\t})\n" +
+			"{I}\treturn encodeValue(materialized)\n" +
+			"{I}}\n" +
+			"\n",
+	},
+	familyC: {
+		anchorRe: regexp.MustCompile(`(?m)^([ \t]+)// Handle primitive kinds and collections using reflection value rv \(points to underlying value\)[ \t]*\n`),
+		insertion: "{I}" + orderedMapEncodeMarker + " into a native\n" +
+			"{I}// map[string]any and recurse. The downstream encodeMap path then\n" +
+			"{I}// produces the HostMapValue with the right structure. Pointer-wrapped\n" +
+			"{I}// ordered carriers (used by optional map fields) are unwrapped via\n" +
+			"{I}// reflect so a nil optional flows to the existing nil-value handling.\n" +
+			"{I}if probe := unwrapEncodeOrderedCarrier(value); probe != nil {\n" +
+			"{I}\tmaterialized := make(map[string]any, probe.Len())\n" +
+			"{I}\tprobe.RangeAny(func(k string, v any) bool {\n" +
+			"{I}\t\tmaterialized[k] = v\n" +
+			"{I}\t\treturn true\n" +
+			"{I}\t})\n" +
+			"{I}\treturn encodeValue(materialized)\n" +
+			"{I}}\n" +
+			"\n",
+	},
+}
+
+// orderedMapRawObjectMarker pins the after-image of the raw-object map
+// conversion helper appended to each affected rawobjects_* file.
+const orderedMapRawObjectMarker = "// ordered map compat: convert OrderedFields back to native"
+
+// rawObjectMapCompatFiles is the per-family set of pkg/rawobjects_*.go
+// files whose public methods return native `map[string]string` or
+// `map[string]any` shapes. Their decode paths now hand back OrderedFields;
+// without the compat shim the .(map[string]T) type assertion panics.
+//
+// The same three files cover all three families today; the per-family
+// dispatch exists so a future family can add or remove files without
+// requiring a new patcher signature.
+var rawObjectMapCompatFiles = map[decodeFamily][]string{
+	familyA: {"rawobjects_http_request.go", "rawobjects_http_response.go", "rawobjects_function_log.go"},
+	familyB: {"rawobjects_http_request.go", "rawobjects_http_response.go", "rawobjects_function_log.go"},
+	familyC: {"rawobjects_http_request.go", "rawobjects_http_response.go", "rawobjects_function_log.go"},
+}
+
+// patchRawObjectMaps walks the per-family rawobjects_* file list and
+// rewrites every `.(map[string]string)` and `.(map[string]any)` type
+// assertion to flow through orderedFieldsToStringMap /
+// orderedFieldsToAnyMap helpers. The helpers handle both legacy native
+// maps (compat shim for callers that still produce them) and the new
+// OrderedFields carrier. Missing files are tolerated quietly: a family
+// that introduces a new file later does not block the patch. The
+// helpers themselves live in a single sibling file
+// (pkg/ordered_map_compat.go) so multiple rawobjects_*.go files share
+// the same declaration without redeclaration errors.
+func patchRawObjectMaps(moduleDir string, family decodeFamily) error {
+	files, ok := rawObjectMapCompatFiles[family]
+	if !ok {
+		return fmt.Errorf("no raw-object map compat file list for family %s", family)
+	}
+	anyChanged := false
+	for _, name := range files {
+		path := rawObjectsPath(moduleDir, name)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		body := string(raw)
+		newBody := rewriteRawObjectMapAsserts(body)
+		if newBody == body {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(newBody), 0o644); err != nil {
+			return err
+		}
+		anyChanged = true
+	}
+
+	// Emit the shared helper file once per module. The file is keyed by
+	// path and contents so re-runs against an already-patched tree
+	// produce a byte-stable file.
+	helperPath := rawObjectsPath(moduleDir, "ordered_map_compat.go")
+	if !anyChanged {
+		// Even if no rewrites landed (e.g. a family that already had no
+		// raw-object map asserts), still emit the helper file so the
+		// patched module surface is uniform across families.
+	}
+	return os.WriteFile(helperPath, []byte(rawObjectsHelperFile()), 0o644)
+}
+
+// rewriteRawObjectMapAsserts rewrites every `<expr>.(map[string]string)`
+// and `<expr>.(map[string]any)` substring into a helper call that
+// accepts the OrderedFields carrier. The helpers return `(map, bool)`
+// so the upstream `m, ok := <expr>.(...)` shape compiles unchanged.
+// Pattern coverage is intentionally narrow — the upstream files use
+// only these two assertion shapes for map returns — and the rewrite
+// leaves any structurally similar expression that does not match the
+// exact suffix untouched.
+func rewriteRawObjectMapAsserts(body string) string {
+	body = rewriteMapAssert(body, ".(map[string]string)", "orderedFieldsToStringMap")
+	body = rewriteMapAssert(body, ".(map[string]any)", "orderedFieldsToAnyMap")
+	return body
+}
+
+// rewriteMapAssert scans body for assertSuffix occurrences, walks
+// backwards from each `.` to find the start of the primary expression
+// being asserted on, and rewrites `<expr>.assertSuffix` into
+// `helperName(<expr>)`. The walker tolerates nested parens, brackets,
+// and dotted member chains so `foo.bar[i].baz.(...)` rewrites cleanly.
+func rewriteMapAssert(body, assertSuffix, helperName string) string {
+	for {
+		idx := strings.Index(body, assertSuffix)
+		if idx < 0 {
+			return body
+		}
+		end := idx + len(assertSuffix)
+		exprStart := walkBackPrimary(body, idx)
+		expr := body[exprStart:idx]
+		replacement := fmt.Sprintf("%s(%s)", helperName, expr)
+		body = body[:exprStart] + replacement + body[end:]
+	}
+}
+
+// walkBackPrimary walks backwards from a `.` at endIdx (the start of the
+// assertion suffix) and returns the index of the start of the primary
+// expression. Supports identifiers, dotted member chains, bracket
+// indexing, and balanced parenthesised sub-expressions. Stops at the
+// first non-expression character (whitespace, operator, comma, brace,
+// statement boundary).
+func walkBackPrimary(body string, endIdx int) int {
+	i := endIdx
+	parenDepth := 0
+	brackDepth := 0
+	for i > 0 {
+		c := body[i-1]
+		if parenDepth > 0 {
+			switch c {
+			case '(':
+				parenDepth--
+			case ')':
+				parenDepth++
+			}
+			i--
+			continue
+		}
+		if brackDepth > 0 {
+			switch c {
+			case '[':
+				brackDepth--
+			case ']':
+				brackDepth++
+			}
+			i--
+			continue
+		}
+		if c == ')' {
+			parenDepth++
+			i--
+			continue
+		}
+		if c == ']' {
+			brackDepth++
+			i--
+			continue
+		}
+		if c == '.' || c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			i--
+			continue
+		}
+		break
+	}
+	return i
+}
+
+// rawObjectsHelperFile returns the full sibling file written into
+// pkg/ordered_map_compat.go. The helpers return `(map, bool)` so the
+// upstream `m, ok := <expr>.(...)` shape compiles unchanged. The bool
+// is true on every successful conversion (native, legacy, or ordered
+// carrier) and false only when the input is nil or an unrecognised
+// shape — matching the original type-assertion semantics that returned
+// `(nil, false)` on mismatch.
+func rawObjectsHelperFile() string {
+	return `// Code generated by cmd/hacks/hacks/dynamic_order_fix.go; DO NOT EDIT.
+// ` + orderedMapRawObjectMarker + ` map shapes. The raw-object public
+// methods promise map[string]string / map[string]any returns; the
+// patched runtime decoder now hands back OrderedFields for every CFFI
+// map node, so the .(map[string]T) type assertions previously inline
+// would silently fail (comma-ok form: !ok branch surfaced as
+// "unexpected type"). These helpers accept either the legacy native
+// map (compat shim for callers that still build one) or the ordered
+// carrier and produce the native map the public method advertises.
+package baml
+
+import "fmt"
+
+// orderedFieldsToStringMap converts an arbitrary value that may be a
+// native map[string]string, a map[string]any whose values stringify, or
+// any ordered carrier (OrderedFields / OrderedMap[T] via RangeAny) into
+// a native map[string]string. Returns (nil, false) for nil or
+// unrecognised shapes so call sites that previously matched
+// .(map[string]string) keep the same comma-ok contract.
+func orderedFieldsToStringMap(value any) (map[string]string, bool) {
+	if value == nil {
+		return nil, false
+	}
+	if m, ok := value.(map[string]string); ok {
+		return m, true
+	}
+	if m, ok := value.(map[string]any); ok {
+		out := make(map[string]string, len(m))
+		for k, v := range m {
+			if s, ok := v.(string); ok {
+				out[k] = s
+			} else if v != nil {
+				out[k] = fmt.Sprintf("%v", v)
+			}
+		}
+		return out, true
+	}
+	if ranger, ok := value.(interface {
+		RangeAny(func(string, any) bool)
+		Len() int
+	}); ok {
+		out := make(map[string]string, ranger.Len())
+		ranger.RangeAny(func(k string, v any) bool {
+			if s, ok := v.(string); ok {
+				out[k] = s
+			} else if v != nil {
+				out[k] = fmt.Sprintf("%v", v)
+			}
+			return true
+		})
+		return out, true
+	}
+	return nil, false
+}
+
+// orderedFieldsToAnyMap converts an arbitrary value that may be a
+// native map[string]any or any ordered carrier (OrderedFields /
+// OrderedMap[T] via RangeAny) into a native map[string]any. Returns
+// (nil, false) for nil or unrecognised shapes.
+func orderedFieldsToAnyMap(value any) (map[string]any, bool) {
+	if value == nil {
+		return nil, false
+	}
+	if m, ok := value.(map[string]any); ok {
+		return m, true
+	}
+	if ranger, ok := value.(interface {
+		RangeAny(func(string, any) bool)
+		Len() int
+	}); ok {
+		out := make(map[string]any, ranger.Len())
+		ranger.RangeAny(func(k string, v any) bool {
+			out[k] = v
+			return true
+		})
+		return out, true
+	}
+	return nil, false
+}
+`
 }
 
 // runGoModTidy invokes `go mod tidy` inside moduleDir so the go.sum
