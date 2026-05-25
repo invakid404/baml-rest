@@ -134,10 +134,17 @@ func closureFromDirect(schema FuzzSchema, direct map[string]map[string]bool) map
 	return closure
 }
 
-// directClassRefs returns the one-hop class-ref edges per class.
-// Edges in the effective root type are attributed to the RootClass
-// (when the root is a class) so a top-level union that references
-// the root class still folds into the self-ref calculation.
+// directClassRefs returns the one-hop class-ref edges per class. Only
+// property-tree edges count: a class's direct refs are exactly the
+// class refs reachable through its own properties.
+//
+// Edges in the effective root type are NOT attributed to RootClass.
+// RootType and RootClass can coexist (a schema may have both a
+// non-class effective root and a v1-compatible RootClass), and folding
+// root-reachable refs into RootClass's edge set would falsely mark
+// classes self-referential just because the raw root happens to
+// mention them. Root reachability is a separate concern and lives
+// outside the property-edge graph.
 func directClassRefs(schema FuzzSchema) map[string]map[string]bool {
 	out := make(map[string]map[string]bool, len(schema.Classes))
 	for _, cls := range schema.Classes {
@@ -146,11 +153,6 @@ func directClassRefs(schema FuzzSchema) map[string]map[string]bool {
 			collectClassRefs(prop.Type, set)
 		}
 		out[cls.Name] = set
-	}
-	if schema.RootType != nil && schema.RootClass != "" {
-		if existing, ok := out[schema.RootClass]; ok {
-			collectClassRefs(*schema.RootType, existing)
-		}
 	}
 	return out
 }

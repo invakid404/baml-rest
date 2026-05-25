@@ -274,6 +274,25 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 			w.setErr(ErrSchemaOrderUnsupported)
 			return
 		}
+		// Fail closed on stale or schema-incompatible metadata. The
+		// scope's D11 contract requires the order checker to bail
+		// before traversing the wrong arm when a corpus / replay
+		// envelope was recorded against a different shape. Treat any
+		// of variant-count, arm-kind, or arm-ref drift as
+		// unsupported.
+		selected := typ.Variants[choice.Index]
+		if choice.VariantCount != len(typ.Variants) {
+			w.setErr(ErrSchemaOrderUnsupported)
+			return
+		}
+		if choice.Kind != selected.Kind {
+			w.setErr(ErrSchemaOrderUnsupported)
+			return
+		}
+		if (selected.Kind == KindClassRef || selected.Kind == KindEnumRef) && choice.Ref != selected.Ref {
+			w.setErr(ErrSchemaOrderUnsupported)
+			return
+		}
 		w.walkType(path+":v", typ.Variants[choice.Index], exp, got)
 	}
 }

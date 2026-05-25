@@ -140,6 +140,40 @@ func TestAnalyzeGraphHasUnionFalseForUnionFree(t *testing.T) {
 	}
 }
 
+// TestAnalyzeGraphRootTypeRefsDoNotPollutePropertyGraph pins that a
+// RootType referencing the root class does not flip HasSelfRef when
+// the class's own property tree has no self edge. The two fields can
+// coexist (RootType wins for emission, RootClass stays for replay
+// compatibility), so root-reachable refs must not be folded into the
+// class's direct-edge set.
+func TestAnalyzeGraphRootTypeRefsDoNotPollutePropertyGraph(t *testing.T) {
+	rootRef := FuzzType{Kind: KindClassRef, Ref: "Root"}
+	rootUnion := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			rootRef,
+			{Kind: KindString},
+		},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "f", Type: FuzzType{Kind: KindInt}},
+			},
+		}},
+		RootClass: "Root",
+		RootType:  &rootUnion,
+	}
+	got := AnalyzeGraph(schema)
+	if got.HasSelfRef {
+		t.Errorf("HasSelfRef should stay false when Root's properties have no self edge, got true")
+	}
+	if got.HasMutualCycle {
+		t.Errorf("HasMutualCycle should be false here, got true")
+	}
+}
+
 // TestAnalyzeGraphRawRootRequiresDynamicSkip pins the contract that a
 // non-class effective root flips RequiresDynamicSkip — the dynamic
 // emitter rejects raw roots with ErrDynamicRootTypeUnsupported.
@@ -242,8 +276,8 @@ func TestWalkTNullUnionEmitsExplicitNull(t *testing.T) {
 }
 
 // TestWalkUnionMissingChoiceFailsClosed asserts the walker rejects a
-// union value with no Variant set rather than silently skipping the
-// node.
+// union value with no Variant set; silently skipping the node would
+// hide an upstream invariant break.
 func TestWalkUnionMissingChoiceFailsClosed(t *testing.T) {
 	schema := FuzzSchema{
 		Classes: []FuzzClass{{
@@ -299,6 +333,64 @@ func TestNormalizeUnionRequiresChoice(t *testing.T) {
 	}
 }
 
+// TestNormalizeRawRootUnion asserts the normalizer round-trips a raw
+// top-level union (RootClass == "", RootType set). Without EffectiveRoot
+// dispatch the normalizer would try to read the payload as a class
+// and bail with "unknown class".
+func TestNormalizeRawRootUnion(t *testing.T) {
+	root := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindString},
+			{Kind: KindInt},
+		},
+	}
+	schema := FuzzSchema{RootType: &root}
+	choices := map[string]UnionChoice{
+		"": {Index: 1, Kind: KindInt, VariantCount: 2},
+	}
+	out, err := NormalizeMockToExpectedWithChoices(schema, json.RawMessage(`42`), "", choices)
+	if err != nil {
+		t.Fatalf("normalize raw root union: %v", err)
+	}
+	if string(out) != "42" {
+		t.Errorf("normalize raw root union\nwant: 42\ngot:  %s", string(out))
+	}
+}
+
+// TestNormalizeRawRootList asserts the normalizer handles a raw
+// top-level list root by dispatching off EffectiveRoot.
+func TestNormalizeRawRootList(t *testing.T) {
+	elem := FuzzType{Kind: KindInt}
+	root := FuzzType{Kind: KindList, Inner: &elem}
+	schema := FuzzSchema{RootType: &root}
+	out, err := NormalizeMockToExpectedWithChoices(schema, json.RawMessage(`[1,2,3]`), "", nil)
+	if err != nil {
+		t.Fatalf("normalize raw root list: %v", err)
+	}
+	if string(out) != "[1,2,3]" {
+		t.Errorf("normalize raw root list\nwant: [1,2,3]\ngot:  %s", string(out))
+	}
+}
+
+// TestNormalizeRawRootMap asserts the normalizer handles a raw
+// top-level map root.
+func TestNormalizeRawRootMap(t *testing.T) {
+	key := FuzzType{Kind: KindString}
+	val := FuzzType{Kind: KindInt}
+	root := FuzzType{Kind: KindMap, Key: &key, Inner: &val}
+	schema := FuzzSchema{RootType: &root}
+	out, err := NormalizeMockToExpectedWithChoices(schema, json.RawMessage(`{"a":1,"b":2}`), "", nil)
+	if err != nil {
+		t.Fatalf("normalize raw root map: %v", err)
+	}
+	// Map keys sort alphabetically.
+	want := `{"a":1,"b":2}`
+	if string(out) != want {
+		t.Errorf("normalize raw root map\nwant: %s\ngot:  %s", want, string(out))
+	}
+}
+
 // TestEmitDynamicLowersUnionAsOneOf asserts the dynamic emitter
 // converts a KindUnion to type=union with OneOf populated.
 func TestEmitDynamicLowersUnionAsOneOf(t *testing.T) {
@@ -333,6 +425,60 @@ func TestEmitDynamicLowersUnionAsOneOf(t *testing.T) {
 	}
 	if prop.OneOf[0].Type != "string" || prop.OneOf[1].Type != "null" {
 		t.Errorf("variants: got %q, %q", prop.OneOf[0].Type, prop.OneOf[1].Type)
+	}
+}
+
+// TestEmitDynamicSingleArmUnionEmitsBareVariant asserts the dynamic
+// emitter collapses a single-arm union to its bare variant at both
+// top-level and nested positions. Matches the static emitter's
+// behaviour so hand-written or replay schemas that survived through
+// the Move B shrink-collapse pass with a single-arm union lower as
+// the bare variant; a one-element OneOf would not be legal BAML.
+func TestEmitDynamicSingleArmUnionEmitsBareVariant(t *testing.T) {
+	topLevelUni := FuzzType{
+		Kind:     KindUnion,
+		Variants: []FuzzType{{Kind: KindString}},
+	}
+	nestedUni := FuzzType{
+		Kind:     KindUnion,
+		Variants: []FuzzType{{Kind: KindInt}},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "top", Type: topLevelUni},
+				{Name: "lst", Type: FuzzType{Kind: KindList, Inner: &nestedUni}},
+			},
+		}},
+		RootClass: "Root",
+	}
+	out, err := LowerToDynamicSchema(schema)
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	top, ok := out.Properties.Get("top")
+	if !ok {
+		t.Fatal("missing top property")
+	}
+	if top.Type != "string" {
+		t.Errorf("expected bare string at top, got type %q", top.Type)
+	}
+	if len(top.OneOf) != 0 {
+		t.Errorf("expected no OneOf entries at top, got %d", len(top.OneOf))
+	}
+	lst, ok := out.Properties.Get("lst")
+	if !ok {
+		t.Fatal("missing lst property")
+	}
+	if lst.Type != "list" {
+		t.Fatalf("expected list, got %q", lst.Type)
+	}
+	if lst.Items == nil || lst.Items.Type != "int" {
+		t.Errorf("expected nested single-arm union to collapse to int, got %#v", lst.Items)
+	}
+	if lst.Items != nil && len(lst.Items.OneOf) != 0 {
+		t.Errorf("expected no nested OneOf entries, got %d", len(lst.Items.OneOf))
 	}
 }
 
@@ -579,9 +725,223 @@ func TestCollapseUnionsToPickedReplacesConsistentChoices(t *testing.T) {
 	}
 }
 
+// TestCollapseUnionsToPickedListAllSameCollapses pins that a list of
+// union elements collapses when every element picks the same arm.
+// The Move B internal path uses ":l" (aggregate, no index) so
+// observations across list positions merge.
+func TestCollapseUnionsToPickedListAllSameCollapses(t *testing.T) {
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindString},
+			{Kind: KindInt},
+		},
+	}
+	listOfUnion := FuzzType{Kind: KindList, Inner: &uni}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "items", Type: listOfUnion},
+			},
+		}},
+		RootClass: "Root",
+	}
+	mkArm := func(s string) FuzzValue {
+		return FuzzValue{Kind: KindUnion, VariantIndex: 0, Variant: &FuzzValue{Kind: KindString, String: s}}
+	}
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{
+			{Name: "items", Value: FuzzValue{Kind: KindList, Items: []FuzzValue{
+				mkArm("a"), mkArm("b"), mkArm("c"),
+			}}},
+		},
+	}
+	newSchema, newValue, err := collapseUnionsToPicked(schema, value)
+	if err != nil {
+		t.Fatalf("collapse: %v", err)
+	}
+	cls, _ := newSchema.FindClass("Root")
+	if cls.Properties[0].Type.Kind != KindList {
+		t.Fatalf("expected list kind, got %q", cls.Properties[0].Type.Kind)
+	}
+	if cls.Properties[0].Type.Inner == nil || cls.Properties[0].Type.Inner.Kind != KindString {
+		t.Errorf("expected list<string> after collapse, got inner %#v", cls.Properties[0].Type.Inner)
+	}
+	for i, item := range newValue.Fields[0].Value.Items {
+		if item.Kind != KindString {
+			t.Errorf("list[%d]: expected string, got kind %q", i, item.Kind)
+		}
+	}
+}
+
+// TestCollapseUnionsToPickedListMixedChoicesDoesNotCollapse pins that
+// mixed arm picks across list elements leave the union shape intact.
+// Merging at the element-type position invalidates the plan when
+// elements disagree.
+func TestCollapseUnionsToPickedListMixedChoicesDoesNotCollapse(t *testing.T) {
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindString},
+			{Kind: KindInt},
+		},
+	}
+	listOfUnion := FuzzType{Kind: KindList, Inner: &uni}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "items", Type: listOfUnion},
+			},
+		}},
+		RootClass: "Root",
+	}
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{
+			{Name: "items", Value: FuzzValue{Kind: KindList, Items: []FuzzValue{
+				{Kind: KindUnion, VariantIndex: 0, Variant: &FuzzValue{Kind: KindString, String: "a"}},
+				{Kind: KindUnion, VariantIndex: 1, Variant: &FuzzValue{Kind: KindInt, Int: 7}},
+			}}},
+		},
+	}
+	newSchema, newValue, err := collapseUnionsToPicked(schema, value)
+	if err != nil {
+		t.Fatalf("collapse: %v", err)
+	}
+	cls, _ := newSchema.FindClass("Root")
+	if cls.Properties[0].Type.Inner == nil || cls.Properties[0].Type.Inner.Kind != KindUnion {
+		t.Errorf("mixed list picks should preserve union, got inner %#v", cls.Properties[0].Type.Inner)
+	}
+	for i, item := range newValue.Fields[0].Value.Items {
+		if item.Kind != KindUnion {
+			t.Errorf("list[%d]: expected union wrapper preserved, got kind %q", i, item.Kind)
+		}
+	}
+}
+
+// TestCollapseUnionsToPickedMapValueCollapses pins that a map<string,
+// union> collapses when every value picks the same arm.
+func TestCollapseUnionsToPickedMapValueCollapses(t *testing.T) {
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindString},
+			{Kind: KindInt},
+		},
+	}
+	key := FuzzType{Kind: KindString}
+	mapOfUnion := FuzzType{Kind: KindMap, Key: &key, Inner: &uni}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOfUnion},
+			},
+		}},
+		RootClass: "Root",
+	}
+	mkArm := func(s string) FuzzValue {
+		return FuzzValue{Kind: KindUnion, VariantIndex: 0, Variant: &FuzzValue{Kind: KindString, String: s}}
+	}
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{
+			{Name: "m", Value: FuzzValue{Kind: KindMap, MapEntries: []FuzzMapEntry{
+				{Key: "a", Value: mkArm("x")},
+				{Key: "b", Value: mkArm("y")},
+			}}},
+		},
+	}
+	newSchema, newValue, err := collapseUnionsToPicked(schema, value)
+	if err != nil {
+		t.Fatalf("collapse: %v", err)
+	}
+	cls, _ := newSchema.FindClass("Root")
+	if cls.Properties[0].Type.Inner == nil || cls.Properties[0].Type.Inner.Kind != KindString {
+		t.Errorf("expected map<string,string> after collapse, got inner %#v", cls.Properties[0].Type.Inner)
+	}
+	for _, e := range newValue.Fields[0].Value.MapEntries {
+		if e.Value.Kind != KindString {
+			t.Errorf("map[%q]: expected string, got kind %q", e.Key, e.Value.Kind)
+		}
+	}
+}
+
+// TestCollapseUnionsToPickedNestedUnionInsideMixedOuter pins that an
+// inner union nested inside a non-collapsed outer union still
+// collapses when the inner choice is consistent within the variant it
+// lives in. Move B's path scheme distinguishes ":v0" from ":v1" so
+// nested unions are not merged across distinct outer variants.
+func TestCollapseUnionsToPickedNestedUnionInsideMixedOuter(t *testing.T) {
+	innerUni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindString},
+			{Kind: KindBool},
+		},
+	}
+	outer := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			innerUni,
+			{Kind: KindInt},
+		},
+	}
+	// `items` is a list so we get two visits — one picking outer
+	// variant 0 (the nested-union arm) and one picking outer variant 1
+	// (an int). The outer choice disagrees → outer stays. Inside
+	// variant 0 the inner-union choice is consistent across the single
+	// visit there, so it collapses to its single arm.
+	listOuter := FuzzType{Kind: KindList, Inner: &outer}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "items", Type: listOuter},
+			},
+		}},
+		RootClass: "Root",
+	}
+	innerArm := FuzzValue{
+		Kind: KindUnion, VariantIndex: 0,
+		Variant: &FuzzValue{Kind: KindString, String: "x"},
+	}
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{
+			{Name: "items", Value: FuzzValue{Kind: KindList, Items: []FuzzValue{
+				{Kind: KindUnion, VariantIndex: 0, Variant: &innerArm},
+				{Kind: KindUnion, VariantIndex: 1, Variant: &FuzzValue{Kind: KindInt, Int: 9}},
+			}}},
+		},
+	}
+	newSchema, _, err := collapseUnionsToPicked(schema, value)
+	if err != nil {
+		t.Fatalf("collapse: %v", err)
+	}
+	cls, _ := newSchema.FindClass("Root")
+	listType := cls.Properties[0].Type
+	if listType.Kind != KindList || listType.Inner == nil {
+		t.Fatalf("expected list type, got %#v", listType)
+	}
+	outerType := *listType.Inner
+	if outerType.Kind != KindUnion || len(outerType.Variants) != 2 {
+		t.Fatalf("outer union should be preserved, got %#v", outerType)
+	}
+	if outerType.Variants[0].Kind != KindString {
+		t.Errorf("nested inner union inside outer variant 0 should have collapsed to string, got %#v", outerType.Variants[0])
+	}
+	if outerType.Variants[1].Kind != KindInt {
+		t.Errorf("outer variant 1 should still be int, got %#v", outerType.Variants[1])
+	}
+}
+
 // schemaDumpJSON is a test helper for printing schemas in failure
 // messages. The dump is best-effort: a marshal error degrades to an
-// empty string rather than failing the test.
+// empty string; the helper does not fail the test on its own.
 func schemaDumpJSON(s FuzzSchema) string {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {

@@ -399,16 +399,42 @@ func NormalizeMockToExpected(schema FuzzSchema, mock json.RawMessage, rootClass 
 // NormalizeMockToExpectedWithChoices is the union-aware variant. The
 // `choices` map mirrors CaseMetadata.UnionChoices: each entry tells
 // the normalizer which arm produced the JSON at that path.
+//
+// Normalization is driven by the schema's effective root type
+// (FuzzSchema.EffectiveRoot): when the schema sets RootType the
+// payload is normalized against that type directly, so raw-root
+// union/list/map/scalar schemas round-trip correctly. When RootType
+// is nil the effective root is a class ref pointing at RootClass,
+// keeping the v1 behaviour. The `rootClass` parameter is honoured
+// only as a fallback for callers that supply it before RootType was
+// added to the IR.
 func NormalizeMockToExpectedWithChoices(schema FuzzSchema, mock json.RawMessage, rootClass string, choices map[string]UnionChoice) (json.RawMessage, error) {
 	var raw any
 	if err := json.Unmarshal(mock, &raw); err != nil {
 		return nil, fmt.Errorf("normalize: parse mock: %w", err)
 	}
-	out, err := normalizeClass(schema, rootClass, raw, "", choices)
+	root := effectiveNormalizeRoot(schema, rootClass)
+	out, err := normalizeValue(schema, root, raw, "", choices)
 	if err != nil {
 		return nil, err
 	}
-	return marshalSchemaOrdered(schema, rootClass, out, choices)
+	return marshalSchemaOrdered(schema, root, out, choices)
+}
+
+// effectiveNormalizeRoot picks the FuzzType to normalize and re-emit
+// against. RootType wins when set (so raw roots work); otherwise the
+// `rootClass` argument is used to stay compatible with callers that
+// still hand a class name through. Falling further back to
+// schema.EffectiveRoot covers schemas where both RootType is nil and
+// the caller passed an empty rootClass.
+func effectiveNormalizeRoot(schema FuzzSchema, rootClass string) FuzzType {
+	if schema.RootType != nil {
+		return *schema.RootType
+	}
+	if rootClass != "" {
+		return FuzzType{Kind: KindClassRef, Ref: rootClass}
+	}
+	return schema.EffectiveRoot()
 }
 
 func normalizeClass(schema FuzzSchema, className string, raw any, basePath string, choices map[string]UnionChoice) (map[string]any, error) {
@@ -510,10 +536,13 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 // class-instance keys in schema declaration order. Inner map keys
 // retain encoding/json's alphabetical order — they're not class
 // instances, so there's no schema-defined ordering to preserve.
-// Union arms inside the type tree resolve through `choices`.
-func marshalSchemaOrdered(schema FuzzSchema, rootClass string, normalized any, choices map[string]UnionChoice) (json.RawMessage, error) {
+// Union arms inside the type tree resolve through `choices`. The
+// `root` FuzzType drives dispatch directly, so raw-root
+// union/list/map/scalar schemas are walked as-is without going
+// through the class helper.
+func marshalSchemaOrdered(schema FuzzSchema, root FuzzType, normalized any, choices map[string]UnionChoice) (json.RawMessage, error) {
 	var buf bytes.Buffer
-	if err := writeOrderedClass(&buf, schema, rootClass, normalized, "", choices); err != nil {
+	if err := writeOrderedValue(&buf, schema, root, normalized, "", choices); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil

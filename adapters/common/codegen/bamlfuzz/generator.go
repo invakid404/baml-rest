@@ -783,6 +783,21 @@ func walkClassesInValue(t FuzzType, v FuzzValue, schema FuzzSchema, visit func(c
 	}
 }
 
+// recordUnionChoices walks a (type, value) pair and stamps observed
+// union-arm choices into `p` keyed by structural position in the type
+// tree. The path scheme matches rewriteTypeAtPath exactly: union arms
+// use ":v%d" so distinct variants of an outer union resolve to
+// distinct slots; list elements all collapse onto ":l" and map values
+// onto ":m" so observations across siblings merge at the element-type
+// position. Merging at the element position is what makes "every
+// element picked the same arm" collapse correctly and "elements
+// disagree" invalidate cleanly.
+//
+// These paths are Move B's internal collapse-plan keys. They are
+// SEPARATE from the JSON-path convention used by the walker,
+// normalizer, and order checker (which key into
+// CaseMetadata.UnionChoices and use `.<field>[idx][key]:v` paths);
+// changing one does not require changing the other.
 func recordUnionChoices(t FuzzType, v FuzzValue, path string, p collapsePlan) {
 	switch t.Kind {
 	case KindUnion:
@@ -797,7 +812,7 @@ func recordUnionChoices(t FuzzType, v FuzzValue, path string, p collapsePlan) {
 		case existing != v.VariantIndex:
 			p.choices[path] = -1
 		}
-		recordUnionChoices(t.Variants[v.VariantIndex], *v.Variant, path+":v", p)
+		recordUnionChoices(t.Variants[v.VariantIndex], *v.Variant, fmt.Sprintf("%s:v%d", path, v.VariantIndex), p)
 	case KindOptional:
 		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
 			recordUnionChoices(*t.Inner, *v.Inner, path+":o", p)
@@ -806,15 +821,15 @@ func recordUnionChoices(t FuzzType, v FuzzValue, path string, p collapsePlan) {
 		if t.Inner == nil {
 			return
 		}
-		for i, item := range v.Items {
-			recordUnionChoices(*t.Inner, item, fmt.Sprintf("%s:l%d", path, i), p)
+		for _, item := range v.Items {
+			recordUnionChoices(*t.Inner, item, path+":l", p)
 		}
 	case KindMap:
 		if t.Inner == nil {
 			return
 		}
 		for _, e := range v.MapEntries {
-			recordUnionChoices(*t.Inner, e.Value, path+":m:"+e.Key, p)
+			recordUnionChoices(*t.Inner, e.Value, path+":m", p)
 		}
 	}
 }
@@ -878,7 +893,12 @@ func rewriteTypeAtPath(t FuzzType, path string, plan collapsePlan) FuzzType {
 	switch t.Kind {
 	case KindUnion:
 		if idx, ok := plan.choices[path]; ok && idx >= 0 && idx < len(t.Variants) {
-			return rewriteTypeAtPath(t.Variants[idx], path+":v", plan)
+			// Step the path with ":v<idx>" (matching the
+			// recordUnionChoices scheme) so collapse descents land
+			// at the same key used when stamping nested unions
+			// inside the picked variant. Mismatched keys here would
+			// silently leave nested unions uncollapsed.
+			return rewriteTypeAtPath(t.Variants[idx], fmt.Sprintf("%s:v%d", path, idx), plan)
 		}
 		out := t
 		out.Variants = make([]FuzzType, len(t.Variants))

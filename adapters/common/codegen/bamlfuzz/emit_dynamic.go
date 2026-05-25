@@ -175,6 +175,17 @@ func lowerProperty(ft FuzzType) (*bamlutils.DynamicProperty, error) {
 		}
 		prop.Ref = ft.Ref
 	case KindUnion:
+		// Single-arm unions short-circuit to the bare variant for
+		// parity with the static emitter (which renders the lone arm
+		// without pipe syntax). A one-element OneOf is not legal
+		// BAML. Single-arm unions are unreachable from the random
+		// generator — drawUnion picks at least MinUnionVariants —
+		// but they can land on the dynamic emitter through
+		// hand-written / replay schemas, so the defensive collapse
+		// keeps both paths in lockstep.
+		if len(ft.Variants) == 1 {
+			return lowerProperty(ft.Variants[0])
+		}
 		variants, err := lowerVariants(ft.Variants)
 		if err != nil {
 			return nil, err
@@ -245,6 +256,12 @@ func lowerTypeSpec(ft FuzzType) (*bamlutils.DynamicTypeSpec, error) {
 		}
 		spec.Ref = ft.Ref
 	case KindUnion:
+		// See the matching short-circuit in lowerProperty: a
+		// one-element OneOf is invalid BAML; the static emitter
+		// drops the wrapper in the same case.
+		if len(ft.Variants) == 1 {
+			return lowerTypeSpec(ft.Variants[0])
+		}
 		variants, err := lowerVariants(ft.Variants)
 		if err != nil {
 			return nil, err
@@ -258,10 +275,9 @@ func lowerTypeSpec(ft FuzzType) (*bamlutils.DynamicTypeSpec, error) {
 }
 
 // lowerVariants renders each union variant as a DynamicTypeSpec.
-// Empty / single-arm variants are rejected: an empty union is
-// invalid BAML, and a single-arm union should have been collapsed
-// to the bare variant before reaching the dynamic emitter
-// (LowerToBamlSource enforces the static-side equivalent).
+// Empty variants are rejected (no BAML form). Single-arm unions are
+// collapsed to the bare variant by the callers in lowerProperty /
+// lowerTypeSpec before reaching here, mirroring the static emitter.
 func lowerVariants(variants []FuzzType) ([]*bamlutils.DynamicTypeSpec, error) {
 	if len(variants) == 0 {
 		return nil, fmt.Errorf("union has no variants")
