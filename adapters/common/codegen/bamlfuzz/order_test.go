@@ -512,6 +512,168 @@ func TestFormatSchemaOrderDiffs(t *testing.T) {
 	}
 }
 
+// TestSchemaOrderDiffMapInsertionOrderMismatch pins the D1 map policy
+// directly: insertion-order swap surfaces a single diff entry at the
+// map node's own path.
+func TestSchemaOrderDiffMapInsertionOrderMismatch(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: FuzzType{
+					Kind:  KindMap,
+					Key:   &FuzzType{Kind: KindString},
+					Inner: &FuzzType{Kind: KindString},
+				}},
+			},
+		}},
+		RootClass: "Root",
+	}
+	exp := json.RawMessage(`{"m":{"kA":"a","kB":"b"}}`)
+	got := json.RawMessage(`{"m":{"kB":"b","kA":"a"}}`)
+	diffs, err := SchemaOrderDiff("side", schema, exp, got)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d (%v)", len(diffs), diffs)
+	}
+	if diffs[0].Path != "$.m" {
+		t.Errorf("path: got %q want %q", diffs[0].Path, "$.m")
+	}
+	if !keysEqual(diffs[0].Expected, []string{"kA", "kB"}) {
+		t.Errorf("expected keys: got %v want %v", diffs[0].Expected, []string{"kA", "kB"})
+	}
+	if !keysEqual(diffs[0].Actual, []string{"kB", "kA"}) {
+		t.Errorf("actual keys: got %v want %v", diffs[0].Actual, []string{"kB", "kA"})
+	}
+}
+
+// TestSchemaOrderDiffMapWithNestedClassPropagates pins that map-key
+// order and nested-class-property order are asserted independently
+// at distinct paths.
+func TestSchemaOrderDiffMapWithNestedClassPropagates(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{
+			{
+				Name: "Root",
+				Properties: []FuzzProperty{
+					{Name: "m", Type: mapOf(classRef("Inner"))},
+				},
+			},
+			{
+				Name: "Inner",
+				Properties: []FuzzProperty{
+					{Name: "a", Type: FuzzType{Kind: KindInt}},
+					{Name: "b", Type: FuzzType{Kind: KindInt}},
+				},
+			},
+		},
+		RootClass: "Root",
+	}
+
+	// Variant 1: map order kept, inner class order swapped → one
+	// diff at $.m["kA"] for the class.
+	exp := json.RawMessage(`{"m":{"kA":{"a":1,"b":2}}}`)
+	got := json.RawMessage(`{"m":{"kA":{"b":2,"a":1}}}`)
+	diffs, err := SchemaOrderDiff("side", schema, exp, got)
+	if err != nil {
+		t.Fatalf("variant 1: SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("variant 1: expected 1 diff, got %d (%v)", len(diffs), diffs)
+	}
+	if diffs[0].Path != `$.m["kA"]` {
+		t.Errorf("variant 1: path: got %q want %q", diffs[0].Path, `$.m["kA"]`)
+	}
+
+	// Variant 2: map order swapped, inner class order kept → one
+	// diff at $.m for the map.
+	exp = json.RawMessage(`{"m":{"kA":{"a":1,"b":2},"kB":{"a":3,"b":4}}}`)
+	got = json.RawMessage(`{"m":{"kB":{"a":3,"b":4},"kA":{"a":1,"b":2}}}`)
+	diffs, err = SchemaOrderDiff("side", schema, exp, got)
+	if err != nil {
+		t.Fatalf("variant 2: SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("variant 2: expected 1 diff, got %d (%v)", len(diffs), diffs)
+	}
+	if diffs[0].Path != "$.m" {
+		t.Errorf("variant 2: path: got %q want %q", diffs[0].Path, "$.m")
+	}
+}
+
+// TestSchemaOrderDiffMapSameOrderPasses asserts identical insertion
+// order on both sides produces no diff entries and no error.
+func TestSchemaOrderDiffMapSameOrderPasses(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(FuzzType{Kind: KindString})},
+			},
+		}},
+		RootClass: "Root",
+	}
+	exp := json.RawMessage(`{"m":{"kA":"a","kB":"b"}}`)
+	got := json.RawMessage(`{"m":{"kA":"a","kB":"b"}}`)
+	diffs, err := SchemaOrderDiff("side", schema, exp, got)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs, got %v", diffs)
+	}
+}
+
+// TestSchemaOrderDiffMapStructuralDisagreementSilent pins that the
+// walker silently bails when the two sides disagree on shape at a map
+// node — SemanticDiff is the gate for structural mismatches.
+func TestSchemaOrderDiffMapStructuralDisagreementSilent(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(FuzzType{Kind: KindString})},
+			},
+		}},
+		RootClass: "Root",
+	}
+	exp := json.RawMessage(`{"m":{"k":"v"}}`)
+	got := json.RawMessage(`{"m":null}`)
+	diffs, err := SchemaOrderDiff("side", schema, exp, got)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("structural disagreement should be silent, got %v", diffs)
+	}
+}
+
+// TestSchemaOrderDiffUnionMissingChoiceReturnsUnsupported pins that
+// a union-rooted schema with zero recorded choices still returns
+// ErrSchemaOrderUnsupported. Exercises the hard-fail wiring end to
+// end: any future regression that strips a choice from the metadata
+// map will surface here.
+func TestSchemaOrderDiffUnionMissingChoiceReturnsUnsupported(t *testing.T) {
+	schema := FuzzSchema{
+		RootType: &FuzzType{
+			Kind: KindUnion,
+			Variants: []FuzzType{
+				{Kind: KindString},
+				{Kind: KindInt},
+			},
+		},
+	}
+	_, err := SchemaOrderDiff("side", schema,
+		json.RawMessage(`"x"`),
+		json.RawMessage(`"x"`),
+	)
+	if !errors.Is(err, ErrSchemaOrderUnsupported) {
+		t.Errorf("got err=%v, want errors.Is(err, ErrSchemaOrderUnsupported)", err)
+	}
+}
+
 func keysEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
