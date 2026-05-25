@@ -102,3 +102,22 @@ func EncodeClassOrdered(name string, fields map[string]any, dynamicFields *Order
 	return serde.EncodeClass(name, fields, &flattened)
 }
 
+// OrderedMap is the public alias for the generic ordered map carrier
+// used by statically-typed map<string, T> fields in the generated
+// client. Generated code spells it `baml.OrderedMap[T]`; the
+// value type stays concrete while iteration order matches BAML's CFFI
+// emission order.
+type OrderedMap[V any] = serde.OrderedMap[V]
+
+// OrderedKV constructs a single ordered-map entry. Provided so
+// generated initialisers can build `baml.OrderedMap[T]` literals
+// without importing serde directly.
+func OrderedKV[V any](key string, value V) serde.OrderedEntry[V] {
+	return serde.OrderedKV(key, value)
+}
+
+// NewOrderedMap builds a typed ordered map from entries in source
+// order. Returns the wrapped serde error on duplicate keys.
+func NewOrderedMap[V any](entries ...serde.OrderedEntry[V]) (OrderedMap[V], error) {
+	return serde.NewOrderedMap(entries...)
+}

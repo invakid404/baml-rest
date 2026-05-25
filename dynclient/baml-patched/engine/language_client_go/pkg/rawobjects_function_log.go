@@ -158,7 +158,7 @@ func (f *functionLog) Tags() (map[string]any, error) {
 		return nil, fmt.Errorf("failed to get tags: %w", err)
 	}
 
-	tags, ok := result.(map[string]any)
+	tags, ok := orderedFieldsToAnyMap(result)
 	if !ok {
 		return nil, fmt.Errorf("unexpected type for tags: %T", result)
 	}
