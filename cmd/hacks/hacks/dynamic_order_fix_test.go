@@ -2403,6 +2403,310 @@ func TestIsOrderableMapValueType_PerFamily(t *testing.T) {
 	}
 }
 
+// TestNativeMapHelperPreservesNilValues pins the cold-v4 Finding 1
+// regression for the recursive-type-alias path. BAML's `JsonValue`
+// alias resolves to `*Union6...` and accepts `null` as a variant; the
+// patched runtime decodes a null map value to an untyped nil in the
+// ranger callback. Without explicit nil handling, the helper's typed
+// assertion `v.(JsonValue)` rejects untyped nil and the key drops
+// from the produced map — turning a documented order-loss arm into
+// silent data loss. The fix emits a `v == nil` branch that writes
+// `out[k] = nil`, preserving the key.
+//
+// The fixture mirrors the integration shape: a `Self` alias to a
+// pointer-bearing union, plus a non-nilable element type on a
+// sibling helper to confirm only the nilable arm emits the nil
+// preservation branch.
+func TestNativeMapHelperPreservesNilValues(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const aliasSrc = `package types
+
+type Self = *MyUnion
+`
+	if err := os.WriteFile(filepath.Join(typesDir, "type_aliases.go"), []byte(aliasSrc), 0o644); err != nil {
+		t.Fatalf("write type_aliases.go: %v", err)
+	}
+
+	const unionSrc = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type MyUnion struct {
+	variant         string
+	variant_Int     *int64
+	variant_MapSelf *map[string]Self
+}
+
+func (u *MyUnion) Decode(holder *cffi.CFFIValueUnionVariant, typeMap baml.TypeMap) {
+	valueHolder := holder.Value
+	variantName := holder.ValueOptionName
+	switch variantName {
+	case "int":
+		u.variant = "Int"
+		value := baml.Decode(valueHolder).Int()
+		u.variant_Int = &value
+	case "Map__string_Self":
+		u.variant = "MapSelf"
+		value := baml.Decode(valueHolder).Interface().(map[string]Self)
+		u.variant_MapSelf = &value
+	default:
+		panic(fmt.Sprintf("unexpected variant: %s", variantName))
+	}
+}
+
+func (u *MyUnion) AsMapSelf() *map[string]Self {
+	if u.variant != "MapSelf" {
+		return nil
+	}
+	return u.variant_MapSelf
+}
+`
+	unionsPath := filepath.Join(typesDir, "unions.go")
+	if err := os.WriteFile(unionsPath, []byte(unionSrc), 0o644); err != nil {
+		t.Fatalf("write unions.go: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	// The nilable arm's helper must guard against untyped nil
+	// BEFORE the typed assertion and preserve the key.
+	const nilGuard = "if v == nil {\n\t\t\t\tout[k] = nil\n\t\t\t\treturn true\n\t\t\t}"
+	if !strings.Contains(helperBody, nilGuard) {
+		t.Fatalf("native-map helper missing nil-preservation branch:\n%s", helperBody)
+	}
+	// The typed-assertion path remains in place — the guard is
+	// additive, not a replacement.
+	if !strings.Contains(helperBody, "if cv, ok := v.(Self); ok {") {
+		t.Fatalf("native-map helper lost typed-assertion path for non-nil values:\n%s", helperBody)
+	}
+	// The guard must precede the typed assertion textually so the
+	// nil case wins over the assertion (which would reject untyped
+	// nil and silently drop the key).
+	idxGuard := strings.Index(helperBody, "if v == nil")
+	idxAssert := strings.Index(helperBody, "if cv, ok := v.(Self); ok {")
+	if idxGuard < 0 || idxAssert < 0 || idxGuard > idxAssert {
+		t.Fatalf("nil guard does not precede typed assertion:\n%s", helperBody)
+	}
+}
+
+// TestNativeMapHelperSkipsNilForNonNilableElement pins the other side
+// of the nilability split: a recursive map whose element type is a
+// non-nilable struct must not emit the `out[k] = nil` branch. The
+// pkgTypeIndex resolves the alias chain to a struct definition and
+// reports the element as non-nilable; the helper renderer then omits
+// the nil-preservation arm because the BAML runtime never hands an
+// untyped nil into the ranger callback for non-nilable types (and
+// writing a zero struct would falsely advertise a present entry).
+//
+// This test guards against future drift where the nilability check
+// is dropped or always-true: were it always-true, this fixture's
+// helper would compile-fail because `out[k] = nil` is not assignable
+// to a non-nilable struct value.
+func TestNativeMapHelperSkipsNilForNonNilableElement(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// `Self` aliases a struct that has a `map[string]Self` field, so
+	// the recursive-map guard fires (Self is an alias whose closure
+	// contains a map<string,Self>) but the element type itself is a
+	// non-nilable named struct.
+	const src = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type Self = StructNode
+
+type StructNode struct {
+	Children map[string]Self
+}
+
+type Wrapper struct {
+	variant         string
+	variant_MapSelf *map[string]Self
+}
+
+func (w *Wrapper) Decode(holder *cffi.CFFIValueUnionVariant, typeMap baml.TypeMap) {
+	switch holder.ValueOptionName {
+	case "Map__string_Self":
+		value := baml.Decode(holder.Value).Interface().(map[string]Self)
+		w.variant_MapSelf = &value
+	default:
+		panic(fmt.Sprintf("unexpected: %s", holder.ValueOptionName))
+	}
+}
+`
+	path := filepath.Join(typesDir, "node.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+	// The native helper for the non-nilable `Self` (alias→struct)
+	// must not emit `out[k] = nil` because nil is not assignable to
+	// a struct value.
+	if strings.Contains(helperBody, "out[k] = nil") {
+		t.Fatalf("non-nilable element helper unexpectedly emitted nil preservation:\n%s", helperBody)
+	}
+	// The typed-assertion path remains.
+	if !strings.Contains(helperBody, "if cv, ok := v.(Self); ok {") {
+		t.Fatalf("non-nilable helper lost typed-assertion path:\n%s", helperBody)
+	}
+}
+
+// TestStaticMapRewriteAddsBamlImport pins the cold-v4 Finding 2
+// regression for files that gain a `baml.OrderedMap[T]` reference
+// during the rewrite but did not import the BAML pkg beforehand. The
+// integration build's `baml_client/embed.go`, written by cmd/embed
+// before the hacks pass, only imports `embed`; a `make(map[string]X)`
+// argument used to surface as `undefined: baml` after rewriting (a
+// separate fix skips the make-call rewrite outright). Other shapes —
+// a struct field with `map[string]string` and no `make` wrapper —
+// still need a rewrite plus the missing import; this fixture pins
+// that path: rewrite happens AND the file gains a `baml` aliased
+// import.
+func TestStaticMapRewriteAddsBamlImport(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Sibling file declares the BAML pkg import so the helper / import
+	// resolver knows which path to bind in the rewritten file.
+	const siblingSrc = `package types
+
+import (
+	baml "github.com/example/fake-baml-patched/pkg"
+)
+
+var _ = baml.TypeMap{}
+`
+	if err := os.WriteFile(filepath.Join(typesDir, "sibling.go"), []byte(siblingSrc), 0o644); err != nil {
+		t.Fatalf("write sibling: %v", err)
+	}
+
+	// Target file has no baml import; the rewrite must introduce one.
+	const targetSrc = `package types
+
+type Standalone struct {
+	Headers map[string]string
+}
+`
+	targetPath := filepath.Join(typesDir, "standalone.go")
+	if err := os.WriteFile(targetPath, []byte(targetSrc), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	after := readFileT(t, targetPath)
+	if !strings.Contains(after, "Headers baml.OrderedMap[string]") {
+		t.Fatalf("target field was not rewritten:\n%s", after)
+	}
+	if !strings.Contains(after, `baml "github.com/example/fake-baml-patched/pkg"`) {
+		t.Fatalf("rewritten file did not gain the baml aliased import:\n%s", after)
+	}
+	// Validate the rewritten file parses cleanly — guards against
+	// the AST surgery emitting an ill-formed import block.
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, targetPath, []byte(after), parser.ParseComments); err != nil {
+		t.Fatalf("rewritten file does not parse: %v\n%s", err, after)
+	}
+}
+
+// TestStaticMapRewriteSkipsMakeMapArg pins the cold-v4 Finding 2
+// regression for cmd/embed-shaped files. The generator-emitted
+// `embed.go` has `var Sources = make(map[string]embed.FS)` plus
+// `Sources["k"] = v`. Rewriting the `make` argument to
+// `baml.OrderedMap[embed.FS]` produces a struct type that `make`
+// rejects at compile time, and the index-assignment line fails for
+// the same reason. The rewrite must leave runtime map allocations
+// untouched; this fixture asserts the file is byte-identical after
+// the static-map pass (no rewrite landed, no helper file emitted).
+func TestStaticMapRewriteSkipsMakeMapArg(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	if err := os.MkdirAll(clientDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const src = `package baml_client
+
+import (
+	"embed"
+)
+
+//go:embed sentinel.txt
+var source embed.FS
+
+var Sources = make(map[string]embed.FS)
+
+func init() {
+	Sources["."] = source
+}
+`
+	embedPath := filepath.Join(clientDir, "embed.go")
+	if err := os.WriteFile(embedPath, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// `//go:embed` requires the named pattern to exist.
+	if err := os.WriteFile(filepath.Join(clientDir, "sentinel.txt"), []byte("sentinel"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	after := readFileT(t, embedPath)
+	if after != src {
+		t.Fatalf("embed.go changed after static-map pass:\n--- before ---\n%s\n--- after ---\n%s", src, after)
+	}
+	// No helper file should have been emitted for a package with no
+	// successful rewrites.
+	helperPath := filepath.Join(clientDir, "ordered_map_static.go")
+	if _, err := os.Stat(helperPath); err == nil {
+		t.Fatalf("unexpected helper file emitted for embed-only package: %s", helperPath)
+	}
+}
+
 // TestIsOrderableSinglePatternFunc_DelegatesToMapValueType pins the
 // IsSinglePattern helper's _MapValue accessor and confirms it hands
 // off to the value-type discriminator on every family. The pre-B2

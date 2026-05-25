@@ -477,12 +477,32 @@ func patchGeneratedStaticMapFile(path string, pkgIdx *pkgTypeIndex) (bool, error
 
 	// Validate the rewrite still parses.
 	fset := token.NewFileSet()
-	if _, err := parser.ParseFile(fset, path, []byte(newBody), parser.ParseComments); err != nil {
+	file, err := parser.ParseFile(fset, path, []byte(newBody), parser.ParseComments)
+	if err != nil {
 		// Persist the bad output to a sibling .reject file for
 		// post-mortem inspection so the test harness has something
 		// concrete to diff against the original.
 		_ = os.WriteFile(path+".reject", []byte(newBody), 0o644)
 		return false, fmt.Errorf("static-map rewrite produced invalid Go: %w", err)
+	}
+
+	// Ensure the rewritten file binds the `baml` selector to the BAML
+	// pkg import. The rewriter emits `baml.OrderedMap[T]` and
+	// `baml.DecodeToOrderedValue(...)`; BAML's schema-derived files
+	// already import the pkg, but generator-emitted siblings
+	// (cmd/embed's `embed.go`, ad-hoc generated files) only import
+	// what they directly use. Adding the import after the rewrite
+	// keeps the pass robust against future generator shapes without
+	// hard-coding a per-filename skip list.
+	if added, ensureErr := ensureBAMLAliasImport(file, path, pkgIdx); ensureErr != nil {
+		return false, ensureErr
+	} else if added {
+		var buf strings.Builder
+		cfg := printer.Config{Mode: printer.UseSpaces | printer.TabIndent, Tabwidth: 8}
+		if printErr := cfg.Fprint(&buf, fset, file); printErr != nil {
+			return false, fmt.Errorf("re-printing static-map rewrite: %w", printErr)
+		}
+		newBody = buf.String()
 	}
 
 	prettied, err := gofmtBytes([]byte(newBody))
@@ -496,7 +516,7 @@ func patchGeneratedStaticMapFile(path string, pkgIdx *pkgTypeIndex) (bool, error
 	// Emit / refresh the per-package helper file. Helpers are package-
 	// scoped because the generated package import path varies (types,
 	// stream_types, baml_client root).
-	if err := ensureStaticMapHelperFile(filepath.Dir(path), prettied); err != nil {
+	if err := ensureStaticMapHelperFile(filepath.Dir(path), prettied, pkgIdx); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -648,6 +668,21 @@ func rewriteMapStringTypeExprs(body string, pkgIdx *pkgTypeIndex) (string, bool)
 				searchFrom = typeEnd
 				continue
 			}
+		}
+		// Skip `make(map[string]T, ...)` argument position. Runtime
+		// map allocations are not BAML decode sites; rewriting the
+		// argument to `baml.OrderedMap[T]` would feed `make` a struct
+		// type (rejected at compile time) and any companion index
+		// assignment (`m[k] = v`) on the variable would not compile
+		// either because OrderedMap is a struct, not a map. The
+		// generator-emitted `embed.go` produced by cmd/embed has
+		// this shape; the BAML emitter never uses `make` for static
+		// schema maps (it stages decoded carriers via type
+		// assertions on the runtime value), so skipping `make` calls
+		// here loses no real coverage.
+		if isInsideMakeCall(body, absIdx) {
+			searchFrom = typeEnd
+			continue
 		}
 		// Recursive type-alias guard. The Go compiler ICEs on a
 		// `baml.OrderedMap[T]` instantiation when T is a type alias
@@ -1011,6 +1046,84 @@ func isFuncReturnTypePosition(body string, mapStart int) bool {
 	return false
 }
 
+// isInsideMakeCall reports whether body[mapStart:] sits in the
+// argument position of a `make(...)` call. Walks left from mapStart
+// over pointer / slice modifier prefixes plus inline whitespace; if
+// the first non-modifier byte is `(` and the identifier immediately
+// before it is `make`, the map type is a runtime allocation argument
+// and rewriting it produces invalid Go (OrderedMap[T] is a struct,
+// not a map type — `make` rejects it and any `m[k] = v` on the
+// resulting variable also fails to compile).
+//
+// The walk mirrors isFuncReturnTypePosition's left-walk over `*` /
+// `[]` wrappers so a hypothetical `make([]*map[string]T, n)` still
+// resolves to the `make` argument. The check returns false on a
+// malformed prefix (no preceding context, mismatched brackets,
+// identifier byte preceding `make`) so the fail-closed default keeps
+// the rewrite running for non-make positions.
+func isInsideMakeCall(body string, mapStart int) bool {
+	i := mapStart
+	for i > 0 {
+		c := body[i-1]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n':
+			i--
+			continue
+		case c == '*':
+			i--
+			continue
+		case c == ']':
+			depth := 1
+			j := i - 2
+			for j >= 0 && depth > 0 {
+				switch body[j] {
+				case ']':
+					depth++
+				case '[':
+					depth--
+				}
+				if depth == 0 {
+					break
+				}
+				j--
+			}
+			if depth != 0 || j < 0 {
+				return false
+			}
+			i = j
+			continue
+		}
+		if c != '(' {
+			return false
+		}
+		// Scan back across whitespace to find the identifier preceding `(`.
+		j := i - 2
+		for j >= 0 && (body[j] == ' ' || body[j] == '\t') {
+			j--
+		}
+		if j < 3 {
+			return false
+		}
+		if body[j-3:j+1] != "make" {
+			return false
+		}
+		// Reject identifiers that end with `make` as a suffix (e.g.
+		// `unmake(`) by checking the byte immediately preceding the
+		// `m` is not an identifier continuation.
+		if j-3 > 0 {
+			prev := body[j-4]
+			if (prev >= 'a' && prev <= 'z') ||
+				(prev >= 'A' && prev <= 'Z') ||
+				(prev >= '0' && prev <= '9') ||
+				prev == '_' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // findMatchingParen finds the `)` matching the `(` at openIdx.
 func findMatchingParen(body string, openIdx int) int {
 	if openIdx < 0 || openIdx >= len(body) || body[openIdx] != '(' {
@@ -1257,7 +1370,7 @@ func encodeStaticMapType(typeExpr string) string {
 // and not the `baml` alias is treated as a sibling generated
 // package, and its import path is resolved by inspecting the same
 // surrounding files used to derive the BAML alias.
-func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
+func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte, pkgIdx *pkgTypeIndex) error {
 	entries, err := os.ReadDir(packageDir)
 	if err != nil {
 		return err
@@ -1351,7 +1464,7 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 		if _, done := emitted[name]; done {
 			continue
 		}
-		body, ok := emitStaticHelperByName(name)
+		body, ok := emitStaticHelperByName(name, pkgIdx)
 		if !ok {
 			continue
 		}
@@ -1477,7 +1590,7 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 // unparseable name (e.g. an unrelated `bamlOrderedAs_` reference
 // from user code) yields false so the worklist skips it without
 // emitting a wrong-typed stub.
-func emitStaticHelperByName(name string) (string, bool) {
+func emitStaticHelperByName(name string, pkgIdx *pkgTypeIndex) (string, bool) {
 	if strings.HasPrefix(name, "bamlOrderedAs_") {
 		typeExpr, ok := staticMapHelperTypeFromName(name)
 		if !ok {
@@ -1497,7 +1610,17 @@ func emitStaticHelperByName(name string) (string, bool) {
 		if !ok {
 			return "", false
 		}
-		return emitNativeMapHelper(name, elemName, isPtr), true
+		// Default to nilable when no package index is available. The
+		// native-map helper is generated for recursive type aliases,
+		// which in BAML's emitted code are always pointer aliases
+		// (e.g. `type JsonValue = *Union6...`); the BAML runtime hands
+		// untyped nil into the ranger callback for null holders. A
+		// missing index would happen only in tests that bypass the
+		// package walk — treating "unknown" as nilable preserves the
+		// key in the produced map, which is the conservative call when
+		// the alternative is silent data loss.
+		nilable := pkgIdx == nil || pkgIdx.isNilableElement(elemName)
+		return emitNativeMapHelper(name, elemName, isPtr, nilable), true
 	}
 	return "", false
 }
@@ -1585,6 +1708,118 @@ func findBAMLPkgImportPath(file *ast.File) string {
 		}
 	}
 	return fallback
+}
+
+// ensureBAMLAliasImport adds an explicit `baml "<path>"` import to a
+// rewritten file when no existing import already binds the `baml`
+// selector. The static-map rewrite emits `baml.OrderedMap[T]` and
+// `baml.DecodeToOrderedValue(...)`, so any file that received a
+// rewrite must bind `baml`. Returns (added, err) where `added` is
+// true when an import was inserted (and the caller must re-print the
+// file) and false when the file already had a compatible binding.
+//
+// Import-path resolution order, mirroring findBAMLPkgImportPath:
+//  1. The rewritten file itself — the rewrite never removes an
+//     existing baml import, so a file that already binds baml needs
+//     no further action.
+//  2. The pkgTypeIndex cache populated during package-level scanning
+//     — sibling files (other generated package members) declare the
+//     same fork/upstream path the helper file uses.
+//  3. As a last resort, the file-level neighbour scan via
+//     collectImportPathsByName against the on-disk directory, which
+//     covers the case where pkgIdx was not built (idx == nil).
+//  4. The upstream `github.com/boundaryml/baml/...` path — matches
+//     the helper-file fallback so a downstream
+//     RewriteGeneratedClientBAMLImports retargets both consistently.
+func ensureBAMLAliasImport(file *ast.File, path string, pkgIdx *pkgTypeIndex) (bool, error) {
+	for _, imp := range file.Imports {
+		if imp == nil || imp.Path == nil {
+			continue
+		}
+		rawPath := strings.Trim(imp.Path.Value, `"`)
+		if imp.Name != nil {
+			switch imp.Name.Name {
+			case "_", ".":
+				continue
+			case "baml":
+				return false, nil
+			}
+		} else if defaultImportName(rawPath) == "baml" {
+			return false, nil
+		}
+	}
+	bamlPath := findBAMLPkgImportPath(file)
+	if bamlPath == "" && pkgIdx != nil {
+		bamlPath = pkgIdx.bamlImportPath
+	}
+	if bamlPath == "" {
+		bamlPath = neighbourBAMLImportPath(filepath.Dir(path))
+	}
+	if bamlPath == "" {
+		bamlPath = "github.com/boundaryml/baml/engine/language_client_go/pkg"
+	}
+	spec := &ast.ImportSpec{
+		Name: ast.NewIdent("baml"),
+		Path: &ast.BasicLit{Kind: token.STRING, Value: `"` + bamlPath + `"`},
+	}
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		// Force block form so the printer emits the spec on its own
+		// line; gofmt later normalises grouping.
+		if !gd.Lparen.IsValid() {
+			gd.Lparen = gd.Pos()
+			gd.Rparen = gd.End()
+		}
+		gd.Specs = append(gd.Specs, spec)
+		file.Imports = append(file.Imports, spec)
+		return true, nil
+	}
+	gd := &ast.GenDecl{
+		Tok:    token.IMPORT,
+		Lparen: token.Pos(1),
+		Rparen: token.Pos(1),
+		Specs:  []ast.Spec{spec},
+	}
+	file.Decls = append([]ast.Decl{gd}, file.Decls...)
+	file.Imports = append(file.Imports, spec)
+	return true, nil
+}
+
+// neighbourBAMLImportPath scans the .go files in dir (skipping the
+// helper file the static-map pass owns) for a BAML pkg import and
+// returns the first path that matches the same selection order as
+// findBAMLPkgImportPath. Empty string when no neighbour file declares
+// the import. Used as a fallback when pkgTypeIndex was not populated
+// (callers that hand in a nil index, or a test harness that loads
+// files in isolation).
+func neighbourBAMLImportPath(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		if e.Name() == staticMapHelperBaseName {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if readErr != nil {
+			continue
+		}
+		file, parseErr := parser.ParseFile(token.NewFileSet(), e.Name(), data, parser.ImportsOnly)
+		if parseErr != nil || file == nil {
+			continue
+		}
+		if path := findBAMLPkgImportPath(file); path != "" {
+			return path
+		}
+	}
+	return ""
 }
 
 // staticMapHelperTypeFromName reverses staticMapHelperName. Returns
@@ -1980,6 +2215,13 @@ func staticMapHelperCore() string {
 type pkgTypeIndex struct {
 	aliases map[string]ast.Expr
 	defs    map[string]ast.Expr
+	// bamlImportPath caches the BAML pkg import path declared by any
+	// sibling file in the package directory. The static-map rewrite
+	// reads this when the file under rewrite does not import the pkg
+	// itself (generator-emitted siblings like cmd/embed's embed.go),
+	// so the added `baml` alias adopts the same fork/upstream path
+	// the surrounding files already bind.
+	bamlImportPath string
 }
 
 // newPkgTypeIndex parses every .go file in dir and collects the
@@ -2008,6 +2250,9 @@ func newPkgTypeIndex(dir string) (*pkgTypeIndex, error) {
 		file, parseErr := parser.ParseFile(token.NewFileSet(), e.Name(), data, parser.SkipObjectResolution)
 		if parseErr != nil || file == nil {
 			continue
+		}
+		if idx.bamlImportPath == "" {
+			idx.bamlImportPath = findBAMLPkgImportPath(file)
 		}
 		for _, decl := range file.Decls {
 			gd, ok := decl.(*ast.GenDecl)
@@ -2132,6 +2377,58 @@ func (idx *pkgTypeIndex) valueRefersTo(expr ast.Expr, target string, visited map
 	return false
 }
 
+// isNilableElement reports whether elemName, used as a `map[string]T`
+// element type in the surrounding package, resolves to a nilable Go
+// type (pointer, slice, map, channel, function, interface). The
+// native-map helper reads this to decide whether a null map value
+// from the BAML runtime should preserve the key with a `nil` value
+// (nilable types) or skip the entry (non-nilable types — the runtime
+// never produces untyped nil for these, and writing the zero value
+// would falsely advertise a present entry).
+//
+// Walks through alias hops; non-alias struct/named definitions in
+// the package are treated as non-nilable. Identifiers that resolve
+// to nothing in the package (Go builtins like `int`, `string`, or
+// imports from sibling packages) are reported as non-nilable on the
+// rationale that BAML's recursive-alias trap fires only on pointer
+// aliases — the only known caller of the native-map helper today.
+func (idx *pkgTypeIndex) isNilableElement(elemName string) bool {
+	if idx == nil {
+		return true
+	}
+	target := strings.TrimSpace(elemName)
+	if !isSimpleGoIdent(target) {
+		return false
+	}
+	return idx.isNilableIdent(target, map[string]bool{})
+}
+
+func (idx *pkgTypeIndex) isNilableIdent(name string, visited map[string]bool) bool {
+	if visited[name] {
+		return false
+	}
+	visited[name] = true
+	if a, ok := idx.aliases[name]; ok {
+		return idx.isNilableTypeExpr(a, visited)
+	}
+	if d, ok := idx.defs[name]; ok {
+		return idx.isNilableTypeExpr(d, visited)
+	}
+	return false
+}
+
+func (idx *pkgTypeIndex) isNilableTypeExpr(expr ast.Expr, visited map[string]bool) bool {
+	switch t := expr.(type) {
+	case *ast.StarExpr, *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType:
+		return true
+	case *ast.Ident:
+		return idx.isNilableIdent(t.Name, visited)
+	case *ast.ParenExpr:
+		return idx.isNilableTypeExpr(t.X, visited)
+	}
+	return false
+}
+
 // exprFor returns the declared RHS expression for name when name is
 // registered as either an alias or a struct/def in the package
 // index. Aliases take precedence on the off chance a name appears in
@@ -2221,7 +2518,7 @@ func nativeMapHelperName(elemName string, isPtr bool) string {
 // stay structurally identical (the assert was on the non-pointer
 // shape; only direct top-level returns ever assert to the pointer
 // shape, but emitting both variants keeps the worklist symmetric).
-func emitNativeMapHelper(name, elemName string, isPtr bool) string {
+func emitNativeMapHelper(name, elemName string, isPtr, elemNilable bool) string {
 	nativeType := "map[string]" + elemName
 	retType := nativeType
 	if isPtr {
@@ -2261,6 +2558,23 @@ func emitNativeMapHelper(name, elemName string, isPtr bool) string {
 	b.WriteString("\t}); ok {\n")
 	fmt.Fprintf(&b, "\t\tout := make(%s, ranger.Len())\n", nativeType)
 	b.WriteString("\t\tranger.RangeAny(func(k string, v any) bool {\n")
+	// Null-holder preservation: BAML's recursive aliases (`type
+	// JsonValue = *Union6...`) include `null` as a variant. The
+	// runtime decodes null map values to an untyped nil in the
+	// ranger callback; a type assertion against the concrete element
+	// type rejects untyped nil, so without this branch the key would
+	// silently drop from the produced map — converting documented
+	// order loss into undocumented data loss. For nilable element
+	// types the explicit `out[k] = nil` keeps the key with a nil
+	// value; non-nilable types skip the entry since the BAML decoder
+	// does not produce untyped nil for them, and writing a zero
+	// struct would falsely advertise a present-but-empty value.
+	if elemNilable {
+		b.WriteString("\t\t\tif v == nil {\n")
+		b.WriteString("\t\t\t\tout[k] = nil\n")
+		b.WriteString("\t\t\t\treturn true\n")
+		b.WriteString("\t\t\t}\n")
+	}
 	fmt.Fprintf(&b, "\t\t\tif cv, ok := v.(%s); ok {\n", elemName)
 	b.WriteString("\t\t\t\tout[k] = cv\n")
 	b.WriteString("\t\t\t}\n")
