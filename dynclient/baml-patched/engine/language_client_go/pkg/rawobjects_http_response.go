@@ -58,7 +58,7 @@ func (h *httpResponse) Headers() (map[string]string, error) {
 		return nil, fmt.Errorf("failed to get headers: %w", err)
 	}
 
-	headers, ok := result.(map[string]string)
+	headers, ok := orderedFieldsToStringMap(result)
 	if !ok {
 		return nil, fmt.Errorf("unexpected type for headers: %T", result)
 	}

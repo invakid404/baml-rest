@@ -129,6 +129,20 @@ func encodeValue(value any) (*cffi.HostValue, error) {
 		return nil, fmt.Errorf("unsupported type: StreamState[any] cannot be passed as inputs to baml functions")
 	}
 
+	// ordered map encode: materialize OrderedFields into a native
+	// map[string]any and recurse. The downstream encodeMap path then
+	// produces the HostMapValue with the right structure. Pointer-wrapped
+	// ordered carriers (used by optional map fields) are unwrapped via
+	// reflect so a nil optional flows to the existing nil-value handling.
+	if probe := unwrapEncodeOrderedCarrier(value); probe != nil {
+		materialized := make(map[string]any, probe.Len())
+		probe.RangeAny(func(k string, v any) bool {
+			materialized[k] = v
+			return true
+		})
+		return encodeValue(materialized)
+	}
+
 	// Handle primitive kinds and collections using reflection value rv (points to underlying value)
 	switch rv.Kind() {
 	case reflect.String:
@@ -285,4 +299,41 @@ func EncodeEnvVar(fields map[string]string) ([]*cffi.HostEnvVar, error) {
 	}
 
 	return entries, nil
+}
+
+// orderedRanger captures the structural shape both
+// OrderedFields (= OrderedMap[any]) and any typed
+// OrderedMap[T] satisfy through bamlutils' RangeAny method.
+// Used by encodeValue so static-map inputs (now typed as
+// baml.OrderedMap[T]) reach the BAML map-encoding pipeline
+// without losing key/value resolution.
+type orderedRanger interface {
+	RangeAny(func(string, any) bool)
+	Len() int
+}
+
+// unwrapEncodeOrderedCarrier normalises ordered-map carriers the
+// generated client may pass into encodeValue. A value receiver
+// orderedMap[V] satisfies orderedRanger directly; a pointer to one
+// (used by optional map fields) is unwrapped via reflect so a nil
+// pointer surfaces as no match — the RangeAny invocation on a nil
+// pointer would otherwise panic. Returns nil for any other shape so
+// the caller falls through to the standard kind dispatch.
+func unwrapEncodeOrderedCarrier(value any) orderedRanger {
+	if value == nil {
+		return nil
+	}
+	if r, ok := value.(orderedRanger); ok {
+		return r
+	}
+	rv := reflect.ValueOf(value)
+	if rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return nil
+		}
+		if r, ok := rv.Elem().Interface().(orderedRanger); ok {
+			return r
+		}
+	}
+	return nil
 }

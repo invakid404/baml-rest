@@ -117,35 +117,51 @@ func decodeMapValue(valueMap *cffi.CFFIValueMap, typeMap TypeMap) (reflect.Value
 	goValueType := convertFieldTypeToGoType(valueType, typeMap)
 	debugLog("goValueType: %+v\n", goValueType)
 	debugLog("typeMap.typeMap[\"INTERNAL.nil\"]: %+v\n", typeMap.typeMap["INTERNAL.nil"])
+	_ = goKeyType
+
+	// ordered map decode: build OrderedFields in CFFI entry order so generated client
+	// conversion preserves BAML emission order. The INTERNAL.nil branch
+	// keeps scalar-preserving assignments (int64/float64/bool surface
+	// through reflect.Value's typed accessors) so dynamic-value maps
+	// hand back faithfully typed scalars; the concrete branch routes
+	// each value through Decode and boxes the result so generated
+	// client conversion can rebuild baml.OrderedMap[T] without losing
+	// CFFI key order.
+	values := NewOrderedFields(len(valueMap.Entries))
 	if goValueType == typeMap.typeMap["INTERNAL.nil"] {
-		values := map[string]any{}
 		for _, entry := range valueMap.Entries {
 			key := entry.Key
 			value := entry.Value
 			decodedValue, goType := Decode(value, typeMap)
 			switch goType {
 			case reflect.TypeOf(int64(0)):
-				values[key] = decodedValue.Int()
+				_ = values.Set(key, decodedValue.Int())
 			case reflect.TypeOf(float64(0)):
-				values[key] = decodedValue.Float()
+				_ = values.Set(key, decodedValue.Float())
 			case reflect.TypeOf(false):
-				values[key] = decodedValue.Bool()
+				_ = values.Set(key, decodedValue.Bool())
 			default:
-				values[key] = decodedValue.Interface()
+				if decodedValue.IsValid() {
+					_ = values.Set(key, decodedValue.Interface())
+				} else {
+					_ = values.Set(key, nil)
+				}
 			}
 		}
-		return reflect.ValueOf(values), reflect.TypeOf(values)
 	} else {
-		mapType := reflect.MapOf(goKeyType, goValueType)
-		values := reflect.MakeMap(mapType)
 		for _, entry := range valueMap.Entries {
 			key := entry.Key
 			value := entry.Value
 			decodedValue, _ := Decode(value, typeMap)
-			values.SetMapIndex(reflect.ValueOf(key), decodedValue)
+			var boxed any
+			if decodedValue.IsValid() {
+				boxed = decodedValue.Interface()
+			}
+			_ = values.Set(key, boxed)
 		}
-		return values, mapType
 	}
+	rv := reflect.ValueOf(values)
+	return rv, rv.Type()
 }
 
 func decodeStreamingStateValue(valueStreamingState *cffi.CFFIValueStreamingState, typeMap TypeMap) (reflect.Value, reflect.Type) {
@@ -418,12 +434,17 @@ func convertFieldTypeToGoType(fieldType *cffi.CFFIFieldTypeHolder, typeMap TypeM
 
 	if map_, ok := type_.(*cffi.CFFIFieldTypeHolder_MapType); ok {
 		mapType := map_.MapType
-		goKeyType := convertFieldTypeToGoType(mapType.KeyType, typeMap)
-		goValueType := convertFieldTypeToGoType(mapType.ValueType, typeMap)
-		if goValueType == typeMap.typeMap["INTERNAL.nil"] {
-			return reflect.TypeOf(map[string]any{})
-		}
-		return reflect.MapOf(goKeyType, goValueType)
+		// ordered map type: advertise OrderedFields carrier; the ordered
+		// runtime decoder produces an OrderedFields and the generated
+		// client converts it back to baml.OrderedMap[T] at the static-map
+		// surface. Allocating a native map type here would mismatch the
+		// reflect.Value handed back by decodeMapValue. Both the
+		// INTERNAL.nil dynamic-valued branch and the concrete-valued
+		// branch collapse to OrderedFields because decodeMapValue
+		// stores either shape through the same carrier.
+		_ = convertFieldTypeToGoType(mapType.KeyType, typeMap)
+		_ = convertFieldTypeToGoType(mapType.ValueType, typeMap)
+		return reflect.TypeOf(OrderedFields{})
 	}
 
 	if typeAlias, ok := type_.(*cffi.CFFIFieldTypeHolder_TypeAliasType); ok {
