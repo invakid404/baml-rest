@@ -543,6 +543,22 @@ func rewriteStaticMapTypesAndAsserts(body string) (string, bool, error) {
 		body = newBody
 	}
 
+	// Pass 3: rewrite direct type assertions on top-level / parse /
+	// stream result carriers. Pass 2 covers the `baml.Decode(...).Interface().(T)`
+	// shape generated inside class Decode bodies, but the generator
+	// also emits `(result.Data).(T)`, `(result).(T)`, and
+	// `result.StreamData.(T)` from top-level call / parse / stream
+	// functions. The patched runtime supplies an ordered carrier in
+	// these `result` carriers too, so a direct assertion to the
+	// (post-pass-1-rewritten) `baml.OrderedMap[T]` shape panics.
+	// Routing the carrier through the typed conversion helper keeps
+	// the ordered runtime value alive on the way out of the runtime.
+	newBody, changedDirects := rewriteStaticMapDirectAsserts(body)
+	if changedDirects {
+		rewroteAny = true
+		body = newBody
+	}
+
 	return body, rewroteAny, nil
 }
 
@@ -703,6 +719,150 @@ func rewriteStaticMapDecodeAsserts(body string) (string, bool) {
 		changed = true
 	}
 	return body, changed
+}
+
+// rewriteStaticMapDirectAsserts rewrites every remaining
+// `<expr>.(<staticMapType>)` site after pass 2. The BAML generator
+// emits direct assertions on `result.Data`, `result.StreamData`, and
+// `result` itself in the top-level call, parse, and stream
+// final/partial paths; those carriers also reach the assertion as an
+// ordered runtime value, so the unrouted assertion panics. The
+// receiver expression is captured by walking back through the chain
+// of identifier / selector / paren-wrapping characters, then handed
+// off to the typed conversion helper (which accepts `any` and
+// produces the typed ordered map).
+//
+// The rewrite is intentionally narrow: it only fires when the type
+// expression inside the assertion is a static-map shape
+// (isStaticMapAssertType). Every other type assertion in the
+// generated code (e.g. `result.Data.(types.Foo)`) is left untouched.
+func rewriteStaticMapDirectAsserts(body string) (string, bool) {
+	const dotParen = ".("
+	changed := false
+	for searchFrom := 0; ; {
+		idx := strings.Index(body[searchFrom:], dotParen)
+		if idx < 0 {
+			break
+		}
+		absIdx := searchFrom + idx
+		if isInsideStringLiteral(body, absIdx) {
+			searchFrom = absIdx + len(dotParen)
+			continue
+		}
+		// Locate the closing `)` of the assertion.
+		assertOpenIdx := absIdx + 1
+		assertCloseIdx := findMatchingParen(body, assertOpenIdx)
+		if assertCloseIdx < 0 {
+			searchFrom = absIdx + len(dotParen)
+			continue
+		}
+		typeStart := assertOpenIdx + 1
+		typeEnd := assertCloseIdx
+		typeExpr := strings.TrimSpace(body[typeStart:typeEnd])
+		if !isStaticMapAssertType(typeExpr) {
+			searchFrom = assertCloseIdx + 1
+			continue
+		}
+		// Walk back from `.` to the start of the receiver expression.
+		// Acceptable receiver characters: identifier bytes, `.` for
+		// selectors, and matched `(...)` for paren wrapping. Anything
+		// else terminates the walk.
+		recvStart := findStaticMapReceiverStart(body, absIdx)
+		if recvStart < 0 || recvStart == absIdx {
+			searchFrom = assertCloseIdx + 1
+			continue
+		}
+		receiver := strings.TrimSpace(body[recvStart:absIdx])
+		stripped := trimOuterMatchedParens(receiver)
+		if stripped == "" {
+			searchFrom = assertCloseIdx + 1
+			continue
+		}
+		normalised, _ := rewriteMapStringTypeExprs(typeExpr)
+		helperName := staticMapHelperName(normalised)
+		replacement := fmt.Sprintf("%s(%s)", helperName, stripped)
+		body = body[:recvStart] + replacement + body[assertCloseIdx+1:]
+		searchFrom = recvStart + len(replacement)
+		changed = true
+	}
+	return body, changed
+}
+
+// findStaticMapReceiverStart walks back from `end` (the byte index of
+// the `.` in a `.(` assertion) over the receiver expression. The walk
+// accepts identifier characters, `.` for selectors, and matched
+// `(...)` groups. It stops at the first non-receiver byte (whitespace,
+// `=`, `,`, `{`, `;`, `+`, etc.). Returns the start byte index, or
+// the same index as `end` when no receiver was found.
+func findStaticMapReceiverStart(body string, end int) int {
+	i := end
+	for i > 0 {
+		c := body[i-1]
+		if c == '.' || c == '_' ||
+			(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			i--
+			continue
+		}
+		if c == ')' {
+			depth := 1
+			j := i - 2
+			matched := -1
+			for j >= 0 {
+				switch body[j] {
+				case ')':
+					depth++
+				case '(':
+					depth--
+				}
+				if depth == 0 {
+					matched = j
+					break
+				}
+				j--
+			}
+			if matched < 0 {
+				break
+			}
+			i = matched
+			continue
+		}
+		break
+	}
+	return i
+}
+
+// trimOuterMatchedParens removes a leading `(` / trailing `)` pair
+// when they wrap the entire expression. Repeated wrappings (e.g.
+// `((x))`) are stripped iteratively. Returns the input unchanged
+// when the outer pair is not a single matched group.
+func trimOuterMatchedParens(s string) string {
+	for {
+		t := strings.TrimSpace(s)
+		if len(t) < 2 || t[0] != '(' || t[len(t)-1] != ')' {
+			return t
+		}
+		inner := t[1 : len(t)-1]
+		depth := 0
+		matched := true
+		for i := 0; i < len(inner); i++ {
+			switch inner[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth < 0 {
+					matched = false
+				}
+			}
+			if !matched {
+				break
+			}
+		}
+		if !matched || depth != 0 {
+			return t
+		}
+		s = inner
+	}
 }
 
 // isStaticMapAssertType reports whether typeExpr (a Go type expression
@@ -898,45 +1058,83 @@ func isInsideStringLiteral(body string, absIdx int) bool {
 
 // staticMapHelperName encodes a `baml.OrderedMap[T]` type expression
 // into a stable Go identifier suffix. Used as the helper function
-// name. Nested maps and dotted/identifier types are encoded so the
-// resulting identifier is unique per shape but stable across reruns.
+// name. The encoding is reversible by decodeStaticMapEnc: nested
+// maps, pointer/slice wrappers, and dotted identifiers each map to
+// fixed token sequences so a re-run that re-discovers a helper name
+// in a generated file can reproduce the original type expression
+// without an out-of-band manifest.
 func staticMapHelperName(typeExpr string) string {
-	enc := typeExpr
-	enc = strings.ReplaceAll(enc, "baml.OrderedMap[", "OM_")
-	enc = strings.ReplaceAll(enc, "[", "_")
-	enc = strings.ReplaceAll(enc, "]", "_")
-	enc = strings.ReplaceAll(enc, ".", "_")
-	enc = strings.ReplaceAll(enc, "*", "Ptr_")
-	enc = strings.ReplaceAll(enc, " ", "")
-	enc = strings.Trim(enc, "_")
-	return "bamlOrderedAs_" + enc
+	return "bamlOrderedAs_" + encodeStaticMapType(typeExpr)
+}
+
+// convertListHelperName names the per-element-type helper that turns
+// the runtime `[]any` produced by baml.DecodeToOrderedValue into a
+// typed `[]T`. Each list helper is emitted alongside the ordered-map
+// helpers and registered through the same worklist as the ordered-
+// map helpers so the per-package helper file resolves regardless of
+// emission order.
+func convertListHelperName(typeExpr string) string {
+	elem := strings.TrimPrefix(strings.TrimSpace(typeExpr), "[]")
+	return "bamlConvertList_" + encodeStaticMapType(elem)
+}
+
+// encodeStaticMapType encodes a Go type expression into a Go-identifier-
+// safe token sequence. The encoding is deterministic and decodable; the
+// only reserved producer is decodeStaticMapEnc. Tokens:
+//
+//	"baml.OrderedMap[" -> "OM_"     (opens a generic; close is inferred
+//	                                 at end-of-token-stream by depth)
+//	"*"                -> "Ptr_"    (pointer prefix)
+//	"[]"               -> "Slice_"  (slice prefix)
+//	"."                -> "_dot_"   (package separator)
+//	"]"                -> ""        (closes inferred by OM_ depth)
+//	spaces             -> ""        (stripped)
+//
+// Identifier characters pass through unchanged, including any
+// underscore that is part of a Go identifier (e.g. `stream_types`).
+// All map types we encode have exactly one type parameter so the
+// implicit-close-at-end rule is unambiguous.
+func encodeStaticMapType(typeExpr string) string {
+	s := strings.ReplaceAll(typeExpr, " ", "")
+	s = strings.ReplaceAll(s, "baml.OrderedMap[", "OM_")
+	s = strings.ReplaceAll(s, "*", "Ptr_")
+	s = strings.ReplaceAll(s, "[]", "Slice_")
+	s = strings.ReplaceAll(s, ".", "_dot_")
+	s = strings.ReplaceAll(s, "]", "")
+	return s
 }
 
 // ensureStaticMapHelperFile writes / refreshes a per-package helper
 // file alongside the generated client files. The file declares every
-// `bamlOrderedAs_*` helper the rewritten code references, using a
-// generic core helper that builds the typed `baml.OrderedMap[T]` from
-// any runtime value the patched serde produces (OrderedFields directly,
-// `*baml.OrderedMap[T]` pointer wrappers from optional fields, or a
-// legacy native map as a compat fallback).
+// `bamlOrderedAs_*` helper the rewritten code references plus the
+// `bamlConvertList_*` helpers those ordered-map helpers transitively
+// call for `map<string, list<T>>` values.
 //
 // The file is regenerated wholesale each time so a re-run after a
-// rewrite-shape change does not stack stale helpers. The helper set is
-// deduplicated by scanning the file just rewritten for
-// `bamlOrderedAs_*` call sites.
+// rewrite-shape change does not stack stale helpers. Helper discovery
+// is a worklist: seed names from a regex scan of every package file,
+// then expand by examining each emitted helper's body for further
+// `bamlOrderedAs_*` / `bamlConvertList_*` references. Without the
+// transitive step, a package whose only static-map surface is a
+// nested map (e.g. `NestedMap baml.OrderedMap[baml.OrderedMap[T]]`)
+// would emit the outer helper but omit the inner helper the outer
+// recursively calls, leaving the package with an undefined symbol.
+//
+// Imports are similarly derived from the emitted bodies: any
+// `<pkg>.<Ident>` reference where `<pkg>` is not the local package
+// and not the `baml` alias is treated as a sibling generated
+// package, and its import path is resolved by inspecting the same
+// surrounding files used to derive the BAML alias.
 func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
-	// Read every .go file in the package and collect all helper names
-	// any of them references. The helper file is one declaration per
-	// helper, defined at package scope so cross-file references resolve.
 	entries, err := os.ReadDir(packageDir)
 	if err != nil {
 		return err
 	}
-	names := map[string]struct{}{}
-	helperRe := regexp.MustCompile(`bamlOrderedAs_[A-Za-z0-9_]+`)
+	seed := map[string]struct{}{}
+	helperRefRe := regexp.MustCompile(`baml(OrderedAs|ConvertList)_[A-Za-z0-9_]+`)
 	collect := func(src []byte) {
-		for _, m := range helperRe.FindAll(src, -1) {
-			names[string(m)] = struct{}{}
+		for _, m := range helperRefRe.FindAll(src, -1) {
+			seed[string(m)] = struct{}{}
 		}
 	}
 	for _, e := range entries {
@@ -953,7 +1151,7 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 		collect(data)
 	}
 	collect(rewrittenSrc)
-	if len(names) == 0 {
+	if len(seed) == 0 {
 		// No helpers referenced — remove any stale helper file from a
 		// prior run so the package stays clean.
 		path := filepath.Join(packageDir, staticMapHelperBaseName)
@@ -964,16 +1162,11 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 	}
 
 	// Determine the package name and the BAML `pkg` import path from a
-	// sibling Go file. The import path varies by build context: the
-	// regenerate-dynclient pipeline rewrites generated-client imports to
-	// the patched-fork path AFTER the static-map pass, while the
-	// cmd/build/build.sh integration pipeline leaves them on the
-	// upstream `github.com/boundaryml/baml/...` path. Adopting whatever
-	// the surrounding files use keeps the helper file resolvable in both
-	// pipelines (and lets the post-pass rewriter retarget the helper
-	// along with everything else when it runs).
+	// sibling Go file. Also collect the full import map so the helper
+	// file's imports can pick up sibling-package paths by name.
 	pkgName := ""
 	bamlImportPath := ""
+	importsByName := map[string]string{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == staticMapHelperBaseName {
 			continue
@@ -993,8 +1186,10 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 		if bamlImportPath == "" {
 			bamlImportPath = findBAMLPkgImportPath(file)
 		}
-		if pkgName != "" && bamlImportPath != "" {
-			break
+		for name, path := range collectImportPathsByName(file) {
+			if _, ok := importsByName[name]; !ok {
+				importsByName[name] = path
+			}
 		}
 	}
 	if pkgName == "" {
@@ -1010,8 +1205,43 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 		bamlImportPath = "github.com/boundaryml/baml/engine/language_client_go/pkg"
 	}
 
-	sortedNames := make([]string, 0, len(names))
-	for n := range names {
+	// Worklist expansion: emit each helper body and follow any
+	// transitive `bamlOrderedAs_*` / `bamlConvertList_*` references
+	// nested inside it.
+	emitted := map[string]string{}
+	worklist := make([]string, 0, len(seed))
+	for n := range seed {
+		worklist = append(worklist, n)
+	}
+	for len(worklist) > 0 {
+		name := worklist[len(worklist)-1]
+		worklist = worklist[:len(worklist)-1]
+		if _, done := emitted[name]; done {
+			continue
+		}
+		body, ok := emitStaticHelperByName(name)
+		if !ok {
+			continue
+		}
+		emitted[name] = body
+		for _, m := range helperRefRe.FindAllString(body, -1) {
+			if _, done := emitted[m]; !done {
+				worklist = append(worklist, m)
+			}
+		}
+	}
+	if len(emitted) == 0 {
+		// All seed names were unparseable encodings — leave the
+		// package clean and drop any stale helper file.
+		path := filepath.Join(packageDir, staticMapHelperBaseName)
+		if _, statErr := os.Stat(path); statErr == nil {
+			return os.Remove(path)
+		}
+		return nil
+	}
+
+	sortedNames := make([]string, 0, len(emitted))
+	for n := range emitted {
 		sortedNames = append(sortedNames, n)
 	}
 	// Stable order so re-runs produce byte-stable output.
@@ -1021,24 +1251,121 @@ func ensureStaticMapHelperFile(packageDir string, rewrittenSrc []byte) error {
 		}
 	}
 
+	// Derive any sibling-package imports needed by the emitted bodies.
+	// The local package and the `baml` alias are excluded; everything
+	// else is treated as a sibling generated package and resolved
+	// through the import map collected from the surrounding files.
+	extraImports := map[string]string{} // import path -> alias ("" for default)
+	pkgRefRe := regexp.MustCompile(`\b([a-zA-Z_][a-zA-Z0-9_]*)\.[A-Z][a-zA-Z0-9_]*`)
+	for _, name := range sortedNames {
+		body := emitted[name]
+		for _, m := range pkgRefRe.FindAllStringSubmatch(body, -1) {
+			ref := m[1]
+			if ref == "baml" || ref == pkgName {
+				continue
+			}
+			path, ok := importsByName[ref]
+			if !ok {
+				continue
+			}
+			extraImports[path] = ""
+		}
+	}
+
 	var buf strings.Builder
 	buf.WriteString("// Code generated by cmd/hacks/hacks/dynamic_order_client.go; DO NOT EDIT.\n")
 	buf.WriteString(staticMapOrderedHelperMarker + "\n\n")
 	buf.WriteString("package " + pkgName + "\n\n")
 	buf.WriteString("import (\n")
 	fmt.Fprintf(&buf, "\tbaml %q\n", bamlImportPath)
+	// Stable import order: sort by path.
+	if len(extraImports) > 0 {
+		paths := make([]string, 0, len(extraImports))
+		for p := range extraImports {
+			paths = append(paths, p)
+		}
+		for i := 1; i < len(paths); i++ {
+			for j := i; j > 0 && paths[j] < paths[j-1]; j-- {
+				paths[j], paths[j-1] = paths[j-1], paths[j]
+			}
+		}
+		for _, p := range paths {
+			fmt.Fprintf(&buf, "\t%q\n", p)
+		}
+	}
 	buf.WriteString(")\n\n")
 	for _, name := range sortedNames {
-		typeExpr, ok := staticMapHelperTypeFromName(name)
-		if !ok {
-			continue
-		}
-		buf.WriteString(emitStaticMapHelper(name, typeExpr))
+		buf.WriteString(emitted[name])
 		buf.WriteString("\n\n")
 	}
 	buf.WriteString(staticMapHelperCore())
 
 	return os.WriteFile(filepath.Join(packageDir, staticMapHelperBaseName), []byte(buf.String()), 0o644)
+}
+
+// emitStaticHelperByName dispatches helper-body emission by name
+// prefix. Returns the rendered body and a success flag; an
+// unparseable name (e.g. an unrelated `bamlOrderedAs_` reference
+// from user code) yields false so the worklist skips it without
+// emitting a wrong-typed stub.
+func emitStaticHelperByName(name string) (string, bool) {
+	if strings.HasPrefix(name, "bamlOrderedAs_") {
+		typeExpr, ok := staticMapHelperTypeFromName(name)
+		if !ok {
+			return "", false
+		}
+		return emitStaticMapHelper(name, typeExpr), true
+	}
+	if strings.HasPrefix(name, "bamlConvertList_") {
+		listType, ok := convertListHelperTypeFromName(name)
+		if !ok {
+			return "", false
+		}
+		return emitConvertListHelper(name, listType), true
+	}
+	return "", false
+}
+
+// collectImportPathsByName returns the file's imports keyed by the
+// in-scope name they bind. The name is the explicit alias when
+// present, otherwise the last segment of the import path — matching
+// how the Go compiler resolves selector expressions back to imports.
+// Blank and dot imports are skipped because they bind no selectable
+// name.
+func collectImportPathsByName(file *ast.File) map[string]string {
+	out := map[string]string{}
+	for _, imp := range file.Imports {
+		if imp == nil || imp.Path == nil {
+			continue
+		}
+		raw := imp.Path.Value
+		if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+			continue
+		}
+		path := raw[1 : len(raw)-1]
+		name := ""
+		if imp.Name != nil {
+			switch imp.Name.Name {
+			case "_", ".":
+				continue
+			default:
+				name = imp.Name.Name
+			}
+		} else {
+			// Default name = last path segment.
+			slash := strings.LastIndex(path, "/")
+			if slash < 0 {
+				name = path
+			} else {
+				name = path[slash+1:]
+			}
+		}
+		if name == "" {
+			continue
+		}
+		out[name] = path
+	}
+	return out
 }
 
 // findBAMLPkgImportPath returns the module-qualified import path used
@@ -1078,75 +1405,69 @@ func findBAMLPkgImportPath(file *ast.File) string {
 }
 
 // staticMapHelperTypeFromName reverses staticMapHelperName. Returns
-// the `baml.OrderedMap[T]` type expression the helper produces.
-// Returns false for unparseable encodings so a future drift in the
-// encoder surfaces as a missing helper; the wrong-typed-helper failure
-// mode would otherwise compile and crash at runtime.
+// the `baml.OrderedMap[T]` (or `*baml.OrderedMap[T]`) type expression
+// the helper produces. Returns false for unparseable encodings so a
+// future drift in the encoder surfaces as a missing helper rather
+// than as a wrong-typed helper that compiles and crashes at runtime.
 func staticMapHelperTypeFromName(name string) (string, bool) {
 	const prefix = "bamlOrderedAs_"
 	if !strings.HasPrefix(name, prefix) {
 		return "", false
 	}
 	enc := strings.TrimPrefix(name, prefix)
-	// Reverse the per-token substitutions. The encoding starts with
-	// either `OM_` (plain ordered map) or `Ptr_OM_` (optional/pointer
-	// wrapped). Anything else is not a static-map helper this pass
-	// emits — skip so a future helper convention does not silently
-	// produce wrong-typed code here.
+	// The encoding always starts with `OM_` (plain ordered map) or
+	// `Ptr_OM_` (optional/pointer wrapped); anything else is not a
+	// static-map helper this pass emits.
 	if !strings.HasPrefix(enc, "OM_") && !strings.HasPrefix(enc, "Ptr_OM_") {
 		return "", false
 	}
 	return decodeStaticMapEnc(enc), true
 }
 
-// decodeStaticMapEnc reverses the OM_/_/Ptr_ substitution. OM_ becomes
-// `baml.OrderedMap[`; closing `]` is appended for every OM_; underscore
-// is a generic separator that maps to dot when followed by an upper-
-// case letter and bracket boundary otherwise. The encoding is
-// engineered to survive Go-identifier constraints; the decoder uses a
-// small state machine to reproduce the original expression.
+// convertListHelperTypeFromName reverses convertListHelperName. The
+// emitted helper signature returns `[]<elementType>`; the element
+// type is recovered by decoding the suffix and prepending `[]`.
+func convertListHelperTypeFromName(name string) (string, bool) {
+	const prefix = "bamlConvertList_"
+	if !strings.HasPrefix(name, prefix) {
+		return "", false
+	}
+	enc := strings.TrimPrefix(name, prefix)
+	if enc == "" {
+		return "", false
+	}
+	return "[]" + decodeStaticMapEnc(enc), true
+}
+
+// decodeStaticMapEnc reverses encodeStaticMapType. Token recognition
+// (`OM_`, `Ptr_`, `Slice_`, `_dot_`) is greedy and unambiguous; any
+// other byte is appended verbatim, which preserves underscores that
+// live inside Go identifiers such as `stream_types`. Generic closes
+// are inferred at end-of-stream by closing every `OM_` that was
+// opened — every static-map type expression we encode has exactly
+// one type parameter, so the close set is always trailing.
 func decodeStaticMapEnc(enc string) string {
 	var out strings.Builder
 	depth := 0
-	i := 0
-	for i < len(enc) {
-		if strings.HasPrefix(enc[i:], "OM_") {
+	for i := 0; i < len(enc); {
+		switch {
+		case strings.HasPrefix(enc[i:], "OM_"):
 			out.WriteString("baml.OrderedMap[")
 			depth++
 			i += 3
-			continue
-		}
-		if strings.HasPrefix(enc[i:], "Ptr_") {
+		case strings.HasPrefix(enc[i:], "Ptr_"):
 			out.WriteString("*")
 			i += 4
-			continue
-		}
-		c := enc[i]
-		if c == '_' {
-			// End of an identifier segment. Either a generic close or
-			// a dotted-name separator. The disambiguator: peek ahead.
-			next := byte(0)
-			if i+1 < len(enc) {
-				next = enc[i+1]
-			}
-			if next == 0 || next == '_' || (next >= 'a' && next <= 'z') {
-				// dotted separator (e.g. baml_OrderedMap → baml.OrderedMap),
-				// but in practice only the legacy `pkg.Type` shape needs
-				// this. Empty separator means end of expression.
-				out.WriteString(".")
-				i++
-				continue
-			}
-			// Close generic.
-			if depth > 0 {
-				out.WriteString("]")
-				depth--
-			}
+		case strings.HasPrefix(enc[i:], "Slice_"):
+			out.WriteString("[]")
+			i += 6
+		case strings.HasPrefix(enc[i:], "_dot_"):
+			out.WriteString(".")
+			i += 5
+		default:
+			out.WriteByte(enc[i])
 			i++
-			continue
 		}
-		out.WriteByte(c)
-		i++
 	}
 	for depth > 0 {
 		out.WriteString("]")
@@ -1261,15 +1582,68 @@ func emitStaticMapHelper(name, typeExpr string) string {
 
 // convertStaticMapValueExpr returns a Go expression that converts the
 // `any`-typed value v to the typed element T. For nested ordered maps
-// the conversion recurses through the matching helper. For all other
-// shapes the conversion uses a type assertion that mirrors what
-// `.Interface().(T)` would produce.
+// the conversion recurses through the matching ordered-map helper;
+// for lists (`[]E`) it recurses through a per-element-type list
+// helper that walks the `[]any` carrier produced by
+// baml.DecodeToOrderedValue. Other shapes fall back to a direct type
+// assertion that mirrors what `.Interface().(T)` would produce on
+// the upstream pre-ordered-decode path.
 func convertStaticMapValueExpr(varName, innerType string) string {
-	if strings.HasPrefix(innerType, "baml.OrderedMap[") {
-		helper := staticMapHelperName(innerType)
+	t := strings.TrimSpace(innerType)
+	if strings.HasPrefix(t, "baml.OrderedMap[") {
+		helper := staticMapHelperName(t)
 		return fmt.Sprintf("%s(%s)", helper, varName)
 	}
-	return fmt.Sprintf("%s.(%s)", varName, innerType)
+	if strings.HasPrefix(t, "[]") {
+		helper := convertListHelperName(t)
+		return fmt.Sprintf("%s(%s)", helper, varName)
+	}
+	return fmt.Sprintf("%s.(%s)", varName, t)
+}
+
+// emitConvertListHelper renders the per-element-type list conversion
+// helper. The body normalises the `[]any` carrier
+// baml.DecodeToOrderedValue produces for list nodes into a typed
+// `[]E`, recursing into ordered-map / list helpers for composite
+// element types. A direct `[]E` carrier from the legacy Decode path
+// is also accepted as a compat fall-through so a generated client
+// fed through the new helper from a path that still produced a
+// concrete slice does not panic.
+func emitConvertListHelper(name, listType string) string {
+	elem := strings.TrimPrefix(strings.TrimSpace(listType), "[]")
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "// %s converts the runtime []any carrier produced\n", name)
+	fmt.Fprintf(&b, "// by baml.DecodeToOrderedValue into a typed %s while\n", listType)
+	b.WriteString("// preserving element order. Composite element types recurse\n")
+	b.WriteString("// through the matching ordered-map or list helper.\n")
+	fmt.Fprintf(&b, "func %s(value any) %s {\n", name, listType)
+	b.WriteString("\tif value == nil {\n")
+	b.WriteString("\t\treturn nil\n")
+	b.WriteString("\t}\n")
+	// Pointer wrapping is not used for list fields today, but accept
+	// `*[]E` defensively so an optional-list wrapper from a future
+	// generator shape does not panic here.
+	fmt.Fprintf(&b, "\tif ptr, ok := value.(*%s); ok {\n", listType)
+	b.WriteString("\t\tif ptr == nil {\n")
+	b.WriteString("\t\t\treturn nil\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn *ptr\n")
+	b.WriteString("\t}\n")
+	fmt.Fprintf(&b, "\tif typed, ok := value.(%s); ok {\n", listType)
+	b.WriteString("\t\treturn typed\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tlistVal, ok := value.([]any)\n")
+	b.WriteString("\tif !ok {\n")
+	b.WriteString("\t\treturn nil\n")
+	b.WriteString("\t}\n")
+	fmt.Fprintf(&b, "\tout := make(%s, len(listVal))\n", listType)
+	b.WriteString("\tfor i, ev := range listVal {\n")
+	fmt.Fprintf(&b, "\t\tout[i] = %s\n", convertStaticMapValueExpr("ev", elem))
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn out\n")
+	b.WriteString("}")
+	return b.String()
 }
 
 // staticMapHelperCore returns the supporting bits the helpers share.

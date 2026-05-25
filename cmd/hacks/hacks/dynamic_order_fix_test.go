@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -485,6 +487,377 @@ func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
 				t.Fatalf("helper file references unrelated import %q in addition to sibling %q:\n%s", other, tc.importPath, helperBody)
 			}
 		})
+	}
+}
+
+// TestStaticMapClientRewrite_TopLevelMapReturnCasts pins the
+// direct-cast surfaces the static-map pass must cover beyond class
+// Decode bodies: top-level, parse, and stream final/partial paths
+// cast `result.Data` (and `result`, `result.StreamData`) directly to
+// the asserted return type. For a `map<string, T>` return, pass 1
+// rewrites the asserted type to `baml.OrderedMap[T]`, but the
+// patched runtime still hands back an ordered carrier; an unrouted
+// direct assertion panics at runtime. The static-map pass therefore
+// recognises the direct-cast shapes the generator emits and routes
+// each through the same typed helper used for the
+// `baml.Decode(...).Interface()` sites in class Decode bodies.
+//
+// The fixture mirrors the four BAML-generator shapes:
+//   - top-level call: `casted := (result.Data).(map[string]string)`
+//   - parse:          `casted := (result).(map[string]string)`
+//   - stream final:   `data := (result.Data).(map[string]string)`
+//   - stream partial: `data := (result.StreamData).(stream_types.X)`
+//     (kept as a non-map control to make sure non-map asserts are not
+//     rewritten)
+func TestStaticMapClientRewrite_TopLevelMapReturnCasts(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	if err := os.MkdirAll(clientDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const before = `package baml_client
+
+import (
+	baml "github.com/example/fake-baml-patched/pkg"
+)
+
+func CallMap(result struct {
+	Data any
+}) map[string]string {
+	casted := (result.Data).(map[string]string)
+	return casted
+}
+
+func ParseMap(result any) map[string]string {
+	casted := (result).(map[string]string)
+	return casted
+}
+
+func StreamMap(result struct {
+	Data       any
+	StreamData any
+}) (map[string]string, map[string]string) {
+	final := (result.Data).(map[string]string)
+	partial := result.StreamData.(map[string]string)
+	return final, partial
+}
+
+func _bamlUse() { _ = baml.NewOrderedFields }
+`
+	path := filepath.Join(clientDir, "functions.go")
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	after := readFileT(t, path)
+	// All four direct-cast sites must route through the helper. The
+	// type expression after pass 1 is `baml.OrderedMap[string]`, so a
+	// surviving `.(baml.OrderedMap[` substring would indicate the cast
+	// was not rewritten.
+	if strings.Contains(after, ".(baml.OrderedMap[") {
+		t.Fatalf("direct-cast assertion to baml.OrderedMap[...] still present after rewrite:\n%s", after)
+	}
+	// The helper call must wrap each carrier expression.
+	for _, marker := range []string{
+		"bamlOrderedAs_OM_string(result.Data)",
+		"bamlOrderedAs_OM_string(result)",
+		"bamlOrderedAs_OM_string(result.StreamData)",
+	} {
+		if !strings.Contains(after, marker) {
+			t.Fatalf("expected helper call %q in patched file:\n%s", marker, after)
+		}
+	}
+
+	helperPath := filepath.Join(clientDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+	if !strings.Contains(helperBody, "func bamlOrderedAs_OM_string(") {
+		t.Fatalf("helper file missing bamlOrderedAs_OM_string declaration:\n%s", helperBody)
+	}
+}
+
+// TestStaticMapClientRewrite_MapOfListElementConversion pins the
+// element-wise conversion of `map<string, list<T>>` carriers. A
+// direct `v.([]T)` assertion in the helper body would panic, because
+// the patched DecodeToOrderedValue returns `[]any` for every list
+// (`interface conversion: []interface {} is not []string`). The
+// helper routes the carrier through a per-element-type list helper
+// that converts the `[]any` to `[]T` element-by-element, and
+// composes the same way for nested lists / qualified element types.
+func TestStaticMapClientRewrite_MapOfListElementConversion(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const before = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type Sample struct {
+	Lists       map[string][]string ` + "`json:\"lists\"`" + `
+	NestedLists map[string][][]string ` + "`json:\"nested_lists\"`" + `
+}
+
+func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "lists":
+			s.Lists = baml.Decode(valueHolder).Interface().(map[string][]string)
+		case "nested_lists":
+			s.NestedLists = baml.Decode(valueHolder).Interface().(map[string][][]string)
+		default:
+			panic(fmt.Sprintf("unexpected field: %s", key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+	// The helper body must NOT contain a direct `v.([]string)` /
+	// `v.([][]string)` assertion — that's the pre-fix shape that panics.
+	for _, banned := range []string{
+		"v.([]string)",
+		"v.([][]string)",
+	} {
+		if strings.Contains(helperBody, banned) {
+			t.Fatalf("helper body still contains direct list assertion %q (panics on []any):\n%s", banned, helperBody)
+		}
+	}
+	// The element-wise loop must produce `[]string` from `[]any`.
+	// The exact shape is implementation-defined; assert on the structural
+	// markers that the converter emits — a `value.([]any)` cast against
+	// the runtime carrier and a `make([]string, ...)` allocation
+	// scaled to the carrier length.
+	mustContain := []string{
+		"value.([]any)",
+		"make([]string,",
+		"make([][]string,",
+	}
+	for _, marker := range mustContain {
+		if !strings.Contains(helperBody, marker) {
+			t.Fatalf("helper body missing element-wise conversion marker %q:\n%s", marker, helperBody)
+		}
+	}
+	// The helper file must compile under go/parser at least.
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, helperPath, []byte(helperBody), parser.ParseComments); err != nil {
+		t.Fatalf("helper file does not parse: %v\n%s", err, helperBody)
+	}
+}
+
+// TestStaticMapClientRewrite_NestedOnlyPackageHasInnerHelper pins
+// the transitive helper collection contract: when a package contains
+// a nested map field but no flat-map sibling, the outer helper
+// recursively calls an inner helper that never appears verbatim in
+// any rewritten file. ensureStaticMapHelperFile must walk every
+// emitted helper's body for nested `bamlOrderedAs_*` references and
+// include them in the emitted set; otherwise the outer helper calls
+// an undefined identifier and the package fails to compile.
+func TestStaticMapClientRewrite_NestedOnlyPackageHasInnerHelper(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const before = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type Sample struct {
+	NestedMap map[string]map[string]string ` + "`json:\"nested_map\"`" + `
+}
+
+func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "nested_map":
+			s.NestedMap = baml.Decode(valueHolder).Interface().(map[string]map[string]string)
+		default:
+			panic(fmt.Sprintf("unexpected field: %s", key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+	// Both the outer helper (referenced by the rewritten code) AND
+	// the inner helper it calls transitively MUST be declared in the
+	// helper file. Pre-fix, only the outer landed and the file failed
+	// to compile.
+	for _, decl := range []string{
+		"func bamlOrderedAs_OM_OM_string(",
+		"func bamlOrderedAs_OM_string(",
+	} {
+		if !strings.Contains(helperBody, decl) {
+			t.Fatalf("helper file missing required declaration %q:\n%s", decl, helperBody)
+		}
+	}
+	// The helper file must parse.
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, helperPath, []byte(helperBody), parser.ParseComments); err != nil {
+		t.Fatalf("helper file does not parse: %v\n%s", err, helperBody)
+	}
+}
+
+// TestStaticMapClientRewrite_QualifiedTypesRoundTripAndImports pins
+// two coupled contracts the static-map pass needs for cross-package
+// element types like `types.Foo` and `stream_types.Bar`:
+//
+//  1. The helper-name encoding round-trips so the rendered helper
+//     declares the correct `baml.OrderedMap[<pkg>.<Type>]` signature.
+//     A `.`-as-`_` encoding would let the decoder treat
+//     `_<uppercase>` as a generic close and produce nonsense like
+//     `baml.OrderedMap[types]Foo`.
+//
+//  2. The emitted helper file imports every sibling generated
+//     package its helper bodies reference. Without that, helpers in
+//     `baml_client/` (or `stream_types/`) can't compile when they
+//     reach into a sibling `types` package.
+//
+// The fixture lives at baml_client/ (not types/), so a value type of
+// `types.Foo` requires both a correct round-trip in the helper name
+// AND a sibling `types` import in the emitted helper file.
+func TestStaticMapClientRewrite_QualifiedTypesRoundTripAndImports(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	streamDir := filepath.Join(clientDir, "stream_types")
+	for _, d := range []string{typesDir, streamDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	// Sibling package decls so the helper file's import block can
+	// pick up the actual import paths via the package-by-name lookup.
+	if err := os.WriteFile(filepath.Join(typesDir, "classes.go"), []byte(`package types
+
+type Foo struct{}
+`), 0o644); err != nil {
+		t.Fatalf("write types/classes.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(streamDir, "classes.go"), []byte(`package stream_types
+
+type Bar struct{}
+`), 0o644); err != nil {
+		t.Fatalf("write stream_types/classes.go: %v", err)
+	}
+
+	const before = `package baml_client
+
+import (
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+
+	"github.com/example/proj/baml_client/types"
+	"github.com/example/proj/baml_client/stream_types"
+)
+
+type Sample struct {
+	FooMap map[string]types.Foo        ` + "`json:\"foo_map\"`" + `
+	BarMap map[string]stream_types.Bar ` + "`json:\"bar_map\"`" + `
+}
+
+func (s *Sample) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		valueHolder := field.Value
+		switch field.Key {
+		case "foo_map":
+			s.FooMap = baml.Decode(valueHolder).Interface().(map[string]types.Foo)
+		case "bar_map":
+			s.BarMap = baml.Decode(valueHolder).Interface().(map[string]stream_types.Bar)
+		}
+	}
+	_ = cffi.CFFIValueClass{}
+}
+`
+	path := filepath.Join(clientDir, "classes.go")
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hack := &DynamicOrderClientHack{}
+	if err := hack.Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	helperPath := filepath.Join(clientDir, "ordered_map_static.go")
+	helperBody := readFileT(t, helperPath)
+
+	// The helper function signatures must declare the qualified
+	// return type — the pre-fix encoder/decoder pair garbled this.
+	for _, sig := range []string{
+		"baml.OrderedMap[types.Foo]",
+		"baml.OrderedMap[stream_types.Bar]",
+	} {
+		if !strings.Contains(helperBody, sig) {
+			t.Fatalf("helper file missing helper signature with %q:\n%s", sig, helperBody)
+		}
+	}
+	// The garbled pre-fix forms must NOT appear.
+	for _, banned := range []string{
+		"baml.OrderedMap[types]Foo",
+		"baml.OrderedMap[stream]types",
+		"baml.OrderedMap[stream]Bar",
+	} {
+		if strings.Contains(helperBody, banned) {
+			t.Fatalf("helper file still contains garbled qualified-type encoding %q:\n%s", banned, helperBody)
+		}
+	}
+	// The helper file must import the sibling packages it references.
+	for _, importPath := range []string{
+		"github.com/example/proj/baml_client/types",
+		"github.com/example/proj/baml_client/stream_types",
+	} {
+		if !strings.Contains(helperBody, importPath) {
+			t.Fatalf("helper file missing required sibling import %q:\n%s", importPath, helperBody)
+		}
+	}
+	// The helper file must parse with go/parser; type-checking
+	// happens via the broader compile sweep.
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, helperPath, []byte(helperBody), parser.ParseComments); err != nil {
+		t.Fatalf("helper file does not parse: %v\n%s", err, helperBody)
 	}
 }
 
