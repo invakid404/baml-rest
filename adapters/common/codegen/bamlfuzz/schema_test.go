@@ -292,10 +292,13 @@ func TestWalkKindNull(t *testing.T) {
 	}
 }
 
-// TestWalkMapKeysSortLexically asserts the walker emits map entries
-// in lexicographic order regardless of FuzzMapEntries input order.
-// This is the canonical-form invariant the round-trip relies on.
-func TestWalkMapKeysSortLexically(t *testing.T) {
+// TestWalkMapKeysPreserveInsertionOrder asserts the walker emits map
+// entries in FuzzValue.MapEntries slice order, byte-identical for both
+// MockLLMContent and Expected. This is the property the strict
+// map key-order assertion in order.go's walkType(KindMap) relies on:
+// without it, the gate is materially unverified because every walked
+// map already shares the same canonical (sorted) shape.
+func TestWalkMapKeysPreserveInsertionOrder(t *testing.T) {
 	mapType := FuzzType{
 		Kind:  KindMap,
 		Key:   &FuzzType{Kind: KindString},
@@ -310,27 +313,59 @@ func TestWalkMapKeysSortLexically(t *testing.T) {
 		}},
 		RootClass: "FuzzClass0",
 	}
-	value := FuzzValue{
-		Kind:      KindClassRef,
-		ClassName: "FuzzClass0",
-		Fields: []FuzzFieldValue{{
-			Name: "Fuzz_field_0", Value: FuzzValue{
-				Kind: KindMap,
-				MapEntries: []FuzzMapEntry{
-					{Key: "kZ", Value: FuzzValue{Kind: KindInt, Int: 1}},
-					{Key: "kA", Value: FuzzValue{Kind: KindInt, Int: 2}},
-					{Key: "kM", Value: FuzzValue{Kind: KindInt, Int: 3}},
-				},
+	mkValue := func(entries []FuzzMapEntry) FuzzValue {
+		return FuzzValue{
+			Kind:      KindClassRef,
+			ClassName: "FuzzClass0",
+			Fields: []FuzzFieldValue{{
+				Name: "Fuzz_field_0", Value: FuzzValue{Kind: KindMap, MapEntries: entries},
+			}},
+		}
+	}
+	cases := []struct {
+		name    string
+		entries []FuzzMapEntry
+		want    string
+	}{
+		{
+			name: "z_a_m",
+			entries: []FuzzMapEntry{
+				{Key: "kZ", Value: FuzzValue{Kind: KindInt, Int: 1}},
+				{Key: "kA", Value: FuzzValue{Kind: KindInt, Int: 2}},
+				{Key: "kM", Value: FuzzValue{Kind: KindInt, Int: 3}},
 			},
-		}},
+			want: `{"Fuzz_field_0":{"kZ":1,"kA":2,"kM":3}}`,
+		},
+		{
+			name: "m_a_z",
+			entries: []FuzzMapEntry{
+				{Key: "kM", Value: FuzzValue{Kind: KindInt, Int: 1}},
+				{Key: "kA", Value: FuzzValue{Kind: KindInt, Int: 2}},
+				{Key: "kZ", Value: FuzzValue{Kind: KindInt, Int: 3}},
+			},
+			want: `{"Fuzz_field_0":{"kM":1,"kA":2,"kZ":3}}`,
+		},
 	}
-	res, err := Walk(schema, value)
-	if err != nil {
-		t.Fatalf("walk: %v", err)
-	}
-	want := `{"Fuzz_field_0":{"kA":2,"kM":3,"kZ":1}}`
-	if string(res.MockLLMContent) != want {
-		t.Errorf("mock keys not lexicographic\nwant: %s\ngot:  %s", want, string(res.MockLLMContent))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := Walk(schema, mkValue(tc.entries))
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			if string(res.MockLLMContent) != tc.want {
+				t.Errorf("mock keys not in MapEntries order\nwant: %s\ngot:  %s", tc.want, string(res.MockLLMContent))
+			}
+			if string(res.Expected) != tc.want {
+				t.Errorf("expected keys not in MapEntries order\nwant: %s\ngot:  %s", tc.want, string(res.Expected))
+			}
+			normalized, err := NormalizeMockToExpected(schema, res.MockLLMContent, "FuzzClass0")
+			if err != nil {
+				t.Fatalf("normalize: %v", err)
+			}
+			if string(normalized) != tc.want {
+				t.Errorf("normalize round-trip not in MapEntries order\nwant: %s\ngot:  %s", tc.want, string(normalized))
+			}
+		})
 	}
 }
 
