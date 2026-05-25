@@ -309,7 +309,17 @@ func drawLiteral(t *rapid.T, label string) *FuzzLiteral {
 		b := rapid.Bool().Draw(t, label+":lit_bool")
 		return &FuzzLiteral{Kind: LiteralBool, Bool: b}
 	}
-	return &FuzzLiteral{Kind: LiteralString}
+	// Fail closed: a literal kind appeared in kindChoices that the
+	// switch above does not handle. The previous string-literal
+	// fallback silently masked a kindChoices reintroduction of
+	// LiteralInt (the switch would skip the int arm and the function
+	// would emit a string literal under the LiteralString tag),
+	// defeating `TestSchemaGenDoesNotProduceLiteralInt`'s mutation
+	// guard. A fatal here pins the contract: every entry in
+	// kindChoices must have a matching arm, so a future widening is
+	// visible at test time.
+	t.Fatalf("drawLiteral: unhandled literal kind %v", kindChoices[kidx])
+	return nil
 }
 
 // injectSelfRef replaces `cls`'s last property with a self-
