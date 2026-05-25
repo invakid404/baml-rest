@@ -165,6 +165,68 @@ func TestOrderedMap_RangeAndAll(t *testing.T) {
 	}
 }
 
+func TestOrderedMap_RangeAny_PreservesOrderAndBoxesValue(t *testing.T) {
+	m := MustOrderedMap(
+		OrderedKV("first", "alpha"),
+		OrderedKV("second", "beta"),
+		OrderedKV("third", "gamma"),
+	)
+	var pairs [][2]any
+	m.RangeAny(func(k string, v any) bool {
+		pairs = append(pairs, [2]any{k, v})
+		return true
+	})
+	wantKeys := []string{"first", "second", "third"}
+	for i, kv := range pairs {
+		if kv[0].(string) != wantKeys[i] {
+			t.Errorf("RangeAny key[%d]: got %q want %q", i, kv[0], wantKeys[i])
+		}
+		s, ok := kv[1].(string)
+		if !ok {
+			t.Errorf("RangeAny value[%d]: not boxed as string, got %T", i, kv[1])
+		}
+		if s == "" {
+			t.Errorf("RangeAny value[%d]: empty", i)
+		}
+	}
+
+	// Typed Range is unaffected.
+	var typed []string
+	m.Range(func(_ string, v string) bool {
+		typed = append(typed, v)
+		return true
+	})
+	if !reflect.DeepEqual(typed, []string{"alpha", "beta", "gamma"}) {
+		t.Errorf("Range typed: got %v", typed)
+	}
+}
+
+func TestOrderedMap_RangeAny_EarlyStopAndConcreteType(t *testing.T) {
+	type rec struct {
+		N int
+	}
+	m := MustOrderedMap(
+		OrderedKV("a", rec{1}),
+		OrderedKV("b", rec{2}),
+		OrderedKV("c", rec{3}),
+	)
+	var visited []string
+	m.RangeAny(func(k string, v any) bool {
+		visited = append(visited, k)
+		r, ok := v.(rec)
+		if !ok {
+			t.Errorf("RangeAny value at %q is %T, want rec", k, v)
+		}
+		if k == "a" && r.N != 1 {
+			t.Errorf("RangeAny N: got %d want 1", r.N)
+		}
+		return k != "b"
+	})
+	if !reflect.DeepEqual(visited, []string{"a", "b"}) {
+		t.Errorf("RangeAny early stop: got %v", visited)
+	}
+}
+
 func TestOrderedMap_Clone(t *testing.T) {
 	m := MustOrderedMap(OrderedKV("a", 1), OrderedKV("b", 2))
 	c := m.Clone()

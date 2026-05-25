@@ -203,6 +203,19 @@ func (m OrderedMap[V]) Range(fn func(string, V) bool) {
 	}
 }
 
+// RangeAny invokes fn for each entry in insertion order with the value
+// boxed to any. It exists so non-generic call sites (the dynamic-value
+// unwrap pass, the codegen reflection scanner) can iterate ordered maps
+// in the same shape they iterate serde.OrderedFields without knowing
+// the V parameter. Iteration stops when fn returns false.
+func (m OrderedMap[V]) RangeAny(fn func(string, any) bool) {
+	for _, k := range m.keys {
+		if !fn(k, m.vals[k]) {
+			return
+		}
+	}
+}
+
 // All returns a range-over-func iterator over the map's entries in
 // insertion order, for `for k, v := range m.All()` ergonomics.
 func (m OrderedMap[V]) All() iter.Seq2[string, V] {

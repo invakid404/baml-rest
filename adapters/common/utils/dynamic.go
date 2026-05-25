@@ -20,6 +20,20 @@ type orderedFieldRanger interface {
 	Range(func(string, any) bool)
 }
 
+// orderedAnyRanger captures the broader shape any typed
+// `bamlutils.OrderedMap[T]` exposes through its RangeAny method (issue
+// #366). Typed static maps stay generic at the call site; this
+// interface lets UnwrapDynamicValue recognise them without knowing the
+// value type parameter. orderedFieldRanger above only matches the
+// `OrderedMap[any]` specialisation that the patched serde produces;
+// orderedAnyRanger picks up typed maps so generated code returning
+// `baml.OrderedMap[Foo]` recursively unwraps into the JSON shape the
+// rest of baml-rest expects.
+type orderedAnyRanger interface {
+	Len() int
+	RangeAny(func(string, any) bool)
+}
+
 func UnwrapDynamicValue(value any) any {
 	if value == nil {
 		return nil
@@ -28,6 +42,22 @@ func UnwrapDynamicValue(value any) any {
 	rv := reflect.ValueOf(value)
 	if rv.Kind() == reflect.Ptr && rv.IsNil() {
 		return nil
+	}
+
+	// Detect typed ordered maps (bamlutils.OrderedMap[T]) before the
+	// any-specialised orderedFieldRanger probe, so typed static-map
+	// fields (issue #366) recurse here and surface as ordered
+	// OrderedMap[any] values with preserved insertion order. Typed
+	// `OrderedMap[T]` exposes both Range(string, T) and
+	// RangeAny(string, any); the latter is the structurally stable
+	// shape across all V parameters.
+	if ordered, ok := value.(orderedAnyRanger); ok {
+		out := bamlutils.OrderedMap[any]{}
+		ordered.RangeAny(func(key string, v any) bool {
+			_ = out.Set(key, UnwrapDynamicValue(v))
+			return true
+		})
+		return out
 	}
 
 	// Detect the patched ordered field carrier before the typed
