@@ -1181,7 +1181,7 @@ func TestCoupledCaseGenValueShapeMatchesSchema(t *testing.T) {
 func assertValueAlignsWithSchema(schema FuzzSchema, t FuzzType, v FuzzValue) error {
 	switch t.Kind {
 	case KindString, KindInt, KindFloat, KindBool, KindNull, KindLiteral, KindEnumRef:
-		if v.Kind == KindUnion {
+		if v.Kind != t.Kind {
 			return &alignError{path: "<scalar>", want: t.Kind, got: v.Kind}
 		}
 		return nil
@@ -1234,9 +1234,18 @@ func assertValueAlignsWithSchema(schema FuzzSchema, t FuzzType, v FuzzValue) err
 		if v.Kind != KindClassRef {
 			return &alignError{path: "<class>", want: KindClassRef, got: v.Kind}
 		}
-		cls, ok := schema.FindClass(v.ClassName)
+		if v.ClassName != t.Ref {
+			return &alignError{
+				path:    "<class>",
+				want:    KindClassRef,
+				got:     v.Kind,
+				wantRef: t.Ref,
+				gotRef:  v.ClassName,
+			}
+		}
+		cls, ok := schema.FindClass(t.Ref)
 		if !ok {
-			return errors.New("class ref " + v.ClassName + " not in schema")
+			return errors.New("class ref " + t.Ref + " not in schema")
 		}
 		for _, prop := range cls.Properties {
 			fv, ok := v.LookupField(prop.Name)
@@ -1244,7 +1253,7 @@ func assertValueAlignsWithSchema(schema FuzzSchema, t FuzzType, v FuzzValue) err
 				continue
 			}
 			if err := assertValueAlignsWithSchema(schema, prop.Type, fv); err != nil {
-				return &alignError{path: v.ClassName + "." + prop.Name, inner: err}
+				return &alignError{path: t.Ref + "." + prop.Name, inner: err}
 			}
 		}
 		return nil
@@ -1253,15 +1262,21 @@ func assertValueAlignsWithSchema(schema FuzzSchema, t FuzzType, v FuzzValue) err
 }
 
 type alignError struct {
-	path  string
-	want  FuzzTypeKind
-	got   FuzzTypeKind
-	inner error
+	path    string
+	want    FuzzTypeKind
+	got     FuzzTypeKind
+	wantRef string
+	gotRef  string
+	inner   error
 }
 
 func (a *alignError) Error() string {
 	if a.inner != nil {
 		return a.path + ": " + a.inner.Error()
+	}
+	if a.wantRef != "" || a.gotRef != "" {
+		return a.path + ": want kind " + string(a.want) + " ref " + a.wantRef +
+			", got " + string(a.got) + " ref " + a.gotRef
 	}
 	return a.path + ": want kind " + string(a.want) + ", got " + string(a.got)
 }
