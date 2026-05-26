@@ -1,0 +1,133 @@
+name: bamlfuzz nightly
+
+on:
+  schedule:
+    # 03:17 UTC nightly — off the :00 mark so we don't queue behind the
+    # crowd of cron jobs that fire on the hour.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: BAMLFUZZ_SEED override (defaults to github.run_id)
+        type: string
+        required: false
+      dynamic_cases:
+        description: Cases per preserve mode (default 50)
+        type: string
+        required: false
+        default: "50"
+      static_batches:
+        description: Rapid static batches (default 10)
+        type: string
+        required: false
+        default: "10"
+
+concurrency:
+  group: bamlfuzz-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+env:
+  GO_VERSION: "1.26.3"
+
+jobs:
+  get-latest-version:
+    runs-on: ubuntu-latest
+    outputs:
+      latest: ${{ steps.read.outputs.latest }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Read latest BAML version
+        id: read
+        run: |
+          latest=$(jq -r '.latest // empty' integration/baml_versions.json)
+          if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+            echo "::error file=integration/baml_versions.json::missing non-empty .latest BAML version"
+            exit 1
+          fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: get-latest-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        unary-server: [false, true]
+    env:
+      BAML_VERSION: ${{ needs.get-latest-version.outputs.latest }}
+      UNARY_SERVER: ${{ matrix.unary-server }}
+      BAML_REST_HTTP_CLIENT: nethttp
+      BAMLFUZZ_KEEP_ARTIFACTS: "1"
+      BAMLFUZZ_DYNAMIC_CASES: ${{ github.event.inputs.dynamic_cases || '50' }}
+      BAMLFUZZ_STATIC_BATCHES: ${{ github.event.inputs.static_batches || '10' }}
+      BAMLFUZZ_SEED: ${{ github.event.inputs.seed || github.run_id }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run bamlfuzz oracles (BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }})
+        # `subprocess` matches the normal server deployment path (server +
+        # cmd/worker go-plugin), same as integration-tests.yml. -p 1 keeps
+        # the integration env setup serial; the two oracles share state.
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^TestBamlfuzz(Static|Dynamic)Oracle$' ./integration/...
+
+      - name: Upload replay artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bamlfuzz-envelopes-${{ matrix.unary-server }}-${{ github.run_id }}
+          path: adapters/common/codegen/testdata/bamlfuzz/*/_artifacts/
+          if-no-files-found: ignore
+
+      - name: Comment on sticky tracking issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: "bamlfuzz nightly status"
+          UNARY: ${{ matrix.unary-server }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          # Find existing open issue (first match by title).
+          ISSUE_NUMBER=$(gh issue list --repo "$REPO" --state open \
+            --search "in:title \"$TITLE\"" --json number --jq '.[0].number // empty')
+          # Create the sticky stub if none exists. gh issue create prints
+          # the URL on stdout; we strip the trailing path segment for the
+          # number.
+          if [ -z "$ISSUE_NUMBER" ]; then
+            ISSUE_URL=$(gh issue create --repo "$REPO" \
+              --title "$TITLE" \
+              --body "Sticky tracking issue for bamlfuzz nightly failures. Each failed run appends a comment here. See #372 for the workflow design.")
+            ISSUE_NUMBER="${ISSUE_URL##*/}"
+          fi
+          {
+            echo "## bamlfuzz nightly failed (run ${RUN_ID})"
+            echo
+            echo "Seed: \`${BAMLFUZZ_SEED}\`"
+            echo "Matrix: unary-server=${UNARY}"
+            echo "Workflow: ${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+            echo "Envelope artifact: bamlfuzz-envelopes-${UNARY}-${RUN_ID}"
+            echo
+            echo "Repro (after downloading the artifact and locating the envelope JSON):"
+            echo
+            echo '```'
+            echo "BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration -run='^TestBamlfuzz(Static|Dynamic)Oracle\$' ./integration -count=1"
+            echo '```'
+          } | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -
