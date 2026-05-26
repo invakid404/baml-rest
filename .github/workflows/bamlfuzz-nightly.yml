@@ -7,20 +7,30 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
+      mode:
+        description: Run mode (fuzz uses Go's testing.F + corpus persistence; rapid uses the property-based oracles)
+        type: choice
+        options: [fuzz, rapid]
+        default: fuzz
       seed:
-        description: BAMLFUZZ_SEED override (defaults to github.run_id)
+        description: BAMLFUZZ_SEED override (defaults to github.run_id; rapid mode only)
         type: string
         required: false
       dynamic_cases:
-        description: Cases per preserve mode (default 50)
+        description: Rapid-mode cases per preserve mode (default 50)
         type: string
         required: false
         default: "50"
       static_batches:
-        description: Rapid static batches (default 10)
+        description: Rapid-mode static batches (default 10)
         type: string
         required: false
         default: "10"
+      fuzztime:
+        description: Fuzz-mode duration per target (default 15m; total wall time roughly 2× this)
+        type: string
+        required: false
+        default: "15m"
 
 concurrency:
   group: bamlfuzz-nightly
@@ -71,6 +81,10 @@ jobs:
       UNARY_SERVER: ${{ matrix.unary-server }}
       BAML_REST_HTTP_CLIENT: nethttp
       BAMLFUZZ_KEEP_ARTIFACTS: "1"
+      MODE: ${{ github.event.inputs.mode || 'fuzz' }}
+      FUZZTIME: ${{ github.event.inputs.fuzztime || '15m' }}
+      # Rapid-mode knobs: ignored by the fuzz-mode step. Kept addressable
+      # via dispatch inputs so a manual run can mix-and-match.
       BAMLFUZZ_DYNAMIC_CASES: ${{ github.event.inputs.dynamic_cases || '50' }}
       BAMLFUZZ_STATIC_BATCHES: ${{ github.event.inputs.static_batches || '10' }}
       BAMLFUZZ_SEED: ${{ github.event.inputs.seed || github.run_id }}
@@ -85,13 +99,76 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run bamlfuzz oracles (BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }})
+      - name: Restore corpus from prior nightly
+        if: ${{ env.MODE == 'fuzz' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_NAME: bamlfuzz-corpus-${{ matrix.unary-server }}
+        run: |
+          set -euo pipefail
+          mkdir -p adapters/common/codegen/testdata/bamlfuzz/.fuzzcache
+          prior_run=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow=bamlfuzz-nightly.yml \
+            --status=success \
+            --branch=master \
+            --limit=1 \
+            --json databaseId \
+            --jq '.[0].databaseId // empty')
+          if [ -z "$prior_run" ]; then
+            echo "no prior successful nightly run; starting with empty corpus"
+            exit 0
+          fi
+          if ! gh run download "$prior_run" --repo "$GITHUB_REPOSITORY" \
+              --name "$ARTIFACT_NAME" \
+              --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache; then
+            echo "prior nightly had no corpus artifact for ${ARTIFACT_NAME}; starting fresh"
+          fi
+
+      - name: Run bamlfuzz nightly — static fuzz target (BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' }}
+        # `go test -fuzz` runs ONE target per invocation, so the static
+        # and dynamic targets are split across sequential steps. Each
+        # gets half the configured fuzztime budget. The corpus dir is
+        # shared so seed inputs that the dynamic target discovered also
+        # influence the static target on the next nightly.
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -fuzz='^FuzzBamlfuzzStatic$' \
+            -fuzztime="${FUZZTIME}" \
+            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
+            ./integration
+
+      - name: Run bamlfuzz nightly — dynamic fuzz target (BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' }}
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -fuzz='^FuzzBamlfuzzDynamic$' \
+            -fuzztime="${FUZZTIME}" \
+            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
+            ./integration
+
+      - name: Run bamlfuzz oracles — rapid mode (BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'rapid' }}
         # `subprocess` matches the normal server deployment path (server +
         # cmd/worker go-plugin), same as integration-tests.yml. -p 1 keeps
         # the integration env setup serial; the two oracles share state.
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
             -run='^TestBamlfuzz(Static|Dynamic)Oracle$' ./integration/...
+
+      - name: Upload corpus for next nightly
+        if: ${{ always() && env.MODE == 'fuzz' }}
+        # Uploaded on every run (including failures) so a fuzz failure
+        # the engine already wrote to the cache survives into the next
+        # restore pass — the corpus is the only mechanism that lets the
+        # fuzzer keep building on prior progress.
+        uses: actions/upload-artifact@v7
+        with:
+          name: bamlfuzz-corpus-${{ matrix.unary-server }}
+          path: adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/
+          if-no-files-found: ignore
+          retention-days: 90
 
       - name: Upload replay artifacts on failure
         if: failure()
@@ -127,14 +204,24 @@ jobs:
           {
             echo "## bamlfuzz nightly failed (run ${RUN_ID})"
             echo
-            echo "Seed: \`${BAMLFUZZ_SEED}\`"
+            echo "Mode: \`${MODE}\`"
             echo "Matrix: unary-server=${UNARY}"
             echo "Workflow: ${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
             echo "Envelope artifact: bamlfuzz-envelopes-${UNARY}-${RUN_ID}"
-            echo
-            echo "Repro (after downloading the artifact and locating the envelope JSON):"
-            echo
-            echo '```'
-            echo "BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration -run='^TestBamlfuzz(Static|Dynamic)Oracle\$' ./integration -count=1"
-            echo '```'
+            if [ "${MODE}" = "fuzz" ]; then
+              echo "Corpus artifact: bamlfuzz-corpus-${UNARY}"
+              echo
+              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/):"
+              echo
+              echo '```'
+              echo "UNARY_SERVER=${UNARY} go test -tags=integration -fuzz='^FuzzBamlfuzz(Static|Dynamic)$' -fuzztime=30s ./integration"
+              echo '```'
+            else
+              echo
+              echo "Repro:"
+              echo
+              echo '```'
+              echo "UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration -run='^TestBamlfuzz(Static|Dynamic)Oracle\$' ./integration -count=1"
+              echo '```'
+            fi
           } | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -
