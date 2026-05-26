@@ -508,7 +508,7 @@ func reproductionFor(c bamlfuzz.OracleCase, caseIdx int, source caseSource) stri
 		// the fastest path back to the same failure: restore the
 		// prior nightly's corpus artifact under .fuzzcache, then run
 		// the engine.
-		return "go test -tags=integration -run='^$' -fuzz='^FuzzBamlfuzzDynamic$' -fuzztime=10m " +
+		return "go test -tags=integration,subprocess -run='^$' -fuzz='^FuzzBamlfuzzDynamic$' -fuzztime=10m " +
 			"-fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
 	}
 	segments := []string{"^TestBamlfuzzDynamicOracle$"}
@@ -695,7 +695,7 @@ func TestReproductionFor(t *testing.T) {
 		0,
 		caseSourceFuzz,
 	)
-	wantFuzz := "go test -tags=integration -run='^$' -fuzz='^FuzzBamlfuzzDynamic$' -fuzztime=10m -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+	wantFuzz := "go test -tags=integration,subprocess -run='^$' -fuzz='^FuzzBamlfuzzDynamic$' -fuzztime=10m -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
 	if fuzz != wantFuzz {
 		t.Errorf("fuzz repro:\n got:  %s\n want: %s", fuzz, wantFuzz)
 	}
