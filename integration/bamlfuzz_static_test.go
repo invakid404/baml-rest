@@ -16,7 +16,7 @@
 // and the envelope artifact name. To triage:
 //
 //  1. Open the failed run, download the
-//     `bamlfuzz-envelopes-<unary>-<run_id>` artifact.
+//     `bamlfuzz-envelopes-<baml-version>-<unary>-<run_id>` artifact.
 //  2. Locate the failing case's envelope JSON under
 //     adapters/common/codegen/testdata/bamlfuzz/{static,dynamic}/_artifacts/.
 //  3. Run the repro command from the sticky-issue comment locally with
@@ -181,7 +181,7 @@ func FuzzBamlfuzzStatic(f *testing.F) {
 			Expected:            cc.Walk.Expected,
 			Metadata:            cc.Walk.Metadata,
 		}
-		runStaticBatch(t, []bamlfuzz.OracleCase{c}, "fuzz", staticCaseSourceRapid)
+		runStaticBatch(t, []bamlfuzz.OracleCase{c}, "fuzz", staticCaseSourceFuzz)
 	})
 }
 
@@ -206,15 +206,18 @@ func chunkStaticCorpus(cases []bamlfuzz.OracleCase, batchSize int) [][]bamlfuzz.
 
 // staticCaseSource mirrors caseSource from the dynamic oracle: corpus
 // cases get one set of failure semantics, rapid-generated cases get
-// another. v1 treats both identically inside the static oracle (every
-// shape must build and call cleanly), but the source label travels
-// through into the reproduction command so the developer copy-pastes
-// the correct subtest path.
+// another, and testing.F fuzz cases get a third. v1 treats all three
+// identically inside the static oracle (every shape must build and
+// call cleanly), but the source label travels through into the
+// reproduction command so the developer copy-pastes the right
+// instruction: -run='subtest' for corpus/rapid, -fuzz=Name pointed at
+// the persisted .fuzzcache for fuzz.
 type staticCaseSource int
 
 const (
 	staticCaseSourceCorpus staticCaseSource = iota
 	staticCaseSourceRapid
+	staticCaseSourceFuzz
 )
 
 // runStaticBatch lowers each OracleCase in `cases` to .baml source,
@@ -619,6 +622,17 @@ func caseIDFor(batchLabel string, idx int) string {
 // BAMLFUZZ_SEED is echoed when set so a rapid-seeded draw is
 // reproducible.
 func staticReproductionFor(c bamlfuzz.OracleCase, caseIdx int, batchLabel string, source staticCaseSource, isolated bool) string {
+	if source == staticCaseSourceFuzz {
+		// The fuzz engine reaches this case by replaying a corpus
+		// entry under -fuzzcachedir. The envelope's Schema/Value/
+		// MockLLMContent fields are the canonical replay material,
+		// but pointing the developer at the fuzz engine itself is
+		// the fastest path back to the same failure: restore the
+		// prior nightly's corpus artifact under .fuzzcache, then run
+		// the engine.
+		return "go test -tags=integration -run='^$' -fuzz='^FuzzBamlfuzzStatic$' -fuzztime=10m " +
+			"-fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+	}
 	leaf := c.Name
 	if isolated {
 		leaf = c.Name + "_isolated"
@@ -873,6 +887,25 @@ func TestStaticReproductionFor(t *testing.T) {
 	wantWithSeedAndBatches := "BAMLFUZZ_STATIC_BATCHES=10 BAMLFUZZ_SEED=9999 go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^rapid_batch_7$/^rapid_b7_c2$' ./integration -count=1"
 	if withSeedAndBatches != wantWithSeedAndBatches {
 		t.Errorf("rapid+seed+batches repro:\n got:  %s\n want: %s", withSeedAndBatches, wantWithSeedAndBatches)
+	}
+
+	// Fuzz cases bypass the subtest-tree repro: the engine reaches
+	// them by replaying a corpus entry under -fuzzcachedir, so the
+	// recipe runs the engine itself. The BAMLFUZZ_SEED /
+	// BAMLFUZZ_STATIC_BATCHES env vars do not perturb the fuzz path
+	// and must not leak into the command.
+	t.Setenv("BAMLFUZZ_SEED", "9999")
+	t.Setenv("BAMLFUZZ_STATIC_BATCHES", "10")
+	fuzz := staticReproductionFor(
+		bamlfuzz.OracleCase{Name: "fuzz"},
+		0,
+		"fuzz",
+		staticCaseSourceFuzz,
+		false,
+	)
+	wantFuzz := "go test -tags=integration -run='^$' -fuzz='^FuzzBamlfuzzStatic$' -fuzztime=10m -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+	if fuzz != wantFuzz {
+		t.Errorf("fuzz repro:\n got:  %s\n want: %s", fuzz, wantFuzz)
 	}
 }
 

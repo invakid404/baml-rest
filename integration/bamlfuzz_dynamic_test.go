@@ -163,25 +163,36 @@ func FuzzBamlfuzzDynamic(f *testing.F) {
 			Expected:            cc.Walk.Expected,
 			Metadata:            cc.Walk.Metadata,
 		}
-		runDynamicOracleCase(t, dyn, c, 0, caseSourceRapid)
+		runDynamicOracleCase(t, dyn, c, 0, caseSourceFuzz)
 	})
 }
 
-// caseSource identifies whether an OracleCase came from the on-disk
-// corpus or the rapid generator. Provenance matters when the dynamic
-// emitter rejects a schema with ErrDynamicSchemaUnsupported: corpus
-// cases (e.g. the mutual_recursion case gated by
+// caseSource identifies where an OracleCase came from: the on-disk
+// corpus, the rapid generator, or the testing.F fuzz engine.
+// Provenance matters in two places. First, when the dynamic emitter
+// rejects a schema with ErrDynamicSchemaUnsupported: corpus cases
+// (e.g. the mutual_recursion case gated by
 // TODO(upstream-mutual-rec-dynamic-crash)) skip with a clear message,
 // but a rapid case hitting the same error is a generator regression —
 // DynamicSafeSchemaGen pins MutualCycleProbability=0 and
 // AllowSelfRef=false, so the random walker should never produce an
 // unsupported schema; the rapid branch fails to surface that drift,
 // while corpus cases take the skip branch via unsupportedActionFor.
+// Fuzz cases skip on unsupported because the fuzz engine is allowed
+// to wander into the same shape the dynamic emitter rejects.
+//
+// Second, the envelope's Reproduction field depends on the source:
+// corpus and rapid emit a `-run` command that selects the specific
+// subtest; fuzz emits a `-fuzz` command that re-runs the engine
+// against the persisted -fuzzcachedir corpus, where the input bytes
+// that triggered the failure live after the workflow restored the
+// prior nightly's artifact.
 type caseSource int
 
 const (
 	caseSourceCorpus caseSource = iota
 	caseSourceRapid
+	caseSourceFuzz
 )
 
 // unsupportedAction is what runDynamicOracleCase should do when the
@@ -196,10 +207,12 @@ const (
 )
 
 func unsupportedActionFor(source caseSource) unsupportedAction {
-	if source == caseSourceCorpus {
+	switch source {
+	case caseSourceCorpus, caseSourceFuzz:
 		return unsupportedSkip
+	default:
+		return unsupportedFail
 	}
-	return unsupportedFail
 }
 
 // dynamicSeedFor produces a deterministic rapid seed for a (preserve, i)
@@ -487,6 +500,17 @@ func failAndDump(t *testing.T, envelope *bamlfuzz.DynamicFailureEnvelope, format
 // When the runner is invoked with BAMLFUZZ_SEED set, the env var is
 // echoed into the command so the rapid-seeded draw is reproducible.
 func reproductionFor(c bamlfuzz.OracleCase, caseIdx int, source caseSource) string {
+	if source == caseSourceFuzz {
+		// The fuzz engine reaches this case by replaying a corpus
+		// entry under -fuzzcachedir. The Schema/Value/MockLLMContent
+		// fields of the envelope are the canonical replay material,
+		// but pointing the developer at the fuzz engine itself is
+		// the fastest path back to the same failure: restore the
+		// prior nightly's corpus artifact under .fuzzcache, then run
+		// the engine.
+		return "go test -tags=integration -run='^$' -fuzz='^FuzzBamlfuzzDynamic$' -fuzztime=10m " +
+			"-fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+	}
 	segments := []string{"^TestBamlfuzzDynamicOracle$"}
 	switch source {
 	case caseSourceCorpus:
@@ -658,6 +682,23 @@ func TestReproductionFor(t *testing.T) {
 	if withSeedAndCases != wantWithSeedAndCases {
 		t.Errorf("rapid+seed+cases repro:\n got:  %s\n want: %s", withSeedAndCases, wantWithSeedAndCases)
 	}
+
+	// Fuzz cases bypass the subtest-tree repro: the engine reaches
+	// them by replaying a corpus entry under -fuzzcachedir, so the
+	// recipe runs the engine itself. The BAMLFUZZ_SEED /
+	// BAMLFUZZ_DYNAMIC_CASES env vars do not perturb the fuzz path
+	// and must not leak into the command.
+	t.Setenv("BAMLFUZZ_SEED", "12345")
+	t.Setenv("BAMLFUZZ_DYNAMIC_CASES", "50")
+	fuzz := reproductionFor(
+		bamlfuzz.OracleCase{PreserveSchemaOrder: true},
+		0,
+		caseSourceFuzz,
+	)
+	wantFuzz := "go test -tags=integration -run='^$' -fuzz='^FuzzBamlfuzzDynamic$' -fuzztime=10m -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+	if fuzz != wantFuzz {
+		t.Errorf("fuzz repro:\n got:  %s\n want: %s", fuzz, wantFuzz)
+	}
 }
 
 // TestUnsupportedActionFor pins the source-dependent dispatch for the
@@ -672,5 +713,8 @@ func TestUnsupportedActionFor(t *testing.T) {
 	}
 	if got := unsupportedActionFor(caseSourceRapid); got != unsupportedFail {
 		t.Errorf("caseSourceRapid: got %v, want unsupportedFail", got)
+	}
+	if got := unsupportedActionFor(caseSourceFuzz); got != unsupportedSkip {
+		t.Errorf("caseSourceFuzz: got %v, want unsupportedSkip", got)
 	}
 }

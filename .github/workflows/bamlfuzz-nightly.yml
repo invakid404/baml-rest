@@ -232,10 +232,11 @@ jobs:
             if [ "${MODE}" = "fuzz" ]; then
               echo "Corpus artifact: bamlfuzz-corpus-${BAML}-${UNARY}"
               echo
-              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/):"
+              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/). \`go test -fuzz\` accepts only a single target per invocation, so run the static and dynamic targets sequentially. The \`-fuzzcachedir\` flag points the engine at the extracted corpus so the failing input is replayed:"
               echo
               echo '```'
-              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration -fuzz='^FuzzBamlfuzz(Static|Dynamic)$' -fuzztime=30s ./integration"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration -run='^\$' -fuzz='^FuzzBamlfuzzStatic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration -run='^\$' -fuzz='^FuzzBamlfuzzDynamic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
               echo '```'
             else
               echo
