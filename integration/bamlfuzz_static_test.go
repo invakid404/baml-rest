@@ -27,6 +27,7 @@ package integration
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,7 +42,10 @@ import (
 	"testing"
 	"time"
 
+	"pgregory.net/rapid"
+
 	"github.com/invakid404/baml-rest/adapters/common/codegen/bamlfuzz"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/integration/mockllm"
 	"github.com/invakid404/baml-rest/integration/testutil"
 )
@@ -131,6 +135,60 @@ func TestBamlfuzzStaticOracle(t *testing.T) {
 			runStaticBatch(t, cases, fmt.Sprintf("rapid_batch_%d", b), staticCaseSourceRapid)
 		})
 	}
+}
+
+// FuzzBamlfuzzStatic is the testing.F companion to
+// TestBamlfuzzStaticOracle. It exposes the static prompt oracle to
+// Go's native fuzz engine via the bamlfuzz.MakeFuzz bridge: testing.F
+// supplies a []byte input that SeedFromBytes hashes into the rapid
+// bit-stream that drives one CoupledCaseGen draw.
+//
+// Each fuzz invocation runs exactly one case through runStaticBatch
+// with a singleton batch — the static path's Docker build dominates
+// per-invocation wall time, so batching multiple cases per
+// invocation would defeat the fuzz engine's input-shrinking. The
+// seed corpus mirrors the (batch, case) pairs the rapid subtree of
+// TestBamlfuzzStaticOracle covers with BAMLFUZZ_STATIC_BATCHES=1, so
+// a developer running this target locally starts from known-good
+// draws.
+//
+// PreserveSchemaOrder is drawn from the bit stream so the fuzzer
+// explores both halves of the order-preservation oracle.
+func FuzzBamlfuzzStatic(f *testing.F) {
+	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+		f.Skip("Skipping: dynamic endpoints require BAML >= 0.215.0")
+	}
+	if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+		f.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+	}
+
+	// Seed corpus: rapid_batch_0 case indices 0..4. These are the
+	// exact seeds the rapid subtree of TestBamlfuzzStaticOracle
+	// already covers when BAMLFUZZ_STATIC_BATCHES defaults to 1.
+	for i := 0; i < staticCasesPerBatch; i++ {
+		seed := staticSeedFor(0, i)
+		buf := make([]byte, 8)
+		binary.LittleEndian.PutUint64(buf, seed)
+		f.Add(buf)
+	}
+
+	bamlfuzz.MakeFuzz(f, func(t *testing.T, rt *rapid.T) {
+		preserve := rapid.Bool().Draw(rt, "preserve_schema_order")
+		cc := bamlfuzz.CoupledCaseGen(bamlfuzz.StaticSchemaGen()).Draw(rt, "coupled_case")
+		c := bamlfuzz.OracleCase{
+			Name:                "fuzz",
+			Seed:                0,
+			CaseIndex:           0,
+			Mode:                bamlfuzz.OracleStaticPrompt,
+			PreserveSchemaOrder: preserve,
+			Schema:              cc.Schema,
+			Value:               cc.Value,
+			MockLLMContent:      cc.Walk.MockLLMContent,
+			Expected:            cc.Walk.Expected,
+			Metadata:            cc.Walk.Metadata,
+		}
+		runStaticBatch(t, []bamlfuzz.OracleCase{c}, "fuzz", staticCaseSourceRapid)
+	})
 }
 
 // chunkStaticCorpus splits cases into consecutive batches of at most

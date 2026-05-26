@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pgregory.net/rapid"
 
 	"github.com/invakid404/baml-rest/adapters/common/codegen/bamlfuzz"
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -109,6 +112,69 @@ func TestBamlfuzzDynamicOracle(t *testing.T) {
 				}
 			})
 		}
+	})
+}
+
+// FuzzBamlfuzzDynamic is the testing.F companion to
+// TestBamlfuzzDynamicOracle. It exposes the dynamic oracle to Go's
+// native fuzz engine via the bamlfuzz.MakeFuzz bridge: testing.F's
+// []byte corpus is hashed into a uint64 seed (see SeedFromBytes) and
+// fed to a rapid bit-stream so each fuzz input drives one
+// CoupledCaseGen draw against the dynamic-safe schema generator.
+//
+// The seed corpus mirrors the four (preserve, idx) pairs the rapid
+// subtree of TestBamlfuzzDynamicOracle exercises, so a developer
+// running this target locally with `go test -fuzz=...` starts from
+// the same known-good draws PR CI already covers and the fuzz engine
+// extends outward from there.
+//
+// Unlike the rapid oracle, this target draws PreserveSchemaOrder from
+// the bit stream so the fuzzer explores both halves of the oracle.
+// The dynclient and BAMLClient package-level state are reused
+// verbatim — re-initialising them per fuzz invocation would explode
+// the per-input wall time well beyond what `-fuzztime` can budget.
+func FuzzBamlfuzzDynamic(f *testing.F) {
+	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
+		f.Skip("Skipping: dynamic endpoints require BAML >= 0.215.0")
+	}
+	if BAMLSourcePath == "" && !bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") {
+		f.Skip("BAML bug: streaming API doesn't propagate dynamic classes to parser")
+	}
+
+	dyn, err := testutil.NewDynclient(TestEnv)
+	if err != nil {
+		f.Fatalf("NewDynclient: %v", err)
+	}
+
+	// Seed corpus: the four (preserve, i) pairs the rapid oracle
+	// already covers. Encoding the existing dynamicSeedFor outputs as
+	// 8 little-endian bytes lets the fuzz engine start from
+	// known-good draws before exploring outward.
+	for _, preserve := range []bool{true, false} {
+		for i := 0; i < 4; i++ {
+			seed := dynamicSeedFor(preserve, i)
+			buf := make([]byte, 8)
+			binary.LittleEndian.PutUint64(buf, seed)
+			f.Add(buf)
+		}
+	}
+
+	bamlfuzz.MakeFuzz(f, func(t *testing.T, rt *rapid.T) {
+		preserve := rapid.Bool().Draw(rt, "preserve_schema_order")
+		cc := bamlfuzz.CoupledCaseGen(bamlfuzz.DynamicSafeSchemaGen()).Draw(rt, "coupled_case")
+		c := bamlfuzz.OracleCase{
+			Name:                "fuzz",
+			Seed:                0,
+			CaseIndex:           0,
+			Mode:                bamlfuzz.OracleDynamicThreeWay,
+			PreserveSchemaOrder: preserve,
+			Schema:              cc.Schema,
+			Value:               cc.Value,
+			MockLLMContent:      cc.Walk.MockLLMContent,
+			Expected:            cc.Walk.Expected,
+			Metadata:            cc.Walk.Metadata,
+		}
+		runDynamicOracleCase(t, dyn, c, 0, caseSourceRapid)
 	})
 }
 
