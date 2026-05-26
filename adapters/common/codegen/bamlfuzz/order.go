@@ -16,9 +16,10 @@ import (
 // additional metadata. Today this fires when a union node is
 // reached without a recorded UnionChoice entry — the walker has no
 // canonical "expected order" for a union value without knowing
-// which arm produced it. Callers detect with errors.Is and
-// typically skip the order assertion while still running the
-// semantic-equality checks.
+// which arm produced it. The integration oracles treat this as a
+// hard failure because UnionChoices are propagated for every union
+// path the walker visits; a missing or stale choice is an integrity
+// bug, not a skippable shape.
 var ErrSchemaOrderUnsupported = errors.New("bamlfuzz: schema order check unsupported")
 
 // SchemaOrderDiffEntry names one schema-order disagreement at a JSON
@@ -35,14 +36,16 @@ type SchemaOrderDiffEntry struct {
 }
 
 // SchemaOrderDiff walks `expected` and `actual` in parallel with
-// `schema`, asserting wire key order only at JSON nodes the schema
-// types as a class instance. Map nodes participate in recursion but
-// their key order is not asserted; map values are walked through the
-// inner type. Union nodes resolve through `choices` (typically
+// `schema`, asserting wire key order at JSON nodes the schema types
+// as either a class instance or a map. The map-key contract is
+// insertion order: FuzzValue.MapEntries carries the request's
+// insertion order and the wire is expected to echo it back. Map
+// values are then walked through the inner type. Union nodes resolve
+// through `choices` (typically
 // CaseMetadata.UnionChoices from the walker), advancing into the
 // recorded variant arm; a missing or out-of-range entry returns
-// ErrSchemaOrderUnsupported so callers can skip the order assertion
-// without abandoning semantic diagnostics.
+// ErrSchemaOrderUnsupported, which the integration oracles surface
+// as a hard failure (see ErrSchemaOrderUnsupported's doc comment).
 //
 // `label` is opaque and is stored on every emitted entry's Side field.
 //
@@ -252,6 +255,14 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 		}
 		if exp.kind != orderedObject || got.kind != orderedObject {
 			return
+		}
+		if !slices.Equal(exp.keys, got.keys) {
+			w.diffs = append(w.diffs, SchemaOrderDiffEntry{
+				Side:     w.side,
+				Path:     path,
+				Expected: append([]string{}, exp.keys...),
+				Actual:   append([]string{}, got.keys...),
+			})
 		}
 		for _, key := range sortedIntersection(exp.byKey, got.byKey) {
 			w.walkType(fmt.Sprintf("%s[%q]", path, key), *typ.Inner, exp.byKey[key], got.byKey[key])

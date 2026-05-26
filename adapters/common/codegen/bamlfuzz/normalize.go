@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"github.com/invakid404/baml-rest/bamlutils"
 )
 
 // WalkResult captures the two JSON renderings the oracle paths need
@@ -35,8 +37,10 @@ type WalkResult struct {
 // Field iteration follows the class's declaration order so the
 // emitted JSON is byte-stable across runs at the same seed.
 // Per-instance map values inside the value tree iterate in the
-// FuzzValue.MapEntries order (also generator-determined), so those
-// too are stable. Union values are rendered via the recorded
+// FuzzValue.MapEntries slice order verbatim — the walker no longer
+// sorts map keys, which lets the strict map key-order assertion in
+// order.go's walkType(KindMap) actually exercise non-lexicographic
+// orders end-to-end. Union values are rendered via the recorded
 // VariantIndex / Variant fields; the walker fails closed when a
 // union value lacks a recorded choice.
 func Walk(schema FuzzSchema, value FuzzValue) (WalkResult, error) {
@@ -212,8 +216,7 @@ func (s *walkState) renderValueMock(buf *bytes.Buffer, t FuzzType, val FuzzValue
 			return fmt.Errorf("walk: map type missing inner at %q", path)
 		}
 		buf.WriteByte('{')
-		entries := sortedMapEntries(val.MapEntries)
-		for i, entry := range entries {
+		for i, entry := range val.MapEntries {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
@@ -303,8 +306,7 @@ func (s *walkState) renderValueExpected(buf *bytes.Buffer, t FuzzType, val FuzzV
 			return fmt.Errorf("expected: map type missing inner")
 		}
 		buf.WriteByte('{')
-		entries := sortedMapEntries(val.MapEntries)
-		for i, entry := range entries {
+		for i, entry := range val.MapEntries {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
@@ -382,11 +384,11 @@ func writeLiteral(buf *bytes.Buffer, lit *FuzzLiteral) error {
 // NormalizeMockToExpected re-parses `mock` and walks the schema's
 // class graph to insert JSON null for every optional field that the
 // LLM omitted. The returned bytes are the canonical-equivalent of
-// the walker's Expected output, modulo encoding/json's map-key
-// sorting (top-level class field order still follows the schema).
-//
-// This is the invariant the tests assert: walking (mock) ->
-// normalize -> bytes-equal walker's expected.
+// the walker's Expected output: class instance keys follow schema
+// declaration order, and map keys retain the mock's wire order —
+// which, given a well-formed mock, mirrors FuzzValue.MapEntries
+// insertion order. This is the invariant the tests assert: walking
+// (mock) -> normalize -> bytes-equal walker's expected.
 //
 // Union schemas require union-choice metadata to disambiguate which
 // arm produced the mock; call NormalizeMockToExpectedWithChoices
@@ -409,8 +411,8 @@ func NormalizeMockToExpected(schema FuzzSchema, mock json.RawMessage, rootClass 
 // only as a fallback for callers that supply it before RootType was
 // added to the IR.
 func NormalizeMockToExpectedWithChoices(schema FuzzSchema, mock json.RawMessage, rootClass string, choices map[string]UnionChoice) (json.RawMessage, error) {
-	var raw any
-	if err := json.Unmarshal(mock, &raw); err != nil {
+	raw, err := decodePreserveOrder(mock)
+	if err != nil {
 		return nil, fmt.Errorf("normalize: parse mock: %w", err)
 	}
 	root := effectiveNormalizeRoot(schema, rootClass)
@@ -419,6 +421,66 @@ func NormalizeMockToExpectedWithChoices(schema FuzzSchema, mock json.RawMessage,
 		return nil, err
 	}
 	return marshalSchemaOrdered(schema, root, out, choices)
+}
+
+// decodePreserveOrder decodes JSON into an `any`-shaped tree where
+// every object node is a *bamlutils.OrderedMap[any] keyed in wire
+// order. Arrays become []any whose elements are recursively decoded
+// the same way; scalars and nulls decode through encoding/json's
+// default rules. The order-preserving carrier is what lets the
+// normalizer emit map values in the mock's wire order, so the
+// round-trip against the walker's MapEntries insertion order is
+// byte-stable.
+func decodePreserveOrder(data json.RawMessage) (any, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty JSON payload")
+	}
+	switch trimmed[0] {
+	case '{':
+		var raw bamlutils.OrderedMap[json.RawMessage]
+		if err := raw.UnmarshalJSON(data); err != nil {
+			return nil, err
+		}
+		out := &bamlutils.OrderedMap[any]{}
+		var firstErr error
+		raw.Range(func(k string, v json.RawMessage) bool {
+			child, err := decodePreserveOrder(v)
+			if err != nil {
+				firstErr = fmt.Errorf("%s: %w", k, err)
+				return false
+			}
+			if err := out.Set(k, child); err != nil {
+				firstErr = err
+				return false
+			}
+			return true
+		})
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return out, nil
+	case '[':
+		var rawArr []json.RawMessage
+		if err := json.Unmarshal(data, &rawArr); err != nil {
+			return nil, err
+		}
+		arr := make([]any, len(rawArr))
+		for i, r := range rawArr {
+			v, err := decodePreserveOrder(r)
+			if err != nil {
+				return nil, fmt.Errorf("[%d]: %w", i, err)
+			}
+			arr[i] = v
+		}
+		return arr, nil
+	default:
+		var v any
+		if err := json.Unmarshal(data, &v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	}
 }
 
 // effectiveNormalizeRoot picks the FuzzType to normalize and re-emit
@@ -437,18 +499,18 @@ func effectiveNormalizeRoot(schema FuzzSchema, rootClass string) FuzzType {
 	return schema.EffectiveRoot()
 }
 
-func normalizeClass(schema FuzzSchema, className string, raw any, basePath string, choices map[string]UnionChoice) (map[string]any, error) {
+func normalizeClass(schema FuzzSchema, className string, raw any, basePath string, choices map[string]UnionChoice) (*bamlutils.OrderedMap[any], error) {
 	cls, ok := schema.FindClass(className)
 	if !ok {
 		return nil, fmt.Errorf("normalize: unknown class %q", className)
 	}
-	obj, ok := raw.(map[string]any)
+	obj, ok := raw.(*bamlutils.OrderedMap[any])
 	if !ok {
 		return nil, fmt.Errorf("normalize: class %q expected JSON object, got %T", className, raw)
 	}
-	out := make(map[string]any, len(cls.Properties))
+	out := &bamlutils.OrderedMap[any]{}
 	for _, prop := range cls.Properties {
-		fv, present := obj[prop.Name]
+		fv, present := obj.Get(prop.Name)
 		if !present {
 			// Absent optionals normalize to null; absent non-
 			// optionals are a contract violation upstream of the
@@ -456,14 +518,18 @@ func normalizeClass(schema FuzzSchema, className string, raw any, basePath strin
 			if prop.Type.Kind != KindOptional {
 				return nil, fmt.Errorf("normalize: required field %q on %q missing from mock", prop.Name, className)
 			}
-			out[prop.Name] = nil
+			if err := out.Set(prop.Name, nil); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		nv, err := normalizeValue(schema, prop.Type, fv, basePath+"."+prop.Name, choices)
 		if err != nil {
 			return nil, fmt.Errorf("normalize: field %q on %q: %w", prop.Name, className, err)
 		}
-		out[prop.Name] = nv
+		if err := out.Set(prop.Name, nv); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -503,17 +569,26 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		if raw == nil {
 			return nil, nil
 		}
-		obj, ok := raw.(map[string]any)
+		obj, ok := raw.(*bamlutils.OrderedMap[any])
 		if !ok {
 			return nil, fmt.Errorf("map expected object, got %T", raw)
 		}
-		out := make(map[string]any, len(obj))
-		for k, v := range obj {
+		out := &bamlutils.OrderedMap[any]{}
+		var firstErr error
+		obj.Range(func(k string, v any) bool {
 			nv, err := normalizeValue(schema, *t.Inner, v, fmt.Sprintf("%s[%q]", path, k), choices)
 			if err != nil {
-				return nil, fmt.Errorf("map[%q]: %w", k, err)
+				firstErr = fmt.Errorf("map[%q]: %w", k, err)
+				return false
 			}
-			out[k] = nv
+			if err := out.Set(k, nv); err != nil {
+				firstErr = err
+				return false
+			}
+			return true
+		})
+		if firstErr != nil {
+			return nil, firstErr
 		}
 		return out, nil
 	case KindClassRef:
@@ -533,9 +608,11 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 }
 
 // marshalSchemaOrdered re-emits a normalized value as JSON with
-// class-instance keys in schema declaration order. Inner map keys
-// retain encoding/json's alphabetical order — they're not class
-// instances, so there's no schema-defined ordering to preserve.
+// class-instance keys in schema declaration order and inner map
+// keys in the carrier's recorded insertion order. The carrier is
+// the *bamlutils.OrderedMap[any] tree produced by normalizeClass /
+// normalizeValue (which themselves consume the decodePreserveOrder
+// output, so wire order from the mock flows through unchanged).
 // Union arms inside the type tree resolve through `choices`. The
 // `root` FuzzType drives dispatch directly, so raw-root
 // union/list/map/scalar schemas are walked as-is without going
@@ -553,7 +630,7 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 	if !ok {
 		return fmt.Errorf("ordered: unknown class %q", className)
 	}
-	obj, ok := v.(map[string]any)
+	obj, ok := v.(*bamlutils.OrderedMap[any])
 	if !ok {
 		return fmt.Errorf("ordered: class %q expected object, got %T", className, v)
 	}
@@ -568,7 +645,8 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 		}
 		buf.Write(keyBytes)
 		buf.WriteByte(':')
-		if err := writeOrderedValue(buf, schema, prop.Type, obj[prop.Name], path+"."+prop.Name, choices); err != nil {
+		fv, _ := obj.Get(prop.Name)
+		if err := writeOrderedValue(buf, schema, prop.Type, fv, path+"."+prop.Name, choices); err != nil {
 			return err
 		}
 	}
@@ -609,30 +687,38 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 			buf.WriteString("null")
 			return nil
 		}
-		// Sort the keys ourselves so the byte-stream matches the
-		// walker's lexicographic emission order. encoding/json's
-		// map encoder also sorts alphabetically, but going through
-		// it would re-emit any class-instance map without the
-		// schema-ordered field layout we need at outer levels.
-		obj, ok := v.(map[string]any)
+		// Emit map values in the carrier's recorded insertion order
+		// (the OrderedMap[any] tree threaded through from the mock
+		// via decodePreserveOrder). This matches the walker's
+		// FuzzValue.MapEntries slice-order emission, so the
+		// (walk → normalize) round-trip is byte-stable.
+		obj, ok := v.(*bamlutils.OrderedMap[any])
 		if !ok {
 			return fmt.Errorf("map expected object, got %T", v)
 		}
-		keys := sortedKeys(obj)
 		buf.WriteByte('{')
-		for i, k := range keys {
+		i := 0
+		var firstErr error
+		obj.Range(func(k string, mv any) bool {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
+			i++
 			kb, err := json.Marshal(k)
 			if err != nil {
-				return err
+				firstErr = err
+				return false
 			}
 			buf.Write(kb)
 			buf.WriteByte(':')
-			if err := writeOrderedValue(buf, schema, *t.Inner, obj[k], fmt.Sprintf("%s[%q]", path, k), choices); err != nil {
-				return err
+			if err := writeOrderedValue(buf, schema, *t.Inner, mv, fmt.Sprintf("%s[%q]", path, k), choices); err != nil {
+				firstErr = err
+				return false
 			}
+			return true
+		})
+		if firstErr != nil {
+			return firstErr
 		}
 		buf.WriteByte('}')
 		return nil
@@ -658,31 +744,3 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 	}
 }
 
-// sortedMapEntries returns a copy of entries sorted lexicographically
-// by Key. encoding/json's map encoder uses the same comparison, so
-// emitting in sorted order keeps walker output byte-identical to a
-// post-normalize round-trip through encoding/json.
-func sortedMapEntries(entries []FuzzMapEntry) []FuzzMapEntry {
-	out := make([]FuzzMapEntry, len(entries))
-	copy(out, entries)
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1].Key > out[j].Key; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
-	return out
-}
-
-func sortedKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	// Insertion sort (n ≤ 3 in v1).
-	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
-			keys[j-1], keys[j] = keys[j], keys[j-1]
-		}
-	}
-	return keys
-}

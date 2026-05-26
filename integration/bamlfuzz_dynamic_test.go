@@ -379,9 +379,9 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 // non-empty diff records the diagnostic lines on envelope.OrderWarning
 // (the field still travels in the replay artifact for forensics) and
 // appends a failure reason so the caller's collected `failures` list
-// flows through failAndDump. ErrSchemaOrderUnsupported is a soft skip:
-// union-bearing schemas have no canonical order contract today, so the
-// semantic-equality oracle remains the gate.
+// flows through failAndDump. ErrSchemaOrderUnsupported is a hard
+// failure: UnionChoices are propagated for every union path the walker
+// visits, so a missing or stale choice is an integrity bug.
 func checkSchemaOrder(t *testing.T, c bamlfuzz.OracleCase, envelope *bamlfuzz.DynamicFailureEnvelope, failures *[]string, label string, expected, actual json.RawMessage) {
 	t.Helper()
 	if !c.PreserveSchemaOrder {
@@ -390,8 +390,10 @@ func checkSchemaOrder(t *testing.T, c bamlfuzz.OracleCase, envelope *bamlfuzz.Dy
 	diffs, err := bamlfuzz.SchemaOrderDiffWithChoices(label, c.Schema, expected, actual, c.Metadata.UnionChoices)
 	switch {
 	case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
-		t.Logf("schema order check skipped for %s %s: %v", c.Name, label, err)
+		envelope.OrderWarning = append(envelope.OrderWarning, fmt.Sprintf("%s: %v", label, err))
+		*failures = append(*failures, fmt.Sprintf("%s schema order unsupported: %v", label, err))
 	case err != nil:
+		envelope.OrderWarning = append(envelope.OrderWarning, fmt.Sprintf("%s: %v", label, err))
 		*failures = append(*failures, fmt.Sprintf("%s schema order: %v", label, err))
 	case len(diffs) > 0:
 		envelope.OrderWarning = append(envelope.OrderWarning, bamlfuzz.FormatSchemaOrderDiffs(diffs)...)

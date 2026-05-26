@@ -287,7 +287,9 @@ func runOneStaticCase(t *testing.T, env *testutil.TestEnvironment, mockClient *m
 		diffs, err := bamlfuzz.SchemaOrderDiffWithChoices("expected_vs_rest", lc.Case.Schema, lc.Case.Expected, resp.Body, lc.Case.Metadata.UnionChoices)
 		switch {
 		case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
-			t.Logf("schema order check skipped for %s: %v", lc.Case.Name, err)
+			envelope.OrderWarning = append(envelope.OrderWarning, err.Error())
+			failStaticAndDump(t, envelope, "schema order check unsupported for %s: %v", lc.Case.Name, err)
+			return
 		case err != nil:
 			envelope.OrderWarning = append(envelope.OrderWarning, err.Error())
 			failStaticAndDump(t, envelope, "schema order check failed for %s: %v", lc.Case.Name, err)
