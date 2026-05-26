@@ -1,5 +1,28 @@
 //go:build integration
 
+// Nightly fuzz workflow
+//
+// The bamlfuzz oracles (this file + bamlfuzz_dynamic_test.go) run on
+// every PR with their default case counts (4 dynamic cases per
+// preserve mode, 1 static rapid batch). They additionally run nightly
+// under .github/workflows/bamlfuzz-nightly.yml with a random seed
+// (github.run_id) and the cranked-up knobs BAMLFUZZ_DYNAMIC_CASES=50
+// and BAMLFUZZ_STATIC_BATCHES=10 so each scheduled run explores a
+// broader slice of the schema space than PR CI can afford.
+//
+// Failures are tracked on the sticky "bamlfuzz nightly status" issue
+// in the GitHub repo. Each failed run appends a comment with the
+// seed, the matrix cell (unary-server=true|false), the workflow URL,
+// and the envelope artifact name. To triage:
+//
+//  1. Open the failed run, download the
+//     `bamlfuzz-envelopes-<unary>-<run_id>` artifact.
+//  2. Locate the failing case's envelope JSON under
+//     adapters/common/codegen/testdata/bamlfuzz/{static,dynamic}/_artifacts/.
+//  3. Run the repro command from the sticky-issue comment locally with
+//     BAML/Docker available (the comment echoes the exact BAMLFUZZ_SEED
+//     + BAMLFUZZ_DYNAMIC_CASES + BAMLFUZZ_STATIC_BATCHES the run used).
+
 package integration
 
 import (
@@ -569,6 +592,9 @@ func staticReproductionFor(c bamlfuzz.OracleCase, caseIdx int, batchLabel string
 	if seed := os.Getenv("BAMLFUZZ_SEED"); seed != "" {
 		cmd = "BAMLFUZZ_SEED=" + seed + " " + cmd
 	}
+	if batches := os.Getenv("BAMLFUZZ_STATIC_BATCHES"); batches != "" {
+		cmd = "BAMLFUZZ_STATIC_BATCHES=" + batches + " " + cmd
+	}
 	return cmd
 }
 
@@ -673,6 +699,7 @@ func loadStaticCorpus(dir string) ([]bamlfuzz.OracleCase, error) {
 // `_isolated` leaf shape isolateStaticBatch emits.
 func TestStaticReproductionFor(t *testing.T) {
 	t.Setenv("BAMLFUZZ_SEED", "")
+	t.Setenv("BAMLFUZZ_STATIC_BATCHES", "")
 	corpus := staticReproductionFor(
 		bamlfuzz.OracleCase{Name: "self_referential_tree"},
 		4,
@@ -760,6 +787,40 @@ func TestStaticReproductionFor(t *testing.T) {
 	wantCorpusBatchIsolated := "go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^corpus_batch_3$/^raw_union_root_isolated$' ./integration -count=1"
 	if corpusBatchIsolated != wantCorpusBatchIsolated {
 		t.Errorf("corpus_batch isolated repro:\n got:  %s\n want: %s", corpusBatchIsolated, wantCorpusBatchIsolated)
+	}
+
+	// Nightly raises BAMLFUZZ_STATIC_BATCHES so rapid_batch_<i>
+	// beyond batch 0 actually exists in the repro. Verify the
+	// prefix propagates.
+	t.Setenv("BAMLFUZZ_STATIC_BATCHES", "10")
+	withBatches := staticReproductionFor(
+		bamlfuzz.OracleCase{Name: "rapid_b7_c2"},
+		2,
+		"rapid_batch_7",
+		staticCaseSourceRapid,
+		false,
+	)
+	wantWithBatches := "BAMLFUZZ_STATIC_BATCHES=10 go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^rapid_batch_7$/^rapid_b7_c2$' ./integration -count=1"
+	if withBatches != wantWithBatches {
+		t.Errorf("rapid+batches repro:\n got:  %s\n want: %s", withBatches, wantWithBatches)
+	}
+
+	// Both env knobs set together. BAMLFUZZ_SEED is prepended first
+	// in staticReproductionFor, then BAMLFUZZ_STATIC_BATCHES wraps
+	// it, so the batches prefix sits leftmost in the rendered
+	// command.
+	t.Setenv("BAMLFUZZ_SEED", "9999")
+	t.Setenv("BAMLFUZZ_STATIC_BATCHES", "10")
+	withSeedAndBatches := staticReproductionFor(
+		bamlfuzz.OracleCase{Name: "rapid_b7_c2"},
+		2,
+		"rapid_batch_7",
+		staticCaseSourceRapid,
+		false,
+	)
+	wantWithSeedAndBatches := "BAMLFUZZ_STATIC_BATCHES=10 BAMLFUZZ_SEED=9999 go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^rapid_batch_7$/^rapid_b7_c2$' ./integration -count=1"
+	if withSeedAndBatches != wantWithSeedAndBatches {
+		t.Errorf("rapid+seed+batches repro:\n got:  %s\n want: %s", withSeedAndBatches, wantWithSeedAndBatches)
 	}
 }
 

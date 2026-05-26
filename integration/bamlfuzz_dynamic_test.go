@@ -35,10 +35,12 @@ const dynamicOracleCorpusDir = "../adapters/common/codegen/testdata/bamlfuzz/dyn
 const dynamicOracleArtifactDir = "../adapters/common/codegen/testdata/bamlfuzz/dynamic/_artifacts"
 
 // rapidCasesPerMode controls how many random dynamic cases run per
-// preserve mode in PR-B. v1's full target is 20 per mode (40 total);
-// PR-B keeps the count small to bound CI wall time until the static
-// path lands in PR-C and the full smoke matrix runs.
-const rapidCasesPerMode = 4
+// preserve mode. The default of 4 is sized for PR CI wall time; the
+// nightly fuzz workflow cranks it up via BAMLFUZZ_DYNAMIC_CASES so
+// each scheduled run explores a broader slice of the schema space.
+func rapidCasesPerMode() int {
+	return envIntDefault("BAMLFUZZ_DYNAMIC_CASES", 4)
+}
 
 // TestBamlfuzzDynamicOracle drives the three-way dynamic oracle: for each
 // fuzz case we
@@ -96,7 +98,8 @@ func TestBamlfuzzDynamicOracle(t *testing.T) {
 				label = "preserve_on"
 			}
 			t.Run(label, func(t *testing.T) {
-				for i := 0; i < rapidCasesPerMode; i++ {
+				cases := rapidCasesPerMode()
+				for i := 0; i < cases; i++ {
 					i := i
 					seed := dynamicSeedFor(preserve, i)
 					t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
@@ -449,6 +452,9 @@ func reproductionFor(c bamlfuzz.OracleCase, caseIdx int, source caseSource) stri
 	if seed := os.Getenv("BAMLFUZZ_SEED"); seed != "" {
 		cmd = "BAMLFUZZ_SEED=" + seed + " " + cmd
 	}
+	if cases := os.Getenv("BAMLFUZZ_DYNAMIC_CASES"); cases != "" {
+		cmd = "BAMLFUZZ_DYNAMIC_CASES=" + cases + " " + cmd
+	}
 	return cmd
 }
 
@@ -525,6 +531,7 @@ func loadDynamicCorpus(dir string) ([]bamlfuzz.OracleCase, error) {
 // applied when set; this test exercises both.
 func TestReproductionFor(t *testing.T) {
 	t.Setenv("BAMLFUZZ_SEED", "")
+	t.Setenv("BAMLFUZZ_DYNAMIC_CASES", "")
 	corpus := reproductionFor(
 		bamlfuzz.OracleCase{Name: "scalar_string"},
 		0,
@@ -564,6 +571,37 @@ func TestReproductionFor(t *testing.T) {
 	wantWithSeed := "BAMLFUZZ_SEED=12345 go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^rapid$/^preserve_on$/^case_0$' ./integration -count=1"
 	if withSeed != wantWithSeed {
 		t.Errorf("rapid+seed repro:\n got:  %s\n want: %s", withSeed, wantWithSeed)
+	}
+
+	// Nightly raises BAMLFUZZ_DYNAMIC_CASES to surface cases beyond
+	// the default 4. The repro recipe must propagate that count so a
+	// developer rerunning the printed command reaches the failing
+	// case index.
+	t.Setenv("BAMLFUZZ_SEED", "")
+	t.Setenv("BAMLFUZZ_DYNAMIC_CASES", "50")
+	withCases := reproductionFor(
+		bamlfuzz.OracleCase{PreserveSchemaOrder: false},
+		25,
+		caseSourceRapid,
+	)
+	wantWithCases := "BAMLFUZZ_DYNAMIC_CASES=50 go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^rapid$/^preserve_off$/^case_25$' ./integration -count=1"
+	if withCases != wantWithCases {
+		t.Errorf("rapid+cases repro:\n got:  %s\n want: %s", withCases, wantWithCases)
+	}
+
+	// Both env knobs set together. BAMLFUZZ_SEED is prepended first
+	// in reproductionFor, then BAMLFUZZ_DYNAMIC_CASES wraps it, so
+	// the cases prefix sits leftmost in the rendered command.
+	t.Setenv("BAMLFUZZ_SEED", "12345")
+	t.Setenv("BAMLFUZZ_DYNAMIC_CASES", "50")
+	withSeedAndCases := reproductionFor(
+		bamlfuzz.OracleCase{PreserveSchemaOrder: false},
+		25,
+		caseSourceRapid,
+	)
+	wantWithSeedAndCases := "BAMLFUZZ_DYNAMIC_CASES=50 BAMLFUZZ_SEED=12345 go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^rapid$/^preserve_off$/^case_25$' ./integration -count=1"
+	if withSeedAndCases != wantWithSeedAndCases {
+		t.Errorf("rapid+seed+cases repro:\n got:  %s\n want: %s", withSeedAndCases, wantWithSeedAndCases)
 	}
 }
 
