@@ -17,10 +17,9 @@ import (
 // are recognised:
 //
 //   - Exactly 8 bytes: interpreted as a little-endian uint64 seed
-//     verbatim. The seed corpus the integration fuzz targets ship via
-//     f.Add encodes `dynamicSeedFor` / `staticSeedFor` outputs this way,
-//     so a corpus entry replays the same rapid stream as the rapid
-//     oracle subtree.
+//     verbatim. The nightly workflow's persisted -fuzzcachedir corpus
+//     stores its entries this way, so a restored corpus entry replays
+//     the exact rapid stream the engine recorded.
 //   - Anything else (including the empty input): hashed with fnv-64a
 //     into a single uint64 (see SeedFromBytes). The hashing layer is
 //     what lets short inputs like {1, 2, 3} and their zero-padded

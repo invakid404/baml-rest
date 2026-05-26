@@ -135,8 +135,22 @@ jobs:
         # gets half the configured fuzztime budget. The corpus dir is
         # shared so seed inputs that the dynamic target discovered also
         # influence the static target on the next nightly.
+        #
+        # `-run='^$'` matches no ordinary test name, which keeps the
+        # cranked-up TestBamlfuzz{Static,Dynamic}Oracle rapid runs from
+        # consuming the per-step budget before fuzzing starts.
+        # BAMLFUZZ_KEEP_ARTIFACTS is forced off here; the success-path
+        # envelope dump in the oracle bodies all writes to
+        # _artifacts/fuzz.json (one filename per fuzz case), which races
+        # under parallel fuzz workers and can overwrite a failure
+        # envelope on the way out. Failures still dump unconditionally
+        # via failAndDump/failStaticAndDump, so the workflow's
+        # upload-on-failure step still captures the right artifact.
+        env:
+          BAMLFUZZ_KEEP_ARTIFACTS: ""
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^$' \
             -fuzz='^FuzzBamlfuzzStatic$' \
             -fuzztime="${FUZZTIME}" \
             -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
@@ -144,8 +158,11 @@ jobs:
 
       - name: Run bamlfuzz nightly — dynamic fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'fuzz' }}
+        env:
+          BAMLFUZZ_KEEP_ARTIFACTS: ""
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^$' \
             -fuzz='^FuzzBamlfuzzDynamic$' \
             -fuzztime="${FUZZTIME}" \
             -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \

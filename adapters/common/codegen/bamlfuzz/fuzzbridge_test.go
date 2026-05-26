@@ -98,8 +98,8 @@ func TestSeedFromBytesDistinct(t *testing.T) {
 // generator-driven exploration path).
 func TestMakeFuzzPipelineEncoding(t *testing.T) {
 	t.Run("8_byte_direct_seed_path", func(t *testing.T) {
-		// A corpus entry built by the integration fuzz targets:
-		// dynamicSeedFor's uint64 output, encoded as 8 little-endian
+		// A corpus entry the way the fuzz engine writes one to
+		// -fuzzcachedir: a uint64 seed encoded as 8 little-endian
 		// bytes. The bridge must replay this exact seed, not hash it.
 		const wantSeed uint64 = 0x86113a7efb803239
 		raw := make([]byte, 8)
