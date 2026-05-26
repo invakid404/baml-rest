@@ -156,7 +156,13 @@ jobs:
 
   integration-tests-baml-source:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The baml-source matrix builds BAML from source, which dominates
+    # the per-cell wall time and pushes consistent runs into the 38-45m
+    # window. The pinned-version `integration-tests` job above stays at
+    # 45m because it pulls prebuilt BAML and finishes in 6-17m. 60m
+    # gives the baml-source matrix headroom without changing the
+    # nominal budget for the lighter jobs.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -200,5 +206,8 @@ jobs:
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
         # `subprocess` matches the normal server deployment path used
-        # by the versioned integration job above.
-        run: go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 40m ./integration/...
+        # by the versioned integration job above. The 55m Go timeout
+        # sits below the 60m GHA step budget so a near-timeout case
+        # still has room to dump its envelope before the runner kills
+        # the job.
+        run: go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 55m ./integration/...
