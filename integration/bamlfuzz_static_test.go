@@ -1,5 +1,28 @@
 //go:build integration
 
+// Nightly fuzz workflow
+//
+// The bamlfuzz oracles (this file + bamlfuzz_dynamic_test.go) run on
+// every PR with their default case counts (4 dynamic cases per
+// preserve mode, 1 static rapid batch). They additionally run nightly
+// under .github/workflows/bamlfuzz-nightly.yml with a random seed
+// (github.run_id) and the cranked-up knobs BAMLFUZZ_DYNAMIC_CASES=50
+// and BAMLFUZZ_STATIC_BATCHES=10 so each scheduled run explores a
+// broader slice of the schema space than PR CI can afford.
+//
+// Failures are tracked on the sticky "bamlfuzz nightly status" issue
+// in the GitHub repo. Each failed run appends a comment with the
+// seed, the matrix cell (unary-server=true|false), the workflow URL,
+// and the envelope artifact name. To triage:
+//
+//  1. Open the failed run, download the
+//     `bamlfuzz-envelopes-<unary>-<run_id>` artifact.
+//  2. Locate the failing case's envelope JSON under
+//     adapters/common/codegen/testdata/bamlfuzz/{static,dynamic}/_artifacts/.
+//  3. Run the repro command from the sticky-issue comment locally with
+//     BAML/Docker available (the comment echoes the exact BAMLFUZZ_SEED
+//     + BAMLFUZZ_DYNAMIC_CASES + BAMLFUZZ_STATIC_BATCHES the run used).
+
 package integration
 
 import (
