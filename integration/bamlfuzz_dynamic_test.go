@@ -588,6 +588,21 @@ func TestReproductionFor(t *testing.T) {
 	if withCases != wantWithCases {
 		t.Errorf("rapid+cases repro:\n got:  %s\n want: %s", withCases, wantWithCases)
 	}
+
+	// Both env knobs set together. BAMLFUZZ_SEED is prepended first
+	// in reproductionFor, then BAMLFUZZ_DYNAMIC_CASES wraps it, so
+	// the cases prefix sits leftmost in the rendered command.
+	t.Setenv("BAMLFUZZ_SEED", "12345")
+	t.Setenv("BAMLFUZZ_DYNAMIC_CASES", "50")
+	withSeedAndCases := reproductionFor(
+		bamlfuzz.OracleCase{PreserveSchemaOrder: false},
+		25,
+		caseSourceRapid,
+	)
+	wantWithSeedAndCases := "BAMLFUZZ_DYNAMIC_CASES=50 BAMLFUZZ_SEED=12345 go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^rapid$/^preserve_off$/^case_25$' ./integration -count=1"
+	if withSeedAndCases != wantWithSeedAndCases {
+		t.Errorf("rapid+seed+cases repro:\n got:  %s\n want: %s", withSeedAndCases, wantWithSeedAndCases)
+	}
 }
 
 // TestUnsupportedActionFor pins the source-dependent dispatch for the

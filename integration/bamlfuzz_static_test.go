@@ -804,6 +804,24 @@ func TestStaticReproductionFor(t *testing.T) {
 	if withBatches != wantWithBatches {
 		t.Errorf("rapid+batches repro:\n got:  %s\n want: %s", withBatches, wantWithBatches)
 	}
+
+	// Both env knobs set together. BAMLFUZZ_SEED is prepended first
+	// in staticReproductionFor, then BAMLFUZZ_STATIC_BATCHES wraps
+	// it, so the batches prefix sits leftmost in the rendered
+	// command.
+	t.Setenv("BAMLFUZZ_SEED", "9999")
+	t.Setenv("BAMLFUZZ_STATIC_BATCHES", "10")
+	withSeedAndBatches := staticReproductionFor(
+		bamlfuzz.OracleCase{Name: "rapid_b7_c2"},
+		2,
+		"rapid_batch_7",
+		staticCaseSourceRapid,
+		false,
+	)
+	wantWithSeedAndBatches := "BAMLFUZZ_STATIC_BATCHES=10 BAMLFUZZ_SEED=9999 go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^rapid_batch_7$/^rapid_b7_c2$' ./integration -count=1"
+	if withSeedAndBatches != wantWithSeedAndBatches {
+		t.Errorf("rapid+seed+batches repro:\n got:  %s\n want: %s", withSeedAndBatches, wantWithSeedAndBatches)
+	}
 }
 
 // TestSubtestAggregationContract pins the Go testing-API contract
