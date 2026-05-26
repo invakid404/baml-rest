@@ -11,26 +11,35 @@ import (
 // MakeFuzz adapts rapid's bit-stream-driven generator model onto Go's
 // testing.F []byte-driven fuzz model.
 //
-// Two input shapes are recognised:
+// Each fuzz invocation becomes a single uint64 seed that drives a
+// PRNG-backed rapid bit stream; body then draws as many bits as it
+// needs without the input []byte capping draw count. Two input shapes
+// are recognised:
 //
-//   - Exactly 8 bytes: treated as a little-endian uint64 seed and
-//     forwarded to rapid verbatim. The seed corpus the integration
-//     fuzz targets ship via f.Add encodes `dynamicSeedFor` /
-//     `staticSeedFor` outputs this way, so corpus entries replay the
-//     exact rapid bit stream the rapid oracle subtree already covers.
+//   - Exactly 8 bytes: interpreted as a little-endian uint64 seed
+//     verbatim. The seed corpus the integration fuzz targets ship via
+//     f.Add encodes `dynamicSeedFor` / `staticSeedFor` outputs this way,
+//     so a corpus entry replays the same rapid stream as the rapid
+//     oracle subtree.
 //   - Anything else (including the empty input): hashed with fnv-64a
-//     into a single uint64 (see SeedFromBytes) and then forwarded to
-//     rapid as 8 little-endian bytes. The hashing layer is what lets
-//     short inputs like {1, 2, 3} and their zero-padded extension
-//     {1, 2, 3, 0, 0, 0, 0, 0} drive distinct rapid runs —
-//     rapid.MakeFuzz's own bytes→uint64 routine pads with zeros, so
-//     an unhashed path for non-8-byte inputs would collapse those two
-//     into the same bit stream.
+//     into a single uint64 (see SeedFromBytes). The hashing layer is
+//     what lets short inputs like {1, 2, 3} and their zero-padded
+//     extension {1, 2, 3, 0, 0, 0, 0, 0} drive distinct rapid runs;
+//     without it both prefixes would collapse to the same seed.
+//
+// The seed feeds rapid via `rapid.Custom(...).Example(int(seed))`,
+// matching the canonical seeded-draw mechanism integration/buildRapidCase
+// already uses. Unlike rapid.MakeFuzz — which converts the raw bytes
+// into a fixed buffer and panics with `invalidData("overrun")` once
+// draws exhaust it — Example installs a randomBitStream seeded from
+// the uint64, so the body gets unlimited draws; a multi-Draw property
+// then runs to completion where the buffer-backed path would skip on
+// the second draw.
 //
 // body runs once per fuzz invocation with the per-call *testing.T and
-// a rapid *rapid.T configured from the derived seed. rapid handles
-// its own Cleanup paths inside its checkOnce; the wrapping
-// testing.T's Cleanup runs after body returns.
+// a rapid *rapid.T configured from the derived seed. rapid handles its
+// own Cleanup paths inside Example; the wrapping testing.T's Cleanup
+// runs after body returns.
 func MakeFuzz(f *testing.F, body func(*testing.T, *rapid.T)) {
 	f.Helper()
 	f.Fuzz(func(t *testing.T, raw []byte) {
@@ -40,11 +49,10 @@ func MakeFuzz(f *testing.F, body func(*testing.T, *rapid.T)) {
 		} else {
 			seed = SeedFromBytes(raw)
 		}
-		var encoded [8]byte
-		binary.LittleEndian.PutUint64(encoded[:], seed)
-		rapid.MakeFuzz(func(rt *rapid.T) {
+		rapid.Custom(func(rt *rapid.T) struct{} {
 			body(t, rt)
-		})(t, encoded[:])
+			return struct{}{}
+		}).Example(int(seed))
 	})
 }
 

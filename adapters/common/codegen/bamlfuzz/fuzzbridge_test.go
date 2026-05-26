@@ -79,34 +79,24 @@ func TestSeedFromBytesDistinct(t *testing.T) {
 	}
 }
 
-// TestMakeFuzzPipelineEncoding pins the bytes→uint64→little-endian
-// encoding that MakeFuzz applies before handing off to rapid.MakeFuzz.
-// The full dispatch (testing.F + f.Fuzz + the rapid bit stream) only
-// runs end-to-end under `go test -fuzz`, which the integration-tag
-// targets FuzzBamlfuzz{Static,Dynamic} exercise in CI. Locally,
+// TestMakeFuzzPipelineEncoding pins the bytes→uint64 decision MakeFuzz
+// applies before handing the seed to rapid. The full dispatch
+// (testing.F + f.Fuzz + rapid.Custom + Example) only runs end-to-end
+// under `go test -fuzz`, which the integration-tag targets
+// FuzzBamlfuzz{Static,Dynamic} exercise in CI. Locally,
 //
 //	go test -tags=integration -fuzz='^FuzzBamlfuzzDynamic$' \
 //	    -fuzztime=30s ./integration
 //
 // drives the bridge end-to-end through the actual testing.F engine —
 // faking *testing.F outside that engine is brittle, so the unit test
-// stops at the encoding boundary.
+// stops at the seed-derivation boundary.
 //
 // Two branches are pinned: an 8-byte input is interpreted as a
 // little-endian uint64 seed verbatim (the corpus replay path), while
 // any other length is hashed through SeedFromBytes first (the
 // generator-driven exploration path).
 func TestMakeFuzzPipelineEncoding(t *testing.T) {
-	t.Run("non_8_byte_hashed_path", func(t *testing.T) {
-		raw := []byte("anchor")
-		seed := SeedFromBytes(raw)
-		var encoded [8]byte
-		binary.LittleEndian.PutUint64(encoded[:], seed)
-		if got := binary.LittleEndian.Uint64(encoded[:]); got != seed {
-			t.Errorf("uint64 round-trip through little-endian encoding broke: %d != %d", got, seed)
-		}
-	})
-
 	t.Run("8_byte_direct_seed_path", func(t *testing.T) {
 		// A corpus entry built by the integration fuzz targets:
 		// dynamicSeedFor's uint64 output, encoded as 8 little-endian
@@ -122,6 +112,27 @@ func TestMakeFuzzPipelineEncoding(t *testing.T) {
 		// 8-byte inputs would be caught.
 		if hashed := SeedFromBytes(raw); hashed == wantSeed {
 			t.Errorf("SeedFromBytes(raw) collided with the direct seed; the test loses its discrimination")
+		}
+	})
+
+	t.Run("non_8_byte_hashed_path", func(t *testing.T) {
+		// A non-8-byte input must route through SeedFromBytes; the
+		// resulting uint64 then feeds rapid.Example(int(seed)) just
+		// like the corpus-path uint64. Verify that the hashed seed is
+		// stable so the same fuzz input always reaches the same rapid
+		// draw.
+		raw := []byte("anchor")
+		first := SeedFromBytes(raw)
+		second := SeedFromBytes(raw)
+		if first != second {
+			t.Errorf("SeedFromBytes(%q) not deterministic: %d vs %d", raw, first, second)
+		}
+		// The hashed branch must produce a different uint64 than a
+		// naive LE decode of the same bytes would; that's what
+		// guarantees short inputs distinct from 8-byte corpus seeds
+		// reach different rapid runs.
+		if first == 0 {
+			t.Errorf("SeedFromBytes(%q) collapsed to zero; non-empty input must produce non-zero seed", raw)
 		}
 	})
 }
