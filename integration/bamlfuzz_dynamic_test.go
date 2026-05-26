@@ -452,6 +452,9 @@ func reproductionFor(c bamlfuzz.OracleCase, caseIdx int, source caseSource) stri
 	if seed := os.Getenv("BAMLFUZZ_SEED"); seed != "" {
 		cmd = "BAMLFUZZ_SEED=" + seed + " " + cmd
 	}
+	if cases := os.Getenv("BAMLFUZZ_DYNAMIC_CASES"); cases != "" {
+		cmd = "BAMLFUZZ_DYNAMIC_CASES=" + cases + " " + cmd
+	}
 	return cmd
 }
 
@@ -528,6 +531,7 @@ func loadDynamicCorpus(dir string) ([]bamlfuzz.OracleCase, error) {
 // applied when set; this test exercises both.
 func TestReproductionFor(t *testing.T) {
 	t.Setenv("BAMLFUZZ_SEED", "")
+	t.Setenv("BAMLFUZZ_DYNAMIC_CASES", "")
 	corpus := reproductionFor(
 		bamlfuzz.OracleCase{Name: "scalar_string"},
 		0,
@@ -567,6 +571,22 @@ func TestReproductionFor(t *testing.T) {
 	wantWithSeed := "BAMLFUZZ_SEED=12345 go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^rapid$/^preserve_on$/^case_0$' ./integration -count=1"
 	if withSeed != wantWithSeed {
 		t.Errorf("rapid+seed repro:\n got:  %s\n want: %s", withSeed, wantWithSeed)
+	}
+
+	// Nightly raises BAMLFUZZ_DYNAMIC_CASES to surface cases beyond
+	// the default 4. The repro recipe must propagate that count so a
+	// developer rerunning the printed command reaches the failing
+	// case index.
+	t.Setenv("BAMLFUZZ_SEED", "")
+	t.Setenv("BAMLFUZZ_DYNAMIC_CASES", "50")
+	withCases := reproductionFor(
+		bamlfuzz.OracleCase{PreserveSchemaOrder: false},
+		25,
+		caseSourceRapid,
+	)
+	wantWithCases := "BAMLFUZZ_DYNAMIC_CASES=50 go test -tags=integration -run='^TestBamlfuzzDynamicOracle$/^rapid$/^preserve_off$/^case_25$' ./integration -count=1"
+	if withCases != wantWithCases {
+		t.Errorf("rapid+cases repro:\n got:  %s\n want: %s", withCases, wantWithCases)
 	}
 }
 

@@ -592,6 +592,9 @@ func staticReproductionFor(c bamlfuzz.OracleCase, caseIdx int, batchLabel string
 	if seed := os.Getenv("BAMLFUZZ_SEED"); seed != "" {
 		cmd = "BAMLFUZZ_SEED=" + seed + " " + cmd
 	}
+	if batches := os.Getenv("BAMLFUZZ_STATIC_BATCHES"); batches != "" {
+		cmd = "BAMLFUZZ_STATIC_BATCHES=" + batches + " " + cmd
+	}
 	return cmd
 }
 
@@ -696,6 +699,7 @@ func loadStaticCorpus(dir string) ([]bamlfuzz.OracleCase, error) {
 // `_isolated` leaf shape isolateStaticBatch emits.
 func TestStaticReproductionFor(t *testing.T) {
 	t.Setenv("BAMLFUZZ_SEED", "")
+	t.Setenv("BAMLFUZZ_STATIC_BATCHES", "")
 	corpus := staticReproductionFor(
 		bamlfuzz.OracleCase{Name: "self_referential_tree"},
 		4,
@@ -783,6 +787,22 @@ func TestStaticReproductionFor(t *testing.T) {
 	wantCorpusBatchIsolated := "go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^corpus_batch_3$/^raw_union_root_isolated$' ./integration -count=1"
 	if corpusBatchIsolated != wantCorpusBatchIsolated {
 		t.Errorf("corpus_batch isolated repro:\n got:  %s\n want: %s", corpusBatchIsolated, wantCorpusBatchIsolated)
+	}
+
+	// Nightly raises BAMLFUZZ_STATIC_BATCHES so rapid_batch_<i>
+	// beyond batch 0 actually exists in the repro. Verify the
+	// prefix propagates.
+	t.Setenv("BAMLFUZZ_STATIC_BATCHES", "10")
+	withBatches := staticReproductionFor(
+		bamlfuzz.OracleCase{Name: "rapid_b7_c2"},
+		2,
+		"rapid_batch_7",
+		staticCaseSourceRapid,
+		false,
+	)
+	wantWithBatches := "BAMLFUZZ_STATIC_BATCHES=10 go test -tags=integration -run='^TestBamlfuzzStaticOracle$/^rapid_batch_7$/^rapid_b7_c2$' ./integration -count=1"
+	if withBatches != wantWithBatches {
+		t.Errorf("rapid+batches repro:\n got:  %s\n want: %s", withBatches, wantWithBatches)
 	}
 }
 
