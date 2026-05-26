@@ -7,20 +7,30 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
+      mode:
+        description: Run mode (fuzz uses Go's testing.F + corpus persistence; rapid uses the property-based oracles)
+        type: choice
+        options: [fuzz, rapid]
+        default: fuzz
       seed:
-        description: BAMLFUZZ_SEED override (defaults to github.run_id)
+        description: BAMLFUZZ_SEED override (defaults to github.run_id; rapid mode only)
         type: string
         required: false
       dynamic_cases:
-        description: Cases per preserve mode (default 50)
+        description: Rapid-mode cases per preserve mode (default 50)
         type: string
         required: false
         default: "50"
       static_batches:
-        description: Rapid static batches (default 10)
+        description: Rapid-mode static batches (default 10)
         type: string
         required: false
         default: "10"
+      fuzztime:
+        description: Fuzz-mode duration per target (default 15m; total wall time roughly 2× this)
+        type: string
+        required: false
+        default: "15m"
 
 concurrency:
   group: bamlfuzz-nightly
@@ -34,28 +44,32 @@ env:
   GO_VERSION: "1.26.3"
 
 jobs:
-  get-latest-version:
+  get-versions:
     runs-on: ubuntu-latest
     outputs:
-      latest: ${{ steps.read.outputs.latest }}
+      matrix: ${{ steps.set.outputs.matrix }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - name: Read latest BAML version
-        id: read
+      - name: Build version matrix
+        id: set
+        # The fuzz matrix expands the prior single-version nightly to
+        # every pinned BAML version + the latest. Pinned versions
+        # exercise older adapter shapes (pre-0.219 lacks BuildRequest,
+        # for example); the latest catches regressions against the
+        # newest BAML. Each version × unary-server combination gets its
+        # own corpus, so an adapter-specific failure mode persists in
+        # the corpus that triggered it; newer-version draws cannot
+        # crowd it out across cells.
         run: |
-          latest=$(jq -r '.latest // empty' integration/baml_versions.json)
-          if [ -z "$latest" ] || [ "$latest" = "null" ]; then
-            echo "::error file=integration/baml_versions.json::missing non-empty .latest BAML version"
-            exit 1
-          fi
-          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          matrix=$(jq -c '{"baml-version": ([.pinned[], .latest] | unique), "unary-server": [false, true]}' integration/baml_versions.json)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   fuzz:
-    needs: get-latest-version
+    needs: get-versions
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -64,13 +78,16 @@ jobs:
       issues: write
     strategy:
       fail-fast: false
-      matrix:
-        unary-server: [false, true]
+      matrix: ${{ fromJson(needs.get-versions.outputs.matrix) }}
     env:
-      BAML_VERSION: ${{ needs.get-latest-version.outputs.latest }}
+      BAML_VERSION: ${{ matrix.baml-version }}
       UNARY_SERVER: ${{ matrix.unary-server }}
       BAML_REST_HTTP_CLIENT: nethttp
       BAMLFUZZ_KEEP_ARTIFACTS: "1"
+      MODE: ${{ github.event.inputs.mode || 'fuzz' }}
+      FUZZTIME: ${{ github.event.inputs.fuzztime || '15m' }}
+      # Rapid-mode knobs: ignored by the fuzz-mode step. Kept addressable
+      # via dispatch inputs so a manual run can mix-and-match.
       BAMLFUZZ_DYNAMIC_CASES: ${{ github.event.inputs.dynamic_cases || '50' }}
       BAMLFUZZ_STATIC_BATCHES: ${{ github.event.inputs.static_batches || '10' }}
       BAMLFUZZ_SEED: ${{ github.event.inputs.seed || github.run_id }}
@@ -85,7 +102,74 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run bamlfuzz oracles (BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }})
+      - name: Restore corpus from prior nightly
+        if: ${{ env.MODE == 'fuzz' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_NAME: bamlfuzz-corpus-${{ matrix.baml-version }}-${{ matrix.unary-server }}
+        run: |
+          set -euo pipefail
+          mkdir -p adapters/common/codegen/testdata/bamlfuzz/.fuzzcache
+          prior_run=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow=bamlfuzz-nightly.yml \
+            --status=success \
+            --branch=master \
+            --limit=1 \
+            --json databaseId \
+            --jq '.[0].databaseId // empty')
+          if [ -z "$prior_run" ]; then
+            echo "no prior successful nightly run; starting with empty corpus"
+            exit 0
+          fi
+          if ! gh run download "$prior_run" --repo "$GITHUB_REPOSITORY" \
+              --name "$ARTIFACT_NAME" \
+              --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache; then
+            echo "prior nightly had no corpus artifact for ${ARTIFACT_NAME}; starting fresh"
+          fi
+
+      - name: Run bamlfuzz nightly — static fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' }}
+        # `go test -fuzz` runs ONE target per invocation, so the static
+        # and dynamic targets are split across sequential steps. Each
+        # gets half the configured fuzztime budget. The corpus dir is
+        # shared so seed inputs that the dynamic target discovered also
+        # influence the static target on the next nightly.
+        #
+        # `-run='^$'` matches no ordinary test name, which keeps the
+        # cranked-up TestBamlfuzz{Static,Dynamic}Oracle rapid runs from
+        # consuming the per-step budget before fuzzing starts.
+        # BAMLFUZZ_KEEP_ARTIFACTS is forced off here; the success-path
+        # envelope dump in the oracle bodies all writes to
+        # _artifacts/fuzz.json (one filename per fuzz case), which races
+        # under parallel fuzz workers and can overwrite a failure
+        # envelope on the way out. Failures still dump unconditionally
+        # via failAndDump/failStaticAndDump, so the workflow's
+        # upload-on-failure step still captures the right artifact.
+        env:
+          BAMLFUZZ_KEEP_ARTIFACTS: ""
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^$' \
+            -fuzz='^FuzzBamlfuzzStatic$' \
+            -fuzztime="${FUZZTIME}" \
+            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
+            ./integration
+
+      - name: Run bamlfuzz nightly — dynamic fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' }}
+        env:
+          BAMLFUZZ_KEEP_ARTIFACTS: ""
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^$' \
+            -fuzz='^FuzzBamlfuzzDynamic$' \
+            -fuzztime="${FUZZTIME}" \
+            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
+            ./integration
+
+      - name: Run bamlfuzz oracles — rapid mode (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'rapid' }}
         # `subprocess` matches the normal server deployment path (server +
         # cmd/worker go-plugin), same as integration-tests.yml. -p 1 keeps
         # the integration env setup serial; the two oracles share state.
@@ -93,11 +177,24 @@ jobs:
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
             -run='^TestBamlfuzz(Static|Dynamic)Oracle$' ./integration/...
 
+      - name: Upload corpus for next nightly
+        if: ${{ always() && env.MODE == 'fuzz' }}
+        # Uploaded on every run (including failures) so a fuzz failure
+        # the engine already wrote to the cache survives into the next
+        # restore pass — the corpus is the only mechanism that lets the
+        # fuzzer keep building on prior progress.
+        uses: actions/upload-artifact@v7
+        with:
+          name: bamlfuzz-corpus-${{ matrix.baml-version }}-${{ matrix.unary-server }}
+          path: adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/
+          if-no-files-found: ignore
+          retention-days: 90
+
       - name: Upload replay artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: bamlfuzz-envelopes-${{ matrix.unary-server }}-${{ github.run_id }}
+          name: bamlfuzz-envelopes-${{ matrix.baml-version }}-${{ matrix.unary-server }}-${{ github.run_id }}
           path: adapters/common/codegen/testdata/bamlfuzz/*/_artifacts/
           if-no-files-found: ignore
 
@@ -106,6 +203,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TITLE: "bamlfuzz nightly status"
+          BAML: ${{ matrix.baml-version }}
           UNARY: ${{ matrix.unary-server }}
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
@@ -127,14 +225,25 @@ jobs:
           {
             echo "## bamlfuzz nightly failed (run ${RUN_ID})"
             echo
-            echo "Seed: \`${BAMLFUZZ_SEED}\`"
-            echo "Matrix: unary-server=${UNARY}"
+            echo "Mode: \`${MODE}\`"
+            echo "Matrix: baml-version=${BAML}, unary-server=${UNARY}"
             echo "Workflow: ${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
-            echo "Envelope artifact: bamlfuzz-envelopes-${UNARY}-${RUN_ID}"
-            echo
-            echo "Repro (after downloading the artifact and locating the envelope JSON):"
-            echo
-            echo '```'
-            echo "BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration -run='^TestBamlfuzz(Static|Dynamic)Oracle\$' ./integration -count=1"
-            echo '```'
+            echo "Envelope artifact: bamlfuzz-envelopes-${BAML}-${UNARY}-${RUN_ID}"
+            if [ "${MODE}" = "fuzz" ]; then
+              echo "Corpus artifact: bamlfuzz-corpus-${BAML}-${UNARY}"
+              echo
+              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/). \`go test -fuzz\` accepts only a single target per invocation, so run the static and dynamic targets sequentially. The \`-fuzzcachedir\` flag points the engine at the extracted corpus so the failing input is replayed:"
+              echo
+              echo '```'
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzStatic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzDynamic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+              echo '```'
+            else
+              echo
+              echo "Repro:"
+              echo
+              echo '```'
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration -run='^TestBamlfuzz(Static|Dynamic)Oracle\$' ./integration -count=1"
+              echo '```'
+            fi
           } | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -
