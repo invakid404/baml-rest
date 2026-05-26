@@ -35,10 +35,12 @@ const dynamicOracleCorpusDir = "../adapters/common/codegen/testdata/bamlfuzz/dyn
 const dynamicOracleArtifactDir = "../adapters/common/codegen/testdata/bamlfuzz/dynamic/_artifacts"
 
 // rapidCasesPerMode controls how many random dynamic cases run per
-// preserve mode in PR-B. v1's full target is 20 per mode (40 total);
-// PR-B keeps the count small to bound CI wall time until the static
-// path lands in PR-C and the full smoke matrix runs.
-const rapidCasesPerMode = 4
+// preserve mode. The default of 4 is sized for PR CI wall time; the
+// nightly fuzz workflow cranks it up via BAMLFUZZ_DYNAMIC_CASES so
+// each scheduled run explores a broader slice of the schema space.
+func rapidCasesPerMode() int {
+	return envIntDefault("BAMLFUZZ_DYNAMIC_CASES", 4)
+}
 
 // TestBamlfuzzDynamicOracle drives the three-way dynamic oracle: for each
 // fuzz case we
@@ -96,7 +98,8 @@ func TestBamlfuzzDynamicOracle(t *testing.T) {
 				label = "preserve_on"
 			}
 			t.Run(label, func(t *testing.T) {
-				for i := 0; i < rapidCasesPerMode; i++ {
+				cases := rapidCasesPerMode()
+				for i := 0; i < cases; i++ {
 					i := i
 					seed := dynamicSeedFor(preserve, i)
 					t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
