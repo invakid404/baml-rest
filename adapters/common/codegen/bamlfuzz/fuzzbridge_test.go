@@ -83,21 +83,46 @@ func TestSeedFromBytesDistinct(t *testing.T) {
 // encoding that MakeFuzz applies before handing off to rapid.MakeFuzz.
 // The full dispatch (testing.F + f.Fuzz + the rapid bit stream) only
 // runs end-to-end under `go test -fuzz`, which the integration-tag
-// targets TestBamlfuzz{Static,Dynamic}Fuzz exercise in CI. Locally,
+// targets FuzzBamlfuzz{Static,Dynamic} exercise in CI. Locally,
 //
-//	go test -tags=integration -fuzz='^TestBamlfuzzDynamicFuzz$' \
+//	go test -tags=integration -fuzz='^FuzzBamlfuzzDynamic$' \
 //	    -fuzztime=30s ./integration
 //
 // drives the bridge end-to-end through the actual testing.F engine —
 // faking *testing.F outside that engine is brittle, so the unit test
 // stops at the encoding boundary.
+//
+// Two branches are pinned: an 8-byte input is interpreted as a
+// little-endian uint64 seed verbatim (the corpus replay path), while
+// any other length is hashed through SeedFromBytes first (the
+// generator-driven exploration path).
 func TestMakeFuzzPipelineEncoding(t *testing.T) {
-	raw := []byte("anchor")
-	seed := SeedFromBytes(raw)
-	var encoded [8]byte
-	binary.LittleEndian.PutUint64(encoded[:], seed)
-	if got := binary.LittleEndian.Uint64(encoded[:]); got != seed {
-		t.Errorf("uint64 round-trip through little-endian encoding broke: %d != %d", got, seed)
-	}
+	t.Run("non_8_byte_hashed_path", func(t *testing.T) {
+		raw := []byte("anchor")
+		seed := SeedFromBytes(raw)
+		var encoded [8]byte
+		binary.LittleEndian.PutUint64(encoded[:], seed)
+		if got := binary.LittleEndian.Uint64(encoded[:]); got != seed {
+			t.Errorf("uint64 round-trip through little-endian encoding broke: %d != %d", got, seed)
+		}
+	})
+
+	t.Run("8_byte_direct_seed_path", func(t *testing.T) {
+		// A corpus entry built by the integration fuzz targets:
+		// dynamicSeedFor's uint64 output, encoded as 8 little-endian
+		// bytes. The bridge must replay this exact seed, not hash it.
+		const wantSeed uint64 = 0x86113a7efb803239
+		raw := make([]byte, 8)
+		binary.LittleEndian.PutUint64(raw, wantSeed)
+		if got := binary.LittleEndian.Uint64(raw); got != wantSeed {
+			t.Fatalf("8-byte LE direct decode broke: %d != %d", got, wantSeed)
+		}
+		// The hashed path would produce a different seed; pinning
+		// that here guarantees a future regression that re-hashes
+		// 8-byte inputs would be caught.
+		if hashed := SeedFromBytes(raw); hashed == wantSeed {
+			t.Errorf("SeedFromBytes(raw) collided with the direct seed; the test loses its discrimination")
+		}
+	})
 }
 

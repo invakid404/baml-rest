@@ -9,22 +9,37 @@ import (
 )
 
 // MakeFuzz adapts rapid's bit-stream-driven generator model onto Go's
-// testing.F []byte-driven fuzz model. The raw fuzz input is hashed with
-// fnv-64a into a single uint64, which is then fed to rapid.MakeFuzz as
-// 8 little-endian bytes. The hashing layer is what lets short inputs
-// like {1, 2, 3} and their zero-padded extension {1, 2, 3, 0, 0, 0, 0, 0}
-// drive distinct rapid runs — rapid.MakeFuzz's own bytes→uint64 routine
-// pads with zeros, so the unhashed path would collapse those two inputs
-// into the same bit stream.
+// testing.F []byte-driven fuzz model.
 //
-// body runs once per fuzz invocation with the per-call *testing.T and a
-// rapid *rapid.T configured from the derived seed. rapid handles its
-// own Cleanup paths inside its checkOnce; the wrapping testing.T's
-// Cleanup runs after body returns.
+// Two input shapes are recognised:
+//
+//   - Exactly 8 bytes: treated as a little-endian uint64 seed and
+//     forwarded to rapid verbatim. The seed corpus the integration
+//     fuzz targets ship via f.Add encodes `dynamicSeedFor` /
+//     `staticSeedFor` outputs this way, so corpus entries replay the
+//     exact rapid bit stream the rapid oracle subtree already covers.
+//   - Anything else (including the empty input): hashed with fnv-64a
+//     into a single uint64 (see SeedFromBytes) and then forwarded to
+//     rapid as 8 little-endian bytes. The hashing layer is what lets
+//     short inputs like {1, 2, 3} and their zero-padded extension
+//     {1, 2, 3, 0, 0, 0, 0, 0} drive distinct rapid runs —
+//     rapid.MakeFuzz's own bytes→uint64 routine pads with zeros, so
+//     an unhashed path for non-8-byte inputs would collapse those two
+//     into the same bit stream.
+//
+// body runs once per fuzz invocation with the per-call *testing.T and
+// a rapid *rapid.T configured from the derived seed. rapid handles
+// its own Cleanup paths inside its checkOnce; the wrapping
+// testing.T's Cleanup runs after body returns.
 func MakeFuzz(f *testing.F, body func(*testing.T, *rapid.T)) {
 	f.Helper()
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		seed := SeedFromBytes(raw)
+		var seed uint64
+		if len(raw) == 8 {
+			seed = binary.LittleEndian.Uint64(raw)
+		} else {
+			seed = SeedFromBytes(raw)
+		}
 		var encoded [8]byte
 		binary.LittleEndian.PutUint64(encoded[:], seed)
 		rapid.MakeFuzz(func(rt *rapid.T) {
