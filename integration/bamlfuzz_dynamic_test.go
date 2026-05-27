@@ -701,6 +701,71 @@ func TestReproductionFor(t *testing.T) {
 	}
 }
 
+// TestReproKeyOrderDiscrepancySeed0x86113a7e is a manual debugging aid
+// that replays the deterministic dynamic-oracle case captured by issue
+// #379. The case exposes a schema key-order mismatch between the
+// walker's Expected JSON and BAML's emitted JSON across both /call and
+// /call/_dynamic on a shape the PR-time rapid oracle does not reach
+// (the FuzzBamlfuzzDynamic body draws a leading rapid.Bool() before
+// CoupledCaseGen, which case_0 of the rapid oracle does not). Skipped
+// by default so PR-time CI stays green; gated on
+// BAMLFUZZ_REPRO_KEY_ORDER=1 for local triage.
+//
+// To run manually with BAML/Docker available:
+//
+//	BAMLFUZZ_REPRO_KEY_ORDER=1 BAML_VERSION=0.222.0 \
+//	  go test -tags=integration,subprocess \
+//	  -run='^TestReproKeyOrderDiscrepancySeed0x86113a7e$' \
+//	  ./integration -count=1
+//
+// On failure the envelope dumps to
+// adapters/common/codegen/testdata/bamlfuzz/dynamic/_artifacts/fuzz_repro_issue_379.json
+// with full Schema/Value/MockLLMContent/Expected + observed dynclient
+// and REST responses for triage.
+//
+// Remove this test once issue #379 is closed.
+func TestReproKeyOrderDiscrepancySeed0x86113a7e(t *testing.T) {
+	if os.Getenv("BAMLFUZZ_REPRO_KEY_ORDER") != "1" {
+		t.Skip("set BAMLFUZZ_REPRO_KEY_ORDER=1 to run this manual repro")
+	}
+	dynclientCallGate(t)
+
+	dyn, err := testutil.NewDynclient(TestEnv)
+	if err != nil {
+		t.Fatalf("NewDynclient: %v", err)
+	}
+
+	// The literal value is the exact dynamicSeedFor(true, 0) draw that
+	// issue #379 identifies. Hard-coding it pins the case to the seed
+	// quoted in the issue even if the helper's derivation rule ever
+	// changes; a unit test downstream can re-verify equivalence against
+	// the live helper. var, not const: the high bit is set, so int64
+	// and int casts only typecheck at runtime.
+	var seed uint64 = 0x86113a7efb803239
+
+	// Mirror the FuzzBamlfuzzDynamic body draw-for-draw: rapid.Bool()
+	// first, then CoupledCaseGen(DynamicSafeSchemaGen()). Drift here
+	// would silently land on a different case than the issue describes.
+	rapid.Custom(func(rt *rapid.T) struct{} {
+		preserve := rapid.Bool().Draw(rt, "preserve_schema_order")
+		cc := bamlfuzz.CoupledCaseGen(bamlfuzz.DynamicSafeSchemaGen()).Draw(rt, "coupled_case")
+		c := bamlfuzz.OracleCase{
+			Name:                "fuzz_repro_issue_379",
+			Seed:                int64(seed),
+			CaseIndex:           0,
+			Mode:                bamlfuzz.OracleDynamicThreeWay,
+			PreserveSchemaOrder: preserve,
+			Schema:              cc.Schema,
+			Value:               cc.Value,
+			MockLLMContent:      cc.Walk.MockLLMContent,
+			Expected:            cc.Walk.Expected,
+			Metadata:            cc.Walk.Metadata,
+		}
+		runDynamicOracleCase(t, dyn, c, 0, caseSourceFuzz)
+		return struct{}{}
+	}).Example(int(seed))
+}
+
 // TestUnsupportedActionFor pins the source-dependent dispatch for the
 // rapid-vs-corpus skip-vs-fail contract. Decoupled from
 // runDynamicOracleCase itself because a Go subtest failure cascades to
