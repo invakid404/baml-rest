@@ -79,7 +79,15 @@ func buildInvalidProperty(kind string) (*bamlutils.DynamicProperty, error) {
 // order modulo the specific key the mutation touched (drop_key
 // removes one in place; retype/swap_enum/wrap_in_array replace one
 // in place; add_unknown_key appends at the end).
-func applyJSONMutation(content json.RawMessage, kind string) (json.RawMessage, error) {
+//
+// `schema` is consulted by schema-aware mutations: JSONMutationSwapEnum
+// scans the root class for a property of enum type so the replacement
+// actually exercises an enum-coercion code path; a generic first-field
+// replacement would only swap a string for a string when the first
+// field is non-enum, defeating the mutation's intent. When no enum
+// field exists in the schema the mutation returns an error and the
+// caller's fallback (typically JSONMutationAddUnknownKey) takes over.
+func applyJSONMutation(schema FuzzSchema, content json.RawMessage, kind string) (json.RawMessage, error) {
 	var obj bamlutils.OrderedMap[json.RawMessage]
 	if err := obj.UnmarshalJSON(content); err != nil {
 		return nil, fmt.Errorf("unmarshal mock content: %w", err)
@@ -110,10 +118,18 @@ func applyJSONMutation(content json.RawMessage, kind string) (json.RawMessage, e
 			return nil, fmt.Errorf("retype_scalar: %w", err)
 		}
 	case JSONMutationSwapEnum:
-		if len(keys) == 0 {
-			return nil, fmt.Errorf("no keys for swap_enum")
+		target, ok := findRootEnumFieldName(schema)
+		if !ok {
+			return nil, fmt.Errorf("swap_enum: schema has no root-class enum field")
 		}
-		if err := obj.Replace(keys[0], json.RawMessage(`"_invalid_enum_variant"`)); err != nil {
+		if !obj.Has(target) {
+			// The walker is supposed to render every root-class field
+			// into the mock; a missing key here would be a generator
+			// integrity bug. Surface as a hard error so the caller's
+			// fallback handles it deterministically.
+			return nil, fmt.Errorf("swap_enum: enum field %q absent from mock content", target)
+		}
+		if err := obj.Replace(target, json.RawMessage(`"_invalid_enum_variant"`)); err != nil {
 			return nil, fmt.Errorf("swap_enum: %w", err)
 		}
 	case JSONMutationWrapInArray:
@@ -134,6 +150,41 @@ func applyJSONMutation(content json.RawMessage, kind string) (json.RawMessage, e
 		return nil, fmt.Errorf("marshal mutated mock: %w", err)
 	}
 	return out, nil
+}
+
+// findRootEnumFieldName scans the root class for a property typed as
+// an enum reference. Walks through KindOptional and KindUnion
+// wrappers so an optional<enum> or a union arm naming an enum still
+// counts. Returns the property name plus a found flag.
+func findRootEnumFieldName(schema FuzzSchema) (string, bool) {
+	rootCls, ok := schema.FindClass(schema.RootClass)
+	if !ok {
+		return "", false
+	}
+	for _, prop := range rootCls.Properties {
+		if typeReachesEnum(prop.Type) {
+			return prop.Name, true
+		}
+	}
+	return "", false
+}
+
+func typeReachesEnum(t FuzzType) bool {
+	switch t.Kind {
+	case KindEnumRef:
+		return true
+	case KindOptional:
+		if t.Inner != nil {
+			return typeReachesEnum(*t.Inner)
+		}
+	case KindUnion:
+		for _, v := range t.Variants {
+			if typeReachesEnum(v) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // retypeScalarValue produces a value of a different JSON type than

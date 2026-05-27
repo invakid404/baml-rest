@@ -78,9 +78,9 @@ func InvalidJSONCoercionGen() *rapid.Generator[InvalidOracleCase] {
 		cc := CoupledCaseGen(DynamicSafeSchemaGen()).Draw(t, "coupled_case")
 		idx := rapid.IntRange(0, len(invalidJSONMutationKinds)-1).Draw(t, "json_mutation_kind")
 		kind := invalidJSONMutationKinds[idx]
-		mutated, err := applyJSONMutation(cc.Walk.MockLLMContent, kind)
+		mutated, err := applyJSONMutation(cc.Schema, cc.Walk.MockLLMContent, kind)
 		if err != nil {
-			fallback, ferr := applyJSONMutation(cc.Walk.MockLLMContent, JSONMutationAddUnknownKey)
+			fallback, ferr := applyJSONMutation(cc.Schema, cc.Walk.MockLLMContent, JSONMutationAddUnknownKey)
 			if ferr != nil {
 				t.Fatalf("bamlfuzz: fallback JSON mutation failed: %v (original kind=%q err=%v)", ferr, kind, err)
 			}
