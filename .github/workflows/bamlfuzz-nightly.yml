@@ -32,7 +32,7 @@ on:
         required: false
         default: "50"
       fuzztime:
-        description: Fuzz-mode duration per target (default 15m; total wall time roughly 2× this)
+        description: Fuzz-mode duration per target (default 15m; total wall time roughly 4× this — static + dynamic + invalid-dynamic + invalid-json-coercion run sequentially)
         type: string
         required: false
         default: "15m"
@@ -76,7 +76,13 @@ jobs:
   fuzz:
     needs: get-versions
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Four sequential fuzz targets at the default 15m each = 60m of fuzz
+    # wall time; setup + image pull + corpus restore land around 10m on
+    # cold runners. The 120m cap leaves headroom for an operator-set
+    # FUZZTIME up to ~25m without breaching, and absorbs the
+    # invalid-* targets' slower per-exec rate when a draw lands on a
+    # mutation whose JSON re-encoding dominates the loop.
+    timeout-minutes: 120
     permissions:
       contents: read
       actions: read
@@ -136,22 +142,26 @@ jobs:
 
       - name: Run bamlfuzz nightly — static fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'fuzz' }}
-        # `go test -fuzz` runs ONE target per invocation, so the static
-        # and dynamic targets are split across sequential steps. Each
-        # gets half the configured fuzztime budget. The corpus dir is
-        # shared so seed inputs that the dynamic target discovered also
-        # influence the static target on the next nightly.
+        # `go test -fuzz` runs ONE target per invocation, so the four
+        # fuzz targets (static, dynamic, invalid-dynamic,
+        # invalid-json-coercion) are split across sequential steps.
+        # Each gets the full configured FUZZTIME budget. Total fuzz
+        # wall time is therefore 4 × FUZZTIME; the job's
+        # timeout-minutes block above caps the combined cost. The
+        # corpus dir is shared so seed inputs any target discovers
+        # also influence the others on the next nightly.
         #
         # `-run='^$'` matches no ordinary test name, which keeps the
-        # cranked-up TestBamlfuzz{Static,Dynamic}Oracle rapid runs from
-        # consuming the per-step budget before fuzzing starts.
+        # cranked-up TestBamlfuzz{Static,Dynamic,Invalid*} rapid runs
+        # from consuming the per-step budget before fuzzing starts.
         # BAMLFUZZ_KEEP_ARTIFACTS is forced off here; the success-path
         # envelope dump in the oracle bodies all writes to
         # _artifacts/fuzz.json (one filename per fuzz case), which races
         # under parallel fuzz workers and can overwrite a failure
         # envelope on the way out. Failures still dump unconditionally
-        # via failAndDump/failStaticAndDump, so the workflow's
-        # upload-on-failure step still captures the right artifact.
+        # via failAndDump / failStaticAndDump / failAndDumpInvalid, so
+        # the workflow's upload-on-failure step still captures the
+        # right artifact.
         env:
           BAMLFUZZ_KEEP_ARTIFACTS: ""
         run: |
