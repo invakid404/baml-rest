@@ -26,6 +26,11 @@ on:
         type: string
         required: false
         default: "10"
+      invalid_cases:
+        description: Rapid-mode invalid-input cases per oracle (default 50)
+        type: string
+        required: false
+        default: "50"
       fuzztime:
         description: Fuzz-mode duration per target (default 15m; total wall time roughly 2× this)
         type: string
@@ -90,6 +95,7 @@ jobs:
       # via dispatch inputs so a manual run can mix-and-match.
       BAMLFUZZ_DYNAMIC_CASES: ${{ github.event.inputs.dynamic_cases || '50' }}
       BAMLFUZZ_STATIC_BATCHES: ${{ github.event.inputs.static_batches || '10' }}
+      BAMLFUZZ_INVALID_CASES: ${{ github.event.inputs.invalid_cases || '50' }}
       BAMLFUZZ_SEED: ${{ github.event.inputs.seed || github.run_id }}
     steps:
       - name: Checkout Repository
@@ -168,14 +174,38 @@ jobs:
             -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
             ./integration
 
+      - name: Run bamlfuzz nightly — invalid-schema fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' }}
+        env:
+          BAMLFUZZ_KEEP_ARTIFACTS: ""
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^$' \
+            -fuzz='^FuzzBamlfuzzInvalidDynamic$' \
+            -fuzztime="${FUZZTIME}" \
+            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
+            ./integration
+
+      - name: Run bamlfuzz nightly — invalid-JSON-coercion fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' }}
+        env:
+          BAMLFUZZ_KEEP_ARTIFACTS: ""
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^$' \
+            -fuzz='^FuzzBamlfuzzInvalidJSONCoercion$' \
+            -fuzztime="${FUZZTIME}" \
+            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
+            ./integration
+
       - name: Run bamlfuzz oracles — rapid mode (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'rapid' }}
         # `subprocess` matches the normal server deployment path (server +
         # cmd/worker go-plugin), same as integration-tests.yml. -p 1 keeps
-        # the integration env setup serial; the two oracles share state.
+        # the integration env setup serial; the oracles share state.
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
-            -run='^TestBamlfuzz(Static|Dynamic)Oracle$' ./integration/...
+            -run='^TestBamlfuzz(Static|Dynamic)Oracle$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)$' ./integration/...
 
       - name: Upload corpus for next nightly
         if: ${{ always() && env.MODE == 'fuzz' }}
@@ -237,13 +267,15 @@ jobs:
               echo '```'
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzStatic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzDynamic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzInvalidDynamic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzInvalidJSONCoercion\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
               echo '```'
             else
               echo
               echo "Repro:"
               echo
               echo '```'
-              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration -run='^TestBamlfuzz(Static|Dynamic)Oracle\$' ./integration -count=1"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} BAMLFUZZ_INVALID_CASES=${BAMLFUZZ_INVALID_CASES} go test -tags=integration -run='^TestBamlfuzz(Static|Dynamic)Oracle\$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)\$' ./integration -count=1"
               echo '```'
             fi
           } | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -
