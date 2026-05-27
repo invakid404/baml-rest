@@ -76,13 +76,21 @@ jobs:
   fuzz:
     needs: get-versions
     runs-on: ubuntu-latest
-    # Four sequential fuzz targets at the default 15m each = 60m of fuzz
-    # wall time; setup + image pull + corpus restore land around 10m on
-    # cold runners. The 120m cap leaves headroom for an operator-set
-    # FUZZTIME up to ~25m without breaching, and absorbs the
-    # invalid-* targets' slower per-exec rate when a draw lands on a
-    # mutation whose JSON re-encoding dominates the loop.
-    timeout-minutes: 120
+    # Four sequential fuzz targets, each its own `go test ./integration`
+    # invocation — so TestMain (the integration env Setup that boots
+    # the BAML REST container + mock LLM) runs FOUR TIMES, not once.
+    # Budget:
+    #   - fuzz: 4 × FUZZTIME (default 15m) = 60m
+    #   - setup: 4 × ~10m per invocation on cold runners = 40m
+    #   - corpus restore + Go install + safety margin = ~10m
+    #   Total at the FUZZTIME default: ~110m.
+    # The 180m cap absorbs cold-runner setup variance and supports an
+    # operator-set FUZZTIME up to ~25m (4 × 25m + 40m setup + 10m
+    # margin = 150m) without breaching. A future refactor that runs
+    # all four fuzz targets under a single `go test` invocation would
+    # collapse setup to ~10m total and shrink the budget back to the
+    # ~75m the prior two-target nightly used.
+    timeout-minutes: 180
     permissions:
       contents: read
       actions: read
@@ -285,7 +293,7 @@ jobs:
               echo "Repro:"
               echo
               echo '```'
-              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} BAMLFUZZ_INVALID_CASES=${BAMLFUZZ_INVALID_CASES} go test -tags=integration -run='^TestBamlfuzz(Static|Dynamic)Oracle\$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)\$' ./integration -count=1"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} BAMLFUZZ_INVALID_CASES=${BAMLFUZZ_INVALID_CASES} go test -tags=integration,subprocess -run='^TestBamlfuzz(Static|Dynamic)Oracle\$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)\$' ./integration -count=1"
               echo '```'
             fi
           } | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -
