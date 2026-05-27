@@ -468,25 +468,237 @@ func formatActualOutcome(dynSuccess, restSuccess bool) string {
 
 // checkInvalidOrderC runs the schema-aware key-order assertion on the
 // (dynclient.Data, REST.Body) pair for an Axis C case in the success
-// quadrant. Returns a non-empty diagnostic when the surfaces disagree
-// on key order at any class node OR when the order walker bails. The
-// second return reports whether the call site should treat the result
-// as a hard failure: a real order mismatch is hard fail; an
-// ErrSchemaOrderUnsupported result (the walker hit a union node
-// without a recorded choice) downgrades to a soft warning because the
-// post-mutation surface output may legitimately exercise union arms
-// the original walker did not visit.
+// quadrant. Returns (diagnostic, hardFail) — a non-empty diagnostic
+// always indicates the check found something worth reporting; the
+// second return reports whether the call site should fail the test.
+//
+// The order walker's UnionChoices contract requires a recorded choice
+// for every union path it visits. The walker built CaseMetadata.UnionChoices
+// from the pre-mutation FuzzValue, but the mock LLM JSON has been
+// perturbed since: a mutation can flip the surfaces into a union arm
+// the pre-mutation walk never recorded, leaving the order walker no
+// way to dispatch at that node. To keep the order assertion runnable
+// in that case, derive a fresh choices map from the actual parsed
+// dynclient output (which SemanticDiff already proved equals the REST
+// body at this point), then feed THAT into the walker. Derivation
+// covers every union path in the schema reachable through the parsed
+// JSON, so the walker should always have a choice and never bail.
+//
+// ErrSchemaOrderUnsupported after derivation is a hard fail: it means
+// either (a) the parsed value at a union path has a shape no arm
+// matches (a real schema-vs-output divergence the oracle should
+// surface), or (b) the derivation itself is buggy. Both are worth
+// failing on.
 func checkInvalidOrderC(c bamlfuzz.InvalidOracleCase, dyn, rest json.RawMessage) (string, bool) {
-	diffs, err := bamlfuzz.SchemaOrderDiffWithChoices("dynclient_vs_rest_order", c.Schema, dyn, rest, c.Metadata.UnionChoices)
+	choices, err := deriveUnionChoicesFromParsed(c.Schema, dyn)
+	if err != nil {
+		return fmt.Sprintf("axis C order check: derive union choices: %v", err), true
+	}
+	diffs, err := bamlfuzz.SchemaOrderDiffWithChoices("dynclient_vs_rest_order", c.Schema, dyn, rest, choices)
 	switch {
 	case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
-		return fmt.Sprintf("axis C order check: %v (soft-skip on union arm metadata)", err), false
+		return fmt.Sprintf("axis C order check: %v (derivation did not cover every union path; treat as hard fail per F1 contract)", err), true
 	case err != nil:
 		return fmt.Sprintf("axis C order check: %v", err), true
 	case len(diffs) > 0:
 		return strings.Join(bamlfuzz.FormatSchemaOrderDiffs(diffs), "; "), true
 	}
 	return "", false
+}
+
+// deriveUnionChoicesFromParsed walks the schema in parallel with the
+// parsed JSON, recording a UnionChoice at every union path. The path
+// scheme matches the walker's CaseMetadata.UnionChoices convention
+// exactly: paths start at "" (no leading "$"); class fields append
+// ".<name>"; list elements append "[<idx>]"; map values append
+// "[<quoted-key>]"; union variant arms append ":v". The order walker
+// (order.go's walkType) strips the leading "$" before consulting
+// choices, so a "" start here lands on the same key the walker
+// queries.
+//
+// The variant picked at each union is the first arm whose Kind shape
+// matches the parsed value. Ambiguous arms (e.g., KindString vs
+// KindEnumRef vs KindLiteralString — all produce JSON strings) are
+// disambiguated by content match where possible (KindLiteralString
+// requires byte-equal value; KindEnumRef requires the string to be
+// one of the enum's declared values), with KindString as the
+// catch-all fallback. A union with no matching arm leaves the node
+// unrecorded; the order walker then surfaces ErrSchemaOrderUnsupported,
+// which checkInvalidOrderC treats as a hard failure.
+func deriveUnionChoicesFromParsed(schema bamlfuzz.FuzzSchema, parsed json.RawMessage) (map[string]bamlfuzz.UnionChoice, error) {
+	var v any
+	if err := json.Unmarshal(parsed, &v); err != nil {
+		return nil, err
+	}
+	choices := make(map[string]bamlfuzz.UnionChoice)
+	deriveChoicesAt(schema, schema.EffectiveRoot(), v, "", choices)
+	return choices, nil
+}
+
+func deriveChoicesAt(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any, path string, choices map[string]bamlfuzz.UnionChoice) {
+	switch t.Kind {
+	case bamlfuzz.KindUnion:
+		idx := pickUnionArm(schema, t.Variants, v)
+		if idx < 0 || idx >= len(t.Variants) {
+			return
+		}
+		selected := t.Variants[idx]
+		choices[path] = bamlfuzz.UnionChoice{
+			Index:        idx,
+			Kind:         selected.Kind,
+			Ref:          selected.Ref,
+			VariantCount: len(t.Variants),
+		}
+		deriveChoicesAt(schema, selected, v, path+":v", choices)
+	case bamlfuzz.KindOptional:
+		if t.Inner == nil || v == nil {
+			return
+		}
+		deriveChoicesAt(schema, *t.Inner, v, path, choices)
+	case bamlfuzz.KindList:
+		if t.Inner == nil {
+			return
+		}
+		arr, ok := v.([]any)
+		if !ok {
+			return
+		}
+		for i, item := range arr {
+			deriveChoicesAt(schema, *t.Inner, item, fmt.Sprintf("%s[%d]", path, i), choices)
+		}
+	case bamlfuzz.KindMap:
+		if t.Inner == nil {
+			return
+		}
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		for k, val := range obj {
+			deriveChoicesAt(schema, *t.Inner, val, fmt.Sprintf("%s[%q]", path, k), choices)
+		}
+	case bamlfuzz.KindClassRef:
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		cls, found := schema.FindClass(t.Ref)
+		if !found {
+			return
+		}
+		for _, prop := range cls.Properties {
+			fv, present := obj[prop.Name]
+			if !present {
+				continue
+			}
+			deriveChoicesAt(schema, prop.Type, fv, path+"."+prop.Name, choices)
+		}
+	}
+}
+
+// pickUnionArm returns the index of the first variant whose shape
+// matches the observed value v, or -1 if no arm matches.
+func pickUnionArm(schema bamlfuzz.FuzzSchema, variants []bamlfuzz.FuzzType, v any) int {
+	for i, variant := range variants {
+		if variantMatchesValue(schema, variant, v) {
+			return i
+		}
+	}
+	return -1
+}
+
+// variantMatchesValue reports whether variant's Kind can plausibly
+// hold v. Literal kinds require byte-equal content; enum refs require
+// v to be one of the enum's declared values; class refs require v's
+// JSON object keys to be a subset of the class's property names so
+// classref-vs-map ambiguity resolves toward the class arm when keys
+// look like class properties.
+func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any) bool {
+	switch t.Kind {
+	case bamlfuzz.KindNull:
+		return v == nil
+	case bamlfuzz.KindString:
+		_, ok := v.(string)
+		return ok
+	case bamlfuzz.KindInt, bamlfuzz.KindFloat:
+		_, ok := v.(float64)
+		return ok
+	case bamlfuzz.KindBool:
+		_, ok := v.(bool)
+		return ok
+	case bamlfuzz.KindLiteral:
+		if t.Literal == nil {
+			return false
+		}
+		switch t.Literal.Kind {
+		case bamlfuzz.LiteralString:
+			s, ok := v.(string)
+			return ok && s == t.Literal.String
+		case bamlfuzz.LiteralInt:
+			n, ok := v.(float64)
+			return ok && n == float64(t.Literal.Int)
+		case bamlfuzz.LiteralBool:
+			b, ok := v.(bool)
+			return ok && b == t.Literal.Bool
+		}
+		return false
+	case bamlfuzz.KindEnumRef:
+		s, ok := v.(string)
+		if !ok {
+			return false
+		}
+		enum, found := schema.FindEnum(t.Ref)
+		if !found {
+			return false
+		}
+		for _, val := range enum.Values {
+			if val == s {
+				return true
+			}
+		}
+		return false
+	case bamlfuzz.KindList:
+		_, ok := v.([]any)
+		return ok
+	case bamlfuzz.KindMap:
+		_, ok := v.(map[string]any)
+		return ok
+	case bamlfuzz.KindClassRef:
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return false
+		}
+		cls, found := schema.FindClass(t.Ref)
+		if !found {
+			return false
+		}
+		propNames := make(map[string]struct{}, len(cls.Properties))
+		for _, p := range cls.Properties {
+			propNames[p.Name] = struct{}{}
+		}
+		for k := range obj {
+			if _, ok := propNames[k]; !ok {
+				return false
+			}
+		}
+		return true
+	case bamlfuzz.KindOptional:
+		if v == nil {
+			return true
+		}
+		if t.Inner != nil {
+			return variantMatchesValue(schema, *t.Inner, v)
+		}
+		return false
+	case bamlfuzz.KindUnion:
+		for _, variant := range t.Variants {
+			if variantMatchesValue(schema, variant, v) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // reproductionForInvalid returns the canonical command to re-run a
