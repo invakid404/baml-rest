@@ -701,6 +701,91 @@ func TestReproductionFor(t *testing.T) {
 	}
 }
 
+// TestReproKeyOrderDiscrepancyAllCorpusSeeds is a manual debugging aid
+// that replays the 8 deterministic (preserve, case_idx) seeds the PR #376
+// testing.F smoke ran during baseline coverage — the same surface area
+// where issue #379 surfaced a schema key-order mismatch between the
+// walker's Expected JSON and BAML's emitted JSON across both /call and
+// /call/_dynamic. The original repro pinned a single hardcoded seed
+// (dynamicSeedFor(true, 0)), but a local replay at BAML 0.222.0 showed
+// that seed lands on preserve_schema_order=false via the body's
+// rapid.Bool() draw, short-circuiting the schema-order assertion path.
+// Iterating all 8 candidate seeds as independent subtests surfaces
+// whichever (if any) reach the bug.
+//
+// Skipped by default so PR-time CI stays green; gated on
+// BAMLFUZZ_REPRO_KEY_ORDER=1 for local triage.
+//
+// To run manually with BAML/Docker available:
+//
+//	BAMLFUZZ_REPRO_KEY_ORDER=1 BAML_VERSION=0.222.0 \
+//	  go test -tags=integration,subprocess \
+//	  -run='^TestReproKeyOrderDiscrepancyAllCorpusSeeds$' \
+//	  ./integration -count=1
+//
+// On failure each subtest dumps an envelope keyed by its
+// (preserve, case_idx) label to
+// adapters/common/codegen/testdata/bamlfuzz/dynamic/_artifacts/fuzz_repro_issue_379_<label>.json
+// so concurrent or sequential failures across the 8 seeds don't
+// overwrite each other's artifacts.
+//
+// Remove this test once issue #379 is closed.
+func TestReproKeyOrderDiscrepancyAllCorpusSeeds(t *testing.T) {
+	if os.Getenv("BAMLFUZZ_REPRO_KEY_ORDER") != "1" {
+		t.Skip("set BAMLFUZZ_REPRO_KEY_ORDER=1 to run this manual repro")
+	}
+	dynclientCallGate(t)
+
+	dyn, err := testutil.NewDynclient(TestEnv)
+	if err != nil {
+		t.Fatalf("NewDynclient: %v", err)
+	}
+
+	// The 8 (preserve, idx) pairs that PR #376's testing.F bridge
+	// seeds via f.Add during baseline coverage — the surface where
+	// the issue #379 discrepancy was originally caught.
+	seeds := []struct {
+		preserve bool
+		idx      int
+	}{
+		{true, 0}, {true, 1}, {true, 2}, {true, 3},
+		{false, 0}, {false, 1}, {false, 2}, {false, 3},
+	}
+	for _, sd := range seeds {
+		sd := sd
+		seed := dynamicSeedFor(sd.preserve, sd.idx)
+		label := fmt.Sprintf("preserve_%v_case_%d", sd.preserve, sd.idx)
+		t.Run(label, func(t *testing.T) {
+			// Per-subtest case Name so failure envelopes land at
+			// distinct artifact paths and don't clobber each other.
+			caseName := "fuzz_repro_issue_379_" + label
+			// Mirror the FuzzBamlfuzzDynamic body draw-for-draw:
+			// rapid.Bool() first, then
+			// CoupledCaseGen(DynamicSafeSchemaGen()). Drift here
+			// would silently land on a different case than the
+			// fuzz engine reaches at the same seed.
+			rapid.Custom(func(rt *rapid.T) struct{} {
+				preserve := rapid.Bool().Draw(rt, "preserve_schema_order")
+				cc := bamlfuzz.CoupledCaseGen(bamlfuzz.DynamicSafeSchemaGen()).Draw(rt, "coupled_case")
+				c := bamlfuzz.OracleCase{
+					Name:                caseName,
+					Seed:                int64(seed),
+					CaseIndex:           0,
+					Mode:                bamlfuzz.OracleDynamicThreeWay,
+					PreserveSchemaOrder: preserve,
+					Schema:              cc.Schema,
+					Value:               cc.Value,
+					MockLLMContent:      cc.Walk.MockLLMContent,
+					Expected:            cc.Walk.Expected,
+					Metadata:            cc.Walk.Metadata,
+				}
+				runDynamicOracleCase(t, dyn, c, 0, caseSourceFuzz)
+				return struct{}{}
+			}).Example(int(seed))
+		})
+	}
+}
+
 // TestUnsupportedActionFor pins the source-dependent dispatch for the
 // rapid-vs-corpus skip-vs-fail contract. Decoupled from
 // runDynamicOracleCase itself because a Go subtest failure cascades to
