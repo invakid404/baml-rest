@@ -3,7 +3,6 @@ package bamlfuzz
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -68,57 +67,69 @@ func buildInvalidProperty(kind string) (*bamlutils.DynamicProperty, error) {
 // applyJSONMutation perturbs the mock LLM JSON response with one
 // targeted edit. Returns the mutated bytes. The mock content the
 // walker emits at the dynamic-safe root is always a JSON object whose
-// keys are the class's properties, so a flat map[string]json.RawMessage
-// decode is sufficient — every mutation kind operates on a top-level
-// key.
+// keys are the class's properties; every mutation operates on the
+// top-level wire shape.
 //
-// Decode goes through encoding/json so the JSON wire-order may
-// scramble across the mutation; the Axis C oracle compares semantic
-// equality only, not source-order, so the reorder is invisible to the
-// assertion.
+// Decode/re-encode goes through bamlutils.OrderedMap so wire-order is
+// preserved across the mutation. The Axis C order oracle compares
+// dynclient vs REST key order at every class node via
+// SchemaOrderDiffWithChoices, so scrambling the mock's input order
+// here would corrupt the assertion's expected behaviour: a mock with
+// keys [a, b, c] must come out of the mutation in the same [a, b, c]
+// order modulo the specific key the mutation touched (drop_key
+// removes one in place; retype/swap_enum/wrap_in_array replace one
+// in place; add_unknown_key appends at the end).
 func applyJSONMutation(content json.RawMessage, kind string) (json.RawMessage, error) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(content, &obj); err != nil {
+	var obj bamlutils.OrderedMap[json.RawMessage]
+	if err := obj.UnmarshalJSON(content); err != nil {
 		return nil, fmt.Errorf("unmarshal mock content: %w", err)
 	}
-	if obj == nil {
-		obj = make(map[string]json.RawMessage)
-	}
-	keys := make([]string, 0, len(obj))
-	for k := range obj {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := obj.Keys()
 
 	switch kind {
 	case JSONMutationDropKey:
 		if len(keys) == 0 {
 			return nil, fmt.Errorf("no keys to drop")
 		}
-		delete(obj, keys[0])
+		obj.Delete(keys[0])
 	case JSONMutationAddUnknownKey:
-		obj["_invalid_unknown_key"] = json.RawMessage(`"unknown"`)
+		// Set returns an error on duplicate key. The reserved
+		// "_invalid_unknown_key" name is namespaced so it cannot
+		// collide with the generator's Fuzz_field_N convention; a
+		// duplicate here would mean a caller wired the same case
+		// twice, which is an integrity bug worth surfacing.
+		if err := obj.Set("_invalid_unknown_key", json.RawMessage(`"unknown"`)); err != nil {
+			return nil, fmt.Errorf("add_unknown_key: %w", err)
+		}
 	case JSONMutationRetypeScalar:
 		if len(keys) == 0 {
 			return nil, fmt.Errorf("no keys to retype")
 		}
-		obj[keys[0]] = retypeScalarValue(obj[keys[0]])
+		cur, _ := obj.Get(keys[0])
+		if err := obj.Replace(keys[0], retypeScalarValue(cur)); err != nil {
+			return nil, fmt.Errorf("retype_scalar: %w", err)
+		}
 	case JSONMutationSwapEnum:
 		if len(keys) == 0 {
 			return nil, fmt.Errorf("no keys for swap_enum")
 		}
-		obj[keys[0]] = json.RawMessage(`"_invalid_enum_variant"`)
+		if err := obj.Replace(keys[0], json.RawMessage(`"_invalid_enum_variant"`)); err != nil {
+			return nil, fmt.Errorf("swap_enum: %w", err)
+		}
 	case JSONMutationWrapInArray:
 		if len(keys) == 0 {
 			return nil, fmt.Errorf("no keys for wrap_in_array")
 		}
-		target := keys[0]
-		obj[target] = json.RawMessage("[" + string(obj[target]) + "]")
+		cur, _ := obj.Get(keys[0])
+		wrapped := json.RawMessage("[" + string(cur) + "]")
+		if err := obj.Replace(keys[0], wrapped); err != nil {
+			return nil, fmt.Errorf("wrap_in_array: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("unknown json mutation %q", kind)
 	}
 
-	out, err := json.Marshal(obj)
+	out, err := obj.MarshalJSON()
 	if err != nil {
 		return nil, fmt.Errorf("marshal mutated mock: %w", err)
 	}

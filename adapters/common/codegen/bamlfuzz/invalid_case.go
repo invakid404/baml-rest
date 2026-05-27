@@ -95,16 +95,25 @@ const (
 // LowerInvalidToDynamicSchema; for Axis C the schema lowers cleanly and
 // the perturbation lives in MockLLMContent.
 type InvalidOracleCase struct {
-	Name            string            `json:"name"`
-	Seed            int64             `json:"seed"`
-	CaseIndex       int               `json:"case_index"`
-	Mode            InvalidOracleMode `json:"mode"`
-	Mutation        string            `json:"mutation"`
-	ExpectedOutcome ExpectedOutcome   `json:"expected_outcome"`
-	Schema          FuzzSchema        `json:"schema"`
-	Value           FuzzValue         `json:"value"`
-	MockLLMContent  json.RawMessage   `json:"mock_llm_content"`
-	Metadata        CaseMetadata      `json:"metadata"`
+	Name string `json:"name"`
+	Seed int64  `json:"seed"`
+	// CaseIndex is the position of the case within its rapid batch.
+	// Used to derive distinct artifact filenames per case.
+	CaseIndex int               `json:"case_index"`
+	Mode      InvalidOracleMode `json:"mode"`
+	Mutation  string            `json:"mutation"`
+	// PreserveSchemaOrder mirrors the dynamic /call/_dynamic
+	// preserve_schema_order request field. Axis C's success quadrant
+	// runs the schema-aware key-order oracle when true; both axes pass
+	// the value through verbatim to dynclient.Request so the surface
+	// pipeline exercises whatever order-emission code path the bit
+	// selects.
+	PreserveSchemaOrder bool            `json:"preserve_schema_order"`
+	ExpectedOutcome     ExpectedOutcome `json:"expected_outcome"`
+	Schema              FuzzSchema      `json:"schema"`
+	Value               FuzzValue       `json:"value"`
+	MockLLMContent      json.RawMessage `json:"mock_llm_content"`
+	Metadata            CaseMetadata    `json:"metadata"`
 }
 
 // InvalidFailureEnvelope captures the full context around an oracle
@@ -112,29 +121,31 @@ type InvalidOracleCase struct {
 // each surface actually did (succeed / error) so a developer reading
 // the artifact can see the divergence without re-running the case.
 type InvalidFailureEnvelope struct {
-	GeneratorVersion  string                         `json:"generator_version"`
-	GeneratedAt       string                         `json:"generated_at"`
-	RapidSeed         int64                          `json:"rapid_seed"`
-	CaseIndex         int                            `json:"case_index"`
-	CaseName          string                         `json:"case_name"`
-	OracleMode        InvalidOracleMode              `json:"oracle_mode"`
-	Mutation          string                         `json:"mutation"`
-	ExpectedOutcome   ExpectedOutcome                `json:"expected_outcome"`
-	Schema            FuzzSchema                     `json:"schema"`
-	DynamicSchema     *bamlutils.DynamicOutputSchema `json:"dynamic_schema,omitempty"`
-	LoweringError     string                         `json:"lowering_error,omitempty"`
-	MockLLMScenarioID string                         `json:"mockllm_scenario_id,omitempty"`
-	MockLLMContent    json.RawMessage                `json:"mock_llm_content,omitempty"`
-	DynclientOutput   json.RawMessage                `json:"dynclient_output,omitempty"`
-	DynclientError    string                         `json:"dynclient_error,omitempty"`
-	RESTStatus        int                            `json:"rest_status,omitempty"`
-	RESTBody          json.RawMessage                `json:"rest_body,omitempty"`
-	RESTError         string                         `json:"rest_error,omitempty"`
-	SemanticDiff      []SemanticDiffEntry            `json:"semantic_diff,omitempty"`
-	ActualOutcome     string                         `json:"actual_outcome,omitempty"`
-	ReplayPath        string                         `json:"replay_path"`
-	Reproduction      string                         `json:"reproduction"`
-	Metadata          CaseMetadata                   `json:"metadata"`
+	GeneratorVersion    string                         `json:"generator_version"`
+	GeneratedAt         string                         `json:"generated_at"`
+	RapidSeed           int64                          `json:"rapid_seed"`
+	CaseIndex           int                            `json:"case_index"`
+	CaseName            string                         `json:"case_name"`
+	OracleMode          InvalidOracleMode              `json:"oracle_mode"`
+	Mutation            string                         `json:"mutation"`
+	PreserveSchemaOrder bool                           `json:"preserve_schema_order"`
+	ExpectedOutcome     ExpectedOutcome                `json:"expected_outcome"`
+	Schema              FuzzSchema                     `json:"schema"`
+	DynamicSchema       *bamlutils.DynamicOutputSchema `json:"dynamic_schema,omitempty"`
+	LoweringError       string                         `json:"lowering_error,omitempty"`
+	MockLLMScenarioID   string                         `json:"mockllm_scenario_id,omitempty"`
+	MockLLMContent      json.RawMessage                `json:"mock_llm_content,omitempty"`
+	DynclientOutput     json.RawMessage                `json:"dynclient_output,omitempty"`
+	DynclientError      string                         `json:"dynclient_error,omitempty"`
+	RESTStatus          int                            `json:"rest_status,omitempty"`
+	RESTBody            json.RawMessage                `json:"rest_body,omitempty"`
+	RESTError           string                         `json:"rest_error,omitempty"`
+	SemanticDiff        []SemanticDiffEntry            `json:"semantic_diff,omitempty"`
+	OrderWarning        []string                       `json:"order_warning,omitempty"`
+	ActualOutcome       string                         `json:"actual_outcome,omitempty"`
+	ReplayPath          string                         `json:"replay_path"`
+	Reproduction        string                         `json:"reproduction"`
+	Metadata            CaseMetadata                   `json:"metadata"`
 }
 
 // WriteInvalidReplayArtifact writes the invalid-case failure envelope

@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -107,6 +108,13 @@ func FuzzBamlfuzzInvalidDynamic(f *testing.F) {
 // equal (so a lenient-coercion divergence between dynclient and REST
 // surfaces); when at least one surface errors both must error (no
 // error-text comparison; see pre-flight finding).
+//
+// The rapid loop iterates both preserve_schema_order modes so the Axis
+// C oracle exercises the ordered-fields code path under
+// preserve_schema_order=true. The order assertion (success quadrant
+// only) compares dynclient vs REST key order at every class node via
+// SchemaOrderDiffWithChoices — the same machinery the valid-case
+// dynamic oracle uses.
 func TestBamlfuzzInvalidJSONCoercion(t *testing.T) {
 	dynclientCallGate(t)
 
@@ -117,12 +125,22 @@ func TestBamlfuzzInvalidJSONCoercion(t *testing.T) {
 
 	t.Run("rapid", func(t *testing.T) {
 		cases := invalidCasesPerRun()
-		for i := 0; i < cases; i++ {
-			i := i
-			seed := invalidSeedFor("invalid_json_coercion", i)
-			t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
-				c := buildRapidInvalidJSONCase(t, seed, i)
-				runInvalidOracleCase(t, dyn, c, i, caseSourceRapid)
+		modes := []bool{true, false}
+		for _, preserve := range modes {
+			preserve := preserve
+			label := "preserve_off"
+			if preserve {
+				label = "preserve_on"
+			}
+			t.Run(label, func(t *testing.T) {
+				for i := 0; i < cases; i++ {
+					i := i
+					seed := invalidSeedFor(fmt.Sprintf("invalid_json_coercion:%s", label), i)
+					t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
+						c := buildRapidInvalidJSONCase(t, seed, i, preserve)
+						runInvalidOracleCase(t, dyn, c, i, caseSourceRapid)
+					})
+				}
 			})
 		}
 	})
@@ -147,7 +165,9 @@ func FuzzBamlfuzzInvalidJSONCoercion(f *testing.F) {
 	f.Add(invalidFuzzSeedBytes("invalid_json_coercion", 0))
 
 	bamlfuzz.MakeFuzz(f, func(t *testing.T, rt *rapid.T) {
+		preserve := rapid.Bool().Draw(rt, "preserve_schema_order")
 		c := bamlfuzz.InvalidJSONCoercionGen().Draw(rt, "invalid_json_case")
+		c.PreserveSchemaOrder = preserve
 		c.Name = "fuzz_" + c.Mutation
 		runInvalidOracleCase(t, dyn, c, 0, caseSourceFuzz)
 	})
@@ -175,11 +195,27 @@ func fnv64aInvalidString(s string) uint64 {
 	return h.Sum64()
 }
 
-// invalidFuzzSeedBytes encodes invalidSeedFor's uint64 output as 8
-// little-endian bytes — the exact wire shape bamlfuzz.MakeFuzz
-// recognizes as a verbatim seed (fuzzbridge.go).
+// invalidFuzzSeedBytes derives a deterministic 8-byte fuzz-corpus seed
+// from (label, idx). The output is the exact wire shape
+// bamlfuzz.MakeFuzz recognizes as a verbatim uint64 (fuzzbridge.go).
+//
+// BAMLFUZZ_SEED is intentionally NOT folded in here, even though the
+// rapid path's invalidSeedFor does fold it in. Reason: the nightly's
+// fuzz mode runs with BAMLFUZZ_SEED=github.run_id set in the job env,
+// and the fuzz-mode repro command emitted on failure does not echo
+// BAMLFUZZ_SEED back (only the corpus bytes under -fuzzcachedir
+// identify the failing input). Folding the env var into the corpus
+// seed bytes would make every nightly's seed bytes different from the
+// developer-machine bytes under the same f.Add(label, idx) call, so a
+// failed run's "go test -fuzz=..." command would replay a different
+// case than the one that triggered the failure. Keeping the corpus
+// bytes pure ensures f.Add(label, 0) is byte-identical across all
+// environments.
 func invalidFuzzSeedBytes(label string, idx int) []byte {
-	seed := invalidSeedFor(label, idx)
+	h := fnv.New64a()
+	h.Write([]byte(label))
+	fmt.Fprintf(h, ":%d", idx)
+	seed := h.Sum64()
 	b := make([]byte, 8)
 	binary.LittleEndian.PutUint64(b, seed)
 	return b
@@ -197,13 +233,20 @@ func buildRapidInvalidDynamicCase(t *testing.T, seed uint64, idx int) bamlfuzz.I
 }
 
 // buildRapidInvalidJSONCase synthesizes one Axis C case
-// deterministically from seed.
-func buildRapidInvalidJSONCase(t *testing.T, seed uint64, idx int) bamlfuzz.InvalidOracleCase {
+// deterministically from seed. PreserveSchemaOrder is set explicitly
+// by the caller's preserve-mode iterator and is encoded into the case
+// name so per-mode artifact paths don't collide.
+func buildRapidInvalidJSONCase(t *testing.T, seed uint64, idx int, preserve bool) bamlfuzz.InvalidOracleCase {
 	t.Helper()
 	c := bamlfuzz.InvalidJSONCoercionGen().Example(int(seed))
-	c.Name = fmt.Sprintf("rapid_%d_%s", idx, c.Mutation)
+	mode := "preserve_off"
+	if preserve {
+		mode = "preserve_on"
+	}
+	c.Name = fmt.Sprintf("rapid_%s_%d_%s", mode, idx, c.Mutation)
 	c.Seed = int64(seed)
 	c.CaseIndex = idx
+	c.PreserveSchemaOrder = preserve
 	return c
 }
 
@@ -231,17 +274,18 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 
 	artifactDir := invalidArtifactDirFor(c.Mode)
 	envelope := &bamlfuzz.InvalidFailureEnvelope{
-		GeneratorVersion: bamlfuzz.GeneratorVersion,
-		RapidSeed:        c.Seed,
-		CaseIndex:        caseIdx,
-		CaseName:         c.Name,
-		OracleMode:       c.Mode,
-		Mutation:         c.Mutation,
-		ExpectedOutcome:  c.ExpectedOutcome,
-		Schema:           c.Schema,
-		MockLLMContent:   c.MockLLMContent,
-		Metadata:         c.Metadata,
-		Reproduction:     reproductionForInvalid(c, caseIdx, source),
+		GeneratorVersion:    bamlfuzz.GeneratorVersion,
+		RapidSeed:           c.Seed,
+		CaseIndex:           caseIdx,
+		CaseName:            c.Name,
+		OracleMode:          c.Mode,
+		Mutation:            c.Mutation,
+		PreserveSchemaOrder: c.PreserveSchemaOrder,
+		ExpectedOutcome:     c.ExpectedOutcome,
+		Schema:              c.Schema,
+		MockLLMContent:      c.MockLLMContent,
+		Metadata:            c.Metadata,
+		Reproduction:        reproductionForInvalid(c, caseIdx, source),
 	}
 
 	lowered, err := bamlfuzz.LowerInvalidToDynamicSchema(c)
@@ -285,6 +329,7 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 	defer callCancel()
 
 	hello := "Return the dynamic fuzz value."
+	preserve := c.PreserveSchemaOrder
 	libReq := dynclient.Request{
 		Messages: []dynclient.Message{
 			{Role: "system", PartsContent: []dynclient.ContentPart{
@@ -293,8 +338,9 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 			}},
 			{Role: "user", TextContent: &hello},
 		},
-		ClientRegistry: testutil.DynRegistry(clientReg),
-		OutputSchema:   &lowered,
+		ClientRegistry:      testutil.DynRegistry(clientReg),
+		OutputSchema:        &lowered,
+		PreserveSchemaOrder: &preserve,
 	}
 
 	libResp, libErr := dyn.DynamicCall(callCtx, libReq)
@@ -363,6 +409,15 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 				failAndDumpInvalid(t, artifactDir, envelope, "axis C both-success but dynclient ≠ REST body (mutation=%s)", c.Mutation)
 				return
 			}
+			if c.PreserveSchemaOrder {
+				if msg, fail := checkInvalidOrderC(c, envelope.DynclientOutput, envelope.RESTBody); msg != "" {
+					envelope.OrderWarning = append(envelope.OrderWarning, msg)
+					if fail {
+						failAndDumpInvalid(t, artifactDir, envelope, "axis C dynclient ≠ REST key order (mutation=%s)", c.Mutation)
+						return
+					}
+				}
+			}
 		case !dynSuccess && !restSuccess:
 			// Both errored: pass — error-text divergence is intentional
 			// per the pre-flight finding.
@@ -411,12 +466,40 @@ func formatActualOutcome(dynSuccess, restSuccess bool) string {
 	return fmt.Sprintf("dynclient=%s rest=%s", dyn, rest)
 }
 
+// checkInvalidOrderC runs the schema-aware key-order assertion on the
+// (dynclient.Data, REST.Body) pair for an Axis C case in the success
+// quadrant. Returns a non-empty diagnostic when the surfaces disagree
+// on key order at any class node OR when the order walker bails. The
+// second return reports whether the call site should treat the result
+// as a hard failure: a real order mismatch is hard fail; an
+// ErrSchemaOrderUnsupported result (the walker hit a union node
+// without a recorded choice) downgrades to a soft warning because the
+// post-mutation surface output may legitimately exercise union arms
+// the original walker did not visit.
+func checkInvalidOrderC(c bamlfuzz.InvalidOracleCase, dyn, rest json.RawMessage) (string, bool) {
+	diffs, err := bamlfuzz.SchemaOrderDiffWithChoices("dynclient_vs_rest_order", c.Schema, dyn, rest, c.Metadata.UnionChoices)
+	switch {
+	case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
+		return fmt.Sprintf("axis C order check: %v (soft-skip on union arm metadata)", err), false
+	case err != nil:
+		return fmt.Sprintf("axis C order check: %v", err), true
+	case len(diffs) > 0:
+		return strings.Join(bamlfuzz.FormatSchemaOrderDiffs(diffs), "; "), true
+	}
+	return "", false
+}
+
 // reproductionForInvalid returns the canonical command to re-run a
 // failing invalid-case in isolation, embedded in the envelope so a
 // developer can copy-paste it from the failure log. Mirrors
 // reproductionFor's source dispatch: fuzz cases re-run the engine
 // against the persisted -fuzzcachedir; rapid cases re-run a single
 // subtest under -run.
+//
+// The Axis C rapid subtree has a per-mode layer (preserve_off /
+// preserve_on) under "rapid"; the repro path reflects this when the
+// case carries the mode in c.PreserveSchemaOrder so the printed
+// command targets the exact failing subtest.
 func reproductionForInvalid(c bamlfuzz.InvalidOracleCase, caseIdx int, source caseSource) string {
 	var testName, fuzzName string
 	switch c.Mode {
@@ -431,8 +514,18 @@ func reproductionForInvalid(c bamlfuzz.InvalidOracleCase, caseIdx int, source ca
 		return "go test -tags=integration,subprocess -run='^$' -fuzz='^" + fuzzName +
 			"$' -fuzztime=10m -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
 	}
-	cmd := fmt.Sprintf("go test -tags=integration -run='^%s$/^rapid$/^case_%d$' ./integration -count=1",
-		testName, caseIdx)
+	var runPath string
+	switch c.Mode {
+	case bamlfuzz.InvalidJSONCoercion:
+		mode := "preserve_off"
+		if c.PreserveSchemaOrder {
+			mode = "preserve_on"
+		}
+		runPath = fmt.Sprintf("^%s$/^rapid$/^%s$/^case_%d$", testName, mode, caseIdx)
+	default:
+		runPath = fmt.Sprintf("^%s$/^rapid$/^case_%d$", testName, caseIdx)
+	}
+	cmd := fmt.Sprintf("go test -tags=integration -run='%s' ./integration -count=1", runPath)
 	if seed := os.Getenv("BAMLFUZZ_SEED"); seed != "" {
 		cmd = "BAMLFUZZ_SEED=" + seed + " " + cmd
 	}
