@@ -272,7 +272,7 @@ jobs:
             if [ "${MODE}" = "fuzz" ]; then
               echo "Corpus artifact: bamlfuzz-corpus-${BAML}-${UNARY}"
               echo
-              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/). \`go test -fuzz\` accepts only a single target per invocation, so run the static and dynamic targets sequentially. The \`-fuzzcachedir\` flag points the engine at the extracted corpus so the failing input is replayed:"
+              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/). \`go test -fuzz\` accepts only a single target per invocation, so run the static, dynamic, invalid-dynamic, and invalid-json-coercion targets sequentially. The \`-fuzzcachedir\` flag points the engine at the extracted corpus so the failing input is replayed:"
               echo
               echo '```'
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzStatic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
