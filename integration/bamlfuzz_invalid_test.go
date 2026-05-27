@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -184,15 +185,14 @@ func invalidSeedFor(label string, idx int) uint64 {
 	fmt.Fprintf(h, ":%d", idx)
 	base := h.Sum64()
 	if v := os.Getenv("BAMLFUZZ_SEED"); v != "" {
-		base ^= fnv64aInvalidString(v)
+		// Reuse fnv64aString from bamlfuzz_dynamic_test.go (same
+		// package, same build tag). The static-test variant
+		// fnv64aStaticString is a deliberate duplicate left in
+		// place — same cleanup opportunity, but in an out-of-scope
+		// file.
+		base ^= fnv64aString(v)
 	}
 	return base
-}
-
-func fnv64aInvalidString(s string) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(s))
-	return h.Sum64()
 }
 
 // invalidFuzzSeedBytes derives a deterministic 8-byte fuzz-corpus seed
@@ -325,8 +325,16 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 
 	clientReg := testutil.CreateTestClient(TestEnv.MockLLMInternal, scenarioID)
 
-	callCtx, callCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer callCancel()
+	// Independent contexts per surface. Sharing one context across
+	// dynclient and REST lets a dynclient hang / cancellation drain
+	// the deadline before REST runs, so REST returns context.Canceled
+	// without ever hitting the server. The oracle would then see
+	// "both error" and pass the case — masking a one-sided failure.
+	// A common parentCtx still allows test-level cancellation to abort
+	// both surfaces together; per-surface child contexts isolate the
+	// 30s budget so each call gets its own clock.
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
 
 	hello := "Return the dynamic fuzz value."
 	preserve := c.PreserveSchemaOrder
@@ -343,7 +351,16 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 		PreserveSchemaOrder: &preserve,
 	}
 
-	libResp, libErr := dyn.DynamicCall(callCtx, libReq)
+	dynCtx, dynCancel := context.WithTimeout(parentCtx, 30*time.Second)
+	defer dynCancel()
+	libResp, libErr := dyn.DynamicCall(dynCtx, libReq)
+	if libErr != nil && (errors.Is(libErr, context.Canceled) || errors.Is(libErr, context.DeadlineExceeded)) {
+		// Context-derived dynclient error is a harness failure, not an
+		// oracle signal — the BAML pipeline never produced a verdict.
+		// Treating it as a rejection would let an outright timeout pass
+		// the both-reject oracle.
+		t.Fatalf("harness failure: dynclient context (case=%s mutation=%s): %v", c.Name, c.Mutation, libErr)
+	}
 	var dynSuccess bool
 	switch {
 	case libErr != nil:
@@ -362,23 +379,28 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 		failAndDumpInvalid(t, artifactDir, envelope, "build REST body: %v", err)
 		return
 	}
-	restResp, err := BAMLClient.DynamicCallJSON(callCtx, restBody)
-	var restSuccess bool
-	switch {
-	case err != nil:
-		envelope.RESTError = err.Error()
-	case restResp == nil:
+	restCtx, restCancel := context.WithTimeout(parentCtx, 30*time.Second)
+	defer restCancel()
+	restResp, err := BAMLClient.DynamicCallJSON(restCtx, restBody)
+	if err != nil {
+		// BAMLClient.DynamicCallJSON wraps the HTTP transport layer;
+		// 4xx/5xx responses come back through restResp.StatusCode +
+		// restResp.Error, not through err. A non-nil err here is a
+		// transport or context failure — harness, not oracle signal.
+		t.Fatalf("harness failure: REST transport (case=%s mutation=%s): %v", c.Name, c.Mutation, err)
+	}
+	if restResp == nil {
 		envelope.RESTError = "nil response from BAMLClient.DynamicCallJSON"
 		failAndDumpInvalid(t, artifactDir, envelope, "REST client returned nil response without an error")
 		return
-	default:
-		envelope.RESTStatus = restResp.StatusCode
-		if restResp.StatusCode >= 400 {
-			envelope.RESTError = restResp.Error
-		} else {
-			envelope.RESTBody = restResp.Body
-			restSuccess = true
-		}
+	}
+	var restSuccess bool
+	envelope.RESTStatus = restResp.StatusCode
+	if restResp.StatusCode >= 400 {
+		envelope.RESTError = restResp.Error
+	} else {
+		envelope.RESTBody = restResp.Body
+		restSuccess = true
 	}
 
 	envelope.ActualOutcome = formatActualOutcome(dynSuccess, restSuccess)
@@ -596,24 +618,96 @@ func deriveChoicesAt(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any, pat
 	}
 }
 
-// pickUnionArm returns the index of the first variant whose shape
-// matches the observed value v, or -1 if no arm matches.
+// defaultMatchDepth caps the structural-match recursion in
+// variantMatchesValue. The v1 schema generator bounds nesting at
+// bamlfuzz.MaxTypeDepth=4, so 16 is comfortable headroom; the cap
+// exists to keep a future grammar widening from blowing the stack.
+const defaultMatchDepth = 16
+
+// pickUnionArm picks the variant index whose structural matcher
+// accepts v, choosing narrow shapes before broad ones. The previous
+// implementation took the first shallow Kind match in declaration
+// order, which let a `union<map<string, T>, class Foo>` with a value
+// shaped like a `Foo` instance silently dispatch to the map arm
+// (KindMap accepts any object) — and the order walker then skipped
+// the nested class-level order check, defeating the very assertion
+// PreserveSchemaOrder=true was meant to run.
+//
+// Narrowness order: literal → null/bool → enum ref → class ref →
+// list → map → numeric → string → optional/union → catch-all. Within
+// a tier, original declaration order is preserved (stable sort) so a
+// schema's variant ordering still influences the pick when multiple
+// arms are equally narrow.
+//
+// Returns -1 if no variant matches the value.
 func pickUnionArm(schema bamlfuzz.FuzzSchema, variants []bamlfuzz.FuzzType, v any) int {
-	for i, variant := range variants {
-		if variantMatchesValue(schema, variant, v) {
-			return i
+	indices := make([]int, len(variants))
+	for i := range variants {
+		indices[i] = i
+	}
+	sort.SliceStable(indices, func(a, b int) bool {
+		return variantNarrowness(variants[indices[a]]) < variantNarrowness(variants[indices[b]])
+	})
+	for _, idx := range indices {
+		if variantMatchesValue(schema, variants[idx], v, defaultMatchDepth) {
+			return idx
 		}
 	}
 	return -1
 }
 
-// variantMatchesValue reports whether variant's Kind can plausibly
-// hold v. Literal kinds require byte-equal content; enum refs require
-// v to be one of the enum's declared values; class refs require v's
-// JSON object keys to be a subset of the class's property names so
-// classref-vs-map ambiguity resolves toward the class arm when keys
-// look like class properties.
-func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any) bool {
+// variantNarrowness ranks variant kinds from narrowest (lowest score)
+// to broadest. Lower wins in pickUnionArm. KindOptional unwraps to
+// its inner type so optional<class> sorts with class, not with the
+// broad fallback.
+func variantNarrowness(t bamlfuzz.FuzzType) int {
+	switch t.Kind {
+	case bamlfuzz.KindLiteral:
+		return 0
+	case bamlfuzz.KindNull:
+		return 1
+	case bamlfuzz.KindBool:
+		return 2
+	case bamlfuzz.KindEnumRef:
+		return 3
+	case bamlfuzz.KindClassRef:
+		return 4
+	case bamlfuzz.KindList:
+		return 5
+	case bamlfuzz.KindMap:
+		return 6
+	case bamlfuzz.KindInt, bamlfuzz.KindFloat:
+		return 7
+	case bamlfuzz.KindString:
+		return 8
+	case bamlfuzz.KindOptional:
+		if t.Inner != nil {
+			return variantNarrowness(*t.Inner)
+		}
+		return 9
+	case bamlfuzz.KindUnion:
+		return 9
+	}
+	return 10
+}
+
+// variantMatchesValue reports whether v structurally conforms to t.
+// Class refs require the observed object's keys to be a subset of
+// declared properties AND every required (non-optional) property to
+// be present — the previous "any key-subset matches" rule let any
+// JSON object that happened to use a class's property names slip
+// through, even when missing required fields. List<T> and
+// ClassRef<T> recurse into elements so nested narrowness is checked
+// too, depth-limited to keep a degenerate cycle from blowing the
+// stack.
+func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any, depth int) bool {
+	if depth <= 0 {
+		// Out of depth budget: accept on top-level shape only. The
+		// v1 grammar bounds nesting at bamlfuzz.MaxTypeDepth=4, so
+		// random generation never lands here; the guard exists to
+		// prevent a future widening from stack-blowing.
+		return shallowKindMatch(t, v)
+	}
 	switch t.Kind {
 	case bamlfuzz.KindNull:
 		return v == nil
@@ -658,11 +752,33 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any)
 		}
 		return false
 	case bamlfuzz.KindList:
-		_, ok := v.([]any)
-		return ok
+		arr, ok := v.([]any)
+		if !ok {
+			return false
+		}
+		if t.Inner == nil {
+			return true
+		}
+		for _, item := range arr {
+			if !variantMatchesValue(schema, *t.Inner, item, depth-1) {
+				return false
+			}
+		}
+		return true
 	case bamlfuzz.KindMap:
-		_, ok := v.(map[string]any)
-		return ok
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return false
+		}
+		if t.Inner == nil {
+			return true
+		}
+		for _, val := range obj {
+			if !variantMatchesValue(schema, *t.Inner, val, depth-1) {
+				return false
+			}
+		}
+		return true
 	case bamlfuzz.KindClassRef:
 		obj, ok := v.(map[string]any)
 		if !ok {
@@ -672,12 +788,29 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any)
 		if !found {
 			return false
 		}
-		propNames := make(map[string]struct{}, len(cls.Properties))
+		propByName := make(map[string]bamlfuzz.FuzzType, len(cls.Properties))
 		for _, p := range cls.Properties {
-			propNames[p.Name] = struct{}{}
+			propByName[p.Name] = p.Type
 		}
 		for k := range obj {
-			if _, ok := propNames[k]; !ok {
+			if _, ok := propByName[k]; !ok {
+				return false
+			}
+		}
+		for _, p := range cls.Properties {
+			if p.Type.Kind == bamlfuzz.KindOptional {
+				continue
+			}
+			if _, present := obj[p.Name]; !present {
+				return false
+			}
+		}
+		for name, fieldType := range propByName {
+			fv, present := obj[name]
+			if !present {
+				continue
+			}
+			if !variantMatchesValue(schema, fieldType, fv, depth-1) {
 				return false
 			}
 		}
@@ -687,16 +820,48 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any)
 			return true
 		}
 		if t.Inner != nil {
-			return variantMatchesValue(schema, *t.Inner, v)
+			return variantMatchesValue(schema, *t.Inner, v, depth-1)
 		}
 		return false
 	case bamlfuzz.KindUnion:
 		for _, variant := range t.Variants {
-			if variantMatchesValue(schema, variant, v) {
+			if variantMatchesValue(schema, variant, v, depth-1) {
 				return true
 			}
 		}
 		return false
+	}
+	return false
+}
+
+// shallowKindMatch is the depth-exhausted fallback: top-level
+// shape compatibility only. Class refs degrade to "is an object";
+// no key-set or required-field check.
+func shallowKindMatch(t bamlfuzz.FuzzType, v any) bool {
+	switch t.Kind {
+	case bamlfuzz.KindNull:
+		return v == nil
+	case bamlfuzz.KindString, bamlfuzz.KindEnumRef:
+		_, ok := v.(string)
+		return ok
+	case bamlfuzz.KindInt, bamlfuzz.KindFloat:
+		_, ok := v.(float64)
+		return ok
+	case bamlfuzz.KindBool:
+		_, ok := v.(bool)
+		return ok
+	case bamlfuzz.KindList:
+		_, ok := v.([]any)
+		return ok
+	case bamlfuzz.KindMap, bamlfuzz.KindClassRef:
+		_, ok := v.(map[string]any)
+		return ok
+	case bamlfuzz.KindLiteral:
+		return true
+	case bamlfuzz.KindOptional:
+		return true
+	case bamlfuzz.KindUnion:
+		return true
 	}
 	return false
 }
@@ -712,6 +877,17 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any)
 // preserve_on) under "rapid"; the repro path reflects this when the
 // case carries the mode in c.PreserveSchemaOrder so the printed
 // command targets the exact failing subtest.
+//
+// Both the fuzz and rapid repros hardcode `-tags=integration,subprocess`
+// because the nightly invokes the test binary under those tags
+// (subprocess routes through the cmd/worker go-plugin, inprocess uses
+// the in-binary worker — they exercise different code paths in the
+// worker pool). Replaying with `-tags=integration` alone would run the
+// inprocess worker and potentially mask a failure that only reproduces
+// on the subprocess path. NB: the existing TestBamlfuzz{Static,Dynamic}Oracle
+// repro emitters in bamlfuzz_{static,dynamic}_test.go still emit
+// `-tags=integration` for their rapid branch; that's the same bug in
+// out-of-scope files, worth a future cleanup but left alone here.
 func reproductionForInvalid(c bamlfuzz.InvalidOracleCase, caseIdx int, source caseSource) string {
 	var testName, fuzzName string
 	switch c.Mode {
@@ -737,7 +913,7 @@ func reproductionForInvalid(c bamlfuzz.InvalidOracleCase, caseIdx int, source ca
 	default:
 		runPath = fmt.Sprintf("^%s$/^rapid$/^case_%d$", testName, caseIdx)
 	}
-	cmd := fmt.Sprintf("go test -tags=integration -run='%s' ./integration -count=1", runPath)
+	cmd := fmt.Sprintf("go test -tags=integration,subprocess -run='%s' ./integration -count=1", runPath)
 	if seed := os.Getenv("BAMLFUZZ_SEED"); seed != "" {
 		cmd = "BAMLFUZZ_SEED=" + seed + " " + cmd
 	}
