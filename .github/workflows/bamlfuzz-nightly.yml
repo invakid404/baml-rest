@@ -31,8 +31,13 @@ on:
         type: string
         required: false
         default: "50"
+      streaming_cases:
+        description: Rapid-mode streaming cases per preserve mode (default 50)
+        type: string
+        required: false
+        default: "50"
       fuzztime:
-        description: Fuzz-mode duration per target (default 15m; total wall time roughly 4× this — static + dynamic + invalid-dynamic + invalid-json-coercion run sequentially)
+        description: Fuzz-mode duration per target (default 15m; total wall time roughly 5× this — static + dynamic + invalid-dynamic + invalid-json-coercion + streaming run sequentially)
         type: string
         required: false
         default: "15m"
@@ -76,21 +81,21 @@ jobs:
   fuzz:
     needs: get-versions
     runs-on: ubuntu-latest
-    # Four sequential fuzz targets, each its own `go test ./integration`
+    # Five sequential fuzz targets, each its own `go test ./integration`
     # invocation — so TestMain (the integration env Setup that boots
-    # the BAML REST container + mock LLM) runs FOUR TIMES, not once.
+    # the BAML REST container + mock LLM) runs FIVE TIMES, not once.
     # Budget:
-    #   - fuzz: 4 × FUZZTIME (default 15m) = 60m
-    #   - setup: 4 × ~10m per invocation on cold runners = 40m
+    #   - fuzz: 5 × FUZZTIME (default 15m) = 75m
+    #   - setup: 5 × ~10m per invocation on cold runners = 50m
     #   - corpus restore + Go install + safety margin = ~10m
-    #   Total at the FUZZTIME default: ~110m.
-    # The 180m cap absorbs cold-runner setup variance and supports an
-    # operator-set FUZZTIME up to ~25m (4 × 25m + 40m setup + 10m
-    # margin = 150m) without breaching. A future refactor that runs
-    # all four fuzz targets under a single `go test` invocation would
+    #   Total at the FUZZTIME default: ~135m.
+    # The 210m cap absorbs cold-runner setup variance and supports an
+    # operator-set FUZZTIME up to ~30m (5 × 30m + 50m setup + 10m
+    # margin = 210m) without breaching. A future refactor that runs
+    # all five fuzz targets under a single `go test` invocation would
     # collapse setup to ~10m total and shrink the budget back to the
-    # ~75m the prior two-target nightly used.
-    timeout-minutes: 180
+    # ~85m a single-setup run would need.
+    timeout-minutes: 210
     permissions:
       contents: read
       actions: read
@@ -110,6 +115,7 @@ jobs:
       BAMLFUZZ_DYNAMIC_CASES: ${{ github.event.inputs.dynamic_cases || '50' }}
       BAMLFUZZ_STATIC_BATCHES: ${{ github.event.inputs.static_batches || '10' }}
       BAMLFUZZ_INVALID_CASES: ${{ github.event.inputs.invalid_cases || '50' }}
+      BAMLFUZZ_STREAMING_CASES: ${{ github.event.inputs.streaming_cases || '50' }}
       BAMLFUZZ_SEED: ${{ github.event.inputs.seed || github.run_id }}
     steps:
       - name: Checkout Repository
@@ -150,11 +156,11 @@ jobs:
 
       - name: Run bamlfuzz nightly — static fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'fuzz' }}
-        # `go test -fuzz` runs ONE target per invocation, so the four
+        # `go test -fuzz` runs ONE target per invocation, so the five
         # fuzz targets (static, dynamic, invalid-dynamic,
-        # invalid-json-coercion) are split across sequential steps.
-        # Each gets the full configured FUZZTIME budget. Total fuzz
-        # wall time is therefore 4 × FUZZTIME; the job's
+        # invalid-json-coercion, streaming) are split across sequential
+        # steps. Each gets the full configured FUZZTIME budget. Total
+        # fuzz wall time is therefore 5 × FUZZTIME; the job's
         # timeout-minutes block above caps the combined cost. The
         # corpus dir is shared so seed inputs any target discovers
         # also influence the others on the next nightly.
@@ -216,6 +222,18 @@ jobs:
             -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
             ./integration
 
+      - name: Run bamlfuzz nightly — streaming fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' }}
+        env:
+          BAMLFUZZ_KEEP_ARTIFACTS: ""
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^$' \
+            -fuzz='^FuzzBamlfuzzStreaming$' \
+            -fuzztime="${FUZZTIME}" \
+            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
+            ./integration
+
       - name: Run bamlfuzz oracles — rapid mode (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'rapid' }}
         # `subprocess` matches the normal server deployment path (server +
@@ -228,7 +246,7 @@ jobs:
         # bamlfuzz-package-stress job instead.
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
-            -run='^TestBamlfuzz(Static|Dynamic)Oracle$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)$' ./integration/...
+            -run='^TestBamlfuzz(Static|Dynamic|Streaming)Oracle$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)$' ./integration/...
 
       - name: Upload corpus for next nightly
         if: ${{ always() && env.MODE == 'fuzz' }}
@@ -285,20 +303,21 @@ jobs:
             if [ "${MODE}" = "fuzz" ]; then
               echo "Corpus artifact: bamlfuzz-corpus-${BAML}-${UNARY}"
               echo
-              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/). \`go test -fuzz\` accepts only a single target per invocation, so run the static, dynamic, invalid-dynamic, and invalid-json-coercion targets sequentially. The \`-fuzzcachedir\` flag points the engine at the extracted corpus so the failing input is replayed:"
+              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/). \`go test -fuzz\` accepts only a single target per invocation, so run the static, dynamic, invalid-dynamic, invalid-json-coercion, and streaming targets sequentially. The \`-fuzzcachedir\` flag points the engine at the extracted corpus so the failing input is replayed:"
               echo
               echo '```'
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzStatic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzDynamic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzInvalidDynamic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzInvalidJSONCoercion\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzStreaming\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
               echo '```'
             else
               echo
               echo "Repro:"
               echo
               echo '```'
-              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} BAMLFUZZ_INVALID_CASES=${BAMLFUZZ_INVALID_CASES} go test -tags=integration,subprocess -run='^TestBamlfuzz(Static|Dynamic)Oracle\$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)\$' ./integration -count=1"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} BAMLFUZZ_INVALID_CASES=${BAMLFUZZ_INVALID_CASES} BAMLFUZZ_STREAMING_CASES=${BAMLFUZZ_STREAMING_CASES} go test -tags=integration,subprocess -run='^TestBamlfuzz(Static|Dynamic|Streaming)Oracle\$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)\$' ./integration -count=1"
               echo '```'
             fi
           } | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -
