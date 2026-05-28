@@ -26,8 +26,13 @@ on:
         type: string
         required: false
         default: "10"
+      invalid_cases:
+        description: Rapid-mode invalid-input cases per oracle (default 50)
+        type: string
+        required: false
+        default: "50"
       fuzztime:
-        description: Fuzz-mode duration per target (default 15m; total wall time roughly 2× this)
+        description: Fuzz-mode duration per target (default 15m; total wall time roughly 4× this — static + dynamic + invalid-dynamic + invalid-json-coercion run sequentially)
         type: string
         required: false
         default: "15m"
@@ -71,7 +76,21 @@ jobs:
   fuzz:
     needs: get-versions
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Four sequential fuzz targets, each its own `go test ./integration`
+    # invocation — so TestMain (the integration env Setup that boots
+    # the BAML REST container + mock LLM) runs FOUR TIMES, not once.
+    # Budget:
+    #   - fuzz: 4 × FUZZTIME (default 15m) = 60m
+    #   - setup: 4 × ~10m per invocation on cold runners = 40m
+    #   - corpus restore + Go install + safety margin = ~10m
+    #   Total at the FUZZTIME default: ~110m.
+    # The 180m cap absorbs cold-runner setup variance and supports an
+    # operator-set FUZZTIME up to ~25m (4 × 25m + 40m setup + 10m
+    # margin = 150m) without breaching. A future refactor that runs
+    # all four fuzz targets under a single `go test` invocation would
+    # collapse setup to ~10m total and shrink the budget back to the
+    # ~75m the prior two-target nightly used.
+    timeout-minutes: 180
     permissions:
       contents: read
       actions: read
@@ -90,6 +109,7 @@ jobs:
       # via dispatch inputs so a manual run can mix-and-match.
       BAMLFUZZ_DYNAMIC_CASES: ${{ github.event.inputs.dynamic_cases || '50' }}
       BAMLFUZZ_STATIC_BATCHES: ${{ github.event.inputs.static_batches || '10' }}
+      BAMLFUZZ_INVALID_CASES: ${{ github.event.inputs.invalid_cases || '50' }}
       BAMLFUZZ_SEED: ${{ github.event.inputs.seed || github.run_id }}
     steps:
       - name: Checkout Repository
@@ -130,22 +150,26 @@ jobs:
 
       - name: Run bamlfuzz nightly — static fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'fuzz' }}
-        # `go test -fuzz` runs ONE target per invocation, so the static
-        # and dynamic targets are split across sequential steps. Each
-        # gets half the configured fuzztime budget. The corpus dir is
-        # shared so seed inputs that the dynamic target discovered also
-        # influence the static target on the next nightly.
+        # `go test -fuzz` runs ONE target per invocation, so the four
+        # fuzz targets (static, dynamic, invalid-dynamic,
+        # invalid-json-coercion) are split across sequential steps.
+        # Each gets the full configured FUZZTIME budget. Total fuzz
+        # wall time is therefore 4 × FUZZTIME; the job's
+        # timeout-minutes block above caps the combined cost. The
+        # corpus dir is shared so seed inputs any target discovers
+        # also influence the others on the next nightly.
         #
         # `-run='^$'` matches no ordinary test name, which keeps the
-        # cranked-up TestBamlfuzz{Static,Dynamic}Oracle rapid runs from
-        # consuming the per-step budget before fuzzing starts.
+        # cranked-up TestBamlfuzz{Static,Dynamic,Invalid*} rapid runs
+        # from consuming the per-step budget before fuzzing starts.
         # BAMLFUZZ_KEEP_ARTIFACTS is forced off here; the success-path
         # envelope dump in the oracle bodies all writes to
         # _artifacts/fuzz.json (one filename per fuzz case), which races
         # under parallel fuzz workers and can overwrite a failure
         # envelope on the way out. Failures still dump unconditionally
-        # via failAndDump/failStaticAndDump, so the workflow's
-        # upload-on-failure step still captures the right artifact.
+        # via failAndDump / failStaticAndDump / failAndDumpInvalid, so
+        # the workflow's upload-on-failure step still captures the
+        # right artifact.
         env:
           BAMLFUZZ_KEEP_ARTIFACTS: ""
         run: |
@@ -168,14 +192,38 @@ jobs:
             -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
             ./integration
 
+      - name: Run bamlfuzz nightly — invalid-schema fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' }}
+        env:
+          BAMLFUZZ_KEEP_ARTIFACTS: ""
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^$' \
+            -fuzz='^FuzzBamlfuzzInvalidDynamic$' \
+            -fuzztime="${FUZZTIME}" \
+            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
+            ./integration
+
+      - name: Run bamlfuzz nightly — invalid-JSON-coercion fuzz target (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' }}
+        env:
+          BAMLFUZZ_KEEP_ARTIFACTS: ""
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^$' \
+            -fuzz='^FuzzBamlfuzzInvalidJSONCoercion$' \
+            -fuzztime="${FUZZTIME}" \
+            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
+            ./integration
+
       - name: Run bamlfuzz oracles — rapid mode (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'rapid' }}
         # `subprocess` matches the normal server deployment path (server +
         # cmd/worker go-plugin), same as integration-tests.yml. -p 1 keeps
-        # the integration env setup serial; the two oracles share state.
+        # the integration env setup serial; the oracles share state.
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
-            -run='^TestBamlfuzz(Static|Dynamic)Oracle$' ./integration/...
+            -run='^TestBamlfuzz(Static|Dynamic)Oracle$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)$' ./integration/...
 
       - name: Upload corpus for next nightly
         if: ${{ always() && env.MODE == 'fuzz' }}
@@ -232,18 +280,20 @@ jobs:
             if [ "${MODE}" = "fuzz" ]; then
               echo "Corpus artifact: bamlfuzz-corpus-${BAML}-${UNARY}"
               echo
-              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/). \`go test -fuzz\` accepts only a single target per invocation, so run the static and dynamic targets sequentially. The \`-fuzzcachedir\` flag points the engine at the extracted corpus so the failing input is replayed:"
+              echo "Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/). \`go test -fuzz\` accepts only a single target per invocation, so run the static, dynamic, invalid-dynamic, and invalid-json-coercion targets sequentially. The \`-fuzzcachedir\` flag points the engine at the extracted corpus so the failing input is replayed:"
               echo
               echo '```'
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzStatic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzDynamic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzInvalidDynamic\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^FuzzBamlfuzzInvalidJSONCoercion\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
               echo '```'
             else
               echo
               echo "Repro:"
               echo
               echo '```'
-              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration -run='^TestBamlfuzz(Static|Dynamic)Oracle\$' ./integration -count=1"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_DYNAMIC_CASES=${BAMLFUZZ_DYNAMIC_CASES} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} BAMLFUZZ_INVALID_CASES=${BAMLFUZZ_INVALID_CASES} go test -tags=integration,subprocess -run='^TestBamlfuzz(Static|Dynamic)Oracle\$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)\$' ./integration -count=1"
               echo '```'
             fi
           } | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -
