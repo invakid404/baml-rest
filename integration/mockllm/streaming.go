@@ -7,6 +7,7 @@ import (
 	"context"
 	"math/rand"
 	"time"
+	"unicode/utf8"
 )
 
 // StreamWriter handles writing SSE chunks with timing.
@@ -78,10 +79,19 @@ func StreamResponse(ctx context.Context, w *bufio.Writer, scenario *Scenario, pr
 	}
 
 	chunkIndex := 0
-	for i := 0; i < len(content); i += chunkSize {
+	// Advance by the snapped `end` (not a fixed stride): when the rune
+	// boundary pushes `end` past i+chunkSize, the next chunk must resume
+	// there so bytes are neither re-sent nor restarted mid-rune.
+	for i := 0; i < len(content); {
 		end := i + chunkSize
 		if end > len(content) {
 			end = len(content)
+		}
+		// Snap the boundary forward to the next rune start: a real LLM SSE
+		// server never emits a frame that splits a multi-byte UTF-8 rune,
+		// and the stream transport rejects invalid-UTF-8 frames.
+		for end < len(content) && !utf8.RuneStart(content[end]) {
+			end++
 		}
 		chunk := content[i:end]
 
@@ -109,6 +119,8 @@ func StreamResponse(ctx context.Context, w *bufio.Writer, scenario *Scenario, pr
 				}
 			}
 		}
+
+		i = end
 	}
 
 	// Send final chunk with finish_reason: "stop"
