@@ -147,21 +147,30 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p adapters/common/codegen/testdata/bamlfuzz/.fuzzcache
-          prior_run=$(gh run list \
+          candidates=$(gh run list \
             --repo "$GITHUB_REPOSITORY" \
             --workflow=bamlfuzz-nightly.yml \
-            --status=success \
+            --status=completed \
             --branch=master \
-            --limit=1 \
+            --limit=10 \
             --json databaseId \
-            --jq '.[0].databaseId // empty')
-          if [ -z "$prior_run" ]; then
-            echo "no prior successful nightly run; starting with empty corpus"
-            exit 0
+            --jq '.[].databaseId')
+
+          restored=""
+          for run_id in $candidates; do
+            if gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+                --name "$ARTIFACT_NAME" \
+                --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache \
+                2>/dev/null; then
+              echo "restored corpus from run $run_id"
+              restored="$run_id"
+              break
+            fi
+          done
+
+          if [ -z "$restored" ]; then
+            echo "no recent completed run had artifact $ARTIFACT_NAME; starting fresh"
           fi
-          gh run download "$prior_run" --repo "$GITHUB_REPOSITORY" \
-            --name "$ARTIFACT_NAME" \
-            --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache
 
       # One-time transition fallback: the prior nightly on master uploaded
       # corpus under the legacy unscoped name (without -$target suffix).
@@ -176,22 +185,29 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p adapters/common/codegen/testdata/bamlfuzz/.fuzzcache
-          prior_run=$(gh run list \
+          candidates=$(gh run list \
             --repo "$GITHUB_REPOSITORY" \
             --workflow=bamlfuzz-nightly.yml \
-            --status=success \
+            --status=completed \
             --branch=master \
-            --limit=1 \
+            --limit=10 \
             --json databaseId \
-            --jq '.[0].databaseId // empty')
-          if [ -z "$prior_run" ]; then
-            echo "no prior successful nightly run; starting with empty corpus"
-            exit 0
-          fi
-          if ! gh run download "$prior_run" --repo "$GITHUB_REPOSITORY" \
-              --name "$ARTIFACT_NAME" \
-              --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache; then
-            echo "legacy corpus artifact ${ARTIFACT_NAME} not found; starting fresh"
+            --jq '.[].databaseId')
+
+          restored=""
+          for run_id in $candidates; do
+            if gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+                --name "$ARTIFACT_NAME" \
+                --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache \
+                2>/dev/null; then
+              echo "restored legacy corpus from run $run_id"
+              restored="$run_id"
+              break
+            fi
+          done
+
+          if [ -z "$restored" ]; then
+            echo "no recent completed run had artifact $ARTIFACT_NAME; starting fresh"
           fi
 
       - name: Fuzz ${{ matrix.target }} (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
