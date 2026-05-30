@@ -221,6 +221,11 @@ jobs:
         # `subprocess` matches the normal server deployment path (server +
         # cmd/worker go-plugin), same as integration-tests.yml. -p 1 keeps
         # the integration env setup serial; the oracles share state.
+        #
+        # BAMLFUZZ_RAPID_STRESS does NOT belong here: raiseRapidChecksFloor
+        # lives in the adapters/common/codegen/bamlfuzz package, which this
+        # integration step never invokes. The env is set on the dedicated
+        # bamlfuzz-package-stress job instead.
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
             -run='^TestBamlfuzz(Static|Dynamic)Oracle$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)$' ./integration/...
@@ -297,3 +302,42 @@ jobs:
               echo '```'
             fi
           } | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -
+
+  # Stress invariants for the bamlfuzz Go package itself. raiseRapidChecksFloor
+  # (adapters/common/codegen/bamlfuzz/union_test.go) is opt-in via
+  # BAMLFUZZ_RAPID_STRESS and lives in the bamlfuzz PACKAGE, not ./integration,
+  # so the rapid-mode integration step in the fuzz job can never trip it.
+  # Running the package's union tests under the gated 5000-check floor surfaces
+  # generator regressions like the recursion-cap fallback Codex found at 1315
+  # cases. The floor's defer-restore of the rapid checks count is package-local
+  # and this run is non-race with -count=1, so the floor does not compound the
+  # way it would under the unit-tests CI's -race -count=100.
+  #
+  # These tests are pure Go: they never read BAML_VERSION or UNARY_SERVER and
+  # are not BAML-version dependent, so they run as one standalone cell rather
+  # than inside the version matrix. Keeping them off the matrix means there is
+  # no matrix.baml-version literal to drift when Renovate bumps
+  # integration/baml_versions.json. Gated on the same rapid-mode condition the
+  # fuzz job's MODE env uses, so it runs only on a manual rapid dispatch.
+  bamlfuzz-package-stress:
+    name: bamlfuzz package stress invariants
+    if: ${{ (github.event.inputs.mode || 'fuzz') == 'rapid' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run bamlfuzz package stress invariants
+        env:
+          BAMLFUZZ_RAPID_STRESS: "1"
+        working-directory: adapters/common
+        run: |
+          GOWORK=off go test -count=1 -timeout 80m ./codegen/bamlfuzz/...

@@ -3,7 +3,10 @@ package bamlfuzz
 import (
 	"encoding/json"
 	"errors"
+	"flag"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1410,4 +1413,960 @@ func valueDumpJSON(v FuzzValue) string {
 		return ""
 	}
 	return string(b)
+}
+
+// --- Regression coverage for issue #349: union-arm coercion ambiguity.
+//
+// An empty map `{}` rendered for a union's direct map arm is byte-
+// identical to an empty/null-materialized class instance, and BAML's
+// union resolver coerces such `{}` to the class arm whenever a class
+// is reachable through a sibling arm — diverging from the walker's
+// prediction. The generator therefore forbids a zero-length map for
+// such direct map arms.
+
+func TestUnionHasClassReachableSibling_Direct(t *testing.T) {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			{Kind: KindClassRef, Ref: "X"},
+		},
+	}
+	if !unionHasClassReachableSibling(uni, 0) {
+		t.Fatalf("direct class_ref sibling not detected")
+	}
+	if unionHasClassReachableSibling(uni, 1) {
+		t.Fatalf("excluded sibling falsely reported as class-reachable")
+	}
+}
+
+func TestUnionHasClassReachableSibling_NestedUnion(t *testing.T) {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	inner := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindString},
+			{Kind: KindClassRef, Ref: "X"},
+		},
+	}
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			inner,
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+		},
+	}
+	if !unionHasClassReachableSibling(uni, 1) {
+		t.Fatalf("class_ref through nested union not detected")
+	}
+}
+
+func TestUnionHasClassReachableSibling_OptionalWrap(t *testing.T) {
+	cls := FuzzType{Kind: KindClassRef, Ref: "X"}
+	opt := FuzzType{Kind: KindOptional, Inner: &cls}
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			opt,
+		},
+	}
+	if !unionHasClassReachableSibling(uni, 0) {
+		t.Fatalf("class_ref through optional wrapper not detected")
+	}
+}
+
+func TestUnionHasClassReachableSibling_NoClass(t *testing.T) {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			{Kind: KindString},
+			{Kind: KindInt},
+		},
+	}
+	if unionHasClassReachableSibling(uni, 0) {
+		t.Fatalf("class-free union falsely reported as class-reachable")
+	}
+}
+
+func TestUnionHasClassReachableSibling_NonUnionInput(t *testing.T) {
+	if unionHasClassReachableSibling(FuzzType{Kind: KindMap}, 0) {
+		t.Fatalf("non-union input must report false")
+	}
+}
+
+// fixtureSchemaMapVsClassSiblingUnion is the minimal reproduction of
+// the envelope shape: a class whose single field is a union with a
+// direct map arm and a class_ref arm. Used by the regression rapid
+// check below.
+func fixtureSchemaMapVsClassSiblingUnion() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	inner := FuzzClass{
+		Name: "Inner",
+		Properties: []FuzzProperty{
+			{Name: "Fuzz_field_0", Type: FuzzType{Kind: KindInt}},
+		},
+	}
+	outer := FuzzClass{
+		Name: "Outer",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					{Kind: KindMap, Key: &keyT, Inner: &intT},
+					{Kind: KindClassRef, Ref: "Inner"},
+				},
+			}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{outer, inner},
+		RootClass: "Outer",
+	})
+}
+
+// TestValueGenMapArmWithClassSiblingNeverEmpty is the durable
+// regression guard. With a union whose map arm has a class-reachable
+// sibling, ValueGen must never produce an empty map for the picked
+// map arm — otherwise the walker's Expected (`{}`) diverges from BAML
+// (which coerces `{}` to the class arm with null-filled fields).
+func TestValueGenMapArmWithClassSiblingNeverEmpty(t *testing.T) {
+	schema := fixtureSchemaMapVsClassSiblingUnion()
+	var exercised bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		fv, ok := v.LookupField("f")
+		if !ok {
+			rt.Fatalf("outer instance missing field f")
+		}
+		if fv.Kind != KindUnion || fv.Variant == nil {
+			rt.Fatalf("field f expected union value, got %v", fv.Kind)
+		}
+		if fv.VariantIndex != 0 {
+			return
+		}
+		if fv.Variant.Kind != KindMap {
+			rt.Fatalf("union arm 0 expected to be a map value, got %v", fv.Variant.Kind)
+		}
+		exercised = true
+		if len(fv.Variant.MapEntries) == 0 {
+			rt.Fatalf("map arm produced an empty map — ambiguous with class sibling under BAML coercion")
+		}
+	})
+	if !exercised {
+		t.Fatalf("rapid budget never picked the direct map arm — coverage sentinel never fired; non-empty-map invariant unverified")
+	}
+}
+
+// fixtureSchemaOptionalMapVsClassSiblingUnion mirrors
+// fixtureSchemaMapVsClassSiblingUnion but the map arm sits under an
+// optional wrapper. The picked-arm dispatch must descend through the
+// optional and apply the non-empty-map constraint at the leaf when the
+// optional draws as present, matching the sibling-side reach helper
+// (which descends through optionals).
+func fixtureSchemaOptionalMapVsClassSiblingUnion() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	mapT := FuzzType{Kind: KindMap, Key: &keyT, Inner: &intT}
+	optMap := FuzzType{Kind: KindOptional, Inner: &mapT}
+	inner := FuzzClass{
+		Name: "Inner",
+		Properties: []FuzzProperty{
+			{Name: "Fuzz_field_0", Type: FuzzType{Kind: KindInt}},
+		},
+	}
+	outer := FuzzClass{
+		Name: "Outer",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					optMap,
+					{Kind: KindClassRef, Ref: "Inner"},
+				},
+			}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{outer, inner},
+		RootClass: "Outer",
+	})
+}
+
+// TestValueGenOptionalMapArmWithClassSiblingNeverEmpty is the
+// regression guard for the picked-arm/sibling-side asymmetry: when a
+// union arm is `optional<map<...>>` and a sibling reaches a class_ref,
+// a present optional must not draw an empty map. An empty `{}` is byte-
+// identical to a null-materialized class instance, which BAML coerces
+// to the class arm — diverging from the walker's recorded choice.
+// The companion direct-arm guard
+// (TestValueGenMapArmWithClassSiblingNeverEmpty) pins the same property
+// for the no-wrapper shape; both must hold for the union resolver's
+// coercion to remain unambiguous.
+func TestValueGenOptionalMapArmWithClassSiblingNeverEmpty(t *testing.T) {
+	schema := fixtureSchemaOptionalMapVsClassSiblingUnion()
+	var exercised bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		fv, ok := v.LookupField("f")
+		if !ok {
+			rt.Fatalf("outer instance missing field f")
+		}
+		if fv.Kind != KindUnion || fv.Variant == nil {
+			rt.Fatalf("field f expected union value, got %v", fv.Kind)
+		}
+		if fv.VariantIndex != 0 {
+			return
+		}
+		if fv.Variant.Kind != KindOptional {
+			rt.Fatalf("union arm 0 expected to be an optional value, got %v", fv.Variant.Kind)
+		}
+		if fv.Variant.OptionalShape != OptionalPresent {
+			return
+		}
+		if fv.Variant.Inner == nil {
+			rt.Fatalf("present optional missing Inner")
+		}
+		if fv.Variant.Inner.Kind != KindMap {
+			rt.Fatalf("present optional expected map at leaf, got %v", fv.Variant.Inner.Kind)
+		}
+		exercised = true
+		if len(fv.Variant.Inner.MapEntries) == 0 {
+			rt.Fatalf("present optional<map> drew empty map — ambiguous with class sibling under BAML coercion")
+		}
+	})
+	if !exercised {
+		t.Fatalf("rapid budget never reached present-optional<map> leaf — coverage sentinel never fired; non-empty-map invariant unverified")
+	}
+}
+
+// fixtureSchemaNestedUnionMapVsClassSibling pins the nested-union
+// shape: the outer union has a nested-union arm `[map<string,int>,
+// string]` and a class-reachable arm. When the outer pick lands on
+// the nested union AND the nested union picks its own map arm, the
+// drawn `{}` is byte-identical to a null-materialized Inner — the
+// outer union's class-reachable sibling is what BAML's resolver
+// uses to disambiguate, not the inner union's siblings. The picked-
+// arm dispatch must descend through nested unions and apply the
+// non-empty-map constraint at the leaf.
+func fixtureSchemaNestedUnionMapVsClassSibling() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	innerUnion := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			{Kind: KindString},
+		},
+	}
+	inner := FuzzClass{
+		Name: "Inner",
+		Properties: []FuzzProperty{
+			{Name: "Fuzz_field_0", Type: FuzzType{Kind: KindInt}},
+		},
+	}
+	outer := FuzzClass{
+		Name: "Outer",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					innerUnion,
+					{Kind: KindClassRef, Ref: "Inner"},
+				},
+			}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{outer, inner},
+		RootClass: "Outer",
+	})
+}
+
+// TestValueGenNestedUnionMapArmWithClassSiblingNeverEmpty exercises
+// the nested-union case. The outer union picks the nested-union arm
+// and the nested union picks its map arm — the leaf map must be
+// non-empty so the wire bytes don't coerce to the outer's class-
+// reachable sibling.
+func TestValueGenNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
+	schema := fixtureSchemaNestedUnionMapVsClassSibling()
+	var exercised bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		fv, ok := v.LookupField("f")
+		if !ok {
+			rt.Fatalf("outer instance missing field f")
+		}
+		if fv.Kind != KindUnion || fv.Variant == nil {
+			rt.Fatalf("field f expected union value, got %v", fv.Kind)
+		}
+		if fv.VariantIndex != 0 {
+			return
+		}
+		if fv.Variant.Kind != KindUnion {
+			rt.Fatalf("outer arm 0 expected to be a nested union value, got %v", fv.Variant.Kind)
+		}
+		if fv.Variant.Variant == nil {
+			rt.Fatalf("nested union missing Variant")
+		}
+		if fv.Variant.VariantIndex != 0 {
+			return
+		}
+		if fv.Variant.Variant.Kind != KindMap {
+			rt.Fatalf("nested union arm 0 expected to be a map value, got %v", fv.Variant.Variant.Kind)
+		}
+		exercised = true
+		if len(fv.Variant.Variant.MapEntries) == 0 {
+			rt.Fatalf("nested-union map arm produced an empty map — ambiguous with outer class sibling under BAML coercion")
+		}
+	})
+	if !exercised {
+		t.Fatalf("rapid budget never reached nested-union map leaf — coverage sentinel never fired; non-empty-map invariant unverified")
+	}
+}
+
+// fixtureSchemaOptionalNestedUnionMapVsClassSibling layers an
+// optional over the nested union: `union[ optional<union[map, string]>,
+// class_ref Inner ]`. The picked-arm dispatch must descend through
+// the optional (present branch) and into the nested union before
+// applying the constraint at the map leaf. Bounded composition of
+// the two transparent wrappers the helper already handles in
+// isolation.
+func fixtureSchemaOptionalNestedUnionMapVsClassSibling() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	innerUnion := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			{Kind: KindString},
+		},
+	}
+	optInnerUnion := FuzzType{Kind: KindOptional, Inner: &innerUnion}
+	inner := FuzzClass{
+		Name: "Inner",
+		Properties: []FuzzProperty{
+			{Name: "Fuzz_field_0", Type: FuzzType{Kind: KindInt}},
+		},
+	}
+	outer := FuzzClass{
+		Name: "Outer",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					optInnerUnion,
+					{Kind: KindClassRef, Ref: "Inner"},
+				},
+			}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{outer, inner},
+		RootClass: "Outer",
+	})
+}
+
+// TestValueGenOptionalNestedUnionMapArmWithClassSiblingNeverEmpty
+// exercises the optional + nested-union compound: the outer pick
+// lands on the optional<nested-union>, the optional draws present,
+// the nested union picks its map arm. The leaf map must be non-
+// empty.
+func TestValueGenOptionalNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
+	schema := fixtureSchemaOptionalNestedUnionMapVsClassSibling()
+	var exercised bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		fv, ok := v.LookupField("f")
+		if !ok {
+			rt.Fatalf("outer instance missing field f")
+		}
+		if fv.Kind != KindUnion || fv.Variant == nil {
+			rt.Fatalf("field f expected union value, got %v", fv.Kind)
+		}
+		if fv.VariantIndex != 0 {
+			return
+		}
+		if fv.Variant.Kind != KindOptional {
+			rt.Fatalf("outer arm 0 expected to be an optional value, got %v", fv.Variant.Kind)
+		}
+		if fv.Variant.OptionalShape != OptionalPresent {
+			return
+		}
+		if fv.Variant.Inner == nil {
+			rt.Fatalf("present optional missing Inner")
+		}
+		if fv.Variant.Inner.Kind != KindUnion {
+			rt.Fatalf("optional<nested-union> expected union value, got %v", fv.Variant.Inner.Kind)
+		}
+		if fv.Variant.Inner.Variant == nil {
+			rt.Fatalf("nested union missing Variant")
+		}
+		if fv.Variant.Inner.VariantIndex != 0 {
+			return
+		}
+		if fv.Variant.Inner.Variant.Kind != KindMap {
+			rt.Fatalf("nested union arm 0 expected to be a map value, got %v", fv.Variant.Inner.Variant.Kind)
+		}
+		exercised = true
+		if len(fv.Variant.Inner.Variant.MapEntries) == 0 {
+			rt.Fatalf("optional+nested-union map arm produced an empty map — ambiguous with outer class sibling under BAML coercion")
+		}
+	})
+	if !exercised {
+		t.Fatalf("rapid budget never reached optional+nested-union map leaf — coverage sentinel never fired; non-empty-map invariant unverified")
+	}
+}
+
+// fixtureSchemaDeepNestedUnionMapVsClassSibling stacks two levels of
+// nested union: `union[ union[ union[map, T], string ], class_ref
+// Inner ]`. Pins arbitrary-depth propagation of the constraint
+// through transparent wrappers, bounded by MaxTypeDepth.
+func fixtureSchemaDeepNestedUnionMapVsClassSibling() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	innermost := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			{Kind: KindInt},
+		},
+	}
+	middle := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			innermost,
+			{Kind: KindString},
+		},
+	}
+	inner := FuzzClass{
+		Name: "Inner",
+		Properties: []FuzzProperty{
+			{Name: "Fuzz_field_0", Type: FuzzType{Kind: KindInt}},
+		},
+	}
+	outer := FuzzClass{
+		Name: "Outer",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					middle,
+					{Kind: KindClassRef, Ref: "Inner"},
+				},
+			}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{outer, inner},
+		RootClass: "Outer",
+	})
+}
+
+// TestValueGenDeepNestedUnionMapArmWithClassSiblingNeverEmpty walks
+// the two-level nested union case. When the picked path traverses
+// outer → middle → innermost → map, the leaf map must be non-empty.
+func TestValueGenDeepNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
+	schema := fixtureSchemaDeepNestedUnionMapVsClassSibling()
+	var exercised bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		fv, ok := v.LookupField("f")
+		if !ok {
+			rt.Fatalf("outer instance missing field f")
+		}
+		if fv.Kind != KindUnion || fv.Variant == nil {
+			rt.Fatalf("field f expected union value, got %v", fv.Kind)
+		}
+		if fv.VariantIndex != 0 {
+			return
+		}
+		mid := fv.Variant
+		if mid.Kind != KindUnion || mid.Variant == nil {
+			rt.Fatalf("outer arm 0 expected middle union value, got %v", mid.Kind)
+		}
+		if mid.VariantIndex != 0 {
+			return
+		}
+		innermost := mid.Variant
+		if innermost.Kind != KindUnion || innermost.Variant == nil {
+			rt.Fatalf("middle arm 0 expected innermost union value, got %v", innermost.Kind)
+		}
+		if innermost.VariantIndex != 0 {
+			return
+		}
+		leaf := innermost.Variant
+		if leaf.Kind != KindMap {
+			rt.Fatalf("innermost arm 0 expected map value, got %v", leaf.Kind)
+		}
+		exercised = true
+		if len(leaf.MapEntries) == 0 {
+			rt.Fatalf("deep-nested map arm produced an empty map — ambiguous with outermost class sibling under BAML coercion")
+		}
+	})
+	if !exercised {
+		t.Fatalf("rapid budget never reached deep-nested map leaf — coverage sentinel never fired; non-empty-map invariant unverified")
+	}
+}
+
+// TestValueGenMapArmWithoutClassSiblingMayBeEmpty pins the fix's
+// targeting: when no sibling reaches a class, the map arm is allowed
+// to draw as empty. Asserted by observing at least one empty-map
+// draw across the rapid sample budget. Without this guard the fix
+// could over-trigger and shift the corpus more than needed.
+func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	outer := FuzzClass{
+		Name: "Outer",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					{Kind: KindMap, Key: &keyT, Inner: &intT},
+					{Kind: KindString},
+					{Kind: KindInt},
+				},
+			}},
+		},
+	}
+	schema := AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{outer},
+		RootClass: "Outer",
+	})
+	var sawEmpty, sawMapPick bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		fv, ok := v.LookupField("f")
+		if !ok {
+			rt.Fatalf("outer instance missing field f")
+		}
+		if fv.Kind != KindUnion || fv.Variant == nil {
+			rt.Fatalf("field f expected union value, got %v", fv.Kind)
+		}
+		if fv.VariantIndex != 0 {
+			return
+		}
+		sawMapPick = true
+		if len(fv.Variant.MapEntries) == 0 {
+			sawEmpty = true
+		}
+	})
+	if !sawMapPick {
+		t.Fatalf("rapid budget never picked the map arm — targeting guard never exercised; regression unverified")
+	}
+	if !sawEmpty {
+		t.Fatalf("empty-map draw never observed for class-free sibling union — fix is over-triggering")
+	}
+}
+
+// fixtureSchemaRecursiveUnionMapClampClassSibling builds the mutual-
+// cycle shape Codex's r3 stress run reduced to: a union whose direct
+// map arm and class_ref sibling BOTH reach the recursion cap at the
+// same point, so the safe-arm filter empties and the draw falls back
+// to the over-cap arms. There drawMap clamps the map length to 0,
+// which previously rendered the ambiguous empty map `{}` against the
+// class sibling. `A → union[map<string,A>, class_ref B]`, `B →
+// optional<class_ref A>`: entering A twice exhausts its budget, at
+// which point the map arm (reaches A, over cap) and the class_ref B
+// arm (B reaches A, over cap) are both pruned from the safe set. The
+// fix steers the fallback pick to the class_ref B arm, whose only
+// field is an optional that terminates as absent/null at the cap.
+func fixtureSchemaRecursiveUnionMapClampClassSibling() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	mapValT := FuzzType{Kind: KindClassRef, Ref: "A"}
+	mapAA := FuzzType{Kind: KindMap, Key: &keyT, Inner: &mapValT}
+	a := FuzzClass{
+		Name: "A",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					mapAA,
+					{Kind: KindClassRef, Ref: "B"},
+				},
+			}},
+		},
+	}
+	bOptInner := FuzzType{Kind: KindClassRef, Ref: "A"}
+	b := FuzzClass{
+		Name: "B",
+		Properties: []FuzzProperty{
+			{Name: "g", Type: FuzzType{Kind: KindOptional, Inner: &bOptInner}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{a, b},
+		RootClass: "A",
+	})
+}
+
+// recursiveFallbackExercised reports whether the draw populated the
+// root union's map arm. Each map entry is a depth-2 A instance whose
+// own union sits over the recursion cap on both arms — the fallback
+// the regression guards. A non-empty root map therefore proves the
+// clamp path was reached, so the assertion below actually covered it.
+func recursiveFallbackExercised(v FuzzValue) bool {
+	fv, ok := v.LookupField("f")
+	if !ok || fv.Kind != KindUnion || fv.Variant == nil {
+		return false
+	}
+	if fv.VariantIndex != 0 || fv.Variant.Kind != KindMap {
+		return false
+	}
+	return len(fv.Variant.MapEntries) > 0
+}
+
+// TestValueGenRecursiveFallbackMapArmWithClassSiblingNeverEmpty is the
+// deterministic regression for the recursion-cap fallback Codex found
+// in r3. When the union's safe-arm set empties (every arm over the
+// cap) and a class_ref sibling is present, the draw must not fall back
+// to the map arm and render a depth-clamped `{}` — BAML coerces that
+// empty map to the class sibling, diverging from the walker's recorded
+// map choice. Before the picker-level fix this fixture draws empty
+// ambiguous maps at the depth-2 union; after it, the fallback picks
+// the terminating class_ref arm and the leaf invariant holds.
+func TestValueGenRecursiveFallbackMapArmWithClassSiblingNeverEmpty(t *testing.T) {
+	schema := fixtureSchemaRecursiveUnionMapClampClassSibling()
+	var exercised bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		if recursiveFallbackExercised(v) {
+			exercised = true
+		}
+		walkValueForMapArmAmbiguity(rt, schema.EffectiveRoot(), v, schema)
+	})
+	if !exercised {
+		t.Fatalf("rapid budget never reached the depth-clamped fallback union — coverage sentinel never fired; regression unverified")
+	}
+}
+
+// raiseRapidChecksFloor lifts the rapid check budget for the calling
+// test to at least floor, returning a restore func. An explicit
+// -rapid.checks above floor on the command line is left untouched —
+// the floor only raises the default. Package tests are sequential
+// (none call t.Parallel), so the global flag mutation is safe across
+// the test's lifetime.
+//
+// The floor is opt-in via BAMLFUZZ_RAPID_STRESS=1. By default it is a
+// no-op so the package runs at rapid's standard budget; the default
+// unit-tests CI job invokes `go test -race -count=100`, where a high
+// floor compounds across the 100 iterations and the race instrument
+// into a multi-minute-per-test cost that blows the package timeout.
+// The nightly stress job sets BAMLFUZZ_RAPID_STRESS=1 to exercise the
+// higher budget that surfaced the recursion-cap regression.
+func raiseRapidChecksFloor(t *testing.T, floor int) func() {
+	t.Helper()
+	if os.Getenv("BAMLFUZZ_RAPID_STRESS") != "1" {
+		return func() {}
+	}
+	f := flag.Lookup("rapid.checks")
+	if f == nil {
+		return func() {}
+	}
+	getter, ok := f.Value.(flag.Getter)
+	if !ok {
+		return func() {}
+	}
+	prev, ok := getter.Get().(int)
+	if !ok {
+		return func() {}
+	}
+	if prev >= floor {
+		return func() {}
+	}
+	prevStr := f.Value.String()
+	if err := flag.Set("rapid.checks", strconv.Itoa(floor)); err != nil {
+		return func() {}
+	}
+	return func() { _ = flag.Set("rapid.checks", prevStr) }
+}
+
+// TestValueGenStaticSchemaUnionMapArmInvariant is the wide-net
+// invariant: across StaticSchemaGen, every drawn (schema, value) pair
+// whose union picks a direct or optional-wrapped map arm with a
+// class-reachable sibling must carry a non-empty map at the leaf when
+// any wrapping optionals drew present. Backstops the targeted fixture
+// tests against future generator paths that could re-introduce the
+// empty-map draw at either the direct or the optional<map> arm shape.
+//
+// In BAMLFUZZ_RAPID_STRESS=1 runs, the check budget is floored at
+// 5000: rapid's default budget did not surface the recursion-cap
+// fallback Codex hit at 1315 cases under seed 12166613081859382899,
+// and 5000 covers that class of generator regression. Default runs
+// keep rapid's standard budget.
+func TestValueGenStaticSchemaUnionMapArmInvariant(t *testing.T) {
+	defer raiseRapidChecksFloor(t, 5000)()
+	rapid.Check(t, func(rt *rapid.T) {
+		schema := StaticSchemaGen().Draw(rt, "schema")
+		value := ValueGen(schema).Draw(rt, "value")
+		walkValueForMapArmAmbiguity(rt, schema.EffectiveRoot(), value, schema)
+	})
+}
+
+// assertPickedArmLeafMapNonEmpty walks a (type, value) pair whose
+// effective leaf type reaches KindMap through transparent wrappers
+// (KindOptional and nested KindUnion). At every present optional and
+// at every union it descends into the picked subtype/subvalue; when
+// it reaches KindMap it asserts the entry list is non-empty. Absent
+// /null optional shapes terminate the walk without an assertion (no
+// `{}` is emitted in those cases).
+func assertPickedArmLeafMapNonEmpty(rt *rapid.T, t FuzzType, v FuzzValue) {
+	switch t.Kind {
+	case KindMap:
+		if v.Kind != KindMap {
+			rt.Fatalf("expected map value at leaf, got %v", v.Kind)
+		}
+		if len(v.MapEntries) == 0 {
+			rt.Fatalf("map arm produced empty map with class-reachable sibling")
+		}
+	case KindOptional:
+		if v.Kind != KindOptional {
+			rt.Fatalf("expected optional value, got %v", v.Kind)
+		}
+		if v.OptionalShape != OptionalPresent {
+			return
+		}
+		if t.Inner == nil {
+			rt.Fatalf("present optional map-arm type missing Inner")
+		}
+		if v.Inner == nil {
+			rt.Fatalf("present optional map-arm value missing Inner")
+		}
+		assertPickedArmLeafMapNonEmpty(rt, *t.Inner, *v.Inner)
+	case KindUnion:
+		if v.Kind != KindUnion {
+			rt.Fatalf("expected union value, got %v", v.Kind)
+		}
+		if v.Variant == nil {
+			rt.Fatalf("union value missing Variant")
+		}
+		if v.VariantIndex < 0 || v.VariantIndex >= len(t.Variants) {
+			rt.Fatalf("union value VariantIndex %d out of range (arms=%d)", v.VariantIndex, len(t.Variants))
+		}
+		assertPickedArmLeafMapNonEmpty(rt, t.Variants[v.VariantIndex], *v.Variant)
+	}
+}
+
+// walkValueForMapArmAmbiguity fails closed on malformed type/value
+// shapes. The walker drives generated values against the type IR
+// they were produced from, so a kind mismatch, an out-of-range
+// variant index, a nil Inner, or a missing class field signals a
+// generator regression. A silent `return` would let such a
+// regression slip past the map-arm-ambiguity assertions
+// undetected. Same fail-closed posture as assertPickedArmLeafMapNonEmpty;
+// rt.Fatalf propagates through rapid.Check's shrinker so the minimal
+// reproducer surfaces.
+func walkValueForMapArmAmbiguity(rt *rapid.T, t FuzzType, v FuzzValue, schema FuzzSchema) {
+	switch t.Kind {
+	case KindUnion:
+		if v.Kind != KindUnion {
+			rt.Fatalf("walker: union type expected union value, got %v", v.Kind)
+		}
+		if v.Variant == nil {
+			rt.Fatalf("walker: union value missing Variant (value kind=%v)", v.Kind)
+		}
+		if v.VariantIndex < 0 || v.VariantIndex >= len(t.Variants) {
+			rt.Fatalf("walker: union value VariantIndex %d out of range (arms=%d)", v.VariantIndex, len(t.Variants))
+		}
+		arm := t.Variants[v.VariantIndex]
+		if pickedArmReachesMapThroughTransparent(arm, 0) && unionHasClassReachableSibling(t, v.VariantIndex) {
+			assertPickedArmLeafMapNonEmpty(rt, arm, *v.Variant)
+		}
+		walkValueForMapArmAmbiguity(rt, arm, *v.Variant, schema)
+	case KindOptional:
+		if v.Kind != KindOptional {
+			rt.Fatalf("walker: optional type expected optional value, got %v", v.Kind)
+		}
+		if t.Inner == nil {
+			rt.Fatalf("walker: optional type missing Inner")
+		}
+		if v.OptionalShape == OptionalPresent {
+			if v.Inner == nil {
+				rt.Fatalf("walker: present optional value missing Inner")
+			}
+			walkValueForMapArmAmbiguity(rt, *t.Inner, *v.Inner, schema)
+		}
+	case KindList:
+		if v.Kind != KindList {
+			rt.Fatalf("walker: list type expected list value, got %v", v.Kind)
+		}
+		if t.Inner == nil {
+			rt.Fatalf("walker: list type missing Inner")
+		}
+		for _, item := range v.Items {
+			walkValueForMapArmAmbiguity(rt, *t.Inner, item, schema)
+		}
+	case KindMap:
+		if v.Kind != KindMap {
+			rt.Fatalf("walker: map type expected map value, got %v", v.Kind)
+		}
+		if t.Inner == nil {
+			rt.Fatalf("walker: map type missing Inner")
+		}
+		for _, e := range v.MapEntries {
+			walkValueForMapArmAmbiguity(rt, *t.Inner, e.Value, schema)
+		}
+	case KindClassRef:
+		if v.Kind != KindClassRef {
+			rt.Fatalf("walker: class_ref type %q expected class_ref value, got %v", t.Ref, v.Kind)
+		}
+		if v.ClassName != t.Ref {
+			rt.Fatalf("walker: class_ref value class %q drifts from type ref %q", v.ClassName, t.Ref)
+		}
+		cls, ok := schema.FindClass(t.Ref)
+		if !ok {
+			rt.Fatalf("walker: class_ref type ref %q not found in schema", t.Ref)
+		}
+		for _, prop := range cls.Properties {
+			fv, ok := v.LookupField(prop.Name)
+			if !ok {
+				rt.Fatalf("walker: class %q value missing field %q", t.Ref, prop.Name)
+			}
+			walkValueForMapArmAmbiguity(rt, prop.Type, fv, schema)
+		}
+	}
+}
+
+// fixtureSchemaNestedUnionAmbientClampClassSibling builds the nested
+// analogue of fixtureSchemaRecursiveUnionMapClampClassSibling: the map
+// arm Codex's r4 finding names lives inside an INNER union whose own
+// arms reach no class, while the OUTER union holds the class_ref
+// sibling. `A → union[ union[map<string,A>, list<A>], class_ref B ]`,
+// `B → optional<class_ref A>`.
+//
+// Entering A twice exhausts its per-class budget. At the depth-2 A the
+// outer union's both arms sit over the cap (the inner-union arm reaches
+// A through its map/list, the class_ref B arm reaches A through B's
+// optional), so the safe-arm set empties and the outer falls back —
+// then prunes to the class-ambiguity-safe set and may still pick the
+// inner-union arm, whose list sibling keeps it off the forced-empty
+// list. Descending into that inner union, the local class check is
+// false: its only arms are map<string,A> and list<A>, neither a direct
+// class_ref. Before threading the ambient flag the nested
+// unionDrawCandidates therefore skipped the prune and could pick the
+// over-cap map arm, where drawMap clamps minLen=1 down to 0 and emits
+// `{}` — byte-identical to a null-materialized A and coerced by BAML to
+// the outer's class_ref B sibling. With the ambient flag on, the
+// nested prune drops the forced map arm and the pick lands on list<A>,
+// which clamps to `[]` (unambiguous) at the cap.
+func fixtureSchemaNestedUnionAmbientClampClassSibling() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	mapValT := FuzzType{Kind: KindClassRef, Ref: "A"}
+	listValT := FuzzType{Kind: KindClassRef, Ref: "A"}
+	innerUnion := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &mapValT},
+			{Kind: KindList, Inner: &listValT},
+		},
+	}
+	a := FuzzClass{
+		Name: "A",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					innerUnion,
+					{Kind: KindClassRef, Ref: "B"},
+				},
+			}},
+		},
+	}
+	bOptInner := FuzzType{Kind: KindClassRef, Ref: "A"}
+	b := FuzzClass{
+		Name: "B",
+		Properties: []FuzzProperty{
+			{Name: "g", Type: FuzzType{Kind: KindOptional, Inner: &bOptInner}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{a, b},
+		RootClass: "A",
+	})
+}
+
+// nestedAmbientFallbackExercised reports whether the draw actually
+// descended into the depth-2 nested-union arm — the only path that
+// exercises the ambient prune. The depth-1 frame must pick the outer
+// union's inner-union arm (index 0), then the inner union's map arm
+// (index 0). A non-empty depth-1 map alone is insufficient: those
+// entries are depth-2 A instances that could each pick the outer
+// union's class_ref B sibling, leaving the ambient-pruned nested union
+// (`drawArmEnsuringMapNonEmpty` → nested KindUnion →
+// `unionDrawCandidates(arm, true)`) untouched. So we require at least
+// one depth-1 map entry whose value is an A whose own `f` field picked
+// the outer nested-union arm (VariantIndex == 0, wrapping a KindUnion).
+// That is the depth-2 nested-union pick that drives the ambient
+// fallback the regression guards. The sentinel holds on both the
+// pre-fix (clamped `{}` at the depth-2 leaf) and post-fix (list arm at
+// the depth-2 leaf) runs: it keys off the depth-2 union choice, which
+// is taken in both, not off the leaf's clamped shape.
+func nestedAmbientFallbackExercised(v FuzzValue) bool {
+	fv, ok := v.LookupField("f")
+	if !ok || fv.Kind != KindUnion || fv.Variant == nil {
+		return false
+	}
+	if fv.VariantIndex != 0 {
+		return false
+	}
+	inner := fv.Variant
+	if inner.Kind != KindUnion || inner.Variant == nil {
+		return false
+	}
+	if inner.VariantIndex != 0 || inner.Variant.Kind != KindMap {
+		return false
+	}
+	for _, entry := range inner.Variant.MapEntries {
+		if entry.Value.Kind != KindClassRef || entry.Value.ClassName != "A" {
+			continue
+		}
+		depth2f, ok := entry.Value.LookupField("f")
+		if !ok || depth2f.Kind != KindUnion || depth2f.Variant == nil {
+			continue
+		}
+		if depth2f.VariantIndex == 0 && depth2f.Variant.Kind == KindUnion {
+			return true
+		}
+	}
+	return false
+}
+
+// TestValueGenNestedUnionAmbientConstraintNeverEmpty is the
+// deterministic regression for the nested-union ensure path Codex's r4
+// review found. drawArmEnsuringMapNonEmpty reuses unionDrawCandidates
+// for nested unions; before the ambient flag that helper pruned
+// forced-empty map arms only when the nested union had its own
+// class-reachable arm. The shape here
+// (`union[ union[map<string,A>, list<A>], class_ref B ]` at the cap)
+// has the class sibling on the OUTER union, so the nested prune was
+// skipped and the over-cap map arm rendered an ambiguous `{}`. The
+// ambient flag carries the outer union's class-reachability into the
+// nested candidate filter, so the forced map arm is dropped and the
+// pick lands on the list arm. The wide-net
+// TestValueGenStaticSchemaUnionMapArmInvariant catches this shape
+// transitively; this fixture pins it directly.
+func TestValueGenNestedUnionAmbientConstraintNeverEmpty(t *testing.T) {
+	defer raiseRapidChecksFloor(t, 5000)()
+	schema := fixtureSchemaNestedUnionAmbientClampClassSibling()
+	var exercised bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		if nestedAmbientFallbackExercised(v) {
+			exercised = true
+		}
+		walkValueForMapArmAmbiguity(rt, schema.EffectiveRoot(), v, schema)
+	})
+	if !exercised {
+		t.Fatalf("rapid budget never reached the depth-clamped nested fallback union — coverage sentinel never fired; regression unverified")
+	}
 }
