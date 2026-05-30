@@ -3,7 +3,9 @@ package bamlfuzz
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1966,6 +1968,117 @@ func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
 	}
 }
 
+// fixtureSchemaRecursiveUnionMapClampClassSibling builds the mutual-
+// cycle shape Codex's r3 stress run reduced to: a union whose direct
+// map arm and class_ref sibling BOTH reach the recursion cap at the
+// same point, so the safe-arm filter empties and the draw falls back
+// to the over-cap arms. There drawMap clamps the map length to 0,
+// which previously rendered the ambiguous empty map `{}` against the
+// class sibling. `A → union[map<string,A>, class_ref B]`, `B →
+// optional<class_ref A>`: entering A twice exhausts its budget, at
+// which point the map arm (reaches A, over cap) and the class_ref B
+// arm (B reaches A, over cap) are both pruned from the safe set. The
+// fix steers the fallback pick to the class_ref B arm, whose only
+// field is an optional that terminates as absent/null at the cap.
+func fixtureSchemaRecursiveUnionMapClampClassSibling() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	mapValT := FuzzType{Kind: KindClassRef, Ref: "A"}
+	mapAA := FuzzType{Kind: KindMap, Key: &keyT, Inner: &mapValT}
+	a := FuzzClass{
+		Name: "A",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					mapAA,
+					{Kind: KindClassRef, Ref: "B"},
+				},
+			}},
+		},
+	}
+	bOptInner := FuzzType{Kind: KindClassRef, Ref: "A"}
+	b := FuzzClass{
+		Name: "B",
+		Properties: []FuzzProperty{
+			{Name: "g", Type: FuzzType{Kind: KindOptional, Inner: &bOptInner}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{a, b},
+		RootClass: "A",
+	})
+}
+
+// recursiveFallbackExercised reports whether the draw populated the
+// root union's map arm. Each map entry is a depth-2 A instance whose
+// own union sits over the recursion cap on both arms — the fallback
+// the regression guards. A non-empty root map therefore proves the
+// clamp path was reached, so the assertion below actually covered it.
+func recursiveFallbackExercised(v FuzzValue) bool {
+	fv, ok := v.LookupField("f")
+	if !ok || fv.Kind != KindUnion || fv.Variant == nil {
+		return false
+	}
+	if fv.VariantIndex != 0 || fv.Variant.Kind != KindMap {
+		return false
+	}
+	return len(fv.Variant.MapEntries) > 0
+}
+
+// TestValueGenRecursiveFallbackMapArmWithClassSiblingNeverEmpty is the
+// deterministic regression for the recursion-cap fallback Codex found
+// in r3. When the union's safe-arm set empties (every arm over the
+// cap) and a class_ref sibling is present, the draw must not fall back
+// to the map arm and render a depth-clamped `{}` — BAML coerces that
+// empty map to the class sibling, diverging from the walker's recorded
+// map choice. Before the picker-level fix this fixture draws empty
+// ambiguous maps at the depth-2 union; after it, the fallback picks
+// the terminating class_ref arm and the leaf invariant holds.
+func TestValueGenRecursiveFallbackMapArmWithClassSiblingNeverEmpty(t *testing.T) {
+	schema := fixtureSchemaRecursiveUnionMapClampClassSibling()
+	var exercised bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		if recursiveFallbackExercised(v) {
+			exercised = true
+		}
+		walkValueForMapArmAmbiguity(rt, schema.EffectiveRoot(), v, schema)
+	})
+	if !exercised {
+		t.Fatalf("rapid budget never reached the depth-clamped fallback union — coverage sentinel never fired; regression unverified")
+	}
+}
+
+// raiseRapidChecksFloor lifts the rapid check budget for the calling
+// test to at least floor, returning a restore func. An explicit
+// -rapid.checks above floor on the command line is left untouched —
+// the floor only raises the default. Package tests are sequential
+// (none call t.Parallel), so the global flag mutation is safe across
+// the test's lifetime.
+func raiseRapidChecksFloor(t *testing.T, floor int) func() {
+	t.Helper()
+	f := flag.Lookup("rapid.checks")
+	if f == nil {
+		return func() {}
+	}
+	getter, ok := f.Value.(flag.Getter)
+	if !ok {
+		return func() {}
+	}
+	prev, ok := getter.Get().(int)
+	if !ok {
+		return func() {}
+	}
+	if prev >= floor {
+		return func() {}
+	}
+	prevStr := f.Value.String()
+	if err := flag.Set("rapid.checks", strconv.Itoa(floor)); err != nil {
+		return func() {}
+	}
+	return func() { _ = flag.Set("rapid.checks", prevStr) }
+}
+
 // TestValueGenStaticSchemaUnionMapArmInvariant is the wide-net
 // invariant: across StaticSchemaGen, every drawn (schema, value) pair
 // whose union picks a direct or optional-wrapped map arm with a
@@ -1973,7 +2086,13 @@ func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
 // any wrapping optionals drew present. Backstops the targeted fixture
 // tests against future generator paths that could re-introduce the
 // empty-map draw at either the direct or the optional<map> arm shape.
+//
+// The check budget is floored at 5000: the default 100 did not surface
+// the recursion-cap fallback Codex hit at 1315 cases under seed
+// 12166613081859382899, and 5000 covers that class of generator
+// regression in well under a second.
 func TestValueGenStaticSchemaUnionMapArmInvariant(t *testing.T) {
+	defer raiseRapidChecksFloor(t, 5000)()
 	rapid.Check(t, func(rt *rapid.T) {
 		schema := StaticSchemaGen().Draw(rt, "schema")
 		value := ValueGen(schema).Draw(rt, "value")
