@@ -140,7 +140,6 @@ jobs:
       - name: Restore corpus from prior nightly (target-scoped)
         if: ${{ env.MODE == 'fuzz' }}
         id: restore-target
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACT_NAME: bamlfuzz-corpus-${{ matrix.baml-version }}-${{ matrix.unary-server }}-${{ matrix.target }}
@@ -158,9 +157,10 @@ jobs:
 
           restored=""
           for run_id in $candidates; do
-            has_artifact=$(gh api \
+            has_artifact=$(gh api --paginate \
               "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" \
-              --jq "[.artifacts[] | select(.name == \"$ARTIFACT_NAME\")] | length")
+              --jq "[.artifacts[] | select(.name == \"$ARTIFACT_NAME\")] | length" \
+              | awk '{s+=$1} END {print s+0}')
             if [ "$has_artifact" -gt 0 ]; then
               gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
                 --name "$ARTIFACT_NAME" \
@@ -182,7 +182,6 @@ jobs:
       # no-op and can be removed in a future PR.
       - name: Fallback restore from legacy unscoped corpus
         if: ${{ env.MODE == 'fuzz' && steps.restore-target.outputs.restored == '' }}
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACT_NAME: bamlfuzz-corpus-${{ matrix.baml-version }}-${{ matrix.unary-server }}
@@ -200,9 +199,10 @@ jobs:
 
           restored=""
           for run_id in $candidates; do
-            has_artifact=$(gh api \
+            has_artifact=$(gh api --paginate \
               "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" \
-              --jq "[.artifacts[] | select(.name == \"$ARTIFACT_NAME\")] | length")
+              --jq "[.artifacts[] | select(.name == \"$ARTIFACT_NAME\")] | length" \
+              | awk '{s+=$1} END {print s+0}')
             if [ "$has_artifact" -gt 0 ]; then
               gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
                 --name "$ARTIFACT_NAME" \
