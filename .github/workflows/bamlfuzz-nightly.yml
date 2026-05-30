@@ -286,10 +286,10 @@ jobs:
             if [ "${MODE}" = "fuzz" ]; then
               echo "Corpus artifact: bamlfuzz-corpus-${BAML}-${UNARY}-${TARGET}"
               echo
-              echo "This cell ran fuzz target \`${TARGET}\`. Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/):"
+              echo "This cell ran fuzz target \`${TARGET}\`. Repro (from repo root, after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/):"
               echo
               echo '```'
-              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^${TARGET}\$' -fuzztime=30s ./integration -test.fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^${TARGET}\$' -fuzztime=30s ./integration -test.fuzzcachedir=\$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache"
               echo '```'
             else
               echo
