@@ -1538,6 +1538,7 @@ func fixtureSchemaMapVsClassSiblingUnion() FuzzSchema {
 // (which coerces `{}` to the class arm with null-filled fields).
 func TestValueGenMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	schema := fixtureSchemaMapVsClassSiblingUnion()
+	var exercised bool
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
 		fv, ok := v.LookupField("f")
@@ -1553,10 +1554,14 @@ func TestValueGenMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 		if fv.Variant.Kind != KindMap {
 			rt.Fatalf("union arm 0 expected to be a map value, got %v", fv.Variant.Kind)
 		}
+		exercised = true
 		if len(fv.Variant.MapEntries) == 0 {
 			rt.Fatalf("map arm produced an empty map — ambiguous with class sibling under BAML coercion")
 		}
 	})
+	if !exercised {
+		t.Fatalf("rapid budget never picked the direct map arm — coverage sentinel never fired; non-empty-map invariant unverified")
+	}
 }
 
 // fixtureSchemaOptionalMapVsClassSiblingUnion mirrors
@@ -1606,6 +1611,7 @@ func fixtureSchemaOptionalMapVsClassSiblingUnion() FuzzSchema {
 // coercion to remain unambiguous.
 func TestValueGenOptionalMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	schema := fixtureSchemaOptionalMapVsClassSiblingUnion()
+	var exercised bool
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
 		fv, ok := v.LookupField("f")
@@ -1630,10 +1636,14 @@ func TestValueGenOptionalMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 		if fv.Variant.Inner.Kind != KindMap {
 			rt.Fatalf("present optional expected map at leaf, got %v", fv.Variant.Inner.Kind)
 		}
+		exercised = true
 		if len(fv.Variant.Inner.MapEntries) == 0 {
 			rt.Fatalf("present optional<map> drew empty map — ambiguous with class sibling under BAML coercion")
 		}
 	})
+	if !exercised {
+		t.Fatalf("rapid budget never reached present-optional<map> leaf — coverage sentinel never fired; non-empty-map invariant unverified")
+	}
 }
 
 // fixtureSchemaNestedUnionMapVsClassSibling pins the nested-union
@@ -1991,9 +2001,16 @@ func assertPickedArmLeafMapNonEmpty(rt *rapid.T, t FuzzType, v FuzzValue) {
 		if v.Kind != KindOptional {
 			rt.Fatalf("expected optional value, got %v", v.Kind)
 		}
-		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
-			assertPickedArmLeafMapNonEmpty(rt, *t.Inner, *v.Inner)
+		if v.OptionalShape != OptionalPresent {
+			return
 		}
+		if t.Inner == nil {
+			rt.Fatalf("present optional map-arm type missing Inner")
+		}
+		if v.Inner == nil {
+			rt.Fatalf("present optional map-arm value missing Inner")
+		}
+		assertPickedArmLeafMapNonEmpty(rt, *t.Inner, *v.Inner)
 	case KindUnion:
 		if v.Kind != KindUnion {
 			rt.Fatalf("expected union value, got %v", v.Kind)
