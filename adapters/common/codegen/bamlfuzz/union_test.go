@@ -2157,14 +2157,26 @@ func assertPickedArmLeafMapNonEmpty(rt *rapid.T, t FuzzType, v FuzzValue) {
 	}
 }
 
+// walkValueForMapArmAmbiguity fails closed on malformed type/value
+// shapes. The walker drives generated values against the type IR
+// they were produced from, so a kind mismatch, an out-of-range
+// variant index, a nil Inner, or a missing class field signals a
+// generator regression. A silent `return` would let such a
+// regression slip past the map-arm-ambiguity assertions
+// undetected. Same fail-closed posture as assertPickedArmLeafMapNonEmpty;
+// rt.Fatalf propagates through rapid.Check's shrinker so the minimal
+// reproducer surfaces.
 func walkValueForMapArmAmbiguity(rt *rapid.T, t FuzzType, v FuzzValue, schema FuzzSchema) {
 	switch t.Kind {
 	case KindUnion:
-		if v.Kind != KindUnion || v.Variant == nil {
-			return
+		if v.Kind != KindUnion {
+			rt.Fatalf("walker: union type expected union value, got %v", v.Kind)
+		}
+		if v.Variant == nil {
+			rt.Fatalf("walker: union value missing Variant (value kind=%v)", v.Kind)
 		}
 		if v.VariantIndex < 0 || v.VariantIndex >= len(t.Variants) {
-			return
+			rt.Fatalf("walker: union value VariantIndex %d out of range (arms=%d)", v.VariantIndex, len(t.Variants))
 		}
 		arm := t.Variants[v.VariantIndex]
 		if pickedArmReachesMapThroughTransparent(arm, 0) && unionHasClassReachableSibling(t, v.VariantIndex) {
@@ -2172,35 +2184,50 @@ func walkValueForMapArmAmbiguity(rt *rapid.T, t FuzzType, v FuzzValue, schema Fu
 		}
 		walkValueForMapArmAmbiguity(rt, arm, *v.Variant, schema)
 	case KindOptional:
-		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
+		if v.OptionalShape == OptionalPresent {
+			if v.Inner == nil {
+				rt.Fatalf("walker: present optional value missing Inner")
+			}
+			if t.Inner == nil {
+				rt.Fatalf("walker: optional type missing Inner")
+			}
 			walkValueForMapArmAmbiguity(rt, *t.Inner, *v.Inner, schema)
 		}
 	case KindList:
+		if v.Kind != KindList {
+			rt.Fatalf("walker: list type expected list value, got %v", v.Kind)
+		}
 		if t.Inner == nil {
-			return
+			rt.Fatalf("walker: list type missing Inner")
 		}
 		for _, item := range v.Items {
 			walkValueForMapArmAmbiguity(rt, *t.Inner, item, schema)
 		}
 	case KindMap:
+		if v.Kind != KindMap {
+			rt.Fatalf("walker: map type expected map value, got %v", v.Kind)
+		}
 		if t.Inner == nil {
-			return
+			rt.Fatalf("walker: map type missing Inner")
 		}
 		for _, e := range v.MapEntries {
 			walkValueForMapArmAmbiguity(rt, *t.Inner, e.Value, schema)
 		}
 	case KindClassRef:
 		if v.Kind != KindClassRef {
-			return
+			rt.Fatalf("walker: class_ref type %q expected class_ref value, got %v", t.Ref, v.Kind)
 		}
-		cls, ok := schema.FindClass(v.ClassName)
+		if v.ClassName != t.Ref {
+			rt.Fatalf("walker: class_ref value class %q drifts from type ref %q", v.ClassName, t.Ref)
+		}
+		cls, ok := schema.FindClass(t.Ref)
 		if !ok {
-			return
+			rt.Fatalf("walker: class_ref type ref %q not found in schema", t.Ref)
 		}
 		for _, prop := range cls.Properties {
 			fv, ok := v.LookupField(prop.Name)
 			if !ok {
-				continue
+				rt.Fatalf("walker: class %q value missing field %q", t.Ref, prop.Name)
 			}
 			walkValueForMapArmAmbiguity(rt, prop.Type, fv, schema)
 		}
