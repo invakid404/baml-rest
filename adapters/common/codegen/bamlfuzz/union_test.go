@@ -2099,10 +2099,11 @@ func raiseRapidChecksFloor(t *testing.T, floor int) func() {
 // tests against future generator paths that could re-introduce the
 // empty-map draw at either the direct or the optional<map> arm shape.
 //
-// The check budget is floored at 5000: the default 100 did not surface
-// the recursion-cap fallback Codex hit at 1315 cases under seed
-// 12166613081859382899, and 5000 covers that class of generator
-// regression in well under a second.
+// In BAMLFUZZ_RAPID_STRESS=1 runs, the check budget is floored at
+// 5000: rapid's default budget did not surface the recursion-cap
+// fallback Codex hit at 1315 cases under seed 12166613081859382899,
+// and 5000 covers that class of generator regression. Default runs
+// keep rapid's standard budget.
 func TestValueGenStaticSchemaUnionMapArmInvariant(t *testing.T) {
 	defer raiseRapidChecksFloor(t, 5000)()
 	rapid.Check(t, func(rt *rapid.T) {

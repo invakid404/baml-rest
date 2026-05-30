@@ -221,6 +221,16 @@ jobs:
         # `subprocess` matches the normal server deployment path (server +
         # cmd/worker go-plugin), same as integration-tests.yml. -p 1 keeps
         # the integration env setup serial; the oracles share state.
+        #
+        # BAMLFUZZ_RAPID_STRESS lifts the rapid check budget for the
+        # high-budget union invariants to their 5000-check floor. It is
+        # scoped to this step only: the fuzz-mode steps run each target
+        # once per -fuzztime so the floor never compounds there, and no
+        # race-instrumented step carries it (the floor × -race ×
+        # -count=100 compounding is exactly what the unit-tests job
+        # avoids by leaving this env unset).
+        env:
+          BAMLFUZZ_RAPID_STRESS: "1"
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
             -run='^TestBamlfuzz(Static|Dynamic)Oracle$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)$' ./integration/...
