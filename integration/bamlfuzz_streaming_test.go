@@ -376,9 +376,9 @@ func runStreamingOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 	// no error event, no unexpected reset. Run first so a degenerate
 	// stream (no final) is reported even when the equivalence diffs
 	// below short-circuit on an empty payload.
-	dynReset := checkSingleCleanFinal("dynclient", envelope.DynclientKinds, &failures)
-	sseReset := checkSingleCleanFinal("rest_sse", envelope.RESTKindsSSE, &failures)
-	ndjsonReset := checkSingleCleanFinal("rest_ndjson", envelope.RESTKindsNDJSON, &failures)
+	dynReset := checkSingleCleanFinal("dynclient", envelope.DynclientKinds, envelope.DynclientFinal, &failures)
+	sseReset := checkSingleCleanFinal("rest_sse", envelope.RESTKindsSSE, envelope.RESTFinalSSE, &failures)
+	ndjsonReset := checkSingleCleanFinal("rest_ndjson", envelope.RESTKindsNDJSON, envelope.RESTFinalNDJSON, &failures)
 	envelope.SawReset = dynReset || sseReset || ndjsonReset
 
 	// Assertion 1 — three-way final equivalence: dynclient final ≡ REST
@@ -458,13 +458,21 @@ func checkStreamFinalOrder(t *testing.T, c bamlfuzz.OracleCase, envelope *bamlfu
 }
 
 // checkSingleCleanFinal applies assertion 5 to one leg's event-kind
-// sequence: exactly one final, no error event, no reset, and the final
-// is terminal (the last non-metadata event). Returns whether a reset was
-// seen so the caller can aggregate SawReset across legs. A reset is a
-// finding (not a silent pass) because the rapid generator's mock
-// scenarios are deterministic single-attempt, so the orchestrator never
-// retries.
-func checkSingleCleanFinal(leg string, kinds []string, failures *[]string) (sawReset bool) {
+// sequence: exactly one final, no error event, no reset, the final is
+// terminal (the last non-metadata event), and the final frame carries a
+// non-empty payload. Returns whether a reset was seen so the caller can
+// aggregate SawReset across legs. A reset is a finding (not a silent
+// pass) because the rapid generator's mock scenarios are deterministic
+// single-attempt, so the orchestrator never retries.
+//
+// The non-empty-payload check closes a vacuous-pass hole: diffAndRecord
+// skips any SemanticDiff when either side has len == 0, so a leg that
+// emits exactly one final frame with empty/nil Data would clear the
+// terminality, order, and (skipped) equivalence checks while silently
+// violating final equivalence. Requiring a non-empty final here turns
+// that empty payload into a hard failure at the leg where it was
+// observed.
+func checkSingleCleanFinal(leg string, kinds []string, finalData json.RawMessage, failures *[]string) (sawReset bool) {
 	finals := 0
 	finalIdx := -1
 	for i, k := range kinds {
@@ -489,6 +497,9 @@ func checkSingleCleanFinal(leg string, kinds []string, failures *[]string) (sawR
 	// one final and no error/reset but did not terminate at the final
 	// frame, which is a spec violation.
 	if finals == 1 {
+		if len(finalData) == 0 {
+			*failures = append(*failures, fmt.Sprintf("%s: final frame has empty Data (kinds=%v) — vacuous pass would slip every equivalence assertion through", leg, kinds))
+		}
 		for i := finalIdx + 1; i < len(kinds); i++ {
 			if kinds[i] == "metadata" {
 				continue
