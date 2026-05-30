@@ -2252,17 +2252,22 @@ func fixtureSchemaNestedUnionAmbientClampClassSibling() FuzzSchema {
 	})
 }
 
-// nestedAmbientFallbackExercised reports whether the draw populated the
-// depth-1 inner-union map arm: the outer union picked its inner-union
-// arm (index 0) and the inner union picked its map arm (index 0) with
-// at least one entry. Each entry is a depth-2 A instance whose own
-// outer union sits over the recursion cap on both arms — the fallback
-// path the regression guards. A non-empty depth-1 inner map therefore
-// proves the depth-2 nested fallback was reached, so the leaf assertion
-// below actually covered it. The sentinel holds on both the pre-fix
-// (clamped `{}` at depth 2) and post-fix (list arm at depth 2) runs:
-// the depth-1 map is never clamped, so it stays the stable coverage
-// proof.
+// nestedAmbientFallbackExercised reports whether the draw actually
+// descended into the depth-2 nested-union arm — the only path that
+// exercises the ambient prune. The depth-1 frame must pick the outer
+// union's inner-union arm (index 0), then the inner union's map arm
+// (index 0). A non-empty depth-1 map alone is insufficient: those
+// entries are depth-2 A instances that could each pick the outer
+// union's class_ref B sibling, leaving the ambient-pruned nested union
+// (`drawArmEnsuringMapNonEmpty` → nested KindUnion →
+// `unionDrawCandidates(arm, true)`) untouched. So we require at least
+// one depth-1 map entry whose value is an A whose own `f` field picked
+// the outer nested-union arm (VariantIndex == 0, wrapping a KindUnion).
+// That is the depth-2 nested-union pick that drives the ambient
+// fallback the regression guards. The sentinel holds on both the
+// pre-fix (clamped `{}` at the depth-2 leaf) and post-fix (list arm at
+// the depth-2 leaf) runs: it keys off the depth-2 union choice, which
+// is taken in both, not off the leaf's clamped shape.
 func nestedAmbientFallbackExercised(v FuzzValue) bool {
 	fv, ok := v.LookupField("f")
 	if !ok || fv.Kind != KindUnion || fv.Variant == nil {
@@ -2278,7 +2283,19 @@ func nestedAmbientFallbackExercised(v FuzzValue) bool {
 	if inner.VariantIndex != 0 || inner.Variant.Kind != KindMap {
 		return false
 	}
-	return len(inner.Variant.MapEntries) > 0
+	for _, entry := range inner.Variant.MapEntries {
+		if entry.Value.Kind != KindClassRef || entry.Value.ClassName != "A" {
+			continue
+		}
+		depth2f, ok := entry.Value.LookupField("f")
+		if !ok || depth2f.Kind != KindUnion || depth2f.Variant == nil {
+			continue
+		}
+		if depth2f.VariantIndex == 0 && depth2f.Variant.Kind == KindUnion {
+			return true
+		}
+	}
+	return false
 }
 
 // TestValueGenNestedUnionAmbientConstraintNeverEmpty is the
