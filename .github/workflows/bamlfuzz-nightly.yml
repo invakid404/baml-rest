@@ -264,6 +264,10 @@ jobs:
           name: bamlfuzz-corpus-${{ matrix.baml-version }}-${{ matrix.unary-server }}-${{ matrix.target }}
           path: adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/
           if-no-files-found: ignore
+          # The path is a dot-directory; without this flag upload-artifact@v7
+          # treats its contents as hidden and silently uploads nothing, so the
+          # corpus would never persist across runs.
+          include-hidden-files: true
           retention-days: 90
 
       - name: Upload replay artifacts on failure
