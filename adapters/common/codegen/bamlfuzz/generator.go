@@ -476,15 +476,17 @@ func (c *valueDrawCtx) drawValueForType(t *rapid.T, ft FuzzType, label string) F
 // optional/list/map termination); this is a defensive branch the
 // schema generator's depth bounds make unreachable.
 //
-// When the picked arm's effective kind (after unwrapping any
-// KindOptional wrappers) is KindMap and a sibling arm reaches a
-// class_ref (directly or through nested unions/optional wrappers), any
-// map drawn at the leaf carries len >= 1. An empty map renders as the
-// wire bytes `{}`, which BAML's union resolver coerces to the class arm
-// with null-materialized fields — diverging from the walker's
-// prediction. Forcing the map to carry at least one entry keeps the
-// walker's recorded arm choice the one BAML lands on, including for
-// the optional<map> shape where the optional draws as present.
+// When the picked arm reaches KindMap through transparent wrappers
+// (nested KindUnion / KindOptional) and a sibling arm reaches a
+// class_ref, any map drawn along the picked path carries len >= 1.
+// An empty map renders as the wire bytes `{}`, which BAML's union
+// resolver coerces to the class arm with null-materialized fields —
+// diverging from the walker's prediction. The transparent-wrapper
+// reach check mirrors the sibling-side helper (typeReachesClassRef
+// descends through optionals and nested unions), so a shape like
+// `union[union[map<string,int>, string], class_ref X]` triggers the
+// non-empty-map constraint when the inner union picks the map arm
+// even though the inner union's own sibling set is class-free.
 func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValue {
 	if len(ft.Variants) == 0 {
 		t.Fatalf("bamlfuzz: union has no variants (label=%s); schema is malformed", label)
@@ -509,7 +511,7 @@ func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValu
 	arm := ft.Variants[idx]
 	armLabel := fmt.Sprintf("%s:variant_%d", label, idx)
 	var inner FuzzValue
-	if pickedArmEffectiveKindIsMap(arm) && unionHasClassReachableSibling(ft, idx) {
+	if pickedArmReachesMapThroughTransparent(arm, 0) && unionHasClassReachableSibling(ft, idx) {
 		inner = c.drawArmEnsuringMapNonEmpty(t, arm, armLabel)
 	} else {
 		inner = c.drawValueForType(t, arm, armLabel)
@@ -521,31 +523,50 @@ func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValu
 	}
 }
 
-// pickedArmEffectiveKindIsMap reports whether `arm` is KindMap directly
-// or resolves to KindMap after stripping nested KindOptional wrappers.
-// The picked-arm dispatch mirrors the sibling-side reach helper
-// (typeReachesClassRef descends through optionals), so a union shape
-// like `optional<map<string, T>> | class_ref X` triggers the
-// non-empty-map constraint when the optional draws as present — the
-// asymmetric direct-KindMap check skipped these and emitted `{}` at
-// the leaf, which BAML coerces to the class sibling.
-func pickedArmEffectiveKindIsMap(arm FuzzType) bool {
-	cur := arm
-	for cur.Kind == KindOptional && cur.Inner != nil {
-		cur = *cur.Inner
+// pickedArmReachesMapThroughTransparent reports whether `arm` is
+// KindMap directly or resolves to KindMap after descending through
+// nested KindOptional and KindUnion wrappers. These are the only
+// kinds whose drawn value can render as the leaf wire bytes `{}` of
+// a sibling arm's path; KindList wraps in `[...]`, KindClassRef in
+// named fields, neither colliding with the empty-map encoding.
+// Bounded by MaxTypeDepth + 1 so a malformed cyclic union literal
+// cannot loop the walk.
+func pickedArmReachesMapThroughTransparent(arm FuzzType, depth int) bool {
+	if depth > MaxTypeDepth {
+		return false
 	}
-	return cur.Kind == KindMap
+	switch arm.Kind {
+	case KindMap:
+		return true
+	case KindOptional:
+		if arm.Inner == nil {
+			return false
+		}
+		return pickedArmReachesMapThroughTransparent(*arm.Inner, depth+1)
+	case KindUnion:
+		for _, v := range arm.Variants {
+			if pickedArmReachesMapThroughTransparent(v, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
-// drawArmEnsuringMapNonEmpty draws the value for a union arm whose
-// effective kind (after unwrapping KindOptional wrappers) is KindMap.
-// At every optional wrapper the helper mirrors drawOptional's
-// shape draw (present/absent/null with the same termination-on-
-// depth-exhaustion semantics); only the present branch forwards the
-// non-empty-map constraint, so absent / null draws are unaffected.
-// When the leaf KindMap is reached, drawMap is invoked with minLen=1
-// (drawMap itself clamps minLen down when wouldExceedDepth forces
-// maxLen=0; termination still beats the non-emptiness preference).
+// drawArmEnsuringMapNonEmpty draws the value for a union arm reached
+// through transparent wrappers (nested KindUnion / KindOptional) from
+// a class-ambiguous outer union. At every transparent wrapper the
+// helper mirrors the corresponding draw (drawOptional's shape split,
+// drawUnion's safe-arm pick) so the bitstream layout stays unchanged
+// from the unconstrained path; only the recursive value draw forwards
+// the non-empty-map constraint. KindMap leaves are drawn via drawMap
+// with minLen=1 — drawMap itself clamps minLen down when
+// wouldExceedDepth forces maxLen=0, so termination still beats the
+// non-emptiness preference. Non-transparent kinds (KindList,
+// KindClassRef, scalars) cannot render as `{}` at the leaf and so
+// don't propagate the constraint — the default branch hands them off
+// to drawValueForType for the standard draw.
 func (c *valueDrawCtx) drawArmEnsuringMapNonEmpty(t *rapid.T, arm FuzzType, label string) FuzzValue {
 	switch arm.Kind {
 	case KindMap:
@@ -568,11 +589,36 @@ func (c *valueDrawCtx) drawArmEnsuringMapNonEmpty(t *rapid.T, arm FuzzType, labe
 			OptionalShape: OptionalPresent,
 			Inner:         &inner,
 		}
+	case KindUnion:
+		if len(arm.Variants) == 0 {
+			t.Fatalf("bamlfuzz: nested union has no variants (label=%s); schema is malformed", label)
+		}
+		safe := make([]int, 0, len(arm.Variants))
+		for i := range arm.Variants {
+			v := arm.Variants[i]
+			if !c.wouldExceedDepth(&v) {
+				safe = append(safe, i)
+			}
+		}
+		if len(safe) == 0 {
+			for i := range arm.Variants {
+				safe = append(safe, i)
+			}
+		}
+		pick := rapid.IntRange(0, len(safe)-1).Draw(t, label+":variant_pick")
+		idx := safe[pick]
+		innerArm := arm.Variants[idx]
+		innerLabel := fmt.Sprintf("%s:variant_%d", label, idx)
+		innerVal := c.drawArmEnsuringMapNonEmpty(t, innerArm, innerLabel)
+		return FuzzValue{
+			Kind:         KindUnion,
+			VariantIndex: idx,
+			Variant:      &innerVal,
+		}
 	default:
-		// Defensive: pickedArmEffectiveKindIsMap pins this helper to
-		// KindMap / KindOptional<...<KindMap>> arms only. Any other
-		// kind here means a caller is misusing the helper; fall back
-		// to the standard draw so the value still type-checks.
+		// Non-transparent leaf kind: cannot render as `{}`, so the
+		// ambient class-ambiguity constraint is a no-op. Hand off to
+		// the standard draw.
 		return c.drawValueForType(t, arm, label)
 	}
 }
