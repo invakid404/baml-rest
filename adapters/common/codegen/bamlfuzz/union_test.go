@@ -1559,6 +1559,83 @@ func TestValueGenMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	})
 }
 
+// fixtureSchemaOptionalMapVsClassSiblingUnion mirrors
+// fixtureSchemaMapVsClassSiblingUnion but the map arm sits under an
+// optional wrapper. The picked-arm dispatch must descend through the
+// optional and apply the non-empty-map constraint at the leaf when the
+// optional draws as present, matching the sibling-side reach helper
+// (which descends through optionals).
+func fixtureSchemaOptionalMapVsClassSiblingUnion() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	mapT := FuzzType{Kind: KindMap, Key: &keyT, Inner: &intT}
+	optMap := FuzzType{Kind: KindOptional, Inner: &mapT}
+	inner := FuzzClass{
+		Name: "Inner",
+		Properties: []FuzzProperty{
+			{Name: "Fuzz_field_0", Type: FuzzType{Kind: KindInt}},
+		},
+	}
+	outer := FuzzClass{
+		Name: "Outer",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					optMap,
+					{Kind: KindClassRef, Ref: "Inner"},
+				},
+			}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{outer, inner},
+		RootClass: "Outer",
+	})
+}
+
+// TestValueGenOptionalMapArmWithClassSiblingNeverEmpty is the
+// regression guard for the picked-arm/sibling-side asymmetry: when a
+// union arm is `optional<map<...>>` and a sibling reaches a class_ref,
+// a present optional must not draw an empty map. An empty `{}` is byte-
+// identical to a null-materialized class instance, which BAML coerces
+// to the class arm — diverging from the walker's recorded choice.
+// The companion direct-arm guard
+// (TestValueGenMapArmWithClassSiblingNeverEmpty) pins the same property
+// for the no-wrapper shape; both must hold for the union resolver's
+// coercion to remain unambiguous.
+func TestValueGenOptionalMapArmWithClassSiblingNeverEmpty(t *testing.T) {
+	schema := fixtureSchemaOptionalMapVsClassSiblingUnion()
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		fv, ok := v.LookupField("f")
+		if !ok {
+			rt.Fatalf("outer instance missing field f")
+		}
+		if fv.Kind != KindUnion || fv.Variant == nil {
+			rt.Fatalf("field f expected union value, got %v", fv.Kind)
+		}
+		if fv.VariantIndex != 0 {
+			return
+		}
+		if fv.Variant.Kind != KindOptional {
+			rt.Fatalf("union arm 0 expected to be an optional value, got %v", fv.Variant.Kind)
+		}
+		if fv.Variant.OptionalShape != OptionalPresent {
+			return
+		}
+		if fv.Variant.Inner == nil {
+			rt.Fatalf("present optional missing Inner")
+		}
+		if fv.Variant.Inner.Kind != KindMap {
+			rt.Fatalf("present optional expected map at leaf, got %v", fv.Variant.Inner.Kind)
+		}
+		if len(fv.Variant.Inner.MapEntries) == 0 {
+			rt.Fatalf("present optional<map> drew empty map — ambiguous with class sibling under BAML coercion")
+		}
+	})
+}
+
 // TestValueGenMapArmWithoutClassSiblingMayBeEmpty pins the fix's
 // targeting: when no sibling reaches a class, the map arm is allowed
 // to draw as empty. Asserted by observing at least one empty-map
@@ -1612,16 +1689,42 @@ func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
 
 // TestValueGenStaticSchemaUnionMapArmInvariant is the wide-net
 // invariant: across StaticSchemaGen, every drawn (schema, value) pair
-// whose union picks a direct map arm with a class-reachable sibling
-// must carry a non-empty map. Backstops the targeted fixture test
-// against future generator paths that could re-introduce the empty-
-// map draw.
+// whose union picks a direct or optional-wrapped map arm with a
+// class-reachable sibling must carry a non-empty map at the leaf when
+// any wrapping optionals drew present. Backstops the targeted fixture
+// tests against future generator paths that could re-introduce the
+// empty-map draw at either the direct or the optional<map> arm shape.
 func TestValueGenStaticSchemaUnionMapArmInvariant(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		schema := StaticSchemaGen().Draw(rt, "schema")
 		value := ValueGen(schema).Draw(rt, "value")
 		walkValueForMapArmAmbiguity(rt, schema.EffectiveRoot(), value, schema)
 	})
+}
+
+// assertPickedArmLeafMapNonEmpty walks a (type, value) pair whose
+// effective leaf type is KindMap, descending through KindOptional
+// wrappers on the value side. At every present optional it recurses;
+// when it reaches KindMap it asserts the entry list is non-empty.
+// Absent/null optional shapes terminate the walk without an assertion
+// (no `{}` is emitted in those cases).
+func assertPickedArmLeafMapNonEmpty(rt *rapid.T, t FuzzType, v FuzzValue) {
+	switch t.Kind {
+	case KindMap:
+		if v.Kind != KindMap {
+			rt.Fatalf("expected map value at leaf, got %v", v.Kind)
+		}
+		if len(v.MapEntries) == 0 {
+			rt.Fatalf("map arm produced empty map with class-reachable sibling (leaf under %d optional wrappers)", 0)
+		}
+	case KindOptional:
+		if v.Kind != KindOptional {
+			rt.Fatalf("expected optional value, got %v", v.Kind)
+		}
+		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
+			assertPickedArmLeafMapNonEmpty(rt, *t.Inner, *v.Inner)
+		}
+	}
 }
 
 func walkValueForMapArmAmbiguity(rt *rapid.T, t FuzzType, v FuzzValue, schema FuzzSchema) {
@@ -1634,13 +1737,8 @@ func walkValueForMapArmAmbiguity(rt *rapid.T, t FuzzType, v FuzzValue, schema Fu
 			return
 		}
 		arm := t.Variants[v.VariantIndex]
-		if arm.Kind == KindMap && unionHasClassReachableSibling(t, v.VariantIndex) {
-			if v.Variant.Kind != KindMap {
-				rt.Fatalf("union picked map arm but value is %v", v.Variant.Kind)
-			}
-			if len(v.Variant.MapEntries) == 0 {
-				rt.Fatalf("map arm produced empty map with class-reachable sibling")
-			}
+		if pickedArmEffectiveKindIsMap(arm) && unionHasClassReachableSibling(t, v.VariantIndex) {
+			assertPickedArmLeafMapNonEmpty(rt, arm, *v.Variant)
 		}
 		walkValueForMapArmAmbiguity(rt, arm, *v.Variant, schema)
 	case KindOptional:

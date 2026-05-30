@@ -476,13 +476,15 @@ func (c *valueDrawCtx) drawValueForType(t *rapid.T, ft FuzzType, label string) F
 // optional/list/map termination); this is a defensive branch the
 // schema generator's depth bounds make unreachable.
 //
-// When the picked arm is a direct KindMap and a sibling arm reaches a
-// class_ref (directly or through nested unions/optional wrappers), the
-// map is drawn with len >= 1. An empty map renders as the wire bytes
-// `{}`, which BAML's union resolver coerces to the class arm with
-// null-materialized fields — diverging from the walker's prediction.
-// Forcing the map to carry at least one entry keeps the walker's
-// recorded arm choice the one BAML lands on.
+// When the picked arm's effective kind (after unwrapping any
+// KindOptional wrappers) is KindMap and a sibling arm reaches a
+// class_ref (directly or through nested unions/optional wrappers), any
+// map drawn at the leaf carries len >= 1. An empty map renders as the
+// wire bytes `{}`, which BAML's union resolver coerces to the class arm
+// with null-materialized fields — diverging from the walker's
+// prediction. Forcing the map to carry at least one entry keeps the
+// walker's recorded arm choice the one BAML lands on, including for
+// the optional<map> shape where the optional draws as present.
 func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValue {
 	if len(ft.Variants) == 0 {
 		t.Fatalf("bamlfuzz: union has no variants (label=%s); schema is malformed", label)
@@ -507,8 +509,8 @@ func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValu
 	arm := ft.Variants[idx]
 	armLabel := fmt.Sprintf("%s:variant_%d", label, idx)
 	var inner FuzzValue
-	if arm.Kind == KindMap && unionHasClassReachableSibling(ft, idx) {
-		inner = c.drawMap(t, arm, 1, armLabel)
+	if pickedArmEffectiveKindIsMap(arm) && unionHasClassReachableSibling(ft, idx) {
+		inner = c.drawArmEnsuringMapNonEmpty(t, arm, armLabel)
 	} else {
 		inner = c.drawValueForType(t, arm, armLabel)
 	}
@@ -516,6 +518,62 @@ func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValu
 		Kind:         KindUnion,
 		VariantIndex: idx,
 		Variant:      &inner,
+	}
+}
+
+// pickedArmEffectiveKindIsMap reports whether `arm` is KindMap directly
+// or resolves to KindMap after stripping nested KindOptional wrappers.
+// The picked-arm dispatch mirrors the sibling-side reach helper
+// (typeReachesClassRef descends through optionals), so a union shape
+// like `optional<map<string, T>> | class_ref X` triggers the
+// non-empty-map constraint when the optional draws as present — the
+// asymmetric direct-KindMap check skipped these and emitted `{}` at
+// the leaf, which BAML coerces to the class sibling.
+func pickedArmEffectiveKindIsMap(arm FuzzType) bool {
+	cur := arm
+	for cur.Kind == KindOptional && cur.Inner != nil {
+		cur = *cur.Inner
+	}
+	return cur.Kind == KindMap
+}
+
+// drawArmEnsuringMapNonEmpty draws the value for a union arm whose
+// effective kind (after unwrapping KindOptional wrappers) is KindMap.
+// At every optional wrapper the helper mirrors drawOptional's
+// shape draw (present/absent/null with the same termination-on-
+// depth-exhaustion semantics); only the present branch forwards the
+// non-empty-map constraint, so absent / null draws are unaffected.
+// When the leaf KindMap is reached, drawMap is invoked with minLen=1
+// (drawMap itself clamps minLen down when wouldExceedDepth forces
+// maxLen=0; termination still beats the non-emptiness preference).
+func (c *valueDrawCtx) drawArmEnsuringMapNonEmpty(t *rapid.T, arm FuzzType, label string) FuzzValue {
+	switch arm.Kind {
+	case KindMap:
+		return c.drawMap(t, arm, 1, label)
+	case KindOptional:
+		if c.wouldExceedDepth(arm.Inner) {
+			shape := OptionalAbsent
+			if rapid.Bool().Draw(t, label+":term_shape") {
+				shape = OptionalNull
+			}
+			return FuzzValue{Kind: KindOptional, OptionalShape: shape}
+		}
+		shape := drawOptionalShape(t, label)
+		if shape != OptionalPresent {
+			return FuzzValue{Kind: KindOptional, OptionalShape: shape}
+		}
+		inner := c.drawArmEnsuringMapNonEmpty(t, *arm.Inner, label+":opt_present")
+		return FuzzValue{
+			Kind:          KindOptional,
+			OptionalShape: OptionalPresent,
+			Inner:         &inner,
+		}
+	default:
+		// Defensive: pickedArmEffectiveKindIsMap pins this helper to
+		// KindMap / KindOptional<...<KindMap>> arms only. Any other
+		// kind here means a caller is misusing the helper; fall back
+		// to the standard draw so the value still type-checks.
+		return c.drawValueForType(t, arm, label)
 	}
 }
 
