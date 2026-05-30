@@ -2193,3 +2193,120 @@ func walkValueForMapArmAmbiguity(rt *rapid.T, t FuzzType, v FuzzValue, schema Fu
 		}
 	}
 }
+
+// fixtureSchemaNestedUnionAmbientClampClassSibling builds the nested
+// analogue of fixtureSchemaRecursiveUnionMapClampClassSibling: the map
+// arm Codex's r4 finding names lives inside an INNER union whose own
+// arms reach no class, while the OUTER union holds the class_ref
+// sibling. `A → union[ union[map<string,A>, list<A>], class_ref B ]`,
+// `B → optional<class_ref A>`.
+//
+// Entering A twice exhausts its per-class budget. At the depth-2 A the
+// outer union's both arms sit over the cap (the inner-union arm reaches
+// A through its map/list, the class_ref B arm reaches A through B's
+// optional), so the safe-arm set empties and the outer falls back —
+// then prunes to the class-ambiguity-safe set and may still pick the
+// inner-union arm, whose list sibling keeps it off the forced-empty
+// list. Descending into that inner union, the local class check is
+// false: its only arms are map<string,A> and list<A>, neither a direct
+// class_ref. Before threading the ambient flag the nested
+// unionDrawCandidates therefore skipped the prune and could pick the
+// over-cap map arm, where drawMap clamps minLen=1 down to 0 and emits
+// `{}` — byte-identical to a null-materialized A and coerced by BAML to
+// the outer's class_ref B sibling. With the ambient flag on, the
+// nested prune drops the forced map arm and the pick lands on list<A>,
+// which clamps to `[]` (unambiguous) at the cap.
+func fixtureSchemaNestedUnionAmbientClampClassSibling() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	mapValT := FuzzType{Kind: KindClassRef, Ref: "A"}
+	listValT := FuzzType{Kind: KindClassRef, Ref: "A"}
+	innerUnion := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &mapValT},
+			{Kind: KindList, Inner: &listValT},
+		},
+	}
+	a := FuzzClass{
+		Name: "A",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					innerUnion,
+					{Kind: KindClassRef, Ref: "B"},
+				},
+			}},
+		},
+	}
+	bOptInner := FuzzType{Kind: KindClassRef, Ref: "A"}
+	b := FuzzClass{
+		Name: "B",
+		Properties: []FuzzProperty{
+			{Name: "g", Type: FuzzType{Kind: KindOptional, Inner: &bOptInner}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{a, b},
+		RootClass: "A",
+	})
+}
+
+// nestedAmbientFallbackExercised reports whether the draw populated the
+// depth-1 inner-union map arm: the outer union picked its inner-union
+// arm (index 0) and the inner union picked its map arm (index 0) with
+// at least one entry. Each entry is a depth-2 A instance whose own
+// outer union sits over the recursion cap on both arms — the fallback
+// path the regression guards. A non-empty depth-1 inner map therefore
+// proves the depth-2 nested fallback was reached, so the leaf assertion
+// below actually covered it. The sentinel holds on both the pre-fix
+// (clamped `{}` at depth 2) and post-fix (list arm at depth 2) runs:
+// the depth-1 map is never clamped, so it stays the stable coverage
+// proof.
+func nestedAmbientFallbackExercised(v FuzzValue) bool {
+	fv, ok := v.LookupField("f")
+	if !ok || fv.Kind != KindUnion || fv.Variant == nil {
+		return false
+	}
+	if fv.VariantIndex != 0 {
+		return false
+	}
+	inner := fv.Variant
+	if inner.Kind != KindUnion || inner.Variant == nil {
+		return false
+	}
+	if inner.VariantIndex != 0 || inner.Variant.Kind != KindMap {
+		return false
+	}
+	return len(inner.Variant.MapEntries) > 0
+}
+
+// TestValueGenNestedUnionAmbientConstraintNeverEmpty is the
+// deterministic regression for the nested-union ensure path Codex's r4
+// review found. drawArmEnsuringMapNonEmpty reuses unionDrawCandidates
+// for nested unions; before the ambient flag that helper pruned
+// forced-empty map arms only when the nested union had its own
+// class-reachable arm. The shape here
+// (`union[ union[map<string,A>, list<A>], class_ref B ]` at the cap)
+// has the class sibling on the OUTER union, so the nested prune was
+// skipped and the over-cap map arm rendered an ambiguous `{}`. The
+// ambient flag carries the outer union's class-reachability into the
+// nested candidate filter, so the forced map arm is dropped and the
+// pick lands on the list arm. The wide-net
+// TestValueGenStaticSchemaUnionMapArmInvariant catches this shape
+// transitively; this fixture pins it directly.
+func TestValueGenNestedUnionAmbientConstraintNeverEmpty(t *testing.T) {
+	defer raiseRapidChecksFloor(t, 5000)()
+	schema := fixtureSchemaNestedUnionAmbientClampClassSibling()
+	var exercised bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		if nestedAmbientFallbackExercised(v) {
+			exercised = true
+		}
+		walkValueForMapArmAmbiguity(rt, schema.EffectiveRoot(), v, schema)
+	})
+	if !exercised {
+		t.Fatalf("rapid budget never reached the depth-clamped nested fallback union — coverage sentinel never fired; regression unverified")
+	}
+}

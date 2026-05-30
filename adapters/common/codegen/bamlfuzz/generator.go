@@ -491,7 +491,7 @@ func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValu
 	if len(ft.Variants) == 0 {
 		t.Fatalf("bamlfuzz: union has no variants (label=%s); schema is malformed", label)
 	}
-	candidates := c.unionDrawCandidates(ft)
+	candidates := c.unionDrawCandidates(ft, false)
 	pick := rapid.IntRange(0, len(candidates)-1).Draw(t, label+":variant_pick")
 	idx := candidates[pick]
 	arm := ft.Variants[idx]
@@ -518,17 +518,30 @@ func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValu
 // still enforces optional/list/map termination at the next wrapper).
 //
 // The second filter closes the recursion-cap back-door Codex found:
-// when the base set falls back to over-cap arms and the union has a
-// class-reachable arm, a map-reaching arm is forced to render the
-// depth-clamped empty map `{}` (drawMap clamps minLen=1 to 0 once
-// wouldExceedDepth holds). That `{}` is byte-identical to a null-
-// materialized class instance, which BAML's resolver coerces to the
-// class arm — diverging from the walker's recorded map choice. Such
-// arms are dropped so the pick lands on a sibling that resolves
-// unambiguously (a class_ref or scalar arm). The filter is a no-op
-// on the non-fallback base set, where over-cap map arms are already
+// when the base set falls back to over-cap arms and a class is
+// reachable, a map-reaching arm is forced to render the depth-clamped
+// empty map `{}` (drawMap clamps minLen=1 to 0 once wouldExceedDepth
+// holds). That `{}` is byte-identical to a null-materialized class
+// instance, which BAML's resolver coerces to the class arm —
+// diverging from the walker's recorded map choice. Such arms are
+// dropped so the pick lands on a sibling that resolves unambiguously
+// (a class_ref or scalar arm). The filter is a no-op on the
+// non-fallback base set, where over-cap map arms are already
 // excluded, and is skipped if it would empty the candidate set.
-func (c *valueDrawCtx) unionDrawCandidates(ft FuzzType) []int {
+//
+// classReachable folds two sources of that ambiguity. The LOCAL one
+// this union owns — a class_ref among its own arms — is what gates
+// pruning at the top level. The AMBIENT one is established by an outer
+// union before the recursion descends here: drawArmEnsuringMapNonEmpty
+// only recurses into a nested union after the outer union already
+// proved a class-reachable sibling, so a depth-clamped `{}` at this
+// nested leaf is still ambiguous with that outer class even when the
+// nested union carries no class arm of its own. Passing
+// ambientHasClassSibling=true from that path keeps the prune on for
+// the nested union, independent of its local arms; drawUnion enters at
+// the top level with ambientHasClassSibling=false, so the local check
+// alone decides and the existing top-level behaviour is unchanged.
+func (c *valueDrawCtx) unionDrawCandidates(ft FuzzType, ambientHasClassSibling bool) []int {
 	base := make([]int, 0, len(ft.Variants))
 	for i := range ft.Variants {
 		v := ft.Variants[i]
@@ -541,7 +554,8 @@ func (c *valueDrawCtx) unionDrawCandidates(ft FuzzType) []int {
 			base = append(base, i)
 		}
 	}
-	if !unionHasClassReachableArm(ft) {
+	classReachable := ambientHasClassSibling || unionHasClassReachableArm(ft)
+	if !classReachable {
 		return base
 	}
 	pruned := make([]int, 0, len(base))
@@ -678,7 +692,11 @@ func (c *valueDrawCtx) drawArmEnsuringMapNonEmpty(t *rapid.T, arm FuzzType, labe
 		if len(arm.Variants) == 0 {
 			t.Fatalf("bamlfuzz: nested union has no variants (label=%s); schema is malformed", label)
 		}
-		candidates := c.unionDrawCandidates(arm)
+		// ambientHasClassSibling=true: drawArmEnsuringMapNonEmpty only
+		// reaches this nested union after an outer union proved a
+		// class-reachable sibling, so the prune must run here whether or
+		// not this nested union owns a class arm.
+		candidates := c.unionDrawCandidates(arm, true)
 		pick := rapid.IntRange(0, len(candidates)-1).Draw(t, label+":variant_pick")
 		idx := candidates[pick]
 		innerArm := arm.Variants[idx]
