@@ -458,17 +458,20 @@ func checkStreamFinalOrder(t *testing.T, c bamlfuzz.OracleCase, envelope *bamlfu
 }
 
 // checkSingleCleanFinal applies assertion 5 to one leg's event-kind
-// sequence: exactly one final, no error event, no reset. Returns whether
-// a reset was seen so the caller can aggregate SawReset across legs. A
-// reset is a finding (not a silent pass) because the rapid generator's
-// mock scenarios are deterministic single-attempt, so the orchestrator
-// never retries.
+// sequence: exactly one final, no error event, no reset, and the final
+// is terminal (the last non-metadata event). Returns whether a reset was
+// seen so the caller can aggregate SawReset across legs. A reset is a
+// finding (not a silent pass) because the rapid generator's mock
+// scenarios are deterministic single-attempt, so the orchestrator never
+// retries.
 func checkSingleCleanFinal(leg string, kinds []string, failures *[]string) (sawReset bool) {
 	finals := 0
-	for _, k := range kinds {
+	finalIdx := -1
+	for i, k := range kinds {
 		switch k {
 		case "final":
 			finals++
+			finalIdx = i
 		case "reset":
 			sawReset = true
 		case "error":
@@ -476,10 +479,23 @@ func checkSingleCleanFinal(leg string, kinds []string, failures *[]string) (sawR
 		}
 	}
 	if finals != 1 {
-		*failures = append(*failures, fmt.Sprintf("%s: expected exactly one final frame, saw %d", leg, finals))
+		*failures = append(*failures, fmt.Sprintf("%s: expected exactly one final frame, saw %d (kinds=%v)", leg, finals, kinds))
 	}
 	if sawReset {
 		*failures = append(*failures, fmt.Sprintf("%s: unexpected reset frame (deterministic single-attempt mock)", leg))
+	}
+	// With exactly one final, require it to be terminal: no non-metadata
+	// event may follow it. A sequence like [partial, final, partial] has
+	// one final and no error/reset but did not terminate at the final
+	// frame, which is a spec violation.
+	if finals == 1 {
+		for i := finalIdx + 1; i < len(kinds); i++ {
+			if kinds[i] == "metadata" {
+				continue
+			}
+			*failures = append(*failures, fmt.Sprintf("%s: non-metadata event after final at index %d (kind=%s, kinds=%v)", leg, i, kinds[i], kinds))
+			break
+		}
 	}
 	return sawReset
 }

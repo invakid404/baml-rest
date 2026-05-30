@@ -90,9 +90,7 @@ func StreamResponse(ctx context.Context, w *bufio.Writer, scenario *Scenario, pr
 		// Snap the boundary forward to the next rune start: a real LLM SSE
 		// server never emits a frame that splits a multi-byte UTF-8 rune,
 		// and the stream transport rejects invalid-UTF-8 frames.
-		for end < len(content) && !utf8.RuneStart(content[end]) {
-			end++
-		}
+		end = snapChunkEndToRuneStart(content, end)
 		chunk := content[i:end]
 
 		// Check for failure injection
@@ -199,11 +197,15 @@ func streamAnthropicBlock(
 		}
 		*deltaIndex++
 	} else {
-		for i := 0; i < len(content); i += chunkSize {
+		// Advance by the snapped `end` (not a fixed stride) so a multi-byte
+		// rune is never split across two deltas — same contract as the
+		// default StreamResponse path.
+		for i := 0; i < len(content); {
 			end := i + chunkSize
 			if end > len(content) {
 				end = len(content)
 			}
+			end = snapChunkEndToRuneStart(content, end)
 			chunk := content[i:end]
 
 			if scenario.FailAfter > 0 && *deltaIndex >= scenario.FailAfter {
@@ -231,6 +233,8 @@ func streamAnthropicBlock(
 					}
 				}
 			}
+
+			i = end
 		}
 	}
 
@@ -238,6 +242,17 @@ func streamAnthropicBlock(
 		return err
 	}
 	return w.Flush()
+}
+
+// snapChunkEndToRuneStart advances end forward until it lands on a UTF-8
+// rune boundary (or the end of content), so a chunk never splits a
+// multi-byte rune. A real LLM SSE server never emits a frame that splits
+// a rune, and the stream transport rejects invalid-UTF-8 frames.
+func snapChunkEndToRuneStart(content string, end int) int {
+	for end < len(content) && !utf8.RuneStart(content[end]) {
+		end++
+	}
+	return end
 }
 
 func handleFailure(ctx context.Context, scenario *Scenario) error {
