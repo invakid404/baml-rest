@@ -230,8 +230,8 @@ jobs:
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
             -run='^TestBamlfuzz(Static|Dynamic)Oracle$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)$' ./integration/...
 
-      - name: Run bamlfuzz package stress invariants (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
-        if: ${{ env.MODE == 'rapid' }}
+      - name: Run bamlfuzz package stress invariants
+        if: ${{ env.MODE == 'rapid' && matrix.baml-version == '0.222.0' && matrix.unary-server == false }}
         # raiseRapidChecksFloor (adapters/common/codegen/bamlfuzz/
         # union_test.go) is opt-in via BAMLFUZZ_RAPID_STRESS and lives in
         # the bamlfuzz PACKAGE, not ./integration — so the rapid-mode
@@ -243,11 +243,16 @@ jobs:
         # -count=1, so the floor does not compound the way it would under
         # the unit-tests CI's `-race -count=100` (which is exactly why
         # that job leaves this env unset).
+        #
+        # Runs on one representative rapid cell — the bamlfuzz package
+        # tests are pure-Go and not BAML-version-dependent (they never
+        # read BAML_VERSION or UNARY_SERVER), so the matrix fan-out would
+        # just re-run identical work.
         env:
           BAMLFUZZ_RAPID_STRESS: "1"
         working-directory: adapters/common
         run: |
-          GOWORK=off go test -count=1 ./codegen/bamlfuzz/...
+          GOWORK=off go test -count=1 -timeout 80m ./codegen/bamlfuzz/...
 
       - name: Upload corpus for next nightly
         if: ${{ always() && env.MODE == 'fuzz' }}

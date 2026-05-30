@@ -2184,12 +2184,15 @@ func walkValueForMapArmAmbiguity(rt *rapid.T, t FuzzType, v FuzzValue, schema Fu
 		}
 		walkValueForMapArmAmbiguity(rt, arm, *v.Variant, schema)
 	case KindOptional:
+		if v.Kind != KindOptional {
+			rt.Fatalf("walker: optional type expected optional value, got %v", v.Kind)
+		}
+		if t.Inner == nil {
+			rt.Fatalf("walker: optional type missing Inner")
+		}
 		if v.OptionalShape == OptionalPresent {
 			if v.Inner == nil {
 				rt.Fatalf("walker: present optional value missing Inner")
-			}
-			if t.Inner == nil {
-				rt.Fatalf("walker: optional type missing Inner")
 			}
 			walkValueForMapArmAmbiguity(rt, *t.Inner, *v.Inner, schema)
 		}
