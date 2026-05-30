@@ -74,17 +74,20 @@ jobs:
         # own corpus, so an adapter-specific failure mode persists in
         # the corpus that triggered it; newer-version draws cannot
         # crowd it out across cells.
+        env:
+          MODE: ${{ github.event.inputs.mode || 'fuzz' }}
         run: |
-          matrix=$(jq -c '{
+          matrix=$(jq --arg mode "$MODE" -c '{
             "baml-version": ([.pinned[], .latest] | unique),
             "unary-server": [false, true],
-            "target": [
-              "FuzzBamlfuzzStatic",
-              "FuzzBamlfuzzDynamic",
-              "FuzzBamlfuzzInvalidDynamic",
-              "FuzzBamlfuzzInvalidJSONCoercion",
-              "FuzzBamlfuzzStreaming"
-            ]
+            "target": (if $mode == "rapid"
+                       then ["FuzzBamlfuzzStatic"]
+                       else ["FuzzBamlfuzzStatic",
+                             "FuzzBamlfuzzDynamic",
+                             "FuzzBamlfuzzInvalidDynamic",
+                             "FuzzBamlfuzzInvalidJSONCoercion",
+                             "FuzzBamlfuzzStreaming"]
+                       end)
           }' integration/baml_versions.json)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
@@ -93,15 +96,15 @@ jobs:
     runs-on: ubuntu-latest
     # Each matrix cell runs ONE fuzz target via the `target` axis.
     # Budget per cell:
-    #   - setup: 1 × ~10m TestMain (Docker env boot)
+    #   - setup: 1 × ~10m TestMain (Docker env boot, runs BEFORE m.Run())
     #   - fuzz:  1 × FUZZTIME (default 15m; Go hard-caps at -timeout 80m)
     #   - corpus restore + Go install + safety margin = ~5m
     #   - upload corpus + sticky comment + post steps = ~5m
-    #   Total at the FUZZTIME default: ~30m.
-    # The 90m cap sits above Go's -timeout 80m so Go's timeout fires
-    # first on a hang, leaving room for post-steps (corpus upload,
-    # sticky issue comment) to complete before Actions kills the runner.
-    timeout-minutes: 90
+    #   Worst case: ~10m setup + 80m Go timeout + ~5m post = ~95m.
+    # The 105m cap sits above that so Go's -timeout fires first on a
+    # hang, leaving room for post-steps (corpus upload, sticky issue
+    # comment) to complete before Actions kills the runner.
+    timeout-minutes: 105
     permissions:
       contents: read
       actions: read
