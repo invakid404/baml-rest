@@ -1411,3 +1411,270 @@ func valueDumpJSON(v FuzzValue) string {
 	}
 	return string(b)
 }
+
+// --- Regression coverage for issue #349: union-arm coercion ambiguity.
+//
+// An empty map `{}` rendered for a union's direct map arm is byte-
+// identical to an empty/null-materialized class instance, and BAML's
+// union resolver coerces such `{}` to the class arm whenever a class
+// is reachable through a sibling arm — diverging from the walker's
+// prediction. The generator therefore forbids a zero-length map for
+// such direct map arms.
+
+func TestUnionHasClassReachableSibling_Direct(t *testing.T) {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			{Kind: KindClassRef, Ref: "X"},
+		},
+	}
+	if !unionHasClassReachableSibling(uni, 0) {
+		t.Fatalf("direct class_ref sibling not detected")
+	}
+	if unionHasClassReachableSibling(uni, 1) {
+		t.Fatalf("excluded sibling falsely reported as class-reachable")
+	}
+}
+
+func TestUnionHasClassReachableSibling_NestedUnion(t *testing.T) {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	inner := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindString},
+			{Kind: KindClassRef, Ref: "X"},
+		},
+	}
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			inner,
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+		},
+	}
+	if !unionHasClassReachableSibling(uni, 1) {
+		t.Fatalf("class_ref through nested union not detected")
+	}
+}
+
+func TestUnionHasClassReachableSibling_OptionalWrap(t *testing.T) {
+	cls := FuzzType{Kind: KindClassRef, Ref: "X"}
+	opt := FuzzType{Kind: KindOptional, Inner: &cls}
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			opt,
+		},
+	}
+	if !unionHasClassReachableSibling(uni, 0) {
+		t.Fatalf("class_ref through optional wrapper not detected")
+	}
+}
+
+func TestUnionHasClassReachableSibling_NoClass(t *testing.T) {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			{Kind: KindString},
+			{Kind: KindInt},
+		},
+	}
+	if unionHasClassReachableSibling(uni, 0) {
+		t.Fatalf("class-free union falsely reported as class-reachable")
+	}
+}
+
+func TestUnionHasClassReachableSibling_NonUnionInput(t *testing.T) {
+	if unionHasClassReachableSibling(FuzzType{Kind: KindMap}, 0) {
+		t.Fatalf("non-union input must report false")
+	}
+}
+
+// fixtureSchemaMapVsClassSiblingUnion is the minimal reproduction of
+// the envelope shape: a class whose single field is a union with a
+// direct map arm and a class_ref arm. Used by the regression rapid
+// check below.
+func fixtureSchemaMapVsClassSiblingUnion() FuzzSchema {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	inner := FuzzClass{
+		Name: "Inner",
+		Properties: []FuzzProperty{
+			{Name: "Fuzz_field_0", Type: FuzzType{Kind: KindInt}},
+		},
+	}
+	outer := FuzzClass{
+		Name: "Outer",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					{Kind: KindMap, Key: &keyT, Inner: &intT},
+					{Kind: KindClassRef, Ref: "Inner"},
+				},
+			}},
+		},
+	}
+	return AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{outer, inner},
+		RootClass: "Outer",
+	})
+}
+
+// TestValueGenMapArmWithClassSiblingNeverEmpty is the durable
+// regression guard. With a union whose map arm has a class-reachable
+// sibling, ValueGen must never produce an empty map for the picked
+// map arm — otherwise the walker's Expected (`{}`) diverges from BAML
+// (which coerces `{}` to the class arm with null-filled fields).
+func TestValueGenMapArmWithClassSiblingNeverEmpty(t *testing.T) {
+	schema := fixtureSchemaMapVsClassSiblingUnion()
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		fv, ok := v.LookupField("f")
+		if !ok {
+			rt.Fatalf("outer instance missing field f")
+		}
+		if fv.Kind != KindUnion || fv.Variant == nil {
+			rt.Fatalf("field f expected union value, got %v", fv.Kind)
+		}
+		if fv.VariantIndex != 0 {
+			return
+		}
+		if fv.Variant.Kind != KindMap {
+			rt.Fatalf("union arm 0 expected to be a map value, got %v", fv.Variant.Kind)
+		}
+		if len(fv.Variant.MapEntries) == 0 {
+			rt.Fatalf("map arm produced an empty map — ambiguous with class sibling under BAML coercion")
+		}
+	})
+}
+
+// TestValueGenMapArmWithoutClassSiblingMayBeEmpty pins the fix's
+// targeting: when no sibling reaches a class, the map arm is allowed
+// to draw as empty. Asserted by observing at least one empty-map
+// draw across the rapid sample budget. Without this guard the fix
+// could over-trigger and shift the corpus more than needed.
+func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
+	keyT := FuzzType{Kind: KindString}
+	intT := FuzzType{Kind: KindInt}
+	outer := FuzzClass{
+		Name: "Outer",
+		Properties: []FuzzProperty{
+			{Name: "f", Type: FuzzType{
+				Kind: KindUnion,
+				Variants: []FuzzType{
+					{Kind: KindMap, Key: &keyT, Inner: &intT},
+					{Kind: KindString},
+					{Kind: KindInt},
+				},
+			}},
+		},
+	}
+	schema := AnalyzeGraph(FuzzSchema{
+		Classes:   []FuzzClass{outer},
+		RootClass: "Outer",
+	})
+	var sawEmpty, sawMapPick bool
+	rapid.Check(t, func(rt *rapid.T) {
+		v := ValueGen(schema).Draw(rt, "v")
+		fv, ok := v.LookupField("f")
+		if !ok {
+			rt.Fatalf("outer instance missing field f")
+		}
+		if fv.Kind != KindUnion || fv.Variant == nil {
+			rt.Fatalf("field f expected union value, got %v", fv.Kind)
+		}
+		if fv.VariantIndex != 0 {
+			return
+		}
+		sawMapPick = true
+		if len(fv.Variant.MapEntries) == 0 {
+			sawEmpty = true
+		}
+	})
+	if !sawMapPick {
+		t.Skip("rapid budget did not pick the map arm — sample-size flake; rerun")
+	}
+	if !sawEmpty {
+		t.Fatalf("empty-map draw never observed for class-free sibling union — fix is over-triggering")
+	}
+}
+
+// TestValueGenStaticSchemaUnionMapArmInvariant is the wide-net
+// invariant: across StaticSchemaGen, every drawn (schema, value) pair
+// whose union picks a direct map arm with a class-reachable sibling
+// must carry a non-empty map. Backstops the targeted fixture test
+// against future generator paths that could re-introduce the empty-
+// map draw.
+func TestValueGenStaticSchemaUnionMapArmInvariant(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		schema := StaticSchemaGen().Draw(rt, "schema")
+		value := ValueGen(schema).Draw(rt, "value")
+		walkValueForMapArmAmbiguity(rt, schema.EffectiveRoot(), value, schema)
+	})
+}
+
+func walkValueForMapArmAmbiguity(rt *rapid.T, t FuzzType, v FuzzValue, schema FuzzSchema) {
+	switch t.Kind {
+	case KindUnion:
+		if v.Kind != KindUnion || v.Variant == nil {
+			return
+		}
+		if v.VariantIndex < 0 || v.VariantIndex >= len(t.Variants) {
+			return
+		}
+		arm := t.Variants[v.VariantIndex]
+		if arm.Kind == KindMap && unionHasClassReachableSibling(t, v.VariantIndex) {
+			if v.Variant.Kind != KindMap {
+				rt.Fatalf("union picked map arm but value is %v", v.Variant.Kind)
+			}
+			if len(v.Variant.MapEntries) == 0 {
+				rt.Fatalf("map arm produced empty map with class-reachable sibling")
+			}
+		}
+		walkValueForMapArmAmbiguity(rt, arm, *v.Variant, schema)
+	case KindOptional:
+		if v.OptionalShape == OptionalPresent && v.Inner != nil && t.Inner != nil {
+			walkValueForMapArmAmbiguity(rt, *t.Inner, *v.Inner, schema)
+		}
+	case KindList:
+		if t.Inner == nil {
+			return
+		}
+		for _, item := range v.Items {
+			walkValueForMapArmAmbiguity(rt, *t.Inner, item, schema)
+		}
+	case KindMap:
+		if t.Inner == nil {
+			return
+		}
+		for _, e := range v.MapEntries {
+			walkValueForMapArmAmbiguity(rt, *t.Inner, e.Value, schema)
+		}
+	case KindClassRef:
+		if v.Kind != KindClassRef {
+			return
+		}
+		cls, ok := schema.FindClass(v.ClassName)
+		if !ok {
+			return
+		}
+		for _, prop := range cls.Properties {
+			fv, ok := v.LookupField(prop.Name)
+			if !ok {
+				continue
+			}
+			walkValueForMapArmAmbiguity(rt, prop.Type, fv, schema)
+		}
+	}
+}

@@ -452,7 +452,7 @@ func (c *valueDrawCtx) drawValueForType(t *rapid.T, ft FuzzType, label string) F
 	case KindList:
 		return c.drawList(t, ft, label)
 	case KindMap:
-		return c.drawMap(t, ft, label)
+		return c.drawMap(t, ft, 0, label)
 	case KindClassRef:
 		// Required class ref: if recursion budget for the target
 		// is exhausted, this shape is unreachable from the
@@ -475,6 +475,14 @@ func (c *valueDrawCtx) drawValueForType(t *rapid.T, ft FuzzType, label string) F
 // the helper falls back to any arm (the inner draw still enforces
 // optional/list/map termination); this is a defensive branch the
 // schema generator's depth bounds make unreachable.
+//
+// When the picked arm is a direct KindMap and a sibling arm reaches a
+// class_ref (directly or through nested unions/optional wrappers), the
+// map is drawn with len >= 1. An empty map renders as the wire bytes
+// `{}`, which BAML's union resolver coerces to the class arm with
+// null-materialized fields — diverging from the walker's prediction.
+// Forcing the map to carry at least one entry keeps the walker's
+// recorded arm choice the one BAML lands on.
 func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValue {
 	if len(ft.Variants) == 0 {
 		t.Fatalf("bamlfuzz: union has no variants (label=%s); schema is malformed", label)
@@ -496,12 +504,66 @@ func (c *valueDrawCtx) drawUnion(t *rapid.T, ft FuzzType, label string) FuzzValu
 	}
 	pick := rapid.IntRange(0, len(safe)-1).Draw(t, label+":variant_pick")
 	idx := safe[pick]
-	inner := c.drawValueForType(t, ft.Variants[idx], fmt.Sprintf("%s:variant_%d", label, idx))
+	arm := ft.Variants[idx]
+	armLabel := fmt.Sprintf("%s:variant_%d", label, idx)
+	var inner FuzzValue
+	if arm.Kind == KindMap && unionHasClassReachableSibling(ft, idx) {
+		inner = c.drawMap(t, arm, 1, armLabel)
+	} else {
+		inner = c.drawValueForType(t, arm, armLabel)
+	}
 	return FuzzValue{
 		Kind:         KindUnion,
 		VariantIndex: idx,
 		Variant:      &inner,
 	}
+}
+
+// unionHasClassReachableSibling reports whether any variant of `union`
+// at an index other than `excludeIdx` is, or reaches via nested unions
+// and optional wrappers, a KindClassRef. The check exists so the
+// value generator can avoid producing an empty map `{}` for a union's
+// direct map arm when a class is reachable through a sibling: an
+// empty `{}` is byte-identical to an empty class instance, and BAML's
+// union resolver prefers the class — null-materializing its declared
+// fields — over the empty map. Recursion is bounded by MaxTypeDepth +
+// 1 so a malformed cyclic union literal cannot loop the walk.
+func unionHasClassReachableSibling(union FuzzType, excludeIdx int) bool {
+	if union.Kind != KindUnion {
+		return false
+	}
+	for i, v := range union.Variants {
+		if i == excludeIdx {
+			continue
+		}
+		if typeReachesClassRef(v, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func typeReachesClassRef(t FuzzType, depth int) bool {
+	if depth > MaxTypeDepth {
+		return false
+	}
+	switch t.Kind {
+	case KindClassRef:
+		return true
+	case KindOptional:
+		if t.Inner == nil {
+			return false
+		}
+		return typeReachesClassRef(*t.Inner, depth+1)
+	case KindUnion:
+		for _, v := range t.Variants {
+			if typeReachesClassRef(v, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func (c *valueDrawCtx) drawOptional(t *rapid.T, ft FuzzType, label string) FuzzValue {
@@ -557,12 +619,21 @@ func (c *valueDrawCtx) drawList(t *rapid.T, ft FuzzType, label string) FuzzValue
 	return FuzzValue{Kind: KindList, Items: items}
 }
 
-func (c *valueDrawCtx) drawMap(t *rapid.T, ft FuzzType, label string) FuzzValue {
+// drawMap draws a KindMap value with length in [minLen, MaxMapLen].
+// When recursion budget is exhausted for the inner type the cap drops
+// to 0 and a minLen > 0 is clamped down with it — termination beats
+// the non-emptiness preference. Callers that want the standard "may
+// be empty" behaviour pass minLen = 0; the union-ambiguity branch in
+// drawUnion passes minLen = 1.
+func (c *valueDrawCtx) drawMap(t *rapid.T, ft FuzzType, minLen int, label string) FuzzValue {
 	maxLen := MaxMapLen
 	if c.wouldExceedDepth(ft.Inner) {
 		maxLen = 0
 	}
-	length := rapid.IntRange(0, maxLen).Draw(t, label+":map_len")
+	if minLen > maxLen {
+		minLen = maxLen
+	}
+	length := rapid.IntRange(minLen, maxLen).Draw(t, label+":map_len")
 	used := make(map[string]struct{}, length)
 	entries := make([]FuzzMapEntry, 0, length)
 	for i := 0; i < length; i++ {
