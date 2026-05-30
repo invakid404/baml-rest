@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -1961,7 +1962,7 @@ func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
 		}
 	})
 	if !sawMapPick {
-		t.Skip("rapid budget did not pick the map arm — sample-size flake; rerun")
+		t.Fatalf("rapid budget never picked the map arm — targeting guard never exercised; regression unverified")
 	}
 	if !sawEmpty {
 		t.Fatalf("empty-map draw never observed for class-free sibling union — fix is over-triggering")
@@ -2055,8 +2056,19 @@ func TestValueGenRecursiveFallbackMapArmWithClassSiblingNeverEmpty(t *testing.T)
 // the floor only raises the default. Package tests are sequential
 // (none call t.Parallel), so the global flag mutation is safe across
 // the test's lifetime.
+//
+// The floor is opt-in via BAMLFUZZ_RAPID_STRESS=1. By default it is a
+// no-op so the package runs at rapid's standard budget; the default
+// unit-tests CI job invokes `go test -race -count=100`, where a high
+// floor compounds across the 100 iterations and the race instrument
+// into a multi-minute-per-test cost that blows the package timeout.
+// The nightly stress job sets BAMLFUZZ_RAPID_STRESS=1 to exercise the
+// higher budget that surfaced the recursion-cap regression.
 func raiseRapidChecksFloor(t *testing.T, floor int) func() {
 	t.Helper()
+	if os.Getenv("BAMLFUZZ_RAPID_STRESS") != "1" {
+		return func() {}
+	}
 	f := flag.Lookup("rapid.checks")
 	if f == nil {
 		return func() {}
