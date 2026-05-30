@@ -158,10 +158,13 @@ jobs:
 
           restored=""
           for run_id in $candidates; do
-            if gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+            has_artifact=$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" \
+              --jq "[.artifacts[] | select(.name == \"$ARTIFACT_NAME\")] | length")
+            if [ "$has_artifact" -gt 0 ]; then
+              gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
                 --name "$ARTIFACT_NAME" \
-                --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache \
-                2>/dev/null; then
+                --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache
               echo "restored corpus from run $run_id"
               restored="$run_id"
               break
@@ -171,13 +174,14 @@ jobs:
           if [ -z "$restored" ]; then
             echo "no recent completed run had artifact $ARTIFACT_NAME; starting fresh"
           fi
+          echo "restored=${restored:-}" >> "$GITHUB_OUTPUT"
 
       # One-time transition fallback: the prior nightly on master uploaded
       # corpus under the legacy unscoped name (without -$target suffix).
       # Once the first target-scoped nightly succeeds, this step becomes a
       # no-op and can be removed in a future PR.
       - name: Fallback restore from legacy unscoped corpus
-        if: ${{ env.MODE == 'fuzz' && steps.restore-target.outcome != 'success' }}
+        if: ${{ env.MODE == 'fuzz' && steps.restore-target.outputs.restored == '' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -196,10 +200,13 @@ jobs:
 
           restored=""
           for run_id in $candidates; do
-            if gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+            has_artifact=$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" \
+              --jq "[.artifacts[] | select(.name == \"$ARTIFACT_NAME\")] | length")
+            if [ "$has_artifact" -gt 0 ]; then
+              gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
                 --name "$ARTIFACT_NAME" \
-                --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache \
-                2>/dev/null; then
+                --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache
               echo "restored legacy corpus from run $run_id"
               restored="$run_id"
               break
@@ -328,8 +335,8 @@ jobs:
   # way it would under the unit-tests CI's -race -count=100.
   #
   # These tests are pure Go: they never read BAML_VERSION or UNARY_SERVER and
-  # are not BAML-version dependent, so they run as one standalone cell rather
-  # than inside the version matrix. Keeping them off the matrix means there is
+  # are not BAML-version dependent, so they run as one standalone cell
+  # outside the version matrix. Keeping them off the matrix means there is
   # no matrix.baml-version literal to drift when Renovate bumps
   # integration/baml_versions.json. Gated on the same rapid-mode condition the
   # fuzz job's MODE env uses, so it runs only on a manual rapid dispatch.
