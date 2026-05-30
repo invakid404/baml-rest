@@ -94,12 +94,14 @@ jobs:
     # Each matrix cell runs ONE fuzz target via the `target` axis.
     # Budget per cell:
     #   - setup: 1 × ~10m TestMain (Docker env boot)
-    #   - fuzz:  1 × FUZZTIME (default 15m)
+    #   - fuzz:  1 × FUZZTIME (default 15m; Go hard-caps at -timeout 80m)
     #   - corpus restore + Go install + safety margin = ~5m
+    #   - upload corpus + sticky comment + post steps = ~5m
     #   Total at the FUZZTIME default: ~30m.
-    # The 60m cap supports an operator-set FUZZTIME up to ~45m
-    # (10m setup + 45m fuzz + 5m margin = 60m) without breaching.
-    timeout-minutes: 60
+    # The 90m cap sits above Go's -timeout 80m so Go's timeout fires
+    # first on a hang, leaving room for post-steps (corpus upload,
+    # sticky issue comment) to complete before Actions kills the runner.
+    timeout-minutes: 90
     permissions:
       contents: read
       actions: read
@@ -132,8 +134,10 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Restore corpus from prior nightly
+      - name: Restore corpus from prior nightly (target-scoped)
         if: ${{ env.MODE == 'fuzz' }}
+        id: restore-target
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACT_NAME: bamlfuzz-corpus-${{ matrix.baml-version }}-${{ matrix.unary-server }}-${{ matrix.target }}
@@ -152,10 +156,39 @@ jobs:
             echo "no prior successful nightly run; starting with empty corpus"
             exit 0
           fi
+          gh run download "$prior_run" --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" \
+            --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache
+
+      # One-time transition fallback: the prior nightly on master uploaded
+      # corpus under the legacy unscoped name (without -$target suffix).
+      # Once the first target-scoped nightly succeeds, this step becomes a
+      # no-op and can be removed in a future PR.
+      - name: Fallback restore from legacy unscoped corpus
+        if: ${{ env.MODE == 'fuzz' && steps.restore-target.outcome != 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_NAME: bamlfuzz-corpus-${{ matrix.baml-version }}-${{ matrix.unary-server }}
+        run: |
+          set -euo pipefail
+          mkdir -p adapters/common/codegen/testdata/bamlfuzz/.fuzzcache
+          prior_run=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow=bamlfuzz-nightly.yml \
+            --status=success \
+            --branch=master \
+            --limit=1 \
+            --json databaseId \
+            --jq '.[0].databaseId // empty')
+          if [ -z "$prior_run" ]; then
+            echo "no prior successful nightly run; starting with empty corpus"
+            exit 0
+          fi
           if ! gh run download "$prior_run" --repo "$GITHUB_REPOSITORY" \
               --name "$ARTIFACT_NAME" \
               --dir adapters/common/codegen/testdata/bamlfuzz/.fuzzcache; then
-            echo "prior nightly had no corpus artifact for ${ARTIFACT_NAME}; starting fresh"
+            echo "legacy corpus artifact ${ARTIFACT_NAME} not found; starting fresh"
           fi
 
       - name: Fuzz ${{ matrix.target }} (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
