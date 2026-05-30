@@ -208,8 +208,8 @@ jobs:
             -run='^$' \
             -fuzz='^${{ matrix.target }}$' \
             -fuzztime="${FUZZTIME}" \
-            -fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache" \
-            ./integration
+            ./integration \
+            -test.fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache"
 
       - name: Run bamlfuzz oracles — rapid mode (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'rapid' && matrix.target == 'FuzzBamlfuzzStatic' }}
@@ -289,7 +289,7 @@ jobs:
               echo "This cell ran fuzz target \`${TARGET}\`. Repro (after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/):"
               echo
               echo '```'
-              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^${TARGET}\$' -fuzztime=30s -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} go test -tags=integration,subprocess -run='^\$' -fuzz='^${TARGET}\$' -fuzztime=30s ./integration -test.fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache"
               echo '```'
             else
               echo
