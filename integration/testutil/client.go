@@ -1328,18 +1328,58 @@ func (c *BAMLRestClient) DynamicStreamWithRawNDJSON(ctx context.Context, req Dyn
 }
 
 func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, req DynamicRequest, expectRawEnvelope bool) (<-chan StreamEvent, <-chan error) {
+	body, err := sonic.Marshal(req)
+	if err != nil {
+		return closedStreamWithError(err)
+	}
+	return c.dynamicStreamRequestBody(ctx, url, body, expectRawEnvelope)
+}
+
+func (c *BAMLRestClient) dynamicStreamRequestNDJSON(ctx context.Context, url string, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+	body, err := sonic.Marshal(req)
+	if err != nil {
+		return closedStreamWithError(err)
+	}
+	return c.dynamicStreamRequestBodyNDJSON(ctx, url, body)
+}
+
+// DynamicStreamBody executes a /stream/_dynamic SSE request with a
+// caller-provided JSON body. Like DynamicCallJSON, this lets tests build
+// the body via bamlutils-ordered types so property / class / enum
+// declaration order survives end-to-end; the DynamicRequest-based
+// DynamicStream helper marshals a map-backed DynamicOutputSchema, which
+// cannot carry declaration order and would defeat a final-frame key-order
+// assertion.
+func (c *BAMLRestClient) DynamicStreamBody(ctx context.Context, body []byte) (<-chan StreamEvent, <-chan error) {
+	return c.dynamicStreamRequestBody(ctx, fmt.Sprintf("%s/stream/_dynamic", c.baseURL), body, false)
+}
+
+// DynamicStreamNDJSONBody executes a /stream/_dynamic NDJSON request with
+// a caller-provided JSON body. NDJSON-transport analogue of
+// DynamicStreamBody; same order-preservation rationale.
+func (c *BAMLRestClient) DynamicStreamNDJSONBody(ctx context.Context, body []byte) (<-chan StreamEvent, <-chan error) {
+	return c.dynamicStreamRequestBodyNDJSON(ctx, fmt.Sprintf("%s/stream/_dynamic", c.baseURL), body)
+}
+
+// closedStreamWithError returns a stream pair that immediately reports a
+// single error and is closed, matching the channel contract of the live
+// streaming paths (buffered errs, both channels closed).
+func closedStreamWithError(err error) (<-chan StreamEvent, <-chan error) {
+	events := make(chan StreamEvent)
+	errs := make(chan error, 1)
+	errs <- err
+	close(events)
+	close(errs)
+	return events, errs
+}
+
+func (c *BAMLRestClient) dynamicStreamRequestBody(ctx context.Context, url string, body []byte, expectRawEnvelope bool) (<-chan StreamEvent, <-chan error) {
 	events := make(chan StreamEvent)
 	errs := make(chan error, 1)
 
 	go func() {
 		defer close(events)
 		defer close(errs)
-
-		body, err := sonic.Marshal(req)
-		if err != nil {
-			errs <- err
-			return
-		}
 
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
@@ -1357,8 +1397,8 @@ func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, r
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			body, _ := io.ReadAll(resp.Body)
-			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(body))
+			respBody, _ := io.ReadAll(resp.Body)
+			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(respBody))
 			return
 		}
 
@@ -1370,19 +1410,13 @@ func (c *BAMLRestClient) dynamicStreamRequest(ctx context.Context, url string, r
 	return events, errs
 }
 
-func (c *BAMLRestClient) dynamicStreamRequestNDJSON(ctx context.Context, url string, req DynamicRequest) (<-chan StreamEvent, <-chan error) {
+func (c *BAMLRestClient) dynamicStreamRequestBodyNDJSON(ctx context.Context, url string, body []byte) (<-chan StreamEvent, <-chan error) {
 	events := make(chan StreamEvent)
 	errs := make(chan error, 1)
 
 	go func() {
 		defer close(events)
 		defer close(errs)
-
-		body, err := sonic.Marshal(req)
-		if err != nil {
-			errs <- err
-			return
-		}
 
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
@@ -1400,8 +1434,8 @@ func (c *BAMLRestClient) dynamicStreamRequestNDJSON(ctx context.Context, url str
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			body, _ := io.ReadAll(resp.Body)
-			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(body))
+			respBody, _ := io.ReadAll(resp.Body)
+			errs <- fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(respBody))
 			return
 		}
 

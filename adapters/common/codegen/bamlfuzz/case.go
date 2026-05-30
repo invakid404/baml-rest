@@ -3,8 +3,8 @@ package bamlfuzz
 import "encoding/json"
 
 // OracleMode names the oracle the test harness runs against an
-// OracleCase. The two modes correspond to the two emission paths in
-// the v1 plan.
+// OracleCase. Each mode corresponds to one emission/transport path the
+// same generated case is driven through.
 type OracleMode string
 
 const (
@@ -18,6 +18,13 @@ const (
 	// drive REST /call/<GeneratedFunction>, and diff against the
 	// walker's expected JSON.
 	OracleStaticPrompt OracleMode = "static_prompt"
+	// OracleDynamicStreaming: drive the same lowered dynamic case
+	// through the streaming surfaces (dynclient DynamicStream iterator
+	// + REST /stream/_dynamic over SSE and NDJSON), collect each leg's
+	// final frame, and assert it equals the walker's expected JSON and
+	// the unary parse. Partial frames are not asserted on in v1 — only
+	// the terminal frame, which is chunk-timing invariant.
+	OracleDynamicStreaming OracleMode = "dynamic_streaming"
 )
 
 // CaseMetadata is per-case provenance that's useful to a developer
