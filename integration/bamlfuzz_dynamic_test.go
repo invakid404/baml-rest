@@ -353,17 +353,23 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 		OutputSchema:        &lowered,
 		PreserveSchemaOrder: preservePtr,
 	}
-	libResp, libErr := dyn.DynamicCall(callCtx, libReq)
+	var (
+		libResp *dynclient.CallResult
+		libErr  error
+	)
+	panicked, panicVal, panicStack := callWithRecover(func() {
+		libResp, libErr = dyn.DynamicCall(callCtx, libReq)
+	})
+	if panicked {
+		envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
+		envelope.DynclientPanicStack = string(panicStack)
+		failAndDump(t, envelope, "dyn.DynamicCall panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
 	switch {
 	case libErr != nil:
 		envelope.DynclientError = libErr.Error()
 	case libResp == nil:
-		// Defensive contract check: dynclient.Client.DynamicCall today
-		// always returns a non-nil response on the nil-error path. A
-		// future client regression returning (nil, nil) would otherwise
-		// flow through as a successful empty response and silently
-		// equate two legs. Surface as a hard failure with the envelope
-		// noting which side went nil.
 		envelope.DynclientError = "nil response from dyn.DynamicCall"
 		failAndDump(t, envelope, "dynclient returned nil response without an error")
 		return
@@ -379,15 +385,20 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 		failAndDump(t, envelope, "build REST body: %v", err)
 		return
 	}
-	restResp, err := BAMLClient.DynamicCallJSON(callCtx, restBody)
+	var restResp *testutil.DynamicCallResponse
+	panicked, panicVal, panicStack = callWithRecover(func() {
+		restResp, err = BAMLClient.DynamicCallJSON(callCtx, restBody)
+	})
+	if panicked {
+		envelope.RESTPanic = fmt.Sprintf("%v", panicVal)
+		envelope.RESTPanicStack = string(panicStack)
+		failAndDump(t, envelope, "BAMLClient.DynamicCallJSON panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
 	switch {
 	case err != nil:
 		envelope.RESTError = err.Error()
 	case restResp == nil:
-		// Defensive contract check: see the dynclient branch above.
-		// DynamicCallJSON today always allocates a response on the
-		// nil-error path; this guard turns a future regression into a
-		// hard failure with the envelope noting the source leg.
 		envelope.RESTError = "nil response from BAMLClient.DynamicCallJSON"
 		failAndDump(t, envelope, "REST client returned nil response without an error")
 		return

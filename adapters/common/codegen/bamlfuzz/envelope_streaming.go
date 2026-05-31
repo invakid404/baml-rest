@@ -72,10 +72,18 @@ type StreamingFailureEnvelope struct {
 	// Per-leg surface errors. Context/transport errors are harness
 	// failures and never reach the envelope; these capture stream-level
 	// or HTTP-status errors that are oracle signal.
-	DynclientError  string `json:"dynclient_error,omitempty"`
-	RESTErrorSSE    string `json:"rest_error_sse,omitempty"`
-	RESTErrorNDJSON string `json:"rest_error_ndjson,omitempty"`
-	UnaryError      string `json:"unary_error,omitempty"`
+	DynclientError       string `json:"dynclient_error,omitempty"`
+	DynclientPanic       string `json:"dynclient_panic,omitempty"`
+	DynclientPanicStack  string `json:"dynclient_panic_stack,omitempty"`
+	RESTErrorSSE         string `json:"rest_error_sse,omitempty"`
+	RESTPanicSSE         string `json:"rest_panic_sse,omitempty"`
+	RESTPanicStackSSE    string `json:"rest_panic_stack_sse,omitempty"`
+	RESTErrorNDJSON      string `json:"rest_error_ndjson,omitempty"`
+	RESTPanicNDJSON      string `json:"rest_panic_ndjson,omitempty"`
+	RESTPanicStackNDJSON string `json:"rest_panic_stack_ndjson,omitempty"`
+	UnaryError           string `json:"unary_error,omitempty"`
+	UnaryPanic           string `json:"unary_panic,omitempty"`
+	UnaryPanicStack      string `json:"unary_panic_stack,omitempty"`
 
 	SemanticDiff []SemanticDiffEntry `json:"semantic_diff,omitempty"`
 	OrderWarning []string            `json:"order_warning,omitempty"`

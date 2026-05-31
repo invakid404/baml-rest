@@ -299,7 +299,19 @@ func runStreamingOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 	// --- dynclient streaming leg ---
 	dynCtx, dynCancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer dynCancel()
-	stream, openErr := dyn.DynamicStream(dynCtx, libReq)
+	var (
+		stream  *dynclient.Stream
+		openErr error
+	)
+	panicked, panicVal, panicStack := callWithRecover(func() {
+		stream, openErr = dyn.DynamicStream(dynCtx, libReq)
+	})
+	if panicked {
+		envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
+		envelope.DynclientPanicStack = string(panicStack)
+		failAndDumpStreaming(t, envelope, "dyn.DynamicStream panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
 	if openErr != nil {
 		if isContextErr(openErr) {
 			t.Fatalf("harness failure: dynclient stream open (case=%s): %v", c.Name, openErr)
@@ -307,8 +319,22 @@ func runStreamingOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 		envelope.DynclientError = openErr.Error()
 		failures = append(failures, fmt.Sprintf("dynclient stream open: %v", openErr))
 	} else {
-		dynPartials, dynFinal, dynKinds, drainErr := drainDynclientStream(stream)
+		var (
+			dynPartials []json.RawMessage
+			dynFinal    json.RawMessage
+			dynKinds    []string
+			drainErr    error
+		)
+		panicked, panicVal, panicStack = callWithRecover(func() {
+			dynPartials, dynFinal, dynKinds, drainErr = drainDynclientStream(stream)
+		})
 		stream.Close()
+		if panicked {
+			envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
+			envelope.DynclientPanicStack = string(panicStack)
+			failAndDumpStreaming(t, envelope, "drainDynclientStream panicked: %v\n%s", panicVal, panicStack)
+			return
+		}
 		envelope.DynclientPartials = dynPartials
 		envelope.DynclientFinal = dynFinal
 		envelope.DynclientKinds = dynKinds
@@ -324,8 +350,34 @@ func runStreamingOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 	// --- REST SSE streaming leg ---
 	sseCtx, sseCancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer sseCancel()
-	sseEvents, sseErrs := BAMLClient.DynamicStreamBody(sseCtx, restBody)
-	ssePartials, sseFinal, sseKinds, sseErr := drainRESTStream(sseEvents, sseErrs)
+	var (
+		sseEvents <-chan testutil.StreamEvent
+		sseErrs   <-chan error
+	)
+	panicked, panicVal, panicStack = callWithRecover(func() {
+		sseEvents, sseErrs = BAMLClient.DynamicStreamBody(sseCtx, restBody)
+	})
+	if panicked {
+		envelope.RESTPanicSSE = fmt.Sprintf("%v", panicVal)
+		envelope.RESTPanicStackSSE = string(panicStack)
+		failAndDumpStreaming(t, envelope, "BAMLClient.DynamicStreamBody panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
+	var (
+		ssePartials []json.RawMessage
+		sseFinal    json.RawMessage
+		sseKinds    []string
+		sseErr      error
+	)
+	panicked, panicVal, panicStack = callWithRecover(func() {
+		ssePartials, sseFinal, sseKinds, sseErr = drainRESTStream(sseEvents, sseErrs)
+	})
+	if panicked {
+		envelope.RESTPanicSSE = fmt.Sprintf("%v", panicVal)
+		envelope.RESTPanicStackSSE = string(panicStack)
+		failAndDumpStreaming(t, envelope, "drainRESTStream (SSE) panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
 	envelope.RESTPartialsSSE = ssePartials
 	envelope.RESTFinalSSE = sseFinal
 	envelope.RESTKindsSSE = sseKinds
@@ -340,8 +392,34 @@ func runStreamingOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 	// --- REST NDJSON streaming leg ---
 	ndjsonCtx, ndjsonCancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer ndjsonCancel()
-	ndjsonEvents, ndjsonErrs := BAMLClient.DynamicStreamNDJSONBody(ndjsonCtx, restBody)
-	ndjsonPartials, ndjsonFinal, ndjsonKinds, ndjsonErr := drainRESTStream(ndjsonEvents, ndjsonErrs)
+	var (
+		ndjsonEvents <-chan testutil.StreamEvent
+		ndjsonErrs   <-chan error
+	)
+	panicked, panicVal, panicStack = callWithRecover(func() {
+		ndjsonEvents, ndjsonErrs = BAMLClient.DynamicStreamNDJSONBody(ndjsonCtx, restBody)
+	})
+	if panicked {
+		envelope.RESTPanicNDJSON = fmt.Sprintf("%v", panicVal)
+		envelope.RESTPanicStackNDJSON = string(panicStack)
+		failAndDumpStreaming(t, envelope, "BAMLClient.DynamicStreamNDJSONBody panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
+	var (
+		ndjsonPartials []json.RawMessage
+		ndjsonFinal    json.RawMessage
+		ndjsonKinds    []string
+		ndjsonErr      error
+	)
+	panicked, panicVal, panicStack = callWithRecover(func() {
+		ndjsonPartials, ndjsonFinal, ndjsonKinds, ndjsonErr = drainRESTStream(ndjsonEvents, ndjsonErrs)
+	})
+	if panicked {
+		envelope.RESTPanicNDJSON = fmt.Sprintf("%v", panicVal)
+		envelope.RESTPanicStackNDJSON = string(panicStack)
+		failAndDumpStreaming(t, envelope, "drainRESTStream (NDJSON) panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
 	envelope.RESTPartialsNDJSON = ndjsonPartials
 	envelope.RESTFinalNDJSON = ndjsonFinal
 	envelope.RESTKindsNDJSON = ndjsonKinds
@@ -356,7 +434,19 @@ func runStreamingOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 	// --- unary cross-check leg ---
 	unaryCtx, unaryCancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer unaryCancel()
-	unaryResp, unaryErr := dyn.DynamicCall(unaryCtx, libReq)
+	var (
+		unaryResp *dynclient.CallResult
+		unaryErr  error
+	)
+	panicked, panicVal, panicStack = callWithRecover(func() {
+		unaryResp, unaryErr = dyn.DynamicCall(unaryCtx, libReq)
+	})
+	if panicked {
+		envelope.UnaryPanic = fmt.Sprintf("%v", panicVal)
+		envelope.UnaryPanicStack = string(panicStack)
+		failAndDumpStreaming(t, envelope, "dyn.DynamicCall (unary cross-check) panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
 	switch {
 	case unaryErr != nil:
 		if isContextErr(unaryErr) {
