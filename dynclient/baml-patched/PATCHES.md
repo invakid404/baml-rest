@@ -1,9 +1,11 @@
 # Patches applied to this BAML fork
 
 This directory holds a copy of `github.com/boundaryml/baml` (version v0.222.0)
-rewritten to module path `github.com/invakid404/baml-rest/dynclient/baml-patched`. PR #3185 (runtime
-deadlock fix) is merged upstream at or above v0.220.0, so no
-embedded patch is applied to this tree.
+rewritten to module path `github.com/invakid404/baml-rest/dynclient/baml-patched`.
+
+## Embedded patches
+
+- `baml3620_serde_nil_v222.diff` — serde nil-value panic fix (BoundaryML/baml #3620) (sha256 f43c6977e017286a53dc702f03059a4cc8a76bd2ee6e0d6f853254b70343e4ec).
 
 - Internal `github.com/boundaryml/baml/...` imports are rewritten to `github.com/invakid404/baml-rest/dynclient/baml-patched/...`.
 

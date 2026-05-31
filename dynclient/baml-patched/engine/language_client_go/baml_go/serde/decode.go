@@ -101,6 +101,10 @@ func decodeListValue(valueList *cffi.CFFIValueList, typeMap TypeMap) (reflect.Va
 
 		for i, v := range valueList.Items {
 			decodedValue, _ := Decode(v, typeMap)
+			if !decodedValue.IsValid() {
+				values.Index(i).Set(reflect.Zero(goElementType))
+				continue
+			}
 			values.Index(i).Set(decodedValue)
 		}
 		return values, sliceOf
