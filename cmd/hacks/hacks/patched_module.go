@@ -250,10 +250,14 @@ func collectAppliedPatches(version string) ([]appliedPatch, error) {
 		})
 	}
 
-	if bamlutils.CompareVersions(version, baml3620SerdeNilMinFloor) >= 0 &&
-		bamlutils.CompareVersions(version, baml3620SerdeNilUpstreamMergedFloor) < 0 {
+	isV214Family := bamlutils.CompareVersions(version, baml3620SerdeNilV214MinVersion) >= 0 &&
+		bamlutils.CompareVersions(version, baml3620SerdeNilV214MaxVersion) < 0
+	isV222Family := bamlutils.CompareVersions(version, baml3620SerdeNilV222MinVersion) >= 0 &&
+		bamlutils.CompareVersions(version, baml3620SerdeNilUpstreamMergedFloor) < 0
+
+	if isV214Family || isV222Family {
 		patchPath := baml3620SerdeNilV222Path
-		if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
+		if isV214Family {
 			patchPath = baml3620SerdeNilV214Path
 		}
 		patchData, err := readEmbeddedPatch(patchPath)

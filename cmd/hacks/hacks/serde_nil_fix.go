@@ -14,7 +14,9 @@ const (
 	baml3620SerdeNilV222Path            = "patches/baml3620_serde_nil_v222.diff"
 	baml3620SerdeNilV222Checksum        = "f43c6977e017286a53dc702f03059a4cc8a76bd2ee6e0d6f853254b70343e4ec"
 	baml3620SerdeNilProvenance          = "BoundaryML/baml issue #3620 — Go SDK serde nil-value panic"
-	baml3620SerdeNilMinFloor            = "v0.214.0"
+	baml3620SerdeNilV214MinVersion      = "v0.214.0"
+	baml3620SerdeNilV214MaxVersion      = "v0.215.0"
+	baml3620SerdeNilV222MinVersion      = "v0.218.0"
 	baml3620SerdeNilUpstreamMergedFloor = "v999.0.0"
 )
 
@@ -96,18 +98,25 @@ func ApplyBamlSerdeNilFixToDir(version, moduleDir string) error {
 		return fmt.Errorf("module directory is required to apply the serde nil-value fix patch")
 	}
 
-	if bamlutils.CompareVersions(version, baml3620SerdeNilMinFloor) < 0 {
-		fmt.Printf("Skipping serde nil-value fix (effective version %s is below %s where the patch shape is untested)\n", version, baml3620SerdeNilMinFloor)
-		return nil
-	}
 	if bamlutils.CompareVersions(version, baml3620SerdeNilUpstreamMergedFloor) >= 0 {
 		fmt.Printf("Skipping serde nil-value fix (effective version %s is at or above %s where issue #3620 is fixed upstream)\n", version, baml3620SerdeNilUpstreamMergedFloor)
 		return nil
 	}
 
-	patchPath := baml3620SerdeNilV222Path
-	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
+	isV214Family := bamlutils.CompareVersions(version, baml3620SerdeNilV214MinVersion) >= 0 &&
+		bamlutils.CompareVersions(version, baml3620SerdeNilV214MaxVersion) < 0
+	isV222Family := bamlutils.CompareVersions(version, baml3620SerdeNilV222MinVersion) >= 0
+
+	if !isV214Family && !isV222Family {
+		fmt.Printf("Skipping serde nil-value fix: version %s falls outside supported ranges (v0.214.x or v0.218.0+); upstream code shape is unverified\n", version)
+		return nil
+	}
+
+	var patchPath string
+	if isV214Family {
 		patchPath = baml3620SerdeNilV214Path
+	} else {
+		patchPath = baml3620SerdeNilV222Path
 	}
 
 	patchData, err := readEmbeddedPatch(patchPath)
