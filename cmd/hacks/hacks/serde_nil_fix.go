@@ -31,6 +31,20 @@ func init() {
 	}
 }
 
+// chooseBamlSerdeNilPatch returns the embedded patch path that applies to the
+// given BAML version, or "" if no patch applies.
+func chooseBamlSerdeNilPatch(version string) string {
+	if bamlutils.CompareVersions(version, baml3620SerdeNilV214MinVersion) >= 0 &&
+		bamlutils.CompareVersions(version, baml3620SerdeNilV214MaxVersion) < 0 {
+		return baml3620SerdeNilV214Path
+	}
+	if bamlutils.CompareVersions(version, baml3620SerdeNilV222MinVersion) >= 0 &&
+		bamlutils.CompareVersions(version, baml3620SerdeNilUpstreamMergedFloor) < 0 {
+		return baml3620SerdeNilV222Path
+	}
+	return ""
+}
+
 // ApplyBamlSerdeNilFix is the server-build in-place wrapper that mirrors
 // ApplyRuntimeDeadlockFix: resolves the BAML module, copies it out of
 // GOMODCACHE when needed, applies the serde nil-value fix, and installs
@@ -98,25 +112,14 @@ func ApplyBamlSerdeNilFixToDir(version, moduleDir string) error {
 		return fmt.Errorf("module directory is required to apply the serde nil-value fix patch")
 	}
 
-	if bamlutils.CompareVersions(version, baml3620SerdeNilUpstreamMergedFloor) >= 0 {
-		fmt.Printf("Skipping serde nil-value fix (effective version %s is at or above %s where issue #3620 is fixed upstream)\n", version, baml3620SerdeNilUpstreamMergedFloor)
+	patchPath := chooseBamlSerdeNilPatch(version)
+	if patchPath == "" {
+		if bamlutils.CompareVersions(version, baml3620SerdeNilUpstreamMergedFloor) >= 0 {
+			fmt.Printf("Skipping serde nil-value fix (effective version %s is at or above %s where issue #3620 is fixed upstream)\n", version, baml3620SerdeNilUpstreamMergedFloor)
+		} else {
+			fmt.Printf("Skipping serde nil-value fix: version %s falls outside supported ranges (v0.214.x or v0.218.0+); upstream code shape is unverified\n", version)
+		}
 		return nil
-	}
-
-	isV214Family := bamlutils.CompareVersions(version, baml3620SerdeNilV214MinVersion) >= 0 &&
-		bamlutils.CompareVersions(version, baml3620SerdeNilV214MaxVersion) < 0
-	isV222Family := bamlutils.CompareVersions(version, baml3620SerdeNilV222MinVersion) >= 0
-
-	if !isV214Family && !isV222Family {
-		fmt.Printf("Skipping serde nil-value fix: version %s falls outside supported ranges (v0.214.x or v0.218.0+); upstream code shape is unverified\n", version)
-		return nil
-	}
-
-	var patchPath string
-	if isV214Family {
-		patchPath = baml3620SerdeNilV214Path
-	} else {
-		patchPath = baml3620SerdeNilV222Path
 	}
 
 	patchData, err := readEmbeddedPatch(patchPath)

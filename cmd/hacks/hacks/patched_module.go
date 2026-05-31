@@ -234,11 +234,7 @@ type appliedPatch struct {
 func collectAppliedPatches(version string) ([]appliedPatch, error) {
 	var patches []appliedPatch
 
-	if bamlutils.CompareVersions(version, pr3185UpstreamMergedFloor) < 0 {
-		patchPath := pr3185PatchV218BackportPath
-		if bamlutils.CompareVersions(version, "v0.219.0") >= 0 {
-			patchPath = pr3185PatchV219Path
-		}
+	if patchPath := chooseRuntimeDeadlockPatch(version); patchPath != "" {
 		patchData, err := readEmbeddedPatch(patchPath)
 		if err != nil {
 			return nil, err
@@ -250,22 +246,13 @@ func collectAppliedPatches(version string) ([]appliedPatch, error) {
 		})
 	}
 
-	isV214Family := bamlutils.CompareVersions(version, baml3620SerdeNilV214MinVersion) >= 0 &&
-		bamlutils.CompareVersions(version, baml3620SerdeNilV214MaxVersion) < 0
-	isV222Family := bamlutils.CompareVersions(version, baml3620SerdeNilV222MinVersion) >= 0 &&
-		bamlutils.CompareVersions(version, baml3620SerdeNilUpstreamMergedFloor) < 0
-
-	if isV214Family || isV222Family {
-		patchPath := baml3620SerdeNilV222Path
-		if isV214Family {
-			patchPath = baml3620SerdeNilV214Path
-		}
-		patchData, err := readEmbeddedPatch(patchPath)
+	if serdeNilPath := chooseBamlSerdeNilPatch(version); serdeNilPath != "" {
+		patchData, err := readEmbeddedPatch(serdeNilPath)
 		if err != nil {
 			return nil, err
 		}
 		patches = append(patches, appliedPatch{
-			path:     patchPath,
+			path:     serdeNilPath,
 			checksum: fmt.Sprintf("%x", sha256.Sum256(patchData)),
 			desc:     "serde nil-value panic fix (BoundaryML/baml #3620)",
 		})

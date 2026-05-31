@@ -60,6 +60,21 @@ var (
 	gnuPatchPathOnce sync.Once
 )
 
+// chooseRuntimeDeadlockPatch returns the embedded patch path that applies to
+// the given BAML version, or "" if no patch applies.
+func chooseRuntimeDeadlockPatch(version string) string {
+	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
+		return ""
+	}
+	if bamlutils.CompareVersions(version, pr3185UpstreamMergedFloor) >= 0 {
+		return ""
+	}
+	if bamlutils.CompareVersions(version, "v0.219.0") >= 0 {
+		return pr3185PatchV219Path
+	}
+	return pr3185PatchV218BackportPath
+}
+
 // ApplyRuntimeDeadlockFix applies the PR #3185 runtime deadlock fix from
 // BoundaryML/baml to installed Go runtime sources.
 //
@@ -144,18 +159,14 @@ func ApplyRuntimeDeadlockFixToDir(bamlVersion, moduleDir string) error {
 		return fmt.Errorf("module directory is required to apply the deadlock-fix patch")
 	}
 
-	if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
-		fmt.Printf("Skipping runtime-deadlock-fix (effective version %s is below v0.218.0)\n", version)
+	patchPath := chooseRuntimeDeadlockPatch(version)
+	if patchPath == "" {
+		if bamlutils.CompareVersions(version, pr3185UpstreamMergedFloor) >= 0 {
+			fmt.Printf("Skipping runtime-deadlock-fix (effective version %s is at or above %s where PR #3185 is merged upstream)\n", version, pr3185UpstreamMergedFloor)
+		} else {
+			fmt.Printf("Skipping runtime-deadlock-fix (effective version %s is below v0.218.0)\n", version)
+		}
 		return nil
-	}
-	if bamlutils.CompareVersions(version, pr3185UpstreamMergedFloor) >= 0 {
-		fmt.Printf("Skipping runtime-deadlock-fix (effective version %s is at or above %s where PR #3185 is merged upstream)\n", version, pr3185UpstreamMergedFloor)
-		return nil
-	}
-
-	patchPath := pr3185PatchV218BackportPath
-	if bamlutils.CompareVersions(version, "v0.219.0") >= 0 {
-		patchPath = pr3185PatchV219Path
 	}
 
 	patchData, err := readEmbeddedPatch(patchPath)
