@@ -111,7 +111,7 @@ func GeneratePatchedBAMLModule(srcDir, outDir, modulePath, version string) error
 	}
 
 	if err := ApplyBamlSerdeNilFixToDir(normalizedVersion, outDir); err != nil {
-		return fmt.Errorf("applying baml serde nil-value fix: %w", err)
+		return err
 	}
 
 	if err := writePatchedProvenance(outDir, normalizedVersion, modulePath); err != nil {
@@ -250,13 +250,18 @@ func collectAppliedPatches(version string) ([]appliedPatch, error) {
 		})
 	}
 
-	if bamlutils.CompareVersions(version, baml3620SerdeNilUpstreamMergedFloor) < 0 {
-		patchData, err := readEmbeddedPatch(baml3620SerdeNilV222Path)
+	if bamlutils.CompareVersions(version, baml3620SerdeNilMinFloor) >= 0 &&
+		bamlutils.CompareVersions(version, baml3620SerdeNilUpstreamMergedFloor) < 0 {
+		patchPath := baml3620SerdeNilV222Path
+		if bamlutils.CompareVersions(version, "v0.218.0") < 0 {
+			patchPath = baml3620SerdeNilV214Path
+		}
+		patchData, err := readEmbeddedPatch(patchPath)
 		if err != nil {
 			return nil, err
 		}
 		patches = append(patches, appliedPatch{
-			path:     baml3620SerdeNilV222Path,
+			path:     patchPath,
 			checksum: fmt.Sprintf("%x", sha256.Sum256(patchData)),
 			desc:     "serde nil-value panic fix (BoundaryML/baml #3620)",
 		})

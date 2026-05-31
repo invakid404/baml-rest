@@ -1,0 +1,14 @@
+diff --git a/engine/language_client_go/baml_go/serde/decode.go b/engine/language_client_go/baml_go/serde/decode.go
+--- a/engine/language_client_go/baml_go/serde/decode.go
++++ b/engine/language_client_go/baml_go/serde/decode.go
+@@ -97,6 +97,10 @@
+
+ 	for i, v := range valueList.Values {
+ 		decodedValue := Decode(v, typeMap)
++		if !decodedValue.IsValid() {
++			values.Index(i).Set(reflect.Zero(goElementType))
++			continue
++		}
+ 		values.Index(i).Set(decodedValue)
+ 	}
+
