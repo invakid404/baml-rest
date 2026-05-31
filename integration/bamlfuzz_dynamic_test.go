@@ -357,10 +357,10 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 		libResp *dynclient.CallResult
 		libErr  error
 	)
-	panicVal, panicStack := callWithRecover(func() {
+	panicked, panicVal, panicStack := callWithRecover(func() {
 		libResp, libErr = dyn.DynamicCall(callCtx, libReq)
 	})
-	if panicVal != nil {
+	if panicked {
 		envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
 		envelope.DynclientPanicStack = string(panicStack)
 		failAndDump(t, envelope, "dyn.DynamicCall panicked: %v\n%s", panicVal, panicStack)
@@ -386,10 +386,10 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 		return
 	}
 	var restResp *testutil.DynamicCallResponse
-	panicVal, panicStack = callWithRecover(func() {
+	panicked, panicVal, panicStack = callWithRecover(func() {
 		restResp, err = BAMLClient.DynamicCallJSON(callCtx, restBody)
 	})
-	if panicVal != nil {
+	if panicked {
 		envelope.RESTPanic = fmt.Sprintf("%v", panicVal)
 		envelope.RESTPanicStack = string(panicStack)
 		failAndDump(t, envelope, "BAMLClient.DynamicCallJSON panicked: %v\n%s", panicVal, panicStack)

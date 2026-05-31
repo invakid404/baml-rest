@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -1380,6 +1381,11 @@ func (c *BAMLRestClient) dynamicStreamRequestBody(ctx context.Context, url strin
 	go func() {
 		defer close(events)
 		defer close(errs)
+		defer func() {
+			if r := recover(); r != nil {
+				errs <- fmt.Errorf("SSE goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
@@ -1417,6 +1423,11 @@ func (c *BAMLRestClient) dynamicStreamRequestBodyNDJSON(ctx context.Context, url
 	go func() {
 		defer close(events)
 		defer close(errs)
+		defer func() {
+			if r := recover(); r != nil {
+				errs <- fmt.Errorf("NDJSON goroutine panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
