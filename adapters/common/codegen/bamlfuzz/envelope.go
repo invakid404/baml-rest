@@ -105,6 +105,8 @@ type StaticFailureEnvelope struct {
 	RESTStatus          int                 `json:"rest_status,omitempty"`
 	RESTBody            json.RawMessage     `json:"rest_body,omitempty"`
 	RESTError           string              `json:"rest_error,omitempty"`
+	RESTPanic           string              `json:"rest_panic,omitempty"`
+	RESTPanicStack      string              `json:"rest_panic_stack,omitempty"`
 	SemanticDiff        []SemanticDiffEntry `json:"semantic_diff,omitempty"`
 	OrderWarning        []string            `json:"order_warning,omitempty"`
 	ReplayPath          string              `json:"replay_path"`

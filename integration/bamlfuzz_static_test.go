@@ -329,11 +329,23 @@ func runOneStaticCase(t *testing.T, env *testutil.TestEnvironment, mockClient *m
 
 	callCtx, callCancel := context.WithTimeout(context.Background(), staticCallTimeout)
 	defer callCancel()
-	resp, err := bamlClient.Call(callCtx, testutil.CallRequest{
-		Method:  lc.Source.FunctionName,
-		Input:   map[string]any{"input": "Static fuzz call."},
-		Options: &testutil.BAMLOptions{ClientRegistry: clientReg},
+	var (
+		resp *testutil.CallResponse
+		err  error
+	)
+	panicked, panicVal, panicStack := callWithRecover(func() {
+		resp, err = bamlClient.Call(callCtx, testutil.CallRequest{
+			Method:  lc.Source.FunctionName,
+			Input:   map[string]any{"input": "Static fuzz call."},
+			Options: &testutil.BAMLOptions{ClientRegistry: clientReg},
+		})
 	})
+	if panicked {
+		envelope.RESTPanic = fmt.Sprintf("%v", panicVal)
+		envelope.RESTPanicStack = string(panicStack)
+		failStaticAndDump(t, envelope, "bamlClient.Call panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
 	switch {
 	case err != nil:
 		envelope.RESTError = err.Error()

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -1383,7 +1384,12 @@ func (c *BAMLRestClient) dynamicStreamRequestBody(ctx context.Context, url strin
 		defer close(errs)
 		defer func() {
 			if r := recover(); r != nil {
-				errs <- fmt.Errorf("SSE goroutine panic: %v\n%s", r, debug.Stack())
+				msg := fmt.Errorf("SSE goroutine panic: %v\n%s", r, debug.Stack())
+				select {
+				case errs <- msg:
+				default:
+					fmt.Fprintf(os.Stderr, "stream producer panic (errs channel full): %v\n", msg)
+				}
 			}
 		}()
 
@@ -1425,7 +1431,12 @@ func (c *BAMLRestClient) dynamicStreamRequestBodyNDJSON(ctx context.Context, url
 		defer close(errs)
 		defer func() {
 			if r := recover(); r != nil {
-				errs <- fmt.Errorf("NDJSON goroutine panic: %v\n%s", r, debug.Stack())
+				msg := fmt.Errorf("NDJSON goroutine panic: %v\n%s", r, debug.Stack())
+				select {
+				case errs <- msg:
+				default:
+					fmt.Fprintf(os.Stderr, "stream producer panic (errs channel full): %v\n", msg)
+				}
 			}
 		}()
 
