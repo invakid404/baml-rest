@@ -353,12 +353,20 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 
 	dynCtx, dynCancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer dynCancel()
-	libResp, libErr := dyn.DynamicCall(dynCtx, libReq)
+	var (
+		libResp *dynclient.CallResult
+		libErr  error
+	)
+	panicVal, panicStack := callWithRecover(func() {
+		libResp, libErr = dyn.DynamicCall(dynCtx, libReq)
+	})
+	if panicVal != nil {
+		envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
+		envelope.DynclientPanicStack = string(panicStack)
+		failAndDumpInvalid(t, artifactDir, envelope, "dyn.DynamicCall panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
 	if libErr != nil && (errors.Is(libErr, context.Canceled) || errors.Is(libErr, context.DeadlineExceeded)) {
-		// Context-derived dynclient error is a harness failure, not an
-		// oracle signal — the BAML pipeline never produced a verdict.
-		// Treating it as a rejection would let an outright timeout pass
-		// the both-reject oracle.
 		t.Fatalf("harness failure: dynclient context (case=%s mutation=%s): %v", c.Name, c.Mutation, libErr)
 	}
 	var dynSuccess bool
@@ -381,12 +389,17 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 	}
 	restCtx, restCancel := context.WithTimeout(parentCtx, 30*time.Second)
 	defer restCancel()
-	restResp, err := BAMLClient.DynamicCallJSON(restCtx, restBody)
+	var restResp *testutil.DynamicCallResponse
+	panicVal, panicStack = callWithRecover(func() {
+		restResp, err = BAMLClient.DynamicCallJSON(restCtx, restBody)
+	})
+	if panicVal != nil {
+		envelope.RESTPanic = fmt.Sprintf("%v", panicVal)
+		envelope.RESTPanicStack = string(panicStack)
+		failAndDumpInvalid(t, artifactDir, envelope, "BAMLClient.DynamicCallJSON panicked: %v\n%s", panicVal, panicStack)
+		return
+	}
 	if err != nil {
-		// BAMLClient.DynamicCallJSON wraps the HTTP transport layer;
-		// 4xx/5xx responses come back through restResp.StatusCode +
-		// restResp.Error, not through err. A non-nil err here is a
-		// transport or context failure — harness, not oracle signal.
 		t.Fatalf("harness failure: REST transport (case=%s mutation=%s): %v", c.Name, c.Mutation, err)
 	}
 	if restResp == nil {

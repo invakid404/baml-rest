@@ -137,9 +137,13 @@ type InvalidFailureEnvelope struct {
 	MockLLMContent      json.RawMessage                `json:"mock_llm_content,omitempty"`
 	DynclientOutput     json.RawMessage                `json:"dynclient_output,omitempty"`
 	DynclientError      string                         `json:"dynclient_error,omitempty"`
+	DynclientPanic      string                         `json:"dynclient_panic,omitempty"`
+	DynclientPanicStack string                         `json:"dynclient_panic_stack,omitempty"`
 	RESTStatus          int                            `json:"rest_status,omitempty"`
 	RESTBody            json.RawMessage                `json:"rest_body,omitempty"`
 	RESTError           string                         `json:"rest_error,omitempty"`
+	RESTPanic           string                         `json:"rest_panic,omitempty"`
+	RESTPanicStack      string                         `json:"rest_panic_stack,omitempty"`
 	SemanticDiff        []SemanticDiffEntry            `json:"semantic_diff,omitempty"`
 	OrderWarning        []string                       `json:"order_warning,omitempty"`
 	ActualOutcome       string                         `json:"actual_outcome,omitempty"`
