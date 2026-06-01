@@ -631,7 +631,7 @@ func runPatch(moduleDir, patchPath string, dryRun, reverse bool) (exitCode int, 
 		return -1, "", err
 	}
 
-	args := []string{"-p1", "-d", moduleDir, "--batch"}
+	args := []string{"-p1", "-d", moduleDir, "--batch", "--no-backup-if-mismatch"}
 	if dryRun {
 		args = append(args, "--dry-run")
 	}
