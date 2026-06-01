@@ -91,8 +91,8 @@ func TestInjectAbsentOptionals_UnionClassArmMissingRequired(t *testing.T) {
 		}),
 	)
 	s := &DynamicOutputSchema{Properties: props, Classes: classes}
-	got := inject(t, `{"v":"hello"}`, s)
-	want := `{"v":"hello"}`
+	got := inject(t, `{"v":{"note":"hello"}}`, s)
+	want := `{"v":{"note":"hello"}}`
 	if got != want {
 		t.Fatalf("union class arm missing required:\n got %s\nwant %s", got, want)
 	}
