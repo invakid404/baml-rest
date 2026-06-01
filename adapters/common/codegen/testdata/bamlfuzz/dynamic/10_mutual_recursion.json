@@ -105,8 +105,7 @@
   "expected": {
     "name": "root-a",
     "b": {
-      "kind": "nested-b",
-      "a": null
+      "kind": "nested-b"
     }
   },
   "metadata": {

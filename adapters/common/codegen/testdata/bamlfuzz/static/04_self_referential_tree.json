@@ -122,8 +122,7 @@
     "value": "root",
     "children": [
       {
-        "value": "leaf-a",
-        "children": null
+        "value": "leaf-a"
       },
       {
         "value": "leaf-b",
