@@ -1,0 +1,17 @@
+diff --git a/engine/language_client_go/baml_go/serde/decode.go b/engine/language_client_go/baml_go/serde/decode.go
+--- a/engine/language_client_go/baml_go/serde/decode.go
++++ b/engine/language_client_go/baml_go/serde/decode.go
+@@ -99,9 +99,13 @@
+ 		sliceOf := reflect.SliceOf(goElementType)
+ 		values := reflect.MakeSlice(sliceOf, length, length)
+ 
+ 		for i, v := range valueList.Items {
+ 			decodedValue, _ := Decode(v, typeMap)
++			if !decodedValue.IsValid() {
++				values.Index(i).Set(reflect.Zero(goElementType))
++				continue
++			}
+ 			values.Index(i).Set(decodedValue)
+ 		}
+ 		return values, sliceOf
+ 	}
