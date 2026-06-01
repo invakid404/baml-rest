@@ -214,7 +214,8 @@ func (n orderedNode) appendTo(buf *bytes.Buffer) error {
 // self-referential or mutually-recursive class refs terminates because
 // the JSON payload itself is finite.
 type dynamicOrderWalker struct {
-	schema *DynamicOutputSchema
+	schema  *DynamicOutputSchema
+	lenient bool // when true, matchesClass treats absent optional properties as acceptable
 }
 
 // resolveClass returns the schema's class definition for name. The
@@ -485,8 +486,11 @@ func (w *dynamicOrderWalker) matchesClass(name string, node orderedNode) bool {
 		return false
 	}
 	missing := false
-	cls.Properties.Range(func(propName string, _ *DynamicProperty) bool {
+	cls.Properties.Range(func(propName string, prop *DynamicProperty) bool {
 		if _, present := node.byKey[propName]; !present {
+			if w.lenient && prop != nil && prop.Type == "optional" {
+				return true
+			}
 			missing = true
 			return false
 		}

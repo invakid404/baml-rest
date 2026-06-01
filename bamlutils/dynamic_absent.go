@@ -173,6 +173,6 @@ func (w *absentOptionalWalker) injectType(spec DynamicTypeSpec, node orderedNode
 
 // matchesType delegates to the dynamic order walker's matching logic.
 func (w *absentOptionalWalker) matchesType(spec DynamicTypeSpec, node orderedNode) bool {
-	orderWalker := &dynamicOrderWalker{schema: w.schema}
+	orderWalker := &dynamicOrderWalker{schema: w.schema, lenient: true}
 	return orderWalker.matchesType(spec, node)
 }
