@@ -133,6 +133,13 @@ jobs:
 
           go run ./cmd/regenerate-dynclient
 
+          # go.work.sum is an additive checksum database, not a lockfile.
+          # The regen's transitive `go mod tidy` may append entries that
+          # weren't present at commit time if the Go module proxy has
+          # published new sums since. Restore the committed version so
+          # additive-only sum drift doesn't trip the idempotency gate.
+          git checkout -- go.work.sum 2>/dev/null || true
+
           if [ -n "$(git status --porcelain)" ]; then
             echo "ERROR: cmd/regenerate-dynclient is not idempotent on this commit."
             git status --short
