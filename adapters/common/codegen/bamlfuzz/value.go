@@ -2,10 +2,12 @@ package bamlfuzz
 
 // FuzzOptionalShape encodes which of the three legitimate LLM
 // shapes an optional field takes. Absent optionals are omitted
-// from the expected parsed output (matching BAML's parser
-// behavior); Null optionals appear as explicit JSON null. The
-// distinction matters for both the mock (what the LLM emits)
-// and the expected output (what the parser produces).
+// from expected output when preserve_schema_order is false; when
+// true they appear as JSON null (matching BAML's behaviour of
+// emitting all schema keys). Null optionals always appear as
+// explicit JSON null. The distinction matters for both the mock
+// (what the LLM emits) and the expected output (what the parser
+// produces).
 type FuzzOptionalShape string
 
 const (

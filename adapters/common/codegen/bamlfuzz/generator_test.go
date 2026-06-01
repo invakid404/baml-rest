@@ -232,7 +232,7 @@ func TestWalkRoundTripNormalizesAbsent(t *testing.T) {
 		if err != nil {
 			rt.Fatalf("walk: %v", err)
 		}
-		normalized, err := NormalizeMockToExpectedWithChoices(schema, res.MockLLMContent, schema.RootClass, res.Metadata.UnionChoices)
+		normalized, err := NormalizeMockToExpectedWithChoices(schema, res.MockLLMContent, schema.RootClass, res.Metadata.UnionChoices, false)
 		if err != nil {
 			rt.Fatalf("normalize: %v\nmock: %s\nschema: %s",
 				err, string(res.MockLLMContent), schemaDump(schema))

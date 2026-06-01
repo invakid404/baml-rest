@@ -19,11 +19,24 @@ type WalkResult struct {
 	MockLLMContent json.RawMessage
 	// Expected is the schema-normalized parsed value that matches
 	// what the BAML parser produces: present optionals carry their
-	// inner value, explicit-null optionals appear as JSON null, and
-	// absent optionals are omitted from the parent object.
+	// inner value, explicit-null optionals appear as JSON null.
+	// Absent optionals are omitted when PreserveSchemaOrder is
+	// false (the default); when true they appear as JSON null,
+	// matching BAML's behaviour of emitting all schema keys.
 	Expected json.RawMessage
 	// Metadata is per-case provenance the failure envelope embeds.
 	Metadata CaseMetadata
+}
+
+// WalkOption configures optional Walk behaviour.
+type WalkOption func(*walkState)
+
+// WithPreserveSchemaOrder controls whether absent optional fields
+// appear in the Expected output. When true, absent optionals are
+// emitted as JSON null (matching BAML's preserve-schema-order mode);
+// when false they are omitted.
+func WithPreserveSchemaOrder(v bool) WalkOption {
+	return func(s *walkState) { s.preserveSchemaOrder = v }
 }
 
 // Walk renders a (schema, root-value) pair through the LLM-output
@@ -42,13 +55,16 @@ type WalkResult struct {
 // orders end-to-end. Union values are rendered via the recorded
 // VariantIndex / Variant fields; the walker fails closed when a
 // union value lacks a recorded choice.
-func Walk(schema FuzzSchema, value FuzzValue) (WalkResult, error) {
+func Walk(schema FuzzSchema, value FuzzValue, opts ...WalkOption) (WalkResult, error) {
 	meta := CaseMetadata{
 		OptionalShapes:  make(map[string]string),
 		RecursionDepths: make(map[string]int),
 		UnionChoices:    make(map[string]UnionChoice),
 	}
 	state := &walkState{schema: schema, meta: &meta, depths: make(map[string]int)}
+	for _, opt := range opts {
+		opt(state)
+	}
 	root := schema.EffectiveRoot()
 	var mockBuf, expectBuf bytes.Buffer
 	if err := state.renderValueMock(&mockBuf, root, value, ""); err != nil {
@@ -69,9 +85,10 @@ func Walk(schema FuzzSchema, value FuzzValue) (WalkResult, error) {
 // are incremented when entering a class instance and decremented on
 // exit so the meta.RecursionDepths reports the peak depth observed.
 type walkState struct {
-	schema FuzzSchema
-	meta   *CaseMetadata
-	depths map[string]int
+	schema              FuzzSchema
+	meta                *CaseMetadata
+	depths              map[string]int
+	preserveSchemaOrder bool
 }
 
 func (s *walkState) renderClassMock(buf *bytes.Buffer, val FuzzValue, path string) error {
@@ -134,7 +151,7 @@ func (s *walkState) renderClassExpected(buf *bytes.Buffer, val FuzzValue) error 
 		if !ok {
 			return fmt.Errorf("walk: missing field %q on class %q in expected", prop.Name, cls.Name)
 		}
-		if prop.Type.Kind == KindOptional && fv.OptionalShape == OptionalAbsent {
+		if prop.Type.Kind == KindOptional && fv.OptionalShape == OptionalAbsent && !s.preserveSchemaOrder {
 			continue
 		}
 		if !first {
@@ -388,23 +405,24 @@ func writeLiteral(buf *bytes.Buffer, lit *FuzzLiteral) error {
 // NormalizeMockToExpected re-parses `mock` and walks the schema's
 // class graph to produce the canonical-equivalent of the walker's
 // Expected output: class instance keys follow schema declaration
-// order with absent optionals omitted (matching BAML's parser
-// behavior), and map keys retain the mock's wire order — which,
-// given a well-formed mock, mirrors FuzzValue.MapEntries insertion
-// order. This is the invariant the tests assert: walking
-// (mock) -> normalize -> bytes-equal walker's expected.
+// order, and map keys retain the mock's wire order. Absent optional
+// fields are omitted (preserve=false default, matching BAML's
+// parser behaviour when preserve_schema_order is off).
 //
 // Union schemas require union-choice metadata to disambiguate which
 // arm produced the mock; call NormalizeMockToExpectedWithChoices
 // directly when the schema contains KindUnion. This entry point
 // fails closed on encountering a union without recorded choices.
 func NormalizeMockToExpected(schema FuzzSchema, mock json.RawMessage, rootClass string) (json.RawMessage, error) {
-	return NormalizeMockToExpectedWithChoices(schema, mock, rootClass, nil)
+	return NormalizeMockToExpectedWithChoices(schema, mock, rootClass, nil, false)
 }
 
 // NormalizeMockToExpectedWithChoices is the union-aware variant. The
 // `choices` map mirrors CaseMetadata.UnionChoices: each entry tells
-// the normalizer which arm produced the JSON at that path.
+// the normalizer which arm produced the JSON at that path. When
+// `preserve` is true, absent optional fields are emitted as JSON
+// null (matching BAML's preserve_schema_order mode); when false
+// they are omitted.
 //
 // Normalization is driven by the schema's effective root type
 // (FuzzSchema.EffectiveRoot): when the schema sets RootType the
@@ -414,17 +432,17 @@ func NormalizeMockToExpected(schema FuzzSchema, mock json.RawMessage, rootClass 
 // keeping the v1 behaviour. The `rootClass` parameter is honoured
 // only as a fallback for callers that supply it before RootType was
 // added to the IR.
-func NormalizeMockToExpectedWithChoices(schema FuzzSchema, mock json.RawMessage, rootClass string, choices map[string]UnionChoice) (json.RawMessage, error) {
+func NormalizeMockToExpectedWithChoices(schema FuzzSchema, mock json.RawMessage, rootClass string, choices map[string]UnionChoice, preserve bool) (json.RawMessage, error) {
 	raw, err := decodePreserveOrder(mock)
 	if err != nil {
 		return nil, fmt.Errorf("normalize: parse mock: %w", err)
 	}
 	root := effectiveNormalizeRoot(schema, rootClass)
-	out, err := normalizeValue(schema, root, raw, "", choices)
+	out, err := normalizeValue(schema, root, raw, "", choices, preserve)
 	if err != nil {
 		return nil, err
 	}
-	return marshalSchemaOrdered(schema, root, out, choices)
+	return marshalSchemaOrdered(schema, root, out, choices, preserve)
 }
 
 // decodePreserveOrder decodes JSON into an `any`-shaped tree where
@@ -503,7 +521,7 @@ func effectiveNormalizeRoot(schema FuzzSchema, rootClass string) FuzzType {
 	return schema.EffectiveRoot()
 }
 
-func normalizeClass(schema FuzzSchema, className string, raw any, basePath string, choices map[string]UnionChoice) (*bamlutils.OrderedMap[any], error) {
+func normalizeClass(schema FuzzSchema, className string, raw any, basePath string, choices map[string]UnionChoice, preserve bool) (*bamlutils.OrderedMap[any], error) {
 	cls, ok := schema.FindClass(className)
 	if !ok {
 		return nil, fmt.Errorf("normalize: unknown class %q", className)
@@ -519,9 +537,14 @@ func normalizeClass(schema FuzzSchema, className string, raw any, basePath strin
 			if prop.Type.Kind != KindOptional {
 				return nil, fmt.Errorf("normalize: required field %q on %q missing from mock", prop.Name, className)
 			}
+			if preserve {
+				if err := out.Set(prop.Name, nil); err != nil {
+					return nil, err
+				}
+			}
 			continue
 		}
-		nv, err := normalizeValue(schema, prop.Type, fv, basePath+"."+prop.Name, choices)
+		nv, err := normalizeValue(schema, prop.Type, fv, basePath+"."+prop.Name, choices, preserve)
 		if err != nil {
 			return nil, fmt.Errorf("normalize: field %q on %q: %w", prop.Name, className, err)
 		}
@@ -532,7 +555,7 @@ func normalizeClass(schema FuzzSchema, className string, raw any, basePath strin
 	return out, nil
 }
 
-func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices map[string]UnionChoice) (any, error) {
+func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices map[string]UnionChoice, preserve bool) (any, error) {
 	switch t.Kind {
 	case KindString, KindInt, KindFloat, KindBool, KindLiteral, KindEnumRef:
 		return raw, nil
@@ -545,7 +568,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		if t.Inner == nil {
 			return nil, fmt.Errorf("optional missing inner")
 		}
-		return normalizeValue(schema, *t.Inner, raw, path, choices)
+		return normalizeValue(schema, *t.Inner, raw, path, choices, preserve)
 	case KindList:
 		if raw == nil {
 			return nil, nil
@@ -556,7 +579,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		}
 		out := make([]any, len(arr))
 		for i, item := range arr {
-			nv, err := normalizeValue(schema, *t.Inner, item, fmt.Sprintf("%s[%d]", path, i), choices)
+			nv, err := normalizeValue(schema, *t.Inner, item, fmt.Sprintf("%s[%d]", path, i), choices, preserve)
 			if err != nil {
 				return nil, fmt.Errorf("list[%d]: %w", i, err)
 			}
@@ -574,7 +597,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		out := &bamlutils.OrderedMap[any]{}
 		var firstErr error
 		obj.Range(func(k string, v any) bool {
-			nv, err := normalizeValue(schema, *t.Inner, v, fmt.Sprintf("%s[%q]", path, k), choices)
+			nv, err := normalizeValue(schema, *t.Inner, v, fmt.Sprintf("%s[%q]", path, k), choices, preserve)
 			if err != nil {
 				firstErr = fmt.Errorf("map[%q]: %w", k, err)
 				return false
@@ -590,7 +613,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		}
 		return out, nil
 	case KindClassRef:
-		return normalizeClass(schema, t.Ref, raw, path, choices)
+		return normalizeClass(schema, t.Ref, raw, path, choices, preserve)
 	case KindUnion:
 		choice, ok := choices[path]
 		if !ok {
@@ -599,7 +622,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		if choice.Index < 0 || choice.Index >= len(t.Variants) {
 			return nil, fmt.Errorf("normalize: union choice index %d out of range at %q", choice.Index, path)
 		}
-		return normalizeValue(schema, t.Variants[choice.Index], raw, path+":v", choices)
+		return normalizeValue(schema, t.Variants[choice.Index], raw, path+":v", choices, preserve)
 	default:
 		return nil, fmt.Errorf("normalize: unknown kind %q", t.Kind)
 	}
@@ -615,15 +638,15 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 // `root` FuzzType drives dispatch directly, so raw-root
 // union/list/map/scalar schemas are walked as-is without going
 // through the class helper.
-func marshalSchemaOrdered(schema FuzzSchema, root FuzzType, normalized any, choices map[string]UnionChoice) (json.RawMessage, error) {
+func marshalSchemaOrdered(schema FuzzSchema, root FuzzType, normalized any, choices map[string]UnionChoice, preserve bool) (json.RawMessage, error) {
 	var buf bytes.Buffer
-	if err := writeOrderedValue(&buf, schema, root, normalized, "", choices); err != nil {
+	if err := writeOrderedValue(&buf, schema, root, normalized, "", choices, preserve); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
-func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v any, path string, choices map[string]UnionChoice) error {
+func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v any, path string, choices map[string]UnionChoice, preserve bool) error {
 	cls, ok := schema.FindClass(className)
 	if !ok {
 		return fmt.Errorf("ordered: unknown class %q", className)
@@ -637,6 +660,18 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 	for _, prop := range cls.Properties {
 		fv, present := obj.Get(prop.Name)
 		if !present && prop.Type.Kind == KindOptional {
+			if preserve {
+				if !first {
+					buf.WriteByte(',')
+				}
+				first = false
+				keyBytes, err := json.Marshal(prop.Name)
+				if err != nil {
+					return err
+				}
+				buf.Write(keyBytes)
+				buf.WriteString(":null")
+			}
 			continue
 		}
 		if !first {
@@ -649,7 +684,7 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 		}
 		buf.Write(keyBytes)
 		buf.WriteByte(':')
-		if err := writeOrderedValue(buf, schema, prop.Type, fv, path+"."+prop.Name, choices); err != nil {
+		if err := writeOrderedValue(buf, schema, prop.Type, fv, path+"."+prop.Name, choices, preserve); err != nil {
 			return err
 		}
 	}
@@ -657,14 +692,14 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 	return nil
 }
 
-func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, path string, choices map[string]UnionChoice) error {
+func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, path string, choices map[string]UnionChoice, preserve bool) error {
 	switch t.Kind {
 	case KindOptional:
 		if v == nil {
 			buf.WriteString("null")
 			return nil
 		}
-		return writeOrderedValue(buf, schema, *t.Inner, v, path, choices)
+		return writeOrderedValue(buf, schema, *t.Inner, v, path, choices, preserve)
 	case KindList:
 		if v == nil {
 			buf.WriteString("null")
@@ -679,7 +714,7 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			if err := writeOrderedValue(buf, schema, *t.Inner, item, fmt.Sprintf("%s[%d]", path, i), choices); err != nil {
+			if err := writeOrderedValue(buf, schema, *t.Inner, item, fmt.Sprintf("%s[%d]", path, i), choices, preserve); err != nil {
 				return err
 			}
 		}
@@ -690,11 +725,6 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 			buf.WriteString("null")
 			return nil
 		}
-		// Emit map values in the carrier's recorded insertion order
-		// (the OrderedMap[any] tree threaded through from the mock
-		// via decodePreserveOrder). This matches the walker's
-		// FuzzValue.MapEntries slice-order emission, so the
-		// (walk → normalize) round-trip is byte-stable.
 		obj, ok := v.(*bamlutils.OrderedMap[any])
 		if !ok {
 			return fmt.Errorf("map expected object, got %T", v)
@@ -714,7 +744,7 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 			}
 			buf.Write(kb)
 			buf.WriteByte(':')
-			if err := writeOrderedValue(buf, schema, *t.Inner, mv, fmt.Sprintf("%s[%q]", path, k), choices); err != nil {
+			if err := writeOrderedValue(buf, schema, *t.Inner, mv, fmt.Sprintf("%s[%q]", path, k), choices, preserve); err != nil {
 				firstErr = err
 				return false
 			}
@@ -726,7 +756,7 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 		buf.WriteByte('}')
 		return nil
 	case KindClassRef:
-		return writeOrderedClass(buf, schema, t.Ref, v, path, choices)
+		return writeOrderedClass(buf, schema, t.Ref, v, path, choices, preserve)
 	case KindUnion:
 		choice, ok := choices[path]
 		if !ok {
@@ -735,9 +765,8 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 		if choice.Index < 0 || choice.Index >= len(t.Variants) {
 			return fmt.Errorf("ordered: union choice index %d out of range at %q", choice.Index, path)
 		}
-		return writeOrderedValue(buf, schema, t.Variants[choice.Index], v, path+":v", choices)
+		return writeOrderedValue(buf, schema, t.Variants[choice.Index], v, path+":v", choices, preserve)
 	default:
-		// Primitives, literals, enums: emit through encoding/json.
 		b, err := json.Marshal(v)
 		if err != nil {
 			return err
