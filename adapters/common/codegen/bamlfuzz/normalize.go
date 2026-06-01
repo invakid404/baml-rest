@@ -386,12 +386,12 @@ func writeLiteral(buf *bytes.Buffer, lit *FuzzLiteral) error {
 }
 
 // NormalizeMockToExpected re-parses `mock` and walks the schema's
-// class graph to insert JSON null for every optional field that the
-// LLM omitted. The returned bytes are the canonical-equivalent of
-// the walker's Expected output: class instance keys follow schema
-// declaration order, and map keys retain the mock's wire order —
-// which, given a well-formed mock, mirrors FuzzValue.MapEntries
-// insertion order. This is the invariant the tests assert: walking
+// class graph to produce the canonical-equivalent of the walker's
+// Expected output: class instance keys follow schema declaration
+// order with absent optionals omitted (matching BAML's parser
+// behavior), and map keys retain the mock's wire order — which,
+// given a well-formed mock, mirrors FuzzValue.MapEntries insertion
+// order. This is the invariant the tests assert: walking
 // (mock) -> normalize -> bytes-equal walker's expected.
 //
 // Union schemas require union-choice metadata to disambiguate which
