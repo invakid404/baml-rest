@@ -302,6 +302,18 @@ type loweredStaticCase struct {
 // response against Expected, and write a StaticFailureEnvelope on any
 // disagreement.
 func runOneStaticCase(t *testing.T, env *testutil.TestEnvironment, mockClient *mockllm.Client, bamlClient *testutil.BAMLRestClient, lc loweredStaticCase, batchDir string, caseIdx int, batchLabel string, source staticCaseSource) {
+	// BAML's static-typed serde always emits every schema field in the
+	// response — absent optionals become JSON null regardless of
+	// preserve_schema_order. Re-walk with preserve=true so Expected
+	// includes all fields, matching the runtime's behaviour.
+	{
+		res, err := bamlfuzz.Walk(lc.Case.Schema, lc.Case.Value, bamlfuzz.WithPreserveSchemaOrder(true))
+		if err != nil {
+			t.Fatalf("re-walk for static expected: %v", err)
+		}
+		lc.Case.Expected = res.Expected
+	}
+
 	envelope := newStaticEnvelope(lc.Case, caseIdx, batchLabel, source, false)
 	envelope.BamlSource = lc.Source.Source
 	envelope.FunctionName = lc.Source.FunctionName

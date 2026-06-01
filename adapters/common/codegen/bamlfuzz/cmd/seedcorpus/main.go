@@ -91,7 +91,7 @@ type seedSpec struct {
 
 func materialize(idx int, spec seedSpec, mode bamlfuzz.OracleMode) bamlfuzz.OracleCase {
 	schema := bamlfuzz.AnalyzeGraph(spec.Schema)
-	walk, err := bamlfuzz.Walk(schema, spec.Value)
+	walk, err := bamlfuzz.Walk(schema, spec.Value, bamlfuzz.WithPreserveSchemaOrder(spec.Preserve))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "walk %s: %v\n", spec.Name, err)
 		os.Exit(1)

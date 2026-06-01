@@ -352,7 +352,7 @@ func TestNormalizeRawRootUnion(t *testing.T) {
 	choices := map[string]UnionChoice{
 		"": {Index: 1, Kind: KindInt, VariantCount: 2},
 	}
-	out, err := NormalizeMockToExpectedWithChoices(schema, json.RawMessage(`42`), "", choices)
+	out, err := NormalizeMockToExpectedWithChoices(schema, json.RawMessage(`42`), "", choices, false)
 	if err != nil {
 		t.Fatalf("normalize raw root union: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestNormalizeRawRootList(t *testing.T) {
 	elem := FuzzType{Kind: KindInt}
 	root := FuzzType{Kind: KindList, Inner: &elem}
 	schema := FuzzSchema{RootType: &root}
-	out, err := NormalizeMockToExpectedWithChoices(schema, json.RawMessage(`[1,2,3]`), "", nil)
+	out, err := NormalizeMockToExpectedWithChoices(schema, json.RawMessage(`[1,2,3]`), "", nil, false)
 	if err != nil {
 		t.Fatalf("normalize raw root list: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestNormalizeRawRootMap(t *testing.T) {
 	val := FuzzType{Kind: KindInt}
 	root := FuzzType{Kind: KindMap, Key: &key, Inner: &val}
 	schema := FuzzSchema{RootType: &root}
-	out, err := NormalizeMockToExpectedWithChoices(schema, json.RawMessage(`{"a":1,"b":2}`), "", nil)
+	out, err := NormalizeMockToExpectedWithChoices(schema, json.RawMessage(`{"a":1,"b":2}`), "", nil, false)
 	if err != nil {
 		t.Fatalf("normalize raw root map: %v", err)
 	}
@@ -707,7 +707,7 @@ func checkNoLiteralInt(rt *rapid.T, t FuzzType) {
 func TestCoupledCaseGenProducesWalkableCases(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		cc := CoupledCaseGen(StaticSchemaGen()).Draw(rt, "case")
-		normalized, err := NormalizeMockToExpectedWithChoices(cc.Schema, cc.Walk.MockLLMContent, cc.Schema.RootClass, cc.Walk.Metadata.UnionChoices)
+		normalized, err := NormalizeMockToExpectedWithChoices(cc.Schema, cc.Walk.MockLLMContent, cc.Schema.RootClass, cc.Walk.Metadata.UnionChoices, false)
 		if err != nil {
 			rt.Fatalf("normalize: %v\nschema: %s", err, schemaDumpJSON(cc.Schema))
 		}
