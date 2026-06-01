@@ -20,9 +20,9 @@ type WalkResult struct {
 	// Expected is the schema-normalized parsed value that matches
 	// what the BAML parser produces: present optionals carry their
 	// inner value, explicit-null optionals appear as JSON null.
-	// Absent optionals are omitted when PreserveSchemaOrder is
-	// false (the default); when true they appear as JSON null,
-	// matching BAML's behaviour of emitting all schema keys.
+	// Absent optionals always appear as JSON null, matching the
+	// static path and the dynamic path's InjectAbsentOptionals
+	// post-processing.
 	Expected json.RawMessage
 	// Metadata is per-case provenance the failure envelope embeds.
 	Metadata CaseMetadata
@@ -31,12 +31,13 @@ type WalkResult struct {
 // WalkOption configures optional Walk behaviour.
 type WalkOption func(*walkState)
 
-// WithPreserveSchemaOrder controls whether absent optional fields
-// appear in the Expected output. When true, absent optionals are
-// emitted as JSON null (matching BAML's preserve-schema-order mode);
-// when false they are omitted.
+// WithPreserveSchemaOrder is a legacy option that previously
+// controlled whether absent optional fields appeared in Expected
+// output. Since the dynamic path now always injects absent optionals
+// as null (matching the static path), this option is accepted but
+// ignored — absent optionals always appear as JSON null.
 func WithPreserveSchemaOrder(v bool) WalkOption {
-	return func(s *walkState) { s.preserveSchemaOrder = v }
+	return func(s *walkState) {}
 }
 
 // Walk renders a (schema, root-value) pair through the LLM-output
@@ -85,10 +86,9 @@ func Walk(schema FuzzSchema, value FuzzValue, opts ...WalkOption) (WalkResult, e
 // are incremented when entering a class instance and decremented on
 // exit so the meta.RecursionDepths reports the peak depth observed.
 type walkState struct {
-	schema              FuzzSchema
-	meta                *CaseMetadata
-	depths              map[string]int
-	preserveSchemaOrder bool
+	schema FuzzSchema
+	meta   *CaseMetadata
+	depths map[string]int
 }
 
 func (s *walkState) renderClassMock(buf *bytes.Buffer, val FuzzValue, path string) error {
@@ -150,9 +150,6 @@ func (s *walkState) renderClassExpected(buf *bytes.Buffer, val FuzzValue) error 
 		fv, ok := val.LookupField(prop.Name)
 		if !ok {
 			return fmt.Errorf("walk: missing field %q on class %q in expected", prop.Name, cls.Name)
-		}
-		if prop.Type.Kind == KindOptional && fv.OptionalShape == OptionalAbsent && !s.preserveSchemaOrder {
-			continue
 		}
 		if !first {
 			buf.WriteByte(',')
@@ -406,23 +403,21 @@ func writeLiteral(buf *bytes.Buffer, lit *FuzzLiteral) error {
 // class graph to produce the canonical-equivalent of the walker's
 // Expected output: class instance keys follow schema declaration
 // order, and map keys retain the mock's wire order. Absent optional
-// fields are omitted (preserve=false default, matching BAML's
-// parser behaviour when preserve_schema_order is off).
+// fields are always emitted as JSON null.
 //
 // Union schemas require union-choice metadata to disambiguate which
 // arm produced the mock; call NormalizeMockToExpectedWithChoices
 // directly when the schema contains KindUnion. This entry point
 // fails closed on encountering a union without recorded choices.
 func NormalizeMockToExpected(schema FuzzSchema, mock json.RawMessage, rootClass string) (json.RawMessage, error) {
-	return NormalizeMockToExpectedWithChoices(schema, mock, rootClass, nil, false)
+	return NormalizeMockToExpectedWithChoices(schema, mock, rootClass, nil, true)
 }
 
 // NormalizeMockToExpectedWithChoices is the union-aware variant. The
 // `choices` map mirrors CaseMetadata.UnionChoices: each entry tells
-// the normalizer which arm produced the JSON at that path. When
-// `preserve` is true, absent optional fields are emitted as JSON
-// null (matching BAML's preserve_schema_order mode); when false
-// they are omitted.
+// the normalizer which arm produced the JSON at that path. The
+// `preserve` parameter is accepted for API compatibility but absent
+// optional fields are always emitted as JSON null.
 //
 // Normalization is driven by the schema's effective root type
 // (FuzzSchema.EffectiveRoot): when the schema sets RootType the
@@ -537,10 +532,8 @@ func normalizeClass(schema FuzzSchema, className string, raw any, basePath strin
 			if prop.Type.Kind != KindOptional {
 				return nil, fmt.Errorf("normalize: required field %q on %q missing from mock", prop.Name, className)
 			}
-			if preserve {
-				if err := out.Set(prop.Name, nil); err != nil {
-					return nil, err
-				}
+			if err := out.Set(prop.Name, nil); err != nil {
+				return nil, err
 			}
 			continue
 		}
@@ -660,18 +653,16 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 	for _, prop := range cls.Properties {
 		fv, present := obj.Get(prop.Name)
 		if !present && prop.Type.Kind == KindOptional {
-			if preserve {
-				if !first {
-					buf.WriteByte(',')
-				}
-				first = false
-				keyBytes, err := json.Marshal(prop.Name)
-				if err != nil {
-					return err
-				}
-				buf.Write(keyBytes)
-				buf.WriteString(":null")
+			if !first {
+				buf.WriteByte(',')
 			}
+			first = false
+			keyBytes, err := json.Marshal(prop.Name)
+			if err != nil {
+				return err
+			}
+			buf.Write(keyBytes)
+			buf.WriteString(":null")
 			continue
 		}
 		if !first {

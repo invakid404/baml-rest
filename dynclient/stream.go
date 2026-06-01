@@ -235,6 +235,10 @@ func (s *Stream) finalEvent(result *workerplugin.StreamResult) (*Event, error) {
 	}
 	if flattened != nil {
 		var transErr error
+		flattened, transErr = bamlutils.InjectAbsentOptionals(flattened, s.outputSchema)
+		if transErr != nil {
+			return nil, transErr
+		}
 		if s.preserveSchemaOrder {
 			flattened, transErr = bamlutils.ReorderDynamicOutputBySchema(flattened, s.outputSchema)
 		} else {

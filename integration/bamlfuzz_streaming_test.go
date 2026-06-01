@@ -207,14 +207,6 @@ func streamChunkSizeFor(seed int64) int {
 func runStreamingOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.OracleCase, caseIdx int, source caseSource) {
 	t.Helper()
 
-	if c.PreserveSchemaOrder {
-		res, err := bamlfuzz.Walk(c.Schema, c.Value, bamlfuzz.WithPreserveSchemaOrder(true))
-		if err != nil {
-			t.Fatalf("re-walk with preserve_schema_order: %v", err)
-		}
-		c.Expected = res.Expected
-	}
-
 	chunkSize := streamChunkSizeFor(c.Seed)
 	envelope := &bamlfuzz.StreamingFailureEnvelope{
 		GeneratorVersion:    bamlfuzz.GeneratorVersion,
