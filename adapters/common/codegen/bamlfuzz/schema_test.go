@@ -196,9 +196,9 @@ func TestAnalyzeGraphDAGStaysSafe(t *testing.T) {
 }
 
 // TestWalkOptionalContract pins the absent-vs-null contract: walker
-// expected JSON renders absent and null the same way (both null),
-// while the mock JSON differs (absent omits the key, null emits an
-// explicit null).
+// expected JSON omits absent optionals (matching BAML parser output)
+// and renders explicit-null optionals as JSON null, while the mock
+// JSON differs (absent omits the key, null emits an explicit null).
 func TestWalkOptionalContract(t *testing.T) {
 	optStr := FuzzType{Kind: KindOptional, Inner: &FuzzType{Kind: KindString}}
 	schema := FuzzSchema{
@@ -233,7 +233,7 @@ func TestWalkOptionalContract(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 	wantMock := `{"Fuzz_field_0":"hello","Fuzz_field_2":null}`
-	wantExpected := `{"Fuzz_field_0":"hello","Fuzz_field_1":null,"Fuzz_field_2":null}`
+	wantExpected := `{"Fuzz_field_0":"hello","Fuzz_field_2":null}`
 	if string(res.MockLLMContent) != wantMock {
 		t.Errorf("mock mismatch\nwant: %s\ngot:  %s", wantMock, string(res.MockLLMContent))
 	}

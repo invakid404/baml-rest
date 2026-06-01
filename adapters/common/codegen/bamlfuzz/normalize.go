@@ -17,11 +17,10 @@ type WalkResult struct {
 	// from the parent object's key set; shape "null" emits an
 	// explicit JSON null.
 	MockLLMContent json.RawMessage
-	// Expected is the schema-normalized parsed value: every
-	// optional field — present, absent, or explicit-null — appears
-	// at its key, with absent and null both rendered as JSON null.
-	// Equivalently: this is what the BAML parser is contracted to
-	// produce when it consumes MockLLMContent.
+	// Expected is the schema-normalized parsed value that matches
+	// what the BAML parser produces: present optionals carry their
+	// inner value, explicit-null optionals appear as JSON null, and
+	// absent optionals are omitted from the parent object.
 	Expected json.RawMessage
 	// Metadata is per-case provenance the failure envelope embeds.
 	Metadata CaseMetadata
@@ -129,14 +128,19 @@ func (s *walkState) renderClassExpected(buf *bytes.Buffer, val FuzzValue) error 
 	}
 	defer func() { s.depths[cls.Name]-- }()
 	buf.WriteByte('{')
-	for i, prop := range cls.Properties {
+	first := true
+	for _, prop := range cls.Properties {
 		fv, ok := val.LookupField(prop.Name)
 		if !ok {
 			return fmt.Errorf("walk: missing field %q on class %q in expected", prop.Name, cls.Name)
 		}
-		if i > 0 {
+		if prop.Type.Kind == KindOptional && fv.OptionalShape == OptionalAbsent {
+			continue
+		}
+		if !first {
 			buf.WriteByte(',')
 		}
+		first = false
 		keyBytes, err := json.Marshal(prop.Name)
 		if err != nil {
 			return err
@@ -512,14 +516,8 @@ func normalizeClass(schema FuzzSchema, className string, raw any, basePath strin
 	for _, prop := range cls.Properties {
 		fv, present := obj.Get(prop.Name)
 		if !present {
-			// Absent optionals normalize to null; absent non-
-			// optionals are a contract violation upstream of the
-			// walker.
 			if prop.Type.Kind != KindOptional {
 				return nil, fmt.Errorf("normalize: required field %q on %q missing from mock", prop.Name, className)
-			}
-			if err := out.Set(prop.Name, nil); err != nil {
-				return nil, err
 			}
 			continue
 		}
@@ -635,17 +633,22 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 		return fmt.Errorf("ordered: class %q expected object, got %T", className, v)
 	}
 	buf.WriteByte('{')
-	for i, prop := range cls.Properties {
-		if i > 0 {
+	first := true
+	for _, prop := range cls.Properties {
+		fv, present := obj.Get(prop.Name)
+		if !present && prop.Type.Kind == KindOptional {
+			continue
+		}
+		if !first {
 			buf.WriteByte(',')
 		}
+		first = false
 		keyBytes, err := json.Marshal(prop.Name)
 		if err != nil {
 			return err
 		}
 		buf.Write(keyBytes)
 		buf.WriteByte(':')
-		fv, _ := obj.Get(prop.Name)
 		if err := writeOrderedValue(buf, schema, prop.Type, fv, path+"."+prop.Name, choices); err != nil {
 			return err
 		}
@@ -743,4 +746,3 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 		return nil
 	}
 }
-
