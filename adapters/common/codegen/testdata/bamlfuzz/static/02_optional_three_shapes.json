@@ -83,7 +83,8 @@
   },
   "expected": {
     "present_field": "here",
-    "null_field": null
+    "null_field": null,
+    "absent_field": null
   },
   "metadata": {
     "optional_shapes": {
