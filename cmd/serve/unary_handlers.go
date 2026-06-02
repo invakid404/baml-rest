@@ -184,6 +184,11 @@ func makeChiDynamicCallHandlerWithEmitter(p unaryCaller, streamMode bamlutils.St
 			writeChiInternalError(w, r, err)
 			return
 		}
+		flattenedData, err = bamlutils.InjectAbsentOptionals(flattenedData, input.OutputSchema)
+		if err != nil {
+			writeChiInternalError(w, r, err)
+			return
+		}
 		if input.PreserveSchemaOrder != nil && *input.PreserveSchemaOrder {
 			reordered, rerr := bamlutils.ReorderDynamicOutputBySchema(flattenedData, input.OutputSchema)
 			if rerr != nil {
@@ -250,6 +255,11 @@ func makeChiDynamicParseHandler(p unaryParser, preserveSchemaOrderDefault bool) 
 		}
 
 		flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
+		if err != nil {
+			writeChiInternalError(w, r, err)
+			return
+		}
+		flattenedData, err = bamlutils.InjectAbsentOptionals(flattenedData, input.OutputSchema)
 		if err != nil {
 			writeChiInternalError(w, r, err)
 			return

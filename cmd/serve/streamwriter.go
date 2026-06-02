@@ -198,22 +198,26 @@ type dynamicFinalReorder struct {
 	Enabled bool
 }
 
-// applyFinal runs the schema-guided reorder when Enabled is true (and
-// Schema is non-nil) and otherwise alpha-sorts the payload. Returns
-// the original bytes when no transform applies (e.g. Enabled with a
-// nil Schema, which the handlers do not populate today but the
-// fallback keeps consumeStream safe under future shape changes).
+// applyFinal injects absent-optional nulls and then runs the
+// schema-guided reorder when Enabled is true (and Schema is non-nil)
+// or otherwise alpha-sorts the payload. Returns the original bytes
+// when no transform applies (e.g. nil receiver, which the static
+// stream handlers use).
 func (d *dynamicFinalReorder) applyFinal(data []byte) ([]byte, error) {
 	if d == nil {
 		return data, nil
 	}
+	injected, err := bamlutils.InjectAbsentOptionals(data, d.Schema)
+	if err != nil {
+		return nil, err
+	}
 	if d.Enabled {
 		if d.Schema == nil {
-			return data, nil
+			return injected, nil
 		}
-		return bamlutils.ReorderDynamicOutputBySchema(data, d.Schema)
+		return bamlutils.ReorderDynamicOutputBySchema(injected, d.Schema)
 	}
-	return bamlutils.SortDynamicOutput(data)
+	return bamlutils.SortDynamicOutput(injected)
 }
 
 // HandleNDJSONStreamFiber handles NDJSON stream requests with native Fiber streaming.

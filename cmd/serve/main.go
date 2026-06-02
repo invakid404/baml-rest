@@ -516,6 +516,11 @@ var serveCmd = &cobra.Command{
 						logger.Error().Err(err).Msg("dynamic response flatten failed")
 						return writeFiberInternalError(c, err)
 					}
+					flattenedData, err = bamlutils.InjectAbsentOptionals(flattenedData, parsed.OutputSchema)
+					if err != nil {
+						logger.Error().Err(err).Msg("dynamic response inject absent optionals failed")
+						return writeFiberInternalError(c, err)
+					}
 					if parsed.PreserveSchemaOrder {
 						reordered, rerr := bamlutils.ReorderDynamicOutputBySchema(flattenedData, parsed.OutputSchema)
 						if rerr != nil {
@@ -608,6 +613,11 @@ var serveCmd = &cobra.Command{
 				flattenedData, err := bamlutils.FlattenDynamicOutput(result.Data)
 				if err != nil {
 					logger.Error().Err(err).Msg("dynamic parse response flatten failed")
+					return writeFiberInternalError(c, err)
+				}
+				flattenedData, err = bamlutils.InjectAbsentOptionals(flattenedData, parsed.OutputSchema)
+				if err != nil {
+					logger.Error().Err(err).Msg("dynamic parse response inject absent optionals failed")
 					return writeFiberInternalError(c, err)
 				}
 				if parsed.PreserveSchemaOrder {
