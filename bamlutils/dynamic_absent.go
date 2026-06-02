@@ -111,7 +111,16 @@ func (w *absentOptionalWalker) injectClass(className string, node orderedNode) (
 // injectType recurses into composite types to reach nested class
 // instances that may have their own absent optionals.
 func (w *absentOptionalWalker) injectType(spec DynamicTypeSpec, node orderedNode) (orderedNode, error) {
-	if spec.Ref != "" {
+	// A class/enum reference is spelled as a spec with Ref set and no
+	// structural Type. When Type IS set the spec is a composite (map,
+	// list, optional, union, …) and must take its structural path even
+	// if a stray Ref rode along — hand-written / replay / corpus
+	// envelopes can carry a `map<string, ClassRef>` whose property spec
+	// also stamps the value class's name into Ref. Honouring Ref first
+	// there would treat the map CONTAINER as a class instance and inject
+	// the class's absent optionals into the map's key namespace instead
+	// of recursing into each map value.
+	if spec.Ref != "" && spec.Type == "" {
 		if w.isClassRef(spec.Ref) {
 			return w.injectClass(spec.Ref, node)
 		}
