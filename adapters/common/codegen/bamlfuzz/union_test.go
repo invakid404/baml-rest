@@ -606,6 +606,39 @@ func TestEmitStaticOptionalUnionMemberFlattensToNull(t *testing.T) {
 	}
 }
 
+// TestEmitStaticNestedOptionalUnionMemberFlattensRecursively asserts
+// that a nested optional union member (optional<optional<int>>) flattens
+// at every level to `((int | null) | null)`. A non-recursive flatten
+// would emit `((int)? | null)`, re-introducing the parser-rejected
+// `(T)?` inside the sub-union.
+func TestEmitStaticNestedOptionalUnionMemberFlattensRecursively(t *testing.T) {
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindOptional, Inner: &FuzzType{Kind: KindOptional, Inner: &FuzzType{Kind: KindInt}}},
+			{Kind: KindString},
+		},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name:       "Root",
+			Properties: []FuzzProperty{{Name: "u", Type: uni}},
+		}},
+		RootClass: "Root",
+	}
+	src, err := LowerToBamlSource(schema, "TestC")
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	if !strings.Contains(src.Source, "u (((int | null) | null) | string)") {
+		t.Errorf("nested optional union member should flatten recursively, got source:\n%s", src.Source)
+	}
+	// No `(T)?` form may survive at any nesting level.
+	if strings.Contains(src.Source, ")?") {
+		t.Errorf("emitted a parenthesized-optional `)?` inside union:\n%s", src.Source)
+	}
+}
+
 // TestEmitStaticOptionalUnionMemberPreservesArmCount asserts the
 // flattened optional arm stays a single parenthesised sub-union so the
 // outer union's arm count (and therefore the oracle's UnionChoice

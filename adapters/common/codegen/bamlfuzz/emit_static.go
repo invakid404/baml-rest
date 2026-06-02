@@ -314,6 +314,11 @@ func typeSpelling(t FuzzType, classNames, enumNames map[string]string) (string, 
 // outer union's arm count unchanged (the flattened optional stays a
 // single sub-union arm), so the oracle's recorded UnionChoice indices
 // still line up with the emitted source.
+//
+// The inner spelling is taken recursively through unionMemberSpelling so
+// a nested optional (`optional<optional<int>>`) flattens at every level:
+// `((int | null) | null)`, not `((int)? | null)` which would re-introduce
+// the rejected `(T)?` inside the sub-union.
 func unionMemberSpelling(v FuzzType, classNames, enumNames map[string]string) (string, error) {
 	if v.Kind != KindOptional {
 		return typeSpelling(v, classNames, enumNames)
@@ -321,7 +326,7 @@ func unionMemberSpelling(v FuzzType, classNames, enumNames map[string]string) (s
 	if v.Inner == nil {
 		return "", fmt.Errorf("optional missing inner")
 	}
-	inner, err := typeSpelling(*v.Inner, classNames, enumNames)
+	inner, err := unionMemberSpelling(*v.Inner, classNames, enumNames)
 	if err != nil {
 		return "", err
 	}
