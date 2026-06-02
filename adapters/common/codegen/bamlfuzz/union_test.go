@@ -639,6 +639,41 @@ func TestEmitStaticNestedOptionalUnionMemberFlattensRecursively(t *testing.T) {
 	}
 }
 
+// TestEmitStaticSingleArmUnionOptionalMemberFlattens asserts that an
+// optional buried under a single-arm union variant still flattens.
+// typeSpelling collapses a one-arm union to its bare variant, so
+// union[union[optional<int>], string] would emit ((int)? | string)
+// unless unionMemberSpelling unwraps the single-arm union while keeping
+// the union-member context.
+func TestEmitStaticSingleArmUnionOptionalMemberFlattens(t *testing.T) {
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindUnion, Variants: []FuzzType{
+				{Kind: KindOptional, Inner: &FuzzType{Kind: KindInt}},
+			}},
+			{Kind: KindString},
+		},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name:       "Root",
+			Properties: []FuzzProperty{{Name: "u", Type: uni}},
+		}},
+		RootClass: "Root",
+	}
+	src, err := LowerToBamlSource(schema, "TestC")
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	if !strings.Contains(src.Source, "u ((int | null) | string)") {
+		t.Errorf("single-arm union wrapping an optional should flatten to (int | null), got source:\n%s", src.Source)
+	}
+	if strings.Contains(src.Source, ")?") {
+		t.Errorf("emitted a parenthesized-optional `)?` inside union:\n%s", src.Source)
+	}
+}
+
 // TestEmitStaticOptionalUnionMemberPreservesArmCount asserts the
 // flattened optional arm stays a single parenthesised sub-union so the
 // outer union's arm count (and therefore the oracle's UnionChoice

@@ -319,7 +319,17 @@ func typeSpelling(t FuzzType, classNames, enumNames map[string]string) (string, 
 // a nested optional (`optional<optional<int>>`) flattens at every level:
 // `((int | null) | null)`, not `((int)? | null)` which would re-introduce
 // the rejected `(T)?` inside the sub-union.
+//
+// A single-arm union variant is unwrapped and re-spelled through
+// unionMemberSpelling rather than typeSpelling: typeSpelling collapses a
+// one-arm union to its bare variant, which would drop us back into the
+// `(T)?` spelling for `union[union[optional<int>]]`. Unwrapping here keeps
+// the union-member context across the collapse, so the optional still
+// flattens to `(int | null)`.
 func unionMemberSpelling(v FuzzType, classNames, enumNames map[string]string) (string, error) {
+	if v.Kind == KindUnion && len(v.Variants) == 1 {
+		return unionMemberSpelling(v.Variants[0], classNames, enumNames)
+	}
 	if v.Kind != KindOptional {
 		return typeSpelling(v, classNames, enumNames)
 	}
