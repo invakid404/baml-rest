@@ -691,6 +691,39 @@ func TestEmitStaticRawTopLevelUnion(t *testing.T) {
 	}
 }
 
+// TestEmitStaticRawTopLevelUnionOptionalMemberFlattens asserts that an
+// optional variant in a raw top-level union (rendered via the
+// no-outer-parens return-type path) also flattens to `(inner | null)`
+// rather than `(inner)?`. Without routing the return-type union loop
+// through unionMemberSpelling, the function signature would carry the
+// parser-rejected `(int)?` form.
+func TestEmitStaticRawTopLevelUnionOptionalMemberFlattens(t *testing.T) {
+	root := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindOptional, Inner: &FuzzType{Kind: KindInt}},
+			{Kind: KindString},
+		},
+	}
+	schema := FuzzSchema{
+		Classes:  []FuzzClass{},
+		Enums:    []FuzzEnum{},
+		RootType: &root,
+	}
+	src, err := LowerToBamlSource(schema, "TestC")
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	// Top-level union: no outer parens, but the optional arm still
+	// flattens to a parenthesised `(int | null)` sub-union.
+	if !strings.Contains(src.Source, "-> (int | null) | string {") {
+		t.Errorf("expected '-> (int | null) | string {' in source, got:\n%s", src.Source)
+	}
+	if strings.Contains(src.Source, "(int)?") {
+		t.Errorf("emitted forbidden parenthesized-optional `(int)?` in return type:\n%s", src.Source)
+	}
+}
+
 // TestValueGenTerminatesThroughUnionRecursion is a rapid-driven
 // safety test: union variants can contain class refs that, when
 // chosen, would recurse into the same class. The value generator

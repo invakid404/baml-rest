@@ -345,7 +345,7 @@ func typeSpellingNoUnionParens(t FuzzType, classNames, enumNames map[string]stri
 	}
 	parts := make([]string, len(t.Variants))
 	for i, v := range t.Variants {
-		s, err := typeSpelling(v, classNames, enumNames)
+		s, err := unionMemberSpelling(v, classNames, enumNames)
 		if err != nil {
 			return "", fmt.Errorf("union variant %d: %w", i, err)
 		}
