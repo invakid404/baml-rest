@@ -197,6 +197,17 @@ func TestMain(m *testing.M) {
 		}
 	}
 	UseBuildRequest = parseBoolEnv(os.Getenv("BAML_REST_USE_BUILD_REQUEST"))
+
+	// Fuzz worker subprocesses re-run TestMain but don't need the shared
+	// Docker environment — FuzzBamlfuzzStatic builds its own via
+	// setupStaticEnv, and FuzzBamlfuzzDynamic uses the coordinator's
+	// TestEnv (not the worker's). Skip the expensive Setup to avoid
+	// resource conflicts and unrecovered goroutine panics from
+	// testcontainers health-check goroutines in the worker process.
+	if isFuzzWorker() {
+		os.Exit(m.Run())
+	}
+
 	TestEnv, err = testutil.Setup(ctx, matrixSetupOptions())
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
@@ -235,6 +246,19 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+// isFuzzWorker reports whether this process is a Go fuzzing worker
+// subprocess, which the fuzz framework launches with the internal
+// -test.fuzzworker flag. Workers re-run TestMain but must not build the
+// shared Docker environment.
+func isFuzzWorker() bool {
+	for _, arg := range os.Args[1:] {
+		if arg == "-test.fuzzworker" || strings.HasPrefix(arg, "-test.fuzzworker=") {
+			return true
+		}
+	}
+	return false
 }
 
 // dumpContainerLogs fetches and prints logs from a Docker container.
