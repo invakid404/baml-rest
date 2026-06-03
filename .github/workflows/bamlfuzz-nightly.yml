@@ -346,7 +346,7 @@ jobs:
               echo "This cell ran the Static oracle via \`-run\` (FuzzBamlfuzzStatic overruns Go's 10s/input fuzz watchdog). Repro:"
               echo
               echo '```'
-              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration,subprocess -run='TestBamlfuzzStaticOracle' ./integration -count=1 -p 1"
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration,subprocess -run='TestBamlfuzzStaticOracle' ./integration -count=1 -p 1"
               echo '```'
             elif [ "${MODE}" = "fuzz" ]; then
               echo "Corpus artifact: bamlfuzz-corpus-${BAML}-${UNARY}-${TARGET}"
