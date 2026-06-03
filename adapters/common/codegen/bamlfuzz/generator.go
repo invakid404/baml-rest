@@ -2,6 +2,7 @@ package bamlfuzz
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"pgregory.net/rapid"
@@ -167,6 +168,19 @@ func drawSchema(t *rapid.T, opts SchemaGenOptions) FuzzSchema {
 	}
 	if selfRefRoot {
 		injectSelfRef(&classes[0])
+	}
+
+	// Fold degenerate unions (duplicate arms, all-null) out of every
+	// drawn property type before the schema escapes the generator. The
+	// self-ref / cycle injections above only ever write optional<class>
+	// edges, so normalizing after them is safe and keeps the cleanup in
+	// one place. Done here (not in drawType) so the whole subtree —
+	// including arms that themselves contain unions — is normalized
+	// bottom-up in a single pass.
+	for i := range classes {
+		for j := range classes[i].Properties {
+			classes[i].Properties[j].Type = normalizeUnionType(classes[i].Properties[j].Type)
+		}
 	}
 
 	schema := FuzzSchema{
@@ -1177,9 +1191,13 @@ func planRoot(rootType FuzzType, value FuzzValue) collapsePlan {
 }
 
 func rewriteTypeWithPlan(t FuzzType, plan collapsePlan) FuzzType {
-	if len(plan.choices) == 0 {
-		return t
-	}
+	// No early-return on an empty plan: rewriteTypeAtPath also performs
+	// the unconditional union-arm dedup (folding duplicate / all-null
+	// arms that the raw generator or a nested collapse can produce), and
+	// that cleanup must run even when no position in this field
+	// collapses. Skipping it here would leave the schema with a
+	// duplicate-arm union while rewriteValueByPlans — which has no such
+	// guard — still dedups the value, drifting the two out of alignment.
 	return rewriteTypeAtPath(t, "", plan)
 }
 
@@ -1194,11 +1212,29 @@ func rewriteTypeAtPath(t FuzzType, path string, plan collapsePlan) FuzzType {
 			// silently leave nested unions uncollapsed.
 			return rewriteTypeAtPath(t.Variants[idx], fmt.Sprintf("%s:v%d", path, idx), plan)
 		}
-		out := t
-		out.Variants = make([]FuzzType, len(t.Variants))
-		for i, v := range t.Variants {
-			out.Variants[i] = rewriteTypeAtPath(v, fmt.Sprintf("%s:v%d", path, i), plan)
+		// The union itself stays (its arm choice disagreed across
+		// visits, or it sits at an uncollapsed path). Rewrite each arm,
+		// then deduplicate: collapsing a nested union to its picked arm
+		// can make sibling arms structurally identical — e.g. a parent
+		// union[null, union[null, string]] whose inner union picked its
+		// null arm rewrites to union[null, null]. BAML 0.219+ rejects a
+		// union with no non-null arm (and even pre-0.219 a duplicate-arm
+		// union is degenerate), so fold the duplicates away before the
+		// type reaches the emitter.
+		deduped, _ := rewriteUnionVariants(t, path, plan)
+		if allVariantsNull(deduped) {
+			// Every surviving arm is null: the union carries no real
+			// alternative, so emit a bare null instead of a union that
+			// `baml generate` would panic on.
+			return FuzzType{Kind: KindNull}
 		}
+		if len(deduped) == 1 {
+			// Dedup collapsed the union to a single arm; unwrap it so
+			// the emitter never has to render a one-operand pipe.
+			return deduped[0]
+		}
+		out := t
+		out.Variants = deduped
 		return out
 	case KindOptional:
 		if t.Inner == nil {
@@ -1226,6 +1262,119 @@ func rewriteTypeAtPath(t FuzzType, path string, plan collapsePlan) FuzzType {
 		return out
 	}
 	return t
+}
+
+// rewriteUnionVariants rewrites every arm of the union `t` at `path`
+// under `plan` (mirroring rewriteTypeAtPath's per-arm descent exactly,
+// ":v<idx>" step and all) and then deduplicates the results by
+// structural identity, preserving first-seen arm order. It returns the
+// deduplicated arm list together with a mapping from each original arm
+// index to its index in the deduped list.
+//
+// Both the schema rewrite (rewriteTypeAtPath) and the value rewrite
+// (rewriteValueByPlans) call this so they agree on the post-dedup arm
+// set and indices: the schema stores `deduped`, and the value remaps
+// its picked VariantIndex through `mapping` (or drops the wrapper
+// entirely when the union folded to a single arm). Drifting the two
+// apart would leave a union-shaped value sitting in a non-union schema
+// slot, the misalignment assertValueAlignsWithSchema guards against.
+func rewriteUnionVariants(t FuzzType, path string, plan collapsePlan) (deduped []FuzzType, mapping []int) {
+	rewritten := make([]FuzzType, len(t.Variants))
+	for i, v := range t.Variants {
+		rewritten[i] = rewriteTypeAtPath(v, fmt.Sprintf("%s:v%d", path, i), plan)
+	}
+	mapping = make([]int, len(rewritten))
+	for i, rv := range rewritten {
+		at := -1
+		for j, d := range deduped {
+			if reflect.DeepEqual(rv, d) {
+				at = j
+				break
+			}
+		}
+		if at < 0 {
+			at = len(deduped)
+			deduped = append(deduped, rv)
+		}
+		mapping[i] = at
+	}
+	return deduped, mapping
+}
+
+// normalizeUnionType folds degenerate unions out of a freshly drawn
+// type tree. It recursively deduplicates structurally-identical union
+// arms, unwraps a union that dedups down to a single arm, and replaces
+// an all-null union with a bare null. The raw schema generator draws
+// each union arm independently, so it readily produces duplicate arms
+// (string|string) or an all-null union (null|null); BAML 0.219+ panics
+// on a union with no non-null arm ("Union type must have at least one
+// non-null type"). Applying this at draw time — before the schema is
+// handed to ValueGen — keeps the value generator, walker, and static
+// emitter all observing the same cleaned shape, so the panic is avoided
+// even for "preserve" cases that never run the Move B collapse pass.
+//
+// This complements the dedup baked into rewriteTypeAtPath: the draw-time
+// pass cleans raw generator output, while the rewrite-time pass cleans
+// duplicates that a nested-union collapse introduces later.
+func normalizeUnionType(t FuzzType) FuzzType {
+	switch t.Kind {
+	case KindOptional, KindList:
+		if t.Inner == nil {
+			return t
+		}
+		inner := normalizeUnionType(*t.Inner)
+		out := t
+		out.Inner = &inner
+		return out
+	case KindMap:
+		if t.Inner == nil {
+			return t
+		}
+		inner := normalizeUnionType(*t.Inner)
+		out := t
+		out.Inner = &inner
+		return out
+	case KindUnion:
+		deduped := make([]FuzzType, 0, len(t.Variants))
+		for _, v := range t.Variants {
+			nv := normalizeUnionType(v)
+			dup := false
+			for _, d := range deduped {
+				if reflect.DeepEqual(nv, d) {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				deduped = append(deduped, nv)
+			}
+		}
+		if allVariantsNull(deduped) {
+			return FuzzType{Kind: KindNull}
+		}
+		if len(deduped) == 1 {
+			return deduped[0]
+		}
+		out := t
+		out.Variants = deduped
+		return out
+	}
+	return t
+}
+
+// allVariantsNull reports whether `variants` is non-empty and every
+// entry is a bare KindNull. Used to fold an all-null union — the shape
+// BAML 0.219+ panics on — down to a single null.
+func allVariantsNull(variants []FuzzType) bool {
+	if len(variants) == 0 {
+		return false
+	}
+	for _, v := range variants {
+		if v.Kind != KindNull {
+			return false
+		}
+	}
+	return true
 }
 
 // rewriteValueByPlans rewrites the value to match a schema rewritten
@@ -1264,8 +1413,18 @@ func rewriteValueByPlans(schema FuzzSchema, t FuzzType, v FuzzValue, plans map[f
 			// selects the surviving subtree.
 			return rewriteValueByPlans(schema, t.Variants[idx], *v.Variant, plans, currentPlan, fmt.Sprintf("%s:v%d", path, idx))
 		}
+		// Union stays in the schema. Rewrite the picked arm's value,
+		// then mirror rewriteTypeAtPath's arm dedup so the value tracks
+		// the post-dedup schema: if the union folded to a single arm the
+		// wrapper is dropped (value becomes the bare arm); otherwise the
+		// picked index is remapped onto the deduped arm list.
 		newInner := rewriteValueByPlans(schema, t.Variants[v.VariantIndex], *v.Variant, plans, currentPlan, fmt.Sprintf("%s:v%d", path, v.VariantIndex))
+		deduped, mapping := rewriteUnionVariants(t, path, currentPlan)
+		if allVariantsNull(deduped) || len(deduped) == 1 {
+			return newInner
+		}
 		out := v
+		out.VariantIndex = mapping[v.VariantIndex]
 		out.Variant = &newInner
 		return out
 	case KindClassRef:
