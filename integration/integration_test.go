@@ -198,17 +198,6 @@ func TestMain(m *testing.M) {
 	}
 	UseBuildRequest = parseBoolEnv(os.Getenv("BAML_REST_USE_BUILD_REQUEST"))
 
-	// FuzzBamlfuzzStatic worker subprocesses re-run TestMain but don't need
-	// the shared Docker environment — that target builds its own per-iteration
-	// env via setupStaticEnv and never touches TestEnv. Skip the expensive
-	// Setup for those workers to avoid resource conflicts and unrecovered
-	// goroutine panics from testcontainers health-check goroutines. The other
-	// fuzz targets (Dynamic, Streaming, InvalidJSONCoercion) use the shared
-	// TestEnv/MockClient/BAMLClient, so their workers must still build it.
-	if isStaticFuzzWorker() {
-		os.Exit(m.Run())
-	}
-
 	TestEnv, err = testutil.Setup(ctx, matrixSetupOptions())
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
@@ -247,40 +236,6 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
-}
-
-// isStaticFuzzWorker reports whether this process is a Go fuzzing worker
-// subprocess (-test.fuzzworker) that is fuzzing the FuzzBamlfuzzStatic
-// target. Only that target builds its own per-iteration environment via
-// setupStaticEnv; the others (Dynamic, Streaming, InvalidJSONCoercion) rely
-// on the shared TestEnv, so their workers must still run the Docker setup.
-//
-// The fuzz framework launches workers with -test.fuzzworker prepended to a
-// copy of the coordinator's args (internal/fuzz.startWorkers), so the worker
-// inherits the same -test.fuzz=<pattern> regexp the coordinator was invoked
-// with — the nightly uses -fuzz='^FuzzBamlfuzzStatic$'.
-func isStaticFuzzWorker() bool {
-	var fuzzWorker bool
-	var fuzzPattern string
-	args := os.Args[1:]
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "-test.fuzzworker" || arg == "--test.fuzzworker",
-			strings.HasPrefix(arg, "-test.fuzzworker="), strings.HasPrefix(arg, "--test.fuzzworker="):
-			fuzzWorker = true
-		case strings.HasPrefix(arg, "-test.fuzz="):
-			fuzzPattern = strings.TrimPrefix(arg, "-test.fuzz=")
-		case strings.HasPrefix(arg, "--test.fuzz="):
-			fuzzPattern = strings.TrimPrefix(arg, "--test.fuzz=")
-		case arg == "-test.fuzz" || arg == "--test.fuzz":
-			if i+1 < len(args) {
-				fuzzPattern = args[i+1]
-				i++
-			}
-		}
-	}
-	return fuzzWorker && strings.Contains(fuzzPattern, "FuzzBamlfuzzStatic")
 }
 
 // dumpContainerLogs fetches and prints logs from a Docker container.

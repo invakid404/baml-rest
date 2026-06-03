@@ -13,7 +13,7 @@ on:
         options: [fuzz, rapid]
         default: fuzz
       seed:
-        description: BAMLFUZZ_SEED override (defaults to github.run_id; rapid mode only)
+        description: BAMLFUZZ_SEED override (defaults to github.run_id; rapid mode + the fuzz-mode Static oracle cell)
         type: string
         required: false
       dynamic_cases:
@@ -22,7 +22,7 @@ on:
         required: false
         default: "50"
       static_batches:
-        description: Rapid-mode static batches (default 10)
+        description: Static rapid batches; used by both rapid mode and the fuzz-mode Static oracle cell (default 10)
         type: string
         required: false
         default: "10"
@@ -119,8 +119,11 @@ jobs:
       BAMLFUZZ_KEEP_ARTIFACTS: "1"
       MODE: ${{ github.event.inputs.mode || 'fuzz' }}
       FUZZTIME: ${{ github.event.inputs.fuzztime || '15m' }}
-      # Rapid-mode knobs: ignored by the fuzz-mode step. Kept addressable
-      # via dispatch inputs so a manual run can mix-and-match.
+      # Oracle knobs. BAMLFUZZ_STATIC_BATCHES is respected in fuzz mode
+      # too — the Static step routes through TestBamlfuzzStaticOracle
+      # under -run. The rest apply in rapid mode only (the -fuzz step
+      # ignores them). Kept addressable via dispatch inputs so a manual
+      # run can mix-and-match.
       BAMLFUZZ_DYNAMIC_CASES: ${{ github.event.inputs.dynamic_cases || '50' }}
       BAMLFUZZ_STATIC_BATCHES: ${{ github.event.inputs.static_batches || '10' }}
       BAMLFUZZ_INVALID_CASES: ${{ github.event.inputs.invalid_cases || '50' }}
@@ -138,7 +141,10 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Restore corpus from prior nightly (target-scoped)
-        if: ${{ env.MODE == 'fuzz' }}
+        # FuzzBamlfuzzStatic runs through TestBamlfuzzStaticOracle under
+        # -run (see the Static step below), which does not use the fuzz
+        # corpus, so skip corpus restore/upload for that target.
+        if: ${{ env.MODE == 'fuzz' && matrix.target != 'FuzzBamlfuzzStatic' }}
         id: restore-target
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -181,7 +187,7 @@ jobs:
       # Once the first target-scoped nightly succeeds, this step becomes a
       # no-op and can be removed in a future PR.
       - name: Fallback restore from legacy unscoped corpus
-        if: ${{ env.MODE == 'fuzz' && steps.restore-target.outputs.restored == '' }}
+        if: ${{ env.MODE == 'fuzz' && matrix.target != 'FuzzBamlfuzzStatic' && steps.restore-target.outputs.restored == '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACT_NAME: bamlfuzz-corpus-${{ matrix.baml-version }}-${{ matrix.unary-server }}
@@ -218,7 +224,9 @@ jobs:
           fi
 
       - name: Fuzz ${{ matrix.target }} (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
-        if: ${{ env.MODE == 'fuzz' }}
+        # FuzzBamlfuzzStatic is handled by the Static oracle step below,
+        # not the native fuzz engine — see that step for why.
+        if: ${{ env.MODE == 'fuzz' && matrix.target != 'FuzzBamlfuzzStatic' }}
         # Each matrix cell runs exactly one fuzz target via the `target`
         # axis. BAMLFUZZ_KEEP_ARTIFACTS is forced off; the success-path
         # envelope dump writes to _artifacts/fuzz.json which races under
@@ -233,6 +241,27 @@ jobs:
             -fuzztime="${FUZZTIME}" \
             ./integration \
             -test.fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache"
+
+      - name: Static oracle (-run, no fuzz watchdog) (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' && matrix.target == 'FuzzBamlfuzzStatic' }}
+        # FuzzBamlfuzzStatic builds a full Docker env per iteration
+        # (~30-60s: npx baml generate + go build + container start), but
+        # Go's fuzz engine hard-caps every input at a 10s watchdog
+        # (internal/fuzz/worker.go → panic("deadlocked!")), so -fuzz
+        # always overruns and crashes this target on its first exec with
+        # exit status 2 (the worker's stderr is wired to /dev/null, so the
+        # panic never surfaces). Run the identical schema-gen + build +
+        # REST + oracle path through TestBamlfuzzStaticOracle under -run
+        # instead, which has no per-input watchdog.
+        #
+        # BAMLFUZZ_STATIC_BATCHES (job env, default 10) scales the rapid
+        # batches; 10 × staticCasesPerBatch (5) = 50 cases, matching the
+        # ~50-case budget the other targets explore per nightly cell.
+        # No corpus restore/upload: -run does not use the fuzz corpus.
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='TestBamlfuzzStaticOracle' \
+            ./integration
 
       - name: Run bamlfuzz oracles — rapid mode (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'rapid' && matrix.target == 'FuzzBamlfuzzStatic' }}
@@ -254,7 +283,8 @@ jobs:
             -run='^TestBamlfuzz(Static|Dynamic|Streaming)Oracle$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)$' ./integration/...
 
       - name: Upload corpus for next nightly
-        if: ${{ always() && env.MODE == 'fuzz' }}
+        # Static runs via -run (no fuzz corpus), so nothing to persist.
+        if: ${{ always() && env.MODE == 'fuzz' && matrix.target != 'FuzzBamlfuzzStatic' }}
         # Uploaded on every run (including failures) so a fuzz failure
         # the engine already wrote to the cache survives into the next
         # restore pass — the corpus is the only mechanism that lets the
@@ -310,7 +340,18 @@ jobs:
             echo "Matrix: baml-version=${BAML}, unary-server=${UNARY}, target=${TARGET}"
             echo "Workflow: ${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
             echo "Envelope artifact: bamlfuzz-envelopes-${BAML}-${UNARY}-${TARGET}-${RUN_ID}"
-            if [ "${MODE}" = "fuzz" ]; then
+            if [ "${MODE}" = "fuzz" ] && [ "${TARGET}" = "FuzzBamlfuzzStatic" ]; then
+              # Static runs through TestBamlfuzzStaticOracle under -run
+              # (FuzzBamlfuzzStatic is incompatible with go test -fuzz's
+              # hardcoded 10s/input watchdog), so there is no fuzz corpus
+              # and the repro is the oracle command.
+              echo
+              echo "This cell ran the Static oracle via \`-run\` (FuzzBamlfuzzStatic overruns Go's 10s/input fuzz watchdog). Repro:"
+              echo
+              echo '```'
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration,subprocess -run='TestBamlfuzzStaticOracle' ./integration -count=1 -p 1"
+              echo '```'
+            elif [ "${MODE}" = "fuzz" ]; then
               echo "Corpus artifact: bamlfuzz-corpus-${BAML}-${UNARY}-${TARGET}"
               echo
               echo "This cell ran fuzz target \`${TARGET}\`. Repro (from repo root, after downloading the corpus artifact and extracting under adapters/common/codegen/testdata/bamlfuzz/.fuzzcache/):"
