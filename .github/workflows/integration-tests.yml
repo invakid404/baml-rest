@@ -19,7 +19,7 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.3
 
       - name: Build version matrix
         id: set-matrix
@@ -74,10 +74,10 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.3
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v6.4.0
         with:
           go-version: ${{ env.GO_VERSION }}
 
@@ -99,7 +99,7 @@ jobs:
       latest: ${{ steps.read.outputs.latest }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.3
 
       - name: Read latest BAML version
         id: read
@@ -137,10 +137,10 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.3
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v6.4.0
         with:
           go-version: ${{ env.GO_VERSION }}
 
@@ -181,21 +181,21 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.3
 
       - name: Read BAML source commit
         id: baml-source
         run: echo "commit=$(jq -r '.source' integration/baml_versions.json)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout BAML Source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.3
         with:
           repository: BoundaryML/baml
           ref: ${{ steps.baml-source.outputs.commit }}
           path: baml-source
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v6.4.0
         with:
           go-version: ${{ env.GO_VERSION }}
 
