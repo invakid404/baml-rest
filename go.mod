@@ -10,7 +10,7 @@ require (
 	github.com/dave/jennifer v1.7.1
 	github.com/docker/buildx v0.34.1
 	github.com/enriquebris/goconcurrentqueue v0.7.0
-	github.com/getkin/kin-openapi v0.139.0
+	github.com/getkin/kin-openapi v0.140.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/gofiber/contrib/v3/zerolog v1.0.6
 	github.com/gofiber/fiber/v3 v3.3.0
