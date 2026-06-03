@@ -119,8 +119,11 @@ jobs:
       BAMLFUZZ_KEEP_ARTIFACTS: "1"
       MODE: ${{ github.event.inputs.mode || 'fuzz' }}
       FUZZTIME: ${{ github.event.inputs.fuzztime || '15m' }}
-      # Rapid-mode knobs: ignored by the fuzz-mode step. Kept addressable
-      # via dispatch inputs so a manual run can mix-and-match.
+      # Oracle knobs. BAMLFUZZ_STATIC_BATCHES is respected in fuzz mode
+      # too — the Static step routes through TestBamlfuzzStaticOracle
+      # under -run. The rest apply in rapid mode only (the -fuzz step
+      # ignores them). Kept addressable via dispatch inputs so a manual
+      # run can mix-and-match.
       BAMLFUZZ_DYNAMIC_CASES: ${{ github.event.inputs.dynamic_cases || '50' }}
       BAMLFUZZ_STATIC_BATCHES: ${{ github.event.inputs.static_batches || '10' }}
       BAMLFUZZ_INVALID_CASES: ${{ github.event.inputs.invalid_cases || '50' }}
