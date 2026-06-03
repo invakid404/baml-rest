@@ -558,6 +558,152 @@ func TestEmitStaticUnionPipeSyntax(t *testing.T) {
 	}
 }
 
+// TestEmitStaticOptionalUnionMemberFlattensToNull pins the fix for the
+// FuzzBamlfuzzStatic crash class: an optional sitting as a union member
+// must be spelled as the flattened `(inner | null)` sub-union, never as
+// `(inner)?`. BAML's parser rejects a parenthesized-optional in union
+// position ("No type specified for field"), which crashed the static
+// fuzz worker on its first exec. The standalone optional field in the
+// same schema keeps its `(string)?` spelling — only the union-member
+// position changes.
+func TestEmitStaticOptionalUnionMemberFlattensToNull(t *testing.T) {
+	// Union with an optional-int arm alongside a plain string arm,
+	// mirroring the crasher shape `(... | ((int)? | ...))`.
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindOptional, Inner: &FuzzType{Kind: KindInt}},
+			{Kind: KindString},
+		},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "u", Type: uni},
+				// Standalone optional field must stay `(string)?`.
+				{Name: "opt", Type: FuzzType{Kind: KindOptional, Inner: &FuzzType{Kind: KindString}}},
+			},
+		}},
+		RootClass: "Root",
+	}
+	src, err := LowerToBamlSource(schema, "TestC")
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	// Optional union member flattens to `(int | null)`.
+	if !strings.Contains(src.Source, "u ((int | null) | string)") {
+		t.Errorf("optional union member should flatten to (int | null), got source:\n%s", src.Source)
+	}
+	// The `(T)?` form must not appear anywhere — it is exactly the
+	// construct BAML rejects inside a union.
+	if strings.Contains(src.Source, "(int)?") {
+		t.Errorf("emitted forbidden parenthesized-optional `(int)?` inside union:\n%s", src.Source)
+	}
+	// Standalone optional field is untouched.
+	if !strings.Contains(src.Source, "opt (string)?") {
+		t.Errorf("standalone optional field should keep `(string)?` spelling, got source:\n%s", src.Source)
+	}
+}
+
+// TestEmitStaticNestedOptionalUnionMemberFlattensRecursively asserts
+// that a nested optional union member (optional<optional<int>>) flattens
+// at every level to `((int | null) | null)`. A non-recursive flatten
+// would emit `((int)? | null)`, re-introducing the parser-rejected
+// `(T)?` inside the sub-union.
+func TestEmitStaticNestedOptionalUnionMemberFlattensRecursively(t *testing.T) {
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindOptional, Inner: &FuzzType{Kind: KindOptional, Inner: &FuzzType{Kind: KindInt}}},
+			{Kind: KindString},
+		},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name:       "Root",
+			Properties: []FuzzProperty{{Name: "u", Type: uni}},
+		}},
+		RootClass: "Root",
+	}
+	src, err := LowerToBamlSource(schema, "TestC")
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	if !strings.Contains(src.Source, "u (((int | null) | null) | string)") {
+		t.Errorf("nested optional union member should flatten recursively, got source:\n%s", src.Source)
+	}
+	// No `(T)?` form may survive at any nesting level.
+	if strings.Contains(src.Source, ")?") {
+		t.Errorf("emitted a parenthesized-optional `)?` inside union:\n%s", src.Source)
+	}
+}
+
+// TestEmitStaticSingleArmUnionOptionalMemberFlattens asserts that an
+// optional buried under a single-arm union variant still flattens.
+// typeSpelling collapses a one-arm union to its bare variant, so
+// union[union[optional<int>], string] would emit ((int)? | string)
+// unless unionMemberSpelling unwraps the single-arm union while keeping
+// the union-member context.
+func TestEmitStaticSingleArmUnionOptionalMemberFlattens(t *testing.T) {
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindUnion, Variants: []FuzzType{
+				{Kind: KindOptional, Inner: &FuzzType{Kind: KindInt}},
+			}},
+			{Kind: KindString},
+		},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name:       "Root",
+			Properties: []FuzzProperty{{Name: "u", Type: uni}},
+		}},
+		RootClass: "Root",
+	}
+	src, err := LowerToBamlSource(schema, "TestC")
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	if !strings.Contains(src.Source, "u ((int | null) | string)") {
+		t.Errorf("single-arm union wrapping an optional should flatten to (int | null), got source:\n%s", src.Source)
+	}
+	if strings.Contains(src.Source, ")?") {
+		t.Errorf("emitted a parenthesized-optional `)?` inside union:\n%s", src.Source)
+	}
+}
+
+// TestEmitStaticOptionalUnionMemberPreservesArmCount asserts the
+// flattened optional arm stays a single parenthesised sub-union so the
+// outer union's arm count (and therefore the oracle's UnionChoice
+// indices) is unchanged.
+func TestEmitStaticOptionalUnionMemberPreservesArmCount(t *testing.T) {
+	uni := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindBool},
+			{Kind: KindOptional, Inner: &FuzzType{Kind: KindClassRef, Ref: "Leaf"}},
+			{Kind: KindInt},
+		},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{
+			{Name: "Root", Properties: []FuzzProperty{{Name: "u", Type: uni}}},
+			{Name: "Leaf", Properties: []FuzzProperty{{Name: "n", Type: FuzzType{Kind: KindInt}}}},
+		},
+		RootClass: "Root",
+	}
+	src, err := LowerToBamlSource(schema, "TestC")
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	// Three outer arms preserved: bool, (Leaf_TestC | null), int.
+	if !strings.Contains(src.Source, "u (bool | (Leaf_TestC | null) | int)") {
+		t.Errorf("optional class-ref union member should flatten in place keeping 3 arms, got source:\n%s", src.Source)
+	}
+}
+
 // TestEmitStaticSingleArmUnionEmitsBareVariant asserts the static
 // emitter renders a single-arm union (only reachable through the
 // shrink-collapse pass) as the bare variant. Emitting a one-operand
@@ -610,6 +756,39 @@ func TestEmitStaticRawTopLevelUnion(t *testing.T) {
 	}
 	if !strings.Contains(src.Source, "-> string | int {") {
 		t.Errorf("expected '-> string | int {' in source, got:\n%s", src.Source)
+	}
+}
+
+// TestEmitStaticRawTopLevelUnionOptionalMemberFlattens asserts that an
+// optional variant in a raw top-level union (rendered via the
+// no-outer-parens return-type path) also flattens to `(inner | null)`
+// rather than `(inner)?`. Without routing the return-type union loop
+// through unionMemberSpelling, the function signature would carry the
+// parser-rejected `(int)?` form.
+func TestEmitStaticRawTopLevelUnionOptionalMemberFlattens(t *testing.T) {
+	root := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindOptional, Inner: &FuzzType{Kind: KindInt}},
+			{Kind: KindString},
+		},
+	}
+	schema := FuzzSchema{
+		Classes:  []FuzzClass{},
+		Enums:    []FuzzEnum{},
+		RootType: &root,
+	}
+	src, err := LowerToBamlSource(schema, "TestC")
+	if err != nil {
+		t.Fatalf("lower: %v", err)
+	}
+	// Top-level union: no outer parens, but the optional arm still
+	// flattens to a parenthesised `(int | null)` sub-union.
+	if !strings.Contains(src.Source, "-> (int | null) | string {") {
+		t.Errorf("expected '-> (int | null) | string {' in source, got:\n%s", src.Source)
+	}
+	if strings.Contains(src.Source, "(int)?") {
+		t.Errorf("emitted forbidden parenthesized-optional `(int)?` in return type:\n%s", src.Source)
 	}
 }
 

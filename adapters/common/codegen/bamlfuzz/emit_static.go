@@ -280,7 +280,7 @@ func typeSpelling(t FuzzType, classNames, enumNames map[string]string) (string, 
 		}
 		parts := make([]string, len(t.Variants))
 		for i, v := range t.Variants {
-			s, err := typeSpelling(v, classNames, enumNames)
+			s, err := unionMemberSpelling(v, classNames, enumNames)
 			if err != nil {
 				return "", fmt.Errorf("union variant %d: %w", i, err)
 			}
@@ -295,6 +295,52 @@ func typeSpelling(t FuzzType, classNames, enumNames map[string]string) (string, 
 	default:
 		return "", fmt.Errorf("unsupported kind %q", t.Kind)
 	}
+}
+
+// unionMemberSpelling spells one variant of a union. It differs from
+// typeSpelling only for an optional variant: BAML's parser rejects a
+// parenthesized-optional (`(T)?`) sitting as a union member — it reads
+// the leading `(` as a grouped union, then chokes on the trailing `?`
+// and reports "No type specified for field" / "not a valid field or
+// attribute definition" (BoundaryML/baml; surfaced via the static fuzz
+// oracle). Standalone optional fields keep the `(T)?` spelling, which
+// the parser accepts; only the union-member position is affected.
+//
+// An optional that lives inside a union can only ever render as its
+// inner value or an explicit null — an omitted key is impossible
+// mid-union, so renderValueMock degrades OptionalAbsent to null. The
+// equivalent, parseable spelling is therefore the flattened
+// `(inner | null)` union. Wrapping it in its own parens keeps the
+// outer union's arm count unchanged (the flattened optional stays a
+// single sub-union arm), so the oracle's recorded UnionChoice indices
+// still line up with the emitted source.
+//
+// The inner spelling is taken recursively through unionMemberSpelling so
+// a nested optional (`optional<optional<int>>`) flattens at every level:
+// `((int | null) | null)`, not `((int)? | null)` which would re-introduce
+// the rejected `(T)?` inside the sub-union.
+//
+// A single-arm union variant is unwrapped and re-spelled through
+// unionMemberSpelling rather than typeSpelling: typeSpelling collapses a
+// one-arm union to its bare variant, which would drop us back into the
+// `(T)?` spelling for `union[union[optional<int>]]`. Unwrapping here keeps
+// the union-member context across the collapse, so the optional still
+// flattens to `(int | null)`.
+func unionMemberSpelling(v FuzzType, classNames, enumNames map[string]string) (string, error) {
+	if v.Kind == KindUnion && len(v.Variants) == 1 {
+		return unionMemberSpelling(v.Variants[0], classNames, enumNames)
+	}
+	if v.Kind != KindOptional {
+		return typeSpelling(v, classNames, enumNames)
+	}
+	if v.Inner == nil {
+		return "", fmt.Errorf("optional missing inner")
+	}
+	inner, err := unionMemberSpelling(*v.Inner, classNames, enumNames)
+	if err != nil {
+		return "", err
+	}
+	return "(" + inner + " | null)", nil
 }
 
 // typeSpellingNoUnionParens spells `t` but, when t is a KindUnion,
@@ -314,7 +360,7 @@ func typeSpellingNoUnionParens(t FuzzType, classNames, enumNames map[string]stri
 	}
 	parts := make([]string, len(t.Variants))
 	for i, v := range t.Variants {
-		s, err := typeSpelling(v, classNames, enumNames)
+		s, err := unionMemberSpelling(v, classNames, enumNames)
 		if err != nil {
 			return "", fmt.Errorf("union variant %d: %w", i, err)
 		}
