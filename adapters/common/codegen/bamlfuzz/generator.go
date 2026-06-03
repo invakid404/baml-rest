@@ -1224,8 +1224,8 @@ func rewriteTypeAtPath(t FuzzType, path string, plan collapsePlan) FuzzType {
 		deduped, _ := rewriteUnionVariants(t, path, plan)
 		if allVariantsNull(deduped) {
 			// Every surviving arm is null: the union carries no real
-			// alternative, so emit a bare null instead of a union that
-			// `baml generate` would panic on.
+			// alternative, so emit a bare null. A union with no non-null
+			// arm makes `baml generate` panic on BAML 0.219+.
 			return FuzzType{Kind: KindNull}
 		}
 		if len(deduped) == 1 {
@@ -1281,7 +1281,16 @@ func rewriteTypeAtPath(t FuzzType, path string, plan collapsePlan) FuzzType {
 func rewriteUnionVariants(t FuzzType, path string, plan collapsePlan) (deduped []FuzzType, mapping []int) {
 	rewritten := make([]FuzzType, len(t.Variants))
 	for i, v := range t.Variants {
-		rewritten[i] = rewriteTypeAtPath(v, fmt.Sprintf("%s:v%d", path, i), plan)
+		rv := rewriteTypeAtPath(v, fmt.Sprintf("%s:v%d", path, i), plan)
+		// A nested-union collapse can turn an optional<union[...]> arm
+		// into optional<null>, which unionMemberSpelling flattens to
+		// `(null | null)` — the panic shape. Reduce any arm that spells
+		// to a null-only union member down to a bare null so the dedup
+		// below merges it with the union's other null arms.
+		if nullEquivalentUnionArm(rv) {
+			rv = FuzzType{Kind: KindNull}
+		}
+		rewritten[i] = rv
 	}
 	mapping = make([]int, len(rewritten))
 	for i, rv := range rewritten {
@@ -1338,6 +1347,15 @@ func normalizeUnionType(t FuzzType) FuzzType {
 		deduped := make([]FuzzType, 0, len(t.Variants))
 		for _, v := range t.Variants {
 			nv := normalizeUnionType(v)
+			// optional<null> (and deeper optional<...<null>>) spells via
+			// unionMemberSpelling as a null-only `(null | null)` arm, so
+			// reduce it to a bare null before dedup. This keeps it from
+			// surviving the structural dedup as a distinct arm and lets
+			// the all-null fold below catch unions like
+			// union[optional<null>, null].
+			if nullEquivalentUnionArm(nv) {
+				nv = FuzzType{Kind: KindNull}
+			}
 			dup := false
 			for _, d := range deduped {
 				if reflect.DeepEqual(nv, d) {
@@ -1360,6 +1378,24 @@ func normalizeUnionType(t FuzzType) FuzzType {
 		return out
 	}
 	return t
+}
+
+// nullEquivalentUnionArm reports whether `t`, sitting as a union arm,
+// spells to a null-only union member. A bare null qualifies, as does an
+// optional wrapping a null-equivalent type: unionMemberSpelling renders
+// optional<X> as `(spelling(X) | null)`, so optional<null> becomes
+// `(null | null)` and optional<optional<null>> becomes
+// `((null | null) | null)` — both carry no non-null alternative and trip
+// the BAML 0.219+ union validation. Such arms are folded to a bare null
+// before union dedup so the all-null check can collapse them away.
+func nullEquivalentUnionArm(t FuzzType) bool {
+	switch t.Kind {
+	case KindNull:
+		return true
+	case KindOptional:
+		return t.Inner != nil && nullEquivalentUnionArm(*t.Inner)
+	}
+	return false
 }
 
 // allVariantsNull reports whether `variants` is non-empty and every
@@ -1413,19 +1449,29 @@ func rewriteValueByPlans(schema FuzzSchema, t FuzzType, v FuzzValue, plans map[f
 			// selects the surviving subtree.
 			return rewriteValueByPlans(schema, t.Variants[idx], *v.Variant, plans, currentPlan, fmt.Sprintf("%s:v%d", path, idx))
 		}
-		// Union stays in the schema. Rewrite the picked arm's value,
-		// then mirror rewriteTypeAtPath's arm dedup so the value tracks
-		// the post-dedup schema: if the union folded to a single arm the
-		// wrapper is dropped (value becomes the bare arm); otherwise the
-		// picked index is remapped onto the deduped arm list.
-		newInner := rewriteValueByPlans(schema, t.Variants[v.VariantIndex], *v.Variant, plans, currentPlan, fmt.Sprintf("%s:v%d", path, v.VariantIndex))
+		// Union stays in the schema. Mirror rewriteTypeAtPath's arm dedup
+		// so the value tracks the post-dedup schema: the picked arm's
+		// index is remapped onto the deduped arm list, and when the union
+		// folds to a single arm the wrapper is dropped (value becomes the
+		// bare arm).
 		deduped, mapping := rewriteUnionVariants(t, path, currentPlan)
-		if allVariantsNull(deduped) || len(deduped) == 1 {
-			return newInner
+		mapped := mapping[v.VariantIndex]
+		var aligned FuzzValue
+		if deduped[mapped].Kind == KindNull {
+			// The picked arm reduced to a bare null — it was a direct null
+			// or an optional<null...> arm that spells null-only. The
+			// aligned value at a null slot is an explicit null, matching
+			// how a mid-union optional renders (absent degrades to null).
+			aligned = FuzzValue{Kind: KindNull}
+		} else {
+			aligned = rewriteValueByPlans(schema, t.Variants[v.VariantIndex], *v.Variant, plans, currentPlan, fmt.Sprintf("%s:v%d", path, v.VariantIndex))
+		}
+		if len(deduped) == 1 {
+			return aligned
 		}
 		out := v
-		out.VariantIndex = mapping[v.VariantIndex]
-		out.Variant = &newInner
+		out.VariantIndex = mapped
+		out.Variant = &aligned
 		return out
 	case KindClassRef:
 		if v.Kind != KindClassRef {

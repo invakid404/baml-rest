@@ -890,6 +890,14 @@ func checkNoDegenerateUnion(rt *rapid.T, t FuzzType) {
 			rt.Fatalf("drawn schema contains an all-null union: %#v", t)
 		}
 		for i := range t.Variants {
+			// A null-equivalent arm that is not a bare null (e.g.
+			// optional<null>) spells via unionMemberSpelling as a
+			// null-only `(null | null)` member and trips the BAML 0.219+
+			// validation. normalizeUnionType folds these to bare null, so
+			// none may remain in a drawn schema.
+			if t.Variants[i].Kind != KindNull && nullEquivalentUnionArm(t.Variants[i]) {
+				rt.Fatalf("drawn schema contains a null-equivalent union arm (e.g. optional<null>): %#v", t.Variants[i])
+			}
 			for j := i + 1; j < len(t.Variants); j++ {
 				if reflect.DeepEqual(t.Variants[i], t.Variants[j]) {
 					rt.Fatalf("drawn schema contains a duplicate-arm union (arms %d and %d): %#v", i, j, t)
@@ -1210,8 +1218,8 @@ func TestCollapseUnionsToPickedNestedUnionInsideMixedOuter(t *testing.T) {
 // nested union arm collapses to null, the rewritten arms become
 // [null, null]. BAML 0.219+ rejects a union with no non-null arm
 // ("Union type must have at least one non-null type"), so the rewrite
-// must fold the duplicate nulls and return a bare KindNull rather than
-// a degenerate two-null union.
+// must fold the duplicate nulls down to a single bare KindNull; a
+// two-null union is the degenerate shape this guards against.
 func TestRewriteTypeAtPathDedupesAllNullToSingleNull(t *testing.T) {
 	inner := FuzzType{
 		Kind: KindUnion,
@@ -1243,8 +1251,8 @@ func TestRewriteTypeAtPathDedupesAllNullToSingleNull(t *testing.T) {
 // TestRewriteTypeAtPathDedupesNestedDuplicates pins that a nested-union
 // collapse which makes two surviving arms structurally identical is
 // deduplicated. Here the inner union collapses to int, colliding with
-// the parent's existing int arm; the result keeps the distinct arms
-// (string, int) once each rather than emitting int twice.
+// the parent's existing int arm; the result keeps each distinct arm
+// (string, int) exactly once, with the duplicate int dropped.
 func TestRewriteTypeAtPathDedupesNestedDuplicates(t *testing.T) {
 	inner := FuzzType{
 		Kind: KindUnion,
@@ -1292,6 +1300,97 @@ func TestRewriteTypeAtPathLeavesMixedUnionUnchanged(t *testing.T) {
 	got := rewriteTypeAtPath(parent, "", newCollapsePlan())
 	if !reflect.DeepEqual(got, parent) {
 		t.Errorf("distinct-arm union should be unchanged\nwant: %#v\ngot:  %#v", parent, got)
+	}
+}
+
+// TestNormalizeUnionTypeReducesOptionalNull pins that an optional<null>
+// union arm is folded to a bare null at draw time. unionMemberSpelling
+// flattens optional<null> to `(null | null)`, so without this reduction
+// union[optional<null>, null] would survive structural dedup (the two
+// arms differ in kind) and emit a panic-inducing all-null union, and
+// union[optional<null>, string] would emit `((null | null) | string)`.
+func TestNormalizeUnionTypeReducesOptionalNull(t *testing.T) {
+	null := FuzzType{Kind: KindNull}
+	optNull := FuzzType{Kind: KindOptional, Inner: &null}
+
+	// union[optional<null>, null] → both arms null-equivalent → bare null.
+	allNull := FuzzType{Kind: KindUnion, Variants: []FuzzType{optNull, {Kind: KindNull}}}
+	if got := normalizeUnionType(allNull); got.Kind != KindNull {
+		t.Errorf("union[optional<null>, null] should fold to bare null, got %#v", got)
+	}
+
+	// union[optional<null>, string] → optional<null> becomes null, leaving
+	// union[null, string].
+	mixed := FuzzType{Kind: KindUnion, Variants: []FuzzType{optNull, {Kind: KindString}}}
+	got := normalizeUnionType(mixed)
+	if got.Kind != KindUnion || len(got.Variants) != 2 {
+		t.Fatalf("expected a 2-arm union, got %#v", got)
+	}
+	if got.Variants[0].Kind != KindNull || got.Variants[1].Kind != KindString {
+		t.Errorf("expected union[null, string], got [%q, %q]", got.Variants[0].Kind, got.Variants[1].Kind)
+	}
+}
+
+// TestCollapseUnionsToPickedFoldsOptionalNullArm pins that the collapse
+// pass also avoids the optional<null> panic shape: an outer union arm
+// optional<union[null, string]> whose inner union consistently picks
+// null collapses to optional<null>, which must be reduced to a bare null
+// so the surrounding union does not emit `((null | null) | null)`. The
+// rewritten value must stay aligned with the rewritten schema.
+func TestCollapseUnionsToPickedFoldsOptionalNullArm(t *testing.T) {
+	innerUni := FuzzType{Kind: KindUnion, Variants: []FuzzType{{Kind: KindNull}, {Kind: KindString}}}
+	optArm := FuzzType{Kind: KindOptional, Inner: &innerUni}
+	outer := FuzzType{Kind: KindUnion, Variants: []FuzzType{{Kind: KindNull}, optArm}}
+	listOfOuter := FuzzType{Kind: KindList, Inner: &outer}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name:       "Root",
+			Properties: []FuzzProperty{{Name: "items", Type: listOfOuter}},
+		}},
+		RootClass: "Root",
+	}
+	// Element 0 picks the outer's direct null arm; element 1 picks the
+	// optional arm, present, whose inner union picks null. The outer pick
+	// disagrees (0 vs 1) so the outer union stays; the inner union is
+	// visited once and consistently picks null, so it collapses to null,
+	// turning the optional arm into optional<null>.
+	elemDirectNull := FuzzValue{Kind: KindUnion, VariantIndex: 0, Variant: &FuzzValue{Kind: KindNull}}
+	elemOptInnerNull := FuzzValue{
+		Kind: KindUnion, VariantIndex: 1,
+		Variant: &FuzzValue{
+			Kind: KindOptional, OptionalShape: OptionalPresent,
+			Inner: &FuzzValue{
+				Kind: KindUnion, VariantIndex: 0,
+				Variant: &FuzzValue{Kind: KindNull},
+			},
+		},
+	}
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{{
+			Name:  "items",
+			Value: FuzzValue{Kind: KindList, Items: []FuzzValue{elemDirectNull, elemOptInnerNull}},
+		}},
+	}
+
+	newSchema, newValue, err := collapseUnionsToPicked(schema, value)
+	if err != nil {
+		t.Fatalf("collapse: %v", err)
+	}
+	// After reducing optional<null> to null, the outer union's arms are
+	// [null, null] → folded to a bare null under the list.
+	cls, _ := newSchema.FindClass("Root")
+	listType := cls.Properties[0].Type
+	if listType.Kind != KindList || listType.Inner == nil || listType.Inner.Kind != KindNull {
+		t.Fatalf("expected list<null> after optional<null> reduction, got %#v", listType)
+	}
+	assertNoAllNullUnion(t, newSchema.EffectiveRoot())
+	if err := assertValueAlignsWithSchema(newSchema, newSchema.EffectiveRoot(), newValue); err != nil {
+		t.Fatalf("rewritten value not aligned with schema: %v\nschema: %s\nvalue: %s",
+			err, schemaDumpJSON(newSchema), valueDumpJSON(newValue))
+	}
+	if _, err := Walk(newSchema, newValue); err != nil {
+		t.Fatalf("walk of collapsed pair failed: %v", err)
 	}
 }
 
@@ -1594,6 +1693,17 @@ func TestCoupledCaseGenValueShapeMatchesSchema(t *testing.T) {
 		if err := assertValueAlignsWithSchema(cc.Schema, cc.Schema.EffectiveRoot(), cc.Value); err != nil {
 			rt.Fatalf("value/schema misalignment: %v\nschema: %s\nvalue: %s",
 				err, schemaDumpJSON(cc.Schema), valueDumpJSON(cc.Value))
+		}
+		// The collapse pass must not reintroduce a degenerate union (all
+		// arms null, duplicate arms, or an optional<null> arm) into the
+		// post-collapse schema — those panic `baml generate` on 0.219+.
+		for _, cls := range cc.Schema.Classes {
+			for _, prop := range cls.Properties {
+				checkNoDegenerateUnion(rt, prop.Type)
+			}
+		}
+		if cc.Schema.RootType != nil {
+			checkNoDegenerateUnion(rt, *cc.Schema.RootType)
 		}
 	})
 }
