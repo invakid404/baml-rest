@@ -3,7 +3,7 @@ module github.com/invakid404/baml-rest/worker
 go 1.26.3
 
 require (
-	github.com/bytedance/sonic v1.15.1
+	github.com/bytedance/sonic v1.15.2
 	github.com/invakid404/baml-rest/bamlutils v0.0.47
 	github.com/invakid404/baml-rest/workerplugin v0.0.47
 	github.com/prometheus/client_golang v1.23.2
