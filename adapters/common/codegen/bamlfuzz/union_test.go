@@ -861,6 +861,59 @@ func TestSchemaGenDoesNotProduceLiteralInt(t *testing.T) {
 	})
 }
 
+// TestSchemaGenDoesNotProduceAllNullUnion is a rapid-driven invariant:
+// no union with an all-null arm set (and no duplicate-arm union) may
+// survive in a drawn schema. The raw generator draws each union arm
+// independently and so readily produces null|null or string|string;
+// BAML 0.219+ panics on a union with no non-null arm during
+// `baml generate`. normalizeUnionType folds these at draw time, so this
+// pins that the cleanup stays wired into the generator and the
+// preserve-mode (non-collapsed) corpus never ships the panic shape.
+func TestSchemaGenDoesNotProduceAllNullUnion(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		schema := StaticSchemaGen().Draw(rt, "schema")
+		for _, cls := range schema.Classes {
+			for _, prop := range cls.Properties {
+				checkNoDegenerateUnion(rt, prop.Type)
+			}
+		}
+		if schema.RootType != nil {
+			checkNoDegenerateUnion(rt, *schema.RootType)
+		}
+	})
+}
+
+func checkNoDegenerateUnion(rt *rapid.T, t FuzzType) {
+	switch t.Kind {
+	case KindUnion:
+		if allVariantsNull(t.Variants) {
+			rt.Fatalf("drawn schema contains an all-null union: %#v", t)
+		}
+		for i := range t.Variants {
+			// A null-equivalent arm that is not a bare null (e.g.
+			// optional<null>) spells via unionMemberSpelling as a
+			// null-only `(null | null)` member and trips the BAML 0.219+
+			// validation. normalizeUnionType folds these to bare null, so
+			// none may remain in a drawn schema.
+			if t.Variants[i].Kind != KindNull && nullEquivalentUnionArm(t.Variants[i]) {
+				rt.Fatalf("drawn schema contains a null-equivalent union arm (e.g. optional<null>): %#v", t.Variants[i])
+			}
+			for j := i + 1; j < len(t.Variants); j++ {
+				if reflect.DeepEqual(t.Variants[i], t.Variants[j]) {
+					rt.Fatalf("drawn schema contains a duplicate-arm union (arms %d and %d): %#v", i, j, t)
+				}
+			}
+		}
+		for _, v := range t.Variants {
+			checkNoDegenerateUnion(rt, v)
+		}
+	case KindOptional, KindList, KindMap:
+		if t.Inner != nil {
+			checkNoDegenerateUnion(rt, *t.Inner)
+		}
+	}
+}
+
 func checkNoLiteralInt(rt *rapid.T, t FuzzType) {
 	switch t.Kind {
 	case KindLiteral:
@@ -1160,6 +1213,296 @@ func TestCollapseUnionsToPickedNestedUnionInsideMixedOuter(t *testing.T) {
 	}
 }
 
+// TestRewriteTypeAtPathDedupesAllNullToSingleNull pins the BAML 0.219+
+// panic fix: when a parent union does not collapse on its own but a
+// nested union arm collapses to null, the rewritten arms become
+// [null, null]. BAML 0.219+ rejects a union with no non-null arm
+// ("Union type must have at least one non-null type"), so the rewrite
+// must fold the duplicate nulls down to a single bare KindNull; a
+// two-null union is the degenerate shape this guards against.
+func TestRewriteTypeAtPathDedupesAllNullToSingleNull(t *testing.T) {
+	inner := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindNull},
+			{Kind: KindString},
+		},
+	}
+	parent := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindNull},
+			inner,
+		},
+	}
+	// Plan: the parent (path "") does not collapse, but the inner union
+	// at ":v1" collapses to its null arm (index 0). Rewriting arm 1 then
+	// yields null, so the parent's arms are [null, null].
+	plan := collapsePlan{choices: map[string]int{":v1": 0}}
+	got := rewriteTypeAtPath(parent, "", plan)
+	if got.Kind != KindNull {
+		t.Fatalf("all-null union should fold to a bare null, got %#v", got)
+	}
+	if len(got.Variants) != 0 {
+		t.Errorf("folded null should carry no variants, got %d", len(got.Variants))
+	}
+}
+
+// TestRewriteTypeAtPathDedupesNestedDuplicates pins that a nested-union
+// collapse which makes two surviving arms structurally identical is
+// deduplicated. Here the inner union collapses to int, colliding with
+// the parent's existing int arm; the result keeps each distinct arm
+// (string, int) exactly once, with the duplicate int dropped.
+func TestRewriteTypeAtPathDedupesNestedDuplicates(t *testing.T) {
+	inner := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindInt},
+			{Kind: KindBool},
+		},
+	}
+	parent := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindString},
+			{Kind: KindInt},
+			inner,
+		},
+	}
+	// Inner union at ":v2" collapses to its int arm (index 0), making
+	// the parent's arms [string, int, int].
+	plan := collapsePlan{choices: map[string]int{":v2": 0}}
+	got := rewriteTypeAtPath(parent, "", plan)
+	if got.Kind != KindUnion {
+		t.Fatalf("mixed union should stay a union after dedup, got kind %q", got.Kind)
+	}
+	if len(got.Variants) != 2 {
+		t.Fatalf("expected 2 deduped arms, got %d: %#v", len(got.Variants), got.Variants)
+	}
+	if got.Variants[0].Kind != KindString || got.Variants[1].Kind != KindInt {
+		t.Errorf("expected deduped arms [string, int], got [%q, %q]",
+			got.Variants[0].Kind, got.Variants[1].Kind)
+	}
+}
+
+// TestRewriteTypeAtPathLeavesMixedUnionUnchanged pins that a union
+// whose arms stay structurally distinct after the per-arm rewrite is
+// returned unchanged — the dedup pass must not perturb a well-formed
+// multi-arm union.
+func TestRewriteTypeAtPathLeavesMixedUnionUnchanged(t *testing.T) {
+	parent := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindString},
+			{Kind: KindInt},
+		},
+	}
+	got := rewriteTypeAtPath(parent, "", newCollapsePlan())
+	if !reflect.DeepEqual(got, parent) {
+		t.Errorf("distinct-arm union should be unchanged\nwant: %#v\ngot:  %#v", parent, got)
+	}
+}
+
+// TestNormalizeUnionTypeReducesOptionalNull pins that an optional<null>
+// union arm is folded to a bare null at draw time. unionMemberSpelling
+// flattens optional<null> to `(null | null)`, so without this reduction
+// union[optional<null>, null] would survive structural dedup (the two
+// arms differ in kind) and emit a panic-inducing all-null union, and
+// union[optional<null>, string] would emit `((null | null) | string)`.
+func TestNormalizeUnionTypeReducesOptionalNull(t *testing.T) {
+	null := FuzzType{Kind: KindNull}
+	optNull := FuzzType{Kind: KindOptional, Inner: &null}
+
+	// union[optional<null>, null] → both arms null-equivalent → bare null.
+	allNull := FuzzType{Kind: KindUnion, Variants: []FuzzType{optNull, {Kind: KindNull}}}
+	if got := normalizeUnionType(allNull); got.Kind != KindNull {
+		t.Errorf("union[optional<null>, null] should fold to bare null, got %#v", got)
+	}
+
+	// union[optional<null>, string] → optional<null> becomes null, leaving
+	// union[null, string].
+	mixed := FuzzType{Kind: KindUnion, Variants: []FuzzType{optNull, {Kind: KindString}}}
+	got := normalizeUnionType(mixed)
+	if got.Kind != KindUnion || len(got.Variants) != 2 {
+		t.Fatalf("expected a 2-arm union, got %#v", got)
+	}
+	if got.Variants[0].Kind != KindNull || got.Variants[1].Kind != KindString {
+		t.Errorf("expected union[null, string], got [%q, %q]", got.Variants[0].Kind, got.Variants[1].Kind)
+	}
+}
+
+// TestCollapseUnionsToPickedFoldsOptionalNullArm pins that the collapse
+// pass also avoids the optional<null> panic shape: an outer union arm
+// optional<union[null, string]> whose inner union consistently picks
+// null collapses to optional<null>, which must be reduced to a bare null
+// so the surrounding union does not emit `((null | null) | null)`. The
+// rewritten value must stay aligned with the rewritten schema.
+func TestCollapseUnionsToPickedFoldsOptionalNullArm(t *testing.T) {
+	innerUni := FuzzType{Kind: KindUnion, Variants: []FuzzType{{Kind: KindNull}, {Kind: KindString}}}
+	optArm := FuzzType{Kind: KindOptional, Inner: &innerUni}
+	outer := FuzzType{Kind: KindUnion, Variants: []FuzzType{{Kind: KindNull}, optArm}}
+	listOfOuter := FuzzType{Kind: KindList, Inner: &outer}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name:       "Root",
+			Properties: []FuzzProperty{{Name: "items", Type: listOfOuter}},
+		}},
+		RootClass: "Root",
+	}
+	// Element 0 picks the outer's direct null arm; element 1 picks the
+	// optional arm, present, whose inner union picks null. The outer pick
+	// disagrees (0 vs 1) so the outer union stays; the inner union is
+	// visited once and consistently picks null, so it collapses to null,
+	// turning the optional arm into optional<null>.
+	elemDirectNull := FuzzValue{Kind: KindUnion, VariantIndex: 0, Variant: &FuzzValue{Kind: KindNull}}
+	elemOptInnerNull := FuzzValue{
+		Kind: KindUnion, VariantIndex: 1,
+		Variant: &FuzzValue{
+			Kind: KindOptional, OptionalShape: OptionalPresent,
+			Inner: &FuzzValue{
+				Kind: KindUnion, VariantIndex: 0,
+				Variant: &FuzzValue{Kind: KindNull},
+			},
+		},
+	}
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{{
+			Name:  "items",
+			Value: FuzzValue{Kind: KindList, Items: []FuzzValue{elemDirectNull, elemOptInnerNull}},
+		}},
+	}
+
+	newSchema, newValue, err := collapseUnionsToPicked(schema, value)
+	if err != nil {
+		t.Fatalf("collapse: %v", err)
+	}
+	// After reducing optional<null> to null, the outer union's arms are
+	// [null, null] → folded to a bare null under the list.
+	cls, _ := newSchema.FindClass("Root")
+	listType := cls.Properties[0].Type
+	if listType.Kind != KindList || listType.Inner == nil || listType.Inner.Kind != KindNull {
+		t.Fatalf("expected list<null> after optional<null> reduction, got %#v", listType)
+	}
+	assertNoAllNullUnion(t, newSchema.EffectiveRoot())
+	if err := assertValueAlignsWithSchema(newSchema, newSchema.EffectiveRoot(), newValue); err != nil {
+		t.Fatalf("rewritten value not aligned with schema: %v\nschema: %s\nvalue: %s",
+			err, schemaDumpJSON(newSchema), valueDumpJSON(newValue))
+	}
+	if _, err := Walk(newSchema, newValue); err != nil {
+		t.Fatalf("walk of collapsed pair failed: %v", err)
+	}
+}
+
+// TestCollapseUnionsToPickedFoldsAllNullUnionEndToEnd is the
+// end-to-end regression for the reported `baml generate` panic: a
+// parent union[null, union[null, string]] sitting inside a list, where
+// observations disagree at the parent (so it does not collapse) but the
+// reached inner union consistently picks its null arm (so it collapses
+// to null). Before the fix the parent rewrote to union[null, null],
+// which BAML 0.219+ panics on. After the fix the position folds to a
+// bare null and the rewritten value stays aligned with the rewritten
+// schema (no stale union wrapper left over a non-union slot).
+func TestCollapseUnionsToPickedFoldsAllNullUnionEndToEnd(t *testing.T) {
+	inner := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindNull},
+			{Kind: KindString},
+		},
+	}
+	parent := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindNull},
+			inner,
+		},
+	}
+	listOfParent := FuzzType{Kind: KindList, Inner: &parent}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "items", Type: listOfParent},
+			},
+		}},
+		RootClass: "Root",
+	}
+	// Two list elements with disagreeing parent picks: element 0 picks
+	// the parent's direct null arm; element 1 picks the inner union,
+	// which in turn picks its null arm. The parent choice disagrees
+	// (0 vs 1) so the parent stays; the inner choice is consistent
+	// across the single visit that reaches it, so it collapses to null.
+	elemDirectNull := FuzzValue{
+		Kind: KindUnion, VariantIndex: 0,
+		Variant: &FuzzValue{Kind: KindNull},
+	}
+	elemInnerNull := FuzzValue{
+		Kind: KindUnion, VariantIndex: 1,
+		Variant: &FuzzValue{
+			Kind: KindUnion, VariantIndex: 0,
+			Variant: &FuzzValue{Kind: KindNull},
+		},
+	}
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{{
+			Name:  "items",
+			Value: FuzzValue{Kind: KindList, Items: []FuzzValue{elemDirectNull, elemInnerNull}},
+		}},
+	}
+
+	newSchema, newValue, err := collapseUnionsToPicked(schema, value)
+	if err != nil {
+		t.Fatalf("collapse: %v", err)
+	}
+
+	cls, _ := newSchema.FindClass("Root")
+	listType := cls.Properties[0].Type
+	if listType.Kind != KindList || listType.Inner == nil {
+		t.Fatalf("expected list type, got %#v", listType)
+	}
+	if listType.Inner.Kind != KindNull {
+		t.Fatalf("all-null union under the list should fold to bare null, got %#v", *listType.Inner)
+	}
+	// No union with all-null arms may survive anywhere in the schema —
+	// that is the exact shape that panics `baml generate`.
+	assertNoAllNullUnion(t, newSchema.EffectiveRoot())
+	for _, c := range newSchema.Classes {
+		for _, p := range c.Properties {
+			assertNoAllNullUnion(t, p.Type)
+		}
+	}
+	// The rewritten value must align with the rewritten schema: the
+	// list elements drop their union wrappers and become bare nulls.
+	if err := assertValueAlignsWithSchema(newSchema, newSchema.EffectiveRoot(), newValue); err != nil {
+		t.Fatalf("rewritten value not aligned with schema: %v\nschema: %s\nvalue: %s",
+			err, schemaDumpJSON(newSchema), valueDumpJSON(newValue))
+	}
+	if _, err := Walk(newSchema, newValue); err != nil {
+		t.Fatalf("walk of collapsed pair failed: %v", err)
+	}
+}
+
+// assertNoAllNullUnion fails the test if `ft` contains a KindUnion
+// whose every arm is KindNull — the BAML 0.219+ panic shape.
+func assertNoAllNullUnion(t *testing.T, ft FuzzType) {
+	t.Helper()
+	switch ft.Kind {
+	case KindUnion:
+		if allVariantsNull(ft.Variants) {
+			t.Errorf("found all-null union: %#v", ft)
+		}
+		for _, v := range ft.Variants {
+			assertNoAllNullUnion(t, v)
+		}
+	case KindOptional, KindList, KindMap:
+		if ft.Inner != nil {
+			assertNoAllNullUnion(t, *ft.Inner)
+		}
+	}
+}
+
 // schemaDumpJSON is a test helper for printing schemas in failure
 // messages. The dump is best-effort: a marshal error degrades to an
 // empty string; the helper does not fail the test on its own.
@@ -1350,6 +1693,17 @@ func TestCoupledCaseGenValueShapeMatchesSchema(t *testing.T) {
 		if err := assertValueAlignsWithSchema(cc.Schema, cc.Schema.EffectiveRoot(), cc.Value); err != nil {
 			rt.Fatalf("value/schema misalignment: %v\nschema: %s\nvalue: %s",
 				err, schemaDumpJSON(cc.Schema), valueDumpJSON(cc.Value))
+		}
+		// The collapse pass must not reintroduce a degenerate union (all
+		// arms null, duplicate arms, or an optional<null> arm) into the
+		// post-collapse schema — those panic `baml generate` on 0.219+.
+		for _, cls := range cc.Schema.Classes {
+			for _, prop := range cls.Properties {
+				checkNoDegenerateUnion(rt, prop.Type)
+			}
+		}
+		if cc.Schema.RootType != nil {
+			checkNoDegenerateUnion(rt, *cc.Schema.RootType)
 		}
 	})
 }
