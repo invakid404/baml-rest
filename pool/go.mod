@@ -3,7 +3,7 @@ module github.com/invakid404/baml-rest/pool
 go 1.26.3
 
 require (
-	github.com/bytedance/sonic v1.15.1
+	github.com/bytedance/sonic v1.15.2
 	github.com/google/uuid v1.6.0
 	github.com/gregwebs/go-recovery v0.4.1
 	github.com/hashicorp/go-hclog v1.6.3
