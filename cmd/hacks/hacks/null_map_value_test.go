@@ -105,7 +105,7 @@ func (u Union3IntOrMapStringKeyNullValueOrString) MarshalJSON() ([]byte, error) 
 	// position (field, accessor return, __New/Set params elided here).
 	for _, marker := range []string{
 		"*baml.OrderedMap[*interface{}]",
-		"bamlOrderedAs_OM_Ptr_Iface(baml.DecodeToOrderedValue(valueHolder))",
+		"bamlOrderedAs_OM_Ptr_Iface_(baml.DecodeToOrderedValue(valueHolder))",
 	} {
 		if !strings.Contains(after, marker) {
 			t.Fatalf("missing rewritten marker %q in patched file:\n%s", marker, after)
@@ -119,7 +119,7 @@ func (u Union3IntOrMapStringKeyNullValueOrString) MarshalJSON() ([]byte, error) 
 	helperPath := filepath.Join(typesDir, "ordered_map_static.go")
 	helperBody := readFileT(t, helperPath)
 	for _, marker := range []string{
-		"func bamlOrderedAs_OM_Ptr_Iface(value any) baml.OrderedMap[*interface{}] {",
+		"func bamlOrderedAs_OM_Ptr_Iface_(value any) baml.OrderedMap[*interface{}] {",
 		// Null map entries keep their key with a nil value rather than
 		// panicking the `v.(*interface{})` assertion on an untyped nil.
 		"_ = out.Set(k, nil)",
@@ -242,6 +242,113 @@ func (c *Mixed) Decode(holder *holderT) {
 	after2 := readFileT(t, path)
 	if got := strings.Count(after2, "_ = valueHolder"); got != 1 {
 		t.Fatalf("hack is not idempotent — second pass produced %d `_ = valueHolder`:\n%s", got, after2)
+	}
+}
+
+// TestStaticMapTypeEncoding_IfaceTokenNoCollision pins the trailing
+// underscore on the `Iface_` token. An undelimited `Iface` token would
+// be greedily consumed inside an ordinary identifier — a map value type
+// named `IfaceThing` would encode as `OM_IfaceThing` and decode back to
+// the wrong type `interface{}Thing`. The trailing `_` keeps the empty
+// interface distinct from identifiers that merely begin with `Iface`.
+func TestStaticMapTypeEncoding_IfaceTokenNoCollision(t *testing.T) {
+	cases := []string{
+		"baml.OrderedMap[*interface{}]",
+		"baml.OrderedMap[interface{}]",
+		// Identifiers that begin with (or contain) `Iface` must survive
+		// the round-trip untouched.
+		"baml.OrderedMap[IfaceThing]",
+		"baml.OrderedMap[Iface]",
+		"baml.OrderedMap[*IfaceThing]",
+		"baml.OrderedMap[baml.OrderedMap[IfaceThing]]",
+		// Mixed: the empty interface alongside an Iface-prefixed name.
+		"baml.OrderedMap[baml.OrderedMap[*interface{}]]",
+	}
+	for _, want := range cases {
+		enc := encodeStaticMapType(want)
+		if strings.ContainsAny(enc, "[]{}*. ") {
+			t.Fatalf("encoding %q produced a non-identifier token %q", want, enc)
+		}
+		got := decodeStaticMapEnc(enc)
+		if got != want {
+			t.Fatalf("round-trip mismatch: %q -> %q -> %q", want, enc, got)
+		}
+		// The helper-name path (used by the worklist to re-derive the
+		// type from a discovered identifier) must agree.
+		if viaName, ok := staticMapHelperTypeFromName(staticMapHelperName(want)); !ok || viaName != want {
+			t.Fatalf("helper-name round-trip mismatch for %q: ok=%v got=%q", want, ok, viaName)
+		}
+	}
+}
+
+// TestStaticMapClientRewrite_IfacePrefixedValueType drives a class whose
+// map value type is named `IfaceThing` through the full rewrite and
+// asserts the emitted helper rebuilds `baml.OrderedMap[IfaceThing]`
+// rather than the collision shape `interface{}Thing`.
+func TestStaticMapClientRewrite_IfacePrefixedValueType(t *testing.T) {
+	srcDir := t.TempDir()
+	clientDir := filepath.Join(srcDir, "baml_client")
+	typesDir := filepath.Join(clientDir, "types")
+	if err := os.MkdirAll(typesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const before = `package types
+
+import (
+	"fmt"
+
+	baml "github.com/example/fake-baml-patched/pkg"
+	"github.com/example/fake-baml-patched/pkg/cffi"
+)
+
+type IfaceThing struct {
+	N int64
+}
+
+type Holder struct {
+	Things map[string]IfaceThing ` + "`json:\"things\"`" + `
+}
+
+func (h *Holder) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+		case "things":
+			h.Things = baml.Decode(valueHolder).Interface().(map[string]IfaceThing)
+		default:
+			panic(fmt.Sprintf("unexpected field: %s", key))
+		}
+	}
+}
+`
+	path := filepath.Join(typesDir, "classes.go")
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := (&DynamicOrderClientHack{}).Apply(clientDir); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	after := readFileT(t, path)
+	for _, marker := range []string{
+		"baml.OrderedMap[IfaceThing]",
+		"bamlOrderedAs_OM_IfaceThing(baml.DecodeToOrderedValue(valueHolder))",
+	} {
+		if !strings.Contains(after, marker) {
+			t.Fatalf("missing rewritten marker %q in patched file:\n%s", marker, after)
+		}
+	}
+
+	helperBody := readFileT(t, filepath.Join(typesDir, "ordered_map_static.go"))
+	if !strings.Contains(helperBody, "func bamlOrderedAs_OM_IfaceThing(value any) baml.OrderedMap[IfaceThing] {") {
+		t.Fatalf("helper for IfaceThing missing or mis-typed:\n%s", helperBody)
+	}
+	// The collision shape must not appear anywhere.
+	if strings.Contains(after, "interface{}Thing") || strings.Contains(helperBody, "interface{}Thing") {
+		t.Fatalf("Iface token greedily collided with IfaceThing")
 	}
 }
 

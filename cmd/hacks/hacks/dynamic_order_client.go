@@ -1372,8 +1372,13 @@ func convertListHelperName(typeExpr string) string {
 //	                                 at end-of-token-stream by depth)
 //	"*"                -> "Ptr_"    (pointer prefix)
 //	"[]"               -> "Slice_"  (slice prefix)
-//	"interface{}"      -> "Iface"   (the empty interface, Go's spelling
-//	                                 of the BAML `null` value type)
+//	"interface{}"      -> "Iface_"  (the empty interface, Go's spelling
+//	                                 of the BAML `null` value type; the
+//	                                 trailing `_` matches the Slice_/Ptr_/
+//	                                 OM_ convention so the decoder does
+//	                                 not greedily consume the `Iface`
+//	                                 prefix of an identifier like
+//	                                 `IfaceThing`)
 //	"."                -> "_dot_"   (package separator)
 //	"]"                -> ""        (closes inferred by OM_ depth)
 //	spaces             -> ""        (stripped)
@@ -1384,10 +1389,10 @@ func convertListHelperName(typeExpr string) string {
 // implicit-close-at-end rule is unambiguous.
 //
 // Known limitation: encodeStaticMapType reserves the token
-// substrings `_dot_`, `Slice_`, `Ptr_`, `OM_`, and `Iface`.
+// substrings `_dot_`, `Slice_`, `Ptr_`, `OM_`, and `Iface_`.
 // Identifiers whose own spelling contains any of those literal
 // substrings (e.g. a Go type called `Slice_string`, a package
-// selector `some_dot_type`, or a type named `IfaceThing`) are not
+// selector `some_dot_type`, or a type named `Iface_v2`) are not
 // round-trip-safe: the decoder would
 // greedily consume the reserved token and rebuild a different
 // Go type expression. BAML's generated Go identifiers are
@@ -1401,11 +1406,13 @@ func convertListHelperName(typeExpr string) string {
 func encodeStaticMapType(typeExpr string) string {
 	s := strings.ReplaceAll(typeExpr, " ", "")
 	// The empty interface carries the only brace characters that reach
-	// this encoder (BAML's `null` -> `*interface{}`). Fold it to a token
-	// before the brace-free replacements run so no `{`/`}` survives into
-	// the helper identifier; the space-strip above already collapsed the
-	// `interface {}` spelling to `interface{}`.
-	s = strings.ReplaceAll(s, "interface{}", "Iface")
+	// this encoder (BAML's `null` -> `*interface{}`). Fold it to a
+	// trailing-underscore token before the brace-free replacements run
+	// so no `{`/`}` survives into the helper identifier; the space-strip
+	// above already collapsed the `interface {}` spelling to
+	// `interface{}`. The trailing `_` keeps the decoder from consuming
+	// the `Iface` prefix of an ordinary identifier (`IfaceThing`).
+	s = strings.ReplaceAll(s, "interface{}", "Iface_")
 	s = strings.ReplaceAll(s, "baml.OrderedMap[", "OM_")
 	s = strings.ReplaceAll(s, "*", "Ptr_")
 	s = strings.ReplaceAll(s, "[]", "Slice_")
@@ -1937,7 +1944,7 @@ func convertListHelperTypeFromName(name string) (string, bool) {
 }
 
 // decodeStaticMapEnc reverses encodeStaticMapType. Token recognition
-// (`OM_`, `Ptr_`, `Slice_`, `Iface`, `_dot_`) is greedy and
+// (`OM_`, `Ptr_`, `Slice_`, `Iface_`, `_dot_`) is greedy and
 // unambiguous; any other byte is appended verbatim, which preserves
 // underscores that live inside Go identifiers such as `stream_types`.
 // Generic closes
@@ -1959,9 +1966,9 @@ func decodeStaticMapEnc(enc string) string {
 		case strings.HasPrefix(enc[i:], "Slice_"):
 			out.WriteString("[]")
 			i += 6
-		case strings.HasPrefix(enc[i:], "Iface"):
+		case strings.HasPrefix(enc[i:], "Iface_"):
 			out.WriteString("interface{}")
-			i += 5
+			i += 6
 		case strings.HasPrefix(enc[i:], "_dot_"):
 			out.WriteString(".")
 			i += 5
