@@ -1205,6 +1205,15 @@ func readGoTypeExpr(body string, start int) (int, bool) {
 		// Now we're past the `]`; the value-type expression follows.
 		return readGoTypeExpr(body, j)
 	}
+	// Literal interface / struct type with a brace body. BAML emits
+	// `interface{}` as the Go value type for the BAML `null` type, so a
+	// `map<string, null>` lowers to `map[string]*interface{}`. The
+	// identifier loop below stops at the `{`, truncating the type to
+	// `interface`; consume the balanced brace body here so the caller
+	// sees the whole `interface{}` (or `struct{...}`) expression.
+	if end, ok := readBracedTypeKeyword(body, i); ok {
+		return end, true
+	}
 	// Identifier / dotted name with optional generic args.
 	for i < len(body) {
 		c := body[i]
@@ -1236,6 +1245,53 @@ func readGoTypeExpr(body string, start int) (int, bool) {
 		return 0, false
 	}
 	return i, true
+}
+
+// readBracedTypeKeyword recognises a literal `interface{...}` or
+// `struct{...}` type expression at body[start:] and returns the index
+// past the closing `}`. The keyword must be followed (after optional
+// inline whitespace) by a `{`, so a plain identifier that merely starts
+// with the keyword spelling (`interfaceFoo`, `structName`) is not
+// matched. Returns false when start does not open such a type.
+//
+// BAML emits `interface{}` as the Go representation of the BAML `null`
+// type; `map<string, null>` therefore lowers to `map[string]*interface{}`.
+// readGoTypeExpr's identifier scan would otherwise stop at the `{` and
+// hand back a truncated `interface` type, so this helper keeps the
+// `{}` (or any `struct` field list) attached to the type expression.
+func readBracedTypeKeyword(body string, start int) (int, bool) {
+	for _, kw := range [...]string{"interface", "struct"} {
+		if !strings.HasPrefix(body[start:], kw) {
+			continue
+		}
+		j := start + len(kw)
+		// Require the keyword to be followed by `{` (after optional
+		// inline whitespace); otherwise this is an identifier whose
+		// spelling merely begins with the keyword.
+		k := j
+		for k < len(body) && (body[k] == ' ' || body[k] == '\t') {
+			k++
+		}
+		if k >= len(body) || body[k] != '{' {
+			continue
+		}
+		depth := 1
+		m := k + 1
+		for m < len(body) && depth > 0 {
+			switch body[m] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+			}
+			m++
+		}
+		if depth != 0 {
+			return 0, false
+		}
+		return m, true
+	}
+	return 0, false
 }
 
 // isDynamicValueType reports whether the inner value type of a map is
@@ -1316,6 +1372,8 @@ func convertListHelperName(typeExpr string) string {
 //	                                 at end-of-token-stream by depth)
 //	"*"                -> "Ptr_"    (pointer prefix)
 //	"[]"               -> "Slice_"  (slice prefix)
+//	"interface{}"      -> "Iface"   (the empty interface, Go's spelling
+//	                                 of the BAML `null` value type)
 //	"."                -> "_dot_"   (package separator)
 //	"]"                -> ""        (closes inferred by OM_ depth)
 //	spaces             -> ""        (stripped)
@@ -1326,10 +1384,11 @@ func convertListHelperName(typeExpr string) string {
 // implicit-close-at-end rule is unambiguous.
 //
 // Known limitation: encodeStaticMapType reserves the token
-// substrings `_dot_`, `Slice_`, `Ptr_`, and `OM_`. Identifiers
-// whose own spelling contains any of those literal substrings
-// (e.g. a Go type called `Slice_string` or a package selector
-// `some_dot_type`) are not round-trip-safe: the decoder would
+// substrings `_dot_`, `Slice_`, `Ptr_`, `OM_`, and `Iface`.
+// Identifiers whose own spelling contains any of those literal
+// substrings (e.g. a Go type called `Slice_string`, a package
+// selector `some_dot_type`, or a type named `IfaceThing`) are not
+// round-trip-safe: the decoder would
 // greedily consume the reserved token and rebuild a different
 // Go type expression. BAML's generated Go identifiers are
 // PascalCase/camelCase without those substrings today, so the
@@ -1341,6 +1400,12 @@ func convertListHelperName(typeExpr string) string {
 // entirely.
 func encodeStaticMapType(typeExpr string) string {
 	s := strings.ReplaceAll(typeExpr, " ", "")
+	// The empty interface carries the only brace characters that reach
+	// this encoder (BAML's `null` -> `*interface{}`). Fold it to a token
+	// before the brace-free replacements run so no `{`/`}` survives into
+	// the helper identifier; the space-strip above already collapsed the
+	// `interface {}` spelling to `interface{}`.
+	s = strings.ReplaceAll(s, "interface{}", "Iface")
 	s = strings.ReplaceAll(s, "baml.OrderedMap[", "OM_")
 	s = strings.ReplaceAll(s, "*", "Ptr_")
 	s = strings.ReplaceAll(s, "[]", "Slice_")
@@ -1872,9 +1937,10 @@ func convertListHelperTypeFromName(name string) (string, bool) {
 }
 
 // decodeStaticMapEnc reverses encodeStaticMapType. Token recognition
-// (`OM_`, `Ptr_`, `Slice_`, `_dot_`) is greedy and unambiguous; any
-// other byte is appended verbatim, which preserves underscores that
-// live inside Go identifiers such as `stream_types`. Generic closes
+// (`OM_`, `Ptr_`, `Slice_`, `Iface`, `_dot_`) is greedy and
+// unambiguous; any other byte is appended verbatim, which preserves
+// underscores that live inside Go identifiers such as `stream_types`.
+// Generic closes
 // are inferred at end-of-stream by closing every `OM_` that was
 // opened — every static-map type expression we encode has exactly
 // one type parameter, so the close set is always trailing.
@@ -1893,6 +1959,9 @@ func decodeStaticMapEnc(enc string) string {
 		case strings.HasPrefix(enc[i:], "Slice_"):
 			out.WriteString("[]")
 			i += 6
+		case strings.HasPrefix(enc[i:], "Iface"):
+			out.WriteString("interface{}")
+			i += 5
 		case strings.HasPrefix(enc[i:], "_dot_"):
 			out.WriteString(".")
 			i += 5
