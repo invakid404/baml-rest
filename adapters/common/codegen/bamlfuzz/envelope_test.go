@@ -19,7 +19,10 @@ func TestSemanticEqual(t *testing.T) {
 		{"missing key", `{"a":1,"b":2}`, `{"a":1}`, false},
 		{"nested order", `{"x":{"a":1,"b":2}}`, `{"x":{"b":2,"a":1}}`, true},
 		{"array order matters", `[1,2,3]`, `[3,2,1]`, false},
-		{"null vs missing", `{"a":null}`, `{}`, false},
+		// boundaryml/baml#3690 workaround: a key present and null on one
+		// side but absent on the other is treated as equivalent, so the
+		// leaked optional field does not break equality.
+		{"null vs missing", `{"a":null}`, `{}`, true},
 		{"both null", `null`, `null`, true},
 	}
 	for _, c := range cases {
@@ -73,6 +76,58 @@ func TestSemanticDiff_FindsDifferences(t *testing.T) {
 		if d.Side != "a_vs_b" {
 			t.Errorf("entry side=%q want %q", d.Side, "a_vs_b")
 		}
+	}
+}
+
+// TestSemanticDiff_ToleratesExtraNullKeys pins the boundaryml/baml#3690
+// workaround: when the only difference between two payloads is a key
+// that is present (and null-valued) on one side but absent on the other,
+// SemanticDiff reports no disagreement.
+func TestSemanticDiff_ToleratesExtraNullKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"extra null on b", `{"k0":-26}`, `{"Fuzz_field_0":null,"k0":-26}`},
+		{"extra null on a", `{"Fuzz_field_0":null,"k0":-26}`, `{"k0":-26}`},
+		{"null on both", `{"f":null,"k0":-26}`, `{"f":null,"k0":-26}`},
+		{"nested extra null", `{"o":{"k":1}}`, `{"o":{"leak":null,"k":1}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiff("side", []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiff: %v", err)
+			}
+			if len(diff) != 0 {
+				t.Errorf("expected no diff entries, got %v", diff)
+			}
+		})
+	}
+}
+
+// TestSemanticDiff_RealDifferencesSurviveNullTolerance asserts the
+// #3690 workaround only suppresses extra null keys: a missing non-null
+// key or an extra non-null key still produces a diff entry.
+func TestSemanticDiff_RealDifferencesSurviveNullTolerance(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"extra non-null key on b", `{"k0":-26}`, `{"extra":1,"k0":-26}`},
+		{"missing non-null key on b", `{"a":1,"b":2}`, `{"a":1}`},
+		{"null vs non-null value", `{"a":null}`, `{"a":1}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiff("side", []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiff: %v", err)
+			}
+			if len(diff) == 0 {
+				t.Errorf("expected a diff entry, got none")
+			}
+		})
 	}
 }
 

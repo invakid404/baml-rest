@@ -196,6 +196,31 @@ func (w *orderWalker) setErr(err error) {
 	}
 }
 
+// Workaround for boundaryml/baml#3690: BAML's Go codegen serializes
+// null-valued optional fields from a class union arm even when the
+// active arm is a map or a different class, leaking extra null-valued
+// keys into the wire object. The order comparisons below drop those
+// leaked keys before checking key-order equality so the spurious key
+// does not register as an order mismatch. This is a comparison-only
+// relaxation. Remove when the upstream fix lands.
+
+// stripExtraNullKeys returns a filtered copy of keys removing entries
+// that are null-valued in src and absent from the reference set ref.
+// Null keys that ref also carries are preserved so genuine null-valued
+// fields still participate in the order check.
+func stripExtraNullKeys(keys []string, src, ref map[string]orderedJSON) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if src[k].kind == orderedNull {
+			if _, ok := ref[k]; !ok {
+				continue
+			}
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
 func (w *orderWalker) walkClass(path, className string, exp, got orderedJSON) {
 	cls, ok := w.schema.FindClass(className)
 	if !ok {
@@ -208,12 +233,14 @@ func (w *orderWalker) walkClass(path, className string, exp, got orderedJSON) {
 	if exp.kind != orderedObject || got.kind != orderedObject {
 		return
 	}
-	if !slices.Equal(exp.keys, got.keys) {
+	expKeys := stripExtraNullKeys(exp.keys, exp.byKey, got.byKey)
+	gotKeys := stripExtraNullKeys(got.keys, got.byKey, exp.byKey)
+	if !slices.Equal(expKeys, gotKeys) {
 		w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 			Side:     w.side,
 			Path:     path,
-			Expected: append([]string{}, exp.keys...),
-			Actual:   append([]string{}, got.keys...),
+			Expected: expKeys,
+			Actual:   gotKeys,
 		})
 	}
 	for _, prop := range cls.Properties {
@@ -256,12 +283,14 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 		if exp.kind != orderedObject || got.kind != orderedObject {
 			return
 		}
-		if !slices.Equal(exp.keys, got.keys) {
+		expKeys := stripExtraNullKeys(exp.keys, exp.byKey, got.byKey)
+		gotKeys := stripExtraNullKeys(got.keys, got.byKey, exp.byKey)
+		if !slices.Equal(expKeys, gotKeys) {
 			w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 				Side:     w.side,
 				Path:     path,
-				Expected: append([]string{}, exp.keys...),
-				Actual:   append([]string{}, got.keys...),
+				Expected: expKeys,
+				Actual:   gotKeys,
 			})
 		}
 		for _, key := range sortedIntersection(exp.byKey, got.byKey) {

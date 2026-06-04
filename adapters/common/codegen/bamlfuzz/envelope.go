@@ -286,6 +286,33 @@ func decodeAny(b json.RawMessage) (any, error) {
 	return v, nil
 }
 
+// Workaround for boundaryml/baml#3690: BAML's Go codegen serializes
+// null-valued optional fields from a class union arm even when the
+// active arm is a map or a different class, so a payload like
+// {"k0": -26} comes back as {"Fuzz_field_0": null, "k0": -26}. The
+// comparators below treat a missing key as equivalent to a key whose
+// value is null, suppressing the spurious diff. This is a
+// comparison-only relaxation — it never touches the serialized output.
+// Remove when the upstream fix lands and the leaked null keys stop
+// appearing on the wire.
+
+// withoutExtraNullKeys returns a view of m excluding keys that are
+// null-valued in m and absent from ref. Keeping null keys that ref also
+// carries preserves genuine null-vs-null agreement while dropping the
+// leaked extras described above.
+func withoutExtraNullKeys(m, ref map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if v == nil {
+			if _, ok := ref[k]; !ok {
+				continue
+			}
+		}
+		out[k] = v
+	}
+	return out
+}
+
 func deepEqualSemantic(a, b any) bool {
 	switch av := a.(type) {
 	case map[string]any:
@@ -293,11 +320,13 @@ func deepEqualSemantic(a, b any) bool {
 		if !ok {
 			return false
 		}
-		if len(av) != len(bv) {
+		af := withoutExtraNullKeys(av, bv)
+		bf := withoutExtraNullKeys(bv, av)
+		if len(af) != len(bf) {
 			return false
 		}
-		for k, v := range av {
-			rv, present := bv[k]
+		for k, v := range af {
+			rv, present := bf[k]
 			if !present {
 				return false
 			}
@@ -372,6 +401,16 @@ func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
 			av1, ok1 := av[k]
 			bv1, ok2 := bv[k]
 			if !ok1 || !ok2 {
+				// boundaryml/baml#3690 workaround: a key present on
+				// only one side whose value is null is the leaked
+				// optional field, not a real disagreement. Skip it.
+				present := av1
+				if !ok1 {
+					present = bv1
+				}
+				if present == nil {
+					continue
+				}
 				*out = append(*out, SemanticDiffEntry{Side: side, Path: path + "." + k, Got: av1, Want: bv1})
 				continue
 			}
