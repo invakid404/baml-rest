@@ -713,6 +713,12 @@ func variantNarrowness(t bamlfuzz.FuzzType) int {
 // ClassRef<T> recurse into elements so nested narrowness is checked
 // too, depth-limited to keep a degenerate cycle from blowing the
 // stack.
+//
+// boundaryml/baml#3690 tolerance: a leaked null-valued key is ignored
+// when matching both maps (it is not a real entry) and classes (it is
+// not a real extra key). The order walker that consumes the derived
+// choice is itself null-tolerant, so the arm picked here must agree
+// with the null-stripped view the walker compares.
 func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any, depth int) bool {
 	if depth <= 0 {
 		// Out of depth budget: accept on top-level shape only. The
@@ -787,6 +793,14 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any,
 			return true
 		}
 		for _, val := range obj {
+			// boundaryml/baml#3690: a leaked null-valued key from a
+			// sibling class union arm is not a real map entry, so it
+			// must not disqualify the map arm. The null-tolerant order
+			// walker strips it from the comparison anyway; ignore it
+			// here so arm derivation agrees with what the walker sees.
+			if val == nil {
+				continue
+			}
 			if !variantMatchesValue(schema, *t.Inner, val, depth-1) {
 				return false
 			}
@@ -805,8 +819,14 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any,
 		for _, p := range cls.Properties {
 			propByName[p.Name] = p.Type
 		}
-		for k := range obj {
+		for k, val := range obj {
 			if _, ok := propByName[k]; !ok {
+				// boundaryml/baml#3690: tolerate a leaked null-valued
+				// key that is not a declared property; a non-null
+				// unknown key still disqualifies the class arm.
+				if val == nil {
+					continue
+				}
 				return false
 			}
 		}
