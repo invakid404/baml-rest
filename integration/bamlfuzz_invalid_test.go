@@ -434,7 +434,7 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 	case bamlfuzz.OutcomeConditional:
 		switch {
 		case dynSuccess && restSuccess:
-			diffs, derr := bamlfuzz.SemanticDiff("dynclient_vs_rest", envelope.DynclientOutput, envelope.RESTBody)
+			diffs, derr := bamlfuzz.SemanticDiffParity("dynclient_vs_rest", envelope.DynclientOutput, envelope.RESTBody)
 			if derr != nil {
 				failAndDumpInvalid(t, artifactDir, envelope, "axis C diff decode (mutation=%s): %v", c.Mutation, derr)
 				return
@@ -529,7 +529,7 @@ func checkInvalidOrderC(c bamlfuzz.InvalidOracleCase, dyn, rest json.RawMessage)
 	if err != nil {
 		return fmt.Sprintf("axis C order check: derive union choices: %v", err), true
 	}
-	diffs, err := bamlfuzz.SchemaOrderDiffWithChoices("dynclient_vs_rest_order", c.Schema, dyn, rest, choices)
+	diffs, err := bamlfuzz.SchemaOrderDiffParityWithChoices("dynclient_vs_rest_order", c.Schema, dyn, rest, choices)
 	switch {
 	case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
 		return fmt.Sprintf("axis C order check: %v (derivation did not cover every union path; treat as hard fail per F1 contract)", err), true

@@ -59,8 +59,24 @@ func SchemaOrderDiff(label string, schema FuzzSchema, expected, actual json.RawM
 }
 
 // SchemaOrderDiffWithChoices is the union-aware variant of
-// SchemaOrderDiff. `choices` mirrors CaseMetadata.UnionChoices.
+// SchemaOrderDiff. `choices` mirrors CaseMetadata.UnionChoices. It is for
+// expected-vs-actual comparisons: the boundaryml/baml#3690 null-key
+// tolerance is applied only to the actual side. For actual-vs-actual
+// parity order checks use SchemaOrderDiffParityWithChoices.
 func SchemaOrderDiffWithChoices(label string, schema FuzzSchema, expected, actual json.RawMessage, choices map[string]UnionChoice) ([]SchemaOrderDiffEntry, error) {
+	return schemaOrderDiff(label, schema, expected, actual, choices, false)
+}
+
+// SchemaOrderDiffParityWithChoices is the symmetric variant for
+// actual-vs-actual parity order checks (e.g. dynclient_vs_rest), where
+// both legs are BAML-generated and either may carry a boundaryml/baml#3690
+// leaked null key. Leaked null keys on either side are tolerated before
+// the key-order comparison.
+func SchemaOrderDiffParityWithChoices(label string, schema FuzzSchema, a, b json.RawMessage, choices map[string]UnionChoice) ([]SchemaOrderDiffEntry, error) {
+	return schemaOrderDiff(label, schema, a, b, choices, true)
+}
+
+func schemaOrderDiff(label string, schema FuzzSchema, expected, actual json.RawMessage, choices map[string]UnionChoice, parity bool) ([]SchemaOrderDiffEntry, error) {
 	if schema.RootClass == "" && schema.RootType == nil {
 		return nil, fmt.Errorf("bamlfuzz: schema missing both RootClass and RootType")
 	}
@@ -77,7 +93,7 @@ func SchemaOrderDiffWithChoices(label string, schema FuzzSchema, expected, actua
 	if err != nil {
 		return nil, fmt.Errorf("decode actual: %w", err)
 	}
-	w := &orderWalker{schema: schema, side: label, choices: choices}
+	w := &orderWalker{schema: schema, side: label, choices: choices, parity: parity}
 	w.walkType("$", schema.EffectiveRoot(), exp, got)
 	return w.diffs, w.err
 }
@@ -188,6 +204,24 @@ type orderWalker struct {
 	diffs   []SchemaOrderDiffEntry
 	err     error
 	choices map[string]UnionChoice
+	// parity tolerates boundaryml/baml#3690 leaked null keys on either
+	// side (actual-vs-actual). When false, only the actual side (got) is
+	// stripped (expected-vs-actual).
+	parity bool
+}
+
+// orderKeys applies the boundaryml/baml#3690 null-key tolerance to a
+// class/map node and returns the (expectedKeys, actualKeys) to compare.
+// The actual side is always stripped of leaked nulls; in parity mode the
+// expected side is stripped too.
+func (w *orderWalker) orderKeys(exp, got orderedJSON) (expKeys, gotKeys []string) {
+	gotKeys = stripExtraNullKeys(got.keys, got.byKey, exp.byKey)
+	if w.parity {
+		expKeys = stripExtraNullKeys(exp.keys, exp.byKey, got.byKey)
+	} else {
+		expKeys = append([]string{}, exp.keys...)
+	}
+	return expKeys, gotKeys
 }
 
 func (w *orderWalker) setErr(err error) {
@@ -200,22 +234,28 @@ func (w *orderWalker) setErr(err error) {
 // null-valued optional fields from a class union arm even when the
 // active arm is a map or a different class, leaking extra null-valued
 // keys into the wire object. The order comparisons below drop those
-// leaked keys before checking key-order equality, but asymmetrically:
-// the upstream bug only ever ADDS keys to the actual output, so only
-// `got` (the actual side) is stripped. `exp` (the expected side) is
-// compared as-is, so a null key the expected side carries that `got`
-// dropped still registers as a mismatch. This is a comparison-only
-// relaxation. Remove when the upstream fix lands.
+// leaked keys before checking key-order equality. The bug only ever
+// ADDS keys to a BAML-generated output, so the direction depends on what
+// is being compared (orderWalker.parity):
+//
+//   - expected-vs-actual (parity == false): only `got` (the actual side)
+//     is stripped; `exp` is compared as-is, so a null key the expected
+//     side carries that `got` dropped still registers as a mismatch.
+//   - actual-vs-actual (parity == true): both sides are BAML-generated,
+//     so leaked null keys on either side are stripped.
+//
+// This is a comparison-only relaxation. Remove when the upstream fix lands.
 
-// stripExtraNullKeys returns a filtered copy of the actual side's keys,
-// removing entries that are null-valued in `got` and absent from the
-// expected-side reference `exp`. Null keys that `exp` also carries are
-// preserved so genuine null-valued fields still participate.
-func stripExtraNullKeys(keys []string, got, exp map[string]orderedJSON) []string {
+// stripExtraNullKeys returns a filtered copy of `keys`, removing entries
+// that are null-valued in `src` and absent from the reference set `ref`.
+// Null keys that `ref` also carries are preserved so genuine null-valued
+// fields still participate. The caller chooses which side(s) to strip,
+// encoding the asymmetric / parity tolerance described above.
+func stripExtraNullKeys(keys []string, src, ref map[string]orderedJSON) []string {
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
-		if got[k].kind == orderedNull {
-			if _, ok := exp[k]; !ok {
+		if src[k].kind == orderedNull {
+			if _, ok := ref[k]; !ok {
 				continue
 			}
 		}
@@ -236,12 +276,12 @@ func (w *orderWalker) walkClass(path, className string, exp, got orderedJSON) {
 	if exp.kind != orderedObject || got.kind != orderedObject {
 		return
 	}
-	gotKeys := stripExtraNullKeys(got.keys, got.byKey, exp.byKey)
-	if !slices.Equal(exp.keys, gotKeys) {
+	expKeys, gotKeys := w.orderKeys(exp, got)
+	if !slices.Equal(expKeys, gotKeys) {
 		w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 			Side:     w.side,
 			Path:     path,
-			Expected: append([]string{}, exp.keys...),
+			Expected: expKeys,
 			Actual:   gotKeys,
 		})
 	}
@@ -285,12 +325,12 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 		if exp.kind != orderedObject || got.kind != orderedObject {
 			return
 		}
-		gotKeys := stripExtraNullKeys(got.keys, got.byKey, exp.byKey)
-		if !slices.Equal(exp.keys, gotKeys) {
+		expKeys, gotKeys := w.orderKeys(exp, got)
+		if !slices.Equal(expKeys, gotKeys) {
 			w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 				Side:     w.side,
 				Path:     path,
-				Expected: append([]string{}, exp.keys...),
+				Expected: expKeys,
 				Actual:   gotKeys,
 			})
 		}

@@ -805,6 +805,62 @@ func TestSchemaOrderDiffWithChoices_UnionMapArmToleratesLeakedNull(t *testing.T)
 	}
 }
 
+// TestSchemaOrderDiffParity_ToleratesExtraNullEitherSide pins the
+// symmetric #3690 order tolerance for actual-vs-actual parity checks: a
+// leaked null key on either side is dropped before the key-order
+// comparison, so it does not register as a mismatch. The asymmetric
+// variant flags an a-side-only null (see
+// TestSchemaOrderDiff_NullKeyMissingFromActualStillDiffs); parity does
+// not.
+func TestSchemaOrderDiffParity_ToleratesExtraNullEitherSide(t *testing.T) {
+	schema := schemaRootOnly("a", "b")
+	cases := []struct {
+		name   string
+		a, b   string
+		parity bool
+		want   int
+	}{
+		{"null on a only, parity tolerates", `{"a":"1","b":"2","leak":null}`, `{"a":"1","b":"2"}`, true, 0},
+		{"null on b only, parity tolerates", `{"a":"1","b":"2"}`, `{"a":"1","b":"2","leak":null}`, true, 0},
+		{"null on a only, asymmetric flags", `{"a":"1","b":"2","leak":null}`, `{"a":"1","b":"2"}`, false, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var (
+				diffs []SchemaOrderDiffEntry
+				err   error
+			)
+			if c.parity {
+				diffs, err = SchemaOrderDiffParityWithChoices("side", schema, json.RawMessage(c.a), json.RawMessage(c.b), nil)
+			} else {
+				diffs, err = SchemaOrderDiffWithChoices("side", schema, json.RawMessage(c.a), json.RawMessage(c.b), nil)
+			}
+			if err != nil {
+				t.Fatalf("SchemaOrderDiff: %v", err)
+			}
+			if len(diffs) != c.want {
+				t.Errorf("expected %d diffs, got %d (%v)", c.want, len(diffs), diffs)
+			}
+		})
+	}
+}
+
+// TestSchemaOrderDiffParity_ExtraNonNullKeyStillDiffs asserts the parity
+// order tolerance is scoped to null keys: an extra non-null key on either
+// side remains a mismatch.
+func TestSchemaOrderDiffParity_ExtraNonNullKeyStillDiffs(t *testing.T) {
+	schema := schemaRootOnly("a", "b")
+	exp := json.RawMessage(`{"a":"1","b":"2","extra":"3"}`)
+	got := json.RawMessage(`{"a":"1","b":"2"}`)
+	diffs, err := SchemaOrderDiffParityWithChoices("side", schema, exp, got, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for extra non-null key, got %d (%v)", len(diffs), diffs)
+	}
+}
+
 func keysEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

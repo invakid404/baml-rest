@@ -134,6 +134,58 @@ func TestSemanticDiff_RealDifferencesSurviveNullTolerance(t *testing.T) {
 	}
 }
 
+// TestSemanticDiffParity_ToleratesExtraNullEitherSide pins the symmetric
+// #3690 tolerance used for actual-vs-actual parity comparisons: a leaked
+// null key on either side is forgiven, since both legs are BAML-generated
+// and may independently carry the leak.
+func TestSemanticDiffParity_ToleratesExtraNullEitherSide(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"same extra null both sides", `{"f":null,"k0":-26}`, `{"f":null,"k0":-26}`},
+		{"extra null on a only", `{"f":null,"k0":-26}`, `{"k0":-26}`},
+		{"extra null on b only", `{"k0":-26}`, `{"f":null,"k0":-26}`},
+		{"different leaked null each side", `{"fa":null,"k0":-26}`, `{"fb":null,"k0":-26}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiffParity("side", []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiffParity: %v", err)
+			}
+			if len(diff) != 0 {
+				t.Errorf("expected no diff entries, got %v", diff)
+			}
+		})
+	}
+}
+
+// TestSemanticDiffParity_RealDifferencesStillDiff asserts the parity
+// variant only forgives extra null keys: an extra non-null key on either
+// side, or a differing value, still produces a diff entry.
+func TestSemanticDiffParity_RealDifferencesStillDiff(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"extra non-null key on a", `{"extra":1,"k0":-26}`, `{"k0":-26}`},
+		{"extra non-null key on b", `{"k0":-26}`, `{"extra":1,"k0":-26}`},
+		{"differing value", `{"k0":-26}`, `{"k0":-27}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiffParity("side", []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiffParity: %v", err)
+			}
+			if len(diff) == 0 {
+				t.Errorf("expected a diff entry, got none")
+			}
+		})
+	}
+}
+
 func TestDetectOrderWarning(t *testing.T) {
 	warns := DetectOrderWarning("top",
 		[]byte(`{"a":1,"b":2,"c":3}`),
