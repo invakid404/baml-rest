@@ -290,21 +290,24 @@ func decodeAny(b json.RawMessage) (any, error) {
 // null-valued optional fields from a class union arm even when the
 // active arm is a map or a different class, so a payload like
 // {"k0": -26} comes back as {"Fuzz_field_0": null, "k0": -26}. The
-// comparators below treat a missing key as equivalent to a key whose
-// value is null, suppressing the spurious diff. This is a
-// comparison-only relaxation — it never touches the serialized output.
-// Remove when the upstream fix lands and the leaked null keys stop
-// appearing on the wire.
+// comparators below tolerate this, but asymmetrically: `a` is the
+// expected/reference side and `b` is the actual side, and the upstream
+// bug only ever ADDS keys to the actual output. So an extra null-valued
+// key present in `b` but absent from `a` is suppressed; the reverse — a
+// null key the expected side carries that the actual side dropped — is a
+// genuine missing field and still fails. This is a comparison-only
+// relaxation — it never touches the serialized output. Remove when the
+// upstream fix lands and the leaked null keys stop appearing on the wire.
 
-// withoutExtraNullKeys returns a view of m excluding keys that are
-// null-valued in m and absent from ref. Keeping null keys that ref also
-// carries preserves genuine null-vs-null agreement while dropping the
-// leaked extras described above.
-func withoutExtraNullKeys(m, ref map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
+// withoutExtraNullKeys returns a view of the actual-side map `actual`
+// excluding keys that are null-valued there and absent from the
+// expected-side reference `expected`. Null keys the expected side also
+// carries are kept so genuine null-vs-null agreement still participates.
+func withoutExtraNullKeys(actual, expected map[string]any) map[string]any {
+	out := make(map[string]any, len(actual))
+	for k, v := range actual {
 		if v == nil {
-			if _, ok := ref[k]; !ok {
+			if _, ok := expected[k]; !ok {
 				continue
 			}
 		}
@@ -320,12 +323,13 @@ func deepEqualSemantic(a, b any) bool {
 		if !ok {
 			return false
 		}
-		af := withoutExtraNullKeys(av, bv)
+		// Only the actual side (b) is stripped of leaked null keys; the
+		// expected side (a) is compared as-is so a missing field fails.
 		bf := withoutExtraNullKeys(bv, av)
-		if len(af) != len(bf) {
+		if len(av) != len(bf) {
 			return false
 		}
-		for k, v := range af {
+		for k, v := range av {
 			rv, present := bf[k]
 			if !present {
 				return false
@@ -401,14 +405,13 @@ func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
 			av1, ok1 := av[k]
 			bv1, ok2 := bv[k]
 			if !ok1 || !ok2 {
-				// boundaryml/baml#3690 workaround: a key present on
-				// only one side whose value is null is the leaked
-				// optional field, not a real disagreement. Skip it.
-				present := av1
-				if !ok1 {
-					present = bv1
-				}
-				if present == nil {
+				// boundaryml/baml#3690 workaround: an extra null-valued
+				// key on the actual side (b) that the expected side (a)
+				// lacks is the leaked optional field, not a real
+				// disagreement. The reverse — a null key in expected
+				// that actual dropped — is a genuine missing field and
+				// is still reported.
+				if !ok1 && bv1 == nil {
 					continue
 				}
 				*out = append(*out, SemanticDiffEntry{Side: side, Path: path + "." + k, Got: av1, Want: bv1})

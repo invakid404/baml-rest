@@ -691,6 +691,23 @@ func TestSchemaOrderDiff_ToleratesExtraNullKeysInClass(t *testing.T) {
 	}
 }
 
+// TestSchemaOrderDiff_NullKeyMissingFromActualStillDiffs pins the
+// asymmetry: the workaround only forgives extra null keys ON the actual
+// side. A null-valued key the expected side carries that the actual side
+// dropped is a genuine missing field and still surfaces a diff.
+func TestSchemaOrderDiff_NullKeyMissingFromActualStillDiffs(t *testing.T) {
+	schema := schemaRootOnly("a", "b")
+	exp := json.RawMessage(`{"a":"1","b":"2","leak":null}`)
+	got := json.RawMessage(`{"a":"1","b":"2"}`)
+	diffs, err := SchemaOrderDiffWithChoices("side", schema, exp, got, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for null key missing from actual, got %d (%v)", len(diffs), diffs)
+	}
+}
+
 // TestSchemaOrderDiff_ExtraNonNullKeyInClassStillDiffs asserts the
 // workaround is scoped to null keys: an extra non-null key remains an
 // order mismatch.
@@ -738,6 +755,18 @@ func TestSchemaOrderDiff_ToleratesExtraNullKeysInMap(t *testing.T) {
 	}
 	if len(diffs) != 1 {
 		t.Fatalf("expected 1 diff for extra non-null map key, got %d (%v)", len(diffs), diffs)
+	}
+
+	// Asymmetry: a null map key the expected side carries that the
+	// actual side dropped is a genuine missing entry and still diffs.
+	expMissing := json.RawMessage(`{"m":{"leak":null,"k0":-26}}`)
+	gotMissing := json.RawMessage(`{"m":{"k0":-26}}`)
+	diffs, err = SchemaOrderDiffWithChoices("side", schema, expMissing, gotMissing, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for null map key missing from actual, got %d (%v)", len(diffs), diffs)
 	}
 }
 

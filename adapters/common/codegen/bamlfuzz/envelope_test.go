@@ -19,10 +19,12 @@ func TestSemanticEqual(t *testing.T) {
 		{"missing key", `{"a":1,"b":2}`, `{"a":1}`, false},
 		{"nested order", `{"x":{"a":1,"b":2}}`, `{"x":{"b":2,"a":1}}`, true},
 		{"array order matters", `[1,2,3]`, `[3,2,1]`, false},
-		// boundaryml/baml#3690 workaround: a key present and null on one
-		// side but absent on the other is treated as equivalent, so the
-		// leaked optional field does not break equality.
-		{"null vs missing", `{"a":null}`, `{}`, true},
+		// boundaryml/baml#3690 workaround is asymmetric: an extra null
+		// key on the actual side (b) is tolerated, but a null key the
+		// expected side (a) carries that actual dropped is a genuine
+		// missing field and still fails.
+		{"null missing from actual", `{"a":null}`, `{}`, false},
+		{"extra null on actual", `{}`, `{"a":null}`, true},
 		{"both null", `null`, `null`, true},
 	}
 	for _, c := range cases {
@@ -80,18 +82,17 @@ func TestSemanticDiff_FindsDifferences(t *testing.T) {
 }
 
 // TestSemanticDiff_ToleratesExtraNullKeys pins the boundaryml/baml#3690
-// workaround: when the only difference between two payloads is a key
-// that is present (and null-valued) on one side but absent on the other,
-// SemanticDiff reports no disagreement.
+// workaround: when the only difference is a null-valued key present on
+// the actual side (b) but absent from the expected side (a), SemanticDiff
+// reports no disagreement. The tolerance is asymmetric — a is expected.
 func TestSemanticDiff_ToleratesExtraNullKeys(t *testing.T) {
 	cases := []struct {
 		name string
 		a, b string
 	}{
-		{"extra null on b", `{"k0":-26}`, `{"Fuzz_field_0":null,"k0":-26}`},
-		{"extra null on a", `{"Fuzz_field_0":null,"k0":-26}`, `{"k0":-26}`},
+		{"extra null on actual", `{"k0":-26}`, `{"Fuzz_field_0":null,"k0":-26}`},
 		{"null on both", `{"f":null,"k0":-26}`, `{"f":null,"k0":-26}`},
-		{"nested extra null", `{"o":{"k":1}}`, `{"o":{"leak":null,"k":1}}`},
+		{"nested extra null on actual", `{"o":{"k":1}}`, `{"o":{"leak":null,"k":1}}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -107,16 +108,18 @@ func TestSemanticDiff_ToleratesExtraNullKeys(t *testing.T) {
 }
 
 // TestSemanticDiff_RealDifferencesSurviveNullTolerance asserts the
-// #3690 workaround only suppresses extra null keys: a missing non-null
-// key or an extra non-null key still produces a diff entry.
+// #3690 workaround only suppresses extra null keys on the actual side:
+// an extra non-null key, a missing non-null key, or a null key the
+// expected side carries that actual dropped still produces a diff entry.
 func TestSemanticDiff_RealDifferencesSurviveNullTolerance(t *testing.T) {
 	cases := []struct {
 		name string
 		a, b string
 	}{
-		{"extra non-null key on b", `{"k0":-26}`, `{"extra":1,"k0":-26}`},
-		{"missing non-null key on b", `{"a":1,"b":2}`, `{"a":1}`},
+		{"extra non-null key on actual", `{"k0":-26}`, `{"extra":1,"k0":-26}`},
+		{"missing non-null key on actual", `{"a":1,"b":2}`, `{"a":1}`},
 		{"null vs non-null value", `{"a":null}`, `{"a":1}`},
+		{"null key missing from actual", `{"a":null,"k":1}`, `{"k":1}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

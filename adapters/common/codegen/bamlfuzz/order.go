@@ -200,19 +200,22 @@ func (w *orderWalker) setErr(err error) {
 // null-valued optional fields from a class union arm even when the
 // active arm is a map or a different class, leaking extra null-valued
 // keys into the wire object. The order comparisons below drop those
-// leaked keys before checking key-order equality so the spurious key
-// does not register as an order mismatch. This is a comparison-only
+// leaked keys before checking key-order equality, but asymmetrically:
+// the upstream bug only ever ADDS keys to the actual output, so only
+// `got` (the actual side) is stripped. `exp` (the expected side) is
+// compared as-is, so a null key the expected side carries that `got`
+// dropped still registers as a mismatch. This is a comparison-only
 // relaxation. Remove when the upstream fix lands.
 
-// stripExtraNullKeys returns a filtered copy of keys removing entries
-// that are null-valued in src and absent from the reference set ref.
-// Null keys that ref also carries are preserved so genuine null-valued
-// fields still participate in the order check.
-func stripExtraNullKeys(keys []string, src, ref map[string]orderedJSON) []string {
+// stripExtraNullKeys returns a filtered copy of the actual side's keys,
+// removing entries that are null-valued in `got` and absent from the
+// expected-side reference `exp`. Null keys that `exp` also carries are
+// preserved so genuine null-valued fields still participate.
+func stripExtraNullKeys(keys []string, got, exp map[string]orderedJSON) []string {
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
-		if src[k].kind == orderedNull {
-			if _, ok := ref[k]; !ok {
+		if got[k].kind == orderedNull {
+			if _, ok := exp[k]; !ok {
 				continue
 			}
 		}
@@ -233,13 +236,12 @@ func (w *orderWalker) walkClass(path, className string, exp, got orderedJSON) {
 	if exp.kind != orderedObject || got.kind != orderedObject {
 		return
 	}
-	expKeys := stripExtraNullKeys(exp.keys, exp.byKey, got.byKey)
 	gotKeys := stripExtraNullKeys(got.keys, got.byKey, exp.byKey)
-	if !slices.Equal(expKeys, gotKeys) {
+	if !slices.Equal(exp.keys, gotKeys) {
 		w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 			Side:     w.side,
 			Path:     path,
-			Expected: expKeys,
+			Expected: append([]string{}, exp.keys...),
 			Actual:   gotKeys,
 		})
 	}
@@ -283,13 +285,12 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 		if exp.kind != orderedObject || got.kind != orderedObject {
 			return
 		}
-		expKeys := stripExtraNullKeys(exp.keys, exp.byKey, got.byKey)
 		gotKeys := stripExtraNullKeys(got.keys, got.byKey, exp.byKey)
-		if !slices.Equal(expKeys, gotKeys) {
+		if !slices.Equal(exp.keys, gotKeys) {
 			w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 				Side:     w.side,
 				Path:     path,
-				Expected: expKeys,
+				Expected: append([]string{}, exp.keys...),
 				Actual:   gotKeys,
 			})
 		}
