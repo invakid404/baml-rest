@@ -253,10 +253,13 @@ func (w *orderWalker) setErr(err error) {
 //     is stripped; `exp` is compared as-is, so a null key the expected
 //     side carries that `got` dropped still registers as a mismatch.
 //   - actual-vs-actual (parity == true): both sides are BAML-generated,
-//     so leaked null keys on either side are stripped. In a map arm,
-//     where a null is never a real entry, parity mode drops every null
-//     key from both sides — even one both carry — so two leaks landing
-//     in different positions do not produce a spurious order diff.
+//     so leaked null keys on either side are stripped. In a map arm
+//     whose value type cannot be null, a null is never a real entry, so
+//     parity mode drops every null key from both sides — even one both
+//     carry — so two leaks landing in different positions do not produce
+//     a spurious order diff. When the map's value type CAN be null (e.g.
+//     map<string, null> or map<string, optional<T>>) the nulls are real
+//     entries and only the reference-aware strip applies.
 //
 // This is a comparison-only relaxation. Remove when the upstream fix lands.
 
@@ -291,6 +294,28 @@ func stripNullKeys(keys []string, src map[string]orderedJSON) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// canBeNull reports whether a value of `typ` can legitimately serialize
+// as JSON null. It gates the parity map-arm null stripping: only when a
+// map's value type CANNOT be null is a null entry necessarily a
+// boundaryml/baml#3690 leak. For a map whose value type can be null
+// (e.g. map<string, null> or map<string, optional<T>>) the null entries
+// are real and their order must still be compared.
+func canBeNull(typ FuzzType) bool {
+	switch typ.Kind {
+	case KindNull, KindOptional:
+		return true
+	case KindUnion:
+		for _, v := range typ.Variants {
+			if canBeNull(v) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 func (w *orderWalker) walkClass(path, className string, exp, got orderedJSON) {
@@ -354,7 +379,12 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 		if exp.kind != orderedObject || got.kind != orderedObject {
 			return
 		}
-		expKeys, gotKeys := w.orderKeys(exp, got, true)
+		// A null map entry is necessarily a #3690 leak only when the
+		// value type cannot itself be null; for map<string, null> or
+		// map<string, optional<T>> the nulls are real entries whose order
+		// still matters, so fall back to the reference-aware strip.
+		stripLeakedNulls := !canBeNull(*typ.Inner)
+		expKeys, gotKeys := w.orderKeys(exp, got, stripLeakedNulls)
 		if !slices.Equal(expKeys, gotKeys) {
 			w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 				Side:     w.side,
@@ -364,11 +394,12 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 			})
 		}
 		for _, key := range sortedIntersection(exp.byKey, got.byKey) {
-			// In parity mode a null-valued map key is a leaked field, not
-			// a real entry. Its value carries no order signal, and a
-			// nested union beneath it has no recorded choice — recursing
-			// would surface a spurious ErrSchemaOrderUnsupported. Skip it.
-			if w.parity && (exp.byKey[key].kind == orderedNull || got.byKey[key].kind == orderedNull) {
+			// In parity mode a null-valued map key whose value type
+			// cannot be null is a leaked field, not a real entry. Its
+			// value carries no order signal, and a nested union beneath
+			// it has no recorded choice — recursing would surface a
+			// spurious ErrSchemaOrderUnsupported. Skip it.
+			if w.parity && stripLeakedNulls && (exp.byKey[key].kind == orderedNull || got.byKey[key].kind == orderedNull) {
 				continue
 			}
 			w.walkType(fmt.Sprintf("%s[%q]", path, key), *typ.Inner, exp.byKey[key], got.byKey[key])
