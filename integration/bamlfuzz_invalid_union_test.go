@@ -157,3 +157,64 @@ func TestDeriveUnionChoices_MapNullValueTypeAcceptsNullEntry(t *testing.T) {
 		t.Errorf("expected map arm (index 0) for nullable value type, got %+v", choice)
 	}
 }
+
+// unionDualMapSchema builds `map<string,int> | map<string,optional<int>>`
+// with the non-nullable arm FIRST, so without the strict-first arm
+// selection it would win by stable order even when the payload has a real
+// null entry the nullable arm matches exactly.
+func unionDualMapSchema() bamlfuzz.FuzzSchema {
+	strT := bamlfuzz.FuzzType{Kind: bamlfuzz.KindString}
+	intT := bamlfuzz.FuzzType{Kind: bamlfuzz.KindInt}
+	optIntT := bamlfuzz.FuzzType{Kind: bamlfuzz.KindOptional, Inner: &intT}
+	return bamlfuzz.FuzzSchema{
+		RootType: &bamlfuzz.FuzzType{
+			Kind: bamlfuzz.KindUnion,
+			Variants: []bamlfuzz.FuzzType{
+				{Kind: bamlfuzz.KindMap, Key: &strT, Inner: &intT},
+				{Kind: bamlfuzz.KindMap, Key: &strT, Inner: &optIntT},
+			},
+		},
+	}
+}
+
+// TestDeriveUnionChoices_PrefersNullableMapArm pins the two-pass arm
+// selection: a payload with a real null entry ({"x": null, "y": 1}) must
+// resolve to map<string, optional<int>> (index 1), which matches every
+// entry exactly, over map<string, int> (index 0), which only matches by
+// tolerating the null as a leaked key. Picking the non-nullable arm would
+// let the order walker strip "x" as leaked and hide real order mismatches.
+func TestDeriveUnionChoices_PrefersNullableMapArm(t *testing.T) {
+	schema := unionDualMapSchema()
+	payload := json.RawMessage(`{"x":null,"y":1}`)
+	choices, err := deriveUnionChoicesFromParsed(schema, payload)
+	if err != nil {
+		t.Fatalf("deriveUnionChoicesFromParsed: %v", err)
+	}
+	choice, ok := choices[""]
+	if !ok {
+		t.Fatalf("expected a union choice at root path, got none (%v)", choices)
+	}
+	if choice.Index != 1 {
+		t.Errorf("expected the nullable map arm (index 1), got %+v", choice)
+	}
+}
+
+// TestDeriveUnionChoices_NonNullPayloadStillPicksFirstMap guards the
+// strict-pass tie-break: with no nulls ({"x": 1, "y": 2}) both map arms
+// match strictly, so stable declaration order keeps the first arm
+// (index 0).
+func TestDeriveUnionChoices_NonNullPayloadStillPicksFirstMap(t *testing.T) {
+	schema := unionDualMapSchema()
+	payload := json.RawMessage(`{"x":1,"y":2}`)
+	choices, err := deriveUnionChoicesFromParsed(schema, payload)
+	if err != nil {
+		t.Fatalf("deriveUnionChoicesFromParsed: %v", err)
+	}
+	choice, ok := choices[""]
+	if !ok {
+		t.Fatalf("expected a union choice at root path, got none (%v)", choices)
+	}
+	if choice.Index != 0 {
+		t.Errorf("expected the first map arm (index 0) by stable order, got %+v", choice)
+	}
+}
