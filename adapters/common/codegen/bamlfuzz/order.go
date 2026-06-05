@@ -214,7 +214,18 @@ type orderWalker struct {
 // class/map node and returns the (expectedKeys, actualKeys) to compare.
 // The actual side is always stripped of leaked nulls; in parity mode the
 // expected side is stripped too.
-func (w *orderWalker) orderKeys(exp, got orderedJSON) (expKeys, gotKeys []string) {
+//
+// stripAllNulls is set by map-arm callers. A null value is never a
+// legitimate map entry, so in parity mode (two actual outputs that may
+// each leak) every null key is dropped from both sides — including a
+// null key both sides carry, whose position would otherwise produce a
+// spurious order diff when the two leaks land in different spots. Class
+// nodes pass false: a null there can be a real optional field whose
+// declared position still matters.
+func (w *orderWalker) orderKeys(exp, got orderedJSON, stripAllNulls bool) (expKeys, gotKeys []string) {
+	if w.parity && stripAllNulls {
+		return stripNullKeys(exp.keys, exp.byKey), stripNullKeys(got.keys, got.byKey)
+	}
 	gotKeys = stripExtraNullKeys(got.keys, got.byKey, exp.byKey)
 	if w.parity {
 		expKeys = stripExtraNullKeys(exp.keys, exp.byKey, got.byKey)
@@ -242,7 +253,10 @@ func (w *orderWalker) setErr(err error) {
 //     is stripped; `exp` is compared as-is, so a null key the expected
 //     side carries that `got` dropped still registers as a mismatch.
 //   - actual-vs-actual (parity == true): both sides are BAML-generated,
-//     so leaked null keys on either side are stripped.
+//     so leaked null keys on either side are stripped. In a map arm,
+//     where a null is never a real entry, parity mode drops every null
+//     key from both sides — even one both carry — so two leaks landing
+//     in different positions do not produce a spurious order diff.
 //
 // This is a comparison-only relaxation. Remove when the upstream fix lands.
 
@@ -264,6 +278,21 @@ func stripExtraNullKeys(keys []string, src, ref map[string]orderedJSON) []string
 	return out
 }
 
+// stripNullKeys returns a copy of `keys` with every null-valued entry
+// removed, unconditional of any reference set. Used for parity map-arm
+// contexts where a null is never a real entry, so its position carries
+// no order signal even when both actual sides carry it.
+func stripNullKeys(keys []string, src map[string]orderedJSON) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if src[k].kind == orderedNull {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
 func (w *orderWalker) walkClass(path, className string, exp, got orderedJSON) {
 	cls, ok := w.schema.FindClass(className)
 	if !ok {
@@ -276,7 +305,7 @@ func (w *orderWalker) walkClass(path, className string, exp, got orderedJSON) {
 	if exp.kind != orderedObject || got.kind != orderedObject {
 		return
 	}
-	expKeys, gotKeys := w.orderKeys(exp, got)
+	expKeys, gotKeys := w.orderKeys(exp, got, false)
 	if !slices.Equal(expKeys, gotKeys) {
 		w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 			Side:     w.side,
@@ -325,7 +354,7 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 		if exp.kind != orderedObject || got.kind != orderedObject {
 			return
 		}
-		expKeys, gotKeys := w.orderKeys(exp, got)
+		expKeys, gotKeys := w.orderKeys(exp, got, true)
 		if !slices.Equal(expKeys, gotKeys) {
 			w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 				Side:     w.side,
@@ -335,6 +364,13 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 			})
 		}
 		for _, key := range sortedIntersection(exp.byKey, got.byKey) {
+			// In parity mode a null-valued map key is a leaked field, not
+			// a real entry. Its value carries no order signal, and a
+			// nested union beneath it has no recorded choice — recursing
+			// would surface a spurious ErrSchemaOrderUnsupported. Skip it.
+			if w.parity && (exp.byKey[key].kind == orderedNull || got.byKey[key].kind == orderedNull) {
+				continue
+			}
 			w.walkType(fmt.Sprintf("%s[%q]", path, key), *typ.Inner, exp.byKey[key], got.byKey[key])
 		}
 	case KindUnion:

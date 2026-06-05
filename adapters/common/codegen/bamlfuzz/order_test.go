@@ -861,6 +861,84 @@ func TestSchemaOrderDiffParity_ExtraNonNullKeyStillDiffs(t *testing.T) {
 	}
 }
 
+// TestSchemaOrderDiffParity_MapSameLeakedNullDifferentPosition pins the
+// boundaryml/baml#3690 map-arm parity fix: when both actual outputs carry
+// the same leaked null key but in different positions, the order check
+// must not flag it. A null is never a real map entry, so parity mode
+// drops it from both sides before the key-order comparison.
+func TestSchemaOrderDiffParity_MapSameLeakedNullDifferentPosition(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(FuzzType{Kind: KindInt})},
+			},
+		}},
+		RootClass: "Root",
+	}
+	// Both legs leaked "Fuzz_field_0":null, but the leak landed in a
+	// different spot relative to the real "k0" entry on each side.
+	a := json.RawMessage(`{"m":{"Fuzz_field_0":null,"k0":1}}`)
+	b := json.RawMessage(`{"m":{"k0":1,"Fuzz_field_0":null}}`)
+	diffs, err := SchemaOrderDiffParityWithChoices("side", schema, a, b, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs for same leaked null in different positions, got %v", diffs)
+	}
+
+	// A real ordering swap of non-null entries still diffs, even with the
+	// leaked null present.
+	a = json.RawMessage(`{"m":{"Fuzz_field_0":null,"k0":1,"k1":2}}`)
+	b = json.RawMessage(`{"m":{"k1":2,"k0":1,"Fuzz_field_0":null}}`)
+	diffs, err = SchemaOrderDiffParityWithChoices("side", schema, a, b, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for real key-order swap, got %d (%v)", len(diffs), diffs)
+	}
+}
+
+// TestSchemaOrderDiffParity_MapSameLeakedNullUnionValueNoUnsupported
+// guards point 3 of the fix: a leaked null map key whose declared value
+// type is a union must be skipped in the recursion, not walked into —
+// otherwise the missing union choice surfaces a spurious
+// ErrSchemaOrderUnsupported.
+func TestSchemaOrderDiffParity_MapSameLeakedNullUnionValueNoUnsupported(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(FuzzType{
+					Kind: KindUnion,
+					Variants: []FuzzType{
+						{Kind: KindString},
+						{Kind: KindInt},
+					},
+				})},
+			},
+		}},
+		RootClass: "Root",
+	}
+	// "leak":null is a leaked null entry; its value type is the union,
+	// but the walker must not consult choices for it. "k0":"x" walks the
+	// string arm, which needs no choice.
+	choices := map[string]UnionChoice{
+		`.m["k0"]`: {Index: 0, Kind: KindString, VariantCount: 2},
+	}
+	a := json.RawMessage(`{"m":{"leak":null,"k0":"x"}}`)
+	b := json.RawMessage(`{"m":{"k0":"x","leak":null}}`)
+	diffs, err := SchemaOrderDiffParityWithChoices("side", schema, a, b, choices)
+	if err != nil {
+		t.Fatalf("unexpected err (leaked null union value should be skipped): %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs, got %v", diffs)
+	}
+}
+
 func keysEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
