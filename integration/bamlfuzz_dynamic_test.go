@@ -438,7 +438,7 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 		checkSchemaOrder(t, c, envelope, &failures, "expected_vs_rest", c.Expected, envelope.RESTBody)
 	}
 	if libErr == nil && envelope.RESTError == "" && envelope.DynclientOutput != nil && envelope.RESTBody != nil {
-		if diff, err := bamlfuzz.SemanticDiff("dynclient_vs_rest", envelope.DynclientOutput, envelope.RESTBody); err != nil {
+		if diff, err := bamlfuzz.SemanticDiffParity("dynclient_vs_rest", envelope.DynclientOutput, envelope.RESTBody); err != nil {
 			failures = append(failures, fmt.Sprintf("dynclient_vs_rest diff: %v", err))
 		} else if len(diff) > 0 {
 			envelope.SemanticDiff = append(envelope.SemanticDiff, diff...)

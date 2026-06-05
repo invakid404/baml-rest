@@ -215,7 +215,7 @@ func SemanticEqual(a, b json.RawMessage) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("decode b: %w", err)
 	}
-	return deepEqualSemantic(av, bv), nil
+	return deepEqualSemantic(av, bv, nullExpectedVsActual), nil
 }
 
 // SemanticDiff returns the list of path-level disagreements between two
@@ -225,10 +225,30 @@ func SemanticEqual(a, b json.RawMessage) (bool, error) {
 // emitted SemanticDiffEntry so callers can label which oracle leg pair
 // they're comparing.
 //
+// SemanticDiff is for expected-vs-actual comparisons: `a` is the
+// expected/reference side and the boundaryml/baml#3690 null-key
+// tolerance is applied only to extra null keys on the actual side `b`
+// (see the null-tolerance block lower in this file). For actual-vs-actual
+// parity comparisons where either leg may independently carry the leak,
+// use SemanticDiffParity.
+//
 // Either input being empty (len == 0) is a decode error — same contract
 // as SemanticEqual. Callers wrap with `decode a: %w` / `decode b: %w`
 // so the failure log identifies which side was empty.
 func SemanticDiff(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error) {
+	return semanticDiff(side, a, b, nullExpectedVsActual)
+}
+
+// SemanticDiffParity is the symmetric variant of SemanticDiff for
+// actual-vs-actual parity comparisons (e.g. dynclient_vs_rest), where
+// both legs are BAML-generated and either side may independently carry a
+// boundaryml/baml#3690 leaked null key. An extra null-valued key on
+// either side is tolerated; every other disagreement is still reported.
+func SemanticDiffParity(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error) {
+	return semanticDiff(side, a, b, nullParity)
+}
+
+func semanticDiff(side string, a, b json.RawMessage, mode nullMode) ([]SemanticDiffEntry, error) {
 	av, err := decodeAny(a)
 	if err != nil {
 		return nil, fmt.Errorf("decode a: %w", err)
@@ -238,7 +258,7 @@ func SemanticDiff(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error
 		return nil, fmt.Errorf("decode b: %w", err)
 	}
 	var out []SemanticDiffEntry
-	diffAny(&out, side, "$", av, bv)
+	diffAny(&out, side, "$", av, bv, mode)
 	return out, nil
 }
 
@@ -286,22 +306,75 @@ func decodeAny(b json.RawMessage) (any, error) {
 	return v, nil
 }
 
-func deepEqualSemantic(a, b any) bool {
+// Workaround for boundaryml/baml#3690: BAML's Go codegen serializes
+// null-valued optional fields from a class union arm even when the
+// active arm is a map or a different class, so a payload like
+// {"k0": -26} comes back as {"Fuzz_field_0": null, "k0": -26}. The
+// comparators below tolerate this leaked null key. The bug only ever
+// ADDS keys to a BAML-generated output, so the tolerance direction
+// depends on what is being compared (selected via nullMode):
+//
+//   - nullExpectedVsActual: `a` is the expected/reference side and `b`
+//     is the actual output. Only an extra null key present in `b` but
+//     absent from `a` is suppressed; a null key the expected side
+//     carries that the actual side dropped is a genuine missing field
+//     and still fails.
+//   - nullParity: both sides are BAML-generated (actual-vs-actual), so
+//     either may independently carry the leak. An extra null key on
+//     either side is suppressed.
+//
+// This is a comparison-only relaxation — it never touches the serialized
+// output. Remove when the upstream fix lands and the leaked null keys
+// stop appearing on the wire.
+type nullMode int
+
+const (
+	nullExpectedVsActual nullMode = iota
+	nullParity
+)
+
+// withoutExtraNullKeys returns a view of `src` excluding keys that are
+// null-valued there and absent from the reference `ref`. Null keys that
+// `ref` also carries are kept so genuine null-vs-null agreement still
+// participates. The caller chooses which side(s) to strip, encoding the
+// asymmetric / parity tolerance described above.
+func withoutExtraNullKeys(src, ref map[string]any) map[string]any {
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		if v == nil {
+			if _, ok := ref[k]; !ok {
+				continue
+			}
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func deepEqualSemantic(a, b any, mode nullMode) bool {
 	switch av := a.(type) {
 	case map[string]any:
 		bv, ok := b.(map[string]any)
 		if !ok {
 			return false
 		}
-		if len(av) != len(bv) {
+		// The actual side (b) is always stripped of leaked null keys. In
+		// parity mode the expected side (a) is stripped too; otherwise a
+		// is authoritative so a missing field still fails.
+		bf := withoutExtraNullKeys(bv, av)
+		af := av
+		if mode == nullParity {
+			af = withoutExtraNullKeys(av, bv)
+		}
+		if len(af) != len(bf) {
 			return false
 		}
-		for k, v := range av {
-			rv, present := bv[k]
+		for k, v := range af {
+			rv, present := bf[k]
 			if !present {
 				return false
 			}
-			if !deepEqualSemantic(v, rv) {
+			if !deepEqualSemantic(v, rv, mode) {
 				return false
 			}
 		}
@@ -315,7 +388,7 @@ func deepEqualSemantic(a, b any) bool {
 			return false
 		}
 		for i := range av {
-			if !deepEqualSemantic(av[i], bv[i]) {
+			if !deepEqualSemantic(av[i], bv[i], mode) {
 				return false
 			}
 		}
@@ -345,8 +418,8 @@ func deepEqualSemantic(a, b any) bool {
 	}
 }
 
-func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
-	if deepEqualSemantic(a, b) {
+func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any, mode nullMode) {
+	if deepEqualSemantic(a, b, mode) {
 		return
 	}
 	switch av := a.(type) {
@@ -372,10 +445,23 @@ func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
 			av1, ok1 := av[k]
 			bv1, ok2 := bv[k]
 			if !ok1 || !ok2 {
+				// boundaryml/baml#3690 workaround: a leaked null-valued
+				// key present on only one side is not a real
+				// disagreement. An extra null on the actual side (b) is
+				// always tolerated; in parity mode an extra null on the
+				// a side is too. A non-null one-sided key, or (outside
+				// parity) a null key the expected side carries that
+				// actual dropped, is still reported.
+				if !ok1 && bv1 == nil {
+					continue
+				}
+				if mode == nullParity && !ok2 && av1 == nil {
+					continue
+				}
 				*out = append(*out, SemanticDiffEntry{Side: side, Path: path + "." + k, Got: av1, Want: bv1})
 				continue
 			}
-			diffAny(out, side, path+"."+k, av1, bv1)
+			diffAny(out, side, path+"."+k, av1, bv1, mode)
 		}
 	case []any:
 		bv, ok := b.([]any)
@@ -384,7 +470,7 @@ func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
 			return
 		}
 		for i := range av {
-			diffAny(out, side, fmt.Sprintf("%s[%d]", path, i), av[i], bv[i])
+			diffAny(out, side, fmt.Sprintf("%s[%d]", path, i), av[i], bv[i], mode)
 		}
 	default:
 		*out = append(*out, SemanticDiffEntry{Side: side, Path: path, Got: a, Want: b})
