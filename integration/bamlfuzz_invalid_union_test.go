@@ -105,3 +105,55 @@ func TestCheckInvalidOrderC_RealOrderMismatchStillFails(t *testing.T) {
 		t.Errorf("expected a hard fail for the key-order swap, got fail=false msg=%q", msg)
 	}
 }
+
+// unionMapOrStringSchema builds `map<string, V> | string` for the given
+// map value type, exercising the variantMatchesValue map-arm null gate.
+func unionMapOrStringSchema(mapValue bamlfuzz.FuzzType) bamlfuzz.FuzzSchema {
+	strT := bamlfuzz.FuzzType{Kind: bamlfuzz.KindString}
+	return bamlfuzz.FuzzSchema{
+		RootType: &bamlfuzz.FuzzType{
+			Kind: bamlfuzz.KindUnion,
+			Variants: []bamlfuzz.FuzzType{
+				{Kind: bamlfuzz.KindMap, Key: &strT, Inner: &mapValue},
+				{Kind: bamlfuzz.KindString},
+			},
+		},
+	}
+}
+
+// TestDeriveUnionChoices_MapNullableInnerRejectsPayload pins the
+// boundaryml/baml#3690 CanBeNull gate on arm derivation: for
+// `map<string,int> | string`, a payload whose only entry is null
+// ({"k0": null}) must NOT match the map arm. int cannot be null, so the
+// sole null entry is not a real map entry and the map arm has nothing
+// real to match — neither arm resolves.
+func TestDeriveUnionChoices_MapNullableInnerRejectsPayload(t *testing.T) {
+	schema := unionMapOrStringSchema(bamlfuzz.FuzzType{Kind: bamlfuzz.KindInt})
+	payload := json.RawMessage(`{"k0":null}`)
+	choices, err := deriveUnionChoicesFromParsed(schema, payload)
+	if err != nil {
+		t.Fatalf("deriveUnionChoicesFromParsed: %v", err)
+	}
+	if choice, ok := choices[""]; ok && choice.Kind == bamlfuzz.KindMap {
+		t.Errorf("expected the map arm to be rejected for an all-null payload, got %+v", choice)
+	}
+}
+
+// TestDeriveUnionChoices_MapNullValueTypeAcceptsNullEntry is the positive
+// counterpart: when the map value type CAN be null (map<string,null>), a
+// null entry is legitimate, so {"k0": null} resolves to the map arm.
+func TestDeriveUnionChoices_MapNullValueTypeAcceptsNullEntry(t *testing.T) {
+	schema := unionMapOrStringSchema(bamlfuzz.FuzzType{Kind: bamlfuzz.KindNull})
+	payload := json.RawMessage(`{"k0":null}`)
+	choices, err := deriveUnionChoicesFromParsed(schema, payload)
+	if err != nil {
+		t.Fatalf("deriveUnionChoicesFromParsed: %v", err)
+	}
+	choice, ok := choices[""]
+	if !ok {
+		t.Fatalf("expected a union choice at root path, got none (%v)", choices)
+	}
+	if choice.Kind != bamlfuzz.KindMap || choice.Index != 0 {
+		t.Errorf("expected map arm (index 0) for nullable value type, got %+v", choice)
+	}
+}

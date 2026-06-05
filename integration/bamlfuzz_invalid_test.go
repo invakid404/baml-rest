@@ -715,10 +715,12 @@ func variantNarrowness(t bamlfuzz.FuzzType) int {
 // stack.
 //
 // boundaryml/baml#3690 tolerance: a leaked null-valued key is ignored
-// when matching both maps (it is not a real entry) and classes (it is
-// not a real extra key). The order walker that consumes the derived
-// choice is itself null-tolerant, so the arm picked here must agree
-// with the null-stripped view the walker compares.
+// when matching maps whose value type cannot be null (the null is not a
+// real entry) and classes (it is not a real extra key). For a map whose
+// value type can be null the null is a legitimate entry and is matched
+// normally. The order walker that consumes the derived choice is itself
+// null-tolerant, so the arm picked here must agree with the null-stripped
+// view the walker compares.
 func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any, depth int) bool {
 	if depth <= 0 {
 		// Out of depth budget: accept on top-level shape only. The
@@ -792,18 +794,31 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any,
 		if t.Inner == nil {
 			return true
 		}
+		innerNullable := bamlfuzz.CanBeNull(*t.Inner)
+		matched := 0
 		for _, val := range obj {
 			// boundaryml/baml#3690: a leaked null-valued key from a
 			// sibling class union arm is not a real map entry, so it
 			// must not disqualify the map arm. The null-tolerant order
 			// walker strips it from the comparison anyway; ignore it
 			// here so arm derivation agrees with what the walker sees.
-			if val == nil {
+			// Only skip when the value type cannot itself be null — for
+			// map<string, null> / map<string, optional<T>> a null is a
+			// legitimate entry and must be checked normally.
+			if val == nil && !innerNullable {
 				continue
 			}
 			if !variantMatchesValue(schema, *t.Inner, val, depth-1) {
 				return false
 			}
+			matched++
+		}
+		// A non-empty object whose every entry was a skipped leaked null
+		// is not a real instance of a non-nullable-value map: e.g.
+		// {"k0": null} must not match map<string, int>. An empty object
+		// ({}) is still a valid empty map.
+		if len(obj) > 0 && matched == 0 && !innerNullable {
+			return false
 		}
 		return true
 	case bamlfuzz.KindClassRef:

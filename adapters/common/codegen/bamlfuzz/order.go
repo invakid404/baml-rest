@@ -296,19 +296,20 @@ func stripNullKeys(keys []string, src map[string]orderedJSON) []string {
 	return out
 }
 
-// canBeNull reports whether a value of `typ` can legitimately serialize
-// as JSON null. It gates the parity map-arm null stripping: only when a
-// map's value type CANNOT be null is a null entry necessarily a
-// boundaryml/baml#3690 leak. For a map whose value type can be null
-// (e.g. map<string, null> or map<string, optional<T>>) the null entries
-// are real and their order must still be compared.
-func canBeNull(typ FuzzType) bool {
+// CanBeNull reports whether a value of `typ` can legitimately serialize
+// as JSON null. It gates the boundaryml/baml#3690 null-leak tolerance:
+// only when a type CANNOT be null is an observed null necessarily a leak.
+// For the parity map-arm strip here, and for union-arm derivation in the
+// integration oracle, a map whose value type can be null (e.g.
+// map<string, null> or map<string, optional<T>>) has real null entries
+// that must still be compared / matched.
+func CanBeNull(typ FuzzType) bool {
 	switch typ.Kind {
 	case KindNull, KindOptional:
 		return true
 	case KindUnion:
 		for _, v := range typ.Variants {
-			if canBeNull(v) {
+			if CanBeNull(v) {
 				return true
 			}
 		}
@@ -383,7 +384,7 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 		// value type cannot itself be null; for map<string, null> or
 		// map<string, optional<T>> the nulls are real entries whose order
 		// still matters, so fall back to the reference-aware strip.
-		stripLeakedNulls := !canBeNull(*typ.Inner)
+		stripLeakedNulls := !CanBeNull(*typ.Inner)
 		expKeys, gotKeys := w.orderKeys(exp, got, stripLeakedNulls)
 		if !slices.Equal(expKeys, gotKeys) {
 			w.diffs = append(w.diffs, SchemaOrderDiffEntry{

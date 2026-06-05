@@ -940,7 +940,7 @@ func TestSchemaOrderDiffParity_MapSameLeakedNullUnionValueNoUnsupported(t *testi
 }
 
 // TestSchemaOrderDiffParity_MapNullValueTypeKeepsOrderCheck pins the
-// boundaryml/baml#3690 canBeNull gate: when a map's value type can itself
+// boundaryml/baml#3690 CanBeNull gate: when a map's value type can itself
 // be null (map<string, null>), every entry is legitimately null, so the
 // parity all-null strip must NOT apply — a real key-order difference is
 // still flagged.
