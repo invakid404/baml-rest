@@ -240,6 +240,96 @@ func TestWalkUnionRendersPickedArm(t *testing.T) {
 	}
 }
 
+// TestWalkUnionArmOmitsAbsentOptional pins the asymmetric absent-optional
+// contract that boundaryml/baml#3690 forces on the oracle: an absent
+// optional in a class reached through a union arm is OMITTED from the
+// expected output, while the same shape reached through a deterministic
+// (non-union) field still renders as JSON null.
+//
+// The runtime's InjectAbsentOptionals re-derives the active union arm
+// structurally from the wire value, and that derivation can land on a
+// different (or narrower) arm than the one that actually produced the
+// value, so it never injects the null and the key stays off the wire —
+// exactly what both dynclient and REST emit. The deterministic field has
+// no such ambiguity, so the inject-null contract still holds there.
+//
+// Mirrors the nightly repro: FuzzClass0.Fuzz_field_0 is a union whose
+// picked arm is a class with an absent optional<int>, and both actual
+// outputs dropped the key while the oracle wrongly carried it as null.
+func TestWalkUnionArmOmitsAbsentOptional(t *testing.T) {
+	inner := FuzzClass{
+		Name: "Inner",
+		Properties: []FuzzProperty{
+			{Name: "req", Type: FuzzType{Kind: KindString}},
+			{Name: "opt", Type: FuzzType{Kind: KindOptional, Inner: &FuzzType{Kind: KindInt}}},
+		},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{
+			{
+				Name: "Root",
+				Properties: []FuzzProperty{
+					{Name: "viaUnion", Type: FuzzType{
+						Kind: KindUnion,
+						Variants: []FuzzType{
+							{Kind: KindString},
+							{Kind: KindClassRef, Ref: "Inner"},
+						},
+					}},
+					{Name: "viaField", Type: FuzzType{Kind: KindClassRef, Ref: "Inner"}},
+				},
+			},
+			inner,
+		},
+		RootClass: "Root",
+	}
+	// In both Inner instances req is present and opt is absent. Only the
+	// arm reached through the union should drop the opt key.
+	mkInner := func(req string) FuzzValue {
+		return FuzzValue{
+			Kind: KindClassRef, ClassName: "Inner",
+			Fields: []FuzzFieldValue{
+				{Name: "req", Value: FuzzValue{Kind: KindString, String: req}},
+				{Name: "opt", Value: FuzzValue{Kind: KindOptional, OptionalShape: OptionalAbsent}},
+			},
+		}
+	}
+	unionArm := mkInner("a")
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{
+			{Name: "viaUnion", Value: FuzzValue{
+				Kind: KindUnion, VariantIndex: 1, Variant: &unionArm,
+			}},
+			{Name: "viaField", Value: mkInner("b")},
+		},
+	}
+	res, err := Walk(schema, value)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	// The LLM never emits an absent optional, in either position.
+	wantMock := `{"viaUnion":{"req":"a"},"viaField":{"req":"b"}}`
+	if string(res.MockLLMContent) != wantMock {
+		t.Errorf("mock mismatch\nwant: %s\ngot:  %s", wantMock, string(res.MockLLMContent))
+	}
+	// Expected: union-arm opt omitted, deterministic-field opt is null.
+	wantExpected := `{"viaUnion":{"req":"a"},"viaField":{"req":"b","opt":null}}`
+	if string(res.Expected) != wantExpected {
+		t.Errorf("expected mismatch\nwant: %s\ngot:  %s", wantExpected, string(res.Expected))
+	}
+	// The normalize-from-mock path must agree with the walker's Expected
+	// byte-for-byte (the invariant TestWalkRoundTripNormalizesAbsent
+	// asserts at scale), including the union-arm omission.
+	normalized, err := NormalizeMockToExpectedWithChoices(schema, res.MockLLMContent, "Root", res.Metadata.UnionChoices, false)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if string(normalized) != string(res.Expected) {
+		t.Errorf("normalize round-trip\nwant: %s\ngot:  %s", string(res.Expected), string(normalized))
+	}
+}
+
 // TestWalkTNullUnionEmitsExplicitNull asserts T|null implemented as a
 // union with a KindNull variant emits JSON null when the null arm is
 // picked, separately from KindOptional's absent-key semantics.

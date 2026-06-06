@@ -19,10 +19,14 @@ type WalkResult struct {
 	MockLLMContent json.RawMessage
 	// Expected is the schema-normalized parsed value that matches
 	// what the BAML parser produces: present optionals carry their
-	// inner value, explicit-null optionals appear as JSON null.
-	// Absent optionals always appear as JSON null, matching the
-	// static path and the dynamic path's InjectAbsentOptionals
-	// post-processing.
+	// inner value, explicit-null optionals appear as JSON null. An
+	// absent optional reached through a deterministic (non-union)
+	// path appears as JSON null, matching the static path and the
+	// dynamic path's InjectAbsentOptionals post-processing. An absent
+	// optional reached through a union arm is omitted entirely: the
+	// runtime re-derives the active arm structurally and can land on a
+	// different arm than the recorded one, so it never injects the
+	// null and the key stays off the wire.
 	Expected json.RawMessage
 	// Metadata is per-case provenance the failure envelope embeds.
 	Metadata CaseMetadata
@@ -98,7 +102,7 @@ func Walk(schema FuzzSchema, value FuzzValue, opts ...WalkOption) (WalkResult, e
 	if err := state.renderValueMock(&mockBuf, root, value, ""); err != nil {
 		return WalkResult{}, err
 	}
-	if err := state.renderValueExpected(&expectBuf, root, value); err != nil {
+	if err := state.renderValueExpected(&expectBuf, root, value, false); err != nil {
 		return WalkResult{}, err
 	}
 	return WalkResult{
@@ -165,7 +169,12 @@ func (s *walkState) renderClassMock(buf *bytes.Buffer, val FuzzValue, path strin
 	return nil
 }
 
-func (s *walkState) renderClassExpected(buf *bytes.Buffer, val FuzzValue) error {
+// renderClassExpected renders a class instance into the expected
+// (schema-normalized) JSON. `inUnion` is true when this class was
+// reached through one or more union arms: see renderValueExpected's
+// KindOptional/KindUnion handling for why absent optionals are
+// omitted rather than nulled in that case.
+func (s *walkState) renderClassExpected(buf *bytes.Buffer, val FuzzValue, inUnion bool) error {
 	cls, ok := s.schema.FindClass(val.ClassName)
 	if !ok {
 		return fmt.Errorf("walk: unknown class %q in expected", val.ClassName)
@@ -182,6 +191,17 @@ func (s *walkState) renderClassExpected(buf *bytes.Buffer, val FuzzValue) error 
 		if !ok {
 			return fmt.Errorf("walk: missing field %q on class %q in expected", prop.Name, cls.Name)
 		}
+		// Inside a union arm an absent optional produces no key at all.
+		// The runtime's InjectAbsentOptionals re-derives the active
+		// union arm structurally from the wire value, and that
+		// derivation can land on a different arm than the one that
+		// actually generated the value (or one without this optional),
+		// so the null is never injected and the key stays off the wire.
+		// Outside a union the deterministic inject-null contract still
+		// holds, so absent optionals there render as JSON null below.
+		if inUnion && prop.Type.Kind == KindOptional && fv.OptionalShape == OptionalAbsent {
+			continue
+		}
 		if !first {
 			buf.WriteByte(',')
 		}
@@ -192,7 +212,7 @@ func (s *walkState) renderClassExpected(buf *bytes.Buffer, val FuzzValue) error 
 		}
 		buf.Write(keyBytes)
 		buf.WriteByte(':')
-		if err := s.renderValueExpected(buf, prop.Type, fv); err != nil {
+		if err := s.renderValueExpected(buf, prop.Type, fv, inUnion); err != nil {
 			return err
 		}
 	}
@@ -302,7 +322,13 @@ func (s *walkState) renderValueMock(buf *bytes.Buffer, t FuzzType, val FuzzValue
 	}
 }
 
-func (s *walkState) renderValueExpected(buf *bytes.Buffer, t FuzzType, val FuzzValue) error {
+// renderValueExpected renders one value into the expected JSON.
+// `inUnion` propagates whether the value sits beneath a union arm so
+// renderClassExpected can omit (rather than null) absent optionals
+// there. Descending into a union variant sets it for the subtree; it
+// never resets, since once the runtime's arm derivation can diverge
+// every absent optional below is unreliable.
+func (s *walkState) renderValueExpected(buf *bytes.Buffer, t FuzzType, val FuzzValue, inUnion bool) error {
 	switch t.Kind {
 	case KindString:
 		return writeJSON(buf, val.String)
@@ -333,9 +359,12 @@ func (s *walkState) renderValueExpected(buf *bytes.Buffer, t FuzzType, val FuzzV
 			if val.Inner == nil || t.Inner == nil {
 				return fmt.Errorf("expected: present optional missing inner")
 			}
-			return s.renderValueExpected(buf, *t.Inner, *val.Inner)
+			return s.renderValueExpected(buf, *t.Inner, *val.Inner, inUnion)
 		}
-		// Absent and null collapse to JSON null.
+		// Absent and null collapse to JSON null. (An absent optional
+		// inside a union arm is omitted by renderClassExpected before it
+		// ever reaches here, so this null is only ever the explicit-null
+		// shape or a non-union absent optional.)
 		buf.WriteString("null")
 		return nil
 	case KindList:
@@ -347,7 +376,7 @@ func (s *walkState) renderValueExpected(buf *bytes.Buffer, t FuzzType, val FuzzV
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			if err := s.renderValueExpected(buf, *t.Inner, item); err != nil {
+			if err := s.renderValueExpected(buf, *t.Inner, item, inUnion); err != nil {
 				return err
 			}
 		}
@@ -368,14 +397,14 @@ func (s *walkState) renderValueExpected(buf *bytes.Buffer, t FuzzType, val FuzzV
 			}
 			buf.Write(keyBytes)
 			buf.WriteByte(':')
-			if err := s.renderValueExpected(buf, *t.Inner, entry.Value); err != nil {
+			if err := s.renderValueExpected(buf, *t.Inner, entry.Value, inUnion); err != nil {
 				return err
 			}
 		}
 		buf.WriteByte('}')
 		return nil
 	case KindClassRef:
-		return s.renderClassExpected(buf, val)
+		return s.renderClassExpected(buf, val, inUnion)
 	case KindUnion:
 		if val.Kind != KindUnion || val.Variant == nil {
 			return fmt.Errorf("expected: union value missing selected variant")
@@ -383,7 +412,7 @@ func (s *walkState) renderValueExpected(buf *bytes.Buffer, t FuzzType, val FuzzV
 		if val.VariantIndex < 0 || val.VariantIndex >= len(t.Variants) {
 			return fmt.Errorf("expected: union variant index %d out of range [0,%d)", val.VariantIndex, len(t.Variants))
 		}
-		return s.renderValueExpected(buf, t.Variants[val.VariantIndex], *val.Variant)
+		return s.renderValueExpected(buf, t.Variants[val.VariantIndex], *val.Variant, true)
 	default:
 		return fmt.Errorf("expected: unknown kind %q", t.Kind)
 	}
@@ -464,8 +493,9 @@ func writeLiteral(buf *bytes.Buffer, lit *FuzzLiteral) error {
 // NormalizeMockToExpected re-parses `mock` and walks the schema's
 // class graph to produce the canonical-equivalent of the walker's
 // Expected output: class instance keys follow schema declaration
-// order, and map keys retain the mock's wire order. Absent optional
-// fields are always emitted as JSON null.
+// order, and map keys retain the mock's wire order. An absent optional
+// field is emitted as JSON null outside a union arm and omitted within
+// one — see WalkResult.Expected and renderClassExpected.
 //
 // Union schemas require union-choice metadata to disambiguate which
 // arm produced the mock; call NormalizeMockToExpectedWithChoices
@@ -478,8 +508,9 @@ func NormalizeMockToExpected(schema FuzzSchema, mock json.RawMessage, rootClass 
 // NormalizeMockToExpectedWithChoices is the union-aware variant. The
 // `choices` map mirrors CaseMetadata.UnionChoices: each entry tells
 // the normalizer which arm produced the JSON at that path. The
-// `preserve` parameter is accepted for API compatibility but absent
-// optional fields are always emitted as JSON null.
+// `preserve` parameter is accepted for API compatibility; absent
+// optional fields are emitted as JSON null outside a union arm and
+// omitted within one (see NormalizeMockToExpected).
 //
 // Normalization is driven by the schema's effective root type
 // (FuzzSchema.EffectiveRoot): when the schema sets RootType the
@@ -495,7 +526,7 @@ func NormalizeMockToExpectedWithChoices(schema FuzzSchema, mock json.RawMessage,
 		return nil, fmt.Errorf("normalize: parse mock: %w", err)
 	}
 	root := effectiveNormalizeRoot(schema, rootClass)
-	out, err := normalizeValue(schema, root, raw, "", choices, preserve)
+	out, err := normalizeValue(schema, root, raw, "", choices, preserve, false)
 	if err != nil {
 		return nil, err
 	}
@@ -578,7 +609,14 @@ func effectiveNormalizeRoot(schema FuzzSchema, rootClass string) FuzzType {
 	return schema.EffectiveRoot()
 }
 
-func normalizeClass(schema FuzzSchema, className string, raw any, basePath string, choices map[string]UnionChoice, preserve bool) (*bamlutils.OrderedMap[any], error) {
+// normalizeClass builds the order-preserving carrier for a class
+// instance. `inUnion` reports whether this class was reached through a
+// union arm: an absent optional is then left out of the carrier
+// entirely (so the re-emitter omits it), mirroring renderClassExpected
+// and the runtime's union-arm-derived InjectAbsentOptionals behaviour.
+// Outside a union the missing optional is recorded as nil so it
+// re-emits as JSON null.
+func normalizeClass(schema FuzzSchema, className string, raw any, basePath string, choices map[string]UnionChoice, preserve, inUnion bool) (*bamlutils.OrderedMap[any], error) {
 	cls, ok := schema.FindClass(className)
 	if !ok {
 		return nil, fmt.Errorf("normalize: unknown class %q", className)
@@ -594,12 +632,15 @@ func normalizeClass(schema FuzzSchema, className string, raw any, basePath strin
 			if prop.Type.Kind != KindOptional {
 				return nil, fmt.Errorf("normalize: required field %q on %q missing from mock", prop.Name, className)
 			}
+			if inUnion {
+				continue
+			}
 			if err := out.Set(prop.Name, nil); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		nv, err := normalizeValue(schema, prop.Type, fv, basePath+"."+prop.Name, choices, preserve)
+		nv, err := normalizeValue(schema, prop.Type, fv, basePath+"."+prop.Name, choices, preserve, inUnion)
 		if err != nil {
 			return nil, fmt.Errorf("normalize: field %q on %q: %w", prop.Name, className, err)
 		}
@@ -610,7 +651,7 @@ func normalizeClass(schema FuzzSchema, className string, raw any, basePath strin
 	return out, nil
 }
 
-func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices map[string]UnionChoice, preserve bool) (any, error) {
+func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices map[string]UnionChoice, preserve, inUnion bool) (any, error) {
 	switch t.Kind {
 	case KindString, KindInt, KindFloat, KindBool, KindLiteral, KindEnumRef:
 		return raw, nil
@@ -623,7 +664,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		if t.Inner == nil {
 			return nil, fmt.Errorf("optional missing inner")
 		}
-		return normalizeValue(schema, *t.Inner, raw, path, choices, preserve)
+		return normalizeValue(schema, *t.Inner, raw, path, choices, preserve, inUnion)
 	case KindList:
 		if raw == nil {
 			return nil, nil
@@ -634,7 +675,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		}
 		out := make([]any, len(arr))
 		for i, item := range arr {
-			nv, err := normalizeValue(schema, *t.Inner, item, fmt.Sprintf("%s[%d]", path, i), choices, preserve)
+			nv, err := normalizeValue(schema, *t.Inner, item, fmt.Sprintf("%s[%d]", path, i), choices, preserve, inUnion)
 			if err != nil {
 				return nil, fmt.Errorf("list[%d]: %w", i, err)
 			}
@@ -652,7 +693,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		out := &bamlutils.OrderedMap[any]{}
 		var firstErr error
 		obj.Range(func(k string, v any) bool {
-			nv, err := normalizeValue(schema, *t.Inner, v, fmt.Sprintf("%s[%q]", path, k), choices, preserve)
+			nv, err := normalizeValue(schema, *t.Inner, v, fmt.Sprintf("%s[%q]", path, k), choices, preserve, inUnion)
 			if err != nil {
 				firstErr = fmt.Errorf("map[%q]: %w", k, err)
 				return false
@@ -668,7 +709,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		}
 		return out, nil
 	case KindClassRef:
-		return normalizeClass(schema, t.Ref, raw, path, choices, preserve)
+		return normalizeClass(schema, t.Ref, raw, path, choices, preserve, inUnion)
 	case KindUnion:
 		choice, ok := choices[path]
 		if !ok {
@@ -677,7 +718,7 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 		if choice.Index < 0 || choice.Index >= len(t.Variants) {
 			return nil, fmt.Errorf("normalize: union choice index %d out of range at %q", choice.Index, path)
 		}
-		return normalizeValue(schema, t.Variants[choice.Index], raw, path+":v", choices, preserve)
+		return normalizeValue(schema, t.Variants[choice.Index], raw, path+":v", choices, preserve, true)
 	default:
 		return nil, fmt.Errorf("normalize: unknown kind %q", t.Kind)
 	}
@@ -695,13 +736,19 @@ func normalizeValue(schema FuzzSchema, t FuzzType, raw any, path string, choices
 // through the class helper.
 func marshalSchemaOrdered(schema FuzzSchema, root FuzzType, normalized any, choices map[string]UnionChoice, preserve bool) (json.RawMessage, error) {
 	var buf bytes.Buffer
-	if err := writeOrderedValue(&buf, schema, root, normalized, "", choices, preserve); err != nil {
+	if err := writeOrderedValue(&buf, schema, root, normalized, "", choices, preserve, false); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
-func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v any, path string, choices map[string]UnionChoice, preserve bool) error {
+// writeOrderedClass re-emits a class instance in schema declaration
+// order. `inUnion` reports whether this class sits beneath a union arm.
+// A declared optional missing from the carrier re-emits as JSON null
+// outside a union (the inject-null contract); inside a union it is
+// omitted, matching normalizeClass / renderClassExpected and the
+// runtime's union-arm-derived InjectAbsentOptionals behaviour.
+func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v any, path string, choices map[string]UnionChoice, preserve, inUnion bool) error {
 	cls, ok := schema.FindClass(className)
 	if !ok {
 		return fmt.Errorf("ordered: unknown class %q", className)
@@ -715,6 +762,9 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 	for _, prop := range cls.Properties {
 		fv, present := obj.Get(prop.Name)
 		if !present && prop.Type.Kind == KindOptional {
+			if inUnion {
+				continue
+			}
 			if !first {
 				buf.WriteByte(',')
 			}
@@ -737,7 +787,7 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 		}
 		buf.Write(keyBytes)
 		buf.WriteByte(':')
-		if err := writeOrderedValue(buf, schema, prop.Type, fv, path+"."+prop.Name, choices, preserve); err != nil {
+		if err := writeOrderedValue(buf, schema, prop.Type, fv, path+"."+prop.Name, choices, preserve, inUnion); err != nil {
 			return err
 		}
 	}
@@ -745,14 +795,14 @@ func writeOrderedClass(buf *bytes.Buffer, schema FuzzSchema, className string, v
 	return nil
 }
 
-func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, path string, choices map[string]UnionChoice, preserve bool) error {
+func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, path string, choices map[string]UnionChoice, preserve, inUnion bool) error {
 	switch t.Kind {
 	case KindOptional:
 		if v == nil {
 			buf.WriteString("null")
 			return nil
 		}
-		return writeOrderedValue(buf, schema, *t.Inner, v, path, choices, preserve)
+		return writeOrderedValue(buf, schema, *t.Inner, v, path, choices, preserve, inUnion)
 	case KindList:
 		if v == nil {
 			buf.WriteString("null")
@@ -767,7 +817,7 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			if err := writeOrderedValue(buf, schema, *t.Inner, item, fmt.Sprintf("%s[%d]", path, i), choices, preserve); err != nil {
+			if err := writeOrderedValue(buf, schema, *t.Inner, item, fmt.Sprintf("%s[%d]", path, i), choices, preserve, inUnion); err != nil {
 				return err
 			}
 		}
@@ -797,7 +847,7 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 			}
 			buf.Write(kb)
 			buf.WriteByte(':')
-			if err := writeOrderedValue(buf, schema, *t.Inner, mv, fmt.Sprintf("%s[%q]", path, k), choices, preserve); err != nil {
+			if err := writeOrderedValue(buf, schema, *t.Inner, mv, fmt.Sprintf("%s[%q]", path, k), choices, preserve, inUnion); err != nil {
 				firstErr = err
 				return false
 			}
@@ -809,7 +859,7 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 		buf.WriteByte('}')
 		return nil
 	case KindClassRef:
-		return writeOrderedClass(buf, schema, t.Ref, v, path, choices, preserve)
+		return writeOrderedClass(buf, schema, t.Ref, v, path, choices, preserve, inUnion)
 	case KindUnion:
 		choice, ok := choices[path]
 		if !ok {
@@ -818,7 +868,7 @@ func writeOrderedValue(buf *bytes.Buffer, schema FuzzSchema, t FuzzType, v any, 
 		if choice.Index < 0 || choice.Index >= len(t.Variants) {
 			return fmt.Errorf("ordered: union choice index %d out of range at %q", choice.Index, path)
 		}
-		return writeOrderedValue(buf, schema, t.Variants[choice.Index], v, path+":v", choices, preserve)
+		return writeOrderedValue(buf, schema, t.Variants[choice.Index], v, path+":v", choices, preserve, true)
 	default:
 		b, err := json.Marshal(v)
 		if err != nil {
