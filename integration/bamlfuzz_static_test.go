@@ -364,7 +364,7 @@ func runOneStaticCase(t *testing.T, env *testutil.TestEnvironment, mockClient *m
 	}
 	envelope.RESTBody = resp.Body
 
-	if diff, err := bamlfuzz.SemanticDiff("expected_vs_rest", lc.Case.Expected, resp.Body); err != nil {
+	if diff, err := bamlfuzz.SemanticDiffWithSchema("expected_vs_rest", lc.Case.Schema, lc.Case.Metadata.UnionChoices, lc.Case.Expected, resp.Body); err != nil {
 		envelope.RESTError = err.Error()
 		failStaticAndDump(t, envelope, "expected_vs_rest diff: %v", err)
 		return

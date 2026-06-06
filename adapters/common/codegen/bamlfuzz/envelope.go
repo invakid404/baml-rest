@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/invakid404/baml-rest/adapters/common/codegen/internal/testharness"
@@ -248,6 +249,49 @@ func SemanticDiffParity(side string, a, b json.RawMessage) ([]SemanticDiffEntry,
 	return semanticDiff(side, a, b, nullParity)
 }
 
+// SemanticDiffWithSchema is the schema-aware variant of SemanticDiff
+// used by the static prompt oracle. On top of SemanticDiff's
+// expected-vs-actual semantics (including the boundaryml/baml#3690
+// null-key tolerance) it forgives a string-literal escape-level
+// mismatch: BAML's static codegen is inconsistent about literal string
+// values containing special characters — for some positions (e.g. a
+// top-level class-field literal) it echoes the source-escaped token
+// (`\"quoted\"`), while for others (e.g. a deeply nested union arm) it
+// returns the decoded value (`"quoted"`). The oracle's expected output
+// always carries the decoded value (see normalize.go's writeLiteral).
+// When the schema types a field as a string literal, the two forms are
+// treated as equal so the position-dependent escaping does not flag a
+// false disagreement.
+//
+// `choices` mirrors CaseMetadata.UnionChoices and lets the literal-path
+// collector descend through union arms; a missing entry simply stops the
+// descent (the unresolved union arm contributes no literal paths), which
+// is safe because an unresolved-arm literal would not be tolerated.
+//
+// The tolerance is narrow: it applies ONLY at JSON paths the schema
+// types as a string literal. A plain `string` field that happens to
+// contain quotes is unaffected and still diffs normally.
+func SemanticDiffWithSchema(side string, schema FuzzSchema, choices map[string]UnionChoice, a, b json.RawMessage) ([]SemanticDiffEntry, error) {
+	av, err := decodeAny(a)
+	if err != nil {
+		return nil, fmt.Errorf("decode a: %w", err)
+	}
+	bv, err := decodeAny(b)
+	if err != nil {
+		return nil, fmt.Errorf("decode b: %w", err)
+	}
+	lit := make(map[string]bool)
+	root := schema.EffectiveRoot()
+	// Walk both sides: class-field literal positions are schema-fixed, but
+	// list indices / map keys come from the value, so collecting from both
+	// payloads ensures a literal path present on either side is recognized.
+	collectLiteralStringPaths(lit, schema, choices, "$", "", root, av)
+	collectLiteralStringPaths(lit, schema, choices, "$", "", root, bv)
+	var out []SemanticDiffEntry
+	diffAny(&out, side, "$", av, bv, nullExpectedVsActual, lit)
+	return out, nil
+}
+
 func semanticDiff(side string, a, b json.RawMessage, mode nullMode) ([]SemanticDiffEntry, error) {
 	av, err := decodeAny(a)
 	if err != nil {
@@ -258,8 +302,102 @@ func semanticDiff(side string, a, b json.RawMessage, mode nullMode) ([]SemanticD
 		return nil, fmt.Errorf("decode b: %w", err)
 	}
 	var out []SemanticDiffEntry
-	diffAny(&out, side, "$", av, bv, mode)
+	diffAny(&out, side, "$", av, bv, mode, nil)
 	return out, nil
+}
+
+// collectLiteralStringPaths records, into `out`, every JSON path (in
+// diffAny's path convention) whose schema type resolves to a
+// KindLiteral / LiteralString. It walks the schema type guided by the
+// decoded value `v` so list indices and map keys come from the actual
+// data. Two path strings are tracked in parallel: `jsonPath` (rooted at
+// "$", `.key` for every object member — diffAny treats class and map
+// nodes identically) and `choicePath` (rooted at "", `[%q]` for map
+// keys plus a `:v` step into each union arm — the CaseMetadata.UnionChoices
+// key convention shared with normalize.go and order.go). Only the
+// jsonPath form is emitted; the choicePath form exists solely to look up
+// union choices.
+func collectLiteralStringPaths(out map[string]bool, schema FuzzSchema, choices map[string]UnionChoice, jsonPath, choicePath string, t FuzzType, v any) {
+	switch t.Kind {
+	case KindLiteral:
+		if t.Literal != nil && t.Literal.Kind == LiteralString {
+			out[jsonPath] = true
+		}
+	case KindOptional:
+		if t.Inner == nil || v == nil {
+			return
+		}
+		collectLiteralStringPaths(out, schema, choices, jsonPath, choicePath, *t.Inner, v)
+	case KindClassRef:
+		cls, ok := schema.FindClass(t.Ref)
+		if !ok {
+			return
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		for _, prop := range cls.Properties {
+			cv, ok := m[prop.Name]
+			if !ok {
+				continue
+			}
+			collectLiteralStringPaths(out, schema, choices, jsonPath+"."+prop.Name, choicePath+"."+prop.Name, prop.Type, cv)
+		}
+	case KindList:
+		if t.Inner == nil {
+			return
+		}
+		arr, ok := v.([]any)
+		if !ok {
+			return
+		}
+		for i, e := range arr {
+			collectLiteralStringPaths(out, schema, choices, fmt.Sprintf("%s[%d]", jsonPath, i), fmt.Sprintf("%s[%d]", choicePath, i), *t.Inner, e)
+		}
+	case KindMap:
+		if t.Inner == nil {
+			return
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		for k, mv := range m {
+			collectLiteralStringPaths(out, schema, choices, jsonPath+"."+k, fmt.Sprintf("%s[%q]", choicePath, k), *t.Inner, mv)
+		}
+	case KindUnion:
+		choice, ok := choices[choicePath]
+		if !ok {
+			return
+		}
+		if choice.Index < 0 || choice.Index >= len(t.Variants) {
+			return
+		}
+		collectLiteralStringPaths(out, schema, choices, jsonPath, choicePath+":v", t.Variants[choice.Index], v)
+	}
+}
+
+// literalEscapeEquivalent reports whether two string values are equal
+// modulo source-escaping of a string literal: one side is the
+// strconv.Quote body (the quoted form without its surrounding double
+// quotes) of the other. This forgives BAML's position-dependent literal
+// echo, where one oracle leg carries the decoded value (`"quoted"`) and
+// the other the source-escaped token (`\"quoted\"`). It is symmetric, so
+// it covers both expected=decoded/actual=escaped and the reverse. The
+// match is exact in both directions, so it only suppresses a genuine
+// escape relationship — never two unrelated strings.
+func literalEscapeEquivalent(a, b string) bool {
+	return escapeBody(a) == b || escapeBody(b) == a
+}
+
+// escapeBody returns strconv.Quote(s) with its surrounding double quotes
+// stripped — i.e. the Go source-escaped rendering of s without the outer
+// delimiters. strconv.Quote never returns a string shorter than two
+// characters (the two delimiters), so the slice bounds are always valid.
+func escapeBody(s string) string {
+	quoted := strconv.Quote(s)
+	return quoted[1 : len(quoted)-1]
 }
 
 // DetectOrderWarning compares the top-level key order of two JSON
@@ -418,7 +556,11 @@ func deepEqualSemantic(a, b any, mode nullMode) bool {
 	}
 }
 
-func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any, mode nullMode) {
+// diffAny appends path-level disagreements between `a` and `b` to `out`.
+// `lit` (nil for non-schema-aware callers) is the set of JSON paths the
+// schema types as a string literal; at those paths a source-escape-level
+// string mismatch is tolerated (see literalEscapeEquivalent).
+func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any, mode nullMode, lit map[string]bool) {
 	if deepEqualSemantic(a, b, mode) {
 		return
 	}
@@ -461,7 +603,7 @@ func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any, mode nullMod
 				*out = append(*out, SemanticDiffEntry{Side: side, Path: path + "." + k, Got: av1, Want: bv1})
 				continue
 			}
-			diffAny(out, side, path+"."+k, av1, bv1, mode)
+			diffAny(out, side, path+"."+k, av1, bv1, mode, lit)
 		}
 	case []any:
 		bv, ok := b.([]any)
@@ -470,8 +612,17 @@ func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any, mode nullMod
 			return
 		}
 		for i := range av {
-			diffAny(out, side, fmt.Sprintf("%s[%d]", path, i), av[i], bv[i], mode)
+			diffAny(out, side, fmt.Sprintf("%s[%d]", path, i), av[i], bv[i], mode, lit)
 		}
+	case string:
+		// At a schema string-literal path, a source-escape-level mismatch
+		// between the two legs is BAML's position-dependent literal echo,
+		// not a real disagreement. Reached only when the strings already
+		// differ (deepEqualSemantic short-circuited equal values above).
+		if bv, ok := b.(string); ok && lit[path] && literalEscapeEquivalent(av, bv) {
+			return
+		}
+		*out = append(*out, SemanticDiffEntry{Side: side, Path: path, Got: a, Want: b})
 	default:
 		*out = append(*out, SemanticDiffEntry{Side: side, Path: path, Got: a, Want: b})
 	}
