@@ -168,7 +168,7 @@ func FuzzBamlfuzzStatic(f *testing.F) {
 
 	bamlfuzz.MakeFuzz(f, func(t *testing.T, rt *rapid.T) {
 		preserve := rapid.Bool().Draw(rt, "preserve_schema_order")
-		cc := bamlfuzz.CoupledCaseGen(bamlfuzz.StaticSchemaGen()).Draw(rt, "coupled_case")
+		cc := bamlfuzz.CoupledCaseGen(bamlfuzz.StaticSchemaGen(), bamlfuzz.WithStaticLiteralEcho()).Draw(rt, "coupled_case")
 		c := bamlfuzz.OracleCase{
 			Name:                "fuzz",
 			Seed:                0,
@@ -687,7 +687,7 @@ func buildStaticRapidBatch(t *testing.T, batchIdx int, n int) []bamlfuzz.OracleC
 	cases := make([]bamlfuzz.OracleCase, n)
 	for i := 0; i < n; i++ {
 		seed := staticSeedFor(batchIdx, i)
-		cc := bamlfuzz.CoupledCaseGen(bamlfuzz.StaticSchemaGen()).Example(int(seed))
+		cc := bamlfuzz.CoupledCaseGen(bamlfuzz.StaticSchemaGen(), bamlfuzz.WithStaticLiteralEcho()).Example(int(seed))
 		cases[i] = bamlfuzz.OracleCase{
 			Name:                fmt.Sprintf("rapid_b%d_c%d", batchIdx, i),
 			Seed:                int64(seed),
