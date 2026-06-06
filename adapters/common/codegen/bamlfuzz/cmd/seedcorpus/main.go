@@ -91,7 +91,15 @@ type seedSpec struct {
 
 func materialize(idx int, spec seedSpec, mode bamlfuzz.OracleMode) bamlfuzz.OracleCase {
 	schema := bamlfuzz.AnalyzeGraph(spec.Schema)
-	walk, err := bamlfuzz.Walk(schema, spec.Value, bamlfuzz.WithPreserveSchemaOrder(spec.Preserve))
+	walkOpts := []bamlfuzz.WalkOption{bamlfuzz.WithPreserveSchemaOrder(spec.Preserve)}
+	// Static-mode corpus replays through the BAML-source path, so its
+	// Expected must mirror BAML's source-literal round-trip (see
+	// bamlfuzz.WithStaticLiteralEcho). Dynamic mode round-trips literals
+	// verbatim and must not echo.
+	if mode == bamlfuzz.OracleStaticPrompt {
+		walkOpts = append(walkOpts, bamlfuzz.WithStaticLiteralEcho())
+	}
+	walk, err := bamlfuzz.Walk(schema, spec.Value, walkOpts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "walk %s: %v\n", spec.Name, err)
 		os.Exit(1)

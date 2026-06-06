@@ -925,11 +925,16 @@ type CoupledCase struct {
 // the original (uncollapsed) shape when union choices disagree
 // across class instances or when re-walking the collapsed value
 // fails for any reason — coupled cases must always be walkable.
-func CoupledCaseGen(schemaGen *rapid.Generator[FuzzSchema]) *rapid.Generator[CoupledCase] {
+//
+// opts are forwarded to every Walk call (the initial walk and the
+// collapsed re-walk). The static oracle passes WithStaticLiteralEcho so
+// its Expected matches BAML's source-literal round-trip; other callers
+// pass none.
+func CoupledCaseGen(schemaGen *rapid.Generator[FuzzSchema], opts ...WalkOption) *rapid.Generator[CoupledCase] {
 	return rapid.Custom(func(t *rapid.T) CoupledCase {
 		schema := schemaGen.Draw(t, "schema")
 		value := ValueGen(schema).Draw(t, "value")
-		walk, err := Walk(schema, value)
+		walk, err := Walk(schema, value, opts...)
 		if err != nil {
 			t.Fatalf("bamlfuzz: walk drawn (schema, value): %v", err)
 		}
@@ -937,7 +942,7 @@ func CoupledCaseGen(schemaGen *rapid.Generator[FuzzSchema]) *rapid.Generator[Cou
 		if rapid.Bool().Draw(t, "collapse_unions") {
 			cs, cv, cerr := collapseUnionsToPicked(schema, value)
 			if cerr == nil {
-				cw, werr := Walk(cs, cv)
+				cw, werr := Walk(cs, cv, opts...)
 				if werr == nil {
 					out.Schema = cs
 					out.Value = cv
