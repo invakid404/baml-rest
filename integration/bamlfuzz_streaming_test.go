@@ -96,6 +96,21 @@ func TestBamlfuzzStreamingOracle(t *testing.T) {
 // dynamic-safe schema generator. PreserveSchemaOrder is drawn from the
 // bit stream so the fuzzer explores both halves of the oracle.
 //
+// NOTE: the nightly fuzz workflow does NOT run this target through Go's
+// native `-fuzz` engine — it routes the streaming oracle through
+// TestBamlfuzzStreamingOracle under `-run` instead (same as
+// FuzzBamlfuzzStatic). Go's fuzz worker wraps every exec in a hard 10s
+// watchdog (internal/fuzz/worker.go → panic("deadlocked!")), and one
+// streaming exec drives four sequential calls (dynclient stream, REST
+// SSE stream, REST NDJSON stream, unary cross-check), each with a 30s
+// budget plus chunked draining. Under fuzz load that routinely overruns
+// 10s; the worker panics and dies, and since each fuzz worker is a fresh
+// process that re-runs the ~90s Docker-booting TestMain, the
+// coordinator's restart handshake then fails with "fuzzing process
+// terminated without fuzzing: EOF". The target is kept so plain
+// `go test` still replays the f.Add seed below as a bounded subtest (no
+// watchdog without `-fuzz=`), but do not re-add it to the `-fuzz` step.
+//
 // One f.Add seed is registered so plain `go test` (no `-fuzz=`) runs the
 // target with a deterministic input. The seed is derived FNV-64a from a
 // stable label and is NOT folded with BAMLFUZZ_SEED — the nightly's fuzz

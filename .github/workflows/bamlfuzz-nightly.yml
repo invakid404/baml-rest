@@ -141,10 +141,11 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Restore corpus from prior nightly (target-scoped)
-        # FuzzBamlfuzzStatic runs through TestBamlfuzzStaticOracle under
-        # -run (see the Static step below), which does not use the fuzz
-        # corpus, so skip corpus restore/upload for that target.
-        if: ${{ env.MODE == 'fuzz' && matrix.target != 'FuzzBamlfuzzStatic' }}
+        # FuzzBamlfuzzStatic and FuzzBamlfuzzStreaming both run through
+        # their oracle test under -run (see the Static/Streaming steps
+        # below), not Go's native fuzz engine, so they have no fuzz
+        # corpus — skip corpus restore/upload for those targets.
+        if: ${{ env.MODE == 'fuzz' && !contains(fromJSON('["FuzzBamlfuzzStatic", "FuzzBamlfuzzStreaming"]'), matrix.target) }}
         id: restore-target
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -187,7 +188,7 @@ jobs:
       # Once the first target-scoped nightly succeeds, this step becomes a
       # no-op and can be removed in a future PR.
       - name: Fallback restore from legacy unscoped corpus
-        if: ${{ env.MODE == 'fuzz' && matrix.target != 'FuzzBamlfuzzStatic' && steps.restore-target.outputs.restored == '' }}
+        if: ${{ env.MODE == 'fuzz' && !contains(fromJSON('["FuzzBamlfuzzStatic", "FuzzBamlfuzzStreaming"]'), matrix.target) && steps.restore-target.outputs.restored == '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACT_NAME: bamlfuzz-corpus-${{ matrix.baml-version }}-${{ matrix.unary-server }}
@@ -224,9 +225,10 @@ jobs:
           fi
 
       - name: Fuzz ${{ matrix.target }} (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
-        # FuzzBamlfuzzStatic is handled by the Static oracle step below,
-        # not the native fuzz engine — see that step for why.
-        if: ${{ env.MODE == 'fuzz' && matrix.target != 'FuzzBamlfuzzStatic' }}
+        # FuzzBamlfuzzStatic and FuzzBamlfuzzStreaming are handled by the
+        # oracle steps below, not the native fuzz engine — see those steps
+        # for why.
+        if: ${{ env.MODE == 'fuzz' && !contains(fromJSON('["FuzzBamlfuzzStatic", "FuzzBamlfuzzStreaming"]'), matrix.target) }}
         # Each matrix cell runs exactly one fuzz target via the `target`
         # axis. BAMLFUZZ_KEEP_ARTIFACTS is forced off; the success-path
         # envelope dump writes to _artifacts/fuzz.json which races under
@@ -263,6 +265,33 @@ jobs:
             -run='TestBamlfuzzStaticOracle' \
             ./integration
 
+      - name: Streaming oracle (-run, no fuzz watchdog) (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
+        if: ${{ env.MODE == 'fuzz' && matrix.target == 'FuzzBamlfuzzStreaming' }}
+        # FuzzBamlfuzzStreaming is incompatible with Go's native fuzz
+        # engine for the same reason as FuzzBamlfuzzStatic, but more
+        # intermittently: every fuzz exec is wrapped in a hard 10s
+        # watchdog (internal/fuzz/worker.go → panic("deadlocked!")), and
+        # a single streaming exec drives FOUR sequential calls (dynclient
+        # stream, REST SSE stream, REST NDJSON stream, unary cross-check),
+        # each with a 30s context budget plus chunked SSE/NDJSON draining.
+        # Under fuzz load that routinely overruns 10s; the worker panics
+        # and dies, and because the fuzz worker is a fresh process that
+        # re-runs TestMain (a ~90s Docker env boot), the coordinator's
+        # restart handshake then fails with "fuzzing process terminated
+        # without fuzzing: EOF". The 0.219.0/unary=false cell hit this on
+        # every recent nightly. Run the identical schema-gen + streaming +
+        # oracle path through TestBamlfuzzStreamingOracle under -run
+        # instead, which has no per-input watchdog.
+        #
+        # BAMLFUZZ_STREAMING_CASES (job env, default 50) scales the rapid
+        # streaming cases per preserve mode, matching the ~50-case budget
+        # the native fuzz targets explore per nightly cell. No corpus
+        # restore/upload: -run does not use the fuzz corpus.
+        run: |
+          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
+            -run='^TestBamlfuzzStreamingOracle$' \
+            ./integration
+
       - name: Run bamlfuzz oracles — rapid mode (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'rapid' && matrix.target == 'FuzzBamlfuzzStatic' }}
         # Gate: rapid mode runs all 5 oracle tests in one `go test`
@@ -283,8 +312,9 @@ jobs:
             -run='^TestBamlfuzz(Static|Dynamic|Streaming)Oracle$|^TestBamlfuzzInvalid(Dynamic|JSONCoercion)$' ./integration/...
 
       - name: Upload corpus for next nightly
-        # Static runs via -run (no fuzz corpus), so nothing to persist.
-        if: ${{ always() && env.MODE == 'fuzz' && matrix.target != 'FuzzBamlfuzzStatic' }}
+        # Static and Streaming run via -run (no fuzz corpus), so nothing
+        # to persist for those targets.
+        if: ${{ always() && env.MODE == 'fuzz' && !contains(fromJSON('["FuzzBamlfuzzStatic", "FuzzBamlfuzzStreaming"]'), matrix.target) }}
         # Uploaded on every run (including failures) so a fuzz failure
         # the engine already wrote to the cache survives into the next
         # restore pass — the corpus is the only mechanism that lets the
@@ -350,6 +380,18 @@ jobs:
               echo
               echo '```'
               echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_STATIC_BATCHES=${BAMLFUZZ_STATIC_BATCHES} go test -tags=integration,subprocess -run='TestBamlfuzzStaticOracle' ./integration -count=1 -p 1"
+              echo '```'
+            elif [ "${MODE}" = "fuzz" ] && [ "${TARGET}" = "FuzzBamlfuzzStreaming" ]; then
+              # Streaming runs through TestBamlfuzzStreamingOracle under
+              # -run for the same reason as Static: a single streaming fuzz
+              # exec drives four sequential calls that routinely overrun
+              # Go's 10s/input fuzz watchdog. No fuzz corpus; the repro is
+              # the oracle command.
+              echo
+              echo "This cell ran the Streaming oracle via \`-run\` (FuzzBamlfuzzStreaming overruns Go's 10s/input fuzz watchdog). Repro:"
+              echo
+              echo '```'
+              echo "BAML_VERSION=${BAML} UNARY_SERVER=${UNARY} BAMLFUZZ_SEED=${BAMLFUZZ_SEED} BAMLFUZZ_STREAMING_CASES=${BAMLFUZZ_STREAMING_CASES} go test -tags=integration,subprocess -run='^TestBamlfuzzStreamingOracle\$' ./integration -count=1 -p 1"
               echo '```'
             elif [ "${MODE}" = "fuzz" ]; then
               echo "Corpus artifact: bamlfuzz-corpus-${BAML}-${UNARY}-${TARGET}"
