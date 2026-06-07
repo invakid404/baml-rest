@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"text/template"
@@ -168,7 +169,7 @@ func Setup(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
 			}
 		}
 
-		env, err := setupOnce(ctx, opts)
+		env, err := runSetupAttempt(ctx, opts)
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("[testutil] container setup succeeded on attempt %d/%d", attempt, totalAttempts)
@@ -178,13 +179,31 @@ func Setup(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
 		lastErr = err
 
 		// If the context is already done there's no point retrying: every
-		// further attempt would fail the same way. Surface the error now.
+		// further attempt would fail the same way. Surface the error now,
+		// reporting the number of attempts actually made (not the cap).
 		if ctx.Err() != nil {
-			break
+			return nil, fmt.Errorf("container setup failed after %d attempt(s); "+
+				"context done before retrying: %w (last error: %v)", attempt, ctx.Err(), lastErr)
 		}
 	}
 
 	return nil, fmt.Errorf("container setup failed after %d attempt(s): %w", totalAttempts, lastErr)
+}
+
+// runSetupAttempt performs a single setupOnce and converts a panic into an
+// error so a true Go panic from deep inside testcontainers still triggers a
+// retry instead of tearing down the whole test binary. setupOnce tears down
+// its own partial resources (including on panic, see its deferred recover)
+// before the panic propagates here, so no network or container is leaked.
+func runSetupAttempt(ctx context.Context, opts SetupOptions) (env *TestEnvironment, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("container setup panicked: %v\n%s", r, debug.Stack())
+			log.Printf("[testutil] recovered panic during container setup: %v", r)
+		}
+	}()
+
+	return setupOnce(ctx, opts)
 }
 
 // setupOnce performs a single build+start of the mock LLM server and baml-rest
@@ -192,6 +211,16 @@ func Setup(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
 // (network and/or containers) before returning, so callers can safely retry.
 func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
 	env := &TestEnvironment{}
+
+	// If anything below panics (e.g. deep inside testcontainers), tear down
+	// whatever was already created before the panic propagates to the retry
+	// wrapper, so a retry doesn't leak a network or half-started container.
+	defer func() {
+		if r := recover(); r != nil {
+			_ = env.Terminate(ctx)
+			panic(r)
+		}
+	}()
 
 	// Create Docker network
 	net, err := network.New(ctx)
