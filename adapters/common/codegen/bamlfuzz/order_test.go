@@ -674,6 +674,371 @@ func TestSchemaOrderDiffUnionMissingChoiceReturnsUnsupported(t *testing.T) {
 	}
 }
 
+// TestSchemaOrderDiff_ToleratesExtraNullKeysInClass pins the
+// boundaryml/baml#3690 workaround at a class node: an extra null-valued
+// key on the actual side that expected does not carry must not register
+// as a key-order mismatch.
+func TestSchemaOrderDiff_ToleratesExtraNullKeysInClass(t *testing.T) {
+	schema := schemaRootOnly("a", "b")
+	exp := json.RawMessage(`{"a":"1","b":"2"}`)
+	got := json.RawMessage(`{"a":"1","b":"2","Fuzz_field_0":null}`)
+	diffs, err := SchemaOrderDiffWithChoices("side", schema, exp, got, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs for leaked null key, got %v", diffs)
+	}
+}
+
+// TestSchemaOrderDiff_NullKeyMissingFromActualStillDiffs pins the
+// asymmetry: the workaround only forgives extra null keys ON the actual
+// side. A null-valued key the expected side carries that the actual side
+// dropped is a genuine missing field and still surfaces a diff.
+func TestSchemaOrderDiff_NullKeyMissingFromActualStillDiffs(t *testing.T) {
+	schema := schemaRootOnly("a", "b")
+	exp := json.RawMessage(`{"a":"1","b":"2","leak":null}`)
+	got := json.RawMessage(`{"a":"1","b":"2"}`)
+	diffs, err := SchemaOrderDiffWithChoices("side", schema, exp, got, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for null key missing from actual, got %d (%v)", len(diffs), diffs)
+	}
+}
+
+// TestSchemaOrderDiff_ExtraNonNullKeyInClassStillDiffs asserts the
+// workaround is scoped to null keys: an extra non-null key remains an
+// order mismatch.
+func TestSchemaOrderDiff_ExtraNonNullKeyInClassStillDiffs(t *testing.T) {
+	schema := schemaRootOnly("a", "b")
+	exp := json.RawMessage(`{"a":"1","b":"2"}`)
+	got := json.RawMessage(`{"a":"1","b":"2","extra":"3"}`)
+	diffs, err := SchemaOrderDiffWithChoices("side", schema, exp, got, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for extra non-null key, got %d (%v)", len(diffs), diffs)
+	}
+}
+
+// TestSchemaOrderDiff_ToleratesExtraNullKeysInMap pins the workaround at
+// a map node: the leaked null key on the actual side is dropped before
+// the insertion-order comparison.
+func TestSchemaOrderDiff_ToleratesExtraNullKeysInMap(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(FuzzType{Kind: KindInt})},
+			},
+		}},
+		RootClass: "Root",
+	}
+	exp := json.RawMessage(`{"m":{"k0":-26}}`)
+	got := json.RawMessage(`{"m":{"Fuzz_field_0":null,"k0":-26}}`)
+	diffs, err := SchemaOrderDiffWithChoices("side", schema, exp, got, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs for leaked null map key, got %v", diffs)
+	}
+
+	// An extra non-null map key remains a mismatch.
+	got = json.RawMessage(`{"m":{"extra":1,"k0":-26}}`)
+	diffs, err = SchemaOrderDiffWithChoices("side", schema, exp, got, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for extra non-null map key, got %d (%v)", len(diffs), diffs)
+	}
+
+	// Asymmetry: a null map key the expected side carries that the
+	// actual side dropped is a genuine missing entry and still diffs.
+	expMissing := json.RawMessage(`{"m":{"leak":null,"k0":-26}}`)
+	gotMissing := json.RawMessage(`{"m":{"k0":-26}}`)
+	diffs, err = SchemaOrderDiffWithChoices("side", schema, expMissing, gotMissing, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for null map key missing from actual, got %d (%v)", len(diffs), diffs)
+	}
+}
+
+// TestSchemaOrderDiffWithChoices_UnionMapArmToleratesLeakedNull mirrors
+// the exact boundaryml/baml#3690 shape: a `class | map<string,int>`
+// union whose active map arm comes back with a leaked null field from
+// the class arm. The order walker descends into the map arm and the
+// leaked key is tolerated.
+func TestSchemaOrderDiffWithChoices_UnionMapArmToleratesLeakedNull(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "FuzzClass1",
+			Properties: []FuzzProperty{
+				{Name: "Fuzz_field_0", Type: optionalOf(FuzzType{Kind: KindFloat})},
+			},
+		}},
+		RootType: &FuzzType{
+			Kind: KindUnion,
+			Variants: []FuzzType{
+				classRef("FuzzClass1"),
+				mapOf(FuzzType{Kind: KindInt}),
+			},
+		},
+	}
+	choices := map[string]UnionChoice{
+		"": {Index: 1, Kind: KindMap, VariantCount: 2},
+	}
+	exp := json.RawMessage(`{"k0":-26}`)
+	got := json.RawMessage(`{"Fuzz_field_0":null,"k0":-26}`)
+	diffs, err := SchemaOrderDiffWithChoices("side", schema, exp, got, choices)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs for leaked null key in map arm, got %v", diffs)
+	}
+}
+
+// TestSchemaOrderDiffParity_ToleratesExtraNullEitherSide pins the
+// symmetric #3690 order tolerance for actual-vs-actual parity checks: a
+// leaked null key on either side is dropped before the key-order
+// comparison, so it does not register as a mismatch. The asymmetric
+// variant flags an a-side-only null (see
+// TestSchemaOrderDiff_NullKeyMissingFromActualStillDiffs); parity does
+// not.
+func TestSchemaOrderDiffParity_ToleratesExtraNullEitherSide(t *testing.T) {
+	schema := schemaRootOnly("a", "b")
+	cases := []struct {
+		name   string
+		a, b   string
+		parity bool
+		want   int
+	}{
+		{"null on a only, parity tolerates", `{"a":"1","b":"2","leak":null}`, `{"a":"1","b":"2"}`, true, 0},
+		{"null on b only, parity tolerates", `{"a":"1","b":"2"}`, `{"a":"1","b":"2","leak":null}`, true, 0},
+		{"null on a only, asymmetric flags", `{"a":"1","b":"2","leak":null}`, `{"a":"1","b":"2"}`, false, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var (
+				diffs []SchemaOrderDiffEntry
+				err   error
+			)
+			if c.parity {
+				diffs, err = SchemaOrderDiffParityWithChoices("side", schema, json.RawMessage(c.a), json.RawMessage(c.b), nil)
+			} else {
+				diffs, err = SchemaOrderDiffWithChoices("side", schema, json.RawMessage(c.a), json.RawMessage(c.b), nil)
+			}
+			if err != nil {
+				t.Fatalf("SchemaOrderDiff: %v", err)
+			}
+			if len(diffs) != c.want {
+				t.Errorf("expected %d diffs, got %d (%v)", c.want, len(diffs), diffs)
+			}
+		})
+	}
+}
+
+// TestSchemaOrderDiffParity_ExtraNonNullKeyStillDiffs asserts the parity
+// order tolerance is scoped to null keys: an extra non-null key on either
+// side remains a mismatch.
+func TestSchemaOrderDiffParity_ExtraNonNullKeyStillDiffs(t *testing.T) {
+	schema := schemaRootOnly("a", "b")
+	exp := json.RawMessage(`{"a":"1","b":"2","extra":"3"}`)
+	got := json.RawMessage(`{"a":"1","b":"2"}`)
+	diffs, err := SchemaOrderDiffParityWithChoices("side", schema, exp, got, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for extra non-null key, got %d (%v)", len(diffs), diffs)
+	}
+}
+
+// TestSchemaOrderDiffParity_MapSameLeakedNullDifferentPosition pins the
+// boundaryml/baml#3690 map-arm parity fix: when both actual outputs carry
+// the same leaked null key but in different positions, the order check
+// must not flag it. A null is never a real map entry, so parity mode
+// drops it from both sides before the key-order comparison.
+func TestSchemaOrderDiffParity_MapSameLeakedNullDifferentPosition(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(FuzzType{Kind: KindInt})},
+			},
+		}},
+		RootClass: "Root",
+	}
+	// Both legs leaked "Fuzz_field_0":null, but the leak landed in a
+	// different spot relative to the real "k0" entry on each side.
+	a := json.RawMessage(`{"m":{"Fuzz_field_0":null,"k0":1}}`)
+	b := json.RawMessage(`{"m":{"k0":1,"Fuzz_field_0":null}}`)
+	diffs, err := SchemaOrderDiffParityWithChoices("side", schema, a, b, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs for same leaked null in different positions, got %v", diffs)
+	}
+
+	// A real ordering swap of non-null entries still diffs, even with the
+	// leaked null present.
+	a = json.RawMessage(`{"m":{"Fuzz_field_0":null,"k0":1,"k1":2}}`)
+	b = json.RawMessage(`{"m":{"k1":2,"k0":1,"Fuzz_field_0":null}}`)
+	diffs, err = SchemaOrderDiffParityWithChoices("side", schema, a, b, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for real key-order swap, got %d (%v)", len(diffs), diffs)
+	}
+}
+
+// TestSchemaOrderDiffParity_MapSameLeakedNullUnionValueNoUnsupported
+// guards point 3 of the fix: a leaked null map key whose declared value
+// type is a union must be skipped in the recursion, not walked into —
+// otherwise the missing union choice surfaces a spurious
+// ErrSchemaOrderUnsupported.
+func TestSchemaOrderDiffParity_MapSameLeakedNullUnionValueNoUnsupported(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(FuzzType{
+					Kind: KindUnion,
+					Variants: []FuzzType{
+						{Kind: KindString},
+						{Kind: KindInt},
+					},
+				})},
+			},
+		}},
+		RootClass: "Root",
+	}
+	// "leak":null is a leaked null entry; its value type is the union,
+	// but the walker must not consult choices for it. "k0":"x" walks the
+	// string arm, which needs no choice.
+	choices := map[string]UnionChoice{
+		`.m["k0"]`: {Index: 0, Kind: KindString, VariantCount: 2},
+	}
+	a := json.RawMessage(`{"m":{"leak":null,"k0":"x"}}`)
+	b := json.RawMessage(`{"m":{"k0":"x","leak":null}}`)
+	diffs, err := SchemaOrderDiffParityWithChoices("side", schema, a, b, choices)
+	if err != nil {
+		t.Fatalf("unexpected err (leaked null union value should be skipped): %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs, got %v", diffs)
+	}
+}
+
+// TestSchemaOrderDiffParity_MapNullValueTypeKeepsOrderCheck pins the
+// boundaryml/baml#3690 CanBeNull gate: when a map's value type can itself
+// be null (map<string, null>), every entry is legitimately null, so the
+// parity all-null strip must NOT apply — a real key-order difference is
+// still flagged.
+func TestSchemaOrderDiffParity_MapNullValueTypeKeepsOrderCheck(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(FuzzType{Kind: KindNull})},
+			},
+		}},
+		RootClass: "Root",
+	}
+	// Both entries are real null-valued map entries; the order differs.
+	a := json.RawMessage(`{"m":{"x":null,"y":null}}`)
+	b := json.RawMessage(`{"m":{"y":null,"x":null}}`)
+	diffs, err := SchemaOrderDiffParityWithChoices("side", schema, a, b, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for reordered null entries, got %d (%v)", len(diffs), diffs)
+	}
+
+	// Identical order on both sides → no diff.
+	a = json.RawMessage(`{"m":{"x":null,"y":null}}`)
+	b = json.RawMessage(`{"m":{"x":null,"y":null}}`)
+	diffs, err = SchemaOrderDiffParityWithChoices("side", schema, a, b, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs for identical null-entry order, got %v", diffs)
+	}
+}
+
+// TestSchemaOrderDiffParity_MapOptionalValueTypeKeepsOrderCheck pins that
+// the gate also fires through optional<T>: map<string, optional<int>>
+// entries can be null legitimately, so the all-null strip is suppressed
+// and a real reorder of null entries still diffs.
+func TestSchemaOrderDiffParity_MapOptionalValueTypeKeepsOrderCheck(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(optionalOf(FuzzType{Kind: KindInt}))},
+			},
+		}},
+		RootClass: "Root",
+	}
+	a := json.RawMessage(`{"m":{"x":null,"y":null}}`)
+	b := json.RawMessage(`{"m":{"y":null,"x":null}}`)
+	diffs, err := SchemaOrderDiffParityWithChoices("side", schema, a, b, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for reordered optional entries, got %d (%v)", len(diffs), diffs)
+	}
+}
+
+// TestSchemaOrderDiffParity_MapIntValueTypeStripsLeakedNulls reaffirms the
+// non-nullable case: for map<string, int> a null entry can only be a leak,
+// so parity strips it (different leak positions agree) while a real reorder
+// of the int entries still diffs.
+func TestSchemaOrderDiffParity_MapIntValueTypeStripsLeakedNulls(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "Root",
+			Properties: []FuzzProperty{
+				{Name: "m", Type: mapOf(FuzzType{Kind: KindInt})},
+			},
+		}},
+		RootClass: "Root",
+	}
+	// Same leaked null, different position → no diff.
+	a := json.RawMessage(`{"m":{"leak":null,"k0":1}}`)
+	b := json.RawMessage(`{"m":{"k0":1,"leak":null}}`)
+	diffs, err := SchemaOrderDiffParityWithChoices("side", schema, a, b, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("expected no diffs for leaked null in different positions, got %v", diffs)
+	}
+
+	// Real reorder of int entries (leak present) → diff.
+	a = json.RawMessage(`{"m":{"leak":null,"k0":1,"k1":2}}`)
+	b = json.RawMessage(`{"m":{"k1":2,"k0":1}}`)
+	diffs, err = SchemaOrderDiffParityWithChoices("side", schema, a, b, nil)
+	if err != nil {
+		t.Fatalf("SchemaOrderDiff: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff for reordered int entries, got %d (%v)", len(diffs), diffs)
+	}
+}
+
 func keysEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

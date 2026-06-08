@@ -19,7 +19,12 @@ func TestSemanticEqual(t *testing.T) {
 		{"missing key", `{"a":1,"b":2}`, `{"a":1}`, false},
 		{"nested order", `{"x":{"a":1,"b":2}}`, `{"x":{"b":2,"a":1}}`, true},
 		{"array order matters", `[1,2,3]`, `[3,2,1]`, false},
-		{"null vs missing", `{"a":null}`, `{}`, false},
+		// boundaryml/baml#3690 workaround is asymmetric: an extra null
+		// key on the actual side (b) is tolerated, but a null key the
+		// expected side (a) carries that actual dropped is a genuine
+		// missing field and still fails.
+		{"null missing from actual", `{"a":null}`, `{}`, false},
+		{"extra null on actual", `{}`, `{"a":null}`, true},
 		{"both null", `null`, `null`, true},
 	}
 	for _, c := range cases {
@@ -73,6 +78,251 @@ func TestSemanticDiff_FindsDifferences(t *testing.T) {
 		if d.Side != "a_vs_b" {
 			t.Errorf("entry side=%q want %q", d.Side, "a_vs_b")
 		}
+	}
+}
+
+// TestSemanticDiff_ToleratesExtraNullKeys pins the boundaryml/baml#3690
+// workaround: when the only difference is a null-valued key present on
+// the actual side (b) but absent from the expected side (a), SemanticDiff
+// reports no disagreement. The tolerance is asymmetric — a is expected.
+func TestSemanticDiff_ToleratesExtraNullKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"extra null on actual", `{"k0":-26}`, `{"Fuzz_field_0":null,"k0":-26}`},
+		{"null on both", `{"f":null,"k0":-26}`, `{"f":null,"k0":-26}`},
+		{"nested extra null on actual", `{"o":{"k":1}}`, `{"o":{"leak":null,"k":1}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiff("side", []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiff: %v", err)
+			}
+			if len(diff) != 0 {
+				t.Errorf("expected no diff entries, got %v", diff)
+			}
+		})
+	}
+}
+
+// TestSemanticDiff_RealDifferencesSurviveNullTolerance asserts the
+// #3690 workaround only suppresses extra null keys on the actual side:
+// an extra non-null key, a missing non-null key, or a null key the
+// expected side carries that actual dropped still produces a diff entry.
+func TestSemanticDiff_RealDifferencesSurviveNullTolerance(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"extra non-null key on actual", `{"k0":-26}`, `{"extra":1,"k0":-26}`},
+		{"missing non-null key on actual", `{"a":1,"b":2}`, `{"a":1}`},
+		{"null vs non-null value", `{"a":null}`, `{"a":1}`},
+		{"null key missing from actual", `{"a":null,"k":1}`, `{"k":1}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiff("side", []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiff: %v", err)
+			}
+			if len(diff) == 0 {
+				t.Errorf("expected a diff entry, got none")
+			}
+		})
+	}
+}
+
+// TestSemanticDiffParity_ToleratesExtraNullEitherSide pins the symmetric
+// #3690 tolerance used for actual-vs-actual parity comparisons: a leaked
+// null key on either side is forgiven, since both legs are BAML-generated
+// and may independently carry the leak.
+func TestSemanticDiffParity_ToleratesExtraNullEitherSide(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"same extra null both sides", `{"f":null,"k0":-26}`, `{"f":null,"k0":-26}`},
+		{"extra null on a only", `{"f":null,"k0":-26}`, `{"k0":-26}`},
+		{"extra null on b only", `{"k0":-26}`, `{"f":null,"k0":-26}`},
+		{"different leaked null each side", `{"fa":null,"k0":-26}`, `{"fb":null,"k0":-26}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiffParity("side", []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiffParity: %v", err)
+			}
+			if len(diff) != 0 {
+				t.Errorf("expected no diff entries, got %v", diff)
+			}
+		})
+	}
+}
+
+// TestSemanticDiffParity_RealDifferencesStillDiff asserts the parity
+// variant only forgives extra null keys: an extra non-null key on either
+// side, or a differing value, still produces a diff entry.
+func TestSemanticDiffParity_RealDifferencesStillDiff(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"extra non-null key on a", `{"extra":1,"k0":-26}`, `{"k0":-26}`},
+		{"extra non-null key on b", `{"k0":-26}`, `{"extra":1,"k0":-26}`},
+		{"differing value", `{"k0":-26}`, `{"k0":-27}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiffParity("side", []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiffParity: %v", err)
+			}
+			if len(diff) == 0 {
+				t.Errorf("expected a diff entry, got none")
+			}
+		})
+	}
+}
+
+// literalClassSchema is a single-class schema whose Fuzz_field_0 is a
+// string literal (value `"quoted"`, i.e. the two-quote token) and whose
+// Fuzz_field_1 is a plain string — used to pin that the literal-escape
+// tolerance fires only at the literal-typed path.
+func literalClassSchema() FuzzSchema {
+	return FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "FuzzClass0",
+			Properties: []FuzzProperty{
+				{Name: "Fuzz_field_0", Type: FuzzType{Kind: KindLiteral, Literal: &FuzzLiteral{Kind: LiteralString, String: `"quoted"`}}},
+				{Name: "Fuzz_field_1", Type: FuzzType{Kind: KindString}},
+			},
+		}},
+		RootClass: "FuzzClass0",
+	}
+}
+
+// decoded / escaped are the two wire forms BAML's static codegen emits
+// for the same `"quoted"` literal depending on the literal's position in
+// the type tree: the decoded value (`"quoted"`) vs the source-escaped
+// token (`\"quoted\"`). Both are valid JSON strings; they decode to
+// different Go strings, which is why the comparison layer must reconcile
+// them when the schema says the field is a literal.
+const (
+	decodedLiteralObj = `{"Fuzz_field_0":"\"quoted\"","Fuzz_field_1":"plain"}`
+	escapedLiteralObj = `{"Fuzz_field_0":"\\\"quoted\\\"","Fuzz_field_1":"plain"}`
+)
+
+// TestSemanticDiffWithSchema_ToleratesLiteralEscape pins the
+// position-dependent literal-escape tolerance: when the schema types a
+// field as a string literal, the decoded form (`"quoted"`) and the
+// source-escaped form (`\"quoted\"`) are treated as equal in BOTH
+// directions. This reproduces nightly #9 (BAML returns escaped, oracle
+// expects decoded) and the symmetric case.
+func TestSemanticDiffWithSchema_ToleratesLiteralEscape(t *testing.T) {
+	schema := literalClassSchema()
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		{"expected decoded, actual escaped", decodedLiteralObj, escapedLiteralObj},
+		{"expected escaped, actual decoded", escapedLiteralObj, decodedLiteralObj},
+		{"both decoded", decodedLiteralObj, decodedLiteralObj},
+		{"both escaped", escapedLiteralObj, escapedLiteralObj},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiffWithSchema("expected_vs_rest", schema, nil, []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiffWithSchema: %v", err)
+			}
+			if len(diff) != 0 {
+				t.Errorf("expected no diff entries, got %v", diff)
+			}
+		})
+	}
+}
+
+// TestSemanticDiffWithSchema_LiteralEscapeIsNarrow asserts the tolerance
+// is confined to literal-typed string fields: an escape-level mismatch on
+// a plain string field still diffs, and a genuinely different literal
+// value still diffs.
+func TestSemanticDiffWithSchema_LiteralEscapeIsNarrow(t *testing.T) {
+	schema := literalClassSchema()
+	cases := []struct {
+		name string
+		a, b string
+	}{
+		// Fuzz_field_1 is a plain string; an escape-level difference there
+		// is a real disagreement, not the literal echo.
+		{
+			"plain string escape diff still diffs",
+			`{"Fuzz_field_0":"\"quoted\"","Fuzz_field_1":"\"q\""}`,
+			`{"Fuzz_field_0":"\"quoted\"","Fuzz_field_1":"\\\"q\\\""}`,
+		},
+		// A literal value that genuinely differs (not an escape relation)
+		// must still diff.
+		{
+			"different literal value still diffs",
+			`{"Fuzz_field_0":"\"quoted\"","Fuzz_field_1":"plain"}`,
+			`{"Fuzz_field_0":"different","Fuzz_field_1":"plain"}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			diff, err := SemanticDiffWithSchema("expected_vs_rest", schema, nil, []byte(c.a), []byte(c.b))
+			if err != nil {
+				t.Fatalf("SemanticDiffWithSchema: %v", err)
+			}
+			if len(diff) == 0 {
+				t.Errorf("expected a diff entry, got none")
+			}
+		})
+	}
+}
+
+// TestSemanticDiffWithSchema_LiteralUnderUnion exercises the choices-driven
+// descent: a literal that sits in a union arm is reconciled only when the
+// recorded UnionChoice resolves the arm. Without the choice the union is
+// unresolved, no literal path is collected, and the escape mismatch diffs.
+func TestSemanticDiffWithSchema_LiteralUnderUnion(t *testing.T) {
+	schema := FuzzSchema{
+		Classes: []FuzzClass{{
+			Name: "FuzzClass0",
+			Properties: []FuzzProperty{{
+				Name: "Fuzz_field_0",
+				Type: FuzzType{Kind: KindUnion, Variants: []FuzzType{
+					{Kind: KindLiteral, Literal: &FuzzLiteral{Kind: LiteralString, String: `"quoted"`}},
+					{Kind: KindInt},
+				}},
+			}},
+		}},
+		RootClass: "FuzzClass0",
+		HasUnion:  true,
+	}
+	decoded := `{"Fuzz_field_0":"\"quoted\""}`
+	escaped := `{"Fuzz_field_0":"\\\"quoted\\\""}`
+	choices := map[string]UnionChoice{
+		".Fuzz_field_0": {Index: 0, Kind: KindLiteral, VariantCount: 2},
+	}
+
+	diff, err := SemanticDiffWithSchema("expected_vs_rest", schema, choices, []byte(decoded), []byte(escaped))
+	if err != nil {
+		t.Fatalf("SemanticDiffWithSchema: %v", err)
+	}
+	if len(diff) != 0 {
+		t.Errorf("with union choice resolving the literal arm, expected no diff, got %v", diff)
+	}
+
+	// Without the choice the union arm is unresolved, so the literal path is
+	// not collected and the escape mismatch is reported as a real diff.
+	diff, err = SemanticDiffWithSchema("expected_vs_rest", schema, nil, []byte(decoded), []byte(escaped))
+	if err != nil {
+		t.Fatalf("SemanticDiffWithSchema: %v", err)
+	}
+	if len(diff) == 0 {
+		t.Error("without a union choice the unresolved-arm literal must still diff, got none")
 	}
 }
 

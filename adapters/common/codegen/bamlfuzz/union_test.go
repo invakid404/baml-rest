@@ -240,6 +240,96 @@ func TestWalkUnionRendersPickedArm(t *testing.T) {
 	}
 }
 
+// TestWalkUnionArmOmitsAbsentOptional pins the asymmetric absent-optional
+// contract that boundaryml/baml#3690 forces on the oracle: an absent
+// optional in a class reached through a union arm is OMITTED from the
+// expected output, while the same shape reached through a deterministic
+// (non-union) field still renders as JSON null.
+//
+// The runtime's InjectAbsentOptionals re-derives the active union arm
+// structurally from the wire value, and that derivation can land on a
+// different (or narrower) arm than the one that actually produced the
+// value, so it never injects the null and the key stays off the wire —
+// exactly what both dynclient and REST emit. The deterministic field has
+// no such ambiguity, so the inject-null contract still holds there.
+//
+// Mirrors the nightly repro: FuzzClass0.Fuzz_field_0 is a union whose
+// picked arm is a class with an absent optional<int>, and both actual
+// outputs dropped the key while the oracle wrongly carried it as null.
+func TestWalkUnionArmOmitsAbsentOptional(t *testing.T) {
+	inner := FuzzClass{
+		Name: "Inner",
+		Properties: []FuzzProperty{
+			{Name: "req", Type: FuzzType{Kind: KindString}},
+			{Name: "opt", Type: FuzzType{Kind: KindOptional, Inner: &FuzzType{Kind: KindInt}}},
+		},
+	}
+	schema := FuzzSchema{
+		Classes: []FuzzClass{
+			{
+				Name: "Root",
+				Properties: []FuzzProperty{
+					{Name: "viaUnion", Type: FuzzType{
+						Kind: KindUnion,
+						Variants: []FuzzType{
+							{Kind: KindString},
+							{Kind: KindClassRef, Ref: "Inner"},
+						},
+					}},
+					{Name: "viaField", Type: FuzzType{Kind: KindClassRef, Ref: "Inner"}},
+				},
+			},
+			inner,
+		},
+		RootClass: "Root",
+	}
+	// In both Inner instances req is present and opt is absent. Only the
+	// arm reached through the union should drop the opt key.
+	mkInner := func(req string) FuzzValue {
+		return FuzzValue{
+			Kind: KindClassRef, ClassName: "Inner",
+			Fields: []FuzzFieldValue{
+				{Name: "req", Value: FuzzValue{Kind: KindString, String: req}},
+				{Name: "opt", Value: FuzzValue{Kind: KindOptional, OptionalShape: OptionalAbsent}},
+			},
+		}
+	}
+	unionArm := mkInner("a")
+	value := FuzzValue{
+		Kind: KindClassRef, ClassName: "Root",
+		Fields: []FuzzFieldValue{
+			{Name: "viaUnion", Value: FuzzValue{
+				Kind: KindUnion, VariantIndex: 1, Variant: &unionArm,
+			}},
+			{Name: "viaField", Value: mkInner("b")},
+		},
+	}
+	res, err := Walk(schema, value)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	// The LLM never emits an absent optional, in either position.
+	wantMock := `{"viaUnion":{"req":"a"},"viaField":{"req":"b"}}`
+	if string(res.MockLLMContent) != wantMock {
+		t.Errorf("mock mismatch\nwant: %s\ngot:  %s", wantMock, string(res.MockLLMContent))
+	}
+	// Expected: union-arm opt omitted, deterministic-field opt is null.
+	wantExpected := `{"viaUnion":{"req":"a"},"viaField":{"req":"b","opt":null}}`
+	if string(res.Expected) != wantExpected {
+		t.Errorf("expected mismatch\nwant: %s\ngot:  %s", wantExpected, string(res.Expected))
+	}
+	// The normalize-from-mock path must agree with the walker's Expected
+	// byte-for-byte (the invariant TestWalkRoundTripNormalizesAbsent
+	// asserts at scale), including the union-arm omission.
+	normalized, err := NormalizeMockToExpectedWithChoices(schema, res.MockLLMContent, "Root", res.Metadata.UnionChoices, false)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if string(normalized) != string(res.Expected) {
+		t.Errorf("normalize round-trip\nwant: %s\ngot:  %s", string(res.Expected), string(normalized))
+	}
+}
+
 // TestWalkTNullUnionEmitsExplicitNull asserts T|null implemented as a
 // union with a KindNull variant emits JSON null when the null arm is
 // picked, separately from KindOptional's absent-key semantics.
@@ -2452,31 +2542,70 @@ func TestValueGenDeepNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 }
 
 // TestValueGenMapArmWithoutClassSiblingMayBeEmpty pins the fix's
-// targeting: when no sibling reaches a class, the map arm is allowed
-// to draw as empty. Asserted by observing at least one empty-map
-// draw across the rapid sample budget. Without this guard the fix
-// could over-trigger and shift the corpus more than needed.
+// targeting deterministically: for a class-free union
+// union[map<string,int>, string, int] the non-empty-map constraint
+// must never engage, so the map arm stays free to draw as empty.
+//
+// drawUnion gates the ensure-non-empty draw on
+//
+//	pickedArmReachesMapThroughTransparent(arm, 0) && unionHasClassReachableSibling(ft, idx)
+//
+// For the map arm (index 0) the first conjunct is true (the arm is a
+// map) but the second is false (no sibling reaches a class), so the
+// gate is false and drawMap runs with minLen=0. We assert each helper
+// directly rather than observing an empty-map draw, whose appearance
+// within a finite rapid budget is statistical and was the flake
+// source. unionDrawCandidates is likewise asserted to keep the map arm
+// (unionHasClassReachableArm is false → the prune is skipped).
 func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
 	keyT := FuzzType{Kind: KindString}
 	intT := FuzzType{Kind: KindInt}
-	outer := FuzzClass{
-		Name: "Outer",
-		Properties: []FuzzProperty{
-			{Name: "f", Type: FuzzType{
-				Kind: KindUnion,
-				Variants: []FuzzType{
-					{Kind: KindMap, Key: &keyT, Inner: &intT},
-					{Kind: KindString},
-					{Kind: KindInt},
-				},
-			}},
+	unionFT := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			{Kind: KindString},
+			{Kind: KindInt},
 		},
+	}
+	outer := FuzzClass{
+		Name:       "Outer",
+		Properties: []FuzzProperty{{Name: "f", Type: unionFT}},
 	}
 	schema := AnalyzeGraph(FuzzSchema{
 		Classes:   []FuzzClass{outer},
 		RootClass: "Outer",
 	})
-	var sawEmpty, sawMapPick bool
+
+	const mapArm = 0
+	// First gate conjunct: the map arm reaches a map through transparent
+	// wrappers (here it is a map directly).
+	if !pickedArmReachesMapThroughTransparent(unionFT.Variants[mapArm], 0) {
+		t.Fatalf("pickedArmReachesMapThroughTransparent(mapArm) = false; want true (arm is a map)")
+	}
+	// Second gate conjunct: no sibling of the map arm reaches a class, so
+	// the empty-map ambiguity cannot arise and the constraint must stay
+	// off. Both conjuncts together mean drawUnion skips the ensure-non-
+	// empty branch and drawMap allows minLen=0.
+	if unionHasClassReachableSibling(unionFT, mapArm) {
+		t.Fatalf("unionHasClassReachableSibling(union, mapArm) = true; want false (class-free union)")
+	}
+
+	// The candidate filter must not prune the map arm: with no class
+	// reachable anywhere in the union, classReachable is false and the
+	// prune is skipped entirely, leaving every variant index selectable.
+	if unionHasClassReachableArm(unionFT) {
+		t.Fatalf("unionHasClassReachableArm(union) = true; want false (class-free union)")
+	}
+	ctx := &valueDrawCtx{schema: schema, depth: make(map[string]int)}
+	candidates := ctx.unionDrawCandidates(unionFT, false)
+	wantCandidates := []int{0, 1, 2}
+	if !reflect.DeepEqual(candidates, wantCandidates) {
+		t.Fatalf("unionDrawCandidates(union, false) = %v; want %v (no pruning, map arm retained)", candidates, wantCandidates)
+	}
+
+	// Smoke check: ValueGen on the shape draws without panicking. This is
+	// not a statistical assertion — it just exercises the code path.
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
 		fv, ok := v.LookupField("f")
@@ -2486,20 +2615,7 @@ func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
 		if fv.Kind != KindUnion || fv.Variant == nil {
 			rt.Fatalf("field f expected union value, got %v", fv.Kind)
 		}
-		if fv.VariantIndex != 0 {
-			return
-		}
-		sawMapPick = true
-		if len(fv.Variant.MapEntries) == 0 {
-			sawEmpty = true
-		}
 	})
-	if !sawMapPick {
-		t.Fatalf("rapid budget never picked the map arm — targeting guard never exercised; regression unverified")
-	}
-	if !sawEmpty {
-		t.Fatalf("empty-map draw never observed for class-free sibling union — fix is over-triggering")
-	}
 }
 
 // fixtureSchemaRecursiveUnionMapClampClassSibling builds the mutual-

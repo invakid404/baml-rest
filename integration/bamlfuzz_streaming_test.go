@@ -96,6 +96,21 @@ func TestBamlfuzzStreamingOracle(t *testing.T) {
 // dynamic-safe schema generator. PreserveSchemaOrder is drawn from the
 // bit stream so the fuzzer explores both halves of the oracle.
 //
+// NOTE: the nightly fuzz workflow does NOT run this target through Go's
+// native `-fuzz` engine — it routes the streaming oracle through
+// TestBamlfuzzStreamingOracle under `-run` instead (same as
+// FuzzBamlfuzzStatic). Go's fuzz worker wraps every exec in a hard 10s
+// watchdog (internal/fuzz/worker.go → panic("deadlocked!")), and one
+// streaming exec drives four sequential calls (dynclient stream, REST
+// SSE stream, REST NDJSON stream, unary cross-check), each with a 30s
+// budget plus chunked draining. Under fuzz load that routinely overruns
+// 10s; the worker panics and dies, and since each fuzz worker is a fresh
+// process that re-runs the ~90s Docker-booting TestMain, the
+// coordinator's restart handshake then fails with "fuzzing process
+// terminated without fuzzing: EOF". The target is kept so plain
+// `go test` still replays the f.Add seed below as a bounded subtest (no
+// watchdog without `-fuzz=`), but do not re-add it to the `-fuzz` step.
+//
 // One f.Add seed is registered so plain `go test` (no `-fuzz=`) runs the
 // target with a deterministic input. The seed is derived FNV-64a from a
 // stable label and is NOT folded with BAMLFUZZ_SEED — the nightly's fuzz
@@ -472,17 +487,18 @@ func runStreamingOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 	envelope.SawReset = dynReset || sseReset || ndjsonReset
 
 	// Assertion 1 — three-way final equivalence: dynclient final ≡ REST
-	// SSE final ≡ Expected.
-	diffAndRecord(envelope, &failures, "expected_vs_dynclient_final", c.Expected, envelope.DynclientFinal)
-	diffAndRecord(envelope, &failures, "expected_vs_rest_sse_final", c.Expected, envelope.RESTFinalSSE)
-	diffAndRecord(envelope, &failures, "dynclient_vs_rest_sse_final", envelope.DynclientFinal, envelope.RESTFinalSSE)
+	// SSE final ≡ Expected. The first two are expected-vs-actual; the
+	// dynclient-vs-REST leg is actual-vs-actual parity.
+	diffAndRecord(envelope, &failures, "expected_vs_dynclient_final", c.Expected, envelope.DynclientFinal, false)
+	diffAndRecord(envelope, &failures, "expected_vs_rest_sse_final", c.Expected, envelope.RESTFinalSSE, false)
+	diffAndRecord(envelope, &failures, "dynclient_vs_rest_sse_final", envelope.DynclientFinal, envelope.RESTFinalSSE, true)
 
 	// Assertion 3 — streaming final ≡ unary parse. Directly probes a
-	// streaming-vs-unary parser divergence.
-	diffAndRecord(envelope, &failures, "dynclient_final_vs_unary", envelope.DynclientFinal, envelope.UnaryParse)
+	// streaming-vs-unary parser divergence (both BAML-generated: parity).
+	diffAndRecord(envelope, &failures, "dynclient_final_vs_unary", envelope.DynclientFinal, envelope.UnaryParse, true)
 
 	// Assertion 4 — transport parity: SSE final ≡ NDJSON final.
-	diffAndRecord(envelope, &failures, "rest_sse_vs_ndjson_final", envelope.RESTFinalSSE, envelope.RESTFinalNDJSON)
+	diffAndRecord(envelope, &failures, "rest_sse_vs_ndjson_final", envelope.RESTFinalSSE, envelope.RESTFinalNDJSON, true)
 
 	// Assertion 2 — final-frame key order on each leg (preserve only).
 	checkStreamFinalOrder(t, c, envelope, &failures, "dynclient_final_order", envelope.DynclientFinal)
@@ -505,11 +521,20 @@ func runStreamingOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 // (empty payload) is skipped here — the absent final is reported by the
 // single-clean-final check, so re-flagging it as a decode error would
 // just duplicate the signal.
-func diffAndRecord(envelope *bamlfuzz.StreamingFailureEnvelope, failures *[]string, side string, a, b json.RawMessage) {
+//
+// `parity` selects the boundaryml/baml#3690 null-key tolerance: false for
+// expected-vs-actual pairings (only the actual side's leaked nulls are
+// forgiven), true for actual-vs-actual parity pairings where either
+// BAML-generated leg may independently carry the leak.
+func diffAndRecord(envelope *bamlfuzz.StreamingFailureEnvelope, failures *[]string, side string, a, b json.RawMessage, parity bool) {
 	if len(a) == 0 || len(b) == 0 {
 		return
 	}
-	diff, err := bamlfuzz.SemanticDiff(side, a, b)
+	diffFn := bamlfuzz.SemanticDiff
+	if parity {
+		diffFn = bamlfuzz.SemanticDiffParity
+	}
+	diff, err := diffFn(side, a, b)
 	if err != nil {
 		*failures = append(*failures, fmt.Sprintf("%s diff: %v", side, err))
 		return

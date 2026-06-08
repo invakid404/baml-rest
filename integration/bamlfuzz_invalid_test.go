@@ -434,7 +434,7 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 	case bamlfuzz.OutcomeConditional:
 		switch {
 		case dynSuccess && restSuccess:
-			diffs, derr := bamlfuzz.SemanticDiff("dynclient_vs_rest", envelope.DynclientOutput, envelope.RESTBody)
+			diffs, derr := bamlfuzz.SemanticDiffParity("dynclient_vs_rest", envelope.DynclientOutput, envelope.RESTBody)
 			if derr != nil {
 				failAndDumpInvalid(t, artifactDir, envelope, "axis C diff decode (mutation=%s): %v", c.Mutation, derr)
 				return
@@ -529,7 +529,7 @@ func checkInvalidOrderC(c bamlfuzz.InvalidOracleCase, dyn, rest json.RawMessage)
 	if err != nil {
 		return fmt.Sprintf("axis C order check: derive union choices: %v", err), true
 	}
-	diffs, err := bamlfuzz.SchemaOrderDiffWithChoices("dynclient_vs_rest_order", c.Schema, dyn, rest, choices)
+	diffs, err := bamlfuzz.SchemaOrderDiffParityWithChoices("dynclient_vs_rest_order", c.Schema, dyn, rest, choices)
 	switch {
 	case errors.Is(err, bamlfuzz.ErrSchemaOrderUnsupported):
 		return fmt.Sprintf("axis C order check: %v (derivation did not cover every union path; treat as hard fail per F1 contract)", err), true
@@ -661,9 +661,15 @@ func pickUnionArm(schema bamlfuzz.FuzzSchema, variants []bamlfuzz.FuzzType, v an
 	sort.SliceStable(indices, func(a, b int) bool {
 		return variantNarrowness(variants[indices[a]]) < variantNarrowness(variants[indices[b]])
 	})
-	for _, idx := range indices {
-		if variantMatchesValue(schema, variants[idx], v, defaultMatchDepth) {
-			return idx
+	// Two passes: a strict pass first so an arm that matches every entry
+	// exactly is preferred over one that only matches by tolerating
+	// boundaryml/baml#3690 leaked nulls. Only if no arm matches strictly
+	// do we fall back to the tolerant pass, which is the prior behavior.
+	for _, tolerant := range []bool{false, true} {
+		for _, idx := range indices {
+			if variantMatchesValue(schema, variants[idx], v, defaultMatchDepth, tolerant) {
+				return idx
+			}
 		}
 	}
 	return -1
@@ -713,7 +719,21 @@ func variantNarrowness(t bamlfuzz.FuzzType) int {
 // ClassRef<T> recurse into elements so nested narrowness is checked
 // too, depth-limited to keep a degenerate cycle from blowing the
 // stack.
-func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any, depth int) bool {
+//
+// boundaryml/baml#3690 tolerance: when `tolerant` is set, a leaked
+// null-valued key is ignored when matching maps whose value type cannot
+// be null (the null is not a real entry) and classes (it is not a real
+// extra key). For a map whose value type can be null the null is a
+// legitimate entry and is matched normally regardless of `tolerant`. The
+// order walker that consumes the derived choice is itself null-tolerant,
+// so the arm picked here must agree with the null-stripped view the
+// walker compares.
+//
+// pickUnionArm runs a strict pass (tolerant=false) before a tolerant one
+// so an arm that matches every entry EXACTLY wins over one that only
+// matches by skipping leaked nulls — e.g. map<string, optional<int>>
+// beats map<string, int> for {"x": null, "y": 1}.
+func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any, depth int, tolerant bool) bool {
 	if depth <= 0 {
 		// Out of depth budget: accept on top-level shape only. The
 		// v1 grammar bounds nesting at bamlfuzz.MaxTypeDepth=4, so
@@ -773,7 +793,7 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any,
 			return true
 		}
 		for _, item := range arr {
-			if !variantMatchesValue(schema, *t.Inner, item, depth-1) {
+			if !variantMatchesValue(schema, *t.Inner, item, depth-1, tolerant) {
 				return false
 			}
 		}
@@ -786,10 +806,34 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any,
 		if t.Inner == nil {
 			return true
 		}
+		innerNullable := bamlfuzz.CanBeNull(*t.Inner)
+		matched := 0
 		for _, val := range obj {
-			if !variantMatchesValue(schema, *t.Inner, val, depth-1) {
+			// boundaryml/baml#3690: a leaked null-valued key from a
+			// sibling class union arm is not a real map entry, so it
+			// must not disqualify the map arm. The null-tolerant order
+			// walker strips it from the comparison anyway; ignore it
+			// here so arm derivation agrees with what the walker sees.
+			// Only skip when the value type cannot itself be null — for
+			// map<string, null> / map<string, optional<T>> a null is a
+			// legitimate entry and must be checked normally. The skip is
+			// also gated on tolerant: the strict pass rejects a null
+			// against a non-nullable value so an exactly-matching arm is
+			// preferred.
+			if val == nil && !innerNullable && tolerant {
+				continue
+			}
+			if !variantMatchesValue(schema, *t.Inner, val, depth-1, tolerant) {
 				return false
 			}
+			matched++
+		}
+		// A non-empty object whose every entry was a skipped leaked null
+		// is not a real instance of a non-nullable-value map: e.g.
+		// {"k0": null} must not match map<string, int>. An empty object
+		// ({}) is still a valid empty map.
+		if len(obj) > 0 && matched == 0 && !innerNullable {
+			return false
 		}
 		return true
 	case bamlfuzz.KindClassRef:
@@ -805,8 +849,16 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any,
 		for _, p := range cls.Properties {
 			propByName[p.Name] = p.Type
 		}
-		for k := range obj {
+		for k, val := range obj {
 			if _, ok := propByName[k]; !ok {
+				// boundaryml/baml#3690: tolerate a leaked null-valued
+				// key that is not a declared property; a non-null
+				// unknown key still disqualifies the class arm. Gated on
+				// tolerant so the strict pass rejects an unknown null key
+				// and an exactly-matching arm is preferred.
+				if val == nil && tolerant {
+					continue
+				}
 				return false
 			}
 		}
@@ -823,7 +875,7 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any,
 			if !present {
 				continue
 			}
-			if !variantMatchesValue(schema, fieldType, fv, depth-1) {
+			if !variantMatchesValue(schema, fieldType, fv, depth-1, tolerant) {
 				return false
 			}
 		}
@@ -833,12 +885,12 @@ func variantMatchesValue(schema bamlfuzz.FuzzSchema, t bamlfuzz.FuzzType, v any,
 			return true
 		}
 		if t.Inner != nil {
-			return variantMatchesValue(schema, *t.Inner, v, depth-1)
+			return variantMatchesValue(schema, *t.Inner, v, depth-1, tolerant)
 		}
 		return false
 	case bamlfuzz.KindUnion:
 		for _, variant := range t.Variants {
-			if variantMatchesValue(schema, variant, v, depth-1) {
+			if variantMatchesValue(schema, variant, v, depth-1, tolerant) {
 				return true
 			}
 		}

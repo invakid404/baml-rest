@@ -59,8 +59,24 @@ func SchemaOrderDiff(label string, schema FuzzSchema, expected, actual json.RawM
 }
 
 // SchemaOrderDiffWithChoices is the union-aware variant of
-// SchemaOrderDiff. `choices` mirrors CaseMetadata.UnionChoices.
+// SchemaOrderDiff. `choices` mirrors CaseMetadata.UnionChoices. It is for
+// expected-vs-actual comparisons: the boundaryml/baml#3690 null-key
+// tolerance is applied only to the actual side. For actual-vs-actual
+// parity order checks use SchemaOrderDiffParityWithChoices.
 func SchemaOrderDiffWithChoices(label string, schema FuzzSchema, expected, actual json.RawMessage, choices map[string]UnionChoice) ([]SchemaOrderDiffEntry, error) {
+	return schemaOrderDiff(label, schema, expected, actual, choices, false)
+}
+
+// SchemaOrderDiffParityWithChoices is the symmetric variant for
+// actual-vs-actual parity order checks (e.g. dynclient_vs_rest), where
+// both legs are BAML-generated and either may carry a boundaryml/baml#3690
+// leaked null key. Leaked null keys on either side are tolerated before
+// the key-order comparison.
+func SchemaOrderDiffParityWithChoices(label string, schema FuzzSchema, a, b json.RawMessage, choices map[string]UnionChoice) ([]SchemaOrderDiffEntry, error) {
+	return schemaOrderDiff(label, schema, a, b, choices, true)
+}
+
+func schemaOrderDiff(label string, schema FuzzSchema, expected, actual json.RawMessage, choices map[string]UnionChoice, parity bool) ([]SchemaOrderDiffEntry, error) {
 	if schema.RootClass == "" && schema.RootType == nil {
 		return nil, fmt.Errorf("bamlfuzz: schema missing both RootClass and RootType")
 	}
@@ -77,7 +93,7 @@ func SchemaOrderDiffWithChoices(label string, schema FuzzSchema, expected, actua
 	if err != nil {
 		return nil, fmt.Errorf("decode actual: %w", err)
 	}
-	w := &orderWalker{schema: schema, side: label, choices: choices}
+	w := &orderWalker{schema: schema, side: label, choices: choices, parity: parity}
 	w.walkType("$", schema.EffectiveRoot(), exp, got)
 	return w.diffs, w.err
 }
@@ -188,11 +204,118 @@ type orderWalker struct {
 	diffs   []SchemaOrderDiffEntry
 	err     error
 	choices map[string]UnionChoice
+	// parity tolerates boundaryml/baml#3690 leaked null keys on either
+	// side (actual-vs-actual). When false, only the actual side (got) is
+	// stripped (expected-vs-actual).
+	parity bool
+}
+
+// orderKeys applies the boundaryml/baml#3690 null-key tolerance to a
+// class/map node and returns the (expectedKeys, actualKeys) to compare.
+// The actual side is always stripped of leaked nulls; in parity mode the
+// expected side is stripped too.
+//
+// stripAllNulls is set by map-arm callers. A null value is never a
+// legitimate map entry, so in parity mode (two actual outputs that may
+// each leak) every null key is dropped from both sides — including a
+// null key both sides carry, whose position would otherwise produce a
+// spurious order diff when the two leaks land in different spots. Class
+// nodes pass false: a null there can be a real optional field whose
+// declared position still matters.
+func (w *orderWalker) orderKeys(exp, got orderedJSON, stripAllNulls bool) (expKeys, gotKeys []string) {
+	if w.parity && stripAllNulls {
+		return stripNullKeys(exp.keys, exp.byKey), stripNullKeys(got.keys, got.byKey)
+	}
+	gotKeys = stripExtraNullKeys(got.keys, got.byKey, exp.byKey)
+	if w.parity {
+		expKeys = stripExtraNullKeys(exp.keys, exp.byKey, got.byKey)
+	} else {
+		expKeys = append([]string{}, exp.keys...)
+	}
+	return expKeys, gotKeys
 }
 
 func (w *orderWalker) setErr(err error) {
 	if w.err == nil {
 		w.err = err
+	}
+}
+
+// Workaround for boundaryml/baml#3690: BAML's Go codegen serializes
+// null-valued optional fields from a class union arm even when the
+// active arm is a map or a different class, leaking extra null-valued
+// keys into the wire object. The order comparisons below drop those
+// leaked keys before checking key-order equality. The bug only ever
+// ADDS keys to a BAML-generated output, so the direction depends on what
+// is being compared (orderWalker.parity):
+//
+//   - expected-vs-actual (parity == false): only `got` (the actual side)
+//     is stripped; `exp` is compared as-is, so a null key the expected
+//     side carries that `got` dropped still registers as a mismatch.
+//   - actual-vs-actual (parity == true): both sides are BAML-generated,
+//     so leaked null keys on either side are stripped. In a map arm
+//     whose value type cannot be null, a null is never a real entry, so
+//     parity mode drops every null key from both sides — even one both
+//     carry — so two leaks landing in different positions do not produce
+//     a spurious order diff. When the map's value type CAN be null (e.g.
+//     map<string, null> or map<string, optional<T>>) the nulls are real
+//     entries and only the reference-aware strip applies.
+//
+// This is a comparison-only relaxation. Remove when the upstream fix lands.
+
+// stripExtraNullKeys returns a filtered copy of `keys`, removing entries
+// that are null-valued in `src` and absent from the reference set `ref`.
+// Null keys that `ref` also carries are preserved so genuine null-valued
+// fields still participate. The caller chooses which side(s) to strip,
+// encoding the asymmetric / parity tolerance described above.
+func stripExtraNullKeys(keys []string, src, ref map[string]orderedJSON) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if src[k].kind == orderedNull {
+			if _, ok := ref[k]; !ok {
+				continue
+			}
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
+// stripNullKeys returns a copy of `keys` with every null-valued entry
+// removed, unconditional of any reference set. Used for parity map-arm
+// contexts where a null is never a real entry, so its position carries
+// no order signal even when both actual sides carry it.
+func stripNullKeys(keys []string, src map[string]orderedJSON) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if src[k].kind == orderedNull {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
+// CanBeNull reports whether a value of `typ` can legitimately serialize
+// as JSON null. It gates the boundaryml/baml#3690 null-leak tolerance:
+// only when a type CANNOT be null is an observed null necessarily a leak.
+// For the parity map-arm strip here, and for union-arm derivation in the
+// integration oracle, a map whose value type can be null (e.g.
+// map<string, null> or map<string, optional<T>>) has real null entries
+// that must still be compared / matched.
+func CanBeNull(typ FuzzType) bool {
+	switch typ.Kind {
+	case KindNull, KindOptional:
+		return true
+	case KindUnion:
+		for _, v := range typ.Variants {
+			if CanBeNull(v) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
 	}
 }
 
@@ -208,12 +331,13 @@ func (w *orderWalker) walkClass(path, className string, exp, got orderedJSON) {
 	if exp.kind != orderedObject || got.kind != orderedObject {
 		return
 	}
-	if !slices.Equal(exp.keys, got.keys) {
+	expKeys, gotKeys := w.orderKeys(exp, got, false)
+	if !slices.Equal(expKeys, gotKeys) {
 		w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 			Side:     w.side,
 			Path:     path,
-			Expected: append([]string{}, exp.keys...),
-			Actual:   append([]string{}, got.keys...),
+			Expected: expKeys,
+			Actual:   gotKeys,
 		})
 	}
 	for _, prop := range cls.Properties {
@@ -256,15 +380,29 @@ func (w *orderWalker) walkType(path string, typ FuzzType, exp, got orderedJSON) 
 		if exp.kind != orderedObject || got.kind != orderedObject {
 			return
 		}
-		if !slices.Equal(exp.keys, got.keys) {
+		// A null map entry is necessarily a #3690 leak only when the
+		// value type cannot itself be null; for map<string, null> or
+		// map<string, optional<T>> the nulls are real entries whose order
+		// still matters, so fall back to the reference-aware strip.
+		stripLeakedNulls := !CanBeNull(*typ.Inner)
+		expKeys, gotKeys := w.orderKeys(exp, got, stripLeakedNulls)
+		if !slices.Equal(expKeys, gotKeys) {
 			w.diffs = append(w.diffs, SchemaOrderDiffEntry{
 				Side:     w.side,
 				Path:     path,
-				Expected: append([]string{}, exp.keys...),
-				Actual:   append([]string{}, got.keys...),
+				Expected: expKeys,
+				Actual:   gotKeys,
 			})
 		}
 		for _, key := range sortedIntersection(exp.byKey, got.byKey) {
+			// In parity mode a null-valued map key whose value type
+			// cannot be null is a leaked field, not a real entry. Its
+			// value carries no order signal, and a nested union beneath
+			// it has no recorded choice — recursing would surface a
+			// spurious ErrSchemaOrderUnsupported. Skip it.
+			if w.parity && stripLeakedNulls && (exp.byKey[key].kind == orderedNull || got.byKey[key].kind == orderedNull) {
+				continue
+			}
 			w.walkType(fmt.Sprintf("%s[%q]", path, key), *typ.Inner, exp.byKey[key], got.byKey[key])
 		}
 	case KindUnion:

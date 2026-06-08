@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/invakid404/baml-rest/adapters/common/codegen/internal/testharness"
@@ -215,7 +216,7 @@ func SemanticEqual(a, b json.RawMessage) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("decode b: %w", err)
 	}
-	return deepEqualSemantic(av, bv), nil
+	return deepEqualSemantic(av, bv, nullExpectedVsActual), nil
 }
 
 // SemanticDiff returns the list of path-level disagreements between two
@@ -225,10 +226,73 @@ func SemanticEqual(a, b json.RawMessage) (bool, error) {
 // emitted SemanticDiffEntry so callers can label which oracle leg pair
 // they're comparing.
 //
+// SemanticDiff is for expected-vs-actual comparisons: `a` is the
+// expected/reference side and the boundaryml/baml#3690 null-key
+// tolerance is applied only to extra null keys on the actual side `b`
+// (see the null-tolerance block lower in this file). For actual-vs-actual
+// parity comparisons where either leg may independently carry the leak,
+// use SemanticDiffParity.
+//
 // Either input being empty (len == 0) is a decode error — same contract
 // as SemanticEqual. Callers wrap with `decode a: %w` / `decode b: %w`
 // so the failure log identifies which side was empty.
 func SemanticDiff(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error) {
+	return semanticDiff(side, a, b, nullExpectedVsActual)
+}
+
+// SemanticDiffParity is the symmetric variant of SemanticDiff for
+// actual-vs-actual parity comparisons (e.g. dynclient_vs_rest), where
+// both legs are BAML-generated and either side may independently carry a
+// boundaryml/baml#3690 leaked null key. An extra null-valued key on
+// either side is tolerated; every other disagreement is still reported.
+func SemanticDiffParity(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error) {
+	return semanticDiff(side, a, b, nullParity)
+}
+
+// SemanticDiffWithSchema is the schema-aware variant of SemanticDiff
+// used by the static prompt oracle. On top of SemanticDiff's
+// expected-vs-actual semantics (including the boundaryml/baml#3690
+// null-key tolerance) it forgives a string-literal escape-level
+// mismatch: BAML's static codegen is inconsistent about literal string
+// values containing special characters — for some positions (e.g. a
+// top-level class-field literal) it echoes the source-escaped token
+// (`\"quoted\"`), while for others (e.g. a deeply nested union arm) it
+// returns the decoded value (`"quoted"`). The oracle's expected output
+// always carries the decoded value (see normalize.go's writeLiteral).
+// When the schema types a field as a string literal, the two forms are
+// treated as equal so the position-dependent escaping does not flag a
+// false disagreement.
+//
+// `choices` mirrors CaseMetadata.UnionChoices and lets the literal-path
+// collector descend through union arms; a missing entry simply stops the
+// descent (the unresolved union arm contributes no literal paths), which
+// is safe because an unresolved-arm literal would not be tolerated.
+//
+// The tolerance is narrow: it applies ONLY at JSON paths the schema
+// types as a string literal. A plain `string` field that happens to
+// contain quotes is unaffected and still diffs normally.
+func SemanticDiffWithSchema(side string, schema FuzzSchema, choices map[string]UnionChoice, a, b json.RawMessage) ([]SemanticDiffEntry, error) {
+	av, err := decodeAny(a)
+	if err != nil {
+		return nil, fmt.Errorf("decode a: %w", err)
+	}
+	bv, err := decodeAny(b)
+	if err != nil {
+		return nil, fmt.Errorf("decode b: %w", err)
+	}
+	lit := make(map[string]bool)
+	root := schema.EffectiveRoot()
+	// Walk both sides: class-field literal positions are schema-fixed, but
+	// list indices / map keys come from the value, so collecting from both
+	// payloads ensures a literal path present on either side is recognized.
+	collectLiteralStringPaths(lit, schema, choices, "$", "", root, av)
+	collectLiteralStringPaths(lit, schema, choices, "$", "", root, bv)
+	var out []SemanticDiffEntry
+	diffAny(&out, side, "$", av, bv, nullExpectedVsActual, lit)
+	return out, nil
+}
+
+func semanticDiff(side string, a, b json.RawMessage, mode nullMode) ([]SemanticDiffEntry, error) {
 	av, err := decodeAny(a)
 	if err != nil {
 		return nil, fmt.Errorf("decode a: %w", err)
@@ -238,8 +302,102 @@ func SemanticDiff(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error
 		return nil, fmt.Errorf("decode b: %w", err)
 	}
 	var out []SemanticDiffEntry
-	diffAny(&out, side, "$", av, bv)
+	diffAny(&out, side, "$", av, bv, mode, nil)
 	return out, nil
+}
+
+// collectLiteralStringPaths records, into `out`, every JSON path (in
+// diffAny's path convention) whose schema type resolves to a
+// KindLiteral / LiteralString. It walks the schema type guided by the
+// decoded value `v` so list indices and map keys come from the actual
+// data. Two path strings are tracked in parallel: `jsonPath` (rooted at
+// "$", `.key` for every object member — diffAny treats class and map
+// nodes identically) and `choicePath` (rooted at "", `[%q]` for map
+// keys plus a `:v` step into each union arm — the CaseMetadata.UnionChoices
+// key convention shared with normalize.go and order.go). Only the
+// jsonPath form is emitted; the choicePath form exists solely to look up
+// union choices.
+func collectLiteralStringPaths(out map[string]bool, schema FuzzSchema, choices map[string]UnionChoice, jsonPath, choicePath string, t FuzzType, v any) {
+	switch t.Kind {
+	case KindLiteral:
+		if t.Literal != nil && t.Literal.Kind == LiteralString {
+			out[jsonPath] = true
+		}
+	case KindOptional:
+		if t.Inner == nil || v == nil {
+			return
+		}
+		collectLiteralStringPaths(out, schema, choices, jsonPath, choicePath, *t.Inner, v)
+	case KindClassRef:
+		cls, ok := schema.FindClass(t.Ref)
+		if !ok {
+			return
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		for _, prop := range cls.Properties {
+			cv, ok := m[prop.Name]
+			if !ok {
+				continue
+			}
+			collectLiteralStringPaths(out, schema, choices, jsonPath+"."+prop.Name, choicePath+"."+prop.Name, prop.Type, cv)
+		}
+	case KindList:
+		if t.Inner == nil {
+			return
+		}
+		arr, ok := v.([]any)
+		if !ok {
+			return
+		}
+		for i, e := range arr {
+			collectLiteralStringPaths(out, schema, choices, fmt.Sprintf("%s[%d]", jsonPath, i), fmt.Sprintf("%s[%d]", choicePath, i), *t.Inner, e)
+		}
+	case KindMap:
+		if t.Inner == nil {
+			return
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		for k, mv := range m {
+			collectLiteralStringPaths(out, schema, choices, jsonPath+"."+k, fmt.Sprintf("%s[%q]", choicePath, k), *t.Inner, mv)
+		}
+	case KindUnion:
+		choice, ok := choices[choicePath]
+		if !ok {
+			return
+		}
+		if choice.Index < 0 || choice.Index >= len(t.Variants) {
+			return
+		}
+		collectLiteralStringPaths(out, schema, choices, jsonPath, choicePath+":v", t.Variants[choice.Index], v)
+	}
+}
+
+// literalEscapeEquivalent reports whether two string values are equal
+// modulo source-escaping of a string literal: one side is the
+// strconv.Quote body (the quoted form without its surrounding double
+// quotes) of the other. This forgives BAML's position-dependent literal
+// echo, where one oracle leg carries the decoded value (`"quoted"`) and
+// the other the source-escaped token (`\"quoted\"`). It is symmetric, so
+// it covers both expected=decoded/actual=escaped and the reverse. The
+// match is exact in both directions, so it only suppresses a genuine
+// escape relationship — never two unrelated strings.
+func literalEscapeEquivalent(a, b string) bool {
+	return escapeBody(a) == b || escapeBody(b) == a
+}
+
+// escapeBody returns strconv.Quote(s) with its surrounding double quotes
+// stripped — i.e. the Go source-escaped rendering of s without the outer
+// delimiters. strconv.Quote never returns a string shorter than two
+// characters (the two delimiters), so the slice bounds are always valid.
+func escapeBody(s string) string {
+	quoted := strconv.Quote(s)
+	return quoted[1 : len(quoted)-1]
 }
 
 // DetectOrderWarning compares the top-level key order of two JSON
@@ -286,22 +444,75 @@ func decodeAny(b json.RawMessage) (any, error) {
 	return v, nil
 }
 
-func deepEqualSemantic(a, b any) bool {
+// Workaround for boundaryml/baml#3690: BAML's Go codegen serializes
+// null-valued optional fields from a class union arm even when the
+// active arm is a map or a different class, so a payload like
+// {"k0": -26} comes back as {"Fuzz_field_0": null, "k0": -26}. The
+// comparators below tolerate this leaked null key. The bug only ever
+// ADDS keys to a BAML-generated output, so the tolerance direction
+// depends on what is being compared (selected via nullMode):
+//
+//   - nullExpectedVsActual: `a` is the expected/reference side and `b`
+//     is the actual output. Only an extra null key present in `b` but
+//     absent from `a` is suppressed; a null key the expected side
+//     carries that the actual side dropped is a genuine missing field
+//     and still fails.
+//   - nullParity: both sides are BAML-generated (actual-vs-actual), so
+//     either may independently carry the leak. An extra null key on
+//     either side is suppressed.
+//
+// This is a comparison-only relaxation — it never touches the serialized
+// output. Remove when the upstream fix lands and the leaked null keys
+// stop appearing on the wire.
+type nullMode int
+
+const (
+	nullExpectedVsActual nullMode = iota
+	nullParity
+)
+
+// withoutExtraNullKeys returns a view of `src` excluding keys that are
+// null-valued there and absent from the reference `ref`. Null keys that
+// `ref` also carries are kept so genuine null-vs-null agreement still
+// participates. The caller chooses which side(s) to strip, encoding the
+// asymmetric / parity tolerance described above.
+func withoutExtraNullKeys(src, ref map[string]any) map[string]any {
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		if v == nil {
+			if _, ok := ref[k]; !ok {
+				continue
+			}
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func deepEqualSemantic(a, b any, mode nullMode) bool {
 	switch av := a.(type) {
 	case map[string]any:
 		bv, ok := b.(map[string]any)
 		if !ok {
 			return false
 		}
-		if len(av) != len(bv) {
+		// The actual side (b) is always stripped of leaked null keys. In
+		// parity mode the expected side (a) is stripped too; otherwise a
+		// is authoritative so a missing field still fails.
+		bf := withoutExtraNullKeys(bv, av)
+		af := av
+		if mode == nullParity {
+			af = withoutExtraNullKeys(av, bv)
+		}
+		if len(af) != len(bf) {
 			return false
 		}
-		for k, v := range av {
-			rv, present := bv[k]
+		for k, v := range af {
+			rv, present := bf[k]
 			if !present {
 				return false
 			}
-			if !deepEqualSemantic(v, rv) {
+			if !deepEqualSemantic(v, rv, mode) {
 				return false
 			}
 		}
@@ -315,7 +526,7 @@ func deepEqualSemantic(a, b any) bool {
 			return false
 		}
 		for i := range av {
-			if !deepEqualSemantic(av[i], bv[i]) {
+			if !deepEqualSemantic(av[i], bv[i], mode) {
 				return false
 			}
 		}
@@ -345,8 +556,12 @@ func deepEqualSemantic(a, b any) bool {
 	}
 }
 
-func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
-	if deepEqualSemantic(a, b) {
+// diffAny appends path-level disagreements between `a` and `b` to `out`.
+// `lit` (nil for non-schema-aware callers) is the set of JSON paths the
+// schema types as a string literal; at those paths a source-escape-level
+// string mismatch is tolerated (see literalEscapeEquivalent).
+func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any, mode nullMode, lit map[string]bool) {
+	if deepEqualSemantic(a, b, mode) {
 		return
 	}
 	switch av := a.(type) {
@@ -372,10 +587,23 @@ func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
 			av1, ok1 := av[k]
 			bv1, ok2 := bv[k]
 			if !ok1 || !ok2 {
+				// boundaryml/baml#3690 workaround: a leaked null-valued
+				// key present on only one side is not a real
+				// disagreement. An extra null on the actual side (b) is
+				// always tolerated; in parity mode an extra null on the
+				// a side is too. A non-null one-sided key, or (outside
+				// parity) a null key the expected side carries that
+				// actual dropped, is still reported.
+				if !ok1 && bv1 == nil {
+					continue
+				}
+				if mode == nullParity && !ok2 && av1 == nil {
+					continue
+				}
 				*out = append(*out, SemanticDiffEntry{Side: side, Path: path + "." + k, Got: av1, Want: bv1})
 				continue
 			}
-			diffAny(out, side, path+"."+k, av1, bv1)
+			diffAny(out, side, path+"."+k, av1, bv1, mode, lit)
 		}
 	case []any:
 		bv, ok := b.([]any)
@@ -384,8 +612,17 @@ func diffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
 			return
 		}
 		for i := range av {
-			diffAny(out, side, fmt.Sprintf("%s[%d]", path, i), av[i], bv[i])
+			diffAny(out, side, fmt.Sprintf("%s[%d]", path, i), av[i], bv[i], mode, lit)
 		}
+	case string:
+		// At a schema string-literal path, a source-escape-level mismatch
+		// between the two legs is BAML's position-dependent literal echo,
+		// not a real disagreement. Reached only when the strings already
+		// differ (deepEqualSemantic short-circuited equal values above).
+		if bv, ok := b.(string); ok && lit[path] && literalEscapeEquivalent(av, bv) {
+			return
+		}
+		*out = append(*out, SemanticDiffEntry{Side: side, Path: path, Got: a, Want: b})
 	default:
 		*out = append(*out, SemanticDiffEntry{Side: side, Path: path, Got: a, Want: b})
 	}
