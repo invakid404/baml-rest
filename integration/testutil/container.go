@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"text/template"
@@ -120,9 +122,105 @@ type SetupOptions struct {
 	RuntimeEnv map[string]string
 }
 
-// Setup creates the test environment with mock LLM server and baml-rest container.
+// setupRetryBackoff is the delay applied before each retry of the container
+// build+start sequence. Its length determines how many retries Setup performs:
+// the first entry is the wait before the 2nd attempt, the second before the
+// 3rd, and so on. Three retries (plus the initial attempt) gives four total
+// tries with escalating backoff.
+var setupRetryBackoff = []time.Duration{
+	5 * time.Second,
+	15 * time.Second,
+	30 * time.Second,
+}
+
+// Setup creates the test environment with mock LLM server and baml-rest
+// container, retrying the whole build+start sequence on transient failures.
+//
+// Container creation is the flaky part of the integration suite: Docker image
+// builds (build.sh) occasionally exit non-zero, the BAML library download can
+// fail ("could not find BAML library v0.XXX.0 for linux/amd64"), the BAML
+// runtime can panic on init inside the container, the registry can time out,
+// and runners hit disk pressure. These are transient infra failures, not test
+// logic bugs, so we retry the entire setup with exponential backoff. Only the
+// build/start sequence is retried here; actual test execution is untouched.
+//
+// Each failed attempt fully tears down whatever was partially created (network
+// and any started containers) via setupOnce before the next attempt, so retries
+// always start from a clean slate.
 func Setup(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
+	totalAttempts := len(setupRetryBackoff) + 1
+
+	var lastErr error
+	for attempt := 1; attempt <= totalAttempts; attempt++ {
+		if attempt > 1 {
+			backoff := setupRetryBackoff[attempt-2]
+			log.Printf("[testutil] container setup attempt %d/%d failed: %v; "+
+				"cleaning up and retrying in %s", attempt-1, totalAttempts, lastErr, backoff)
+
+			// Respect cancellation/deadline while backing off so we don't
+			// burn the remaining context budget sleeping.
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, fmt.Errorf("container setup aborted after %d attempt(s) while "+
+					"waiting to retry: %w (last error: %v)", attempt-1, ctx.Err(), lastErr)
+			case <-timer.C:
+			}
+		}
+
+		env, err := runSetupAttempt(ctx, opts)
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("[testutil] container setup succeeded on attempt %d/%d", attempt, totalAttempts)
+			}
+			return env, nil
+		}
+		lastErr = err
+
+		// If the context is already done there's no point retrying: every
+		// further attempt would fail the same way. Surface the error now,
+		// reporting the number of attempts actually made (not the cap).
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("container setup failed after %d attempt(s); "+
+				"context done before retrying: %w (last error: %v)", attempt, ctx.Err(), lastErr)
+		}
+	}
+
+	return nil, fmt.Errorf("container setup failed after %d attempt(s): %w", totalAttempts, lastErr)
+}
+
+// runSetupAttempt performs a single setupOnce and converts a panic into an
+// error so a true Go panic from deep inside testcontainers still triggers a
+// retry instead of tearing down the whole test binary. setupOnce tears down
+// its own partial resources (including on panic, see its deferred recover)
+// before the panic propagates here, so no network or container is leaked.
+func runSetupAttempt(ctx context.Context, opts SetupOptions) (env *TestEnvironment, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("container setup panicked: %v\n%s", r, debug.Stack())
+			log.Printf("[testutil] recovered panic during container setup: %v", r)
+		}
+	}()
+
+	return setupOnce(ctx, opts)
+}
+
+// setupOnce performs a single build+start of the mock LLM server and baml-rest
+// container. On any failure it terminates whatever it had already created
+// (network and/or containers) before returning, so callers can safely retry.
+func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
 	env := &TestEnvironment{}
+
+	// If anything below panics (e.g. deep inside testcontainers), tear down
+	// whatever was already created before the panic propagates to the retry
+	// wrapper, so a retry doesn't leak a network or half-started container.
+	defer func() {
+		if r := recover(); r != nil {
+			_ = env.Terminate(ctx)
+			panic(r)
+		}
+	}()
 
 	// Create Docker network
 	net, err := network.New(ctx)
@@ -207,10 +305,20 @@ func startMockLLMContainer(ctx context.Context, networkName string) (testcontain
 		WaitingFor: wait.ForHTTP("/_admin/health").WithPort(MockLLMInternalPort).WithStartupTimeout(30 * time.Second),
 	}
 
-	return testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
 		Started:          true,
 	})
+	if err != nil {
+		// On a start/wait failure (e.g. the health check never passes)
+		// testcontainers may still return a built container. Tear it down so a
+		// retry doesn't leak it.
+		if c != nil {
+			_ = c.Terminate(ctx)
+		}
+		return nil, err
+	}
+	return c, nil
 }
 
 func createMockLLMBuildContext() (io.ReadSeeker, error) {
@@ -290,10 +398,21 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 		WaitingFor: waitFor,
 	}
 
-	return testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
 		Started:          true,
 	})
+	if err != nil {
+		// A build.sh non-zero exit, a BAML library init panic, or a startup
+		// timeout all surface here. In the start/wait cases testcontainers may
+		// still hand back a built container; terminate it so a retry starts
+		// clean instead of leaking a half-started container.
+		if c != nil {
+			_ = c.Terminate(ctx)
+		}
+		return nil, err
+	}
+	return c, nil
 }
 
 // buildContainerEnv returns the env map passed to the baml-rest container.
