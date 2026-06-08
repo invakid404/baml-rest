@@ -11,7 +11,7 @@ require (
 	github.com/bytedance/sonic v1.15.2
 	github.com/cloudwego/gjson v0.1.1
 	github.com/valyala/fasthttp v1.71.0
-	golang.org/x/mod v0.36.0
+	golang.org/x/mod v0.37.0
 	golang.org/x/net v0.55.0
 	golang.org/x/sync v0.20.0
 )
