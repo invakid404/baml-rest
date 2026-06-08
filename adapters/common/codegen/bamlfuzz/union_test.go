@@ -2542,31 +2542,70 @@ func TestValueGenDeepNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 }
 
 // TestValueGenMapArmWithoutClassSiblingMayBeEmpty pins the fix's
-// targeting: when no sibling reaches a class, the map arm is allowed
-// to draw as empty. Asserted by observing at least one empty-map
-// draw across the rapid sample budget. Without this guard the fix
-// could over-trigger and shift the corpus more than needed.
+// targeting deterministically: for a class-free union
+// union[map<string,int>, string, int] the non-empty-map constraint
+// must never engage, so the map arm stays free to draw as empty.
+//
+// drawUnion gates the ensure-non-empty draw on
+//
+//	pickedArmReachesMapThroughTransparent(arm, 0) && unionHasClassReachableSibling(ft, idx)
+//
+// For the map arm (index 0) the first conjunct is true (the arm is a
+// map) but the second is false (no sibling reaches a class), so the
+// gate is false and drawMap runs with minLen=0. We assert each helper
+// directly rather than observing an empty-map draw, whose appearance
+// within a finite rapid budget is statistical and was the flake
+// source. unionDrawCandidates is likewise asserted to keep the map arm
+// (unionHasClassReachableArm is false → the prune is skipped).
 func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
 	keyT := FuzzType{Kind: KindString}
 	intT := FuzzType{Kind: KindInt}
-	outer := FuzzClass{
-		Name: "Outer",
-		Properties: []FuzzProperty{
-			{Name: "f", Type: FuzzType{
-				Kind: KindUnion,
-				Variants: []FuzzType{
-					{Kind: KindMap, Key: &keyT, Inner: &intT},
-					{Kind: KindString},
-					{Kind: KindInt},
-				},
-			}},
+	unionFT := FuzzType{
+		Kind: KindUnion,
+		Variants: []FuzzType{
+			{Kind: KindMap, Key: &keyT, Inner: &intT},
+			{Kind: KindString},
+			{Kind: KindInt},
 		},
+	}
+	outer := FuzzClass{
+		Name:       "Outer",
+		Properties: []FuzzProperty{{Name: "f", Type: unionFT}},
 	}
 	schema := AnalyzeGraph(FuzzSchema{
 		Classes:   []FuzzClass{outer},
 		RootClass: "Outer",
 	})
-	var sawEmpty, sawMapPick bool
+
+	const mapArm = 0
+	// First gate conjunct: the map arm reaches a map through transparent
+	// wrappers (here it is a map directly).
+	if !pickedArmReachesMapThroughTransparent(unionFT.Variants[mapArm], 0) {
+		t.Fatalf("pickedArmReachesMapThroughTransparent(mapArm) = false; want true (arm is a map)")
+	}
+	// Second gate conjunct: no sibling of the map arm reaches a class, so
+	// the empty-map ambiguity cannot arise and the constraint must stay
+	// off. Both conjuncts together mean drawUnion skips the ensure-non-
+	// empty branch and drawMap allows minLen=0.
+	if unionHasClassReachableSibling(unionFT, mapArm) {
+		t.Fatalf("unionHasClassReachableSibling(union, mapArm) = true; want false (class-free union)")
+	}
+
+	// The candidate filter must not prune the map arm: with no class
+	// reachable anywhere in the union, classReachable is false and the
+	// prune is skipped entirely, leaving every variant index selectable.
+	if unionHasClassReachableArm(unionFT) {
+		t.Fatalf("unionHasClassReachableArm(union) = true; want false (class-free union)")
+	}
+	ctx := &valueDrawCtx{schema: schema, depth: make(map[string]int)}
+	candidates := ctx.unionDrawCandidates(unionFT, false)
+	wantCandidates := []int{0, 1, 2}
+	if !reflect.DeepEqual(candidates, wantCandidates) {
+		t.Fatalf("unionDrawCandidates(union, false) = %v; want %v (no pruning, map arm retained)", candidates, wantCandidates)
+	}
+
+	// Smoke check: ValueGen on the shape draws without panicking. This is
+	// not a statistical assertion — it just exercises the code path.
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
 		fv, ok := v.LookupField("f")
@@ -2576,20 +2615,7 @@ func TestValueGenMapArmWithoutClassSiblingMayBeEmpty(t *testing.T) {
 		if fv.Kind != KindUnion || fv.Variant == nil {
 			rt.Fatalf("field f expected union value, got %v", fv.Kind)
 		}
-		if fv.VariantIndex != 0 {
-			return
-		}
-		sawMapPick = true
-		if len(fv.Variant.MapEntries) == 0 {
-			sawEmpty = true
-		}
 	})
-	if !sawMapPick {
-		t.Fatalf("rapid budget never picked the map arm — targeting guard never exercised; regression unverified")
-	}
-	if !sawEmpty {
-		t.Fatalf("empty-map draw never observed for class-free sibling union — fix is over-triggering")
-	}
 }
 
 // fixtureSchemaRecursiveUnionMapClampClassSibling builds the mutual-
