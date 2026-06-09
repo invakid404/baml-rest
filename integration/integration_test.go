@@ -341,14 +341,35 @@ type envTerminator interface {
 // the teardown error and whether the budget was exceeded (so the caller
 // can capture a container-side dump while the container is likely still
 // alive holding the stuck goroutine).
+//
+// The deadline is enforced INDEPENDENTLY of whether env.Terminate honors
+// the context: Terminate runs in a goroutine and we select on its result
+// vs ctx.Done(). The #420 stall is a Docker stop/remove that may not be
+// abortable via ctx cancellation, so a synchronous call could block past
+// the budget on the very failure this bounds. errCh is buffered so the
+// goroutine never blocks even when we return via the timeout path; a
+// wedged Terminate goroutine may then linger, but this runs in TestMain
+// teardown immediately before diagnostics + os.Exit, so that leak is
+// acceptable.
 func boundedTerminate(env envTerminator, budget time.Duration) (err error, timedOut bool) {
 	if budget <= 0 {
 		return env.Terminate(context.Background()), false
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
-	err = env.Terminate(ctx)
-	return err, ctx.Err() != nil
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- env.Terminate(ctx)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err, ctx.Err() != nil
+	case <-ctx.Done():
+		return ctx.Err(), true
+	}
 }
 
 // exitCodeAfterTeardown decides the process exit code given the test

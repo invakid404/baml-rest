@@ -91,6 +91,60 @@ type completingTerminator struct{}
 
 func (completingTerminator) Terminate(context.Context) error { return nil }
 
+// ctxIgnoringTerminator models the worst case the #420 fix must survive:
+// a Terminate that does NOT honor the context (a Docker stop/remove that
+// can't be aborted by ctx cancellation) and blocks until released. It
+// proves boundedTerminate enforces its budget independently of the
+// terminator's ctx handling.
+type ctxIgnoringTerminator struct {
+	release chan struct{}
+}
+
+func (c *ctxIgnoringTerminator) Terminate(context.Context) error {
+	<-c.release
+	return nil
+}
+
+// TestBoundedTerminateBoundsContextIgnoringTerminate is the core
+// regression guard CodeRabbit asked for: even when Terminate ignores the
+// context entirely, boundedTerminate must still return timedOut=true
+// around the budget rather than blocking on it.
+func TestBoundedTerminateBoundsContextIgnoringTerminate(t *testing.T) {
+	c := &ctxIgnoringTerminator{release: make(chan struct{})}
+	// Release the blocked Terminate goroutine on the way out so it doesn't
+	// linger past the test.
+	defer close(c.release)
+
+	type result struct {
+		err      error
+		timedOut bool
+		elapsed  time.Duration
+	}
+	done := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		err, timedOut := boundedTerminate(c, 150*time.Millisecond)
+		done <- result{err, timedOut, time.Since(start)}
+	}()
+
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("boundedTerminate did not return within 5s — budget not enforced independently of Terminate")
+	}
+
+	if !r.timedOut {
+		t.Fatal("boundedTerminate timedOut = false, want true for a context-ignoring teardown")
+	}
+	if !errors.Is(r.err, context.DeadlineExceeded) {
+		t.Fatalf("boundedTerminate err = %v, want context.DeadlineExceeded", r.err)
+	}
+	if r.elapsed > 5*time.Second {
+		t.Fatalf("boundedTerminate blocked %s past the 150ms budget", r.elapsed)
+	}
+}
+
 // TestExitCodeAfterTeardown pins the invariant that a bounded-teardown
 // error fails the suite even when the tests themselves passed (the #420
 // wedged-teardown hang must not exit green), while never masking a real
