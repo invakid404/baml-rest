@@ -205,6 +205,46 @@ func TestBoundedTerminateTimeoutWithFlattenedError(t *testing.T) {
 	}
 }
 
+// TestClassifyTeardownResult deterministically pins the teardown
+// classification contract — independent of select timing — and in
+// particular the #420 diagnostics bug class: a budget overrun whose error
+// does NOT wrap context.DeadlineExceeded (TestEnvironment.Terminate
+// flattens with %v) must still classify timedOut=true so the caller's
+// stack-dump path runs. That case returns timedOut=false under the old
+// errors.Is logic, so it genuinely distinguishes fixed from buggy.
+func TestClassifyTeardownResult(t *testing.T) {
+	// %v, so this does NOT wrap context.DeadlineExceeded.
+	flattened := fmt.Errorf("terminate errors: %v", context.DeadlineExceeded)
+	if errors.Is(flattened, context.DeadlineExceeded) {
+		t.Fatal("test precondition: flattened error must NOT errors.Is-match DeadlineExceeded")
+	}
+	otherErr := errors.New("docker daemon refused")
+
+	cases := []struct {
+		name         string
+		err          error
+		ctxErr       error
+		wantErr      error
+		wantTimedOut bool
+	}{
+		{"success, ctx alive", nil, nil, nil, false},
+		{"success, ctx expired (boundary win)", nil, context.DeadlineExceeded, nil, false},
+		{"flattened error after deadline", flattened, context.DeadlineExceeded, flattened, true},
+		{"non-deadline error before deadline", otherErr, nil, otherErr, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotErr, gotTimedOut := classifyTeardownResult(tc.err, tc.ctxErr)
+			if gotErr != tc.wantErr {
+				t.Errorf("err = %v, want %v", gotErr, tc.wantErr)
+			}
+			if gotTimedOut != tc.wantTimedOut {
+				t.Errorf("timedOut = %v, want %v", gotTimedOut, tc.wantTimedOut)
+			}
+		})
+	}
+}
+
 // erroringTerminator returns a fixed non-nil, non-deadline error
 // immediately, ignoring the context.
 type erroringTerminator struct{ err error }

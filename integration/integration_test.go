@@ -335,6 +335,22 @@ type envTerminator interface {
 	Terminate(context.Context) error
 }
 
+// classifyTeardownResult maps a completed teardown (its error and the
+// bounded context's error) to the (err, timedOut) contract. timedOut is
+// classified on ctxErr, NOT on the teardown error value:
+// TestEnvironment.Terminate flattens its aggregate with %v (not %w), so a
+// real deadline error from an inner Terminate/Remove would not satisfy
+// errors.Is(err, context.DeadlineExceeded) and the caller would skip the
+// #420 stack dump. ctxErr is wrapping- and error-shape-independent.
+// Gated on err != nil so a boundary success (Terminate returned nil just
+// as ctx expired) stays (nil, false) — no phantom timeout.
+func classifyTeardownResult(err error, ctxErr error) (error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	return err, ctxErr != nil
+}
+
 // boundedTerminate runs env teardown under a budget-bounded context so a
 // wedged container can never stall teardown to the job cap (#420). A
 // budget of 0 means "no bound" (legacy context.Background()). It returns
@@ -365,19 +381,10 @@ func boundedTerminate(env envTerminator, budget time.Duration) (err error, timed
 	}()
 
 	// finish maps a completed Terminate result to the (err, timedOut)
-	// contract. timedOut is classified on the BOUNDED ctx (ctx.Err()),
-	// not on the error value: TestEnvironment.Terminate flattens its
-	// aggregate with %v (not %w), so a real deadline error from an inner
-	// Terminate/Remove would not satisfy errors.Is(err, DeadlineExceeded)
-	// and the caller would skip the #420 stack dump. ctx.Err() is
-	// wrapping- and error-shape-independent. Gated on err != nil so a
-	// boundary success (Terminate returned nil just as ctx expired) stays
-	// (nil, false) — no phantom timeout.
+	// contract, classifying timedOut on the bounded ctx — see
+	// classifyTeardownResult.
 	finish := func(err error) (error, bool) {
-		if err == nil {
-			return nil, false
-		}
-		return err, ctx.Err() != nil
+		return classifyTeardownResult(err, ctx.Err())
 	}
 
 	select {
