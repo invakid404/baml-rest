@@ -124,6 +124,58 @@ func TestSetupWithRetry_NoPerAttemptBound(t *testing.T) {
 	}
 }
 
+// TestRunSetupCleanup_UsesLiveContext is the partial-cleanup-leak regression:
+// when an attempt times out, setupOnce / the start helpers must tear down
+// whatever they partially created on a LIVE context (testcontainers Terminate
+// needs one to issue Docker stop/remove). runSetupCleanup is the single path
+// all those teardowns now route through; this proves the context it hands the
+// teardown func is not already-done — even though the per-attempt work ctx (and
+// potentially the parent) has expired — and is bounded so it can't itself hang.
+func TestRunSetupCleanup_UsesLiveContext(t *testing.T) {
+	// Stand in for the failure scenario: the per-attempt work ctx has already
+	// expired by the time cleanup runs.
+	attemptCtx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	<-attemptCtx.Done() // event-driven: wait for the deadline, no fixed sleep
+	if attemptCtx.Err() == nil {
+		t.Fatal("precondition: attempt ctx should be expired before cleanup")
+	}
+
+	// Capture the cleanup ctx's state INSIDE the callback, while it is still
+	// live — runSetupCleanup defers cancel(), so inspecting it after the call
+	// returns would always show "canceled".
+	var (
+		called    bool
+		isSame    bool
+		errAtCall error
+		dlAtCall  time.Time
+		dlOK      bool
+	)
+	runSetupCleanup(func(ctx context.Context) error {
+		called = true
+		isSame = ctx == attemptCtx
+		errAtCall = ctx.Err()
+		dlAtCall, dlOK = ctx.Deadline()
+		return nil
+	})
+
+	if !called {
+		t.Fatal("runSetupCleanup did not invoke the teardown func")
+	}
+	if errAtCall != nil {
+		t.Fatalf("cleanup ctx was already done at teardown time (%v); teardown needs a LIVE context", errAtCall)
+	}
+	if isSame {
+		t.Fatal("cleanup ctx is the expired attempt ctx; it must be independent")
+	}
+	if !dlOK {
+		t.Fatal("cleanup ctx has no deadline; it must be bounded")
+	}
+	if remaining := time.Until(dlAtCall); remaining <= 0 {
+		t.Fatalf("cleanup ctx deadline already passed (remaining %s)", remaining)
+	}
+}
+
 func TestSetupBudget(t *testing.T) {
 	if got := SetupBudget(SetupOptions{}); got != OverallSetupBudgetLight {
 		t.Fatalf("SetupBudget(light) = %s, want %s", got, OverallSetupBudgetLight)

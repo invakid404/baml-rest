@@ -188,6 +188,18 @@ const (
 	// runner/daemon contention just hits the same wall (scope G4/G5), so the
 	// design favors one big single attempt over guaranteeing a second.
 	setupRetryReserve = 2 * time.Minute
+
+	// setupCleanupTimeout bounds the partial-teardown of a failed attempt
+	// (terminating whatever network/containers it had already created before
+	// the next attempt or before the error propagates). This budget is
+	// deliberately INDEPENDENT of the per-attempt work context: testcontainers
+	// Terminate needs a LIVE context to issue Docker stop/remove, but the most
+	// common cleanup trigger is the per-attempt deadline firing — so cleanup is
+	// run on a fresh context.Background()-derived ctx (see runSetupCleanup), not
+	// the expired work ctx. Sized smaller than the 5m defaultTeardownTimeout
+	// because a partially-started attempt has at most a half-built container and
+	// a network to remove, not a full running environment.
+	setupCleanupTimeout = 2 * time.Minute
 )
 
 // SetupBudget returns the overall (parent) context budget a Setup call should
@@ -323,6 +335,22 @@ func attemptContext(ctx context.Context, perAttempt time.Duration) (context.Cont
 	return context.WithTimeout(ctx, perAttempt)
 }
 
+// runSetupCleanup runs a partial-teardown function under a fresh, bounded
+// context derived from context.Background() — independent of BOTH the
+// (possibly expired) per-attempt work ctx AND a (possibly cancelled) parent
+// ctx. testcontainers Terminate needs a LIVE context to issue Docker
+// stop/remove; the dominant cleanup trigger is the per-attempt deadline
+// firing, and the overall budget may also be exhausted, so reusing either
+// would leave half-started containers and networks leaked before the retry.
+// Errors are ignored (best-effort teardown), matching the existing setup-path
+// cleanup contract. The cancel is always invoked so the cleanup ctx itself
+// never leaks.
+func runSetupCleanup(teardown func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), setupCleanupTimeout)
+	defer cancel()
+	_ = teardown(ctx)
+}
+
 // runSetupAttempt performs a single setupOnce and converts a panic into an
 // error so a true Go panic from deep inside testcontainers still triggers a
 // retry instead of tearing down the whole test binary. setupOnce tears down
@@ -350,7 +378,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// wrapper, so a retry doesn't leak a network or half-started container.
 	defer func() {
 		if r := recover(); r != nil {
-			_ = env.Terminate(ctx)
+			runSetupCleanup(env.Terminate)
 			panic(r)
 		}
 	}()
@@ -365,7 +393,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// Start mock LLM server
 	mockLLM, err := startMockLLMContainer(ctx, net.Name)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to start mock LLM container: %w", err)
 	}
 	env.MockLLM = mockLLM
@@ -373,12 +401,12 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// Get mock LLM mapped port
 	mockPort, err := mockLLM.MappedPort(ctx, MockLLMInternalPort)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to get mock LLM port: %w", err)
 	}
 	mockHost, err := mockLLM.Host(ctx)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to get mock LLM host: %w", err)
 	}
 	env.MockLLMURL = fmt.Sprintf("http://%s:%s", mockHost, mockPort.Port())
@@ -387,7 +415,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// Build and start baml-rest container
 	bamlRest, err := startBAMLRestContainer(ctx, net.Name, opts)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to start baml-rest container: %w", err)
 	}
 	env.BAMLRest = bamlRest
@@ -395,12 +423,12 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// Get baml-rest mapped ports
 	restPort, err := bamlRest.MappedPort(ctx, BAMLRestInternalPort)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to get baml-rest port: %w", err)
 	}
 	restHost, err := bamlRest.Host(ctx)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to get baml-rest host: %w", err)
 	}
 	env.BAMLRestURL = fmt.Sprintf("http://%s:%s", restHost, restPort.Port())
@@ -408,7 +436,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	if opts.UnaryServer {
 		unaryPort, err := bamlRest.MappedPort(ctx, BAMLRestUnaryPort)
 		if err != nil {
-			_ = env.Terminate(ctx)
+			runSetupCleanup(env.Terminate)
 			return nil, fmt.Errorf("failed to get baml-rest unary port: %w", err)
 		}
 		env.BAMLRestUnaryURL = fmt.Sprintf("http://%s:%s", restHost, unaryPort.Port())
@@ -447,7 +475,7 @@ func startMockLLMContainer(ctx context.Context, networkName string) (testcontain
 		// testcontainers may still return a built container. Tear it down so a
 		// retry doesn't leak it.
 		if c != nil {
-			_ = c.Terminate(ctx)
+			runSetupCleanup(func(cleanupCtx context.Context) error { return c.Terminate(cleanupCtx) })
 		}
 		return nil, err
 	}
@@ -541,7 +569,7 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 		// still hand back a built container; terminate it so a retry starts
 		// clean instead of leaking a half-started container.
 		if c != nil {
-			_ = c.Terminate(ctx)
+			runSetupCleanup(func(cleanupCtx context.Context) error { return c.Terminate(cleanupCtx) })
 		}
 		return nil, err
 	}
