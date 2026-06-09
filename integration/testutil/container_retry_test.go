@@ -5,7 +5,6 @@ package testutil
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 )
@@ -93,16 +92,12 @@ func TestSetupWithRetry_ParentExhaustionBails(t *testing.T) {
 	// setupWithRetry has TWO parent-deadline bail branches — post-attempt
 	// ("context done before retrying") and during the backoff wait ("while
 	// waiting to retry") — and under the tiny budgets here scheduler timing
-	// decides which wins. Both wrap the parent ctx.Err(), so assert the
-	// parent-deadline SHAPE (the robust invariant) rather than a single
-	// message; that IS the test's contract: parent exhaustion bails with a
-	// parent-deadline error.
-	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-		t.Fatalf("error %v does not wrap a parent-deadline error (DeadlineExceeded/Canceled)", err)
-	}
-	if !strings.Contains(err.Error(), "context done before retrying") &&
-		!strings.Contains(err.Error(), "while waiting to retry") {
-		t.Fatalf("error %q is not a parent-exhaustion bail", err)
+	// decides which wins. Both wrap the parent ctx.Err(), which for this
+	// WithTimeout parent (only cancel()'d after the assertion) is always
+	// DeadlineExceeded — so that single check is the robust invariant both
+	// branches satisfy and IS the test's contract.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %v does not wrap context.DeadlineExceeded", err)
 	}
 	if maxAttempts := len(fastBackoff) + 1; calls > maxAttempts {
 		t.Fatalf("attempt ran %d time(s), want <= %d (must not loop past the cap)", calls, maxAttempts)
@@ -212,7 +207,11 @@ func TestRunSetupCleanup_EnforcesBudget(t *testing.T) {
 		close(returned)
 	}()
 
-	<-started // teardown is running and blocked
+	select {
+	case <-started: // teardown is running and blocked
+	case <-time.After(2 * time.Second):
+		t.Fatal("runSetupCleanup did not invoke teardown")
+	}
 	select {
 	case <-returned:
 		// returned despite teardown ignoring its ctx — budget enforced
