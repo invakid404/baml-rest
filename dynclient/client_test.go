@@ -597,34 +597,22 @@ func TestStreamNextReturnsEOF(t *testing.T) {
 // Next did a bare `<-s.results`, so a wedged worker stalled the read
 // forever and a per-call deadline could not preempt it — the failure
 // mode that ran the streaming CI cell to its job-level timeout.
+//
+// The Stream is built directly over a controlled result channel that is
+// never closed until after Next returns, so the ONLY select arm Next can
+// take is ctx.Done(). Driving it through the full client (where the same
+// cancellation that fires the deadline also closes the bridge channel)
+// would race the two arms and let Next observe io.EOF instead — a flaky
+// assertion. We require a deterministic context.DeadlineExceeded.
 func TestStreamNextHonorsContextDeadline(t *testing.T) {
-	rt := &fakeRuntime{}
-	c := newClient(t, rt)
-
-	// A worker that opens the stream but never emits a frame and never
-	// closes the channel until its context is cancelled — the wedged
-	// shape. Parking on adapter.Done() keeps the producer goroutine from
-	// leaking once Next aborts.
-	rt.streamingImpl = func(adapter bamlutils.Adapter, _ any) (<-chan bamlutils.StreamResult, error) {
-		ch := make(chan bamlutils.StreamResult)
-		go func() {
-			<-adapter.Done()
-			close(ch)
-		}()
-		return ch, nil
-	}
-
+	results := make(chan *workerplugin.StreamResult)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	stream, err := c.DynamicStream(ctx, validRequest())
-	if err != nil {
-		t.Fatalf("DynamicStream: %v", err)
-	}
-	defer stream.Close()
+	s := newStream(ctx, cancel, func() {}, results, false, "test stream", nil, false)
 
 	start := time.Now()
-	_, err = stream.Next()
+	_, err := s.Next()
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -634,9 +622,13 @@ func TestStreamNextHonorsContextDeadline(t *testing.T) {
 		t.Fatalf("Next blocked %s past the 100ms deadline — context not honored", elapsed)
 	}
 	// The terminal context error latches across subsequent Next calls.
-	if _, err := stream.Next(); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := s.Next(); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second Next err = %v, want latched context.DeadlineExceeded", err)
 	}
+
+	// Only now is it safe to close: no Next is in flight to race the
+	// close against the deadline arm.
+	close(results)
 }
 
 func TestNewWithRuntimeRunsInit(t *testing.T) {

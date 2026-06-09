@@ -31,21 +31,39 @@ func (f *fakeTerminator) Terminate(ctx context.Context) error {
 func TestBoundedTerminateHonorsDeadline(t *testing.T) {
 	f := &fakeTerminator{started: make(chan struct{})}
 
-	start := time.Now()
-	err, timedOut := boundedTerminate(f, 150*time.Millisecond)
-	elapsed := time.Since(start)
+	type result struct {
+		err      error
+		timedOut bool
+		elapsed  time.Duration
+	}
+	done := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		err, timedOut := boundedTerminate(f, 150*time.Millisecond)
+		done <- result{err, timedOut, time.Since(start)}
+	}()
 
-	if err == nil {
+	// Independent guard: if a regression makes boundedTerminate stop
+	// passing a deadline ctx, the call blocks on the fakeTerminator
+	// forever — fail fast here instead of hanging to the suite timeout.
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("boundedTerminate did not return within 5s — deadline not propagated")
+	}
+
+	if r.err == nil {
 		t.Fatal("boundedTerminate err = nil, want a deadline error")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("boundedTerminate err = %v, want context.DeadlineExceeded", err)
+	if !errors.Is(r.err, context.DeadlineExceeded) {
+		t.Fatalf("boundedTerminate err = %v, want context.DeadlineExceeded", r.err)
 	}
-	if !timedOut {
+	if !r.timedOut {
 		t.Fatal("boundedTerminate timedOut = false, want true on a blocked teardown")
 	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("boundedTerminate blocked %s past the 150ms budget — context not honored", elapsed)
+	if r.elapsed > 5*time.Second {
+		t.Fatalf("boundedTerminate blocked %s past the 150ms budget — context not honored", r.elapsed)
 	}
 	select {
 	case <-f.started:

@@ -400,10 +400,12 @@ func streamReadDeadline() time.Duration {
 		fmt.Fprintf(os.Stderr, "testutil: invalid BAML_REST_STREAM_READ_DEADLINE %q: %v; using %s\n", raw, err, defaultStreamReadDeadline)
 		return defaultStreamReadDeadline
 	}
-	if d <= 0 {
-		fmt.Fprintf(os.Stderr, "testutil: non-positive BAML_REST_STREAM_READ_DEADLINE %q (parsed %s); using %s\n", raw, d, defaultStreamReadDeadline)
+	if d < 0 {
+		fmt.Fprintf(os.Stderr, "testutil: negative BAML_REST_STREAM_READ_DEADLINE %q (parsed %s); using %s\n", raw, d, defaultStreamReadDeadline)
 		return defaultStreamReadDeadline
 	}
+	// A parsed 0 (e.g. "0s") passes through and leaves a deadline-less
+	// context untouched, consistent with the "0"/"off" literals above.
 	return d
 }
 

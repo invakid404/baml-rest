@@ -87,6 +87,11 @@ jobs:
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
+          # Fire the in-harness suite watchdog (#420) with margin before
+          # this job's 45m cap, measured from process start. It dumps
+          # stacks and force-exits if setup/teardown stalls — the window
+          # `go test -timeout 40m` does not cover.
+          BAML_REST_SUITE_WATCHDOG: 42m
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
         # share state (server config, worker pool) that could cause flakiness if parallel.
         # `subprocess` matches the normal server deployment path (server +
@@ -150,6 +155,8 @@ jobs:
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: auto
+          # Suite watchdog (#420), margin before this job's 45m cap.
+          BAML_REST_SUITE_WATCHDOG: 42m
         # No `subprocess` tag — the default no-tag build compiles the
         # direct in-process worker path.
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
@@ -205,6 +212,12 @@ jobs:
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
+          # Suite watchdog (#420). This is the cell where #420 manifests;
+          # set to the 60m cap minus 3m so a stalled teardown dumps stacks
+          # and force-exits with margin before the runner kills the job.
+          # Larger than the 45m-cap jobs because a healthy baml-source
+          # m.Run runs 38-45m and must not false-trip.
+          BAML_REST_SUITE_WATCHDOG: 57m
         # `subprocess` matches the normal server deployment path used
         # by the versioned integration job above. The 55m Go timeout
         # sits below the 60m GHA step budget so a near-timeout case
