@@ -221,6 +221,27 @@ func TestRunSetupCleanup_EnforcesBudget(t *testing.T) {
 	}
 }
 
+// TestRunSetupCleanup_ContainsPanic proves a panicking teardown does NOT crash
+// the test binary. teardown runs on its own goroutine (outside
+// runSetupAttempt's recover), so without containment a panic from
+// Terminate/network removal would be unhandled and abort the process. The
+// helper must recover it and return normally. Deterministic: the panic fires
+// synchronously inside teardown, and runSetupCleanup blocks until it observes
+// the result, so reaching the line after the call proves containment.
+func TestRunSetupCleanup_ContainsPanic(t *testing.T) {
+	var called bool
+	runSetupCleanup(func(ctx context.Context) error {
+		called = true
+		panic("boom from Terminate")
+	})
+
+	if !called {
+		t.Fatal("runSetupCleanup did not invoke the teardown func")
+	}
+	// Reaching here at all is the assertion: the panic was contained on the
+	// cleanup goroutine instead of crashing the process.
+}
+
 func TestSetupBudget(t *testing.T) {
 	if got := SetupBudget(SetupOptions{}); got != OverallSetupBudgetLight {
 		t.Fatalf("SetupBudget(light) = %s, want %s", got, OverallSetupBudgetLight)

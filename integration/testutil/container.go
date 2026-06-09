@@ -358,7 +358,20 @@ func runSetupCleanup(teardown func(context.Context) error) {
 	defer cancel()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- teardown(ctx) }()
+	go func() {
+		// teardown runs on its own goroutine, outside runSetupAttempt's recover
+		// wrapper, so contain a panic from Terminate/network removal here — a
+		// panicking best-effort cleanup must not crash the test binary. teardown
+		// either returns OR panics (never both), so at most one send happens;
+		// errCh is buffered (cap 1) so neither send blocks.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[testutil] recovered panic during setup cleanup: %v", r)
+				errCh <- fmt.Errorf("setup cleanup panicked: %v\n%s", r, debug.Stack())
+			}
+		}()
+		errCh <- teardown(ctx)
+	}()
 	select {
 	case <-errCh:
 	case <-ctx.Done():
