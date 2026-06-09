@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -147,6 +148,57 @@ func TestBoundedTerminateBoundsContextIgnoringTerminate(t *testing.T) {
 	}
 	if !errors.Is(r.err, context.DeadlineExceeded) {
 		t.Fatalf("boundedTerminate err = %v, want context.DeadlineExceeded", r.err)
+	}
+	if r.elapsed > maxBoundedTerminateElapsed {
+		t.Fatalf("boundedTerminate blocked %s past the 150ms budget", r.elapsed)
+	}
+}
+
+// flattenedTimeoutTerminator blocks until its context is cancelled, then
+// returns an aggregate error flattened with %v (not %w) — mirroring
+// TestEnvironment.Terminate, whose `fmt.Errorf("terminate errors: %v",
+// errs)` strips any context.DeadlineExceeded wrapping. boundedTerminate
+// must classify a budget overrun as a timeout regardless of the error's
+// shape, so the #420 diagnostics dump fires.
+type flattenedTimeoutTerminator struct{}
+
+func (flattenedTimeoutTerminator) Terminate(ctx context.Context) error {
+	<-ctx.Done()
+	// Flatten with %v so the result does NOT errors.Is-match
+	// context.DeadlineExceeded — the exact shape that made the old
+	// error-based classifier report timedOut=false.
+	return fmt.Errorf("terminate errors: %v", ctx.Err())
+}
+
+// TestBoundedTerminateTimeoutWithFlattenedError pins the #420 diagnostics
+// bug: a budget overrun whose error does not wrap context.DeadlineExceeded
+// must still yield timedOut=true (classified on the bounded ctx, not the
+// error value), or the caller would skip the goroutine/native stack dump.
+func TestBoundedTerminateTimeoutWithFlattenedError(t *testing.T) {
+	type result struct {
+		err      error
+		timedOut bool
+		elapsed  time.Duration
+	}
+	done := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		err, timedOut := boundedTerminate(flattenedTimeoutTerminator{}, 150*time.Millisecond)
+		done <- result{err, timedOut, time.Since(start)}
+	}()
+
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("boundedTerminate did not return within 5s")
+	}
+
+	if r.err == nil {
+		t.Fatal("boundedTerminate err = nil, want a non-nil teardown error")
+	}
+	if !r.timedOut {
+		t.Fatal("boundedTerminate timedOut = false on a budget overrun with a flattened (non-wrapping) error — #420 dump would be skipped")
 	}
 	if r.elapsed > maxBoundedTerminateElapsed {
 		t.Fatalf("boundedTerminate blocked %s past the 150ms budget", r.elapsed)

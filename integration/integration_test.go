@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -366,14 +365,19 @@ func boundedTerminate(env envTerminator, budget time.Duration) (err error, timed
 	}()
 
 	// finish maps a completed Terminate result to the (err, timedOut)
-	// contract: success → (nil, false); a deadline error → (err, true);
-	// any other error → (err, false), still caught by the caller's
-	// err != nil gate.
+	// contract. timedOut is classified on the BOUNDED ctx (ctx.Err()),
+	// not on the error value: TestEnvironment.Terminate flattens its
+	// aggregate with %v (not %w), so a real deadline error from an inner
+	// Terminate/Remove would not satisfy errors.Is(err, DeadlineExceeded)
+	// and the caller would skip the #420 stack dump. ctx.Err() is
+	// wrapping- and error-shape-independent. Gated on err != nil so a
+	// boundary success (Terminate returned nil just as ctx expired) stays
+	// (nil, false) — no phantom timeout.
 	finish := func(err error) (error, bool) {
 		if err == nil {
 			return nil, false
 		}
-		return err, errors.Is(err, context.DeadlineExceeded)
+		return err, ctx.Err() != nil
 	}
 
 	select {
