@@ -372,13 +372,14 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 	return result, nil
 }
 
-// defaultStreamReadDeadline is the per-stream client read budget applied
-// when a streaming exec is handed a context that carries no deadline of
-// its own. It is sized far above any healthy mock-LLM stream (which
-// completes in well under a second) so it never false-trips a healthy
-// run, while still bounding a wedged read: a single hung stream then
-// fails fast with the offending test name instead of parking until the
-// CI job-level timeout kills the suite with no diagnostics (#420).
+// defaultStreamReadDeadline is a defense-in-depth client read budget
+// applied when a streaming exec is handed a context that carries no
+// deadline of its own. It is NOT the #420 fix: the test-side read is
+// already bounded by the per-test context and the 2m http.Client.Timeout
+// above, and that hang is server-side / in teardown, not a client read.
+// This only guarantees a future deadline-less streaming test can't issue
+// an unbounded client read. Sized far above any healthy mock-LLM stream
+// (which completes in well under a second) so it never false-trips.
 // Override with BAML_REST_STREAM_READ_DEADLINE (any time.ParseDuration
 // value); "0"/"off" leaves a deadline-less context untouched.
 const defaultStreamReadDeadline = 3 * time.Minute

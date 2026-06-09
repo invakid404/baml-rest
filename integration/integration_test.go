@@ -159,14 +159,25 @@ func getBAMLVersion() string {
 const GoroutineLeakFilter = "invakid404/baml-rest,boundaryml/baml,-StartRSSMonitor,-healthChecker,-GetGoroutines,-acceptandserve"
 
 // defaultSuiteWatchdogTimeout is the wall-clock budget after which the
-// suite watchdog dumps goroutine stacks and force-fails. 45m sits
-// comfortably below the baml-source job's `go test -timeout 55m` and the
-// 60m GHA cap (see .github/workflows/integration-tests.yml and #420), so
-// the NEXT occurrence of the streaming hang is captured as a named
-// goroutine dump instead of a silent kill at the job ceiling. The
-// lighter pinned-version job (`-timeout 40m`, finishes in 6-17m) exits
-// long before this fires.
-const defaultSuiteWatchdogTimeout = 45 * time.Minute
+// suite watchdog dumps stacks and force-exits. It is deliberately set
+// ABOVE the baml-source job's `go test -timeout 55m` and BELOW the 60m
+// GHA job cap (see .github/workflows/integration-tests.yml and #420):
+//
+//   - For a hang INSIDE m.Run, Go's own `-timeout` alarm fires first (at
+//     55m) and dumps + exits, so this watchdog never gets there.
+//   - The watchdog's real job is the window Go's `-timeout` provably does
+//     NOT cover — everything AFTER m.Run returns. The testing package
+//     arms its alarm inside M.Run and stops it before Run returns, so a
+//     stall in TestMain teardown (the actual #420 shape: Terminate over
+//     an unbounded context while a wedged container won't stop) has no
+//     `-timeout` guard at all. This watchdog is that guard.
+//
+// 57m leaves ~3m of headroom under the 60m cap to complete the dump, and
+// sits clear of the heavy job's healthy m.Run window (38-45m) plus a
+// bounded teardown, so it does not false-trip a slow-but-healthy run.
+// The lighter pinned-version job (`-timeout 40m`, finishes in 6-17m)
+// exits long before this fires.
+const defaultSuiteWatchdogTimeout = 57 * time.Minute
 
 // suiteWatchdogTimeout resolves the watchdog budget from the
 // BAML_REST_SUITE_WATCHDOG env var (any time.ParseDuration value),
@@ -188,36 +199,31 @@ func suiteWatchdogTimeout() time.Duration {
 	return d
 }
 
-// startSuiteWatchdog launches a background timer that, if the suite has
-// not finished within timeout, dumps all Go goroutine stacks (this test
-// process) plus best-effort worker goroutine and native (OS-thread)
-// stacks, then force-exits non-zero. This turns the #420 hang — which
-// otherwise runs to the job-level timeout with zero diagnostics — into a
-// fast, named failure that tells us whether the worker is wedged in a
-// cgo/native frame (native-stacks) or a Go frame (goroutines). Returns a
-// stop func that disarms the watchdog; calling it after a clean run
-// prevents the timer from firing during teardown.
-func startSuiteWatchdog(timeout time.Duration) (stop func()) {
+// startSuiteWatchdog launches a background timer that, if the whole
+// TestMain (setup + m.Run + teardown) has not finished within timeout,
+// dumps all Go goroutine stacks (this test process) plus best-effort
+// worker goroutine and native (OS-thread) stacks pulled from inside the
+// container via the /_debug endpoints, then force-exits non-zero.
+//
+// It is intentionally fire-and-forget and is NEVER cancelled: the
+// process exits (via os.Exit at the end of TestMain) on a clean run
+// before the timer fires, while on a hang the timer must still be live
+// during teardown — the post-m.Run window Go's `-timeout` does not cover
+// (#420). Cancelling it when m.Run returns (an earlier mistake) would
+// blind exactly the window we need to watch.
+func startSuiteWatchdog(timeout time.Duration) {
 	if timeout <= 0 {
-		return func() {}
+		return
 	}
-	done := make(chan struct{})
 	go func() {
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-		select {
-		case <-done:
-			return
-		case <-timer.C:
-		}
-		fmt.Fprintf(os.Stderr, "\n=== SUITE WATCHDOG: suite exceeded %s without finishing (baml-rest #420) ===\n", timeout)
+		<-time.After(timeout)
+		fmt.Fprintf(os.Stderr, "\n=== SUITE WATCHDOG: TestMain exceeded %s without finishing (baml-rest #420) ===\n", timeout)
 		fmt.Fprintf(os.Stderr, "=== dumping ALL goroutine stacks (test process) ===\n")
 		_ = pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
 		dumpWorkerDiagnostics()
 		fmt.Fprintf(os.Stderr, "=== SUITE WATCHDOG: forcing exit(1) after dump ===\n")
 		os.Exit(1)
 	}()
-	return func() { close(done) }
 }
 
 // dumpWorkerDiagnostics fetches goroutine and native-thread stacks from
@@ -270,6 +276,59 @@ func dumpWorkerDiagnostics() {
 		}
 		cancel()
 	}
+}
+
+// defaultTeardownTimeout bounds TestMain's post-m.Run teardown. The
+// observed #420 failure is not a hang inside m.Run (every in-test client
+// read is already bounded by a per-test context and the 2m
+// http.Client.Timeout) but a stall in teardown: TestEnv.Terminate was
+// called with an unbounded context.Background(), so a wedged container
+// that won't stop dragged Docker stop/remove out to the 60m job cap with
+// no diagnostics. Bounding teardown converts that into a fast, named
+// teardown failure (and a container-side stack dump) instead.
+const defaultTeardownTimeout = 5 * time.Minute
+
+// teardownTimeout resolves the teardown budget from
+// BAML_REST_TEARDOWN_TIMEOUT (any time.ParseDuration value), defaulting
+// to defaultTeardownTimeout. "0"/"off" restores the old unbounded
+// behavior (returns 0 → context.Background()).
+func teardownTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("BAML_REST_TEARDOWN_TIMEOUT"))
+	switch strings.ToLower(raw) {
+	case "":
+		return defaultTeardownTimeout
+	case "0", "off", "disable", "disabled":
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		fmt.Fprintf(os.Stderr, "invalid BAML_REST_TEARDOWN_TIMEOUT %q: %v; using %s\n", raw, err, defaultTeardownTimeout)
+		return defaultTeardownTimeout
+	}
+	return d
+}
+
+// envTerminator is the subset of *TestEnvironment that boundedTerminate
+// needs, so the bounding logic can be unit-tested with a fake that
+// blocks until its context is cancelled.
+type envTerminator interface {
+	Terminate(context.Context) error
+}
+
+// boundedTerminate runs env teardown under a budget-bounded context so a
+// wedged container can never stall teardown to the job cap (#420). A
+// budget of 0 means "no bound" (legacy context.Background()). It returns
+// the teardown error and whether the budget was exceeded (so the caller
+// can capture a container-side dump while the container is likely still
+// alive holding the stuck goroutine).
+func boundedTerminate(env envTerminator, budget time.Duration) (err error, timedOut bool) {
+	if budget <= 0 {
+		return env.Terminate(context.Background()), false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	err = env.Terminate(ctx)
+	return err, ctx.Err() != nil
 }
 
 func TestMain(m *testing.M) {
@@ -334,20 +393,16 @@ func TestMain(m *testing.M) {
 		UnaryClient = testutil.NewBAMLRestClient(TestEnv.BAMLRestUnaryURL)
 	}
 
-	// Arm the suite watchdog before running tests. If the suite wedges
-	// (the #420 streaming hang), this dumps every goroutine's stack —
-	// naming the blocked test and distinguishing a wedged cgo/native
-	// frame from a blocked Go read — then force-exits non-zero, well
-	// before the `go test -timeout` and the GHA job cap would kill the
-	// runner with no diagnostics.
-	stopWatchdog := startSuiteWatchdog(suiteWatchdogTimeout())
+	// Arm the suite watchdog before running tests, and deliberately leave
+	// it armed across m.Run AND teardown. Go's `go test -timeout` alarm
+	// only covers the m.Run window; the #420 stall is in post-m.Run
+	// teardown, which has no `-timeout` guard. The watchdog is that guard:
+	// on a hang it dumps test-process goroutines plus container-side
+	// worker/native stacks, then force-exits before the 60m job cap.
+	startSuiteWatchdog(suiteWatchdogTimeout())
 
 	// Run tests
 	code := m.Run()
-
-	// Disarm the watchdog on clean completion so its background timer
-	// never fires during teardown.
-	stopWatchdog()
 
 	// Dump container logs on failure to surface errors from inside
 	// the Docker containers (e.g. BAML runtime panics, worker crashes)
@@ -356,10 +411,19 @@ func TestMain(m *testing.M) {
 		dumpContainerLogs("Mock LLM", TestEnv.MockLLM)
 	}
 
-	// Cleanup
+	// Cleanup. Bound teardown so a wedged container fails fast with a
+	// named error (and a container-side stack dump) instead of stalling
+	// Docker stop/remove to the 60m job cap — the actual #420 shape, in
+	// the post-m.Run window Go's `-timeout` does not cover.
 	println("Tearing down test environment...")
-	if err := TestEnv.Terminate(context.Background()); err != nil {
-		println("Failed to terminate test environment:", err.Error())
+	if err, timedOut := boundedTerminate(TestEnv, teardownTimeout()); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to terminate test environment: %v\n", err)
+		if timedOut {
+			fmt.Fprintf(os.Stderr, "=== teardown exceeded %s — capturing diagnostics before exit (#420) ===\n", teardownTimeout())
+			fmt.Fprintf(os.Stderr, "=== dumping ALL goroutine stacks (test process) ===\n")
+			_ = pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
+			dumpWorkerDiagnostics()
+		}
 	}
 
 	os.Exit(code)
