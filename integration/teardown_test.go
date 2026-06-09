@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// maxBoundedTerminateElapsed bounds how long boundedTerminate may take on
+// a 150ms budget. Tight enough to catch a regression where the deadline
+// is not honored (which would take ~the full Terminate time), but loose
+// enough to tolerate goroutine-scheduling jitter on a loaded CI runner.
+// The separate 5s time.After guard in each test stays as the anti-hang
+// escape; this is the real assertion.
+const maxBoundedTerminateElapsed = 2 * time.Second
+
 // fakeTerminator is an envTerminator whose Terminate blocks until its
 // context is cancelled, modelling a wedged container that won't stop —
 // the #420 teardown shape.
@@ -62,7 +70,7 @@ func TestBoundedTerminateHonorsDeadline(t *testing.T) {
 	if !r.timedOut {
 		t.Fatal("boundedTerminate timedOut = false, want true on a blocked teardown")
 	}
-	if r.elapsed > 5*time.Second {
+	if r.elapsed > maxBoundedTerminateElapsed {
 		t.Fatalf("boundedTerminate blocked %s past the 150ms budget — context not honored", r.elapsed)
 	}
 	select {
@@ -140,7 +148,7 @@ func TestBoundedTerminateBoundsContextIgnoringTerminate(t *testing.T) {
 	if !errors.Is(r.err, context.DeadlineExceeded) {
 		t.Fatalf("boundedTerminate err = %v, want context.DeadlineExceeded", r.err)
 	}
-	if r.elapsed > 5*time.Second {
+	if r.elapsed > maxBoundedTerminateElapsed {
 		t.Fatalf("boundedTerminate blocked %s past the 150ms budget", r.elapsed)
 	}
 }

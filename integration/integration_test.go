@@ -365,18 +365,33 @@ func boundedTerminate(env envTerminator, budget time.Duration) (err error, timed
 		errCh <- env.Terminate(ctx)
 	}()
 
-	select {
-	case err := <-errCh:
-		// A successful teardown stays success even if it finished in a
-		// photo-finish with the deadline — don't report a phantom timeout
-		// (which the caller would have dropped anyway, since it gates on
-		// err != nil). Only a deadline ERROR is a real timeout.
+	// finish maps a completed Terminate result to the (err, timedOut)
+	// contract: success → (nil, false); a deadline error → (err, true);
+	// any other error → (err, false), still caught by the caller's
+	// err != nil gate.
+	finish := func(err error) (error, bool) {
 		if err == nil {
 			return nil, false
 		}
 		return err, errors.Is(err, context.DeadlineExceeded)
+	}
+
+	select {
+	case err := <-errCh:
+		return finish(err)
 	case <-ctx.Done():
-		return ctx.Err(), true
+		// Photo-finish tie-break: prefer a Terminate result that already
+		// completed by the time the deadline fired, so a benign
+		// slow-but-successful teardown resolves to its real result
+		// deterministically rather than racing the select arms. Only a
+		// genuine timeout with no completion reports (DeadlineExceeded,
+		// true) — which still flips CI via exitCodeAfterTeardown.
+		select {
+		case err := <-errCh:
+			return finish(err)
+		default:
+			return ctx.Err(), true
+		}
 	}
 }
 
