@@ -43,13 +43,15 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 		// blanket form would mask the openai-generic BuildRequest path
 		// the user originally reported on.
 
-		setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
-		defer setupCancel()
-
 		opts := matrixSetupOptions()
 		opts.RuntimeEnv = map[string]string{
 			"BAML_REST_CLIENT_DEFAULTS": `{"client_defaults":{"options":{"allowed_role_metadata":["cache_control"]}}}`,
 		}
+
+		// Centralized, mode-aware setup budget (#424).
+		setupCtx, setupCancel := context.WithTimeout(context.Background(), testutil.SetupBudget(opts))
+		defer setupCancel()
+
 		env, err := testutil.Setup(setupCtx, opts)
 		if err != nil {
 			t.Fatalf("Failed to setup dedicated env: %v", err)

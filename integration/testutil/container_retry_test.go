@@ -1,0 +1,159 @@
+//go:build integration
+
+package testutil
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
+
+// fastBackoff is a backoff slice the length of the production setupRetryBackoff
+// (3 retries -> 4 total attempts) but with negligible delays, so the
+// inter-attempt sleep can never dominate or flake these timing tests. The
+// retry-vs-bail behavior under test is event-driven (it keys off context
+// cancellation, not wall-clock sleeps), so 1ms is plenty.
+var fastBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+
+// TestSetupWithRetry_PerAttemptTimeoutDoesNotPoisonParent is the #424
+// regression: an attempt that exhausts its per-attempt budget must NOT poison
+// the parent into the "context done before retrying" bail — a subsequent
+// attempt must still run while the parent has budget left.
+//
+// Non-flaky by construction: attempt 1 consumes EXACTLY its per-attempt budget
+// by blocking on the attempt ctx (no fixed sleep), and the parent (1s) is far
+// larger than perAttempt (20ms) + backoff so the parent is never the limiter.
+func TestSetupWithRetry_PerAttemptTimeoutDoesNotPoisonParent(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	const perAttempt = 20 * time.Millisecond
+
+	var calls int
+	want := &TestEnvironment{}
+	attempt := func(ctx context.Context) (*TestEnvironment, error) {
+		calls++
+		if calls == 1 {
+			// Consume exactly the per-attempt budget, event-driven: block
+			// until this attempt's ctx fires, then surface its deadline error.
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return want, nil
+	}
+
+	got, err := setupWithRetry(parent, perAttempt, fastBackoff, attempt)
+	if err != nil {
+		t.Fatalf("setupWithRetry returned error, want success after retry: %v", err)
+	}
+	if got != want {
+		t.Fatalf("setupWithRetry returned %p, want the attempt-2 env %p", got, want)
+	}
+	if calls != 2 {
+		t.Fatalf("attempt ran %d time(s), want exactly 2 (attempt 2 must run after attempt 1's per-attempt timeout)", calls)
+	}
+	if parent.Err() != nil {
+		t.Fatalf("parent ctx was consumed (%v); a per-attempt timeout must not poison the parent", parent.Err())
+	}
+}
+
+// TestSetupWithRetry_ParentExhaustionBails is the negative counterpart: when
+// every attempt exhausts its per-attempt budget and the parent is too small to
+// fund another, the loop must bail via the parent ctx.Err() path (authoritative
+// parent cap) rather than looping forever.
+//
+// Non-flaky by construction: parent (25ms) is just over one perAttempt (20ms),
+// so attempt 1 gets its own 20ms timer (parent alive afterwards -> retry) and
+// attempt 2's requested deadline lands AFTER the parent deadline, so Go ties it
+// directly to the parent (no independent timer) — its cancellation therefore
+// guarantees parent.Err() is set when we check. Under scheduler jitter the only
+// drift is bailing one attempt earlier, which the assertions still accept.
+func TestSetupWithRetry_ParentExhaustionBails(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	const perAttempt = 20 * time.Millisecond
+
+	var calls int
+	attempt := func(ctx context.Context) (*TestEnvironment, error) {
+		calls++
+		<-ctx.Done() // every attempt exhausts its (parent-capped) budget
+		return nil, ctx.Err()
+	}
+
+	env, err := setupWithRetry(parent, perAttempt, fastBackoff, attempt)
+	if env != nil {
+		t.Fatalf("setupWithRetry returned env %p, want nil on parent exhaustion", env)
+	}
+	if err == nil {
+		t.Fatal("setupWithRetry returned nil error, want a parent-exhaustion failure")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %v does not wrap context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "context done before retrying") {
+		t.Fatalf("error %q is not the parent-exhaustion bail", err)
+	}
+	if maxAttempts := len(fastBackoff) + 1; calls > maxAttempts {
+		t.Fatalf("attempt ran %d time(s), want <= %d (must not loop past the cap)", calls, maxAttempts)
+	}
+}
+
+// TestSetupWithRetry_NoPerAttemptBound proves perAttempt <= 0 runs the attempt
+// on the parent ctx directly (no sub-context), so an attempt that ignores any
+// per-attempt deadline still sees the parent's.
+func TestSetupWithRetry_NoPerAttemptBound(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var gotDeadline time.Time
+	attempt := func(ctx context.Context) (*TestEnvironment, error) {
+		d, _ := ctx.Deadline()
+		gotDeadline = d
+		return &TestEnvironment{}, nil
+	}
+
+	if _, err := setupWithRetry(parent, 0, fastBackoff, attempt); err != nil {
+		t.Fatalf("setupWithRetry returned error: %v", err)
+	}
+	parentDeadline, _ := parent.Deadline()
+	if !gotDeadline.Equal(parentDeadline) {
+		t.Fatalf("attempt ctx deadline = %v, want the parent deadline %v (no per-attempt sub-context)", gotDeadline, parentDeadline)
+	}
+}
+
+func TestSetupBudget(t *testing.T) {
+	if got := SetupBudget(SetupOptions{}); got != OverallSetupBudgetLight {
+		t.Fatalf("SetupBudget(light) = %s, want %s", got, OverallSetupBudgetLight)
+	}
+	if got := SetupBudget(SetupOptions{BAMLSource: "/some/baml"}); got != OverallSetupBudgetBAMLSource {
+		t.Fatalf("SetupBudget(baml-source) = %s, want %s", got, OverallSetupBudgetBAMLSource)
+	}
+}
+
+func TestPerAttemptBudget(t *testing.T) {
+	// No deadline -> 0 ("no per-attempt bound").
+	if got := perAttemptBudget(context.Background()); got != 0 {
+		t.Fatalf("perAttemptBudget(no deadline) = %s, want 0", got)
+	}
+
+	// Healthy parent -> remaining minus the retry reserve.
+	parent, cancel := context.WithTimeout(context.Background(), OverallSetupBudgetLight)
+	defer cancel()
+	got := perAttemptBudget(parent)
+	want := OverallSetupBudgetLight - setupRetryReserve
+	// Allow a small delta for the time elapsed between construction and read.
+	if delta := want - got; delta < 0 || delta > time.Second {
+		t.Fatalf("perAttemptBudget(%s parent) = %s, want ~%s (reserve %s)", OverallSetupBudgetLight, got, want, setupRetryReserve)
+	}
+
+	// Parent smaller than the reserve -> 0 (don't shrink the attempt with a
+	// non-positive sub-deadline; the parent still caps it).
+	tight, cancelTight := context.WithTimeout(context.Background(), setupRetryReserve/2)
+	defer cancelTight()
+	if got := perAttemptBudget(tight); got != 0 {
+		t.Fatalf("perAttemptBudget(sub-reserve parent) = %s, want 0", got)
+	}
+}
