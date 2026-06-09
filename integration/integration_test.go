@@ -158,45 +158,49 @@ func getBAMLVersion() string {
 //   - acceptandserve: go-plugin broker goroutines that can outlive canceled requests
 const GoroutineLeakFilter = "invakid404/baml-rest,boundaryml/baml,-StartRSSMonitor,-healthChecker,-GetGoroutines,-acceptandserve"
 
-// defaultSuiteWatchdogTimeout is the wall-clock budget (measured from
-// TestMain start) after which the suite watchdog dumps stacks and
-// force-exits. The watchdog guards the window Go's `go test -timeout`
-// provably does NOT cover — everything before/after m.Run (setup, which
-// now retries with backoff per #415, and teardown, the actual #420
-// stall). The testing package arms its alarm inside M.Run and stops it
-// before Run returns, so a stall in TestMain teardown has no `-timeout`
-// guard at all; this watchdog is that guard.
+// defaultSuiteWatchdogTimeout returns the watchdog budget to use when
+// BAML_REST_SUITE_WATCHDOG is unset. The watchdog guards the window Go's
+// `go test -timeout` provably does NOT cover — everything before/after
+// m.Run (setup, which now retries with backoff per #415, and teardown,
+// the actual #420 stall). The testing package arms its alarm inside
+// M.Run and stops it before Run returns, so a stall in TestMain teardown
+// has no `-timeout` guard at all; this watchdog is that guard.
 //
-// The budget must fire with margin before the job's `timeout-minutes`
-// cap, and the suite runs under jobs with DIFFERENT caps (45m for
-// integration-tests / -inprocess, 60m for -baml-source — see
-// .github/workflows/integration-tests.yml). The default is therefore set
-// conservatively for the SMALLEST cap (45m → 42m, cap-3m); CI overrides
-// BAML_REST_SUITE_WATCHDOG per job to that job's cap-3m (e.g. 57m for the
-// 60m baml-source job, which is where #420 manifests and whose healthy
-// m.Run runs 38-45m and so needs the larger budget to avoid false trips).
-const defaultSuiteWatchdogTimeout = 42 * time.Minute
+// In CI the budget is set explicitly per job (see the BAML_REST_SUITE_WATCHDOG
+// env in .github/workflows/integration-tests.yml), anchored to each job's
+// step-level `timeout-minutes` minus a 3m margin. This default only
+// applies to local / unset runs, and is biased by mode so a healthy
+// local run never false-trips: baml-source mode (BAML_SOURCE set) builds
+// BAML from source and has a 38-45m healthy m.Run window, so it needs the
+// larger 57m budget; the lighter modes finish well under 45m and use 42m.
+func defaultSuiteWatchdogTimeout() time.Duration {
+	if os.Getenv("BAML_SOURCE") != "" {
+		return 57 * time.Minute
+	}
+	return 42 * time.Minute
+}
 
 // suiteWatchdogTimeout resolves the watchdog budget from the
 // BAML_REST_SUITE_WATCHDOG env var (any time.ParseDuration value),
-// defaulting to defaultSuiteWatchdogTimeout. "0"/"off" disables the
-// watchdog entirely (returns 0).
+// defaulting to defaultSuiteWatchdogTimeout(). "0"/"off" (or a parsed 0)
+// disables the watchdog entirely (returns 0).
 func suiteWatchdogTimeout() time.Duration {
+	def := defaultSuiteWatchdogTimeout()
 	raw := strings.TrimSpace(os.Getenv("BAML_REST_SUITE_WATCHDOG"))
 	switch strings.ToLower(raw) {
 	case "":
-		return defaultSuiteWatchdogTimeout
+		return def
 	case "0", "off", "disable", "disabled":
 		return 0
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid BAML_REST_SUITE_WATCHDOG %q: %v; using %s\n", raw, err, defaultSuiteWatchdogTimeout)
-		return defaultSuiteWatchdogTimeout
+		fmt.Fprintf(os.Stderr, "invalid BAML_REST_SUITE_WATCHDOG %q: %v; using %s\n", raw, err, def)
+		return def
 	}
 	if d < 0 {
-		fmt.Fprintf(os.Stderr, "negative BAML_REST_SUITE_WATCHDOG %q (parsed %s); using %s\n", raw, d, defaultSuiteWatchdogTimeout)
-		return defaultSuiteWatchdogTimeout
+		fmt.Fprintf(os.Stderr, "negative BAML_REST_SUITE_WATCHDOG %q (parsed %s); using %s\n", raw, d, def)
+		return def
 	}
 	// A parsed 0 (e.g. "0s") passes through and disables the watchdog,
 	// consistent with the "0"/"off" literals above.
