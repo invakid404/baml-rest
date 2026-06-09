@@ -192,8 +192,12 @@ func suiteWatchdogTimeout() time.Duration {
 		return 0
 	}
 	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid BAML_REST_SUITE_WATCHDOG %q: %v; using %s\n", raw, err, defaultSuiteWatchdogTimeout)
+		return defaultSuiteWatchdogTimeout
+	}
+	if d <= 0 {
+		fmt.Fprintf(os.Stderr, "non-positive BAML_REST_SUITE_WATCHDOG %q (parsed %s); using %s\n", raw, d, defaultSuiteWatchdogTimeout)
 		return defaultSuiteWatchdogTimeout
 	}
 	return d
@@ -301,8 +305,12 @@ func teardownTimeout() time.Duration {
 		return 0
 	}
 	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid BAML_REST_TEARDOWN_TIMEOUT %q: %v; using %s\n", raw, err, defaultTeardownTimeout)
+		return defaultTeardownTimeout
+	}
+	if d <= 0 {
+		fmt.Fprintf(os.Stderr, "non-positive BAML_REST_TEARDOWN_TIMEOUT %q (parsed %s); using %s\n", raw, d, defaultTeardownTimeout)
 		return defaultTeardownTimeout
 	}
 	return d
@@ -329,6 +337,19 @@ func boundedTerminate(env envTerminator, budget time.Duration) (err error, timed
 	defer cancel()
 	err = env.Terminate(ctx)
 	return err, ctx.Err() != nil
+}
+
+// exitCodeAfterTeardown decides the process exit code given the test
+// result code and the teardown error. A teardown failure of any kind
+// (timeout or otherwise) must fail the suite: otherwise a green test run
+// followed by a wedged-teardown hang — the #420 shape this PR exists to
+// surface — would still exit 0 and let CI pass. A non-zero test code is
+// left as-is (the test failure dominates and is the more useful signal).
+func exitCodeAfterTeardown(code int, teardownErr error) int {
+	if code == 0 && teardownErr != nil {
+		return 1
+	}
+	return code
 }
 
 func TestMain(m *testing.M) {
@@ -424,6 +445,9 @@ func TestMain(m *testing.M) {
 			_ = pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
 			dumpWorkerDiagnostics()
 		}
+		// A teardown failure must not pass CI on an otherwise-green run —
+		// that is exactly the wedged-teardown hang this PR surfaces.
+		code = exitCodeAfterTeardown(code, err)
 	}
 
 	os.Exit(code)

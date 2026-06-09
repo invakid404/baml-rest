@@ -72,3 +72,29 @@ func TestBoundedTerminateZeroBudgetIsUnbounded(t *testing.T) {
 type completingTerminator struct{}
 
 func (completingTerminator) Terminate(context.Context) error { return nil }
+
+// TestExitCodeAfterTeardown pins the invariant that a bounded-teardown
+// error fails the suite even when the tests themselves passed (the #420
+// wedged-teardown hang must not exit green), while never masking a real
+// test failure.
+func TestExitCodeAfterTeardown(t *testing.T) {
+	teardownErr := errors.New("teardown timed out")
+	cases := []struct {
+		name        string
+		code        int
+		teardownErr error
+		want        int
+	}{
+		{"green run, clean teardown", 0, nil, 0},
+		{"green run, teardown error", 0, teardownErr, 1},
+		{"failed run, clean teardown", 2, nil, 2},
+		{"failed run, teardown error keeps test code", 2, teardownErr, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := exitCodeAfterTeardown(tc.code, tc.teardownErr); got != tc.want {
+				t.Fatalf("exitCodeAfterTeardown(%d, %v) = %d, want %d", tc.code, tc.teardownErr, got, tc.want)
+			}
+		})
+	}
+}

@@ -396,8 +396,12 @@ func streamReadDeadline() time.Duration {
 		return 0
 	}
 	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "testutil: invalid BAML_REST_STREAM_READ_DEADLINE %q: %v; using %s\n", raw, err, defaultStreamReadDeadline)
+		return defaultStreamReadDeadline
+	}
+	if d <= 0 {
+		fmt.Fprintf(os.Stderr, "testutil: non-positive BAML_REST_STREAM_READ_DEADLINE %q (parsed %s); using %s\n", raw, d, defaultStreamReadDeadline)
 		return defaultStreamReadDeadline
 	}
 	return d
