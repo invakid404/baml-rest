@@ -145,6 +145,44 @@ func TestBoundedTerminateBoundsContextIgnoringTerminate(t *testing.T) {
 	}
 }
 
+// erroringTerminator returns a fixed non-nil, non-deadline error
+// immediately, ignoring the context.
+type erroringTerminator struct{ err error }
+
+func (e erroringTerminator) Terminate(context.Context) error { return e.err }
+
+// TestBoundedTerminateSuccessIsNotTimeout guards the (nil, true) contract
+// hole: a teardown that returns nil must yield (nil, false), never a
+// phantom timedOut. (The true photo-finish — errCh delivering nil at the
+// exact instant ctx expires — is inherently racy and cannot be forced
+// deterministically; this locks the success contract on the errCh arm,
+// which is where the old `ctx.Err() != nil` could have leaked a phantom
+// timeout.) A benign successful teardown must never look like #420.
+func TestBoundedTerminateSuccessIsNotTimeout(t *testing.T) {
+	err, timedOut := boundedTerminate(completingTerminator{}, 5*time.Second)
+	if err != nil {
+		t.Fatalf("boundedTerminate err = %v, want nil for a successful teardown", err)
+	}
+	if timedOut {
+		t.Fatal("boundedTerminate timedOut = true, want false for a successful teardown")
+	}
+}
+
+// TestBoundedTerminateNonDeadlineErrorNotTimeout: a non-deadline teardown
+// error surfaces as (err, false) — timedOut is reserved for genuine
+// deadline overruns, while the caller's err != nil gate still catches the
+// failure and fails CI.
+func TestBoundedTerminateNonDeadlineErrorNotTimeout(t *testing.T) {
+	boom := errors.New("docker daemon refused")
+	err, timedOut := boundedTerminate(erroringTerminator{err: boom}, 5*time.Second)
+	if !errors.Is(err, boom) {
+		t.Fatalf("boundedTerminate err = %v, want %v", err, boom)
+	}
+	if timedOut {
+		t.Fatal("boundedTerminate timedOut = true, want false for a non-deadline error")
+	}
+}
+
 // TestExitCodeAfterTeardown pins the invariant that a bounded-teardown
 // error fails the suite even when the tests themselves passed (the #420
 // wedged-teardown hang must not exit green), while never masking a real

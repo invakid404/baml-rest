@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -366,7 +367,14 @@ func boundedTerminate(env envTerminator, budget time.Duration) (err error, timed
 
 	select {
 	case err := <-errCh:
-		return err, ctx.Err() != nil
+		// A successful teardown stays success even if it finished in a
+		// photo-finish with the deadline — don't report a phantom timeout
+		// (which the caller would have dropped anyway, since it gates on
+		// err != nil). Only a deadline ERROR is a real timeout.
+		if err == nil {
+			return nil, false
+		}
+		return err, errors.Is(err, context.DeadlineExceeded)
 	case <-ctx.Done():
 		return ctx.Err(), true
 	}
