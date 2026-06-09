@@ -90,11 +90,19 @@ func TestSetupWithRetry_ParentExhaustionBails(t *testing.T) {
 	if err == nil {
 		t.Fatal("setupWithRetry returned nil error, want a parent-exhaustion failure")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error %v does not wrap context.DeadlineExceeded", err)
+	// setupWithRetry has TWO parent-deadline bail branches — post-attempt
+	// ("context done before retrying") and during the backoff wait ("while
+	// waiting to retry") — and under the tiny budgets here scheduler timing
+	// decides which wins. Both wrap the parent ctx.Err(), so assert the
+	// parent-deadline SHAPE (the robust invariant) rather than a single
+	// message; that IS the test's contract: parent exhaustion bails with a
+	// parent-deadline error.
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("error %v does not wrap a parent-deadline error (DeadlineExceeded/Canceled)", err)
 	}
-	if !strings.Contains(err.Error(), "context done before retrying") {
-		t.Fatalf("error %q is not the parent-exhaustion bail", err)
+	if !strings.Contains(err.Error(), "context done before retrying") &&
+		!strings.Contains(err.Error(), "while waiting to retry") {
+		t.Fatalf("error %q is not a parent-exhaustion bail", err)
 	}
 	if maxAttempts := len(fastBackoff) + 1; calls > maxAttempts {
 		t.Fatalf("attempt ran %d time(s), want <= %d (must not loop past the cap)", calls, maxAttempts)
@@ -173,6 +181,43 @@ func TestRunSetupCleanup_UsesLiveContext(t *testing.T) {
 	}
 	if remaining := time.Until(dlAtCall); remaining <= 0 {
 		t.Fatalf("cleanup ctx deadline already passed (remaining %s)", remaining)
+	}
+}
+
+// TestRunSetupCleanup_EnforcesBudget proves the cleanup budget is actually
+// enforced: a teardown that IGNORES its context and blocks must NOT stall the
+// retry/bail loop — runSetupCleanup must return when the budget expires. This
+// is the #422 failure mode (Docker stop/remove that doesn't honor ctx). Under
+// the previous synchronous implementation this test would hang and time out.
+// Event-driven and non-flaky: a tiny budget bounds the return, and the blocked
+// teardown goroutine is released only after the assertion.
+func TestRunSetupCleanup_EnforcesBudget(t *testing.T) {
+	saved := setupCleanupTimeout
+	setupCleanupTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { setupCleanupTimeout = saved })
+
+	// release unblocks the (intentionally leaked) teardown goroutine after the
+	// assertion, so it can drain to the buffered channel and exit cleanly.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	started := make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		runSetupCleanup(func(ctx context.Context) error {
+			close(started)
+			<-release // ignore ctx entirely: a sync impl would hang here forever
+			return nil
+		})
+		close(returned)
+	}()
+
+	<-started // teardown is running and blocked
+	select {
+	case <-returned:
+		// returned despite teardown ignoring its ctx — budget enforced
+	case <-time.After(2 * time.Second):
+		t.Fatal("runSetupCleanup did not return within its budget when teardown ignored its context")
 	}
 }
 

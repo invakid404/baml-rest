@@ -188,19 +188,20 @@ const (
 	// runner/daemon contention just hits the same wall (scope G4/G5), so the
 	// design favors one big single attempt over guaranteeing a second.
 	setupRetryReserve = 2 * time.Minute
-
-	// setupCleanupTimeout bounds the partial-teardown of a failed attempt
-	// (terminating whatever network/containers it had already created before
-	// the next attempt or before the error propagates). This budget is
-	// deliberately INDEPENDENT of the per-attempt work context: testcontainers
-	// Terminate needs a LIVE context to issue Docker stop/remove, but the most
-	// common cleanup trigger is the per-attempt deadline firing — so cleanup is
-	// run on a fresh context.Background()-derived ctx (see runSetupCleanup), not
-	// the expired work ctx. Sized smaller than the 5m defaultTeardownTimeout
-	// because a partially-started attempt has at most a half-built container and
-	// a network to remove, not a full running environment.
-	setupCleanupTimeout = 2 * time.Minute
 )
+
+// setupCleanupTimeout bounds the partial-teardown of a failed attempt
+// (terminating whatever network/containers it had already created before the
+// next attempt or before the error propagates). This budget is deliberately
+// INDEPENDENT of the per-attempt work context: testcontainers Terminate needs
+// a LIVE context to issue Docker stop/remove, but the most common cleanup
+// trigger is the per-attempt deadline firing — so cleanup is run on a fresh
+// context.Background()-derived ctx (see runSetupCleanup), not the expired work
+// ctx. Sized smaller than the 5m defaultTeardownTimeout because a
+// partially-started attempt has at most a half-built container and a network to
+// remove, not a full running environment. A var (not const) so tests can shrink
+// it to assert the budget is actually ENFORCED.
+var setupCleanupTimeout = 2 * time.Minute
 
 // SetupBudget returns the overall (parent) context budget a Setup call should
 // be given for the supplied options. baml-source builds compile the Rust cffi
@@ -342,13 +343,26 @@ func attemptContext(ctx context.Context, perAttempt time.Duration) (context.Cont
 // stop/remove; the dominant cleanup trigger is the per-attempt deadline
 // firing, and the overall budget may also be exhausted, so reusing either
 // would leave half-started containers and networks leaked before the retry.
-// Errors are ignored (best-effort teardown), matching the existing setup-path
-// cleanup contract. The cancel is always invoked so the cleanup ctx itself
-// never leaks.
+//
+// The budget is ENFORCED preemptively (same goroutine+select shape as
+// integration.boundedTerminate, the #422 teardown bound): a Docker stop/remove
+// that ignores context cancellation must not block the retry/bail loop past the
+// budget. teardown runs in a goroutine reporting on a buffered channel so it
+// never blocks on send even after we've returned via the deadline; a leaked
+// goroutine on a truly-wedged Terminate is acceptable for best-effort
+// inter-attempt cleanup. Errors are ignored (best-effort), matching the
+// existing setup-path cleanup contract; cancel is always invoked so the cleanup
+// ctx itself never leaks.
 func runSetupCleanup(teardown func(context.Context) error) {
 	ctx, cancel := context.WithTimeout(context.Background(), setupCleanupTimeout)
 	defer cancel()
-	_ = teardown(ctx)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- teardown(ctx) }()
+	select {
+	case <-errCh:
+	case <-ctx.Done():
+	}
 }
 
 // runSetupAttempt performs a single setupOnce and converts a panic into an
