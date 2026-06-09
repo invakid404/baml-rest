@@ -591,6 +591,46 @@ func TestStreamNextReturnsEOF(t *testing.T) {
 	}
 }
 
+// TestStreamNextHonorsContextDeadline pins the #420 fix: Next must abort
+// when the stream context's deadline expires, even if the worker never
+// produces a result and never closes the result channel. Before the fix
+// Next did a bare `<-s.results`, so a wedged worker stalled the read
+// forever and a per-call deadline could not preempt it — the failure
+// mode that ran the streaming CI cell to its job-level timeout.
+//
+// The Stream is built directly over a controlled result channel that is
+// never closed until after Next returns, so the ONLY select arm Next can
+// take is ctx.Done(). Driving it through the full client (where the same
+// cancellation that fires the deadline also closes the bridge channel)
+// would race the two arms and let Next observe io.EOF instead — a flaky
+// assertion. We require a deterministic context.DeadlineExceeded.
+func TestStreamNextHonorsContextDeadline(t *testing.T) {
+	results := make(chan *workerplugin.StreamResult)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	s := newStream(ctx, cancel, func() {}, results, false, "test stream", nil, false)
+
+	start := time.Now()
+	_, err := s.Next()
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Next err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Next blocked %s past the 100ms deadline — context not honored", elapsed)
+	}
+	// The terminal context error latches across subsequent Next calls.
+	if _, err := s.Next(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second Next err = %v, want latched context.DeadlineExceeded", err)
+	}
+
+	// Only now is it safe to close: no Next is in flight to race the
+	// close against the deadline arm.
+	close(results)
+}
+
 func TestNewWithRuntimeRunsInit(t *testing.T) {
 	// init must run before the worker handler is constructed so the
 	// public New() path triggers BAML's native sync.Once before any

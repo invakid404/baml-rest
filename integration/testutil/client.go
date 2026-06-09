@@ -372,6 +372,60 @@ func (c *BAMLRestClient) CallWithRaw(ctx context.Context, req CallRequest) (*Cal
 	return result, nil
 }
 
+// defaultStreamReadDeadline is a defense-in-depth client read budget
+// applied when a streaming exec is handed a context that carries no
+// deadline of its own. It is NOT the #420 fix: the test-side read is
+// already bounded by the per-test context and the 2m http.Client.Timeout
+// above, and that hang is server-side / in teardown, not a client read.
+// This only guarantees a future deadline-less streaming test can't issue
+// an unbounded client read. Sized far above any healthy mock-LLM stream
+// (which completes in well under a second) so it never false-trips.
+// Override with BAML_REST_STREAM_READ_DEADLINE (any time.ParseDuration
+// value); "0"/"off" leaves a deadline-less context untouched.
+const defaultStreamReadDeadline = 3 * time.Minute
+
+// streamReadDeadline resolves the per-stream read budget from the
+// environment, falling back to defaultStreamReadDeadline. A return of 0
+// means "do not impose a deadline" (explicit opt-out).
+func streamReadDeadline() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("BAML_REST_STREAM_READ_DEADLINE"))
+	switch strings.ToLower(raw) {
+	case "":
+		return defaultStreamReadDeadline
+	case "0", "off", "disable", "disabled":
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testutil: invalid BAML_REST_STREAM_READ_DEADLINE %q: %v; using %s\n", raw, err, defaultStreamReadDeadline)
+		return defaultStreamReadDeadline
+	}
+	if d < 0 {
+		fmt.Fprintf(os.Stderr, "testutil: negative BAML_REST_STREAM_READ_DEADLINE %q (parsed %s); using %s\n", raw, d, defaultStreamReadDeadline)
+		return defaultStreamReadDeadline
+	}
+	// A parsed 0 (e.g. "0s") passes through and leaves a deadline-less
+	// context untouched, consistent with the "0"/"off" literals above.
+	return d
+}
+
+// withStreamDeadline returns ctx unchanged (with a no-op cancel) when it
+// already carries a deadline — preserving the explicit per-call budgets
+// and manual-cancel semantics the streaming tests rely on (e.g. the
+// cancellation tests in stream_test.go) — and otherwise wraps it with
+// the default streamReadDeadline so no client-side stream read can block
+// indefinitely. The returned cancel must be invoked when the stream
+// goroutine exits.
+func withStreamDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	if d := streamReadDeadline(); d > 0 {
+		return context.WithTimeout(ctx, d)
+	}
+	return ctx, func() {}
+}
+
 // StreamEvent represents a single event from /stream endpoints (works for both SSE and NDJSON).
 type StreamEvent struct {
 	Event     string             // Event type: "data", "final", "reset", "error" for NDJSON; "" for SSE data, "final"/"reset"/"error" for SSE
@@ -513,6 +567,9 @@ func (c *BAMLRestClient) streamRequestNDJSON(ctx context.Context, url string, re
 		defer close(events)
 		defer close(errs)
 
+		ctx, cancel := withStreamDeadline(ctx)
+		defer cancel()
+
 		body, err := buildRequestBody(req.Input, req.Options)
 		if err != nil {
 			errs <- err
@@ -555,6 +612,9 @@ func (c *BAMLRestClient) streamRequest(ctx context.Context, url string, req Call
 	go func() {
 		defer close(events)
 		defer close(errs)
+
+		ctx, cancel := withStreamDeadline(ctx)
+		defer cancel()
 
 		body, err := buildRequestBody(req.Input, req.Options)
 		if err != nil {
@@ -1393,6 +1453,9 @@ func (c *BAMLRestClient) dynamicStreamRequestBody(ctx context.Context, url strin
 			}
 		}()
 
+		ctx, cancel := withStreamDeadline(ctx)
+		defer cancel()
+
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
 			errs <- err
@@ -1439,6 +1502,9 @@ func (c *BAMLRestClient) dynamicStreamRequestBodyNDJSON(ctx context.Context, url
 				}
 			}
 		}()
+
+		ctx, cancel := withStreamDeadline(ctx)
+		defer cancel()
 
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		if err != nil {
