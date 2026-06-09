@@ -111,22 +111,34 @@ func (s *Stream) Next() (*Event, error) {
 	}
 
 	for {
-		result, ok := <-s.results
-		if !ok {
-			return nil, s.terminate(io.EOF)
+		// Select on s.ctx.Done() alongside the result channel so a wedged
+		// worker — one whose upstream stream stalls without ever closing
+		// results — surfaces the stream context's deadline/cancellation
+		// instead of blocking Next indefinitely. Previously this was a
+		// bare `<-s.results`, so the context the caller wired into the
+		// stream (via DynamicStream) was honored only for opening the
+		// call, never for the read loop; a per-call deadline could not
+		// abort a stuck read. (baml-rest #420.)
+		select {
+		case <-s.ctx.Done():
+			return nil, s.terminate(s.ctx.Err())
+		case result, ok := <-s.results:
+			if !ok {
+				return nil, s.terminate(io.EOF)
+			}
+			ev, extra, err := s.translate(result)
+			workerplugin.ReleaseStreamResult(result)
+			if err != nil {
+				return nil, s.terminate(err)
+			}
+			if extra != nil {
+				s.pending = append(s.pending, *extra)
+			}
+			if ev != nil {
+				return ev, nil
+			}
+			// Heartbeat or empty frame — keep waiting.
 		}
-		ev, extra, err := s.translate(result)
-		workerplugin.ReleaseStreamResult(result)
-		if err != nil {
-			return nil, s.terminate(err)
-		}
-		if extra != nil {
-			s.pending = append(s.pending, *extra)
-		}
-		if ev != nil {
-			return ev, nil
-		}
-		// Heartbeat or empty frame — keep waiting.
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"testing"
@@ -157,6 +158,120 @@ func getBAMLVersion() string {
 //   - acceptandserve: go-plugin broker goroutines that can outlive canceled requests
 const GoroutineLeakFilter = "invakid404/baml-rest,boundaryml/baml,-StartRSSMonitor,-healthChecker,-GetGoroutines,-acceptandserve"
 
+// defaultSuiteWatchdogTimeout is the wall-clock budget after which the
+// suite watchdog dumps goroutine stacks and force-fails. 45m sits
+// comfortably below the baml-source job's `go test -timeout 55m` and the
+// 60m GHA cap (see .github/workflows/integration-tests.yml and #420), so
+// the NEXT occurrence of the streaming hang is captured as a named
+// goroutine dump instead of a silent kill at the job ceiling. The
+// lighter pinned-version job (`-timeout 40m`, finishes in 6-17m) exits
+// long before this fires.
+const defaultSuiteWatchdogTimeout = 45 * time.Minute
+
+// suiteWatchdogTimeout resolves the watchdog budget from the
+// BAML_REST_SUITE_WATCHDOG env var (any time.ParseDuration value),
+// defaulting to defaultSuiteWatchdogTimeout. "0"/"off" disables the
+// watchdog entirely (returns 0).
+func suiteWatchdogTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("BAML_REST_SUITE_WATCHDOG"))
+	switch strings.ToLower(raw) {
+	case "":
+		return defaultSuiteWatchdogTimeout
+	case "0", "off", "disable", "disabled":
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		fmt.Fprintf(os.Stderr, "invalid BAML_REST_SUITE_WATCHDOG %q: %v; using %s\n", raw, err, defaultSuiteWatchdogTimeout)
+		return defaultSuiteWatchdogTimeout
+	}
+	return d
+}
+
+// startSuiteWatchdog launches a background timer that, if the suite has
+// not finished within timeout, dumps all Go goroutine stacks (this test
+// process) plus best-effort worker goroutine and native (OS-thread)
+// stacks, then force-exits non-zero. This turns the #420 hang — which
+// otherwise runs to the job-level timeout with zero diagnostics — into a
+// fast, named failure that tells us whether the worker is wedged in a
+// cgo/native frame (native-stacks) or a Go frame (goroutines). Returns a
+// stop func that disarms the watchdog; calling it after a clean run
+// prevents the timer from firing during teardown.
+func startSuiteWatchdog(timeout time.Duration) (stop func()) {
+	if timeout <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return
+		case <-timer.C:
+		}
+		fmt.Fprintf(os.Stderr, "\n=== SUITE WATCHDOG: suite exceeded %s without finishing (baml-rest #420) ===\n", timeout)
+		fmt.Fprintf(os.Stderr, "=== dumping ALL goroutine stacks (test process) ===\n")
+		_ = pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
+		dumpWorkerDiagnostics()
+		fmt.Fprintf(os.Stderr, "=== SUITE WATCHDOG: forcing exit(1) after dump ===\n")
+		os.Exit(1)
+	}()
+	return func() { close(done) }
+}
+
+// dumpWorkerDiagnostics fetches goroutine and native-thread stacks from
+// the worker subprocess(es) behind each running server via the debug
+// endpoints, printing them to stderr. Best-effort: each failure is
+// logged and skipped so the watchdog always reaches its force-exit. The
+// native-stacks output is the key signal for #420 — a worker blocked in
+// an unpreemptable cgo call into the BAML native lib shows a native
+// frame here while its Go goroutine sits in cgocall.
+func dumpWorkerDiagnostics() {
+	clients := []struct {
+		name   string
+		client *testutil.BAMLRestClient
+	}{
+		{"baml-rest", BAMLClient},
+		{"unary", UnaryClient},
+	}
+	// The worker subprocess only fills per-worker matched_stacks when a
+	// filter is supplied (an empty filter returns just the main process's
+	// full dump, which the watchdog already captured via pprof). Match
+	// the BAML and baml-rest frames so a worker wedged in a BAML
+	// streaming/cgo call shows up here.
+	const workerStackFilter = "invakid404/baml-rest,boundaryml/baml"
+	for _, c := range clients {
+		if c.client == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if g, err := c.client.GetGoroutines(ctx, workerStackFilter); err == nil {
+			for _, w := range g.Workers {
+				if w.Error != "" {
+					fmt.Fprintf(os.Stderr, "=== %s worker %d goroutines: error: %s ===\n", c.name, w.WorkerID, w.Error)
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "=== %s worker %d goroutines (total=%d, matched=%d) ===\n%s\n", c.name, w.WorkerID, w.TotalCount, w.MatchCount, strings.Join(w.MatchedStacks, "\n"))
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "=== %s worker goroutines: error: %v ===\n", c.name, err)
+		}
+		if n, err := c.client.GetNativeStacks(ctx); err == nil {
+			for _, w := range n.Workers {
+				if w.Error != "" {
+					fmt.Fprintf(os.Stderr, "=== %s worker %d native stacks (pid=%d): error: %s ===\n", c.name, w.WorkerID, w.Pid, w.Error)
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "=== %s worker %d native stacks (pid=%d) ===\n%s\n", c.name, w.WorkerID, w.Pid, w.Output)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "=== %s worker native stacks: error: %v ===\n", c.name, err)
+		}
+		cancel()
+	}
+}
+
 func TestMain(m *testing.M) {
 	timeout := 10 * time.Minute
 	if BAMLSourcePath != "" {
@@ -219,8 +334,20 @@ func TestMain(m *testing.M) {
 		UnaryClient = testutil.NewBAMLRestClient(TestEnv.BAMLRestUnaryURL)
 	}
 
+	// Arm the suite watchdog before running tests. If the suite wedges
+	// (the #420 streaming hang), this dumps every goroutine's stack —
+	// naming the blocked test and distinguishing a wedged cgo/native
+	// frame from a blocked Go read — then force-exits non-zero, well
+	// before the `go test -timeout` and the GHA job cap would kill the
+	// runner with no diagnostics.
+	stopWatchdog := startSuiteWatchdog(suiteWatchdogTimeout())
+
 	// Run tests
 	code := m.Run()
+
+	// Disarm the watchdog on clean completion so its background timer
+	// never fires during teardown.
+	stopWatchdog()
 
 	// Dump container logs on failure to surface errors from inside
 	// the Docker containers (e.g. BAML runtime panics, worker crashes)

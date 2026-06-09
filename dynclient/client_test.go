@@ -591,6 +591,54 @@ func TestStreamNextReturnsEOF(t *testing.T) {
 	}
 }
 
+// TestStreamNextHonorsContextDeadline pins the #420 fix: Next must abort
+// when the stream context's deadline expires, even if the worker never
+// produces a result and never closes the result channel. Before the fix
+// Next did a bare `<-s.results`, so a wedged worker stalled the read
+// forever and a per-call deadline could not preempt it — the failure
+// mode that ran the streaming CI cell to its job-level timeout.
+func TestStreamNextHonorsContextDeadline(t *testing.T) {
+	rt := &fakeRuntime{}
+	c := newClient(t, rt)
+
+	// A worker that opens the stream but never emits a frame and never
+	// closes the channel until its context is cancelled — the wedged
+	// shape. Parking on adapter.Done() keeps the producer goroutine from
+	// leaking once Next aborts.
+	rt.streamingImpl = func(adapter bamlutils.Adapter, _ any) (<-chan bamlutils.StreamResult, error) {
+		ch := make(chan bamlutils.StreamResult)
+		go func() {
+			<-adapter.Done()
+			close(ch)
+		}()
+		return ch, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	stream, err := c.DynamicStream(ctx, validRequest())
+	if err != nil {
+		t.Fatalf("DynamicStream: %v", err)
+	}
+	defer stream.Close()
+
+	start := time.Now()
+	_, err = stream.Next()
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Next err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Next blocked %s past the 100ms deadline — context not honored", elapsed)
+	}
+	// The terminal context error latches across subsequent Next calls.
+	if _, err := stream.Next(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second Next err = %v, want latched context.DeadlineExceeded", err)
+	}
+}
+
 func TestNewWithRuntimeRunsInit(t *testing.T) {
 	// init must run before the worker handler is constructed so the
 	// public New() path triggers BAML's native sync.Once before any
