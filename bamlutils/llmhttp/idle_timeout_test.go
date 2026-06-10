@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -160,20 +161,29 @@ func TestIdleTimeoutZeroIsInfinite(t *testing.T) {
 	}
 }
 
-// TestIdleTimeoutPrefersCtxErr verifies that when the context was cancelled,
-// a fired watchdog surfaces ctx.Err() rather than ErrIdleTimeout, so a client
-// cancel is not mislabelled a provider stall. White-box: drive the wrapper's
-// override branch directly.
+// eofReader always returns (0, io.EOF) — models a connection the watchdog has
+// already closed, where the next read yields no usable data. Used to drive the
+// fired-override branch (which only triggers on an n==0 read).
+type eofReader struct{}
+
+func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
+func (eofReader) Close() error             { return nil }
+
+// TestIdleTimeoutPrefersCtxErr verifies that on a no-data (n==0) read after the
+// watchdog fired, the wrapper surfaces ctx.Err() when the context was
+// cancelled (so a client cancel is not mislabelled a provider stall) and
+// ErrIdleTimeout otherwise — overriding the underlying io.EOF either way.
 func TestIdleTimeoutPrefersCtxErr(t *testing.T) {
 	t.Parallel()
 
 	t.Run("ctx_cancelled", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		r := &idleTimeoutReader{
-			ctx:     ctx,
-			r:       newControlledReader([]byte("x")),
-			closer:  io.NopCloser(nil),
-			timeout: time.Hour,
+			ctx:       ctx,
+			r:         eofReader{},
+			closer:    io.NopCloser(nil),
+			interrupt: func() {},
+			timeout:   time.Hour,
 		}
 		r.fired.Store(true)
 		cancel()
@@ -192,10 +202,11 @@ func TestIdleTimeoutPrefersCtxErr(t *testing.T) {
 
 	t.Run("ctx_live", func(t *testing.T) {
 		r := &idleTimeoutReader{
-			ctx:     context.Background(),
-			r:       newControlledReader([]byte("x")),
-			closer:  io.NopCloser(nil),
-			timeout: time.Hour,
+			ctx:       context.Background(),
+			r:         eofReader{},
+			closer:    io.NopCloser(nil),
+			interrupt: func() {},
+			timeout:   time.Hour,
 		}
 		r.fired.Store(true)
 
@@ -207,6 +218,70 @@ func TestIdleTimeoutPrefersCtxErr(t *testing.T) {
 			t.Errorf("expected ErrIdleTimeout, got %v", err)
 		}
 	})
+}
+
+// alwaysByteReader returns exactly one byte per Read after sleeping `delay`,
+// and IGNORES Close() — it keeps producing bytes even after the watchdog has
+// fired and "closed" it. This is the adversary for the data-wins invariant: it
+// lets the idle timer fire repeatedly mid-stream while bytes keep arriving, so
+// the test can prove the wrapper never surfaces ErrIdleTimeout as long as the
+// underlying reader returns n>0.
+type alwaysByteReader struct {
+	delay  time.Duration
+	closes atomic.Int64
+}
+
+func (r *alwaysByteReader) Read(p []byte) (int, error) {
+	time.Sleep(r.delay)
+	if len(p) == 0 {
+		return 0, nil
+	}
+	p[0] = 'x'
+	return 1, nil
+}
+
+func (r *alwaysByteReader) Close() error {
+	r.closes.Add(1)
+	return nil
+}
+
+// TestIdleTimeoutNeverFalseKillsAtBoundary hammers the timer race: the reader
+// trickles one byte per ~idle-window so the AfterFunc fires repeatedly while
+// bytes are still arriving. The data-wins invariant requires that EVERY Read
+// returning n>0 delivers its byte with a nil error and the wrapper NEVER
+// returns ErrIdleTimeout while bytes keep coming — even though `fired` flips
+// during the run. Run under -race -count to shake out the race window.
+func TestIdleTimeoutNeverFalseKillsAtBoundary(t *testing.T) {
+	t.Parallel()
+
+	const (
+		idle  = 200 * time.Microsecond
+		delay = 200 * time.Microsecond // right at the boundary
+		iters = 2000
+	)
+	reader := &alwaysByteReader{delay: delay}
+	r := newIdleTimeoutReader(context.Background(), reader, nil, idle).(*idleTimeoutReader)
+	defer r.Close()
+
+	buf := make([]byte, 1)
+	firedDuringRun := false
+	for i := 0; i < iters; i++ {
+		n, err := r.Read(buf)
+		if errors.Is(err, ErrIdleTimeout) {
+			t.Fatalf("iter %d: false-kill — ErrIdleTimeout returned for a read that should deliver data", i)
+		}
+		if n != 1 || err != nil {
+			t.Fatalf("iter %d: data lost — got (n=%d, err=%v), want (1, nil)", i, n, err)
+		}
+		if r.fired.Load() {
+			firedDuringRun = true
+		}
+	}
+	// Sanity: the boundary timing should have actually fired the watchdog at
+	// least once, otherwise the test isn't exercising the race it claims to.
+	if !firedDuringRun {
+		t.Log("note: watchdog never fired during the run; boundary timing may be too loose to exercise the race")
+	}
 }
 
 // TestClassifyIdleTimeoutRetryable verifies the classifier maps ErrIdleTimeout

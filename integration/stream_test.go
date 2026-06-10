@@ -346,7 +346,8 @@ func TestStreamMidStreamFailure(t *testing.T) {
 		})
 
 		var receivedEvents []testutil.StreamEvent
-		var streamErr error
+		var serverErr error    // a stream error delivered on the errs channel
+		var sawErrorEvent bool // an in-band SSE "error" event
 		var ctxFired bool
 		startTime := time.Now()
 
@@ -357,36 +358,53 @@ func TestStreamMidStreamFailure(t *testing.T) {
 					goto done
 				}
 				receivedEvents = append(receivedEvents, event)
+				if event.Event == "error" {
+					sawErrorEvent = true
+				}
 				t.Logf("Received event %d: type=%s", len(receivedEvents), event.Event)
 			case err := <-errs:
 				if err != nil {
-					streamErr = err
+					serverErr = err
 					t.Logf("Received stream error: %v", err)
 				}
 			case <-ctx.Done():
 				ctxFired = true
-				streamErr = ctx.Err()
 				t.Logf("Context cancelled after %v", time.Since(startTime))
 				goto done
 			}
 		}
 	done:
+		// A terminal error can race the events-channel close; drain one
+		// non-blockingly so we don't miss it.
+		select {
+		case err := <-errs:
+			if err != nil && serverErr == nil {
+				serverErr = err
+			}
+		default:
+		}
 		elapsed := time.Since(startTime)
 		t.Logf("Total events received: %d", len(receivedEvents))
-		t.Logf("Stream error: %v", streamErr)
+		t.Logf("serverErr=%v sawErrorEvent=%v ctxFired=%v", serverErr, sawErrorEvent, ctxFired)
 		t.Logf("Duration: %v", elapsed)
 
 		if serverSideIdle {
 			// The server-side idle timeout (1s) must have ended the stream
 			// before the client ctx (30s). If the client ctx fired first the
-			// server did NOT bound the read — the #423 regression. A clean
-			// errorless close that races the ctx would also be caught here
-			// because ctxFired would be false only if the stream terminated
-			// on its own first.
+			// server did NOT bound the read — the #423 regression.
 			if ctxFired {
 				t.Fatalf("client ctx fired after %v before any server-side idle timeout — server did not bound the stalled read (#423)", elapsed)
 			}
-			t.Logf("server-side idle timeout bounded the stalled stream after %v (well under the %v client deadline)", elapsed, clientTimeout)
+			// Crucially, the stall must surface as an ERROR (a stream error
+			// on errs, or an in-band SSE "error" event) — NOT a clean,
+			// errorless completion. A silent truncated success would leave
+			// both serverErr and sawErrorEvent unset and fail here. This is
+			// the load-bearing guarantee: an idle stall is a retryable
+			// failure, never a 200-with-truncated-final.
+			if serverErr == nil && !sawErrorEvent {
+				t.Fatalf("stalled stream ended without any error after %v — server treated the idle stall as a clean/truncated success (#423 regression)", elapsed)
+			}
+			t.Logf("server-side idle stall surfaced as an error after %v (well under the %v client deadline)", elapsed, clientTimeout)
 		}
 	})
 }

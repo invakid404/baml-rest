@@ -90,13 +90,19 @@ func StreamIdleTimeoutFromEnv() time.Duration {
 // request/response objects to fasthttp) is deferred to the consumer's Close()
 // after the scanner has exited, exactly as on the ctx-cancel path.
 //
-// After the parked Read returns — with whatever the severed connection
-// produced, which can race to io.EOF — Read overrides the result with
-// ErrIdleTimeout (or ctx.Err() when the context was cancelled, so a client
-// cancel is not mislabelled a provider stall). Returning a non-EOF sentinel
-// is mandatory: a clean io.EOF here would make the orchestrator run parseFinal
-// on the truncated accumulator and report a silent, possibly-malformed
-// success.
+// When the parked Read returns with NO usable data (n==0) because of the
+// idle close, Read surfaces ErrIdleTimeout (or ctx.Err() when the context was
+// cancelled, so a client cancel is not mislabelled a provider stall).
+// Returning a non-EOF sentinel is mandatory: a clean io.EOF here would make
+// the orchestrator run parseFinal on the truncated accumulator and report a
+// silent, possibly-malformed success.
+//
+// Conversely, when a Read returns n>0 the bytes are delivered unconditionally
+// — even if the watchdog fired in the race window between the underlying Read
+// returning and our inspection. Data always wins: a Read that produced bytes
+// never returns ErrIdleTimeout, so a stream that keeps trickling bytes within
+// the idle window is never false-killed at the boundary. A subsequent
+// genuinely-idle (n==0) read is what surfaces the sentinel.
 type idleTimeoutReader struct {
 	ctx       context.Context
 	r         io.Reader
@@ -143,12 +149,25 @@ func newIdleTimeoutReader(ctx context.Context, body io.ReadCloser, interrupt fun
 func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
 
+	if n > 0 {
+		// DATA WINS, unconditionally. Bytes that were genuinely read — even
+		// if the idle watchdog fired and closed the conn in the race window
+		// between this Read returning and our inspection — must be delivered,
+		// never discarded. This is the load-bearing safety property: a Read
+		// that produced bytes NEVER returns ErrIdleTimeout, so a stream that
+		// keeps trickling any bytes within the idle window is never killed at
+		// the boundary. Reset the idle timer to bound the NEXT inter-byte gap
+		// and defer any accompanying error (e.g. a final io.EOF) to the
+		// following Read, where it is handled with the data already drained.
+		r.armOrReset()
+		return n, nil
+	}
+
+	// n == 0: this Read produced no usable data, so it is safe to surface a
+	// terminal condition. If the watchdog fired, the idle close is what
+	// stopped the bytes — return the sentinel (preferring ctx.Err() so a
+	// client cancel is not mislabelled a provider stall).
 	if r.fired.Load() {
-		// The watchdog already tore down the connection. Override whatever
-		// the closed conn produced (it can race to io.EOF) and deliver no
-		// further bytes (n=0) so a half-formed trailing event is never
-		// emitted. Prefer ctx.Err() when the context was cancelled so a
-		// client cancel is not mislabelled a provider stall.
 		if ctxErr := r.ctx.Err(); ctxErr != nil {
 			return 0, ctxErr
 		}
@@ -156,16 +175,11 @@ func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 	}
 
 	if err != nil {
-		// Stream ending (EOF or a real read error) — stop the watchdog so it
-		// cannot fire spuriously after a clean end.
+		// Stream ending (clean EOF or a real read error) with no data — stop
+		// the watchdog so it cannot fire spuriously after a clean end.
 		r.stop()
-		return n, err
 	}
-
-	if n > 0 {
-		r.armOrReset()
-	}
-	return n, err
+	return 0, err
 }
 
 // armOrReset starts the idle timer on the first byte and resets it on every
