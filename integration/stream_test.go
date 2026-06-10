@@ -312,7 +312,11 @@ func TestStreamMidStreamFailure(t *testing.T) {
 			defer func() {
 				restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer restoreCancel()
-				_, _ = BAMLClient.SetStreamIdleTimeout(restoreCtx, (5 * time.Minute).Milliseconds())
+				// Surface a failed restore: a leaked short idle timeout would
+				// flake subsequent streaming tests, so fail loudly here.
+				if _, err := BAMLClient.SetStreamIdleTimeout(restoreCtx, (5 * time.Minute).Milliseconds()); err != nil {
+					t.Errorf("failed to restore stream idle timeout: %v", err)
+				}
 			}()
 		}
 
@@ -820,8 +824,12 @@ func TestWorkerDeathMidStream(t *testing.T) {
 		defer func() {
 			restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer restoreCancel()
-			// Restore to a long timeout (120 seconds = default)
-			_, _ = BAMLClient.SetFirstByteTimeout(restoreCtx, 120000)
+			// Restore to a long timeout (120 seconds = default). Surface a
+			// failed restore: a leaked short first-byte timeout would flake
+			// subsequent tests, so fail loudly here.
+			if _, err := BAMLClient.SetFirstByteTimeout(restoreCtx, 120000); err != nil {
+				t.Errorf("failed to restore first byte timeout: %v", err)
+			}
 		}()
 
 		// Create a STATEFUL scenario:
