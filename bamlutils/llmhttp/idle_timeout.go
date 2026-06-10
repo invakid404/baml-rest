@@ -102,7 +102,10 @@ func StreamIdleTimeoutFromEnv() time.Duration {
 // returning and our inspection. Data always wins: a Read that produced bytes
 // never returns ErrIdleTimeout, so a stream that keeps trickling bytes within
 // the idle window is never false-killed at the boundary. A subsequent
-// genuinely-idle (n==0) read is what surfaces the sentinel.
+// genuinely-idle (n==0) read is what surfaces the sentinel. Only our OWN
+// idle-close error is suppressed on the n>0 path; a genuine upstream error
+// (e.g. io.ErrUnexpectedEOF) is propagated alongside the bytes so a real
+// truncation is never masked as a clean end.
 type idleTimeoutReader struct {
 	ctx       context.Context
 	r         io.Reader
@@ -150,15 +153,27 @@ func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
 
 	if n > 0 {
-		// DATA WINS, unconditionally. Bytes that were genuinely read — even
-		// if the idle watchdog fired and closed the conn in the race window
-		// between this Read returning and our inspection — must be delivered,
-		// never discarded. This is the load-bearing safety property: a Read
+		// DATA WINS: bytes that were genuinely read are always delivered,
+		// never discarded. This is the load-bearing safety property — a Read
 		// that produced bytes NEVER returns ErrIdleTimeout, so a stream that
 		// keeps trickling any bytes within the idle window is never killed at
-		// the boundary. Reset the idle timer to bound the NEXT inter-byte gap
-		// and defer any accompanying error (e.g. a final io.EOF) to the
-		// following Read, where it is handled with the data already drained.
+		// the boundary.
+		//
+		// Suppress ONLY our own idle-close error. When the watchdog fired in
+		// the race window between the underlying Read returning bytes and this
+		// inspection, the conn-close error riding in with those bytes is ours
+		// to swallow: the subsequent n==0 read surfaces the ErrIdleTimeout
+		// sentinel, so nothing is silently truncated. But a GENUINE upstream
+		// error (e.g. io.ErrUnexpectedEOF, which fastStreamReader produces on
+		// a truncated chunked stream) must NOT be swallowed — deliver the
+		// bytes AND propagate the error so the scanner drains the bytes then
+		// reports it on its next Scan. Returning (n, nil) there would end the
+		// stream with a nil Errc and run parseFinal on a partial accumulator
+		// (silent truncation).
+		if err != nil && !r.fired.Load() {
+			r.stop()
+			return n, err
+		}
 		r.armOrReset()
 		return n, nil
 	}
