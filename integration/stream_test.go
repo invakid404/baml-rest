@@ -275,9 +275,46 @@ func TestStreamMidStreamFailure(t *testing.T) {
 	})
 
 	t.Run("timeout_after_first_byte", func(t *testing.T) {
-		// Use a shorter timeout since we expect this to hang
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// #423: the build-request streaming path now enforces a SERVER-side
+		// inter-token idle read timeout. A provider that delivers a few
+		// chunks and then goes silent must have its read bounded by the
+		// server within the idle window — it must NOT hang until the client
+		// gives up, and must NOT surface a silently-truncated success.
+		//
+		// The server-side knob (/_debug/config stream_idle_timeout_ms) only
+		// reaches the streaming llmhttp.Client when host and worker share it
+		// (in-process build) AND the request actually routes through the
+		// build-request orchestrator. In other configs the streaming HTTP
+		// runs where this knob can't touch it (subprocess worker, or BAML's
+		// own Rust loop on the legacy path), so the server-side assertion is
+		// skipped there and the legacy client-bounded shape is exercised
+		// instead.
+		serverSideIdle := inProcessBuild && ActuallyBuildRequest()
+
+		// Generous client ctx so that, when serverSideIdle is true, the
+		// SERVER-side idle timeout — not the client deadline — is what ends
+		// the stream.
+		clientTimeout := 10 * time.Second
+		if serverSideIdle {
+			clientTimeout = 30 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), clientTimeout)
 		defer cancel()
+
+		if serverSideIdle {
+			// Short idle window (1s) << client ctx (30s) so the server kills
+			// the silent stream well before the client deadline. Restore the
+			// 5-minute production default afterwards so later tests are
+			// unaffected.
+			if _, err := BAMLClient.SetStreamIdleTimeout(ctx, 1000); err != nil {
+				t.Fatalf("failed to set stream idle timeout: %v", err)
+			}
+			defer func() {
+				restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer restoreCancel()
+				_, _ = BAMLClient.SetStreamIdleTimeout(restoreCtx, (5 * time.Minute).Milliseconds())
+			}()
+		}
 
 		// Create a scenario that will timeout (hang) after 3 chunks
 		content := `{"name": "Jane Doe", "age": 25, "tags": ["engineer"]}`
@@ -310,6 +347,7 @@ func TestStreamMidStreamFailure(t *testing.T) {
 
 		var receivedEvents []testutil.StreamEvent
 		var streamErr error
+		var ctxFired bool
 		startTime := time.Now()
 
 		for {
@@ -326,19 +364,30 @@ func TestStreamMidStreamFailure(t *testing.T) {
 					t.Logf("Received stream error: %v", err)
 				}
 			case <-ctx.Done():
-				t.Logf("Context cancelled after %v", time.Since(startTime))
+				ctxFired = true
 				streamErr = ctx.Err()
+				t.Logf("Context cancelled after %v", time.Since(startTime))
 				goto done
 			}
 		}
 	done:
-
+		elapsed := time.Since(startTime)
 		t.Logf("Total events received: %d", len(receivedEvents))
 		t.Logf("Stream error: %v", streamErr)
-		t.Logf("Duration: %v", time.Since(startTime))
+		t.Logf("Duration: %v", elapsed)
 
-		// Should have received some events before timeout
-		// The client-side timeout (10s) should trigger before the server timeout
+		if serverSideIdle {
+			// The server-side idle timeout (1s) must have ended the stream
+			// before the client ctx (30s). If the client ctx fired first the
+			// server did NOT bound the read — the #423 regression. A clean
+			// errorless close that races the ctx would also be caught here
+			// because ctxFired would be false only if the stream terminated
+			// on its own first.
+			if ctxFired {
+				t.Fatalf("client ctx fired after %v before any server-side idle timeout — server did not bound the stalled read (#423)", elapsed)
+			}
+			t.Logf("server-side idle timeout bounded the stalled stream after %v (well under the %v client deadline)", elapsed, clientTimeout)
+		}
 	})
 }
 

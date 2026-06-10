@@ -13,11 +13,12 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/gofiber/fiber/v3"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/rs/zerolog"
 )
 
-func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *pool.Pool) {
+func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *pool.Pool, httpClient *llmhttp.Client) {
 	// Kill a worker that has in-flight requests (for testing mid-stream worker death)
 	r.Post("/_debug/kill-worker", func(c fiber.Ctx) error {
 		result, err := workerPool.KillWorkerWithInFlight()
@@ -61,6 +62,13 @@ func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *p
 	r.Post("/_debug/config", func(c fiber.Ctx) error {
 		var req struct {
 			FirstByteTimeoutMs *int64 `json:"first_byte_timeout_ms,omitempty"`
+			// StreamIdleTimeoutMs adjusts the in-process llmhttp.Client's
+			// inter-token idle read timeout. 0 means infinite. Only
+			// meaningful for in-process builds where the host and the
+			// worker share the same llmhttp.Client instance; in subprocess
+			// builds the worker owns its own client and this knob is a
+			// no-op on the streaming path.
+			StreamIdleTimeoutMs *int64 `json:"stream_idle_timeout_ms,omitempty"`
 		}
 		if err := sonic.Unmarshal(c.Body(), &req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -80,9 +88,27 @@ func registerDebugEndpoints(r fiber.Router, logger zerolog.Logger, workerPool *p
 			logger.Info().Int64("first_byte_timeout_ms", *req.FirstByteTimeoutMs).Msg("Updated FirstByteTimeout")
 		}
 
+		if req.StreamIdleTimeoutMs != nil {
+			if *req.StreamIdleTimeoutMs < 0 {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"status": "error",
+					"error":  "stream_idle_timeout_ms must be >= 0",
+				})
+			}
+			if httpClient != nil {
+				httpClient.SetStreamIdleTimeout(time.Duration(*req.StreamIdleTimeoutMs) * time.Millisecond)
+			}
+			logger.Info().Int64("stream_idle_timeout_ms", *req.StreamIdleTimeoutMs).Msg("Updated StreamIdleTimeout")
+		}
+
+		streamIdleMs := int64(0)
+		if httpClient != nil {
+			streamIdleMs = httpClient.GetStreamIdleTimeout().Milliseconds()
+		}
 		return c.JSON(fiber.Map{
-			"status":                "ok",
-			"first_byte_timeout_ms": workerPool.GetFirstByteTimeout().Milliseconds(),
+			"status":                 "ok",
+			"first_byte_timeout_ms":  workerPool.GetFirstByteTimeout().Milliseconds(),
+			"stream_idle_timeout_ms": streamIdleMs,
 		})
 	})
 	logger.Info().Msg("Debug endpoints enabled: /_debug/config")

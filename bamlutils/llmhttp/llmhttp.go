@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils/sseclient"
@@ -121,6 +122,35 @@ type Client struct {
 	cache                 *protocolCache
 	rewriteRules          []urlrewrite.Rule
 	useGlobalRewriteRules bool
+
+	// streamIdleTimeout is the inter-token idle read timeout (in
+	// nanoseconds) applied to streaming responses via idleTimeoutReader.
+	// 0 means infinite (no idle bound). Stored atomically so the debug
+	// endpoint can adjust it at runtime; in production it is set once at
+	// construction and never mutated.
+	streamIdleTimeout atomic.Int64
+}
+
+// SetStreamIdleTimeout updates the inter-token idle read timeout applied to
+// streaming responses. A non-positive duration disables the bound (infinite),
+// matching BAML's idle_timeout_ms=0 semantics. Safe for concurrent use.
+func (c *Client) SetStreamIdleTimeout(d time.Duration) {
+	if c == nil {
+		return
+	}
+	if d < 0 {
+		d = 0
+	}
+	c.streamIdleTimeout.Store(int64(d))
+}
+
+// GetStreamIdleTimeout returns the current inter-token idle read timeout
+// (0 means infinite).
+func (c *Client) GetStreamIdleTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return time.Duration(c.streamIdleTimeout.Load())
 }
 
 // FastHTTPClientOptions tunes the fasthttp backend. Each field affects
@@ -196,6 +226,20 @@ type ClientOptions struct {
 	// ClientModeFastHTTP or when Auto mode resolves an origin to
 	// fasthttp. Ignored entirely when Mode is ClientModeNetHTTP.
 	FastHTTP FastHTTPClientOptions
+
+	// StreamIdleTimeout sets the inter-token idle read timeout applied to
+	// streaming responses (see idleTimeoutReader). Unlike RewriteRules,
+	// a nil value is NOT "disabled": it falls back to
+	// DefaultStreamIdleTimeout so the production stream-hang is bounded
+	// out of the box even for callers that don't configure it. A non-nil
+	// value is used verbatim, including a pointer to 0 which means
+	// infinite (no bound), matching BAML's idle_timeout_ms=0 semantics.
+	//
+	// cmd/serve and cmd/worker pass StreamIdleTimeoutFromEnv() here so the
+	// BAML_REST_STREAM_IDLE_TIMEOUT env var is honoured; the explicit
+	// constructors themselves do not read env (consistent with the rest of
+	// ClientOptions).
+	StreamIdleTimeout *time.Duration
 }
 
 // NewClient creates a new LLM HTTP client with the given http.Client.
@@ -238,11 +282,17 @@ func NewClient(httpClient *http.Client) *Client {
 	fast := FastHTTPClientOptions{
 		TLSConfig: tlsConfigFromHTTPClient(httpClient),
 	}
-	return &Client{
+	c := &Client{
 		httpClient:            httpClient,
 		cache:                 newProtocolCache(loadClientMode(), fast, proxyFuncFromHTTPClient(httpClient)),
 		useGlobalRewriteRules: true,
 	}
+	// Legacy/env seam: mirror the env-driven Mode resolution above by
+	// reading BAML_REST_STREAM_IDLE_TIMEOUT (default 5m, "0" = infinite),
+	// so DefaultClient is protected against silent provider stalls out of
+	// the box.
+	c.SetStreamIdleTimeout(StreamIdleTimeoutFromEnv())
+	return c
 }
 
 // NewClientWithOptions constructs a Client from an explicit
@@ -262,11 +312,20 @@ func NewClientWithOptions(opts ClientOptions) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &Client{
+	c := &Client{
 		httpClient:   httpClient,
 		cache:        newProtocolCache(opts.Mode, opts.FastHTTP, proxyFuncFromHTTPClient(httpClient)),
 		rewriteRules: slices.Clone(opts.RewriteRules),
 	}
+	// A nil StreamIdleTimeout falls back to the protective default rather
+	// than disabling the bound (see ClientOptions.StreamIdleTimeout). A
+	// non-nil value is used verbatim, including a pointer to 0 = infinite.
+	idle := DefaultStreamIdleTimeout
+	if opts.StreamIdleTimeout != nil {
+		idle = *opts.StreamIdleTimeout
+	}
+	c.SetStreamIdleTimeout(idle)
+	return c
 }
 
 // NewDefaultClientWithOptions builds a Client whose underlying
@@ -430,19 +489,29 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 		return nil, fmt.Errorf("llmhttp: unexpected Content-Type %q (expected text/event-stream): %s", ct, string(body))
 	}
 
+	// Wrap the body with an inter-token idle read timeout before handing it
+	// to the SSE parser. On a mid-stream provider stall the watchdog closes
+	// the body and surfaces ErrIdleTimeout (a retryable transport flake),
+	// so the read is bounded without coupling to any fixed total timeout.
+	// A non-positive timeout returns resp.Body unwrapped (infinite). The
+	// nil interrupt defaults to resp.Body.Close, which net/http supports
+	// concurrently with a parked Read.
+	body := newIdleTimeoutReader(ctx, resp.Body, nil, c.GetStreamIdleTimeout())
+
 	// Start SSE parsing on the response body. The terminal value sseclient
 	// emits on errc is run through classifyStreamErrc so a mid-stream typed
-	// transport drop (ECONNRESET / EPIPE / ECONNREFUSED / net.ErrClosed)
-	// carries ErrTransportFlake out of the streaming path — matching the
-	// non-streaming body-read site at Execute below.
-	events, errc := sseclient.Stream(ctx, resp.Body)
+	// transport drop (ECONNRESET / EPIPE / ECONNREFUSED / net.ErrClosed) or
+	// an idle timeout (ErrIdleTimeout) carries ErrTransportFlake out of the
+	// streaming path — matching the non-streaming body-read site at Execute
+	// below.
+	events, errc := sseclient.Stream(ctx, body)
 
 	return &StreamResponse{
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Header,
 		Events:     events,
 		Errc:       classifyStreamErrc(errc),
-		body:       resp.Body,
+		body:       body,
 	}, nil
 }
 

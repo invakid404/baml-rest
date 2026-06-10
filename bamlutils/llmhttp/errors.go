@@ -44,6 +44,12 @@ const (
 	// class; the distinct mechanisms remain visible via the Underlying
 	// chain.
 	TransportFlakeStaleConnTeardown
+	// TransportFlakeIdleTimeout is the inter-token idle read timeout
+	// (ErrIdleTimeout) fired by idleTimeoutReader when a streaming
+	// provider goes silent mid-stream. It is unambiguous — the watchdog
+	// only fires after the configured idle window of zero bytes — so it
+	// is classified retryable at every wrap site (ungated).
+	TransportFlakeIdleTimeout
 )
 
 func (c TransportFlakeCategory) String() string {
@@ -58,6 +64,8 @@ func (c TransportFlakeCategory) String() string {
 		return "closed-connection"
 	case TransportFlakeStaleConnTeardown:
 		return "stale-conn-teardown"
+	case TransportFlakeIdleTimeout:
+		return "idle-timeout"
 	default:
 		return "unknown"
 	}
@@ -113,6 +121,13 @@ func classifyTransportErr(err error, prefix string, staleConnTeardownAcceptable 
 	}
 
 	switch {
+	case errors.Is(err, ErrIdleTimeout):
+		// Inter-token idle read timeout. Ungated: the watchdog only fires
+		// after the configured window of zero bytes, so it is an
+		// unambiguous mid-stream stall at any wrap site. Must classify
+		// retryable so the orchestrator retries/falls back rather than
+		// running parseFinal on the truncated accumulator.
+		return &TransportError{Category: TransportFlakeIdleTimeout, Prefix: prefix, Underlying: err}
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return &TransportError{Category: TransportFlakeConnectionRefused, Prefix: prefix, Underlying: err}
 	case errors.Is(err, syscall.ECONNRESET):

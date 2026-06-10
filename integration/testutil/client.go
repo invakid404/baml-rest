@@ -800,9 +800,49 @@ func (c *BAMLRestClient) GetInFlightStatus(ctx context.Context) (*InFlightResult
 
 // ConfigResult represents the response from /_debug/config.
 type ConfigResult struct {
-	Status             string `json:"status"`
-	FirstByteTimeoutMs int64  `json:"first_byte_timeout_ms"`
-	Error              string `json:"error,omitempty"`
+	Status              string `json:"status"`
+	FirstByteTimeoutMs  int64  `json:"first_byte_timeout_ms"`
+	StreamIdleTimeoutMs int64  `json:"stream_idle_timeout_ms"`
+	Error               string `json:"error,omitempty"`
+}
+
+// SetStreamIdleTimeout calls the /_debug/config endpoint to configure the
+// in-process llmhttp.Client's inter-token idle read timeout (0 = infinite).
+// Only meaningful for in-process debug builds where host and worker share the
+// same client; see the endpoint doc in cmd/serve/debug.go.
+func (c *BAMLRestClient) SetStreamIdleTimeout(ctx context.Context, timeoutMs int64) (*ConfigResult, error) {
+	reqBody := map[string]any{
+		"stream_idle_timeout_ms": timeoutMs,
+	}
+	bodyBytes, err := sonic.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/_debug/config", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result ConfigResult
+	if err := sonic.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &result, nil
 }
 
 // SetFirstByteTimeout calls the /_debug/config endpoint to configure the first byte timeout.

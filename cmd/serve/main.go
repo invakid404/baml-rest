@@ -240,9 +240,11 @@ var serveCmd = &cobra.Command{
 		buildRequestConfig := buildrequest.EnvConfig()
 		preserveSchemaOrderDefault := preserveSchemaOrderDefaultFromEnv()
 		baseURLRewrites := urlrewrite.LoadDefaultRules()
+		streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
 		httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{
-			Mode:         llmhttp.ClientModeFromEnv(),
-			RewriteRules: baseURLRewrites,
+			Mode:              llmhttp.ClientModeFromEnv(),
+			RewriteRules:      baseURLRewrites,
+			StreamIdleTimeout: &streamIdleTimeout,
 		})
 		runtimeCfg := workerModeRuntimeConfig{
 			Runtime:         rootruntime.Runtime{},
@@ -356,7 +358,7 @@ var serveCmd = &cobra.Command{
 		})
 
 		// Register debug endpoints (no-op unless built with -tags=debug)
-		registerDebugEndpoints(app, logger, workerPool)
+		registerDebugEndpoints(app, logger, workerPool, httpClient)
 
 		// Routes with HTTP request logging and metrics
 		if err := registerHTTPMetrics(); err != nil {
