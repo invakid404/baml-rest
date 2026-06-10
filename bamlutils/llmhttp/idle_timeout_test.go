@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -196,13 +197,14 @@ func TestIdleTimeoutPropagatesUpstreamError(t *testing.T) {
 	}
 }
 
-// TestIdleTimeoutReadDirectError white-box-checks the n>0 branch: a genuine
-// error (fired==false) propagates with the bytes; an idle-close error
-// (fired==true) is suppressed so data wins and the sentinel is deferred.
+// TestIdleTimeoutReadDirectError white-box-checks the n>0 branch's error
+// provenance: only our own idle close (fired AND a closed-conn error) is
+// suppressed; every other error propagates with its real identity — including
+// a genuine io.ErrUnexpectedEOF that merely races the timer firing.
 func TestIdleTimeoutReadDirectError(t *testing.T) {
 	t.Parallel()
 
-	t.Run("genuine_error_propagates", func(t *testing.T) {
+	t.Run("genuine_error_propagates_not_fired", func(t *testing.T) {
 		r := newIdleTimeoutReader(context.Background(), &truncReader{err: io.ErrUnexpectedEOF}, nil, time.Hour).(*idleTimeoutReader)
 		defer r.Close()
 		n, err := r.Read(make([]byte, 64))
@@ -214,16 +216,40 @@ func TestIdleTimeoutReadDirectError(t *testing.T) {
 		}
 	})
 
-	t.Run("idle_close_error_suppressed", func(t *testing.T) {
-		r := newIdleTimeoutReader(context.Background(), &truncReader{err: io.ErrUnexpectedEOF}, nil, time.Hour).(*idleTimeoutReader)
+	t.Run("idle_close_suppressed_only_for_closed_conn", func(t *testing.T) {
+		// net.ErrClosed with fired=true IS our idle close (only a local close
+		// produces it) → suppressed so data wins; the n==0 read surfaces the
+		// sentinel.
+		r := newIdleTimeoutReader(context.Background(), &truncReader{err: net.ErrClosed}, nil, time.Hour).(*idleTimeoutReader)
 		defer r.Close()
-		r.fired.Store(true) // simulate the idle watchdog having fired in the race window
+		r.fired.Store(true)
 		n, err := r.Read(make([]byte, 64))
 		if n <= 0 {
 			t.Fatalf("expected the bytes delivered, got n=%d", n)
 		}
 		if err != nil {
-			t.Errorf("our idle-close error must be suppressed on the n>0 path (data wins), got %v", err)
+			t.Errorf("our idle-close (net.ErrClosed, fired) must be suppressed on n>0, got %v", err)
+		}
+	})
+
+	t.Run("genuine_error_with_fired_still_propagates", func(t *testing.T) {
+		// The provenance bug: a genuine io.ErrUnexpectedEOF (truncated chunked
+		// stream) that arrives in the SAME window the timer fired. fired alone
+		// must NOT suppress it — io.ErrUnexpectedEOF is not a closed-conn error
+		// — so it propagates with its real identity, never relabeled as the
+		// retryable idle timeout (which would mask a content-integrity failure).
+		r := newIdleTimeoutReader(context.Background(), &truncReader{err: io.ErrUnexpectedEOF}, nil, time.Hour).(*idleTimeoutReader)
+		defer r.Close()
+		r.fired.Store(true)
+		n, err := r.Read(make([]byte, 64))
+		if n <= 0 {
+			t.Fatalf("expected the bytes delivered, got n=%d", n)
+		}
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("genuine io.ErrUnexpectedEOF racing the timer must propagate, got %v", err)
+		}
+		if errors.Is(err, ErrIdleTimeout) {
+			t.Errorf("genuine error must not be relabeled ErrIdleTimeout: %v", err)
 		}
 	})
 }

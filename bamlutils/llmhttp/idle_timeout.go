@@ -4,12 +4,22 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// isClosedConnErr reports whether err is the "use of closed connection" error
+// that a Read returns after our interrupt has closed the underlying conn.
+// net.ErrClosed only arises when the LOCAL side closed the conn — the upstream
+// cannot induce it — so combined with the fired flag it is strong provenance
+// that an error is our own idle close rather than a genuine upstream failure.
+func isClosedConnErr(err error) bool {
+	return errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed)
+}
 
 // EnvVarStreamIdleTimeout selects the server-level inter-token idle read
 // timeout enforced on the build-request streaming path. The value is a Go
@@ -158,24 +168,30 @@ func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 		// that produced bytes NEVER returns ErrIdleTimeout, so a stream that
 		// keeps trickling any bytes within the idle window is never killed at
 		// the boundary.
-		//
-		// Suppress ONLY our own idle-close error. When the watchdog fired in
-		// the race window between the underlying Read returning bytes and this
-		// inspection, the conn-close error riding in with those bytes is ours
-		// to swallow: the subsequent n==0 read surfaces the ErrIdleTimeout
-		// sentinel, so nothing is silently truncated. But a GENUINE upstream
-		// error (e.g. io.ErrUnexpectedEOF, which fastStreamReader produces on
-		// a truncated chunked stream) must NOT be swallowed — deliver the
-		// bytes AND propagate the error so the scanner drains the bytes then
-		// reports it on its next Scan. Returning (n, nil) there would end the
-		// stream with a nil Errc and run parseFinal on a partial accumulator
-		// (silent truncation).
-		if err != nil && !r.fired.Load() {
-			r.stop()
-			return n, err
+		if err == nil {
+			// Clean data read — reset the idle timer for the next gap.
+			r.armOrReset()
+			return n, nil
 		}
-		r.armOrReset()
-		return n, nil
+		// An error rode in with the bytes. Suppress it ONLY when it is
+		// provably OUR idle close: the watchdog fired AND the error is a
+		// closed-connection error, which only our interrupt (closing the
+		// local conn) can produce — the upstream cannot make a local read
+		// return net.ErrClosed. `fired` alone is insufficient: it proves the
+		// callback ran, not that THIS error came from our close, so a genuine
+		// io.ErrUnexpectedEOF (fastStreamReader's truncated-chunked signal)
+		// that merely races the timer must keep its real identity. When it IS
+		// our close, deliver the bytes now and let the subsequent n==0 read
+		// surface the ErrIdleTimeout sentinel.
+		if r.fired.Load() && isClosedConnErr(err) {
+			return n, nil
+		}
+		// Genuine upstream error — deliver the bytes AND propagate the error
+		// with its real identity so the scanner drains the bytes then reports
+		// it. Returning (n, nil) here would end the stream with a nil Errc and
+		// run parseFinal on a partial accumulator (silent truncation).
+		r.stop()
+		return n, err
 	}
 
 	// n == 0: this Read produced no usable data, so it is safe to surface a
