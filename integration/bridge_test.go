@@ -36,9 +36,6 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 		t.Skip("bridge requires BuildRequest path; skipping on legacy or pre-0.219 runtimes")
 	}
 
-	setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer setupCancel()
-
 	opts := matrixSetupOptions()
 	opts.UseBuildRequest = true
 	opts.RuntimeEnv = map[string]string{
@@ -47,6 +44,11 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 		// accumulation bridge.
 		"BAML_REST_DISABLE_CALL_BUILD_REQUEST": "true",
 	}
+
+	// Centralized, mode-aware setup budget (#424).
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), testutil.SetupBudget(opts))
+	defer setupCancel()
+
 	env, err := testutil.Setup(setupCtx, opts)
 	if err != nil {
 		t.Fatalf("Failed to setup dedicated env: %v", err)
@@ -263,9 +265,6 @@ func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
 		t.Skip("bridge requires BuildRequest path; skipping on legacy or pre-0.219 runtimes")
 	}
 
-	setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer setupCancel()
-
 	opts := matrixSetupOptions()
 	opts.UseBuildRequest = true
 	opts.RuntimeEnv = map[string]string{
@@ -273,6 +272,11 @@ func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
 		// supported). Debug-tag only — no effect on release builds.
 		"BAML_REST_CALL_UNSUPPORTED_PROVIDERS": "openai-generic",
 	}
+
+	// Centralized, mode-aware setup budget (#424).
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), testutil.SetupBudget(opts))
+	defer setupCancel()
+
 	env, err := testutil.Setup(setupCtx, opts)
 	if err != nil {
 		t.Fatalf("Failed to setup dedicated env: %v", err)

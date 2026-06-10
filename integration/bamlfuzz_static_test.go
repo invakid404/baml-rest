@@ -73,12 +73,6 @@ const integrationBamlSrcDir = "testdata/baml_src"
 // blast radius per Docker build.
 const staticCasesPerBatch = 5
 
-// staticEnvSetupTimeout caps how long any one batch is allowed to
-// spend bringing up its dedicated integration environment. Scope D9
-// sets 10 minutes inside the 12-minute job timeout; tests get the
-// full slice so cold-cache builds can complete on slower runners.
-const staticEnvSetupTimeout = 10 * time.Minute
-
 // staticCallTimeout bounds one /call/<FunctionName> request inside a
 // batch. Generous so a slow worker doesn't trip a per-case timeout
 // before the integration server reports a real failure.
@@ -539,10 +533,15 @@ func copyFile(src, dst string) error {
 // matrixSetupOptions so the static oracle runs under the same
 // runtime shape as the rest of the integration suite.
 func setupStaticEnv(bamlSrcDir string) (*testutil.TestEnvironment, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), staticEnvSetupTimeout)
-	defer cancel()
 	opts := matrixSetupOptions()
 	opts.BAMLSrcPath = bamlSrcDir
+
+	// Centralized, mode-aware setup budget (#424). A batch's dedicated env is
+	// the same container the rest of the suite builds, so it rides the same
+	// budget; cold-cache builds still complete well within the nightly job's
+	// `go test -timeout`.
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.SetupBudget(opts))
+	defer cancel()
 	return testutil.Setup(ctx, opts)
 }
 

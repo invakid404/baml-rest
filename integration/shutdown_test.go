@@ -33,10 +33,13 @@ import (
 // UnaryClient is configured (UNARY_SERVER=true leg), we enable chi in the
 // dedicated container too and assert the drain property on both stacks.
 func TestGracefulShutdownDrainsInFlightCall(t *testing.T) {
-	setupCtx, setupCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	setupOpts := matrixSetupOptions()
+
+	// Centralized, mode-aware setup budget (#424).
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), testutil.SetupBudget(setupOpts))
 	defer setupCancel()
 
-	env, err := testutil.Setup(setupCtx, matrixSetupOptions())
+	env, err := testutil.Setup(setupCtx, setupOpts)
 	if err != nil {
 		t.Fatalf("Failed to setup dedicated shutdown env: %v", err)
 	}

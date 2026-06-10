@@ -430,13 +430,6 @@ func TestMain(m *testing.M) {
 	// still be live during teardown (#420).
 	startSuiteWatchdog(suiteWatchdogTimeout())
 
-	timeout := 10 * time.Minute
-	if BAMLSourcePath != "" {
-		timeout = 30 * time.Minute // Rust compilation is slow
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
 	// Find the testdata directory
 	var err error
 	bamlSrcPath, err = findTestdataPath()
@@ -470,7 +463,16 @@ func TestMain(m *testing.M) {
 	}
 	UseBuildRequest = parseBoolEnv(os.Getenv("BAML_REST_USE_BUILD_REQUEST"))
 
-	TestEnv, err = testutil.Setup(ctx, matrixSetupOptions())
+	// The overall setup budget is mode-aware and centralized in testutil
+	// (#424): baml-source builds the Rust cffi stage and need the larger
+	// budget, the light jobs a smaller one. This ctx is NOT covered by
+	// `go test -timeout` (it runs before m.Run); the suite watchdog and step
+	// timeout are its outer guards.
+	opts := matrixSetupOptions()
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.SetupBudget(opts))
+	defer cancel()
+
+	TestEnv, err = testutil.Setup(ctx, opts)
 	if err != nil {
 		println("Failed to setup test environment:", err.Error())
 		os.Exit(1)

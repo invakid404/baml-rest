@@ -133,6 +133,108 @@ var setupRetryBackoff = []time.Duration{
 	30 * time.Second,
 }
 
+// Setup-budget constants — the single source of truth for every setup-ctx
+// construction across the integration suite (#424). Every callsite that does
+// context.WithTimeout(..., testutil.Setup) routes its budget through
+// SetupBudget so the per-attempt/overall relationship is enforced in one
+// place rather than scattered as magic numbers.
+//
+// The #424 failure was a slow-but-healthy Docker image build (mockllm +
+// baml-rest, sequential, on a contended GitHub runner) exceeding the old 10m
+// main-setup ctx (integration_test.go) and tripping the
+// "context done before retrying" bail before the retry path could engage. The
+// load-bearing fix is growing the OVERALL (parent) budget so one generous
+// single attempt can ride out that transient slowness; the per-attempt budget
+// (below) is the structural cleanup that stops a slow attempt from silently
+// consuming the whole parent.
+//
+// Budgets are sized against MEASURED green-CI timings and the #422 suite
+// watchdog, which bounds the window Go's `go test -timeout` does not cover
+// (setup + m.Run + teardown). The governing inequality, per job class, is:
+//
+//	overall_setup + healthy_m.Run + teardown(<= defaultTeardownTimeout=5m) <= watchdog
+//
+// Measured on a green master run (build = "Setting up..." -> "ready",
+// m.Run = "ready" -> "Tearing down"):
+//
+//	light (versioned/in-process, watchdog 42m): build ~4.5m, m.Run ~12m worst,
+//	    teardown <1s. Ceiling check: 20 + 12 + 5 = 37m < 42m (>=2m margin) and
+//	    < the 45m step timeout.
+//	baml-source (watchdog 57m): build ~18.5m cold (Rust cargo build --release
+//	    cffi stage dominates), m.Run ~26m worst, teardown ~1s. Real:
+//	    18.5 + 26 + ~0 = ~44.5m < 57m. The 30m ceiling intentionally exceeds the
+//	    strict ceiling-sum (30 + 26 + 5 > 57) because real cold setup is ~18.5m,
+//	    not 30m; 30m is a pathology ceiling the watchdog still backstops, and it
+//	    is left unchanged so baml-source's single-attempt budget never shrinks.
+const (
+	// OverallSetupBudgetLight is the overall (parent) ctx budget for a full
+	// Setup call in the light job classes (versioned + in-process matrices,
+	// BAML_SOURCE unset). Grown from the historical 10m to ride out a
+	// slow-but-healthy build while staying under the 42m watchdog (#424).
+	OverallSetupBudgetLight = 20 * time.Minute
+
+	// OverallSetupBudgetBAMLSource is the overall budget for baml-source
+	// builds (BAML_SOURCE set), whose Rust cargo build --release cffi stage
+	// dominates setup. Unchanged from the historical 30m so the single-attempt
+	// budget never shrinks (scope G1); the 57m watchdog backstops it.
+	OverallSetupBudgetBAMLSource = 30 * time.Minute
+
+	// setupRetryReserve is the slice of the overall budget held back from a
+	// single attempt so a FAST-failing attempt (build.sh non-zero exit, BAML
+	// library 404, init panic, registry blip — the transient classes #415's
+	// retry targets) leaves real headroom for the retry to actually run. A
+	// slow-success build that exhausts its per-attempt budget deliberately
+	// does NOT get a meaningful retry: retrying a build that is slow due to
+	// runner/daemon contention just hits the same wall (scope G4/G5), so the
+	// design favors one big single attempt over guaranteeing a second.
+	setupRetryReserve = 2 * time.Minute
+)
+
+// setupCleanupTimeout bounds the partial-teardown of a failed attempt
+// (terminating whatever network/containers it had already created before the
+// next attempt or before the error propagates). This budget is deliberately
+// INDEPENDENT of the per-attempt work context: testcontainers Terminate needs
+// a LIVE context to issue Docker stop/remove, but the most common cleanup
+// trigger is the per-attempt deadline firing — so cleanup is run on a fresh
+// context.Background()-derived ctx (see runSetupCleanup), not the expired work
+// ctx. Sized smaller than the 5m defaultTeardownTimeout because a
+// partially-started attempt has at most a half-built container and a network to
+// remove, not a full running environment. A var (not const) so tests can shrink
+// it to assert the budget is actually ENFORCED.
+var setupCleanupTimeout = 2 * time.Minute
+
+// SetupBudget returns the overall (parent) context budget a Setup call should
+// be given for the supplied options. baml-source builds compile the Rust cffi
+// stage and need the larger budget; every other build uses the light budget.
+// This is the one knob every setup-ctx callsite reads (#424).
+func SetupBudget(opts SetupOptions) time.Duration {
+	if opts.BAMLSource != "" {
+		return OverallSetupBudgetBAMLSource
+	}
+	return OverallSetupBudgetLight
+}
+
+// perAttemptBudget derives the per-attempt deadline from the parent ctx at
+// loop entry: the whole remaining parent budget minus setupRetryReserve, so
+// the first attempt gets a generous single build window while leaving room for
+// a fast-fail retry. This is mode-aware for free — a 20m parent yields ~18m,
+// a 30m parent ~28m (scope G1). Returns 0 ("no per-attempt bound; use the
+// parent ctx as-is") when the parent has no deadline, or when too little
+// budget remains to both run an attempt and reserve retry headroom — in the
+// latter case a sub-context would only shrink the attempt further, and the
+// parent deadline still caps it.
+func perAttemptBudget(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+	budget := time.Until(deadline) - setupRetryReserve
+	if budget <= 0 {
+		return 0
+	}
+	return budget
+}
+
 // Setup creates the test environment with mock LLM server and baml-rest
 // container, retrying the whole build+start sequence on transient failures.
 //
@@ -148,46 +250,132 @@ var setupRetryBackoff = []time.Duration{
 // and any started containers) via setupOnce before the next attempt, so retries
 // always start from a clean slate.
 func Setup(ctx context.Context, opts SetupOptions) (*TestEnvironment, error) {
-	totalAttempts := len(setupRetryBackoff) + 1
+	return setupWithRetry(ctx, perAttemptBudget(ctx), setupRetryBackoff,
+		func(attemptCtx context.Context) (*TestEnvironment, error) {
+			return runSetupAttempt(attemptCtx, opts)
+		})
+}
+
+// setupWithRetry is the retry loop extracted from Setup so it can be
+// unit-tested without real Docker (#424). It runs attempt under its own
+// per-attempt deadline (perAttempt, capped by the parent ctx) so a slow
+// attempt cannot silently consume the whole parent budget, then decides
+// retry-vs-bail on the PARENT ctx:
+//
+//   - attempt timed out on its per-attempt budget but the parent still has
+//     budget left -> ctx.Err() == nil -> fall through and retry (the
+//     fast-fail transient path #415 targets); and
+//   - parent exhausted -> ctx.Err() != nil -> bail, since every further
+//     attempt would fail the same way.
+//
+// perAttempt <= 0 means "no per-attempt bound": the attempt runs on the
+// parent ctx directly. attempt receives the per-attempt context and MUST
+// honor it (runSetupAttempt -> setupOnce threads it through both the mockllm
+// and baml-rest builds plus their startup waits, so one attempt's deadline
+// covers the whole sequence — scope G9).
+func setupWithRetry(
+	ctx context.Context,
+	perAttempt time.Duration,
+	backoff []time.Duration,
+	attempt func(context.Context) (*TestEnvironment, error),
+) (*TestEnvironment, error) {
+	totalAttempts := len(backoff) + 1
 
 	var lastErr error
-	for attempt := 1; attempt <= totalAttempts; attempt++ {
-		if attempt > 1 {
-			backoff := setupRetryBackoff[attempt-2]
+	for n := 1; n <= totalAttempts; n++ {
+		if n > 1 {
+			wait := backoff[n-2]
 			log.Printf("[testutil] container setup attempt %d/%d failed: %v; "+
-				"cleaning up and retrying in %s", attempt-1, totalAttempts, lastErr, backoff)
+				"cleaning up and retrying in %s", n-1, totalAttempts, lastErr, wait)
 
 			// Respect cancellation/deadline while backing off so we don't
 			// burn the remaining context budget sleeping.
-			timer := time.NewTimer(backoff)
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
 				return nil, fmt.Errorf("container setup aborted after %d attempt(s) while "+
-					"waiting to retry: %w (last error: %v)", attempt-1, ctx.Err(), lastErr)
+					"waiting to retry: %w (last error: %v)", n-1, ctx.Err(), lastErr)
 			case <-timer.C:
 			}
 		}
 
-		env, err := runSetupAttempt(ctx, opts)
+		attemptCtx, cancel := attemptContext(ctx, perAttempt)
+		env, err := attempt(attemptCtx)
+		cancel()
 		if err == nil {
-			if attempt > 1 {
-				log.Printf("[testutil] container setup succeeded on attempt %d/%d", attempt, totalAttempts)
+			if n > 1 {
+				log.Printf("[testutil] container setup succeeded on attempt %d/%d", n, totalAttempts)
 			}
 			return env, nil
 		}
 		lastErr = err
 
-		// If the context is already done there's no point retrying: every
-		// further attempt would fail the same way. Surface the error now,
-		// reporting the number of attempts actually made (not the cap).
+		// If the PARENT context is already done there's no point retrying:
+		// every further attempt would fail the same way. A per-attempt
+		// timeout that leaves parent budget intact does NOT take this branch,
+		// so it proceeds to the next attempt. Report the number of attempts
+		// actually made (not the cap).
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("container setup failed after %d attempt(s); "+
-				"context done before retrying: %w (last error: %v)", attempt, ctx.Err(), lastErr)
+				"context done before retrying: %w (last error: %v)", n, ctx.Err(), lastErr)
 		}
 	}
 
 	return nil, fmt.Errorf("container setup failed after %d attempt(s): %w", totalAttempts, lastErr)
+}
+
+// attemptContext derives the per-attempt context from the parent. A
+// non-positive perAttempt means "no per-attempt bound" (the attempt runs on
+// the parent ctx directly); otherwise the attempt deadline is
+// min(perAttempt, parent-remaining) since the child is derived from ctx.
+func attemptContext(ctx context.Context, perAttempt time.Duration) (context.Context, context.CancelFunc) {
+	if perAttempt <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, perAttempt)
+}
+
+// runSetupCleanup runs a partial-teardown function under a fresh, bounded
+// context derived from context.Background() — independent of BOTH the
+// (possibly expired) per-attempt work ctx AND a (possibly cancelled) parent
+// ctx. testcontainers Terminate needs a LIVE context to issue Docker
+// stop/remove; the dominant cleanup trigger is the per-attempt deadline
+// firing, and the overall budget may also be exhausted, so reusing either
+// would leave half-started containers and networks leaked before the retry.
+//
+// The budget is ENFORCED preemptively (same goroutine+select shape as
+// integration.boundedTerminate, the #422 teardown bound): a Docker stop/remove
+// that ignores context cancellation must not block the retry/bail loop past the
+// budget. teardown runs in a goroutine reporting on a buffered channel so it
+// never blocks on send even after we've returned via the deadline; a leaked
+// goroutine on a truly-wedged Terminate is acceptable for best-effort
+// inter-attempt cleanup. Errors are ignored (best-effort), matching the
+// existing setup-path cleanup contract; cancel is always invoked so the cleanup
+// ctx itself never leaks.
+func runSetupCleanup(teardown func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), setupCleanupTimeout)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		// teardown runs on its own goroutine, outside runSetupAttempt's recover
+		// wrapper, so contain a panic from Terminate/network removal here — a
+		// panicking best-effort cleanup must not crash the test binary. teardown
+		// either returns OR panics (never both), so at most one send happens;
+		// errCh is buffered (cap 1) so neither send blocks.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[testutil] recovered panic during setup cleanup: %v", r)
+				errCh <- fmt.Errorf("setup cleanup panicked: %v\n%s", r, debug.Stack())
+			}
+		}()
+		errCh <- teardown(ctx)
+	}()
+	select {
+	case <-errCh:
+	case <-ctx.Done():
+	}
 }
 
 // runSetupAttempt performs a single setupOnce and converts a panic into an
@@ -217,7 +405,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// wrapper, so a retry doesn't leak a network or half-started container.
 	defer func() {
 		if r := recover(); r != nil {
-			_ = env.Terminate(ctx)
+			runSetupCleanup(env.Terminate)
 			panic(r)
 		}
 	}()
@@ -232,7 +420,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// Start mock LLM server
 	mockLLM, err := startMockLLMContainer(ctx, net.Name)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to start mock LLM container: %w", err)
 	}
 	env.MockLLM = mockLLM
@@ -240,12 +428,12 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// Get mock LLM mapped port
 	mockPort, err := mockLLM.MappedPort(ctx, MockLLMInternalPort)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to get mock LLM port: %w", err)
 	}
 	mockHost, err := mockLLM.Host(ctx)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to get mock LLM host: %w", err)
 	}
 	env.MockLLMURL = fmt.Sprintf("http://%s:%s", mockHost, mockPort.Port())
@@ -254,7 +442,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// Build and start baml-rest container
 	bamlRest, err := startBAMLRestContainer(ctx, net.Name, opts)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to start baml-rest container: %w", err)
 	}
 	env.BAMLRest = bamlRest
@@ -262,12 +450,12 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	// Get baml-rest mapped ports
 	restPort, err := bamlRest.MappedPort(ctx, BAMLRestInternalPort)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to get baml-rest port: %w", err)
 	}
 	restHost, err := bamlRest.Host(ctx)
 	if err != nil {
-		_ = env.Terminate(ctx)
+		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to get baml-rest host: %w", err)
 	}
 	env.BAMLRestURL = fmt.Sprintf("http://%s:%s", restHost, restPort.Port())
@@ -275,7 +463,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	if opts.UnaryServer {
 		unaryPort, err := bamlRest.MappedPort(ctx, BAMLRestUnaryPort)
 		if err != nil {
-			_ = env.Terminate(ctx)
+			runSetupCleanup(env.Terminate)
 			return nil, fmt.Errorf("failed to get baml-rest unary port: %w", err)
 		}
 		env.BAMLRestUnaryURL = fmt.Sprintf("http://%s:%s", restHost, unaryPort.Port())
@@ -314,7 +502,7 @@ func startMockLLMContainer(ctx context.Context, networkName string) (testcontain
 		// testcontainers may still return a built container. Tear it down so a
 		// retry doesn't leak it.
 		if c != nil {
-			_ = c.Terminate(ctx)
+			runSetupCleanup(func(cleanupCtx context.Context) error { return c.Terminate(cleanupCtx) })
 		}
 		return nil, err
 	}
@@ -408,7 +596,7 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 		// still hand back a built container; terminate it so a retry starts
 		// clean instead of leaking a half-started container.
 		if c != nil {
-			_ = c.Terminate(ctx)
+			runSetupCleanup(func(cleanupCtx context.Context) error { return c.Terminate(cleanupCtx) })
 		}
 		return nil, err
 	}
