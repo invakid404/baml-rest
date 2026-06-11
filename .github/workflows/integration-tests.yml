@@ -100,6 +100,12 @@ jobs:
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
           # Step timeout (45m) minus 3m margin.
           BAML_REST_SUITE_WATCHDOG: 42m
+          # CI-only: skip the testcontainers Ryuk reaper so setup doesn't
+          # pull/create it from Docker Hub (the earliest registry touch
+          # point, which flaked in #426/#427). Safe here because GH runners
+          # are ephemeral and torn down after the job, so leaked containers
+          # are cleaned up regardless. Never set this for local runs.
+          TESTCONTAINERS_RYUK_DISABLED: true
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
         # share state (server config, worker pool) that could cause flakiness if parallel.
         # `subprocess` matches the normal server deployment path (server +
@@ -170,6 +176,12 @@ jobs:
           BAML_REST_HTTP_CLIENT: auto
           # Step timeout (45m) minus 3m margin.
           BAML_REST_SUITE_WATCHDOG: 42m
+          # CI-only: skip the testcontainers Ryuk reaper so setup doesn't
+          # pull/create it from Docker Hub (the earliest registry touch
+          # point, which flaked in #426/#427). Safe here because GH runners
+          # are ephemeral and torn down after the job, so leaked containers
+          # are cleaned up regardless. Never set this for local runs.
+          TESTCONTAINERS_RYUK_DISABLED: true
         # No `subprocess` tag — the default no-tag build compiles the
         # direct in-process worker path.
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
@@ -179,11 +191,11 @@ jobs:
     # The baml-source matrix builds BAML from source, which dominates the
     # per-cell wall time and pushes consistent runs into the 38-45m
     # window. This is the cell where #420 manifests. The go-test step is
-    # bounded at 60m (below) from go-test start — the same origin as the
-    # 57m watchdog — so the watchdog's 3m margin holds regardless of
+    # bounded at 70m (below) from go-test start — the same origin as the
+    # 67m watchdog — so the watchdog's 3m margin holds regardless of
     # pre-test step duration. This JOB cap is the looser outer backstop:
-    # step (60m) + a generous pre-test budget (~15m for checkout, BAML
-    # source checkout, and Go setup). See #420.
+    # step (70m) + pre-test overhead (~5m for checkout, BAML source
+    # checkout, and Go setup) stays under 75m. See #420, #428.
     timeout-minutes: 75
     strategy:
       fail-fast: false
@@ -222,24 +234,33 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run Integration Tests (BAML Source, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }}, http-client=${{ matrix.http-client }})
-        # Step timeout (60m) and the watchdog (57m) share the SAME origin
+        # Step timeout (70m) and the watchdog (67m) share the SAME origin
         # (go-test start), so the watchdog fires 3m before the step is
         # killed regardless of pre-test step duration — the gap the bare
-        # job cap could not guarantee. `go test -timeout 55m` only guards
+        # job cap could not guarantee. `go test -timeout 65m` only guards
         # the in-m.Run window; the watchdog guards setup + teardown (#420).
-        timeout-minutes: 60
+        timeout-minutes: 70
         env:
           BAML_SOURCE: ${{ github.workspace }}/baml-source
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
-          # Step timeout (60m) minus 3m margin. Larger than the 45m-cap
+          # Step timeout (70m) minus 3m margin. Larger than the 45m-cap
           # jobs because a healthy baml-source m.Run runs 38-45m and must
-          # not false-trip; still leaves headroom over the 55m go-test
-          # timeout so an in-m.Run hang gets Go's own dump first.
-          BAML_REST_SUITE_WATCHDOG: 57m
+          # not false-trip; still leaves headroom over the 65m go-test
+          # timeout so an in-m.Run hang gets Go's own dump first. Widened
+          # from 57m in #428: the ~20m Rust build crowds the suite and the
+          # old 57m watchdog false-tripped slow cells (#426 saw 119 PASS /
+          # 0 FAIL die at 57m) — used the ~15m headroom under the 75m cap.
+          BAML_REST_SUITE_WATCHDOG: 67m
+          # CI-only: skip the testcontainers Ryuk reaper so setup doesn't
+          # pull/create it from Docker Hub (the earliest registry touch
+          # point, which flaked in #426/#427). Safe here because GH runners
+          # are ephemeral and torn down after the job, so leaked containers
+          # are cleaned up regardless. Never set this for local runs.
+          TESTCONTAINERS_RYUK_DISABLED: true
         # `subprocess` matches the normal server deployment path used
-        # by the versioned integration job above. The 55m Go timeout
-        # sits below the 60m step budget so a near-timeout case still has
+        # by the versioned integration job above. The 65m Go timeout
+        # sits below the 70m step budget so a near-timeout case still has
         # room to dump its envelope before the step is killed.
-        run: go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 55m ./integration/...
+        run: go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 65m ./integration/...
