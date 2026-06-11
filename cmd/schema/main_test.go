@@ -365,3 +365,57 @@ func TestSchemaPreserveOrderExposure(t *testing.T) {
 		t.Errorf("dynamic_types.order must be removed; OrderedMap carries order intrinsically")
 	}
 }
+
+// TestSchemaIncludeReasoningExposure pins that the dynamic call/stream input
+// schema documents the include_reasoning opt-in. The dynamic input has no
+// __baml_options__ wrapper, so the flag is a top-level boolean on the
+// request body (forwarded into __baml_options__.include_reasoning by the
+// server); the public OpenAPI must expose it so the dynamic with-raw
+// reasoning capability is discoverable. The parse input has no with-raw
+// surface, so it must NOT advertise the flag.
+func TestSchemaIncludeReasoningExposure(t *testing.T) {
+	baml_rest.InitBamlRuntime()
+
+	origMethods := baml_rest.Methods
+	t.Cleanup(func() { baml_rest.Methods = origMethods })
+	baml_rest.Methods = map[string]bamlutils.StreamingMethod{
+		bamlutils.DynamicMethodName: {
+			MakeInput:        func() any { return &SchemaPostRequiredStubInput{} },
+			MakeOutput:       func() any { return &SchemaPostRequiredStubOutput{} },
+			MakeStreamOutput: func() any { return &SchemaPostRequiredStubOutput{} },
+		},
+	}
+
+	doc := generateOpenAPISchema()
+	if doc == nil || doc.Components == nil {
+		t.Fatalf("generated schema has no components")
+	}
+	schemas := doc.Components.Schemas
+
+	dynInput, ok := schemas["__DynamicInput__"]
+	if !ok || dynInput == nil || dynInput.Value == nil {
+		t.Fatalf("__DynamicInput__ not registered")
+	}
+	prop, ok := dynInput.Value.Properties["include_reasoning"]
+	if !ok || prop == nil || prop.Value == nil {
+		t.Fatalf("__DynamicInput__.properties missing include_reasoning")
+	}
+	if !prop.Value.Type.Is(openapi3.TypeBoolean) {
+		t.Errorf("__DynamicInput__.include_reasoning: expected boolean, got %v", prop.Value.Type)
+	}
+	if prop.Value.Description == "" {
+		t.Errorf("__DynamicInput__.include_reasoning: expected a non-empty description")
+	}
+	// Opt-in: must not be required.
+	if slices.Contains(dynInput.Value.Required, "include_reasoning") {
+		t.Errorf("__DynamicInput__.required must not include include_reasoning (it's an opt-in)")
+	}
+
+	// The parse input has no with-raw/reasoning surface; it must not
+	// advertise the flag.
+	if parseInput, ok := schemas["__DynamicParseInput__"]; ok && parseInput.Value != nil {
+		if _, present := parseInput.Value.Properties["include_reasoning"]; present {
+			t.Errorf("__DynamicParseInput__ must not expose include_reasoning (parse has no reasoning channel)")
+		}
+	}
+}

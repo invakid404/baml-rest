@@ -234,6 +234,12 @@ type reasoningLegOutcome struct {
 	reasoning string
 	data      json.RawMessage
 	raw       string
+	// errStr is the recorded non-context error / HTTP>=400 message / nil-
+	// or-empty-result diagnostic for a leg that did NOT succeed. Every
+	// reasoning case is a successful-path case (valid content, dynamic-safe
+	// schema), so a leg with ok=false must contribute errStr as an oracle
+	// failure — it can never be silently skipped past the ok-gated checks.
+	errStr string
 }
 
 // runReasoningOracleCase performs the reasoning-channel comparison for one
@@ -339,30 +345,31 @@ func runReasoningOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 	}
 
 	// ---- unary dynclient leg, flag on/off ----
-	dynOn, fatal := runReasoningDynclientUnary(t, dyn, baseReq, true, c, envelope)
-	if fatal {
-		return
-	}
-	dynOff, fatal := runReasoningDynclientUnary(t, dyn, baseReq, false, c, envelope)
-	if fatal {
-		return
-	}
+	// A context/transport error inside a leg is a harness failure (t.Fatalf
+	// there); every other non-success (panic, non-context error, HTTP>=400,
+	// nil/empty result) returns ok=false with errStr set, and is turned into
+	// an explicit oracle failure below — a broken leg can never be skipped
+	// into a pass by the later ok-gated checks.
+	dynOn := runReasoningDynclientUnary(t, dyn, baseReq, true, c, envelope)
+	dynOff := runReasoningDynclientUnary(t, dyn, baseReq, false, c, envelope)
 	envelope.DynclientReasoningOn, envelope.DynclientDataOn, envelope.DynclientRawOn = dynOn.reasoning, dynOn.data, dynOn.raw
 	envelope.DynclientReasoningOff, envelope.DynclientDataOff, envelope.DynclientRawOff = dynOff.reasoning, dynOff.data, dynOff.raw
 
 	// ---- unary REST /call-with-raw/_dynamic leg, flag on/off ----
-	restOn, fatal := runReasoningRESTUnary(t, baseReq, &lowered, true, c, envelope)
-	if fatal {
-		return
-	}
-	restOff, fatal := runReasoningRESTUnary(t, baseReq, &lowered, false, c, envelope)
-	if fatal {
-		return
-	}
+	restOn := runReasoningRESTUnary(t, baseReq, &lowered, true, c, envelope)
+	restOff := runReasoningRESTUnary(t, baseReq, &lowered, false, c, envelope)
 	envelope.RESTReasoningOn, envelope.RESTDataOn, envelope.RESTRawOn = restOn.reasoning, restOn.data, restOn.raw
 	envelope.RESTReasoningOff, envelope.RESTDataOff, envelope.RESTRawOff = restOff.reasoning, restOff.data, restOff.raw
 
 	var failures []string
+
+	// Leg-error propagation (the vacuous-pass guard): any leg that did not
+	// succeed on this successful-path case contributes its error string, so
+	// no ok==false leg is silently skipped by a later ok check.
+	failures = append(failures, legErrorFailure("dynclient opt-in unary", dynOn)...)
+	failures = append(failures, legErrorFailure("dynclient default unary", dynOff)...)
+	failures = append(failures, legErrorFailure("REST opt-in unary", restOn)...)
+	failures = append(failures, legErrorFailure("REST default unary", restOff)...)
 
 	// R1/R2/R4 + raw-separation + data-presence per leg, via the pure
 	// reasoning-channel checker (unit-tested in isolation).
@@ -400,7 +407,7 @@ func runReasoningOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 	}
 
 	// ---- R3: streaming legs ----
-	failures = append(failures, runReasoningStreamingLegs(t, dyn, baseReq, &lowered, c, expectedRaw, thinking, envelope)...)
+	failures = append(failures, runReasoningStreamingLegs(t, dyn, baseReq, &lowered, c, thinking, envelope)...)
 
 	if len(failures) == 0 {
 		if os.Getenv("BAMLFUZZ_KEEP_ARTIFACTS") == "1" {
@@ -413,16 +420,49 @@ func runReasoningOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 	failAndDumpReasoning(t, envelope, "%s", strings.Join(failures, "; "))
 }
 
+// legFailureFrom turns a non-ok (ok==false) leg into an explicit oracle
+// failure. Every reasoning case is a successful-path case, so a leg that did
+// not succeed (errored, returned HTTP>=400, or produced no result) must
+// contribute its recorded error — it can never be silently skipped past the
+// ok-gated channel checks. An ok leg contributes nothing. Shared by the
+// unary and streaming legs (both carry an ok flag + errStr).
+func legFailureFrom(label string, ok bool, errStr string) []string {
+	if ok {
+		return nil
+	}
+	msg := errStr
+	if msg == "" {
+		msg = "leg did not complete and produced no result"
+	}
+	return []string{fmt.Sprintf("%s leg failed on a successful-path case: %s", label, msg)}
+}
+
+// legErrorFailure is the unary-leg adapter for legFailureFrom.
+func legErrorFailure(label string, leg reasoningLegOutcome) []string {
+	return legFailureFrom(label, leg.ok, leg.errStr)
+}
+
 // runReasoningDynclientUnary drives one dynclient.DynamicCallRaw with the
-// given include_reasoning flag. A panic or nil-without-error response dumps
-// the envelope and returns fatal=true (the caller must stop); a context /
-// transport error is a harness failure (t.Fatalf) because a call that
-// never produced a verdict must not satisfy an equality check by default.
-// A non-context error is recorded on the envelope and surfaces ok=false.
-func runReasoningDynclientUnary(t *testing.T, dyn *dynclient.Client, base dynclient.Request, includeReasoning bool, c bamlfuzz.OracleCase, envelope *bamlfuzz.ReasoningFailureEnvelope) (reasoningLegOutcome, bool) {
+// given include_reasoning flag. A context/transport error is a harness
+// failure (t.Fatalf) because a call that never produced a verdict must not
+// satisfy an equality check. Every other non-success (panic, non-context
+// error, nil response) returns ok=false with errStr set and the envelope's
+// error/panic fields populated; the caller turns ok=false into an explicit
+// oracle failure via legErrorFailure, so no failure is reported inline and
+// no broken leg is skipped into a pass.
+func runReasoningDynclientUnary(t *testing.T, dyn *dynclient.Client, base dynclient.Request, includeReasoning bool, c bamlfuzz.OracleCase, envelope *bamlfuzz.ReasoningFailureEnvelope) reasoningLegOutcome {
 	t.Helper()
 	req := base
 	req.IncludeReasoning = includeReasoning
+
+	recordErr := func(msg string) reasoningLegOutcome {
+		if includeReasoning {
+			envelope.DynclientErrorOn = msg
+		} else {
+			envelope.DynclientErrorOff = msg
+		}
+		return reasoningLegOutcome{errStr: msg}
+	}
 
 	callCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -437,30 +477,18 @@ func runReasoningDynclientUnary(t *testing.T, dyn *dynclient.Client, base dyncli
 	if panicked {
 		envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
 		envelope.DynclientPanicStack = string(panicStack)
-		failAndDumpReasoning(t, envelope, "dyn.DynamicCallRaw panicked (include_reasoning=%v): %v\n%s", includeReasoning, panicVal, panicStack)
-		return reasoningLegOutcome{}, true
+		return recordErr(fmt.Sprintf("dyn.DynamicCallRaw panicked: %v", panicVal))
 	}
 	switch {
 	case cerr != nil:
 		if isContextErr(cerr) {
 			t.Fatalf("harness failure: dynclient DynamicCallRaw (include_reasoning=%v, case=%s): %v", includeReasoning, c.Name, cerr)
 		}
-		if includeReasoning {
-			envelope.DynclientErrorOn = cerr.Error()
-		} else {
-			envelope.DynclientErrorOff = cerr.Error()
-		}
-		return reasoningLegOutcome{}, false
+		return recordErr(cerr.Error())
 	case resp == nil:
-		if includeReasoning {
-			envelope.DynclientErrorOn = "nil response from dyn.DynamicCallRaw"
-		} else {
-			envelope.DynclientErrorOff = "nil response from dyn.DynamicCallRaw"
-		}
-		failAndDumpReasoning(t, envelope, "dynclient returned nil response without an error (include_reasoning=%v)", includeReasoning)
-		return reasoningLegOutcome{}, true
+		return recordErr("nil response from dyn.DynamicCallRaw")
 	default:
-		return reasoningLegOutcome{ok: true, reasoning: resp.Reasoning, data: resp.Data, raw: resp.Raw}, false
+		return reasoningLegOutcome{ok: true, reasoning: resp.Reasoning, data: resp.Data, raw: resp.Raw}
 	}
 }
 
@@ -468,16 +496,26 @@ func runReasoningDynclientUnary(t *testing.T, dyn *dynclient.Client, base dyncli
 // the given include_reasoning flag. The body is built via buildDynamicCallBody
 // so include_reasoning AND property order travel identically to the
 // dynclient leg (buildDynamicCallBody copies req.IncludeReasoning). Same
-// fatal / harness-failure / recorded-error contract as the dynclient leg.
-func runReasoningRESTUnary(t *testing.T, base dynclient.Request, lowered *bamlutils.DynamicOutputSchema, includeReasoning bool, c bamlfuzz.OracleCase, envelope *bamlfuzz.ReasoningFailureEnvelope) (reasoningLegOutcome, bool) {
+// harness-failure / recorded-error contract as the dynclient leg: context
+// errors t.Fatalf, every other non-success surfaces ok=false + errStr for
+// legErrorFailure to escalate.
+func runReasoningRESTUnary(t *testing.T, base dynclient.Request, lowered *bamlutils.DynamicOutputSchema, includeReasoning bool, c bamlfuzz.OracleCase, envelope *bamlfuzz.ReasoningFailureEnvelope) reasoningLegOutcome {
 	t.Helper()
 	req := base
 	req.IncludeReasoning = includeReasoning
 
+	recordErr := func(msg string) reasoningLegOutcome {
+		if includeReasoning {
+			envelope.RESTErrorOn = msg
+		} else {
+			envelope.RESTErrorOff = msg
+		}
+		return reasoningLegOutcome{errStr: msg}
+	}
+
 	body, berr := buildDynamicCallBody(req, lowered)
 	if berr != nil {
-		failAndDumpReasoning(t, envelope, "build REST body (include_reasoning=%v): %v", includeReasoning, berr)
-		return reasoningLegOutcome{}, true
+		return recordErr(fmt.Sprintf("build REST body: %v", berr))
 	}
 
 	callCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -493,28 +531,16 @@ func runReasoningRESTUnary(t *testing.T, base dynclient.Request, lowered *bamlut
 	if panicked {
 		envelope.RESTPanic = fmt.Sprintf("%v", panicVal)
 		envelope.RESTPanicStack = string(panicStack)
-		failAndDumpReasoning(t, envelope, "BAMLClient.DynamicCallWithRawJSON panicked (include_reasoning=%v): %v\n%s", includeReasoning, panicVal, panicStack)
-		return reasoningLegOutcome{}, true
+		return recordErr(fmt.Sprintf("BAMLClient.DynamicCallWithRawJSON panicked: %v", panicVal))
 	}
 	switch {
 	case rerr != nil:
 		if isContextErr(rerr) {
 			t.Fatalf("harness failure: REST DynamicCallWithRawJSON (include_reasoning=%v, case=%s): %v", includeReasoning, c.Name, rerr)
 		}
-		if includeReasoning {
-			envelope.RESTErrorOn = rerr.Error()
-		} else {
-			envelope.RESTErrorOff = rerr.Error()
-		}
-		return reasoningLegOutcome{}, false
+		return recordErr(rerr.Error())
 	case resp == nil:
-		if includeReasoning {
-			envelope.RESTErrorOn = "nil response from BAMLClient.DynamicCallWithRawJSON"
-		} else {
-			envelope.RESTErrorOff = "nil response from BAMLClient.DynamicCallWithRawJSON"
-		}
-		failAndDumpReasoning(t, envelope, "REST client returned nil response without an error (include_reasoning=%v)", includeReasoning)
-		return reasoningLegOutcome{}, true
+		return recordErr("nil response from BAMLClient.DynamicCallWithRawJSON")
 	}
 	if includeReasoning {
 		envelope.RESTStatusOn = resp.StatusCode
@@ -522,14 +548,9 @@ func runReasoningRESTUnary(t *testing.T, base dynclient.Request, lowered *bamlut
 		envelope.RESTStatusOff = resp.StatusCode
 	}
 	if resp.StatusCode >= 400 {
-		if includeReasoning {
-			envelope.RESTErrorOn = resp.Error
-		} else {
-			envelope.RESTErrorOff = resp.Error
-		}
-		return reasoningLegOutcome{}, false
+		return recordErr(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Error))
 	}
-	return reasoningLegOutcome{ok: true, reasoning: resp.Reasoning, data: resp.Data, raw: resp.Raw}, false
+	return reasoningLegOutcome{ok: true, reasoning: resp.Reasoning, data: resp.Data, raw: resp.Raw}
 }
 
 // recordReasoningFailures runs the pure reasoning-channel checker for one
@@ -637,72 +658,88 @@ func reasoningDataDiff(envelope *bamlfuzz.ReasoningFailureEnvelope, side string,
 // with-raw leg: the cumulative reasoning at the last frame (NOT a per-frame
 // delta — chunk boundaries interleave thinking/text blocks, so only the
 // final cumulative snapshot is comparable), the final-frame data, and any
-// frame whose data/raw carried the leak marker.
+// per-frame violation (a leak of the thinking marker into data/raw, or
+// reasoning arriving on a frame other than data/final). ok=false with
+// errStr set marks a leg that did not complete (escalated by the caller).
 type reasoningStreamOutcome struct {
+	ok                  bool
+	errStr              string
 	cumulativeReasoning string
 	finalData           json.RawMessage
-	leakFrames          []string
+	frameFailures       []string
 }
 
-// runReasoningStreamingLegs drives R3: the dynclient DynamicStreamRaw and
-// REST /stream-with-raw/_dynamic legs under include_reasoning=true, plus a
-// dynclient flag-off run to confirm streaming reasoning stays empty by
-// default. It asserts the cumulative streaming reasoning equals the fed
-// thinking (cross-path and against the unary leg's value already pinned to
-// thinking), the final data equals Expected, the default run yields empty
-// reasoning, and no streaming frame leaked thinking into data/raw.
-func runReasoningStreamingLegs(t *testing.T, dyn *dynclient.Client, base dynclient.Request, lowered *bamlutils.DynamicOutputSchema, c bamlfuzz.OracleCase, expectedRaw, thinking string, envelope *bamlfuzz.ReasoningFailureEnvelope) []string {
+// runReasoningStreamingLegs drives R3: both streaming transports (dynclient
+// DynamicStreamRaw and REST /stream-with-raw/_dynamic) in BOTH flag states.
+// Every successful stream's final data is validated against Expected and
+// its frames are checked for leaks/provenance, regardless of flag. On the
+// opt-in runs the cumulative reasoning must equal the fed thinking; on the
+// default runs it must be empty (R4 holds on every path). A leg that did
+// not complete contributes its error via legErrorFailure — no stream is
+// skipped into a pass, and the four legs run independently (no early
+// return) so one broken leg never hides another.
+func runReasoningStreamingLegs(t *testing.T, dyn *dynclient.Client, base dynclient.Request, lowered *bamlutils.DynamicOutputSchema, c bamlfuzz.OracleCase, thinking string, envelope *bamlfuzz.ReasoningFailureEnvelope) []string {
 	t.Helper()
 	var failures []string
 
-	// --- dynclient streaming, opt-in ---
-	dynStream, ok := drainReasoningDynclientStream(t, dyn, base, true, c, envelope)
-	if !ok {
-		return failures
+	// --- dynclient streaming, opt-in / default ---
+	dynOnS := drainReasoningDynclientStream(t, dyn, base, true, c, envelope)
+	envelope.StreamDynclientReasoning, envelope.StreamDynclientFinal = dynOnS.cumulativeReasoning, dynOnS.finalData
+	failures = append(failures, legFailureFrom("dynclient opt-in stream", dynOnS.ok, dynOnS.errStr)...)
+	if dynOnS.ok {
+		failures = append(failures, assertStreamOutcome("dynclient stream opt-in", dynOnS, thinking, c.Expected, envelope)...)
 	}
-	envelope.StreamDynclientReasoning = dynStream.cumulativeReasoning
-	envelope.StreamDynclientFinal = dynStream.finalData
-	failures = append(failures, assertStreamOutcome("dynclient stream", dynStream, thinking, c.Expected, envelope)...)
 
-	// --- dynclient streaming, default (flag off) → reasoning must be empty ---
-	dynStreamOff, ok := drainReasoningDynclientStream(t, dyn, base, false, c, envelope)
-	if !ok {
-		return failures
+	dynOffS := drainReasoningDynclientStream(t, dyn, base, false, c, envelope)
+	envelope.StreamDynclientReasoningOff, envelope.StreamDynclientFinalOff = dynOffS.cumulativeReasoning, dynOffS.finalData
+	failures = append(failures, legFailureFrom("dynclient default stream", dynOffS.ok, dynOffS.errStr)...)
+	if dynOffS.ok {
+		failures = append(failures, assertStreamOutcome("dynclient stream default", dynOffS, "", c.Expected, envelope)...)
 	}
-	envelope.StreamDynclientReasoningOff = dynStreamOff.cumulativeReasoning
-	if dynStreamOff.cumulativeReasoning != "" {
-		failures = append(failures, fmt.Sprintf("dynclient stream default: reasoning non-empty: got %q want empty", dynStreamOff.cumulativeReasoning))
-	}
-	failures = append(failures, dynStreamOff.leakFrames...)
 
-	// --- REST streaming, opt-in ---
-	restStream, ok := drainReasoningRESTStream(t, lowered, base, c, envelope)
-	if !ok {
-		return failures
+	// --- REST streaming, opt-in / default ---
+	restOnS := drainReasoningRESTStream(t, lowered, base, true, c, envelope)
+	envelope.StreamRESTReasoning, envelope.StreamRESTFinal = restOnS.cumulativeReasoning, restOnS.finalData
+	failures = append(failures, legFailureFrom("REST opt-in stream", restOnS.ok, restOnS.errStr)...)
+	if restOnS.ok {
+		failures = append(failures, assertStreamOutcome("REST stream opt-in", restOnS, thinking, c.Expected, envelope)...)
 	}
-	envelope.StreamRESTReasoning = restStream.cumulativeReasoning
-	envelope.StreamRESTFinal = restStream.finalData
-	failures = append(failures, assertStreamOutcome("REST stream", restStream, thinking, c.Expected, envelope)...)
 
-	// Cross-path: both streaming legs' cumulative reasoning must agree.
-	if dynStream.cumulativeReasoning != restStream.cumulativeReasoning {
+	restOffS := drainReasoningRESTStream(t, lowered, base, false, c, envelope)
+	envelope.StreamRESTReasoningOff, envelope.StreamRESTFinalOff = restOffS.cumulativeReasoning, restOffS.finalData
+	failures = append(failures, legFailureFrom("REST default stream", restOffS.ok, restOffS.errStr)...)
+	if restOffS.ok {
+		failures = append(failures, assertStreamOutcome("REST stream default", restOffS, "", c.Expected, envelope)...)
+	}
+
+	// Cross-path: both opt-in streaming legs' cumulative reasoning must agree
+	// (only meaningful when both completed).
+	if dynOnS.ok && restOnS.ok && dynOnS.cumulativeReasoning != restOnS.cumulativeReasoning {
 		failures = append(failures, fmt.Sprintf("dynclient stream reasoning ≠ REST stream reasoning: %q vs %q",
-			dynStream.cumulativeReasoning, restStream.cumulativeReasoning))
+			dynOnS.cumulativeReasoning, restOnS.cumulativeReasoning))
 	}
 
 	return failures
 }
 
-// assertStreamOutcome encodes the per-leg R3 assertions for an opt-in
-// streaming run: cumulative reasoning equals the fed thinking (non-empty),
-// the final data equals the walker's Expected, and no frame leaked thinking.
-func assertStreamOutcome(leg string, out reasoningStreamOutcome, thinking string, expected json.RawMessage, envelope *bamlfuzz.ReasoningFailureEnvelope) []string {
+// assertStreamOutcome encodes the per-leg R3 assertions for one completed
+// streaming run. wantReasoning is the fed thinking on opt-in runs (the
+// cumulative reasoning must equal it, non-empty) or "" on default runs (the
+// cumulative reasoning must be empty — R4). In BOTH flag states the final
+// data must be present and equal the walker's Expected, and no frame may
+// leak the thinking marker or carry reasoning on a non-data/final frame.
+func assertStreamOutcome(leg string, out reasoningStreamOutcome, wantReasoning string, expected json.RawMessage, envelope *bamlfuzz.ReasoningFailureEnvelope) []string {
 	var failures []string
-	if out.cumulativeReasoning == "" {
+	if wantReasoning == "" {
+		if out.cumulativeReasoning != "" {
+			failures = append(failures, fmt.Sprintf("%s: cumulative reasoning non-empty under default flag: got %q want empty", leg, out.cumulativeReasoning))
+		}
+	} else if out.cumulativeReasoning == "" {
 		failures = append(failures, leg+": cumulative reasoning is empty (expected the fed thinking)")
-	} else if out.cumulativeReasoning != thinking {
-		failures = append(failures, fmt.Sprintf("%s: cumulative reasoning ≠ thinking: got %q want %q", leg, out.cumulativeReasoning, thinking))
+	} else if out.cumulativeReasoning != wantReasoning {
+		failures = append(failures, fmt.Sprintf("%s: cumulative reasoning ≠ thinking: got %q want %q", leg, out.cumulativeReasoning, wantReasoning))
 	}
+
 	if len(out.finalData) == 0 {
 		failures = append(failures, leg+": empty final-frame data on a successful stream")
 	} else if diff, err := bamlfuzz.SemanticDiff(leg+"_final", expected, out.finalData); err != nil {
@@ -711,7 +748,7 @@ func assertStreamOutcome(leg string, out reasoningStreamOutcome, thinking string
 		envelope.SemanticDiff = append(envelope.SemanticDiff, diff...)
 		failures = append(failures, leg+": final data ≠ Expected")
 	}
-	failures = append(failures, out.leakFrames...)
+	failures = append(failures, out.frameFailures...)
 	return failures
 }
 
@@ -730,13 +767,27 @@ func frameLeak(leg, kind string, data json.RawMessage, raw string) string {
 
 // drainReasoningDynclientStream opens a dynclient DynamicStreamRaw with the
 // given flag and drains it to EOF, accumulating the cumulative reasoning
-// (last non-empty snapshot — final frames carry the full text), the final
-// data, and any leaking frame. A panic or context error is fatal (the
-// caller stops); ok=false means the leg was already reported.
-func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dynclient.Request, includeReasoning bool, c bamlfuzz.OracleCase, envelope *bamlfuzz.ReasoningFailureEnvelope) (reasoningStreamOutcome, bool) {
+// (last non-empty snapshot from a data/final frame — final frames carry the
+// full text), the final data, and any per-frame violation. Reasoning is
+// accumulated ONLY from partial/final frames; reasoning on a reset/metadata
+// (or any other) frame is a contract violation (reasoning rides inside
+// data/final frames — there is no dedicated reasoning frame) and is
+// recorded as a frame failure. A context error is a harness failure
+// (t.Fatalf); a panic or other drain error returns ok=false + errStr for
+// the caller to escalate.
+func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dynclient.Request, includeReasoning bool, c bamlfuzz.OracleCase, envelope *bamlfuzz.ReasoningFailureEnvelope) reasoningStreamOutcome {
 	t.Helper()
 	req := base
 	req.IncludeReasoning = includeReasoning
+
+	legLabel := "dynclient stream opt-in"
+	if !includeReasoning {
+		legLabel = "dynclient stream default"
+	}
+	recordErr := func(msg string) reasoningStreamOutcome {
+		envelope.StreamError = msg
+		return reasoningStreamOutcome{errStr: msg}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -749,25 +800,18 @@ func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dyn
 		stream, openErr = dyn.DynamicStreamRaw(ctx, req)
 	})
 	if panicked {
-		envelope.StreamError = fmt.Sprintf("dyn.DynamicStreamRaw panic: %v", panicVal)
-		failAndDumpReasoning(t, envelope, "dyn.DynamicStreamRaw panicked (include_reasoning=%v): %v\n%s", includeReasoning, panicVal, panicStack)
-		return reasoningStreamOutcome{}, false
+		envelope.DynclientPanicStack = string(panicStack)
+		return recordErr(fmt.Sprintf("dyn.DynamicStreamRaw panicked: %v", panicVal))
 	}
 	if openErr != nil {
 		if isContextErr(openErr) {
 			t.Fatalf("harness failure: dynclient DynamicStreamRaw open (include_reasoning=%v, case=%s): %v", includeReasoning, c.Name, openErr)
 		}
-		envelope.StreamError = openErr.Error()
-		failAndDumpReasoning(t, envelope, "dyn.DynamicStreamRaw open errored (include_reasoning=%v): %v", includeReasoning, openErr)
-		return reasoningStreamOutcome{}, false
+		return recordErr(openErr.Error())
 	}
 	defer stream.Close()
 
-	var out reasoningStreamOutcome
-	legLabel := "dynclient stream"
-	if !includeReasoning {
-		legLabel = "dynclient stream default"
-	}
+	out := reasoningStreamOutcome{ok: true}
 	for {
 		ev, e := stream.Next()
 		if errors.Is(e, io.EOF) {
@@ -777,9 +821,7 @@ func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dyn
 			if isContextErr(e) {
 				t.Fatalf("harness failure: dynclient DynamicStreamRaw next (include_reasoning=%v, case=%s): %v", includeReasoning, c.Name, e)
 			}
-			envelope.StreamError = e.Error()
-			failAndDumpReasoning(t, envelope, "dynclient stream drain errored (include_reasoning=%v): %v", includeReasoning, e)
-			return reasoningStreamOutcome{}, false
+			return recordErr(e.Error())
 		}
 		switch ev.Kind {
 		case dynclient.EventPartial:
@@ -787,7 +829,7 @@ func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dyn
 				out.cumulativeReasoning = ev.Reasoning
 			}
 			if leak := frameLeak(legLabel, "partial", ev.Data, ev.Raw); leak != "" {
-				out.leakFrames = append(out.leakFrames, leak)
+				out.frameFailures = append(out.frameFailures, leak)
 			}
 		case dynclient.EventFinal:
 			if ev.Reasoning != "" {
@@ -795,26 +837,45 @@ func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dyn
 			}
 			out.finalData = append(json.RawMessage(nil), ev.Data...)
 			if leak := frameLeak(legLabel, "final", ev.Data, ev.Raw); leak != "" {
-				out.leakFrames = append(out.leakFrames, leak)
+				out.frameFailures = append(out.frameFailures, leak)
+			}
+		default:
+			// reset / metadata / any future kind: reasoning must NOT ride
+			// here — the contract is that reasoning travels inside
+			// data/final frames only.
+			if ev.Reasoning != "" {
+				out.frameFailures = append(out.frameFailures,
+					fmt.Sprintf("%s: reasoning on a non-data frame (kind=%s): %q", legLabel, ev.Kind, ev.Reasoning))
 			}
 		}
 	}
-	return out, true
+	return out
 }
 
 // drainReasoningRESTStream drives the REST /stream-with-raw/_dynamic SSE
-// leg (opt-in) via an order-preserving body and accumulates the cumulative
-// reasoning, final data, and leaking frames. Same fatal / reported contract
-// as the dynclient streaming drain.
-func drainReasoningRESTStream(t *testing.T, lowered *bamlutils.DynamicOutputSchema, base dynclient.Request, c bamlfuzz.OracleCase, envelope *bamlfuzz.ReasoningFailureEnvelope) (reasoningStreamOutcome, bool) {
+// leg with the given flag via an order-preserving body, accumulating the
+// cumulative reasoning, final data, and per-frame violations with the same
+// provenance enforcement as the dynclient drain: reasoning is accepted
+// ONLY from data/final frames; reasoning on a metadata/reset/error frame is
+// a frame failure. Context errors t.Fatalf; other errors surface ok=false +
+// errStr for the caller to escalate.
+func drainReasoningRESTStream(t *testing.T, lowered *bamlutils.DynamicOutputSchema, base dynclient.Request, includeReasoning bool, c bamlfuzz.OracleCase, envelope *bamlfuzz.ReasoningFailureEnvelope) reasoningStreamOutcome {
 	t.Helper()
 	req := base
-	req.IncludeReasoning = true
+	req.IncludeReasoning = includeReasoning
+
+	legLabel := "REST stream opt-in"
+	if !includeReasoning {
+		legLabel = "REST stream default"
+	}
+	recordErr := func(msg string) reasoningStreamOutcome {
+		envelope.StreamError = msg
+		return reasoningStreamOutcome{errStr: msg}
+	}
 
 	body, berr := buildDynamicCallBody(req, lowered)
 	if berr != nil {
-		failAndDumpReasoning(t, envelope, "build REST stream body: %v", berr)
-		return reasoningStreamOutcome{}, false
+		return recordErr(fmt.Sprintf("build REST stream body: %v", berr))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -828,12 +889,11 @@ func drainReasoningRESTStream(t *testing.T, lowered *bamlutils.DynamicOutputSche
 		events, errs = BAMLClient.DynamicStreamWithRawBody(ctx, body)
 	})
 	if panicked {
-		envelope.StreamError = fmt.Sprintf("DynamicStreamWithRawBody panic: %v", panicVal)
-		failAndDumpReasoning(t, envelope, "BAMLClient.DynamicStreamWithRawBody panicked: %v\n%s", panicVal, panicStack)
-		return reasoningStreamOutcome{}, false
+		envelope.RESTPanicStack = string(panicStack)
+		return recordErr(fmt.Sprintf("DynamicStreamWithRawBody panicked: %v", panicVal))
 	}
 
-	var out reasoningStreamOutcome
+	out := reasoningStreamOutcome{ok: true}
 	for ev := range events {
 		switch {
 		case ev.IsFinal():
@@ -841,33 +901,32 @@ func drainReasoningRESTStream(t *testing.T, lowered *bamlutils.DynamicOutputSche
 				out.cumulativeReasoning = ev.Reasoning
 			}
 			out.finalData = append(json.RawMessage(nil), ev.Data...)
-			if leak := frameLeak("REST stream", "final", ev.Data, ev.Raw); leak != "" {
-				out.leakFrames = append(out.leakFrames, leak)
+			if leak := frameLeak(legLabel, "final", ev.Data, ev.Raw); leak != "" {
+				out.frameFailures = append(out.frameFailures, leak)
 			}
 		case ev.IsPartialData():
 			if ev.Reasoning != "" {
 				out.cumulativeReasoning = ev.Reasoning
 			}
-			if leak := frameLeak("REST stream", "partial", ev.Data, ev.Raw); leak != "" {
-				out.leakFrames = append(out.leakFrames, leak)
+			if leak := frameLeak(legLabel, "partial", ev.Data, ev.Raw); leak != "" {
+				out.frameFailures = append(out.frameFailures, leak)
 			}
 		default:
-			// metadata / reset / error frames: still capture a reasoning
-			// snapshot if one rides along, but assert nothing on shape here.
+			// metadata / reset / error (or any future) frame: reasoning must
+			// NOT ride here — there is no dedicated reasoning frame type.
 			if ev.Reasoning != "" {
-				out.cumulativeReasoning = ev.Reasoning
+				out.frameFailures = append(out.frameFailures,
+					fmt.Sprintf("%s: reasoning on a non-data frame: %q", legLabel, ev.Reasoning))
 			}
 		}
 	}
 	if e, okErr := <-errs; okErr && e != nil {
 		if isContextErr(e) {
-			t.Fatalf("harness failure: REST DynamicStreamWithRawBody (case=%s): %v", c.Name, e)
+			t.Fatalf("harness failure: REST DynamicStreamWithRawBody (include_reasoning=%v, case=%s): %v", includeReasoning, c.Name, e)
 		}
-		envelope.StreamError = e.Error()
-		failAndDumpReasoning(t, envelope, "REST stream drain errored: %v", e)
-		return reasoningStreamOutcome{}, false
+		return recordErr(e.Error())
 	}
-	return out, true
+	return out
 }
 
 // failAndDumpReasoning writes the ReasoningFailureEnvelope to the artifact
@@ -1054,6 +1113,125 @@ func TestReasoningChannelFailures(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			got := reasoningChannelFailures("dynclient", thinking, content, tc.on, tc.off)
+			if tc.wantClean {
+				if len(got) != 0 {
+					t.Fatalf("expected no failures, got %v", got)
+				}
+				return
+			}
+			if len(got) == 0 {
+				t.Fatalf("expected failures, got none")
+			}
+			for _, want := range tc.wantMatch {
+				found := false
+				for _, g := range got {
+					if strings.Contains(g, want) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected a failure containing %q; got %v", want, got)
+				}
+			}
+		})
+	}
+}
+
+// TestLegFailureFrom pins the leg-error vacuous-pass guard: an ok==false
+// leg MUST contribute its error string as a failure (never be skipped),
+// while an ok==true leg contributes nothing. This is the unit-level proof
+// that a broken unary or streaming leg cannot pass as long as other legs
+// pass.
+func TestLegFailureFrom(t *testing.T) {
+	if got := legFailureFrom("dynclient opt-in", true, ""); got != nil {
+		t.Errorf("ok leg should contribute no failures, got %v", got)
+	}
+	got := legFailureFrom("dynclient opt-in", false, "boom")
+	if len(got) != 1 || !strings.Contains(got[0], "boom") || !strings.Contains(got[0], "dynclient opt-in") {
+		t.Errorf("errored leg must surface its label+error, got %v", got)
+	}
+	// A non-ok leg with no recorded error still fails (no silent skip).
+	got = legFailureFrom("REST default", false, "")
+	if len(got) != 1 || !strings.Contains(got[0], "did not complete") {
+		t.Errorf("non-ok leg with empty errStr must still fail, got %v", got)
+	}
+}
+
+// TestAssertStreamOutcome pins the per-stream R3/R4 assertions: opt-in
+// streams must echo the thinking and carry a present, correct final data;
+// default streams must have EMPTY reasoning AND still a present, correct
+// final data; frame failures (leak/provenance) always propagate. This is
+// the unit-level proof that the flag-off streaming path validates final
+// data (not just reasoning) and that R4 holds on the streaming path.
+func TestAssertStreamOutcome(t *testing.T) {
+	const thinking = "think {\"x\":1}"
+	expected := json.RawMessage(`{"k":"v"}`)
+	good := json.RawMessage(`{"k":"v"}`)
+	bad := json.RawMessage(`{"k":"LEAKED"}`)
+
+	cases := []struct {
+		name          string
+		out           reasoningStreamOutcome
+		wantReasoning string
+		wantClean     bool
+		wantMatch     []string
+	}{
+		{
+			name:          "optin_clean",
+			out:           reasoningStreamOutcome{ok: true, cumulativeReasoning: thinking, finalData: good},
+			wantReasoning: thinking,
+			wantClean:     true,
+		},
+		{
+			name:          "default_clean_empty_reasoning",
+			out:           reasoningStreamOutcome{ok: true, cumulativeReasoning: "", finalData: good},
+			wantReasoning: "",
+			wantClean:     true,
+		},
+		{
+			name:          "default_with_reasoning_fails_R4",
+			out:           reasoningStreamOutcome{ok: true, cumulativeReasoning: thinking, finalData: good},
+			wantReasoning: "",
+			wantMatch:     []string{"cumulative reasoning non-empty under default flag"},
+		},
+		{
+			name:          "optin_empty_reasoning_fails",
+			out:           reasoningStreamOutcome{ok: true, cumulativeReasoning: "", finalData: good},
+			wantReasoning: thinking,
+			wantMatch:     []string{"cumulative reasoning is empty"},
+		},
+		{
+			name:          "optin_missing_final_data_fails",
+			out:           reasoningStreamOutcome{ok: true, cumulativeReasoning: thinking, finalData: nil},
+			wantReasoning: thinking,
+			wantMatch:     []string{"empty final-frame data"},
+		},
+		{
+			name:          "default_missing_final_data_fails",
+			out:           reasoningStreamOutcome{ok: true, cumulativeReasoning: "", finalData: nil},
+			wantReasoning: "",
+			wantMatch:     []string{"empty final-frame data"},
+		},
+		{
+			name:          "final_data_diverges_fails",
+			out:           reasoningStreamOutcome{ok: true, cumulativeReasoning: thinking, finalData: bad},
+			wantReasoning: thinking,
+			wantMatch:     []string{"final data ≠ Expected"},
+		},
+		{
+			name:          "frame_failures_propagate",
+			out:           reasoningStreamOutcome{ok: true, cumulativeReasoning: thinking, finalData: good, frameFailures: []string{"frame leaked marker"}},
+			wantReasoning: thinking,
+			wantMatch:     []string{"frame leaked marker"},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			env := &bamlfuzz.ReasoningFailureEnvelope{}
+			got := assertStreamOutcome("leg", tc.out, tc.wantReasoning, expected, env)
 			if tc.wantClean {
 				if len(got) != 0 {
 					t.Fatalf("expected no failures, got %v", got)

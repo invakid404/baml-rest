@@ -209,15 +209,19 @@ type ReasoningFailureEnvelope struct {
 	RESTPanic        string          `json:"rest_panic,omitempty"`
 	RESTPanicStack   string          `json:"rest_panic_stack,omitempty"`
 
-	// Streaming legs (include_reasoning=true): the cumulative reasoning at
-	// the last frame and the final-frame data, per transport. CumulativeOff
-	// holds the dynclient streaming cumulative reasoning under the flag-off
-	// run (must be empty).
+	// Streaming legs: the cumulative reasoning at the last frame and the
+	// final-frame data, per transport and flag state. Both transports run
+	// in both flag states (R4 must hold on every path); the "Off" fields
+	// hold the include_reasoning=false run, whose reasoning must be empty
+	// and whose final data must still be present and correct.
 	StreamDynclientReasoning    string          `json:"stream_dynclient_reasoning,omitempty"`
 	StreamDynclientReasoningOff string          `json:"stream_dynclient_reasoning_off,omitempty"`
 	StreamDynclientFinal        json.RawMessage `json:"stream_dynclient_final,omitempty"`
+	StreamDynclientFinalOff     json.RawMessage `json:"stream_dynclient_final_off,omitempty"`
 	StreamRESTReasoning         string          `json:"stream_rest_reasoning,omitempty"`
+	StreamRESTReasoningOff      string          `json:"stream_rest_reasoning_off,omitempty"`
 	StreamRESTFinal             json.RawMessage `json:"stream_rest_final,omitempty"`
+	StreamRESTFinalOff          json.RawMessage `json:"stream_rest_final_off,omitempty"`
 	StreamError                 string          `json:"stream_error,omitempty"`
 
 	SemanticDiff      []SemanticDiffEntry `json:"semantic_diff,omitempty"`
