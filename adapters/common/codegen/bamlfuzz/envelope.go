@@ -148,6 +148,115 @@ func WriteRawReplayArtifact(dir string, envelope *RawFailureEnvelope) (string, e
 	return path, nil
 }
 
+// ReasoningFailureEnvelope captures the full context around a
+// disagreement on the reasoning-channel oracle. It mirrors
+// RawFailureEnvelope's parsed-`data` capture (the with-raw legs still
+// diff their flattened output against the walker's Expected) and adds the
+// reasoning-channel evidence: each leg is driven twice — once with
+// __baml_options__.include_reasoning on and once off — so the envelope
+// records both flag states. The reasoning "expected" is ThinkingInput
+// (the fed thinking string), not a walker output: BAML passes reasoning
+// through verbatim, so the oracle proves cross-path preservation and
+// content/reasoning separation, not reasoning parsing.
+type ReasoningFailureEnvelope struct {
+	GeneratorVersion    string     `json:"generator_version"`
+	GeneratedAt         string     `json:"generated_at"`
+	RapidSeed           int64      `json:"rapid_seed"`
+	CaseIndex           int        `json:"case_index"`
+	CaseName            string     `json:"case_name"`
+	OracleMode          OracleMode `json:"oracle_mode"`
+	PreserveSchemaOrder bool       `json:"preserve_schema_order"`
+	Schema              FuzzSchema `json:"schema"`
+	// Value is the generated value tree the walker rendered MockLLMContent
+	// and Expected from, captured so the artifact can standalone-replay a
+	// failing case (fuzz cases have RapidSeed 0).
+	Value             FuzzValue                      `json:"value"`
+	DynamicSchema     *bamlutils.DynamicOutputSchema `json:"dynamic_schema,omitempty"`
+	DynamicSkipReason string                         `json:"dynamic_skip_reason,omitempty"`
+	MockLLMScenarioID string                         `json:"mockllm_scenario_id"`
+	MockLLMContent    json.RawMessage                `json:"mockllm_content"`
+	Expected          json.RawMessage                `json:"expected"`
+
+	// ThinkingInput is the fuzzed thinking string fed to the Anthropic mock
+	// (Scenario.Thinking). It is the reasoning channel's "expected" value —
+	// every leg's reasoning must equal it under include_reasoning=true.
+	ThinkingInput string `json:"thinking_input"`
+
+	// Unary dynclient leg, both flag states. The "On" fields come from the
+	// include_reasoning=true run; the "Off" fields from the flag-absent run.
+	DynclientReasoningOn  string          `json:"dynclient_reasoning_on,omitempty"`
+	DynclientReasoningOff string          `json:"dynclient_reasoning_off,omitempty"`
+	DynclientDataOn       json.RawMessage `json:"dynclient_data_on,omitempty"`
+	DynclientDataOff      json.RawMessage `json:"dynclient_data_off,omitempty"`
+	DynclientRawOn        string          `json:"dynclient_raw_on,omitempty"`
+	DynclientRawOff       string          `json:"dynclient_raw_off,omitempty"`
+	DynclientErrorOn      string          `json:"dynclient_error_on,omitempty"`
+	DynclientErrorOff     string          `json:"dynclient_error_off,omitempty"`
+	DynclientPanic        string          `json:"dynclient_panic,omitempty"`
+	DynclientPanicStack   string          `json:"dynclient_panic_stack,omitempty"`
+
+	// Unary REST /call-with-raw/_dynamic leg, both flag states.
+	RESTReasoningOn  string          `json:"rest_reasoning_on,omitempty"`
+	RESTReasoningOff string          `json:"rest_reasoning_off,omitempty"`
+	RESTDataOn       json.RawMessage `json:"rest_data_on,omitempty"`
+	RESTDataOff      json.RawMessage `json:"rest_data_off,omitempty"`
+	RESTRawOn        string          `json:"rest_raw_on,omitempty"`
+	RESTRawOff       string          `json:"rest_raw_off,omitempty"`
+	RESTStatusOn     int             `json:"rest_status_on,omitempty"`
+	RESTStatusOff    int             `json:"rest_status_off,omitempty"`
+	RESTErrorOn      string          `json:"rest_error_on,omitempty"`
+	RESTErrorOff     string          `json:"rest_error_off,omitempty"`
+	RESTPanic        string          `json:"rest_panic,omitempty"`
+	RESTPanicStack   string          `json:"rest_panic_stack,omitempty"`
+
+	// Streaming legs (include_reasoning=true): the cumulative reasoning at
+	// the last frame and the final-frame data, per transport. CumulativeOff
+	// holds the dynclient streaming cumulative reasoning under the flag-off
+	// run (must be empty).
+	StreamDynclientReasoning    string          `json:"stream_dynclient_reasoning,omitempty"`
+	StreamDynclientReasoningOff string          `json:"stream_dynclient_reasoning_off,omitempty"`
+	StreamDynclientFinal        json.RawMessage `json:"stream_dynclient_final,omitempty"`
+	StreamRESTReasoning         string          `json:"stream_rest_reasoning,omitempty"`
+	StreamRESTFinal             json.RawMessage `json:"stream_rest_final,omitempty"`
+	StreamError                 string          `json:"stream_error,omitempty"`
+
+	SemanticDiff      []SemanticDiffEntry `json:"semantic_diff,omitempty"`
+	ReasoningMismatch []string            `json:"reasoning_mismatch,omitempty"`
+	ReplayPath        string              `json:"replay_path"`
+	Reproduction      string              `json:"reproduction"`
+	Metadata          CaseMetadata        `json:"metadata"`
+}
+
+// WriteReasoningReplayArtifact writes a ReasoningFailureEnvelope to `dir`
+// as a JSON file. Same on-disk format as WriteRawReplayArtifact (2-space
+// indent, deterministic basename); envelope.ReplayPath is stamped with
+// the resulting path so the t.Errorf message can point at the artifact.
+func WriteReasoningReplayArtifact(dir string, envelope *ReasoningFailureEnvelope) (string, error) {
+	if envelope == nil {
+		return "", fmt.Errorf("bamlfuzz: nil envelope")
+	}
+	if envelope.GeneratorVersion == "" {
+		envelope.GeneratorVersion = GeneratorVersion
+	}
+	if envelope.GeneratedAt == "" {
+		envelope.GeneratedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("bamlfuzz: mkdir %s: %w", dir, err)
+	}
+	name := sanitizeArtifactBasename(envelope.CaseName, envelope.CaseIndex)
+	path := filepath.Join(dir, name+".json")
+	envelope.ReplayPath = path
+	buf, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("bamlfuzz: marshal envelope: %w", err)
+	}
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		return "", fmt.Errorf("bamlfuzz: write %s: %w", path, err)
+	}
+	return path, nil
+}
+
 // SemanticDiffEntry names one path-level disagreement between two of the
 // oracle legs. `Side` identifies which legs disagree
 // ("expected_vs_dynclient", "expected_vs_rest", "dynclient_vs_rest").

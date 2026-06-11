@@ -571,9 +571,9 @@ func TestDynamicInput_ToWorkerInput_PropagatesOrder(t *testing.T) {
 	// Parse the worker payload preserving key order so we can verify the
 	// classes/enums objects survived as ordered objects on the wire.
 	type dyn struct {
-		PreserveOrder bool                         `json:"preserve_order"`
-		Classes       OrderedMap[*DynamicClass]    `json:"classes"`
-		Enums         OrderedMap[*DynamicEnum]     `json:"enums"`
+		PreserveOrder bool                      `json:"preserve_order"`
+		Classes       OrderedMap[*DynamicClass] `json:"classes"`
+		Enums         OrderedMap[*DynamicEnum]  `json:"enums"`
 	}
 	type tb struct {
 		DynamicTypes dyn `json:"dynamic_types"`
@@ -1119,4 +1119,51 @@ func keysOf(m map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestDynamicInput_ToWorkerInput_IncludeReasoning verifies the reasoning
+// opt-in threads through to __baml_options__.include_reasoning so the
+// dynamic with-raw legs can surface provider reasoning. With the flag off
+// (default) the omitempty field must not appear; with it on, the worker
+// payload must carry include_reasoning:true. This is the plumbing the
+// reasoning-channel bamlfuzz oracle relies on to set the flag identically
+// on the dynclient and REST dynamic legs.
+func TestDynamicInput_ToWorkerInput_IncludeReasoning(t *testing.T) {
+	t.Parallel()
+
+	primary := "TestClient"
+	base := func(includeReasoning bool) *DynamicInput {
+		text := "hi"
+		return &DynamicInput{
+			Messages: []DynamicMessage{{Role: "user", TextContent: &text}},
+			ClientRegistry: &ClientRegistry{
+				Primary: &primary,
+				Clients: []*ClientProperty{{
+					Name:     primary,
+					Provider: "anthropic",
+					Options:  map[string]any{"model": "m", "api_key": "k"},
+				}},
+			},
+			OutputSchema: &DynamicOutputSchema{
+				Properties: MustOrderedMap(OrderedKV("answer", &DynamicProperty{Type: "string"})),
+			},
+			IncludeReasoning: includeReasoning,
+		}
+	}
+
+	off, err := base(false).ToWorkerInput()
+	if err != nil {
+		t.Fatalf("ToWorkerInput (off): %v", err)
+	}
+	if bytes.Contains(off, []byte(`"include_reasoning"`)) {
+		t.Errorf("flag-off worker payload unexpectedly carries include_reasoning:\n%s", off)
+	}
+
+	on, err := base(true).ToWorkerInput()
+	if err != nil {
+		t.Fatalf("ToWorkerInput (on): %v", err)
+	}
+	if !bytes.Contains(on, []byte(`"include_reasoning":true`)) {
+		t.Errorf("flag-on worker payload missing include_reasoning:true:\n%s", on)
+	}
 }

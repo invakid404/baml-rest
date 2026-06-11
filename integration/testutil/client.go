@@ -1472,6 +1472,17 @@ func (c *BAMLRestClient) DynamicStreamNDJSONBody(ctx context.Context, body []byt
 	return c.dynamicStreamRequestBodyNDJSON(ctx, fmt.Sprintf("%s/stream/_dynamic", c.baseURL), body)
 }
 
+// DynamicStreamWithRawBody executes a /stream-with-raw/_dynamic SSE
+// request with a caller-provided JSON body. With-raw analogue of
+// DynamicStreamBody: the order-preserving body lets the reasoning oracle
+// build the request via bamlutils-ordered types (so include_reasoning and
+// declaration order survive end-to-end), and expectRawEnvelope=true makes
+// the decoder surface the per-frame raw + reasoning channels on
+// StreamEvent.
+func (c *BAMLRestClient) DynamicStreamWithRawBody(ctx context.Context, body []byte) (<-chan StreamEvent, <-chan error) {
+	return c.dynamicStreamRequestBody(ctx, fmt.Sprintf("%s/stream-with-raw/_dynamic", c.baseURL), body, true)
+}
+
 // closedStreamWithError returns a stream pair that immediately reports a
 // single error and is closed, matching the channel contract of the live
 // streaming paths (buffered errs, both channels closed).

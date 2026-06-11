@@ -31,6 +31,18 @@ const (
 	// equivalence it pins the raw echo channel: the extracted output text
 	// must equal the mock's emitted content byte-for-byte on both legs.
 	OracleCallWithRaw OracleMode = "call_with_raw"
+	// OracleReasoning: lower the schema through the dynamic emitter and
+	// drive the with-raw legs against the Anthropic mock provider with a
+	// fuzzed thinking block, toggling __baml_options__.include_reasoning.
+	// Beyond the dynamic oracle's parsed-data equivalence it pins the
+	// reasoning channel: with the flag on, every leg's `reasoning` must
+	// equal the fed thinking string (cross-path preservation), while
+	// parsed `data` and `raw` stay byte-identical with the flag on vs off
+	// (separation — thinking never leaks into the parseable/raw channel).
+	// The reasoning "expected" is the input thinking itself, not a
+	// walker-computed value: BAML passes reasoning through untouched, so
+	// the oracle proves preservation + separation, not reasoning parsing.
+	OracleReasoning OracleMode = "reasoning"
 )
 
 // CaseMetadata is per-case provenance that's useful to a developer
