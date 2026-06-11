@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -205,6 +206,7 @@ func runCallWithRawOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Or
 		OracleMode:          bamlfuzz.OracleCallWithRaw,
 		PreserveSchemaOrder: c.PreserveSchemaOrder,
 		Schema:              c.Schema,
+		Value:               c.Value,
 		MockLLMContent:      c.MockLLMContent,
 		Expected:            c.Expected,
 		Metadata:            c.Metadata,
@@ -349,8 +351,12 @@ func runCallWithRawOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Or
 
 	// --- A4 anchor: plain /call dynclient leg (same case) ---
 	// Cheap reuse of the existing DynamicCall path to prove with-raw's
-	// parsed `data` matches the plain call. An error here is recorded but
-	// only fails the A4 assertion below, not the whole case.
+	// parsed `data` matches the plain call. A non-context error / panic /
+	// nil response is recorded as PlainCallError so the A4 assertion below
+	// can fail the case loudly; a context error is a harness failure. Only
+	// a genuinely present payload is recorded as PlainCallOutput — a
+	// "successful" call that returned no Data must not look like clean
+	// output to the anchor.
 	var (
 		plainResp *dynclient.CallResult
 		plainErr  error
@@ -358,14 +364,17 @@ func runCallWithRawOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Or
 	panicked, panicVal, panicStack = callWithRecover(func() {
 		plainResp, plainErr = dyn.DynamicCall(callCtx, libReq)
 	})
-	if panicked {
-		envelope.PlainCallError = fmt.Sprintf("panic: %v", panicVal)
-	} else if plainErr != nil {
+	switch {
+	case panicked:
+		envelope.PlainCallError = fmt.Sprintf("panic: %v\n%s", panicVal, panicStack)
+	case plainErr != nil:
 		if isContextErr(plainErr) {
 			t.Fatalf("harness failure: dynclient DynamicCall (A4 anchor, case=%s): %v", c.Name, plainErr)
 		}
 		envelope.PlainCallError = plainErr.Error()
-	} else if plainResp != nil {
+	case plainResp == nil:
+		envelope.PlainCallError = "nil response from dyn.DynamicCall"
+	default:
 		envelope.PlainCallOutput = plainResp.Data
 	}
 
@@ -378,10 +387,23 @@ func runCallWithRawOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Or
 		failures = append(failures, fmt.Sprintf("REST errored (status %d): %s", envelope.RESTStatus, envelope.RESTError))
 	}
 
-	// A1 — parsed data still equals Expected on both legs. SemanticDiff
-	// hard-errors on an empty payload (decodeAny), so an empty `data` side
-	// cannot pass by skip.
-	if libErr == nil && envelope.DynclientOutput != nil {
+	// A successful leg (no transport/oracle error) MUST carry non-empty
+	// parsed `data`. The walker always renders a non-empty Expected for
+	// these cases, so an empty payload on a clean leg — e.g. a 2xx body
+	// like {"raw": <text>} that unmarshals to Data==nil — is a real
+	// divergence, not something to skip past the A1/A2 diffs. Guarding it
+	// explicitly closes the empty-payload vacuous-pass hole (scope §6): a
+	// leg could otherwise satisfy the raw echo (A3) while the data
+	// comparison was silently skipped on its nil payload.
+	failures = append(failures, rawDataPresenceFailures(
+		libErr == nil, envelope.DynclientOutput,
+		envelope.RESTError == "", envelope.RESTBody)...)
+
+	// A1 — parsed data still equals Expected on both legs. Gated on a
+	// present (non-empty) payload; the emptiness itself is already a
+	// failure recorded above, so an empty side never reaches here to pass
+	// by skip.
+	if libErr == nil && len(envelope.DynclientOutput) > 0 {
 		if diff, err := bamlfuzz.SemanticDiff("expected_vs_dynclient_raw", c.Expected, envelope.DynclientOutput); err != nil {
 			failures = append(failures, fmt.Sprintf("expected_vs_dynclient_raw diff: %v", err))
 		} else if len(diff) > 0 {
@@ -389,7 +411,7 @@ func runCallWithRawOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Or
 			failures = append(failures, "expected ≠ dynclient (data)")
 		}
 	}
-	if envelope.RESTError == "" && envelope.RESTBody != nil {
+	if envelope.RESTError == "" && len(envelope.RESTBody) > 0 {
 		if diff, err := bamlfuzz.SemanticDiff("expected_vs_rest_raw", c.Expected, envelope.RESTBody); err != nil {
 			failures = append(failures, fmt.Sprintf("expected_vs_rest_raw diff: %v", err))
 		} else if len(diff) > 0 {
@@ -398,7 +420,7 @@ func runCallWithRawOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Or
 		}
 	}
 	// A2 — data parity between the two with-raw legs.
-	if libErr == nil && envelope.RESTError == "" && envelope.DynclientOutput != nil && envelope.RESTBody != nil {
+	if libErr == nil && envelope.RESTError == "" && len(envelope.DynclientOutput) > 0 && len(envelope.RESTBody) > 0 {
 		if diff, err := bamlfuzz.SemanticDiffParity("dynclient_raw_vs_rest_raw", envelope.DynclientOutput, envelope.RESTBody); err != nil {
 			failures = append(failures, fmt.Sprintf("dynclient_raw_vs_rest_raw diff: %v", err))
 		} else if len(diff) > 0 {
@@ -434,16 +456,25 @@ func runCallWithRawOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Or
 		}
 	}
 
-	// A4 — with-raw parsed data ⊇ plain /call. Parity comparison so a
-	// leaked null key on either BAML-generated side is tolerated like the
-	// dynamic oracle's dynclient_vs_rest check.
-	if envelope.PlainCallError == "" && envelope.PlainCallOutput != nil &&
-		libErr == nil && envelope.DynclientOutput != nil {
-		if diff, err := bamlfuzz.SemanticDiffParity("dynclient_raw_vs_plain_call", envelope.DynclientOutput, envelope.PlainCallOutput); err != nil {
-			failures = append(failures, fmt.Sprintf("dynclient_raw_vs_plain_call diff: %v", err))
-		} else if len(diff) > 0 {
-			envelope.SemanticDiff = append(envelope.SemanticDiff, diff...)
-			failures = append(failures, "with-raw data ≠ plain /call data")
+	// A4 — with-raw parsed data ⊇ plain /call. Enforced (not skipped)
+	// whenever the with-raw dynclient leg itself produced data: the plain
+	// call hits the same mock with the same case, so a plain-call error or
+	// empty output there is a real problem, not an optional check to no-op.
+	// Parity comparison so a leaked null key on either BAML-generated side
+	// is tolerated like the dynamic oracle's dynclient_vs_rest check.
+	if libErr == nil && len(envelope.DynclientOutput) > 0 {
+		switch {
+		case envelope.PlainCallError != "":
+			failures = append(failures, fmt.Sprintf("plain /call leg failed on a case the with-raw leg handled: %s", envelope.PlainCallError))
+		case len(envelope.PlainCallOutput) == 0:
+			failures = append(failures, "plain /call returned empty data on a successful case")
+		default:
+			if diff, err := bamlfuzz.SemanticDiffParity("dynclient_raw_vs_plain_call", envelope.DynclientOutput, envelope.PlainCallOutput); err != nil {
+				failures = append(failures, fmt.Sprintf("dynclient_raw_vs_plain_call diff: %v", err))
+			} else if len(diff) > 0 {
+				envelope.SemanticDiff = append(envelope.SemanticDiff, diff...)
+				failures = append(failures, "with-raw data ≠ plain /call data")
+			}
 		}
 	}
 
@@ -456,6 +487,29 @@ func runCallWithRawOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Or
 		return
 	}
 	failAndDumpRaw(t, envelope, "%s", strings.Join(failures, "; "))
+}
+
+// rawDataPresenceFailures returns harness-failure messages for any
+// with-raw leg that completed cleanly (no transport/oracle error) yet
+// returned empty parsed `data`. The walker always renders a non-empty
+// Expected for the fuzzed cases, so an empty payload on a successful leg —
+// e.g. a 2xx body like {"raw": <text>} that unmarshals to a nil Data — is
+// a real divergence that must fail explicitly rather than be skipped past
+// the A1/A2 diffs (the empty-payload vacuous-pass hole, scope §6). A leg
+// that DID error is not flagged here: it already contributes its own
+// failure, and its empty data is expected.
+//
+// Extracted as a pure function so the guard's behaviour can be asserted
+// directly (TestRawDataPresenceFailures) without driving the full oracle.
+func rawDataPresenceFailures(dynOK bool, dynData json.RawMessage, restOK bool, restData json.RawMessage) []string {
+	var failures []string
+	if dynOK && len(dynData) == 0 {
+		failures = append(failures, "dynclient returned empty parsed data on a successful call")
+	}
+	if restOK && len(restData) == 0 {
+		failures = append(failures, "REST returned empty parsed data on a successful call")
+	}
+	return failures
 }
 
 // failAndDumpRaw writes the RawFailureEnvelope to the artifact dir and
@@ -569,5 +623,80 @@ func TestReproductionForRaw(t *testing.T) {
 	wantFuzz := "go test -tags=integration,subprocess -run='^$' -fuzz='^FuzzBamlfuzzCallWithRaw$' -fuzztime=10m -fuzzcachedir=adapters/common/codegen/testdata/bamlfuzz/.fuzzcache ./integration"
 	if fuzz != wantFuzz {
 		t.Errorf("fuzz repro:\n got:  %s\n want: %s", fuzz, wantFuzz)
+	}
+}
+
+// TestRawDataPresenceFailures pins the empty-payload guard that closes the
+// vacuous-pass hole: a with-raw leg that did NOT error must carry
+// non-empty parsed data, or the oracle records an explicit failure rather
+// than silently skipping the A1/A2 data comparison on its empty payload.
+// The errored-leg case proves the guard does not double-count a leg that
+// already failed.
+func TestRawDataPresenceFailures(t *testing.T) {
+	nonEmpty := json.RawMessage(`{"k":1}`)
+
+	cases := []struct {
+		name      string
+		dynOK     bool
+		dynData   json.RawMessage
+		restOK    bool
+		restData  json.RawMessage
+		wantCount int
+		wantMatch []string
+	}{
+		{
+			name:  "both_present",
+			dynOK: true, dynData: nonEmpty,
+			restOK: true, restData: nonEmpty,
+			wantCount: 0,
+		},
+		{
+			name:  "dynclient_empty_but_ok_fails",
+			dynOK: true, dynData: nil,
+			restOK: true, restData: nonEmpty,
+			wantCount: 1,
+			wantMatch: []string{"dynclient returned empty parsed data"},
+		},
+		{
+			name:  "rest_empty_but_ok_fails",
+			dynOK: true, dynData: nonEmpty,
+			restOK: true, restData: json.RawMessage(``),
+			wantCount: 1,
+			wantMatch: []string{"REST returned empty parsed data"},
+		},
+		{
+			name:  "both_empty_but_ok_fails_twice",
+			dynOK: true, dynData: nil,
+			restOK: true, restData: nil,
+			wantCount: 2,
+		},
+		{
+			name:  "errored_legs_not_flagged",
+			dynOK: false, dynData: nil,
+			restOK: false, restData: nil,
+			wantCount: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := rawDataPresenceFailures(tc.dynOK, tc.dynData, tc.restOK, tc.restData)
+			if len(got) != tc.wantCount {
+				t.Fatalf("failure count: got %d %v, want %d", len(got), got, tc.wantCount)
+			}
+			for _, want := range tc.wantMatch {
+				found := false
+				for _, g := range got {
+					if strings.Contains(g, want) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected a failure containing %q; got %v", want, got)
+				}
+			}
+		})
 	}
 }

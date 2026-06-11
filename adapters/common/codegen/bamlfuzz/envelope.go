@@ -69,19 +69,24 @@ type DynamicFailureEnvelope struct {
 // with byte equality against MockLLMContent (it is pre-parse wire text,
 // not JSON), so DynclientRaw / RESTRaw travel verbatim for forensics.
 type RawFailureEnvelope struct {
-	GeneratorVersion    string                         `json:"generator_version"`
-	GeneratedAt         string                         `json:"generated_at"`
-	RapidSeed           int64                          `json:"rapid_seed"`
-	CaseIndex           int                            `json:"case_index"`
-	CaseName            string                         `json:"case_name"`
-	OracleMode          OracleMode                     `json:"oracle_mode"`
-	PreserveSchemaOrder bool                           `json:"preserve_schema_order"`
-	Schema              FuzzSchema                     `json:"schema"`
-	DynamicSchema       *bamlutils.DynamicOutputSchema `json:"dynamic_schema,omitempty"`
-	DynamicSkipReason   string                         `json:"dynamic_skip_reason,omitempty"`
-	MockLLMScenarioID   string                         `json:"mockllm_scenario_id"`
-	MockLLMContent      json.RawMessage                `json:"mockllm_content"`
-	Expected            json.RawMessage                `json:"expected"`
+	GeneratorVersion    string     `json:"generator_version"`
+	GeneratedAt         string     `json:"generated_at"`
+	RapidSeed           int64      `json:"rapid_seed"`
+	CaseIndex           int        `json:"case_index"`
+	CaseName            string     `json:"case_name"`
+	OracleMode          OracleMode `json:"oracle_mode"`
+	PreserveSchemaOrder bool       `json:"preserve_schema_order"`
+	Schema              FuzzSchema `json:"schema"`
+	// Value is the generated value tree the walker rendered MockLLMContent
+	// and Expected from. Captured alongside Schema + RapidSeed so the
+	// artifact can standalone-reconstruct the failing case even for fuzz
+	// cases, where RapidSeed is 0 and the seed alone is insufficient.
+	Value             FuzzValue                      `json:"value"`
+	DynamicSchema     *bamlutils.DynamicOutputSchema `json:"dynamic_schema,omitempty"`
+	DynamicSkipReason string                         `json:"dynamic_skip_reason,omitempty"`
+	MockLLMScenarioID string                         `json:"mockllm_scenario_id"`
+	MockLLMContent    json.RawMessage                `json:"mockllm_content"`
+	Expected          json.RawMessage                `json:"expected"`
 
 	// Parsed `data` payloads from each with-raw leg.
 	DynclientOutput     json.RawMessage `json:"dynclient_output,omitempty"`
