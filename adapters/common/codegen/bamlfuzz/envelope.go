@@ -61,6 +61,88 @@ type DynamicFailureEnvelope struct {
 	Metadata            CaseMetadata                   `json:"metadata"`
 }
 
+// RawFailureEnvelope captures the full context around a disagreement on
+// the /call-with-raw oracle. It mirrors DynamicFailureEnvelope's parsed
+// `data` capture (the with-raw legs still diff their flattened output
+// against the walker's Expected) and adds the raw-channel evidence: the
+// extracted output text each leg returned. The raw channel is asserted
+// with byte equality against MockLLMContent (it is pre-parse wire text,
+// not JSON), so DynclientRaw / RESTRaw travel verbatim for forensics.
+type RawFailureEnvelope struct {
+	GeneratorVersion    string                         `json:"generator_version"`
+	GeneratedAt         string                         `json:"generated_at"`
+	RapidSeed           int64                          `json:"rapid_seed"`
+	CaseIndex           int                            `json:"case_index"`
+	CaseName            string                         `json:"case_name"`
+	OracleMode          OracleMode                     `json:"oracle_mode"`
+	PreserveSchemaOrder bool                           `json:"preserve_schema_order"`
+	Schema              FuzzSchema                     `json:"schema"`
+	DynamicSchema       *bamlutils.DynamicOutputSchema `json:"dynamic_schema,omitempty"`
+	DynamicSkipReason   string                         `json:"dynamic_skip_reason,omitempty"`
+	MockLLMScenarioID   string                         `json:"mockllm_scenario_id"`
+	MockLLMContent      json.RawMessage                `json:"mockllm_content"`
+	Expected            json.RawMessage                `json:"expected"`
+
+	// Parsed `data` payloads from each with-raw leg.
+	DynclientOutput     json.RawMessage `json:"dynclient_output,omitempty"`
+	DynclientError      string          `json:"dynclient_error,omitempty"`
+	DynclientPanic      string          `json:"dynclient_panic,omitempty"`
+	DynclientPanicStack string          `json:"dynclient_panic_stack,omitempty"`
+	RESTStatus          int             `json:"rest_status,omitempty"`
+	RESTBody            json.RawMessage `json:"rest_body,omitempty"`
+	RESTError           string          `json:"rest_error,omitempty"`
+	RESTPanic           string          `json:"rest_panic,omitempty"`
+	RESTPanicStack      string          `json:"rest_panic_stack,omitempty"`
+
+	// Raw-channel capture: the extracted output text each leg returned.
+	// Asserted equal to MockLLMContent (and to each other) via string
+	// equality, not SemanticDiff.
+	DynclientRaw string `json:"dynclient_raw,omitempty"`
+	RESTRaw      string `json:"rest_raw,omitempty"`
+
+	// PlainCallOutput is the parsed `data` from the plain /call dynclient
+	// leg, captured for the with-raw ⊇ plain-call anchor (A4).
+	PlainCallOutput json.RawMessage `json:"plain_call_output,omitempty"`
+	PlainCallError  string          `json:"plain_call_error,omitempty"`
+
+	SemanticDiff []SemanticDiffEntry `json:"semantic_diff,omitempty"`
+	RawMismatch  []string            `json:"raw_mismatch,omitempty"`
+	ReplayPath   string              `json:"replay_path"`
+	Reproduction string              `json:"reproduction"`
+	Metadata     CaseMetadata        `json:"metadata"`
+}
+
+// WriteRawReplayArtifact writes a RawFailureEnvelope to `dir` as a JSON
+// file. Same on-disk format as WriteReplayArtifact (2-space indent,
+// deterministic basename via sanitizeArtifactBasename); envelope.ReplayPath
+// is stamped with the resulting path so the t.Errorf message can point at
+// the artifact.
+func WriteRawReplayArtifact(dir string, envelope *RawFailureEnvelope) (string, error) {
+	if envelope == nil {
+		return "", fmt.Errorf("bamlfuzz: nil envelope")
+	}
+	if envelope.GeneratorVersion == "" {
+		envelope.GeneratorVersion = GeneratorVersion
+	}
+	if envelope.GeneratedAt == "" {
+		envelope.GeneratedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("bamlfuzz: mkdir %s: %w", dir, err)
+	}
+	name := sanitizeArtifactBasename(envelope.CaseName, envelope.CaseIndex)
+	path := filepath.Join(dir, name+".json")
+	envelope.ReplayPath = path
+	buf, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("bamlfuzz: marshal envelope: %w", err)
+	}
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		return "", fmt.Errorf("bamlfuzz: write %s: %w", path, err)
+	}
+	return path, nil
+}
+
 // SemanticDiffEntry names one path-level disagreement between two of the
 // oracle legs. `Side` identifies which legs disagree
 // ("expected_vs_dynclient", "expected_vs_rest", "dynclient_vs_rest").

@@ -25,6 +25,12 @@ const (
 	// the unary parse. Partial frames are not asserted on in v1 — only
 	// the terminal frame, which is chunk-timing invariant.
 	OracleDynamicStreaming OracleMode = "dynamic_streaming"
+	// OracleCallWithRaw: lower the schema through the dynamic emitter and
+	// drive the with-raw legs (dynclient DynamicCallRaw + REST
+	// /call-with-raw/_dynamic). Beyond the dynamic oracle's parsed-data
+	// equivalence it pins the raw echo channel: the extracted output text
+	// must equal the mock's emitted content byte-for-byte on both legs.
+	OracleCallWithRaw OracleMode = "call_with_raw"
 )
 
 // CaseMetadata is per-case provenance that's useful to a developer

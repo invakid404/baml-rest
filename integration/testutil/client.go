@@ -1364,6 +1364,32 @@ func (c *BAMLRestClient) DynamicCall(ctx context.Context, req DynamicRequest) (*
 	return result, nil
 }
 
+// DynamicCallWithRawJSON executes a /call-with-raw/_dynamic request with a
+// caller-provided JSON body. Like DynamicCallJSON, this lets tests build
+// the request via bamlutils-ordered types so insertion order of
+// properties / classes / enums is preserved end-to-end (testutil's
+// map-backed DynamicOutputSchema cannot carry declaration order). On a
+// 2xx the body is decoded into the {data, raw, reasoning} envelope.
+func (c *BAMLRestClient) DynamicCallWithRawJSON(ctx context.Context, body []byte) (*DynamicCallWithRawResponse, error) {
+	url := fmt.Sprintf("%s/call-with-raw/_dynamic", c.baseURL)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DynamicCallWithRawResponse{
+		StatusCode: resp.StatusCode,
+	}
+	if resp.StatusCode >= 400 {
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
+	} else {
+		if err := sonic.Unmarshal(respBody, result); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+	}
+	return result, nil
+}
+
 // DynamicCallWithRaw executes a /call-with-raw/_dynamic request.
 func (c *BAMLRestClient) DynamicCallWithRaw(ctx context.Context, req DynamicRequest) (*DynamicCallWithRawResponse, error) {
 	body, err := sonic.Marshal(req)
