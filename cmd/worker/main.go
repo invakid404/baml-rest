@@ -43,9 +43,11 @@ func main() {
 	// host process instead.
 	buildRequestConfig := buildrequest.EnvConfig()
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
+	streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
 	httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{
-		Mode:         llmhttp.ClientModeFromEnv(),
-		RewriteRules: baseURLRewrites,
+		Mode:              llmhttp.ClientModeFromEnv(),
+		RewriteRules:      baseURLRewrites,
+		StreamIdleTimeout: &streamIdleTimeout,
 	})
 
 	// Load deployment-wide ClientRegistry defaults. A parse failure here is

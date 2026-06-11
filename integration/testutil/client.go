@@ -800,18 +800,19 @@ func (c *BAMLRestClient) GetInFlightStatus(ctx context.Context) (*InFlightResult
 
 // ConfigResult represents the response from /_debug/config.
 type ConfigResult struct {
-	Status             string `json:"status"`
-	FirstByteTimeoutMs int64  `json:"first_byte_timeout_ms"`
-	Error              string `json:"error,omitempty"`
+	Status              string `json:"status"`
+	FirstByteTimeoutMs  int64  `json:"first_byte_timeout_ms"`
+	StreamIdleTimeoutMs int64  `json:"stream_idle_timeout_ms"`
+	Error               string `json:"error,omitempty"`
 }
 
-// SetFirstByteTimeout calls the /_debug/config endpoint to configure the first byte timeout.
-// This is only available in debug builds.
-func (c *BAMLRestClient) SetFirstByteTimeout(ctx context.Context, timeoutMs int64) (*ConfigResult, error) {
-	reqBody := map[string]any{
-		"first_byte_timeout_ms": timeoutMs,
-	}
-	bodyBytes, err := sonic.Marshal(reqBody)
+// postDebugConfig sends a POST to /_debug/config with the given body, checks
+// for a 2xx status (so a failed config-set is never reported as success — a
+// silent failure would let a test run against the DEFAULT settings instead of
+// the ones it asked for), and unmarshals the response. Shared by
+// SetStreamIdleTimeout and SetFirstByteTimeout. Only available in debug builds.
+func (c *BAMLRestClient) postDebugConfig(ctx context.Context, body map[string]any) (*ConfigResult, error) {
+	bodyBytes, err := sonic.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
@@ -829,17 +830,39 @@ func (c *BAMLRestClient) SetFirstByteTimeout(ctx context.Context, timeoutMs int6
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("/_debug/config returned HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
 	var result ConfigResult
-	if err := sonic.Unmarshal(body, &result); err != nil {
+	if err := sonic.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	return &result, nil
+}
+
+// SetStreamIdleTimeout calls the /_debug/config endpoint to configure the
+// in-process llmhttp.Client's inter-token idle read timeout (0 = infinite).
+// Only meaningful for in-process debug builds where host and worker share the
+// same client; see the endpoint doc in cmd/serve/debug.go.
+func (c *BAMLRestClient) SetStreamIdleTimeout(ctx context.Context, timeoutMs int64) (*ConfigResult, error) {
+	return c.postDebugConfig(ctx, map[string]any{
+		"stream_idle_timeout_ms": timeoutMs,
+	})
+}
+
+// SetFirstByteTimeout calls the /_debug/config endpoint to configure the first byte timeout.
+// This is only available in debug builds.
+func (c *BAMLRestClient) SetFirstByteTimeout(ctx context.Context, timeoutMs int64) (*ConfigResult, error) {
+	return c.postDebugConfig(ctx, map[string]any{
+		"first_byte_timeout_ms": timeoutMs,
+	})
 }
 
 // GoroutinesResult represents the response from /_debug/goroutines.

@@ -251,17 +251,28 @@ func (c *Client) executeStreamFast(ctx context.Context, req *Request, rewrittenU
 
 	rc := newFastStreamReader(ctx, fReq, fResp, bodyStream, slot, hc)
 
+	// Wrap with the same inter-token idle read timeout as the stdlib path
+	// (ExecuteStream). On fire the watchdog severs the captured socket via
+	// slot.shutdown — the same race-safe unblock the ctx-cancel watcher uses
+	// — which returns the parked rc.Read with a socket error WITHOUT
+	// releasing the pooled fasthttp request/response (the scanner may still
+	// hold rc); that release is deferred to the consumer's Close() →
+	// rc.Close() after the scanner has exited. A non-positive timeout returns
+	// rc unwrapped (infinite).
+	body := newIdleTimeoutReader(ctx, rc, slot.shutdown, c.GetStreamIdleTimeout())
+
 	// Same classification wrapper as the stdlib path in ExecuteStream:
-	// surface typed mid-stream transport drops as ErrTransportFlake while
-	// leaving io.ErrUnexpectedEOF (chunked truncation) intact.
-	events, errc := sseclient.Stream(ctx, rc)
+	// surface typed mid-stream transport drops and idle timeouts
+	// (ErrIdleTimeout) as ErrTransportFlake while leaving
+	// io.ErrUnexpectedEOF (chunked truncation) intact.
+	events, errc := sseclient.Stream(ctx, body)
 
 	return &StreamResponse{
 		StatusCode: status,
 		Headers:    headers,
 		Events:     events,
 		Errc:       classifyStreamErrc(errc),
-		body:       rc,
+		body:       body,
 	}, nil
 }
 
