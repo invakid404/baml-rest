@@ -585,13 +585,15 @@ func newStaticEnvelope(c bamlfuzz.OracleCase, caseIdx int, batchLabel string, so
 // fails the test with a message that points at the replay path.
 func failStaticAndDump(t *testing.T, envelope *bamlfuzz.StaticFailureEnvelope, format string, args ...any) {
 	t.Helper()
+	msg := fmt.Sprintf(format, args...)
 	path, err := bamlfuzz.WriteStaticReplayArtifact(staticOracleArtifactDir, envelope)
 	if err != nil {
+		// Still emit the repro command: a failed artifact write must not
+		// also cost the developer the one-line command to reproduce.
 		t.Errorf("write static replay artifact: %v", err)
-		t.Errorf(format, args...)
+		t.Errorf("%s\nrepro: %s", msg, envelope.Reproduction)
 		return
 	}
-	msg := fmt.Sprintf(format, args...)
 	t.Errorf("%s\nreplay: %s\nrepro: %s", msg, path, envelope.Reproduction)
 }
 
