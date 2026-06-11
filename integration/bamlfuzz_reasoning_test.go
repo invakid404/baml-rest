@@ -800,6 +800,7 @@ func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dyn
 		stream, openErr = dyn.DynamicStreamRaw(ctx, req)
 	})
 	if panicked {
+		envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
 		envelope.DynclientPanicStack = string(panicStack)
 		return recordErr(fmt.Sprintf("dyn.DynamicStreamRaw panicked: %v", panicVal))
 	}
@@ -889,6 +890,7 @@ func drainReasoningRESTStream(t *testing.T, lowered *bamlutils.DynamicOutputSche
 		events, errs = BAMLClient.DynamicStreamWithRawBody(ctx, body)
 	})
 	if panicked {
+		envelope.RESTPanic = fmt.Sprintf("%v", panicVal)
 		envelope.RESTPanicStack = string(panicStack)
 		return recordErr(fmt.Sprintf("DynamicStreamWithRawBody panicked: %v", panicVal))
 	}
