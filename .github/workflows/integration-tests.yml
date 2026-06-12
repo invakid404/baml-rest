@@ -313,7 +313,7 @@ jobs:
             '
 
       - name: Upload prebuilt cffi artifact
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.1
         with:
           # Name keyed on the source commit so overlapping retention windows
           # across runs can never hand a cell the wrong commit's artifact.
@@ -368,7 +368,7 @@ jobs:
         # name). Injecting it lets the Docker build COPY the .so + baml-cli and
         # skip the cffi-builder cargo stage, removing ~18m from each cell's
         # pre-go-test wall time. See #433.
-        uses: actions/download-artifact@v4.3.0
+        uses: actions/download-artifact@v8.0.1
         with:
           name: baml-cffi-${{ needs.build-baml-cffi.outputs.commit }}
           path: prebuilt-cffi
