@@ -224,6 +224,21 @@ type ReasoningFailureEnvelope struct {
 	StreamRESTFinalOff          json.RawMessage `json:"stream_rest_final_off,omitempty"`
 	StreamError                 string          `json:"stream_error,omitempty"`
 
+	// Streaming panic capture, per transport and flag state. Distinct from
+	// the unary DynclientPanic/RESTPanic slots (and from each other) because
+	// a single case drives the unary legs plus four stream legs into one
+	// envelope; sharing slots would let a later leg's panic overwrite an
+	// earlier leg's evidence in the replay artifact. The unsuffixed fields
+	// hold the include_reasoning=true run, the "Off" fields the false run.
+	StreamDynclientPanic         string `json:"stream_dynclient_panic,omitempty"`
+	StreamDynclientPanicStack    string `json:"stream_dynclient_panic_stack,omitempty"`
+	StreamDynclientPanicOff      string `json:"stream_dynclient_panic_off,omitempty"`
+	StreamDynclientPanicStackOff string `json:"stream_dynclient_panic_stack_off,omitempty"`
+	StreamRESTPanic              string `json:"stream_rest_panic,omitempty"`
+	StreamRESTPanicStack         string `json:"stream_rest_panic_stack,omitempty"`
+	StreamRESTPanicOff           string `json:"stream_rest_panic_off,omitempty"`
+	StreamRESTPanicStackOff      string `json:"stream_rest_panic_stack_off,omitempty"`
+
 	SemanticDiff      []SemanticDiffEntry `json:"semantic_diff,omitempty"`
 	ReasoningMismatch []string            `json:"reasoning_mismatch,omitempty"`
 	ReplayPath        string              `json:"replay_path"`

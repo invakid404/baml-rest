@@ -800,8 +800,16 @@ func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dyn
 		stream, openErr = dyn.DynamicStreamRaw(ctx, req)
 	})
 	if panicked {
-		envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
-		envelope.DynclientPanicStack = string(panicStack)
+		// Dedicated per-flag stream panic slots so a stream panic never
+		// overwrites the unary leg's (or the other flag-state's) panic
+		// evidence in the shared envelope.
+		if includeReasoning {
+			envelope.StreamDynclientPanic = fmt.Sprintf("%v", panicVal)
+			envelope.StreamDynclientPanicStack = string(panicStack)
+		} else {
+			envelope.StreamDynclientPanicOff = fmt.Sprintf("%v", panicVal)
+			envelope.StreamDynclientPanicStackOff = string(panicStack)
+		}
 		return recordErr(fmt.Sprintf("dyn.DynamicStreamRaw panicked: %v", panicVal))
 	}
 	if openErr != nil {
@@ -890,8 +898,15 @@ func drainReasoningRESTStream(t *testing.T, lowered *bamlutils.DynamicOutputSche
 		events, errs = BAMLClient.DynamicStreamWithRawBody(ctx, body)
 	})
 	if panicked {
-		envelope.RESTPanic = fmt.Sprintf("%v", panicVal)
-		envelope.RESTPanicStack = string(panicStack)
+		// Dedicated per-flag stream panic slots (see the dynclient stream
+		// drain) so this never clobbers the unary REST leg's panic evidence.
+		if includeReasoning {
+			envelope.StreamRESTPanic = fmt.Sprintf("%v", panicVal)
+			envelope.StreamRESTPanicStack = string(panicStack)
+		} else {
+			envelope.StreamRESTPanicOff = fmt.Sprintf("%v", panicVal)
+			envelope.StreamRESTPanicStackOff = string(panicStack)
+		}
 		return recordErr(fmt.Sprintf("DynamicStreamWithRawBody panicked: %v", panicVal))
 	}
 
