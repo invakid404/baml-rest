@@ -69,7 +69,7 @@ func makeStreamEventSchema(eventType, description string, dataSchema *openapi3.S
 		props["reasoning"] = &openapi3.SchemaRef{
 			Value: &openapi3.Schema{
 				Type:        &openapi3.Types{openapi3.TypeString},
-				Description: "Provider-specific reasoning/thinking text accumulated to this point. Populated only when __baml_options__.include_reasoning is true.",
+				Description: "Provider-specific reasoning/thinking text accumulated to this point. Populated only when the request opts into reasoning (include_reasoning — via __baml_options__.include_reasoning on the typed-method endpoints, or the include_reasoning request field on the dynamic endpoints).",
 			},
 		}
 	}
@@ -1494,6 +1494,19 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		"using the dynclient module get the insertion order of their OrderedMap literals (preserved by " +
 		"default unless WithPreserveSchemaOrderDefault flips the client-wide default)."
 
+	// include_reasoning is a top-level opt-in on the dynamic input body. The
+	// static (typed-method) endpoints carry it inside __baml_options__, but
+	// the dynamic input has no __baml_options__ wrapper — it is a flat
+	// DynamicInput — so the flag lives directly on the request body and is
+	// forwarded into __baml_options__.include_reasoning by the server. This
+	// is the dynamic-path equivalent of __baml_options__.include_reasoning.
+	dynamicIncludeReasoningDescription := "Optional opt-in (default false): when true, the with-raw dynamic " +
+		"endpoints (/call-with-raw/_dynamic, /stream-with-raw/_dynamic) populate the response `reasoning` " +
+		"field with provider-specific reasoning/thinking text (Anthropic thinking blocks, OpenAI " +
+		"reasoning_content, etc.), distinct from `raw`. `raw` stays text-only under any value; the flag " +
+		"never affects the parseable result. This is the dynamic-input equivalent of " +
+		"__baml_options__.include_reasoning on the typed-method endpoints."
+
 	// Dynamic input schema
 	dynamicInputSchemaName := "__DynamicInput__"
 	schemas[dynamicInputSchemaName] = &openapi3.SchemaRef{
@@ -1521,6 +1534,12 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 						Type:        &openapi3.Types{openapi3.TypeBoolean},
 						Nullable:    true,
 						Description: preserveSchemaOrderDescription,
+					},
+				},
+				"include_reasoning": &openapi3.SchemaRef{
+					Value: &openapi3.Schema{
+						Type:        &openapi3.Types{openapi3.TypeBoolean},
+						Description: dynamicIncludeReasoningDescription,
 					},
 				},
 			},
@@ -1649,7 +1668,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 				"reasoning": &openapi3.SchemaRef{
 					Value: &openapi3.Schema{
 						Type:        &openapi3.Types{openapi3.TypeString},
-						Description: "Provider-specific reasoning/thinking text. Populated only when __baml_options__.include_reasoning is true.",
+						Description: "Provider-specific reasoning/thinking text. Populated only when the request's include_reasoning field is true.",
 					},
 				},
 			},
@@ -1657,7 +1676,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		},
 	})
 
-	callWithRawDescription := "Successful response for dynamic prompt with raw LLM output, plus optional reasoning text when __baml_options__.include_reasoning is true"
+	callWithRawDescription := "Successful response for dynamic prompt with raw LLM output, plus optional reasoning text when the request's include_reasoning field is true"
 	callWithRawResponses := openapi3.NewResponses()
 	callWithRawResponses.Delete("default")
 	callWithRawResponses.Set("200", &openapi3.ResponseRef{
@@ -1695,7 +1714,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		Post: &openapi3.Operation{
 			OperationID: "dynamicCallWithRaw",
 			Summary:     "Call dynamic prompt with raw output",
-			Description: "Execute a dynamic prompt and return both the parsed result and raw LLM output, plus an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true.",
+			Description: "Execute a dynamic prompt and return both the parsed result and raw LLM output, plus an optional 'reasoning' field populated only when the request's include_reasoning field is true.",
 			RequestBody: jsonRequestBody(&openapi3.SchemaRef{
 				Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
 			}),
@@ -1788,8 +1807,8 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		heartbeatEventSchemaRef, resetEventSchemaRef, errorEventSchemaRef,
 	)
 
-	streamWithRawDescription := "Stream of partial and final results for dynamic prompt with raw LLM output, plus optional reasoning text when __baml_options__.include_reasoning is true"
-	sseStreamWithRawDescription := "Server-Sent Events stream with raw LLM output, plus an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true."
+	streamWithRawDescription := "Stream of partial and final results for dynamic prompt with raw LLM output, plus optional reasoning text when the request's include_reasoning field is true"
+	sseStreamWithRawDescription := "Server-Sent Events stream with raw LLM output, plus an optional 'reasoning' field populated only when the request's include_reasoning field is true."
 	streamWithRawResponses := openapi3.NewResponses()
 	streamWithRawResponses.Delete("default")
 	streamWithRawResponses.Set("200", &openapi3.ResponseRef{
@@ -1835,7 +1854,7 @@ func generateDynamicEndpoints(schemas openapi3.Schemas, paths *openapi3.Paths, b
 		Post: &openapi3.Operation{
 			OperationID: "dynamicStreamWithRaw",
 			Summary:     "Stream dynamic prompt results with raw output",
-			Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available, plus an optional 'reasoning' field on data/final events populated only when __baml_options__.include_reasoning is true. " +
+			Description: "Returns a stream of events containing partial results and the accumulated raw LLM output as they become available, plus an optional 'reasoning' field on data/final events populated only when the request's include_reasoning field is true. " +
 				"NDJSON may include 'heartbeat' events during idle periods (including before the first data event); clients should ignore them.",
 			RequestBody: jsonRequestBody(&openapi3.SchemaRef{
 				Ref: fmt.Sprintf("#/components/schemas/%s", dynamicInputSchemaName),
@@ -2195,9 +2214,9 @@ func buildStreamEventUnion(
 	finalDesc := "Final data event containing the complete, validated result"
 	var dataRawDesc, finalRawDesc string
 	if includeRaw {
-		dataDesc = "Partial data event containing an intermediate parsed result with accumulated raw LLM output (text-only), plus an optional accumulated 'reasoning' field populated only when __baml_options__.include_reasoning is true. Fields not yet parsed may be null."
+		dataDesc = "Partial data event containing an intermediate parsed result with accumulated raw LLM output (text-only), plus an optional accumulated 'reasoning' field populated only when the request opts into reasoning (include_reasoning). Fields not yet parsed may be null."
 		dataRawDesc = "Accumulated raw LLM response text up to this point (always text-only by construction)"
-		finalDesc = "Final data event containing the complete, validated result with full raw LLM output, plus an optional 'reasoning' field populated only when __baml_options__.include_reasoning is true"
+		finalDesc = "Final data event containing the complete, validated result with full raw LLM output, plus an optional 'reasoning' field populated only when the request opts into reasoning (include_reasoning)"
 		finalRawDesc = "Complete raw LLM response text (always text-only by construction)"
 	}
 

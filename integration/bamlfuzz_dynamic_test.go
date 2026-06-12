@@ -577,6 +577,13 @@ func buildDynamicCallBody(req dynclient.Request, lowered *bamlutils.DynamicOutpu
 		ClientRegistry:      req.ClientRegistry,
 		OutputSchema:        lowered,
 		PreserveSchemaOrder: req.PreserveSchemaOrder,
+		// Carry the reasoning opt-in so the REST leg threads
+		// include_reasoning identically to the dynclient leg (which sets it
+		// on the Request directly). The dynamic/raw/streaming oracles leave
+		// it false, so this is a no-op for them; the reasoning oracle relies
+		// on it to avoid a false cross-path divergence (one leg returning
+		// reasoning, the other empty).
+		IncludeReasoning: req.IncludeReasoning,
 	}
 	return json.Marshal(input)
 }

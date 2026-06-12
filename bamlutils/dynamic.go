@@ -598,6 +598,15 @@ type DynamicInput struct {
 	// JSON null decodes to nil through standard Go pointer unmarshal
 	// behavior, matching the absent/inherit semantics.
 	PreserveSchemaOrder *bool `json:"preserve_schema_order,omitempty"`
+	// IncludeReasoning opts the dynamic request into surfacing
+	// provider-specific reasoning/thinking text on the `reasoning` field of
+	// the /call-with-raw and /stream-with-raw responses, distinct from
+	// `raw`. It mirrors BamlOptions.IncludeReasoning and is forwarded into
+	// __baml_options__ by ToWorkerInput so the worker's adapter honors it
+	// identically on both the dynclient and REST dynamic legs. When false
+	// (default, omitted) the reasoning channel stays empty; `raw` is
+	// text-only by construction under any value.
+	IncludeReasoning bool `json:"include_reasoning,omitempty"`
 }
 
 // preserveSchemaOrderEnabled resolves the *bool tri-state to a concrete
@@ -698,6 +707,7 @@ func (d *DynamicInput) ToWorkerInput() (b []byte, err error) {
 			TypeBuilder: &TypeBuilder{
 				DynamicTypes: dynamicTypes,
 			},
+			IncludeReasoning: d.IncludeReasoning,
 		},
 	}
 	return sonic.Marshal(internal)
