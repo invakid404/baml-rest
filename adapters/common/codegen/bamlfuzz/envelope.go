@@ -192,22 +192,28 @@ type ReasoningFailureEnvelope struct {
 	DynclientRawOff       string          `json:"dynclient_raw_off,omitempty"`
 	DynclientErrorOn      string          `json:"dynclient_error_on,omitempty"`
 	DynclientErrorOff     string          `json:"dynclient_error_off,omitempty"`
-	DynclientPanic        string          `json:"dynclient_panic,omitempty"`
-	DynclientPanicStack   string          `json:"dynclient_panic_stack,omitempty"`
+	// Unary panic capture, split by flag state so the include_reasoning=true
+	// and =false runs of the same leg cannot clobber each other's evidence.
+	DynclientPanic         string `json:"dynclient_panic,omitempty"`
+	DynclientPanicStack    string `json:"dynclient_panic_stack,omitempty"`
+	DynclientPanicOff      string `json:"dynclient_panic_off,omitempty"`
+	DynclientPanicStackOff string `json:"dynclient_panic_stack_off,omitempty"`
 
 	// Unary REST /call-with-raw/_dynamic leg, both flag states.
-	RESTReasoningOn  string          `json:"rest_reasoning_on,omitempty"`
-	RESTReasoningOff string          `json:"rest_reasoning_off,omitempty"`
-	RESTDataOn       json.RawMessage `json:"rest_data_on,omitempty"`
-	RESTDataOff      json.RawMessage `json:"rest_data_off,omitempty"`
-	RESTRawOn        string          `json:"rest_raw_on,omitempty"`
-	RESTRawOff       string          `json:"rest_raw_off,omitempty"`
-	RESTStatusOn     int             `json:"rest_status_on,omitempty"`
-	RESTStatusOff    int             `json:"rest_status_off,omitempty"`
-	RESTErrorOn      string          `json:"rest_error_on,omitempty"`
-	RESTErrorOff     string          `json:"rest_error_off,omitempty"`
-	RESTPanic        string          `json:"rest_panic,omitempty"`
-	RESTPanicStack   string          `json:"rest_panic_stack,omitempty"`
+	RESTReasoningOn   string          `json:"rest_reasoning_on,omitempty"`
+	RESTReasoningOff  string          `json:"rest_reasoning_off,omitempty"`
+	RESTDataOn        json.RawMessage `json:"rest_data_on,omitempty"`
+	RESTDataOff       json.RawMessage `json:"rest_data_off,omitempty"`
+	RESTRawOn         string          `json:"rest_raw_on,omitempty"`
+	RESTRawOff        string          `json:"rest_raw_off,omitempty"`
+	RESTStatusOn      int             `json:"rest_status_on,omitempty"`
+	RESTStatusOff     int             `json:"rest_status_off,omitempty"`
+	RESTErrorOn       string          `json:"rest_error_on,omitempty"`
+	RESTErrorOff      string          `json:"rest_error_off,omitempty"`
+	RESTPanic         string          `json:"rest_panic,omitempty"`
+	RESTPanicStack    string          `json:"rest_panic_stack,omitempty"`
+	RESTPanicOff      string          `json:"rest_panic_off,omitempty"`
+	RESTPanicStackOff string          `json:"rest_panic_stack_off,omitempty"`
 
 	// Streaming legs: the cumulative reasoning at the last frame and the
 	// final-frame data, per transport and flag state. Both transports run
@@ -222,7 +228,14 @@ type ReasoningFailureEnvelope struct {
 	StreamRESTReasoningOff      string          `json:"stream_rest_reasoning_off,omitempty"`
 	StreamRESTFinal             json.RawMessage `json:"stream_rest_final,omitempty"`
 	StreamRESTFinalOff          json.RawMessage `json:"stream_rest_final_off,omitempty"`
-	StreamError                 string          `json:"stream_error,omitempty"`
+
+	// Streaming transport/drain errors, per transport and flag state. Like
+	// the panic slots, these are distinct per leg×flag so a later stream
+	// leg's error never overwrites an earlier one's in the shared envelope.
+	StreamDynclientError    string `json:"stream_dynclient_error,omitempty"`
+	StreamDynclientErrorOff string `json:"stream_dynclient_error_off,omitempty"`
+	StreamRESTError         string `json:"stream_rest_error,omitempty"`
+	StreamRESTErrorOff      string `json:"stream_rest_error_off,omitempty"`
 
 	// Streaming panic capture, per transport and flag state. Distinct from
 	// the unary DynclientPanic/RESTPanic slots (and from each other) because

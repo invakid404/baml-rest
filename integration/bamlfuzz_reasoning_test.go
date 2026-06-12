@@ -475,8 +475,15 @@ func runReasoningDynclientUnary(t *testing.T, dyn *dynclient.Client, base dyncli
 		resp, cerr = dyn.DynamicCallRaw(callCtx, req)
 	})
 	if panicked {
-		envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
-		envelope.DynclientPanicStack = string(panicStack)
+		// Flag-specific slots: the include_reasoning=true and =false runs of
+		// this leg share one envelope, so they must not clobber each other.
+		if includeReasoning {
+			envelope.DynclientPanic = fmt.Sprintf("%v", panicVal)
+			envelope.DynclientPanicStack = string(panicStack)
+		} else {
+			envelope.DynclientPanicOff = fmt.Sprintf("%v", panicVal)
+			envelope.DynclientPanicStackOff = string(panicStack)
+		}
 		return recordErr(fmt.Sprintf("dyn.DynamicCallRaw panicked: %v", panicVal))
 	}
 	switch {
@@ -529,8 +536,14 @@ func runReasoningRESTUnary(t *testing.T, base dynclient.Request, lowered *bamlut
 		resp, rerr = BAMLClient.DynamicCallWithRawJSON(callCtx, body)
 	})
 	if panicked {
-		envelope.RESTPanic = fmt.Sprintf("%v", panicVal)
-		envelope.RESTPanicStack = string(panicStack)
+		// Flag-specific slots (see the dynclient unary handler).
+		if includeReasoning {
+			envelope.RESTPanic = fmt.Sprintf("%v", panicVal)
+			envelope.RESTPanicStack = string(panicStack)
+		} else {
+			envelope.RESTPanicOff = fmt.Sprintf("%v", panicVal)
+			envelope.RESTPanicStackOff = string(panicStack)
+		}
 		return recordErr(fmt.Sprintf("BAMLClient.DynamicCallWithRawJSON panicked: %v", panicVal))
 	}
 	switch {
@@ -785,7 +798,11 @@ func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dyn
 		legLabel = "dynclient stream default"
 	}
 	recordErr := func(msg string) reasoningStreamOutcome {
-		envelope.StreamError = msg
+		if includeReasoning {
+			envelope.StreamDynclientError = msg
+		} else {
+			envelope.StreamDynclientErrorOff = msg
+		}
 		return reasoningStreamOutcome{errStr: msg}
 	}
 
@@ -851,10 +868,14 @@ func drainReasoningDynclientStream(t *testing.T, dyn *dynclient.Client, base dyn
 		default:
 			// reset / metadata / any future kind: reasoning must NOT ride
 			// here — the contract is that reasoning travels inside
-			// data/final frames only.
+			// data/final frames only. The thinking marker must not leak into
+			// a non-data frame's data/raw either, so still run the leak probe.
 			if ev.Reasoning != "" {
 				out.frameFailures = append(out.frameFailures,
 					fmt.Sprintf("%s: reasoning on a non-data frame (kind=%s): %q", legLabel, ev.Kind, ev.Reasoning))
+			}
+			if leak := frameLeak(legLabel, string(ev.Kind), ev.Data, ev.Raw); leak != "" {
+				out.frameFailures = append(out.frameFailures, leak)
 			}
 		}
 	}
@@ -878,7 +899,11 @@ func drainReasoningRESTStream(t *testing.T, lowered *bamlutils.DynamicOutputSche
 		legLabel = "REST stream default"
 	}
 	recordErr := func(msg string) reasoningStreamOutcome {
-		envelope.StreamError = msg
+		if includeReasoning {
+			envelope.StreamRESTError = msg
+		} else {
+			envelope.StreamRESTErrorOff = msg
+		}
 		return reasoningStreamOutcome{errStr: msg}
 	}
 
@@ -930,10 +955,19 @@ func drainReasoningRESTStream(t *testing.T, lowered *bamlutils.DynamicOutputSche
 			}
 		default:
 			// metadata / reset / error (or any future) frame: reasoning must
-			// NOT ride here — there is no dedicated reasoning frame type.
+			// NOT ride here — there is no dedicated reasoning frame type — and
+			// the thinking marker must not leak into the frame's data/raw, so
+			// still run the leak probe.
+			kind := ev.Event
+			if kind == "" {
+				kind = "non-data"
+			}
 			if ev.Reasoning != "" {
 				out.frameFailures = append(out.frameFailures,
-					fmt.Sprintf("%s: reasoning on a non-data frame: %q", legLabel, ev.Reasoning))
+					fmt.Sprintf("%s: reasoning on a non-data frame (event=%q): %q", legLabel, ev.Event, ev.Reasoning))
+			}
+			if leak := frameLeak(legLabel, kind, ev.Data, ev.Raw); leak != "" {
+				out.frameFailures = append(out.frameFailures, leak)
 			}
 		}
 	}
@@ -1269,6 +1303,43 @@ func TestAssertStreamOutcome(t *testing.T) {
 				if !found {
 					t.Errorf("expected a failure containing %q; got %v", want, got)
 				}
+			}
+		})
+	}
+}
+
+// TestFrameLeak pins the leak probe the streaming drains run on every
+// frame — including, after the fix, non-data (metadata/reset/error) frames.
+// It must flag the reasoning marker in either the data or the raw channel
+// and stay silent on clean frames, so a metadata/reset/error frame that
+// smuggled thinking text into its data/raw is now caught.
+func TestFrameLeak(t *testing.T) {
+	marker := reasoningLeakMarker
+	cases := []struct {
+		name      string
+		data      json.RawMessage
+		raw       string
+		wantLeak  bool
+		wantMatch string
+	}{
+		{name: "clean", data: json.RawMessage(`{"k":"v"}`), raw: "plain text", wantLeak: false},
+		{name: "data_leak", data: json.RawMessage(`{"k":"` + marker + `"}`), raw: "plain", wantLeak: true, wantMatch: "data leaked"},
+		{name: "raw_leak", data: json.RawMessage(`{"k":"v"}`), raw: "oops " + marker, wantLeak: true, wantMatch: "raw leaked"},
+		{name: "empty_frame", data: nil, raw: "", wantLeak: false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := frameLeak("REST stream default", "metadata", tc.data, tc.raw)
+			if tc.wantLeak {
+				if got == "" {
+					t.Fatalf("expected a leak description, got empty")
+				}
+				if !strings.Contains(got, tc.wantMatch) {
+					t.Errorf("expected leak description to contain %q, got %q", tc.wantMatch, got)
+				}
+			} else if got != "" {
+				t.Errorf("expected no leak on a clean frame, got %q", got)
 			}
 		})
 	}
