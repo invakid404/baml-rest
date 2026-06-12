@@ -40,6 +40,12 @@ var BAMLVersion string
 // BAMLSourcePath is the path to a local BAML source repo (set via BAML_SOURCE env var)
 var BAMLSourcePath string
 
+// PrebuiltCffiDir is the path to a directory holding a prebuilt libbaml_cffi.so
+// + baml-cli (set via BAML_PREBUILT_CFFI_DIR). When set (CI only), the Docker
+// build injects these artifacts and skips the in-image cargo build. Unset for
+// local runs, which keep building the cffi lib from source.
+var PrebuiltCffiDir string
+
 // UseBuildRequest is true when the test container runs the BuildRequest path.
 // Set in TestMain from the BAML_REST_USE_BUILD_REQUEST env var.
 var UseBuildRequest bool
@@ -62,6 +68,7 @@ func matrixSetupOptions() testutil.SetupOptions {
 		BAMLVersion:     BAMLVersion,
 		AdapterVersion:  adapterVersion,
 		BAMLSource:      BAMLSourcePath,
+		PrebuiltCffiDir: PrebuiltCffiDir,
 		UnaryServer:     unaryServer,
 		UseBuildRequest: UseBuildRequest,
 		InProcess:       inProcessBuild,
@@ -103,6 +110,7 @@ func parseBoolEnv(value string) bool {
 
 func init() {
 	BAMLSourcePath = os.Getenv("BAML_SOURCE")
+	PrebuiltCffiDir = os.Getenv("BAML_PREBUILT_CFFI_DIR")
 	BAMLVersion = getBAMLVersion()
 }
 

@@ -186,7 +186,146 @@ jobs:
         # direct in-process worker path.
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
 
+  build-baml-cffi:
+    runs-on: ubuntu-latest
+    # Build the BAML cffi artifact (libbaml_cffi.so + baml-cli) exactly once,
+    # OUTSIDE the integration-tests-baml-source watchdog window, and hand it to
+    # the 8 matrix cells so they skip the ~18m cargo build entirely. On a warm
+    # cache (the common case — .source is a pinned SHA) this restores in ~1-2m;
+    # on a cold cache (a Renovate .source bump) it runs the full release build
+    # here, where a generous cap absorbs it and the matrix cells never see the
+    # ~18m under their 67m watchdog. See #433.
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.baml-source.outputs.commit }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6.0.3
+
+      - name: Read BAML source commit
+        id: baml-source
+        # Guard against a missing/null .source: jq -r writes the literal
+        # "null" on a missing key, which would propagate as a bogus git ref
+        # and cache input. Fail fast instead. This is the single source of
+        # the commit — the consumer job reads it via needs.*.outputs.commit.
+        run: |
+          commit=$(jq -r '.source // empty' integration/baml_versions.json)
+          if [ -z "$commit" ] || [ "$commit" = "null" ]; then
+            echo "::error file=integration/baml_versions.json::missing non-empty .source BAML source commit"
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout BAML Source
+        uses: actions/checkout@v6.0.3
+        with:
+          repository: BoundaryML/baml
+          ref: ${{ steps.baml-source.outputs.commit }}
+          path: baml-source
+
+      - name: Detect protoc-gen-go version
+        id: protoc
+        # Mirror cmd/build/main.go detectProtocGenGoVersion: read the
+        # `// protoc-gen-go vX.Y.Z` marker from a generated .pb.go file so the
+        # prebuild's protobuf toolchain matches what the in-Docker cffi-builder
+        # stage would have used (currently v1.34.1).
+        run: |
+          ver=$(grep -rhoE 'protoc-gen-go v[0-9]+\.[0-9]+\.[0-9]+' \
+            baml-source/engine/language_client_go/pkg/cffi/*.pb.go \
+            | head -n1 | sed 's/protoc-gen-go v/v/')
+          if [ -z "$ver" ]; then
+            echo "::error::could not detect protoc-gen-go version from baml-source"
+            exit 1
+          fi
+          echo "Detected protoc-gen-go $ver"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve pinned rust image
+        id: rust-image
+        # Single-source the rust base from the Dockerfile FROM pin so the cache
+        # key and the build's docker run both derive from the same digest. A
+        # future digest bump in cmd/build/Dockerfile.tmpl then invalidates this
+        # cache automatically, instead of risking a cache-hit that serves a .so
+        # built under the old toolchain.
+        run: |
+          matches=$(grep -cE '^FROM rust:bookworm@sha256:[0-9a-f]+' cmd/build/Dockerfile.tmpl)
+          if [ "$matches" -ne 1 ]; then
+            echo "::error file=cmd/build/Dockerfile.tmpl::expected exactly one pinned 'FROM rust:bookworm@sha256:' line, found $matches"
+            exit 1
+          fi
+          image=$(grep -oE 'rust:bookworm@sha256:[0-9a-f]+' cmd/build/Dockerfile.tmpl | head -n1)
+          digest=$(printf '%s' "$image" | sed -E 's/.*@sha256://' | cut -c1-12)
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Restore prebuilt cffi cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: prebuilt-cffi
+          # Final-artifact cache. The key fully pins the artifact: the BAML
+          # source commit fixes the source AND Cargo.lock; the rust:bookworm
+          # digest fragment (derived from the Dockerfile FROM pin) fixes the
+          # toolchain so a base bump invalidates the cache rather than serving a
+          # stale .so. Cargo.lock hash is a cheap belt-and-braces guard against
+          # a dirty tree.
+          key: baml-cffi-${{ runner.os }}-rust-bookworm-${{ steps.rust-image.outputs.digest }}-${{ steps.baml-source.outputs.commit }}-${{ hashFiles('baml-source/engine/Cargo.lock') }}
+          # Partial restores warm the slot for inspection only — a different
+          # commit's .so is the WRONG artifact, so the cargo build below gates
+          # on an EXACT-key hit (cache-hit == 'true'), not these fallbacks.
+          restore-keys: |
+            baml-cffi-${{ runner.os }}-rust-bookworm-${{ steps.rust-image.outputs.digest }}-${{ steps.baml-source.outputs.commit }}-
+            baml-cffi-${{ runner.os }}-rust-bookworm-${{ steps.rust-image.outputs.digest }}-
+
+      - name: Build cffi artifact in rust:bookworm
+        # Gate on an EXACT-key cache hit only (see restore-keys note above).
+        # glibc parity is load-bearing: the .so MUST be compiled inside
+        # rust:bookworm (Debian, glibc 2.36), NOT on the bare ubuntu-latest
+        # runner (glibc 2.39), or it fails to load in the bookworm-slim runtime
+        # with GLIBC_2.3x-not-found. The image is the Dockerfile FROM pin
+        # (resolved above) so this reproduces the in-Docker cffi-builder
+        # environment exactly.
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          PROTOC_GEN_GO_VERSION: ${{ steps.protoc.outputs.version }}
+        run: |
+          mkdir -p prebuilt-cffi
+          docker run --rm \
+            -e GO_VERSION="${GO_VERSION}" \
+            -e PROTOC_GEN_GO_VERSION \
+            -v "${{ github.workspace }}/baml-source:/baml-source" \
+            -v "${{ github.workspace }}/prebuilt-cffi:/out" \
+            "${{ steps.rust-image.outputs.image }}" \
+            bash -euo pipefail -c '
+              apt-get update >/dev/null && apt-get install -y wget >/dev/null
+              arch=$(dpkg --print-architecture)
+              wget -q "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz"
+              tar -C /usr/local -xzf "go${GO_VERSION}.linux-${arch}.tar.gz"
+              export GOPATH=/go
+              export PATH="/usr/local/go/bin:/go/bin:${PATH}"
+              go install google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}
+              cd /baml-source/engine
+              cargo build --release -p baml-cli -p baml_cffi
+              cp target/release/libbaml_cffi.so /out/libbaml_cffi.so
+              cp target/release/baml-cli /out/baml-cli
+            '
+
+      - name: Upload prebuilt cffi artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Name keyed on the source commit so overlapping retention windows
+          # across runs can never hand a cell the wrong commit's artifact.
+          name: baml-cffi-${{ steps.baml-source.outputs.commit }}
+          path: |
+            prebuilt-cffi/libbaml_cffi.so
+            prebuilt-cffi/baml-cli
+          retention-days: 1
+          if-no-files-found: error
+
   integration-tests-baml-source:
+    needs: build-baml-cffi
     runs-on: ubuntu-latest
     # The baml-source matrix builds BAML from source, which dominates the
     # per-cell wall time and pushes consistent runs into the 38-45m
@@ -217,16 +356,22 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
 
-      - name: Read BAML source commit
-        id: baml-source
-        run: echo "commit=$(jq -r '.source' integration/baml_versions.json)" >> "$GITHUB_OUTPUT"
-
       - name: Checkout BAML Source
         uses: actions/checkout@v6.0.3
         with:
           repository: BoundaryML/baml
-          ref: ${{ steps.baml-source.outputs.commit }}
+          ref: ${{ needs.build-baml-cffi.outputs.commit }}
           path: baml-source
+
+      - name: Download prebuilt cffi artifact
+        # Built once by build-baml-cffi (same source commit -> same artifact
+        # name). Injecting it lets the Docker build COPY the .so + baml-cli and
+        # skip the cffi-builder cargo stage, removing ~18m from each cell's
+        # pre-go-test wall time. See #433.
+        uses: actions/download-artifact@v4
+        with:
+          name: baml-cffi-${{ needs.build-baml-cffi.outputs.commit }}
+          path: prebuilt-cffi
 
       - name: Set up Go
         uses: actions/setup-go@v6.4.0
@@ -242,6 +387,10 @@ jobs:
         timeout-minutes: 70
         env:
           BAML_SOURCE: ${{ github.workspace }}/baml-source
+          # Directory of the prebuilt cffi artifact downloaded above. Its
+          # presence flips the Docker build to inject the prebuilt .so + baml-cli
+          # instead of running the in-image cargo build (testutil/container.go).
+          BAML_PREBUILT_CFFI_DIR: ${{ github.workspace }}/prebuilt-cffi
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}

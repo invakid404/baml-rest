@@ -100,6 +100,15 @@ type SetupOptions struct {
 	// BAMLSource is the path to a local BAML source repository for building from unreleased versions
 	BAMLSource string
 
+	// PrebuiltCffiDir, when set, points at a directory holding a prebuilt
+	// libbaml_cffi.so + baml-cli (built once in CI inside rust:bookworm for
+	// glibc parity). When set, the in-Docker cargo build (cffi-builder stage)
+	// is skipped and these artifacts are injected into the build context
+	// instead. Requires BAMLSource to be set (for language_client_go source).
+	// When unset, behavior is unchanged: the cffi lib is built from source
+	// inside the Docker image (the local-dev default).
+	PrebuiltCffiDir string
+
 	// UnaryServer enables the opt-in chi/net-http unary server on port 8081.
 	UnaryServer bool
 
@@ -630,6 +639,7 @@ type dockerfileTemplateData struct {
 	noCacheMount       bool   // Disable BuildKit cache mount (not supported in testcontainers)
 	noCustomBamlLib    bool   // Don't copy custom_baml_lib.so (not used in tests)
 	bamlSource         bool   // Build from BAML source (enables cffi-builder stage)
+	prebuiltCffi       bool   // Inject prebuilt cffi artifacts instead of running the cffi-builder cargo stage
 	protocGenGoVersion string // protoc-gen-go version for BAML source builds
 	unaryServer        bool   // Build with unaryserver tag for chi unary server
 	inProcess          bool   // Build single-process server+worker (drops subprocess tag)
@@ -646,6 +656,7 @@ func (d dockerfileTemplateData) toMap() map[string]any {
 		"noCacheMount":       d.noCacheMount,
 		"noCustomBamlLib":    d.noCustomBamlLib,
 		"bamlSource":         d.bamlSource,
+		"prebuiltCffi":       d.prebuiltCffi,
 		"protocGenGoVersion": d.protocGenGoVersion,
 		"unaryServer":        d.unaryServer,
 		"inProcess":          d.inProcess,
@@ -683,6 +694,7 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 
 	if opts.BAMLSource != "" {
 		tmplData.bamlSource = true
+		tmplData.prebuiltCffi = opts.PrebuiltCffiDir != ""
 		protocGenGoVersion, err := detectProtocGenGoVersion(opts.BAMLSource)
 		if err != nil {
 			return nil, fmt.Errorf("failed to detect protoc-gen-go version: %w", err)
@@ -747,12 +759,34 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 
 	// Add BAML source to build context for --baml-source builds
 	if opts.BAMLSource != "" {
-		// Copy engine directory (for Rust CFFI/CLI build), excluding large/irrelevant dirs
-		engineDir := filepath.Join(opts.BAMLSource, "engine")
-		if err := addDirToTarExclude(tw, engineDir, "baml_engine", map[string]bool{
-			"target": true, ".git": true, "node_modules": true,
-		}); err != nil {
-			return nil, fmt.Errorf("failed to copy BAML engine source: %w", err)
+		if opts.PrebuiltCffiDir != "" {
+			// Prebuilt path: inject the cffi artifacts built once in CI and
+			// skip taring the full engine/ tree (the cffi-builder cargo stage
+			// is gone). language_client_go is plain Go source still required
+			// for the module replace directive, so tar just that subtree.
+			soSrc := filepath.Join(opts.PrebuiltCffiDir, "libbaml_cffi.so")
+			if err := addFileToTar(tw, soSrc, "prebuilt/libbaml_cffi.so"); err != nil {
+				return nil, fmt.Errorf("failed to add prebuilt libbaml_cffi.so: %w", err)
+			}
+			cliSrc := filepath.Join(opts.PrebuiltCffiDir, "baml-cli")
+			if err := addFileToTar(tw, cliSrc, "prebuilt/baml-cli"); err != nil {
+				return nil, fmt.Errorf("failed to add prebuilt baml-cli: %w", err)
+			}
+
+			lcgDir := filepath.Join(opts.BAMLSource, "engine", "language_client_go")
+			if err := addDirToTarExclude(tw, lcgDir, "baml_engine/language_client_go", map[string]bool{
+				"target": true, ".git": true, "node_modules": true,
+			}); err != nil {
+				return nil, fmt.Errorf("failed to copy language_client_go source: %w", err)
+			}
+		} else {
+			// Copy engine directory (for Rust CFFI/CLI build), excluding large/irrelevant dirs
+			engineDir := filepath.Join(opts.BAMLSource, "engine")
+			if err := addDirToTarExclude(tw, engineDir, "baml_engine", map[string]bool{
+				"target": true, ".git": true, "node_modules": true,
+			}); err != nil {
+				return nil, fmt.Errorf("failed to copy BAML engine source: %w", err)
+			}
 		}
 
 		// Copy go.mod and go.sum from repo root (needed for Go module replace directive)

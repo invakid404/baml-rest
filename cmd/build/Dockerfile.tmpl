@@ -1,9 +1,11 @@
 # Go version (defined once, re-declared in each stage that needs it)
 ARG GO_VERSION=1.26.3
 
-{{- if .bamlSource }}
-# Rust builder stage: Build BAML CFFI library and CLI from source
-FROM rust:bookworm AS cffi-builder
+{{- if and .bamlSource (not .prebuiltCffi) }}
+# Rust builder stage: Build BAML CFFI library and CLI from source.
+# Pinned to a digest so a silent base-image bump cannot change the
+# toolchain (and thus the produced .so) underneath a fixed cache key.
+FROM rust:bookworm@sha256:19817ead3289c8c631c73df281e18b59b172f6a31f4f563290f69cddd06c30e9 AS cffi-builder
 
 # Install Go (needed for protoc-gen-go during CFFI build)
 ARG TARGETARCH{{ if .defaultTargetArch }}={{ .defaultTargetArch }}{{ end }}
@@ -71,14 +73,30 @@ COPY baml_src /workspace/baml_src
 COPY baml_rest /workspace/baml_rest
 
 {{- if .bamlSource }}
+{{- if .prebuiltCffi }}
+# Copy prebuilt CFFI library and CLI from the build context (the cffi-builder
+# cargo stage is skipped — the artifacts were built once in a dedicated CI job
+# inside the same rust:bookworm base for glibc parity, then injected here).
+COPY prebuilt/libbaml_cffi.so /workspace/custom_baml_lib.so
+COPY prebuilt/baml-cli /usr/local/bin/baml-cli
+# upload/download-artifact does not preserve the executable bit, so restore it.
+RUN chmod +x /usr/local/bin/baml-cli
+{{- else }}
 # Copy built CFFI library and CLI from Rust stage
 COPY --from=cffi-builder /baml_engine/target/release/libbaml_cffi.so /workspace/custom_baml_lib.so
 COPY --from=cffi-builder /baml_engine/target/release/baml-cli /usr/local/bin/baml-cli
+{{- end }}
 
 # Assemble Go module for replace directive (go.mod is at repo root, Go source under engine/)
 COPY baml_go.mod /workspace/custom_baml_go_lib/go.mod
 COPY baml_go.sum* /workspace/custom_baml_go_lib/
+{{- if .prebuiltCffi }}
+# language_client_go is plain Go source (not a cargo output), copied from the
+# build context rather than the skipped cffi-builder stage.
+COPY baml_engine/language_client_go /workspace/custom_baml_go_lib/engine/language_client_go
+{{- else }}
 COPY --from=cffi-builder /baml_engine/language_client_go /workspace/custom_baml_go_lib/engine/language_client_go
+{{- end }}
 RUN touch /workspace/custom_baml_go_lib/.provided
 {{- else }}
 {{- if not .noCustomBamlLib }}
