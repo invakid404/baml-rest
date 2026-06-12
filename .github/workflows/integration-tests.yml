@@ -262,7 +262,7 @@ jobs:
 
       - name: Restore prebuilt cffi cache
         id: cache
-        uses: actions/cache@v5
+        uses: actions/cache@v5.0.5
         with:
           path: prebuilt-cffi
           # Final-artifact cache. The key fully pins the artifact: the BAML
@@ -313,7 +313,7 @@ jobs:
             '
 
       - name: Upload prebuilt cffi artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           # Name keyed on the source commit so overlapping retention windows
           # across runs can never hand a cell the wrong commit's artifact.
@@ -368,7 +368,7 @@ jobs:
         # name). Injecting it lets the Docker build COPY the .so + baml-cli and
         # skip the cffi-builder cargo stage, removing ~18m from each cell's
         # pre-go-test wall time. See #433.
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           name: baml-cffi-${{ needs.build-baml-cffi.outputs.commit }}
           path: prebuilt-cffi
