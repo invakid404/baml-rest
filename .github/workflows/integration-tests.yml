@@ -262,7 +262,7 @@ jobs:
 
       - name: Restore prebuilt cffi cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: prebuilt-cffi
           # Final-artifact cache. The key fully pins the artifact: the BAML
