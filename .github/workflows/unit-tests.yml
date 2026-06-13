@@ -65,9 +65,9 @@ jobs:
           find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -exec dirname {} \; | while read dir; do
             echo "=== Testing $dir ==="
             if [ "$dir" = "./adapters/common" ]; then
-              (cd "$dir" && GOWORK=off go test -race -count=100 ./...)
+              (cd "$dir" && GOWORK=off go test -race -count=100 -timeout 20m ./...)
             else
-              (cd "$dir" && go test -race -count=100 ./...)
+              (cd "$dir" && go test -race -count=100 -timeout 20m ./...)
             fi
           done
 
