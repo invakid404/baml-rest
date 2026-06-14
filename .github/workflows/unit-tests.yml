@@ -124,6 +124,16 @@ jobs:
         # accumulates silently across PRs (the latent-drift class of bug
         # that produced #299).
         run: |
+          # go.work.sum may be dirtied by earlier workspace-mode Go commands
+          # (the per-module test loop above appends additive module-content
+          # checksums). Restore the committed version before checking
+          # dynclient-owned drift. This only discards uncommitted go.work.sum
+          # mutations — `git checkout -- go.work.sum` restores it to HEAD,
+          # which already includes any committed PR change, and the full-tree
+          # status check immediately below still fails on every other dirty
+          # file (#442).
+          git checkout -- go.work.sum 2>/dev/null || true
+
           if [ -n "$(git status --porcelain)" ]; then
             echo "ERROR: tree is dirty before cmd/regenerate-dynclient."
             git status --short
