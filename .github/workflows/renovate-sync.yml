@@ -60,31 +60,33 @@ jobs:
       - name: Run scripts/sync.sh
         run: ./scripts/sync.sh
 
-      - name: Populate workspace module checksums
-        # scripts/sync.sh reconciles go.mod/go.sum and some go.work.sum
-        # entries, but `go work sync` + `GOWORK=off go mod tidy` do not
-        # force a download/verify of every module zip the workspace tests
-        # later load. That left module-content `h1:` lines (e.g.
-        # golang.org/x/crypto vX.Y.Z) missing from go.work.sum after a
-        # dep-bump sync, so the first workspace-mode package load in
-        # unit-tests appended them and dirtied the tree before
-        # cmd/regenerate-dynclient (#442 / unblocks #438).
-        #
-        # Mirror the unit-tests.yml workspace-mode module traversal but use
-        # `go list -deps -test` instead of running tests: it forces module
-        # zip verification so Go appends the required workspace checksums
-        # before the allowlist/commit step below.
-        run: |
-          find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -exec dirname {} \; | while read -r dir; do
-            if [ "$dir" = "./adapters/common" ]; then
-              (cd "$dir" && GOWORK=off go list -deps -test ./... >/dev/null)
-            else
-              (cd "$dir" && go list -deps -test ./... >/dev/null)
-            fi
-          done
-
       - name: Validate, commit, and push sync result
         run: |
+          # scripts/sync.sh reconciles go.mod/go.sum and some go.work.sum
+          # entries, but `go work sync` + `GOWORK=off go mod tidy` do not
+          # force a download/verify of every module zip the workspace tests
+          # later load. That left module-content `h1:` lines (e.g.
+          # golang.org/x/crypto vX.Y.Z) missing from go.work.sum after a
+          # dep-bump sync, so the first workspace-mode package load in
+          # unit-tests appended them and dirtied the tree before
+          # cmd/regenerate-dynclient (#442 / unblocks #438).
+          #
+          # Mirror the unit-tests.yml workspace-mode module traversal but use
+          # `go list -deps -test` instead of running tests: it forces module
+          # zip verification so Go appends the required workspace checksums.
+          # Defined once and called after EVERY ./scripts/sync.sh run (the
+          # initial step above and the non-fast-forward retry below), so the
+          # populate-then-validate sequence is identical on both passes.
+          populate_workspace_checksums() {
+            find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -exec dirname {} \; | while read -r dir; do
+              if [ "$dir" = "./adapters/common" ]; then
+                (cd "$dir" && GOWORK=off go list -deps -test ./... >/dev/null)
+              else
+                (cd "$dir" && go list -deps -test ./... >/dev/null)
+              fi
+            done
+          }
+
           # Allowlist: only Go module metadata may change.
           #   go.mod, go.sum, go.work.sum at the root, and go.mod / go.sum
           #   under any nested module directory. Anything else (tracked or
@@ -149,6 +151,9 @@ jobs:
           }
 
           # ---- first pass: validate, commit, push ----
+          # Initial ./scripts/sync.sh already ran in the step above; force
+          # workspace module-content checksums before validating.
+          populate_workspace_checksums
           validate_diff_allowlist
 
           if [ -z "$(git status --porcelain --untracked-files=all)" ]; then
@@ -175,6 +180,7 @@ jobs:
           git fetch origin "${GITHUB_REF_NAME}"
           git reset --hard "origin/${GITHUB_REF_NAME}"
           ./scripts/sync.sh
+          populate_workspace_checksums
           validate_diff_allowlist
           if [ -z "$(git status --porcelain --untracked-files=all)" ]; then
             echo "Sync is a no-op on top of remote; nothing to push."
