@@ -34,6 +34,7 @@ import (
 // Inner failures bubble up as the captured `go test` output pinned
 // into the outer fatal message.
 func TestPoolLifecycle(t *testing.T) {
+	testharness.CapStress(t)
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skipf("go binary not on PATH: %v", err)
 	}
@@ -46,6 +47,7 @@ func TestPoolLifecycle(t *testing.T) {
 // (so the harness lost coverage) or this seed has drifted out of sync
 // with the relevant emission path.
 func TestPoolLifecycle_RegressionSeeds(t *testing.T) {
+	testharness.CapStress(t)
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skipf("go binary not on PATH: %v", err)
 	}
