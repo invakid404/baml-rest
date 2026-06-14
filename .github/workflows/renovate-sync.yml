@@ -7,7 +7,11 @@ on:
 
 concurrency:
   group: renovate-sync-${{ github.ref }}
-  cancel-in-progress: true
+  # A github-actions[bot] sync commit pushed by this workflow must not
+  # cancel the dep-bump run that just produced it (that older run is
+  # finishing post-job cleanup). Real Renovate dep-bump/rebase pushes
+  # (authored by renovate[bot]) still cancel older in-flight sync runs.
+  cancel-in-progress: ${{ github.event.head_commit.author.name != 'github-actions[bot]' }}
 
 env:
   GO_VERSION: "1.26.3"
@@ -55,6 +59,29 @@ jobs:
 
       - name: Run scripts/sync.sh
         run: ./scripts/sync.sh
+
+      - name: Populate workspace module checksums
+        # scripts/sync.sh reconciles go.mod/go.sum and some go.work.sum
+        # entries, but `go work sync` + `GOWORK=off go mod tidy` do not
+        # force a download/verify of every module zip the workspace tests
+        # later load. That left module-content `h1:` lines (e.g.
+        # golang.org/x/crypto vX.Y.Z) missing from go.work.sum after a
+        # dep-bump sync, so the first workspace-mode package load in
+        # unit-tests appended them and dirtied the tree before
+        # cmd/regenerate-dynclient (#442 / unblocks #438).
+        #
+        # Mirror the unit-tests.yml workspace-mode module traversal but use
+        # `go list -deps -test` instead of running tests: it forces module
+        # zip verification so Go appends the required workspace checksums
+        # before the allowlist/commit step below.
+        run: |
+          find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -exec dirname {} \; | while read -r dir; do
+            if [ "$dir" = "./adapters/common" ]; then
+              (cd "$dir" && GOWORK=off go list -deps -test ./... >/dev/null)
+            else
+              (cd "$dir" && go list -deps -test ./... >/dev/null)
+            fi
+          done
 
       - name: Validate, commit, and push sync result
         run: |
