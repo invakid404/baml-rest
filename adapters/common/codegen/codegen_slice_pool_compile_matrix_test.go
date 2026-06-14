@@ -41,6 +41,7 @@ import (
 // the single-non-pooled cell, which `go build` alone wouldn't catch
 // (an unnecessary closure would still compile).
 func TestCompileMatrix(t *testing.T) {
+	testharness.CapStress(t)
 	t.Parallel()
 
 	// Skip when `go` is not on PATH (the subprocess compile step
