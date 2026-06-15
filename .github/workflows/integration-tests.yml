@@ -64,8 +64,187 @@ jobs:
           ' integration/baml_versions.json)
           echo "matrix=$matrix" >> $GITHUB_OUTPUT
 
+  warm-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Job-level so the Docker Hub login step's own `if:` can read it — a
+      # step-level env is not reliably in scope for that step's own `if:`,
+      # which would skip the login and leave the cold pulls unauthenticated.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    # Single prebuild that resolves the base-image digests, pulls each one
+    # ONCE (authenticated), saves it to a tarball, and hands the set to every
+    # Docker-consuming matrix cell as a per-run artifact. This replaces the
+    # per-cell anonymous Docker Hub pulls that bursted the shared
+    # GitHub-runner IP pool against Docker Hub's rate limit and surfaced as
+    # "registry-1.docker.io ... context deadline exceeded" container-setup
+    # flakes (#447). Consuming cells `docker load` the tarballs and never
+    # touch Docker Hub — so the Docker Hub login now lives here, not per cell.
+    outputs:
+      # build-baml-cffi `docker run`s the pinned rust base. `docker save`/`load`
+      # does NOT restore repo-digest mappings, so a digest-qualified
+      # `rust:bookworm@sha256:...` ref would still hit Docker Hub after a load.
+      # The warm job pulls the pinned digest and tags it to this deterministic
+      # local alias; build-baml-cffi runs the alias instead of the digest ref.
+      rust-alias: ${{ steps.rust.outputs.alias }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6.0.3
+
+      - name: Log in to Docker Hub
+        # Authenticated Docker Hub pulls get a much higher rate limit than
+        # anonymous pulls off the shared GitHub-runner IP pool (#447). This is
+        # the ONLY Docker Hub login in this workflow — consuming cells just
+        # `docker load` the warmed tarballs — so it runs here, before digest
+        # resolution and the cold pulls below.
+        #
+        # secrets.* can't be referenced directly in a step `if:`, so gate on
+        # the job-level DOCKERHUB_USERNAME env (set above) — the step skips
+        # cleanly on forks / when the secret is absent instead of running
+        # login-action with empty credentials.
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v4.2.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve base-image digests
+        id: resolve
+        # Resolve each floating tag to its current registry index digest so the
+        # cache key tracks image CONTENT, not the mutable tag, and so the pull
+        # below is by immutable digest (no tag float between resolve and pull).
+        # imagetools inspect queries the registry using the login above.
+        run: |
+          set -euo pipefail
+          for entry in \
+            "node:node:22-bookworm" \
+            "debian:debian:bookworm-slim" \
+            "golang:golang:1.26.3-alpine" \
+            "alpine:alpine:3.19"; do
+            key="${entry%%:*}"
+            ref="${entry#*:}"
+            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+            echo "$key=$digest" >> "$GITHUB_OUTPUT"
+            echo "resolved $ref -> $digest"
+          done
+
+      - name: Resolve pinned rust image
+        id: rust
+        # Single-source the rust base from the Dockerfile FROM pin (same guard
+        # as build-baml-cffi) so the warm alias and that job's cache key derive
+        # from the same digest. A future digest bump in Dockerfile.tmpl then
+        # invalidates the warm cache automatically.
+        run: |
+          set -euo pipefail
+          matches=$(grep -cE '^FROM rust:bookworm@sha256:[0-9a-f]+' cmd/build/Dockerfile.tmpl)
+          if [ "$matches" -ne 1 ]; then
+            echo "::error file=cmd/build/Dockerfile.tmpl::expected exactly one pinned 'FROM rust:bookworm@sha256:' line, found $matches"
+            exit 1
+          fi
+          image=$(grep -oE 'rust:bookworm@sha256:[0-9a-f]+' cmd/build/Dockerfile.tmpl | head -n1)
+          digest=$(printf '%s' "$image" | sed -E 's/.*@sha256://' | cut -c1-12)
+          alias="baml-rest-warm/rust-bookworm:${digest}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "alias=$alias" >> "$GITHUB_OUTPUT"
+
+      # Per-image cross-run caches keyed on the resolved digest: a bump to one
+      # tag re-pulls only that image, not the whole set. On a hit the tarball
+      # is restored to disk and the pull step skips it.
+      - name: Cache node:22-bookworm tarball
+        id: cache-node
+        uses: actions/cache@v5.0.5
+        with:
+          path: warm-images/node.tar
+          key: warm-image-${{ runner.os }}-node-${{ steps.resolve.outputs.node }}
+      - name: Cache debian:bookworm-slim tarball
+        id: cache-debian
+        uses: actions/cache@v5.0.5
+        with:
+          path: warm-images/debian.tar
+          key: warm-image-${{ runner.os }}-debian-${{ steps.resolve.outputs.debian }}
+      - name: Cache golang:1.26.3-alpine tarball
+        id: cache-golang
+        uses: actions/cache@v5.0.5
+        with:
+          path: warm-images/golang.tar
+          key: warm-image-${{ runner.os }}-golang-${{ steps.resolve.outputs.golang }}
+      - name: Cache alpine:3.19 tarball
+        id: cache-alpine
+        uses: actions/cache@v5.0.5
+        with:
+          path: warm-images/alpine.tar
+          key: warm-image-${{ runner.os }}-alpine-${{ steps.resolve.outputs.alpine }}
+      - name: Cache rust alias tarball
+        id: cache-rust
+        uses: actions/cache@v5.0.5
+        with:
+          path: warm-images/rust-bookworm.tar
+          key: warm-image-${{ runner.os }}-rust-bookworm-${{ steps.rust.outputs.digest }}
+
+      - name: Pull and save base images
+        # For each cache miss, pull by immutable digest and tag to the exact
+        # tag the Dockerfiles reference, so testcontainers' tag-based `FROM`
+        # reuses the loaded image with no registry lookup, then `docker save` a
+        # raw tar (Actions compresses the artifact/cache). Cache hits already
+        # have the tar on disk from the restore above. Rust is pulled by its
+        # pinned digest and tagged ONLY to the local alias.
+        env:
+          NODE_DIGEST: ${{ steps.resolve.outputs.node }}
+          DEBIAN_DIGEST: ${{ steps.resolve.outputs.debian }}
+          GOLANG_DIGEST: ${{ steps.resolve.outputs.golang }}
+          ALPINE_DIGEST: ${{ steps.resolve.outputs.alpine }}
+          RUST_IMAGE: ${{ steps.rust.outputs.image }}
+          RUST_ALIAS: ${{ steps.rust.outputs.alias }}
+          NODE_HIT: ${{ steps.cache-node.outputs.cache-hit }}
+          DEBIAN_HIT: ${{ steps.cache-debian.outputs.cache-hit }}
+          GOLANG_HIT: ${{ steps.cache-golang.outputs.cache-hit }}
+          ALPINE_HIT: ${{ steps.cache-alpine.outputs.cache-hit }}
+          RUST_HIT: ${{ steps.cache-rust.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          mkdir -p warm-images
+
+          warm_tag() {
+            local tag="$1" digest="$2" tarfile="$3" hit="$4"
+            if [ "$hit" = "true" ] && [ -f "warm-images/$tarfile" ]; then
+              echo "cache hit: $tag ($tarfile)"
+              return
+            fi
+            local repo="${tag%%:*}"
+            echo "pulling ${repo}@${digest} -> ${tag}"
+            docker pull "${repo}@${digest}"
+            docker tag "${repo}@${digest}" "$tag"
+            docker save "$tag" -o "warm-images/$tarfile"
+          }
+
+          warm_tag "node:22-bookworm"     "$NODE_DIGEST"   "node.tar"   "$NODE_HIT"
+          warm_tag "debian:bookworm-slim" "$DEBIAN_DIGEST" "debian.tar" "$DEBIAN_HIT"
+          warm_tag "golang:1.26.3-alpine" "$GOLANG_DIGEST" "golang.tar" "$GOLANG_HIT"
+          warm_tag "alpine:3.19"          "$ALPINE_DIGEST" "alpine.tar" "$ALPINE_HIT"
+
+          if [ "$RUST_HIT" = "true" ] && [ -f "warm-images/rust-bookworm.tar" ]; then
+            echo "cache hit: $RUST_ALIAS (rust-bookworm.tar)"
+          else
+            echo "pulling ${RUST_IMAGE} -> ${RUST_ALIAS}"
+            docker pull "$RUST_IMAGE"
+            docker tag "$RUST_IMAGE" "$RUST_ALIAS"
+            docker save "$RUST_ALIAS" -o "warm-images/rust-bookworm.tar"
+          fi
+
+          ls -lh warm-images/
+
+      - name: Upload warm images
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: warm-images-${{ github.run_id }}
+          path: warm-images/*.tar
+          if-no-files-found: error
+          retention-days: 1
+
   integration-tests:
-    needs: get-versions
+    needs: [get-versions, warm-images]
     runs-on: ubuntu-latest
     # Outer backstop only: step timeout-minutes (45m, below) bounds the
     # go-test step from go-test start — the same origin as the watchdog —
@@ -80,6 +259,27 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Download warm base images
+        # Base images are pulled once by the warm-images job and handed over as
+        # a per-run artifact; this cell only loads them — no Docker Hub login,
+        # no pull (#447).
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: warm-images-${{ github.run_id }}
+          path: warm-images
+
+      - name: Load warm base images
+        # `docker load` the warmed tarballs before the go-test step so
+        # testcontainers' tag-based `FROM` builds reuse them locally instead of
+        # pulling from Docker Hub.
+        run: |
+          set -euo pipefail
+          for tar in warm-images/*.tar; do
+            echo "loading $tar"
+            docker load -i "$tar"
+          done
+          docker image ls
 
       - name: Set up Go
         uses: actions/setup-go@v6.4.0
@@ -141,7 +341,7 @@ jobs:
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
 
   integration-tests-inprocess:
-    needs: get-latest-version
+    needs: [get-latest-version, warm-images]
     runs-on: ubuntu-latest
     # Outer backstop only: step timeout-minutes (45m) + pre-test budget
     # (~10m). The step timeout and watchdog share the go-test origin. #420
@@ -159,6 +359,27 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Download warm base images
+        # Base images are pulled once by the warm-images job and handed over as
+        # a per-run artifact; this cell only loads them — no Docker Hub login,
+        # no pull (#447).
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: warm-images-${{ github.run_id }}
+          path: warm-images
+
+      - name: Load warm base images
+        # `docker load` the warmed tarballs before the go-test step so
+        # testcontainers' tag-based `FROM` builds reuse them locally instead of
+        # pulling from Docker Hub.
+        run: |
+          set -euo pipefail
+          for tar in warm-images/*.tar; do
+            echo "loading $tar"
+            docker load -i "$tar"
+          done
+          docker image ls
 
       - name: Set up Go
         uses: actions/setup-go@v6.4.0
@@ -187,6 +408,7 @@ jobs:
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
 
   build-baml-cffi:
+    needs: warm-images
     runs-on: ubuntu-latest
     # Build the BAML cffi artifact (libbaml_cffi.so + baml-cli) exactly once,
     # OUTSIDE the integration-tests-baml-source watchdog window, and hand it to
@@ -203,6 +425,27 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Download warm base images
+        # The cffi build below `docker run`s the rust base. The warm-images job
+        # pulled the pinned digest and saved it under a local alias; this cell
+        # loads that tarball and runs the alias — no Docker Hub login, no pull
+        # (#447).
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: warm-images-${{ github.run_id }}
+          path: warm-images
+
+      - name: Load warm base images
+        # `docker load` the warmed tarballs before the cffi `docker run` so the
+        # rust alias resolves locally instead of pulling from Docker Hub.
+        run: |
+          set -euo pipefail
+          for tar in warm-images/*.tar; do
+            echo "loading $tar"
+            docker load -i "$tar"
+          done
+          docker image ls
 
       - name: Read BAML source commit
         id: baml-source
@@ -284,9 +527,10 @@ jobs:
         # glibc parity is load-bearing: the .so MUST be compiled inside
         # rust:bookworm (Debian, glibc 2.36), NOT on the bare ubuntu-latest
         # runner (glibc 2.39), or it fails to load in the bookworm-slim runtime
-        # with GLIBC_2.3x-not-found. The image is the Dockerfile FROM pin
-        # (resolved above) so this reproduces the in-Docker cffi-builder
-        # environment exactly.
+        # with GLIBC_2.3x-not-found. The run uses the warm-images rust alias,
+        # which is the Dockerfile FROM pin pulled-and-tagged by the warm job
+        # (steps.rust-image above resolves the same digest for the cache key),
+        # so this reproduces the in-Docker cffi-builder environment exactly.
         if: steps.cache.outputs.cache-hit != 'true'
         env:
           PROTOC_GEN_GO_VERSION: ${{ steps.protoc.outputs.version }}
@@ -297,7 +541,7 @@ jobs:
             -e PROTOC_GEN_GO_VERSION \
             -v "${{ github.workspace }}/baml-source:/baml-source" \
             -v "${{ github.workspace }}/prebuilt-cffi:/out" \
-            "${{ steps.rust-image.outputs.image }}" \
+            "${{ needs.warm-images.outputs.rust-alias }}" \
             bash -euo pipefail -c '
               apt-get update >/dev/null && apt-get install -y wget >/dev/null
               arch=$(dpkg --print-architecture)
@@ -325,7 +569,7 @@ jobs:
           if-no-files-found: error
 
   integration-tests-baml-source:
-    needs: build-baml-cffi
+    needs: [build-baml-cffi, warm-images]
     runs-on: ubuntu-latest
     # The baml-source matrix builds BAML from source, which dominates the
     # per-cell wall time and pushes consistent runs into the 38-45m
@@ -355,6 +599,27 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Download warm base images
+        # Base images are pulled once by the warm-images job and handed over as
+        # a per-run artifact; this cell only loads them — no Docker Hub login,
+        # no pull (#447).
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: warm-images-${{ github.run_id }}
+          path: warm-images
+
+      - name: Load warm base images
+        # `docker load` the warmed tarballs before the go-test step so
+        # testcontainers' tag-based `FROM` builds reuse them locally instead of
+        # pulling from Docker Hub.
+        run: |
+          set -euo pipefail
+          for tar in warm-images/*.tar; do
+            echo "loading $tar"
+            docker load -i "$tar"
+          done
+          docker image ls
 
       - name: Checkout BAML Source
         uses: actions/checkout@v6.0.3

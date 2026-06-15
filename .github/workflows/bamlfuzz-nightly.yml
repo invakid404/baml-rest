@@ -91,8 +91,143 @@ jobs:
           }' integration/baml_versions.json)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
+  warm-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Job-level so the Docker Hub login step's own `if:` can read it — a
+      # step-level env is not reliably in scope for that step's own `if:`,
+      # which would skip the login and leave the cold pulls unauthenticated.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    # Single prebuild that resolves the base-image digests, pulls each one
+    # ONCE (authenticated), saves it to a tarball, and hands the set to the
+    # fuzz matrix as a per-run artifact. This replaces the per-cell anonymous
+    # Docker Hub pulls that bursted the shared GitHub-runner IP pool against
+    # Docker Hub's rate limit and surfaced as "registry-1.docker.io ...
+    # context deadline exceeded" container-setup flakes (#447). The fuzz cells
+    # `docker load` the tarballs and never touch Docker Hub — so the Docker
+    # Hub login now lives here, not per cell. Same base set as
+    # integration-tests.yml; no rust (the fuzz job never builds cffi).
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Log in to Docker Hub
+        # Authenticated Docker Hub pulls get a much higher rate limit than
+        # anonymous pulls off the shared GitHub-runner IP pool (#447). This is
+        # the ONLY Docker Hub login in this workflow — the fuzz cells just
+        # `docker load` the warmed tarballs — so it runs here, before digest
+        # resolution and the cold pulls below.
+        #
+        # secrets.* can't be referenced directly in a step `if:`, so gate on
+        # the job-level DOCKERHUB_USERNAME env (set above) — the step skips
+        # cleanly on forks / when the secret is absent instead of running
+        # login-action with empty credentials.
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v4.2.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve base-image digests
+        id: resolve
+        # Resolve each floating tag to its current registry index digest so the
+        # cache key tracks image CONTENT, not the mutable tag, and so the pull
+        # below is by immutable digest (no tag float between resolve and pull).
+        run: |
+          set -euo pipefail
+          for entry in \
+            "node:node:22-bookworm" \
+            "debian:debian:bookworm-slim" \
+            "golang:golang:1.26.3-alpine" \
+            "alpine:alpine:3.19"; do
+            key="${entry%%:*}"
+            ref="${entry#*:}"
+            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+            echo "$key=$digest" >> "$GITHUB_OUTPUT"
+            echo "resolved $ref -> $digest"
+          done
+
+      # Per-image cross-run caches keyed on the resolved digest: a bump to one
+      # tag re-pulls only that image. On a hit the tarball is restored to disk
+      # and the pull step skips it.
+      - name: Cache node:22-bookworm tarball
+        id: cache-node
+        uses: actions/cache@v5.0.5
+        with:
+          path: warm-images/node.tar
+          key: warm-image-${{ runner.os }}-node-${{ steps.resolve.outputs.node }}
+      - name: Cache debian:bookworm-slim tarball
+        id: cache-debian
+        uses: actions/cache@v5.0.5
+        with:
+          path: warm-images/debian.tar
+          key: warm-image-${{ runner.os }}-debian-${{ steps.resolve.outputs.debian }}
+      - name: Cache golang:1.26.3-alpine tarball
+        id: cache-golang
+        uses: actions/cache@v5.0.5
+        with:
+          path: warm-images/golang.tar
+          key: warm-image-${{ runner.os }}-golang-${{ steps.resolve.outputs.golang }}
+      - name: Cache alpine:3.19 tarball
+        id: cache-alpine
+        uses: actions/cache@v5.0.5
+        with:
+          path: warm-images/alpine.tar
+          key: warm-image-${{ runner.os }}-alpine-${{ steps.resolve.outputs.alpine }}
+
+      - name: Pull and save base images
+        # For each cache miss, pull by immutable digest and tag to the exact
+        # tag the Dockerfiles reference, so testcontainers' tag-based `FROM`
+        # reuses the loaded image with no registry lookup, then `docker save` a
+        # raw tar (Actions compresses the artifact/cache). Cache hits already
+        # have the tar on disk from the restore above.
+        env:
+          NODE_DIGEST: ${{ steps.resolve.outputs.node }}
+          DEBIAN_DIGEST: ${{ steps.resolve.outputs.debian }}
+          GOLANG_DIGEST: ${{ steps.resolve.outputs.golang }}
+          ALPINE_DIGEST: ${{ steps.resolve.outputs.alpine }}
+          NODE_HIT: ${{ steps.cache-node.outputs.cache-hit }}
+          DEBIAN_HIT: ${{ steps.cache-debian.outputs.cache-hit }}
+          GOLANG_HIT: ${{ steps.cache-golang.outputs.cache-hit }}
+          ALPINE_HIT: ${{ steps.cache-alpine.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          mkdir -p warm-images
+
+          warm_tag() {
+            local tag="$1" digest="$2" tarfile="$3" hit="$4"
+            if [ "$hit" = "true" ] && [ -f "warm-images/$tarfile" ]; then
+              echo "cache hit: $tag ($tarfile)"
+              return
+            fi
+            local repo="${tag%%:*}"
+            echo "pulling ${repo}@${digest} -> ${tag}"
+            docker pull "${repo}@${digest}"
+            docker tag "${repo}@${digest}" "$tag"
+            docker save "$tag" -o "warm-images/$tarfile"
+          }
+
+          warm_tag "node:22-bookworm"     "$NODE_DIGEST"   "node.tar"   "$NODE_HIT"
+          warm_tag "debian:bookworm-slim" "$DEBIAN_DIGEST" "debian.tar" "$DEBIAN_HIT"
+          warm_tag "golang:1.26.3-alpine" "$GOLANG_DIGEST" "golang.tar" "$GOLANG_HIT"
+          warm_tag "alpine:3.19"          "$ALPINE_DIGEST" "alpine.tar" "$ALPINE_HIT"
+
+          ls -lh warm-images/
+
+      - name: Upload warm images
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: warm-images-${{ github.run_id }}
+          path: warm-images/*.tar
+          if-no-files-found: error
+          retention-days: 1
+
   fuzz:
-    needs: get-versions
+    needs: [get-versions, warm-images]
     runs-on: ubuntu-latest
     # Each matrix cell runs ONE fuzz target via the `target` axis.
     # Budget per cell:
@@ -116,6 +251,13 @@ jobs:
       BAML_VERSION: ${{ matrix.baml-version }}
       UNARY_SERVER: ${{ matrix.unary-server }}
       BAML_REST_HTTP_CLIENT: nethttp
+      # CI-only: skip the testcontainers Ryuk reaper so setup doesn't
+      # pull/create it from Docker Hub — matching the integration jobs. With
+      # the warm-images set scoped to the integration bases (no ryuk), this
+      # keeps Ryuk from being a stray Docker Hub pull source here (#447). Safe
+      # because GH runners are ephemeral and torn down after the job, so leaked
+      # containers are cleaned up regardless. Never set this for local runs.
+      TESTCONTAINERS_RYUK_DISABLED: true
       BAMLFUZZ_KEEP_ARTIFACTS: "1"
       MODE: ${{ github.event.inputs.mode || 'fuzz' }}
       FUZZTIME: ${{ github.event.inputs.fuzztime || '15m' }}
@@ -134,6 +276,27 @@ jobs:
         uses: actions/checkout@v6.0.3
         with:
           persist-credentials: false
+
+      - name: Download warm base images
+        # Base images are pulled once by the warm-images job and handed over as
+        # a per-run artifact; this cell only loads them — no Docker Hub login,
+        # no pull (#447).
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: warm-images-${{ github.run_id }}
+          path: warm-images
+
+      - name: Load warm base images
+        # `docker load` the warmed tarballs before the go-test steps so
+        # testcontainers' tag-based `FROM` builds reuse them locally instead of
+        # pulling from Docker Hub.
+        run: |
+          set -euo pipefail
+          for tar in warm-images/*.tar; do
+            echo "loading $tar"
+            docker load -i "$tar"
+          done
+          docker image ls
 
       - name: Set up Go
         uses: actions/setup-go@v6.4.0

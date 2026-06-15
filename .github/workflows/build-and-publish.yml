@@ -150,6 +150,11 @@ jobs:
   # Build Docker images (multi-arch)
   build-docker:
     runs-on: ubuntu-latest
+    env:
+      # Job-level so the Docker Hub login step's own `if:` can read it — a
+      # step-level env is not reliably in scope for that step's own `if:`,
+      # which would skip the login and leave the base-image pull unauthenticated.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
       matrix:
         arch: [amd64, arm64]
@@ -157,6 +162,23 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Log in to Docker Hub
+        # Dockerfile.builder's `FROM node:22-bookworm` resolves to Docker Hub,
+        # so the build-push-action below does an anonymous base-image pull that
+        # hits the same shared-runner-IP rate limit as the integration jobs
+        # (#447). This is separate from — and in addition to — the ghcr.io login
+        # below (ghcr.io is the push target, not the base-image source).
+        #
+        # secrets.* can't be referenced directly in a step `if:`, so gate on
+        # the job-level DOCKERHUB_USERNAME env (set above) — the step skips
+        # cleanly on forks / when the secret is absent instead of running
+        # login-action with empty credentials.
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v4.2.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.1.0
@@ -183,6 +205,16 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=ghcr.io/invakid404/baml-rest-builder,push-by-digest=true,name-canonical=true,push=true
+          # setup-buildx-action's default docker-container driver keeps a build
+          # cache separate from the daemon image store, so a daemon `docker
+          # load` would not warm it — wire up the GitHub Actions BuildKit cache
+          # instead. After one warm run, base layers (FROM node:22-bookworm)
+          # and build steps restore from the gha cache instead of pulling from
+          # Docker Hub (#447); the Docker Hub login above still covers cold
+          # misses. Scoped per arch so the amd64 and arm64 matrix cells don't
+          # clobber each other's cache.
+          cache-from: type=gha,scope=baml-rest-builder-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=baml-rest-builder-${{ matrix.arch }}
 
       - name: Export digest
         run: |
