@@ -150,6 +150,11 @@ jobs:
   # Build Docker images (multi-arch)
   build-docker:
     runs-on: ubuntu-latest
+    env:
+      # Job-level so the Docker Hub login step's own `if:` can read it — a
+      # step-level env is not reliably in scope for that step's own `if:`,
+      # which would skip the login and leave the base-image pull unauthenticated.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
       matrix:
         arch: [amd64, arm64]
@@ -165,17 +170,15 @@ jobs:
         # (#447). This is separate from — and in addition to — the ghcr.io login
         # below (ghcr.io is the push target, not the base-image source).
         #
-        # secrets.* can't be referenced directly in a step `if:`, so route the
-        # username through step env and gate on that — the step skips cleanly on
-        # forks / when the secret is absent instead of running login-action with
-        # empty credentials.
+        # secrets.* can't be referenced directly in a step `if:`, so gate on
+        # the job-level DOCKERHUB_USERNAME env (set above) — the step skips
+        # cleanly on forks / when the secret is absent instead of running
+        # login-action with empty credentials.
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v4.2.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.1.0

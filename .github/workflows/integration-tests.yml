@@ -68,6 +68,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # Job-level so the Docker Hub login step's own `if:` can read it — a
+      # step-level env is not reliably in scope for that step's own `if:`,
+      # which would skip the login and leave the cold pulls unauthenticated.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     # Single prebuild that resolves the base-image digests, pulls each one
     # ONCE (authenticated), saves it to a tarball, and hands the set to every
     # Docker-consuming matrix cell as a per-run artifact. This replaces the
@@ -94,17 +99,15 @@ jobs:
         # `docker load` the warmed tarballs — so it runs here, before digest
         # resolution and the cold pulls below.
         #
-        # secrets.* can't be referenced directly in a step `if:`, so route the
-        # username through step env and gate on that — the step skips cleanly on
-        # forks / when the secret is absent instead of running login-action with
-        # empty credentials.
+        # secrets.* can't be referenced directly in a step `if:`, so gate on
+        # the job-level DOCKERHUB_USERNAME env (set above) — the step skips
+        # cleanly on forks / when the secret is absent instead of running
+        # login-action with empty credentials.
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v4.2.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
       - name: Resolve base-image digests
         id: resolve
