@@ -27,6 +27,16 @@ import (
 // skip cleanly while preserving real-regression coverage on the first.
 var perVersionTestRan atomic.Int32
 
+// staticMapNilCarrierProbeRan gates the issue #448 typed-nil probe the
+// same way perVersionTestRan gates the per-version sweep: the probe
+// shells out to `go run` twice (guarded + stripped) per invocation, so
+// under the unit-tests workflow's `go test -race -count=100 ./...` loop
+// it would balloon to ~200 nested go-run calls. The fail-before /
+// pass-after regression assertions are deterministic and gain no extra
+// signal from re-running, so the second and subsequent invocations skip
+// while the first preserves full coverage.
+var staticMapNilCarrierProbeRan atomic.Int32
+
 // TestApplyDynamicOrderFixToDir_PerVersion exercises the hack against
 // each pinned upstream BAML version. The fixture is the read-only
 // module cache copy of github.com/boundaryml/baml@<v>; the test copies
@@ -3300,6 +3310,9 @@ func TestStaticMapHelperTypedNilCarrier_NoPanic(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not available")
 	}
+	if staticMapNilCarrierProbeRan.Add(1) > 1 {
+		t.Skip("static-map typed-nil probe shells out to go run twice; only run on the first -count iteration to keep -count=100 bounded")
+	}
 
 	idx, err := newPkgTypeIndex(t.TempDir())
 	if err != nil {
@@ -3410,7 +3423,12 @@ func (m OrderedMap[V]) RangeAny(fn func(string, any) bool) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "run", ".")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
+	// GOWORK=off isolates the temp module from any caller-configured Go
+	// workspace; an inherited external GOWORK makes `go run` fail with
+	// "no modules were found in the current workspace". `off` (not "")
+	// is the repo's temp-module isolation pattern — empty falls back to
+	// workspace auto-discovery.
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
 	out, _ := cmd.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		t.Fatalf("go run timed out:\n%s", out)
