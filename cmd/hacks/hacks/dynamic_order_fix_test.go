@@ -27,6 +27,16 @@ import (
 // skip cleanly while preserving real-regression coverage on the first.
 var perVersionTestRan atomic.Int32
 
+// staticMapNilCarrierProbeRan gates the issue #448 typed-nil probe the
+// same way perVersionTestRan gates the per-version sweep: the probe
+// shells out to `go run` twice (guarded + stripped) per invocation, so
+// under the unit-tests workflow's `go test -race -count=100 ./...` loop
+// it would balloon to ~200 nested go-run calls. The fail-before /
+// pass-after regression assertions are deterministic and gain no extra
+// signal from re-running, so the second and subsequent invocations skip
+// while the first preserves full coverage.
+var staticMapNilCarrierProbeRan atomic.Int32
+
 // TestApplyDynamicOrderFixToDir_PerVersion exercises the hack against
 // each pinned upstream BAML version. The fixture is the read-only
 // module cache copy of github.com/boundaryml/baml@<v>; the test copies
@@ -3262,4 +3272,166 @@ func (w *WithNestedMap) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap
 	if !strings.Contains(helperBody, "bamlOrderedAs_OM_Ptr_ConcreteClass(v)") {
 		t.Fatalf("outer helper missing the recursive inner-ordered-map call:\n%s", helperBody)
 	}
+}
+
+// TestStaticMapHelperTypedNilCarrier_NoPanic is the issue #448
+// regression. An absent optional `map<string, T>?` field reaches the
+// generated static-map decode helper as an `any` whose dynamic value is
+// a typed-nil ordered-map carrier (a `*baml.OrderedMap[V]` whose type
+// parameter differs from the helper's own `T`). Before the fix the
+// helper's leading `if value == nil` test was false (the interface
+// carries a dynamic type), the exact `*baml.OrderedMap[T]` identity
+// assertion missed (mismatched type parameter), and the typed-nil
+// pointer still satisfied the structural `RangeAny`/`Len` interface
+// because RangeAny is a value-receiver method — so `ranger.RangeAny`
+// dereferenced the nil pointer and triggered Go's runtime.panicwrap,
+// killing the worker.
+//
+// The test compiles the *actual* generator output (emitStaticMapHelper
+// + staticMapHelperCore) against a faithful stub OrderedMap whose
+// receiver shapes match the patched serde carrier, then drives it with
+// a typed-nil `*baml.OrderedMap[any]` carrier. It asserts both
+// directions in one run:
+//
+//   - the as-generated helper (with the bamlStaticMapCarrierIsNil
+//     guard) returns nil without panicking, and
+//   - the same helper with the guard reverted to the pre-fix
+//     `if value == nil` form panics with the RangeAny nil-pointer
+//     panicwrap.
+//
+// Reverting the guard in dynamic_order_client.go therefore flips the
+// first direction to a panic and fails this test; the stripped-variant
+// check guards against the harness silently ceasing to reproduce the
+// bug (e.g. a future rename of the guard call).
+func TestStaticMapHelperTypedNilCarrier_NoPanic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles + runs a temp module; skip under -short")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+	if staticMapNilCarrierProbeRan.Add(1) > 1 {
+		t.Skip("static-map typed-nil probe shells out to go run twice; only run on the first -count iteration to keep -count=100 bounded")
+	}
+
+	idx, err := newPkgTypeIndex(t.TempDir())
+	if err != nil {
+		t.Fatalf("newPkgTypeIndex: %v", err)
+	}
+	// The Ptr_OM_int64 helper is exactly the one in the issue #448
+	// minimal-repro stack: `m (map<string, int>)?` → *baml.OrderedMap[int64].
+	helperSrc := emitStaticMapHelper("bamlOrderedAs_Ptr_OM_int64", "*baml.OrderedMap[int64]", idx)
+	if !strings.Contains(helperSrc, "bamlStaticMapCarrierIsNil(value)") {
+		t.Fatalf("emitted helper does not call the typed-nil guard; the regression strip below would no longer reproduce the bug:\n%s", helperSrc)
+	}
+	coreSrc := staticMapHelperCore()
+	if !strings.Contains(coreSrc, "func bamlStaticMapCarrierIsNil(value any) bool") {
+		t.Fatalf("staticMapHelperCore did not emit bamlStaticMapCarrierIsNil:\n%s", coreSrc)
+	}
+
+	// Pre-fix shape: revert the guard call to the bare nil test that let
+	// the typed-nil carrier through to RangeAny.
+	strippedHelperSrc := strings.Replace(helperSrc, "if bamlStaticMapCarrierIsNil(value) {", "if value == nil {", 1)
+	if strippedHelperSrc == helperSrc {
+		t.Fatalf("failed to strip the guard from the emitted helper:\n%s", helperSrc)
+	}
+
+	// Guarded (as-generated) → must not panic, must return nil.
+	out := runStaticMapNilCarrierProbe(t, helperSrc, coreSrc)
+	if !strings.Contains(out, "OK_NIL") {
+		t.Fatalf("guarded helper did not return nil for a typed-nil carrier:\n%s", out)
+	}
+	if strings.Contains(out, "panic") {
+		t.Fatalf("guarded helper panicked for a typed-nil carrier (issue #448 regression):\n%s", out)
+	}
+
+	// Stripped (pre-fix) → must panic with the RangeAny nil-pointer wrap.
+	stripped := runStaticMapNilCarrierProbe(t, strippedHelperSrc, coreSrc)
+	if !strings.Contains(stripped, "panic") {
+		t.Fatalf("pre-fix helper unexpectedly did not panic — the harness no longer reproduces issue #448:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "RangeAny") || !strings.Contains(stripped, "nil") {
+		t.Fatalf("pre-fix panic was not the expected RangeAny nil-pointer panicwrap:\n%s", stripped)
+	}
+}
+
+// runStaticMapNilCarrierProbe writes a self-contained temp module that
+// pairs the supplied generated helper + core with a faithful stub
+// OrderedMap (value-receiver RangeAny/Len, pointer-receiver Set — the
+// same receiver shapes as the patched serde carrier), drives the helper
+// with a typed-nil `*baml.OrderedMap[any]` carrier, and returns the
+// combined `go run` output. A panic surfaces as non-zero exit with the
+// runtime trace on stderr; the caller inspects the text rather than the
+// exit code so both the success and panic paths are assertable.
+func runStaticMapNilCarrierProbe(t *testing.T, helperSrc, coreSrc string) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	mustWrite := func(rel, content string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("go.mod", "module ordmaptest\n\ngo 1.23\n")
+	// Stub mirrors dynclient/baml-patched serde.OrderedMap receiver
+	// shapes: RangeAny/Len are value receivers (so a typed-nil pointer
+	// still satisfies the structural interface and panicwraps on call),
+	// Set is a pointer receiver.
+	mustWrite("baml/baml.go", `package baml
+
+type entry[V any] struct {
+	key   string
+	value V
+}
+
+type OrderedMap[V any] struct {
+	entries []entry[V]
+	index   map[string]int
+}
+
+func (m *OrderedMap[V]) Set(key string, value V) error {
+	if m.index == nil {
+		m.index = map[string]int{}
+	}
+	if i, ok := m.index[key]; ok {
+		m.entries[i].value = value
+		return nil
+	}
+	m.index[key] = len(m.entries)
+	m.entries = append(m.entries, entry[V]{key: key, value: value})
+	return nil
+}
+
+func (m OrderedMap[V]) Len() int { return len(m.entries) }
+
+func (m OrderedMap[V]) RangeAny(fn func(string, any) bool) {
+	for _, e := range m.entries {
+		if !fn(e.key, e.value) {
+			return
+		}
+	}
+}
+`)
+	mustWrite("main.go", "package main\n\nimport (\n\t\"fmt\"\n\t\"reflect\"\n\n\tbaml \"ordmaptest/baml\"\n)\n\nvar _ = reflect.ValueOf\n\n"+helperSrc+"\n\n"+coreSrc+"\n\nfunc main() {\n\t// Typed-nil carrier whose type parameter (any) differs from the\n\t// helper's (int64), so the exact *baml.OrderedMap[int64] identity\n\t// assertion misses and execution reaches the structural RangeAny\n\t// path — the issue #448 trigger.\n\tvar carrier *baml.OrderedMap[any]\n\tvar v any = carrier\n\tgot := bamlOrderedAs_Ptr_OM_int64(v)\n\tif got != nil {\n\t\tfmt.Println(\"UNEXPECTED_NON_NIL\")\n\t\treturn\n\t}\n\tfmt.Println(\"OK_NIL\")\n}\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "run", ".")
+	cmd.Dir = dir
+	// GOWORK=off isolates the temp module from any caller-configured Go
+	// workspace; an inherited external GOWORK makes `go run` fail with
+	// "no modules were found in the current workspace". `off` (not "")
+	// is the repo's temp-module isolation pattern — empty falls back to
+	// workspace auto-discovery.
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	out, _ := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("go run timed out:\n%s", out)
+	}
+	return string(out)
 }
