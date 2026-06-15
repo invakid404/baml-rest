@@ -158,6 +158,25 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
 
+      - name: Log in to Docker Hub
+        # Dockerfile.builder's `FROM node:22-bookworm` resolves to Docker Hub,
+        # so the build-push-action below does an anonymous base-image pull that
+        # hits the same shared-runner-IP rate limit as the integration jobs
+        # (#447). This is separate from — and in addition to — the ghcr.io login
+        # below (ghcr.io is the push target, not the base-image source).
+        #
+        # secrets.* can't be referenced directly in a step `if:`, so route the
+        # username through step env and gate on that — the step skips cleanly on
+        # forks / when the secret is absent instead of running login-action with
+        # empty credentials.
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v4.2.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.1.0
 
