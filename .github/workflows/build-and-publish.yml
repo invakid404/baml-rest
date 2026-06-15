@@ -202,6 +202,16 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=ghcr.io/invakid404/baml-rest-builder,push-by-digest=true,name-canonical=true,push=true
+          # setup-buildx-action's default docker-container driver keeps a build
+          # cache separate from the daemon image store, so a daemon `docker
+          # load` would not warm it — wire up the GitHub Actions BuildKit cache
+          # instead. After one warm run, base layers (FROM node:22-bookworm)
+          # and build steps restore from the gha cache instead of pulling from
+          # Docker Hub (#447); the Docker Hub login above still covers cold
+          # misses. Scoped per arch so the amd64 and arm64 matrix cells don't
+          # clobber each other's cache.
+          cache-from: type=gha,scope=baml-rest-builder-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=baml-rest-builder-${{ matrix.arch }}
 
       - name: Export digest
         run: |
