@@ -54,9 +54,47 @@
       "depNameTemplate": "go",
       "datasourceTemplate": "golang-version",
       "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "description": "Update pinned CI base-image digests in Dockerfiles",
+      "managerFilePatterns": [
+        "/^cmd/build/Dockerfile\\.tmpl$/",
+        "/^integration/mockllm/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=docker\\s+FROM(?:\\s+--platform=[^\\s]+)?\\s+(?<depName>[^:@\\s]+):(?<currentValue>[^@\\s]+)@sha256:(?<currentDigest>[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
+  "docker": {
+    "enabled": true
+  },
   "packageRules": [
+    {
+      "description": "Batch CI base image tag/digest updates. The inherited preset disables Docker handling, so these come from the custom regex manager above (datasource=docker) rather than the native Dockerfile manager.",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchFileNames": [
+        "cmd/build/Dockerfile.tmpl",
+        "integration/mockllm/Dockerfile"
+      ],
+      "matchPackageNames": [
+        "rust",
+        "node",
+        "debian",
+        "golang",
+        "alpine"
+      ],
+      "groupName": "base docker images",
+      "groupSlug": "base-docker-images"
+    },
     {
       "matchDatasources": [
         "golang-version"

@@ -134,21 +134,36 @@ jobs:
 
       - name: Resolve base-image digests
         id: resolve
-        # Resolve each floating tag to its current registry index digest so the
-        # cache key tracks image CONTENT, not the mutable tag, and so the pull
-        # below is by immutable digest (no tag float between resolve and pull).
+        # Single-source each warm base image's digest from its pinned Dockerfile
+        # `FROM` line instead of querying the registry at runtime (#458). The
+        # cache key then tracks image CONTENT via the in-repo pin (bumped by
+        # Renovate's docker custom manager), and the warm pull below is by that
+        # immutable digest — zero Docker Hub calls on the resolve path. Assert
+        # exactly one pinned `FROM` per image and fail loudly otherwise, so a
+        # botched pin can't silently fall through to an empty digest. No rust
+        # here: the fuzz job never builds cffi. node/debian live in
+        # cmd/build/Dockerfile.tmpl; golang/alpine in integration/mockllm.
         run: |
           set -euo pipefail
+          # key|file|image  (image is the repo:tag prefix of the FROM ref)
           for entry in \
-            "node:node:22-bookworm" \
-            "debian:debian:bookworm-slim" \
-            "golang:golang:1.26.3-alpine" \
-            "alpine:alpine:3.19"; do
-            key="${entry%%:*}"
-            ref="${entry#*:}"
-            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+            "node|cmd/build/Dockerfile.tmpl|node:22-bookworm" \
+            "debian|cmd/build/Dockerfile.tmpl|debian:bookworm-slim" \
+            "golang|integration/mockllm/Dockerfile|golang:1.26.3-alpine" \
+            "alpine|integration/mockllm/Dockerfile|alpine:3.19"; do
+            key="${entry%%|*}"
+            rest="${entry#*|}"
+            file="${rest%%|*}"
+            image="${rest#*|}"
+            matches=$(grep -cE "^FROM ${image}@sha256:[0-9a-f]{64}" "$file")
+            if [ "$matches" -ne 1 ]; then
+              echo "::error file=${file}::expected exactly one pinned 'FROM ${image}@sha256:' line, found $matches"
+              exit 1
+            fi
+            # Full sha256:<64hex>: warm_tag does `docker pull "${repo}@${digest}"`.
+            digest=$(grep -oE "${image}@sha256:[0-9a-f]{64}" "$file" | head -n1 | sed -E 's/.*@//')
             echo "$key=$digest" >> "$GITHUB_OUTPUT"
-            echo "resolved $ref -> $digest"
+            echo "resolved $image -> $digest"
           done
 
       # Per-image cross-run caches keyed on the resolved digest: a bump to one
