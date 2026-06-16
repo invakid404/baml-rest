@@ -323,6 +323,14 @@ jobs:
           # are ephemeral and torn down after the job, so leaked containers
           # are cleaned up regardless. Never set this for local runs.
           TESTCONTAINERS_RYUK_DISABLED: true
+          # This suite includes TestBamlfuzzStaticOracle, whose per-batch
+          # full baml-rest image builds otherwise accumulate and exhaust the
+          # runner disk ("no space left on device"). This gate activates the
+          # harness's happy-path `docker image prune -f` between static envs,
+          # bounding per-batch image growth at ~zero runtime cost while
+          # leaving the BuildKit cache warm. Cheaper than the free-disk step
+          # across every matrix cell (#459).
+          BAMLFUZZ_STATIC_DOCKER_PRUNE: "1"
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
         # share state (server config, worker pool) that could cause flakiness if parallel.
         # `subprocess` matches the normal server deployment path (server +
@@ -420,6 +428,14 @@ jobs:
           # are ephemeral and torn down after the job, so leaked containers
           # are cleaned up regardless. Never set this for local runs.
           TESTCONTAINERS_RYUK_DISABLED: true
+          # This suite includes TestBamlfuzzStaticOracle, whose per-batch
+          # full baml-rest image builds otherwise accumulate and exhaust the
+          # runner disk ("no space left on device"). This gate activates the
+          # harness's happy-path `docker image prune -f` between static envs,
+          # bounding per-batch image growth at ~zero runtime cost while
+          # leaving the BuildKit cache warm. Cheaper than the free-disk step
+          # across every matrix cell (#459).
+          BAMLFUZZ_STATIC_DOCKER_PRUNE: "1"
         # No `subprocess` tag — the default no-tag build compiles the
         # direct in-process worker path.
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
