@@ -155,13 +155,16 @@ jobs:
             rest="${entry#*|}"
             file="${rest%%|*}"
             image="${rest#*|}"
-            matches=$(grep -cE "^FROM ${image}@sha256:[0-9a-f]{64}" "$file")
+            # Escape regex metacharacters (the tags contain literal dots) so the
+            # grep -E patterns match the image string literally, not as a regex.
+            image_re=$(printf '%s' "$image" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g')
+            matches=$(grep -cE "^FROM ${image_re}@sha256:[0-9a-f]{64}" "$file")
             if [ "$matches" -ne 1 ]; then
               echo "::error file=${file}::expected exactly one pinned 'FROM ${image}@sha256:' line, found $matches"
               exit 1
             fi
             # Full sha256:<64hex>: warm_tag does `docker pull "${repo}@${digest}"`.
-            digest=$(grep -oE "${image}@sha256:[0-9a-f]{64}" "$file" | head -n1 | sed -E 's/.*@//')
+            digest=$(grep -oE "${image_re}@sha256:[0-9a-f]{64}" "$file" | head -n1 | sed -E 's/.*@//')
             echo "$key=$digest" >> "$GITHUB_OUTPUT"
             echo "resolved $image -> $digest"
           done
