@@ -550,14 +550,14 @@ go run "${ADAPTER_VERSION}/cmd/main.go"
 # BAML call path. Subprocess builds bake it into cmd/worker;
 # in-process builds bake it into cmd/serve because cmd/worker is not
 # built at all.
-WORKER_LDFLAGS=""
-SERVE_LDFLAGS=""
+WORKER_LDFLAGS="-s -w"
+SERVE_LDFLAGS="-s -w"
 if [ -n "${BAML_REST_BASE_URL_REWRITES:-}" ]; then
     echo "Baking in base URL rewrites: ${BAML_REST_BASE_URL_REWRITES}"
     if [ "${SUBPROCESS:-true}" = "true" ]; then
-        WORKER_LDFLAGS="-X 'github.com/invakid404/baml-rest/bamlutils/urlrewrite.builtinRules=${BAML_REST_BASE_URL_REWRITES}'"
+        WORKER_LDFLAGS="${WORKER_LDFLAGS} -X 'github.com/invakid404/baml-rest/bamlutils/urlrewrite.builtinRules=${BAML_REST_BASE_URL_REWRITES}'"
     else
-        SERVE_LDFLAGS="-X 'github.com/invakid404/baml-rest/bamlutils/urlrewrite.builtinRules=${BAML_REST_BASE_URL_REWRITES}'"
+        SERVE_LDFLAGS="${SERVE_LDFLAGS} -X 'github.com/invakid404/baml-rest/bamlutils/urlrewrite.builtinRules=${BAML_REST_BASE_URL_REWRITES}'"
     fi
 fi
 
