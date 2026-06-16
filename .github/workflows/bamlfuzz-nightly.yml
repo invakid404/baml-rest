@@ -441,12 +441,20 @@ jobs:
         # ~50-case budget the other targets explore per nightly cell.
         # No corpus restore/upload: -run does not use the fuzz corpus.
         #
-        # BAMLFUZZ_STATIC_DOCKER_PRUNE prunes dangling images + BuildKit
-        # cache between static envs so this target's many full baml-rest
-        # builds don't accumulate and exhaust the runner disk. Scoped to
-        # this step only — the harness no-ops without it.
+        # BAMLFUZZ_STATIC_DOCKER_PRUNE prunes dangling images between
+        # successful envs; failed setup additionally prunes the BuildKit
+        # cache. Keeping builder prune off the happy path preserves warm
+        # layer reuse so later batches rebuild fast, while still keeping
+        # this target's many full baml-rest builds from accumulating and
+        # exhausting the runner disk. Scoped to this step only — the
+        # harness no-ops without it.
+        #
+        # BAML_REST_SUITE_WATCHDOG is a margin for runner variance, not
+        # the throughput fix: warm-cache runtime is ~20-25m, well under
+        # 50m. Go's -timeout 80m and the job timeout-minutes are unchanged.
         env:
           BAMLFUZZ_STATIC_DOCKER_PRUNE: "1"
+          BAML_REST_SUITE_WATCHDOG: 50m
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
             -run='TestBamlfuzzStaticOracle' \
