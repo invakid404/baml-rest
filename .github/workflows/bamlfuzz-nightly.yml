@@ -277,6 +277,23 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Free runner disk before Docker image load
+        # GitHub-hosted runners start with ~14 GiB free, which the static
+        # oracle's per-batch baml-rest image builds exhaust ("no space left
+        # on device"). Reclaim the preinstalled toolchains/images we never
+        # use BEFORE the warm tarballs are loaded — docker-images:true is
+        # only safe here because our warm base images aren't loaded yet, and
+        # tool-cache:false keeps setup-go's tool cache intact.
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as
         # a per-run artifact; this cell only loads them — no Docker Hub login,
@@ -423,6 +440,13 @@ jobs:
         # batches; 10 × staticCasesPerBatch (5) = 50 cases, matching the
         # ~50-case budget the other targets explore per nightly cell.
         # No corpus restore/upload: -run does not use the fuzz corpus.
+        #
+        # BAMLFUZZ_STATIC_DOCKER_PRUNE prunes dangling images + BuildKit
+        # cache between static envs so this target's many full baml-rest
+        # builds don't accumulate and exhaust the runner disk. Scoped to
+        # this step only — the harness no-ops without it.
+        env:
+          BAMLFUZZ_STATIC_DOCKER_PRUNE: "1"
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
             -run='TestBamlfuzzStaticOracle' \
