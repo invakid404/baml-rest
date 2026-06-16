@@ -440,6 +440,12 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
 
+      - name: Free runner disk before Docker image load
+        # This job loads warm images AND may run a cold full cargo release build
+        # inside rust — the other disk-heavy integration job (#459). Placed
+        # before the warm-image load (docker-images:true must not delete them).
+        uses: ./.github/actions/free-disk-space
+
       - name: Download warm base images
         # The cffi build below `docker run`s the rust base. The warm-images job
         # pulled the pinned digest and saved it under a local alias; this cell
@@ -613,6 +619,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Free runner disk before Docker image load
+        # The observed ENOSPC job: builds BAML from source per cell (#459).
+        # Placed before the warm-image load (docker-images:true must not
+        # delete them).
+        uses: ./.github/actions/free-disk-space
 
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as

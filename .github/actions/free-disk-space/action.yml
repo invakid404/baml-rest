@@ -1,0 +1,24 @@
+name: Free disk space
+description: Reclaim unused runner disk before warm Docker image loads
+
+# Shared wrapper around jlumbroso/free-disk-space so every disk-heavy CI job
+# reclaims the same set of preinstalled toolchains/images (#459). GitHub-hosted
+# runners start with ~14 GiB free, which the disk-heavy integration/fuzz jobs
+# exhaust ("no space left on device"). docker-images:true is only safe BEFORE
+# the repo's warm base-image tarballs are loaded — every consumer must place
+# this step ahead of its `docker load`, or the warmed images get deleted and
+# the Docker Hub pulls (#447) come back. tool-cache:false keeps setup-go's tool
+# cache intact.
+runs:
+  using: composite
+  steps:
+    - name: Free runner disk before Docker image load
+      uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
