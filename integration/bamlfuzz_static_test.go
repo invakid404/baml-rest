@@ -33,6 +33,7 @@ import (
 	"hash/fnv"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -256,6 +257,9 @@ func runStaticBatch(t *testing.T, cases []bamlfuzz.OracleCase, batchLabel string
 
 	env, err := setupStaticEnv(batchDir)
 	if err != nil {
+		// Failed builds are the largest source of unreferenced Docker
+		// residue; reclaim it before the isolation rebuilds run.
+		pruneStaticDockerArtifacts(t)
 		t.Logf("batch build failed for %s: %v; isolating cases singly", batchLabel, err)
 		if !isolateStaticBatch(t, lowered, batchLabel, source) {
 			// All isolated rebuilds passed, but the batch build failed.
@@ -268,7 +272,7 @@ func runStaticBatch(t *testing.T, cases []bamlfuzz.OracleCase, batchLabel string
 		}
 		return
 	}
-	defer terminateStaticEnv(t, env)
+	defer terminateStaticEnvAndPrune(t, env)
 
 	mockClient := mockllm.NewClient(env.MockLLMURL)
 	bamlClient := testutil.NewBAMLRestClient(env.BAMLRestURL)
@@ -437,11 +441,14 @@ func runIsolatedStaticCase(t *testing.T, lc loweredStaticCase, caseIdx int, batc
 	}
 	env, err := setupStaticEnv(singleDir)
 	if err != nil {
+		// Failed isolated builds leave build residue too; reclaim it
+		// before the next isolated case rebuilds.
+		pruneStaticDockerArtifacts(t)
 		envelope.BuildError = err.Error()
 		failStaticAndDump(t, envelope, "isolated build failed: %v", err)
 		return
 	}
-	terminateStaticEnv(t, env)
+	terminateStaticEnvAndPrune(t, env)
 }
 
 // caseSourcePath returns the absolute path to the generated .baml
@@ -554,6 +561,45 @@ func terminateStaticEnv(t *testing.T, env *testutil.TestEnvironment) {
 	defer termCancel()
 	if err := env.Terminate(termCtx); err != nil {
 		t.Logf("static env Terminate: %v", err)
+	}
+}
+
+// terminateStaticEnvAndPrune terminates a static env and then reclaims
+// Docker build residue. Used wherever runStaticBatch / the isolation
+// path finishes with a live env so the static oracle's per-batch
+// baml-rest image builds don't accumulate on the runner disk.
+func terminateStaticEnvAndPrune(t *testing.T, env *testutil.TestEnvironment) {
+	t.Helper()
+	terminateStaticEnv(t, env)
+	pruneStaticDockerArtifacts(t)
+}
+
+// pruneStaticDockerArtifacts reclaims Docker build residue between
+// static envs so the static oracle's many full baml-rest image builds
+// don't exhaust the runner disk ("no space left on device"). It is a
+// no-op unless BAMLFUZZ_STATIC_DOCKER_PRUNE is set, so local runs and
+// other integration tests are unaffected.
+//
+// It prunes only dangling images and the BuildKit cache — never `-a`
+// / `docker system prune -a`, which would delete the warm base images
+// the nightly job loads and force Docker Hub pulls. The static oracle
+// runs serially (-p 1), so pruning between env lifecycles never races
+// a live container. Prune failures are logged as warnings, never
+// failing the test.
+func pruneStaticDockerArtifacts(t *testing.T) {
+	t.Helper()
+	if os.Getenv("BAMLFUZZ_STATIC_DOCKER_PRUNE") == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	for _, args := range [][]string{
+		{"image", "prune", "-f"},
+		{"builder", "prune", "-f"},
+	} {
+		if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
+			t.Logf("WARNING: docker %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
 	}
 }
 

@@ -251,13 +251,6 @@ jobs:
       BAML_VERSION: ${{ matrix.baml-version }}
       UNARY_SERVER: ${{ matrix.unary-server }}
       BAML_REST_HTTP_CLIENT: nethttp
-      # CI-only: skip the testcontainers Ryuk reaper so setup doesn't
-      # pull/create it from Docker Hub — matching the integration jobs. With
-      # the warm-images set scoped to the integration bases (no ryuk), this
-      # keeps Ryuk from being a stray Docker Hub pull source here (#447). Safe
-      # because GH runners are ephemeral and torn down after the job, so leaked
-      # containers are cleaned up regardless. Never set this for local runs.
-      TESTCONTAINERS_RYUK_DISABLED: true
       BAMLFUZZ_KEEP_ARTIFACTS: "1"
       MODE: ${{ github.event.inputs.mode || 'fuzz' }}
       FUZZTIME: ${{ github.event.inputs.fuzztime || '15m' }}
@@ -276,6 +269,23 @@ jobs:
         uses: actions/checkout@v6.0.3
         with:
           persist-credentials: false
+
+      - name: Free runner disk before Docker image load
+        # GitHub-hosted runners start with ~14 GiB free, which the static
+        # oracle's per-batch baml-rest image builds exhaust ("no space left
+        # on device"). Reclaim the preinstalled toolchains/images we never
+        # use BEFORE the warm tarballs are loaded — docker-images:true is
+        # only safe here because our warm base images aren't loaded yet, and
+        # tool-cache:false keeps setup-go's tool cache intact.
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as
@@ -423,6 +433,13 @@ jobs:
         # batches; 10 × staticCasesPerBatch (5) = 50 cases, matching the
         # ~50-case budget the other targets explore per nightly cell.
         # No corpus restore/upload: -run does not use the fuzz corpus.
+        #
+        # BAMLFUZZ_STATIC_DOCKER_PRUNE prunes dangling images + BuildKit
+        # cache between static envs so this target's many full baml-rest
+        # builds don't accumulate and exhaust the runner disk. Scoped to
+        # this step only — the harness no-ops without it.
+        env:
+          BAMLFUZZ_STATIC_DOCKER_PRUNE: "1"
         run: |
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
             -run='TestBamlfuzzStaticOracle' \
