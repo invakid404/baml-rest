@@ -111,22 +111,39 @@ jobs:
 
       - name: Resolve base-image digests
         id: resolve
-        # Resolve each floating tag to its current registry index digest so the
-        # cache key tracks image CONTENT, not the mutable tag, and so the pull
-        # below is by immutable digest (no tag float between resolve and pull).
-        # imagetools inspect queries the registry using the login above.
+        # Single-source each warm base image's digest from its pinned Dockerfile
+        # `FROM` line instead of querying the registry at runtime (#458). The
+        # cache key then tracks image CONTENT via the in-repo pin (bumped by
+        # Renovate's docker custom manager), and the warm pull below is by that
+        # immutable digest — zero Docker Hub calls on the resolve path. Same
+        # guard shape as the rust step below: assert exactly one pinned `FROM`
+        # per image and fail loudly otherwise, so a botched pin can't silently
+        # fall through to an empty digest. node/debian live in
+        # cmd/build/Dockerfile.tmpl; golang/alpine in integration/mockllm.
         run: |
           set -euo pipefail
+          # key|file|image  (image is the repo:tag prefix of the FROM ref)
           for entry in \
-            "node:node:22-bookworm" \
-            "debian:debian:bookworm-slim" \
-            "golang:golang:1.26.3-alpine" \
-            "alpine:alpine:3.19"; do
-            key="${entry%%:*}"
-            ref="${entry#*:}"
-            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+            "node|cmd/build/Dockerfile.tmpl|node:22-bookworm" \
+            "debian|cmd/build/Dockerfile.tmpl|debian:bookworm-slim" \
+            "golang|integration/mockllm/Dockerfile|golang:1.26.3-alpine" \
+            "alpine|integration/mockllm/Dockerfile|alpine:3.19"; do
+            key="${entry%%|*}"
+            rest="${entry#*|}"
+            file="${rest%%|*}"
+            image="${rest#*|}"
+            # Escape regex metacharacters (the tags contain literal dots) so the
+            # grep -E patterns match the image string literally, not as a regex.
+            image_re=$(printf '%s' "$image" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g')
+            matches=$(grep -cE "^FROM ${image_re}@sha256:[0-9a-f]{64}" "$file")
+            if [ "$matches" -ne 1 ]; then
+              echo "::error file=${file}::expected exactly one pinned 'FROM ${image}@sha256:' line, found $matches"
+              exit 1
+            fi
+            # Full sha256:<64hex>: warm_tag does `docker pull "${repo}@${digest}"`.
+            digest=$(grep -oE "${image_re}@sha256:[0-9a-f]{64}" "$file" | head -n1 | sed -E 's/.*@//')
             echo "$key=$digest" >> "$GITHUB_OUTPUT"
-            echo "resolved $ref -> $digest"
+            echo "resolved $image -> $digest"
           done
 
       - name: Resolve pinned rust image
@@ -306,6 +323,14 @@ jobs:
           # are ephemeral and torn down after the job, so leaked containers
           # are cleaned up regardless. Never set this for local runs.
           TESTCONTAINERS_RYUK_DISABLED: true
+          # This suite includes TestBamlfuzzStaticOracle, whose per-batch
+          # full baml-rest image builds otherwise accumulate and exhaust the
+          # runner disk ("no space left on device"). This gate activates the
+          # harness's happy-path `docker image prune -f` between static envs,
+          # bounding per-batch image growth at ~zero runtime cost while
+          # leaving the BuildKit cache warm. Cheaper than the free-disk step
+          # across every matrix cell (#459).
+          BAMLFUZZ_STATIC_DOCKER_PRUNE: "1"
         # -p 1 ensures tests run sequentially (no parallelism) since integration tests
         # share state (server config, worker pool) that could cause flakiness if parallel.
         # `subprocess` matches the normal server deployment path (server +
@@ -403,6 +428,14 @@ jobs:
           # are ephemeral and torn down after the job, so leaked containers
           # are cleaned up regardless. Never set this for local runs.
           TESTCONTAINERS_RYUK_DISABLED: true
+          # This suite includes TestBamlfuzzStaticOracle, whose per-batch
+          # full baml-rest image builds otherwise accumulate and exhaust the
+          # runner disk ("no space left on device"). This gate activates the
+          # harness's happy-path `docker image prune -f` between static envs,
+          # bounding per-batch image growth at ~zero runtime cost while
+          # leaving the BuildKit cache warm. Cheaper than the free-disk step
+          # across every matrix cell (#459).
+          BAMLFUZZ_STATIC_DOCKER_PRUNE: "1"
         # No `subprocess` tag — the default no-tag build compiles the
         # direct in-process worker path.
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
@@ -425,6 +458,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Free runner disk before Docker image load
+        # This job loads warm images AND may run a cold full cargo release build
+        # inside rust — the other disk-heavy integration job (#459). Placed
+        # before the warm-image load (docker-images:true must not delete them).
+        uses: ./.github/actions/free-disk-space
 
       - name: Download warm base images
         # The cffi build below `docker run`s the rust base. The warm-images job
@@ -599,6 +638,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Free runner disk before Docker image load
+        # The observed ENOSPC job: builds BAML from source per cell (#459).
+        # Placed before the warm-image load (docker-images:true must not
+        # delete them).
+        uses: ./.github/actions/free-disk-space
 
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as

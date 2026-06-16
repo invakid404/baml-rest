@@ -134,21 +134,39 @@ jobs:
 
       - name: Resolve base-image digests
         id: resolve
-        # Resolve each floating tag to its current registry index digest so the
-        # cache key tracks image CONTENT, not the mutable tag, and so the pull
-        # below is by immutable digest (no tag float between resolve and pull).
+        # Single-source each warm base image's digest from its pinned Dockerfile
+        # `FROM` line instead of querying the registry at runtime (#458). The
+        # cache key then tracks image CONTENT via the in-repo pin (bumped by
+        # Renovate's docker custom manager), and the warm pull below is by that
+        # immutable digest — zero Docker Hub calls on the resolve path. Assert
+        # exactly one pinned `FROM` per image and fail loudly otherwise, so a
+        # botched pin can't silently fall through to an empty digest. No rust
+        # here: the fuzz job never builds cffi. node/debian live in
+        # cmd/build/Dockerfile.tmpl; golang/alpine in integration/mockllm.
         run: |
           set -euo pipefail
+          # key|file|image  (image is the repo:tag prefix of the FROM ref)
           for entry in \
-            "node:node:22-bookworm" \
-            "debian:debian:bookworm-slim" \
-            "golang:golang:1.26.3-alpine" \
-            "alpine:alpine:3.19"; do
-            key="${entry%%:*}"
-            ref="${entry#*:}"
-            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+            "node|cmd/build/Dockerfile.tmpl|node:22-bookworm" \
+            "debian|cmd/build/Dockerfile.tmpl|debian:bookworm-slim" \
+            "golang|integration/mockllm/Dockerfile|golang:1.26.3-alpine" \
+            "alpine|integration/mockllm/Dockerfile|alpine:3.19"; do
+            key="${entry%%|*}"
+            rest="${entry#*|}"
+            file="${rest%%|*}"
+            image="${rest#*|}"
+            # Escape regex metacharacters (the tags contain literal dots) so the
+            # grep -E patterns match the image string literally, not as a regex.
+            image_re=$(printf '%s' "$image" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g')
+            matches=$(grep -cE "^FROM ${image_re}@sha256:[0-9a-f]{64}" "$file")
+            if [ "$matches" -ne 1 ]; then
+              echo "::error file=${file}::expected exactly one pinned 'FROM ${image}@sha256:' line, found $matches"
+              exit 1
+            fi
+            # Full sha256:<64hex>: warm_tag does `docker pull "${repo}@${digest}"`.
+            digest=$(grep -oE "${image_re}@sha256:[0-9a-f]{64}" "$file" | head -n1 | sed -E 's/.*@//')
             echo "$key=$digest" >> "$GITHUB_OUTPUT"
-            echo "resolved $ref -> $digest"
+            echo "resolved $image -> $digest"
           done
 
       # Per-image cross-run caches keyed on the resolved digest: a bump to one
@@ -278,21 +296,10 @@ jobs:
           persist-credentials: false
 
       - name: Free runner disk before Docker image load
-        # GitHub-hosted runners start with ~14 GiB free, which the static
-        # oracle's per-batch baml-rest image builds exhaust ("no space left
-        # on device"). Reclaim the preinstalled toolchains/images we never
-        # use BEFORE the warm tarballs are loaded — docker-images:true is
-        # only safe here because our warm base images aren't loaded yet, and
-        # tool-cache:false keeps setup-go's tool cache intact.
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
+        # Shared composite (docker-images:true) placed BEFORE the warm-image
+        # load so it doesn't delete the warmed bases. See the action for why
+        # the static oracle's per-batch image builds need this (#459).
+        uses: ./.github/actions/free-disk-space
 
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as
