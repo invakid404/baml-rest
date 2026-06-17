@@ -37,6 +37,21 @@ var perVersionTestRan atomic.Int32
 // while the first preserves full coverage.
 var staticMapNilCarrierProbeRan atomic.Int32
 
+// staticMapSliceCarrierProbeRan gates the issue #456 slice-carrier
+// preservation probe the same way staticMapNilCarrierProbeRan gates the
+// #448 probe: each invocation shells out to `go run` twice (as-generated
+// + reflection-stripped pre-fix shape), so under the unit-tests
+// workflow's `go test -race -count=100 ./...` loop it would balloon into
+// hundreds of nested go-run calls. The fail-before / pass-after
+// assertions are deterministic and gain no extra signal from re-running,
+// so the second and subsequent invocations skip while the first
+// preserves full coverage. The slice-wrapped and convert-list halves
+// each get their own counter so both run on the first iteration.
+var (
+	staticMapSliceCarrierProbeRan atomic.Int32
+	convertListCarrierProbeRan    atomic.Int32
+)
+
 // TestApplyDynamicOrderFixToDir_PerVersion exercises the hack against
 // each pinned upstream BAML version. The fixture is the read-only
 // module cache copy of github.com/boundaryml/baml@<v>; the test copies
@@ -3428,6 +3443,278 @@ func (m OrderedMap[V]) RangeAny(fn func(string, any) bool) {
 	// "no modules were found in the current workspace". `off` (not "")
 	// is the repo's temp-module isolation pattern — empty falls back to
 	// workspace auto-discovery.
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	out, _ := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("go run timed out:\n%s", out)
+	}
+	return string(out)
+}
+
+// TestStaticMapSliceCarrierPreservation is the issue #456 regression
+// probe. The 0.219+ static-map rewrite turns a `*[]map[string]string`
+// field (`((map<string,string>)[] | null)`) into `*[]baml.OrderedMap[string]`
+// and routes its decode through bamlOrderedAs_Ptr_Slice_OM_string. The
+// pre-fix helper accepted only the exact typed slice / pointer-to-slice
+// / `[]any` carrier shapes and dropped everything else to nil, so the
+// non-nil pointer-wrapped list carrier the optional/list decode path
+// hands it (a `*[]` of ordered or native map carriers whose generic
+// type parameter differs from the helper's) fell through to `return nil`
+// and a real list was serialized as JSON null.
+//
+// The probe drives the as-generated helper with two such carriers — a
+// non-nil `*[]baml.OrderedMap[any]` ordered carrier and a non-nil
+// `*[]map[string]string` native carrier — and asserts the list and its
+// value survive. It then strips the reflection normalization back to the
+// pre-fix `return nil` fall-through and asserts the same carriers are
+// dropped to nil, so the harness reproduces #456 before the fix and
+// confirms it after.
+func TestStaticMapSliceCarrierPreservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles + runs a temp module; skip under -short")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+	if staticMapSliceCarrierProbeRan.Add(1) > 1 {
+		t.Skip("static-map slice-carrier probe shells out to go run twice; only run on the first -count iteration to keep -count=100 bounded")
+	}
+
+	idx, err := newPkgTypeIndex(t.TempDir())
+	if err != nil {
+		t.Fatalf("newPkgTypeIndex: %v", err)
+	}
+	// The exact helper pair the #456 rewrite emits for
+	// `*[]baml.OrderedMap[string]`: the slice-wrapped helper plus the
+	// per-element ordered-map helper it recurses through.
+	sliceName := staticMapHelperName("*[]baml.OrderedMap[string]")
+	if sliceName != "bamlOrderedAs_Ptr_Slice_OM_string" {
+		t.Fatalf("unexpected slice helper name %q; the #456 repro tracks bamlOrderedAs_Ptr_Slice_OM_string", sliceName)
+	}
+	sliceSrc := emitStaticMapHelper(sliceName, "*[]baml.OrderedMap[string]", idx)
+	elemSrc := emitStaticMapHelper(staticMapHelperName("baml.OrderedMap[string]"), "baml.OrderedMap[string]", idx)
+	if !strings.Contains(sliceSrc, "reflect.ValueOf(value)") || !strings.Contains(sliceSrc, "reflect.Slice") {
+		t.Fatalf("slice helper is missing the #456 reflection normalization:\n%s", sliceSrc)
+	}
+	coreSrc := staticMapHelperCore()
+
+	mainBody := fmt.Sprintf(`func main() {
+	var om baml.OrderedMap[any]
+	_ = om.Set("k", "v")
+	ordered := []baml.OrderedMap[any]{om}
+	gotOrdered := %[1]s(any(&ordered))
+	if gotOrdered == nil {
+		fmt.Println("ORDERED_NIL")
+		return
+	}
+	if len(*gotOrdered) != 1 {
+		fmt.Println("ORDERED_LEN")
+		return
+	}
+	if v, ok := (*gotOrdered)[0].Get("k"); !ok || v != "v" {
+		fmt.Println("ORDERED_VALUE")
+		return
+	}
+
+	native := []map[string]string{{"k": "v"}}
+	gotNative := %[1]s(any(&native))
+	if gotNative == nil {
+		fmt.Println("NATIVE_NIL")
+		return
+	}
+	if len(*gotNative) != 1 {
+		fmt.Println("NATIVE_LEN")
+		return
+	}
+	if v, ok := (*gotNative)[0].Get("k"); !ok || v != "v" {
+		fmt.Println("NATIVE_VALUE")
+		return
+	}
+	fmt.Println("OK_PRESERVED")
+}`, sliceName)
+
+	// As-generated → both carriers preserved.
+	out := runStaticMapSliceCarrierProbe(t, []string{sliceSrc, elemSrc}, coreSrc, mainBody)
+	if !strings.Contains(out, "OK_PRESERVED") {
+		t.Fatalf("as-generated slice helper dropped a non-nil pointer-wrapped list carrier (issue #456 regression):\n%s", out)
+	}
+
+	// Pre-fix shape: strip the reflection fall-through back to `return
+	// nil` so the unsupported carrier is dropped, reproducing #456.
+	strippedSliceSrc := stripSliceReflectFallback(t, sliceSrc)
+	if strippedSliceSrc == sliceSrc {
+		t.Fatalf("failed to strip the reflection normalization from the slice helper:\n%s", sliceSrc)
+	}
+	stripped := runStaticMapSliceCarrierProbe(t, []string{strippedSliceSrc, elemSrc}, coreSrc, mainBody)
+	if !strings.Contains(stripped, "ORDERED_NIL") {
+		t.Fatalf("pre-fix slice helper unexpectedly did not drop the carrier — the harness no longer reproduces issue #456:\n%s", stripped)
+	}
+}
+
+// TestConvertListHelperPointerWrappedCarrierPreserved pins the same
+// #456 class for the convert-list helper, which carries the identical
+// `[]any`-only assumption for composite list carriers and is reached
+// when a `(map<string,string>)[]` list is nested under a map or list.
+// The non-nil pointer-wrapped carrier must round-trip through the
+// reflection normalization rather than dropping to nil.
+func TestConvertListHelperPointerWrappedCarrierPreserved(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles + runs a temp module; skip under -short")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+	if convertListCarrierProbeRan.Add(1) > 1 {
+		t.Skip("convert-list slice-carrier probe shells out to go run; only run on the first -count iteration to keep -count=100 bounded")
+	}
+
+	idx, err := newPkgTypeIndex(t.TempDir())
+	if err != nil {
+		t.Fatalf("newPkgTypeIndex: %v", err)
+	}
+	listName := convertListHelperName("[]baml.OrderedMap[string]")
+	listSrc := emitConvertListHelper(listName, "[]baml.OrderedMap[string]", idx)
+	elemSrc := emitStaticMapHelper(staticMapHelperName("baml.OrderedMap[string]"), "baml.OrderedMap[string]", idx)
+	if !strings.Contains(listSrc, "reflect.ValueOf(value)") || !strings.Contains(listSrc, "reflect.Slice") {
+		t.Fatalf("convert-list helper is missing the #456 reflection normalization:\n%s", listSrc)
+	}
+	coreSrc := staticMapHelperCore()
+
+	mainBody := fmt.Sprintf(`func main() {
+	var om baml.OrderedMap[any]
+	_ = om.Set("k", "v")
+	ordered := []baml.OrderedMap[any]{om}
+	got := %[1]s(any(&ordered))
+	if got == nil {
+		fmt.Println("LIST_NIL")
+		return
+	}
+	if len(got) != 1 {
+		fmt.Println("LIST_LEN")
+		return
+	}
+	if v, ok := got[0].Get("k"); !ok || v != "v" {
+		fmt.Println("LIST_VALUE")
+		return
+	}
+	fmt.Println("OK_PRESERVED")
+}`, listName)
+
+	out := runStaticMapSliceCarrierProbe(t, []string{listSrc, elemSrc}, coreSrc, mainBody)
+	if !strings.Contains(out, "OK_PRESERVED") {
+		t.Fatalf("as-generated convert-list helper dropped a non-nil pointer-wrapped list carrier (issue #456 regression):\n%s", out)
+	}
+
+	strippedListSrc := stripSliceReflectFallback(t, listSrc)
+	if strippedListSrc == listSrc {
+		t.Fatalf("failed to strip the reflection normalization from the convert-list helper:\n%s", listSrc)
+	}
+	stripped := runStaticMapSliceCarrierProbe(t, []string{strippedListSrc, elemSrc}, coreSrc, mainBody)
+	if !strings.Contains(stripped, "LIST_NIL") {
+		t.Fatalf("pre-fix convert-list helper unexpectedly did not drop the carrier — the harness no longer reproduces issue #456:\n%s", stripped)
+	}
+}
+
+// stripSliceReflectFallback rewrites the reflection-normalization block
+// the #456 fix emits inside a slice / convert-list helper's
+// `if !ok { ... }` fall-through back to the pre-fix `return nil` body,
+// so a probe can assert the bug reproduces before the fix. It anchors on
+// the `if !ok {` line (the `value.([]any)` fall-through) and replaces its
+// body up to the matching single-tab `}` close. The fallback's own inner
+// closes are two-tab (`\t\t}`), so the first `\n\t}\n` after the opener
+// is the block close.
+func stripSliceReflectFallback(t *testing.T, src string) string {
+	t.Helper()
+	const open = "\tif !ok {\n"
+	oi := strings.Index(src, open)
+	if oi < 0 {
+		t.Fatalf("helper has no `if !ok {` fall-through block to strip:\n%s", src)
+	}
+	bodyStart := oi + len(open)
+	ci := strings.Index(src[bodyStart:], "\n\t}\n")
+	if ci < 0 {
+		t.Fatalf("could not find the close of the `if !ok {` block:\n%s", src)
+	}
+	end := bodyStart + ci + len("\n\t}\n")
+	return src[:oi] + "\tif !ok {\n\t\treturn nil\n\t}\n" + src[end:]
+}
+
+// runStaticMapSliceCarrierProbe writes a self-contained temp module that
+// pairs the supplied generated helper sources + core with a faithful
+// stub OrderedMap (value-receiver RangeAny/Len/Get, pointer-receiver Set,
+// matching the patched serde carrier's receiver shapes), drives the
+// supplied main body, and returns the combined `go run` output. The
+// caller inspects the printed sentinel rather than the exit code.
+func runStaticMapSliceCarrierProbe(t *testing.T, helperSrcs []string, coreSrc, mainBody string) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	mustWrite := func(rel, content string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("go.mod", "module ordmaptest\n\ngo 1.23\n")
+	mustWrite("baml/baml.go", `package baml
+
+type entry[V any] struct {
+	key   string
+	value V
+}
+
+type OrderedMap[V any] struct {
+	entries []entry[V]
+	index   map[string]int
+}
+
+func (m *OrderedMap[V]) Set(key string, value V) error {
+	if m.index == nil {
+		m.index = map[string]int{}
+	}
+	if i, ok := m.index[key]; ok {
+		m.entries[i].value = value
+		return nil
+	}
+	m.index[key] = len(m.entries)
+	m.entries = append(m.entries, entry[V]{key: key, value: value})
+	return nil
+}
+
+func (m OrderedMap[V]) Len() int { return len(m.entries) }
+
+func (m OrderedMap[V]) RangeAny(fn func(string, any) bool) {
+	for _, e := range m.entries {
+		if !fn(e.key, e.value) {
+			return
+		}
+	}
+}
+
+func (m OrderedMap[V]) Get(key string) (V, bool) {
+	if m.index != nil {
+		if i, ok := m.index[key]; ok {
+			return m.entries[i].value, true
+		}
+	}
+	var zero V
+	return zero, false
+}
+`)
+	main := "package main\n\nimport (\n\t\"fmt\"\n\t\"reflect\"\n\n\tbaml \"ordmaptest/baml\"\n)\n\nvar _ = reflect.ValueOf\n\n" +
+		strings.Join(helperSrcs, "\n\n") + "\n\n" + coreSrc + "\n\n" + mainBody + "\n"
+	mustWrite("main.go", main)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "run", ".")
+	cmd.Dir = dir
+	// GOWORK=off isolates the temp module from any caller-configured Go
+	// workspace; mirrors runStaticMapNilCarrierProbe.
 	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
 	out, _ := cmd.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
