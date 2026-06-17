@@ -1,0 +1,100 @@
+{
+  "name": "static_optional_list_of_string_map",
+  "seed": 456,
+  "case_index": 11,
+  "mode": "static_prompt",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "items",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "list",
+                  "inner": {
+                    "kind": "map",
+                    "inner": {
+                      "kind": "string"
+                    },
+                    "key": {
+                      "kind": "string"
+                    }
+                  }
+                },
+                {
+                  "kind": "null"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_self_ref": false,
+    "has_mutual_cycle": false,
+    "has_union": true,
+    "requires_dynamic_skip": false
+  },
+  "value": {
+    "kind": "class_ref",
+    "class_name": "Root",
+    "fields": [
+      {
+        "name": "items",
+        "value": {
+          "kind": "union",
+          "variant": {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "map",
+                "map_entries": [
+                  {
+                    "key": "k3",
+                    "value": {
+                      "kind": "string",
+                      "string": "ߥ/%"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "mock_llm_content": {
+    "items": [
+      {
+        "k3": "ߥ/%"
+      }
+    ]
+  },
+  "expected": {
+    "items": [
+      {
+        "k3": "ߥ/%"
+      }
+    ]
+  },
+  "metadata": {
+    "recursion_depths": {
+      "Root": 1
+    },
+    "union_choices": {
+      ".items": {
+        "index": 0,
+        "kind": "list",
+        "variant_count": 2
+      }
+    }
+  }
+}

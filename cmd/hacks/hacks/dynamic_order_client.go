@@ -2219,7 +2219,16 @@ func emitSliceWrappedStaticMapHelper(name, typeExpr string, pkgIdx *pkgTypeIndex
 	}
 	b.WriteString("\tlistVal, ok := value.([]any)\n")
 	b.WriteString("\tif !ok {\n")
-	b.WriteString("\t\treturn nil\n")
+	// The 0.219+ optional/list decode path can hand this helper a
+	// non-nil pointer-wrapped (or otherwise non-[]any) slice carrier
+	// whose elements are ordered/native map carriers. The static
+	// assertions above all miss it, so without reflection
+	// normalization the helper falls through to `return nil` and a
+	// real list is silently serialized as JSON null (issue #456).
+	// Peel a non-nil pointer, then iterate any slice carrier by
+	// reflection and convert each element through the same per-
+	// element conversion the `[]any` fast path uses.
+	emitStaticMapSliceReflectFallback(&b, "\t\t", sliceType, elem, pkgIdx, isPtr)
 	b.WriteString("\t}\n")
 	fmt.Fprintf(&b, "\tout := make(%s, len(listVal))\n", sliceType)
 	b.WriteString("\tfor i, ev := range listVal {\n")
@@ -2237,6 +2246,48 @@ func emitSliceWrappedStaticMapHelper(name, typeExpr string, pkgIdx *pkgTypeIndex
 	}
 	b.WriteString("}")
 	return b.String()
+}
+
+// emitStaticMapSliceReflectFallback writes the reflection-based slice
+// normalization shared by emitSliceWrappedStaticMapHelper and
+// emitConvertListHelper. Both helpers accept only a small set of static
+// carrier shapes (`*[]T`, `[]T`, `[]any`) and otherwise drop the value
+// to nil; the BAML 0.219+ optional/list decode path can hand them a
+// non-nil pointer-wrapped (or otherwise non-`[]any`) slice carrier whose
+// elements are ordered/native map carriers, which matches none of those
+// shapes (issue #456). This emits: peel a non-nil pointer; if the
+// underlying value is a slice, rebuild a typed `[]T` by converting each
+// element through the same per-element conversion the `[]any` fast path
+// uses (with the nilable-element nil guard); a non-pointer, non-slice
+// carrier still returns nil.
+//
+// `indent` is the leading tabs for the emitted block (the caller places
+// the block at its own scope depth). `retPtr` controls whether the
+// rebuilt slice is returned by address (`*[]T` helpers) or by value.
+// `reflect` is always imported into the helper file (see
+// ensureStaticMapHelperFile), so no extra import bookkeeping is needed.
+func emitStaticMapSliceReflectFallback(b *strings.Builder, indent, sliceType, elem string, pkgIdx *pkgTypeIndex, retPtr bool) {
+	fmt.Fprintf(b, "%srv := reflect.ValueOf(value)\n", indent)
+	fmt.Fprintf(b, "%sif rv.Kind() == reflect.Pointer {\n", indent)
+	fmt.Fprintf(b, "%s\tif rv.IsNil() {\n", indent)
+	fmt.Fprintf(b, "%s\t\treturn nil\n", indent)
+	fmt.Fprintf(b, "%s\t}\n", indent)
+	fmt.Fprintf(b, "%s\trv = rv.Elem()\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
+	fmt.Fprintf(b, "%sif rv.Kind() != reflect.Slice {\n", indent)
+	fmt.Fprintf(b, "%s\treturn nil\n", indent)
+	fmt.Fprintf(b, "%s}\n", indent)
+	fmt.Fprintf(b, "%sout := make(%s, rv.Len())\n", indent, sliceType)
+	fmt.Fprintf(b, "%sfor i := 0; i < rv.Len(); i++ {\n", indent)
+	fmt.Fprintf(b, "%s\tev := rv.Index(i).Interface()\n", indent)
+	emitStaticMapElementGuard(b, indent+"\t", "ev", elem, pkgIdx, "out[i] = nil\n"+indent+"\t\tcontinue\n")
+	fmt.Fprintf(b, "%s\tout[i] = %s\n", indent, convertStaticMapValueExpr("ev", elem))
+	fmt.Fprintf(b, "%s}\n", indent)
+	if retPtr {
+		fmt.Fprintf(b, "%sreturn &out\n", indent)
+	} else {
+		fmt.Fprintf(b, "%sreturn out\n", indent)
+	}
 }
 
 // emitConvertListHelper renders the per-element-type list conversion
@@ -2273,7 +2324,11 @@ func emitConvertListHelper(name, listType string, pkgIdx *pkgTypeIndex) string {
 	b.WriteString("\t}\n")
 	b.WriteString("\tlistVal, ok := value.([]any)\n")
 	b.WriteString("\tif !ok {\n")
-	b.WriteString("\t\treturn nil\n")
+	// Same class as issue #456 nested under a map/list: a composite
+	// list carrier can reach this helper pointer-wrapped or as a
+	// non-`[]any` slice, matching none of the static shapes above.
+	// Normalize by reflection instead of dropping the list to nil.
+	emitStaticMapSliceReflectFallback(&b, "\t\t", listType, elem, pkgIdx, false)
 	b.WriteString("\t}\n")
 	fmt.Fprintf(&b, "\tout := make(%s, len(listVal))\n", listType)
 	b.WriteString("\tfor i, ev := range listVal {\n")
