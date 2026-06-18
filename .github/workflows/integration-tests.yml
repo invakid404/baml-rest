@@ -277,6 +277,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
 
+      - name: Enable containerd image store for BuildKit
+        # testcontainers builds baml-rest under BuildKit (#472); the containerd
+        # image store makes the warm-loaded digest-pinned bases visible to
+        # BuildKit (no "no active sessions" registry resolve). Restarts docker,
+        # so it MUST run before the warm-image load below. No free-disk-space
+        # step in this job, so it goes right after checkout.
+        uses: ./.github/actions/enable-containerd-image-store
+
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as
         # a per-run artifact; this cell only loads them — no Docker Hub login,
@@ -384,6 +392,14 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Enable containerd image store for BuildKit
+        # testcontainers builds baml-rest under BuildKit (#472); the containerd
+        # image store makes the warm-loaded digest-pinned bases visible to
+        # BuildKit (no "no active sessions" registry resolve). Restarts docker,
+        # so it MUST run before the warm-image load below. No free-disk-space
+        # step in this job, so it goes right after checkout.
+        uses: ./.github/actions/enable-containerd-image-store
 
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as
@@ -644,6 +660,13 @@ jobs:
         # Placed before the warm-image load (docker-images:true must not
         # delete them).
         uses: ./.github/actions/free-disk-space
+
+      - name: Enable containerd image store for BuildKit
+        # testcontainers builds baml-rest under BuildKit (#472); the containerd
+        # image store makes the warm-loaded digest-pinned bases visible to
+        # BuildKit (no "no active sessions" registry resolve). Restarts docker,
+        # so it MUST run after free-disk-space and BEFORE the warm-image load.
+        uses: ./.github/actions/enable-containerd-image-store
 
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as

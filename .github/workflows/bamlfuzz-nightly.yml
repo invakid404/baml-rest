@@ -301,6 +301,14 @@ jobs:
         # the static oracle's per-batch image builds need this (#459).
         uses: ./.github/actions/free-disk-space
 
+      - name: Enable containerd image store for BuildKit
+        # The per-batch baml-rest build runs under BuildKit (#472). The
+        # containerd image store makes the warm-loaded digest-pinned bases
+        # visible to BuildKit so it resolves them locally instead of failing
+        # with "no active sessions". Restarts docker, so it MUST run after
+        # free-disk-space and BEFORE the warm-image load below.
+        uses: ./.github/actions/enable-containerd-image-store
+
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as
         # a per-run artifact; this cell only loads them — no Docker Hub login,

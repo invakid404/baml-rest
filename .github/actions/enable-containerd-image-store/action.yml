@@ -1,0 +1,70 @@
+name: Enable containerd image store
+description: >-
+  Switch the runner's Docker daemon to the containerd image store
+  (features.containerd-snapshotter) so docker-loaded images are visible to
+  dockerd-integrated BuildKit, then restart Docker and wait for it to return.
+
+# Why: with #472, the testcontainers baml-rest build runs under BuildKit (so
+# build.sh's `RUN --mount=type=cache` branch is honored). The default
+# dockerd-integrated BuildKit keeps its own content store, separate from the
+# classic image store where the warm-images job `docker load`s the digest-pinned
+# base tarballs. For a pinned-digest `FROM`, BuildKit then tries to resolve the
+# base manifest from the registry and fails with
+# "failed to resolve source metadata ... no active sessions" — there is no
+# registry session over the Docker API, and warm-images deliberately avoids
+# Docker Hub (#447). Enabling the containerd image store unifies the two stores,
+# so BuildKit resolves the warm-loaded bases locally without any registry hit.
+#
+# ORDERING (per job): this step MUST run AFTER any free-disk-space step (which
+# manipulates docker images) and BEFORE the warm-image `docker load` — a docker
+# restart wipes already-loaded images, so loading must happen after the restart.
+runs:
+  using: composite
+  steps:
+    - name: Enable containerd image store and restart Docker
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        daemon_json=/etc/docker/daemon.json
+
+        # Merge {"features":{"containerd-snapshotter":true}} into the existing
+        # daemon.json (if any), PRESERVING every existing key. jq's `*` operator
+        # does a recursive object merge, so existing features.* entries survive
+        # and only this one flag is added/overridden.
+        existing='{}'
+        if sudo test -s "$daemon_json"; then
+          existing="$(sudo cat "$daemon_json")"
+        fi
+        merged="$(jq -n \
+          --argjson existing "$existing" \
+          '$existing * {features: {"containerd-snapshotter": true}}')"
+
+        echo "=== merged /etc/docker/daemon.json ==="
+        echo "$merged"
+        sudo mkdir -p /etc/docker
+        echo "$merged" | sudo tee "$daemon_json" >/dev/null
+
+        echo "=== restarting docker ==="
+        sudo systemctl restart docker
+
+        # Wait for the daemon to come back before any docker load/build runs.
+        for i in $(seq 1 30); do
+          if docker info >/dev/null 2>&1; then
+            echo "docker is back after ${i} attempt(s)"
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "::error::docker did not come back after restart"
+            sudo journalctl -u docker --no-pager -n 80 || true
+            exit 1
+          fi
+          sleep 2
+        done
+
+        # Diagnostics: with the containerd snapshotter active the Storage Driver
+        # reports as "overlayfs" (vs the classic "overlay2"); print full info so
+        # a failure to switch is visible in the job log.
+        echo "=== docker info ==="
+        docker info -f 'Storage Driver: {{.Driver}}' || true
+        docker info || true
