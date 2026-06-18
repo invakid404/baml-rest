@@ -8,7 +8,7 @@ ARG GO_VERSION=1.26.3
 # ============================================================================
 # Stage 1: Builder (native platform for fast builds with cross-compilation)
 # ============================================================================
-FROM --platform=$BUILDPLATFORM node:24-bookworm AS builder
+FROM --platform=$BUILDPLATFORM node:24.17.0-bookworm AS builder
 
 # Build arguments for cross-compilation
 ARG BUILDPLATFORM
@@ -49,7 +49,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} CGO_ENABLED=0 go build -o /tmp/baml-re
 # ============================================================================
 # Stage 2: Runtime (target platform with correct architecture binaries)
 # ============================================================================
-FROM node:24-bookworm
+FROM node:24.17.0-bookworm
 
 # Build arguments for target platform
 ARG TARGETARCH
