@@ -115,12 +115,30 @@ jobs:
         # from go.work), this step fails with a diff. The verify step
         # double-asserts the pin matrix via cmd/verify-adapter-pins so a
         # diff-free-but-wrong state can't slip through either.
+        #
+        # The diff covers ALL Go module metadata, not just adapter paths
+        # (#473). scripts/sync.sh is a bounded fixed-point loop, so a
+        # converged tree re-run must be byte-clean across every go.mod /
+        # go.sum / go.work / go.work.sum. Diffing the whole set here means
+        # a future non-convergence surfaces as a direct "scripts/sync.sh
+        # is not idempotent" failure at this step, instead of leaking into
+        # the confusing "tree dirty before cmd/regenerate-dynclient" error
+        # downstream — which is exactly how #473 manifested.
+        #
+        # go.work.sum is excluded from --exit-code and restored instead:
+        # it's an additive checksum database (not a lockfile), and an
+        # earlier workspace-mode Go command in this job may have appended
+        # module-content sums the committed file lacks. That additive
+        # growth is tolerated repo-wide (see the cmd/regenerate-dynclient
+        # gate below and #442); restoring it to HEAD keeps that tolerance
+        # while the full set below still fails on any go.mod/go.sum drift.
         run: |
           git status --porcelain
           ./scripts/sync.sh
+          git checkout -- go.work.sum 2>/dev/null || true
           git diff --exit-code -- \
-            adapters/common/go.mod adapters/common/go.sum \
-            'adapters/adapter_v0_*/go.mod' 'adapters/adapter_v0_*/go.sum'
+            go.mod go.sum go.work \
+            '*/go.mod' '*/go.sum'
 
       - name: cmd/regenerate-dynclient fresh-tree gate
         # Fresh-tree gate for committed dynclient regeneration artifacts.
