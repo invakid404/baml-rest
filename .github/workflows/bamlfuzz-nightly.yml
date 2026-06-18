@@ -145,28 +145,35 @@ jobs:
         # cmd/build/Dockerfile.tmpl; golang/alpine in integration/mockllm.
         run: |
           set -euo pipefail
-          # key|file|image  (image is the repo:tag prefix of the FROM ref)
+          # key|file|repo  (anchor on the REPO, not an exact repo:tag — a
+          # Renovate base-TAG bump like node:22-bookworm -> node:22.22.3-bookworm
+          # must still resolve, so we extract whatever tag is currently pinned.)
           for entry in \
-            "node|cmd/build/Dockerfile.tmpl|node:22-bookworm" \
-            "debian|cmd/build/Dockerfile.tmpl|debian:bookworm-slim" \
-            "golang|integration/mockllm/Dockerfile|golang:1.26.3-alpine" \
-            "alpine|integration/mockllm/Dockerfile|alpine:3.19"; do
+            "node|cmd/build/Dockerfile.tmpl|node" \
+            "debian|cmd/build/Dockerfile.tmpl|debian" \
+            "golang|integration/mockllm/Dockerfile|golang" \
+            "alpine|integration/mockllm/Dockerfile|alpine"; do
             key="${entry%%|*}"
             rest="${entry#*|}"
             file="${rest%%|*}"
-            image="${rest#*|}"
-            # Escape regex metacharacters (the tags contain literal dots) so the
-            # grep -E patterns match the image string literally, not as a regex.
-            image_re=$(printf '%s' "$image" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g')
-            matches=$(grep -cE "^FROM ${image_re}@sha256:[0-9a-f]{64}" "$file")
+            repo="${rest#*|}"
+            # Escape regex metacharacters in the repo so the grep -E patterns
+            # match it literally (the repos here have none, but keep it robust).
+            repo_re=$(printf '%s' "$repo" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g')
+            # Match the repo with ANY pinned tag: `FROM <repo>:<tag>@sha256:<64hex>`.
+            matches=$(grep -cE "^FROM ${repo_re}:[^[:space:]]+@sha256:[0-9a-f]{64}" "$file")
             if [ "$matches" -ne 1 ]; then
-              echo "::error file=${file}::expected exactly one pinned 'FROM ${image}@sha256:' line, found $matches"
+              echo "::error file=${file}::expected exactly one pinned 'FROM ${repo}:<tag>@sha256:' line, found $matches"
               exit 1
             fi
-            # Full sha256:<64hex>: warm_tag does `docker pull "${repo}@${digest}"`.
-            digest=$(grep -oE "${image_re}@sha256:[0-9a-f]{64}" "$file" | head -n1 | sed -E 's/.*@//')
-            echo "$key=$digest" >> "$GITHUB_OUTPUT"
-            echo "resolved $image -> $digest"
+            # ref = repo:tag@sha256:<64hex>; split into the tag and the digest.
+            # warm_tag below does `docker pull "${repo}@${digest}"` then re-tags.
+            ref=$(grep -oE "${repo_re}:[^[:space:]]+@sha256:[0-9a-f]{64}" "$file" | head -n1)
+            tag="${ref%@*}"
+            digest="${ref#*@}"
+            echo "${key}=${digest}" >> "$GITHUB_OUTPUT"
+            echo "${key}_ref=${tag}" >> "$GITHUB_OUTPUT"
+            echo "resolved ${repo} -> tag=${tag} digest=${digest}"
           done
 
       # Per-image cross-run caches keyed on the resolved digest: a bump to one
@@ -208,6 +215,10 @@ jobs:
           DEBIAN_DIGEST: ${{ steps.resolve.outputs.debian }}
           GOLANG_DIGEST: ${{ steps.resolve.outputs.golang }}
           ALPINE_DIGEST: ${{ steps.resolve.outputs.alpine }}
+          NODE_REF: ${{ steps.resolve.outputs.node_ref }}
+          DEBIAN_REF: ${{ steps.resolve.outputs.debian_ref }}
+          GOLANG_REF: ${{ steps.resolve.outputs.golang_ref }}
+          ALPINE_REF: ${{ steps.resolve.outputs.alpine_ref }}
           NODE_HIT: ${{ steps.cache-node.outputs.cache-hit }}
           DEBIAN_HIT: ${{ steps.cache-debian.outputs.cache-hit }}
           GOLANG_HIT: ${{ steps.cache-golang.outputs.cache-hit }}
@@ -229,10 +240,10 @@ jobs:
             docker save "$tag" -o "warm-images/$tarfile"
           }
 
-          warm_tag "node:22-bookworm"     "$NODE_DIGEST"   "node.tar"   "$NODE_HIT"
-          warm_tag "debian:bookworm-slim" "$DEBIAN_DIGEST" "debian.tar" "$DEBIAN_HIT"
-          warm_tag "golang:1.26.3-alpine" "$GOLANG_DIGEST" "golang.tar" "$GOLANG_HIT"
-          warm_tag "alpine:3.19"          "$ALPINE_DIGEST" "alpine.tar" "$ALPINE_HIT"
+          warm_tag "$NODE_REF"   "$NODE_DIGEST"   "node.tar"   "$NODE_HIT"
+          warm_tag "$DEBIAN_REF" "$DEBIAN_DIGEST" "debian.tar" "$DEBIAN_HIT"
+          warm_tag "$GOLANG_REF" "$GOLANG_DIGEST" "golang.tar" "$GOLANG_HIT"
+          warm_tag "$ALPINE_REF" "$ALPINE_DIGEST" "alpine.tar" "$ALPINE_HIT"
 
           ls -lh warm-images/
 
