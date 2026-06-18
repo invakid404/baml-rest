@@ -273,7 +273,7 @@ func runStaticBatch(t *testing.T, cases []bamlfuzz.OracleCase, batchLabel string
 		}
 		return
 	}
-	defer terminateStaticEnvAndPrune(t, env)
+	defer terminateStaticEnv(t, env)
 
 	mockClient := mockllm.NewClient(env.MockLLMURL)
 	bamlClient := testutil.NewBAMLRestClient(env.BAMLRestURL)
@@ -450,7 +450,7 @@ func runIsolatedStaticCase(t *testing.T, lc loweredStaticCase, caseIdx int, batc
 		failStaticAndDump(t, envelope, "isolated build failed: %v", err)
 		return
 	}
-	terminateStaticEnvAndPrune(t, env)
+	terminateStaticEnv(t, env)
 }
 
 // caseSourcePath returns the absolute path to the generated .baml
@@ -566,54 +566,28 @@ func terminateStaticEnv(t *testing.T, env *testutil.TestEnvironment) {
 	}
 }
 
-// terminateStaticEnvAndPrune terminates a static env and then reclaims
-// dangling Docker images. Used wherever runStaticBatch / the isolation
-// path finishes with a live env so the static oracle's per-batch
-// baml-rest image builds don't accumulate on the runner disk. The happy
-// path prunes dangling images only; it deliberately does NOT prune the
-// BuildKit cache, so warm layer reuse survives across batches.
-func terminateStaticEnvAndPrune(t *testing.T, env *testutil.TestEnvironment) {
-	t.Helper()
-	terminateStaticEnv(t, env)
-	pruneStaticDockerArtifacts(t)
-}
-
-// pruneStaticDockerArtifacts reclaims dangling Docker images between
-// static envs so the static oracle's many full baml-rest image builds
-// don't exhaust the runner disk ("no space left on device"). It is a
-// no-op unless BAMLFUZZ_STATIC_DOCKER_PRUNE is set, so local runs and
-// other integration tests are unaffected.
-//
-// This is the happy-path prune: it removes only dangling images and
-// deliberately leaves the BuildKit cache intact, because `docker builder
-// prune` is throughput-destructive — it forces every later batch to
-// rebuild cold instead of reusing warm layers. Failed setup uses
-// pruneStaticDockerArtifactsAfterFailedSetup, which additionally prunes
-// the BuildKit cache.
-//
-// It never uses `-a` / `docker system prune -a`, which would delete the
-// warm base images the nightly job loads and force Docker Hub pulls. The
-// static oracle runs serially (-p 1), so pruning between env lifecycles
-// never races a live container. Prune failures are logged as warnings,
-// never failing the test.
-func pruneStaticDockerArtifacts(t *testing.T) {
-	t.Helper()
-	if os.Getenv("BAMLFUZZ_STATIC_DOCKER_PRUNE") == "" {
-		return
-	}
-	runStaticDockerPrune(t, []string{"image", "prune", "-f"})
-}
-
 // pruneStaticDockerArtifactsAfterFailedSetup reclaims Docker build
-// residue after a failed static setup. In addition to dangling images,
-// it prunes the BuildKit cache, because failed/partial builds are the
-// largest source of unreferenced residue. Builder prune is confined to
-// this failure path because it is throughput-destructive on the happy
-// path (it discards warm layers and forces cold rebuilds). Same gating
-// and best-effort semantics as pruneStaticDockerArtifacts.
+// residue after a failed static setup. It prunes dangling images and the
+// BuildKit cache, because failed/partial builds are the largest source of
+// unreferenced residue.
+//
+// Successful env teardown deliberately does NOT prune: testcontainers
+// already removes the tagged final per-batch image (KeepImage=false), and
+// keeping the classic-builder intermediate layer cache on disk is the
+// whole point — it lets later batches reuse the warm Go toolchain / apt /
+// goimports layers instead of rebuilding them cold (#467). Between-batch
+// runner disk is bounded by the free-disk-space step on the fuzz job
+// (#454/#460), not by pruning here.
+//
+// No-op unless BAMLFUZZ_STATIC_DOCKER_PRUNE_ON_FAILURE is set, so local
+// runs and other integration tests are unaffected. It never uses `-a` /
+// `docker system prune -a`, which would delete the warm base images the
+// nightly job loads and force Docker Hub pulls. The static oracle runs
+// serially (-p 1), so pruning never races a live container. Prune
+// failures are logged as warnings, never failing the test.
 func pruneStaticDockerArtifactsAfterFailedSetup(t *testing.T) {
 	t.Helper()
-	if os.Getenv("BAMLFUZZ_STATIC_DOCKER_PRUNE") == "" {
+	if os.Getenv("BAMLFUZZ_STATIC_DOCKER_PRUNE_ON_FAILURE") == "" {
 		return
 	}
 	runStaticDockerPrune(t, []string{"image", "prune", "-f"})

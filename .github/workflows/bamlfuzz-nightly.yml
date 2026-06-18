@@ -448,24 +448,42 @@ jobs:
         # ~50-case budget the other targets explore per nightly cell.
         # No corpus restore/upload: -run does not use the fuzz corpus.
         #
-        # BAMLFUZZ_STATIC_DOCKER_PRUNE prunes dangling images between
-        # successful envs; failed setup additionally prunes the BuildKit
-        # cache. Keeping builder prune off the happy path preserves warm
-        # layer reuse so later batches rebuild fast, while still keeping
-        # this target's many full baml-rest builds from accumulating and
-        # exhausting the runner disk. Scoped to this step only — the
-        # harness no-ops without it.
+        # Successful static env teardown does NOT prune: testcontainers
+        # already removes each tagged final per-batch image, and the
+        # classic-builder intermediate layer cache must survive on disk so
+        # later batches reuse the warm Go toolchain / apt / goimports
+        # layers instead of rebuilding them cold. The cold-rebuild churn
+        # the success-path prune used to cause is what overran the 50m
+        # watchdog (#467). Disk between batches is bounded by the
+        # free-disk-space step above (#454/#460), not by pruning.
         #
-        # BAML_REST_SUITE_WATCHDOG is a margin for runner variance, not
-        # the throughput fix: warm-cache runtime is ~20-25m, well under
-        # 50m. Go's -timeout 80m and the job timeout-minutes are unchanged.
+        # BAMLFUZZ_STATIC_DOCKER_PRUNE_ON_FAILURE gates ONLY the
+        # failed-setup prune (dangling images + BuildKit cache), since
+        # failed/partial builds are the real residue source. Scoped to
+        # this step only — the harness no-ops without it.
+        #
+        # BAML_REST_SUITE_WATCHDOG is a margin for runner variance. This
+        # fix clears the watchdog by keeping the layer cache warm; the
+        # per-batch `RUN build.sh` work still reruns, so full warmth
+        # (~20-25m) is the separate #470 follow-up. Go's -timeout 80m and
+        # the job timeout-minutes are unchanged.
         env:
-          BAMLFUZZ_STATIC_DOCKER_PRUNE: "1"
+          BAMLFUZZ_STATIC_DOCKER_PRUNE_ON_FAILURE: "1"
           BAML_REST_SUITE_WATCHDOG: 50m
         run: |
+          echo "=== disk before static oracle ==="
+          df -h /
+          docker system df || true
+          # Capture go test's exit without tripping the default `set -e`,
+          # so the after-snapshot always runs even on a test failure.
+          status=0
           go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
             -run='TestBamlfuzzStaticOracle' \
-            ./integration
+            ./integration || status=$?
+          echo "=== disk after static oracle ==="
+          df -h /
+          docker system df || true
+          exit $status
 
       - name: Streaming oracle (-run, no fuzz watchdog) (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'fuzz' && matrix.target == 'FuzzBamlfuzzStreaming' }}
