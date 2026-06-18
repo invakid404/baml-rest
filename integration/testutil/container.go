@@ -21,7 +21,9 @@ import (
 
 	bamlrest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -574,6 +576,21 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 			ContextArchive: buildCtx,
 			Dockerfile:     "Dockerfile",
 			PrintBuildLog:  true, // Enable build log output to see compilation errors
+			// Build with BuildKit (not the classic builder) so the Dockerfile's
+			// `RUN --mount=type=cache,target=/cache /workspace/build.sh` branch
+			// is honored and build.sh's /cache/{go,npm,baml-shared-lib} caches
+			// persist across static-oracle batches within a runner. This mirrors
+			// the CLI Docker path (cmd/build/main.go), which already builds with
+			// build.BuilderBuildKit. KeepImage stays false (default) so #467's
+			// success-path no-prune still relies on BuildKit cache, not final
+			// images, for warmth. We deliberately do NOT add a
+			// `# syntax=docker/dockerfile:...` directive to the Dockerfile: a
+			// local probe showed it fails through Docker API sessions with
+			// "no active sessions"; the bundled BuildKit frontend handles the
+			// cache-mount branch on its own.
+			BuildOptionsModifier: func(opts *client.ImageBuildOptions) {
+				opts.Version = build.BuilderBuildKit
+			},
 		},
 		ExposedPorts: exposedPorts,
 		Cmd:          cmd,
@@ -636,7 +653,7 @@ type dockerfileTemplateData struct {
 
 	// Integration test specific flags
 	defaultTargetArch  string // Provide default for TARGETARCH (testcontainers may not set it)
-	noCacheMount       bool   // Disable BuildKit cache mount (not supported in testcontainers)
+	noCacheMount       bool   // Disable the Dockerfile's BuildKit cache-mount branch for build.sh
 	noCustomBamlLib    bool   // Don't copy custom_baml_lib.so (not used in tests)
 	bamlSource         bool   // Build from BAML source (enables cffi-builder stage)
 	prebuiltCffi       bool   // Inject prebuilt cffi artifacts instead of running the cffi-builder cargo stage
@@ -686,10 +703,14 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		keepSource:        opts.KeepSource,
 		debugBuild:        true,            // Enable debug endpoints for testing (/_debug/*)
 		defaultTargetArch: getDockerArch(), // Use native architecture
-		noCacheMount:      true,            // testcontainers doesn't reliably support BuildKit
-		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
-		unaryServer:       opts.UnaryServer,
-		inProcess:         opts.InProcess,
+		// BuildKit is enabled via BuildOptionsModifier on the FromDockerfile
+		// request (see startBAMLRestContainer), so use the Dockerfile's
+		// `RUN --mount=type=cache,target=/cache` branch: build.sh's Go module,
+		// Go build, npm, and baml-shared-lib caches now persist across batches.
+		noCacheMount:    false,
+		noCustomBamlLib: true, // Integration tests don't use custom BAML lib
+		unaryServer:     opts.UnaryServer,
+		inProcess:       opts.InProcess,
 	}
 
 	if opts.BAMLSource != "" {
