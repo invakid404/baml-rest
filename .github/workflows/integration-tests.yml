@@ -277,6 +277,17 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
 
+      - name: Free runner disk before Docker image load
+        # This job runs TestBamlfuzzStaticOracle, which builds a fresh
+        # baml-rest image per static batch. Since #467 made the static prune
+        # failure-only (success path keeps the classic-builder cache warm),
+        # these per-batch images accumulate with no bound — so this cell
+        # needs the same disk headroom the fuzz/baml-source jobs already
+        # have, or it hits "no space left on device" (#467 follow-up).
+        # Placed before the warm-image load (docker-images:true must not
+        # delete them).
+        uses: ./.github/actions/free-disk-space
+
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as
         # a per-run artifact; this cell only loads them — no Docker Hub login,
@@ -384,6 +395,17 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6.0.3
+
+      - name: Free runner disk before Docker image load
+        # This job runs TestBamlfuzzStaticOracle, which builds a fresh
+        # baml-rest image per static batch. Since #467 made the static prune
+        # failure-only (success path keeps the classic-builder cache warm),
+        # these per-batch images accumulate with no bound — so this cell
+        # needs the same disk headroom the fuzz/baml-source jobs already
+        # have, or it hits "no space left on device" (#467 follow-up).
+        # Placed before the warm-image load (docker-images:true must not
+        # delete them).
+        uses: ./.github/actions/free-disk-space
 
       - name: Download warm base images
         # Base images are pulled once by the warm-images job and handed over as
