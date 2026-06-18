@@ -145,7 +145,11 @@ jobs:
             fi
             # ref = repo:tag@sha256:<64hex>; split into the tag and the digest.
             # warm_tag below does `docker pull "${repo}@${digest}"` then re-tags.
-            ref=$(grep -oE "${repo_re}:[^[:space:]]+@sha256:[0-9a-f]{64}" "$file" | head -n1)
+            # Anchor the extraction to `^FROM ` too (not just the count) so it
+            # can only pull from a validated FROM line; `-o` prints the literal
+            # `FROM ` prefix, so strip it before splitting.
+            ref=$(grep -oE "^FROM ${repo_re}:[^[:space:]]+@sha256:[0-9a-f]{64}" "$file" | head -n1)
+            ref="${ref#FROM }"
             tag="${ref%@*}"
             digest="${ref#*@}"
             echo "${key}=${digest}" >> "$GITHUB_OUTPUT"
@@ -163,13 +167,16 @@ jobs:
           set -euo pipefail
           # Anchor on the `rust` repo with ANY pinned tag so a Renovate base-tag
           # bump (rust:bookworm -> rust:<newtag>) still resolves; `image` keeps
-          # the full repo:tag@digest ref the docker pull/run below needs.
-          matches=$(grep -cE '^FROM rust:[^[:space:]]+@sha256:[0-9a-f]+' cmd/build/Dockerfile.tmpl)
+          # the full repo:tag@digest ref the docker pull/run below needs. Require
+          # a full 64-hex digest (not [0-9a-f]+) so a malformed pin is rejected.
+          matches=$(grep -cE '^FROM rust:[^[:space:]]+@sha256:[0-9a-f]{64}' cmd/build/Dockerfile.tmpl)
           if [ "$matches" -ne 1 ]; then
             echo "::error file=cmd/build/Dockerfile.tmpl::expected exactly one pinned 'FROM rust:<tag>@sha256:' line, found $matches"
             exit 1
           fi
-          image=$(grep -oE 'rust:[^[:space:]]+@sha256:[0-9a-f]+' cmd/build/Dockerfile.tmpl | head -n1)
+          # Anchor the extraction to `^FROM ` too, then strip the printed prefix.
+          image=$(grep -oE '^FROM rust:[^[:space:]]+@sha256:[0-9a-f]{64}' cmd/build/Dockerfile.tmpl | head -n1)
+          image="${image#FROM }"
           digest=$(printf '%s' "$image" | sed -E 's/.*@sha256://' | cut -c1-12)
           alias="baml-rest-warm/rust-bookworm:${digest}"
           echo "image=$image" >> "$GITHUB_OUTPUT"
@@ -570,12 +577,16 @@ jobs:
         run: |
           # Anchor on the `rust` repo with ANY pinned tag so a Renovate base-tag
           # bump still resolves; the digest fragment keeps fixing the toolchain.
-          matches=$(grep -cE '^FROM rust:[^[:space:]]+@sha256:[0-9a-f]+' cmd/build/Dockerfile.tmpl)
+          # Require a full 64-hex digest (not [0-9a-f]+) so a malformed pin is
+          # rejected.
+          matches=$(grep -cE '^FROM rust:[^[:space:]]+@sha256:[0-9a-f]{64}' cmd/build/Dockerfile.tmpl)
           if [ "$matches" -ne 1 ]; then
             echo "::error file=cmd/build/Dockerfile.tmpl::expected exactly one pinned 'FROM rust:<tag>@sha256:' line, found $matches"
             exit 1
           fi
-          image=$(grep -oE 'rust:[^[:space:]]+@sha256:[0-9a-f]+' cmd/build/Dockerfile.tmpl | head -n1)
+          # Anchor the extraction to `^FROM ` too, then strip the printed prefix.
+          image=$(grep -oE '^FROM rust:[^[:space:]]+@sha256:[0-9a-f]{64}' cmd/build/Dockerfile.tmpl | head -n1)
+          image="${image#FROM }"
           digest=$(printf '%s' "$image" | sed -E 's/.*@sha256://' | cut -c1-12)
           echo "image=$image" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"

@@ -168,7 +168,11 @@ jobs:
             fi
             # ref = repo:tag@sha256:<64hex>; split into the tag and the digest.
             # warm_tag below does `docker pull "${repo}@${digest}"` then re-tags.
-            ref=$(grep -oE "${repo_re}:[^[:space:]]+@sha256:[0-9a-f]{64}" "$file" | head -n1)
+            # Anchor the extraction to `^FROM ` too (not just the count) so it
+            # can only pull from a validated FROM line; `-o` prints the literal
+            # `FROM ` prefix, so strip it before splitting.
+            ref=$(grep -oE "^FROM ${repo_re}:[^[:space:]]+@sha256:[0-9a-f]{64}" "$file" | head -n1)
+            ref="${ref#FROM }"
             tag="${ref%@*}"
             digest="${ref#*@}"
             echo "${key}=${digest}" >> "$GITHUB_OUTPUT"
