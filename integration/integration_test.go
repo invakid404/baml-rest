@@ -63,7 +63,7 @@ var (
 // axes (build mode, unary server, build-request, BAML version) so dedicated
 // envs inherit them by default; tests override only what they pin.
 func matrixSetupOptions() testutil.SetupOptions {
-	return testutil.SetupOptions{
+	opts := testutil.SetupOptions{
 		BAMLSrcPath:     bamlSrcPath,
 		BAMLVersion:     BAMLVersion,
 		AdapterVersion:  adapterVersion,
@@ -73,6 +73,13 @@ func matrixSetupOptions() testutil.SetupOptions {
 		UseBuildRequest: UseBuildRequest,
 		InProcess:       inProcessBuild,
 	}
+	// Forward the host BAML_REST_HTTP_CLIENT selector (the CI `http-client`
+	// matrix axis) into the container env so it actually reaches cmd/serve and
+	// the subprocess cmd/worker. Read here — the shared setup path for both the
+	// versioned and baml-source jobs — so the axis exercises net/http vs
+	// fasthttp instead of silently running every arm as auto. No-op when unset.
+	opts.ForwardHostHTTPClientSelector()
+	return opts
 }
 
 // ActuallyBuildRequest reports whether a request is genuinely routed through

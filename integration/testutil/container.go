@@ -612,6 +612,35 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 	return c, nil
 }
 
+// HTTPClientSelectorEnvVar names the env var that selects the llmhttp backend
+// (auto/nethttp/fasthttp). The CI `http-client` matrix axis sets it on the host
+// go-test process; it must be forwarded into the container env to reach both
+// cmd/serve and the subprocess cmd/worker (which inherits the container env via
+// cmd.Env = append(os.Environ(), …)). Without forwarding, every matrix arm runs
+// as the container default (auto) and the axis is a no-op.
+const HTTPClientSelectorEnvVar = "BAML_REST_HTTP_CLIENT"
+
+// ForwardHostHTTPClientSelector copies BAML_REST_HTTP_CLIENT from the host
+// environment into opts.RuntimeEnv when the host has it set, so
+// buildContainerEnv ships it into the baml-rest container. Only a non-empty
+// host value is forwarded: leaving it unset keeps the var absent from the
+// container env so the server/worker pick ClientModeAuto, preserving the
+// "unset → auto" semantics. An already-present RuntimeEnv entry wins, so a test
+// that explicitly pins the selector is never clobbered by the host env.
+func (opts *SetupOptions) ForwardHostHTTPClientSelector() {
+	v := os.Getenv(HTTPClientSelectorEnvVar)
+	if v == "" {
+		return
+	}
+	if opts.RuntimeEnv == nil {
+		opts.RuntimeEnv = map[string]string{}
+	}
+	if _, ok := opts.RuntimeEnv[HTTPClientSelectorEnvVar]; ok {
+		return
+	}
+	opts.RuntimeEnv[HTTPClientSelectorEnvVar] = v
+}
+
 // buildContainerEnv returns the env map passed to the baml-rest container.
 // Entries in opts.RuntimeEnv take precedence over the shared defaults, so a
 // test can override BAML_LOG or BAML_REST_USE_BUILD_REQUEST if it needs to.

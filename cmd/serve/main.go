@@ -241,8 +241,10 @@ var serveCmd = &cobra.Command{
 		preserveSchemaOrderDefault := preserveSchemaOrderDefaultFromEnv()
 		baseURLRewrites := urlrewrite.LoadDefaultRules()
 		streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
+		clientMode := llmhttp.ClientModeFromEnv()
+		logger.Info().Str("mode", clientMode.String()).Msg("llmhttp client backend configured")
 		httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{
-			Mode:              llmhttp.ClientModeFromEnv(),
+			Mode:              clientMode,
 			RewriteRules:      baseURLRewrites,
 			StreamIdleTimeout: &streamIdleTimeout,
 		})
