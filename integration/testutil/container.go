@@ -620,34 +620,30 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 // as the container default (auto) and the axis is a no-op.
 const HTTPClientSelectorEnvVar = "BAML_REST_HTTP_CLIENT"
 
-// ForwardHostHTTPClientSelector copies BAML_REST_HTTP_CLIENT from the host
-// environment into opts.RuntimeEnv when the host has it set, so
-// buildContainerEnv ships it into the baml-rest container. Only a non-empty
-// host value is forwarded: leaving it unset keeps the var absent from the
-// container env so the server/worker pick ClientModeAuto, preserving the
-// "unset → auto" semantics. An already-present RuntimeEnv entry wins, so a test
-// that explicitly pins the selector is never clobbered by the host env.
-func (opts *SetupOptions) ForwardHostHTTPClientSelector() {
-	v := os.Getenv(HTTPClientSelectorEnvVar)
-	if v == "" {
-		return
-	}
-	if opts.RuntimeEnv == nil {
-		opts.RuntimeEnv = map[string]string{}
-	}
-	if _, ok := opts.RuntimeEnv[HTTPClientSelectorEnvVar]; ok {
-		return
-	}
-	opts.RuntimeEnv[HTTPClientSelectorEnvVar] = v
-}
-
 // buildContainerEnv returns the env map passed to the baml-rest container.
 // Entries in opts.RuntimeEnv take precedence over the shared defaults, so a
 // test can override BAML_LOG or BAML_REST_USE_BUILD_REQUEST if it needs to.
+//
+// This is the single chokepoint where every baml-rest container's env is
+// built — matrix and dedicated tests alike — so the host BAML_REST_HTTP_CLIENT
+// selector is forwarded here rather than in matrixSetupOptions. Forwarding in
+// the setup path was clobbered by dedicated tests that REPLACE opts.RuntimeEnv
+// with a fresh map after calling matrixSetupOptions, silently dropping the
+// selector back to auto. Injecting before the RuntimeEnv loop fixes that while
+// preserving precedence: an explicit opts.RuntimeEnv[BAML_REST_HTTP_CLIENT]
+// pin is applied last and wins, so a test that deliberately pins a backend is
+// never overridden by the host env.
 func buildContainerEnv(opts SetupOptions) map[string]string {
 	env := map[string]string{
 		"BAML_LOG":                    "debug",
 		"BAML_REST_USE_BUILD_REQUEST": strconv.FormatBool(opts.UseBuildRequest),
+	}
+	// Forward the host http-client selector when set (non-empty). Set before
+	// the RuntimeEnv loop so an explicit RuntimeEnv pin overrides it; left
+	// unset, the var stays absent so the server/worker pick ClientModeAuto,
+	// preserving "unset → auto".
+	if v := os.Getenv(HTTPClientSelectorEnvVar); v != "" {
+		env[HTTPClientSelectorEnvVar] = v
 	}
 	for k, v := range opts.RuntimeEnv {
 		env[k] = v
