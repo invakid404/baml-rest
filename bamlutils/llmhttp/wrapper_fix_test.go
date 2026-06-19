@@ -341,6 +341,43 @@ func TestFastStreamedConnReuseAfterCappedError(t *testing.T) {
 	assertCleanConnReuse(t, c, server.URL, normal, onSuccess, 5)
 }
 
+// TestFastStreamedConnReuseAfterErrorBodyReadError pins B1 for the non-2xx
+// diagnostic path when the body read ERRORS before EOF (not just exceeds the
+// cap): the first response declares a Content-Length larger than the bytes it
+// writes and then closes the connection, so reading the error body fails
+// mid-stream. The connection must be discarded, not pooled, so a subsequent
+// request on the same client is not corrupted.
+func TestFastStreamedConnReuseAfterErrorBodyReadError(t *testing.T) {
+	normal := `{"ok":true}`
+	var n atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n.Add(1) == 1 {
+			// Declare more body bytes than we write: net/http then closes the
+			// connection when the handler returns short, so the client's body
+			// read hits EOF before the declared length — a partial read via the
+			// error branch (not the cap branch).
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "1024")
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte(`{"error":"boom"`)) // < 1024 bytes
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, normal)
+	}))
+	defer server.Close()
+
+	c := withFastClient(t, server.Client())
+	onSuccess := func() {} // non-nil → streamed lane
+
+	// The first request errors (5xx with a short-then-closed body). Whatever the
+	// exact surfaced error, the contract under test is that it must not poison
+	// the pool for the next request.
+	_, _ = c.Execute(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`}, onSuccess)
+	assertCleanConnReuse(t, c, server.URL, normal, onSuccess, 5)
+}
+
 // TestFastBufferedLaneConcurrent stresses the buffered lane under concurrency
 // to surface any pooled-buffer reuse race (the fastBodyBufPool path is only hit
 // by the streamed lane, but the buffered lane shares fasthttp's response pool).

@@ -707,15 +707,19 @@ func readFastErrorBodyCapped(resp *fasthttp.Response, limit int) []byte {
 		return body
 	}
 
-	raw, _ := io.ReadAll(io.LimitReader(stream, int64(limit)+1))
-	if len(raw) > limit {
-		// Body exceeded the diagnostic cap: we stopped before EOF, so the conn
-		// is dirty — discard it.
-		raw = raw[:limit]
+	raw, err := io.ReadAll(io.LimitReader(stream, int64(limit)+1))
+	if err != nil || len(raw) > limit {
+		// We stopped before EOF — either the body exceeded the diagnostic cap
+		// (len > limit) or the read errored/timed out/reset mid-body. Either
+		// way unread bytes may remain on the wire, so the conn is dirty and
+		// MUST be discarded, not pooled (B1).
+		if len(raw) > limit {
+			raw = raw[:limit]
+		}
 		closeFastConnDiscard(resp)
 		return raw
 	}
-	// Full error body read to EOF: the conn is clean and can return to the pool.
+	// Clean EOF read within the cap: the conn can return to the pool.
 	_ = resp.CloseBodyStream()
 	return raw
 }

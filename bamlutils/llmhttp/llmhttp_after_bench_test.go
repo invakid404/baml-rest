@@ -61,8 +61,9 @@ func wrappedFastStreamedDriver(tb testing.TB, m *mockServer) controlDoFunc {
 	req := m.request()
 	ctx, cancel := context.WithCancel(context.Background())
 	tb.Cleanup(cancel)
-	var beats int64
-	onSuccess := func() { atomic.AddInt64(&beats, 1) }
+	// Empty non-nil callback: selects the streamed-header lane without adding
+	// per-request atomic overhead to the measured lane.
+	onSuccess := func() {}
 	return func() error {
 		resp, err := client.Execute(ctx, req, onSuccess)
 		if err != nil {
