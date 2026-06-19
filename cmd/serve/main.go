@@ -827,8 +827,8 @@ func main() {
 // CallWithRawResponse is the response format for the /call-with-raw endpoint
 type CallWithRawResponse struct {
 	Data      stdjson.RawMessage `json:"data"`
-	Raw       string          `json:"raw"`
-	Reasoning string          `json:"reasoning,omitempty"`
+	Raw       string             `json:"raw"`
+	Reasoning string             `json:"reasoning,omitempty"`
 }
 
 // combinedMetricsGatherer gathers metrics from the main process and all workers
