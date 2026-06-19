@@ -241,8 +241,10 @@ var serveCmd = &cobra.Command{
 		preserveSchemaOrderDefault := preserveSchemaOrderDefaultFromEnv()
 		baseURLRewrites := urlrewrite.LoadDefaultRules()
 		streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
+		clientMode := llmhttp.ClientModeFromEnv()
+		logger.Info().Str("mode", clientMode.String()).Msg("llmhttp client backend configured")
 		httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{
-			Mode:              llmhttp.ClientModeFromEnv(),
+			Mode:              clientMode,
 			RewriteRules:      baseURLRewrites,
 			StreamIdleTimeout: &streamIdleTimeout,
 		})
@@ -825,8 +827,8 @@ func main() {
 // CallWithRawResponse is the response format for the /call-with-raw endpoint
 type CallWithRawResponse struct {
 	Data      stdjson.RawMessage `json:"data"`
-	Raw       string          `json:"raw"`
-	Reasoning string          `json:"reasoning,omitempty"`
+	Raw       string             `json:"raw"`
+	Reasoning string             `json:"reasoning,omitempty"`
 }
 
 // combinedMetricsGatherer gathers metrics from the main process and all workers

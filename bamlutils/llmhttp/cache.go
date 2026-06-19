@@ -46,6 +46,21 @@ const (
 	ClientModeNetHTTP
 )
 
+// String returns the canonical env-style spelling of the mode
+// ("auto"/"fasthttp"/"nethttp"). It is the inverse of ParseClientMode and
+// is used for greppable startup logging in cmd/serve and cmd/worker so the
+// resolved llmhttp backend is observable (BAML_REST_HTTP_CLIENT axis).
+func (m ClientMode) String() string {
+	switch m {
+	case ClientModeFastHTTP:
+		return "fasthttp"
+	case ClientModeNetHTTP:
+		return "nethttp"
+	default:
+		return "auto"
+	}
+}
+
 // Internal aliases preserve the older spelling used by the protocol
 // cache and tests.
 const (

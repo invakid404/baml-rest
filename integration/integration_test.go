@@ -62,6 +62,11 @@ var (
 // matrixSetupOptions returns SetupOptions pre-populated from the matrix
 // axes (build mode, unary server, build-request, BAML version) so dedicated
 // envs inherit them by default; tests override only what they pin.
+//
+// Note: the host BAML_REST_HTTP_CLIENT selector (CI `http-client` axis) is
+// forwarded centrally in testutil.buildContainerEnv — the single chokepoint
+// every container's env passes through — so dedicated tests that replace
+// opts.RuntimeEnv can't drop it. Do NOT re-add forwarding here.
 func matrixSetupOptions() testutil.SetupOptions {
 	return testutil.SetupOptions{
 		BAMLSrcPath:     bamlSrcPath,

@@ -44,8 +44,10 @@ func main() {
 	buildRequestConfig := buildrequest.EnvConfig()
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
 	streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
+	clientMode := llmhttp.ClientModeFromEnv()
+	logger.Info("llmhttp client backend configured", "mode", clientMode.String())
 	httpClient := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{
-		Mode:              llmhttp.ClientModeFromEnv(),
+		Mode:              clientMode,
 		RewriteRules:      baseURLRewrites,
 		StreamIdleTimeout: &streamIdleTimeout,
 	})
