@@ -57,7 +57,10 @@ type controlDoFunc func() error
 // net/http control isn't sharing a pool with the wrapped client under test.
 func newRawNetHTTPTransport() *http.Transport {
 	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		// Explicit no-proxy (not ProxyFromEnvironment) so the raw control dials
+		// the local server directly regardless of ambient proxy env — matching
+		// the no-proxy bench clients without mutating process-global env.
+		Proxy: noProxy,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -323,8 +326,11 @@ func runControlLoad(tb testing.TB, do controlDoFunc, m *mockServer, name string,
 // isolates whether the tail blow-up is fasthttp-inherent (raw-fasthttp tail
 // also bad) or wrapper-induced (raw-fasthttp tail fine, wrapped-fasthttp bad).
 func TestExecuteControlLoadDist(t *testing.T) {
-	if testing.Short() {
-		t.Skip("control load distribution test skipped in -short mode")
+	// Heavy: fires 30k/8k-request load loops and would blow CI's unit-test
+	// timeout. Gated to explicit measurement runs — skipped unless the output
+	// env is present, or in -short mode.
+	if testing.Short() || os.Getenv("BENCH_CONTROL_OUT") == "" {
+		t.Skip("load measurement; set BENCH_CONTROL_OUT to run")
 	}
 
 	gomaxprocs := runtime.GOMAXPROCS(0)

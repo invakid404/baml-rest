@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"runtime"
 	"sort"
@@ -37,21 +38,14 @@ import (
 	"time"
 )
 
-// proxy env that would otherwise pin auto-mode http:// origins to net/http
-// (the cache proxy check runs before the plaintext short-circuit, see
-// protocolCache.probe). Cleared once at package init so auto resolves to
-// fasthttp for our plaintext server, as the issue expects. net/http caches
-// the proxy config on first use, so this must run before any HTTP.
-func init() {
-	for _, k := range []string{
-		"HTTP_PROXY", "http_proxy",
-		"HTTPS_PROXY", "https_proxy",
-		"NO_PROXY", "no_proxy",
-		"ALL_PROXY", "all_proxy",
-	} {
-		os.Unsetenv(k)
-	}
-}
+// noProxy is an explicit "no proxy for any request" resolver. Bench clients
+// install it on their transports so the auto-mode probe never pins our
+// plaintext http:// origin to net/http via a proxy, and the net/http backend
+// dials the local server directly — WITHOUT mutating process-global proxy env
+// (which would leak into every other test in the package). A nil Transport.Proxy
+// is NOT sufficient: proxyFuncFromHTTPClient falls back to
+// http.ProxyFromEnvironment when Proxy is nil, so we must set an explicit func.
+func noProxy(*http.Request) (*url.URL, error) { return nil, nil }
 
 // --- payloads -------------------------------------------------------------
 
@@ -150,12 +144,19 @@ var backendCases = []backendCase{
 }
 
 // newBenchClient builds a Client for the given mode via the explicit options
-// constructor — NOT env. NewDefaultClientWithOptions installs the tuned
-// defaultLLMTransport on the net/http side; the fasthttp side uses the
+// constructor — NOT env. It clones the tuned defaultLLMTransport and installs an
+// explicit no-proxy resolver so the auto-mode probe resolves our plaintext
+// origin to fasthttp and the net/http backend dials directly, with no
+// process-global proxy-env mutation. The fasthttp side uses the
 // effectively-unbounded MaxConns default (math.MaxInt32) so high concurrency
 // never trips ErrNoFreeConns.
 func newBenchClient(mode ClientMode) *Client {
-	return NewDefaultClientWithOptions(ClientOptions{Mode: mode})
+	tr := defaultLLMTransport.Clone()
+	tr.Proxy = noProxy
+	return NewClientWithOptions(ClientOptions{
+		Mode:          mode,
+		NetHTTPClient: &http.Client{Transport: tr},
+	})
 }
 
 // warmup fires `conc` concurrent requests (a few rounds) before measuring so
@@ -381,8 +382,11 @@ func percentile(sorted []time.Duration, p float64) time.Duration {
 //
 //	GOMAXPROCS=8 go test ./bamlutils/llmhttp -run '^TestExecuteLoadDist$' -v
 func TestExecuteLoadDist(t *testing.T) {
-	if testing.Short() {
-		t.Skip("load distribution test skipped in -short mode")
+	// Heavy: fires 30k/8k-request load loops and would blow CI's unit-test
+	// timeout. Gated to explicit measurement runs — skipped unless the output
+	// env (which a measurement run sets anyway) is present, or in -short mode.
+	if testing.Short() || os.Getenv("BENCH_LOAD_OUT") == "" {
+		t.Skip("load measurement; set BENCH_LOAD_OUT to run")
 	}
 
 	gomaxprocs := runtime.GOMAXPROCS(0)

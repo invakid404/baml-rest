@@ -136,8 +136,11 @@ func BenchmarkExecuteAfter(b *testing.B) {
 // TestExecuteAfterLoadDist: latency distribution for both lanes on small/c256
 // and medium/c256 (where the tail blew up before the fix).
 func TestExecuteAfterLoadDist(t *testing.T) {
-	if testing.Short() {
-		t.Skip("after load distribution test skipped in -short mode")
+	// Heavy: fires 30k/8k-request load loops and would blow CI's unit-test
+	// timeout. Gated to explicit measurement runs — skipped unless the output
+	// env is present, or in -short mode.
+	if testing.Short() || os.Getenv("BENCH_AFTER_OUT") == "" {
+		t.Skip("load measurement; set BENCH_AFTER_OUT to run")
 	}
 
 	gomaxprocs := runtime.GOMAXPROCS(0)

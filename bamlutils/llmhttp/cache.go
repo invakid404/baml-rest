@@ -18,6 +18,17 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// maxBufferedResponseBackstop bounds the body the buffered unary HostClient
+// will read, purely as an out-of-memory backstop — NOT for semantic limit
+// enforcement. It sits well above both MaxResponseBodyBytes (the success cap)
+// and MaxErrorBodyBytes (the diagnostic cap) so executeFastBuffered can branch
+// on status first and then enforce the real limits in code: a non-2xx body
+// larger than MaxResponseBodyBytes still becomes an *HTTPError capped to
+// MaxErrorBodyBytes (matching the net/http and streamed paths) rather than a
+// premature "body too large" error. Only a pathological body beyond this
+// backstop trips fasthttp's ErrBodyTooLarge before status is known.
+const maxBufferedResponseBackstop = 2 * MaxResponseBodyBytes
+
 // defaultFastHTTPMaxConns is the per-origin connection cap used when
 // FastHTTPClientOptions.MaxConns is zero or negative. fasthttp falls back
 // to DefaultMaxConnsPerHost = 512 on its own zero value, which throttles
@@ -121,11 +132,13 @@ const (
 //   - host: StreamResponseBody=true. Used by ExecuteStream (SSE) and by the
 //     unary header-streaming lane in Execute where onSuccess must fire after
 //     2xx headers but before the body is read.
-//   - unaryHost: StreamResponseBody=false, MaxResponseBodySize=MaxResponseBodyBytes.
-//     Used only by Execute's buffered fast lane (onSuccess==nil, deadline-only
-//     ctx), where fasthttp reads the full body before DoDeadline returns and
-//     the wrapper can read fResp.Body() with a single copy — no intermediate
-//     io.ReadAll buffer and no body-read goroutine.
+//   - unaryHost: StreamResponseBody=false, MaxResponseBodySize set to an
+//     OOM backstop (maxBufferedResponseBackstop). Used only by Execute's
+//     buffered fast lane (onSuccess==nil, deadline-only ctx), where fasthttp
+//     reads the full body before DoDeadline returns and the wrapper can read
+//     fResp.Body() with a single copy — no intermediate io.ReadAll buffer and
+//     no body-read goroutine. The real success/error size limits are enforced
+//     in executeFastBuffered after the status is known (see B2).
 //
 // The split exists because StreamResponseBody is a per-HostClient setting and
 // must not be mutated per request (the client is shared and toggling it would
@@ -436,7 +449,7 @@ func (c *protocolCache) buildEntry(origin originURL, d decision) *hostEntry {
 		IsTLS:                         origin.scheme == "https",
 		DisableHeaderNamesNormalizing: tmpl.DisableHeaderNamesNormalizing,
 		StreamResponseBody:            false,
-		MaxResponseBodySize:           MaxResponseBodyBytes,
+		MaxResponseBodySize:           maxBufferedResponseBackstop,
 		MaxIdleConnDuration:           tmpl.MaxIdleConnDuration,
 		MaxConnWaitTimeout:            tmpl.MaxConnWaitTimeout,
 		MaxConns:                      tmpl.MaxConns,

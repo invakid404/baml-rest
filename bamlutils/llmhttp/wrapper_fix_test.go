@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -222,6 +223,122 @@ func TestExecuteStreamStillStreamsAfterUnaryHost(t *testing.T) {
 	if events[2].Data != "[DONE]" {
 		t.Errorf("expected [DONE], got %q", events[2].Data)
 	}
+}
+
+// TestFastBufferedNon2xxHugeBody pins B2: on the buffered fast lane, a non-2xx
+// response whose body exceeds MaxResponseBodyBytes must still surface as an
+// *HTTPError with the body capped to MaxErrorBodyBytes — NOT a
+// "response body exceeds maximum size" error. (The buffered host's
+// MaxResponseBodySize is only an OOM backstop; the real limits are enforced in
+// code after the status is known.)
+func TestFastBufferedNon2xxHugeBody(t *testing.T) {
+	hugeError := strings.Repeat("e", MaxResponseBodyBytes+4096) // > MaxResponseBodyBytes
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		fmt.Fprint(w, hugeError)
+	}))
+	defer server.Close()
+
+	c := withFastClient(t, server.Client())
+	// Background ctx + nil onSuccess → buffered lane.
+	_, err := c.Execute(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`}, nil)
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+	if strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("non-2xx huge body must not become a size-limit error: %v", err)
+	}
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
+		t.Fatalf("expected *HTTPError, got %T: %v", err, err)
+	}
+	if httpErr.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", httpErr.StatusCode)
+	}
+	if len(httpErr.Body) != MaxErrorBodyBytes {
+		t.Errorf("expected error body capped to %d, got %d", MaxErrorBodyBytes, len(httpErr.Body))
+	}
+}
+
+// firstThenNormalServer returns a server whose FIRST response is `first`
+// (status firstStatus) and every subsequent response is the normal small JSON
+// body with 200. Used to verify a partial/oversized first read doesn't corrupt
+// the next request reusing the same pooled connection.
+func firstThenNormalServer(t *testing.T, firstStatus int, first, normal string) *httptest.Server {
+	t.Helper()
+	var n atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(firstStatus)
+			fmt.Fprint(w, first)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, normal)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// assertCleanConnReuse fires `reps` sequential requests on the same client and
+// asserts each returns the normal body — i.e. the connection pool was not
+// poisoned by a prior partial read. Sequential single requests reuse the same
+// pooled conn, so a dirty-pooled conn would surface here as a parse error or a
+// garbage body (B1).
+func assertCleanConnReuse(t *testing.T, c *Client, url, normal string, onSuccess func(), reps int) {
+	t.Helper()
+	for i := 0; i < reps; i++ {
+		resp, err := c.Execute(context.Background(), &Request{URL: url, Method: "POST", Body: `{}`}, onSuccess)
+		if err != nil {
+			t.Fatalf("follow-up request %d failed (dirty pooled conn?): %v", i, err)
+		}
+		if resp.Body != normal {
+			t.Fatalf("follow-up request %d got corrupted body (dirty pooled conn?): %q", i, resp.Body)
+		}
+	}
+}
+
+// TestFastStreamedConnReuseAfterOversize pins B1 for the streamed lane's
+// oversized-body path: after an oversized 2xx response trips the size limit
+// (LimitReader stops before EOF), the connection must be DISCARDED, not pooled,
+// so the next request doesn't read leftover body bytes.
+func TestFastStreamedConnReuseAfterOversize(t *testing.T) {
+	normal := `{"ok":true}`
+	oversized := strings.Repeat("x", MaxResponseBodyBytes+1024)
+	server := firstThenNormalServer(t, 200, oversized, normal)
+
+	c := withFastClient(t, server.Client())
+	onSuccess := func() {} // non-nil → streamed lane
+
+	_, err := c.Execute(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`}, onSuccess)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected size-limit error on oversized response, got: %v", err)
+	}
+	assertCleanConnReuse(t, c, server.URL, normal, onSuccess, 5)
+}
+
+// TestFastStreamedConnReuseAfterCappedError pins B1 for the streamed lane's
+// non-2xx diagnostic path: an error body larger than MaxErrorBodyBytes is read
+// only up to the cap (partial), so the connection must be DISCARDED, not pooled.
+func TestFastStreamedConnReuseAfterCappedError(t *testing.T) {
+	normal := `{"ok":true}`
+	largeError := strings.Repeat("e", MaxErrorBodyBytes*4) // > the 4KB diagnostic cap
+	server := firstThenNormalServer(t, 500, largeError, normal)
+
+	c := withFastClient(t, server.Client())
+	onSuccess := func() {} // non-nil → streamed lane
+
+	_, err := c.Execute(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`}, onSuccess)
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
+		t.Fatalf("expected *HTTPError, got %T: %v", err, err)
+	}
+	if len(httpErr.Body) != MaxErrorBodyBytes {
+		t.Errorf("expected error body capped to %d, got %d", MaxErrorBodyBytes, len(httpErr.Body))
+	}
+	assertCleanConnReuse(t, c, server.URL, normal, onSuccess, 5)
 }
 
 // TestFastBufferedLaneConcurrent stresses the buffered lane under concurrency
