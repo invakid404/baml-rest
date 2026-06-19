@@ -111,13 +111,29 @@ const (
 	decisionFast
 )
 
-// hostEntry is the cache payload for a single origin. host is populated only
-// when decision == decisionFast; entries created for decisionNet never
-// allocate a fasthttp.HostClient. Entries are treated as immutable after
-// install so readers never take a lock.
+// hostEntry is the cache payload for a single origin. host/unaryHost are
+// populated only when decision == decisionFast; entries created for
+// decisionNet never allocate a fasthttp.HostClient. Entries are treated as
+// immutable after install so readers never take a lock.
+//
+// Two HostClients are kept per fasthttp origin, differing only in body
+// handling:
+//   - host: StreamResponseBody=true. Used by ExecuteStream (SSE) and by the
+//     unary header-streaming lane in Execute where onSuccess must fire after
+//     2xx headers but before the body is read.
+//   - unaryHost: StreamResponseBody=false, MaxResponseBodySize=MaxResponseBodyBytes.
+//     Used only by Execute's buffered fast lane (onSuccess==nil, deadline-only
+//     ctx), where fasthttp reads the full body before DoDeadline returns and
+//     the wrapper can read fResp.Body() with a single copy — no intermediate
+//     io.ReadAll buffer and no body-read goroutine.
+//
+// The split exists because StreamResponseBody is a per-HostClient setting and
+// must not be mutated per request (the client is shared and toggling it would
+// race and corrupt concurrent streaming reads).
 type hostEntry struct {
-	decision decision
-	host     *fasthttp.HostClient
+	decision  decision
+	host      *fasthttp.HostClient
+	unaryHost *fasthttp.HostClient
 }
 
 // protocolCache stores the routing decision (net/http vs fasthttp) per
@@ -408,5 +424,23 @@ func (c *protocolCache) buildEntry(origin originURL, d decision) *hostEntry {
 		MaxConns:                      tmpl.MaxConns,
 		TLSConfig:                     tmpl.TLSConfig,
 	}
-	return &hostEntry{decision: d, host: hc}
+	// Buffered sibling for Execute's fast lane. Identical wire/pooling config
+	// as host, but StreamResponseBody is OFF so fasthttp reads the full body
+	// into its pooled response buffer before DoDeadline returns, and
+	// MaxResponseBodySize enforces the same MaxResponseBodyBytes ceiling the
+	// streamed path checks manually (fasthttp rejects strictly-greater, so the
+	// exact-at-limit body still succeeds — matching the net/http path).
+	unaryHC := &fasthttp.HostClient{
+		Name:                          tmpl.Name,
+		Addr:                          origin.addr(),
+		IsTLS:                         origin.scheme == "https",
+		DisableHeaderNamesNormalizing: tmpl.DisableHeaderNamesNormalizing,
+		StreamResponseBody:            false,
+		MaxResponseBodySize:           MaxResponseBodyBytes,
+		MaxIdleConnDuration:           tmpl.MaxIdleConnDuration,
+		MaxConnWaitTimeout:            tmpl.MaxConnWaitTimeout,
+		MaxConns:                      tmpl.MaxConns,
+		TLSConfig:                     tmpl.TLSConfig,
+	}
+	return &hostEntry{decision: d, host: hc, unaryHost: unaryHC}
 }

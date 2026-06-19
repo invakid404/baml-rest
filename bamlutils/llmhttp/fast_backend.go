@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,97 +19,195 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/sseclient"
 )
 
+// fastUnaryMode selects how executeFast drives a unary request, derived in
+// Client.Execute from whether the ORIGINAL caller context could be cancelled
+// before DefaultCallTimeout was injected.
+type fastUnaryMode int
+
+const (
+	// fastUnaryDeadlineOnly: the caller context had no Done channel
+	// (context.Background / context.TODO), so the only cancellation source is
+	// the deadline Execute injects. DoDeadline can run synchronously — no
+	// per-request goroutine — and, when no onSuccess callback is needed, the
+	// buffered HostClient reads the whole body before returning so the wrapper
+	// just copies fResp.Body() once.
+	fastUnaryDeadlineOnly fastUnaryMode = iota
+	// fastUnaryCancellable: the caller context was already cancellable
+	// (server request contexts, retry/orchestration contexts). DoDeadline runs
+	// in a goroutine so a mid-flight cancel returns the caller promptly while
+	// the orphaned Do winds down to its deadline and releases the pooled
+	// objects (fasthttp exposes no way to abort an in-flight Do).
+	fastUnaryCancellable
+)
+
 // executeFast runs a non-streaming request through fasthttp. The caller has
-// already applied URL rewrite and resolved the per-origin HostClient via the
+// already applied URL rewrite and resolved the per-origin host entry via the
 // protocol cache.
-func (c *Client) executeFast(ctx context.Context, req *Request, rewrittenURL string, hc *fasthttp.HostClient, onSuccess func()) (*Response, error) {
+//
+// Two body-handling lanes:
+//   - Buffered fast lane (deadline-only ctx AND no onSuccess): uses the
+//     entry's buffered unaryHost (StreamResponseBody=false), so DoDeadline
+//     reads the full body into fasthttp's pooled buffer and the wrapper does a
+//     single string copy — no intermediate buffer, no body-read goroutine.
+//   - Streamed-header lane (onSuccess != nil, or externally cancellable): uses
+//     the streaming host so DoDeadline returns after 2xx headers and onSuccess
+//     can fire before the body is read. The body is then drained synchronously
+//     (no io.ReadAll goroutine) into a pooled buffer with a MaxResponseBodyBytes+1
+//     limit.
+func (c *Client) executeFast(ctx context.Context, req *Request, rewrittenURL string, entry *hostEntry, onSuccess func(), mode fastUnaryMode) (*Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	deadline, hasDeadline := ctx.Deadline()
-	if !hasDeadline {
-		deadline = time.Now().Add(DefaultCallTimeout)
+
+	// Buffered fast lane: nothing to cancel beyond the deadline and no
+	// header-time callback to honour, so we can let fasthttp buffer the whole
+	// body and read it in one copy.
+	if mode == fastUnaryDeadlineOnly && onSuccess == nil && entry.unaryHost != nil {
+		return c.executeFastBuffered(ctx, req, rewrittenURL, entry.unaryHost)
 	}
+	return c.executeFastStreamed(ctx, req, rewrittenURL, entry.host, onSuccess, mode == fastUnaryCancellable)
+}
+
+// fastDeadline returns the deadline to pass to DoDeadline: the caller's if set,
+// otherwise DefaultCallTimeout from now (Execute always injects one, so the
+// fallback only guards direct executeFast callers).
+func fastDeadline(ctx context.Context) time.Time {
+	if d, ok := ctx.Deadline(); ok {
+		return d
+	}
+	return time.Now().Add(DefaultCallTimeout)
+}
+
+// executeFastBuffered runs the buffered fast lane: synchronous DoDeadline
+// against the buffered unaryHost, then a single copy of fResp.Body(). The
+// host's MaxResponseBodySize enforces the body cap, so an oversized 2xx body
+// surfaces as fasthttp.ErrBodyTooLarge, mapped to the same size-limit error
+// the net/http and streamed paths return.
+func (c *Client) executeFastBuffered(ctx context.Context, req *Request, rewrittenURL string, hc *fasthttp.HostClient) (*Response, error) {
+	fReq := fasthttp.AcquireRequest()
+	fResp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(fReq)
+	defer fasthttp.ReleaseResponse(fResp)
+	buildFastRequest(fReq, req, rewrittenURL)
+
+	if err := hc.DoDeadline(fReq, fResp, fastDeadline(ctx)); err != nil {
+		if errors.Is(err, fasthttp.ErrBodyTooLarge) {
+			return nil, fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", MaxResponseBodyBytes)
+		}
+		if ctxErr := awaitCtxIfPastDeadline(ctx); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if te := classifyTransportErr(err, "llmhttp: request failed", true); te != nil {
+			return nil, te
+		}
+		return nil, fmt.Errorf("llmhttp: request failed: %w", err)
+	}
+
+	status := fResp.StatusCode()
+	if status < 200 || status >= 300 {
+		// Body is already buffered; cap the diagnostic to MaxErrorBodyBytes to
+		// match the net/http and streamed error-body policy.
+		body := fResp.Body()
+		if len(body) > MaxErrorBodyBytes {
+			body = body[:MaxErrorBodyBytes]
+		}
+		return nil, &HTTPError{StatusCode: status, Body: string(body)}
+	}
+
+	// onSuccess is nil in this lane by construction (executeFast gates on it).
+	return &Response{
+		StatusCode: status,
+		Headers:    fastHeadersToHTTP(&fResp.Header),
+		Body:       string(fResp.Body()),
+	}, nil
+}
+
+// executeFastStreamed runs the streamed-header lane against the streaming host
+// (StreamResponseBody=true). DoDeadline returns after the 2xx headers so
+// onSuccess can fire before the body is read; the body is then drained
+// synchronously by drainFastBodyLimited. When cancellable, DoDeadline runs in a
+// goroutine so a mid-flight ctx cancel returns the caller promptly.
+func (c *Client) executeFastStreamed(ctx context.Context, req *Request, rewrittenURL string, hc *fasthttp.HostClient, onSuccess func(), cancellable bool) (*Response, error) {
+	deadline := fastDeadline(ctx)
 
 	fReq := fasthttp.AcquireRequest()
 	fResp := fasthttp.AcquireResponse()
 	buildFastRequest(fReq, req, rewrittenURL)
 
-	// Run Do in a goroutine so ctx cancellation returns promptly even though
-	// fasthttp.HostClient.DoDeadline is blocking and not ctx-aware. If ctx
-	// fires before Do returns, the goroutine keeps running until the
-	// deadline and then releases the pooled request/response — there is no
-	// mechanism to abort Do mid-flight short of closing the underlying
-	// connection (HostClient does not expose one).
-	doneCh := make(chan error, 1)
-	go func() {
-		doneCh <- hc.DoDeadline(fReq, fResp, deadline)
-	}()
-
-	select {
-	case <-ctx.Done():
-		// Hand off cleanup so the pool isn't starved by the orphaned Do.
+	var doErr error
+	if cancellable {
+		// Run DoDeadline in a goroutine so ctx cancellation returns promptly
+		// even though DoDeadline is blocking and not ctx-aware. If ctx fires
+		// first, the goroutine keeps running until the deadline and then
+		// releases the pooled request/response — there is no mechanism to abort
+		// Do mid-flight short of closing the underlying connection (HostClient
+		// does not expose one for the shared pool).
+		doneCh := make(chan error, 1)
 		go func() {
-			<-doneCh
-			fasthttp.ReleaseRequest(fReq)
-			fasthttp.ReleaseResponse(fResp)
+			doneCh <- hc.DoDeadline(fReq, fResp, deadline)
 		}()
-		return nil, ctx.Err()
-	case err := <-doneCh:
-		// Must not release until body read completes — with
-		// StreamResponseBody=true, fResp owns the body stream until it is
-		// fully drained or force-closed. Releasing early would return the
-		// response object (and its live body stream reference) to the pool
-		// while the reader is still using it, corrupting the next borrower.
-		// The deferred release below runs AFTER the body path runs.
-		defer fasthttp.ReleaseRequest(fReq)
-		defer fasthttp.ReleaseResponse(fResp)
-		if err != nil {
-			// See awaitCtxIfPastDeadline comment in readFastBodyLimitedCtx:
-			// normalise fasthttp's deadline-exceeded error to ctx.Err()
-			// when the ctx timer is about to fire, so the caller's
-			// ctx-gated cleanup sees a consistent state.
-			if ctxErr := awaitCtxIfPastDeadline(ctx); ctxErr != nil {
-				return nil, ctxErr
-			}
-			if te := classifyTransportErr(err, "llmhttp: request failed", true); te != nil {
-				return nil, te
-			}
-			return nil, fmt.Errorf("llmhttp: request failed: %w", err)
+		select {
+		case <-ctx.Done():
+			// Hand off cleanup so the pool isn't starved by the orphaned Do.
+			go func() {
+				<-doneCh
+				fasthttp.ReleaseRequest(fReq)
+				fasthttp.ReleaseResponse(fResp)
+			}()
+			return nil, ctx.Err()
+		case doErr = <-doneCh:
 		}
-
-		status := fResp.StatusCode()
-
-		// For non-2xx responses, read a bounded diagnostic body (regardless
-		// of StreamResponseBody mode) and surface it as *HTTPError. Matches
-		// the net/http path's error-body policy exactly.
-		if status < 200 || status >= 300 {
-			body := readFastBodyCappedCtx(ctx, fResp, MaxErrorBodyBytes)
-			return nil, &HTTPError{StatusCode: status, Body: string(body)}
-		}
-
-		if onSuccess != nil {
-			onSuccess()
-		}
-
-		// StreamResponseBody is on at the client level; for non-streaming
-		// responses we still need the full body. Read through BodyStream
-		// with the same +1 / truncation check as the net/http path so a
-		// provider sending > MaxResponseBodyBytes is reported, not silently
-		// truncated. Reading is ctx-aware because Do returned after headers
-		// (StreamResponseBody=true) — the caller's deadline therefore must
-		// be enforced during the body read, not just the headers read.
-		body, err := readFastBodyLimitedCtx(ctx, fResp, MaxResponseBodyBytes)
-		if err != nil {
-			return nil, err
-		}
-
-		return &Response{
-			StatusCode: status,
-			Headers:    fastHeadersToHTTP(&fResp.Header),
-			Body:       string(body),
-		}, nil
+	} else {
+		// Deadline-only ctx with an onSuccess callback: nothing to cancel
+		// beyond the deadline, so DoDeadline can run synchronously with no
+		// per-request goroutine. The deadline still bounds a stalled upstream.
+		doErr = hc.DoDeadline(fReq, fResp, deadline)
 	}
+
+	// Must not release until the body read completes — with
+	// StreamResponseBody=true, fResp owns the body stream until it is fully
+	// drained or force-closed. Releasing early would return the response (and
+	// its live body stream reference) to the pool while the reader is still
+	// using it. These defers run AFTER the body path below.
+	defer fasthttp.ReleaseRequest(fReq)
+	defer fasthttp.ReleaseResponse(fResp)
+
+	if doErr != nil {
+		// Normalise fasthttp's deadline-exceeded error to ctx.Err() when the
+		// ctx timer is about to fire, so the caller's ctx-gated cleanup sees a
+		// consistent state.
+		if ctxErr := awaitCtxIfPastDeadline(ctx); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if te := classifyTransportErr(doErr, "llmhttp: request failed", true); te != nil {
+			return nil, te
+		}
+		return nil, fmt.Errorf("llmhttp: request failed: %w", doErr)
+	}
+
+	status := fResp.StatusCode()
+
+	// For non-2xx responses, read a bounded diagnostic body and surface it as
+	// *HTTPError. Matches the net/http path's error-body policy exactly.
+	if status < 200 || status >= 300 {
+		body := readFastBodyCappedCtx(ctx, fResp, MaxErrorBodyBytes)
+		return nil, &HTTPError{StatusCode: status, Body: string(body)}
+	}
+
+	if onSuccess != nil {
+		onSuccess()
+	}
+
+	body, err := drainFastBodyLimited(ctx, fResp, MaxResponseBodyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Response{
+		StatusCode: status,
+		Headers:    fastHeadersToHTTP(&fResp.Header),
+		Body:       body,
+	}, nil
 }
 
 // executeStreamFast runs a streaming request through fasthttp. The returned
@@ -618,73 +717,69 @@ func readFastBodyCappedCtx(ctx context.Context, resp *fasthttp.Response, limit i
 	}
 }
 
-// readFastBodyLimitedCtx reads the full response body up to maxBytes,
-// respecting ctx cancellation. Returns an error when the body exceeds the
-// cap — matching Execute's contract that oversized responses are reportable
-// rather than silently truncated. On ctx fire the underlying connection is
-// force-closed and ctx.Err() is returned, mirroring the net/http path where
-// a cancelled body read surfaces the context error.
+// fastBodyBufPool reuses scratch buffers for draining streamed unary response
+// bodies, so the per-request growing intermediate that io.ReadAll allocated is
+// replaced by a pooled buffer. Buffers larger than maxPooledFastBody are not
+// returned to the pool so an occasional oversized body cannot pin large memory.
+var fastBodyBufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+// maxPooledFastBody caps the capacity of a buffer kept in fastBodyBufPool.
+// 1 MiB comfortably holds typical LLM completions while keeping the pool's
+// retained footprint bounded.
+const maxPooledFastBody = 1 << 20
+
+// drainFastBodyLimited reads a streamed unary response body up to maxBytes,
+// synchronously (no per-request goroutine). It drains BodyStream into a pooled
+// scratch buffer with a maxBytes+1 limit so a body exceeding the cap is
+// reported — matching Execute's contract that oversized responses are an error,
+// not a silent truncation — and matching the net/http path's +1/strictly-greater
+// check exactly.
 //
-// Used exclusively by Execute: see readFastBodyCappedCtx's doc comment for
-// why the CloseWithError race is benign on that code path.
-func readFastBodyLimitedCtx(ctx context.Context, resp *fasthttp.Response, maxBytes int) ([]byte, error) {
+// Unlike the previous goroutine-based reader, a mid-body ctx cancel is not
+// force-closed here: the read is bounded by the conn deadline DoDeadline
+// installed (the same deadline Execute injected), consistent with fasthttp
+// having no real mid-flight abort. awaitCtxIfPastDeadline still normalises a
+// deadline-race error to ctx.Err() so downstream cancellation suppression stays
+// consistent.
+func drainFastBodyLimited(ctx context.Context, resp *fasthttp.Response, maxBytes int) (string, error) {
 	stream := resp.BodyStream()
 	if stream == nil {
-		// Non-streaming path (shouldn't happen with StreamResponseBody on,
-		// but keep a correct fallback).
+		// Body already buffered (defensive — the streaming host should always
+		// yield a stream). One copy, with the same strictly-greater cap check.
 		body := resp.Body()
 		if len(body) > maxBytes {
-			return nil, fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", maxBytes)
+			return "", fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", maxBytes)
 		}
-		return append([]byte(nil), body...), nil
+		return string(body), nil
 	}
 
-	type result struct {
-		buf []byte
-		err error
-	}
-	resCh := make(chan result, 1)
-	go func() {
-		buf, err := io.ReadAll(io.LimitReader(stream, int64(maxBytes)+1))
-		resCh <- result{buf: buf, err: err}
+	buf := fastBodyBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxPooledFastBody {
+			fastBodyBufPool.Put(buf)
+		}
 	}()
 
-	select {
-	case <-ctx.Done():
-		// Wait for the Read goroutine to exit naturally via the conn's
-		// SetReadDeadline (see forceCloseWaitWindow doc) before falling
-		// back to force-close. Read result is discarded — we're
-		// returning ctx.Err() either way.
-		select {
-		case <-resCh:
-		case <-time.After(forceCloseWaitWindow):
-			forceCloseFastBodyStream(resp, ctx.Err())
-			<-resCh
+	_, err := buf.ReadFrom(io.LimitReader(stream, int64(maxBytes)+1))
+	_ = resp.CloseBodyStream()
+	if err != nil {
+		// fasthttp's per-conn SetDeadline (installed by DoDeadline) can fire a
+		// tick ahead of the Go ctx timer. If we're past the deadline, wait
+		// briefly for the ctx timer to land and surface ctx.Err() so the
+		// orchestrator's trySend cancellation suppression stays consistent.
+		if ctxErr := awaitCtxIfPastDeadline(ctx); ctxErr != nil {
+			return "", ctxErr
 		}
-		return nil, ctx.Err()
-	case r := <-resCh:
-		_ = resp.CloseBodyStream()
-		if r.err != nil {
-			// fasthttp's per-conn SetDeadline (installed by DoDeadline)
-			// can fire a tick ahead of the Go ctx timer. Returning a
-			// non-ctx error here would make the orchestrator's trySend
-			// race with ctx.Done() — occasionally emitting an error
-			// result even though the cancellation path should suppress
-			// it. If we're past the deadline, wait briefly for the ctx
-			// timer to land and surface ctx.Err() instead.
-			if err := awaitCtxIfPastDeadline(ctx); err != nil {
-				return nil, err
-			}
-			if te := classifyTransportErr(r.err, "llmhttp: failed to read response body", false); te != nil {
-				return nil, te
-			}
-			return nil, fmt.Errorf("llmhttp: failed to read response body: %w", r.err)
+		if te := classifyTransportErr(err, "llmhttp: failed to read response body", false); te != nil {
+			return "", te
 		}
-		if int64(len(r.buf)) > int64(maxBytes) {
-			return nil, fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", maxBytes)
-		}
-		return r.buf, nil
+		return "", fmt.Errorf("llmhttp: failed to read response body: %w", err)
 	}
+	if buf.Len() > maxBytes {
+		return "", fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", maxBytes)
+	}
+	return buf.String(), nil
 }
 
 // forceCloseFastBodyStream triggers a true connection close on a fasthttp

@@ -173,7 +173,7 @@ func classifyTransportErr(err error, prefix string, staleConnTeardownAcceptable 
 // classifyStreamErrc consumes the single terminal value sseclient.Stream
 // (and the fast-path stream reader) emits and re-emits it on a buffered(1)
 // channel after running non-nil values through classifyTransportErr with
-// body-read semantics — same as Execute and readFastBodyLimitedCtx, where
+// body-read semantics — same as Execute and drainFastBodyLimited, where
 // any bytes already delivered upstream rule out the gated stale-conn-
 // teardown family. A typed mid-stream transport drop (ECONNRESET / EPIPE /
 // ECONNREFUSED / net.ErrClosed) therefore carries the ErrTransportFlake
