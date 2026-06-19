@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Set up Go
         uses: actions/setup-go@v6.4.0
@@ -72,7 +72,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Set up Go
         uses: actions/setup-go@v6.4.0
@@ -161,7 +161,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Log in to Docker Hub
         # Dockerfile.builder's `FROM node:22-bookworm` resolves to Docker Hub,

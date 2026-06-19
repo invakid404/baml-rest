@@ -60,7 +60,7 @@ jobs:
       matrix: ${{ steps.set.outputs.matrix }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
 
@@ -111,7 +111,7 @@ jobs:
     # integration-tests.yml; no rust (the fuzz job never builds cffi).
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
 
@@ -306,7 +306,7 @@ jobs:
       BAMLFUZZ_SEED: ${{ github.event.inputs.seed || github.run_id }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
 
@@ -669,7 +669,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
         with:
           persist-credentials: false
 
