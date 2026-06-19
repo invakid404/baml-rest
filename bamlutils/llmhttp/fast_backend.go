@@ -211,6 +211,15 @@ func (c *Client) executeFastStreamed(ctx context.Context, req *Request, rewritte
 
 	// For non-2xx responses, read a bounded diagnostic body and surface it as
 	// *HTTPError. Matches the net/http path's error-body policy exactly.
+	//
+	// Accepted trade-off: this diagnostic read is synchronous and NOT ctx-aware,
+	// so a mid-flight ctx cancel during it can block until the request deadline
+	// (DoDeadline / DefaultCallTimeout) on a rare stalled/trickled error body.
+	// This is deliberate — restoring ctx-awareness here would require a
+	// per-request body-read goroutine + force-close, reintroducing exactly the
+	// race / double-close hazards this PR removed (fasthttp exposes no per-read
+	// deadline to do it cleanly). The block is bounded by the already-set
+	// request deadline.
 	if status < 200 || status >= 300 {
 		body := readFastErrorBodyCapped(fResp, MaxErrorBodyBytes)
 		return nil, &HTTPError{StatusCode: status, Body: string(body)}
@@ -694,6 +703,11 @@ func readFastBodyCappedSlot(ctx context.Context, resp *fasthttp.Response, slot *
 // unread bytes remain on the wire, so the connection MUST be discarded rather
 // than pooled (B1) — otherwise the next request would read leftover garbage. A
 // fully-read (<= limit) error body leaves the conn clean and poolable.
+//
+// Synchronous and NOT ctx-aware by design: a mid-flight ctx cancel can block
+// here until the request deadline on a rare stalled error body (see the call
+// site in executeFastStreamed for the full rationale — adding ctx-awareness
+// would reintroduce the per-request goroutine + force-close race removed here).
 //
 // Used by the unary streamed lane. Streaming paths use readFastBodyCappedSlot,
 // which closes the captured conn directly.
