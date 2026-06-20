@@ -352,15 +352,20 @@ func TestFastStreamedConnReuseAfterErrorBodyReadError(t *testing.T) {
 	var n atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if n.Add(1) == 1 {
-			// Declare more body bytes than we write: net/http then closes the
-			// connection when the handler returns short, so the client's body
-			// read hits EOF before the declared length — a partial read via the
-			// error branch (not the cap branch).
+			// 500 with a chunked body that is flushed (so headers + one chunk
+			// reach the client and DoDeadline returns a body stream) then
+			// aborted mid-stream WITHOUT the terminating 0-chunk. The client's
+			// diagnostic body read in readFastErrorBodyCapped therefore errors
+			// before EOF — the read-error branch we want to cover. (A
+			// Content-Length body would be pre-read inside DoDeadline instead,
+			// never reaching readFastErrorBodyCapped.)
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Content-Length", "1024")
 			w.WriteHeader(500)
-			_, _ = w.Write([]byte(`{"error":"boom"`)) // < 1024 bytes
-			return
+			_, _ = w.Write([]byte(`{"error":"boom"`))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			panic(http.ErrAbortHandler) // abort the conn with no chunk terminator
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
@@ -371,11 +376,46 @@ func TestFastStreamedConnReuseAfterErrorBodyReadError(t *testing.T) {
 	c := withFastClient(t, server.Client())
 	onSuccess := func() {} // non-nil → streamed lane
 
-	// The first request errors (5xx with a short-then-closed body). Whatever the
-	// exact surfaced error, the contract under test is that it must not poison
-	// the pool for the next request.
-	_, _ = c.Execute(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`}, onSuccess)
-	assertCleanConnReuse(t, c, server.URL, normal, onSuccess, 5)
+	// First request: 500 headers arrive, DoDeadline returns the chunked body
+	// stream, then the diagnostic read in readFastErrorBodyCapped errors before
+	// EOF (truncated chunk). Assert the error path was ACTUALLY exercised: it
+	// must surface as an *HTTPError carrying status 500 and the body prefix that
+	// did arrive ("boom"). This fails loudly if this stops hitting that branch
+	// (e.g. if the partial response started erroring inside DoDeadline instead).
+	_, err := c.Execute(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`}, onSuccess)
+	httpErr, ok := err.(*HTTPError)
+	if !ok {
+		t.Fatalf("expected *HTTPError from the 500 partial-body response, got %T: %v", err, err)
+	}
+	if httpErr.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", httpErr.StatusCode)
+	}
+	if !strings.Contains(httpErr.Body, "boom") {
+		t.Errorf("expected diagnostic body to contain the written prefix %q, got %q", "boom", httpErr.Body)
+	}
+
+	// Conn-reuse: the connection carrying the partial read must not be pooled
+	// with unread bytes — that is the B1 corruption, which would surface as a
+	// GARBAGE / unparseable response on a later request. Because the server
+	// also closed the conn on abort, fasthttp may return one benign
+	// ErrConnectionClosed for a stale keep-alive conn before dialing fresh;
+	// that's tolerated. What must hold is: at least one follow-up succeeds, and
+	// EVERY successful follow-up returns the exact normal body (never garbage).
+	// (Deterministic dirty-byte reuse is covered by the oversize/capped tests.)
+	gotClean := false
+	for i := 0; i < 6; i++ {
+		resp, ferr := c.Execute(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`}, onSuccess)
+		if ferr != nil {
+			continue // tolerate a transient stale-keepalive close
+		}
+		if resp.Body != normal {
+			t.Fatalf("follow-up %d returned corrupted body (dirty pooled conn?): %q", i, resp.Body)
+		}
+		gotClean = true
+	}
+	if !gotClean {
+		t.Fatal("no follow-up request succeeded after the partial-read error; pool may be wedged")
+	}
 }
 
 // TestFastBufferedLaneConcurrent stresses the buffered lane under concurrency
