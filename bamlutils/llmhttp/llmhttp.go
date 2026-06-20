@@ -559,6 +559,17 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 		ctx = context.Background()
 	}
 
+	// Capture whether the ORIGINAL caller context can be cancelled before we
+	// inject DefaultCallTimeout below. A context with no Done channel
+	// (context.Background / context.TODO) can only ever be bounded by the
+	// deadline we are about to add, so the fasthttp backend can call
+	// DoDeadline synchronously and read a fully buffered body — no per-request
+	// goroutine, no body intermediate. A context that was already cancellable
+	// (server request contexts, retry/orchestration contexts) keeps the
+	// goroutine race so a mid-flight cancel still returns the caller promptly.
+	// This must be read before WithTimeout, which always adds a Done channel.
+	cancellable := ctx.Done() != nil
+
 	// Enforce a deadline on the outbound call if the caller didn't set one.
 	// The HTTP client is shared with ExecuteStream (which must not have a
 	// fixed timeout), so the timeout is applied per-request via context
@@ -569,6 +580,11 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, DefaultCallTimeout)
 		defer cancel()
+	}
+
+	fastMode := fastUnaryDeadlineOnly
+	if cancellable {
+		fastMode = fastUnaryCancellable
 	}
 
 	rewritten := c.resolveRequestURL(req)
@@ -584,7 +600,7 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 	if c.cache != nil {
 		if origin, err := parseOrigin(rewritten); err == nil {
 			if entry := c.cache.resolve(ctx, origin); entry != nil && entry.decision == decisionFast && entry.host != nil {
-				return c.executeFast(ctx, req, rewritten, entry.host, onSuccess)
+				return c.executeFast(ctx, req, rewritten, entry, onSuccess, fastMode)
 			}
 		}
 	}

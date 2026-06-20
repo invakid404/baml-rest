@@ -18,6 +18,17 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// maxBufferedResponseBackstop bounds the body the buffered unary HostClient
+// will read, purely as an out-of-memory backstop — NOT for semantic limit
+// enforcement. It sits well above both MaxResponseBodyBytes (the success cap)
+// and MaxErrorBodyBytes (the diagnostic cap) so executeFastBuffered can branch
+// on status first and then enforce the real limits in code: a non-2xx body
+// larger than MaxResponseBodyBytes still becomes an *HTTPError capped to
+// MaxErrorBodyBytes (matching the net/http and streamed paths) rather than a
+// premature "body too large" error. Only a pathological body beyond this
+// backstop trips fasthttp's ErrBodyTooLarge before status is known.
+const maxBufferedResponseBackstop = 2 * MaxResponseBodyBytes
+
 // defaultFastHTTPMaxConns is the per-origin connection cap used when
 // FastHTTPClientOptions.MaxConns is zero or negative. fasthttp falls back
 // to DefaultMaxConnsPerHost = 512 on its own zero value, which throttles
@@ -111,13 +122,31 @@ const (
 	decisionFast
 )
 
-// hostEntry is the cache payload for a single origin. host is populated only
-// when decision == decisionFast; entries created for decisionNet never
-// allocate a fasthttp.HostClient. Entries are treated as immutable after
-// install so readers never take a lock.
+// hostEntry is the cache payload for a single origin. host/unaryHost are
+// populated only when decision == decisionFast; entries created for
+// decisionNet never allocate a fasthttp.HostClient. Entries are treated as
+// immutable after install so readers never take a lock.
+//
+// Two HostClients are kept per fasthttp origin, differing only in body
+// handling:
+//   - host: StreamResponseBody=true. Used by ExecuteStream (SSE) and by the
+//     unary header-streaming lane in Execute where onSuccess must fire after
+//     2xx headers but before the body is read.
+//   - unaryHost: StreamResponseBody=false, MaxResponseBodySize set to an
+//     OOM backstop (maxBufferedResponseBackstop). Used only by Execute's
+//     buffered fast lane (onSuccess==nil, deadline-only ctx), where fasthttp
+//     reads the full body before DoDeadline returns and the wrapper can read
+//     fResp.Body() with a single copy — no intermediate io.ReadAll buffer and
+//     no body-read goroutine. The real success/error size limits are enforced
+//     in executeFastBuffered after the status is known (see B2).
+//
+// The split exists because StreamResponseBody is a per-HostClient setting and
+// must not be mutated per request (the client is shared and toggling it would
+// race and corrupt concurrent streaming reads).
 type hostEntry struct {
-	decision decision
-	host     *fasthttp.HostClient
+	decision  decision
+	host      *fasthttp.HostClient
+	unaryHost *fasthttp.HostClient
 }
 
 // protocolCache stores the routing decision (net/http vs fasthttp) per
@@ -408,5 +437,23 @@ func (c *protocolCache) buildEntry(origin originURL, d decision) *hostEntry {
 		MaxConns:                      tmpl.MaxConns,
 		TLSConfig:                     tmpl.TLSConfig,
 	}
-	return &hostEntry{decision: d, host: hc}
+	// Buffered sibling for Execute's fast lane. Identical wire/pooling config
+	// as host, but StreamResponseBody is OFF so fasthttp reads the full body
+	// into its pooled response buffer before DoDeadline returns, and
+	// MaxResponseBodySize enforces the same MaxResponseBodyBytes ceiling the
+	// streamed path checks manually (fasthttp rejects strictly-greater, so the
+	// exact-at-limit body still succeeds — matching the net/http path).
+	unaryHC := &fasthttp.HostClient{
+		Name:                          tmpl.Name,
+		Addr:                          origin.addr(),
+		IsTLS:                         origin.scheme == "https",
+		DisableHeaderNamesNormalizing: tmpl.DisableHeaderNamesNormalizing,
+		StreamResponseBody:            false,
+		MaxResponseBodySize:           maxBufferedResponseBackstop,
+		MaxIdleConnDuration:           tmpl.MaxIdleConnDuration,
+		MaxConnWaitTimeout:            tmpl.MaxConnWaitTimeout,
+		MaxConns:                      tmpl.MaxConns,
+		TLSConfig:                     tmpl.TLSConfig,
+	}
+	return &hostEntry{decision: d, host: hc, unaryHost: unaryHC}
 }
