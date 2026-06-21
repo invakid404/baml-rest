@@ -147,8 +147,8 @@ func TestIdleTimeoutDoesNotFireOnProgressingStream(t *testing.T) {
 }
 
 // truncReader returns a complete SSE event together with a non-EOF error in a
-// single Read — modelling fastStreamReader's io.ErrUnexpectedEOF on a
-// truncated chunked stream. The watchdog never fires (long idle window), so
+// single Read — modelling net/http's io.ErrUnexpectedEOF on a truncated
+// chunked stream. The watchdog never fires (long idle window), so
 // this exercises the genuine-upstream-error path on the n>0 branch.
 type truncReader struct {
 	sent bool

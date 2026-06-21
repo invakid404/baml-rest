@@ -185,10 +185,12 @@ func TestFastCancellableLaneReturnsPromptlyOnCancel(t *testing.T) {
 	}
 }
 
-// TestExecuteStreamStillStreamsAfterUnaryHost confirms ExecuteStream keeps
-// using the streaming host (StreamResponseBody=true) and parses SSE events
-// after the unary buffered host was added to the cache entry.
-func TestExecuteStreamStillStreamsAfterUnaryHost(t *testing.T) {
+// TestExecuteStreamRoutesNetHTTPUnderFastMode confirms that a fast-mode client
+// (ClientModeFastHTTP, whose cache holds the unary fasthttp hosts) still
+// executes ExecuteStream through net/http and parses SSE events end-to-end —
+// the unary fasthttp cache entry must not divert streaming onto fasthttp
+// (Stage 1 of the streaming memory effort, #475 follow-up).
+func TestExecuteStreamRoutesNetHTTPUnderFastMode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)

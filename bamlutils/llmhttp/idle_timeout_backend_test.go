@@ -13,8 +13,8 @@ import (
 // hangingSSEServer returns an httptest.Server that writes the given complete
 // SSE events, flushes them, then goes silent — blocking until the client tears
 // down the connection (its request context is cancelled when the idle watchdog
-// severs the conn). This drives the REAL backend close paths end-to-end
-// through ExecuteStream: net/http resp.Body.Close and fasthttp slot.shutdown.
+// severs the conn). This drives the REAL net/http close path end-to-end
+// through ExecuteStream (resp.Body.Close interrupts the parked SSE read).
 func hangingSSEServer(t *testing.T, events ...string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,8 +95,11 @@ func TestExecuteStreamIdleTimeoutNetHTTP(t *testing.T) {
 	assertIdleTimeoutFires(t, ClientModeNetHTTP)
 }
 
-// TestExecuteStreamIdleTimeoutFastHTTP exercises the real fasthttp backend
-// close path (slot.shutdown severs the captured socket).
+// TestExecuteStreamIdleTimeoutFastHTTP proves that ClientModeFastHTTP still
+// routes ExecuteStream through net/http (Stage 1 of the streaming memory
+// effort, #475 follow-up) AND that the idle timeout fires there: fasthttp mode
+// applies only to unary Execute, so the stream's idle watchdog runs over the
+// net/http resp.Body close path exactly like ClientModeNetHTTP.
 func TestExecuteStreamIdleTimeoutFastHTTP(t *testing.T) {
 	t.Parallel()
 	assertIdleTimeoutFires(t, ClientModeFastHTTP)

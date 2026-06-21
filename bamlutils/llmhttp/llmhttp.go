@@ -439,18 +439,14 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 		return nil, err
 	}
 
-	// Dispatch to fasthttp when the per-origin cache says the host speaks
-	// HTTP/1.1. Cache misses probe (or short-circuit on http://) before
-	// returning; cache hits are a single atomic load.
-	if c.cache != nil {
-		if origin, err := parseOrigin(rewritten); err == nil {
-			if entry := c.cache.resolve(ctx, origin); entry != nil && entry.decision == decisionFast && entry.host != nil {
-				return c.executeStreamFast(ctx, req, rewritten, entry.host)
-			}
-		}
-		// If the URL doesn't parse or the cache fails open, fall through to
-		// net/http, which produces a proper error with full context.
-	}
+	// Streaming always routes through net/http, even when BAML_REST_HTTP_CLIENT
+	// resolves the origin to fasthttp for unary Execute. fasthttp response
+	// bodies/headers are pooled and released, which makes mid-stream lifetime
+	// and chunked-truncation detection fragile; net/http's resp.Body is
+	// caller-owned until Close and its stdlib chunked reader surfaces
+	// io.ErrUnexpectedEOF natively. The protocol cache and ClientModeFastHTTP
+	// therefore affect only unary Execute below — not SSE streaming. See
+	// Stage 1 of the streaming memory effort (#475 follow-up).
 
 	httpReq, err := buildHTTPRequest(ctx, req, rewritten)
 	if err != nil {
