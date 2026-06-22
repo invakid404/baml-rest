@@ -258,6 +258,7 @@ func TestRunCallOrchestration_FallbackTargets_RoutesBuildRequestToLeaf(t *testin
 		buildFn,
 		func(_ context.Context, s string) (any, error) { return s, nil },
 		func(_ string, body string, _ bool) (string, string, string, error) { return body, body, "", nil },
+		nil, // no byte extractor: the custom string extractor must still be honored on the net/http lane
 		newTestResult,
 	)
 	close(out)

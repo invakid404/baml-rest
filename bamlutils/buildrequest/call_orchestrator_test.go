@@ -57,6 +57,7 @@ func TestRunCallOrchestration_Success(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -105,6 +106,7 @@ func TestRunCallOrchestration_WithRaw(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -146,6 +148,7 @@ func TestRunCallOrchestration_HTTPError(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -199,6 +202,7 @@ func TestRunCallOrchestration_WithRetry(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -258,6 +262,7 @@ func TestRunCallOrchestration_RetryExhausted(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -314,6 +319,7 @@ func TestRunCallOrchestration_ContextCancellation(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -354,6 +360,7 @@ func TestRunCallOrchestration_CancellationDuringParse(t *testing.T) {
 			return nil, ctx.Err()
 		},
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -381,6 +388,7 @@ func TestRunCallOrchestration_UnsupportedProvider(t *testing.T) {
 		},
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 
@@ -405,6 +413,7 @@ func TestRunCallOrchestration_EmptyProvider(t *testing.T) {
 		},
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 
@@ -442,6 +451,7 @@ func TestRunCallOrchestration_EmitsPlannedMetadataBeforeValidationError(t *testi
 		},
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 
@@ -493,6 +503,7 @@ func TestRunCallOrchestration_BuildRequestError(t *testing.T) {
 		},
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -531,6 +542,7 @@ func TestRunCallOrchestration_ParseFinalError(t *testing.T) {
 			return nil, fmt.Errorf("parse failed for: %s", text)
 		},
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -576,6 +588,7 @@ func TestRunCallOrchestration_Anthropic(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -638,6 +651,7 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_Default(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		captureParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -708,6 +722,7 @@ func TestRunCallOrchestration_AnthropicThinkingSplit_OptIn(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		captureParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -770,6 +785,7 @@ func TestRunCallOrchestration_GoogleAI(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -805,6 +821,7 @@ func TestRunCallOrchestration_HeartbeatOnlyOnce(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -851,6 +868,7 @@ func TestRunCallOrchestration_RetryDoesNotEmitRetryHeartbeats(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -941,6 +959,7 @@ func TestRunCallOrchestration_RetryRebuildsRequest(t *testing.T) {
 		buildFn,
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1019,6 +1038,7 @@ func TestRunCallOrchestration_NilHTTPClient(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1161,6 +1181,7 @@ func TestRunCallOrchestration_FallbackChain(t *testing.T) {
 		buildFn,
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1239,6 +1260,7 @@ func TestRunCallOrchestration_FallbackChainWithRaw(t *testing.T) {
 		buildFn,
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1310,6 +1332,7 @@ func TestRunCallOrchestration_FallbackChainExtractionFailure(t *testing.T) {
 		buildFn,
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1362,6 +1385,7 @@ func TestRunCallOrchestration_ValidatesAllChildren(t *testing.T) {
 		},
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	if err == nil {
@@ -1415,6 +1439,7 @@ func TestRunCallOrchestration_MixedChain_LegacySucceedsSecond(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1485,6 +1510,7 @@ func TestRunCallOrchestration_MixedChain_LegacyFirstFails_SupportedWins(t *testi
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1533,6 +1559,7 @@ func TestRunCallOrchestration_MixedChain_LegacyNoCallbackErrors(t *testing.T) {
 		},
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	if err == nil || !strings.Contains(err.Error(), "LegacyCallChild") {
@@ -1600,6 +1627,7 @@ func TestRunCallOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 		makeBuildCallRequest(supportedServer.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1685,6 +1713,7 @@ func TestRunCallOrchestration_SingleProviderClientOverride(t *testing.T) {
 		buildRequest,
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1751,6 +1780,7 @@ func TestRunCallOrchestration_ParseFinalError_CarriesRaw(t *testing.T) {
 			return nil, fmt.Errorf("Parsing error: bad field")
 		},
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
@@ -1808,6 +1838,7 @@ func TestRunCallOrchestration_ExtractError_CarriesBodyAsRaw(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		failingExtract,
+		nil, // no byte extractor: the failing string extractor must still run on the net/http lane
 		newTestResult,
 	)
 	close(out)
@@ -1843,6 +1874,7 @@ func TestRunCallOrchestration_HTTPError_NoRawWrap(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	close(out)
