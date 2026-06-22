@@ -141,10 +141,11 @@ func scan(ctx context.Context, r io.Reader, out chan<- Event) error {
 
 		// Strip trailing \r in case the HTTP server uses \r\n line endings
 		// that weren't fully consumed by the scanner's line splitter.
-		// Go's bufio.ScanLines handles \r\n but not bare \r.
-		if n := len(line); n > 0 && line[n-1] == '\r' {
-			line = line[:n-1]
-		}
+		// Go's bufio.ScanLines handles \r\n but not bare \r. This matches
+		// master's strings.TrimRight(line, "\r"): ALL trailing \r are removed,
+		// not just one. bytes.TrimRight reslices in place, so it does not
+		// allocate and the result still aliases the scanner buffer.
+		line = bytes.TrimRight(line, "\r")
 
 		// Blank line = event boundary (dispatch if we have data)
 		if len(line) == 0 {
