@@ -414,12 +414,12 @@ func TestParseSSELine(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.line, func(t *testing.T) {
-			field, value := parseSSELine(tt.line)
-			if field != tt.field {
-				t.Errorf("field: expected %q, got %q", tt.field, field)
+			field, value := parseSSELine([]byte(tt.line))
+			if string(field) != tt.field {
+				t.Errorf("field: expected %q, got %q", tt.field, string(field))
 			}
-			if value != tt.value {
-				t.Errorf("value: expected %q, got %q", tt.value, value)
+			if string(value) != tt.value {
+				t.Errorf("value: expected %q, got %q", tt.value, string(value))
 			}
 		})
 	}
@@ -459,6 +459,28 @@ func TestCRLFLineEndings(t *testing.T) {
 	}
 	if events[1].Data != "world" {
 		t.Errorf("expected 'world', got %q", events[1].Data)
+	}
+}
+
+func TestMultipleTrailingCR(t *testing.T) {
+	// Parity with master's strings.TrimRight(line, "\r"): ALL trailing
+	// carriage returns are stripped, not just one. This pins the byte-path
+	// trim behavior against regression to a single-\r reslice.
+	input := "data: hello\r\r\r\n\r\r\n"
+
+	events, err := collectEvents(t, context.Background(), strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	// The data line "data: hello\r\r" (after the scanner strips the final
+	// \r\n) must have BOTH trailing \r removed, yielding "hello". The blank
+	// boundary line "\r" (one \r before \n) must trim to empty so it still
+	// acts as an event delimiter.
+	if events[0].Data != "hello" {
+		t.Errorf("expected 'hello' (all trailing \\r trimmed), got %q", events[0].Data)
 	}
 }
 

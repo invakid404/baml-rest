@@ -9,6 +9,7 @@ package sseclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"strings"
@@ -105,10 +106,18 @@ func scan(ctx context.Context, r io.Reader, out chan<- Event) error {
 	scanner := bufio.NewScanner(r)
 	// LLM SSE events are typically small JSON objects, but set a generous
 	// max line size to handle edge cases (e.g., base64-encoded images).
-	// The initial buffer is pooled. Parsing uses scanner.Text() (owned
-	// string) so event fields never alias the pooled buffer; if anything
-	// here ever switches to scanner.Bytes(), it must copy before sending
-	// events or before putSSEScannerBuffer runs.
+	// The initial buffer is pooled.
+	//
+	// Parsing uses scanner.Bytes() (a view over the pooled scanner buffer
+	// that is reused/overwritten on the next Scan) to avoid a per-line string
+	// allocation. This is safe ONLY because no scanner.Bytes() view ever
+	// escapes this loop: data is copied into the owned dataBuf builder via
+	// Write, and the event/id fields are materialized with string(...) which
+	// copies. Event.Data is produced by dataBuf.String(), a view over the
+	// builder's own storage (not reused after Reset). NEVER assign a
+	// scanner.Bytes() slice into an Event or send it on the channel — the
+	// channel is buffered (cap 16) so the parser runs ahead of consumers, and
+	// the underlying bytes would be overwritten before consumers read them.
 	scanner.Buffer((*bufp)[:0], sseScannerMaxTokenSize)
 
 	var (
@@ -126,18 +135,26 @@ func scan(ctx context.Context, r io.Reader, out chan<- Event) error {
 		default:
 		}
 
-		line := scanner.Text()
+		// line aliases the scanner's pooled buffer; valid only until the next
+		// Scan(). It must never be stored in an Event or sent on the channel.
+		line := scanner.Bytes()
 
 		// Strip trailing \r in case the HTTP server uses \r\n line endings
 		// that weren't fully consumed by the scanner's line splitter.
-		// Go's bufio.ScanLines handles \r\n but not bare \r.
-		line = strings.TrimRight(line, "\r")
+		// Go's bufio.ScanLines handles \r\n but not bare \r. This matches
+		// master's strings.TrimRight(line, "\r"): ALL trailing \r are removed,
+		// not just one. bytes.TrimRight reslices in place, so it does not
+		// allocate and the result still aliases the scanner buffer.
+		line = bytes.TrimRight(line, "\r")
 
 		// Blank line = event boundary (dispatch if we have data)
-		if line == "" {
+		if len(line) == 0 {
 			if hasData {
 				ev := Event{
 					Type: eventType,
+					// dataBuf.String() copies out of the scanner buffer
+					// (data was Write-copied into the builder), so Data is
+					// owned by the event and safe to send on the channel.
 					Data: dataBuf.String(),
 					ID:   eventID,
 				}
@@ -163,23 +180,28 @@ func scan(ctx context.Context, r io.Reader, out chan<- Event) error {
 			continue
 		}
 
-		// Parse "field: value" or "field:value" format.
+		// Parse "field: value" or "field:value" format on the raw bytes.
 		field, value := parseSSELine(line)
 
-		switch field {
+		// switch string(field) is special-cased by the compiler to compare
+		// against the case constants without allocating a string.
+		switch string(field) {
 		case "data":
 			if hasData {
 				// Multiple data lines are joined with newlines per SSE spec.
 				dataBuf.WriteByte('\n')
 			}
-			dataBuf.WriteString(value)
+			// Write copies value out of the scanner buffer into builder
+			// storage, so the eventual dataBuf.String() is owned.
+			dataBuf.Write(value)
 			hasData = true
 		case "event":
-			eventType = value
+			// string(value) copies; eventType escapes via the Event.
+			eventType = string(value)
 		case "id":
 			// Per SSE spec, ignore IDs containing null.
-			if !strings.ContainsRune(value, '\x00') {
-				eventID = value
+			if bytes.IndexByte(value, '\x00') < 0 {
+				eventID = string(value)
 			}
 		case "retry":
 			// Retry field is not relevant for one-shot LLM streams; ignore.
@@ -208,14 +230,18 @@ func scan(ctx context.Context, r io.Reader, out chan<- Event) error {
 	return nil
 }
 
-// parseSSELine splits an SSE line into field name and value.
+// parseSSELine splits an SSE line into field name and value, operating on the
+// raw line bytes to avoid allocating an intermediate string.
 // Format: "field: value" or "field:value" (space after colon is optional but
 // if present the first space is stripped per the SSE spec).
 // If there is no colon, the entire line is the field name with empty value.
-func parseSSELine(line string) (field, value string) {
-	idx := strings.IndexByte(line, ':')
+//
+// The returned slices alias the input (and therefore the scanner buffer);
+// callers must copy before retaining them past the next Scan().
+func parseSSELine(line []byte) (field, value []byte) {
+	idx := bytes.IndexByte(line, ':')
 	if idx < 0 {
-		return line, ""
+		return line, nil
 	}
 
 	field = line[:idx]
