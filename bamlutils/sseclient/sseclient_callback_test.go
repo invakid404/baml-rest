@@ -200,6 +200,82 @@ type errReader struct{ err error }
 
 func (e *errReader) Read(p []byte) (int, error) { return 0, e.err }
 
+// cancelOnEOFReader delivers data once, then cancels the context on the
+// follow-up Read that the scanner makes to detect EOF, before returning EOF.
+// This deterministically reproduces the dispatch-time cancellation gap: the
+// cancel lands during the Scan() that returns false (so the loop exits via the
+// for-condition and the loop-body's top-of-iteration ctx check never runs),
+// leaving the post-loop trailing-event dispatch as the only thing that could
+// observe the cancellation.
+type cancelOnEOFReader struct {
+	data   []byte
+	off    int
+	cancel context.CancelFunc
+	done   bool
+}
+
+func (r *cancelOnEOFReader) Read(p []byte) (int, error) {
+	if r.off < len(r.data) {
+		n := copy(p, r.data[r.off:])
+		r.off += n
+		return n, nil
+	}
+	if !r.done {
+		r.done = true
+		r.cancel()
+	}
+	return 0, io.EOF
+}
+
+// TestScanEventsCtxCheckedBeforeTrailingDispatch is the regression test for the
+// cubic P2 on PR #493: a context cancelled at end-of-stream must NOT dispatch
+// the trailing event. The data line "data: b\n" sets hasData, then the EOF
+// Read cancels the context; without the dispatch-time ctx check the trailing
+// emit would still invoke the callback for "b" and ScanEvents would return nil.
+// With the fix it returns context.Canceled and the callback is never entered.
+func TestScanEventsCtxCheckedBeforeTrailingDispatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &cancelOnEOFReader{data: []byte("data: b\n"), cancel: cancel}
+
+	var dispatched []string
+	err := ScanEvents(ctx, r, func(ev EventBytes) error {
+		dispatched = append(dispatched, string(ev.Data))
+		return nil
+	})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if len(dispatched) != 0 {
+		t.Fatalf("trailing event dispatched after cancel: %v", dispatched)
+	}
+}
+
+// TestScanEventsNoDispatchAfterCallbackCancel verifies that when the callback
+// cancels the context mid-stream, no further event is dispatched and
+// ScanEvents returns the ctx error. Deterministic: all bytes are available up
+// front, so the parser would otherwise run straight through every event.
+func TestScanEventsNoDispatchAfterCallbackCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	body := "data: a\n\ndata: b\n\ndata: c\n\n"
+
+	var dispatched []string
+	err := ScanEvents(ctx, strings.NewReader(body), func(ev EventBytes) error {
+		dispatched = append(dispatched, string(ev.Data))
+		if string(ev.Data) == "a" {
+			cancel() // cancel mid-stream after the first event
+		}
+		return nil
+	})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if len(dispatched) != 1 || dispatched[0] != "a" {
+		t.Fatalf("expected only [a] dispatched before cancel, got %v", dispatched)
+	}
+}
+
 // BenchmarkScanEventsParallel mirrors BenchmarkStreamParallel for the
 // synchronous callback path. The callback parses nothing durable — it only
 // touches the bytes — so the steady-state per-event allocation that Stream

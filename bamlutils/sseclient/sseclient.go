@@ -314,6 +314,18 @@ func ScanEvents(ctx context.Context, r io.Reader, fn EventFunc) error {
 	)
 
 	emit := func() error {
+		// Re-check ctx at dispatch time, mirroring the channel-based Stream's
+		// `select { case out <- ev: case <-ctx.Done(): return ctx.Err() }`.
+		// The top-of-loop check alone leaves two gaps: a concurrent cancel in
+		// the window between that check and this dispatch, and the trailing
+		// (post-loop) event below — which the loop-body check never guards
+		// because the loop exits via a false Scan(). Checking here stops a
+		// cancelled stream promptly without ever entering fn for a further
+		// event. ctx.Err() is allocation-free. Returned ctx.Err() is not
+		// ErrStopScan, so callers surface it as the terminal error.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fn(EventBytes{Type: typeBuf, Data: dataBuf, ID: idBuf})
 	}
 
